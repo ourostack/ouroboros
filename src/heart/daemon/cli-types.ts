@@ -86,7 +86,7 @@ export type OuroCliCommand =
   | { kind: "friend.unlink"; agent: string; friendId: string; provider: import("@ouro.bot/friends").IdentityProvider; externalId: string }
   | { kind: "a2a.card"; agent?: string; baseUrl?: string; json?: boolean }
   | { kind: "a2a.onboard"; agent?: string; cardUrl?: string; did?: string; trustLevel?: TrustLevel; name?: string }
-  | { kind: "a2a.message"; to: string; text: string; conversationId?: string; identityFile?: string; json?: boolean }
+  | { kind: "a2a.message"; to: string; text: string; conversationId?: string; /** Relay the text as the principal's own command (signed marker). */ delegated?: boolean; identityFile?: string; json?: boolean }
   | { kind: "a2a.identity"; identityFile?: string; json?: boolean }
   | { kind: "a2a.serve"; agent?: string; host?: string; port?: number; baseUrl?: string; path?: string }
   | { kind: "changelog"; from?: string; agent?: string }

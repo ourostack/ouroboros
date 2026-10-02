@@ -51,6 +51,14 @@ export interface StewardPolicyActor {
     sessionKey: string
     receiptId: string
   }
+  /** Present when the owner's authority arrived as a delegated command from a granted peer. */
+  delegatedVia?: StewardPolicyDelegation
+}
+
+export interface StewardPolicyDelegation {
+  delegateFriendId: string
+  delegateDid: string
+  noticeId: string
 }
 
 export type StewardPolicyMutation =
@@ -118,6 +126,7 @@ interface PolicyAuditRow {
   issuer: string
   authorizingSessionEvent: string
   authorization: NonNullable<StewardPolicyActor["authorization"]>
+  delegatedVia?: StewardPolicyDelegation
   preimage: string
   preimageVersion: number
   preimageSha256: string
@@ -159,6 +168,11 @@ function ownerAuthorization(value: unknown): value is NonNullable<StewardPolicyA
   return record(value) && exactKeys(value, ["profileId", "profileVersion", "requestId", "sessionKey", "receiptId"])
     && value.profileId === "sanctuary-owner" && positiveInteger(value.profileVersion)
     && text(value.requestId) && text(value.sessionKey) && text(value.receiptId)
+}
+
+function delegation(value: unknown): value is StewardPolicyDelegation {
+  return record(value) && exactKeys(value, ["delegateFriendId", "delegateDid", "noticeId"])
+    && text(value.delegateFriendId) && text(value.delegateDid) && text(value.noticeId)
 }
 
 function desiredEntry(value: unknown, version: number): value is DesiredStateEntry {
@@ -207,9 +221,10 @@ function operationIdentity(issuer: string, event: string, requestId: string, kin
 }
 
 function auditRow(value: unknown): value is PolicyAuditRow {
-  if (!record(value) || !exactKeys(value, ["schemaVersion", "transactionId", "precedingBytesSha256", "mutationKind", "key", "mutationFingerprint", "affectedKeyResult", "affectedKeyResultSha256", "issuer", "authorizingSessionEvent", "authorization", "preimage", "preimageVersion", "preimageSha256", "postimage", "postimageVersion", "postimageSha256", "at"])
+  if (!record(value) || !exactKeys(value, ["schemaVersion", "transactionId", "precedingBytesSha256", "mutationKind", "key", "mutationFingerprint", "affectedKeyResult", "affectedKeyResultSha256", "issuer", "authorizingSessionEvent", "authorization", "preimage", "preimageVersion", "preimageSha256", "postimage", "postimageVersion", "postimageSha256", "at"], ["delegatedVia"])
     || value.schemaVersion !== 2 || (value.mutationKind !== "set_desired_state" && value.mutationKind !== "grant_routine_action")
     || !text(value.key) || !text(value.issuer) || !text(value.authorizingSessionEvent) || !ownerAuthorization(value.authorization)
+    || (value.delegatedVia !== undefined && !delegation(value.delegatedVia))
     || typeof value.preimage !== "string" || typeof value.postimage !== "string" || !canonicalTime(value.at)) return false
   const before = policyImage(value.preimage)
   const after = policyImage(value.postimage)
@@ -370,6 +385,7 @@ export function updateStewardPolicy(agentRoot: string, input: { expectedVersion:
   const issuer = requireText(input.actor.friendId, "issuer")
   const authorization = input.actor.authorization
   if (!ownerAuthorization(authorization)) throw new Error("steward policy mutation requires current owner authorization")
+  if (input.actor.delegatedVia !== undefined && !delegation(input.actor.delegatedVia)) throw new Error("steward policy delegation is invalid")
   if (input.mutation.kind !== "set_desired_state" && input.mutation.kind !== "grant_routine_action") throw new Error("steward policy mutation kind is invalid")
   return withImmediateSessionTurnLease(policyPath(agentRoot), (lease) => {
     const snapshot = readAuditedPolicy(agentRoot, lease)
@@ -424,6 +440,7 @@ export function updateStewardPolicy(agentRoot: string, input: { expectedVersion:
       schemaVersion: 2, transactionId: sha256(JSON.stringify([identity, fingerprint])), precedingBytesSha256: sha256(snapshot.auditBytes),
       mutationKind: input.mutation.kind, key, mutationFingerprint: fingerprint, affectedKeyResult, affectedKeyResultSha256: sha256(JSON.stringify(affectedKeyResult)),
       issuer, authorizingSessionEvent, authorization: { ...authorization },
+      ...(input.actor.delegatedVia ? { delegatedVia: { ...input.actor.delegatedVia } } : {}),
       preimage: snapshot.bytes, preimageVersion: current.version, preimageSha256: snapshot.revision,
       postimage, postimageVersion: version, postimageSha256: sha256(postimage), at: now,
     }

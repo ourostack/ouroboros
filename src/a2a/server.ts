@@ -19,6 +19,7 @@ import type { FriendRecord } from "@ouro.bot/friends"
 import { isMissionResultDataPart, receiveInboundMissionResult } from "./mission-result-wire"
 import { delegationStoresFor } from "./delegation-stores"
 import { FileA2ATaskStore } from "./task-store"
+import { admitDelegatedCommand, DELEGATED_BANNER, type A2ADelegationOptions, type DelegatedCommandContext } from "./delegated-command"
 import type { A2AJsonRpcRequest, A2AJsonRpcResponse, A2AMessage, A2ATask } from "./types"
 
 const MAX_A2A_REQUEST_BYTES = 128 * 1024
@@ -34,6 +35,8 @@ export interface A2ATurnRunnerInput {
   message: string
   /** For a verified friend's chat: the relationship that scopes this turn's tools. */
   relationshipAuthorization?: RelationshipAuthorizationEvaluator
+  /** Present only when the server admitted a delegated principal command. */
+  delegatedCommand?: DelegatedCommandContext
 }
 
 export interface A2ATurnRunnerOutput {
@@ -55,6 +58,8 @@ export interface StartA2AServerOptions {
    * can unseal friends DataParts addressed to this DID. Absent in legacy/no-identity
    * deployments (the card omits `did`; inbound stays on the text-only path). */
   identity?: A2AIdentity
+  /** Enables delegated principal commands. Absent: every delegated marker is refused. */
+  delegation?: A2ADelegationOptions
 }
 
 export interface A2AServerHandle {
@@ -174,6 +179,7 @@ async function defaultTurnRunner(input: A2ATurnRunnerInput): Promise<A2ATurnRunn
     toolContext: {
       ...(input.agentName === "sanctuary" ? createSanctuaryToolContext(input.agentName) : {}),
       ...(input.relationshipAuthorization ? { relationshipAuthorization: input.relationshipAuthorization } : {}),
+      ...(input.delegatedCommand ? { delegatedCommand: input.delegatedCommand } : {}),
     },
   })
   return { response: result.response }
@@ -497,7 +503,7 @@ export async function startA2AServer(options: StartA2AServerOptions): Promise<A2
         let verifiedPeerAgentId: string | undefined
         let verifiedPeerName: string | undefined
         let verifiedShareText: string | undefined
-        let verifiedChat: { did: string; friend?: FriendRecord } | undefined
+        let verifiedChat: { did: string; friend?: FriendRecord; onBehalfOf?: "principal" } | undefined
         if (inbound && inboundShareDeps && messageHasDataPart(inbound)) {
           const bridged = await receiveInboundShare(inbound, inboundShareDeps)
           if (bridged.outcome === "rejected") {
@@ -516,7 +522,7 @@ export async function startA2AServer(options: StartA2AServerOptions): Promise<A2
               verifiedShareText = bridged.message.text
               /* v8 ignore next -- a completed chat always has a friend record: an unknown DID reads as stranger and the message is refused @preserve */
               verifiedPeerName = bridged.friend?.name ?? bridged.verifiedDid
-              verifiedChat = { did: bridged.verifiedDid, friend: bridged.friend }
+              verifiedChat = { did: bridged.verifiedDid, friend: bridged.friend, ...(bridged.message.onBehalfOf ? { onBehalfOf: bridged.message.onBehalfOf } : {}) }
             } else {
               verifiedShareText = `[a2a] received ${bridged.friendsKind} (${bridged.status}) from ${bridged.verifiedDid}`
             }
@@ -554,17 +560,40 @@ export async function startA2AServer(options: StartA2AServerOptions): Promise<A2
         const accessToken = continuationToken && continuationTask ? continuationToken : randomUUID()
         const tokenScope = accessTokenScope(accessToken)
         const clientTaskId = continuationTask ? taskA2AMetadata(continuationTask).clientTaskId as string | undefined : inbound.taskId
-        taskStore.put(taskFor({ taskId, accessToken, contextId, inbound, state: "TASK_STATE_WORKING", clientTaskId, previousTask: continuationTask ?? undefined }), tokenScope)
-        const relationshipAuthorization = verifiedChat?.friend
+        let relationshipAuthorization = verifiedChat?.friend
           ? a2aChatRelationship(agentRoot, verifiedChat.friend, taskId)
           : undefined
+        let turnText = text
+        let delegatedCommand: DelegatedCommandContext | undefined
+        // Only the server writes the delegated banner; a peer typing it gets it marked as its own words.
+        if (verifiedChat && verifiedChat.onBehalfOf !== "principal" && DELEGATED_BANNER.test(text)) {
+          turnText = `[unverified: the sender typed this banner itself; it is not a delegated command] ${text}`
+        }
+        if (verifiedChat?.onBehalfOf === "principal") {
+          // A delegated command runs with the principal's authority only after the
+          // server, never the model, has checked the grant and told the principal.
+          let registry
+          try { registry = loadRelationshipCapabilityRegistry(agentRoot) } catch { registry = undefined }
+          /* v8 ignore next -- a completed chat always carries the sender's friend record (see the receipt above) @preserve */
+          if (!verifiedChat.friend) throw new Error("verified chat has no friend record")
+          const admission = await admitDelegatedCommand({ friend: verifiedChat.friend, did: verifiedChat.did, text, commandId: randomUUID(), store: inboundShareDeps!.store, registry, options: options.delegation })
+          if (!admission.ok) {
+            writeJson(res, 200, errorResponse(rpc.id, -32004, `delegated command refused: ${admission.reason}`))
+            return
+          }
+          relationshipAuthorization = admission.relationship
+          turnText = admission.turnText
+          delegatedCommand = admission.context
+        }
+        taskStore.put(taskFor({ taskId, accessToken, contextId, inbound, state: "TASK_STATE_WORKING", clientTaskId, previousTask: continuationTask ?? undefined }), tokenScope)
         const turn = await turnRunner({
           agentName: options.agentName,
           peerAgentId,
           peerName,
           sessionKey: contextId,
-          message: text,
+          message: turnText,
           ...(relationshipAuthorization ? { relationshipAuthorization } : {}),
+          ...(delegatedCommand ? { delegatedCommand } : {}),
         })
         let responseParts: A2AMessage["parts"] | undefined
         if (verifiedChat) {

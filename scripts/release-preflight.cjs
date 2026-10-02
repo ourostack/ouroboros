@@ -346,7 +346,37 @@ function summarizeNpmAuditFailure(output) {
   }
 }
 
-function runRootDependencyAudit(packageRoot, execSyncImpl) {
+/**
+ * Advisories with no patched release can be accepted only through a reviewed entry in
+ * docs/audit-exceptions.json: { items: [{ advisory, package, reason, due }] }. An entry
+ * covers exactly one advisory URL and stops covering it on its due date, so an accepted
+ * risk is re-decided rather than forgotten. Every advisory in the report must be covered.
+ */
+function readAuditExceptions(packageRoot) {
+  const file = path.join(packageRoot, "docs", "audit-exceptions.json")
+  if (!fs.existsSync(file)) return []
+  const parsed = JSON.parse(fs.readFileSync(file, "utf-8"))
+  const items = Array.isArray(parsed?.items) ? parsed.items : []
+  return items.filter((item) => item && typeof item.advisory === "string" && typeof item.due === "string"
+    && typeof item.reason === "string" && item.reason.trim() && /^\d{4}-\d{2}-\d{2}$/u.test(item.due))
+}
+
+function uncoveredAuditAdvisories(output, exceptions, today) {
+  let parsed
+  try { parsed = JSON.parse(String(output)) } catch { return null }
+  const vulnerabilities = parsed?.vulnerabilities && typeof parsed.vulnerabilities === "object" ? Object.values(parsed.vulnerabilities) : []
+  const advisories = new Set()
+  for (const record of vulnerabilities) {
+    for (const entry of Array.isArray(record?.via) ? record.via : []) {
+      if (entry && typeof entry === "object") advisories.add(typeof entry.url === "string" ? entry.url : "(advisory without url)")
+    }
+  }
+  if (advisories.size === 0) return null
+  const active = new Set(exceptions.filter((item) => today < item.due).map((item) => item.advisory))
+  return { uncovered: [...advisories].filter((url) => !active.has(url)), covered: [...advisories].filter((url) => active.has(url)) }
+}
+
+function runRootDependencyAudit(packageRoot, execSyncImpl, options = {}) {
   try {
     const output = execSyncImpl(npmAuditCommand(), {
       cwd: packageRoot,
@@ -384,6 +414,14 @@ function runRootDependencyAudit(packageRoot, execSyncImpl) {
             "root npm audit: unavailable (registry audit endpoint timed out and offline fallback failed)" +
             (offlineDetails ? `\n${offlineDetails}` : ""),
         }
+      }
+    }
+    if (!timedOut) {
+      const exceptions = options.exceptions ?? readAuditExceptions(packageRoot)
+      const today = options.today ?? new Date().toISOString().slice(0, 10)
+      const coverage = uncoveredAuditAdvisories(stdout, exceptions, today)
+      if (coverage && coverage.uncovered.length === 0) {
+        return { ok: true, message: `root npm audit: pass (accepted by docs/audit-exceptions.json: ${coverage.covered.join(", ")})` }
       }
     }
     return {

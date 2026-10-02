@@ -2,6 +2,17 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.848",
+      "changes": [
+        "Delegated commands: an A2A message whose signed envelope carries onBehalfOf \"principal\" (ouro a2a message --delegated) runs with the owner's sanctuary-owner authority only when the sender's friend record holds an operator-set delegationGrant and the sender is active family. The server posts a notice in the owner's Telegram chat first and refuses the command if that fails (JSON-RPC -32004). steward_policy_manage accepts the admitted command and records the source as \"<owner> via <peer> (delegated)\". Host execute stays Telegram-only.",
+        "Telegram: sendOwnerNotice / sendTelegramOwnerNotice post an idempotent Butler notice to the owner's chat and record it in the owner session.",
+        "Depend on @ouro.bot/friends 0.1.0-alpha.14.",
+        "Delegated commands: an A2A message whose signed envelope carries onBehalfOf \"principal\" (ouro a2a message --delegated) runs with the owner's sanctuary-owner authority only when the sender's friend record holds an operator-set delegationGrant and the sender is active family. Each message gets a fresh command id. The server posts a notice in the owner's Telegram chat first (30 s timeout) and refuses the command if that fails (JSON-RPC -32004). steward_policy_manage accepts the admitted command, records the source as \"<owner> via <peer> (delegated)\", and stamps delegatedVia (peer friend id, DID, notice id) on every audit row. Host execute stays Telegram-only.",
+        "A2A: a peer that types the delegated-command banner itself gets it marked as unverified in its turn.",
+        "Release gates: docs/audit-exceptions.json accepts a reviewed, dated exception per advisory URL (first entry: node-forge GHSA-86w9-cpqp-85rv via @bitwarden/cli, which has no patched release, due 2026-11-15); multer is overridden to 2.4.0; the mailroom raw-orphan debt is re-dated to 2026-10-31 and tracked as its own task."
+      ]
+    },
+    {
       "version": "0.1.0-alpha.847",
       "changes": [
         "Bundle sync: post-turn push now removes an empty git index.lock older than 10 minutes (left by a git process that died mid-write) before committing, and any other failed local commit is recorded in state/pending-sync.json so the start-of-turn packet surfaces it. One stale lock had silently blocked every bundle commit for three months while untracked files piled up; a lock that cannot be removed is reported as a warning."

@@ -419,6 +419,49 @@ describe("release-preflight", () => {
     expect(result.message).toContain("vite: moderate (Vite development server vulnerability)")
   })
 
+  it("passes only when every reported advisory has an unexpired reviewed exception", () => {
+    const report = (urls: string[]) => () => {
+      const error = new Error("audit failed") as Error & { stdout: Buffer }
+      error.stdout = Buffer.from(JSON.stringify({
+        vulnerabilities: {
+          "node-forge": { severity: "high", via: urls.map((url) => ({ title: "forge", url })) },
+          "@bitwarden/cli": { severity: "high", via: ["node-forge"] },
+        },
+        metadata: { vulnerabilities: { moderate: 0, high: 2, critical: 0, total: 2 } },
+      }))
+      throw error
+    }
+    const exceptions = [{ advisory: "https://github.com/advisories/GHSA-a", package: "node-forge", reason: "no patched release", due: "2026-11-01" }]
+    expect(runRootDependencyAudit("/tmp/ouro", report(["https://github.com/advisories/GHSA-a"]), { exceptions, today: "2026-10-02" }))
+      .toEqual({ ok: true, message: "root npm audit: pass (accepted by docs/audit-exceptions.json: https://github.com/advisories/GHSA-a)" })
+    expect(runRootDependencyAudit("/tmp/ouro", report(["https://github.com/advisories/GHSA-a"]), { exceptions, today: "2026-11-01" }).ok).toBe(false)
+    expect(runRootDependencyAudit("/tmp/ouro", report(["https://github.com/advisories/GHSA-a", "https://github.com/advisories/GHSA-b"]), { exceptions, today: "2026-10-02" }).ok).toBe(false)
+    expect(runRootDependencyAudit("/tmp/ouro", report([]), { exceptions, today: "2026-10-02" }).ok).toBe(false)
+  })
+
+  it("reads reviewed audit exceptions from the package root and ignores malformed entries", () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "audit-exceptions-"))
+    try {
+      const fail = () => {
+        const error = new Error("audit failed") as Error & { stdout: Buffer }
+        error.stdout = Buffer.from(JSON.stringify({ vulnerabilities: { x: { severity: "high", via: [{ title: "x" }] } } }))
+        throw error
+      }
+      expect(runRootDependencyAudit(root, fail, { today: "2026-10-02" }).ok).toBe(false)
+      fs.mkdirSync(path.join(root, "docs"))
+      fs.writeFileSync(path.join(root, "docs", "audit-exceptions.json"), JSON.stringify({ items: [
+        { advisory: "(advisory without url)", package: "x", reason: "reviewed", due: "2026-12-01" },
+        { advisory: "https://example/a", reason: "", due: "2026-12-01" },
+        { advisory: "https://example/b", reason: "r", due: "soon" },
+      ] }))
+      expect(runRootDependencyAudit(root, fail, { today: "2026-10-02" }).ok).toBe(true)
+      fs.writeFileSync(path.join(root, "docs", "audit-exceptions.json"), JSON.stringify({}))
+      expect(runRootDependencyAudit(root, fail, { today: "2026-10-02" }).ok).toBe(false)
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true })
+    }
+  })
+
   it("reports root npm audit failures even when npm prints no details", () => {
     const result = runRootDependencyAudit("/tmp/ouro", () => {
       throw new Error("audit failed")

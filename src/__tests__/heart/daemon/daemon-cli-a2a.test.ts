@@ -218,6 +218,8 @@ describe("ouro A2A client commands (identity + sealed message)", () => {
     expect(parseOuroCommand(["a2a", "message", "--to", "https://a/card", "--text", "hi"])).toEqual({ kind: "a2a.message", to: "https://a/card", text: "hi" })
     expect(parseOuroCommand(["a2a", "message", "--to", "https://a/card", "--text", "hi", "--context", "c1", "--identity-file", "/k.json", "--json"]))
       .toEqual({ kind: "a2a.message", to: "https://a/card", text: "hi", conversationId: "c1", identityFile: "/k.json", json: true })
+    expect(parseOuroCommand(["a2a", "message", "--to", "https://a/card", "--delegated", "--text", "books on"]))
+      .toEqual({ kind: "a2a.message", to: "https://a/card", text: "books on", delegated: true })
   })
 
   it("rejects invalid client command shapes", () => {
@@ -263,6 +265,9 @@ describe("ouro A2A client commands (identity + sealed message)", () => {
       const json = JSON.parse(await runOuroCli(["a2a", "message", "--to", cardUrl, "--text", "again", "--identity-file", identityFile, "--json"], createMockDeps({ fetchImpl: fetch })))
       expect(json.text).toBe("pong:again")
       expect(json.peerDid).toBe(agent.did)
+      // --delegated signs the principal marker; this agent has no delegation, so it refuses.
+      await expect(runOuroCli(["a2a", "message", "--to", cardUrl, "--text", "books on", "--delegated", "--identity-file", identityFile], createMockDeps({ fetchImpl: fetch })))
+        .rejects.toThrow("delegated command refused: not_enabled")
     } finally {
       await server.close()
       rmSync(dir, { recursive: true, force: true })

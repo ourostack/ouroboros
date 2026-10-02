@@ -50,17 +50,30 @@ export const stewardPolicyToolDefinition: ToolDefinition = {
     const { friendId, trustLevel, sessionEventId } = actor
     const { profileId, requestId } = relationship
     const sessionKey = ctx.currentSession?.key
+    const delegated = ctx.delegatedCommand
+    // Two ways to hold owner authority: the owner's own Telegram turn, or a delegated
+    // command the A2A server admitted (grant checked, owner already notified).
+    const sessionMatches = () => delegated
+      ? ctx.currentSession?.channel === "a2a" && ctx.delegatedCommand === delegated
+        && friendId === delegated.principalFriendId && requestId === delegated.commandId
+        && sessionEventId === `a2a-delegated:${delegated.commandId}`
+      : ctx.currentSession?.friendId === friendId && ctx.currentSession.channel === "telegram"
     if (trustLevel !== "family" || profileId !== "sanctuary-owner" || typeof requestId !== "string" || !requestId.trim()
       || typeof sessionKey !== "string" || !sessionKey.trim() || !sessionEventId.trim()
-      || ctx.currentSession?.friendId !== friendId || ctx.currentSession.channel !== "telegram" || ctx.currentExternalEvent) {
-      throw new Error("steward policy mutation requires a current authenticated owner Telegram request and session")
+      || !sessionMatches() || ctx.currentExternalEvent) {
+      throw new Error(delegated
+        ? "steward policy mutation requires a current admitted delegated owner command"
+        : "steward policy mutation requires a current authenticated owner Telegram request and session")
     }
+    const sourceFor = (raw: string | undefined): string => delegated
+      ? `${delegated.principalName} via ${delegated.delegateName} (delegated)${raw?.trim() ? `: ${raw.trim()}` : ""}`
+      : raw ?? ""
     const expectedVersion = args.expectedVersion === undefined ? undefined : Number(args.expectedVersion)
     if (expectedVersion !== undefined && (!Number.isSafeInteger(expectedVersion) || expectedVersion < 0)) throw new Error("expectedVersion must be a nonnegative integer")
     let mutation: StewardPolicyMutation
     if (args.action === "set_desired_state") {
       if (args.provenance !== "stated" && args.provenance !== "observed" && args.provenance !== "default") throw new Error("desired state provenance is invalid")
-      mutation = { kind: "set_desired_state", key: args.key ?? "", value: args.value ?? "", provenance: args.provenance, source: args.source ?? "", ...(args.expiresAt ? { expiresAt: args.expiresAt } : {}) }
+      mutation = { kind: "set_desired_state", key: args.key ?? "", value: args.value ?? "", provenance: args.provenance, source: sourceFor(args.source), ...(args.expiresAt ? { expiresAt: args.expiresAt } : {}) }
     } else if (args.action === "grant_routine_action") {
       if (args.provenance !== "stated" && args.provenance !== "installed_explicit_policy") throw new Error("routine action provenance is invalid")
       const targets = arrayArgument(args.targetsJson, "targetsJson")
@@ -88,12 +101,16 @@ export const stewardPolicyToolDefinition: ToolDefinition = {
       }
       if (ctx.relationshipAuthorization !== relationship || relationship.profileId !== profileId || relationship.requestId !== requestId
         || relationship.actor?.friendId !== friendId || relationship.actor.trustLevel !== trustLevel || relationship.actor.sessionEventId !== sessionEventId
-        || ctx.currentSession?.friendId !== friendId || ctx.currentSession.key !== sessionKey || ctx.currentSession.channel !== "telegram" || ctx.currentExternalEvent) {
+        || ctx.currentSession?.key !== sessionKey || !sessionMatches() || ctx.currentExternalEvent) {
         throw new Error("steward policy owner authorization or session changed before mutation")
       }
       const result = updateStewardPolicy(agentRoot, {
         expectedVersion: expectedVersion ?? readStewardPolicy(agentRoot).version,
-        actor: { friendId, trustLevel, sessionEventId, authorization: { profileId, requestId, sessionKey, receiptId: authorization.receiptId, profileVersion: authorization.profileVersion } },
+        actor: {
+          friendId, trustLevel, sessionEventId,
+          authorization: { profileId, requestId, sessionKey, receiptId: authorization.receiptId, profileVersion: authorization.profileVersion },
+          ...(delegated ? { delegatedVia: { delegateFriendId: delegated.delegateFriendId, delegateDid: delegated.delegateDid, noticeId: delegated.noticeId } } : {}),
+        },
         mutation,
       })
       emitNervesEvent({ component: "repertoire", event: "repertoire.steward_policy_tool_call", message: "updated steward policy", meta: { action: args.action } })

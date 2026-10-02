@@ -234,6 +234,8 @@ export async function sendSealedA2AChat(input: {
   cardUrl: string
   text: string
   conversationId?: string
+  /** Relay this text as a command from the sender's own principal (signed marker). */
+  onBehalfOf?: "principal"
   identity: DidKeyIdentity
   sodium?: Sodium
   fetchImpl?: typeof fetch
@@ -256,6 +258,7 @@ export async function sendSealedA2AChat(input: {
     recipientEd25519Pub: parsed.ed25519Pub,
     text: input.text,
     conversationId,
+    ...(input.onBehalfOf ? { onBehalfOf: input.onBehalfOf } : {}),
   })
   const request: A2AJsonRpcRequest = {
     jsonrpc: "2.0",
