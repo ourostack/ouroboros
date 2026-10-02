@@ -406,3 +406,126 @@ describe("media MCP — search_now and blocklist_stalled", () => {
     })
   })
 })
+
+describe("media MCP — release numbering tools", () => {
+  type Call = { method: string; url: string; body?: any }
+  let calls: Call[]
+  let mod: any
+  let blocklist: any[]
+  let manual: any[]
+  const json = (body: unknown) => ({ ok: true, status: 200, json: async () => body, text: async () => "" })
+  const episodes = [14472, 14473, 14474, 14475, 14476].map((id, i) => ({ id, seasonNumber: 2, episodeNumber: i + 1, title: ["Milk Bar Bake Sale", "Roy's Italian Cuisine", "Jessica Largey", "Tartine", "Late Night Burger"][i], airDate: "2019-06-07", hasFile: false, monitored: true }))
+  const pack = { guid: "g-s3", indexerId: 5, indexer: "Idx", title: "The Chef Show Season 3 [1080p x265 10bit S85 Joy]", size: 9e9, seeders: 40, age: 100, quality: { quality: { name: "WEBDL-1080p" } },
+    fullSeason: true, seasonNumber: 3, episodeNumbers: [], mappedEpisodeInfo: [], rejected: true, rejections: ["Unknown Series"], protocol: "torrent" }
+  const blocked = { guid: "g-bl", indexerId: 5, title: "The Chef Show S03 1080p NF WEBRip DDP5 1 x264", seeders: 3, fullSeason: true, seasonNumber: 3, rejected: true, rejections: [{ reason: "Release is blocklisted" }],
+    mappedEpisodeInfo: [{ id: 1, seasonNumber: 1, episodeNumber: 1, title: "Wrong" }] }
+
+  beforeEach(async () => {
+    calls = []
+    blocklist = [{ id: 11, seriesId: 191, sourceTitle: "Bad.S03", episodeIds: [1], date: "2026-10-01" }, { id: 12, seriesId: 5, sourceTitle: "Other" }]
+    manual = [{ path: "/dl/Chef.S02E01.mkv", name: "Chef.S02E01", seasonNumber: 2, episodes: [], quality: { quality: { name: "WEBDL-1080p" } }, languages: [{ id: 1, name: "English" }], releaseGroup: "Joy", rejections: [{ reason: "Unknown Series" }] }]
+    const dir = mkdtempSync(join(tmpdir(), "media-cred-"))
+    const credPath = join(dir, "c.json")
+    writeFileSync(credPath, JSON.stringify({ jellyseerr: { url: "http://seerr", apiKey: "k" }, sonarr: { url: "http://sonarr", apiKey: "k" }, radarr: { url: "http://radarr", apiKey: "k" }, prowlarr: { url: "http://prowlarr", apiKey: "k" } }))
+    process.env.SANCTUARY_MEDIA_CREDENTIALS = credPath
+    vi.stubGlobal("fetch", async (url: string, init: any = {}) => {
+      const method = init.method ?? "GET"
+      calls.push({ method, url, body: init.body ? JSON.parse(init.body) : undefined })
+      if (url.includes("/api/v3/episode")) return json(episodes)
+      if (url.startsWith("http://sonarr/api/v3/release") && method === "GET") return json([pack, blocked, pack])
+      if (url.startsWith("http://radarr/api/v3/release") && method === "GET") return json([{ guid: "m1", indexerId: 2, title: "Movie 2020", seeders: 1, rejections: [] }])
+      if (url.includes("/api/v3/release") && method === "POST") return json({ approved: true, rejected: false, rejections: [], downloadId: "DL1" })
+      if (url.includes("/api/v3/blocklist/bulk")) { const ids = JSON.parse(init.body).ids; blocklist = blocklist.filter((b) => !ids.includes(b.id)); return json({}) }
+      if (url.includes("/api/v3/blocklist")) return json({ records: blocklist, totalRecords: blocklist.length })
+      if (url.includes("/api/v3/manualimport")) return json(manual)
+      if (url.includes("/api/v3/command")) return json({ id: 7, name: JSON.parse(init.body).name, status: "queued" })
+      throw new Error(`unexpected ${method} ${url}`)
+    })
+    vi.resetModules()
+    mod = await import("../../../deploy/unraid/sanctuary.ouro/mcp/media-mcp.mjs")
+  })
+  afterEach(() => { vi.unstubAllGlobals(); delete process.env.SANCTUARY_MEDIA_CREDENTIALS })
+
+  it("media_episodes lists a season with ids and codes", async () => {
+    const out = await mod.mediaEpisodes({ service_id: 191, season_number: 2 })
+    expect(calls[0].url).toBe("http://sonarr/api/v3/episode?seriesId=191&seasonNumber=2")
+    expect(out.episodes[0]).toEqual({ episode_id: 14472, code: "S02E01", season: 2, episode: 1, title: "Milk Bar Bake Sale", air_date: "2019-06-07", has_file: false, monitored: true })
+    expect(out.count).toBe(5)
+  })
+
+  it("release search returns compact rows with parse, mapping, rejections and blocklist flag", async () => {
+    const out = await mod.mediaReleaseSearch({ kind: "series", service_id: 191, season_number: 2 })
+    expect(calls[0].url).toBe("http://sonarr/api/v3/release?seriesId=191&seasonNumber=2")
+    expect(out.total_found).toBe(2)
+    expect(out.releases[0]).toMatchObject({ guid: "g-s3", indexer_id: 5, full_season: true, parsed_season: 3, rejected: true, rejections: ["Unknown Series"], blocklisted: false, quality: "WEBDL-1080p" })
+    expect(out.releases[1]).toMatchObject({ guid: "g-bl", blocklisted: true, mapped_episodes: [{ episode_id: 1, code: "S01E01", title: "Wrong" }] })
+    const filtered = await mod.mediaReleaseSearch({ kind: "series", service_id: 191, season_number: 2, query: "joy" })
+    expect(filtered.releases.map((r: any) => r.guid)).toEqual(["g-s3"])
+  })
+
+  it("release search by episode ids and for a movie, and requires a scope", async () => {
+    await mod.mediaReleaseSearch({ kind: "series", service_id: 191, episode_ids: [14472, 14473] })
+    expect(calls.map((c) => c.url)).toEqual(["http://sonarr/api/v3/release?episodeId=14472", "http://sonarr/api/v3/release?episodeId=14473"])
+    const movie = await mod.mediaReleaseSearch({ kind: "movie", service_id: 3 })
+    expect(calls.at(-1)!.url).toBe("http://radarr/api/v3/release?movieId=3")
+    expect(movie.releases[0].mapped_movie_id).toBeNull()
+    expect(await mod.mediaReleaseSearch({ kind: "series", service_id: 191 })).toEqual({ result: "season_number_or_episode_ids_required" })
+    expect(await mod.mediaReleaseSearch({ kind: "tv", service_id: 1 })).toMatchObject({ result: "invalid_kind" })
+  })
+
+  it("grabs with an explicit episode override body", async () => {
+    await mod.mediaReleaseSearch({ kind: "series", service_id: 191, season_number: 2 })
+    const out = await mod.mediaReleaseGrab({ kind: "series", guid: "g-s3", indexer_id: 5, series_id: 191, episode_ids: [14472, 14473, 14474, 14475, 14476], download_client_id: 2 })
+    const post = calls.find((c) => c.method === "POST")!
+    expect(post.url).toBe("http://sonarr/api/v3/release")
+    expect(post.body).toEqual({ guid: "g-s3", indexerId: 5, seriesId: 191, episodeIds: [14472, 14473, 14474, 14475, 14476], shouldOverride: true, downloadClientId: 2 })
+    expect(out).toMatchObject({ result: "grabbed", response: { approved: true, download_id: "DL1" } })
+  })
+
+  it("refuses a mismatched season pack without episode_ids, and a foreign episode id", async () => {
+    await mod.mediaReleaseSearch({ kind: "series", service_id: 191, season_number: 2 })
+    expect(await mod.mediaReleaseGrab({ kind: "series", guid: "g-s3", indexer_id: 5 })).toMatchObject({ result: "season_pack_mismatch", parsed_season: 3, target_season: 2 })
+    expect(await mod.mediaReleaseGrab({ kind: "series", guid: "g-s3", indexer_id: 5, season_number: 2 })).toMatchObject({ result: "season_pack_mismatch" })
+    expect(await mod.mediaReleaseGrab({ kind: "series", guid: "g-s3", indexer_id: 5, series_id: 191, episode_ids: [1] })).toEqual({ result: "episode_id_not_for_series", foreign_episode_ids: [1] })
+    expect(await mod.mediaReleaseGrab({ kind: "series", guid: "nope", indexer_id: 5 })).toMatchObject({ result: "search_first" })
+    expect(calls.some((c) => c.method === "POST")).toBe(false)
+  })
+
+  it("grabs a matching season pack without episode_ids and a movie release plainly", async () => {
+    await mod.mediaReleaseSearch({ kind: "series", service_id: 191, season_number: 3 })
+    await mod.mediaReleaseGrab({ kind: "series", guid: "g-s3", indexer_id: 5 })
+    expect(calls.find((c) => c.method === "POST")!.body).toEqual({ guid: "g-s3", indexerId: 5 })
+    await mod.mediaReleaseSearch({ kind: "movie", service_id: 3 })
+    await mod.mediaReleaseGrab({ kind: "movie", guid: "m1", indexer_id: 2 })
+    expect(calls.filter((c) => c.method === "POST")[1]).toMatchObject({ url: "http://radarr/api/v3/release", body: { guid: "m1", indexerId: 2 } })
+  })
+
+  it("lists the item's blocklist and removes only its own entries", async () => {
+    const list = await mod.mediaBlocklist({ kind: "series", service_id: 191 })
+    expect(list.entries).toEqual([{ blocklist_id: 11, title: "Bad.S03", date: "2026-10-01", indexer: null, quality: null, episode_ids: [1], message: null }])
+    expect(await mod.mediaBlocklist({ kind: "series", service_id: 191, remove_ids: [11, 12] })).toMatchObject({ result: "blocklist_id_not_for_item", foreign_blocklist_ids: [12] })
+    expect(calls.some((c) => c.method === "DELETE")).toBe(false)
+    const out = await mod.mediaBlocklist({ kind: "series", service_id: 191, remove_ids: [11] })
+    expect(calls.find((c) => c.method === "DELETE")).toMatchObject({ url: "http://sonarr/api/v3/blocklist/bulk", body: { ids: [11] } })
+    expect(out).toMatchObject({ result: "removed", removed: [11], count: 0 })
+  })
+
+  it("previews a download and imports files mapped by title", async () => {
+    const preview = await mod.mediaManualImport({ service_id: 191, download_id: "DL1" })
+    expect(calls[0].url).toBe("http://sonarr/api/v3/manualimport?downloadId=DL1&seriesId=191&filterExistingFiles=false")
+    expect(preview.files[0]).toMatchObject({ path: "/dl/Chef.S02E01.mkv", parsed_season: 2, mapped_episodes: [], rejections: ["Unknown Series"] })
+    const out = await mod.mediaManualImport({ mode: "import", service_id: 191, download_id: "DL1", files: [{ path: "/dl/Chef.S02E01.mkv", episode_ids: [14472] }] })
+    expect(calls.find((c) => c.url.endsWith("/command"))!.body).toEqual({ name: "ManualImport", importMode: "auto", files: [{ path: "/dl/Chef.S02E01.mkv", seriesId: 191, episodeIds: [14472],
+      quality: manual[0].quality, languages: manual[0].languages, releaseGroup: "Joy", downloadId: "DL1" }] })
+    expect(out).toMatchObject({ mode: "import", command: { id: 7, name: "ManualImport" } })
+  })
+
+  it("refuses to import a path outside the preview, a foreign episode, or missing episodes", async () => {
+    expect(await mod.mediaManualImport({ mode: "import", service_id: 191, download_id: "DL1", files: [{ path: "/etc/passwd", episode_ids: [14472] }] })).toMatchObject({ result: "path_not_in_preview", paths: ["/etc/passwd"] })
+    expect(await mod.mediaManualImport({ mode: "import", service_id: 191, download_id: "DL1", files: [{ path: "/dl/Chef.S02E01.mkv", episode_ids: [99] }] })).toMatchObject({ result: "episode_id_not_for_series", foreign_episode_ids: [99] })
+    expect(await mod.mediaManualImport({ mode: "import", service_id: 191, download_id: "DL1", files: [{ path: "/dl/Chef.S02E01.mkv", episode_ids: [] }] })).toMatchObject({ result: "episode_ids_required" })
+    expect(await mod.mediaManualImport({ mode: "import", service_id: 191, download_id: "DL1" })).toEqual({ result: "files_required" })
+    expect(await mod.mediaManualImport({ service_id: 191 })).toEqual({ result: "download_id_required" })
+    expect(calls.some((c) => c.url.endsWith("/command"))).toBe(false)
+  })
+})
