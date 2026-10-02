@@ -31,6 +31,9 @@ const SONARR = cred?.sonarr ?? { url: "", apiKey: "" }
 const RADARR = cred?.radarr ?? { url: "", apiKey: "" }
 const PROWLARR = cred?.prowlarr ?? { url: "", apiKey: "" }
 const JELLYFIN_WEB = cred?.jellyfinWebUrl ?? "https://media.mendelow.cloud"
+// Optional: when the credential file carries { jellyfin: { url, apiKey } } the library
+// is searched in Jellyfin too. Absent, title resolution uses Sonarr and Radarr only.
+const JELLYFIN = cred?.jellyfin ?? { url: "", apiKey: "" }
 
 const TIMEOUT_MS = 45_000
 
@@ -66,6 +69,7 @@ function serviceOf(base) {
   if (base === SONARR.url) return "sonarr"
   if (base === RADARR.url) return "radarr"
   if (base === PROWLARR.url) return "prowlarr"
+  if (JELLYFIN.url && base === JELLYFIN.url) return "jellyfin"
   return "service"
 }
 
@@ -125,9 +129,125 @@ function shelfItem(item) {
   }
 }
 
+// ------------------------------------------------------- title resolution
+//
+// One resolver for every tool that takes a title. A title typed from memory is
+// rarely the catalogue's title: "chef" is "The Chef Show", "chef shwo" is a typo.
+// The 2026-09-29 failure was a library search that required the whole title and
+// so reported a tracked series as nonexistent. Matching is therefore partial and
+// typo-tolerant, in-library candidates always come first, and the TVDB/TMDB
+// lookup only runs when the library has nothing.
+
+export function normalizeTitle(s) {
+  return String(s ?? "")
+    .normalize("NFKD").replace(/[\u0300-\u036f]/g, "")
+    .toLowerCase().replace(/&/g, " and ").replace(/['\u2019]/g, "")
+    .replace(/[^a-z0-9]+/g, " ").trim().replace(/^the /, "")
+}
+
+// Optimal-string-alignment distance: an adjacent swap ("shwo") costs one edit.
+function editDistance(a, b) {
+  const d = Array.from({ length: a.length + 1 }, (_, i) => [i, ...Array(b.length).fill(0)])
+  for (let j = 1; j <= b.length; j += 1) d[0][j] = j
+  for (let i = 1; i <= a.length; i += 1) {
+    for (let j = 1; j <= b.length; j += 1) {
+      d[i][j] = Math.min(d[i - 1][j] + 1, d[i][j - 1] + 1, d[i - 1][j - 1] + (a[i - 1] === b[j - 1] ? 0 : 1))
+      if (i > 1 && j > 1 && a[i - 1] === b[j - 2] && a[i - 2] === b[j - 1]) d[i][j] = Math.min(d[i][j], d[i - 2][j - 2] + 1)
+    }
+  }
+  return d[a.length][b.length]
+}
+
+const MATCH_RANK = { exact: 0, prefix: 1, token: 2, fuzzy: 3 }
+
+// Returns "exact" | "prefix" | "token" | "fuzzy" | null.
+export function matchKind(query, title) {
+  const nq = normalizeTitle(query)
+  const nt = normalizeTitle(title)
+  if (!nq || !nt) return null
+  if (nq === nt) return "exact"
+  if (nt.startsWith(nq)) return "prefix"
+  const qt = nq.split(" ")
+  const tt = nt.split(" ")
+  if (qt.every((q) => tt.some((t) => t === q || (q.length >= 3 && t.includes(q))))) return "token"
+  if (nq.length >= 3 && nt.includes(nq)) return "token"
+  // Typos. Short tokens must be exact; a 4-letter token may only be fuzzy when
+  // another query token already matched exactly, so "chef" never drifts to "chess".
+  const exactHit = (q) => tt.includes(q)
+  const fuzzyHit = (q) => tt.some((t) => {
+    if (q.length < 4 || t.length < 4) return false
+    const tol = q.length >= 8 ? 2 : 1
+    return editDistance(q, t) <= tol
+  })
+  const anyExact = qt.some(exactHit)
+  const ok = qt.every((q) => exactHit(q) || (fuzzyHit(q) && (q.length >= 5 || (qt.length > 1 && anyExact))))
+  return ok ? "fuzzy" : null
+}
+
+function rankCandidates(term, items) {
+  return items
+    .map((c) => ({ ...c, match: matchKind(term, c.title) }))
+    .filter((c) => c.match)
+    .sort((x, y) => MATCH_RANK[x.match] - MATCH_RANK[y.match]
+      || Math.abs(normalizeTitle(x.title).length - normalizeTitle(term).length) - Math.abs(normalizeTitle(y.title).length - normalizeTitle(term).length))
+}
+
+const libraryCandidate = (kind, i) => ({ kind, source: kind === "series" ? "sonarr" : "radarr", service_id: i.id, title: i.title,
+  year: i.year ?? null, tmdb_id: i.tmdbId ?? null, tvdb_id: i.tvdbId ?? null, in_library: true })
+
+// Every library item whose title matches, best first. Sonarr and Radarr are the
+// source of truth for what is tracked; Jellyfin (when configured) adds what is
+// on the shelf and marks items it shares with them.
+export async function findLibraryCandidates(term, kind = "any") {
+  const jobs = []
+  if (kind !== "movie") jobs.push(sonarr("/series").then((l) => (Array.isArray(l) ? l : []).map((i) => libraryCandidate("series", i))))
+  if (kind !== "series") jobs.push(radarr("/movie").then((l) => (Array.isArray(l) ? l : []).map((i) => libraryCandidate("movie", i))))
+  const lists = await Promise.all(jobs)
+  let items = lists.flat()
+  const notes = []
+  if (JELLYFIN.url && JELLYFIN.apiKey) {
+    try {
+      const body = await req(JELLYFIN.url, "/Items", { key: JELLYFIN.apiKey, header: "X-Emby-Token",
+        query: { searchTerm: term, IncludeItemTypes: kind === "series" ? "Series" : kind === "movie" ? "Movie" : "Series,Movie", Recursive: true, Limit: 25 } })
+      for (const j of body?.Items ?? []) {
+        const k = j.Type === "Series" ? "series" : "movie"
+        const tmdb = Number(j.ProviderIds?.Tmdb ?? j.ProviderIds?.tmdb) || null
+        const twin = items.find((i) => i.kind === k && ((tmdb && i.tmdb_id === tmdb) || normalizeTitle(i.title) === normalizeTitle(j.Name)))
+        if (twin) twin.in_jellyfin = true
+        else items.push({ kind: k, source: "jellyfin", service_id: null, jellyfin_id: j.Id ?? null, title: j.Name, year: j.ProductionYear ?? null,
+          tmdb_id: tmdb, tvdb_id: null, in_library: true, in_jellyfin: true })
+      }
+    } catch (e) {
+      notes.push(`jellyfin_unavailable: ${e.message}`)
+    }
+  }
+  const ranked = rankCandidates(term, items)
+  if (notes.length) Object.defineProperty(ranked, "notes", { value: notes, enumerable: false })
+  return ranked
+}
+
+// The catalogue fallback, used only when the library has no candidate. These are
+// titles Sonarr/Radarr could add, so they are labelled not_in_library.
+export async function lookupCandidates(term, kind = "any") {
+  const out = []
+  const jobs = []
+  if (kind !== "movie") jobs.push(sonarr("/series/lookup", { query: { term } }).then((l) => (Array.isArray(l) ? l : []).forEach((i) => out.push({ kind: "series", source: "sonarr_lookup", service_id: i.id ?? null, title: i.title, year: i.year ?? null, tmdb_id: i.tmdbId ?? null, tvdb_id: i.tvdbId ?? null, in_library: Boolean(i.id), match: matchKind(term, i.title) ?? "lookup" }))).catch(() => {}))
+  if (kind !== "series") jobs.push(radarr("/movie/lookup", { query: { term } }).then((l) => (Array.isArray(l) ? l : []).forEach((i) => out.push({ kind: "movie", source: "radarr_lookup", service_id: i.id ?? null, title: i.title, year: i.year ?? null, tmdb_id: i.tmdbId ?? null, tvdb_id: null, in_library: Boolean(i.id), match: matchKind(term, i.title) ?? "lookup" }))).catch(() => {}))
+  await Promise.all(jobs)
+  return out.sort((x, y) => (MATCH_RANK[x.match] ?? 4) - (MATCH_RANK[y.match] ?? 4)).slice(0, 10)
+}
+
+// In-library candidates first; the lookup fallback only when there are none.
+export async function resolveTitle(term, kind = "any") {
+  const library = await findLibraryCandidates(term, kind)
+  if (library.length) return { library_matches: library, lookup_candidates: [], not_in_library: false, notes: library.notes ?? [] }
+  const lookup = (await lookupCandidates(term, kind)).filter((c) => !c.in_library).map((c) => ({ ...c, not_in_library: true }))
+  return { library_matches: [], lookup_candidates: lookup, not_in_library: true, notes: [] }
+}
+
 // ------------------------------------------------------------- tool: search
 
-async function mediaSearch(a) {
+export async function mediaSearch(a) {
   const kind = a.kind ?? "any"
   const limit = Math.min(Math.max(a.limit ?? 12, 1), 20)
   const onShelf = a.on_shelf // true | false | undefined(any)
@@ -175,6 +295,10 @@ async function mediaSearch(a) {
     }
   }
 
+  // Partial and typo-tolerant library match, so a half-remembered title still
+  // finds what is tracked. Lookup candidates appear only when the library has none.
+  const resolution = a.query ? await resolveTitle(a.query, kind).catch((e) => ({ library_matches: [], lookup_candidates: [], not_in_library: null, notes: [`title_resolution_failed: ${e.message}`] })) : null
+
   let items = raw.filter((r) => r.mediaType !== "person").map(shelfItem)
   if (kind !== "any") items = items.filter((i) => i.kind === kind)
   if (a.year_range) {
@@ -189,9 +313,12 @@ async function mediaSearch(a) {
     source,
     matched: items.length,
     items: items.slice(0, limit),
+    ...(resolution ? { library_matches: resolution.library_matches.slice(0, 10), lookup_candidates: resolution.lookup_candidates, notes: resolution.notes } : {}),
     applied_filters: { kind, year_range: a.year_range ?? null, genres: a.genres ?? [], keywords: a.keywords ?? [], on_shelf: onShelf ?? "any" },
     // So the agent never claims something is missing when the filter caused it:
-    note: items.length === 0 ? "No matches for these filters. Loosen year_range/genres/keywords before concluding the shelf lacks it." : null,
+    note: resolution?.library_matches.length ? "library_matches lists items already tracked in Sonarr/Radarr (or on the Jellyfin shelf) whose titles match, best first. Offer these before anything else."
+      : items.length === 0 && resolution?.lookup_candidates.length ? "Nothing in the library matches; lookup_candidates are TVDB/TMDB titles that are not in the library."
+      : items.length === 0 ? "No matches for these filters. Loosen year_range/genres/keywords before concluding the shelf lacks it." : null,
   }
 }
 
@@ -360,15 +487,25 @@ async function resolveTarget(a) {
       const found = await findExistingRequest(pick.id, pick.mediaType === "tv" ? "series" : "movie")
       if (found?.hasRequest) return found
     }
+    // Jellyseerr's own search missed it: try the partial/typo-tolerant library
+    // match, and follow its best candidate back to a request by TMDB id.
+    const best = (await findLibraryCandidates(a.title).catch(() => [])).find((c) => c.tmdb_id)
+    if (best) {
+      const found = await findExistingRequest(best.tmdb_id, best.kind)
+      if (found?.hasRequest) return found
+    }
   }
   return null
 }
 
-async function mediaRequestStatus(a) {
+export async function mediaRequestStatus(a) {
   const request = await resolveTarget(a)
   if (!request) {
+    const resolution = a.title ? await resolveTitle(a.title).catch(() => null) : null
     return { found: false, reason: "no_matching_request",
              searched: { request_id: a.request_id ?? null, tmdb_id: a.tmdb_id ?? null, title: a.title ?? null },
+             ...(resolution ? { library_matches: resolution.library_matches.slice(0, 10), lookup_candidates: resolution.lookup_candidates,
+                                note: resolution.library_matches.length ? "Not requested through Jellyseerr, but these titles are already in the library. Use media_search_now with the service_id to act on one." : undefined } : {}),
              diagnosis: { stuck_stage: "request", stuck_reason: "never_requested",
                           likely_fix: "Submit it with media_request.", human_action_required: false } }
   }
@@ -446,6 +583,12 @@ async function mediaRequestStatus(a) {
 // torrent that has not moved a byte since it was grabbed is dead, not slow:
 // Radarr reports trackedDownloadStatus "ok" for these indefinitely, so
 // progress is measured against age rather than trusted from the row.
+// The one stall rule: nothing downloaded yet, and older than the stall window.
+export function isStalledRow(r, nowMs) {
+  return (r.size ?? 0) > 0 && (r.sizeleft ?? 0) >= (r.size ?? 0) && Boolean(r.added)
+    && (nowMs - Date.parse(r.added)) / 3_600_000 >= STALL_AFTER_HOURS
+}
+
 export function computeDownloadState(queueRecs, nowMs) {
   const byDownload = new Map()
   for (const r of queueRecs) byDownload.set(r.downloadId ?? `row:${r.id}`, r)
@@ -453,8 +596,7 @@ export function computeDownloadState(queueRecs, nowMs) {
   const sizeLeft = downloads.reduce((s, r) => s + (r.sizeleft ?? 0), 0)
   const sizeTotal = downloads.reduce((s, r) => s + (r.size ?? 0), 0)
   const stalledItems = downloads
-    .filter((r) => (r.size ?? 0) > 0 && (r.sizeleft ?? 0) >= (r.size ?? 0) && r.added
-      && (nowMs - Date.parse(r.added)) / 3_600_000 >= STALL_AFTER_HOURS)
+    .filter((r) => isStalledRow(r, nowMs))
     .map((r) => ({
       title: r.title ?? null,
       added_at: r.added ?? null,
@@ -652,12 +794,91 @@ async function mediaChainHealth() {
   }
 }
 
+// ------------------------------------- tools: search_now / blocklist_stalled
+
+// Act on an item already in Sonarr/Radarr directly; no Jellyseerr request needed.
+// Never adds a library item: an unknown title is reported, not created.
+const arrFor = (kind) => (kind === "series" ? sonarr : radarr)
+
+async function resolveLibraryItem(a) {
+  let candidates
+  if ((a.service_id !== undefined && a.service_id !== null) || a.tmdb_id) {
+    const list = await arrFor(a.kind)(a.kind === "series" ? "/series" : "/movie")
+    const items = (Array.isArray(list) ? list : []).map((i) => libraryCandidate(a.kind, i))
+    const hit = items.filter((i) => (a.service_id !== undefined && a.service_id !== null ? i.service_id === Number(a.service_id) : i.tmdb_id === Number(a.tmdb_id)))
+    if (hit.length === 1) return { item: { id: hit[0].service_id, title: hit[0].title } }
+    candidates = hit
+  } else if (a.title) {
+    const ranked = (await findLibraryCandidates(a.title, a.kind)).filter((c) => c.service_id !== null)
+    // Act only when the best tier holds exactly one item; otherwise name them.
+    const bestTier = ranked.filter((c) => c.match === ranked[0]?.match)
+    if (bestTier.length === 1) return { item: { id: bestTier[0].service_id, title: bestTier[0].title } }
+    if (!ranked.length) {
+      const lookup = (await lookupCandidates(a.title, a.kind)).filter((c) => !c.in_library).map((c) => ({ ...c, not_in_library: true }))
+      return { result: "not_found", candidates: lookup }
+    }
+    candidates = ranked
+  } else candidates = []
+  return { result: candidates.length ? "ambiguous" : "not_found", candidates: candidates.slice(0, 10) }
+}
+
+async function itemQueue(kind, serviceId) {
+  const client = arrFor(kind)
+  const q = await client("/queue", { query: kind === "series" ? { pageSize: 200, includeSeries: true } : { pageSize: 200 } })
+  const idKey = kind === "series" ? "seriesId" : "movieId"
+  return (q?.records ?? []).filter((r) => r[idKey] === serviceId)
+}
+
+function queueReport(rows) {
+  const now = Date.now()
+  return rows.map((r) => ({ queue_id: r.id ?? null, title: r.title ?? null, status: r.status ?? null,
+                            size_left_bytes: r.sizeleft ?? 0, stalled: isStalledRow(r, now) }))
+}
+
+async function runSearch(kind, serviceId) {
+  const body = kind === "series" ? { name: "SeriesSearch", seriesId: serviceId } : { name: "MoviesSearch", movieIds: [serviceId] }
+  const c = await arrFor(kind)("/command", { method: "POST", body })
+  return { id: c?.id ?? null, name: c?.name ?? body.name, status: c?.status ?? null }
+}
+
+export async function mediaSearchNow(a) {
+  if (a.kind !== "series" && a.kind !== "movie") return { result: "invalid_kind", message: "kind must be 'series' or 'movie'." }
+  const found = await resolveLibraryItem(a)
+  if (!found.item) return { result: found.result, kind: a.kind, candidates: found.candidates }
+  const { item } = found
+  const command = await runSearch(a.kind, item.id)
+  return { kind: a.kind, service_id: item.id, title: item.title, command, queue: queueReport(await itemQueue(a.kind, item.id)) }
+}
+
+export async function mediaBlocklistStalled(a) {
+  if (a.kind !== "series" && a.kind !== "movie") return { result: "invalid_kind", message: "kind must be 'series' or 'movie'." }
+  if (a.service_id === undefined || a.service_id === null) return { result: "service_id_required" }
+  const serviceId = Number(a.service_id)
+  const rows = await itemQueue(a.kind, serviceId)
+  const now = Date.now()
+  let targets
+  if (Array.isArray(a.queue_ids) && a.queue_ids.length) {
+    const own = new Set(rows.map((r) => r.id))
+    const foreign = a.queue_ids.filter((id) => !own.has(id))
+    if (foreign.length) return { result: "queue_id_not_for_item", foreign_queue_ids: foreign, queue: queueReport(rows) }
+    targets = a.queue_ids
+  } else {
+    targets = rows.filter((r) => isStalledRow(r, now)).map((r) => r.id)
+  }
+  if (!targets.length) return { result: "nothing_to_blocklist", queue: queueReport(rows) }
+  for (const id of targets) {
+    await arrFor(a.kind)(`/queue/${id}`, { method: "DELETE", query: { removeFromClient: true, blocklist: true, skipRedownload: true } })
+  }
+  const command = a.research === false ? null : await runSearch(a.kind, serviceId)
+  return { removed: targets, command, queue: queueReport(await itemQueue(a.kind, serviceId)) }
+}
+
 // ------------------------------------------------------------------- schema
 
 const TOOLS = [
   {
     name: "media_search",
-    description: "Search or browse the household media catalogue. Use `query` for a title lookup; use `genres`/`keywords`/`year_range` to browse by vibe (e.g. keywords ['autumn','thanksgiving'] for cozy fall films). `on_shelf: true` restricts to what is already downloaded, `false` to what is not, omit for both. Every item says whether it is on the shelf and carries its tmdb_id so a follow-up media_request needs no second lookup.",
+    description: "Search or browse the household media catalogue. Use `query` for a title lookup: partial and misspelled titles are matched against the library first (Sonarr, Radarr, Jellyfin) and returned as `library_matches` with their kind and service id, and when nothing in the library matches, `lookup_candidates` (TVDB/TMDB) cover titles not in the library. Never say a title does not exist without reading both; use `genres`/`keywords`/`year_range` to browse by vibe (e.g. keywords ['autumn','thanksgiving'] for cozy fall films). `on_shelf: true` restricts to what is already downloaded, `false` to what is not, omit for both. Every item says whether it is on the shelf and carries its tmdb_id so a follow-up media_request needs no second lookup.",
     inputSchema: { type: "object", properties: {
       query: { type: "string", description: "Title or free text. Omit to browse by filters." },
       kind: { type: "string", enum: ["movie", "series", "any"], description: "Default any." },
@@ -710,6 +931,26 @@ const TOOLS = [
       request_id: { type: "string" }, tmdb_id: { type: "number" }, title: { type: "string" },
     } },
   },
+  {
+    name: "media_search_now",
+    description: "Trigger a Sonarr/Radarr search for a series or movie that is already in the library, and report its queue. Use this when the owner asks to search, re-search, or look again for something already in Sonarr/Radarr; no Jellyseerr request id is needed. Identify it by service_id, tmdb_id, or exact title. Never adds anything new: zero or several matches come back as 'not_found' or 'ambiguous' with candidates. Never tell the owner to click Search in the web UI.",
+    inputSchema: { type: "object", properties: {
+      kind: { type: "string", enum: ["series", "movie"] },
+      service_id: { type: "number", description: "Sonarr series id or Radarr movie id." },
+      title: { type: "string" },
+      tmdb_id: { type: "number" },
+    }, required: ["kind"] },
+  },
+  {
+    name: "media_blocklist_stalled",
+    description: "Clear stuck downloads for a series or movie already in Sonarr/Radarr: remove stalled queue rows from the download client, blocklist those releases so they are not grabbed again, then search again (research, default true). Use this when the owner asks to clear stuck or stalled downloads; no Jellyseerr request id is needed. Without queue_ids it targets the item's stalled rows; with queue_ids only those, and each must belong to the item.",
+    inputSchema: { type: "object", properties: {
+      kind: { type: "string", enum: ["series", "movie"] },
+      service_id: { type: "number", description: "Sonarr series id or Radarr movie id (media_search_now returns it)." },
+      queue_ids: { type: "array", items: { type: "number" } },
+      research: { type: "boolean", description: "Search again afterwards. Default true." },
+    }, required: ["kind", "service_id"] },
+  },
 ]
 
 const HANDLERS = {
@@ -719,6 +960,8 @@ const HANDLERS = {
   media_diagnose_and_fix: mediaDiagnoseAndFix,
   media_chain_health: mediaChainHealth,
   media_play_or_resolve: mediaPlayOrResolve,
+  media_search_now: mediaSearchNow,
+  media_blocklist_stalled: mediaBlocklistStalled,
 }
 
 // ------------------------------------------------------------ jsonrpc stdio

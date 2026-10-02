@@ -2,7 +2,7 @@
   "version": 2,
   "profiles": {
     "sanctuary-owner": {
-      "version": 10,
+      "version": 11,
       "contextScopes": [
         "household.status",
         "household.policy",
@@ -64,7 +64,9 @@
         "media_request_status",
         "media_diagnose_and_fix",
         "media_chain_health",
-        "media_play_or_resolve"
+        "media_play_or_resolve",
+        "media_search_now",
+        "media_blocklist_stalled"
       ],
       "effectScopes": [
         "telegram.proactive",
@@ -132,7 +134,7 @@
       ]
     },
     "sanctuary-agent-peer": {
-      "version": 1,
+      "version": 2,
       "toolNames": [
         "external_event_disposition",
         "query_active_work",
@@ -187,7 +189,9 @@
         "media_request_status",
         "media_diagnose_and_fix",
         "media_chain_health",
-        "media_play_or_resolve"
+        "media_play_or_resolve",
+        "media_search_now",
+        "media_blocklist_stalled"
       ],
       "contextScopes": [
         "household.status",
