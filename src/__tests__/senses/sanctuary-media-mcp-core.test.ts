@@ -235,6 +235,12 @@ describe("media MCP — search_now and blocklist_stalled", () => {
       { queue_id: 2, title: "Rel.2", status: "downloading", size_left_bytes: 2 * GB, stalled: false },
     ])
     expect(mod.isStalledRow(stalledRow(1), now)).toBe(true)
+    // Nearly done but unfinished for days (Curb S10E02 at 99.85% for weeks) is stuck too; a fresh partial is not.
+    expect(mod.isStalledRow(stalledRow(9, { sizeleft: 2 * 1024 * 1024, added: hoursAgo(now, 24 * 36) }), now)).toBe(true)
+    expect(mod.isStalledRow(stalledRow(9, { sizeleft: 2 * 1024 * 1024, added: hoursAgo(now, 30) }), now)).toBe(false)
+    expect(mod.isStalledRow(stalledRow(9, { sizeleft: 0, added: hoursAgo(now, 24 * 36) }), now)).toBe(false)
+    expect(mod.isStalledRow(stalledRow(9, { added: undefined }), now)).toBe(false)
+    expect(mod.isStalledRow(stalledRow(9, { size: 0 }), now)).toBe(false)
   })
 
   it("blocklists every stalled row then re-searches", async () => {
@@ -505,6 +511,8 @@ describe("media MCP — release numbering tools", () => {
     expect(await mod.mediaReleaseGrab({ kind: "series", guid: "g-s3", indexer_id: 5, season_number: 2 })).toMatchObject({ result: "season_pack_mismatch" })
     expect(await mod.mediaReleaseGrab({ kind: "series", guid: "g-s3", indexer_id: 5, series_id: 191, episode_ids: [1] })).toEqual({ result: "episode_id_not_for_series", foreign_episode_ids: [1] })
     expect(await mod.mediaReleaseGrab({ kind: "series", guid: "nope", indexer_id: 5 })).toMatchObject({ result: "search_first" })
+    expect(await mod.mediaReleaseGrab({ kind: "series", guid: "g-s3", indexer_id: 6, series_id: 191, episode_ids: [14472] })).toEqual({ result: "indexer_mismatch", expected_indexer_id: 5 })
+    expect(await mod.mediaReleaseGrab({ kind: "series", guid: "g-s3", indexer_id: 5, series_id: 4, episode_ids: [14472] })).toMatchObject({ result: "series_mismatch", searched_series_id: 191 })
     expect(calls.some((c) => c.method === "POST")).toBe(false)
   })
 
@@ -515,6 +523,42 @@ describe("media MCP — release numbering tools", () => {
     await mod.mediaReleaseSearch({ kind: "movie", service_id: 3 })
     await mod.mediaReleaseGrab({ kind: "movie", guid: "m1", indexer_id: 2 })
     expect(calls.filter((c) => c.method === "POST")[1]).toMatchObject({ url: "http://radarr/api/v3/release", body: { guid: "m1", indexerId: 2 } })
+  })
+
+  it("expires cached releases and caps per-episode searches", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] })
+    try {
+      await mod.mediaReleaseSearch({ kind: "series", service_id: 191, season_number: 2 })
+      vi.setSystemTime(Date.now() + 26 * 60_000)
+      expect(await mod.mediaReleaseGrab({ kind: "series", guid: "g-s3", indexer_id: 5, series_id: 191, episode_ids: [14472] })).toMatchObject({ result: "search_first" })
+      // a later search prunes the expired rows and caches fresh ones
+      await mod.mediaReleaseSearch({ kind: "series", service_id: 191, season_number: 2 })
+      expect((await mod.mediaReleaseGrab({ kind: "series", guid: "g-s3", indexer_id: 5, series_id: 191, episode_ids: [14472] })).result).toBe("grabbed")
+    } finally { vi.useRealTimers() }
+    expect(await mod.mediaReleaseSearch({ kind: "series", service_id: 191, episode_ids: [1, 2, 3, 4, 5, 6, 7] })).toMatchObject({ result: "too_many_episode_ids", max: 6 })
+  })
+
+  it("keeps at most 500 cached releases, dropping the oldest", async () => {
+    const many = Array.from({ length: 501 }, (_, i) => ({ guid: `r${i}`, indexerId: 1, title: `R${i}`, seeders: 501 - i, rejections: [] }))
+    vi.stubGlobal("fetch", async () => json(many))
+    await mod.mediaReleaseSearch({ kind: "movie", service_id: 3, limit: 1 })
+    expect((await mod.mediaReleaseGrab({ kind: "movie", guid: "r0", indexer_id: 1 })).result).toBe("search_first")
+    expect((await mod.mediaReleaseGrab({ kind: "movie", guid: "r500", indexer_id: 1 })).result).toBe("grabbed")
+  })
+
+  it("flags a blocklist listing cut off at the page limit", async () => {
+    vi.stubGlobal("fetch", async () => json({ records: [{ id: 1, seriesId: 191, sourceTitle: "x" }], totalRecords: 1e6 }))
+    const out = await mod.mediaBlocklist({ kind: "series", service_id: 191 })
+    expect(out.truncated).toBe(true)
+    expect(out.count).toBe(20)
+  })
+
+  it("warns when an import replaces an episode that already has a file", async () => {
+    episodes[0].hasFile = true
+    try {
+      const out = await mod.mediaManualImport({ mode: "import", service_id: 191, download_id: "DL1", files: [{ path: "/dl/Chef.S02E01.mkv", episode_ids: [14472] }] })
+      expect(out.replacing).toEqual([{ episode_id: 14472, code: "S02E01" }])
+    } finally { episodes[0].hasFile = false }
   })
 
   it("lists the item's blocklist and removes only its own entries", async () => {
@@ -533,7 +577,8 @@ describe("media MCP — release numbering tools", () => {
     expect(preview.files[0]).toMatchObject({ path: "/dl/Chef.S02E01.mkv", parsed_season: 2, mapped_episodes: [], rejections: ["Unknown Series"] })
     const out = await mod.mediaManualImport({ mode: "import", service_id: 191, download_id: "DL1", files: [{ path: "/dl/Chef.S02E01.mkv", episode_ids: [14472] }] })
     expect(calls.find((c) => c.url.endsWith("/command"))!.body).toEqual({ name: "ManualImport", importMode: "auto", files: [{ path: "/dl/Chef.S02E01.mkv", seriesId: 191, episodeIds: [14472],
-      quality: manual[0].quality, languages: manual[0].languages, releaseGroup: "Joy", downloadId: "DL1" }] })
+      quality: manual[0].quality, languages: manual[0].languages, releaseGroup: "Joy", indexerFlags: 0, releaseType: "unknown", downloadId: "DL1" }] })
+    expect(out.replacing).toBeUndefined()
     expect(out).toMatchObject({ mode: "import", command: { id: 7, name: "ManualImport" } })
   })
 
@@ -543,6 +588,11 @@ describe("media MCP — release numbering tools", () => {
     expect(await mod.mediaManualImport({ mode: "import", service_id: 191, download_id: "DL1", files: [{ path: "/dl/Chef.S02E01.mkv", episode_ids: [] }] })).toMatchObject({ result: "episode_ids_required" })
     expect(await mod.mediaManualImport({ mode: "import", service_id: 191, download_id: "DL1" })).toEqual({ result: "files_required" })
     expect(await mod.mediaManualImport({ service_id: 191 })).toEqual({ result: "download_id_required" })
+    expect(await mod.mediaManualImport({ mode: "import", service_id: 191, download_id: "DL1", files: [null] })).toEqual({ result: "files_required" })
+    const dup = { path: "/dl/Chef.S02E01.mkv", episode_ids: [14472] }
+    expect(await mod.mediaManualImport({ mode: "import", service_id: 191, download_id: "DL1", files: [dup, dup] })).toEqual({ result: "duplicate_path" })
+    manual.push({ ...manual[0], path: "/dl/Chef.S02E02.mkv", indexerFlags: 8, releaseType: "seasonPack" })
+    expect(await mod.mediaManualImport({ mode: "import", service_id: 191, download_id: "DL1", files: [dup, { path: "/dl/Chef.S02E02.mkv", episode_ids: [14472] }] })).toEqual({ result: "episode_id_on_two_files" })
     expect(calls.some((c) => c.url.endsWith("/command"))).toBe(false)
   })
 })

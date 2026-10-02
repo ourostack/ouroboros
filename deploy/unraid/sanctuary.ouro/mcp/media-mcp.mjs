@@ -589,9 +589,16 @@ export async function mediaRequestStatus(a) {
 // Radarr reports trackedDownloadStatus "ok" for these indefinitely, so
 // progress is measured against age rather than trusted from the row.
 // The one stall rule: nothing downloaded yet, and older than the stall window.
+// A download that never started, or one still unfinished days later (e.g. stuck at
+// 99.85% with no seeders for the last piece), will not finish on its own.
+const STUCK_INCOMPLETE_AFTER_HOURS = 72
+
 export function isStalledRow(r, nowMs) {
-  return (r.size ?? 0) > 0 && (r.sizeleft ?? 0) >= (r.size ?? 0) && Boolean(r.added)
-    && (nowMs - Date.parse(r.added)) / 3_600_000 >= STALL_AFTER_HOURS
+  if (!((r.size ?? 0) > 0) || !r.added) return false
+  const ageHours = (nowMs - Date.parse(r.added)) / 3_600_000
+  const left = r.sizeleft ?? 0
+  if (left >= r.size) return ageHours >= STALL_AFTER_HOURS
+  return left > 0 && ageHours >= STUCK_INCOMPLETE_AFTER_HOURS
 }
 
 export function computeDownloadState(queueRecs, nowMs) {
@@ -960,7 +967,18 @@ export async function mediaIndexerSearch(a) {
 }
 
 // The last search's compact rows, keyed by kind + guid, so a grab can check what Sonarr parsed.
+// Sonarr/Radarr forget a search's releases after about 30 minutes; expire ours a little sooner.
 const releaseCache = new Map()
+const RELEASE_CACHE_TTL_MS = 25 * 60_000
+const RELEASE_CACHE_MAX = 500
+const MAX_EPISODE_SEARCHES = 6
+
+function cacheRelease(key, row, nowMs = Date.now()) {
+  for (const [k, v] of releaseCache) if (nowMs - v.at > RELEASE_CACHE_TTL_MS) releaseCache.delete(k)
+  releaseCache.delete(key)
+  releaseCache.set(key, { ...row, at: nowMs })
+  while (releaseCache.size > RELEASE_CACHE_MAX) releaseCache.delete(releaseCache.keys().next().value)
+}
 
 function releaseRow(kind, r) {
   const rejections = Array.isArray(r.rejections) ? r.rejections.map((x) => (typeof x === "string" ? x : x?.reason ?? String(x))) : []
@@ -986,6 +1004,7 @@ export async function mediaReleaseSearch(a) {
     raw = await radarr("/release", { query: { movieId: serviceId }, timeoutMs: SEARCH_TIMEOUT_MS })
   } else if (Array.isArray(a.episode_ids) && a.episode_ids.length) {
     // Sonarr searches one episode per call.
+    if (a.episode_ids.length > MAX_EPISODE_SEARCHES) return { result: "too_many_episode_ids", max: MAX_EPISODE_SEARCHES, message: "Search the season instead, or fewer episodes at a time." }
     for (const id of a.episode_ids) raw.push(...await sonarr("/release", { query: { episodeId: id }, timeoutMs: SEARCH_TIMEOUT_MS }))
   } else if (a.season_number !== undefined && a.season_number !== null) {
     raw = await sonarr("/release", { query: { seriesId: serviceId, seasonNumber: a.season_number }, timeoutMs: SEARCH_TIMEOUT_MS })
@@ -999,7 +1018,7 @@ export async function mediaReleaseSearch(a) {
   }
   rows.sort((x, y) => Number(y.seeders ?? 0) - Number(x.seeders ?? 0))
   const limit = Math.min(Math.max(Number(a.limit) || 40, 1), 100)
-  for (const r of rows) releaseCache.set(`${a.kind}:${r.guid}`, { ...r, service_id: serviceId, season_number: a.season_number ?? null })
+  for (const r of rows) cacheRelease(`${a.kind}:${r.guid}`, { ...r, service_id: serviceId, season_number: a.season_number ?? null })
   return { kind: a.kind, service_id: serviceId, total_found: total, matched: rows.length, releases: rows.slice(0, limit) }
 }
 
@@ -1007,7 +1026,10 @@ export async function mediaReleaseGrab(a) {
   if (!kindOk(a)) return invalidKind()
   if (!a.guid || a.indexer_id === undefined || a.indexer_id === null) return { result: "guid_and_indexer_id_required" }
   const cached = releaseCache.get(`${a.kind}:${a.guid}`)
-  if (!cached) return { result: "search_first", message: "Run media_release_search first; a release can only be grabbed from a recent search." }
+  if (!cached || Date.now() - cached.at > RELEASE_CACHE_TTL_MS) {
+    return { result: "search_first", message: "Run media_release_search first; a release can only be grabbed from a recent search (within 25 minutes)." }
+  }
+  if (cached.indexer_id !== null && Number(a.indexer_id) !== Number(cached.indexer_id)) return { result: "indexer_mismatch", expected_indexer_id: cached.indexer_id }
   const body = { guid: a.guid, indexerId: Number(a.indexer_id) }
   const hasEpisodes = Array.isArray(a.episode_ids) && a.episode_ids.length > 0
   if (a.kind === "series") {
@@ -1021,6 +1043,7 @@ export async function mediaReleaseGrab(a) {
     } else {
       if (a.series_id === undefined || a.series_id === null) return { result: "series_id_required_with_episode_ids" }
       const seriesId = Number(a.series_id)
+      if (seriesId !== Number(cached.service_id)) return { result: "series_mismatch", searched_series_id: cached.service_id, message: "This release came from a search for another series." }
       const own = new Set((await seriesEpisodes(seriesId)).map((e) => e.id))
       const foreign = a.episode_ids.filter((id) => !own.has(id))
       if (foreign.length) return { result: "episode_id_not_for_series", foreign_episode_ids: foreign }
@@ -1044,9 +1067,11 @@ async function itemBlocklist(kind, serviceId) {
     const q = await arrFor(kind)("/blocklist", { query: { ...filter, page, pageSize: BLOCKLIST_PAGE_SIZE } })
     const records = q?.records ?? []
     rows.push(...records)
-    if (!records.length || !(Number(q?.totalRecords) > page * BLOCKLIST_PAGE_SIZE)) break
+    if (!records.length || !(Number(q?.totalRecords) > page * BLOCKLIST_PAGE_SIZE)) return rows.filter((r) => r[idKey] === serviceId)
   }
-  return rows.filter((r) => r[idKey] === serviceId)
+  const own = rows.filter((r) => r[idKey] === serviceId)
+  own.truncated = true
+  return own
 }
 
 const blocklistReport = (rows) => rows.map((r) => ({ blocklist_id: r.id, title: r.sourceTitle ?? null, date: r.date ?? null, indexer: r.indexer ?? null,
@@ -1057,7 +1082,9 @@ export async function mediaBlocklist(a) {
   if (a.service_id === undefined || a.service_id === null) return { result: "service_id_required" }
   const serviceId = Number(a.service_id)
   const rows = await itemBlocklist(a.kind, serviceId)
-  if (!Array.isArray(a.remove_ids) || !a.remove_ids.length) return { kind: a.kind, service_id: serviceId, count: rows.length, entries: blocklistReport(rows) }
+  if (!Array.isArray(a.remove_ids) || !a.remove_ids.length) {
+    return { kind: a.kind, service_id: serviceId, count: rows.length, ...(rows.truncated ? { truncated: true } : {}), entries: blocklistReport(rows) }
+  }
   const own = new Set(rows.map((r) => r.id))
   const foreign = a.remove_ids.filter((id) => !own.has(id))
   if (foreign.length) return { result: "blocklist_id_not_for_item", foreign_blocklist_ids: foreign, entries: blocklistReport(rows) }
@@ -1081,21 +1108,29 @@ export async function mediaManualImport(a) {
   const seriesId = Number(a.service_id)
   const rows = await previewRows(seriesId, a.download_id)
   if (a.mode !== "import") return { mode: "preview", series_id: seriesId, download_id: a.download_id, files: previewReport(rows) }
-  if (!Array.isArray(a.files) || !a.files.length) return { result: "files_required" }
+  if (!Array.isArray(a.files) || !a.files.length || a.files.some((f) => !f || typeof f.path !== "string")) return { result: "files_required" }
+  const paths = a.files.map((f) => f.path)
+  if (new Set(paths).size !== paths.length) return { result: "duplicate_path" }
   const byPath = new Map(rows.map((r) => [r.path, r]))
   const unknown = a.files.filter((f) => !byPath.has(f.path)).map((f) => f.path)
   if (unknown.length) return { result: "path_not_in_preview", paths: unknown, files: previewReport(rows) }
-  const own = new Set((await seriesEpisodes(seriesId)).map((e) => e.id))
+  const seriesEps = await seriesEpisodes(seriesId)
+  const own = new Set(seriesEps.map((e) => e.id))
   const foreign = a.files.flatMap((f) => (f.episode_ids ?? []).filter((id) => !own.has(id)))
   if (foreign.length) return { result: "episode_id_not_for_series", foreign_episode_ids: foreign }
   const empty = a.files.filter((f) => !Array.isArray(f.episode_ids) || !f.episode_ids.length).map((f) => f.path)
   if (empty.length) return { result: "episode_ids_required", paths: empty }
+  const targets = a.files.flatMap((f) => f.episode_ids.map(Number))
+  if (new Set(targets).size !== targets.length) return { result: "episode_id_on_two_files" }
   const files = a.files.map((f) => {
     const r = byPath.get(f.path)
-    return { path: f.path, seriesId, episodeIds: f.episode_ids.map(Number), quality: r.quality, languages: r.languages, releaseGroup: r.releaseGroup ?? "", downloadId: a.download_id }
+    return { path: f.path, seriesId, episodeIds: f.episode_ids.map(Number), quality: r.quality, languages: r.languages, releaseGroup: r.releaseGroup ?? "",
+             indexerFlags: r.indexerFlags ?? 0, releaseType: r.releaseType ?? "unknown", downloadId: a.download_id }
   })
   const c = await sonarr("/command", { method: "POST", body: { name: "ManualImport", files, importMode: "auto" } })
-  return { mode: "import", imported: a.files.map((f) => ({ path: f.path, episode_ids: f.episode_ids })), command: { id: c?.id ?? null, name: c?.name ?? "ManualImport", status: c?.status ?? null } }
+  // Episodes that already had a file: Sonarr treats these imports as replacements.
+  const replacing = seriesEps.filter((e) => e.hasFile && targets.includes(e.id)).map((e) => ({ episode_id: e.id, code: sxe(e) }))
+  return { mode: "import", imported: a.files.map((f) => ({ path: f.path, episode_ids: f.episode_ids })), ...(replacing.length ? { replacing } : {}), command: { id: c?.id ?? null, name: c?.name ?? "ManualImport", status: c?.status ?? null } }
 }
 
 // ------------------------------------------------------------------- schema
