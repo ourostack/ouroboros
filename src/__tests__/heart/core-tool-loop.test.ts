@@ -354,6 +354,54 @@ describe("relationship-scoped canonical option boundaries", () => {
   })
 })
 
+describe("settle answer versus reply text written beside it", () => {
+  beforeEach(async () => {
+    vi.resetModules()
+    vi.mocked(fs.readFileSync).mockImplementation(defaultReadFileSync)
+    mockCreate.mockReset()
+    mockResponsesCreate.mockReset()
+    await setupMinimax()
+  })
+
+  const REPLY = "hi ari — looked it up: 20 of 25 episodes of The Chef Show are on the shelf, so 5 are still missing."
+  const RECAP = "recapped the state: 20/25 eps on shelf, offered to re-search."
+
+  it("judges the mismatch as a pure check", async () => {
+    const { settleContentMismatchError } = await import("../../heart/core")
+    expect(settleContentMismatchError(REPLY, RECAP)).toContain("only settle.answer reaches the person")
+    expect(settleContentMismatchError(null, RECAP)).toBeNull()
+    expect(settleContentMismatchError("checking the queue now.", RECAP)).toBeNull()
+    expect(settleContentMismatchError(REPLY, REPLY)).toBeNull()
+    expect(settleContentMismatchError(REPLY, `${REPLY}\n\nwant me to nudge it?`)).toBeNull()
+    expect(settleContentMismatchError(`${REPLY} (from sonarr)`, REPLY)).toBeNull()
+  })
+
+  it("asks once for the reply as the answer, then delivers the corrected answer", async () => {
+    mockCreate.mockReturnValueOnce(makeStream([makeChunk(REPLY, [{ index: 0, id: "settle_recap", function: { name: "settle", arguments: JSON.stringify({ answer: RECAP, intent: "complete" }) } }])]))
+    mockCreate.mockReturnValueOnce(makeStream([makeChunk(undefined, [{ index: 0, id: "settle_reply", function: { name: "settle", arguments: JSON.stringify({ answer: REPLY, intent: "complete" }) } }])]))
+    // What the person ends up with: streamed text, minus anything retracted by onClearText.
+    let visible: string[] = []
+    const messages: any[] = [{ role: "user", content: "why don't we have all eps of chef?" }]
+    const { runAgent } = await import("../../heart/core")
+    const result = await runAgent(messages, makeCallbacks({ onTextChunk: vi.fn((text: string) => { visible.push(text) }), onClearText: vi.fn(() => { visible = [] }) }), "telegram", undefined, { tools: [], execTool: vi.fn(), toolContext: { signin: async () => undefined } })
+    expect(result.outcome).toBe("settled")
+    expect(mockCreate).toHaveBeenCalledTimes(2)
+    expect(JSON.stringify(mockCreate.mock.calls[1][0].messages)).toContain("only settle.answer reaches the person")
+    expect(visible.join("")).toBe(REPLY)
+  })
+
+  it("does not ask twice: a second mismatch is delivered as the model settled it", async () => {
+    mockCreate.mockReturnValueOnce(makeStream([makeChunk(REPLY, [{ index: 0, id: "settle_a", function: { name: "settle", arguments: JSON.stringify({ answer: RECAP, intent: "complete" }) } }])]))
+    mockCreate.mockReturnValueOnce(makeStream([makeChunk(REPLY, [{ index: 0, id: "settle_b", function: { name: "settle", arguments: JSON.stringify({ answer: RECAP, intent: "complete" }) } }])]))
+    const visible: string[] = []
+    const { runAgent } = await import("../../heart/core")
+    const result = await runAgent([{ role: "user", content: "status?" }] as any[], makeCallbacks({ onTextChunk: vi.fn((text: string) => { visible.push(text) }) }), "telegram", undefined, { tools: [], execTool: vi.fn(), toolContext: { signin: async () => undefined } })
+    expect(result.outcome).toBe("settled")
+    expect(mockCreate).toHaveBeenCalledTimes(2)
+    expect(visible.at(-1)).toBe(RECAP)
+  })
+})
+
 describe("runAgent tool loop guard", () => {
   beforeEach(async () => {
     vi.resetModules()
