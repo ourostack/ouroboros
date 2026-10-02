@@ -132,6 +132,8 @@ describe("media MCP — search_now and blocklist_stalled", () => {
   let queues: { sonarr: any[]; radarr: any[] }
   let lookups: { series: any[]; movie: any[] }
   let jellyfinItems: any[]
+  let deleteStatus: Record<number, number>
+  let radarrDown: boolean
 
   const json = (body: unknown) => ({ ok: true, status: 200, json: async () => body, text: async () => "" })
 
@@ -146,6 +148,8 @@ describe("media MCP — search_now and blocklist_stalled", () => {
     queues = { sonarr: [], radarr: [] }
     lookups = { series: [], movie: [] }
     jellyfinItems = []
+    deleteStatus = {}
+    radarrDown = false
     const dir = mkdtempSync(join(tmpdir(), "media-cred-"))
     const credPath = join(dir, "c.json")
     writeFileSync(credPath, JSON.stringify({
@@ -158,13 +162,21 @@ describe("media MCP — search_now and blocklist_stalled", () => {
       const method = init.method ?? "GET"
       calls.push({ method, url, body: init.body ? JSON.parse(init.body) : undefined })
       const isSonarr = url.startsWith("http://sonarr")
+      if (radarrDown && url.startsWith("http://radarr")) throw new Error("connect ECONNREFUSED")
       if (url.includes("/series/lookup")) return json(lookups.series)
       if (url.includes("/movie/lookup")) return json(lookups.movie)
       if (url.startsWith("http://jellyfin/Items")) return json({ Items: jellyfinItems })
       if (url.includes("/api/v3/series")) return json(series)
       if (url.includes("/api/v3/movie")) return json(movies)
-      if (url.includes("/api/v3/queue/") && method === "DELETE") return { ok: true, status: 204, json: async () => null, text: async () => "" }
-      if (url.includes("/api/v3/queue")) return json({ records: isSonarr ? queues.sonarr : queues.radarr })
+      if (url.includes("/api/v3/queue/") && method === "DELETE") {
+        const status = deleteStatus[Number(url.split("/queue/")[1].split("?")[0])] ?? 204
+        return { ok: status < 300, status, json: async () => null, text: async () => (status < 300 ? "" : "gone") }
+      }
+      if (url.includes("/api/v3/queue")) {
+        const all = isSonarr ? queues.sonarr : queues.radarr
+        const page = Number(new URL(url).searchParams.get("page") ?? 1)
+        return json({ records: all.slice((page - 1) * 200, page * 200), totalRecords: all.length })
+      }
       if (url.includes("/api/v3/command")) return json({ id: 99, name: JSON.parse(init.body).name, status: "queued" })
       throw new Error(`unexpected ${method} ${url}`)
     })
@@ -252,6 +264,42 @@ describe("media MCP — search_now and blocklist_stalled", () => {
     expect(out.result).toBe("queue_id_not_for_item")
     expect(out.foreign_queue_ids).toEqual([3])
     expect(deletes()).toHaveLength(0)
+  })
+
+  it("deletes a season pack once, tolerates a vanished row, reports a failed delete and still re-searches", async () => {
+    queues.sonarr = [stalledRow(1, { downloadId: "pack" }), stalledRow(2, { downloadId: "pack" }), stalledRow(4), stalledRow(5)]
+    deleteStatus = { 4: 404, 5: 500 }
+    const out = await mod.mediaBlocklistStalled({ kind: "series", service_id: 7 })
+    expect(deletes().map((d) => d.url.split("?")[0])).toEqual([
+      "http://sonarr/api/v3/queue/1", "http://sonarr/api/v3/queue/4", "http://sonarr/api/v3/queue/5",
+    ])
+    expect(out.removed).toEqual([1, 4])
+    expect(out.failed).toEqual([{ queue_id: 5, error: expect.stringContaining("500") }])
+    expect(out.command).toMatchObject({ name: "SeriesSearch" })
+  })
+
+  it("reads every page of a long queue, filtered to the item", async () => {
+    queues.sonarr = [...Array.from({ length: 250 }, (_, i) => stalledRow(1000 + i, { seriesId: 99 })), stalledRow(1)]
+    const out = await mod.mediaBlocklistStalled({ kind: "series", service_id: 7 })
+    expect(out.removed).toEqual([1])
+    const queueReads = calls.filter((c) => c.method === "GET" && c.url.includes("/api/v3/queue?"))
+    expect(queueReads[0].url).toContain("seriesIds=7")
+    expect(queueReads[1].url).toContain("page=2")
+  })
+
+  it("names a lone typo-distance match instead of searching it", async () => {
+    const out = await mod.mediaSearchNow({ kind: "series", title: "severence" })
+    expect(out.result).toBe("ambiguous")
+    expect(out.candidates[0]).toMatchObject({ service_id: 7, match: "fuzzy" })
+    expect(commands()).toHaveLength(0)
+  })
+
+  it("keeps Sonarr matches when Radarr is down, and notes the outage", async () => {
+    radarrDown = true
+    const ranked = await mod.findLibraryCandidates("severance", "any")
+    expect(ranked.map((c: any) => c.service_id)).toEqual([7])
+    expect(ranked.notes[0]).toContain("library_unavailable")
+    await expect(mod.findLibraryCandidates("autumn", "movie")).rejects.toThrow("radarr did not respond")
   })
 
   it("says nothing_to_blocklist when no row is stalled", async () => {

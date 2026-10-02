@@ -202,9 +202,12 @@ export async function findLibraryCandidates(term, kind = "any") {
   const jobs = []
   if (kind !== "movie") jobs.push(sonarr("/series").then((l) => (Array.isArray(l) ? l : []).map((i) => libraryCandidate("series", i))))
   if (kind !== "series") jobs.push(radarr("/movie").then((l) => (Array.isArray(l) ? l : []).map((i) => libraryCandidate("movie", i))))
-  const lists = await Promise.all(jobs)
-  let items = lists.flat()
+  // One service being down must not hide the other's matches; say which failed.
+  const settled = await Promise.allSettled(jobs)
   const notes = []
+  for (const r of settled) if (r.status === "rejected") notes.push(`library_unavailable: ${r.reason?.message ?? r.reason}`)
+  if (settled.every((r) => r.status === "rejected")) throw settled[0].reason
+  let items = settled.flatMap((r) => (r.status === "fulfilled" ? r.value : []))
   if (JELLYFIN.url && JELLYFIN.apiKey) {
     try {
       const body = await req(JELLYFIN.url, "/Items", { key: JELLYFIN.apiKey, header: "X-Emby-Token",
@@ -810,9 +813,10 @@ async function resolveLibraryItem(a) {
     candidates = hit
   } else if (a.title) {
     const ranked = (await findLibraryCandidates(a.title, a.kind)).filter((c) => c.service_id !== null)
-    // Act only when the best tier holds exactly one item; otherwise name them.
+    // Act only when the best tier holds exactly one item and it is not merely a
+    // typo-distance match; otherwise name the candidates and let the caller pick.
     const bestTier = ranked.filter((c) => c.match === ranked[0]?.match)
-    if (bestTier.length === 1) return { item: { id: bestTier[0].service_id, title: bestTier[0].title } }
+    if (bestTier.length === 1 && bestTier[0].match !== "fuzzy") return { item: { id: bestTier[0].service_id, title: bestTier[0].title } }
     if (!ranked.length) {
       const lookup = (await lookupCandidates(a.title, a.kind)).filter((c) => !c.in_library).map((c) => ({ ...c, not_in_library: true }))
       return { result: "not_found", candidates: lookup }
@@ -822,11 +826,23 @@ async function resolveLibraryItem(a) {
   return { result: candidates.length ? "ambiguous" : "not_found", candidates: candidates.slice(0, 10) }
 }
 
+const QUEUE_PAGE_SIZE = 200
+const QUEUE_MAX_PAGES = 20
+
+// The item's queue rows. Filtered server-side (seriesIds/movieIds) and paged, so a
+// long queue cannot hide a row; the client-side filter stays as the backstop.
 async function itemQueue(kind, serviceId) {
   const client = arrFor(kind)
-  const q = await client("/queue", { query: kind === "series" ? { pageSize: 200, includeSeries: true } : { pageSize: 200 } })
   const idKey = kind === "series" ? "seriesId" : "movieId"
-  return (q?.records ?? []).filter((r) => r[idKey] === serviceId)
+  const filter = kind === "series" ? { seriesIds: serviceId, includeSeries: true } : { movieIds: serviceId }
+  const rows = []
+  for (let page = 1; page <= QUEUE_MAX_PAGES; page++) {
+    const q = await client("/queue", { query: { ...filter, page, pageSize: QUEUE_PAGE_SIZE } })
+    const records = q?.records ?? []
+    rows.push(...records)
+    if (!records.length || !(Number(q?.totalRecords) > page * QUEUE_PAGE_SIZE)) break
+  }
+  return rows.filter((r) => r[idKey] === serviceId)
 }
 
 function queueReport(rows) {
@@ -861,16 +877,34 @@ export async function mediaBlocklistStalled(a) {
     const own = new Set(rows.map((r) => r.id))
     const foreign = a.queue_ids.filter((id) => !own.has(id))
     if (foreign.length) return { result: "queue_id_not_for_item", foreign_queue_ids: foreign, queue: queueReport(rows) }
-    targets = a.queue_ids
+    targets = rows.filter((r) => a.queue_ids.includes(r.id))
   } else {
-    targets = rows.filter((r) => isStalledRow(r, now)).map((r) => r.id)
+    targets = rows.filter((r) => isStalledRow(r, now))
   }
+  // A season pack is many queue rows sharing one downloadId; deleting one removes
+  // the download for all, so delete once per download.
+  const seen = new Set()
+  targets = targets.filter((r) => {
+    const key = r.downloadId ? `d:${r.downloadId}` : `q:${r.id}`
+    if (seen.has(key)) return false
+    seen.add(key)
+    return true
+  })
   if (!targets.length) return { result: "nothing_to_blocklist", queue: queueReport(rows) }
-  for (const id of targets) {
-    await arrFor(a.kind)(`/queue/${id}`, { method: "DELETE", query: { removeFromClient: true, blocklist: true, skipRedownload: true } })
+  const removed = []
+  const failed = []
+  for (const row of targets) {
+    try {
+      await arrFor(a.kind)(`/queue/${row.id}`, { method: "DELETE", query: { removeFromClient: true, blocklist: true, skipRedownload: true } })
+      removed.push(row.id)
+    } catch (e) {
+      // 404: the row went away (finished or removed with its pack); not a failure to retry.
+      if (/_http_404$/.test(e.code ?? "")) removed.push(row.id)
+      else failed.push({ queue_id: row.id, error: e.message })
+    }
   }
   const command = a.research === false ? null : await runSearch(a.kind, serviceId)
-  return { removed: targets, command, queue: queueReport(await itemQueue(a.kind, serviceId)) }
+  return { removed, ...(failed.length ? { failed } : {}), command, queue: queueReport(await itemQueue(a.kind, serviceId)) }
 }
 
 // ------------------------------------------------------------------- schema
@@ -943,7 +977,7 @@ const TOOLS = [
   },
   {
     name: "media_blocklist_stalled",
-    description: "Clear stuck downloads for a series or movie already in Sonarr/Radarr: remove stalled queue rows from the download client, blocklist those releases so they are not grabbed again, then search again (research, default true). Use this when the owner asks to clear stuck or stalled downloads; no Jellyseerr request id is needed. Without queue_ids it targets the item's stalled rows; with queue_ids only those, and each must belong to the item.",
+    description: "Clear stuck downloads for a series or movie already in Sonarr/Radarr: remove stalled queue rows from the download client, blocklist those releases so they are not grabbed again, then search again (research, default true). Use this when the owner asks to clear stuck or stalled downloads; no Jellyseerr request id is needed. Without queue_ids it targets the item's stalled rows; with queue_ids only those, and each must belong to the item. Explicit queue_ids are removed even if still downloading, so pass them only when the owner named those downloads. Rows of one season pack are removed once; a delete that fails is reported in `failed` and the re-search still runs.",
     inputSchema: { type: "object", properties: {
       kind: { type: "string", enum: ["series", "movie"] },
       service_id: { type: "number", description: "Sonarr series id or Radarr movie id (media_search_now returns it)." },
