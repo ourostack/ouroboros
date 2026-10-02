@@ -63,7 +63,9 @@ async function req(base, path, { key, header = "X-Api-Key", method = "GET", body
     throw new ServiceError(`${serviceOf(base)}_http_${res.status}`, `${serviceOf(base)} returned ${res.status}${text ? `: ${text.slice(0, 200)}` : ""}`)
   }
   if (res.status === 204) return null
-  return res.json()
+  // Sonarr/Radarr answer some DELETEs with 200 and an empty body; that is success, not a parse failure.
+  const raw = await res.text()
+  return raw.trim() ? JSON.parse(raw) : null
 }
 
 function serviceOf(base) {

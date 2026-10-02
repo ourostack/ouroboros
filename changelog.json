@@ -4,7 +4,7 @@
     {
       "version": "0.1.0-alpha.852",
       "changes": [
-        "An orientation hold no longer blocks read-only tools from the agent's own MCP servers (readOnlyHint); the Butler's media lookups are marked read-only"
+        "An orientation hold no longer blocks read-only tools from the agent's own MCP servers (readOnlyHint); the Butler's media lookups are marked read-only. The media tools treat a 200 with an empty body as success, so clearing a stuck download goes on to re-search"
       ]
     },
     {

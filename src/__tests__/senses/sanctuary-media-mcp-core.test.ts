@@ -135,7 +135,7 @@ describe("media MCP — search_now and blocklist_stalled", () => {
   let deleteStatus: Record<number, number>
   let radarrDown: boolean
 
-  const json = (body: unknown) => ({ ok: true, status: 200, json: async () => body, text: async () => "" })
+  const json = (body: unknown) => ({ ok: true, status: 200, json: async () => body, text: async () => JSON.stringify(body) })
 
   beforeEach(async () => {
     calls = []
@@ -170,7 +170,7 @@ describe("media MCP — search_now and blocklist_stalled", () => {
       if (url.includes("/api/v3/movie")) return json(movies)
       if (url.includes("/api/v3/queue/") && method === "DELETE") {
         const status = deleteStatus[Number(url.split("/queue/")[1].split("?")[0])] ?? 204
-        return { ok: status < 300, status, json: async () => null, text: async () => (status < 300 ? "" : "gone") }
+        return { ok: status < 300, status, json: async () => { throw new SyntaxError("Unexpected end of JSON input") }, text: async () => (status < 300 ? "" : "gone") }
       }
       if (url.includes("/api/v3/queue")) {
         const all = isSonarr ? queues.sonarr : queues.radarr
@@ -253,6 +253,16 @@ describe("media MCP — search_now and blocklist_stalled", () => {
     ])
     expect(out.command).toMatchObject({ name: "SeriesSearch" })
     expect(calls.findIndex((c) => c.method === "DELETE")).toBeLessThan(calls.findIndex((c) => c.url.includes("/command")))
+  })
+
+  it("treats a 200 with an empty body as success, as Sonarr answers a queue DELETE", async () => {
+    // Live 2026-10-02: Curb S10E02 was blocklisted, then res.json() threw and the re-search never ran.
+    queues.sonarr = [stalledRow(5)]
+    deleteStatus[5] = 200
+    const out = await mod.mediaBlocklistStalled({ kind: "series", service_id: 7 })
+    expect(out.removed).toEqual([5])
+    expect(out.failed ?? []).toEqual([])
+    expect(out.command).toMatchObject({ name: "SeriesSearch" })
   })
 
   it("blocklists only the explicit ids and can skip the re-search", async () => {
@@ -427,7 +437,7 @@ describe("media MCP — release numbering tools", () => {
   let mod: any
   let blocklist: any[]
   let manual: any[]
-  const json = (body: unknown) => ({ ok: true, status: 200, json: async () => body, text: async () => "" })
+  const json = (body: unknown) => ({ ok: true, status: 200, json: async () => body, text: async () => JSON.stringify(body) })
   const episodes = [14472, 14473, 14474, 14475, 14476].map((id, i) => ({ id, seasonNumber: 2, episodeNumber: i + 1, title: ["Milk Bar Bake Sale", "Roy's Italian Cuisine", "Jessica Largey", "Tartine", "Late Night Burger"][i], airDate: "2020-09-24", hasFile: false, monitored: true, ...(i < 4 ? { sceneSeasonNumber: 4, sceneEpisodeNumber: i + 1 } : {}) }))
   const pack = { guid: "g-s3", indexerId: 5, indexer: "Idx", title: "The Chef Show Season 3 [1080p x265 10bit S85 Joy]", size: 9e9, seeders: 40, age: 100, quality: { quality: { name: "WEBDL-1080p" } },
     fullSeason: true, seasonNumber: 3, episodeNumbers: [], mappedEpisodeInfo: [], rejected: true, rejections: ["Unknown Series"], protocol: "torrent" }
