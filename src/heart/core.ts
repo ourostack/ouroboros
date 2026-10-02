@@ -1094,7 +1094,9 @@ export function isExternalStateQuery(toolName: string, args: Record<string, unkn
 
 const SETTLE_CONTENT_MISMATCH_MIN_CHARS = 40
 
-const normalizeForSettleComparison = (text: string): string => text.replace(/\s+/g, " ").trim().toLowerCase()
+// Markdown markers and smart punctuation differ between a reply and its settle copy without changing it.
+const normalizeForSettleComparison = (text: string): string =>
+  text.replace(/[*_`>#~]/g, "").replace(/[\u2018\u2019]/g, "'").replace(/[\u201c\u201d]/g, '"').replace(/[\u2013\u2014]/g, "-").replace(/\s+/g, " ").trim().toLowerCase()
 
 /**
  * Only `settle.answer` reaches the friend; assistant message text in the same
@@ -2330,7 +2332,8 @@ export async function runAgent(
           // The provider finalizer has already established a top-level string
           // answer before ordinary settle handling reaches this point.
           const deliveredAnswer = answer as string
-          const contentMismatch = sawSettleContentMismatch ? null : settleContentMismatchError(msg.content, deliveredAnswer)
+          // Never spend the last provider iteration on this optional retry: delivering the recap beats delivering nothing.
+          const contentMismatch = sawSettleContentMismatch || providerIterations >= MAX_PROVIDER_ITERATIONS - 1 ? null : settleContentMismatchError(msg.content, deliveredAnswer)
           if (contentMismatch) {
             sawSettleContentMismatch = true
             emitNervesEvent({ level: "warn", component: "engine", event: "engine.settle_content_mismatch", message: "settle answer differs from the reply text written beside it; asking once for the reply as the answer", meta: { answerLength: deliveredAnswer.length, contentLength: (msg.content as string).length } })

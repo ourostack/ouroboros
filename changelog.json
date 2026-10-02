@@ -6,7 +6,7 @@
       "changes": [
         "The Butler can fix release-numbering mismatches himself: typed Sonarr/Radarr release search, override grab, blocklist and manual import tools, scene numbering in media_episodes, and a free-text indexer search",
         "media_blocklist_stalled treats a download unfinished after 72 hours as stuck",
-        "The engine asks once when a settle answer drops the reply written beside it, so Telegram and A2A get the full reply. When the only matching release has no seeders, the Butler still grabs it with the right mapping and says it may not finish"
+        "The engine asks once when a settle answer drops the reply written beside it, so Telegram and A2A get the full reply (never on the last provider iteration). When the only matching release has no seeders, the Butler still grabs it with the right mapping and says it may not finish"
       ]
     },
     {

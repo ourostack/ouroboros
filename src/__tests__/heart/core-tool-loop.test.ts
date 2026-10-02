@@ -374,6 +374,8 @@ describe("settle answer versus reply text written beside it", () => {
     expect(settleContentMismatchError(REPLY, REPLY)).toBeNull()
     expect(settleContentMismatchError(REPLY, `${REPLY}\n\nwant me to nudge it?`)).toBeNull()
     expect(settleContentMismatchError(`${REPLY} (from sonarr)`, REPLY)).toBeNull()
+    // markdown markers and smart punctuation are not a different reply
+    expect(settleContentMismatchError("**hi ari** — looked it up: `20` of 25 episodes of The Chef Show are on the shelf, so 5 are still missing.", "hi ari - looked it up: 20 of 25 episodes of the chef show are on the shelf, so 5 are still missing.")).toBeNull()
   })
 
   it("asks once for the reply as the answer, then delivers the corrected answer", async () => {
@@ -388,6 +390,21 @@ describe("settle answer versus reply text written beside it", () => {
     expect(mockCreate).toHaveBeenCalledTimes(2)
     expect(JSON.stringify(mockCreate.mock.calls[1][0].messages)).toContain("only settle.answer reaches the person")
     expect(visible.join("")).toBe(REPLY)
+  })
+
+  it("never spends the last provider iteration on the retry: the recap is delivered", async () => {
+    const { MAX_PROVIDER_ITERATIONS, runAgent } = await import("../../heart/core")
+    for (let i = 0; i < MAX_PROVIDER_ITERATIONS - 2; i++) {
+      mockCreate.mockReturnValueOnce(makeStream([makeChunk(undefined, [{ index: 0, id: `look_${i}`, function: { name: "look", arguments: JSON.stringify({ step: i }) } }])]))
+    }
+    mockCreate.mockReturnValueOnce(makeStream([makeChunk(REPLY, [{ index: 0, id: "settle_late", function: { name: "settle", arguments: JSON.stringify({ answer: RECAP, intent: "complete" }) } }])]))
+    const tools = [{ type: "function", function: { name: "look", description: "look", parameters: { type: "object", properties: { step: { type: "number" } } } } }]
+    const visible: string[] = []
+    const result = await runAgent([{ role: "user", content: "status?" }] as any[], makeCallbacks({ onTextChunk: vi.fn((text: string) => { visible.push(text) }) }), "telegram", undefined,
+      { tools: tools as any, execTool: vi.fn(async (_n: string, args: any) => `step ${args.step} ok`), toolContext: { signin: async () => undefined } })
+    expect(result.outcome).toBe("settled")
+    expect(mockCreate).toHaveBeenCalledTimes(MAX_PROVIDER_ITERATIONS - 1)
+    expect(visible.at(-1)).toBe(RECAP)
   })
 
   it("does not ask twice: a second mismatch is delivered as the model settled it", async () => {
