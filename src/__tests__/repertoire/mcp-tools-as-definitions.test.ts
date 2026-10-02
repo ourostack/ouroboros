@@ -211,6 +211,20 @@ describe("mcpToolsAsDefinitions", () => {
     })
   })
 
+  it("treats a read-only hint as low risk only from the agent's own servers", () => {
+    const tools = [
+      { name: "lookup", description: "Look up", inputSchema: { type: "object" }, annotations: { readOnlyHint: true } },
+      { name: "grab", description: "Grab", inputSchema: { type: "object" }, annotations: { readOnlyHint: false } },
+    ]
+    const own = mcpToolsAsDefinitions(makeMockMcpManager([{ server: "media", tools }]))
+    expect(own[0].riskProfile).toEqual({ mutates: "none", risk: "low", reason: "read-only tool from the agent's own MCP server" })
+    expect(own[1].riskProfile).toMatchObject({ risk: "high" })
+    const plugin = mcpToolsAsDefinitions(makeMockMcpManager([{ server: "desk", pluginId: "desk", tools }]))
+    expect(plugin[0].riskProfile).toMatchObject({ risk: "high" })
+    const runtime = mcpToolsAsDefinitions(makeMockMcpManager([{ server: "rt", source: "runtime", tools }]))
+    expect(runtime[0].riskProfile).toMatchObject({ risk: "high" })
+  })
+
   describe("double-prefix avoidance", () => {
     it("skips prefix when tool name already starts with server name (e.g. browser_navigate)", () => {
       const mgr = makeMockMcpManager([{

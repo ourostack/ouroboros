@@ -7,7 +7,7 @@ export const MCP_CONTEXT = { ...MCP_OWNER, signin: async () => undefined }
 const managers: McpManager[] = []
 
 export function makeMcpView(
-  groups: Array<{ server: string; tools: McpToolInfo[]; pluginId?: string }>,
+  groups: Array<{ server: string; tools: McpToolInfo[]; pluginId?: string; source?: "builtin" | "plugin" | "runtime" }>,
   result?: { content: Array<{ type: string; text: string }> },
   error?: unknown,
   owner: McpOwner = MCP_OWNER,
@@ -23,7 +23,7 @@ export function makeMcpView(
     manager,
     owner,
     entries: groups.map((group, index) => ({
-      ...group, source: group.pluginId ? "plugin" : "builtin",
+      ...group, source: group.source ?? (group.pluginId ? "plugin" : "builtin"),
       configDigest: "a".repeat(64), generation: index + 1,
     })),
   }

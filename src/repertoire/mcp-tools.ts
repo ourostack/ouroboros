@@ -66,11 +66,15 @@ export function mcpToolsAsDefinitions(view: McpTurnView): ToolDefinition[] {
     })
     return {
       tool: schema,
-      riskProfile: {
-        mutates: "external_side_effect" as const,
-        risk: "high" as const,
-        reason: "MCP tools may mutate external systems",
-      },
+      // A read-only hint is trusted only from the agent's own bundle (agent.json mcpServers),
+      // so an orientation hold still lets the agent inspect through those tools.
+      riskProfile: entry.source === "builtin" && tool.annotations?.readOnlyHint === true
+        ? { mutates: "none" as const, risk: "low" as const, reason: "read-only tool from the agent's own MCP server" }
+        : {
+          mutates: "external_side_effect" as const,
+          risk: "high" as const,
+          reason: "MCP tools may mutate external systems",
+        },
       handler: async (args, ctx): Promise<string> => {
         if (ctx?.agentName !== binding.agentName || ctx.agentRoot !== binding.agentRoot) {
           emitNervesEvent({

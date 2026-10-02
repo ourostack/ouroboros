@@ -10,6 +10,8 @@ export interface McpToolInfo {
   name: string
   description: string
   inputSchema: JsonObject
+  /** MCP tool annotations; only readOnlyHint is used, and only from the agent's own servers. */
+  annotations?: { readOnlyHint?: boolean }
 }
 
 interface PendingRequest {
