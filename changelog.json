@@ -2,6 +2,13 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.850",
+      "changes": [
+        "Delegated A2A commands can now change the steward policy: the admitted owner relationship carries its request id, which the owner gate requires (the live Butler admitted a delegated command on 849 and then refused every policy write).",
+        "ouro a2a message lists --delegated in the top-level usage."
+      ]
+    },
+    {
       "version": "0.1.0-alpha.849",
       "changes": [
         "The Butler can start a Sonarr series or Radarr movie search now (media_search_now) and blocklist-and-research stalled queue items (media_blocklist_stalled) without a Jellyseerr request id.",

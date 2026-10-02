@@ -37,7 +37,7 @@ export interface A2ADelegationOptions {
 export type DelegationRefusal = "not_enabled" | "no_grant" | "not_family" | "principal_unresolved" | "notice_failed"
 
 export type DelegatedCommandAdmission =
-  | { ok: true; relationship: RelationshipAuthorizationEvaluator; context: DelegatedCommandContext; turnText: string }
+  | { ok: true; relationship: RelationshipAuthorizationEvaluator & { readonly requestId: string }; context: DelegatedCommandContext; turnText: string }
   | { ok: false; reason: DelegationRefusal }
 
 const NOTICE_EXCERPT_CHARS = 200
@@ -95,13 +95,19 @@ export async function admitDelegatedCommand(input: {
   } catch {
     return refuse("notice_failed")
   }
-  const relationship = createRelationshipAuthorizationEvaluator({
-    friend: principal,
-    registry,
+  // Owner-gated tools (steward policy) bind the mutation to `requestId` on the tool
+  // context's relationship, as the Telegram owner turn does; the evaluator alone
+  // only scopes its receipts by it, so carry it on the relationship itself.
+  const relationship = {
+    ...createRelationshipAuthorizationEvaluator({
+      friend: principal,
+      registry,
+      requestId: input.commandId,
+      requestPhase: "inbound",
+      sessionEventId: `a2a-delegated:${input.commandId}`,
+    }),
     requestId: input.commandId,
-    requestPhase: "inbound",
-    sessionEventId: `a2a-delegated:${input.commandId}`,
-  })
+  }
   const context: DelegatedCommandContext = {
     principalFriendId: principal.id,
     principalName: principal.name,
