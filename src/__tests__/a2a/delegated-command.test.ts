@@ -12,6 +12,8 @@ import { sendSealedA2AChat } from "../../a2a/client"
 import { loadOrMintA2AIdentityFile, type A2AIdentity } from "../../a2a/identity"
 import { admitDelegatedCommand, delegatedCommandNotice, type A2ADelegationOptions } from "../../a2a/delegated-command"
 import { loadRelationshipCapabilityRegistry } from "../../repertoire/relationship-authorization"
+import { stewardPolicyToolDefinition } from "../../repertoire/tools-steward-policy"
+import { readStewardPolicy } from "../../heart/steward-policy"
 
 let sodium: Sodium
 let tmp: TmpBundleHandle | null = null
@@ -145,6 +147,26 @@ describe("admitDelegatedCommand", () => {
       options: { principalProfileId: "sanctuary-owner", notifyPrincipal: async () => undefined },
     })
     expect(admission).toEqual({ ok: false, reason: "principal_unresolved" })
+  })
+
+  it("lets the admitted relationship itself pass the steward policy owner gate", async () => {
+    // Regression: the live Butler admitted a delegated command, then the steward tool
+    // refused it because the admitted relationship carried no requestId.
+    tmp = createTmpBundle({ agentName: `delegated-steward-${Date.now()}` })
+    fs.writeFileSync(path.join(tmp.agentRoot, "tool-profiles.json"), JSON.stringify(PROFILES))
+    const store = new FileFriendStore(`${tmp.agentRoot}/friends`)
+    await store.put("owner-ari", owner())
+    const admission = await admitDelegatedCommand({
+      friend: owner({ id: "peer", name: "Claude Code", capabilityProfileId: "sanctuary-agent-peer", delegationGrant: GRANT }),
+      did: "did:key:z6MkPeer", text: "Books stays on", commandId: "cmd-books", store, registry: loadRelationshipCapabilityRegistry(tmp.agentRoot),
+      options: { principalProfileId: "sanctuary-owner", notifyPrincipal: async () => undefined },
+    })
+    if (!admission.ok) throw new Error(`not admitted: ${admission.reason}`)
+    expect(admission.relationship.requestId).toBe("cmd-books")
+    const ctx = { signin: async () => undefined, agentRoot: tmp.agentRoot, currentSession: { friendId: "a2a-peer", channel: "a2a", key: "ctx-books" },
+      relationshipAuthorization: admission.relationship, delegatedCommand: admission.context }
+    await stewardPolicyToolDefinition.handler({ action: "set_desired_state", provenance: "stated", key: "container:calibre-web", value: "on", source: "Books stays on" }, ctx as any)
+    expect(readStewardPolicy(tmp.agentRoot).desiredStates["container:calibre-web"]).toMatchObject({ value: "on", source: "Ari via Claude Code (delegated): Books stays on" })
   })
 
   it("refuses a revoked delegate", async () => {

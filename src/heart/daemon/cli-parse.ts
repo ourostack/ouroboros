@@ -166,7 +166,7 @@ export function usage(): string {
     "  ouro a2a onboard [--agent <name>] (--card-url <url>|--did <did:key> --name <name>) [--trust <level>] [--name <name>]",
     "  ouro a2a serve [--agent <name>] [--host <host>] [--port <port>] [--base-url <url>] [--path <path>]",
     "  ouro a2a identity [--identity-file <path>] [--json]",
-    "  ouro a2a message --to <card-url> --text <text> [--context <id>] [--identity-file <path>] [--json]",
+    "  ouro a2a message --to <card-url> --text <text> [--context <id>] [--delegated] [--identity-file <path>] [--json]",
     "  ouro whoami [--agent <name>]",
     "  ouro session list [--agent <name>]",
     "  ouro mcp list",
