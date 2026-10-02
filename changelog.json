@@ -6,7 +6,8 @@
       "changes": [
         "The Butler can start a Sonarr series or Radarr movie search now (media_search_now) and blocklist-and-research stalled queue items (media_blocklist_stalled) without a Jellyseerr request id.",
         "Media title lookup matches partial and misspelled titles across Sonarr, Radarr and Jellyfin, and falls back to the TVDB/TMDB lookup before saying a title is not in the library.",
-        "The Butler's always-loaded psyche now says to answer from primary sources rather than memory, re-read live state, label anything unreachable as unverified, and route missing tools to Claude Code instead of asking Ari to click."
+        "The Butler's always-loaded psyche now says to answer from primary sources rather than memory, re-read live state, label anything unreachable as unverified, and route missing tools to Claude Code instead of asking Ari to click.",
+        "media_blocklist_stalled removes each season pack once, reads the item's whole queue, and reports a failed delete without skipping the re-search; media_search_now no longer searches a lone typo-distance title match."
       ]
     },
     {
