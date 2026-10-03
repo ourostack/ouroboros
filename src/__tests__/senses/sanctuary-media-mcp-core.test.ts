@@ -439,7 +439,7 @@ describe("media MCP — release numbering tools", () => {
   let manual: any[]
   const json = (body: unknown) => ({ ok: true, status: 200, json: async () => body, text: async () => JSON.stringify(body) })
   const episodes = [14472, 14473, 14474, 14475, 14476].map((id, i) => ({ id, seasonNumber: 2, episodeNumber: i + 1, title: ["Milk Bar Bake Sale", "Roy's Italian Cuisine", "Jessica Largey", "Tartine", "Late Night Burger"][i], airDate: "2020-09-24", hasFile: false, monitored: true, ...(i < 4 ? { sceneSeasonNumber: 4, sceneEpisodeNumber: i + 1 } : {}) }))
-  const pack = { guid: "g-s3", indexerId: 5, indexer: "Idx", title: "The Chef Show Season 3 [1080p x265 10bit S85 Joy]", size: 9e9, seeders: 40, age: 100, quality: { quality: { name: "WEBDL-1080p" } },
+  const pack = { guid: "g-s3", indexerId: 5, indexer: "Idx", title: "The Chef Show Season 3 [1080p x265 10bit S85 Joy]", size: 9e9, seeders: 40, age: 100, quality: { quality: { id: 3, name: "WEBDL-1080p" }, revision: { version: 1 } }, languages: [{ id: 1, name: "English" }],
     fullSeason: true, seasonNumber: 3, episodeNumbers: [], mappedEpisodeInfo: [], rejected: true, rejections: ["Unknown Series"], protocol: "torrent" }
   const blocked = { guid: "g-bl", indexerId: 5, title: "The Chef Show S03 1080p NF WEBRip DDP5 1 x264", seeders: 3, fullSeason: true, seasonNumber: 3, rejected: true, rejections: [{ reason: "Release is blocklisted" }],
     mappedEpisodeInfo: [{ id: 1, seasonNumber: 1, episodeNumber: 1, title: "Wrong" }] }
@@ -519,8 +519,30 @@ describe("media MCP — release numbering tools", () => {
     const out = await mod.mediaReleaseGrab({ kind: "series", guid: "g-s3", indexer_id: 5, series_id: 191, episode_ids: [14472, 14473, 14474, 14475, 14476], download_client_id: 2 })
     const post = calls.find((c) => c.method === "POST")!
     expect(post.url).toBe("http://sonarr/api/v3/release")
-    expect(post.body).toEqual({ guid: "g-s3", indexerId: 5, seriesId: 191, episodeIds: [14472, 14473, 14474, 14475, 14476], shouldOverride: true, downloadClientId: 2 })
+    // Sonarr v4 throws ArgumentNullException (HTTP 500) on an override without quality and languages.
+    expect(post.body).toEqual({ guid: "g-s3", indexerId: 5, seriesId: 191, episodeIds: [14472, 14473, 14474, 14475, 14476], shouldOverride: true,
+      quality: pack.quality, languages: pack.languages, downloadClientId: 2 })
     expect(out).toMatchObject({ result: "grabbed", response: { approved: true, download_id: "DL1" } })
+  })
+
+  it("refuses an override when the search did not report the release's quality", async () => {
+    await mod.mediaReleaseSearch({ kind: "series", service_id: 191, season_number: 2 })
+    expect(await mod.mediaReleaseGrab({ kind: "series", guid: "g-bl", indexer_id: 5, series_id: 191, episode_ids: [14472] })).toMatchObject({ result: "release_quality_unknown" })
+    expect(calls.some((c) => c.method === "POST")).toBe(false)
+  })
+
+  it("sends an empty language list when the search reported none", async () => {
+    const bare = { ...pack, guid: "g-bare", languages: undefined }
+    vi.stubGlobal("fetch", async (url: string, init: any = {}) => {
+      const method = init.method ?? "GET"
+      calls.push({ method, url, body: init.body ? JSON.parse(init.body) : undefined })
+      if (url.includes("/api/v3/episode")) return json(episodes)
+      if (method === "GET") return json([bare])
+      return json({ approved: true, rejected: false, rejections: [], downloadId: "DL2" })
+    })
+    await mod.mediaReleaseSearch({ kind: "series", service_id: 191, season_number: 2 })
+    await mod.mediaReleaseGrab({ kind: "series", guid: "g-bare", indexer_id: 5, series_id: 191, episode_ids: [14472] })
+    expect(calls.find((c) => c.method === "POST")!.body).toMatchObject({ quality: pack.quality, languages: [] })
   })
 
   it("refuses a mismatched season pack without episode_ids, and a foreign episode id", async () => {
