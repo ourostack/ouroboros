@@ -1012,7 +1012,10 @@ export async function mediaReleaseSearch(a) {
     raw = await sonarr("/release", { query: { seriesId: serviceId, seasonNumber: a.season_number }, timeoutMs: SEARCH_TIMEOUT_MS })
   } else return { result: "season_number_or_episode_ids_required" }
   const seen = new Set()
-  let rows = (Array.isArray(raw) ? raw : []).filter((r) => (seen.has(r.guid) ? false : seen.add(r.guid))).map((r) => releaseRow(a.kind, r))
+  const unique = (Array.isArray(raw) ? raw : []).filter((r) => (seen.has(r.guid) ? false : seen.add(r.guid)))
+  // Sonarr's override grab needs the release's own quality and languages objects back.
+  const rawByGuid = new Map(unique.map((r) => [r.guid, r]))
+  let rows = unique.map((r) => releaseRow(a.kind, r))
   const total = rows.length
   if (a.query) {
     const q = String(a.query).toLowerCase()
@@ -1020,7 +1023,11 @@ export async function mediaReleaseSearch(a) {
   }
   rows.sort((x, y) => Number(y.seeders ?? 0) - Number(x.seeders ?? 0))
   const limit = Math.min(Math.max(Number(a.limit) || 40, 1), 100)
-  for (const r of rows) cacheRelease(`${a.kind}:${r.guid}`, { ...r, service_id: serviceId, season_number: a.season_number ?? null })
+  for (const r of rows) {
+    const source = rawByGuid.get(r.guid)
+    cacheRelease(`${a.kind}:${r.guid}`, { ...r, service_id: serviceId, season_number: a.season_number ?? null,
+      quality_raw: source?.quality ?? null, languages_raw: source?.languages ?? null })
+  }
   return { kind: a.kind, service_id: serviceId, total_found: total, matched: rows.length, releases: rows.slice(0, limit) }
 }
 
@@ -1049,7 +1056,10 @@ export async function mediaReleaseGrab(a) {
       const own = new Set((await seriesEpisodes(seriesId)).map((e) => e.id))
       const foreign = a.episode_ids.filter((id) => !own.has(id))
       if (foreign.length) return { result: "episode_id_not_for_series", foreign_episode_ids: foreign }
-      Object.assign(body, { seriesId, episodeIds: a.episode_ids.map(Number), shouldOverride: true })
+      // Sonarr v4 refuses an override without quality and languages (ArgumentNullException, HTTP 500).
+      if (!cached.quality_raw) return { result: "release_quality_unknown", message: "Sonarr's search did not report this release's quality; search again." }
+      Object.assign(body, { seriesId, episodeIds: a.episode_ids.map(Number), shouldOverride: true,
+        quality: cached.quality_raw, languages: Array.isArray(cached.languages_raw) ? cached.languages_raw : [] })
       if (a.download_client_id !== undefined && a.download_client_id !== null) body.downloadClientId = Number(a.download_client_id)
     }
   }
