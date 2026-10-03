@@ -63,7 +63,9 @@ async function req(base, path, { key, header = "X-Api-Key", method = "GET", body
     throw new ServiceError(`${serviceOf(base)}_http_${res.status}`, `${serviceOf(base)} returned ${res.status}${text ? `: ${text.slice(0, 200)}` : ""}`)
   }
   if (res.status === 204) return null
-  return res.json()
+  // Sonarr/Radarr answer some DELETEs with 200 and an empty body; that is success, not a parse failure.
+  const raw = await res.text()
+  return raw.trim() ? JSON.parse(raw) : null
 }
 
 function serviceOf(base) {
@@ -1135,9 +1137,10 @@ export async function mediaManualImport(a) {
 
 // ------------------------------------------------------------------- schema
 
-const TOOLS = [
+export const TOOLS = [
   {
     name: "media_search",
+    annotations: { readOnlyHint: true },
     description: "Search or browse the household media catalogue. Use `query` for a title lookup: partial and misspelled titles are matched against the library first (Sonarr, Radarr, Jellyfin) and returned as `library_matches` with their kind and service id, and when nothing in the library matches, `lookup_candidates` (TVDB/TMDB) cover titles not in the library. Never say a title does not exist without reading both; use `genres`/`keywords`/`year_range` to browse by vibe (e.g. keywords ['autumn','thanksgiving'] for cozy fall films). `on_shelf: true` restricts to what is already downloaded, `false` to what is not, omit for both. Every item says whether it is on the shelf and carries its tmdb_id so a follow-up media_request needs no second lookup.",
     inputSchema: { type: "object", properties: {
       query: { type: "string", description: "Title or free text. Omit to browse by filters." },
@@ -1163,6 +1166,7 @@ const TOOLS = [
   },
   {
     name: "media_request_status",
+    annotations: { readOnlyHint: true },
     description: "One call, every stage: request, indexer search, download, file on disk, plus acquisition-chain health and a deterministic `diagnosis` block naming what is stuck, why, and the fix. Use this for any 'is it here yet?' or 'why hasn't X downloaded?' question. A queue row is not proof of progress: a release sitting at zero bytes comes back as stalled, not as downloading. Never infer the cause yourself — read diagnosis.summary.",
     inputSchema: { type: "object", properties: {
       request_id: { type: "string", description: "e.g. jellyseerr:42" },
@@ -1181,6 +1185,7 @@ const TOOLS = [
   },
   {
     name: "media_chain_health",
+    annotations: { readOnlyHint: true },
     description: "Health of the whole acquisition chain: Prowlarr indexers, their failure state, and whether Prowlarr is syncing to Sonarr/Radarr. Call this when several things are stuck at once, or before telling anyone a specific title is the problem — a dead chain blocks everything and is the single most likely cause.",
     inputSchema: { type: "object", properties: {} },
   },
@@ -1213,6 +1218,7 @@ const TOOLS = [
   },
   {
     name: "media_episodes",
+    annotations: { readOnlyHint: true },
     description: "List a Sonarr series' episodes (optionally one season): episode_id, SxxEyy code, scene_code (the numbering release names use, when Sonarr has a mapping), title, air date, has_file. Use it to see what the TVDB numbering calls each episode before searching for releases by hand.",
     inputSchema: { type: "object", properties: {
       service_id: { type: "number", description: "Sonarr series id." },
@@ -1221,6 +1227,7 @@ const TOOLS = [
   },
   {
     name: "media_indexer_search",
+    annotations: { readOnlyHint: true },
     description: "Free-text search across every indexer (Prowlarr), sorted by seeders. Discovery only, it grabs nothing. Use it when Sonarr/Radarr's own search finds nothing: try the scene code from media_episodes, 'Season N', the year, or an episode title, to learn whether any release exists and how it is named. Zero seeders means it cannot download right now.",
     inputSchema: { type: "object", properties: {
       query: { type: "string" },
@@ -1229,6 +1236,7 @@ const TOOLS = [
   },
   {
     name: "media_release_search",
+    annotations: { readOnlyHint: true },
     description: "Interactive release search for a series or movie already in the library: what the indexers offer and how Sonarr/Radarr parsed each release (full_season, parsed_season, parsed_episodes, mapped_episodes), whether it is rejected and why, and whether it is blocklisted. Series: give season_number or episode_ids. Can take a minute or more. `query` filters returned titles. Use it when the automatic search found nothing, then grab with media_release_grab.",
     inputSchema: { type: "object", properties: {
       kind: { type: "string", enum: ["series", "movie"] },
