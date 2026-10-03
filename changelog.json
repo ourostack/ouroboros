@@ -2,6 +2,12 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.853",
+      "changes": [
+        "The Butler's override grab sends the release's quality and languages, which Sonarr v4 requires (it returned HTTP 500 without them)"
+      ]
+    },
+    {
       "version": "0.1.0-alpha.852",
       "changes": [
         "An orientation hold no longer blocks read-only tools from the agent's own MCP servers (readOnlyHint); the Butler's media lookups are marked read-only. The media tools treat a 200 with an empty body as success, so clearing a stuck download goes on to re-search"
