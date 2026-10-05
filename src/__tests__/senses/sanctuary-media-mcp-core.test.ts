@@ -1,6 +1,6 @@
-import { mkdtempSync, writeFileSync } from "node:fs"
+import { mkdtempSync, readdirSync, readFileSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
-import { join } from "node:path"
+import { dirname, join } from "node:path"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 
 // The media MCP is a hand-written standalone .mjs deployed into the bundle as-is;
@@ -158,6 +158,7 @@ describe("media MCP — search_now and blocklist_stalled", () => {
       jellyfin: { url: "http://jellyfin", apiKey: "jk" },
     }))
     process.env.SANCTUARY_MEDIA_CREDENTIALS = credPath
+    process.env.SANCTUARY_MEDIA_STATE = join(dir, "state", "download-progress.json")
     vi.stubGlobal("fetch", async (url: string, init: any = {}) => {
       const method = init.method ?? "GET"
       calls.push({ method, url, body: init.body ? JSON.parse(init.body) : undefined })
@@ -183,7 +184,7 @@ describe("media MCP — search_now and blocklist_stalled", () => {
     vi.resetModules()
     mod = await import("../../../deploy/unraid/sanctuary.ouro/mcp/media-mcp.mjs")
   })
-  afterEach(() => { vi.unstubAllGlobals(); delete process.env.SANCTUARY_MEDIA_CREDENTIALS })
+  afterEach(() => { vi.unstubAllGlobals(); delete process.env.SANCTUARY_MEDIA_CREDENTIALS; delete process.env.SANCTUARY_MEDIA_STATE })
 
   const commands = () => calls.filter((c) => c.url.includes("/command"))
   const deletes = () => calls.filter((c) => c.method === "DELETE")
@@ -272,6 +273,144 @@ describe("media MCP — search_now and blocklist_stalled", () => {
     expect(out.command).toBeNull()
     expect(deletes()).toHaveLength(1)
     expect(commands()).toHaveLength(0)
+  })
+
+  // Live 2026-10-05: "yes please get them" deleted the only copy of The Chef Show S2, a 75.9% pack
+  // stalled for two days with no ETA, after one observation in a process that had since restarted.
+  const chefPack = (extra: Record<string, unknown> = {}) => stalledRow(477226420, { downloadId: "743E", title: "The Chef Show [Season 2] (2020)", size: 5914587502, sizeleft: 1426063360, timeleft: "00:00:00", added: hoursAgo(Date.now(), 55), ...extra })
+
+  it("keeps a partial download whose stall is not confirmed, even when named", async () => {
+    queues.sonarr = [chefPack()]
+    const out = await mod.mediaBlocklistStalled({ kind: "series", service_id: 7, queue_ids: [477226420], research: true })
+    expect(out.result).toBe("kept_downloads")
+    expect(out.kept).toEqual([{ queue_id: 477226420, title: "The Chef Show [Season 2] (2020)", percent: 75.9, reason: "stall_unconfirmed" }])
+    expect(out.message).toContain("media_fill_missing")
+    expect(out.message).toContain("30 minutes")
+    expect(deletes()).toHaveLength(0)
+    expect(commands()).toHaveLength(0)
+  })
+
+  it("keeps a named download that is still moving, however old", async () => {
+    queues.sonarr = [chefPack({ timeleft: "01:10:00", added: hoursAgo(Date.now(), 24 * 10) })]
+    const out = await mod.mediaBlocklistStalled({ kind: "series", service_id: 7, queue_ids: [477226420] })
+    expect(out.kept[0].reason).toBe("still_downloading")
+    expect(deletes()).toHaveLength(0)
+  })
+
+  it("does not treat age alone as death for a partial download", async () => {
+    // Past the 72 h stuck window with no ETA, but never observed: kept until a second sighting.
+    queues.sonarr = [chefPack({ added: hoursAgo(Date.now(), 24 * 5) })]
+    expect(mod.isStalledRow(queues.sonarr[0], Date.now())).toBe(true)
+    expect((await mod.mediaBlocklistStalled({ kind: "series", service_id: 7 })).result).toBe("kept_downloads")
+    expect(deletes()).toHaveLength(0)
+  })
+
+  it("names a fresh zero-byte grab as not started yet and removes a failed one", () => {
+    const now = Date.now()
+    expect(mod.removalVerdict(stalledRow(1, { added: hoursAgo(now, 1) }), now, undefined)).toBe("not_started_yet")
+    expect(mod.removalVerdict(stalledRow(1, { sizeleft: GB, status: "failed" }), now, undefined)).toBe("dead")
+    expect(mod.removalVerdict({ id: 2, sizeleft: 5, status: "downloading", timeleft: null }, now, { sizeleft: 5, at: now - 31 * 60_000 })).toBe("dead")
+    expect(mod.removalVerdict({ id: 2, sizeleft: 5, status: "downloading" }, now, { sizeleft: 6, at: now - 31 * 60_000 })).toBe("stall_unconfirmed")
+  })
+
+  it("removes named downloads on the owner's own words and echoes them", async () => {
+    queues.sonarr = [chefPack()]
+    const out = await mod.mediaBlocklistStalled({ kind: "series", service_id: 7, queue_ids: [477226420], owner_words: " clear the stuck chef download ", research: false })
+    expect(out.removed).toEqual([477226420])
+    expect(out.removed_on_owner_words).toBe("clear the stuck chef download")
+    expect(out.kept).toBeUndefined()
+    expect(deletes()).toHaveLength(1)
+  })
+
+  it("refuses owner words without named queue ids", async () => {
+    queues.sonarr = [chefPack()]
+    const out = await mod.mediaBlocklistStalled({ kind: "series", service_id: 7, owner_words: "clear everything" })
+    expect(out.result).toBe("owner_words_need_queue_ids")
+    expect(deletes()).toHaveLength(0)
+  })
+
+  it("confirms a stall across a restart from the persisted observation, then removes it", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] })
+    try {
+      queues.sonarr = [chefPack()]
+      expect((await mod.mediaBlocklistStalled({ kind: "series", service_id: 7, queue_ids: [477226420] })).result).toBe("kept_downloads")
+      vi.setSystemTime(Date.now() + 31 * 60_000)
+      vi.resetModules()
+      mod = await import("../../../deploy/unraid/sanctuary.ouro/mcp/media-mcp.mjs")
+      const out = await mod.mediaBlocklistStalled({ kind: "series", service_id: 7, queue_ids: [477226420], research: false })
+      expect(out.removed).toEqual([477226420])
+    } finally { vi.useRealTimers() }
+  })
+
+  it("restarts confirmation when progress was made or the sightings are hours apart", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] })
+    try {
+      queues.sonarr = [chefPack()]
+      await mod.mediaBlocklistStalled({ kind: "series", service_id: 7, queue_ids: [477226420] })
+      vi.setSystemTime(Date.now() + 7 * 3_600_000)
+      expect((await mod.mediaBlocklistStalled({ kind: "series", service_id: 7, queue_ids: [477226420] })).result).toBe("kept_downloads")
+      vi.setSystemTime(Date.now() + 31 * 60_000)
+      queues.sonarr = [chefPack({ sizeleft: 1_000_000_000 })]
+      expect((await mod.mediaBlocklistStalled({ kind: "series", service_id: 7, queue_ids: [477226420] })).result).toBe("kept_downloads")
+      vi.setSystemTime(Date.now() + 31 * 60_000)
+      expect((await mod.mediaBlocklistStalled({ kind: "series", service_id: 7, queue_ids: [477226420], research: false })).removed).toEqual([477226420])
+    } finally { vi.useRealTimers() }
+  })
+
+  it("keeps movie and id-only rows apart from series rows with the same id", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] })
+    try {
+      const partial = (extra: Record<string, unknown> = {}) => stalledRow(6, { downloadId: undefined, sizeleft: GB, added: hoursAgo(Date.now(), 30), ...extra })
+      queues.radarr = [partial()]
+      queues.sonarr = [partial()]
+      expect((await mod.mediaBlocklistStalled({ kind: "movie", service_id: 3, queue_ids: [6] })).result).toBe("kept_downloads")
+      vi.setSystemTime(Date.now() + 31 * 60_000)
+      expect((await mod.mediaBlocklistStalled({ kind: "series", service_id: 7, queue_ids: [6] })).result).toBe("kept_downloads")
+      expect((await mod.mediaBlocklistStalled({ kind: "movie", service_id: 3, queue_ids: [6], research: false })).removed).toEqual([6])
+      expect(mod.progressKey({ id: 6 }, "movie")).toBe("MOVIE:ROW:6")
+      expect(mod.progressKey({ id: 6, downloadId: "ab" })).toBe("SERIES:AB")
+    } finally { vi.useRealTimers() }
+  })
+
+  it("removes confirmed rows and reports the kept ones in the same call", async () => {
+    queues.sonarr = [stalledRow(1), chefPack()]
+    const out = await mod.mediaBlocklistStalled({ kind: "series", service_id: 7, queue_ids: [1, 477226420], research: false })
+    expect(out.removed).toEqual([1])
+    expect(out.kept).toHaveLength(1)
+  })
+
+  it("merges observations another process saved and never leaves a temp file behind", async () => {
+    const statePath = process.env.SANCTUARY_MEDIA_STATE as string
+    queues.sonarr = [chefPack()]
+    await mod.mediaBlocklistStalled({ kind: "series", service_id: 7, queue_ids: [477226420] })
+    const other = { "SERIES:OTHER": { sizeleft: 1, at: Date.now(), seen: Date.now() }, "SERIES:OLD": { sizeleft: 1, at: 1, seen: 1 } }
+    writeFileSync(statePath, JSON.stringify({ ...JSON.parse(readFileSync(statePath, "utf8")), ...other }))
+    await mod.mediaBlocklistStalled({ kind: "series", service_id: 7, queue_ids: [477226420] })
+    const saved = JSON.parse(readFileSync(statePath, "utf8"))
+    expect(Object.keys(saved).sort()).toEqual(["SERIES:743E", "SERIES:OTHER"])
+    expect(readdirSync(dirname(statePath))).toEqual(["download-progress.json"])
+  })
+
+  it("starts empty from an unreadable, malformed or truncated progress file and survives an unwritable one", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "media-state-"))
+    const bad = join(dir, "bad.json")
+    writeFileSync(bad, JSON.stringify({ "SERIES:743E": { sizeleft: "x", at: 1 }, OTHER: null }))
+    process.env.SANCTUARY_MEDIA_STATE = bad
+    vi.resetModules()
+    mod = await import("../../../deploy/unraid/sanctuary.ouro/mcp/media-mcp.mjs")
+    queues.sonarr = [chefPack()]
+    expect((await mod.mediaBlocklistStalled({ kind: "series", service_id: 7, queue_ids: [477226420] })).result).toBe("kept_downloads")
+    writeFileSync(bad, "{\"SERIES:743E\": {\"sizel")
+    vi.resetModules()
+    mod = await import("../../../deploy/unraid/sanctuary.ouro/mcp/media-mcp.mjs")
+    expect((await mod.mediaBlocklistStalled({ kind: "series", service_id: 7, queue_ids: [477226420] })).result).toBe("kept_downloads")
+    const stderr = vi.spyOn(process.stderr, "write").mockImplementation(() => true)
+    process.env.SANCTUARY_MEDIA_STATE = join(bad, "under-a-file.json")
+    vi.resetModules()
+    mod = await import("../../../deploy/unraid/sanctuary.ouro/mcp/media-mcp.mjs")
+    expect((await mod.mediaBlocklistStalled({ kind: "series", service_id: 7, queue_ids: [477226420] })).result).toBe("kept_downloads")
+    expect(String(stderr.mock.calls[0]?.[0])).toContain("download progress not saved")
+    stderr.mockRestore()
   })
 
   it("refuses a queue id that belongs to another item", async () => {
@@ -452,6 +591,7 @@ describe("media MCP — release numbering tools", () => {
     const credPath = join(dir, "c.json")
     writeFileSync(credPath, JSON.stringify({ jellyseerr: { url: "http://seerr", apiKey: "k" }, sonarr: { url: "http://sonarr", apiKey: "k" }, radarr: { url: "http://radarr", apiKey: "k" }, prowlarr: { url: "http://prowlarr", apiKey: "k" } }))
     process.env.SANCTUARY_MEDIA_CREDENTIALS = credPath
+    process.env.SANCTUARY_MEDIA_STATE = join(dir, "state", "download-progress.json")
     vi.stubGlobal("fetch", async (url: string, init: any = {}) => {
       const method = init.method ?? "GET"
       calls.push({ method, url, body: init.body ? JSON.parse(init.body) : undefined })
@@ -473,7 +613,7 @@ describe("media MCP — release numbering tools", () => {
     vi.resetModules()
     mod = await import("../../../deploy/unraid/sanctuary.ouro/mcp/media-mcp.mjs")
   })
-  afterEach(() => { vi.unstubAllGlobals(); delete process.env.SANCTUARY_MEDIA_CREDENTIALS })
+  afterEach(() => { vi.unstubAllGlobals(); delete process.env.SANCTUARY_MEDIA_CREDENTIALS; delete process.env.SANCTUARY_MEDIA_STATE })
 
   it("media_episodes lists a season with ids and codes", async () => {
     const out = await mod.mediaEpisodes({ service_id: 191, season_number: 2 })
@@ -655,6 +795,7 @@ describe("media MCP — media_fill_missing", () => {
   let commands: any[]
   let mod: any
   let fail: ((method: string, url: string) => boolean) | null
+  let blocklist: any[]
 
   const rel = (guid: string, title: string, seeders: number, over: Record<string, unknown> = {}) => ({ guid, indexerId: 5, indexer: "Lime", title, size: 5e9, seeders, quality: q, languages: langs, rejections: [], mappedEpisodeInfo: [], ...over })
   const mappedHave = [9, 10, 11, 12, 13, 14].map((n) => ({ id: 14451 + n, seasonNumber: 1, episodeNumber: n }))
@@ -675,6 +816,7 @@ describe("media MCP — media_fill_missing", () => {
     queue = []
     history = []
     manual = []
+    blocklist = []
     prowlarrRows = [{ title: "Vegas Chef Prizefight S01E03", seeders: 13, indexer: "Lime" }, { title: "The Chef Show [Season 2] (2020) [WEB DL 1080p]", seeders: 0, indexer: "LimeTorrents" }, { title: "The Chef Show S02 1080p WEB X264 STARZ", seeders: 3, indexer: "Lime" }]
     releases = {
       "seasonNumber=2": [
@@ -690,6 +832,7 @@ describe("media MCP — media_fill_missing", () => {
     const credPath = join(dir, "c.json")
     writeFileSync(credPath, JSON.stringify({ jellyseerr: { url: "http://seerr", apiKey: "k" }, sonarr: { url: "http://sonarr", apiKey: "k" }, radarr: { url: "http://radarr", apiKey: "k" }, prowlarr: { url: "http://prowlarr", apiKey: "k" } }))
     process.env.SANCTUARY_MEDIA_CREDENTIALS = credPath
+    process.env.SANCTUARY_MEDIA_STATE = join(dir, "state", "download-progress.json")
     vi.stubGlobal("fetch", async (url: string, init: any = {}) => {
       const method = init.method ?? "GET"
       const body = init.body ? JSON.parse(init.body) : undefined
@@ -705,6 +848,8 @@ describe("media MCP — media_fill_missing", () => {
       if (url.startsWith("http://sonarr/api/v3/queue/") && method === "DELETE") { const id = Number(url.split("/queue/")[1].split("?")[0]); queue = queue.filter((r) => r.downloadId !== queue.find((x) => x.id === id)?.downloadId); return json({}) }
       if (url.startsWith("http://sonarr/api/v3/queue")) return json({ records: queue, totalRecords: queue.length })
       if (url.startsWith("http://sonarr/api/v3/history/series")) return json(history)
+      if (url.startsWith("http://sonarr/api/v3/blocklist/bulk") && method === "DELETE") { blocklist = blocklist.filter((b) => !body.ids.includes(b.id)); return json({}) }
+      if (url.startsWith("http://sonarr/api/v3/blocklist")) return json({ records: blocklist, totalRecords: blocklist.length })
       if (url.startsWith("http://sonarr/api/v3/release") && method === "GET") {
         const key = Object.keys(releases).find((k) => query.includes(k))
         return json(key ? releases[key] : [])
@@ -719,7 +864,114 @@ describe("media MCP — media_fill_missing", () => {
     vi.resetModules()
     mod = await import("../../../deploy/unraid/sanctuary.ouro/mcp/media-mcp.mjs")
   })
-  afterEach(() => { vi.unstubAllGlobals(); delete process.env.SANCTUARY_MEDIA_CREDENTIALS })
+  afterEach(() => { vi.unstubAllGlobals(); delete process.env.SANCTUARY_MEDIA_CREDENTIALS; delete process.env.SANCTUARY_MEDIA_STATE })
+
+  // Live 2026-10-05: the only copy of the 2020 pack was deleted and blocklisted by mistake.
+  const blockThePack = () => {
+    releases["seasonNumber=2"] = releases["seasonNumber=2"].map((r: any) => (r.guid === "g-2020" ? { ...r, seeders: 0, rejections: [{ reason: "Release is blocklisted" }] } : r))
+    blocklist = [{ id: 77, seriesId: 191, sourceTitle: "The Chef Show [Season 2] (2020) [WEB-DL 1080p]", episodeIds: [14472, 14473, 14474, 14475, 14476] }, { id: 78, seriesId: 191, sourceTitle: "The Chef Show S02E05 1080p HEVC x265 MeGusta" }]
+  }
+  const s2 = ["S02E01", "S02E02", "S02E03", "S02E04", "S02E05"]
+
+  it("reports a matching release that is only blocklisted, and leaves it alone without the owner's words", async () => {
+    blockThePack()
+    const out = await mod.mediaFillMissing({ series: "chef show", season_number: 2 }, { nowMs: now })
+    expect(out.blocklisted_matches).toEqual([{ title: "The Chef Show [Season 2] (2020) [WEB DL 1080p]", seeders: 0, episodes: s2, blocklist_ids: [77] }])
+    expect(out.summary).toContain("only matching release is on the blocklist")
+    expect(out.next_step).toContain("retry_blocklisted")
+    expect(out.actions).toEqual([])
+    expect(calls.filter((c) => c.method !== "GET")).toEqual([])
+  })
+
+  it("takes the release off the blocklist on the owner's words and grabs it to wait for peers", async () => {
+    blockThePack()
+    const out = await mod.mediaFillMissing({ series: "chef show", season_number: 2, retry_blocklisted: " yes please get them " }, { nowMs: now })
+    expect(calls.find((c) => c.method === "DELETE")).toMatchObject({ url: "http://sonarr/api/v3/blocklist/bulk", body: { ids: [77] } })
+    expect(calls.findIndex((c) => c.method === "POST")).toBeLessThan(calls.findIndex((c) => c.method === "DELETE"))
+    expect(out.actions[0]).toEqual({ action: "removed_from_blocklist", title: "The Chef Show [Season 2] (2020) [WEB DL 1080p]", owner_words: "yes please get them" })
+    expect(out.actions[1]).toMatchObject({ action: "grabbed", title: "The Chef Show [Season 2] (2020) [WEB DL 1080p]", episodes: s2, may_never_finish: true })
+    expect(calls.find((c) => c.method === "POST" && c.url.includes("/release"))?.body).toMatchObject({ guid: "g-2020", episodeIds: [14472, 14473, 14474, 14475, 14476] })
+    expect(out.blocklisted_matches).toBeUndefined()
+    expect(blocklist.map((b) => b.id)).toEqual([78])
+    expect(out.summary).toContain("no seeders: it waits for peers and may never finish")
+    expect(out.next_step).toContain("await_condition")
+  })
+
+  it("keeps reporting a blocklisted match it cannot find on the blocklist, or when lifting fails", async () => {
+    blockThePack()
+    blocklist = []
+    const out = await mod.mediaFillMissing({ series: "chef show", season_number: 2, retry_blocklisted: "yes" }, { nowMs: now })
+    expect(out.blocklisted_matches[0].blocklist_ids).toEqual([])
+    expect(calls.filter((c) => c.method !== "GET")).toEqual([])
+    blockThePack()
+    calls.length = 0
+    // Sonarr refuses the grab and the lift fails too: nothing grabbed, the entry stays and is reported.
+    fail = (method, url) => (method === "DELETE" && url.includes("/blocklist")) || (method === "POST" && url.includes("/release"))
+    const failed = await mod.mediaFillMissing({ series: "chef show", season_number: 2, retry_blocklisted: "yes" }, { nowMs: now })
+    expect(failed.blocklisted_matches[0].blocklist_ids).toEqual([77])
+    expect(failed.errors.map((e: any) => e.step)).toContain("remove from blocklist")
+    expect(failed.actions).toEqual([])
+    expect(failed.next_step).toContain("could not take the blocklisted release back")
+  })
+
+  it("records a grab that worked even when lifting its entry afterwards fails", async () => {
+    blockThePack()
+    fail = (method, url) => method === "DELETE" && url.includes("/blocklist")
+    const out = await mod.mediaFillMissing({ series: "chef show", season_number: 2, retry_blocklisted: "yes" }, { nowMs: now })
+    expect(out.actions.map((x: any) => x.action)).toEqual(["grabbed"])
+    expect(out.blocklisted_matches).toBeUndefined()
+  })
+
+  it("lifts the entry and retries once when Sonarr refuses the blocklisted grab", async () => {
+    blockThePack()
+    let refused = 0
+    fail = (method, url) => method === "POST" && url.includes("/release") && refused++ === 0
+    const out = await mod.mediaFillMissing({ series: "chef show", season_number: 2, retry_blocklisted: "yes" }, { nowMs: now })
+    expect(out.actions.map((x: any) => x.action)).toEqual(["removed_from_blocklist", "grabbed"])
+    expect(calls.filter((c) => c.method === "POST")).toHaveLength(2)
+    expect(out.errors).toBeUndefined()
+  })
+
+  it("leaves a blocklisted release on the blocklist when its episodes are held by a stalled download", async () => {
+    blockThePack()
+    releases["seasonNumber=2"] = releases["seasonNumber=2"].map((r: any) => (r.guid === "g-2020" ? { ...r, title: "The Chef Show [Season 2] (2020) [WEB DL 720p]" } : r))
+    blocklist[0].sourceTitle = "The Chef Show [Season 2] (2020) [WEB DL 720p]"
+    queue = [14472, 14473, 14474, 14475, 14476].map((ep, i) => packRow(900 + i, ep))
+    const out = await mod.mediaFillMissing({ series: "chef show", season_number: 2, retry_blocklisted: "yes" }, { nowMs: now })
+    expect(calls.filter((c) => c.method === "DELETE" || c.method === "POST")).toEqual([])
+    expect(out.blocklisted_matches[0].blocklist_ids).toEqual([77])
+  })
+
+  it("treats whitespace-only owner words as none", async () => {
+    blockThePack()
+    const out = await mod.mediaFillMissing({ series: "chef show", season_number: 2, retry_blocklisted: "   " }, { nowMs: now })
+    expect(out.actions).toEqual([])
+    expect(out.next_step).toContain("retry_blocklisted")
+  })
+
+  it("does not offer a blocklisted release when another release covers the same episodes", async () => {
+    blockThePack()
+    releases["seasonNumber=2"].push(rel("g-alt", "The Chef Show [Season 2] (2020) [WEB DL 720p]", 6, { fullSeason: true, seasonNumber: 2 }))
+    const out = await mod.mediaFillMissing({ series: "chef show", season_number: 2 }, { nowMs: now })
+    expect(out.blocklisted_matches).toBeUndefined()
+    expect(out.actions[0]).toMatchObject({ action: "grabbed", title: "The Chef Show [Season 2] (2020) [WEB DL 720p]" })
+  })
+
+  it("matches an other-series blocklisted release as other_series", () => {
+    expect(mod.matchReleaseToEpisodes({ title: "Vegas Chef Prizefight S01E03", rejections: ["Release is blocklisted"] }, { seriesId: 191, seriesTitle: "The Chef Show", seriesYear: 2019, wanted: [], have: [] })).toEqual({ reject: "other_series" })
+  })
+
+  it("shares stall observations with media_blocklist_stalled, so a stall fill saw can be confirmed by the guard", async () => {
+    queue = [14472, 14473].map((ep, i) => packRow(900 + i, ep))
+    const first = await mod.mediaFillMissing({ series: "chef show", season_number: 2 }, { nowMs: now })
+    expect(first.in_flight[0]).toMatchObject({ state: "stalled", stall_confirmed: false })
+    vi.useFakeTimers({ toFake: ["Date"] })
+    try {
+      vi.setSystemTime(now + 31 * 60_000)
+      const out = await mod.mediaBlocklistStalled({ kind: "series", service_id: 191, queue_ids: [900], research: false })
+      expect(out.removed).toEqual([900])
+    } finally { vi.useRealTimers() }
+  })
 
   it("matches the 2020 season pack by season and air year, skips packs of episodes we have, and grabs it with the right mapping", async () => {
     const out = await mod.mediaFillMissing({ series: "chef show" }, { nowMs: now })
@@ -988,7 +1240,7 @@ describe("media MCP — media_fill_missing", () => {
 
   it("closes every schema and refuses invented parameters by name", () => {
     for (const t of mod.TOOLS) expect(t.inputSchema.additionalProperties).toBe(false)
-    expect(mod.unknownArguments("media_fill_missing", { series: "x", dry_run: true })).toMatchObject({ error: "unknown_parameter", unknown: ["dry_run"], allowed: ["series", "service_id", "season_number"] })
+    expect(mod.unknownArguments("media_fill_missing", { series: "x", dry_run: true })).toMatchObject({ error: "unknown_parameter", unknown: ["dry_run"], allowed: ["series", "service_id", "season_number", "retry_blocklisted"] })
     expect(mod.unknownArguments("media_fill_missing", { series: "x" })).toBeNull()
     expect(mod.unknownArguments("media_chain_health", { x: 1 }).message).toContain("no parameters")
     expect(mod.TOOLS.find((t: any) => t.name === "media_fill_missing")._meta).toEqual({ "ouro.bot/timeoutMs": 240_000 })

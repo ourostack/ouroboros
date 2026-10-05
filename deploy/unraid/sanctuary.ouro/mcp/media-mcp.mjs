@@ -9,7 +9,8 @@
 //
 // Protocol: JSON-RPC 2.0 over stdio, newline framed, MCP 2024-11-05.
 
-import { readFileSync } from "node:fs"
+import { mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs"
+import { dirname } from "node:path"
 import { pathToFileURL } from "node:url"
 
 const CRED_PATH = process.env.SANCTUARY_MEDIA_CREDENTIALS ?? "/home/ouro/AgentBundles/sanctuary.ouro/mcp/media-credentials.json"
@@ -877,6 +878,20 @@ export async function mediaSearchNow(a) {
   return { kind: a.kind, service_id: item.id, title: item.title, command, queue: queueReport(await itemQueue(a.kind, item.id)) }
 }
 
+// Whether a download may be removed without the owner naming it. A download that has never
+// started is dead once past the stall window. A partial one is dead only when observed with no
+// ETA and no progress across 30 minutes: age alone is not enough (a 75.9% pack with no seeders
+// today can finish when one returns), and anything with an ETA is still moving.
+const hasEta = (row) => row.timeleft !== undefined && row.timeleft !== null && row.timeleft !== "00:00:00"
+export function removalVerdict(row, nowMs, previous) {
+  if (hasEta(row)) return "still_downloading"
+  const left = row.sizeleft ?? 0
+  if ((row.size ?? 0) > 0 && left >= row.size) return isStalledRow(row, nowMs) ? "dead" : "not_started_yet"
+  if (row.status === "failed") return "dead"
+  const unchanged = previous && previous.sizeleft === left && nowMs - previous.at >= FILL_STALL_CONFIRM_MS
+  return unchanged ? "dead" : "stall_unconfirmed"
+}
+
 export async function mediaBlocklistStalled(a) {
   if (a.kind !== "series" && a.kind !== "movie") return { result: "invalid_kind", message: "kind must be 'series' or 'movie'." }
   if (a.service_id === undefined || a.service_id === null) return { result: "service_id_required" }
@@ -901,6 +916,27 @@ export async function mediaBlocklistStalled(a) {
     seen.add(key)
     return true
   })
+  // Removing a download deletes its progress. Unless the owner asked for this download to go,
+  // only a download confirmed dead is removed: one still moving, or stalled without a second
+  // observation 30 minutes apart, may yet finish (2026-10-05: a 75.9% pack, the only copy, was
+  // deleted on "yes please get them").
+  const ownerWords = typeof a.owner_words === "string" ? a.owner_words.trim() : ""
+  if (ownerWords && !(Array.isArray(a.queue_ids) && a.queue_ids.length)) {
+    return { result: "owner_words_need_queue_ids", message: "owner_words removes only downloads the owner named: pass their queue_ids too.", queue: queueReport(rows) }
+  }
+  const kept = []
+  if (!ownerWords) {
+    targets = targets.filter((r) => {
+      const verdict = removalVerdict(r, now, observeProgress(progressKey(r, a.kind), r.sizeleft ?? 0, now))
+      if (verdict === "dead") return true
+      kept.push({ queue_id: r.id, title: r.title ?? null, percent: pct(r), reason: verdict })
+      return false
+    })
+  }
+  if (!targets.length && kept.length) {
+    return { result: "kept_downloads", kept, queue: queueReport(rows),
+             message: "Nothing removed. These downloads are not confirmed dead, and removing one deletes its progress. A partial download counts as dead only after two calls at least 30 minutes apart see no progress and no ETA; call again later to confirm. For missing episodes call media_fill_missing instead: it replaces a stalled download only when a seeded alternative exists. Pass owner_words only with the owner's own words asking to remove, clear or cancel this download; 'get them' is not that." }
+  }
   if (!targets.length) return { result: "nothing_to_blocklist", queue: queueReport(rows) }
   const removed = []
   const failed = []
@@ -915,7 +951,7 @@ export async function mediaBlocklistStalled(a) {
     }
   }
   const command = a.research === false ? null : await runSearch(a.kind, serviceId)
-  return { removed, ...(failed.length ? { failed } : {}), command, queue: queueReport(await itemQueue(a.kind, serviceId)) }
+  return { removed, ...(failed.length ? { failed } : {}), ...(kept.length ? { kept } : {}), ...(ownerWords ? { removed_on_owner_words: ownerWords } : {}), command, queue: queueReport(await itemQueue(a.kind, serviceId)) }
 }
 
 // ------------------------------- tools: episodes / releases / blocklist / import
@@ -1198,14 +1234,22 @@ function parseAgrees(release, episode) {
 }
 
 // Which wanted episodes one release really holds, and on what evidence; or why it is unusable.
-export function matchReleaseToEpisodes(release, { seriesId, seriesTitle, seriesYear, wanted, have }) {
+// A blocklisted release is still rejected, but says which wanted episodes it would hold, so a
+// release blocklisted by mistake can be offered back to the owner.
+export function matchReleaseToEpisodes(release, ctx) {
+  const rejections = rejectionTexts(release)
+  if (!rejections.some((x) => /blocklist/i.test(x))) return matchUnblocked(release, ctx, rejections)
+  const m = matchUnblocked(release, ctx, rejections.filter((x) => !/blocklist/i.test(x)))
+  if (m.reject === "other_series") return m
+  return { reject: "blocklisted", ...(m.episode_ids ? { would_match: { episode_ids: m.episode_ids, basis: m.basis } } : {}) }
+}
+
+function matchUnblocked(release, { seriesId, seriesTitle, seriesYear, wanted, have }, rejections) {
   const title = release.title ?? ""
   const norm = normalizeTitle(title)
   const base = seriesBaseTitle(seriesTitle)
-  const rejections = rejectionTexts(release)
   if (!hasWord(norm, base)) return { reject: "other_series" }
   if (release.mappedSeriesId && seriesId && release.mappedSeriesId !== seriesId) return { reject: "other_series" }
-  if (rejections.some((x) => /blocklist/i.test(x))) return { reject: "blocklisted" }
   if (rejections.some((x) => /not wanted in profile|below .*minimum|custom format/i.test(x))) return { reject: "quality_not_wanted" }
   const wantedYears = new Set(wanted.map(airYear).filter(Boolean))
   // The series' own premiere year ("Show (2019) Season 2") says nothing about which season it is,
@@ -1249,12 +1293,53 @@ export function stallReason(row, nowMs, previous) {
 }
 
 // Remaining size per download, as first seen at that size, so a later call can tell stopped from slow.
-const progressSeen = new Map()
+// Kept on disk: every Butler restart starts a new MCP process, and an observation lost with it
+// would leave a dead download unconfirmable (or make a fresh one look confirmed too early).
 const PROGRESS_FORGET_MS = 14 * 24 * 3_600_000
+// Observations further apart than this are not continuous: the download may have been paused
+// and resumed in between, so the older one stops counting.
+const PROGRESS_CONTINUITY_MS = 6 * 3_600_000
+const progressPath = () => process.env.SANCTUARY_MEDIA_STATE ?? "/home/ouro/AgentBundles/sanctuary.ouro/state/media/download-progress.json"
+let progressSeen = null
+function readProgressFile() {
+  const out = new Map()
+  try {
+    for (const [k, v] of Object.entries(JSON.parse(readFileSync(progressPath(), "utf8")))) {
+      if (typeof v?.sizeleft === "number" && typeof v?.at === "number") out.set(k, { sizeleft: v.sizeleft, at: v.at, seen: typeof v.seen === "number" ? v.seen : v.at })
+    }
+  } catch { /* first run, or unreadable: start empty */ }
+  return out
+}
+function loadProgress() {
+  if (!progressSeen) progressSeen = readProgressFile()
+  return progressSeen
+}
+// Merge with what another process (an overlapping restart) may have saved, keeping the
+// later sighting per download, then replace the file atomically so a crash cannot truncate it.
+function saveProgress(nowMs) {
+  try {
+    for (const [k, v] of readProgressFile()) {
+      const mine = progressSeen.get(k)
+      if (nowMs - v.seen <= PROGRESS_FORGET_MS && (!mine || v.seen > mine.seen)) progressSeen.set(k, v)
+    }
+    mkdirSync(dirname(progressPath()), { recursive: true, mode: 0o700 })
+    const tmp = `${progressPath()}.tmp-${process.pid}`
+    writeFileSync(tmp, JSON.stringify(Object.fromEntries(progressSeen)), { mode: 0o600 })
+    renameSync(tmp, progressPath())
+  } catch (e) {
+    // Best effort: confirmation then waits for a later observation in this process.
+    process.stderr.write(`media-mcp: download progress not saved: ${e.message}\n`)
+  }
+}
+export const progressKey = (row, kind = "series") => `${kind}:${row.downloadId ?? `row:${row.id}`}`.toUpperCase()
 function observeProgress(downloadId, sizeleft, nowMs) {
-  for (const [k, v] of progressSeen) if (nowMs - v.at > PROGRESS_FORGET_MS) progressSeen.delete(k)
-  const previous = progressSeen.get(downloadId)
-  if (!previous || previous.sizeleft !== sizeleft) progressSeen.set(downloadId, { sizeleft, at: nowMs })
+  const seen = loadProgress()
+  for (const [k, v] of seen) if (nowMs - v.seen > PROGRESS_FORGET_MS) seen.delete(k)
+  let previous = seen.get(downloadId)
+  if (previous && nowMs - previous.seen > PROGRESS_CONTINUITY_MS) previous = undefined
+  if (!previous || previous.sizeleft !== sizeleft) seen.set(downloadId, { sizeleft, at: nowMs, seen: nowMs })
+  else seen.set(downloadId, { ...previous, seen: nowMs })
+  saveProgress(nowMs)
   return previous
 }
 
@@ -1392,7 +1477,7 @@ async function fillPass(a, seriesId, seriesTitle, { nowMs = Date.now(), deadline
       ids.forEach((id) => covered.add(id))
       continue
     }
-    const why = stallReason(d.row, nowMs, observeProgress(d.key, d.row.sizeleft ?? 0, nowMs))
+    const why = stallReason(d.row, nowMs, observeProgress(progressKey(d.row), d.row.sizeleft ?? 0, nowMs))
     const info = { ...entry, percent: pct(d.row), queue_id: d.row.id, added: d.row.added ?? null }
     if (why) stalled.push({ ...info, ids, ...why })
     else { inFlight.push({ ...info, state: importDone(d.row) ? "importing" : "downloading" }); ids.forEach((id) => covered.add(id)) }
@@ -1405,12 +1490,14 @@ async function fillPass(a, seriesId, seriesTitle, { nowMs = Date.now(), deadline
   const searchedEpisodes = new Set()
   const candidates = new Map()
   const rejected = new Map()
+  const blockedMatches = new Map()
   const inFlightTitles = new Set([...downloads.values()].map((d) => normalizeTitle(d.row?.title ?? d.title)).filter(Boolean))
   const consider = (raw) => {
     for (const r of Array.isArray(raw) ? raw : []) {
       if (!r?.guid || candidates.has(r.guid) || rejected.has(r.guid)) continue
       const m = matchReleaseToEpisodes(r, { seriesId, seriesTitle, seriesYear, wanted: need, have })
       const sameAsInFlight = inFlightTitles.has(normalizeTitle(r.title))
+      if (m.would_match && !sameAsInFlight) blockedMatches.set(r.guid, { raw: r, ids: m.would_match.episode_ids, basis: m.would_match.basis })
       if (m.reject || sameAsInFlight) { rejected.set(r.guid, { title: r.title ?? null, seeders: r.seeders ?? null, reason: sameAsInFlight ? "same_release_as_stalled_download" : m.reject }); continue }
       cacheRelease(`series:${r.guid}`, { ...releaseRow("series", r), service_id: seriesId, season_number: null, quality_raw: r.quality ?? null, languages_raw: r.languages ?? null })
       candidates.set(r.guid, { raw: r, ids: m.episode_ids, basis: m.basis })
@@ -1438,6 +1525,33 @@ async function fillPass(a, seriesId, seriesTitle, { nowMs = Date.now(), deadline
     consider(await attempt(`episode search ${sxe(e)}`, () => sonarr("/release", { query: { episodeId: e.id }, timeoutMs: searchTimeout() })))
   }
 
+  // Episodes whose only matching releases are on the blocklist. With the owner's words such a
+  // release joins the candidates and its blocklist entry is lifted only once it is actually being
+  // grabbed (an unseeded one then waits for peers and is kept); without, it is reported.
+  const covers = (id) => [...candidates.values()].some((c) => c.ids.includes(id))
+  const blockedOnly = [...blockedMatches.values()].filter((b) => b.ids.some((id) => !covers(id)))
+  const ownerRetry = typeof a.retry_blocklisted === "string" ? a.retry_blocklisted.trim() : ""
+  const blockedLeft = new Map()
+  if (blockedOnly.length) {
+    const entries = (await attempt("read blocklist", () => itemBlocklist("series", seriesId))) ?? []
+    for (const b of blockedOnly) {
+      const ids = entries.filter((x) => normalizeTitle(x.sourceTitle) === normalizeTitle(b.raw.title)).map((x) => x.id)
+      blockedLeft.set(b.raw.guid, { b, blocklist_ids: ids })
+      if (ownerRetry && ids.length) {
+        cacheRelease(`series:${b.raw.guid}`, { ...releaseRow("series", b.raw), service_id: seriesId, season_number: null, quality_raw: b.raw.quality ?? null, languages_raw: b.raw.languages ?? null })
+        candidates.set(b.raw.guid, { ...b, blocklistIds: ids })
+      }
+    }
+  }
+  const lifted = new Set()
+  const liftFor = async (c) => {
+    const ids = c.blocklistIds.filter((id) => !lifted.has(id))
+    if (ids.length && !(await attempt("remove from blocklist", async () => { await sonarr("/blocklist/bulk", { method: "DELETE", body: { ids } }); return true }))) return false
+    ids.forEach((id) => lifted.add(id))
+    if (ids.length) actions.push({ action: "removed_from_blocklist", title: c.raw.title ?? null, owner_words: ownerRetry })
+    return true
+  }
+
   // Seeded releases first, then the ones that cover the most, then the best seeded.
   const ranked = [...candidates.values()].sort((x, y) =>
     Number((y.raw.seeders ?? 0) > 0) - Number((x.raw.seeders ?? 0) > 0) || y.ids.length - x.ids.length || (y.raw.seeders ?? 0) - (x.raw.seeders ?? 0))
@@ -1457,7 +1571,19 @@ async function fillPass(a, seriesId, seriesTitle, { nowMs = Date.now(), deadline
     if (!ids.length || !c.raw.quality) continue
     if (grabs >= FILL_MAX_GRABS || !mayAct()) { ids.forEach((id) => deferred.add(id)); cutShort ||= !mayAct(); continue }
     const body = { guid: c.raw.guid, indexerId: c.raw.indexerId, seriesId, episodeIds: ids, shouldOverride: true, quality: c.raw.quality, languages: Array.isArray(c.raw.languages) ? c.raw.languages : [] }
-    const res = await attempt(`grab ${c.raw.title}`, async () => (await sonarr("/release", { method: "POST", body })) ?? {})
+    const post = async () => (await sonarr("/release", { method: "POST", body })) ?? {}
+    let res
+    if (c.blocklistIds) {
+      // Grab first; lift the entry after it succeeds, or before one retry if Sonarr refused it as blocklisted.
+      try { res = await post() } catch { res = undefined }
+      const liftedOk = await liftFor(c)
+      if (!res && liftedOk) res = await attempt(`grab ${c.raw.title}`, post)
+      if (!res) continue
+      blockedLeft.delete(c.raw.guid)
+      for (const [g, x] of blockedLeft) if (normalizeTitle(x.b.raw.title) === normalizeTitle(c.raw.title)) blockedLeft.delete(g)
+    } else {
+      res = await attempt(`grab ${c.raw.title}`, post)
+    }
     if (!res) continue
     grabs += 1
     ids.forEach((id) => remaining.delete(id))
@@ -1505,14 +1631,22 @@ async function fillPass(a, seriesId, seriesTitle, { nowMs = Date.now(), deadline
       evidence.push({ query: q, results: own.length, top: rows.map((r) => ({ title: r.title ?? null, seeders: r.seeders ?? null, indexer: r.indexer ?? null })) })
     }
   }
+  const blockedReport = []
+  for (const { b, blocklist_ids } of blockedLeft.values()) {
+    if (blockedReport.some((x) => normalizeTitle(x.title) === normalizeTitle(b.raw.title))) continue
+    blockedReport.push({ title: b.raw.title ?? null, seeders: b.raw.seeders ?? null, episodes: b.ids.map((id) => sxe(byId.get(id))), blocklist_ids })
+  }
   const incomplete = cutShort || deferred.size > 0 || unsearched.length > 0 || !timeLeft() || errors.length > 0
   const moving = inFlight.filter((x) => x.state !== "stalled").length
+  const unseeded = actions.filter((x) => x.action === "grabbed" && x.may_never_finish)
   const summary = [
     `${have.length} of ${base.on_shelf.of} aired episodes are on the shelf; ${wanted.length} monitored ${wanted.length === 1 ? "episode is" : "episodes are"} missing.`,
     grabs ? `Grabbed ${grabs} release${grabs === 1 ? "" : "s"} now.` : "",
+    unseeded.length ? `${unseeded.map((x) => x.title).join("; ")} ${unseeded.length === 1 ? "has no seeders: it waits" : "have no seeders: they wait"} for peers and may never finish.` : "",
     moving ? `${moving} download(s) in progress.` : "",
     stuck.length ? `${stuck.length} download(s) stalled with no peers and no other usable release (${stuck.map((s) => `${s.title} at ${s.percent}%`).join("; ")}).` : "",
     notFound.length ? `No usable release found for ${notFound.map((e) => e.code).join(", ")}.` : "",
+    blockedReport.length ? `The only matching release${blockedReport.length === 1 ? " is" : "s are"} on the blocklist: ${blockedReport.map((x) => `${x.title} (${x.seeders ?? 0} seeders)`).join("; ")}.` : "",
     deferred.size || unsearched.length ? `${deferred.size + unsearched.length} episode(s) not handled yet in this pass.` : "",
     errors.length ? `${errors.length} step(s) failed: ${errors.map((x) => x.step).join("; ")}.` : "",
   ].filter(Boolean).join(" ")
@@ -1520,11 +1654,16 @@ async function fillPass(a, seriesId, seriesTitle, { nowMs = Date.now(), deadline
     ? "This pass did not finish everything. Tell the owner what it did, then call media_fill_missing again to continue; do not act by hand."
     : stuck.length || notFound.length
       ? "Tell the owner exactly this outcome with the evidence; do not grab, import or blocklist anything by hand. Call media_fill_missing again later to retry."
-      : "Work is in progress. Tell the owner what is downloading; call media_fill_missing again later to import and confirm. Do not search or grab anything else now."
+      : unseeded.length
+        ? "Tell the owner what was grabbed and that it has no seeders, so it may never finish. File a follow-up with await_condition to call media_fill_missing again later. Do not search or grab anything else now."
+        : "Work is in progress. Tell the owner what is downloading; call media_fill_missing again later to import and confirm. Do not search or grab anything else now."
+  const blockedHint = !blockedReport.length ? ""
+    : ownerRetry ? " The owner's retry could not take the blocklisted release back (see errors and blocklisted_matches); tell the owner that plainly."
+    : " The only matching release is on the blocklist: tell the owner, and if the owner then asks to get it anyway, call media_fill_missing again with retry_blocklisted set to the owner's own words. Do not remove blocklist entries or grab by hand."
   return { ...base, goal_met: false, in_flight: inFlight, not_found: notFound, actions,
            ...(deferred.size ? { deferred: need.filter((e) => deferred.has(e.id)).map(code) } : {}), ...(unsearched.length ? { unsearched: unsearched.map(code) } : {}),
-           searched, ...(rejected.size ? { rejected_releases: [...rejected.values()].slice(0, 12) } : {}), ...(evidence ? { indexer_evidence: evidence } : {}),
-           ...(errors.length ? { errors } : {}), ...(incomplete ? { incomplete: true } : {}), summary, next_step: nextStep }
+           searched, ...(blockedReport.length ? { blocklisted_matches: blockedReport } : {}), ...(rejected.size ? { rejected_releases: [...rejected.values()].slice(0, 12) } : {}), ...(evidence ? { indexer_evidence: evidence } : {}),
+           ...(errors.length ? { errors } : {}), ...(incomplete ? { incomplete: true } : {}), summary, next_step: nextStep + blockedHint }
 }
 
 // ------------------------------------------------------------------- schema
@@ -1603,12 +1742,13 @@ const TOOL_LIST = [
   },
   {
     name: "media_blocklist_stalled",
-    description: "Clear stuck downloads for a series or movie already in Sonarr/Radarr: remove stalled queue rows from the download client, blocklist those releases so they are not grabbed again, then search again (research, default true). Use this when the owner asks to clear stuck or stalled downloads; no Jellyseerr request id is needed. Without queue_ids it targets the item's stalled rows; with queue_ids only those, and each must belong to the item. Explicit queue_ids are removed even if still downloading, so pass them only when the owner named those downloads. Rows of one season pack are removed once; a delete that fails is reported in `failed` and the re-search still runs.",
+    description: "Clear stuck downloads for a series or movie already in Sonarr/Radarr: remove stalled queue rows from the download client, blocklist those releases so they are not grabbed again, then search again (research, default true). Use this when the owner asks to clear stuck or stalled downloads; no Jellyseerr request id is needed. Without queue_ids it targets the item's stalled rows; with queue_ids only those, and each must belong to the item. A download still moving, or stalled but not yet confirmed dead, is kept (result kept_downloads) because removing it deletes its progress: a partial download counts as dead only after two calls at least 30 minutes apart see no ETA and no progress. Pass owner_words, with queue_ids, only when the owner's own message asked to remove, clear or cancel those downloads. For missing episodes use media_fill_missing instead. Rows of one season pack are removed once; a delete that fails is reported in `failed` and the re-search still runs.",
     inputSchema: { type: "object", properties: {
       kind: { type: "string", enum: ["series", "movie"] },
       service_id: { type: "number", description: "Sonarr series id or Radarr movie id (media_search_now returns it)." },
       queue_ids: { type: "array", items: { type: "number" } },
       research: { type: "boolean", description: "Search again afterwards. Default true." },
+      owner_words: { type: "string", description: "The owner's exact words asking to remove, clear or cancel these downloads; requires queue_ids. Not for 'get them'." },
     }, required: ["kind", "service_id"] },
   },
   {
@@ -1619,6 +1759,7 @@ const TOOL_LIST = [
       series: { type: "string", description: "Series title as the owner said it." },
       service_id: { type: "number", description: "Sonarr series id, when known." },
       season_number: { type: "number", description: "Limit to one season. Omit for the whole series (specials excluded)." },
+      retry_blocklisted: { type: "string", description: "The owner's own words asking to get episodes whose only matching release is on the blocklist (reported in blocklisted_matches). Takes those releases off the blocklist and grabs them." },
     } },
   },
   {

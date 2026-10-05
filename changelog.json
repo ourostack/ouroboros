@@ -2,6 +2,14 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.855",
+      "changes": [
+        "The Butler no longer deletes a partial download that is not confirmed dead: media_blocklist_stalled keeps anything with an ETA or not yet seen without progress across 30 minutes (age alone no longer counts), removes a named download early only with the owner's quoted words, and stall observations now persist atomically across restarts.",
+        "media_fill_missing reports a matching release that is only on the blocklist (blocklisted_matches) and, given the owner's words in retry_blocklisted, grabs it with the right mapping and lifts its blocklist entry only for the release actually grabbed; a grab with no seeders is reported as possibly never finishing, with an await_condition follow-up.",
+        "Butler guidance: never offer to clear a stalled download that media_fill_missing kept, treat a yes as another media_fill_missing call, and promise a follow-up only after filing it with await_condition."
+      ]
+    },
+    {
       "version": "0.1.0-alpha.854",
       "changes": [
         "The Butler gets missing episodes in one call: media_fill_missing re-reads Sonarr, matches releases to episodes only on evidence (episode title, season plus air year, or a Sonarr parse that agrees with the TVDB or scene code), grabs, imports by title, replaces a stalled download only after the stall is confirmed and a seeded replacement is grabbed, searches least recently searched seasons first so repeat calls reach every season, and reports what is on the shelf, in flight, deferred and not found with indexer evidence.",
