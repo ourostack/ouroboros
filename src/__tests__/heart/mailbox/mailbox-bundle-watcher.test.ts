@@ -2,6 +2,7 @@ import * as fs from "fs"
 import * as os from "os"
 import * as path from "path"
 import { describe, expect, it, vi } from "vitest"
+import { emitNervesEvent } from "../../../nerves/runtime"
 
 vi.mock("../../../nerves/runtime", () => ({
   emitNervesEvent: vi.fn(),
@@ -109,9 +110,10 @@ describe("createBundleWatcher on Linux", () => {
     for (const name of names) receipts.listener("change", name)
 
     expect(fake.readdirCalls.length).toBe(readdirsBeforeStorm)
-    expect(fake.timers.length).toBe(1)
+    expect(fake.timers.length).toBe(2)
     fake.timers.shift()?.()
     expect(onChange).toHaveBeenCalledTimes(1)
+    expect(fake.timers.length).toBe(0)
     watcher.stop()
   })
 
@@ -124,7 +126,7 @@ describe("createBundleWatcher on Linux", () => {
     root.listener("change", "x")
     root.listener("change", "y")
     expect(fake.deps.clearTimeout).toHaveBeenCalledTimes(1)
-    expect(fake.timers.length).toBe(1)
+    expect(fake.timers.length).toBe(2)
     fake.timers.at(-1)!()
     expect(onChange).toHaveBeenCalledTimes(1)
     watcher.stop()
@@ -310,6 +312,119 @@ describe("createBundleWatcher reconcile ordering", () => {
     watcher.stop()
     fire()
     await settle()
+  })
+})
+
+describe("createBundleWatcher catch-up, limits and degradation", () => {
+  it("reports one more change when a directory created after boot gets its watch, but not for the boot scan", async () => {
+    const { createBundleWatcher } = await import("../../../heart/mailbox/mailbox-http-transport")
+    const fake = createFakeTree({ "/bundles": ["existing/"], "/bundles/existing": [] })
+    const onChange = vi.fn()
+    const watcher = createBundleWatcher("/bundles", onChange, fake.deps)
+    await settle()
+    expect(fake.timers.length).toBe(0)
+    expect(onChange).not.toHaveBeenCalled()
+
+    // mkdir fresh, then a file lands in it before the rescan has put a watch on it: no event exists for that file.
+    fake.tree["/bundles"] = ["existing/", "fresh/"]
+    fake.tree["/bundles/fresh"] = ["written-early.json", "nested/"]
+    fake.tree["/bundles/fresh/nested"] = []
+    fake.handles[0]!.listener("rename", "fresh")
+    // Fire live timers one at a time: the first debounce report cancels its max-wait twin.
+    while (fake.timers.length > 0) fake.timers.shift()!()
+    await settle()
+    expect(onChange).toHaveBeenCalledTimes(1)
+    expect(fake.handles.map((handle) => handle.dir)).toEqual(expect.arrayContaining(["/bundles/fresh", "/bundles/fresh/nested"]))
+    // The catch-up report is pending now that the new directories are watched.
+    expect(fake.timers.length).toBe(2)
+    while (fake.timers.length > 0) fake.timers.shift()!()
+    expect(onChange).toHaveBeenCalledTimes(2)
+    watcher.stop()
+  })
+
+  it("flushes onChange after the max wait even if events never pause", async () => {
+    const { createBundleWatcher } = await import("../../../heart/mailbox/mailbox-http-transport")
+    const fake = createFakeTree({ "/bundles": [] })
+    const onChange = vi.fn()
+    const watcher = createBundleWatcher("/bundles", onChange, fake.deps)
+    for (let i = 0; i < 50; i += 1) fake.handles[0]!.listener("change", `f${i}`)
+    // The debounce timer was replaced 50 times; the single max-wait timer is the oldest.
+    expect(fake.timers.length).toBe(2)
+    fake.timers.shift()!()
+    expect(onChange).toHaveBeenCalledTimes(1)
+    expect(fake.timers.length).toBe(0)
+    watcher.stop()
+  })
+
+  it("skips .git and node_modules directories", async () => {
+    const { createBundleWatcher } = await import("../../../heart/mailbox/mailbox-http-transport")
+    const fake = createFakeTree({ "/bundles": [".git/", "node_modules/", "src/"], "/bundles/src": [] })
+    const watcher = createBundleWatcher("/bundles", vi.fn(), fake.deps)
+    await settle()
+    expect(fake.handles.map((handle) => handle.dir).sort()).toEqual(["/bundles", "/bundles/src"])
+    watcher.stop()
+  })
+
+  it("reports a failed watch once per interval and stops descending after ENOSPC", async () => {
+    const { createBundleWatcher } = await import("../../../heart/mailbox/mailbox-http-transport")
+    vi.mocked(emitNervesEvent).mockClear()
+    const now = vi.spyOn(Date, "now").mockReturnValue(1_000_000)
+    const fake = createFakeTree({ "/bundles": ["a/", "b/", "c/"], "/bundles/a": [], "/bundles/b": [], "/bundles/c": [] })
+    const realWatch = fake.deps.watch
+    fake.deps.watch = (dir, options, listener) => {
+      if (dir === "/bundles/a") throw Object.assign(new Error("no space"), { code: "ENOSPC" })
+      return realWatch(dir, options, listener)
+    }
+    const watcher = createBundleWatcher("/bundles", vi.fn(), fake.deps)
+    await settle()
+    expect(fake.handles.map((handle) => handle.dir)).toEqual(["/bundles"])
+    expect(emitNervesEvent).toHaveBeenCalledTimes(1)
+    expect(emitNervesEvent).toHaveBeenCalledWith(expect.objectContaining({
+      level: "warn",
+      event: "daemon.mailbox_watch_degraded",
+      message: "mailbox watch degraded: ENOSPC at /bundles/a",
+    }))
+
+    // A second failure inside the interval is silent, one after it is reported again.
+    fake.handles[0]!.errorListener?.(Object.assign(new Error("emfile"), { code: "EMFILE" }))
+    expect(emitNervesEvent).toHaveBeenCalledTimes(1)
+    now.mockReturnValue(1_000_000 + 61_000)
+    fake.handles[0]!.errorListener?.(Object.assign(new Error("emfile"), { code: "EMFILE" }))
+    expect(emitNervesEvent).toHaveBeenCalledTimes(2)
+    watcher.stop()
+    now.mockRestore()
+  })
+
+  it("describes failures without a code by their message or value", async () => {
+    const { createBundleWatcher } = await import("../../../heart/mailbox/mailbox-http-transport")
+    vi.mocked(emitNervesEvent).mockClear()
+    const now = vi.spyOn(Date, "now")
+    const reasons: unknown[] = [new Error("plain failure"), "bare string", null]
+    for (const [index, thrown] of reasons.entries()) {
+      now.mockReturnValue(index * 100_000)
+      const fake = createFakeTree({ "/bundles": [] })
+      fake.deps.watch = () => { throw thrown }
+      createBundleWatcher("/bundles", vi.fn(), fake.deps).stop()
+    }
+    const messages = vi.mocked(emitNervesEvent).mock.calls.map(([event]) => event.message)
+    expect(messages).toEqual([
+      "mailbox watch degraded: plain failure at /bundles",
+      "mailbox watch degraded: bare string at /bundles",
+      "mailbox watch degraded: null at /bundles",
+    ])
+    now.mockRestore()
+  })
+
+  it("ignores a watch error that arrives after stop", async () => {
+    const { createBundleWatcher } = await import("../../../heart/mailbox/mailbox-http-transport")
+    vi.mocked(emitNervesEvent).mockClear()
+    const fake = createFakeTree({ "/bundles": [] })
+    const onChange = vi.fn()
+    const watcher = createBundleWatcher("/bundles", onChange, fake.deps)
+    watcher.stop()
+    fake.handles[0]!.errorListener?.(new Error("late"))
+    expect(fake.timers.length).toBe(0)
+    expect(emitNervesEvent).not.toHaveBeenCalled()
   })
 })
 

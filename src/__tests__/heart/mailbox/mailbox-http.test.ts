@@ -261,10 +261,11 @@ describe("mailbox http", () => {
     watchedCallback?.()
     watchedCallback?.()
     expect(clearTimeout).toHaveBeenCalledWith(1)
-    expect(onChange).toHaveBeenCalledTimes(2)
+    // This fake fires every timer immediately, so each event reports through both the debounce and the max-wait timer.
+    expect(onChange).toHaveBeenCalledTimes(4)
     errorListener?.(new Error("UNKNOWN: unknown error, watch processing file"))
     expect(close).toHaveBeenCalledTimes(1)
-    expect(onChange).toHaveBeenCalledTimes(3)
+    expect(onChange).toHaveBeenCalledTimes(6)
     watcher.stop()
     expect(close).toHaveBeenCalledTimes(1)
 
@@ -307,7 +308,7 @@ describe("mailbox http", () => {
       clearTimeout: vi.fn(),
     })
     expect(syncErrorClose).toHaveBeenCalledTimes(1)
-    expect(syncErrorChange).toHaveBeenCalledTimes(1)
+    expect(syncErrorChange).toHaveBeenCalledTimes(2)
     syncErrorWatcher.stop()
     expect(syncErrorClose).toHaveBeenCalledTimes(2)
   })
