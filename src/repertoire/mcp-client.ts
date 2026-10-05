@@ -12,7 +12,13 @@ export interface McpToolInfo {
   inputSchema: JsonObject
   /** MCP tool annotations; only readOnlyHint is used, and only from the agent's own servers. */
   annotations?: { readOnlyHint?: boolean }
+  /** Server-declared metadata; `ouro.bot/timeoutMs` lets a slow tool ask for a longer call timeout. */
+  _meta?: Record<string, unknown>
 }
+
+/** Metadata key a server uses to declare how long one call to a tool may take. */
+export const MCP_TOOL_TIMEOUT_META_KEY = "ouro.bot/timeoutMs"
+const MAX_TOOL_CALL_TIMEOUT = 600_000
 
 interface PendingRequest {
   resolve: (value: unknown) => void
@@ -37,6 +43,7 @@ interface JsonRpcResponse {
 const MCP_PROTOCOL_VERSION = "2024-11-05"
 const DEFAULT_REQUEST_TIMEOUT = 10_000
 const DEFAULT_TOOL_CALL_TIMEOUT = 30_000
+const MIN_TOOL_CALL_TIMEOUT = 1_000
 
 export function isMcpTransportError(error: unknown): boolean {
   const message = error instanceof Error ? error.message : String(error)
@@ -141,6 +148,13 @@ export class McpClient {
     return allTools
   }
 
+  /** A tool that searches slow services may declare a longer timeout; it is clamped to 1 s .. 10 min. */
+  private declaredToolTimeout(name: string): number {
+    const declared = this.cachedTools?.find((tool) => tool.name === name)?._meta?.[MCP_TOOL_TIMEOUT_META_KEY]
+    if (typeof declared !== "number" || !Number.isFinite(declared)) return DEFAULT_TOOL_CALL_TIMEOUT
+    return Math.min(Math.max(Math.round(declared), MIN_TOOL_CALL_TIMEOUT), MAX_TOOL_CALL_TIMEOUT)
+  }
+
   async refreshTools(): Promise<McpToolInfo[]> {
     this.cachedTools = null
     return this.listTools()
@@ -149,8 +163,9 @@ export class McpClient {
   async callTool(
     name: string,
     args: Record<string, unknown>,
-    timeout: number = DEFAULT_TOOL_CALL_TIMEOUT,
+    timeoutOverride?: number,
   ): Promise<{ content: Array<{ type: string; text: string }>; isError?: boolean }> {
+    const timeout = timeoutOverride ?? this.declaredToolTimeout(name)
     emitNervesEvent({
       event: "mcp.tool_call_start",
       component: "repertoire",

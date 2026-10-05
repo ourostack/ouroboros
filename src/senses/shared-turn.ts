@@ -468,7 +468,7 @@ export function getSenseSessionPath(agentName: string, friendId: string, channel
  */
 export function erroredTurnReply(errorMessage: string | undefined): string {
   return /iteration limit exhausted/u.test(errorMessage ?? "")
-    ? "I couldn't finish that one: I ran out of steps before I had an answer I could stand behind. Ask me again, or ask something narrower, and I'll take another run at it."
+    ? "I hit my step limit in the middle of that job and couldn't finish it. Tell me to continue and I'll pick up from where I stopped."
     : "I couldn't finish that one: something went wrong before I had an answer. Ask me again and I'll retry."
 }
 

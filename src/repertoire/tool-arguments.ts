@@ -60,8 +60,21 @@ function digest(value: string): string {
   return createHash("sha256").update(value, "utf8").digest("hex")
 }
 
+// The model reads these: name the offending parameter and the allowed values so it
+// can correct the call instead of guessing again (e.g. an invented dry_run flag).
+function renderError(error: ErrorObject): string {
+  const where = error.instancePath || "/"
+  if (error.keyword === "additionalProperties") {
+    return `${where} has unknown parameter '${String(error.params.additionalProperty)}': this tool does not accept it; use only the parameters in its schema`
+  }
+  if (error.keyword === "enum" && Array.isArray(error.params.allowedValues)) {
+    return `${where} must be one of: ${error.params.allowedValues.map((value: unknown) => JSON.stringify(value)).join(", ")}`
+  }
+  return `${where} ${error.message}`
+}
+
 function renderErrors(errors: readonly ErrorObject[]): string {
-  return errors.map((error) => `${error.instancePath || "/"} ${error.message}`).join("; ")
+  return errors.map(renderError).join("; ")
 }
 
 export interface ValidatedToolArguments {

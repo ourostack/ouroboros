@@ -64,7 +64,12 @@ describe("strict advertised tool arguments", () => {
     expect(validateAdvertisedToolArguments('{"value":1}', cloned)).toMatchObject({ ok: true })
     expect(validateAdvertisedToolArguments('{"value":"1"}', cloned)).toMatchObject({ ok: false, reason: expect.stringContaining("/value") })
     expect(validateAdvertisedToolArguments('{"value":0}', cloned)).toMatchObject({ ok: false, reason: expect.stringContaining("/value") })
-    expect(validateAdvertisedToolArguments('{"value":1,"extra":true}', cloned)).toMatchObject({ ok: false, reason: expect.stringContaining("additional") })
+    expect(validateAdvertisedToolArguments('{"value":1,"extra":true}', cloned)).toMatchObject({ ok: false, reason: expect.stringContaining("unknown parameter 'extra'") })
+  })
+
+  it("names the allowed values when an enum argument is wrong", () => {
+    const schema = { type: "object", properties: { kind: { type: "string", enum: ["series", "movie"] } }, additionalProperties: false }
+    expect(validateAdvertisedToolArguments('{"kind":"show"}', schema)).toMatchObject({ ok: false, reason: '/kind must be one of: "series", "movie"' })
   })
 
   it("does not resolve a tool's external reference from another tool's compiled schema", () => {
