@@ -1152,18 +1152,24 @@ export async function mediaManualImport(a) {
 // (2026-10-03: The Chef Show took an owner hint, a wrong pack, an invented
 // parameter and the step cap). Each call re-reads Sonarr, so it is safe to call
 // again: in-flight grabs are never repeated, and once nothing is missing it says
-// stop. Release names follow streaming numbering, so releases are matched to
-// episodes by episode title and air year as well as by Sonarr's own parse.
+// stop. Release names follow streaming numbering, so a release is matched to
+// episodes only on evidence: an episode title, a season plus the air year, or a
+// Sonarr parse whose own numbering agrees with the episode's TVDB or scene code.
 
 const FILL_MAX_GRABS = 3
 const FILL_DEADLINE_MS = 150_000
 const FILL_RECENT_GRAB_MS = 15 * 60_000
 const FILL_EVIDENCE_ROWS = 5
+// A torrent with no ETA is called stalled only after its remaining size has not moved for this long.
+const FILL_STALL_CONFIRM_MS = 30 * 60_000
 
-const yearsIn = (title) => new Set((String(title ?? "").match(/(?<![0-9])(?:19|20)[0-9]{2}(?![0-9])/g) ?? []).map(Number))
+// Years in a release name, ignoring resolutions such as 1920x1080 and 2160p.
+const yearsIn = (title) => new Set((String(title ?? "").match(/(?<![0-9x])(?:19|20)[0-9]{2}(?![0-9px])/gi) ?? []).map(Number))
 const airYear = (e) => (e.airDate ? Number(String(e.airDate).slice(0, 4)) : null)
 const hasWord = (haystack, needle) => needle.length > 0 && ` ${haystack} `.includes(` ${needle} `)
 const rejectionTexts = (r) => (Array.isArray(r.rejections) ? r.rejections.map((x) => (typeof x === "string" ? x : x?.reason ?? String(x))) : [])
+// "Doctor Who (2005)" and "The Office (US)" are named without the suffix in most releases.
+export const seriesBaseTitle = (title) => normalizeTitle(String(title ?? "").replace(/\s*\((?:19|20)[0-9]{2}\)\s*$/, "").replace(/\s*\((?:us|uk|au|nz|ca)\)\s*$/i, ""))
 
 // An episode title is evidence only when it is distinctive enough not to appear by chance:
 // several words, or one long word that is not a generic release term.
@@ -1183,24 +1189,40 @@ export function seasonInTitle(title) {
   return code ? Number(code[1]) : null
 }
 
+// Sonarr's mapping is trusted only when the numbering in the name is the episode's own or scene code.
+function parseAgrees(release, episode) {
+  const season = release.seasonNumber
+  const numbers = Array.isArray(release.episodeNumbers) ? release.episodeNumbers : []
+  const codes = [[episode.seasonNumber, episode.episodeNumber], [episode.sceneSeasonNumber, episode.sceneEpisodeNumber]]
+  return codes.some(([s, e]) => Number.isInteger(s) && s === season && (numbers.length ? numbers.includes(e) : Boolean(release.fullSeason)))
+}
+
 // Which wanted episodes one release really holds, and on what evidence; or why it is unusable.
-export function matchReleaseToEpisodes(release, { seriesTitle, wanted, have }) {
+export function matchReleaseToEpisodes(release, { seriesId, seriesTitle, seriesYear, wanted, have }) {
   const title = release.title ?? ""
   const norm = normalizeTitle(title)
+  const base = seriesBaseTitle(seriesTitle)
   const rejections = rejectionTexts(release)
-  if (!hasWord(norm, normalizeTitle(seriesTitle))) return { reject: "other_series" }
+  if (!hasWord(norm, base)) return { reject: "other_series" }
+  if (release.mappedSeriesId && seriesId && release.mappedSeriesId !== seriesId) return { reject: "other_series" }
   if (rejections.some((x) => /blocklist/i.test(x))) return { reject: "blocklisted" }
   if (rejections.some((x) => /not wanted in profile|below .*minimum|custom format/i.test(x))) return { reject: "quality_not_wanted" }
   const wantedYears = new Set(wanted.map(airYear).filter(Boolean))
-  const years = yearsIn(title)
+  // The series' own premiere year ("Show (2019) Season 2") says nothing about which season it is.
+  const years = new Set([...yearsIn(title)].filter((y) => y !== seriesYear))
   if (years.size && ![...years].some((y) => wantedYears.has(y))) return { reject: "year_mismatch", years: [...years] }
-  const byTitle = wanted.filter((e) => episodeTitleIn(norm, e))
+  // Episode titles are looked for in the name with the series name taken out.
+  const rest = ` ${norm} `.replace(` ${base} `, " ").trim()
+  const byTitle = wanted.filter((e) => episodeTitleIn(rest, e))
   if (byTitle.length) return { episode_ids: byTitle.map((e) => e.id), basis: "episode_title" }
-  if (have.some((e) => episodeTitleIn(norm, e))) return { reject: "holds_episodes_we_have" }
-  const wantedIds = new Set(wanted.map((e) => e.id))
+  if (have.some((e) => episodeTitleIn(rest, e))) return { reject: "holds_episodes_we_have" }
+  const wantedById = new Map(wanted.map((e) => [e.id, e]))
   const mapped = (release.mappedEpisodeInfo ?? []).map((e) => e.id).filter((id) => id !== undefined && id !== null)
-  const mappedWanted = mapped.filter((id) => wantedIds.has(id))
-  if (mappedWanted.length) return { episode_ids: mappedWanted, basis: "sonarr_parse" }
+  const mappedWanted = mapped.filter((id) => wantedById.has(id))
+  if (mappedWanted.length) {
+    if (mappedWanted.every((id) => parseAgrees(release, wantedById.get(id)))) return { episode_ids: mappedWanted, basis: "sonarr_parse" }
+    return { reject: "parse_disagrees_with_numbering" }
+  }
   // A season pack named with the season and the air year of the missing episodes
   // ("The Chef Show [Season 2] (2020)"), whatever Sonarr's scene mapping says it holds.
   const season = seasonInTitle(title) ?? (release.fullSeason ? release.seasonNumber ?? null : null)
@@ -1211,15 +1233,26 @@ export function matchReleaseToEpisodes(release, { seriesTitle, wanted, have }) {
   return { reject: mapped.length ? "holds_episodes_we_have" : "no_episode_match" }
 }
 
-// Why a download is not going to finish on its own, or null while it is moving.
-export function stallReason(row, nowMs) {
-  if (isStalledRow(row, nowMs)) return (row.sizeleft ?? 0) >= (row.size ?? 0) ? "never_started" : "unfinished_for_days"
+// Why a download is not going to finish on its own, or null while it may still be moving.
+// `confirmed` is false when the only sign is a missing ETA not yet seen to persist; such a
+// download is reported but never replaced.
+export function stallReason(row, nowMs, previous) {
+  if (isStalledRow(row, nowMs)) return { stall: (row.sizeleft ?? 0) >= (row.size ?? 0) ? "never_started" : "unfinished_for_days", confirmed: true }
   const left = row.sizeleft ?? 0
   const ageHours = row.added ? (nowMs - Date.parse(row.added)) / 3_600_000 : 0
   const moving = row.status === "downloading" || row.status === "warning"
-  // Sonarr reports no time left for a torrent with no peers; only trust that once it is old.
-  if (moving && left > 0 && (row.timeleft === undefined || row.timeleft === null || row.timeleft === "00:00:00") && ageHours >= STALL_AFTER_HOURS) return "no_peers"
-  return null
+  const noEta = row.timeleft === undefined || row.timeleft === null || row.timeleft === "00:00:00"
+  if (!(moving && left > 0 && noEta && ageHours >= STALL_AFTER_HOURS)) return null
+  const unchanged = previous && previous.sizeleft === left && nowMs - previous.at >= FILL_STALL_CONFIRM_MS
+  return { stall: "no_peers", confirmed: Boolean(unchanged) }
+}
+
+// Remaining size per download, as first seen at that size, so a later call can tell stopped from slow.
+const progressSeen = new Map()
+function observeProgress(downloadId, sizeleft, nowMs) {
+  const previous = progressSeen.get(downloadId)
+  if (!previous || previous.sizeleft !== sizeleft) progressSeen.set(downloadId, { sizeleft, at: nowMs })
+  return previous
 }
 
 const importDone = (row) => (row.sizeleft ?? 0) === 0 || row.status === "completed"
@@ -1233,29 +1266,31 @@ async function seriesGrabHistory(seriesId) {
 async function runningImportFor(downloadId) {
   const list = await sonarr("/command")
   return (Array.isArray(list) ? list : []).some((c) => c.name === "ManualImport" && ["queued", "started"].includes(c.status)
-    && (c.body?.files ?? []).some((f) => f.downloadId === downloadId))
+    && (c.body?.files ?? []).some((f) => String(f.downloadId ?? "").toUpperCase() === String(downloadId).toUpperCase()))
 }
 
-// Map a finished download's files to the wanted episodes by title; only unique matches are imported.
-async function importByTitle(seriesId, downloadId, wantedEps) {
+// Map a finished download's files to the wanted episodes by title. Only a file whose name
+// holds exactly one wanted episode title, and the only file holding it, is imported.
+async function importByTitle(seriesId, seriesTitle, downloadId, wantedEps) {
   if (await runningImportFor(downloadId)) return { action: "import_already_running", download_id: downloadId }
   const rows = await previewRows(seriesId, downloadId)
-  const wantedIds = new Set(wantedEps.map((e) => e.id))
+  const base = seriesBaseTitle(seriesTitle)
   const picks = []
   const unmatched = []
   for (const r of rows) {
-    const norm = normalizeTitle(`${r.name ?? ""} ${r.relativePath ?? ""}`)
-    const byTitle = wantedEps.filter((e) => episodeTitleIn(norm, e)).map((e) => e.id)
-    const byParse = (r.episodes ?? []).map((e) => e.id).filter((id) => wantedIds.has(id))
-    const ids = byTitle.length === 1 ? byTitle : byTitle.length === 0 && byParse.length ? byParse : []
-    if (ids.length) picks.push({ row: r, ids })
+    const rest = ` ${normalizeTitle(`${r.name ?? ""} ${r.relativePath ?? ""}`)} `.replace(` ${base} `, " ").trim()
+    const ids = wantedEps.filter((e) => episodeTitleIn(rest, e)).map((e) => e.id)
+    if (ids.length === 1) picks.push({ row: r, ids })
     else unmatched.push(r.name ?? r.path)
   }
   const counts = new Map()
-  for (const p of picks) for (const id of p.ids) counts.set(id, (counts.get(id) ?? 0) + 1)
-  const unique = picks.filter((p) => p.ids.every((id) => counts.get(id) === 1))
+  for (const p of picks) counts.set(p.ids[0], (counts.get(p.ids[0]) ?? 0) + 1)
+  const unique = picks.filter((p) => counts.get(p.ids[0]) === 1)
   for (const p of picks) if (!unique.includes(p)) unmatched.push(p.row.name ?? p.row.path)
-  if (!unique.length) return { action: "import_needs_mapping", download_id: downloadId, unmatched_files: unmatched }
+  if (!unique.length) {
+    return { action: "import_needs_mapping", download_id: downloadId, unmatched_files: unmatched,
+             note: "No file names an episode title. Map them with media_manual_import (preview, then import by title from media_episodes)." }
+  }
   const files = unique.map(({ row: r, ids }) => ({ path: r.path, seriesId, episodeIds: ids, quality: r.quality, languages: r.languages, releaseGroup: r.releaseGroup ?? "",
     indexerFlags: r.indexerFlags ?? 0, releaseType: r.releaseType ?? "unknown", downloadId }))
   const c = await sonarr("/command", { method: "POST", body: { name: "ManualImport", files, importMode: "auto" } })
@@ -1264,14 +1299,32 @@ async function importByTitle(seriesId, downloadId, wantedEps) {
 }
 
 const pct = (row) => ((row.size ?? 0) > 0 ? Math.round((((row.size ?? 0) - (row.sizeleft ?? 0)) / row.size) * 1000) / 10 : null)
+const fillRunning = new Set()
 
-export async function mediaFillMissing(a, { nowMs = Date.now(), deadlineMs = FILL_DEADLINE_MS } = {}) {
-  const startedAt = Date.now()
-  const timeLeft = () => Date.now() - startedAt < deadlineMs
+export async function mediaFillMissing(a, opts = {}) {
   const found = await resolveLibraryItem({ kind: "series", service_id: a.service_id, title: a.series })
   if (!found.item) return { result: found.result, candidates: found.candidates, message: "Name the series by its Sonarr service_id or exact title." }
   const seriesId = found.item.id
-  const seriesTitle = found.item.title
+  // One pass per series at a time: a retry after a timeout must not grab beside a pass still running.
+  if (fillRunning.has(seriesId)) return { result: "already_running", series_id: seriesId, message: "A media_fill_missing pass for this series is still working. Wait a minute and call again; do not act by hand." }
+  fillRunning.add(seriesId)
+  try {
+    return await fillPass(a, seriesId, found.item.title, opts)
+  } finally {
+    fillRunning.delete(seriesId)
+  }
+}
+
+async function fillPass(a, seriesId, seriesTitle, { nowMs = Date.now(), deadlineMs = FILL_DEADLINE_MS } = {}) {
+  const startedAt = Date.now()
+  const remainingMs = () => deadlineMs - (Date.now() - startedAt)
+  const timeLeft = () => remainingMs() > 0
+  const errors = []
+  // Each step after the first reads is isolated: one failure is reported, the rest of the pass and its record survive.
+  const attempt = async (step, fn) => {
+    try { return await fn() } catch (e) { errors.push({ step, error: e.code ?? "failed", message: e.message }); return undefined }
+  }
+  const seriesYear = Number((await attempt("read series", () => sonarr(`/series/${seriesId}`)))?.year) || null
   const season = a.season_number === undefined || a.season_number === null ? null : Number(a.season_number)
   const scope = (await seriesEpisodes(seriesId, season ?? undefined)).filter((e) => (season === null ? e.seasonNumber > 0 : true))
   const aired = (e) => Boolean(e.airDateUtc ?? e.airDate) && Date.parse(e.airDateUtc ?? e.airDate) <= nowMs
@@ -1294,8 +1347,9 @@ export async function mediaFillMissing(a, { nowMs = Date.now(), deadlineMs = FIL
   const history = await seriesGrabHistory(seriesId)
   const grabbedFor = new Map()
   for (const h of history) {
-    if (!h.downloadId) continue
-    const key = String(h.downloadId).toUpperCase()
+    // A client without download ids (e.g. a blackhole) is tracked by release title instead.
+    const key = h.downloadId ? String(h.downloadId).toUpperCase() : h.sourceTitle ? `TITLE:${normalizeTitle(h.sourceTitle)}` : null
+    if (!key) continue
     if (!grabbedFor.has(key)) grabbedFor.set(key, { ids: new Set(), date: h.date, title: h.sourceTitle })
     grabbedFor.get(key).ids.add(h.episodeId)
   }
@@ -1307,8 +1361,10 @@ export async function mediaFillMissing(a, { nowMs = Date.now(), deadlineMs = FIL
     if (!downloads.has(key)) downloads.set(key, { key, row: r, ids: new Set(grabbedFor.get(key)?.ids ?? []) })
     if (!grabbedFor.has(key)) downloads.get(key).ids.add(r.episodeId)
   }
+  const queuedTitles = new Set(queue.map((r) => normalizeTitle(r.title)))
   for (const [key, g] of grabbedFor) {
-    if (!downloads.has(key) && nowMs - Date.parse(g.date) < FILL_RECENT_GRAB_MS) downloads.set(key, { key, row: null, ids: g.ids, title: g.title, recent: true })
+    const recent = nowMs - Date.parse(g.date) < FILL_RECENT_GRAB_MS
+    if (recent && !downloads.has(key) && !queuedTitles.has(normalizeTitle(g.title))) downloads.set(key, { key, row: null, ids: g.ids, title: g.title })
   }
 
   const covered = new Set()
@@ -1320,47 +1376,49 @@ export async function mediaFillMissing(a, { nowMs = Date.now(), deadlineMs = FIL
     const entry = { title: d.row?.title ?? d.title ?? null, download_id: d.row?.downloadId ?? d.key, episodes: ids.map((id) => sxe(byId.get(id))) }
     if (!d.row) { inFlight.push({ ...entry, state: "just_grabbed" }); ids.forEach((id) => covered.add(id)); continue }
     if (importNeeded(d.row)) {
-      const done = await importByTitle(seriesId, d.row.downloadId, ids.map((id) => byId.get(id)))
-      actions.push(done)
-      inFlight.push({ ...entry, state: done.action === "import_needs_mapping" ? "downloaded_needs_mapping" : "importing" })
+      const done = await attempt(`import ${d.row.downloadId}`, () => importByTitle(seriesId, seriesTitle, d.row.downloadId, ids.map((id) => byId.get(id))))
+      if (done) actions.push(done)
+      inFlight.push({ ...entry, state: done?.action === "import_needs_mapping" ? "downloaded_needs_mapping" : done ? "importing" : "downloaded_import_failed" })
       ids.forEach((id) => covered.add(id))
       continue
     }
-    const why = stallReason(d.row, nowMs)
+    const why = stallReason(d.row, nowMs, observeProgress(d.key, d.row.sizeleft ?? 0, nowMs))
     const info = { ...entry, percent: pct(d.row), queue_id: d.row.id, added: d.row.added ?? null }
-    if (why) stalled.push({ ...info, ids, stall: why })
+    if (why) stalled.push({ ...info, ids, ...why })
     else { inFlight.push({ ...info, state: importDone(d.row) ? "importing" : "downloading" }); ids.forEach((id) => covered.add(id)) }
   }
 
   // Search for everything not covered by a moving download, stalled ones included.
   const need = wanted.filter((e) => !covered.has(e.id))
   const searched = []
+  const searchedSeasons = new Set()
+  const searchedEpisodes = new Set()
   const candidates = new Map()
   const rejected = new Map()
-  const inFlightTitles = new Set([...downloads.values()].map((d) => normalizeTitle(d.row?.title ?? d.title)))
+  const inFlightTitles = new Set([...downloads.values()].map((d) => normalizeTitle(d.row?.title ?? d.title)).filter(Boolean))
   const consider = (raw) => {
     for (const r of Array.isArray(raw) ? raw : []) {
       if (!r?.guid || candidates.has(r.guid) || rejected.has(r.guid)) continue
-      const m = matchReleaseToEpisodes(r, { seriesTitle, wanted: need, have })
+      const m = matchReleaseToEpisodes(r, { seriesId, seriesTitle, seriesYear, wanted: need, have })
       const sameAsInFlight = inFlightTitles.has(normalizeTitle(r.title))
       if (m.reject || sameAsInFlight) { rejected.set(r.guid, { title: r.title ?? null, seeders: r.seeders ?? null, reason: sameAsInFlight ? "same_release_as_stalled_download" : m.reject }); continue }
       cacheRelease(`series:${r.guid}`, { ...releaseRow("series", r), service_id: seriesId, season_number: null, quality_raw: r.quality ?? null, languages_raw: r.languages ?? null })
       candidates.set(r.guid, { raw: r, ids: m.episode_ids, basis: m.basis })
     }
   }
+  const searchTimeout = () => Math.max(5_000, Math.min(SEARCH_TIMEOUT_MS, remainingMs()))
   const hasSeededCandidate = (e) => [...candidates.values()].some((c) => (c.raw.seeders ?? 0) > 0 && c.ids.includes(e.id))
-  if (need.length) {
-    for (const s of [...new Set(need.map((e) => e.seasonNumber))].slice(0, 2)) {
-      if (!timeLeft()) break
-      searched.push(`Sonarr season search S${code2(s)}`)
-      consider(await sonarr("/release", { query: { seriesId, seasonNumber: s }, timeoutMs: SEARCH_TIMEOUT_MS }))
-    }
-    const stillNeed = need.filter((e) => !hasSeededCandidate(e))
-    for (const e of stillNeed.slice(0, MAX_EPISODE_SEARCHES)) {
-      if (!timeLeft()) break
-      searched.push(`Sonarr episode search ${sxe(e)}`)
-      consider(await sonarr("/release", { query: { episodeId: e.id }, timeoutMs: SEARCH_TIMEOUT_MS }))
-    }
+  for (const s of [...new Set(need.map((e) => e.seasonNumber))]) {
+    if (!timeLeft()) break
+    searchedSeasons.add(s)
+    searched.push(`Sonarr season search S${code2(s)}`)
+    consider(await attempt(`season search S${code2(s)}`, () => sonarr("/release", { query: { seriesId, seasonNumber: s }, timeoutMs: searchTimeout() })))
+  }
+  for (const e of need.filter((x) => !hasSeededCandidate(x)).slice(0, MAX_EPISODE_SEARCHES)) {
+    if (!timeLeft()) break
+    searchedEpisodes.add(e.id)
+    searched.push(`Sonarr episode search ${sxe(e)}`)
+    consider(await attempt(`episode search ${sxe(e)}`, () => sonarr("/release", { query: { episodeId: e.id }, timeoutMs: searchTimeout() })))
   }
 
   // Seeded releases first, then the ones that cover the most, then the best seeded.
@@ -1368,64 +1426,88 @@ export async function mediaFillMissing(a, { nowMs = Date.now(), deadlineMs = FIL
     Number((y.raw.seeders ?? 0) > 0) - Number((x.raw.seeders ?? 0) > 0) || y.ids.length - x.ids.length || (y.raw.seeders ?? 0) - (x.raw.seeders ?? 0))
   const remaining = new Set(need.map((e) => e.id))
   const stalledIds = new Set(stalled.flatMap((s) => s.ids))
+  // Until a stall is confirmed on a later call, its episodes are not fetched a second time.
+  const unconfirmedIds = new Set(stalled.filter((s) => !s.confirmed).flatMap((s) => s.ids))
+  for (const s of stalled.filter((x) => !x.confirmed)) {
+    s.alternative = ranked.some((c) => (c.raw.seeders ?? 0) > 0 && s.ids.every((id) => c.ids.includes(id)))
+  }
+  const deferred = new Set()
+  let grabs = 0
   for (const c of ranked) {
-    if (actions.filter((x) => x.action === "grabbed").length >= FILL_MAX_GRABS) break
-    const ids = c.ids.filter((id) => remaining.has(id))
-    if (!ids.length) continue
     const seeded = (c.raw.seeders ?? 0) > 0
-    // An unseeded release is no better than a stalled download: keep waiting on that instead.
-    if (!seeded && ids.every((id) => stalledIds.has(id))) continue
-    if (!c.raw.quality) continue
-    // Replace a stalled download only with a release that holds everything it was fetching.
-    for (const s of stalled.filter((x) => !x.replaced && x.ids.every((id) => ids.includes(id)))) {
-      await sonarr(`/queue/${s.queue_id}`, { method: "DELETE", query: { removeFromClient: true, blocklist: true, skipRedownload: true } })
+    // An unseeded release is no better than a stalled download: never fetch those episodes twice that way.
+    const ids = c.ids.filter((id) => remaining.has(id) && !unconfirmedIds.has(id) && (seeded || !stalledIds.has(id)))
+    if (!ids.length || !c.raw.quality) continue
+    if (grabs >= FILL_MAX_GRABS) { ids.forEach((id) => deferred.add(id)); continue }
+    const body = { guid: c.raw.guid, indexerId: c.raw.indexerId, seriesId, episodeIds: ids, shouldOverride: true, quality: c.raw.quality, languages: Array.isArray(c.raw.languages) ? c.raw.languages : [] }
+    const res = await attempt(`grab ${c.raw.title}`, async () => (await sonarr("/release", { method: "POST", body })) ?? {})
+    if (!res) continue
+    grabs += 1
+    ids.forEach((id) => remaining.delete(id))
+    actions.push({ action: "grabbed", title: c.raw.title ?? null, indexer: c.raw.indexer ?? null, seeders: c.raw.seeders ?? null, matched_by: c.basis,
+                   episodes: ids.map((id) => sxe(byId.get(id))), download_id: res.downloadId ?? null, ...(seeded ? {} : { may_never_finish: true }) })
+    inFlight.push({ title: c.raw.title ?? null, download_id: res.downloadId ?? null, episodes: ids.map((id) => sxe(byId.get(id))), state: "just_grabbed" })
+    // Only after the replacement is grabbed, and only for a confirmed stall it fully covers with a seeded release.
+    if (!seeded) continue
+    for (const s of stalled.filter((x) => !x.replaced && x.confirmed && x.ids.every((id) => ids.includes(id)))) {
+      const removed = await attempt(`blocklist ${s.title}`, async () => { await sonarr(`/queue/${s.queue_id}`, { method: "DELETE", query: { removeFromClient: true, blocklist: true, skipRedownload: true } }); return true })
+      if (!removed) continue
       s.replaced = true
       actions.push({ action: "blocklisted_stalled", title: s.title, percent: s.percent, stall: s.stall })
     }
-    const body = { guid: c.raw.guid, indexerId: c.raw.indexerId, seriesId, episodeIds: ids, shouldOverride: true, quality: c.raw.quality, languages: Array.isArray(c.raw.languages) ? c.raw.languages : [] }
-    const res = await sonarr("/release", { method: "POST", body })
-    ids.forEach((id) => remaining.delete(id))
-    actions.push({ action: "grabbed", title: c.raw.title ?? null, indexer: c.raw.indexer ?? null, seeders: c.raw.seeders ?? null, matched_by: c.basis,
-                   episodes: ids.map((id) => sxe(byId.get(id))), download_id: res?.downloadId ?? null, ...(seeded ? {} : { may_never_finish: true }) })
-    inFlight.push({ title: c.raw.title ?? null, download_id: res?.downloadId ?? null, episodes: ids.map((id) => sxe(byId.get(id))), state: "just_grabbed" })
   }
   for (const s of stalled.filter((x) => !x.replaced)) {
+    const alsoGrabbed = s.ids.every((id) => !remaining.has(id))
     inFlight.push({ title: s.title, download_id: s.download_id, episodes: s.episodes, percent: s.percent, queue_id: s.queue_id, added: s.added, state: "stalled", stall: s.stall,
-                    note: "No other usable release was found, so this download was kept in case peers return." })
+                    ...(s.confirmed ? {} : { stall_confirmed: false }),
+                    note: !s.confirmed && s.alternative ? "A seeded alternative exists; a later call replaces this download once the stall is confirmed (no progress for 30 minutes)."
+                      : alsoGrabbed ? "Releases for some of these episodes were grabbed; this download was kept for the rest."
+                      : "No other usable release was found, so this download was kept in case peers return." })
     s.ids.forEach((id) => remaining.delete(id))
   }
 
-  const notFound = need.filter((e) => remaining.has(e.id)).map(code)
+  const open = need.filter((e) => remaining.has(e.id) && !deferred.has(e.id))
+  const unsearched = open.filter((e) => !searchedSeasons.has(e.seasonNumber) && !searchedEpisodes.has(e.id))
+  const notFound = open.filter((e) => !unsearched.includes(e)).map(code)
   const stuck = inFlight.filter((x) => x.state === "stalled")
   let evidence
-  if (notFound.length || stuck.length) {
-    // What exists on the indexers under any name, so a "can't find it" is backed by a listing.
+  if ((notFound.length || stuck.length) && timeLeft()) {
+    // What exists on the indexers under any name, so a "can't find it" is backed by a listing. Best effort.
     evidence = []
-    const open = notFound.length ? need.filter((e) => remaining.has(e.id)) : wanted
-    const ys = [...new Set(open.map((e) => e.airDate?.slice(0, 4)).filter(Boolean))].slice(0, 2)
-    const scene = [...new Set(open.map((e) => e.sceneSeasonNumber).filter((n) => Number.isInteger(n)))].slice(0, 1)
+    const target = notFound.length ? need.filter((e) => notFound.some((n) => n.episode_id === e.id)) : wanted
+    const ys = [...new Set(target.map((e) => e.airDate?.slice(0, 4)).filter(Boolean))].slice(0, 2)
+    const scene = [...new Set(target.map((e) => e.sceneSeasonNumber).filter((n) => Number.isInteger(n)))].slice(0, 1)
     const queries = [...(ys.length ? ys : [""]).map((y) => `${seriesTitle} ${y}`.trim()), ...scene.map((n) => `${seriesTitle} S${code2(n)}`)]
     for (const q of queries) {
       if (!timeLeft()) break
-      const raw = await prowlarr("/search", { query: { query: q, type: "search", limit: 100 }, timeoutMs: SEARCH_TIMEOUT_MS })
-      const rows = (Array.isArray(raw) ? raw : []).sort((x, y) => (y.seeders ?? -1) - (x.seeders ?? -1)).slice(0, FILL_EVIDENCE_ROWS)
-      evidence.push({ query: q, results: (Array.isArray(raw) ? raw.length : 0), top: rows.map((r) => ({ title: r.title ?? null, seeders: r.seeders ?? null, indexer: r.indexer ?? null })) })
+      const raw = await attempt(`indexer evidence "${q}"`, () => prowlarr("/search", { query: { query: q, type: "search", limit: 100 }, timeoutMs: searchTimeout() }))
+      if (!Array.isArray(raw)) continue
+      // Indexers answer free text loosely ("Vegas Chef Prizefight"); keep only releases named for this series.
+      const own = raw.filter((r) => hasWord(normalizeTitle(r.title), seriesBaseTitle(seriesTitle)))
+      const rows = own.sort((x, y) => (y.seeders ?? -1) - (x.seeders ?? -1)).slice(0, FILL_EVIDENCE_ROWS)
+      evidence.push({ query: q, results: own.length, top: rows.map((r) => ({ title: r.title ?? null, seeders: r.seeders ?? null, indexer: r.indexer ?? null })) })
     }
   }
-  const grabbed = actions.filter((x) => x.action === "grabbed").length
+  const incomplete = deferred.size > 0 || unsearched.length > 0 || !timeLeft() || errors.length > 0
+  const moving = inFlight.filter((x) => x.state !== "stalled").length
   const summary = [
     `${have.length} of ${base.on_shelf.of} aired episodes are on the shelf; ${wanted.length} monitored ${wanted.length === 1 ? "episode is" : "episodes are"} missing.`,
-    grabbed ? `Grabbed ${grabbed} release${grabbed === 1 ? "" : "s"} now.` : "",
-    inFlight.filter((x) => x.state !== "stalled").length ? `${inFlight.filter((x) => x.state !== "stalled").length} download(s) in progress.` : "",
+    grabs ? `Grabbed ${grabs} release${grabs === 1 ? "" : "s"} now.` : "",
+    moving ? `${moving} download(s) in progress.` : "",
     stuck.length ? `${stuck.length} download(s) stalled with no peers and no other usable release (${stuck.map((s) => `${s.title} at ${s.percent}%`).join("; ")}).` : "",
     notFound.length ? `No usable release found for ${notFound.map((e) => e.code).join(", ")}.` : "",
+    deferred.size || unsearched.length ? `${deferred.size + unsearched.length} episode(s) not handled yet in this pass.` : "",
+    errors.length ? `${errors.length} step(s) failed: ${errors.map((x) => x.step).join("; ")}.` : "",
   ].filter(Boolean).join(" ")
-  const nextStep = stuck.length || notFound.length
-    ? "Tell the owner exactly this outcome with the evidence; do not grab, import or blocklist anything by hand. Call media_fill_missing again later to retry."
-    : "Work is in progress. Tell the owner what is downloading; call media_fill_missing again later to import and confirm. Do not search or grab anything else now."
-  return { ...base, goal_met: false, in_flight: inFlight.map(({ ids, ...x }) => x), not_found: notFound, actions,
+  const nextStep = incomplete
+    ? "This pass did not finish everything. Tell the owner what it did, then call media_fill_missing again to continue; do not act by hand."
+    : stuck.length || notFound.length
+      ? "Tell the owner exactly this outcome with the evidence; do not grab, import or blocklist anything by hand. Call media_fill_missing again later to retry."
+      : "Work is in progress. Tell the owner what is downloading; call media_fill_missing again later to import and confirm. Do not search or grab anything else now."
+  return { ...base, goal_met: false, in_flight: inFlight, not_found: notFound, actions,
+           ...(deferred.size ? { deferred: need.filter((e) => deferred.has(e.id)).map(code) } : {}), ...(unsearched.length ? { unsearched: unsearched.map(code) } : {}),
            searched, ...(rejected.size ? { rejected_releases: [...rejected.values()].slice(0, 12) } : {}), ...(evidence ? { indexer_evidence: evidence } : {}),
-           ...(timeLeft() ? {} : { incomplete: true }), summary, next_step: nextStep }
+           ...(errors.length ? { errors } : {}), ...(incomplete ? { incomplete: true } : {}), summary, next_step: nextStep }
 }
 
 // ------------------------------------------------------------------- schema

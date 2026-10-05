@@ -4,7 +4,7 @@
     {
       "version": "0.1.0-alpha.854",
       "changes": [
-        "The Butler gets missing episodes in one call: media_fill_missing re-reads Sonarr, matches releases by episode title and air year, grabs, imports by title, replaces stalled downloads when a usable alternative exists, and reports what is on the shelf, in flight and not found with indexer evidence.",
+        "The Butler gets missing episodes in one call: media_fill_missing re-reads Sonarr, matches releases to episodes only on evidence (episode title, season plus air year, or a Sonarr parse that agrees with the TVDB or scene code), grabs, imports by title, replaces a stalled download only after the stall is confirmed and a seeded replacement is grabbed, and reports what is on the shelf, in flight, deferred and not found with indexer evidence.",
         "Long tool-heavy turns get more steps while tools make progress (base 8, +4 per extension, ceiling 24); when the budget runs out the agent settles with a progress report instead of saying it ran out of steps.",
         "Tools refuse invented parameters by name: media tool schemas are closed, and the engine names an unknown parameter and an enum's allowed values. MCP tools can declare a longer call timeout for slow indexer searches."
       ]

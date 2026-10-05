@@ -6,6 +6,12 @@
       "package": "node-forge",
       "reason": "Reached only through @bitwarden/cli 2026.6.0 (latest 2026.9.1 still pins node-forge 1.4.0), and no patched node-forge exists (<=1.4.0 affected). The advisory concerns RSA PKCS#1 v1.5 signature verification; the harness uses bw for vault reads. Re-decide when a patched node-forge or bitwarden release ships.",
       "due": "2026-11-15"
+    },
+    {
+      "advisory": "https://github.com/advisories/GHSA-vfj7-8cjw-p6xm",
+      "package": "braces",
+      "reason": "Reached only through fast-glob 3.3.3 -> micromatch 4.0.8 -> braces 3.0.3, and no patched braces exists (3.0.3 is the latest; the advisory covers all versions). The risk is stack exhaustion from deeply nested brace patterns; the harness passes glob patterns from its own file tools, so the worst case is a failed tool call in the agent's own process. Re-decide when a patched braces or micromatch ships.",
+      "due": "2026-11-15"
     }
   ]
 }

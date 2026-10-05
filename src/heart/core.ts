@@ -2003,7 +2003,7 @@ export async function runAgent(
         emitNervesEvent({ level: "warn", component: "engine", event: "engine.step_budget_exhausted", message: "step budget used up; requesting a settle-only progress report", meta: { stepBudget, providerIterations } })
         continue
       }
-      lastIterationMadeProgress = false;
+      if (result.toolCalls.length > 0) lastIterationMadeProgress = false;
       // Phase annotation for Codex provider
       const hasPhaseAnnotation = providerRuntime.capabilities.has("phase-annotation");
       const isSoleSettle = result.toolCalls.length === 1 && result.toolCalls[0].name === "settle";
