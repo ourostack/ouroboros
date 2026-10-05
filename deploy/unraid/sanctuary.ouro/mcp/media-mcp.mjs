@@ -9,7 +9,8 @@
 //
 // Protocol: JSON-RPC 2.0 over stdio, newline framed, MCP 2024-11-05.
 
-import { readFileSync } from "node:fs"
+import { mkdirSync, readFileSync, writeFileSync } from "node:fs"
+import { dirname } from "node:path"
 import { pathToFileURL } from "node:url"
 
 const CRED_PATH = process.env.SANCTUARY_MEDIA_CREDENTIALS ?? "/home/ouro/AgentBundles/sanctuary.ouro/mcp/media-credentials.json"
@@ -901,6 +902,23 @@ export async function mediaBlocklistStalled(a) {
     seen.add(key)
     return true
   })
+  // Removing a download deletes its progress. Unless the owner asked for this download to go,
+  // only a download confirmed dead is removed: one still moving, or stalled without a second
+  // observation 30 minutes apart, may yet finish (2026-10-05: a 75.9% pack, the only copy, was
+  // deleted on "yes please get them").
+  const kept = []
+  if (a.owner_asked_to_remove !== true) {
+    targets = targets.filter((r) => {
+      const why = stallReason(r, now, observeProgress(progressKey(r), r.sizeleft ?? 0, now))
+      if (why?.confirmed) return true
+      kept.push({ queue_id: r.id, title: r.title ?? null, percent: pct(r), reason: why ? `stall_unconfirmed_${why.stall}` : "still_downloading" })
+      return false
+    })
+  }
+  if (!targets.length && kept.length) {
+    return { result: "kept_downloads", kept, queue: queueReport(rows),
+             message: "Nothing removed. These downloads are not confirmed dead, and removing one deletes its progress. For missing episodes call media_fill_missing: it replaces a stalled download only when a seeded alternative exists. Set owner_asked_to_remove only when the owner's own words asked to remove, clear or cancel this download; 'get them' is not that." }
+  }
   if (!targets.length) return { result: "nothing_to_blocklist", queue: queueReport(rows) }
   const removed = []
   const failed = []
@@ -915,7 +933,7 @@ export async function mediaBlocklistStalled(a) {
     }
   }
   const command = a.research === false ? null : await runSearch(a.kind, serviceId)
-  return { removed, ...(failed.length ? { failed } : {}), command, queue: queueReport(await itemQueue(a.kind, serviceId)) }
+  return { removed, ...(failed.length ? { failed } : {}), ...(kept.length ? { kept } : {}), command, queue: queueReport(await itemQueue(a.kind, serviceId)) }
 }
 
 // ------------------------------- tools: episodes / releases / blocklist / import
@@ -1249,12 +1267,35 @@ export function stallReason(row, nowMs, previous) {
 }
 
 // Remaining size per download, as first seen at that size, so a later call can tell stopped from slow.
-const progressSeen = new Map()
+// Kept on disk: every Butler restart starts a new MCP process, and an observation lost with it
+// would leave a dead download unconfirmable (or make a fresh one look confirmed too early).
 const PROGRESS_FORGET_MS = 14 * 24 * 3_600_000
+const progressPath = () => process.env.SANCTUARY_MEDIA_STATE ?? "/home/ouro/AgentBundles/sanctuary.ouro/state/media/download-progress.json"
+let progressSeen = null
+function loadProgress() {
+  if (progressSeen) return progressSeen
+  progressSeen = new Map()
+  try {
+    for (const [k, v] of Object.entries(JSON.parse(readFileSync(progressPath(), "utf8")))) {
+      if (typeof v?.sizeleft === "number" && typeof v?.at === "number") progressSeen.set(k, { sizeleft: v.sizeleft, at: v.at })
+    }
+  } catch { /* first run, or unreadable: start empty */ }
+  return progressSeen
+}
+function saveProgress() {
+  try {
+    mkdirSync(dirname(progressPath()), { recursive: true })
+    writeFileSync(progressPath(), JSON.stringify(Object.fromEntries(progressSeen)))
+  } catch { /* best effort: confirmation then waits for a later observation */ }
+}
+export const progressKey = (row) => String(row.downloadId ?? `row:${row.id}`).toUpperCase()
 function observeProgress(downloadId, sizeleft, nowMs) {
-  for (const [k, v] of progressSeen) if (nowMs - v.at > PROGRESS_FORGET_MS) progressSeen.delete(k)
-  const previous = progressSeen.get(downloadId)
-  if (!previous || previous.sizeleft !== sizeleft) progressSeen.set(downloadId, { sizeleft, at: nowMs })
+  const seen = loadProgress()
+  let changed = false
+  for (const [k, v] of seen) if (nowMs - v.at > PROGRESS_FORGET_MS) { seen.delete(k); changed = true }
+  const previous = seen.get(downloadId)
+  if (!previous || previous.sizeleft !== sizeleft) { seen.set(downloadId, { sizeleft, at: nowMs }); changed = true }
+  if (changed) saveProgress()
   return previous
 }
 
@@ -1365,7 +1406,7 @@ async function fillPass(a, seriesId, seriesTitle, { nowMs = Date.now(), deadline
   // wrong episodes; the grab history keeps the mapping the grab was made with.
   const downloads = new Map()
   for (const r of queue) {
-    const key = String(r.downloadId ?? `row:${r.id}`).toUpperCase()
+    const key = progressKey(r)
     if (!downloads.has(key)) downloads.set(key, { key, row: r, ids: new Set(grabbedFor.get(key)?.ids ?? []) })
     if (!grabbedFor.has(key)) downloads.get(key).ids.add(r.episodeId)
   }
@@ -1603,12 +1644,13 @@ const TOOL_LIST = [
   },
   {
     name: "media_blocklist_stalled",
-    description: "Clear stuck downloads for a series or movie already in Sonarr/Radarr: remove stalled queue rows from the download client, blocklist those releases so they are not grabbed again, then search again (research, default true). Use this when the owner asks to clear stuck or stalled downloads; no Jellyseerr request id is needed. Without queue_ids it targets the item's stalled rows; with queue_ids only those, and each must belong to the item. Explicit queue_ids are removed even if still downloading, so pass them only when the owner named those downloads. Rows of one season pack are removed once; a delete that fails is reported in `failed` and the re-search still runs.",
+    description: "Clear stuck downloads for a series or movie already in Sonarr/Radarr: remove stalled queue rows from the download client, blocklist those releases so they are not grabbed again, then search again (research, default true). Use this when the owner asks to clear stuck or stalled downloads; no Jellyseerr request id is needed. Without queue_ids it targets the item's stalled rows; with queue_ids only those, and each must belong to the item. A download still moving, or stalled but not yet confirmed dead, is kept (result kept_downloads) because removing it deletes its progress; set owner_asked_to_remove only when the owner's own words asked to remove, clear or cancel that download. For missing episodes use media_fill_missing instead. Rows of one season pack are removed once; a delete that fails is reported in `failed` and the re-search still runs.",
     inputSchema: { type: "object", properties: {
       kind: { type: "string", enum: ["series", "movie"] },
       service_id: { type: "number", description: "Sonarr series id or Radarr movie id (media_search_now returns it)." },
       queue_ids: { type: "array", items: { type: "number" } },
       research: { type: "boolean", description: "Search again afterwards. Default true." },
+      owner_asked_to_remove: { type: "boolean", description: "True only when the owner's own message asked to remove, clear or cancel these downloads. Not for 'get them'." },
     }, required: ["kind", "service_id"] },
   },
   {

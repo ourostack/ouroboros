@@ -158,6 +158,7 @@ describe("media MCP — search_now and blocklist_stalled", () => {
       jellyfin: { url: "http://jellyfin", apiKey: "jk" },
     }))
     process.env.SANCTUARY_MEDIA_CREDENTIALS = credPath
+    process.env.SANCTUARY_MEDIA_STATE = join(dir, "state", "download-progress.json")
     vi.stubGlobal("fetch", async (url: string, init: any = {}) => {
       const method = init.method ?? "GET"
       calls.push({ method, url, body: init.body ? JSON.parse(init.body) : undefined })
@@ -183,7 +184,7 @@ describe("media MCP — search_now and blocklist_stalled", () => {
     vi.resetModules()
     mod = await import("../../../deploy/unraid/sanctuary.ouro/mcp/media-mcp.mjs")
   })
-  afterEach(() => { vi.unstubAllGlobals(); delete process.env.SANCTUARY_MEDIA_CREDENTIALS })
+  afterEach(() => { vi.unstubAllGlobals(); delete process.env.SANCTUARY_MEDIA_CREDENTIALS; delete process.env.SANCTUARY_MEDIA_STATE })
 
   const commands = () => calls.filter((c) => c.url.includes("/command"))
   const deletes = () => calls.filter((c) => c.method === "DELETE")
@@ -272,6 +273,72 @@ describe("media MCP — search_now and blocklist_stalled", () => {
     expect(out.command).toBeNull()
     expect(deletes()).toHaveLength(1)
     expect(commands()).toHaveLength(0)
+  })
+
+  // Live 2026-10-05: "yes please get them" deleted the only copy of The Chef Show S2, a 75.9% pack
+  // stalled for two days with no ETA, after one observation in a process that had since restarted.
+  const chefPack = (extra: Record<string, unknown> = {}) => stalledRow(477226420, { downloadId: "743E", title: "The Chef Show [Season 2] (2020)", size: 5914587502, sizeleft: 1426063360, timeleft: "00:00:00", added: hoursAgo(Date.now(), 55), ...extra })
+
+  it("keeps a partial download whose stall is not confirmed, even when named", async () => {
+    queues.sonarr = [chefPack()]
+    const out = await mod.mediaBlocklistStalled({ kind: "series", service_id: 7, queue_ids: [477226420], research: true })
+    expect(out.result).toBe("kept_downloads")
+    expect(out.kept).toEqual([{ queue_id: 477226420, title: "The Chef Show [Season 2] (2020)", percent: 75.9, reason: "stall_unconfirmed_no_peers" }])
+    expect(out.message).toContain("media_fill_missing")
+    expect(deletes()).toHaveLength(0)
+    expect(commands()).toHaveLength(0)
+  })
+
+  it("keeps a named download that is still moving", async () => {
+    queues.sonarr = [chefPack({ timeleft: "01:10:00" })]
+    const out = await mod.mediaBlocklistStalled({ kind: "series", service_id: 7, queue_ids: [477226420] })
+    expect(out.kept[0].reason).toBe("still_downloading")
+    expect(deletes()).toHaveLength(0)
+  })
+
+  it("removes a named download when the owner asked for it to go", async () => {
+    queues.sonarr = [chefPack()]
+    const out = await mod.mediaBlocklistStalled({ kind: "series", service_id: 7, queue_ids: [477226420], owner_asked_to_remove: true, research: false })
+    expect(out.removed).toEqual([477226420])
+    expect(out.kept).toBeUndefined()
+    expect(deletes()).toHaveLength(1)
+  })
+
+  it("confirms a stall across a restart from the persisted observation, then removes it", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] })
+    try {
+      queues.sonarr = [chefPack()]
+      expect((await mod.mediaBlocklistStalled({ kind: "series", service_id: 7, queue_ids: [477226420] })).result).toBe("kept_downloads")
+      vi.setSystemTime(Date.now() + 31 * 60_000)
+      vi.resetModules()
+      mod = await import("../../../deploy/unraid/sanctuary.ouro/mcp/media-mcp.mjs")
+      const out = await mod.mediaBlocklistStalled({ kind: "series", service_id: 7, queue_ids: [477226420], research: false })
+      expect(out.removed).toEqual([477226420])
+    } finally { vi.useRealTimers() }
+  })
+
+  it("removes confirmed rows and reports the kept ones in the same call", async () => {
+    queues.sonarr = [stalledRow(1), chefPack()]
+    const out = await mod.mediaBlocklistStalled({ kind: "series", service_id: 7, queue_ids: [1, 477226420], research: false })
+    expect(out.removed).toEqual([1])
+    expect(out.kept).toHaveLength(1)
+  })
+
+  it("starts empty from an unreadable or malformed progress file and survives an unwritable one", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "media-state-"))
+    const bad = join(dir, "bad.json")
+    writeFileSync(bad, JSON.stringify({ "743E": { sizeleft: "x", at: 1 }, OTHER: null }))
+    process.env.SANCTUARY_MEDIA_STATE = bad
+    vi.resetModules()
+    mod = await import("../../../deploy/unraid/sanctuary.ouro/mcp/media-mcp.mjs")
+    queues.sonarr = [chefPack()]
+    expect((await mod.mediaBlocklistStalled({ kind: "series", service_id: 7, queue_ids: [477226420] })).result).toBe("kept_downloads")
+    writeFileSync(bad, "{not json")
+    process.env.SANCTUARY_MEDIA_STATE = join(bad, "under-a-file.json")
+    vi.resetModules()
+    mod = await import("../../../deploy/unraid/sanctuary.ouro/mcp/media-mcp.mjs")
+    expect((await mod.mediaBlocklistStalled({ kind: "series", service_id: 7, queue_ids: [477226420] })).result).toBe("kept_downloads")
+    expect(mod.progressKey({ id: 4 })).toBe("ROW:4")
   })
 
   it("refuses a queue id that belongs to another item", async () => {
@@ -452,6 +519,7 @@ describe("media MCP — release numbering tools", () => {
     const credPath = join(dir, "c.json")
     writeFileSync(credPath, JSON.stringify({ jellyseerr: { url: "http://seerr", apiKey: "k" }, sonarr: { url: "http://sonarr", apiKey: "k" }, radarr: { url: "http://radarr", apiKey: "k" }, prowlarr: { url: "http://prowlarr", apiKey: "k" } }))
     process.env.SANCTUARY_MEDIA_CREDENTIALS = credPath
+    process.env.SANCTUARY_MEDIA_STATE = join(dir, "state", "download-progress.json")
     vi.stubGlobal("fetch", async (url: string, init: any = {}) => {
       const method = init.method ?? "GET"
       calls.push({ method, url, body: init.body ? JSON.parse(init.body) : undefined })
@@ -473,7 +541,7 @@ describe("media MCP — release numbering tools", () => {
     vi.resetModules()
     mod = await import("../../../deploy/unraid/sanctuary.ouro/mcp/media-mcp.mjs")
   })
-  afterEach(() => { vi.unstubAllGlobals(); delete process.env.SANCTUARY_MEDIA_CREDENTIALS })
+  afterEach(() => { vi.unstubAllGlobals(); delete process.env.SANCTUARY_MEDIA_CREDENTIALS; delete process.env.SANCTUARY_MEDIA_STATE })
 
   it("media_episodes lists a season with ids and codes", async () => {
     const out = await mod.mediaEpisodes({ service_id: 191, season_number: 2 })
@@ -690,6 +758,7 @@ describe("media MCP — media_fill_missing", () => {
     const credPath = join(dir, "c.json")
     writeFileSync(credPath, JSON.stringify({ jellyseerr: { url: "http://seerr", apiKey: "k" }, sonarr: { url: "http://sonarr", apiKey: "k" }, radarr: { url: "http://radarr", apiKey: "k" }, prowlarr: { url: "http://prowlarr", apiKey: "k" } }))
     process.env.SANCTUARY_MEDIA_CREDENTIALS = credPath
+    process.env.SANCTUARY_MEDIA_STATE = join(dir, "state", "download-progress.json")
     vi.stubGlobal("fetch", async (url: string, init: any = {}) => {
       const method = init.method ?? "GET"
       const body = init.body ? JSON.parse(init.body) : undefined
@@ -719,7 +788,7 @@ describe("media MCP — media_fill_missing", () => {
     vi.resetModules()
     mod = await import("../../../deploy/unraid/sanctuary.ouro/mcp/media-mcp.mjs")
   })
-  afterEach(() => { vi.unstubAllGlobals(); delete process.env.SANCTUARY_MEDIA_CREDENTIALS })
+  afterEach(() => { vi.unstubAllGlobals(); delete process.env.SANCTUARY_MEDIA_CREDENTIALS; delete process.env.SANCTUARY_MEDIA_STATE })
 
   it("matches the 2020 season pack by season and air year, skips packs of episodes we have, and grabs it with the right mapping", async () => {
     const out = await mod.mediaFillMissing({ series: "chef show" }, { nowMs: now })
