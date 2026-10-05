@@ -1234,14 +1234,22 @@ function parseAgrees(release, episode) {
 }
 
 // Which wanted episodes one release really holds, and on what evidence; or why it is unusable.
-export function matchReleaseToEpisodes(release, { seriesId, seriesTitle, seriesYear, wanted, have }) {
+// A blocklisted release is still rejected, but says which wanted episodes it would hold, so a
+// release blocklisted by mistake can be offered back to the owner.
+export function matchReleaseToEpisodes(release, ctx) {
+  const rejections = rejectionTexts(release)
+  if (!rejections.some((x) => /blocklist/i.test(x))) return matchUnblocked(release, ctx, rejections)
+  const m = matchUnblocked(release, ctx, rejections.filter((x) => !/blocklist/i.test(x)))
+  if (m.reject === "other_series") return m
+  return { reject: "blocklisted", ...(m.episode_ids ? { would_match: { episode_ids: m.episode_ids, basis: m.basis } } : {}) }
+}
+
+function matchUnblocked(release, { seriesId, seriesTitle, seriesYear, wanted, have }, rejections) {
   const title = release.title ?? ""
   const norm = normalizeTitle(title)
   const base = seriesBaseTitle(seriesTitle)
-  const rejections = rejectionTexts(release)
   if (!hasWord(norm, base)) return { reject: "other_series" }
   if (release.mappedSeriesId && seriesId && release.mappedSeriesId !== seriesId) return { reject: "other_series" }
-  if (rejections.some((x) => /blocklist/i.test(x))) return { reject: "blocklisted" }
   if (rejections.some((x) => /not wanted in profile|below .*minimum|custom format/i.test(x))) return { reject: "quality_not_wanted" }
   const wantedYears = new Set(wanted.map(airYear).filter(Boolean))
   // The series' own premiere year ("Show (2019) Season 2") says nothing about which season it is,
@@ -1482,12 +1490,14 @@ async function fillPass(a, seriesId, seriesTitle, { nowMs = Date.now(), deadline
   const searchedEpisodes = new Set()
   const candidates = new Map()
   const rejected = new Map()
+  const blockedMatches = new Map()
   const inFlightTitles = new Set([...downloads.values()].map((d) => normalizeTitle(d.row?.title ?? d.title)).filter(Boolean))
   const consider = (raw) => {
     for (const r of Array.isArray(raw) ? raw : []) {
       if (!r?.guid || candidates.has(r.guid) || rejected.has(r.guid)) continue
       const m = matchReleaseToEpisodes(r, { seriesId, seriesTitle, seriesYear, wanted: need, have })
       const sameAsInFlight = inFlightTitles.has(normalizeTitle(r.title))
+      if (m.would_match && !sameAsInFlight) blockedMatches.set(r.guid, { raw: r, ids: m.would_match.episode_ids, basis: m.would_match.basis })
       if (m.reject || sameAsInFlight) { rejected.set(r.guid, { title: r.title ?? null, seeders: r.seeders ?? null, reason: sameAsInFlight ? "same_release_as_stalled_download" : m.reject }); continue }
       cacheRelease(`series:${r.guid}`, { ...releaseRow("series", r), service_id: seriesId, season_number: null, quality_raw: r.quality ?? null, languages_raw: r.languages ?? null })
       candidates.set(r.guid, { raw: r, ids: m.episode_ids, basis: m.basis })
@@ -1513,6 +1523,34 @@ async function fillPass(a, seriesId, seriesTitle, { nowMs = Date.now(), deadline
     markSearched(`e${e.id}`)
     searched.push(`Sonarr episode search ${sxe(e)}`)
     consider(await attempt(`episode search ${sxe(e)}`, () => sonarr("/release", { query: { episodeId: e.id }, timeoutMs: searchTimeout() })))
+  }
+
+  // Episodes whose only matching releases are on the blocklist. With the owner's words they are
+  // taken off it and grabbed like any other candidate (an unseeded one then waits for peers and is
+  // kept); without, they are reported so the owner can decide.
+  const covers = (id) => [...candidates.values()].some((c) => c.ids.includes(id))
+  const blockedOnly = [...blockedMatches.values()].filter((b) => b.ids.some((id) => !covers(id)))
+  const ownerRetry = typeof a.retry_blocklisted === "string" ? a.retry_blocklisted.trim() : ""
+  let blocklistedMatches = []
+  if (blockedOnly.length) {
+    const entries = (await attempt("read blocklist", () => itemBlocklist("series", seriesId))) ?? []
+    const entryIds = (b) => entries.filter((x) => normalizeTitle(x.sourceTitle) === normalizeTitle(b.raw.title)).map((x) => x.id)
+    blocklistedMatches = blockedOnly.map((b) => ({ b, blocklist_ids: entryIds(b) }))
+    if (ownerRetry && mayAct()) {
+      const ids = [...new Set(blocklistedMatches.flatMap((x) => x.blocklist_ids))]
+      const lifted = ids.length ? await attempt("remove from blocklist", async () => { await sonarr("/blocklist/bulk", { method: "DELETE", body: { ids } }); return true }) : false
+      if (lifted) {
+        for (const { b } of blocklistedMatches.filter((x) => x.blocklist_ids.length)) {
+          cacheRelease(`series:${b.raw.guid}`, { ...releaseRow("series", b.raw), service_id: seriesId, season_number: null, quality_raw: b.raw.quality ?? null, languages_raw: b.raw.languages ?? null })
+          candidates.set(b.raw.guid, b)
+          rejected.delete(b.raw.guid)
+        }
+        for (const t of [...new Set(blocklistedMatches.filter((x) => x.blocklist_ids.length).map((x) => x.b.raw.title))]) {
+          actions.push({ action: "removed_from_blocklist", title: t ?? null, owner_words: ownerRetry })
+        }
+        blocklistedMatches = blocklistedMatches.filter((x) => !x.blocklist_ids.length)
+      }
+    }
   }
 
   // Seeded releases first, then the ones that cover the most, then the best seeded.
@@ -1582,25 +1620,37 @@ async function fillPass(a, seriesId, seriesTitle, { nowMs = Date.now(), deadline
       evidence.push({ query: q, results: own.length, top: rows.map((r) => ({ title: r.title ?? null, seeders: r.seeders ?? null, indexer: r.indexer ?? null })) })
     }
   }
+  const blockedReport = []
+  for (const { b, blocklist_ids } of blocklistedMatches) {
+    if (blockedReport.some((x) => normalizeTitle(x.title) === normalizeTitle(b.raw.title))) continue
+    blockedReport.push({ title: b.raw.title ?? null, seeders: b.raw.seeders ?? null, episodes: b.ids.map((id) => sxe(byId.get(id))), blocklist_ids })
+  }
   const incomplete = cutShort || deferred.size > 0 || unsearched.length > 0 || !timeLeft() || errors.length > 0
   const moving = inFlight.filter((x) => x.state !== "stalled").length
+  const unseeded = actions.filter((x) => x.action === "grabbed" && x.may_never_finish)
   const summary = [
     `${have.length} of ${base.on_shelf.of} aired episodes are on the shelf; ${wanted.length} monitored ${wanted.length === 1 ? "episode is" : "episodes are"} missing.`,
     grabs ? `Grabbed ${grabs} release${grabs === 1 ? "" : "s"} now.` : "",
+    unseeded.length ? `${unseeded.map((x) => x.title).join("; ")} ${unseeded.length === 1 ? "has" : "have"} no seeders: it waits for peers and may never finish.` : "",
     moving ? `${moving} download(s) in progress.` : "",
     stuck.length ? `${stuck.length} download(s) stalled with no peers and no other usable release (${stuck.map((s) => `${s.title} at ${s.percent}%`).join("; ")}).` : "",
     notFound.length ? `No usable release found for ${notFound.map((e) => e.code).join(", ")}.` : "",
+    blockedReport.length ? `The only matching release${blockedReport.length === 1 ? " is" : "s are"} on the blocklist: ${blockedReport.map((x) => `${x.title} (${x.seeders ?? 0} seeders)`).join("; ")}.` : "",
     deferred.size || unsearched.length ? `${deferred.size + unsearched.length} episode(s) not handled yet in this pass.` : "",
     errors.length ? `${errors.length} step(s) failed: ${errors.map((x) => x.step).join("; ")}.` : "",
   ].filter(Boolean).join(" ")
   const nextStep = incomplete
     ? "This pass did not finish everything. Tell the owner what it did, then call media_fill_missing again to continue; do not act by hand."
+    : blockedReport.length && !ownerRetry
+      ? "Tell the owner exactly this outcome with the evidence, including that the only matching release is on the blocklist. If the owner then asks to get it anyway, call media_fill_missing again with retry_blocklisted set to the owner's own words; do not remove blocklist entries or grab by hand."
     : stuck.length || notFound.length
       ? "Tell the owner exactly this outcome with the evidence; do not grab, import or blocklist anything by hand. Call media_fill_missing again later to retry."
-      : "Work is in progress. Tell the owner what is downloading; call media_fill_missing again later to import and confirm. Do not search or grab anything else now."
+      : unseeded.length
+        ? "Tell the owner what was grabbed and that it has no seeders, so it may never finish. File a follow-up with await_condition to call media_fill_missing again later. Do not search or grab anything else now."
+        : "Work is in progress. Tell the owner what is downloading; call media_fill_missing again later to import and confirm. Do not search or grab anything else now."
   return { ...base, goal_met: false, in_flight: inFlight, not_found: notFound, actions,
            ...(deferred.size ? { deferred: need.filter((e) => deferred.has(e.id)).map(code) } : {}), ...(unsearched.length ? { unsearched: unsearched.map(code) } : {}),
-           searched, ...(rejected.size ? { rejected_releases: [...rejected.values()].slice(0, 12) } : {}), ...(evidence ? { indexer_evidence: evidence } : {}),
+           searched, ...(blockedReport.length ? { blocklisted_matches: blockedReport } : {}), ...(rejected.size ? { rejected_releases: [...rejected.values()].slice(0, 12) } : {}), ...(evidence ? { indexer_evidence: evidence } : {}),
            ...(errors.length ? { errors } : {}), ...(incomplete ? { incomplete: true } : {}), summary, next_step: nextStep }
 }
 
@@ -1697,6 +1747,7 @@ const TOOL_LIST = [
       series: { type: "string", description: "Series title as the owner said it." },
       service_id: { type: "number", description: "Sonarr series id, when known." },
       season_number: { type: "number", description: "Limit to one season. Omit for the whole series (specials excluded)." },
+      retry_blocklisted: { type: "string", description: "The owner's own words asking to get episodes whose only matching release is on the blocklist (reported in blocklisted_matches). Takes those releases off the blocklist and grabs them." },
     } },
   },
   {

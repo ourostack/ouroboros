@@ -795,6 +795,7 @@ describe("media MCP — media_fill_missing", () => {
   let commands: any[]
   let mod: any
   let fail: ((method: string, url: string) => boolean) | null
+  let blocklist: any[]
 
   const rel = (guid: string, title: string, seeders: number, over: Record<string, unknown> = {}) => ({ guid, indexerId: 5, indexer: "Lime", title, size: 5e9, seeders, quality: q, languages: langs, rejections: [], mappedEpisodeInfo: [], ...over })
   const mappedHave = [9, 10, 11, 12, 13, 14].map((n) => ({ id: 14451 + n, seasonNumber: 1, episodeNumber: n }))
@@ -815,6 +816,7 @@ describe("media MCP — media_fill_missing", () => {
     queue = []
     history = []
     manual = []
+    blocklist = []
     prowlarrRows = [{ title: "Vegas Chef Prizefight S01E03", seeders: 13, indexer: "Lime" }, { title: "The Chef Show [Season 2] (2020) [WEB DL 1080p]", seeders: 0, indexer: "LimeTorrents" }, { title: "The Chef Show S02 1080p WEB X264 STARZ", seeders: 3, indexer: "Lime" }]
     releases = {
       "seasonNumber=2": [
@@ -846,6 +848,8 @@ describe("media MCP — media_fill_missing", () => {
       if (url.startsWith("http://sonarr/api/v3/queue/") && method === "DELETE") { const id = Number(url.split("/queue/")[1].split("?")[0]); queue = queue.filter((r) => r.downloadId !== queue.find((x) => x.id === id)?.downloadId); return json({}) }
       if (url.startsWith("http://sonarr/api/v3/queue")) return json({ records: queue, totalRecords: queue.length })
       if (url.startsWith("http://sonarr/api/v3/history/series")) return json(history)
+      if (url.startsWith("http://sonarr/api/v3/blocklist/bulk") && method === "DELETE") { blocklist = blocklist.filter((b) => !body.ids.includes(b.id)); return json({}) }
+      if (url.startsWith("http://sonarr/api/v3/blocklist")) return json({ records: blocklist, totalRecords: blocklist.length })
       if (url.startsWith("http://sonarr/api/v3/release") && method === "GET") {
         const key = Object.keys(releases).find((k) => query.includes(k))
         return json(key ? releases[key] : [])
@@ -861,6 +865,63 @@ describe("media MCP — media_fill_missing", () => {
     mod = await import("../../../deploy/unraid/sanctuary.ouro/mcp/media-mcp.mjs")
   })
   afterEach(() => { vi.unstubAllGlobals(); delete process.env.SANCTUARY_MEDIA_CREDENTIALS; delete process.env.SANCTUARY_MEDIA_STATE })
+
+  // Live 2026-10-05: the only copy of the 2020 pack was deleted and blocklisted by mistake.
+  const blockThePack = () => {
+    releases["seasonNumber=2"] = releases["seasonNumber=2"].map((r: any) => (r.guid === "g-2020" ? { ...r, seeders: 0, rejections: [{ reason: "Release is blocklisted" }] } : r))
+    blocklist = [{ id: 77, seriesId: 191, sourceTitle: "The Chef Show [Season 2] (2020) [WEB-DL 1080p]", episodeIds: [14472, 14473, 14474, 14475, 14476] }, { id: 78, seriesId: 191, sourceTitle: "The Chef Show S02E05 1080p HEVC x265 MeGusta" }]
+  }
+  const s2 = ["S02E01", "S02E02", "S02E03", "S02E04", "S02E05"]
+
+  it("reports a matching release that is only blocklisted, and leaves it alone without the owner's words", async () => {
+    blockThePack()
+    const out = await mod.mediaFillMissing({ series: "chef show", season_number: 2 }, { nowMs: now })
+    expect(out.blocklisted_matches).toEqual([{ title: "The Chef Show [Season 2] (2020) [WEB DL 1080p]", seeders: 0, episodes: s2, blocklist_ids: [77] }])
+    expect(out.summary).toContain("only matching release is on the blocklist")
+    expect(out.next_step).toContain("retry_blocklisted")
+    expect(out.actions).toEqual([])
+    expect(calls.filter((c) => c.method !== "GET")).toEqual([])
+  })
+
+  it("takes the release off the blocklist on the owner's words and grabs it to wait for peers", async () => {
+    blockThePack()
+    const out = await mod.mediaFillMissing({ series: "chef show", season_number: 2, retry_blocklisted: " yes please get them " }, { nowMs: now })
+    expect(calls.find((c) => c.method === "DELETE")).toMatchObject({ url: "http://sonarr/api/v3/blocklist/bulk", body: { ids: [77] } })
+    expect(out.actions[0]).toEqual({ action: "removed_from_blocklist", title: "The Chef Show [Season 2] (2020) [WEB DL 1080p]", owner_words: "yes please get them" })
+    expect(out.actions[1]).toMatchObject({ action: "grabbed", title: "The Chef Show [Season 2] (2020) [WEB DL 1080p]", episodes: s2, may_never_finish: true })
+    expect(calls.find((c) => c.method === "POST" && c.url.includes("/release"))?.body).toMatchObject({ guid: "g-2020", episodeIds: [14472, 14473, 14474, 14475, 14476] })
+    expect(out.blocklisted_matches).toBeUndefined()
+    expect(blocklist.map((b) => b.id)).toEqual([78])
+    expect(out.summary).toContain("no seeders: it waits for peers and may never finish")
+    expect(out.next_step).toContain("await_condition")
+  })
+
+  it("keeps reporting a blocklisted match it cannot find on the blocklist, or when lifting fails", async () => {
+    blockThePack()
+    blocklist = []
+    const out = await mod.mediaFillMissing({ series: "chef show", season_number: 2, retry_blocklisted: "yes" }, { nowMs: now })
+    expect(out.blocklisted_matches[0].blocklist_ids).toEqual([])
+    expect(calls.filter((c) => c.method !== "GET")).toEqual([])
+    blockThePack()
+    calls.length = 0
+    fail = (method, url) => method === "DELETE" && url.includes("/blocklist")
+    const failed = await mod.mediaFillMissing({ series: "chef show", season_number: 2, retry_blocklisted: "yes" }, { nowMs: now })
+    expect(failed.blocklisted_matches[0].blocklist_ids).toEqual([77])
+    expect(failed.errors.map((e: any) => e.step)).toContain("remove from blocklist")
+    expect(calls.some((c) => c.method === "POST")).toBe(false)
+  })
+
+  it("does not offer a blocklisted release when another release covers the same episodes", async () => {
+    blockThePack()
+    releases["seasonNumber=2"].push(rel("g-alt", "The Chef Show [Season 2] (2020) [WEB DL 720p]", 6, { fullSeason: true, seasonNumber: 2 }))
+    const out = await mod.mediaFillMissing({ series: "chef show", season_number: 2 }, { nowMs: now })
+    expect(out.blocklisted_matches).toBeUndefined()
+    expect(out.actions[0]).toMatchObject({ action: "grabbed", title: "The Chef Show [Season 2] (2020) [WEB DL 720p]" })
+  })
+
+  it("matches an other-series blocklisted release as other_series", () => {
+    expect(mod.matchReleaseToEpisodes({ title: "Vegas Chef Prizefight S01E03", rejections: ["Release is blocklisted"] }, { seriesId: 191, seriesTitle: "The Chef Show", seriesYear: 2019, wanted: [], have: [] })).toEqual({ reject: "other_series" })
+  })
 
   it("shares stall observations with media_blocklist_stalled, so a stall fill saw can be confirmed by the guard", async () => {
     queue = [14472, 14473].map((ep, i) => packRow(900 + i, ep))
@@ -1141,7 +1202,7 @@ describe("media MCP — media_fill_missing", () => {
 
   it("closes every schema and refuses invented parameters by name", () => {
     for (const t of mod.TOOLS) expect(t.inputSchema.additionalProperties).toBe(false)
-    expect(mod.unknownArguments("media_fill_missing", { series: "x", dry_run: true })).toMatchObject({ error: "unknown_parameter", unknown: ["dry_run"], allowed: ["series", "service_id", "season_number"] })
+    expect(mod.unknownArguments("media_fill_missing", { series: "x", dry_run: true })).toMatchObject({ error: "unknown_parameter", unknown: ["dry_run"], allowed: ["series", "service_id", "season_number", "retry_blocklisted"] })
     expect(mod.unknownArguments("media_fill_missing", { series: "x" })).toBeNull()
     expect(mod.unknownArguments("media_chain_health", { x: 1 }).message).toContain("no parameters")
     expect(mod.TOOLS.find((t: any) => t.name === "media_fill_missing")._meta).toEqual({ "ouro.bot/timeoutMs": 240_000 })
