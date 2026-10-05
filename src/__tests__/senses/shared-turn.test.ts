@@ -1036,7 +1036,8 @@ describe("runSenseTurn", () => {
 
   it("names the step limit when an errored turn ran out of steps, and keeps the private channel silent", async () => {
     const { erroredTurnReply, runSenseTurn } = await import("../../senses/shared-turn")
-    expect(erroredTurnReply("provider iteration limit exhausted at response 8 before tool execution")).toMatch(/ran out of steps/u)
+    expect(erroredTurnReply("provider iteration limit exhausted at response 8 before tool execution")).toMatch(/hit my step limit.*pick up from where I stopped/u)
+    expect(erroredTurnReply("provider iteration limit exhausted at response 8 before tool execution")).not.toMatch(/ask something narrower/u)
     expect(erroredTurnReply("socket hang up")).toMatch(/something went wrong/u)
     for (const channel of ["telegram", "inner"] as const) {
       const delivered: string[] = []

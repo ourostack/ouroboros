@@ -675,7 +675,7 @@ describe("runAgent tool loop guard", () => {
     expect(messages).toContainEqual({ role: "tool", tool_call_id: "call_private_settle_accepted", content: "(settled)" })
   })
 
-  it("stops at the eighth accepted provider response before executing its tool call", async () => {
+  it("never executes the eighth response's tool call when no progress was made, then fails the unsettled report call", async () => {
     let response = 0
     mockCreate.mockImplementation(() => {
       response += 1
@@ -685,7 +685,7 @@ describe("runAgent tool loop guard", () => {
         function: { name: "read_file", arguments: JSON.stringify({ path: `/tmp/${response}` }) },
       }])])
     })
-    const execTool = vi.fn().mockResolvedValue("read")
+    const execTool = vi.fn().mockRejectedValue(new Error("unreadable"))
     const callbacks = makeCallbacks()
     const { runAgent } = await import("../../heart/core")
 
@@ -707,10 +707,10 @@ describe("runAgent tool loop guard", () => {
       toolContext: { signin: async () => undefined },
     })
 
-    expect(mockCreate).toHaveBeenCalledTimes(8)
+    expect(mockCreate).toHaveBeenCalledTimes(9)
     expect(execTool).toHaveBeenCalledTimes(7)
     expect(callbacks.onError).toHaveBeenCalledWith(expect.objectContaining({
-      message: "provider iteration limit exhausted at response 8 before tool execution",
+      message: "provider iteration limit exhausted at response 9 before the progress report settled",
     }), "terminal")
     expect(result.outcome).toBe("errored")
   })
@@ -2004,41 +2004,127 @@ describe("runAgent tool loop guard", () => {
     expect(result.outcome).toBe(channel === "inner" ? "rested" : "observed")
   })
 
-  it("stops at eight accepted provider responses before resolving the eighth tool handler", async () => {
-    let response = 0
-    mockCreate.mockImplementation(() => {
-      response += 1
-      return makeStream([makeChunk(undefined, [{
-        index: 0,
-        id: `call_probe_${response}`,
-        function: { name: "probe", arguments: JSON.stringify({ value: `iteration-${response}` }) },
-      }])])
-    })
-    const execTool = vi.fn().mockResolvedValue("ok")
-    const { runAgent } = await import("../../heart/core")
+  describe("adaptive step budget", () => {
+    const probeTool = {
+      type: "function",
+      function: {
+        name: "probe",
+        description: "test probe",
+        parameters: { type: "object", properties: { value: { type: "string" } }, required: ["value"], additionalProperties: false },
+      },
+    }
+    const probeCall = (id: string, value: string) => makeStream([makeChunk(undefined, [{ index: 0, id, function: { name: "probe", arguments: JSON.stringify({ value }) } }])])
+    const settleCall = (answer: string) => makeStream([makeChunk(undefined, [{ index: 0, id: "call_settle", function: { name: "settle", arguments: JSON.stringify({ answer, intent: "complete" }) } }])])
+    const run = async (execTool: any, callbacks = makeCallbacks(), request = "keep probing") => {
+      const { runAgent } = await import("../../heart/core")
+      return runAgent([{ role: "user", content: request }], callbacks, "cli", undefined, {
+        tools: [probeTool] as any, execTool, toolContext: { signin: async () => undefined },
+      })
+    }
 
-    const result = await runAgent([{ role: "user", content: "keep probing" }], makeCallbacks(), "cli", undefined, {
-      tools: [{
-        type: "function",
-        function: {
-          name: "probe",
-          description: "test probe",
-          parameters: {
-            type: "object",
-            properties: { value: { type: "string" } },
-            required: ["value"],
-            additionalProperties: false,
-          },
-        },
-      }],
-      execTool,
-      toolContext: { signin: async () => undefined },
+    it("extends the budget while new successful tool calls make progress", async () => {
+      const { MAX_PROVIDER_ITERATIONS } = await import("../../heart/core")
+      for (let i = 1; i <= MAX_PROVIDER_ITERATIONS + 2; i++) mockCreate.mockReturnValueOnce(probeCall(`call_${i}`, `v${i}`))
+      mockCreate.mockReturnValueOnce(settleCall("all probed"))
+      const execTool = vi.fn().mockResolvedValue("ok")
+      const result = await run(execTool)
+      expect(result.outcome).toBe("settled")
+      expect(execTool).toHaveBeenCalledTimes(MAX_PROVIDER_ITERATIONS + 2)
+      expect(mockCreate).toHaveBeenCalledTimes(MAX_PROVIDER_ITERATIONS + 3)
     })
 
-    expect(mockCreate).toHaveBeenCalledTimes(8)
-    expect(execTool).toHaveBeenCalledTimes(7)
-    expect(execTool).not.toHaveBeenCalledWith("probe", { value: "iteration-8" }, expect.anything())
-    expect(result).toMatchObject({ outcome: "errored", error: expect.objectContaining({ message: expect.stringContaining("8") }) })
+    it("does not extend when the same call keeps repeating, and asks for a progress report instead of erroring", async () => {
+      const { MAX_PROVIDER_ITERATIONS } = await import("../../heart/core")
+      mockCreate.mockReturnValueOnce(probeCall("call_1", "same"))
+      for (let i = 2; i <= MAX_PROVIDER_ITERATIONS; i++) mockCreate.mockReturnValueOnce(probeCall(`call_${i}`, "same"))
+      mockCreate.mockReturnValueOnce(settleCall("probed once; still waiting"))
+      const execTool = vi.fn().mockResolvedValue("ok")
+      const callbacks = makeCallbacks()
+      const result = await run(execTool, callbacks)
+      expect(result.outcome).toBe("settled")
+      expect(mockCreate).toHaveBeenCalledTimes(MAX_PROVIDER_ITERATIONS + 1)
+      expect(callbacks.onError).not.toHaveBeenCalledWith(expect.anything(), "terminal")
+    })
+
+    it("does not extend when every call in the iteration errored", async () => {
+      const { MAX_PROVIDER_ITERATIONS } = await import("../../heart/core")
+      for (let i = 1; i <= MAX_PROVIDER_ITERATIONS; i++) mockCreate.mockReturnValueOnce(probeCall(`call_${i}`, `v${i}`))
+      mockCreate.mockReturnValueOnce(settleCall("every probe failed"))
+      const execTool = vi.fn().mockRejectedValue(new Error("boom"))
+      const result = await run(execTool)
+      expect(result.outcome).toBe("settled")
+      expect(mockCreate).toHaveBeenCalledTimes(MAX_PROVIDER_ITERATIONS + 1)
+    })
+
+    it("forces a settle-only progress report call with the instruction when the budget is used up", async () => {
+      const { MAX_PROVIDER_ITERATIONS } = await import("../../heart/core")
+      mockCreate.mockReturnValueOnce(probeCall("call_1", "same"))
+      for (let i = 2; i <= MAX_PROVIDER_ITERATIONS; i++) mockCreate.mockReturnValueOnce(probeCall(`call_${i}`, "same"))
+      mockCreate.mockReturnValueOnce(settleCall("report"))
+      const callbacks = makeCallbacks()
+      await run(vi.fn().mockResolvedValue("ok"), callbacks)
+      const finalRequest = mockCreate.mock.calls.at(-1)![0]
+      const toolNames = (finalRequest.tools ?? []).map((tool: any) => tool.function?.name ?? tool.name)
+      expect(toolNames).toEqual(["settle"])
+      const serialized = JSON.stringify(finalRequest.messages)
+      expect(serialized).toContain("step budget for this turn is used up")
+      expect(serialized).toContain("not executed")
+      expect(callbacks.onClearText).toHaveBeenCalled()
+    })
+
+    it("stops extending at the hard ceiling and requests the progress report", async () => {
+      const { MAX_PROVIDER_ITERATIONS_CEILING } = await import("../../heart/core")
+      for (let i = 1; i <= MAX_PROVIDER_ITERATIONS_CEILING; i++) mockCreate.mockReturnValueOnce(probeCall(`call_${i}`, `v${i}`))
+      mockCreate.mockReturnValueOnce(settleCall("ceiling report"))
+      const execTool = vi.fn().mockResolvedValue("ok")
+      const result = await run(execTool)
+      expect(result.outcome).toBe("settled")
+      expect(execTool).toHaveBeenCalledTimes(MAX_PROVIDER_ITERATIONS_CEILING - 1)
+      expect(mockCreate).toHaveBeenCalledTimes(MAX_PROVIDER_ITERATIONS_CEILING + 1)
+    })
+
+    it("delivers a sole settle at the budget boundary instead of treating it as exhausted", async () => {
+      const { MAX_PROVIDER_ITERATIONS } = await import("../../heart/core")
+      for (let i = 1; i < MAX_PROVIDER_ITERATIONS; i++) mockCreate.mockReturnValueOnce(probeCall(`call_${i}`, "same"))
+      mockCreate.mockReturnValueOnce(settleCall("done at the line"))
+      const result = await run(vi.fn().mockResolvedValue("ok"))
+      expect(result.outcome).toBe("settled")
+      expect(mockCreate).toHaveBeenCalledTimes(MAX_PROVIDER_ITERATIONS)
+    })
+
+    it("falls back to the iteration-limit error when the progress report call calls a work tool again", async () => {
+      const { MAX_PROVIDER_ITERATIONS } = await import("../../heart/core")
+      mockCreate.mockReturnValueOnce(probeCall("call_1", "same"))
+      mockCreate.mockImplementation(() => probeCall("call_n", "same"))
+      const callbacks = makeCallbacks()
+      const result = await run(vi.fn().mockResolvedValue("ok"), callbacks)
+      expect(result.outcome).toBe("errored")
+      expect(mockCreate).toHaveBeenCalledTimes(MAX_PROVIDER_ITERATIONS + 1)
+      expect(callbacks.onError).toHaveBeenCalledWith(expect.objectContaining({ message: expect.stringContaining("iteration limit exhausted") }), "terminal")
+    })
+
+    it("falls back to the error when the progress report settle is rejected and the retry would need another call", async () => {
+      const { MAX_PROVIDER_ITERATIONS } = await import("../../heart/core")
+      for (let i = 1; i <= MAX_PROVIDER_ITERATIONS; i++) mockCreate.mockReturnValueOnce(probeCall(`call_${i}`, "same"))
+      mockCreate.mockImplementation(() => settleCall("I queued the private pass and will return with it."))
+      const callbacks = makeCallbacks()
+      const result = await run(vi.fn().mockResolvedValue("ok"), callbacks, "think privately and report back to me")
+      expect(result.outcome).toBe("errored")
+      expect(mockCreate).toHaveBeenCalledTimes(MAX_PROVIDER_ITERATIONS + 2)
+      expect(callbacks.onError).toHaveBeenCalledWith(expect.objectContaining({ message: expect.stringContaining("iteration limit exhausted") }), "terminal")
+    })
+
+    it("keeps the old error when settle is not available on the channel", async () => {
+      const { runAgent } = await import("../../heart/core")
+      let response = 0
+      mockCreate.mockImplementation(() => probeCall(`call_${++response}`, `v${response}`))
+      const callbacks = makeCallbacks()
+      const result = await runAgent([{ role: "user", content: "keep probing" }], callbacks, "inner", undefined, {
+        tools: [probeTool] as any, execTool: vi.fn().mockResolvedValue("ok"), toolContext: { signin: async () => undefined },
+      } as any)
+      expect(result.outcome).toBe("errored")
+      expect(callbacks.onError).toHaveBeenCalledWith(expect.objectContaining({ message: "provider iteration limit exhausted at response 24 before tool execution" }), "terminal")
+    })
   })
 
   describe("approval suspension boundary", () => {

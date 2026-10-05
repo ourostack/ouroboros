@@ -213,6 +213,16 @@ export function recordToolOutcome(
   }
 }
 
+/** True when this exact call (tool name + canonicalized arguments) was already recorded this turn. */
+export function hasRecordedToolCall(
+  state: ToolLoopState,
+  toolName: string,
+  args: Record<string, string>,
+): boolean {
+  const callHash = digest(normalizeArgs(toolName, args))
+  return state.history.some((record) => record.toolName === toolName && record.callHash === callHash)
+}
+
 // Tools that must never be blocked by the circuit breaker.
 // settle = end the turn, surface = deliver results outward.
 // ponder = continue thinking (private runtime) or hand off to private runtime (outer).
