@@ -9,7 +9,7 @@
 //
 // Protocol: JSON-RPC 2.0 over stdio, newline framed, MCP 2024-11-05.
 
-import { mkdirSync, readFileSync, writeFileSync } from "node:fs"
+import { mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs"
 import { dirname } from "node:path"
 import { pathToFileURL } from "node:url"
 
@@ -878,6 +878,20 @@ export async function mediaSearchNow(a) {
   return { kind: a.kind, service_id: item.id, title: item.title, command, queue: queueReport(await itemQueue(a.kind, item.id)) }
 }
 
+// Whether a download may be removed without the owner naming it. A download that has never
+// started is dead once past the stall window. A partial one is dead only when observed with no
+// ETA and no progress across 30 minutes: age alone is not enough (a 75.9% pack with no seeders
+// today can finish when one returns), and anything with an ETA is still moving.
+const hasEta = (row) => row.timeleft !== undefined && row.timeleft !== null && row.timeleft !== "00:00:00"
+export function removalVerdict(row, nowMs, previous) {
+  if (hasEta(row)) return "still_downloading"
+  const left = row.sizeleft ?? 0
+  if ((row.size ?? 0) > 0 && left >= row.size) return isStalledRow(row, nowMs) ? "dead" : "not_started_yet"
+  if (row.status === "failed") return "dead"
+  const unchanged = previous && previous.sizeleft === left && nowMs - previous.at >= FILL_STALL_CONFIRM_MS
+  return unchanged ? "dead" : "stall_unconfirmed"
+}
+
 export async function mediaBlocklistStalled(a) {
   if (a.kind !== "series" && a.kind !== "movie") return { result: "invalid_kind", message: "kind must be 'series' or 'movie'." }
   if (a.service_id === undefined || a.service_id === null) return { result: "service_id_required" }
@@ -906,18 +920,22 @@ export async function mediaBlocklistStalled(a) {
   // only a download confirmed dead is removed: one still moving, or stalled without a second
   // observation 30 minutes apart, may yet finish (2026-10-05: a 75.9% pack, the only copy, was
   // deleted on "yes please get them").
+  const ownerWords = typeof a.owner_words === "string" ? a.owner_words.trim() : ""
+  if (ownerWords && !(Array.isArray(a.queue_ids) && a.queue_ids.length)) {
+    return { result: "owner_words_need_queue_ids", message: "owner_words removes only downloads the owner named: pass their queue_ids too.", queue: queueReport(rows) }
+  }
   const kept = []
-  if (a.owner_asked_to_remove !== true) {
+  if (!ownerWords) {
     targets = targets.filter((r) => {
-      const why = stallReason(r, now, observeProgress(progressKey(r), r.sizeleft ?? 0, now))
-      if (why?.confirmed) return true
-      kept.push({ queue_id: r.id, title: r.title ?? null, percent: pct(r), reason: why ? `stall_unconfirmed_${why.stall}` : "still_downloading" })
+      const verdict = removalVerdict(r, now, observeProgress(progressKey(r, a.kind), r.sizeleft ?? 0, now))
+      if (verdict === "dead") return true
+      kept.push({ queue_id: r.id, title: r.title ?? null, percent: pct(r), reason: verdict })
       return false
     })
   }
   if (!targets.length && kept.length) {
     return { result: "kept_downloads", kept, queue: queueReport(rows),
-             message: "Nothing removed. These downloads are not confirmed dead, and removing one deletes its progress. For missing episodes call media_fill_missing: it replaces a stalled download only when a seeded alternative exists. Set owner_asked_to_remove only when the owner's own words asked to remove, clear or cancel this download; 'get them' is not that." }
+             message: "Nothing removed. These downloads are not confirmed dead, and removing one deletes its progress. A partial download counts as dead only after two calls at least 30 minutes apart see no progress and no ETA; call again later to confirm. For missing episodes call media_fill_missing instead: it replaces a stalled download only when a seeded alternative exists. Pass owner_words only with the owner's own words asking to remove, clear or cancel this download; 'get them' is not that." }
   }
   if (!targets.length) return { result: "nothing_to_blocklist", queue: queueReport(rows) }
   const removed = []
@@ -933,7 +951,7 @@ export async function mediaBlocklistStalled(a) {
     }
   }
   const command = a.research === false ? null : await runSearch(a.kind, serviceId)
-  return { removed, ...(failed.length ? { failed } : {}), ...(kept.length ? { kept } : {}), command, queue: queueReport(await itemQueue(a.kind, serviceId)) }
+  return { removed, ...(failed.length ? { failed } : {}), ...(kept.length ? { kept } : {}), ...(ownerWords ? { removed_on_owner_words: ownerWords } : {}), command, queue: queueReport(await itemQueue(a.kind, serviceId)) }
 }
 
 // ------------------------------- tools: episodes / releases / blocklist / import
@@ -1270,32 +1288,50 @@ export function stallReason(row, nowMs, previous) {
 // Kept on disk: every Butler restart starts a new MCP process, and an observation lost with it
 // would leave a dead download unconfirmable (or make a fresh one look confirmed too early).
 const PROGRESS_FORGET_MS = 14 * 24 * 3_600_000
+// Observations further apart than this are not continuous: the download may have been paused
+// and resumed in between, so the older one stops counting.
+const PROGRESS_CONTINUITY_MS = 6 * 3_600_000
 const progressPath = () => process.env.SANCTUARY_MEDIA_STATE ?? "/home/ouro/AgentBundles/sanctuary.ouro/state/media/download-progress.json"
 let progressSeen = null
-function loadProgress() {
-  if (progressSeen) return progressSeen
-  progressSeen = new Map()
+function readProgressFile() {
+  const out = new Map()
   try {
     for (const [k, v] of Object.entries(JSON.parse(readFileSync(progressPath(), "utf8")))) {
-      if (typeof v?.sizeleft === "number" && typeof v?.at === "number") progressSeen.set(k, { sizeleft: v.sizeleft, at: v.at })
+      if (typeof v?.sizeleft === "number" && typeof v?.at === "number") out.set(k, { sizeleft: v.sizeleft, at: v.at, seen: typeof v.seen === "number" ? v.seen : v.at })
     }
   } catch { /* first run, or unreadable: start empty */ }
+  return out
+}
+function loadProgress() {
+  if (!progressSeen) progressSeen = readProgressFile()
   return progressSeen
 }
-function saveProgress() {
+// Merge with what another process (an overlapping restart) may have saved, keeping the
+// later sighting per download, then replace the file atomically so a crash cannot truncate it.
+function saveProgress(nowMs) {
   try {
-    mkdirSync(dirname(progressPath()), { recursive: true })
-    writeFileSync(progressPath(), JSON.stringify(Object.fromEntries(progressSeen)))
-  } catch { /* best effort: confirmation then waits for a later observation */ }
+    for (const [k, v] of readProgressFile()) {
+      const mine = progressSeen.get(k)
+      if (nowMs - v.seen <= PROGRESS_FORGET_MS && (!mine || v.seen > mine.seen)) progressSeen.set(k, v)
+    }
+    mkdirSync(dirname(progressPath()), { recursive: true, mode: 0o700 })
+    const tmp = `${progressPath()}.tmp-${process.pid}`
+    writeFileSync(tmp, JSON.stringify(Object.fromEntries(progressSeen)), { mode: 0o600 })
+    renameSync(tmp, progressPath())
+  } catch (e) {
+    // Best effort: confirmation then waits for a later observation in this process.
+    process.stderr.write(`media-mcp: download progress not saved: ${e.message}\n`)
+  }
 }
-export const progressKey = (row) => String(row.downloadId ?? `row:${row.id}`).toUpperCase()
+export const progressKey = (row, kind = "series") => `${kind}:${row.downloadId ?? `row:${row.id}`}`.toUpperCase()
 function observeProgress(downloadId, sizeleft, nowMs) {
   const seen = loadProgress()
-  let changed = false
-  for (const [k, v] of seen) if (nowMs - v.at > PROGRESS_FORGET_MS) { seen.delete(k); changed = true }
-  const previous = seen.get(downloadId)
-  if (!previous || previous.sizeleft !== sizeleft) { seen.set(downloadId, { sizeleft, at: nowMs }); changed = true }
-  if (changed) saveProgress()
+  for (const [k, v] of seen) if (nowMs - v.seen > PROGRESS_FORGET_MS) seen.delete(k)
+  let previous = seen.get(downloadId)
+  if (previous && nowMs - previous.seen > PROGRESS_CONTINUITY_MS) previous = undefined
+  if (!previous || previous.sizeleft !== sizeleft) seen.set(downloadId, { sizeleft, at: nowMs, seen: nowMs })
+  else seen.set(downloadId, { ...previous, seen: nowMs })
+  saveProgress(nowMs)
   return previous
 }
 
@@ -1406,7 +1442,7 @@ async function fillPass(a, seriesId, seriesTitle, { nowMs = Date.now(), deadline
   // wrong episodes; the grab history keeps the mapping the grab was made with.
   const downloads = new Map()
   for (const r of queue) {
-    const key = progressKey(r)
+    const key = String(r.downloadId ?? `row:${r.id}`).toUpperCase()
     if (!downloads.has(key)) downloads.set(key, { key, row: r, ids: new Set(grabbedFor.get(key)?.ids ?? []) })
     if (!grabbedFor.has(key)) downloads.get(key).ids.add(r.episodeId)
   }
@@ -1433,7 +1469,7 @@ async function fillPass(a, seriesId, seriesTitle, { nowMs = Date.now(), deadline
       ids.forEach((id) => covered.add(id))
       continue
     }
-    const why = stallReason(d.row, nowMs, observeProgress(d.key, d.row.sizeleft ?? 0, nowMs))
+    const why = stallReason(d.row, nowMs, observeProgress(progressKey(d.row), d.row.sizeleft ?? 0, nowMs))
     const info = { ...entry, percent: pct(d.row), queue_id: d.row.id, added: d.row.added ?? null }
     if (why) stalled.push({ ...info, ids, ...why })
     else { inFlight.push({ ...info, state: importDone(d.row) ? "importing" : "downloading" }); ids.forEach((id) => covered.add(id)) }
@@ -1644,13 +1680,13 @@ const TOOL_LIST = [
   },
   {
     name: "media_blocklist_stalled",
-    description: "Clear stuck downloads for a series or movie already in Sonarr/Radarr: remove stalled queue rows from the download client, blocklist those releases so they are not grabbed again, then search again (research, default true). Use this when the owner asks to clear stuck or stalled downloads; no Jellyseerr request id is needed. Without queue_ids it targets the item's stalled rows; with queue_ids only those, and each must belong to the item. A download still moving, or stalled but not yet confirmed dead, is kept (result kept_downloads) because removing it deletes its progress; set owner_asked_to_remove only when the owner's own words asked to remove, clear or cancel that download. For missing episodes use media_fill_missing instead. Rows of one season pack are removed once; a delete that fails is reported in `failed` and the re-search still runs.",
+    description: "Clear stuck downloads for a series or movie already in Sonarr/Radarr: remove stalled queue rows from the download client, blocklist those releases so they are not grabbed again, then search again (research, default true). Use this when the owner asks to clear stuck or stalled downloads; no Jellyseerr request id is needed. Without queue_ids it targets the item's stalled rows; with queue_ids only those, and each must belong to the item. A download still moving, or stalled but not yet confirmed dead, is kept (result kept_downloads) because removing it deletes its progress: a partial download counts as dead only after two calls at least 30 minutes apart see no ETA and no progress. Pass owner_words, with queue_ids, only when the owner's own message asked to remove, clear or cancel those downloads. For missing episodes use media_fill_missing instead. Rows of one season pack are removed once; a delete that fails is reported in `failed` and the re-search still runs.",
     inputSchema: { type: "object", properties: {
       kind: { type: "string", enum: ["series", "movie"] },
       service_id: { type: "number", description: "Sonarr series id or Radarr movie id (media_search_now returns it)." },
       queue_ids: { type: "array", items: { type: "number" } },
       research: { type: "boolean", description: "Search again afterwards. Default true." },
-      owner_asked_to_remove: { type: "boolean", description: "True only when the owner's own message asked to remove, clear or cancel these downloads. Not for 'get them'." },
+      owner_words: { type: "string", description: "The owner's exact words asking to remove, clear or cancel these downloads; requires queue_ids. Not for 'get them'." },
     }, required: ["kind", "service_id"] },
   },
   {
