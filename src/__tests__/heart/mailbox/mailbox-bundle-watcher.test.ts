@@ -240,6 +240,77 @@ describe("createBundleWatcher on Linux", () => {
   })
 })
 
+describe("createBundleWatcher reconcile ordering", () => {
+  function deferredReaddir(fake: ReturnType<typeof createFakeTree>) {
+    const gates: Array<() => void> = []
+    const inner = fake.deps.readdir
+    fake.deps.readdir = (dir: string) => new Promise((resolve, reject) => {
+      gates.push(() => inner(dir).then(resolve, reject))
+    })
+    return gates
+  }
+
+  it("does not run two reconciles at once", async () => {
+    const { createBundleWatcher } = await import("../../../heart/mailbox/mailbox-http-transport")
+    const fake = createFakeTree({ "/bundles": [] })
+    const gates = deferredReaddir(fake)
+    const watcher = createBundleWatcher("/bundles", vi.fn(), fake.deps)
+    gates.shift()!()
+    await settle()
+    fake.handles[0]!.listener("rename", "x")
+    for (const timer of fake.timers.splice()) timer()
+    await settle()
+    expect(gates).toHaveLength(1)
+    // A second rename while the first rescan is still blocked on readdir queues behind it.
+    fake.handles[0]!.listener("rename", "y")
+    for (const timer of fake.timers.splice()) timer()
+    await settle()
+    expect(gates).toHaveLength(1)
+    gates.shift()!()
+    await settle()
+    expect(gates).toHaveLength(1)
+    gates.shift()!()
+    await settle()
+    watcher.stop()
+  })
+
+  it("stops walking when stopped while a directory is being read", async () => {
+    const { createBundleWatcher } = await import("../../../heart/mailbox/mailbox-http-transport")
+    const fake = createFakeTree({ "/bundles": ["a/"], "/bundles/a": [] })
+    const gates = deferredReaddir(fake)
+    const watcher = createBundleWatcher("/bundles", vi.fn(), fake.deps)
+    watcher.stop()
+    gates.shift()!()
+    await settle()
+    expect(fake.handles.map((handle) => handle.dir)).toEqual(["/bundles"])
+  })
+
+  it("stops between nested directories", async () => {
+    const { createBundleWatcher } = await import("../../../heart/mailbox/mailbox-http-transport")
+    const fake = createFakeTree({ "/bundles": ["a/"], "/bundles/a": ["b/"], "/bundles/a/b": [] })
+    const gates = deferredReaddir(fake)
+    const watcher = createBundleWatcher("/bundles", vi.fn(), fake.deps)
+    gates.shift()!()
+    await settle()
+    watcher.stop()
+    gates.shift()!()
+    await settle()
+    expect(gates).toHaveLength(0)
+  })
+
+  it("starts a rescan that finds the watcher already stopped", async () => {
+    const { createBundleWatcher } = await import("../../../heart/mailbox/mailbox-http-transport")
+    const fake = createFakeTree({ "/bundles": [] })
+    const watcher = createBundleWatcher("/bundles", vi.fn(), fake.deps)
+    await settle()
+    fake.handles[0]!.listener("rename", "x")
+    const fire = () => { for (const timer of fake.timers.splice()) timer() }
+    watcher.stop()
+    fire()
+    await settle()
+  })
+})
+
 describe("createBundleWatcher on platforms with native recursive watch", () => {
   it("keeps one recursive watch and reports its changes and errors", async () => {
     const { createBundleWatcher } = await import("../../../heart/mailbox/mailbox-http-transport")
