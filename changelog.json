@@ -5,7 +5,7 @@
       "version": "0.1.0-alpha.855",
       "changes": [
         "The Butler no longer deletes a partial download that is not confirmed dead: media_blocklist_stalled keeps anything with an ETA or not yet seen without progress across 30 minutes (age alone no longer counts), removes a named download early only with the owner's quoted words, and stall observations now persist atomically across restarts.",
-        "media_fill_missing reports a matching release that is only on the blocklist (blocklisted_matches) and, given the owner's words in retry_blocklisted, takes it off the blocklist and grabs it with the right mapping; a grab with no seeders is reported as possibly never finishing, with an await_condition follow-up.",
+        "media_fill_missing reports a matching release that is only on the blocklist (blocklisted_matches) and, given the owner's words in retry_blocklisted, grabs it with the right mapping and lifts its blocklist entry only for the release actually grabbed; a grab with no seeders is reported as possibly never finishing, with an await_condition follow-up.",
         "Butler guidance: never offer to clear a stalled download that media_fill_missing kept, treat a yes as another media_fill_missing call, and promise a follow-up only after filing it with await_condition."
       ]
     },

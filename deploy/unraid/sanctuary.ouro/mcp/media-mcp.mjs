@@ -1525,32 +1525,31 @@ async function fillPass(a, seriesId, seriesTitle, { nowMs = Date.now(), deadline
     consider(await attempt(`episode search ${sxe(e)}`, () => sonarr("/release", { query: { episodeId: e.id }, timeoutMs: searchTimeout() })))
   }
 
-  // Episodes whose only matching releases are on the blocklist. With the owner's words they are
-  // taken off it and grabbed like any other candidate (an unseeded one then waits for peers and is
-  // kept); without, they are reported so the owner can decide.
+  // Episodes whose only matching releases are on the blocklist. With the owner's words such a
+  // release joins the candidates and its blocklist entry is lifted only once it is actually being
+  // grabbed (an unseeded one then waits for peers and is kept); without, it is reported.
   const covers = (id) => [...candidates.values()].some((c) => c.ids.includes(id))
   const blockedOnly = [...blockedMatches.values()].filter((b) => b.ids.some((id) => !covers(id)))
   const ownerRetry = typeof a.retry_blocklisted === "string" ? a.retry_blocklisted.trim() : ""
-  let blocklistedMatches = []
+  const blockedLeft = new Map()
   if (blockedOnly.length) {
     const entries = (await attempt("read blocklist", () => itemBlocklist("series", seriesId))) ?? []
-    const entryIds = (b) => entries.filter((x) => normalizeTitle(x.sourceTitle) === normalizeTitle(b.raw.title)).map((x) => x.id)
-    blocklistedMatches = blockedOnly.map((b) => ({ b, blocklist_ids: entryIds(b) }))
-    if (ownerRetry && mayAct()) {
-      const ids = [...new Set(blocklistedMatches.flatMap((x) => x.blocklist_ids))]
-      const lifted = ids.length ? await attempt("remove from blocklist", async () => { await sonarr("/blocklist/bulk", { method: "DELETE", body: { ids } }); return true }) : false
-      if (lifted) {
-        for (const { b } of blocklistedMatches.filter((x) => x.blocklist_ids.length)) {
-          cacheRelease(`series:${b.raw.guid}`, { ...releaseRow("series", b.raw), service_id: seriesId, season_number: null, quality_raw: b.raw.quality ?? null, languages_raw: b.raw.languages ?? null })
-          candidates.set(b.raw.guid, b)
-          rejected.delete(b.raw.guid)
-        }
-        for (const t of [...new Set(blocklistedMatches.filter((x) => x.blocklist_ids.length).map((x) => x.b.raw.title))]) {
-          actions.push({ action: "removed_from_blocklist", title: t ?? null, owner_words: ownerRetry })
-        }
-        blocklistedMatches = blocklistedMatches.filter((x) => !x.blocklist_ids.length)
+    for (const b of blockedOnly) {
+      const ids = entries.filter((x) => normalizeTitle(x.sourceTitle) === normalizeTitle(b.raw.title)).map((x) => x.id)
+      blockedLeft.set(b.raw.guid, { b, blocklist_ids: ids })
+      if (ownerRetry && ids.length) {
+        cacheRelease(`series:${b.raw.guid}`, { ...releaseRow("series", b.raw), service_id: seriesId, season_number: null, quality_raw: b.raw.quality ?? null, languages_raw: b.raw.languages ?? null })
+        candidates.set(b.raw.guid, { ...b, blocklistIds: ids })
       }
     }
+  }
+  const lifted = new Set()
+  const liftFor = async (c) => {
+    const ids = c.blocklistIds.filter((id) => !lifted.has(id))
+    if (ids.length && !(await attempt("remove from blocklist", async () => { await sonarr("/blocklist/bulk", { method: "DELETE", body: { ids } }); return true }))) return false
+    ids.forEach((id) => lifted.add(id))
+    if (ids.length) actions.push({ action: "removed_from_blocklist", title: c.raw.title ?? null, owner_words: ownerRetry })
+    return true
   }
 
   // Seeded releases first, then the ones that cover the most, then the best seeded.
@@ -1572,7 +1571,19 @@ async function fillPass(a, seriesId, seriesTitle, { nowMs = Date.now(), deadline
     if (!ids.length || !c.raw.quality) continue
     if (grabs >= FILL_MAX_GRABS || !mayAct()) { ids.forEach((id) => deferred.add(id)); cutShort ||= !mayAct(); continue }
     const body = { guid: c.raw.guid, indexerId: c.raw.indexerId, seriesId, episodeIds: ids, shouldOverride: true, quality: c.raw.quality, languages: Array.isArray(c.raw.languages) ? c.raw.languages : [] }
-    const res = await attempt(`grab ${c.raw.title}`, async () => (await sonarr("/release", { method: "POST", body })) ?? {})
+    const post = async () => (await sonarr("/release", { method: "POST", body })) ?? {}
+    let res
+    if (c.blocklistIds) {
+      // Grab first; lift the entry after it succeeds, or before one retry if Sonarr refused it as blocklisted.
+      try { res = await post() } catch { res = undefined }
+      const liftedOk = await liftFor(c)
+      if (!res && liftedOk) res = await attempt(`grab ${c.raw.title}`, post)
+      if (!res) continue
+      blockedLeft.delete(c.raw.guid)
+      for (const [g, x] of blockedLeft) if (normalizeTitle(x.b.raw.title) === normalizeTitle(c.raw.title)) blockedLeft.delete(g)
+    } else {
+      res = await attempt(`grab ${c.raw.title}`, post)
+    }
     if (!res) continue
     grabs += 1
     ids.forEach((id) => remaining.delete(id))
@@ -1621,7 +1632,7 @@ async function fillPass(a, seriesId, seriesTitle, { nowMs = Date.now(), deadline
     }
   }
   const blockedReport = []
-  for (const { b, blocklist_ids } of blocklistedMatches) {
+  for (const { b, blocklist_ids } of blockedLeft.values()) {
     if (blockedReport.some((x) => normalizeTitle(x.title) === normalizeTitle(b.raw.title))) continue
     blockedReport.push({ title: b.raw.title ?? null, seeders: b.raw.seeders ?? null, episodes: b.ids.map((id) => sxe(byId.get(id))), blocklist_ids })
   }
@@ -1631,7 +1642,7 @@ async function fillPass(a, seriesId, seriesTitle, { nowMs = Date.now(), deadline
   const summary = [
     `${have.length} of ${base.on_shelf.of} aired episodes are on the shelf; ${wanted.length} monitored ${wanted.length === 1 ? "episode is" : "episodes are"} missing.`,
     grabs ? `Grabbed ${grabs} release${grabs === 1 ? "" : "s"} now.` : "",
-    unseeded.length ? `${unseeded.map((x) => x.title).join("; ")} ${unseeded.length === 1 ? "has" : "have"} no seeders: it waits for peers and may never finish.` : "",
+    unseeded.length ? `${unseeded.map((x) => x.title).join("; ")} ${unseeded.length === 1 ? "has no seeders: it waits" : "have no seeders: they wait"} for peers and may never finish.` : "",
     moving ? `${moving} download(s) in progress.` : "",
     stuck.length ? `${stuck.length} download(s) stalled with no peers and no other usable release (${stuck.map((s) => `${s.title} at ${s.percent}%`).join("; ")}).` : "",
     notFound.length ? `No usable release found for ${notFound.map((e) => e.code).join(", ")}.` : "",
@@ -1641,17 +1652,18 @@ async function fillPass(a, seriesId, seriesTitle, { nowMs = Date.now(), deadline
   ].filter(Boolean).join(" ")
   const nextStep = incomplete
     ? "This pass did not finish everything. Tell the owner what it did, then call media_fill_missing again to continue; do not act by hand."
-    : blockedReport.length && !ownerRetry
-      ? "Tell the owner exactly this outcome with the evidence, including that the only matching release is on the blocklist. If the owner then asks to get it anyway, call media_fill_missing again with retry_blocklisted set to the owner's own words; do not remove blocklist entries or grab by hand."
     : stuck.length || notFound.length
       ? "Tell the owner exactly this outcome with the evidence; do not grab, import or blocklist anything by hand. Call media_fill_missing again later to retry."
       : unseeded.length
         ? "Tell the owner what was grabbed and that it has no seeders, so it may never finish. File a follow-up with await_condition to call media_fill_missing again later. Do not search or grab anything else now."
         : "Work is in progress. Tell the owner what is downloading; call media_fill_missing again later to import and confirm. Do not search or grab anything else now."
+  const blockedHint = !blockedReport.length ? ""
+    : ownerRetry ? " The owner's retry could not take the blocklisted release back (see errors and blocklisted_matches); tell the owner that plainly."
+    : " The only matching release is on the blocklist: tell the owner, and if the owner then asks to get it anyway, call media_fill_missing again with retry_blocklisted set to the owner's own words. Do not remove blocklist entries or grab by hand."
   return { ...base, goal_met: false, in_flight: inFlight, not_found: notFound, actions,
            ...(deferred.size ? { deferred: need.filter((e) => deferred.has(e.id)).map(code) } : {}), ...(unsearched.length ? { unsearched: unsearched.map(code) } : {}),
            searched, ...(blockedReport.length ? { blocklisted_matches: blockedReport } : {}), ...(rejected.size ? { rejected_releases: [...rejected.values()].slice(0, 12) } : {}), ...(evidence ? { indexer_evidence: evidence } : {}),
-           ...(errors.length ? { errors } : {}), ...(incomplete ? { incomplete: true } : {}), summary, next_step: nextStep }
+           ...(errors.length ? { errors } : {}), ...(incomplete ? { incomplete: true } : {}), summary, next_step: nextStep + blockedHint }
 }
 
 // ------------------------------------------------------------------- schema

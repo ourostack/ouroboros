@@ -887,6 +887,7 @@ describe("media MCP — media_fill_missing", () => {
     blockThePack()
     const out = await mod.mediaFillMissing({ series: "chef show", season_number: 2, retry_blocklisted: " yes please get them " }, { nowMs: now })
     expect(calls.find((c) => c.method === "DELETE")).toMatchObject({ url: "http://sonarr/api/v3/blocklist/bulk", body: { ids: [77] } })
+    expect(calls.findIndex((c) => c.method === "POST")).toBeLessThan(calls.findIndex((c) => c.method === "DELETE"))
     expect(out.actions[0]).toEqual({ action: "removed_from_blocklist", title: "The Chef Show [Season 2] (2020) [WEB DL 1080p]", owner_words: "yes please get them" })
     expect(out.actions[1]).toMatchObject({ action: "grabbed", title: "The Chef Show [Season 2] (2020) [WEB DL 1080p]", episodes: s2, may_never_finish: true })
     expect(calls.find((c) => c.method === "POST" && c.url.includes("/release"))?.body).toMatchObject({ guid: "g-2020", episodeIds: [14472, 14473, 14474, 14475, 14476] })
@@ -904,11 +905,48 @@ describe("media MCP — media_fill_missing", () => {
     expect(calls.filter((c) => c.method !== "GET")).toEqual([])
     blockThePack()
     calls.length = 0
-    fail = (method, url) => method === "DELETE" && url.includes("/blocklist")
+    // Sonarr refuses the grab and the lift fails too: nothing grabbed, the entry stays and is reported.
+    fail = (method, url) => (method === "DELETE" && url.includes("/blocklist")) || (method === "POST" && url.includes("/release"))
     const failed = await mod.mediaFillMissing({ series: "chef show", season_number: 2, retry_blocklisted: "yes" }, { nowMs: now })
     expect(failed.blocklisted_matches[0].blocklist_ids).toEqual([77])
     expect(failed.errors.map((e: any) => e.step)).toContain("remove from blocklist")
-    expect(calls.some((c) => c.method === "POST")).toBe(false)
+    expect(failed.actions).toEqual([])
+    expect(failed.next_step).toContain("could not take the blocklisted release back")
+  })
+
+  it("records a grab that worked even when lifting its entry afterwards fails", async () => {
+    blockThePack()
+    fail = (method, url) => method === "DELETE" && url.includes("/blocklist")
+    const out = await mod.mediaFillMissing({ series: "chef show", season_number: 2, retry_blocklisted: "yes" }, { nowMs: now })
+    expect(out.actions.map((x: any) => x.action)).toEqual(["grabbed"])
+    expect(out.blocklisted_matches).toBeUndefined()
+  })
+
+  it("lifts the entry and retries once when Sonarr refuses the blocklisted grab", async () => {
+    blockThePack()
+    let refused = 0
+    fail = (method, url) => method === "POST" && url.includes("/release") && refused++ === 0
+    const out = await mod.mediaFillMissing({ series: "chef show", season_number: 2, retry_blocklisted: "yes" }, { nowMs: now })
+    expect(out.actions.map((x: any) => x.action)).toEqual(["removed_from_blocklist", "grabbed"])
+    expect(calls.filter((c) => c.method === "POST")).toHaveLength(2)
+    expect(out.errors).toBeUndefined()
+  })
+
+  it("leaves a blocklisted release on the blocklist when its episodes are held by a stalled download", async () => {
+    blockThePack()
+    releases["seasonNumber=2"] = releases["seasonNumber=2"].map((r: any) => (r.guid === "g-2020" ? { ...r, title: "The Chef Show [Season 2] (2020) [WEB DL 720p]" } : r))
+    blocklist[0].sourceTitle = "The Chef Show [Season 2] (2020) [WEB DL 720p]"
+    queue = [14472, 14473, 14474, 14475, 14476].map((ep, i) => packRow(900 + i, ep))
+    const out = await mod.mediaFillMissing({ series: "chef show", season_number: 2, retry_blocklisted: "yes" }, { nowMs: now })
+    expect(calls.filter((c) => c.method === "DELETE" || c.method === "POST")).toEqual([])
+    expect(out.blocklisted_matches[0].blocklist_ids).toEqual([77])
+  })
+
+  it("treats whitespace-only owner words as none", async () => {
+    blockThePack()
+    const out = await mod.mediaFillMissing({ series: "chef show", season_number: 2, retry_blocklisted: "   " }, { nowMs: now })
+    expect(out.actions).toEqual([])
+    expect(out.next_step).toContain("retry_blocklisted")
   })
 
   it("does not offer a blocklisted release when another release covers the same episodes", async () => {
