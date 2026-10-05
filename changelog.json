@@ -4,7 +4,8 @@
     {
       "version": "0.1.0-alpha.857",
       "changes": [
-        "The daemon now caches external-event records by file stat so the one-second reconcile tick no longer re-reads and re-parses every unchanged record, cutting idle CPU."
+        "The daemon now caches external-event records by file stat so the one-second reconcile tick no longer re-reads and re-parses every unchanged record, cutting idle CPU.",
+        "The record cache never keeps a filesystem read error and re-reads any entry older than a minute, so a transient read failure or a missed change cannot hide a record."
       ]
     },
     {
