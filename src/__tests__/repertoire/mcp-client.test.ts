@@ -307,6 +307,40 @@ describe("McpClient", () => {
       await expect(callPromise).rejects.toThrow(/timeout/i)
     })
 
+    it("uses a tool's declared timeout, clamped, and the default otherwise", async () => {
+      const { McpClient, MCP_TOOL_TIMEOUT_META_KEY } = await getMcpClient()
+      const client = await connectClient(McpClient, mockProc)
+      const listPromise = client.listTools()
+      await tick()
+      sendResponse(mockProc, {
+        jsonrpc: "2.0",
+        id: lastStdinRequest(mockProc).id,
+        result: {
+          tools: [
+            { name: "slow", description: "", inputSchema: {}, _meta: { [MCP_TOOL_TIMEOUT_META_KEY]: 200_000 } },
+            { name: "huge", description: "", inputSchema: {}, _meta: { [MCP_TOOL_TIMEOUT_META_KEY]: 9_999_999 } },
+            { name: "tiny", description: "", inputSchema: {}, _meta: { [MCP_TOOL_TIMEOUT_META_KEY]: 5 } },
+            { name: "bogus", description: "", inputSchema: {}, _meta: { [MCP_TOOL_TIMEOUT_META_KEY]: "long" } },
+            { name: "infinite", description: "", inputSchema: {}, _meta: { [MCP_TOOL_TIMEOUT_META_KEY]: Number.POSITIVE_INFINITY } },
+            { name: "plain", description: "", inputSchema: {} },
+          ],
+        },
+      })
+      await listPromise
+      const spy = vi.spyOn(globalThis, "setTimeout")
+      const delays: Record<string, unknown> = {}
+      for (const name of ["slow", "huge", "tiny", "bogus", "infinite", "plain", "unlisted"]) {
+        spy.mockClear()
+        const call = client.callTool(name, {})
+        await tick()
+        delays[name] = spy.mock.calls.find((args) => typeof args[1] === "number" && args[1] !== 10)?.[1]
+        sendResponse(mockProc, { jsonrpc: "2.0", id: lastStdinRequest(mockProc).id, result: { content: [] } })
+        await call
+      }
+      spy.mockRestore()
+      expect(delays).toEqual({ slow: 200_000, huge: 600_000, tiny: 1_000, bogus: 30_000, infinite: 30_000, plain: 30_000, unlisted: 30_000 })
+    })
+
     it("rejects immediately when the transport is not writable", async () => {
       const { McpClient } = await getMcpClient()
       const client = await connectClient(McpClient, mockProc)
