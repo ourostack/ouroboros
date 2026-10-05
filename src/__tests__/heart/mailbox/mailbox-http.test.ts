@@ -239,6 +239,8 @@ describe("mailbox http", () => {
     const clearTimeout = vi.fn()
     let watchedCallback: (() => void) | null = null
     const watcher = createBundleWatcher("/bundles", onChange, {
+      platform: "darwin",
+      readdir: vi.fn(),
       existsSync: () => true,
       watch: (_root, _options, callback) => {
         watchedCallback = callback
@@ -259,14 +261,17 @@ describe("mailbox http", () => {
     watchedCallback?.()
     watchedCallback?.()
     expect(clearTimeout).toHaveBeenCalledWith(1)
-    expect(onChange).toHaveBeenCalledTimes(2)
+    // This fake fires every timer immediately, so each event reports through both the debounce and the max-wait timer.
+    expect(onChange).toHaveBeenCalledTimes(4)
     errorListener?.(new Error("UNKNOWN: unknown error, watch processing file"))
     expect(close).toHaveBeenCalledTimes(1)
-    expect(onChange).toHaveBeenCalledTimes(3)
+    expect(onChange).toHaveBeenCalledTimes(6)
     watcher.stop()
     expect(close).toHaveBeenCalledTimes(1)
 
     const missingWatcher = createBundleWatcher("/missing", onChange, {
+      platform: "darwin",
+      readdir: vi.fn(),
       existsSync: () => false,
       watch: vi.fn(),
       setTimeout: vi.fn(),
@@ -275,6 +280,8 @@ describe("mailbox http", () => {
     missingWatcher.stop()
 
     const throwingWatcher = createBundleWatcher("/bundles", onChange, {
+      platform: "darwin",
+      readdir: vi.fn(),
       existsSync: () => true,
       watch: () => {
         throw new Error("unsupported")
@@ -287,6 +294,8 @@ describe("mailbox http", () => {
     const syncErrorClose = vi.fn()
     const syncErrorChange = vi.fn()
     const syncErrorWatcher = createBundleWatcher("/bundles", syncErrorChange, {
+      platform: "darwin",
+      readdir: vi.fn(),
       existsSync: () => true,
       watch: (_root, _options, _callback) => ({
         close: syncErrorClose,
@@ -299,7 +308,7 @@ describe("mailbox http", () => {
       clearTimeout: vi.fn(),
     })
     expect(syncErrorClose).toHaveBeenCalledTimes(1)
-    expect(syncErrorChange).toHaveBeenCalledTimes(1)
+    expect(syncErrorChange).toHaveBeenCalledTimes(2)
     syncErrorWatcher.stop()
     expect(syncErrorClose).toHaveBeenCalledTimes(2)
   })
