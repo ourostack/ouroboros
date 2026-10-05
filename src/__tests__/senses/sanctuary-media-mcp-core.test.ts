@@ -957,6 +957,35 @@ describe("media MCP — media_fill_missing", () => {
     expect(out.not_found).toHaveLength(8)
   })
 
+  it("searches the least recently searched seasons first, so a deadline cannot starve later seasons", async () => {
+    episodes = [3, 4, 5].flatMap((season) => [1, 2].map((n) => ({ id: season * 100 + n, seasonNumber: season, episodeNumber: n, title: `Title ${season} ${n} Long`, airDate: "2021-01-01", hasFile: false, monitored: true })))
+    const seasonSearches = () => calls.filter((c) => c.url.includes("/release?seriesId")).map((c) => /seasonNumber=(\d+)/.exec(c.url)![1])
+    // A deadline already spent allows no search; the next calls each get exactly one season search.
+    let t = 0
+    vi.spyOn(Date, "now").mockImplementation(() => (t += 1000))
+    await mod.mediaFillMissing({ series: "The Chef Show" }, { nowMs: now, deadlineMs: 3_500 })
+    await mod.mediaFillMissing({ series: "The Chef Show" }, { nowMs: now, deadlineMs: 3_500 })
+    await mod.mediaFillMissing({ series: "The Chef Show" }, { nowMs: now, deadlineMs: 3_500 })
+    vi.restoreAllMocks()
+    expect(seasonSearches()).toEqual(["3", "4", "5"])
+  })
+
+  it("defers grabs and imports once the action grace past the deadline is spent", async () => {
+    queue = [packRow(1, 14460, { sizeleft: 0, trackedDownloadState: "importPending" })]
+    history = [{ episodeId: 14472, downloadId: "743E301E", date: "2026-10-03T02:10:43Z" }]
+    releases["seasonNumber=2"] = [rel("g-t", "The Chef Show Tartine 1080p", 9)]
+    const out = await mod.mediaFillMissing({ series: "The Chef Show", season_number: 2 }, { nowMs: now, deadlineMs: -60_000 })
+    expect(posts()).toEqual([])
+    expect(out.in_flight[0].state).toBe("downloaded_import_next_call")
+    expect(out.incomplete).toBe(true)
+    expect(out.searched).toEqual([])
+  })
+
+  it("keeps the series year as evidence when the missing episodes aired that year", () => {
+    const wanted = [{ id: 1, title: "Pilot Episode Here", seasonNumber: 1, episodeNumber: 1, airDate: "2020-03-01" }]
+    expect(mod.matchReleaseToEpisodes({ title: "Show (2020) Season 1 1080p" }, { seriesTitle: "Show", seriesYear: 2020, wanted, have: [] })).toEqual({ episode_ids: [1], basis: "season_and_air_year" })
+  })
+
   it("closes every schema and refuses invented parameters by name", () => {
     for (const t of mod.TOOLS) expect(t.inputSchema.additionalProperties).toBe(false)
     expect(mod.unknownArguments("media_fill_missing", { series: "x", dry_run: true })).toMatchObject({ error: "unknown_parameter", unknown: ["dry_run"], allowed: ["series", "service_id", "season_number"] })

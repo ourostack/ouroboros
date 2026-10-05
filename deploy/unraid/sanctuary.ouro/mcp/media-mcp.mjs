@@ -1208,8 +1208,9 @@ export function matchReleaseToEpisodes(release, { seriesId, seriesTitle, seriesY
   if (rejections.some((x) => /blocklist/i.test(x))) return { reject: "blocklisted" }
   if (rejections.some((x) => /not wanted in profile|below .*minimum|custom format/i.test(x))) return { reject: "quality_not_wanted" }
   const wantedYears = new Set(wanted.map(airYear).filter(Boolean))
-  // The series' own premiere year ("Show (2019) Season 2") says nothing about which season it is.
-  const years = new Set([...yearsIn(title)].filter((y) => y !== seriesYear))
+  // The series' own premiere year ("Show (2019) Season 2") says nothing about which season it is,
+  // unless the missing episodes aired that year too.
+  const years = new Set([...yearsIn(title)].filter((y) => y !== seriesYear || wantedYears.has(y)))
   if (years.size && ![...years].some((y) => wantedYears.has(y))) return { reject: "year_mismatch", years: [...years] }
   // Episode titles are looked for in the name with the series name taken out.
   const rest = ` ${norm} `.replace(` ${base} `, " ").trim()
@@ -1249,7 +1250,9 @@ export function stallReason(row, nowMs, previous) {
 
 // Remaining size per download, as first seen at that size, so a later call can tell stopped from slow.
 const progressSeen = new Map()
+const PROGRESS_FORGET_MS = 14 * 24 * 3_600_000
 function observeProgress(downloadId, sizeleft, nowMs) {
+  for (const [k, v] of progressSeen) if (nowMs - v.at > PROGRESS_FORGET_MS) progressSeen.delete(k)
   const previous = progressSeen.get(downloadId)
   if (!previous || previous.sizeleft !== sizeleft) progressSeen.set(downloadId, { sizeleft, at: nowMs })
   return previous
@@ -1300,6 +1303,9 @@ async function importByTitle(seriesId, seriesTitle, downloadId, wantedEps) {
 
 const pct = (row) => ((row.size ?? 0) > 0 ? Math.round((((row.size ?? 0) - (row.sizeleft ?? 0)) / row.size) * 1000) / 10 : null)
 const fillRunning = new Set()
+// When each season or episode of a series was last searched, so repeat calls reach the ones a deadline cut off.
+const lastSearched = new Map()
+const FILL_ACTION_GRACE_MS = 45_000
 
 export async function mediaFillMissing(a, opts = {}) {
   const found = await resolveLibraryItem({ kind: "series", service_id: a.service_id, title: a.series })
@@ -1319,6 +1325,8 @@ async function fillPass(a, seriesId, seriesTitle, { nowMs = Date.now(), deadline
   const startedAt = Date.now()
   const remainingMs = () => deadlineMs - (Date.now() - startedAt)
   const timeLeft = () => remainingMs() > 0
+  // Grabs and imports may run a little past the search deadline, never past the harness timeout.
+  const mayAct = () => remainingMs() > -FILL_ACTION_GRACE_MS
   const errors = []
   // Each step after the first reads is isolated: one failure is reported, the rest of the pass and its record survive.
   const attempt = async (step, fn) => {
@@ -1367,6 +1375,7 @@ async function fillPass(a, seriesId, seriesTitle, { nowMs = Date.now(), deadline
     if (recent && !downloads.has(key) && !queuedTitles.has(normalizeTitle(g.title))) downloads.set(key, { key, row: null, ids: g.ids, title: g.title })
   }
 
+  let cutShort = false
   const covered = new Set()
   const stalled = []
   const inFlight = []
@@ -1376,9 +1385,10 @@ async function fillPass(a, seriesId, seriesTitle, { nowMs = Date.now(), deadline
     const entry = { title: d.row?.title ?? d.title ?? null, download_id: d.row?.downloadId ?? d.key, episodes: ids.map((id) => sxe(byId.get(id))) }
     if (!d.row) { inFlight.push({ ...entry, state: "just_grabbed" }); ids.forEach((id) => covered.add(id)); continue }
     if (importNeeded(d.row)) {
-      const done = await attempt(`import ${d.row.downloadId}`, () => importByTitle(seriesId, seriesTitle, d.row.downloadId, ids.map((id) => byId.get(id))))
+      const done = mayAct() ? await attempt(`import ${d.row.downloadId}`, () => importByTitle(seriesId, seriesTitle, d.row.downloadId, ids.map((id) => byId.get(id)))) : undefined
       if (done) actions.push(done)
-      inFlight.push({ ...entry, state: done?.action === "import_needs_mapping" ? "downloaded_needs_mapping" : done ? "importing" : "downloaded_import_failed" })
+      inFlight.push({ ...entry, state: done?.action === "import_needs_mapping" ? "downloaded_needs_mapping" : done ? "importing" : mayAct() ? "downloaded_import_failed" : "downloaded_import_next_call" })
+      if (!done) cutShort = true
       ids.forEach((id) => covered.add(id))
       continue
     }
@@ -1408,15 +1418,22 @@ async function fillPass(a, seriesId, seriesTitle, { nowMs = Date.now(), deadline
   }
   const searchTimeout = () => Math.max(5_000, Math.min(SEARCH_TIMEOUT_MS, remainingMs()))
   const hasSeededCandidate = (e) => [...candidates.values()].some((c) => (c.raw.seeders ?? 0) > 0 && c.ids.includes(e.id))
-  for (const s of [...new Set(need.map((e) => e.seasonNumber))]) {
+  const searchedAt = (key) => lastSearched.get(`${seriesId}:${key}`) ?? 0
+  const markSearched = (key) => lastSearched.set(`${seriesId}:${key}`, Date.now())
+  // Least recently searched first, so a deadline never starves the same seasons on every call.
+  const seasons = [...new Set(need.map((e) => e.seasonNumber))].sort((x, y) => searchedAt(`s${x}`) - searchedAt(`s${y}`) || x - y)
+  for (const s of seasons) {
     if (!timeLeft()) break
     searchedSeasons.add(s)
+    markSearched(`s${s}`)
     searched.push(`Sonarr season search S${code2(s)}`)
     consider(await attempt(`season search S${code2(s)}`, () => sonarr("/release", { query: { seriesId, seasonNumber: s }, timeoutMs: searchTimeout() })))
   }
-  for (const e of need.filter((x) => !hasSeededCandidate(x)).slice(0, MAX_EPISODE_SEARCHES)) {
+  const episodeOrder = need.filter((x) => !hasSeededCandidate(x)).sort((x, y) => searchedAt(`e${x.id}`) - searchedAt(`e${y.id}`))
+  for (const e of episodeOrder.slice(0, MAX_EPISODE_SEARCHES)) {
     if (!timeLeft()) break
     searchedEpisodes.add(e.id)
+    markSearched(`e${e.id}`)
     searched.push(`Sonarr episode search ${sxe(e)}`)
     consider(await attempt(`episode search ${sxe(e)}`, () => sonarr("/release", { query: { episodeId: e.id }, timeoutMs: searchTimeout() })))
   }
@@ -1438,7 +1455,7 @@ async function fillPass(a, seriesId, seriesTitle, { nowMs = Date.now(), deadline
     // An unseeded release is no better than a stalled download: never fetch those episodes twice that way.
     const ids = c.ids.filter((id) => remaining.has(id) && !unconfirmedIds.has(id) && (seeded || !stalledIds.has(id)))
     if (!ids.length || !c.raw.quality) continue
-    if (grabs >= FILL_MAX_GRABS) { ids.forEach((id) => deferred.add(id)); continue }
+    if (grabs >= FILL_MAX_GRABS || !mayAct()) { ids.forEach((id) => deferred.add(id)); cutShort ||= !mayAct(); continue }
     const body = { guid: c.raw.guid, indexerId: c.raw.indexerId, seriesId, episodeIds: ids, shouldOverride: true, quality: c.raw.quality, languages: Array.isArray(c.raw.languages) ? c.raw.languages : [] }
     const res = await attempt(`grab ${c.raw.title}`, async () => (await sonarr("/release", { method: "POST", body })) ?? {})
     if (!res) continue
@@ -1488,7 +1505,7 @@ async function fillPass(a, seriesId, seriesTitle, { nowMs = Date.now(), deadline
       evidence.push({ query: q, results: own.length, top: rows.map((r) => ({ title: r.title ?? null, seeders: r.seeders ?? null, indexer: r.indexer ?? null })) })
     }
   }
-  const incomplete = deferred.size > 0 || unsearched.length > 0 || !timeLeft() || errors.length > 0
+  const incomplete = cutShort || deferred.size > 0 || unsearched.length > 0 || !timeLeft() || errors.length > 0
   const moving = inFlight.filter((x) => x.state !== "stalled").length
   const summary = [
     `${have.length} of ${base.on_shelf.of} aired episodes are on the shelf; ${wanted.length} monitored ${wanted.length === 1 ? "episode is" : "episodes are"} missing.`,
