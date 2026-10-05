@@ -117,4 +117,50 @@ describe("ExternalEventScanCache", () => {
     expect(a.recordPath).toContain(root)
     expect(new ExternalEventScanCache().scan(root)).toEqual([])
   })
+  it("does not cache a filesystem read error, so the next scan retries the record", () => {
+    const root = tempDir("ouro-external-event-cache-")
+    const a = recordExternalEvent(input("a"), { root })
+    const cache = new ExternalEventScanCache()
+    vi.mocked(fs.readFileSync).mockImplementationOnce((() => { throw Object.assign(new Error("EIO: i/o error"), { code: "EIO" }) }) as unknown as typeof fs.readFileSync)
+    expect(cache.scan(root)).toEqual([{ recordPath: a.recordPath, record: null, error: "EIO: i/o error" }])
+    const read = vi.mocked(fs.readFileSync)
+    read.mockClear()
+    const retried = cache.scan(root)
+    expect(read).toHaveBeenCalledTimes(1)
+    expect(retried[0]!.record).toMatchObject({ eventId: "a" })
+  })
+
+  it("re-reads an unchanged record once its cache entry is older than maxAgeMs", () => {
+    const root = tempDir("ouro-external-event-cache-")
+    recordExternalEvent(input("a"), { root })
+    let now = 1_000
+    const cache = new ExternalEventScanCache({ maxAgeMs: 60_000, now: () => now })
+    cache.scan(root)
+    const read = vi.mocked(fs.readFileSync)
+    read.mockClear()
+    now += 59_999
+    cache.scan(root)
+    expect(read).not.toHaveBeenCalled()
+    now += 1
+    cache.scan(root)
+    expect(read).toHaveBeenCalledTimes(1)
+  })
+
+  it("re-reads a record replaced by rename with the same size", () => {
+    const root = tempDir("ouro-external-event-cache-")
+    const a = recordExternalEvent(input("a"), { root })
+    const cache = new ExternalEventScanCache()
+    const before = cache.scan(root)[0]!.record!
+    const original = fs.readFileSync(a.recordPath, "utf8")
+    const swapped = original.replace('"executionState": "received"', '"executionState": "queued  "')
+    expect(swapped.length).toBe(original.length)
+    const tmp = `${a.recordPath}.tmp`
+    fs.writeFileSync(tmp, swapped.replace('"queued  "', '"queued"  '))
+    fs.renameSync(tmp, a.recordPath)
+    const read = vi.mocked(fs.readFileSync)
+    read.mockClear()
+    const after = cache.scan(root)[0]!
+    expect(read).toHaveBeenCalledTimes(1)
+    expect(after.record).not.toBe(before)
+  })
 })

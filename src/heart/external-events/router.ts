@@ -769,6 +769,7 @@ interface ExternalEventScanCacheEntry {
   size: number
   mtimeMs: number
   ctimeMs: number
+  cachedAtMs: number
   entry: ExternalEventScanEntry
 }
 
@@ -777,13 +778,24 @@ interface ExternalEventScanCacheEntry {
  * changes inode, mtime or ctime and invalidates the entry. Cached records are only used to decide what is due;
  * every mutation (claim, revive, reconcile) re-reads the file under its own lock and compare-and-swap check, so a
  * stale cached record can at worst cause one rejected attempt that the next tick retries from fresh data.
+ * As a backstop against a change the stat key misses, an entry older than `maxAgeMs` is re-read anyway, and a
+ * filesystem read error (one carrying an fs `code`, such as EIO or EMFILE) is reported for this scan but never
+ * cached, so a transient failure cannot hide a healthy record until its file next changes.
  */
 export class ExternalEventScanCache {
   private readonly entries = new Map<string, ExternalEventScanCacheEntry>()
+  private readonly maxAgeMs: number
+  private readonly now: () => number
+
+  constructor(options: { maxAgeMs?: number; now?: () => number } = {}) {
+    this.maxAgeMs = options.maxAgeMs ?? 60_000
+    this.now = options.now ?? Date.now
+  }
 
   scan(root: string): ExternalEventScanEntry[] {
     const seen = new Set<string>()
     const rows: ExternalEventScanEntry[] = []
+    const nowMs = this.now()
     if (fs.existsSync(root)) {
       for (const agent of fs.readdirSync(root, { withFileTypes: true })) {
         if (!agent.isDirectory() || agent.name.startsWith(".")) continue
@@ -798,17 +810,20 @@ export class ExternalEventScanCache {
             try { stat = fs.statSync(recordPath) } catch { continue }
             seen.add(recordPath)
             const cached = this.entries.get(recordPath)
-            if (cached && cached.ino === stat.ino && cached.size === stat.size && cached.mtimeMs === stat.mtimeMs && cached.ctimeMs === stat.ctimeMs) {
+            if (cached && cached.ino === stat.ino && cached.size === stat.size && cached.mtimeMs === stat.mtimeMs && cached.ctimeMs === stat.ctimeMs && nowMs - cached.cachedAtMs < this.maxAgeMs) {
               rows.push(cached.entry)
               continue
             }
             let entry: ExternalEventScanEntry
+            let cacheable = true
             try {
               entry = { recordPath, record: readExternalEventRecord(recordPath), error: null }
             } catch (error) {
               entry = { recordPath, record: null, error: error instanceof Error ? error.message : /* v8 ignore next -- filesystem and JSON parsers throw Error objects @preserve */ String(error) }
+              cacheable = !(error && typeof error === "object" && typeof (error as { code?: unknown }).code === "string")
             }
-            this.entries.set(recordPath, { ino: stat.ino, size: stat.size, mtimeMs: stat.mtimeMs, ctimeMs: stat.ctimeMs, entry })
+            if (cacheable) this.entries.set(recordPath, { ino: stat.ino, size: stat.size, mtimeMs: stat.mtimeMs, ctimeMs: stat.ctimeMs, cachedAtMs: nowMs, entry })
+            else this.entries.delete(recordPath)
             rows.push(entry)
           }
         }
