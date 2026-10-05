@@ -285,16 +285,18 @@ describe("createBundleWatcher reconcile ordering", () => {
     expect(fake.handles.map((handle) => handle.dir)).toEqual(["/bundles"])
   })
 
-  it("stops between nested directories", async () => {
+  it("creates no further watches for sibling directories after stop", async () => {
     const { createBundleWatcher } = await import("../../../heart/mailbox/mailbox-http-transport")
-    const fake = createFakeTree({ "/bundles": ["a/"], "/bundles/a": ["b/"], "/bundles/a/b": [] })
+    const fake = createFakeTree({ "/bundles": ["a/", "b/"], "/bundles/a": [], "/bundles/b": [] })
     const gates = deferredReaddir(fake)
     const watcher = createBundleWatcher("/bundles", vi.fn(), fake.deps)
     gates.shift()!()
     await settle()
+    // Root is read; directory a is being read. Stop, then let a finish: b must not get a watch.
     watcher.stop()
     gates.shift()!()
     await settle()
+    expect(fake.handles.map((handle) => handle.dir)).toEqual(["/bundles", "/bundles/a"])
     expect(gates).toHaveLength(0)
   })
 

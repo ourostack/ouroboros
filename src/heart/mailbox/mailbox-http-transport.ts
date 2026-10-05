@@ -180,7 +180,6 @@ export function createBundleWatcher(
   }
 
   async function reconcileDirectory(directory: string): Promise<void> {
-    if (stopped) return
     let entries: Array<{ name: string; isDirectory(): boolean }>
     try {
       entries = await deps.readdir(directory)
@@ -194,6 +193,7 @@ export function createBundleWatcher(
       if (path.dirname(watched) === directory && !subdirectories.has(watched)) unwatchTree(watched)
     }
     for (const subdirectory of subdirectories) {
+      if (stopped) return
       if (watchers.has(subdirectory) || !watchDirectory(subdirectory)) continue
       await reconcileDirectory(subdirectory)
     }
