@@ -239,6 +239,8 @@ describe("mailbox http", () => {
     const clearTimeout = vi.fn()
     let watchedCallback: (() => void) | null = null
     const watcher = createBundleWatcher("/bundles", onChange, {
+      platform: "darwin",
+      readdir: vi.fn(),
       existsSync: () => true,
       watch: (_root, _options, callback) => {
         watchedCallback = callback
@@ -267,6 +269,8 @@ describe("mailbox http", () => {
     expect(close).toHaveBeenCalledTimes(1)
 
     const missingWatcher = createBundleWatcher("/missing", onChange, {
+      platform: "darwin",
+      readdir: vi.fn(),
       existsSync: () => false,
       watch: vi.fn(),
       setTimeout: vi.fn(),
@@ -275,6 +279,8 @@ describe("mailbox http", () => {
     missingWatcher.stop()
 
     const throwingWatcher = createBundleWatcher("/bundles", onChange, {
+      platform: "darwin",
+      readdir: vi.fn(),
       existsSync: () => true,
       watch: () => {
         throw new Error("unsupported")
@@ -287,6 +293,8 @@ describe("mailbox http", () => {
     const syncErrorClose = vi.fn()
     const syncErrorChange = vi.fn()
     const syncErrorWatcher = createBundleWatcher("/bundles", syncErrorChange, {
+      platform: "darwin",
+      readdir: vi.fn(),
       existsSync: () => true,
       watch: (_root, _options, _callback) => ({
         close: syncErrorClose,
