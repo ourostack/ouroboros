@@ -53,7 +53,7 @@ import { awaitNameFromPrivateWakeCommand, buildAwaitPrivateWakeCommand } from ".
 import { buildHabitPrivateWakeCommand, habitMessageFromPrivateWakeCommand } from "./habit-private-wake"
 import { createDegradedHabitFile, parseHabitFile, type HabitFile } from "../habits/habit-parser"
 import { applyHabitRuntimeState } from "../habits/habit-runtime-state"
-import { buildExternalEventMessage, claimExternalEvent, externalEventRecoveryFailure, getExternalEventRoot, isExactLegacyProviderRecoveryFailure, listExternalEventStatus, readExternalEventRecord, reconcileExternalEvent, recordExternalEvent, repairExternalEventsFromManifest, reviveExternalEventAfterRecovery, scanPrivilegedEventSpool, settleExternalEventFailureIfOwned, type ExternalEventFailureClass, type ExternalEventLeaseContext, type ExternalEventLeaseMember, type ExternalEventRecord, type ExternalEventStatus } from "../external-events/router"
+import { buildExternalEventMessage, claimExternalEvent, externalEventRecoveryFailure, getExternalEventRoot, isExactLegacyProviderRecoveryFailure, listExternalEventStatus, ExternalEventScanCache, reconcileExternalEvent, recordExternalEvent, repairExternalEventsFromManifest, reviveExternalEventAfterRecovery, scanPrivilegedEventSpool, settleExternalEventFailureIfOwned, type ExternalEventFailureClass, type ExternalEventLeaseContext, type ExternalEventLeaseMember, type ExternalEventRecord, type ExternalEventStatus } from "../external-events/router"
 import { isRsvpHabitName } from "../../rsvp/habit-policy"
 import { readContainerRuntimePolicy } from "./container-runtime"
 import type { RunNativeRsvpHabitInput, RunNativeRsvpHabitResult } from "../../rsvp/native-habit-runner"
@@ -895,6 +895,7 @@ export class OuroDaemon {
   private readonly externalEventRoot: string | null
   private readonly privilegedEventSpoolRoot: string
   private readonly privilegedEventScanner: typeof scanPrivilegedEventSpool
+  private readonly externalEventScanCache = new ExternalEventScanCache()
   private readonly rsvpHabitRunner?: (input: RunNativeRsvpHabitInput) => Promise<RunNativeRsvpHabitResult>
   private readonly nativeHabitRunner?: OuroDaemonOptions["nativeHabitRunner"]
   private readonly nativeHabitMatch?: OuroDaemonOptions["nativeHabitMatch"]
@@ -2073,11 +2074,10 @@ export class OuroDaemon {
       if (fs.existsSync(this.privilegedEventSpoolRoot)) {
         this.privilegedEventScanner({ spoolRoot: this.privilegedEventSpoolRoot, eventRoot: this.externalEventRootPath() })
       }
-      const statuses = listExternalEventStatus(this.externalEventRootPath())
+      const scanned = this.externalEventScanCache.scan(this.externalEventRootPath())
       const readinessKeys = new Set<string>()
-      for (const status of statuses) {
-        if (status.corrupt) continue
-        const candidate = readExternalEventRecord(status.recordPath)
+      for (const { record: candidate } of scanned) {
+        if (!candidate) continue
         if (candidate.dispatchEnabled === false) continue
         const retryDue = candidate.executionState === "retry_wait" && candidate.nextAttemptAt !== null && Date.parse(candidate.nextAttemptAt) <= Date.parse(now)
         const leaseExpired = candidate.executionState === "running" && candidate.claimExpiresAt !== null && Date.parse(candidate.claimExpiresAt) <= Date.parse(now)
@@ -2107,9 +2107,9 @@ export class OuroDaemon {
       const providerEvidenceByAgent = new Map<string, { observedAt: string } | null>()
       const runtimeEvidenceByAgent = new Map<string, { observedAt: string } | null>()
       const recoveredByClass = new Map<ExternalEventFailureClass, number>()
-      for (const status of statuses) {
-        if (status.corrupt) continue
-        let record = readExternalEventRecord(status.recordPath)
+      for (const { record: scannedRecord } of scanned) {
+        if (!scannedRecord) continue
+        let record = scannedRecord
         if (record.dispatchEnabled === false) continue
         if (blockedReadinessKeys.has(`${record.agent}\0${record.source}`)) continue
         if (record.executionState === "dead_letter") {
