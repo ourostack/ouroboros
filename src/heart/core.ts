@@ -62,7 +62,7 @@ import type { InnerJob } from "./daemon/thoughts";
 import { getAgentName, getAgentRoot } from "./identity";
 import { requestPrivateWake } from "./daemon/socket-client";
 import { createObligation, createReturnObligation, generateObligationId, readReturnObligation } from "../arc/obligations";
-import { createToolLoopState, detectToolLoop, recordToolOutcome } from "./tool-loop";
+import { createToolLoopState, detectToolLoop, hasRecordedToolCall, recordToolOutcome } from "./tool-loop";
 import { advancePonderPacket, createPonderPacket, findHarnessFrictionPacket, revisePonderPacket, type PonderPacket, type PonderPacketKind } from "../arc/packets";
 import { createToolFrictionLedger, rewriteToolResultForModel } from "./tool-friction";
 import { getDefaultModelForProvider, getProviderModelMismatchMessage } from "./provider-models";
@@ -491,7 +491,14 @@ export interface RunAgentOptions {
   flightRecorderResume?: import("../arc/flight-recorder").FlightRecorderResume;
 }
 
+/** Base per-turn provider-call budget. Grows while tool calls keep making progress. */
 export const MAX_PROVIDER_ITERATIONS = 8
+/** How many provider calls each progress-earned extension adds. */
+export const STEP_BUDGET_EXTENSION = 4
+/** Hard ceiling on the per-turn provider-call budget, however much progress is made. */
+export const MAX_PROVIDER_ITERATIONS_CEILING = 24
+
+const STEP_BUDGET_REPORT_INSTRUCTION = "the step budget for this turn is used up. do not call any more work tools; none of the tool calls in your last message were executed. call settle now with a short progress report: what is done (with evidence from tool results above), what is still in flight, and what you will do next. say you can continue where you left off when the conversation resumes."
 
 export interface ApprovalProposalRequest {
   toolCall: OpenAI.ChatCompletionMessageToolCall
@@ -1554,6 +1561,19 @@ export async function runAgent(
   let unresolvedHistoricalEffects: HistoricalFailedEffect[] = [];
   let historicalToolFailureRetries = 0;
   let providerIterations = 0;
+  // Adaptive step budget: starts at the base, grows while tool calls make progress.
+  let stepBudget = MAX_PROVIDER_ITERATIONS;
+  let lastIterationMadeProgress = false;
+  let stepReportIteration: number | null = null;
+  const budgetExhausted = (): boolean => {
+    if (providerIterations < stepBudget) return false
+    if (lastIterationMadeProgress && stepBudget < MAX_PROVIDER_ITERATIONS_CEILING) {
+      stepBudget = Math.min(MAX_PROVIDER_ITERATIONS_CEILING, stepBudget + STEP_BUDGET_EXTENSION)
+      emitNervesEvent({ component: "engine", event: "engine.step_budget_extended", message: "tool progress extended the per-turn step budget", meta: { stepBudget } })
+      return providerIterations >= stepBudget
+    }
+    return true
+  }
   const requiredToolCallNames = [...new Set(options?.requiredToolCalls?.names ?? [])];
   const dispatchedRequiredToolCalls = new Set<string>();
   const rejectAttempt = (assistant: OpenAI.ChatCompletionAssistantMessageParam, controls: OpenAI.ChatCompletionMessageParam[]): void => {
@@ -1572,7 +1592,7 @@ export async function runAgent(
       : null;
   };
   const queueRequiredCorrection = (assistant: OpenAI.ChatCompletionAssistantMessageParam, message: string, limitContext: string): void => {
-    if (providerIterations >= MAX_PROVIDER_ITERATIONS) throw new Error(`provider iteration limit exhausted at response ${MAX_PROVIDER_ITERATIONS} ${limitContext}`)
+    if (budgetExhausted()) throw new Error(`provider iteration limit exhausted at response ${stepBudget} ${limitContext}`)
     rejectAttempt(assistant, [{ role: "user", content: message }])
   }
   const toolLoopState = createToolLoopState();
@@ -1731,7 +1751,9 @@ export async function runAgent(
         .filter((name) => candidateToolNames.has(name)),
     )
     const forcingHistoricalEffect = forcedHistoricalToolNames.size > 0
-    const activeTools = forcingHistoricalEffect
+    const activeTools = stepReportIteration !== null
+      ? candidateActiveTools.filter((tool) => tool.function.name === "settle")
+      : forcingHistoricalEffect
       ? candidateActiveTools.filter((tool) => forcedHistoricalToolNames.has(tool.function.name))
       : candidateActiveTools
     const activeToolNames = new Set(activeTools.map((tool) => tool.function.name));
@@ -1888,8 +1910,12 @@ export async function runAgent(
       const result = attempt.value;
       nextAttemptControls = [];
       providerIterations += 1
-      if (providerIterations === MAX_PROVIDER_ITERATIONS && result.toolCalls.length > 0) {
-        throw new Error(`provider iteration limit exhausted at response ${MAX_PROVIDER_ITERATIONS} before tool execution`)
+      if (stepReportIteration !== null) {
+        // The progress-report call is the last one: it must settle, or the turn errors.
+        const settledReport = result.toolCalls.length === 1 && result.toolCalls[0].name === "settle"
+        if (providerIterations > stepReportIteration || (result.toolCalls.length > 0 && !settledReport)) {
+          throw new Error(`provider iteration limit exhausted at response ${providerIterations} before the progress report settled`)
+        }
       }
       const streamCallbackBuffer = turnCallbackBufferRef.current;
       turnCallbackBufferRef.current = null;
@@ -1961,6 +1987,23 @@ export async function runAgent(
       if (thinkingItems.length > 0) {
         (msg as unknown as Record<string, unknown>)._thinking_blocks = thinkingItems;
       }
+      const settlingNow = result.toolCalls.length === 1 && result.toolCalls[0].name === "settle"
+      if (stepReportIteration === null && result.toolCalls.length > 0 && !settlingNow && budgetExhausted()) {
+        if (!candidateToolNames.has("settle")) {
+          throw new Error(`provider iteration limit exhausted at response ${stepBudget} before tool execution`)
+        }
+        // Do not error into the reply: give the model one settle-only call to report progress.
+        streamCallbackBuffer?.discard()
+        stepReportIteration = providerIterations + 1
+        rejectAttempt(msg, [
+          ...result.toolCalls.map((tc) => ({ role: "tool" as const, tool_call_id: tc.id, content: "not executed: the step budget for this turn is used up." })),
+          { role: "user", content: STEP_BUDGET_REPORT_INSTRUCTION },
+        ])
+        callbacks.onClearText?.()
+        emitNervesEvent({ level: "warn", component: "engine", event: "engine.step_budget_exhausted", message: "step budget used up; requesting a settle-only progress report", meta: { stepBudget, providerIterations } })
+        continue
+      }
+      lastIterationMadeProgress = false;
       // Phase annotation for Codex provider
       const hasPhaseAnnotation = providerRuntime.capabilities.has("phase-annotation");
       const isSoleSettle = result.toolCalls.length === 1 && result.toolCalls[0].name === "settle";
@@ -2333,7 +2376,7 @@ export async function runAgent(
           // answer before ordinary settle handling reaches this point.
           const deliveredAnswer = answer as string
           // Never spend the last provider iteration on this optional retry: delivering the recap beats delivering nothing.
-          const contentMismatch = sawSettleContentMismatch || providerIterations >= MAX_PROVIDER_ITERATIONS - 1 ? null : settleContentMismatchError(msg.content, deliveredAnswer)
+          const contentMismatch = sawSettleContentMismatch || providerIterations >= stepBudget - 1 ? null : settleContentMismatchError(msg.content, deliveredAnswer)
           if (contentMismatch) {
             sawSettleContentMismatch = true
             emitNervesEvent({ level: "warn", component: "engine", event: "engine.settle_content_mismatch", message: "settle answer differs from the reply text written beside it; asking once for the reply as the answer", meta: { answerLength: deliveredAnswer.length, contentLength: (msg.content as string).length } })
@@ -2893,6 +2936,7 @@ export async function runAgent(
             invoked,
             sideEffect: success && toolRiskProfile?.mutates !== "none",
           })
+          if (success && !hasRecordedToolCall(toolLoopState, tc.name, args)) lastIterationMadeProgress = true;
           recordToolOutcome(toolLoopState, tc.name, args, modelResult, success);
           callbacks.onToolEnd(tc.name, buildToolResultSummary(tc.name, args, modelResult, success, toolSelection), success);
           callbacks.onToolResult?.(messages);
