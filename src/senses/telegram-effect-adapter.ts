@@ -624,7 +624,7 @@ export async function sweepTelegramSystemFailsafes(input: {
 }): Promise<{ inspected: number; sent: number }> {
   const scanned = (input.scanCache ?? new ExternalEventScanCache()).scan(input.eventRoot)
   const records = scanned
-    .flatMap((entry) => entry.record && entry.record.agent === "sanctuary" && entry.record.source === "sanctuary-usenet" ? [entry.record] : [])
+    .flatMap((entry) => entry.record && entry.record.agent === "sanctuary" && entry.record.source === "sanctuary-usenet" && !entry.record.privilegedFailsafe ? [entry.record] : [])
     .sort((left, right) => left.eventId.localeCompare(right.eventId))
     .slice(0, 32)
   let sent = 0

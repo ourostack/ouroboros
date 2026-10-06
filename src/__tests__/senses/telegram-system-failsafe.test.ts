@@ -186,25 +186,63 @@ describe("Telegram system failsafe", () => {
     expect(request).toHaveBeenCalledTimes(1)
   })
 
-  it("an idle sweep with a shared scan cache re-reads no unchanged record and still sees a changed one", async () => {
+  it("an idle sweep with a shared scan cache re-reads no unchanged or corrupt record and still acts on a changed one", async () => {
     const ineligible = record({ executionState: "handled", lastError: null })
     const eventRoot = path.dirname(path.dirname(path.dirname(ineligible.recordPath)))
     const corruptPath = path.join(path.dirname(ineligible.recordPath), "corrupt.json")
     fs.writeFileSync(corruptPath, "{not json")
     const scanCache = new ExternalEventScanCache()
-    const verifyProtectiveState = vi.fn(async () => ({ verified: true, reference: "sabnzbd-read:queue-paused:sha256:idle" }))
-    const common = { eventRoot, target, verifyProtectiveState, execute: vi.fn(), recordArtifact: vi.fn(async () => undefined), scanCache }
+    const store = new FileTelegramEffectJournal(root("failsafe-idle-journal"))
+    const request = vi.fn(async () => ({ message_id: 77 }))
+    const execute = createTelegramAuthorizedEffectExecutor({ store, api: { request }, authorize: () => authorization })
+    const common = { eventRoot, target, verifyProtectiveState: vi.fn(async () => ({ verified: true, reference: "sabnzbd-read:queue-paused:sha256:idle" })), execute, recordArtifact: vi.fn(async () => undefined), scanCache, now: () => "2026-08-29T19:58:01.000Z" }
+    const readsOf = (file: string): number => vi.mocked(fs.readFileSync).mock.calls.filter(([p]) => String(p) === file).length
 
     await expect(sweepTelegramSystemFailsafes(common)).resolves.toEqual({ inspected: 1, sent: 0 })
     vi.mocked(fs.readFileSync).mockClear()
     for (let tick = 0; tick < 5; tick += 1) await expect(sweepTelegramSystemFailsafes(common)).resolves.toEqual({ inspected: 1, sent: 0 })
-    expect(vi.mocked(fs.readFileSync).mock.calls.filter(([file]) => String(file).startsWith(eventRoot))).toHaveLength(0)
+    expect(readsOf(ineligible.recordPath)).toBe(0)
+    expect(readsOf(corruptPath)).toBe(0)
 
-    const changed = { ...JSON.parse(fs.readFileSync(ineligible.recordPath, "utf8")), updatedAt: "2026-08-29T19:58:30.000Z", executionState: "retry_wait", lastError: "boom" }
+    const changed = { ...JSON.parse(fs.readFileSync(ineligible.recordPath, "utf8")), executionState: "retry_wait", lastError: "boom" }
     fs.writeFileSync(ineligible.recordPath, JSON.stringify(changed))
     vi.mocked(fs.readFileSync).mockClear()
-    await expect(sweepTelegramSystemFailsafes({ ...common, now: () => "2026-08-29T19:59:01.000Z" })).resolves.toEqual({ inspected: 1, sent: 0 })
-    expect(vi.mocked(fs.readFileSync).mock.calls.filter(([file]) => String(file) === ineligible.recordPath)).toHaveLength(1)
+    await expect(sweepTelegramSystemFailsafes(common)).resolves.toEqual({ inspected: 1, sent: 1 })
+    expect(request).toHaveBeenCalledTimes(1)
+  })
+
+  it("sends once across ticks with a shared cache and re-reads the record after the receipt is bound", async () => {
+    const eligible = record()
+    const eventRoot = path.dirname(path.dirname(path.dirname(eligible.recordPath)))
+    const store = new FileTelegramEffectJournal(root("failsafe-once-journal"))
+    const request = vi.fn(async () => ({ message_id: 55 }))
+    const execute = vi.fn(createTelegramAuthorizedEffectExecutor({ store, api: { request }, authorize: () => authorization }))
+    const common = { eventRoot, target, verifyProtectiveState: vi.fn(async () => ({ verified: true, reference: "sabnzbd-read:queue-paused:sha256:once" })), execute, recordArtifact: vi.fn(async () => undefined), scanCache: new ExternalEventScanCache(), now: () => "2026-08-29T19:58:01.000Z" }
+
+    vi.mocked(fs.readFileSync).mockClear()
+    await expect(sweepTelegramSystemFailsafes(common)).resolves.toEqual({ inspected: 1, sent: 1 })
+    expect(execute).toHaveBeenCalledTimes(1)
+    vi.mocked(fs.readFileSync).mockClear()
+    await expect(sweepTelegramSystemFailsafes(common)).resolves.toEqual({ inspected: 0, sent: 0 })
+    expect(execute).toHaveBeenCalledTimes(1)
+    expect(request).toHaveBeenCalledTimes(1)
+    expect(vi.mocked(fs.readFileSync).mock.calls.filter(([p]) => String(p) === eligible.recordPath).length).toBeGreaterThanOrEqual(1)
+    expect(readExternalEventRecord(eligible.recordPath).privilegedFailsafe).toBeTruthy()
+  })
+
+  it("does not let receipted records starve newer ones past the 32-record cap", async () => {
+    const first = record()
+    const eventRoot = path.dirname(path.dirname(path.dirname(first.recordPath)))
+    const dir = path.dirname(first.recordPath)
+    const base = JSON.parse(fs.readFileSync(first.recordPath, "utf8"))
+    for (let i = 0; i < 32; i += 1) {
+      const id = `a-done-${String(i).padStart(2, "0")}`
+      const p = path.join(dir, `${id}.json`)
+      fs.writeFileSync(p, JSON.stringify({ ...base, eventId: id, recordPath: p, privilegedFailsafe: { artifactId: "e".repeat(64), verificationRef: "v", recordedAt: "2026-08-29T19:58:00.000Z" } }))
+    }
+    const execute = vi.fn(async () => { throw new Error("not reached") })
+    const result = await sweepTelegramSystemFailsafes({ eventRoot, target, verifyProtectiveState: vi.fn(async () => ({ verified: false, reference: "" })), execute: execute as never, recordArtifact: vi.fn(), now: () => "2026-08-29T19:58:01.000Z" })
+    expect(result).toEqual({ inspected: 1, sent: 0 })
   })
 
   it("sweeps eligible persisted events with and without an injected clock", async () => {

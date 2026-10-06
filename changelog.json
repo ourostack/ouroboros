@@ -4,7 +4,7 @@
     {
       "version": "0.1.0-alpha.859",
       "changes": [
-        "The Telegram sense no longer re-reads and re-parses every external-event record (hundreds of files, about 8 MB) each second for its system-failsafe sweep; it now reuses the stat-keyed record cache, cutting the Butler's idle Telegram CPU."
+        "The Telegram sense no longer re-reads and re-parses every external-event record (hundreds of files, about 11 MB) each second for its system-failsafe sweep; it now reuses the stat-keyed record cache, cutting the Butler's idle Telegram CPU. The trade is memory: parsed records now stay cached in the sense process for its lifetime, so heap grows by roughly the size of the usenet records."
       ]
     },
     {
