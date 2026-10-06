@@ -305,7 +305,7 @@ export function createUnraidReadTools(client: ReadClient) {
 const emptyParameters = { type: "object", properties: {}, additionalProperties: false }
 
 function missingRuntime(): string {
-  return JSON.stringify({ ok: false, error: { code: "invalid_response", message: "Sanctuary runtime is unavailable", degraded: true } })
+  return JSON.stringify({ ok: false, error: { code: "tool_context_missing", message: "Sanctuary tools are not wired into this turn; this is a harness wiring gap, not a runtime outage — do not restart; report it.", degraded: true } })
 }
 
 function householdRepairObligation(selection: ToolContext["routineActionSelection"], target: string): Obligation | null {

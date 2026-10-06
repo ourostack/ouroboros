@@ -1,3 +1,6 @@
+import * as fs from "node:fs"
+import * as os from "node:os"
+import * as path from "node:path"
 import { beforeEach, describe, expect, it, vi } from "vitest"
 
 const nervesEvents: Array<Record<string, unknown>> = []
@@ -8,8 +11,10 @@ vi.mock("../../nerves/runtime", () => ({
 }))
 
 const mockGetAgentName = vi.fn(() => "slugger")
+let stateRoot = ""
 vi.mock("../../heart/identity", () => ({
   getAgentName: () => mockGetAgentName(),
+  getAgentStateRoot: () => stateRoot,
 }))
 
 const mockSendDaemonCommand = vi.fn()
@@ -48,6 +53,7 @@ function friendCtx(): ToolContext {
 describe("restart_runtime tool", () => {
   beforeEach(() => {
     vi.clearAllMocks()
+    stateRoot = fs.mkdtempSync(path.join(os.tmpdir(), "restart-runtime-"))
     nervesEvents.length = 0
     mockGetAgentName.mockReturnValue("slugger")
     mockSendDaemonCommand.mockResolvedValue({ ok: true, message: "daemon restarting — launchctl will respawn" })
@@ -392,6 +398,71 @@ describe("revive_sense tool", () => {
       await t.handler({ sense: "", reason: "deliberate test" }, familyCtx())
 
       expect(nervesEvents.find((e) => e.event === "repertoire.sense_revive_requested")).toBeUndefined()
+    })
+  })
+
+  describe("autonomous-turn guard and cooldown", () => {
+    beforeEach(() => { stateRoot = fs.mkdtempSync(path.join(os.tmpdir(), "restart-runtime-")) })
+
+    it.each(["await", "habit", "instinct", "external-event", "scheduler"] as const)("refuses in a %s turn without touching the daemon", async (kind) => {
+      const t = findTool("restart_runtime")
+      const result = JSON.parse(await t.handler({ reason: "runtime unavailable" }, { signin: vi.fn(), autonomousTurnKind: kind }))
+      expect(result).toMatchObject({ refused: true, code: "autonomous_turn_restart_refused" })
+      expect(result.error).toContain(kind)
+      expect(mockSendDaemonCommand).not.toHaveBeenCalled()
+      expect(nervesEvents.some((e) => e.event === "repertoire.runtime_restart_refused")).toBe(true)
+    })
+
+    it("allows an owner turn and then refuses inside the 6 hour cooldown", async () => {
+      const t = findTool("restart_runtime")
+      const first = JSON.parse(await t.handler({ reason: "wedged" }, familyCtx()))
+      expect(first.requested).toBe(true)
+      const second = JSON.parse(await t.handler({ reason: "wedged again" }, familyCtx()))
+      expect(second).toMatchObject({ refused: true, code: "restart_cooldown" })
+      expect(second.retryAfterMs).toBeGreaterThan(0)
+      expect(mockSendDaemonCommand).toHaveBeenCalledTimes(1)
+    })
+
+    it("a failed daemon command leaves no cooldown", async () => {
+      const t = findTool("restart_runtime")
+      mockSendDaemonCommand.mockRejectedValueOnce(new Error("socket down"))
+      expect(JSON.parse(await t.handler({ reason: "x" }, familyCtx())).error).toContain("failed to reach daemon")
+      mockSendDaemonCommand.mockResolvedValueOnce({ ok: false, error: "nope" })
+      await t.handler({ reason: "x" }, familyCtx())
+      expect(fs.existsSync(path.join(stateRoot, "daemon", "restart-runtime-cooldown.json"))).toBe(false)
+      expect(JSON.parse(await t.handler({ reason: "x" }, familyCtx())).requested).toBe(true)
+    })
+
+    it("treats a future-dated cooldown record as expired", async () => {
+      fs.mkdirSync(path.join(stateRoot, "daemon"), { recursive: true })
+      fs.writeFileSync(path.join(stateRoot, "daemon", "restart-runtime-cooldown.json"), JSON.stringify({ requestedAtMs: Date.now() + 10 * 60 * 60 * 1000 }))
+      expect(JSON.parse(await findTool("restart_runtime").handler({ reason: "x" }, familyCtx())).requested).toBe(true)
+    })
+
+    it("a refused autonomous call writes no cooldown file", async () => {
+      await findTool("restart_runtime").handler({ reason: "x" }, { signin: vi.fn(), autonomousTurnKind: "await" })
+      expect(fs.existsSync(path.join(stateRoot, "daemon", "restart-runtime-cooldown.json"))).toBe(false)
+    })
+
+    it("persists the cooldown across a module reload and expires it after 6 hours", async () => {
+      await findTool("restart_runtime").handler({ reason: "wedged" }, familyCtx())
+      vi.resetModules()
+      const reloaded = (await import("../../repertoire/tools-runtime")).runtimeToolDefinitions.find((d) => d.tool.function.name === "restart_runtime")!
+      expect(JSON.parse(await reloaded.handler({ reason: "again" }, familyCtx()))).toMatchObject({ code: "restart_cooldown" })
+      const file = path.join(stateRoot, "daemon", "restart-runtime-cooldown.json")
+      fs.writeFileSync(file, JSON.stringify({ requestedAtMs: Date.now() - 7 * 60 * 60 * 1000 }))
+      expect(JSON.parse(await reloaded.handler({ reason: "later" }, familyCtx())).requested).toBe(true)
+    })
+
+    it("ignores a corrupt cooldown file and still restarts when the state dir is unwritable", async () => {
+      fs.mkdirSync(path.join(stateRoot, "daemon"), { recursive: true })
+      fs.writeFileSync(path.join(stateRoot, "daemon", "restart-runtime-cooldown.json"), "{nope")
+      expect(JSON.parse(await findTool("restart_runtime").handler({ reason: "x" }, familyCtx())).requested).toBe(true)
+      fs.writeFileSync(path.join(stateRoot, "daemon", "restart-runtime-cooldown.json"), JSON.stringify({ requestedAtMs: "bad" }))
+      expect(JSON.parse(await findTool("restart_runtime").handler({ reason: "z" }, familyCtx())).requested).toBe(true)
+      fs.rmSync(path.join(stateRoot, "daemon"), { recursive: true })
+      fs.writeFileSync(path.join(stateRoot, "daemon"), "file blocks mkdir")
+      expect(JSON.parse(await findTool("restart_runtime").handler({ reason: "y" }, familyCtx())).requested).toBe(true)
     })
   })
 })

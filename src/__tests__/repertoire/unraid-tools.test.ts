@@ -439,7 +439,7 @@ describe("Unraid typed read tools", () => {
     }
     for (const definition of unraidToolDefinitions) {
       const missing = JSON.parse(await definition.handler({}, undefined as any))
-      expect(missing).toMatchObject({ ok: false, error: { code: "invalid_response" } })
+      expect(missing).toMatchObject({ ok: false, error: { code: "tool_context_missing" } })
       const args = definition.tool.function.name === "unraid_get_container_logs" ? { container: "alpha", tailLines: 7 }
         : definition.tool.function.name === "sanctuary_search_media_catalog" ? { query: "moon", limit: 3 }
         : definition.tool.function.name === "unraid_restart_container" ? { container: "alpha" } : {}
@@ -461,6 +461,15 @@ describe("Unraid typed read tools", () => {
     const resumeDefinition = unraidToolDefinitions.find((definition) => definition.tool.function.name === "sanctuary_resume_download_queue")!
     expect(resumeDefinition.approvalPolicy?.({}, {} as any)).toEqual({ kind: "required", policyId: "sanctuary.downloads.resume.v1", actionClass: "sanctuary.downloads.resume", requiresSoleCall: true })
     expect(resumeDefinition.riskProfile).toMatchObject({ mutates: "external_side_effect", risk: "high" })
+  })
+
+  it("never reaches the Sanctuary restart from an await turn without a relationship grant", async () => {
+    const restartContainer = vi.fn()
+    const context = { signin: vi.fn(), autonomousTurnKind: "await", agentRoot: "/tmp/none", sanctuary: { restartContainer } } as any
+    const classification = await classifyApprovalForInvocation("unraid_restart_container", { container: "jellyfin" }, context)
+    const result = await execTool("unraid_restart_container", { container: "jellyfin" }, { ...context, routineActionSelection: classification.routineActionSelection })
+    expect(restartContainer).not.toHaveBeenCalled()
+    expect(JSON.parse(result)).toMatchObject({ ok: false })
   })
 
   it("returns every bounded install inspection state exactly and preserves the outer missing-runtime shape", async () => {
@@ -488,7 +497,7 @@ describe("Unraid typed read tools", () => {
       expect(getInstallState).toHaveBeenCalledExactlyOnceWith()
       expect(JSON.stringify(state)).not.toMatch(/(?:\/opt\/|\/home\/|sha256:|credential|stack)/u)
     }
-    await expect(definition.handler({}, undefined as any)).resolves.toBe(JSON.stringify({ ok: false, error: { code: "invalid_response", message: "Sanctuary runtime is unavailable", degraded: true } }))
+    await expect(definition.handler({}, undefined as any)).resolves.toBe(JSON.stringify({ ok: false, error: { code: "tool_context_missing", message: "Sanctuary tools are not wired into this turn; this is a harness wiring gap, not a runtime outage — do not restart; report it.", degraded: true } }))
   })
 
   describe("A-006 current requester routing", () => {

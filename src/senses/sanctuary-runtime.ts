@@ -25,6 +25,11 @@ const sanctuaryToolReceipts = new AsyncLocalStorage<string[]>()
 const sanctuaryToolGroundings = new AsyncLocalStorage<SanctuaryToolGrounding[]>()
 const acceptanceLedgerTails = new Map<string, Promise<void>>()
 
+/** The Butler agent whose private and A2A turns carry the Sanctuary tool context. */
+export function isSanctuaryAgent(agentName: string): boolean {
+  return agentName === "sanctuary"
+}
+
 export type SanctuaryExternalEventSource = "sanctuary-health" | "sanctuary-usenet"
 
 function isSanctuaryExternalEventSource(source: string): source is SanctuaryExternalEventSource {

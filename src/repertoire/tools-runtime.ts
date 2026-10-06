@@ -1,7 +1,10 @@
-import { getAgentName } from "../heart/identity"
+import * as fs from "node:fs"
+import * as path from "node:path"
+import { randomUUID } from "node:crypto"
+import { getAgentName, getAgentStateRoot } from "../heart/identity"
 import { emitNervesEvent } from "../nerves/runtime"
 import { DEFAULT_DAEMON_SOCKET_PATH, sendDaemonCommand } from "../heart/daemon/socket-client"
-import type { ToolDefinition } from "./tools-base"
+import type { ToolContext, ToolDefinition } from "./tools-base"
 
 /**
  * `restart_runtime` is the agent-callable counterpart to `ouro down && ouro up`.
@@ -29,11 +32,63 @@ interface ReviveSenseArgs {
   reason: string
 }
 
-async function restartRuntime(args: RestartRuntimeArgs, agentName: string): Promise<string> {
+export const RESTART_COOLDOWN_MS = 6 * 60 * 60 * 1000
+
+function restartCooldownPath(agentName: string): string {
+  return path.join(getAgentStateRoot(agentName), "daemon", "restart-runtime-cooldown.json")
+}
+
+function readLastRestartMs(agentName: string): number | null {
+  try {
+    const parsed = JSON.parse(fs.readFileSync(restartCooldownPath(agentName), "utf8")) as { requestedAtMs?: unknown }
+    return typeof parsed.requestedAtMs === "number" ? parsed.requestedAtMs : null
+  } catch {
+    return null
+  }
+}
+
+// The cooldown is stored per agent, but the restart it limits is daemon-wide.
+function recordRestart(agentName: string, nowMs: number): void {
+  try {
+    const file = restartCooldownPath(agentName)
+    fs.mkdirSync(path.dirname(file), { recursive: true })
+    const temporary = `${file}.tmp-${process.pid}-${randomUUID()}`
+    fs.writeFileSync(temporary, JSON.stringify({ requestedAtMs: nowMs }), "utf8")
+    fs.renameSync(temporary, file)
+  } catch {
+    // A failed cooldown write must not block an otherwise allowed restart.
+  }
+}
+
+async function restartRuntime(args: RestartRuntimeArgs, agentName: string, ctx?: ToolContext): Promise<string> {
   if (typeof args.reason !== "string" || args.reason.trim().length === 0) {
     return JSON.stringify({ error: "reason is required (one-line audit string)" })
   }
   const reason = args.reason.trim()
+
+  if (ctx?.autonomousTurnKind) {
+    emitNervesEvent({
+      component: "repertoire",
+      event: "repertoire.runtime_restart_refused",
+      message: "restart_runtime refused in an autonomous turn",
+      meta: { agent: agentName, turnKind: ctx.autonomousTurnKind, reason },
+    })
+    return JSON.stringify({
+      refused: true,
+      code: "autonomous_turn_restart_refused",
+      error: `restart_runtime is not allowed from an autonomous ${ctx.autonomousTurnKind} turn: restarting the daemon kills in-flight work for every agent and habit. A tool error or missing capability is not evidence of a dead runtime. Record or report the problem (note it, surface it to the owner) instead of restarting.`,
+    })
+  }
+  const lastMs = readLastRestartMs(agentName)
+  const nowMs = Date.now()
+  if (lastMs !== null && lastMs <= nowMs && nowMs - lastMs < RESTART_COOLDOWN_MS) {
+    return JSON.stringify({
+      refused: true,
+      code: "restart_cooldown",
+      error: `a restart was already requested ${Math.round((nowMs - lastMs) / 60000)} minutes ago; agent-requested restarts are limited to one per 6 hours. Record or report the problem instead.`,
+      retryAfterMs: RESTART_COOLDOWN_MS - (nowMs - lastMs),
+    })
+  }
 
   emitNervesEvent({
     component: "repertoire",
@@ -48,6 +103,8 @@ async function restartRuntime(args: RestartRuntimeArgs, agentName: string): Prom
       reason,
       requestedBy: agentName,
     })
+    // Only a daemon that accepted the command starts the cooldown; a failed attempt must not lock the owner out.
+    if (response.ok) recordRestart(agentName, nowMs)
     return JSON.stringify({
       requested: true,
       reason,
@@ -143,9 +200,9 @@ export const runtimeToolDefinitions: ToolDefinition[] = [
         },
       },
     },
-    handler: async (args) => {
+    handler: async (args, ctx) => {
       const agentName = getAgentName()
-      return restartRuntime({ reason: args.reason }, agentName)
+      return restartRuntime({ reason: args.reason }, agentName, ctx)
     },
     riskProfile: { mutates: "external_side_effect", risk: "high", reason: "restarts the hosting runtime" },
   },
