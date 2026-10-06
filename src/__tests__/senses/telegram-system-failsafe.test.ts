@@ -240,9 +240,11 @@ describe("Telegram system failsafe", () => {
       const p = path.join(dir, `${id}.json`)
       fs.writeFileSync(p, JSON.stringify({ ...base, eventId: id, recordPath: p, privilegedFailsafe: { artifactId: "e".repeat(64), verificationRef: "v", recordedAt: "2026-08-29T19:58:00.000Z" } }))
     }
+    const secondPath = path.join(dir, "z-second.json")
+    fs.writeFileSync(secondPath, JSON.stringify({ ...base, eventId: "z-second", recordPath: secondPath }))
     const execute = vi.fn(async () => { throw new Error("not reached") })
     const result = await sweepTelegramSystemFailsafes({ eventRoot, target, verifyProtectiveState: vi.fn(async () => ({ verified: false, reference: "" })), execute: execute as never, recordArtifact: vi.fn(), now: () => "2026-08-29T19:58:01.000Z" })
-    expect(result).toEqual({ inspected: 1, sent: 0 })
+    expect(result).toEqual({ inspected: 2, sent: 0 })
   })
 
   it("sweeps eligible persisted events with and without an injected clock", async () => {
