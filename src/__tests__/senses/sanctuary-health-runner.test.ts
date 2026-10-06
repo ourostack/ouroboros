@@ -105,4 +105,16 @@ describe("native Sanctuary health habit", () => {
     expect(submitEvidence).toHaveBeenCalledWith(expect.objectContaining({ observationRevision: "sweep-rev-large", transition: "changed" }))
     expect(result.data).toEqual({ incidentCount: 17, submitted: 17, wakesRequested: 1 })
   })
+
+  it("acknowledges recovered incidents only after every receipt was accepted", async () => {
+    const acknowledgeRecovered = vi.fn(async () => undefined)
+    const sweep = vi.fn(async () => ({ message: null, incidents: [], recovered: [{ id: "container:a", summary: "a is down" }], observationRevision: "r", transition: "recovered" as const, acknowledgeRecovered }))
+    await expect(runSanctuaryHealthHabit("sanctuary", {
+      createSweep: () => Object.assign(sweep, {}),
+      submitEvidence: vi.fn(async () => { throw new Error("submit failed") }),
+    })).rejects.toThrow("submit failed")
+    expect(acknowledgeRecovered).not.toHaveBeenCalled()
+    await runSanctuaryHealthHabit("sanctuary", { createSweep: () => Object.assign(sweep, {}), submitEvidence: vi.fn(async () => ({ shouldWake: false })) })
+    expect(acknowledgeRecovered).toHaveBeenCalledWith(["container:a"])
+  })
 })

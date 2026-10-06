@@ -221,6 +221,41 @@ describe("Unraid typed read tools", () => {
     })
   })
 
+  it("reports parity honestly: raw status, in-progress, anchored matching and history-backed error counts", async () => {
+    const date = new Date(Date.now() - 3_600_000).toISOString()
+    const nearDate = new Date(Date.now() - 2 * 3_600_000).toISOString()
+    const farDate = new Date(Date.now() - 100 * 3_600_000).toISOString()
+    const parity = async (parityCheckStatus: Record<string, unknown>, history?: unknown) => {
+      const read = vi.fn(async (query: string) => {
+        if (query.includes("SanctuaryParityHistory")) {
+          if (history instanceof Error) throw history
+          return { parityHistory: history }
+        }
+        return { disks: [], array: { parityCheckStatus } }
+      })
+      return (await createUnraidReadTools({ read } as any).getDisks() as any).data.parity
+    }
+    expect(await parity({ status: "failed", date })).toMatchObject({ result: "failed", status: "failed" })
+    expect(await parity({ status: "cancelled", date })).toMatchObject({ result: "failed" })
+    expect(await parity({ status: "never_run", date: null })).toMatchObject({ result: "unknown", status: "never_run" })
+    expect(await parity({ status: "x".repeat(100), date })).toMatchObject({ result: "unknown", status: "x".repeat(40) })
+    expect(await parity({ date })).toMatchObject({ result: "unknown", status: null })
+    expect(await parity({ status: "incomplete", date })).toMatchObject({ result: "unknown" })
+    expect(await parity({ status: "running", date: null })).toMatchObject({ result: "in_progress", degraded: false })
+    expect(await parity({ status: "paused", date })).toMatchObject({ result: "in_progress" })
+    expect(await parity({ status: "completed", date, errors: 0 })).toMatchObject({ result: "success", errorsSource: "status" })
+    expect(await parity({ status: "completed", date, errors: 2 })).toMatchObject({ result: "failed", errors: 2 })
+    expect(await parity({ status: "completed", date }, [{ date: nearDate, errors: 0 }])).toMatchObject({ result: "success", errors: 0, errorsSource: "history" })
+    expect(await parity({ status: "completed", date }, [{ date: nearDate, errors: 4 }])).toMatchObject({ result: "failed", errors: 4, errorsSource: "history" })
+    expect(await parity({ status: "completed", date }, [{ date: farDate, errors: 0 }])).toMatchObject({ result: "completed", errors: null, errorsSource: "unknown", degraded: false })
+    expect(await parity({ status: "completed", date }, [{ date: nearDate, errors: "bad" }])).toMatchObject({ result: "completed", errorsSource: "unknown" })
+    expect(await parity({ status: "completed", date }, [{ date: "not a date", errors: 0 }])).toMatchObject({ result: "completed" })
+    expect(await parity({ status: "completed", date }, [])).toMatchObject({ result: "completed" })
+    expect(await parity({ status: "completed", date }, null)).toMatchObject({ result: "completed" })
+    expect(await parity({ status: "completed", date }, new Error("Parity history file not found"))).toMatchObject({ result: "completed", errorsSource: "unknown" })
+    expect(await parity({ status: "completed", date: null })).toMatchObject({ result: "completed", degraded: true })
+  })
+
   it("degrades malformed and non-canonical container fields without guessing", async () => {
     expect(normalizeDockerStatus(null, null)).toEqual({ state: "unknown", exitCode: null, degraded: true })
     expect(normalizeDockerStatus(12, "Up 2 hours")).toEqual({ state: "unknown", exitCode: null, degraded: true })
@@ -325,7 +360,7 @@ describe("Unraid typed read tools", () => {
     const read = vi.fn(async () => ({ disks, array: { parityCheckStatus: { status: "completed", date: "invalid", errors: 3 } } }))
     await expect(createUnraidReadTools({ read } as any).getDisks()).resolves.toMatchObject({ ok: true, data: { disks: { length: 64 }, parity: { result: "failed", completedAt: null, ageHours: null, degraded: true }, truncated: true } })
     const result = await createUnraidReadTools({ read: vi.fn(async () => ({ disks: [{ id: "Disk:x", name: "x", smartStatus: "mystery", temperature: "hot" }], array: { parityCheckStatus: { status: "running", date: null, errors: null } } })) } as any).getDisks()
-    expect(result).toMatchObject({ ok: true, data: { disks: [{ smart: "unknown", temperatureC: null, degraded: true }], parity: { result: "unknown" } } })
+    expect(result).toMatchObject({ ok: true, data: { disks: [{ smart: "unknown", temperatureC: null, degraded: true }], parity: { result: "in_progress" } } })
   })
 
   it("maps and sorts degraded notifications while bounding fields", async () => {
@@ -369,7 +404,7 @@ describe("Unraid typed read tools", () => {
         { id: "new", timestamp: "2026-08-18T00:00:00Z", importance: "INFO", title: "new", subject: "", description: "" },
       ] } })
     const tools = createUnraidReadTools({ read } as any)
-    await expect(tools.getDisks()).resolves.toMatchObject({ ok: true, data: { disks: [{ id: "Disk:a" }, { id: "Disk:b" }], parity: { completedAt: null, result: "unknown" } } })
+    await expect(tools.getDisks()).resolves.toMatchObject({ ok: true, data: { disks: [{ id: "Disk:a" }, { id: "Disk:b" }], parity: { completedAt: null, result: "in_progress" } } })
     await expect(tools.getNotifications()).resolves.toMatchObject({ ok: true, data: { unacknowledged: [
       { id: "new" }, { id: "old" }, { id: "a" }, { id: "b" }, { id: "z", severity: "unknown" },
     ] } })

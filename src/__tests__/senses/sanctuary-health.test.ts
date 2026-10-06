@@ -299,7 +299,15 @@ describe("Sanctuary deterministic health sweep", () => {
     const healthy = createSanctuaryHealthSweep({ toolContext: context("running"), statePath, fetch, now })
     const recovered = await healthy()
     expect(recovered).toMatchObject({ message: null, transition: "recovered", incidents: [], recovered: [expect.objectContaining({ id: "container:Docker:a:availability" })] })
+    // The recovery stays offered until the receipt is acknowledged, so a failed submit is retried.
+    const reoffered = await healthy()
+    expect(reoffered).toMatchObject({ message: null, transition: "unchanged", recovered: [expect.objectContaining({ id: "container:Docker:a:availability" })] })
+    await reoffered.acknowledgeRecovered!(["some-other-incident"])
+    expect(readSanctuaryHealthState(statePath).pendingRecovered).toHaveLength(1)
+    await reoffered.acknowledgeRecovered!(["container:Docker:a:availability"])
+    await reoffered.acknowledgeRecovered!(["container:Docker:a:availability"])
     expect((await healthy())).toMatchObject({ message: null, transition: "unchanged", recovered: [] })
+    expect(readSanctuaryHealthState(statePath).pendingRecovered).toBeUndefined()
   })
 
   it("serializes overlapping sweeps while sampling each requested observation", async () => {
@@ -465,6 +473,32 @@ describe("Sanctuary deterministic health sweep", () => {
       })
       expect((await next()).incidents.map((incident) => incident.id)).toContain("parity:stale-or-failed")
     }
+  })
+
+  it("treats a recent completed parity check with no error count as healthy", async () => {
+    const toolContext = context("running")
+    toolContext.sanctuary.getDisks.mockResolvedValue({ ok: true, data: { disks: [], parity: { result: "completed", status: "completed", ageHours: 10, degraded: false } } })
+    const sweep = createSanctuaryHealthSweep({
+      toolContext,
+      statePath: statePath("sanctuary-health-parity-completed-"),
+      fetch: vi.fn().mockResolvedValue(new Response(null, { status: 204 })),
+      now: () => new Date("2026-08-18T15:00:00.000Z"),
+    })
+    expect((await sweep()).incidents.map((incident) => incident.id)).not.toContain("parity:stale-or-failed")
+  })
+
+  it("does not alarm while a parity check is running", async () => {
+    const toolContext = context("running")
+    toolContext.sanctuary.getDisks.mockResolvedValue({ ok: true, data: { disks: [], parity: { result: "in_progress", status: "running", ageHours: null, degraded: false } } })
+    const sweep = createSanctuaryHealthSweep({ toolContext, statePath: statePath("sanctuary-health-parity-running-"), fetch: vi.fn().mockResolvedValue(new Response(null, { status: 204 })), now: () => new Date("2026-08-18T15:00:00.000Z") })
+    expect((await sweep()).incidents.map((incident) => incident.id)).not.toContain("parity:stale-or-failed")
+  })
+
+  it("rejects a corrupt pending-recovery list", async () => {
+    const filePath = statePath("sanctuary-health-pending-corrupt-")
+    writeState(filePath, validState({ pendingRecovered: [{ id: "", summary: 1 }] } as never))
+    const sweep = createSanctuaryHealthSweep({ toolContext: context("running"), statePath: filePath, fetch: vi.fn().mockResolvedValue(new Response(null, { status: 204 })), now: () => new Date("2026-08-18T15:00:00.000Z") })
+    await expect(sweep()).rejects.toThrow(/corrupt/u)
   })
 
   it("normalizes legacy delivery receipts before rejecting an unavailable runtime", async () => {

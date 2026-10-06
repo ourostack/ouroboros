@@ -210,6 +210,106 @@ describe("external event attention lifecycle", () => {
     expect(secondClaim.executionState).toBe("running")
   })
 
+  describe("exhausted recovery reopening", () => {
+    const input = { agent: "sanctuary", source: "guard", eventType: "health.observed", eventId: "parity", observationRevision: "rev-1" }
+    const at = (iso: string) => ({ now: () => iso })
+    const shift = (iso: string, ms: number) => new Date(Date.parse(iso) + ms).toISOString()
+    const exhaust = (eventRoot: string, failedAt = "2026-09-02T02:39:55.000Z") => {
+      const first = recordExternalEvent(input, { root: eventRoot, ...at(shift(failedAt, -3_600_000)) })
+      claimExternalEvent(first.recordPath, { owner: "a", expectedVersion: first.version, expectedGeneration: 1, leaseMs: 1_000, now: () => shift(failedAt, -3_599_000) })
+      const dead = reconcileExternalEvent(first.recordPath, { now: () => failedAt, maxAttempts: 1 })
+      const revived = reviveExternalEventAfterRecovery(first.recordPath, { expectedVersion: dead.version, expectedGeneration: 1, evidence: { class: "execution_lease_expired", observedAt: shift(failedAt, 120_000) }, now: () => shift(failedAt, 137_000) })
+      if (!revived.revived) throw new Error("expected revival")
+      claimExternalEvent(first.recordPath, { owner: "b", expectedVersion: revived.record.version, expectedGeneration: 1, leaseMs: 1_000, now: () => shift(failedAt, 200_000) })
+      const permanent = reconcileExternalEvent(first.recordPath, { now: () => shift(failedAt, 260_000) })
+      expect(permanent).toMatchObject({ executionState: "dead_letter", recoveryGrant: { generation: 1 }, failureProvenance: { class: "execution_lease_expired", failedAt } })
+      return permanent
+    }
+    const wakes = (eventRoot: string, iso: string) => recordExternalEvent(input, { root: eventRoot, ...at(iso) }).shouldWake === true
+    // The record's slot is the UTC hour modulo 6 in which a still-observed receipt may reopen it.
+    const slotHour = (): number => {
+      const hours = [0, 1, 2, 3, 4, 5].filter((hour) => {
+        const probeRoot = root()
+        exhaust(probeRoot)
+        return wakes(probeRoot, `2026-09-10T0${hour}:40:00.000Z`)
+      })
+      expect(hours).toHaveLength(1)
+      return hours[0]!
+    }
+
+    it("keeps an exhausted record dormant inside the cooldown, then opens a new generation in exactly one hour of the following six", () => {
+      const eventRoot = root()
+      exhaust(eventRoot)
+      const slot = slotHour()
+      const reopenedAt = `2026-09-10T0${slot}:40:00.000Z`
+      const reopened = recordExternalEvent(input, { root: eventRoot, ...at(reopenedAt) })
+      expect(reopened).toMatchObject({ executionState: "received", generation: 2, attemptCount: 0, shouldWake: true, lastError: null, duplicateCount: 1 })
+      expect(reopened.failureProvenance).toBeUndefined()
+      expect(reopened.recoveryGrant).toBeUndefined()
+      // A second receipt in the same slot hour does not bump the generation again.
+      expect(recordExternalEvent(input, { root: eventRoot, ...at(shift(reopenedAt, 15 * 60_000)) })).toMatchObject({ executionState: "received", generation: 2, shouldWake: false })
+    })
+
+    it("honours the six-hour cooldown to the millisecond even inside the slot hour", () => {
+      const slot = slotHour()
+      const boundary = `2026-09-10T${12 + slot}:00:00.000Z`
+      const failedAt = shift(boundary, -6 * 3_600_000)
+      const before = root(); exhaust(before, failedAt)
+      expect(wakes(before, shift(boundary, -1))).toBe(false)
+      const exact = root(); exhaust(exact, failedAt)
+      expect(wakes(exact, boundary)).toBe(true)
+    })
+
+    it("stays bounded when a reopened generation fails again", () => {
+      const eventRoot = root()
+      exhaust(eventRoot)
+      const slot = slotHour()
+      const reopenedAt = `2026-09-10T0${slot}:40:00.000Z`
+      const reopened = recordExternalEvent(input, { root: eventRoot, ...at(reopenedAt) })
+      const claim = claimExternalEvent(reopened.recordPath, { owner: "c", expectedVersion: reopened.version, expectedGeneration: 2, leaseMs: 1_000, now: () => shift(reopenedAt, 1_000) })
+      const dead = reconcileExternalEvent(reopened.recordPath, { now: () => shift(reopenedAt, 10_000), maxAttempts: 1 })
+      expect(claim.executionState).toBe("running")
+      expect(dead).toMatchObject({ executionState: "dead_letter", generation: 2, failureProvenance: { failedAt: shift(reopenedAt, 10_000) } })
+      for (let hour = 0; hour < 48; hour += 1) expect(wakes(eventRoot, shift(reopenedAt, 3_600_000 * (hour + 1)))).toBe(false)
+    })
+
+    it("never reopens records without provenance, without a spent grant, or with a disposition", () => {
+      const noProvenance = root()
+      const first = recordExternalEvent(input, { root: noProvenance, ...at("2026-09-02T02:00:00.000Z") })
+      const claim = claimExternalEvent(first.recordPath, { owner: "a", expectedVersion: first.version, expectedGeneration: 1, now: () => "2026-09-02T02:00:01.000Z" })
+      failExternalEventAttempt(first.recordPath, { owner: "a", expectedVersion: claim.version, expectedGeneration: 1, error: "poison", maxAttempts: 1, now: () => "2026-09-02T02:00:02.000Z" })
+      const noGrant = root()
+      const second = recordExternalEvent(input, { root: noGrant, ...at("2026-09-02T02:00:00.000Z") })
+      claimExternalEvent(second.recordPath, { owner: "a", expectedVersion: second.version, expectedGeneration: 1, leaseMs: 1_000, now: () => "2026-09-02T02:00:01.000Z" })
+      expect(reconcileExternalEvent(second.recordPath, { now: () => "2026-09-02T02:39:55.000Z", maxAttempts: 1 })).toMatchObject({ executionState: "dead_letter", failureProvenance: { class: "execution_lease_expired" } })
+      const withDisposition = root()
+      const third = recordExternalEvent(input, { root: withDisposition, ...at("2026-09-02T02:00:00.000Z") })
+      exhaust(withDisposition)
+      const patched = JSON.parse(fs.readFileSync(third.recordPath, "utf8"))
+      patched.disposition = { classification: "false_alarm", decision: "none", nextWake: { kind: "none" } }
+      fs.writeFileSync(third.recordPath, JSON.stringify(patched))
+      for (const eventRoot of [noProvenance, noGrant, withDisposition]) {
+        for (let hour = 0; hour < 6; hour += 1) expect(wakes(eventRoot, `2026-09-10T0${hour}:40:00.000Z`)).toBe(false)
+      }
+    })
+
+    it("never reopens an exhausted record whose dispatch is disabled", () => {
+      const eventRoot = root()
+      exhaust(eventRoot)
+      expect(recordExternalEvent(input, { root: eventRoot, ...at("2026-09-02T03:00:00.000Z"), dispatchEnabled: false })).toMatchObject({ dispatchEnabled: false, shouldWake: false })
+      for (let hour = 0; hour < 6; hour += 1) {
+        expect(recordExternalEvent(input, { root: eventRoot, ...at(`2026-09-09T0${hour}:00:00.000Z`) })).toMatchObject({ executionState: "dead_letter", generation: 1, shouldWake: false })
+      }
+    })
+
+    it("does not let a receipt that disables dispatch reopen the record", () => {
+      const eventRoot = root()
+      exhaust(eventRoot)
+      const slot = slotHour()
+      expect(recordExternalEvent(input, { root: eventRoot, ...at(`2026-09-10T0${slot}:40:00.000Z`), dispatchEnabled: false })).toMatchObject({ executionState: "dead_letter", generation: 1, dispatchEnabled: false, shouldWake: false })
+    })
+  })
+
   it("does not let the general failure API clear a consumed provider recovery grant", () => {
     const eventRoot = root()
     const first = recordExternalEvent({ agent: "sanctuary", source: "guard", eventType: "health.observed", eventId: "untrusted-reclassify" }, { root: eventRoot, now: () => "2026-08-29T18:00:00.000Z" })

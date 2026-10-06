@@ -2,6 +2,14 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.861",
+      "changes": [
+        "A health alarm that is still being observed no longer stays dead-lettered forever once its single recovery grant is spent: a repeat receipt opens a new generation at least six hours after the recorded failure, in one hour slot per record of a six-hour cycle so a backlog cannot wake the Butler at once. This helps only records whose incident is still observed; records whose incident already cleared stay dead_letter.",
+        "The Unraid parity tool reports Unraid API 7.x results honestly: completed with no error count is reported as completed (using the newest parity history entry for the error count when it is within 36 hours of the status date), running and paused are in_progress and raise no alarm, failed and cancelled are reported as failed, and the raw status is included.",
+        "A recovered health incident stays in saved state until its recovery receipt is accepted, so a failed submit is retried instead of losing the recovered transition."
+      ]
+    },
+    {
       "version": "0.1.0-alpha.860",
       "changes": [
         "Awaits filed from an A2A delegated command now run: the follow-up carries the delegating owner's authority narrowed to the peer's profile, its outcome reaches the owner on Telegram as the agent, and an await that can never run is canceled with a reason and reported instead of failing silently on every wake."

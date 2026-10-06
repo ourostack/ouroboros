@@ -75,6 +75,9 @@ export async function runSanctuaryHealthHabit(agentName: string, options: Sanctu
   }
   const submit = options.submitEvidence ?? ((input: ExternalEventInput) => recordExternalEvent(input))
   const receipts = await Promise.all(inputs.map((input) => submit(input)))
+  // Only now that every receipt was accepted may the sweep forget the recovered incidents; a failed submit above leaves them to be re-offered.
+  const recoveredIds = (result.recovered ?? []).map((incident) => incident.id)
+  if (recoveredIds.length > 0) await result.acknowledgeRecovered?.(recoveredIds)
   const wakesRequested = receipts.some((receipt) => receipt.shouldWake) ? 1 : 0
   emitNervesEvent({
     component: "senses",
