@@ -240,10 +240,16 @@ export function createUnraidReadTools(client: ReadClient) {
         const parityRaw = record(record(data.array, "array").parityCheckStatus, "parity status")
         const completedAt = validTimestamp(parityRaw.date)
         const errors = numberOrNull(parityRaw.errors)
-        const result = errors === 0 && typeof parityRaw.status === "string" && /complete|success/i.test(parityRaw.status) ? "success" : errors !== null && errors > 0 ? "failed" : "unknown"
+        const status = typeof parityRaw.status === "string" ? parityRaw.status.trim().slice(0, 40) : null
+        // Unraid API 7.x never reports an error count, so a completed check with no count is "completed", not a claimed zero-error success.
+        const completedStatus = status !== null && /complete|success/i.test(status)
+        const failedStatus = status !== null && /^(failed|cancelled|canceled)$/i.test(status)
+        const result = errors !== null && errors > 0 || failedStatus ? "failed"
+          : completedStatus && errors === 0 ? "success"
+            : completedStatus && errors === null ? "completed" : "unknown"
         const elapsedMs = completedAt ? Date.now() - Date.parse(completedAt) : null
         const ageHours = elapsedMs !== null && elapsedMs >= 0 ? elapsedMs / 3_600_000 : null
-        return { ok: true, data: { disks, parity: { result, completedAt, ageHours, degraded: result === "unknown" || completedAt === null || ageHours === null }, truncated } }
+        return { ok: true, data: { disks, parity: { result, status, completedAt, ageHours, degraded: result === "unknown" || completedAt === null || ageHours === null }, truncated } }
       } catch (error) { return fail(error) }
     },
     async getNotifications(): Promise<ToolResult<Record<string, unknown>>> {

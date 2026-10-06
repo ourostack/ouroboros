@@ -891,6 +891,12 @@ type RecordExternalEventOptions = { root?: string; now?: () => string; dispatchE
 
 // A still-observed condition whose single recovery grant is spent must not stay dead forever: after this cooldown a repeat receipt opens a new generation.
 const EXHAUSTED_RECOVERY_REOPEN_MS = 6 * 60 * 60_000
+// Each record may only reopen in its own hour of a six-hour cycle, so a backlog of exhausted records spreads out (about one sixth per hour, one batch turn) instead of waking together.
+const EXHAUSTED_RECOVERY_SLOTS = 6
+
+function exhaustedRecoverySlot(record: { agent: string; source: string; eventId: string }): number {
+  return createHash("sha256").update(`${record.agent}\0${record.source}\0${record.eventId}`).digest().readUInt32BE(0) % EXHAUSTED_RECOVERY_SLOTS
+}
 
 function recordExternalEventInternal(input: ExternalEventInput, options: RecordExternalEventOptions = {}): ExternalEventRecord {
   validateExternalEventInput(input)
@@ -947,6 +953,7 @@ function recordExternalEventInternal(input: ExternalEventInput, options: RecordE
     const exhaustedRecoveryReopens = existing?.executionState === "dead_letter" && existing.dispatchEnabled !== false
       && existing.recoveryGrant?.generation === existing.generation && existing.failureProvenance !== undefined
       && Date.parse(now) - Date.parse(existing.failureProvenance.failedAt) >= EXHAUSTED_RECOVERY_REOPEN_MS
+      && Math.floor(Date.parse(now) / 3_600_000) % EXHAUSTED_RECOVERY_SLOTS === exhaustedRecoverySlot(existing)
     const shouldWake = !quietInitialReceipt && (!existing || quietBaselineChanged
       || (existing.disposition ? predicateMatches(existing.disposition, input, revision) : existing.executionState === "dead_letter" && (revision !== existing.observationRevision || exhaustedRecoveryReopens)))
     const generation = existing ? existing.generation + (shouldWake ? 1 : 0) : 1

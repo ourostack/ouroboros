@@ -225,12 +225,18 @@ describe("external event attention lifecycle", () => {
       return permanent
     }
 
-    it("keeps an exhausted record dormant inside the cooldown, then opens a new generation for the same still-observed condition", () => {
+    it("keeps an exhausted record dormant inside the cooldown, then opens a new generation in exactly one hour of the following six", () => {
       const eventRoot = root()
       exhaust(eventRoot)
       const early = recordExternalEvent(input, { root: eventRoot, now: () => "2026-09-02T08:39:54.000Z" })
       expect(early).toMatchObject({ executionState: "dead_letter", generation: 1, shouldWake: false })
-      const reopened = recordExternalEvent(input, { root: eventRoot, now: () => "2026-09-02T08:39:55.000Z" })
+      const reopenedAt = [9, 10, 11, 12, 13, 14].filter((hour) => {
+        const probeRoot = root()
+        exhaust(probeRoot)
+        return recordExternalEvent(input, { root: probeRoot, now: () => `2026-09-02T${String(hour).padStart(2, "0")}:40:00.000Z` }).shouldWake
+      })
+      expect(reopenedAt).toHaveLength(1)
+      const reopened = recordExternalEvent(input, { root: eventRoot, now: () => `2026-09-02T${String(reopenedAt[0]).padStart(2, "0")}:40:00.000Z` })
       expect(reopened).toMatchObject({ executionState: "received", generation: 2, attemptCount: 0, shouldWake: true, lastError: null, duplicateCount: 2 })
       expect(reopened.failureProvenance).toBeUndefined()
       expect(reopened.recoveryGrant).toBeUndefined()
@@ -240,7 +246,9 @@ describe("external event attention lifecycle", () => {
       const eventRoot = root()
       exhaust(eventRoot)
       expect(recordExternalEvent(input, { root: eventRoot, now: () => "2026-09-02T03:00:00.000Z", dispatchEnabled: false })).toMatchObject({ dispatchEnabled: false, shouldWake: false })
-      expect(recordExternalEvent(input, { root: eventRoot, now: () => "2026-09-09T00:00:00.000Z" })).toMatchObject({ executionState: "dead_letter", generation: 1, shouldWake: false })
+      for (let hour = 0; hour < 6; hour += 1) {
+        expect(recordExternalEvent(input, { root: eventRoot, now: () => `2026-09-09T0${hour}:00:00.000Z` })).toMatchObject({ executionState: "dead_letter", generation: 1, shouldWake: false })
+      }
     })
   })
 

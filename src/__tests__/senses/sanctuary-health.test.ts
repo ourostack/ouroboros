@@ -467,6 +467,18 @@ describe("Sanctuary deterministic health sweep", () => {
     }
   })
 
+  it("treats a recent completed parity check with no error count as healthy", async () => {
+    const toolContext = context("running")
+    toolContext.sanctuary.getDisks.mockResolvedValue({ ok: true, data: { disks: [], parity: { result: "completed", status: "completed", ageHours: 10, degraded: false } } })
+    const sweep = createSanctuaryHealthSweep({
+      toolContext,
+      statePath: statePath("sanctuary-health-parity-completed-"),
+      fetch: vi.fn().mockResolvedValue(new Response(null, { status: 204 })),
+      now: () => new Date("2026-08-18T15:00:00.000Z"),
+    })
+    expect((await sweep()).incidents.map((incident) => incident.id)).not.toContain("parity:stale-or-failed")
+  })
+
   it("normalizes legacy delivery receipts before rejecting an unavailable runtime", async () => {
     const filePath = statePath("sanctuary-health-transitions-")
     writeState(filePath, validState({

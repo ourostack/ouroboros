@@ -221,6 +221,17 @@ describe("Unraid typed read tools", () => {
     })
   })
 
+  it("reports a completed check without an error count as completed and keeps the raw status", async () => {
+    const parity = async (parityCheckStatus: Record<string, unknown>) => (await createUnraidReadTools({ read: vi.fn(async () => ({ disks: [], array: { parityCheckStatus } })) } as any).getDisks() as any).data.parity
+    const date = new Date(Date.now() - 3_600_000).toISOString()
+    expect(await parity({ status: "completed", date, errors: null })).toMatchObject({ result: "completed", status: "completed", degraded: false })
+    expect(await parity({ status: "failed", date })).toMatchObject({ result: "failed", status: "failed" })
+    expect(await parity({ status: "cancelled", date })).toMatchObject({ result: "failed" })
+    expect(await parity({ status: "never_run", date: null })).toMatchObject({ result: "unknown", status: "never_run" })
+    expect(await parity({ status: "x".repeat(100), date })).toMatchObject({ result: "unknown", status: "x".repeat(40) })
+    expect(await parity({ date })).toMatchObject({ result: "unknown", status: null })
+  })
+
   it("degrades malformed and non-canonical container fields without guessing", async () => {
     expect(normalizeDockerStatus(null, null)).toEqual({ state: "unknown", exitCode: null, degraded: true })
     expect(normalizeDockerStatus(12, "Up 2 hours")).toEqual({ state: "unknown", exitCode: null, degraded: true })

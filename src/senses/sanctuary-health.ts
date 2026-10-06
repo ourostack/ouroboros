@@ -352,7 +352,7 @@ export function createSanctuaryHealthSweep(options: {
         else if (disk.temperatureC >= 50) add(`disk:${disk.id}:temperature`, `${disk.name} is ${disk.temperatureC}°C`)
       }
       const parity = record(disks.parity)
-      if (!parity || parity.result !== "success" || typeof parity.ageHours !== "number" || parity.ageHours >= 45 * 24) add("parity:stale-or-failed", "parity check is unsuccessful, unknown, or older than 45 days")
+      if (!parity || (parity.result !== "success" && parity.result !== "completed") || typeof parity.ageHours !== "number" || parity.ageHours >= 45 * 24) add("parity:stale-or-failed", "parity check is unsuccessful, unknown, or older than 45 days")
     }
     const notifications = record(notificationsResult)?.ok ? record(record(notificationsResult)?.data)?.unacknowledged : null
     if (!Array.isArray(notifications)) add("notifications:unavailable", "notification status is unavailable")
