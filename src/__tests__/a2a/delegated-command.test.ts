@@ -1,6 +1,7 @@
 // End-to-end: a granted peer relays its principal's command over sealed A2A chat.
 // The server, not the model, checks the signed marker and the friend-record grant,
 // notifies the principal first, and only then runs the turn with owner authority.
+import { createHash } from "node:crypto"
 import * as fs from "node:fs"
 import * as path from "node:path"
 import { afterEach, beforeAll, describe, expect, it } from "vitest"
@@ -10,7 +11,7 @@ import { createTmpBundle, type TmpBundleHandle } from "../test-helpers/tmpdir-bu
 import { startA2AServer, type A2AServerHandle, type A2ATurnRunnerInput } from "../../a2a/server"
 import { sendSealedA2AChat } from "../../a2a/client"
 import { loadOrMintA2AIdentityFile, type A2AIdentity } from "../../a2a/identity"
-import { admitDelegatedCommand, delegatedCommandNotice, type A2ADelegationOptions } from "../../a2a/delegated-command"
+import { admitDelegatedCommand, delegatedCommandNotice, delegatedCommandWasNoticed, type A2ADelegationOptions } from "../../a2a/delegated-command"
 import { loadRelationshipCapabilityRegistry } from "../../repertoire/relationship-authorization"
 import { stewardPolicyToolDefinition } from "../../repertoire/tools-steward-policy"
 import { readStewardPolicy } from "../../heart/steward-policy"
@@ -202,5 +203,42 @@ describe("admitDelegatedCommand", () => {
     expect(notice).toContain("…")
     expect(notice).not.toContain("\n")
     expect(notice.length).toBeLessThan(340)
+  })
+})
+
+describe("delegatedCommandWasNoticed", () => {
+  const record = (root: string, commandId: string, body: unknown) => {
+    const key = `owner-notice:delegated:${commandId}`
+    const dir = path.join(root, "state", "telegram", "effects")
+    fs.mkdirSync(dir, { recursive: true })
+    const file = path.join(dir, `${createHash("sha256").update(key).digest("hex")}.json`)
+    fs.writeFileSync(file, JSON.stringify(body))
+    return file
+  }
+  const root = () => { tmp = createTmpBundle(); return tmp.agentRoot }
+
+  it("is true only for the owner's recorded notice of that exact command", () => {
+    const agentRoot = root()
+    record(agentRoot, "cmd-1", { idempotencyKey: "owner-notice:delegated:cmd-1", authorClass: "butler", target: { friendId: "owner" } })
+    expect(delegatedCommandWasNoticed(agentRoot, "cmd-1", "owner")).toBe(true)
+    expect(delegatedCommandWasNoticed(agentRoot, "cmd-1", "someone")).toBe(false)
+    expect(delegatedCommandWasNoticed(agentRoot, "cmd-2", "owner")).toBe(false)
+    record(agentRoot, "cmd-3", { idempotencyKey: "other", authorClass: "butler", target: { friendId: "owner" } })
+    record(agentRoot, "cmd-4", { idempotencyKey: "owner-notice:delegated:cmd-4", authorClass: "user", target: { friendId: "owner" } })
+    expect(delegatedCommandWasNoticed(agentRoot, "cmd-3", "owner")).toBe(false)
+    expect(delegatedCommandWasNoticed(agentRoot, "cmd-4", "owner")).toBe(false)
+    record(agentRoot, "cmd-5", { idempotencyKey: "owner-notice:delegated:cmd-5", authorClass: "butler" })
+    expect(delegatedCommandWasNoticed(agentRoot, "cmd-5", "owner")).toBe(false)
+  })
+
+  it("throws, rather than answering false, when the record cannot be read", () => {
+    const agentRoot = root()
+    const file = record(agentRoot, "cmd-1", {})
+    fs.rmSync(file)
+    fs.mkdirSync(file)
+    expect(() => delegatedCommandWasNoticed(agentRoot, "cmd-1", "owner")).toThrow()
+    fs.rmdirSync(file)
+    fs.writeFileSync(file, "{not-json")
+    expect(() => delegatedCommandWasNoticed(agentRoot, "cmd-1", "owner")).toThrow()
   })
 })

@@ -16,6 +16,7 @@ function argValue(name: string): string | undefined {
 
 import { configureDaemonRuntimeLogger } from "../heart/daemon/runtime-logging"
 import { emitNervesEvent } from "../nerves/runtime"
+import { A2A_PRINCIPAL_PROFILE_ID } from "../a2a/delegated-command"
 
 configureDaemonRuntimeLogger("a2a")
 emitNervesEvent({
@@ -79,7 +80,7 @@ Promise.all([
       // one is announced in the owner's Telegram chat before it runs.
       ...(agentName === "sanctuary" ? {
         delegation: {
-          principalProfileId: "sanctuary-owner",
+          principalProfileId: A2A_PRINCIPAL_PROFILE_ID,
           notifyPrincipal: async (notice: { noticeId: string; text: string }) => {
             const { sendTelegramOwnerNotice } = await import("./telegram")
             await sendTelegramOwnerNotice(agentName, { ...notice, signal: AbortSignal.timeout(30_000) })

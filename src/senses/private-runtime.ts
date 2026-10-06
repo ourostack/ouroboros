@@ -8,7 +8,8 @@ import { loadSession, postTurnTrim, deferPostTurnPersist, type UsageData } from 
 import { buildSystem, flattenSystemPrompt } from "../mind/prompt"
 import { getSharedMcpManager } from "../repertoire/mcp-manager"
 import { getToolsForChannel } from "../repertoire/tools"
-import { cancelStaleAwait, hasActiveExternalEventAwait, inspectRelationshipFollowUp } from "../repertoire/tools-awaiting"
+import { cancelStaleAwait, failBrokenAwait, hasActiveExternalEventAwait, inspectRelationshipFollowUp, isBrokenBindingReason } from "../repertoire/tools-awaiting"
+import { A2A_PRINCIPAL_PROFILE_ID, delegatedCommandWasNoticed } from "../a2a/delegated-command"
 import { renderRelationshipPreferences } from "../repertoire/relationship-authorization"
 import { appendRunLedgerRecordNonFatal, createRunLedgerRecord, usageMetadataFromUsageData } from "../heart/run-ledger"
 import { findNonCanonicalBundlePaths } from "../mind/bundle-manifest"
@@ -139,6 +140,11 @@ const DEFAULT_PRIVATE_RUNTIME_INSTINCTS: PrivateRuntimeInstinct[] = [
 
 type RelationshipAwaitCoordinates = { friendId: string; channel: string; key: string; requestId: string | null }
 
+/** The await file's provenance can never be satisfied; waking it again cannot help. */
+class InvalidRelationshipAwaitProvenanceError extends Error {}
+
+const RELATIONSHIP_AWAIT_CHANNELS = new Set(["telegram", "a2a"])
+
 class StaleRelationshipAwaitError extends Error {
   constructor(readonly reason: string) {
     super(`Relationship await authority ${reason}`)
@@ -160,21 +166,40 @@ function relationshipAwaitCoordinates(awaitFile: AwaitFile): RelationshipAwaitCo
   const values = [awaitFile.filed_for_friend_id, awaitFile.filed_from, awaitFile.filed_from_key]
   if (!awaitFile.request_id) {
     if (awaitFile.filed_from === "external-event" && awaitFile.filed_for_friend_id && awaitFile.filed_from_key) {
-      if (Buffer.byteLength(awaitFile.filed_for_friend_id) > 256 || Buffer.byteLength(awaitFile.filed_from_key) > 1_024) throw new Error("Relationship await provenance is invalid")
+      if (Buffer.byteLength(awaitFile.filed_for_friend_id) > 256 || Buffer.byteLength(awaitFile.filed_from_key) > 1_024) throw new InvalidRelationshipAwaitProvenanceError("Relationship await provenance is invalid")
       return { friendId: awaitFile.filed_for_friend_id, channel: awaitFile.filed_from, key: awaitFile.filed_from_key, requestId: null }
     }
     const isSystemAwait = awaitFile.filed_for_friend_id === null
       && awaitFile.filed_from_key === null
       && (awaitFile.filed_from === null || awaitFile.filed_from === "unknown" || awaitFile.filed_from === "cli")
     if (isSystemAwait) return null
-    throw new Error("Relationship await provenance is incomplete or legacy")
+    throw new InvalidRelationshipAwaitProvenanceError("Relationship await provenance is incomplete or legacy")
   }
-  if (values.some((value) => value === null)) throw new Error("Relationship await provenance is incomplete or legacy")
+  if (values.some((value) => value === null)) throw new InvalidRelationshipAwaitProvenanceError("Relationship await provenance is incomplete or legacy")
   const [friendId, channel, key] = values as [string, string, string]
-  if (channel !== "telegram" || Buffer.byteLength(friendId) > 256 || Buffer.byteLength(channel) > 64 || Buffer.byteLength(key) > 1_024 || Buffer.byteLength(awaitFile.request_id) > 256) {
-    throw new Error("Relationship await provenance is invalid")
+  if (!RELATIONSHIP_AWAIT_CHANNELS.has(channel) || Buffer.byteLength(friendId) > 256 || Buffer.byteLength(channel) > 64 || Buffer.byteLength(key) > 1_024 || Buffer.byteLength(awaitFile.request_id) > 256) {
+    throw new InvalidRelationshipAwaitProvenanceError("Relationship await provenance is invalid")
   }
   return { friendId, channel, key, requestId: awaitFile.request_id }
+}
+
+/**
+ * An A2A peer is reactive-only: it cannot be pushed to, and on its own it has no authority to be followed up with.
+ * Only a peer still holding the operator-set principal-command grant keeps follow-up authority, and that authority
+ * is the delegating owner's, resolved exactly as the delegated command resolved it. Revoking the grant ends it.
+ */
+async function resolveA2APrincipal(agentRoot: string, store: FileFriendStore, peer: FriendRecord, requestId: string): Promise<FriendRecord> {
+  if (peer.delegationGrant?.scope !== "principal_commands" || peer.trustLevel !== "family") throw new StaleRelationshipAwaitError("A2A peer no longer holds a delegation grant")
+  // listAll() swallows an unreadable directory or record as "no friend": only a verified complete read may end an await.
+  const entries = fs.readdirSync(path.join(agentRoot, "friends")).filter((entry) => entry.endsWith(".json"))
+  const friends = await store.listAll()
+  if (friends.length !== entries.length) throw new Error("Relationship await authority friends could not be read completely")
+  const owners = friends.filter((candidate) => candidate.capabilityProfileId === A2A_PRINCIPAL_PROFILE_ID
+    && candidate.trustLevel === "family" && candidate.admissionState === "active")
+  if (owners.length !== 1 || owners[0]!.id === peer.id) throw new StaleRelationshipAwaitError("delegating owner cannot be resolved")
+  const owner = owners[0]!
+  if (!delegatedCommandWasNoticed(agentRoot, requestId, owner.id)) throw new StaleRelationshipAwaitError("request was not a delegated command the owner was notified of")
+  return owner
 }
 
 async function resolveRelationshipAwaitAuthority(agentRoot: string, store: FileFriendStore, registry: ReturnType<typeof loadRelationshipCapabilityRegistry>, coordinates: RelationshipAwaitCoordinates) {
@@ -189,10 +214,15 @@ async function resolveRelationshipAwaitAuthority(agentRoot: string, store: FileF
   if (coordinates.channel === "external-event" && (friend.capabilityProfileId !== "sanctuary-owner" || !registry.profiles["sanctuary-event"])) {
     throw new StaleRelationshipAwaitError("admission or profile is not active")
   }
+  const subjectFriend = coordinates.channel === "a2a" ? await resolveA2APrincipal(agentRoot, store, friend, coordinates.requestId!) : friend
   const authorization = coordinates.channel === "external-event"
     ? createRelationshipAuthorizationEvaluator({ friend, registry, profileId: "sanctuary-event", requestPhase: "follow_up" })
-    : createRelationshipAuthorizationEvaluator({ friend, registry, requestId: coordinates.requestId!, requestPhase: "follow_up" })
-  if (authorization.subject.friendId !== coordinates.friendId) throw new Error("Relationship await authority friend is ambiguous")
+    : coordinates.channel === "a2a"
+      // The follow-up carries the delegating owner's authority (as the delegated command did), but the turn profile
+      // is the peer's own, which can only narrow it: never wider than a peer chat turn or the original command.
+      ? createRelationshipAuthorizationEvaluator({ friend: subjectFriend, registry, profileId: friend.capabilityProfileId, requestId: coordinates.requestId!, requestPhase: "follow_up" })
+      : createRelationshipAuthorizationEvaluator({ friend, registry, requestId: coordinates.requestId!, requestPhase: "follow_up" })
+  if (authorization.subject.friendId !== subjectFriend.id) throw new Error("Relationship await authority friend is ambiguous")
   if (!authorization.authorizeTool("resolve_await").allowed) throw new StaleRelationshipAwaitError("admission or profile is not active")
   return { authorization, friend }
 }
@@ -1267,7 +1297,15 @@ export async function runPrivateRuntimeTurn(options?: RunPrivateRuntimeTurnOptio
 
   const mcpOwner = { agentName, agentRoot: getAgentRoot(agentName) }
   const mcpManager = await getSharedMcpManager(mcpOwner) ?? undefined
-  const relationshipAwaitCoordinatesValue = parsedAwait ? relationshipAwaitCoordinates(parsedAwait) : null
+  const relationshipAwaitCoordinatesValue = parsedAwait ? (() => {
+    try {
+      return relationshipAwaitCoordinates(parsedAwait)
+    } catch (error) {
+      // relationshipAwaitCoordinates only ever throws provenance errors: none of them can be fixed by waking again.
+      failBrokenAwait(getAgentRoot(agentName), agentName, parsedAwait.name, (error as Error).message)
+      throw error
+    }
+  })() : null
   const relationshipAwait = relationshipAwaitCoordinatesValue
       ? await (async () => {
         const agentRoot = getAgentRoot(agentName)
@@ -1285,7 +1323,8 @@ export async function runPrivateRuntimeTurn(options?: RunPrivateRuntimeTurnOptio
               now: now().getTime(),
             })
           if (!binding.active) {
-            cancelStaleAwait(agentRoot, agentName, parsedAwait!.name, binding.reason)
+            if (isBrokenBindingReason(binding.reason)) failBrokenAwait(agentRoot, agentName, parsedAwait!.name, binding.reason)
+            else cancelStaleAwait(agentRoot, agentName, parsedAwait!.name, binding.reason)
             throw new Error(`Relationship await authority binding is missing, stale, or ambiguous: ${binding.reason}`)
           }
         }
@@ -1296,7 +1335,7 @@ export async function runPrivateRuntimeTurn(options?: RunPrivateRuntimeTurnOptio
           try {
             return await resolve()
           } catch (error) {
-            if (error instanceof StaleRelationshipAwaitError) cancelStaleAwait(agentRoot, agentName, parsedAwait!.name, error.reason)
+            if (error instanceof StaleRelationshipAwaitError) failBrokenAwait(agentRoot, agentName, parsedAwait!.name, error.reason)
             throw error
           }
         }

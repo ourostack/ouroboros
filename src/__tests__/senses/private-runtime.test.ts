@@ -1,3 +1,4 @@
+import { createHash } from "crypto"
 import { beforeEach, describe, expect, it, vi } from "vitest"
 import * as fs from "fs"
 import * as os from "os"
@@ -20,6 +21,7 @@ const mockGetAgentName = vi.fn()
 const mockDrainPending = vi.fn()
 const mockGetPendingDir = vi.fn()
 const mockGetPrivateRuntimePendingDir = vi.fn()
+const mockQueuePendingMessageOnce = vi.fn()
 const mockGetDeferredReturnDir = vi.fn()
 const mockHandleInboundTurn = vi.fn()
 const mockGetChannelCapabilities = vi.fn()
@@ -80,6 +82,7 @@ vi.mock("../../mind/pending", () => ({
   drainPending: (...args: any[]) => mockDrainPending(...args),
   getPendingDir: (...args: any[]) => mockGetPendingDir(...args),
   getPrivateRuntimePendingDir: (...args: any[]) => mockGetPrivateRuntimePendingDir(...args),
+  queuePendingMessageOnce: (...args: any[]) => mockQueuePendingMessageOnce(...args),
   getDeferredReturnDir: (...args: any[]) => mockGetDeferredReturnDir(...args),
   PRIVATE_RUNTIME_PENDING: { friendId: "self", channel: "inner", key: "dialog" },
 }))
@@ -271,6 +274,7 @@ describe("private runtime", () => {
     mockDrainPending.mockReset().mockReturnValue([])
     mockGetPendingDir.mockReset().mockReturnValue("/tmp/fake-pending-dir")
     mockGetPrivateRuntimePendingDir.mockReset().mockReturnValue("/tmp/fake-pending-dir")
+    mockQueuePendingMessageOnce.mockReset()
     mockGetDeferredReturnDir.mockReset().mockReturnValue("/tmp/fake-deferred-returns")
     mockGetChannelCapabilities.mockReset().mockReturnValue(innerCapabilities)
     mockEnforceTrustGate.mockReset().mockReturnValue({ allowed: true })
@@ -2511,6 +2515,133 @@ describe("private runtime", () => {
     expect(mockHandleInboundTurn).not.toHaveBeenCalled()
   })
 
+  describe("A2A-filed relationship awaits", () => {
+    const profiles = { version: 2, profiles: {
+      "sanctuary-owner": { version: 3, contextScopes: ["household.status"], toolNames: ["await_condition", "resolve_await", "shell", "send_message"], effectScopes: ["telegram.owner_event"] },
+      "sanctuary-agent-peer": { version: 4, contextScopes: ["household.status"], toolNames: ["await_condition", "resolve_await", "send_message"], effectScopes: [] },
+    } }
+    const grant = { scope: "principal_commands" as const, grantedAt: "2026-10-02T00:00:00.000Z", source: "owner stated" }
+    const base = { externalIds: [], tenantMemberships: [], toolPreferences: {}, notes: {}, totalTokens: 0, createdAt: "2026-08-29T00:00:00.000Z", updatedAt: "2026-08-29T00:00:00.000Z", schemaVersion: 1 as const }
+    const a2aTools = ["await_condition", "resolve_await", "shell", "send_message"].map((name) => ({ type: "function", function: { name, description: name, parameters: {} } }))
+
+    async function setup(options: { peer?: Record<string, unknown>; owner?: boolean | "second"; provenance?: string; obligation?: boolean; notice?: boolean | "other-friend" | "unreadable" } = {}) {
+      fs.writeFileSync(path.join(agentRoot, "tool-profiles.json"), JSON.stringify(profiles))
+      const store = new FileFriendStore(path.join(agentRoot, "friends"))
+      if (options.owner !== false) await store.put("owner", { id: "owner", name: "Ari", trustLevel: "family", admissionState: "active", initiativePolicy: "proactive", capabilityProfileId: "sanctuary-owner", ...base })
+      if (options.owner === "second") await store.put("owner-2", { id: "owner-2", name: "Ari 2", trustLevel: "family", admissionState: "active", initiativePolicy: "proactive", capabilityProfileId: "sanctuary-owner", ...base })
+      await store.put("peer", { id: "peer", name: "Claude Code", trustLevel: "family", admissionState: "active", initiativePolicy: "reactive_only", capabilityProfileId: "sanctuary-agent-peer", delegationGrant: grant, ...base, ...options.peer } as any)
+      fs.mkdirSync(path.join(agentRoot, "awaiting"), { recursive: true })
+      const obligation = options.obligation === false ? null : createObligation(agentRoot, { origin: { friendId: "peer", channel: "a2a", key: "conv-1" }, owedTo: { friendId: "peer", channel: "a2a", key: "conv-1" }, requestId: "req-1", content: "watch release" })
+      if (obligation) advanceObligation(agentRoot, obligation.id, { currentSurface: { kind: "session", label: "a2a/conv-1" }, currentArtifact: "awaiting/release.md", nextAction: "watch release" })
+      if (options.notice !== false) {
+        const key = "owner-notice:delegated:req-1"
+        const effects = path.join(agentRoot, "state", "telegram", "effects")
+        fs.mkdirSync(effects, { recursive: true })
+        fs.writeFileSync(path.join(effects, `${createHash("sha256").update(key).digest("hex")}.json`), options.notice === "unreadable" ? "{not-json" : JSON.stringify({ idempotencyKey: key, authorClass: "butler", target: { friendId: options.notice === "other-friend" ? "someone-else" : "owner" } }))
+      }
+      const provenance = options.provenance ?? "filed_from: a2a\nfiled_for_friend_id: peer\nfiled_from_key: conv-1\nrequest_id: req-1\n"
+      fs.writeFileSync(path.join(agentRoot, "awaiting", "release.md"), `---\ncondition: release landed\ncadence: 30m\nalert: a2a\nstatus: pending\n${provenance}${obligation ? `obligation_id: ${obligation.id}\n` : ""}---\n`, "utf8")
+      mockGetToolsForChannel.mockReturnValue(a2aTools)
+      return store
+    }
+    const run = () => runApprovedPrivateRuntimeTurn({ reason: "await", awaitName: "release", now: () => new Date("2026-08-29T00:05:00.000Z") })
+
+    it("accepts the awaits and authorizes the follow-up with the delegating owner's authority narrowed to the peer's profile", async () => {
+      await setup()
+      await run()
+      const runOptions = mockHandleInboundTurn.mock.calls[0][0].runAgentOptions
+      expect(runOptions.tools.map((tool: any) => tool.function.name)).toEqual(["await_condition", "resolve_await", "send_message"])
+      expect(runOptions.toolContext.context.friend).toMatchObject({ id: "peer" })
+      expect(runOptions.toolContext.currentSession).toMatchObject({ friendId: "peer", channel: "a2a", key: "conv-1" })
+      expect(runOptions.toolContext.relationshipAuthorization).toMatchObject({ requestId: "req-1", profileId: "sanctuary-agent-peer" })
+      expect(runOptions.toolContext.relationshipAuthorization.advertisedToolNames).toEqual(["await_condition", "resolve_await", "send_message"])
+      await expect(runOptions.toolContext.relationshipAuthorization.authorizeTool("resolve_await", {})).resolves.toMatchObject({ allowed: true, friendId: "owner", requestId: "req-1" })
+      await expect(runOptions.toolContext.relationshipAuthorization.authorizeTool("shell", {})).resolves.toMatchObject({ allowed: false })
+    })
+
+    it.each([
+      ["a peer without a delegation grant", { delegationGrant: undefined }, true, /no longer holds a delegation grant/u],
+      ["a peer that is no longer family", { trustLevel: "friend" }, true, /no longer holds a delegation grant/u],
+      ["a peer whose admission was revoked", { admissionState: "revoked" }, true, /admission or profile is not active/u],
+      ["an agent with no resolvable owner", {}, false, /delegating owner cannot be resolved/u],
+      ["an agent with two owners", {}, "second", /delegating owner cannot be resolved/u],
+      ["a peer that is itself the owner profile", { capabilityProfileId: "sanctuary-owner" }, false, /delegating owner cannot be resolved/u],
+      ["an ordinary peer chat that was never a delegated command", {}, true, /was not a delegated command the owner was notified of/u, false],
+      ["a delegated command noticed to a different friend", {}, true, /was not a delegated command the owner was notified of/u, "other-friend"],
+    ])("ends the await visibly for %s", async (_label, peer, owner, reason, notice = true) => {
+      await setup({ peer: peer as Record<string, unknown>, owner: owner as boolean | "second", notice: notice as boolean | "other-friend" })
+      await expect(run()).rejects.toThrow(/relationship await authority/iu)
+      expect(mockHandleInboundTurn).not.toHaveBeenCalled()
+      const archived = fs.readFileSync(path.join(agentRoot, "awaiting", ".done", "release.md"), "utf8")
+      expect(archived).toContain("status: canceled")
+      expect(archived).toMatch(reason)
+      expect(mockQueuePendingMessageOnce).toHaveBeenCalledWith("/tmp/fake-pending-dir", expect.objectContaining({ friendId: "self", channel: "inner", key: "dialog", packetId: "await-failed:release", content: expect.stringContaining('my await "release" was canceled') }))
+      expect(mockEmitNervesEvent).toHaveBeenCalledWith(expect.objectContaining({ event: "senses.relationship_await_failed", level: "error" }))
+    })
+
+    it.each([
+      ["a mismatched channel", "filed_from: bluebubbles\nfiled_for_friend_id: peer\nfiled_from_key: conv-1\nrequest_id: req-1\n"],
+      ["an oversized conversation key", `filed_from: a2a\nfiled_for_friend_id: peer\nfiled_from_key: ${"k".repeat(1_025)}\nrequest_id: req-1\n`],
+      ["an oversized request id", `filed_from: a2a\nfiled_for_friend_id: peer\nfiled_from_key: conv-1\nrequest_id: ${"r".repeat(257)}\n`],
+      ["an oversized friend id", `filed_from: a2a\nfiled_for_friend_id: ${"f".repeat(257)}\nfiled_from_key: conv-1\nrequest_id: req-1\n`],
+      ["a missing conversation key", "filed_from: a2a\nfiled_for_friend_id: peer\nfiled_from_key: null\nrequest_id: req-1\n"],
+    ])("rejects %s and ends the await instead of retrying it", async (_label, provenance) => {
+      await setup({ provenance })
+      await expect(run()).rejects.toThrow(/provenance/u)
+      expect(mockHandleInboundTurn).not.toHaveBeenCalled()
+      expect(fs.existsSync(path.join(agentRoot, "awaiting", "release.md"))).toBe(false)
+      expect(fs.readFileSync(path.join(agentRoot, "awaiting", ".done", "release.md"), "utf8")).toContain("status: canceled")
+      expect(mockQueuePendingMessageOnce).toHaveBeenCalledTimes(1)
+    })
+
+    it("keeps the await pending, and retries, when the friends directory or the notice record cannot be read", async () => {
+      await setup({ notice: "unreadable" })
+      await expect(run()).rejects.toThrow()
+      expect(fs.existsSync(path.join(agentRoot, "awaiting", "release.md"))).toBe(true)
+      expect(mockQueuePendingMessageOnce).not.toHaveBeenCalled()
+    })
+
+    it("keeps the await pending when an owner record is unreadable", async () => {
+      await setup()
+      fs.writeFileSync(path.join(agentRoot, "friends", "owner.json"), "{not-json", "utf8")
+      await expect(run()).rejects.toThrow(/could not be read completely/u)
+      expect(fs.existsSync(path.join(agentRoot, "awaiting", "release.md"))).toBe(true)
+      expect(mockQueuePendingMessageOnce).not.toHaveBeenCalled()
+    })
+
+    it("keeps the await pending when the friends directory cannot be listed", async () => {
+      await setup()
+      const friends = path.join(agentRoot, "friends")
+      const original = fs.readdirSync
+      const spy = vi.spyOn(fs, "readdirSync").mockImplementation(((target: any, ...rest: any[]) => {
+        if (String(target) === friends && rest.length === 0) throw Object.assign(new Error("EIO"), { code: "EIO" })
+        return (original as any)(target, ...rest)
+      }) as any)
+      try {
+        await expect(run()).rejects.toThrow()
+      } finally {
+        spy.mockRestore()
+      }
+      expect(fs.existsSync(path.join(agentRoot, "awaiting", "release.md"))).toBe(true)
+      expect(mockQueuePendingMessageOnce).not.toHaveBeenCalled()
+    })
+
+    it("ends an A2A await that has no obligation, visibly", async () => {
+      await setup({ obligation: false })
+      await expect(run()).rejects.toThrow(/binding is missing, stale, or ambiguous/u)
+      expect(mockHandleInboundTurn).not.toHaveBeenCalled()
+      expect(fs.readFileSync(path.join(agentRoot, "awaiting", ".done", "release.md"), "utf8")).toContain("status: canceled")
+      expect(mockQueuePendingMessageOnce).toHaveBeenCalledWith("/tmp/fake-pending-dir", expect.objectContaining({ packetId: "await-failed:release" }))
+    })
+
+    it("fails when the A2A await has no live obligation binding", async () => {
+      await setup({ provenance: "filed_from: a2a\nfiled_for_friend_id: peer\nfiled_from_key: conv-other\nrequest_id: req-1\n" })
+      await expect(run()).rejects.toThrow(/binding is missing, stale, or ambiguous/u)
+      expect(mockHandleInboundTurn).not.toHaveBeenCalled()
+      expect(mockQueuePendingMessageOnce).toHaveBeenCalledTimes(1)
+    })
+  })
+
   it.each([
     ["oversized external-event friend id", `filed_from: external-event\nfiled_for_friend_id: ${"x".repeat(257)}\nfiled_from_key: /events/event.json\nrequest_id: null\n`],
     ["incomplete request coordinates", "filed_from: telegram\nfiled_for_friend_id: household\nfiled_from_key: null\nrequest_id: request-1\n"],
@@ -2560,12 +2691,8 @@ describe("private runtime", () => {
 
     await expect(runApprovedPrivateRuntimeTurn({ reason: "await", awaitName: "unsafe", now: () => new Date("2026-08-29T00:05:00.000Z") })).rejects.toThrow(/relationship await authority|relationship admission|provenance/i)
     expect(mockHandleInboundTurn).not.toHaveBeenCalled()
-    if (state === "legacy") {
-      expect(fs.existsSync(path.join(agentRoot, "awaiting", "unsafe.md"))).toBe(true)
-    } else {
-      expect(fs.existsSync(path.join(agentRoot, "awaiting", "unsafe.md"))).toBe(false)
-      expect(fs.readFileSync(path.join(agentRoot, "awaiting", ".done", "unsafe.md"), "utf8")).toContain("status: canceled")
-    }
+    expect(fs.existsSync(path.join(agentRoot, "awaiting", "unsafe.md"))).toBe(false)
+    expect(fs.readFileSync(path.join(agentRoot, "awaiting", ".done", "unsafe.md"), "utf8")).toContain("status: canceled")
   })
 
   it.each(["registry", "friend"] as const)("preserves a request await when its %s record cannot be read", async (unreadable) => {

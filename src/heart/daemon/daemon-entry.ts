@@ -27,6 +27,7 @@ import { HabitScheduler } from "../habits/habit-scheduler"
 import { migrateHabitsFromTaskSystem } from "../habits/habit-migration"
 import { AwaitScheduler } from "../awaiting/await-scheduler"
 import { archiveAndAlertExpiredAwait } from "../awaiting/await-expiry"
+import { createA2AAwaitOwnerDeliverer } from "../awaiting/a2a-await-delivery"
 import { recordAwaitDispatch } from "../awaiting/await-runtime-state"
 import { createRealOsCronDeps, resolveOuroBinaryPath } from "./os-cron-deps"
 import { LaunchdCronManager } from "./os-cron"
@@ -855,6 +856,7 @@ void startDaemonAfterContainerCredentialBootstrap({
             deliveryDeps: {
               agentName: agent,
               deliverers: {
+                a2a: createA2AAwaitOwnerDeliverer(agent),
                 telegram: async (request) => {
                   const { sendTelegramAwaitFollowUp } = await import("../../senses/telegram")
                   return sendTelegramAwaitFollowUp(agent, request)

@@ -13,7 +13,8 @@ import {
   deliverAwaitAlert,
   type AwaitAlertResult,
 } from "../heart/awaiting/await-alert"
-import { getPrivateRuntimePendingDir } from "../mind/pending"
+import { createA2AAwaitOwnerDeliverer } from "../heart/awaiting/a2a-await-delivery"
+import { getPrivateRuntimePendingDir, queuePendingMessageOnce } from "../mind/pending"
 import type { PendingMessage } from "../mind/pending"
 import type { ToolDefinition } from "./tools-base"
 import type { CrossChatDeliveryDeps } from "../heart/cross-chat-delivery"
@@ -99,8 +100,8 @@ export function resetAwaitToolDeps(): void {
 }
 
 function resolveDeliveryDeps(agentName: string): CrossChatDeliveryDeps {
-  if (injected.buildDeliveryDeps) return injected.buildDeliveryDeps(agentName)
-  return defaultDeliveryDeps(agentName)
+  const deps = injected.buildDeliveryDeps ? injected.buildDeliveryDeps(agentName) : defaultDeliveryDeps(agentName)
+  return { ...deps, deliverers: { a2a: createA2AAwaitOwnerDeliverer(agentName), ...deps.deliverers } }
 }
 
 interface FileAwaitArgs {
@@ -374,6 +375,36 @@ export function cancelStaleAwait(agentRoot: string, agentName: string, name: str
   if (result.canceled !== name) throw new Error(`Stale await could not be archived for repair: ${result.error ?? name}`)
 }
 
+/** Binding losses that mean the await is broken, as opposed to finished (fulfilled, expired). */
+export function isBrokenBindingReason(reason: string): boolean {
+  return reason === "request obligation is missing" || reason === "request obligation binding no longer matches"
+}
+
+/**
+ * An await that can never run is ended, not retried: archived as canceled with the reason, logged as an error, and
+ * the private runtime is told once that the follow-up it promised will not happen. Without this the await stayed
+ * pending and every scheduled wake failed again, silently, for days.
+ */
+export function failBrokenAwait(agentRoot: string, agentName: string, awaitName: string, reason: string): void {
+  cancelStaleAwait(agentRoot, agentName, awaitName, reason)
+  emitNervesEvent({
+    level: "error",
+    component: "senses",
+    event: "senses.relationship_await_failed",
+    message: "relationship await could not run and was canceled",
+    meta: { agentName, awaitName, reason },
+  })
+  queuePendingMessageOnce(getPrivateRuntimePendingDir(agentName), {
+    from: agentName,
+    friendId: "self",
+    channel: "inner",
+    key: "dialog",
+    content: `my await "${awaitName}" was canceled because it could not run (${reason}). the follow-up it promised did not happen; i should tell my owner and decide whether to file it again.`,
+    timestamp: Date.now(),
+    packetId: `await-failed:${awaitName}`,
+  })
+}
+
 export function inspectRelationshipFollowUp(agentRoot: string, input: { friendId: string; channel: string; key: string; requestId: string; awaitName: string; allowElapsed?: boolean; now?: number }): AwaitBindingInspection {
   const awaiting = readAwaitDefinition(agentRoot, input.awaitName)
   if (!awaiting) throw new Error(`Await ${input.awaitName} could not be verified`)
@@ -535,7 +566,8 @@ export const awaitingToolDefinitions: ToolDefinition[] = [
           binding = inspectRelationshipFollowUp(agentRoot, { friendId: session.friendId, channel: session.channel, key: session.key, requestId, awaitName })
         }
         if (binding && !binding.active) {
-          cancelStaleAwait(agentRoot, agentName, awaitName, binding.reason)
+          if (isBrokenBindingReason(binding.reason)) failBrokenAwait(agentRoot, agentName, awaitName, binding.reason)
+          else cancelStaleAwait(agentRoot, agentName, awaitName, binding.reason)
           return JSON.stringify({ error: binding.reason })
         }
         if (!binding?.active) return JSON.stringify({ error: "resolve_await is limited to the current relationship request or bound external event" })
