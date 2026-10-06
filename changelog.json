@@ -6,7 +6,8 @@
       "changes": [
         "Sanctuary tool context is now attached to every private-runtime turn of the sanctuary agent (await, habit, instinct, external-event), so await turns can observe the download queue.",
         "The missing-Sanctuary-context result now uses code tool_context_missing and says it is a harness wiring gap, not a runtime outage.",
-        "restart_runtime now refuses to restart the daemon from autonomous turns (await, habit, external-event, instinct, scheduler) and enforces a persisted 6-hour cooldown between agent-requested restarts."
+        "restart_runtime now refuses to restart the daemon from autonomous turns (await, habit, external-event, instinct, scheduler) and enforces a persisted 6-hour cooldown between agent-requested restarts.",
+        "restart_runtime now refuses to restart the daemon from autonomous turns (await, habit, external-event, instinct, scheduler) and enforces a persisted 6-hour cooldown between agent-requested restarts, so a tool error can no longer take the daemon down."
       ]
     },
     {
