@@ -705,6 +705,22 @@ describe("tools-awaiting", () => {
       }).toEqual({ equalsExpected: true, includesMarker: true })
     })
 
+    it("adds the A2A owner deliverer to the delivery deps without displacing injected deliverers", async () => {
+      const telegram = vi.fn()
+      setAwaitToolDeps({ buildDeliveryDeps: () => ({ agentName: "slugger", queuePending: vi.fn(), deliverers: { telegram } }) })
+      await fileAwaitDef.handler(
+        { name: "a2a_wait", condition: "c", cadence: "5m" },
+        { currentSession: { friendId: "peer", channel: "a2a", key: "conv-1", sessionPath: "" }, relationshipAuthorization: { requestId: "req-1", authorizedContextScopes: [], advertisedToolNames: ["await_condition"], authorizeTool: vi.fn() } } as any,
+      )
+      mockDeliverAwaitAlert.mockImplementationOnce(async ({ deliveryDeps }) => {
+        expect(deliveryDeps.deliverers.telegram).toBe(telegram)
+        expect(deliveryDeps.deliverers.a2a).toEqual(expect.any(Function))
+        return { attempted: true, delivery: { status: "queued_for_later", detail: "ok" } }
+      })
+      await resolveAwaitDef.handler({ name: "a2a_wait", verdict: "yes", observation: "ok" }, undefined)
+      expect(mockDeliverAwaitAlert).toHaveBeenCalledTimes(1)
+    })
+
     it("setAwaitToolDeps overrides delivery deps factory", async () => {
       const customQueue = vi.fn()
       setAwaitToolDeps({

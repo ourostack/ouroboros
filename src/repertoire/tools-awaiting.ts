@@ -13,6 +13,7 @@ import {
   deliverAwaitAlert,
   type AwaitAlertResult,
 } from "../heart/awaiting/await-alert"
+import { createA2AAwaitOwnerDeliverer } from "../heart/awaiting/a2a-await-delivery"
 import { getPrivateRuntimePendingDir } from "../mind/pending"
 import type { PendingMessage } from "../mind/pending"
 import type { ToolDefinition } from "./tools-base"
@@ -99,8 +100,8 @@ export function resetAwaitToolDeps(): void {
 }
 
 function resolveDeliveryDeps(agentName: string): CrossChatDeliveryDeps {
-  if (injected.buildDeliveryDeps) return injected.buildDeliveryDeps(agentName)
-  return defaultDeliveryDeps(agentName)
+  const deps = injected.buildDeliveryDeps ? injected.buildDeliveryDeps(agentName) : defaultDeliveryDeps(agentName)
+  return { ...deps, deliverers: { a2a: createA2AAwaitOwnerDeliverer(agentName), ...deps.deliverers } }
 }
 
 interface FileAwaitArgs {
