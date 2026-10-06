@@ -150,6 +150,11 @@ vi.mock("../../heart/daemon/daemon-health", () => ({
   getDefaultHealthPath: (...args: any[]) => mockGetDefaultHealthPath(...args),
 }))
 
+const mockSharedMcpManager = vi.hoisted(() => ({ current: null as unknown }))
+vi.mock("../../repertoire/mcp-manager", () => ({
+  getSharedMcpManager: async () => mockSharedMcpManager.current,
+}))
+
 vi.mock("../../repertoire/tools", () => ({
   getToolsForChannel: (...args: any[]) => mockGetToolsForChannel(...args)
     .filter((tool: any) => !args[6]?.relationshipAuthorization || args[6].relationshipAuthorization.advertisedToolNames.includes(tool.function.name)),
@@ -2618,6 +2623,28 @@ describe("private runtime", () => {
       expect(runOptions.toolContext.relationshipAuthorization.advertisedToolNames).toEqual(["await_condition", "resolve_await", "send_message"])
       await expect(runOptions.toolContext.relationshipAuthorization.authorizeTool("resolve_await", {})).resolves.toMatchObject({ allowed: true, friendId: "owner", requestId: "req-1" })
       await expect(runOptions.toolContext.relationshipAuthorization.authorizeTool("shell", {})).resolves.toMatchObject({ allowed: false })
+    })
+
+    it("offers the media MCP tools in the await tick by handing the shared MCP manager to tool selection, still filtered by the profile", async () => {
+      await setup()
+      fs.writeFileSync(path.join(agentRoot, "tool-profiles.json"), JSON.stringify({ version: 2, profiles: {
+        "sanctuary-owner": { ...profiles.profiles["sanctuary-owner"], toolNames: [...profiles.profiles["sanctuary-owner"].toolNames, "media_queue", "media_fill_missing"] },
+        "sanctuary-agent-peer": { ...profiles.profiles["sanctuary-agent-peer"], toolNames: [...profiles.profiles["sanctuary-agent-peer"].toolNames, "media_queue"] },
+      } }))
+      const manager = { sentinel: "mcp-manager" }
+      mockSharedMcpManager.current = manager
+      // Like the real selector, MCP tools exist only when a manager is passed as the fifth argument.
+      mockGetToolsForChannel.mockImplementation((...args: any[]) => [...a2aTools, ...(args[4] === manager ? ["media_queue", "media_fill_missing"].map((name) => ({ type: "function", function: { name, description: name, parameters: {} } })) : [])])
+      try {
+        await run()
+      } finally {
+        mockSharedMcpManager.current = null
+      }
+      const runOptions = mockHandleInboundTurn.mock.calls[0][0].runAgentOptions
+      expect(mockGetToolsForChannel.mock.calls.at(-1)![4]).toBe(manager)
+      expect(runOptions.tools.map((tool: any) => tool.function.name)).toEqual(["await_condition", "resolve_await", "send_message", "media_queue"])
+      expect(runOptions.toolContext.relationshipAuthorization.advertisedToolNames).toContain("media_queue")
+      expect(runOptions.toolContext.relationshipAuthorization.advertisedToolNames).not.toContain("media_fill_missing")
     })
 
     it.each([

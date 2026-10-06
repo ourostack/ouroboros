@@ -875,7 +875,7 @@ export function queueRowView(r, nowMs) {
     percent: pct(r), timeleft: r.timeleft ?? null, size_left_bytes: r.sizeleft ?? 0, size_bytes: r.size ?? 0,
     protocol: r.protocol ?? null, download_client: r.downloadClient ?? null, indexer: r.indexer ?? null,
     added: r.added ?? null, stalled: isStalledRow(r, nowMs),
-    ...(r.errorMessage ? { error_message: r.errorMessage } : {}),
+    ...(r.errorMessage ? { error_message: String(r.errorMessage).slice(0, 300) } : {}),
   }
 }
 
@@ -884,6 +884,7 @@ export async function mediaQueue(a) {
   if (a.kind !== "series" && a.kind !== "movie") return { result: "invalid_kind", message: "kind must be 'series' or 'movie'." }
   let rows
   let item = null
+  let total = null
   if ((a.service_id !== undefined && a.service_id !== null) || a.tmdb_id || a.title) {
     const found = await resolveLibraryItem(a)
     if (!found.item) return { result: found.result, kind: a.kind, candidates: found.candidates }
@@ -896,16 +897,18 @@ export async function mediaQueue(a) {
       const q = await client("/queue", { query: { page, pageSize: QUEUE_PAGE_SIZE, ...(a.kind === "series" ? { includeSeries: true } : {}) } })
       const records = q?.records ?? []
       rows.push(...records)
+      if (Number.isFinite(Number(q?.totalRecords))) total = Number(q.totalRecords)
       if (!records.length || !(Number(q?.totalRecords) > page * QUEUE_PAGE_SIZE) || rows.length >= QUEUE_VIEW_MAX_ROWS) break
     }
   }
+  total = Math.max(total ?? 0, rows.length)
   const now = Date.now()
   const shown = rows.slice(0, QUEUE_VIEW_MAX_ROWS).map((r) => queueRowView(r, now))
   return {
     kind: a.kind, ...(item ? { service_id: item.id, title: item.title } : {}),
-    count: rows.length, ...(rows.length > shown.length ? { truncated: true } : {}), queue: shown,
-    summary: !rows.length ? "Nothing for this is in the Sonarr/Radarr queue."
-      : `${rows.length} queue row${rows.length === 1 ? "" : "s"}; ${shown.filter((r) => r.stalled).length} stalled.`,
+    count: total, shown: shown.length, ...(total > shown.length ? { truncated: true } : {}), queue: shown,
+    summary: !total ? "Nothing for this is in the Sonarr/Radarr queue."
+      : `${total} queue row${total === 1 ? "" : "s"}${total > shown.length ? ` (showing ${shown.length})` : ""}; ${shown.filter((r) => r.stalled).length} stalled.`,
     note: "Sonarr/Radarr do not report seeders or peers. A row stuck at the same percent with no timeleft is the stall signal; for a release's seeder count use media_indexer_search.",
   }
 }

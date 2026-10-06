@@ -5,7 +5,7 @@
       "version": "0.1.0-alpha.863",
       "changes": [
         "Fixed await ticks always failing resolve_await and cancel_await: the inbound pipeline rewrote the turn's current session to the inner dialog, so the relationship guard never matched the await being ticked. The tick now carries its own binding, covering only the await being ticked.",
-        "Added media_queue, a read-only Sonarr/Radarr queue view (torrent and usenet: status, trackedDownloadState, percent, timeleft, stalled) for the Butler, and made sanctuary_get_download_queue say it only sees the usenet queue."
+        "Added media_queue, a read-only Sonarr/Radarr queue view (torrent and usenet: status, trackedDownloadState, percent, timeleft, stalled) for the Butler, and made sanctuary_get_download_queue say it only sees the usenet queue, and the await tick now receives the MCP tools its profile allows (it was given none)."
       ]
     },
     {

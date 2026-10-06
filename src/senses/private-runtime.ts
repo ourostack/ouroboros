@@ -1481,8 +1481,9 @@ export async function runPrivateRuntimeTurn(options?: RunPrivateRuntimeTurnOptio
     })
       .filter((tool) => !externalEventExcludedTools.has(tool.function.name))
     : undefined
+  // The await tick is relationship-scoped but still needs the MCP tools its profile allows (media_queue for a download await).
   const relationshipAwaitToolsResolved = relationshipAwait
-    ? getToolsForChannel(innerCapabilities, undefined, undefined, undefined, undefined, undefined, {
+    ? getToolsForChannel(innerCapabilities, undefined, undefined, undefined, mcpManager, undefined, {
       agentName, relationshipAuthorization: relationshipAwait.relationshipAuthorization,
     })
     : undefined

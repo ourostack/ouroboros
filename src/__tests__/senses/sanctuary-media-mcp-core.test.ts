@@ -225,10 +225,11 @@ describe("media MCP — search_now and blocklist_stalled", () => {
 
   describe("media_queue (read-only)", () => {
     it("shows an item's torrent row with percent, timeleft and trackedDownloadState, and sends no write", async () => {
-      queues.sonarr = [stalledRow(1, { size: 100, sizeleft: 24, status: "downloading", trackedDownloadState: "downloading", trackedDownloadStatus: "warning", timeleft: "02:10:00", protocol: "torrent", downloadClient: "Deluge", indexer: "idx", errorMessage: "slow", added: hoursAgo(now, 24 * 36) }), stalledRow(3, { seriesId: 99 })]
+      queues.sonarr = [stalledRow(1, { size: 100, sizeleft: 24, status: "downloading", trackedDownloadState: "downloading", trackedDownloadStatus: "warning", timeleft: "02:10:00", protocol: "torrent", downloadClient: "Deluge", indexer: "idx", errorMessage: "slow".padEnd(500, "x"), added: hoursAgo(now, 24 * 36) }), stalledRow(3, { seriesId: 99 })]
       const out = await mod.mediaQueue({ kind: "series", title: "severance" })
       expect(out).toMatchObject({ kind: "series", service_id: 7, title: "Severance", count: 1, summary: "1 queue row; 1 stalled." })
-      expect(out.queue[0]).toMatchObject({ queue_id: 1, status: "downloading", tracked_download_state: "downloading", tracked_download_status: "warning", percent: 76, timeleft: "02:10:00", protocol: "torrent", download_client: "Deluge", error_message: "slow" })
+      expect(out.queue[0]).toMatchObject({ queue_id: 1, status: "downloading", tracked_download_state: "downloading", tracked_download_status: "warning", percent: 76, timeleft: "02:10:00", protocol: "torrent", download_client: "Deluge" })
+      expect(out.queue[0].error_message).toHaveLength(300)
       expect(out.note).toMatch(/seeders or peers/u)
       expect(calls.filter((c) => c.method !== "GET")).toEqual([])
     })
@@ -244,9 +245,9 @@ describe("media MCP — search_now and blocklist_stalled", () => {
     })
 
     it("lists the whole queue of a kind when no item is named, truncated at the cap", async () => {
-      queues.sonarr = Array.from({ length: 130 }, (_, i) => ({ id: i + 1, seriesId: 7, title: `R${i}` }))
+      queues.sonarr = Array.from({ length: 230 }, (_, i) => ({ id: i + 1, seriesId: 7, title: `R${i}` }))
       const sonarr = await mod.mediaQueue({ kind: "series" })
-      expect(sonarr).toMatchObject({ count: 130, truncated: true })
+      expect(sonarr).toMatchObject({ count: 230, shown: 100, truncated: true, summary: expect.stringContaining("230 queue rows (showing 100)") })
       expect(sonarr.queue).toHaveLength(100)
       queues.radarr = [{ id: 1, movieId: 3, title: "M" }]
       const radarr = await mod.mediaQueue({ kind: "movie" })
