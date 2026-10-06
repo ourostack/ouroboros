@@ -2,6 +2,12 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.859",
+      "changes": [
+        "The Telegram sense no longer re-reads and re-parses every external-event record (hundreds of files, about 11 MB) each second for its system-failsafe sweep; it now reuses the stat-keyed record cache, cutting the Butler's idle Telegram CPU. The trade is memory: parsed records now stay cached in the sense process for its lifetime, so heap grows by roughly the size of the usenet records."
+      ]
+    },
+    {
       "version": "0.1.0-alpha.857",
       "changes": [
         "The daemon now caches external-event records by file stat so the one-second reconcile tick no longer re-reads and re-parses every unchanged record, cutting idle CPU.",

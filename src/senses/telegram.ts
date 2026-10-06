@@ -62,7 +62,7 @@ import type { SanctuaryHealthSweepResult } from "./sanctuary-health"
 import { createTelegramAuditLedger, type TelegramAuditLedger } from "./telegram-audit-ledger"
 import { extractEventText, loadSessionEnvelopeFile, selectEffectiveSessionEvents } from "../heart/session-events"
 import type { ToolContext } from "../repertoire/tools-base"
-import { getExternalEventRoot, type PrivilegedProtectiveAction } from "../heart/external-events/router"
+import { ExternalEventScanCache, getExternalEventRoot, type PrivilegedProtectiveAction } from "../heart/external-events/router"
 import { withSessionTurnLease } from "../mind/session-transaction"
 import { FileApprovalCheckpointStore, FileApprovalTokenStore } from "../heart/approval-files"
 import { openApprovalStore } from "../heart/approval-store"
@@ -1273,6 +1273,7 @@ export function createTelegramSenseApp(options: CreateTelegramSenseAppOptions): 
       },
     }),
   })
+  const failsafeScanCache = new ExternalEventScanCache()
   reconcileSystemFailsafes = async (): Promise<void> => {
     if (!options.privilegedFailsafe) return
     const target = configuredOwnerTarget()
@@ -1281,6 +1282,7 @@ export function createTelegramSenseApp(options: CreateTelegramSenseAppOptions): 
         eventRoot: options.privilegedFailsafe.eventRoot,
         target,
         verifyProtectiveState: options.privilegedFailsafe.verifyProtectiveState,
+        scanCache: failsafeScanCache,
         execute: executeAuthorizedEffect,
         recordArtifact: async (artifact) => {
           await recordAcceptedEffects(getSenseSessionPath(options.agentName, target.friendId, "telegram", target.sessionKey, agentRoot), [artifact])
