@@ -1085,7 +1085,7 @@ function sanctuaryToolContextFor(agentName: string, externalEventSource: string 
       component: "senses",
       event: "senses.sanctuary_tool_context_unavailable",
       message: "sanctuary tool context could not be built for a private turn",
-      meta: { agent: agentName, reason: error instanceof Error ? error.message : String(error) },
+      meta: { agent: agentName, reason: String(error) },
     })
     return {}
   }
