@@ -887,10 +887,11 @@ export function buildExternalEventMessage(record: ExternalEventRecord): string {
   ].join("\n")
 }
 
-type RecordExternalEventOptions = { root?: string; now?: () => string; dispatchEnabled?: boolean; quietInitialReceipt?: boolean; [privilegedIngress]?: { nonce: string; protectiveAction?: PrivilegedProtectiveAction } }
+type RecordExternalEventOptions = { root?: string; now?: () => string; dispatchEnabled?: boolean; quietInitialReceipt?: boolean; reopenExhausted?: boolean; [privilegedIngress]?: { nonce: string; protectiveAction?: PrivilegedProtectiveAction } }
 
 // A still-observed condition whose single recovery grant is spent must not stay dead forever: after this cooldown a repeat receipt opens a new generation.
 const EXHAUSTED_RECOVERY_REOPEN_MS = 6 * 60 * 60_000
+// The slot is the real once-per-cycle bound. A reopened generation starts with no provenance and no grant, so a second failure cannot reopen it again until a new recovery grant is consumed and the cooldown restarts from that generation's own failedAt.
 // Each record may only reopen in its own hour of a six-hour cycle, so a backlog of exhausted records spreads out (about one sixth per hour, one batch turn) instead of waking together.
 const EXHAUSTED_RECOVERY_SLOTS = 6
 
@@ -950,7 +951,7 @@ function recordExternalEventInternal(input: ExternalEventInput, options: RecordE
     const quietInitialReceipt = options.quietInitialReceipt === true && !existing
     const quietBaselineChanged = existing?.source === PRIVILEGED_EVENT_SOURCE && existing.eventType === "usenet.health_observation"
       && existing.executionState === "handled" && !existing.disposition && revision !== existing.observationRevision
-    const exhaustedRecoveryReopens = existing?.executionState === "dead_letter" && existing.dispatchEnabled !== false
+    const exhaustedRecoveryReopens = options.reopenExhausted === true && options.dispatchEnabled !== false && existing?.executionState === "dead_letter" && existing.dispatchEnabled !== false
       && existing.recoveryGrant?.generation === existing.generation && existing.failureProvenance !== undefined
       && Date.parse(now) - Date.parse(existing.failureProvenance.failedAt) >= EXHAUSTED_RECOVERY_REOPEN_MS
       && Math.floor(Date.parse(now) / 3_600_000) % EXHAUSTED_RECOVERY_SLOTS === exhaustedRecoverySlot(existing)
@@ -1008,7 +1009,8 @@ function recordExternalEventInternal(input: ExternalEventInput, options: RecordE
 export function recordExternalEvent(input: ExternalEventInput, options: { root?: string; now?: () => string; dispatchEnabled?: boolean } = {}): ExternalEventRecord {
   validateExternalEventInput(input)
   if (input.source === PRIVILEGED_EVENT_SOURCE) throw new Error(`External event source '${PRIVILEGED_EVENT_SOURCE}' is reserved for privileged spool ingress`)
-  return recordExternalEventInternal(input, options)
+  // Only public receipts may reopen an exhausted dead letter; the privileged spool path never sets this.
+  return recordExternalEventInternal(input, { ...options, reopenExhausted: true })
 }
 
 function canonicalIso(value: unknown): value is string {

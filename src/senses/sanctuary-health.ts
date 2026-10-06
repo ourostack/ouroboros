@@ -47,6 +47,8 @@ export interface HealthState {
   incidents: Record<string, Incident>
   lastDigestDay: string | null
   updatedAt: string
+  /** Recovered incidents whose recovery receipt has not been accepted yet; they are re-offered until acknowledged. */
+  pendingRecovered?: Incident[]
   outbox: HealthDelivery | null
   indeterminateDeliveries: HealthDelivery[]
   deliveredReceipts: Array<{ deliveryId: string; kind: HealthDelivery["kind"]; messageIds: number[]; deliveredAt: string }>
@@ -67,6 +69,8 @@ export interface SanctuaryHealthSweepResult {
   message: string | null
   incidents: Incident[]
   recovered?: Incident[]
+  /** Called once the recovery receipts were accepted, so the sweep stops re-offering them. */
+  acknowledgeRecovered?: (ids: string[]) => Promise<void>
   observationRevision?: string
   transition?: "opened" | "unchanged" | "changed" | "recovered"
   deliveryId?: string
@@ -210,6 +214,9 @@ function load(filePath: string): HealthState {
     if (!value.incidents || typeof value.incidents !== "object" || Array.isArray(value.incidents)) throw new Error("invalid incidents")
     if (value.lastDigestDay !== null && typeof value.lastDigestDay !== "string") throw new Error("invalid digest day")
     if (typeof value.updatedAt !== "string") throw new Error("invalid update time")
+    if (value.pendingRecovered !== undefined && (!Array.isArray(value.pendingRecovered) || value.pendingRecovered.length > 500 || !value.pendingRecovered.every((incident) => (
+      incident && typeof incident.id === "string" && incident.id.length > 0 && incident.id.length <= 512 && typeof incident.summary === "string" && Buffer.byteLength(incident.summary) <= MAX_HEALTH_TEXT_BYTES
+    )))) throw new Error("invalid pending recoveries")
     if (value.outbox !== undefined && value.outbox !== null && !validDelivery(value.outbox)) throw new Error("invalid health outbox")
     if (value.indeterminateDeliveries !== undefined && (
       !Array.isArray(value.indeterminateDeliveries) || !value.indeterminateDeliveries.every(validDelivery)
@@ -233,6 +240,7 @@ function load(filePath: string): HealthState {
       incidents: value.incidents as Record<string, Incident>,
       lastDigestDay: value.lastDigestDay,
       updatedAt: value.updatedAt,
+      ...(value.pendingRecovered?.length ? { pendingRecovered: value.pendingRecovered } : {}),
       outbox: value.outbox ? { ...value.outbox, kind: value.outbox.kind ?? "legacy_unknown" } : null,
       indeterminateDeliveries: (value.indeterminateDeliveries ?? []).map((delivery) => ({ ...delivery, kind: delivery.kind ?? "legacy_unknown" })),
       deliveredReceipts: (value.deliveredReceipts ?? []).map((receipt) => ({ ...receipt, kind: receipt.kind ?? "legacy_unknown" })),
@@ -352,7 +360,7 @@ export function createSanctuaryHealthSweep(options: {
         else if (disk.temperatureC >= 50) add(`disk:${disk.id}:temperature`, `${disk.name} is ${disk.temperatureC}°C`)
       }
       const parity = record(disks.parity)
-      if (!parity || (parity.result !== "success" && parity.result !== "completed") || typeof parity.ageHours !== "number" || parity.ageHours >= 45 * 24) add("parity:stale-or-failed", "parity check is unsuccessful, unknown, or older than 45 days")
+      if (!parity || (parity.result !== "in_progress" && ((parity.result !== "success" && parity.result !== "completed") || typeof parity.ageHours !== "number" || parity.ageHours >= 45 * 24))) add("parity:stale-or-failed", "parity check is unsuccessful, unknown, or older than 45 days")
     }
     const notifications = record(notificationsResult)?.ok ? record(record(notificationsResult)?.data)?.unacknowledged : null
     if (!Array.isArray(notifications)) add("notifications:unavailable", "notification status is unavailable")
@@ -368,6 +376,9 @@ export function createSanctuaryHealthSweep(options: {
     const opened = Object.values(current).filter((incident) => !previous.incidents[incident.id])
     const changed = Object.values(current).filter((incident) => incident.transition === "changed")
     const recovered = Object.values(previous.incidents).filter((incident) => !current[incident.id])
+    const unacknowledgedRecovered = [...(previous.pendingRecovered ?? []), ...recovered]
+      .filter((incident, index, all) => !current[incident.id] && all.findIndex((other) => other.id === incident.id) === index)
+      .map(({ id, summary }) => ({ id, summary }))
     const acceptanceMeta = acceptanceEventMeta()
     const completedAt = now().toISOString()
     const incidentDigest = createHash("sha256").update(JSON.stringify(current)).digest("hex")
@@ -385,6 +396,7 @@ export function createSanctuaryHealthSweep(options: {
       incidents: current,
       lastDigestDay: null,
       updatedAt: now().toISOString(),
+      ...(unacknowledgedRecovered.length > 0 ? { pendingRecovered: unacknowledgedRecovered } : {}),
       outbox: null,
       indeterminateDeliveries: [],
       deliveredReceipts: previous.deliveredReceipts,
@@ -393,7 +405,13 @@ export function createSanctuaryHealthSweep(options: {
     save(options.statePath, next)
     emitNervesEvent({ component: "senses", event: "senses.sanctuary_health_end", message: "Sanctuary deterministic health sweep completed", meta: { incidentCount: incidents.size, opened: opened.length, recovered: recovered.length, digestDue: false, ...acceptanceEventMeta() } })
     const transition = changed.length > 0 || (opened.length > 0 && recovered.length > 0) ? "changed" : opened.length > 0 ? "opened" : recovered.length > 0 ? "recovered" : "unchanged"
-    return { message: null, incidents: Object.values(current), recovered, observationRevision: incidentDigest, transition }
+    const acknowledgeRecovered = (ids: string[]): Promise<void> => withHealthLock(options.statePath, () => {
+      const latest = load(options.statePath)
+      const remaining = (latest.pendingRecovered ?? []).filter((incident) => !ids.includes(incident.id))
+      const { pendingRecovered: _drop, ...rest } = latest
+      save(options.statePath, { ...rest, ...(remaining.length > 0 ? { pendingRecovered: remaining } : {}), updatedAt: now().toISOString() })
+    }, options.lease)
+    return { message: null, incidents: Object.values(current), recovered: unacknowledgedRecovered, observationRevision: incidentDigest, transition, acknowledgeRecovered }
   }
 
   const sweep = (() => withHealthLock(options.statePath, runSweep, options.lease)) as SanctuaryHealthSweep

@@ -24,6 +24,9 @@ export const SANCTUARY_DISKS_QUERY = `query SanctuaryDisks {
   disks { id name smartStatus temperature }
   array { parityCheckStatus { status date duration errors progress correcting paused running } }
 }`
+export const SANCTUARY_PARITY_HISTORY_QUERY = `query SanctuaryParityHistory {
+  parityHistory { date errors status }
+}`
 export const SANCTUARY_NOTIFICATIONS_QUERY = `query SanctuaryNotifications {
   notifications { list(filter: {type: UNREAD, offset: 0, limit: 100}) { id timestamp importance title subject description type } }
 }`
@@ -239,17 +242,29 @@ export function createUnraidReadTools(client: ReadClient) {
         }).sort((a, b) => a.name.localeCompare(b.name) || a.id.localeCompare(b.id))
         const parityRaw = record(record(data.array, "array").parityCheckStatus, "parity status")
         const completedAt = validTimestamp(parityRaw.date)
-        const errors = numberOrNull(parityRaw.errors)
         const status = typeof parityRaw.status === "string" ? parityRaw.status.trim().slice(0, 40) : null
-        // Unraid API 7.x never reports an error count, so a completed check with no count is "completed", not a claimed zero-error success.
-        const completedStatus = status !== null && /complete|success/i.test(status)
-        const failedStatus = status !== null && /^(failed|cancelled|canceled)$/i.test(status)
+        const completedStatus = status !== null && /^(?:completed|success)$/iu.test(status)
+        const failedStatus = status !== null && /^(?:failed|cancelled|canceled)$/iu.test(status)
+        const inProgressStatus = status !== null && /^(?:running|paused)$/iu.test(status)
+        let errors = numberOrNull(parityRaw.errors)
+        let errorsSource: "status" | "history" | "unknown" = errors === null ? "unknown" : "status"
+        // Unraid API 7.x gives the status no error count. Its parity history (from parity-checks.log) does, so use the newest entry when it is the same run (within 36 hours of the status date).
+        if (completedStatus && errors === null && completedAt) {
+          try {
+            const history = await client.read<Record<string, unknown>>(SANCTUARY_PARITY_HISTORY_QUERY, {})
+            const newest = Array.isArray(history.parityHistory) ? record(history.parityHistory[0], "parity history entry") : null
+            const newestAt = newest ? validTimestamp(newest.date) : null
+            const newestErrors = newest ? numberOrNull(newest.errors) : null
+            if (newestAt && newestErrors !== null && Math.abs(Date.parse(newestAt) - Date.parse(completedAt)) <= 36 * 3_600_000) { errors = newestErrors; errorsSource = "history" }
+          } catch { /* history is optional evidence; the error count stays unknown */ }
+        }
         const result = errors !== null && errors > 0 || failedStatus ? "failed"
           : completedStatus && errors === 0 ? "success"
-            : completedStatus && errors === null ? "completed" : "unknown"
+            : completedStatus ? "completed"
+              : inProgressStatus ? "in_progress" : "unknown"
         const elapsedMs = completedAt ? Date.now() - Date.parse(completedAt) : null
         const ageHours = elapsedMs !== null && elapsedMs >= 0 ? elapsedMs / 3_600_000 : null
-        return { ok: true, data: { disks, parity: { result, status, completedAt, ageHours, degraded: result === "unknown" || completedAt === null || ageHours === null }, truncated } }
+        return { ok: true, data: { disks, parity: { result, status, errors, errorsSource, completedAt, ageHours, degraded: result === "unknown" || (result !== "in_progress" && (completedAt === null || ageHours === null)) }, truncated } }
       } catch (error) { return fail(error) }
     },
     async getNotifications(): Promise<ToolResult<Record<string, unknown>>> {
