@@ -5,7 +5,12 @@ import { createHash } from "node:crypto"
 
 import { afterEach, describe, expect, it, vi } from "vitest"
 
-import { bindPrivilegedFailsafeArtifact, readExternalEventRecord, type ExternalEventRecord } from "../../heart/external-events/router"
+vi.mock("fs", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("fs")>()
+  return { ...actual, readFileSync: vi.fn(actual.readFileSync) }
+})
+
+import { bindPrivilegedFailsafeArtifact, ExternalEventScanCache, readExternalEventRecord, type ExternalEventRecord } from "../../heart/external-events/router"
 import { createSabQueueProtectiveStateVerifier } from "../../senses/telegram"
 import {
   FIXED_USENET_SYSTEM_FAILSAFE,
@@ -179,6 +184,27 @@ describe("Telegram system failsafe", () => {
     expect(request).toHaveBeenCalledTimes(1)
     await expect(reconcileTelegramSystemFailsafe({ ...common, record: readExternalEventRecord(initial.recordPath), recordArtifact: vi.fn() })).resolves.toMatchObject({ sent: false, reason: "already_recorded" })
     expect(request).toHaveBeenCalledTimes(1)
+  })
+
+  it("an idle sweep with a shared scan cache re-reads no unchanged record and still sees a changed one", async () => {
+    const ineligible = record({ executionState: "handled", lastError: null })
+    const eventRoot = path.dirname(path.dirname(path.dirname(ineligible.recordPath)))
+    const corruptPath = path.join(path.dirname(ineligible.recordPath), "corrupt.json")
+    fs.writeFileSync(corruptPath, "{not json")
+    const scanCache = new ExternalEventScanCache()
+    const verifyProtectiveState = vi.fn(async () => ({ verified: true, reference: "sabnzbd-read:queue-paused:sha256:idle" }))
+    const common = { eventRoot, target, verifyProtectiveState, execute: vi.fn(), recordArtifact: vi.fn(async () => undefined), scanCache }
+
+    await expect(sweepTelegramSystemFailsafes(common)).resolves.toEqual({ inspected: 1, sent: 0 })
+    vi.mocked(fs.readFileSync).mockClear()
+    for (let tick = 0; tick < 5; tick += 1) await expect(sweepTelegramSystemFailsafes(common)).resolves.toEqual({ inspected: 1, sent: 0 })
+    expect(vi.mocked(fs.readFileSync).mock.calls.filter(([file]) => String(file).startsWith(eventRoot))).toHaveLength(0)
+
+    const changed = { ...JSON.parse(fs.readFileSync(ineligible.recordPath, "utf8")), updatedAt: "2026-08-29T19:58:30.000Z", executionState: "retry_wait", lastError: "boom" }
+    fs.writeFileSync(ineligible.recordPath, JSON.stringify(changed))
+    vi.mocked(fs.readFileSync).mockClear()
+    await expect(sweepTelegramSystemFailsafes({ ...common, now: () => "2026-08-29T19:59:01.000Z" })).resolves.toEqual({ inspected: 1, sent: 0 })
+    expect(vi.mocked(fs.readFileSync).mock.calls.filter(([file]) => String(file) === ineligible.recordPath)).toHaveLength(1)
   })
 
   it("sweeps eligible persisted events with and without an injected clock", async () => {

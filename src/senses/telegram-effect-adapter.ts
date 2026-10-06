@@ -2,7 +2,7 @@ import * as crypto from "node:crypto"
 import * as fs from "node:fs"
 import * as path from "node:path"
 import { emitNervesEvent } from "../nerves/runtime"
-import { bindPrivilegedFailsafeArtifact, listExternalEventStatus, readExternalEventRecord, type ExternalEventRecord } from "../heart/external-events/router"
+import { bindPrivilegedFailsafeArtifact, ExternalEventScanCache, type ExternalEventRecord } from "../heart/external-events/router"
 import { loadSessionEnvelopeFile, projectedSessionEventIds, selectEffectiveSessionEvents, type SessionEnvelope, type SessionEvent, type SessionIngressRelations } from "../heart/session-events"
 import { currentSessionTurnLease, readSessionTransaction, withSessionTurnLease, writeSessionTransaction, type SessionTurnLease } from "../mind/session-transaction"
 import { escapeTelegramHtml, sendTelegramText, splitTelegramText, TelegramApiError, type TelegramBotApi } from "./telegram-client"
@@ -619,12 +619,18 @@ export async function sweepTelegramSystemFailsafes(input: {
   verifyProtectiveState(action: NonNullable<ExternalEventRecord["privilegedProtectiveAction"]>): Promise<{ verified: boolean; reference: string }>
   execute(input: TelegramAuthorizedEffectInput): Promise<TelegramEffectArtifact>
   recordArtifact(artifact: TelegramEffectArtifact): Promise<void>
+  /** Long-lived callers pass one cache so an idle sweep stats files instead of re-parsing every record each tick. */
+  scanCache?: ExternalEventScanCache
 }): Promise<{ inspected: number; sent: number }> {
-  const records = listExternalEventStatus(input.eventRoot).filter((status) => !status.corrupt && status.agent === "sanctuary" && status.source === "sanctuary-usenet").slice(0, 32)
+  const scanned = (input.scanCache ?? new ExternalEventScanCache()).scan(input.eventRoot)
+  const records = scanned
+    .flatMap((entry) => entry.record && entry.record.agent === "sanctuary" && entry.record.source === "sanctuary-usenet" ? [entry.record] : [])
+    .sort((left, right) => left.eventId.localeCompare(right.eventId))
+    .slice(0, 32)
   let sent = 0
-  for (const status of records) {
+  for (const cached of records) {
     const result = await reconcileTelegramSystemFailsafe({
-      record: readExternalEventRecord(status.recordPath),
+      record: cached,
       ...(input.now ? { now: input.now } : {}),
       target: input.target,
       verifyProtectiveState: input.verifyProtectiveState,
