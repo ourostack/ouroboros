@@ -2523,6 +2523,7 @@ describe("private runtime", () => {
     await runApprovedPrivateRuntimeTurn({ reason: "await", awaitName: "event-wait", now: () => new Date("2026-08-30T17:00:00.000Z") })
     const runOptions = mockHandleInboundTurn.mock.calls[0][0].runAgentOptions
     expect(runOptions.tools.map((tool: any) => tool.function.name)).toEqual(["resolve_await"])
+    expect(runOptions.toolContext.awaitTick).toEqual({ awaitName: "event-wait", friendId: "owner", channel: "external-event", key: "/events/sanctuary/usenet/event.json", requestId: null })
     await expect(runOptions.toolContext.relationshipAuthorization.authorizeTool("resolve_await", { name: "event-wait" })).resolves.toMatchObject({ allowed: true, profileId: "sanctuary-event" })
     await expect(runOptions.toolContext.relationshipAuthorization.authorizeTool("unraid_restart_container", { name: "jellyfin" })).resolves.toMatchObject({ allowed: false, reason: expect.stringContaining("resolve-only") })
     await expect(runOptions.toolContext.relationshipAuthorization.authorizeTool("shell", {})).resolves.toMatchObject({ allowed: false })
@@ -2612,6 +2613,7 @@ describe("private runtime", () => {
       expect(runOptions.tools.map((tool: any) => tool.function.name)).toEqual(["await_condition", "resolve_await", "send_message"])
       expect(runOptions.toolContext.context.friend).toMatchObject({ id: "peer" })
       expect(runOptions.toolContext.currentSession).toMatchObject({ friendId: "peer", channel: "a2a", key: "conv-1" })
+      expect(runOptions.toolContext.awaitTick).toEqual({ awaitName: "release", friendId: "peer", channel: "a2a", key: "conv-1", requestId: "req-1" })
       expect(runOptions.toolContext.relationshipAuthorization).toMatchObject({ requestId: "req-1", profileId: "sanctuary-agent-peer" })
       expect(runOptions.toolContext.relationshipAuthorization.advertisedToolNames).toEqual(["await_condition", "resolve_await", "send_message"])
       await expect(runOptions.toolContext.relationshipAuthorization.authorizeTool("resolve_await", {})).resolves.toMatchObject({ allowed: true, friendId: "owner", requestId: "req-1" })

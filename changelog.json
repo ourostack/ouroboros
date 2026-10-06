@@ -2,6 +2,13 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.863",
+      "changes": [
+        "Fixed await ticks always failing resolve_await and cancel_await: the inbound pipeline rewrote the turn's current session to the inner dialog, so the relationship guard never matched the await being ticked. The tick now carries its own binding, covering only the await being ticked.",
+        "Added media_queue, a read-only Sonarr/Radarr queue view (torrent and usenet: status, trackedDownloadState, percent, timeleft, stalled) for the Butler, and made sanctuary_get_download_queue say it only sees the usenet queue."
+      ]
+    },
+    {
       "version": "0.1.0-alpha.862",
       "changes": [
         "Sanctuary tool context is now attached to every private-runtime turn of the sanctuary agent (await, habit, instinct, external-event), so await turns can observe the download queue.",

@@ -16,7 +16,7 @@ import {
 import { createA2AAwaitOwnerDeliverer } from "../heart/awaiting/a2a-await-delivery"
 import { getPrivateRuntimePendingDir, queuePendingMessageOnce } from "../mind/pending"
 import type { PendingMessage } from "../mind/pending"
-import type { ToolDefinition } from "./tools-base"
+import type { ToolContext, ToolDefinition } from "./tools-base"
 import type { CrossChatDeliveryDeps } from "../heart/cross-chat-delivery"
 import { advanceExternalEventFromAwait, getExternalEventRoot, readExternalEventRecord } from "../heart/external-events/router"
 import { advanceObligation, createObligation, fulfillObligation, readVerifiedObligations, readVerifiedPendingObligations } from "../arc/obligations"
@@ -49,6 +49,21 @@ function validateName(name: string): string | null {
   if (!name) return "name is required"
   if (!VALID_NAME.test(name)) return "name must be alphanumeric, underscores, or hyphens"
   return null
+}
+
+/**
+ * The relationship scope a resolve/cancel is judged against. A turn that is ticking an await carries that await's own
+ * binding (`awaitTick`), because the pipeline rewrites `currentSession` to the inner dialog; that binding covers the
+ * ticked await only, so a tick can never touch any other await. Every other turn is judged by its current session.
+ */
+function relationshipScopeFor(ctx: ToolContext, awaitName: string): { session: { friendId: string; channel: string; key: string } | undefined; requestId: string | undefined } {
+  const tick = ctx.awaitTick
+  if (tick) {
+    return tick.awaitName === awaitName
+      ? { session: { friendId: tick.friendId, channel: tick.channel, key: tick.key }, requestId: tick.requestId ?? undefined }
+      : { session: undefined, requestId: undefined }
+  }
+  return { session: ctx.currentSession, requestId: ctx.relationshipAuthorization?.requestId }
 }
 
 export function readAwaitDefinition(agentRoot: string, name: string): AwaitFile | null {
@@ -551,10 +566,9 @@ export const awaitingToolDefinitions: ToolDefinition[] = [
       const agentRoot = getAgentRoot()
       const agentName = getAgentName()
       if (ctx?.relationshipAuthorization) {
-        const session = ctx.currentSession
-        const requestId = ctx.relationshipAuthorization.requestId
-        const existing = readAwaitDefinition(agentRoot, String(a.name ?? ""))
         const awaitName = String(a.name ?? "")
+        const { session, requestId } = relationshipScopeFor(ctx, awaitName)
+        const existing = readAwaitDefinition(agentRoot, awaitName)
         let binding: AwaitBindingInspection | null = null
         if (session?.channel === "external-event" && existing?.wake_at) {
           binding = inspectExternalEventAwait(agentName, { recordPath: session.key, awaitName, wakeAt: existing.wake_at })
@@ -600,8 +614,7 @@ export const awaitingToolDefinitions: ToolDefinition[] = [
       const agentRoot = getAgentRoot()
       const agentName = getAgentName()
       if (ctx?.relationshipAuthorization) {
-        const session = ctx.currentSession
-        const requestId = ctx.relationshipAuthorization.requestId
+        const { session, requestId } = relationshipScopeFor(ctx, String(a.name ?? ""))
         if (!session || !requestId || !hasActiveRelationshipFollowUp(agentRoot, {
           friendId: session.friendId,
           channel: session.channel,

@@ -112,6 +112,11 @@ export interface ToolContext {
   };
   bluebubblesReplyTarget?: BlueBubblesReplyTargetController;
   currentSession?: BridgeSessionRef;
+  /**
+   * Set only by the private runtime for a turn that is ticking exactly one await. The inbound pipeline replaces
+   * `currentSession` with the inner dialog, so this carries the await's own relationship binding instead.
+   */
+  readonly awaitTick?: Readonly<{ awaitName: string; friendId: string; channel: string; key: string; requestId: string | null }>;
   activeBridges?: BridgeRecord[];
   activeWorkFrame?: ActiveWorkFrame;
   supportedReasoningEfforts?: readonly string[];

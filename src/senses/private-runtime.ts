@@ -1609,6 +1609,14 @@ export async function runPrivateRuntimeTurn(options?: RunPrivateRuntimeTurnOptio
           friendStore: relationshipAwait.store,
           context: relationshipAwait.context,
           currentSession: relationshipAwait.currentSession,
+          // The pipeline rewrites currentSession to the inner dialog; resolve_await/cancel_await need the await's own binding.
+          awaitTick: Object.freeze({
+            awaitName: parsedAwait!.name,
+            friendId: relationshipAwait.currentSession.friendId,
+            channel: relationshipAwait.currentSession.channel,
+            key: relationshipAwait.currentSession.key,
+            requestId: relationshipAwaitCoordinatesValue!.requestId,
+          }),
           relationshipAuthorization: relationshipAwait.relationshipAuthorization,
         } : {}),
         ...(options?.externalEvent ? {
