@@ -210,6 +210,40 @@ describe("external event attention lifecycle", () => {
     expect(secondClaim.executionState).toBe("running")
   })
 
+  describe("exhausted recovery reopening", () => {
+    const input = { agent: "sanctuary", source: "guard", eventType: "health.observed", eventId: "parity", observationRevision: "rev-1" }
+    const exhaust = (eventRoot: string) => {
+      const first = recordExternalEvent(input, { root: eventRoot, now: () => "2026-09-02T02:00:00.000Z" })
+      claimExternalEvent(first.recordPath, { owner: "a", expectedVersion: first.version, expectedGeneration: 1, leaseMs: 1_000, now: () => "2026-09-02T02:00:01.000Z" })
+      const dead = reconcileExternalEvent(first.recordPath, { now: () => "2026-09-02T02:39:55.000Z", maxAttempts: 1 })
+      const revived = reviveExternalEventAfterRecovery(first.recordPath, { expectedVersion: dead.version, expectedGeneration: 1, evidence: { class: "execution_lease_expired", observedAt: "2026-09-02T02:42:00.000Z" }, now: () => "2026-09-02T02:42:17.000Z" })
+      if (!revived.revived) throw new Error("expected revival")
+      const claim = claimExternalEvent(first.recordPath, { owner: "b", expectedVersion: revived.record.version, expectedGeneration: 1, leaseMs: 1_000, now: () => "2026-09-02T02:43:00.000Z" })
+      const permanent = reconcileExternalEvent(first.recordPath, { now: () => "2026-09-02T02:44:00.000Z" })
+      expect(claim.executionState).toBe("running")
+      expect(permanent).toMatchObject({ executionState: "dead_letter", recoveryGrant: { generation: 1 }, failureProvenance: { class: "execution_lease_expired", failedAt: "2026-09-02T02:39:55.000Z" } })
+      return permanent
+    }
+
+    it("keeps an exhausted record dormant inside the cooldown, then opens a new generation for the same still-observed condition", () => {
+      const eventRoot = root()
+      exhaust(eventRoot)
+      const early = recordExternalEvent(input, { root: eventRoot, now: () => "2026-09-02T08:39:54.000Z" })
+      expect(early).toMatchObject({ executionState: "dead_letter", generation: 1, shouldWake: false })
+      const reopened = recordExternalEvent(input, { root: eventRoot, now: () => "2026-09-02T08:39:55.000Z" })
+      expect(reopened).toMatchObject({ executionState: "received", generation: 2, attemptCount: 0, shouldWake: true, lastError: null, duplicateCount: 2 })
+      expect(reopened.failureProvenance).toBeUndefined()
+      expect(reopened.recoveryGrant).toBeUndefined()
+    })
+
+    it("never reopens an exhausted record whose dispatch is disabled", () => {
+      const eventRoot = root()
+      exhaust(eventRoot)
+      expect(recordExternalEvent(input, { root: eventRoot, now: () => "2026-09-02T03:00:00.000Z", dispatchEnabled: false })).toMatchObject({ dispatchEnabled: false, shouldWake: false })
+      expect(recordExternalEvent(input, { root: eventRoot, now: () => "2026-09-09T00:00:00.000Z" })).toMatchObject({ executionState: "dead_letter", generation: 1, shouldWake: false })
+    })
+  })
+
   it("does not let the general failure API clear a consumed provider recovery grant", () => {
     const eventRoot = root()
     const first = recordExternalEvent({ agent: "sanctuary", source: "guard", eventType: "health.observed", eventId: "untrusted-reclassify" }, { root: eventRoot, now: () => "2026-08-29T18:00:00.000Z" })

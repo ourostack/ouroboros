@@ -889,6 +889,9 @@ export function buildExternalEventMessage(record: ExternalEventRecord): string {
 
 type RecordExternalEventOptions = { root?: string; now?: () => string; dispatchEnabled?: boolean; quietInitialReceipt?: boolean; [privilegedIngress]?: { nonce: string; protectiveAction?: PrivilegedProtectiveAction } }
 
+// A still-observed condition whose single recovery grant is spent must not stay dead forever: after this cooldown a repeat receipt opens a new generation.
+const EXHAUSTED_RECOVERY_REOPEN_MS = 6 * 60 * 60_000
+
 function recordExternalEventInternal(input: ExternalEventInput, options: RecordExternalEventOptions = {}): ExternalEventRecord {
   validateExternalEventInput(input)
   const now = options.now?.() ?? new Date().toISOString()
@@ -941,8 +944,11 @@ function recordExternalEventInternal(input: ExternalEventInput, options: RecordE
     const quietInitialReceipt = options.quietInitialReceipt === true && !existing
     const quietBaselineChanged = existing?.source === PRIVILEGED_EVENT_SOURCE && existing.eventType === "usenet.health_observation"
       && existing.executionState === "handled" && !existing.disposition && revision !== existing.observationRevision
+    const exhaustedRecoveryReopens = existing?.executionState === "dead_letter" && existing.dispatchEnabled !== false
+      && existing.recoveryGrant?.generation === existing.generation && existing.failureProvenance !== undefined
+      && Date.parse(now) - Date.parse(existing.failureProvenance.failedAt) >= EXHAUSTED_RECOVERY_REOPEN_MS
     const shouldWake = !quietInitialReceipt && (!existing || quietBaselineChanged
-      || (existing.disposition ? predicateMatches(existing.disposition, input, revision) : existing.executionState === "dead_letter" && revision !== existing.observationRevision))
+      || (existing.disposition ? predicateMatches(existing.disposition, input, revision) : existing.executionState === "dead_letter" && (revision !== existing.observationRevision || exhaustedRecoveryReopens)))
     const generation = existing ? existing.generation + (shouldWake ? 1 : 0) : 1
     const record: ExternalEventRecord = {
     schemaVersion: 2,
