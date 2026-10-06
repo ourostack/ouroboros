@@ -436,6 +436,7 @@ describe("revive_sense tool", () => {
       fs.writeFileSync(path.join(stateRoot, "daemon", "restart-runtime-cooldown.json"), "{nope")
       expect(JSON.parse(await findTool("restart_runtime").handler({ reason: "x" }, familyCtx())).requested).toBe(true)
       fs.writeFileSync(path.join(stateRoot, "daemon", "restart-runtime-cooldown.json"), JSON.stringify({ requestedAtMs: "bad" }))
+      expect(JSON.parse(await findTool("restart_runtime").handler({ reason: "z" }, familyCtx())).requested).toBe(true)
       fs.rmSync(path.join(stateRoot, "daemon"), { recursive: true })
       fs.writeFileSync(path.join(stateRoot, "daemon"), "file blocks mkdir")
       expect(JSON.parse(await findTool("restart_runtime").handler({ reason: "y" }, familyCtx())).requested).toBe(true)
