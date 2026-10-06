@@ -1,5 +1,6 @@
 import * as fs from "node:fs"
 import * as path from "node:path"
+import { randomUUID } from "node:crypto"
 import { getAgentName, getAgentStateRoot } from "../heart/identity"
 import { emitNervesEvent } from "../nerves/runtime"
 import { DEFAULT_DAEMON_SOCKET_PATH, sendDaemonCommand } from "../heart/daemon/socket-client"
@@ -46,11 +47,14 @@ function readLastRestartMs(agentName: string): number | null {
   }
 }
 
+// The cooldown is stored per agent, but the restart it limits is daemon-wide.
 function recordRestart(agentName: string, nowMs: number): void {
   try {
     const file = restartCooldownPath(agentName)
     fs.mkdirSync(path.dirname(file), { recursive: true })
-    fs.writeFileSync(file, JSON.stringify({ requestedAtMs: nowMs }), "utf8")
+    const temporary = `${file}.tmp-${process.pid}-${randomUUID()}`
+    fs.writeFileSync(temporary, JSON.stringify({ requestedAtMs: nowMs }), "utf8")
+    fs.renameSync(temporary, file)
   } catch {
     // A failed cooldown write must not block an otherwise allowed restart.
   }
@@ -77,7 +81,7 @@ async function restartRuntime(args: RestartRuntimeArgs, agentName: string, ctx?:
   }
   const lastMs = readLastRestartMs(agentName)
   const nowMs = Date.now()
-  if (lastMs !== null && nowMs - lastMs < RESTART_COOLDOWN_MS) {
+  if (lastMs !== null && lastMs <= nowMs && nowMs - lastMs < RESTART_COOLDOWN_MS) {
     return JSON.stringify({
       refused: true,
       code: "restart_cooldown",
@@ -85,7 +89,6 @@ async function restartRuntime(args: RestartRuntimeArgs, agentName: string, ctx?:
       retryAfterMs: RESTART_COOLDOWN_MS - (nowMs - lastMs),
     })
   }
-  recordRestart(agentName, nowMs)
 
   emitNervesEvent({
     component: "repertoire",
@@ -100,6 +103,8 @@ async function restartRuntime(args: RestartRuntimeArgs, agentName: string, ctx?:
       reason,
       requestedBy: agentName,
     })
+    // Only a daemon that accepted the command starts the cooldown; a failed attempt must not lock the owner out.
+    if (response.ok) recordRestart(agentName, nowMs)
     return JSON.stringify({
       requested: true,
       reason,

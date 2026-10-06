@@ -298,6 +298,20 @@ describe("tools-awaiting", () => {
       )
     }
 
+    it("exposes the verdict enum and says still pending is no", () => {
+      const fn = resolveAwaitDef.tool.function as any
+      expect(fn.parameters.properties.verdict.enum).toEqual(["yes", "no"])
+      expect(fn.description).toContain("still pending")
+    })
+
+    it("a bad verdict returns an explicit error and records nothing", async () => {
+      await file("bad_verdict")
+      const result = parse(await resolveAwaitDef.handler({ name: "bad_verdict", verdict: "pending", observation: "not yet" }, undefined) as string)
+      expect(result.error).toBe('verdict must be exactly "yes" or "no" (got "pending"); use "no" with an observation while still waiting')
+      expect(fs.existsSync(path.join(agentRoot, "state", "awaits", "bad_verdict.json"))).toBe(false)
+      expect(fs.existsSync(path.join(agentRoot, "awaiting", "bad_verdict.md"))).toBe(true)
+    })
+
     it("verdict=yes archives + alerts", async () => {
       await file("hey_export")
       const result = parse(await resolveAwaitDef.handler(

@@ -402,6 +402,8 @@ describe("revive_sense tool", () => {
   })
 
   describe("autonomous-turn guard and cooldown", () => {
+    beforeEach(() => { stateRoot = fs.mkdtempSync(path.join(os.tmpdir(), "restart-runtime-")) })
+
     it.each(["await", "habit", "instinct", "external-event", "scheduler"] as const)("refuses in a %s turn without touching the daemon", async (kind) => {
       const t = findTool("restart_runtime")
       const result = JSON.parse(await t.handler({ reason: "runtime unavailable" }, { signin: vi.fn(), autonomousTurnKind: kind }))
@@ -419,6 +421,27 @@ describe("revive_sense tool", () => {
       expect(second).toMatchObject({ refused: true, code: "restart_cooldown" })
       expect(second.retryAfterMs).toBeGreaterThan(0)
       expect(mockSendDaemonCommand).toHaveBeenCalledTimes(1)
+    })
+
+    it("a failed daemon command leaves no cooldown", async () => {
+      const t = findTool("restart_runtime")
+      mockSendDaemonCommand.mockRejectedValueOnce(new Error("socket down"))
+      expect(JSON.parse(await t.handler({ reason: "x" }, familyCtx())).error).toContain("failed to reach daemon")
+      mockSendDaemonCommand.mockResolvedValueOnce({ ok: false, error: "nope" })
+      await t.handler({ reason: "x" }, familyCtx())
+      expect(fs.existsSync(path.join(stateRoot, "daemon", "restart-runtime-cooldown.json"))).toBe(false)
+      expect(JSON.parse(await t.handler({ reason: "x" }, familyCtx())).requested).toBe(true)
+    })
+
+    it("treats a future-dated cooldown record as expired", async () => {
+      fs.mkdirSync(path.join(stateRoot, "daemon"), { recursive: true })
+      fs.writeFileSync(path.join(stateRoot, "daemon", "restart-runtime-cooldown.json"), JSON.stringify({ requestedAtMs: Date.now() + 10 * 60 * 60 * 1000 }))
+      expect(JSON.parse(await findTool("restart_runtime").handler({ reason: "x" }, familyCtx())).requested).toBe(true)
+    })
+
+    it("a refused autonomous call writes no cooldown file", async () => {
+      await findTool("restart_runtime").handler({ reason: "x" }, { signin: vi.fn(), autonomousTurnKind: "await" })
+      expect(fs.existsSync(path.join(stateRoot, "daemon", "restart-runtime-cooldown.json"))).toBe(false)
     })
 
     it("persists the cooldown across a module reload and expires it after 6 hours", async () => {

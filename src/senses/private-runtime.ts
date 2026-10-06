@@ -56,7 +56,7 @@ import { readFlightRecorderResume, formatFlightRecorderResume } from "../arc/fli
 import { deskRecordOrientationSection } from "../mind/desk-section"
 import type { HabitSessionToolContext } from "../repertoire/tools-base"
 import type { ExternalEventLeaseContext } from "../heart/external-events/router"
-import { createSanctuaryToolContext } from "./sanctuary-runtime"
+import { createSanctuaryToolContext, isSanctuaryAgent } from "./sanctuary-runtime"
 import { getSenseSessionPath } from "./shared-turn"
 import { createRelationshipAuthorizationEvaluator, loadRelationshipCapabilityRegistry, resolveProfileScopedRelationshipAuthorization } from "../repertoire/relationship-authorization"
 import {
@@ -1074,10 +1074,10 @@ function reduceHabitSessionToNoSend(
 /** Sanctuary tool context for a private turn: always for the sanctuary agent, and for sanctuary external events.
  * Sanctuary external events keep the strict behavior (a missing config fails the turn); other turns degrade to
  * no context so a config gap cannot stop the agent from waking at all. */
-function sanctuaryToolContextFor(agentName: string, externalEventSource: string | undefined): ReturnType<typeof createSanctuaryToolContext> | Record<string, never> {
+export function sanctuaryToolContextFor(agentName: string, externalEventSource: string | undefined): ReturnType<typeof createSanctuaryToolContext> | Record<string, never> {
   const sanctuaryEvent = externalEventSource === "sanctuary-health" || externalEventSource === "sanctuary-usenet"
   if (sanctuaryEvent) return createSanctuaryToolContext(agentName)
-  if (agentName !== "sanctuary") return {}
+  if (!isSanctuaryAgent(agentName)) return {}
   try {
     return createSanctuaryToolContext(agentName)
   } catch (error) {

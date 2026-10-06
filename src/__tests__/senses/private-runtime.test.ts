@@ -2431,6 +2431,13 @@ describe("private runtime", () => {
     expect(mockHandleInboundTurn.mock.calls[2][0].runAgentOptions.toolContext.autonomousTurnKind).toBe("scheduler")
   })
 
+  it("keeps sanctuary external events strict when the machine runtime config is missing", async () => {
+    const { sanctuaryToolContextFor } = await import("../../senses/private-runtime")
+    expect(() => sanctuaryToolContextFor("unconfigured-agent", "sanctuary-health")).toThrow(/machine runtime config is missing/)
+    expect(() => sanctuaryToolContextFor("unconfigured-agent", "sanctuary-usenet")).toThrow(/machine runtime config is missing/)
+    expect(sanctuaryToolContextFor("unconfigured-agent", "other-source")).toEqual({})
+  })
+
   it("does not attach the Sanctuary tool context for other agents", async () => {
     mockLoadSession.mockReturnValue(null)
     await runApprovedPrivateRuntimeTurn({ reason: "instinct", now: () => new Date("2026-03-06T12:00:00.000Z") })

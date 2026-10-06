@@ -247,7 +247,7 @@ async function resolveAwaitTool(name: string, verdict: string, observation: stri
   }
 
   if (verdict !== "yes" && verdict !== "no") {
-    return JSON.stringify({ error: "verdict must be 'yes' or 'no'" })
+    return JSON.stringify({ error: `verdict must be exactly "yes" or "no" (got ${JSON.stringify(verdict)}); use "no" with an observation while still waiting` })
   }
 
   if (!observation || !observation.trim()) {
@@ -535,12 +535,12 @@ export const awaitingToolDefinitions: ToolDefinition[] = [
       type: "function",
       function: {
         name: "resolve_await",
-        description: "Resolve a pending await with a verdict. verdict='yes' archives and fires the alert. verdict='no' records the observation and continues polling.",
+        description: "Resolve a pending await with a verdict. verdict='yes' archives and fires the alert. verdict='no' records the observation and continues polling; still pending is always 'no'.",
         parameters: {
           type: "object",
           properties: {
             name: { type: "string", description: "Await name (filename stem)." },
-            verdict: { type: "string", description: "'yes' if the condition is met, 'no' otherwise." },
+            verdict: { type: "string", enum: ["yes", "no"], description: "Exactly 'yes' if the condition is met. Exactly 'no' for anything else, including still pending, not yet, or unable to tell: send 'no' with an observation and polling continues." },
             observation: { type: "string", description: "One-line summary of what I saw this tick." },
           },
           required: ["name", "verdict", "observation"],

@@ -463,6 +463,15 @@ describe("Unraid typed read tools", () => {
     expect(resumeDefinition.riskProfile).toMatchObject({ mutates: "external_side_effect", risk: "high" })
   })
 
+  it("never reaches the Sanctuary restart from an await turn without a relationship grant", async () => {
+    const restartContainer = vi.fn()
+    const context = { signin: vi.fn(), autonomousTurnKind: "await", agentRoot: "/tmp/none", sanctuary: { restartContainer } } as any
+    const classification = await classifyApprovalForInvocation("unraid_restart_container", { container: "jellyfin" }, context)
+    const result = await execTool("unraid_restart_container", { container: "jellyfin" }, { ...context, routineActionSelection: classification.routineActionSelection })
+    expect(restartContainer).not.toHaveBeenCalled()
+    expect(JSON.parse(result)).toMatchObject({ ok: false })
+  })
+
   it("returns every bounded install inspection state exactly and preserves the outer missing-runtime shape", async () => {
     const mismatchCodes = ["managed_file_missing", "managed_file_content", "managed_file_mode", "bundle_meta_missing", "bundle_meta_field", "bundle_meta_mode"]
     const states = [
