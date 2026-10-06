@@ -2180,6 +2180,39 @@ describe("daemon command plane branches", () => {
     }
   })
 
+  it("dispatches a cached retry_wait record once its time passes without a file change, and does not re-read unchanged records", async () => {
+    const socketPath = tmpSocketPath("daemon-external-event-cached-retry")
+    const externalEventRoot = fs.mkdtempSync(path.join(os.tmpdir(), "external-event-cached-retry-root-"))
+    const bundlesRoot = fs.mkdtempSync(path.join(os.tmpdir(), "external-event-cached-retry-bundles-"))
+    const t0 = "2026-01-01T00:00:00.000Z"
+    const received = recordExternalEvent({ agent: "slugger", source: "sanctuary-health", eventType: "health.sweep_observed", eventId: "sweep" }, { root: externalEventRoot, now: () => t0 })
+    const claimed = claimExternalEvent(received.recordPath, { owner: "o1", expectedVersion: received.version, expectedGeneration: received.generation, now: () => t0 })
+    const waiting = failExternalEventAttempt(claimed.recordPath, { owner: "o1", expectedVersion: claimed.version, expectedGeneration: claimed.generation, error: "boom", now: () => t0 })
+    expect(waiting.executionState).toBe("retry_wait")
+    const { daemon, processManager } = make(socketPath, bundlesRoot, { externalEventRoot })
+    processManager.listAgentSnapshots.mockReturnValue([registeredSnapshot()])
+    const scanCache = (daemon as any).externalEventScanCache as { scan(root: string): unknown[] }
+    const scan = vi.spyOn(scanCache, "scan")
+    vi.useFakeTimers({ toFake: ["Date"] })
+
+    try {
+      vi.setSystemTime(new Date("2025-12-31T00:00:00.000Z"))
+      await (daemon as any).reconcileExternalEvents()
+      await (daemon as any).reconcileExternalEvents()
+      expect(readExternalEventRecord(received.recordPath)).toMatchObject({ executionState: "retry_wait", version: waiting.version })
+      expect(scan).toHaveBeenCalledTimes(2)
+
+      vi.setSystemTime(new Date("2026-01-01T00:01:00.000Z"))
+      await (daemon as any).reconcileExternalEvents()
+      expect(readExternalEventRecord(received.recordPath)).toMatchObject({ attemptCount: 2 })
+    } finally {
+      vi.useRealTimers()
+      await daemon.stop()
+      fs.rmSync(externalEventRoot, { recursive: true, force: true })
+      fs.rmSync(bundlesRoot, { recursive: true, force: true })
+    }
+  })
+
   it("recovers an expired external-event claim on startup without losing the receipt", async () => {
     const socketPath = tmpSocketPath("daemon-external-event-expired")
     const externalEventRoot = fs.mkdtempSync(path.join(os.tmpdir(), "external-event-expired-root-"))

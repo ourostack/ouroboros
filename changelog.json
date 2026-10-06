@@ -2,6 +2,13 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.857",
+      "changes": [
+        "The daemon now caches external-event records by file stat so the one-second reconcile tick no longer re-reads and re-parses every unchanged record, cutting idle CPU.",
+        "The record cache never keeps a filesystem read error and re-reads any entry older than a minute, so a transient read failure or a missed change cannot hide a record."
+      ]
+    },
+    {
       "version": "0.1.0-alpha.856",
       "changes": [
         "The daemon no longer freezes for minutes after an upgrade. Mailbox watched the whole agent bundle with Node's JavaScript recursive watcher on Linux, which blocked the event loop for about 7 s at every boot and for about 150 s when a host-side chown touched every bundle file, long enough to fail the container healthcheck and get the Butler restarted. Mailbox now watches directories without blocking: async discovery, event callbacks that never touch the filesystem, a catch-up report for new directories, a 3 s cap on event debouncing, and a warning event when watches run out."
