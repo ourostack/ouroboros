@@ -2,6 +2,12 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.860",
+      "changes": [
+        "Awaits filed from an A2A delegated command now run: the follow-up carries the delegating owner's authority narrowed to the peer's profile, its outcome reaches the owner on Telegram as the agent, and an await that can never run is canceled with a reason and reported instead of failing silently on every wake."
+      ]
+    },
+    {
       "version": "0.1.0-alpha.859",
       "changes": [
         "The Telegram sense no longer re-reads and re-parses every external-event record (hundreds of files, about 11 MB) each second for its system-failsafe sweep; it now reuses the stat-keyed record cache, cutting the Butler's idle Telegram CPU. The trade is memory: parsed records now stay cached in the sense process for its lifetime, so heap grows by roughly the size of the usenet records."
