@@ -379,6 +379,7 @@ export function createSanctuaryHealthSweep(options: {
     const unacknowledgedRecovered = [...(previous.pendingRecovered ?? []), ...recovered]
       .filter((incident, index, all) => !current[incident.id] && all.findIndex((other) => other.id === incident.id) === index)
       .map(({ id, summary }) => ({ id, summary }))
+      .slice(-500)
     const acceptanceMeta = acceptanceEventMeta()
     const completedAt = now().toISOString()
     const incidentDigest = createHash("sha256").update(JSON.stringify(current)).digest("hex")
