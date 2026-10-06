@@ -2385,6 +2385,58 @@ describe("private runtime", () => {
     expect(input.runAgentOptions.toolContext.relationshipAuthorization).toBeUndefined()
   })
 
+  it("keeps the turn running without Sanctuary tools when the sanctuary agent has no machine runtime config", async () => {
+    mockGetAgentName.mockReturnValue("sanctuary")
+    cacheProviderCredentialRecords("sanctuary", [
+      createProviderCredentialRecord({ provider: "minimax", credentials: { apiKey: "minimax-test-key" }, config: {}, provenance: { source: "manual" }, now: new Date("2026-03-06T11:58:00.000Z") }),
+    ], new Date("2026-03-06T11:59:00.000Z"))
+    mockLoadSession.mockReturnValue(null)
+    const now = () => new Date("2026-03-06T12:00:00.000Z")
+    const decision = writeLedgeredPrivateTurnDecision({ request: { agent: "sanctuary", originRefs: [{ kind: "unit-test", id: "sanctuary-noconfig" }] }, decidedAt: now().toISOString() })
+    await runPrivateRuntimeTurn({ reason: "instinct", now, privateTurnDecision: decision })
+    const ctx = mockHandleInboundTurn.mock.calls[0][0].runAgentOptions.toolContext
+    expect(ctx.sanctuary).toBeUndefined()
+    expect(ctx.autonomousTurnKind).toBe("instinct")
+  })
+
+  it("attaches the Sanctuary tool context and the autonomous turn kind on await, habit and instinct turns of the sanctuary agent", async () => {
+    mockGetAgentName.mockReturnValue("sanctuary")
+    cacheProviderCredentialRecords("sanctuary", [
+      createProviderCredentialRecord({ provider: "minimax", credentials: { apiKey: "minimax-test-key" }, config: {}, provenance: { source: "manual" }, now: new Date("2026-03-06T11:58:00.000Z") }),
+    ], new Date("2026-03-06T11:59:00.000Z"))
+    cacheMachineRuntimeCredentialConfig("sanctuary", { unraidGraphqlUrl: "http://unraid.test/graphql", unraidReadApiKey: "read-test", unraidWriteApiKey: "write-test", jellyfin: { userId: "b".repeat(32), accessToken: "a".repeat(32), folderIds: "library-a,library-b" } })
+    const runSanctuaryTurn = (o: Parameters<typeof runPrivateRuntimeTurn>[0]) => {
+      const now = () => new Date("2026-03-06T12:00:00.000Z")
+      const originRefs: PrivateTurnRequest["originRefs"] = [{ kind: "unit-test", id: `sanctuary-${++privateDecisionCounter}` }]
+      if (o?.awaitName) originRefs.push({ kind: "await", id: o.awaitName })
+      const decision = writeLedgeredPrivateTurnDecision({ request: { agent: "sanctuary", originRefs }, decidedAt: now().toISOString() })
+      return runPrivateRuntimeTurn({ ...o, now, privateTurnDecision: decision })
+    }
+    const awaitingDir = path.join(agentRoot, "awaiting")
+    fs.mkdirSync(awaitingDir, { recursive: true })
+    fs.writeFileSync(path.join(awaitingDir, "chef-show.md"), "---\ncondition: download landed\ncadence: 30m\nstatus: pending\nfiled_from: unknown\nfiled_for_friend_id: null\nfiled_from_key: null\nrequest_id: null\n---\n\nCheck the queue.", "utf8")
+    mockLoadSession.mockReturnValue(null)
+    await runSanctuaryTurn({ reason: "await", awaitName: "chef-show" })
+    const awaitCtx = mockHandleInboundTurn.mock.calls[0][0].runAgentOptions.toolContext
+    expect(awaitCtx.autonomousTurnKind).toBe("await")
+    expect(typeof awaitCtx.sanctuary.getDownloadQueue).toBe("function")
+    const queueTool = (await import("../../repertoire/tools-unraid")).unraidToolDefinitions.find((d) => d.tool.function.name === "sanctuary_get_download_queue")!
+    const queueResult = JSON.parse(await queueTool.handler({}, awaitCtx))
+    expect(queueResult.error?.code).not.toBe("tool_context_missing")
+    await runSanctuaryTurn({ reason: "instinct" })
+    const instinctCtx = mockHandleInboundTurn.mock.calls[1][0].runAgentOptions.toolContext
+    expect(instinctCtx.autonomousTurnKind).toBe("instinct")
+    expect(instinctCtx.sanctuary).toBeDefined()
+    await runSanctuaryTurn({ reason: "heartbeat" })
+    expect(mockHandleInboundTurn.mock.calls[2][0].runAgentOptions.toolContext.autonomousTurnKind).toBe("scheduler")
+  })
+
+  it("does not attach the Sanctuary tool context for other agents", async () => {
+    mockLoadSession.mockReturnValue(null)
+    await runApprovedPrivateRuntimeTurn({ reason: "instinct", now: () => new Date("2026-03-06T12:00:00.000Z") })
+    expect(mockHandleInboundTurn.mock.calls[0][0].runAgentOptions.toolContext.sanctuary).toBeUndefined()
+  })
+
   it("re-resolves a scheduled household await with its request-bound relationship tools after restart", async () => {
     fs.writeFileSync(path.join(agentRoot, "tool-profiles.json"), JSON.stringify({ version: 2, profiles: {
       "sanctuary-owner": { version: 3, contextScopes: ["household.status"], toolNames: ["await_condition", "resolve_await", "steward_policy_manage"], effectScopes: ["telegram.owner_event"] },

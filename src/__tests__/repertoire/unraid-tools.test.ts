@@ -439,7 +439,7 @@ describe("Unraid typed read tools", () => {
     }
     for (const definition of unraidToolDefinitions) {
       const missing = JSON.parse(await definition.handler({}, undefined as any))
-      expect(missing).toMatchObject({ ok: false, error: { code: "invalid_response" } })
+      expect(missing).toMatchObject({ ok: false, error: { code: "tool_context_missing" } })
       const args = definition.tool.function.name === "unraid_get_container_logs" ? { container: "alpha", tailLines: 7 }
         : definition.tool.function.name === "sanctuary_search_media_catalog" ? { query: "moon", limit: 3 }
         : definition.tool.function.name === "unraid_restart_container" ? { container: "alpha" } : {}
@@ -488,7 +488,7 @@ describe("Unraid typed read tools", () => {
       expect(getInstallState).toHaveBeenCalledExactlyOnceWith()
       expect(JSON.stringify(state)).not.toMatch(/(?:\/opt\/|\/home\/|sha256:|credential|stack)/u)
     }
-    await expect(definition.handler({}, undefined as any)).resolves.toBe(JSON.stringify({ ok: false, error: { code: "invalid_response", message: "Sanctuary runtime is unavailable", degraded: true } }))
+    await expect(definition.handler({}, undefined as any)).resolves.toBe(JSON.stringify({ ok: false, error: { code: "tool_context_missing", message: "Sanctuary tools are not wired into this turn; this is a harness wiring gap, not a runtime outage — do not restart; report it.", degraded: true } }))
   })
 
   describe("A-006 current requester routing", () => {

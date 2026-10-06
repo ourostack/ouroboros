@@ -147,6 +147,8 @@ export interface ToolContext {
   /** Irrevocable per-turn capability reduction used by transport-safe probes. */
   readonly noSend?: true;
   habitSession?: HabitSessionToolContext;
+  /** Set only on autonomous private-runtime turns (no person present); absent on owner-initiated turns. */
+  readonly autonomousTurnKind?: "await" | "habit" | "external-event" | "instinct" | "scheduler";
   daemonSocketPath?: string;
   agentName?: string;
   agentRoot?: string;
