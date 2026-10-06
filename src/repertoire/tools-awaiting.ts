@@ -53,7 +53,7 @@ function validateName(name: string): string | null {
 
 /**
  * The relationship scope a resolve/cancel is judged against. A turn that is ticking an await carries that await's own
- * binding (`awaitTick`), because the pipeline rewrites `currentSession` to the inner dialog; that binding covers the
+ * binding (`awaitTick`), because the pipeline rewrites `currentSession` to the private-runtime session; that binding covers the
  * ticked await only, so a tick can never touch any other await. Every other turn is judged by its current session.
  */
 function relationshipScopeFor(ctx: ToolContext, awaitName: string): { session: { friendId: string; channel: string; key: string } | undefined; requestId: string | undefined } {

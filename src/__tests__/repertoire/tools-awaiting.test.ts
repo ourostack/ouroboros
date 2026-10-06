@@ -612,7 +612,7 @@ describe("tools-awaiting", () => {
       }))
     })
 
-    it("lets a tick resolve and cancel the await it is ticking even though the pipeline rewrote currentSession to the inner dialog", async () => {
+    it("lets a tick resolve and cancel the await it is ticking even though the pipeline rewrote currentSession to the private-runtime session", async () => {
       const filing = {
         currentSession: { friendId: "peer", channel: "a2a", key: "conv-1", sessionPath: "/tmp/session.json" },
         relationshipAuthorization: { requestId: "request-tick", authorizedContextScopes: ["own_requests"], advertisedToolNames: ["resolve_await"], authorizeTool: vi.fn() },
