@@ -1,3 +1,6 @@
+import { createHash } from "crypto"
+import * as fs from "fs"
+import * as path from "path"
 import type { FriendRecord, FriendStore } from "@ouro.bot/friends"
 import { emitNervesEvent } from "../nerves/runtime"
 import {
@@ -41,6 +44,29 @@ export type DelegatedCommandAdmission =
   | { ok: false; reason: DelegationRefusal }
 
 const NOTICE_EXCERPT_CHARS = 200
+
+/** The relationship profile that names the principal a delegated peer acts for. */
+export const A2A_PRINCIPAL_PROFILE_ID = "sanctuary-owner"
+
+/**
+ * True when the owner was told about delegated command `commandId` in their own chat: admission only runs a command
+ * after that notice is delivered, and the Telegram effect journal keeps the notice under a key derived from the
+ * command id. A request id with no such record never came through a signed, owner-notified delegated command.
+ * A missing record is `false`; an unreadable or malformed one throws, so the caller retries instead of deciding.
+ */
+export function delegatedCommandWasNoticed(agentRoot: string, commandId: string, principalFriendId: string): boolean {
+  const idempotencyKey = `owner-notice:delegated:${commandId}`
+  const file = path.join(agentRoot, "state", "telegram", "effects", `${createHash("sha256").update(idempotencyKey).digest("hex")}.json`)
+  let raw: string
+  try {
+    raw = fs.readFileSync(file, "utf8")
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return false
+    throw error
+  }
+  const artifact = JSON.parse(raw) as { idempotencyKey?: unknown; authorClass?: unknown; target?: { friendId?: unknown } }
+  return artifact.idempotencyKey === idempotencyKey && artifact.authorClass === "butler" && artifact.target?.friendId === principalFriendId
+}
 
 /** Matches the banner only the server may put in front of an admitted command. */
 export const DELEGATED_BANNER = /^\s*\[\s*delegated command/iu

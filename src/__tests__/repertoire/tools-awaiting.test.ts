@@ -615,6 +615,24 @@ describe("tools-awaiting", () => {
       expect(readDoneFile(agentRoot, "stale")).toContain("cancel_reason: request obligation is no longer active")
     })
 
+    it("ends an await visibly when its obligation binding no longer matches", async () => {
+      const ctx = {
+        currentSession: { friendId: "sibling", channel: "telegram", key: "telegram:777:888", sessionPath: "/tmp/session.json" },
+        relationshipAuthorization: { requestId: "request-moved", authorizedContextScopes: ["own_requests"], advertisedToolNames: ["resolve_await"], authorizeTool: vi.fn() },
+      }
+      await fileAwaitDef.handler({ name: "moved", condition: "ready", cadence: "5m" }, ctx as any)
+      const [obligation] = readVerifiedPendingObligations(agentRoot)
+      advanceObligation(agentRoot, obligation!.id, { currentArtifact: "awaiting/other.md" })
+
+      const result = parse(await resolveAwaitDef.handler({ name: "moved", verdict: "yes", observation: "ready" }, ctx as any) as string)
+
+      expect(result.error).toMatch(/binding no longer matches/u)
+      expect(readDoneFile(agentRoot, "moved")).toContain("status: canceled")
+      expect(mockEmitNervesEvent).toHaveBeenCalledWith(expect.objectContaining({ event: "senses.relationship_await_failed", level: "error" }))
+      const pendingDir = (await import("../../mind/pending")).getPrivateRuntimePendingDir("slugger")
+      expect(fs.readdirSync(pendingDir).map((file) => JSON.parse(fs.readFileSync(path.join(pendingDir, file), "utf8")).content).join("\n")).toContain('my await "moved" was canceled')
+    })
+
     it("preserves an await when its exact obligation record exists but cannot be verified", async () => {
       const ctx = {
         currentSession: { friendId: "sibling", channel: "telegram", key: "telegram:777:888", sessionPath: "/tmp/session.json" },

@@ -1,3 +1,4 @@
+import { createHash } from "crypto"
 import { beforeEach, describe, expect, it, vi } from "vitest"
 import * as fs from "fs"
 import * as os from "os"
@@ -2523,17 +2524,23 @@ describe("private runtime", () => {
     const base = { externalIds: [], tenantMemberships: [], toolPreferences: {}, notes: {}, totalTokens: 0, createdAt: "2026-08-29T00:00:00.000Z", updatedAt: "2026-08-29T00:00:00.000Z", schemaVersion: 1 as const }
     const a2aTools = ["await_condition", "resolve_await", "shell", "send_message"].map((name) => ({ type: "function", function: { name, description: name, parameters: {} } }))
 
-    async function setup(options: { peer?: Record<string, unknown>; owner?: boolean | "second"; provenance?: string; obligation?: boolean } = {}) {
+    async function setup(options: { peer?: Record<string, unknown>; owner?: boolean | "second"; provenance?: string; obligation?: boolean; notice?: boolean | "other-friend" | "unreadable" } = {}) {
       fs.writeFileSync(path.join(agentRoot, "tool-profiles.json"), JSON.stringify(profiles))
       const store = new FileFriendStore(path.join(agentRoot, "friends"))
       if (options.owner !== false) await store.put("owner", { id: "owner", name: "Ari", trustLevel: "family", admissionState: "active", initiativePolicy: "proactive", capabilityProfileId: "sanctuary-owner", ...base })
       if (options.owner === "second") await store.put("owner-2", { id: "owner-2", name: "Ari 2", trustLevel: "family", admissionState: "active", initiativePolicy: "proactive", capabilityProfileId: "sanctuary-owner", ...base })
       await store.put("peer", { id: "peer", name: "Claude Code", trustLevel: "family", admissionState: "active", initiativePolicy: "reactive_only", capabilityProfileId: "sanctuary-agent-peer", delegationGrant: grant, ...base, ...options.peer } as any)
       fs.mkdirSync(path.join(agentRoot, "awaiting"), { recursive: true })
-      const obligation = createObligation(agentRoot, { origin: { friendId: "peer", channel: "a2a", key: "conv-1" }, owedTo: { friendId: "peer", channel: "a2a", key: "conv-1" }, requestId: "req-1", content: "watch release" })
-      advanceObligation(agentRoot, obligation.id, { currentSurface: { kind: "session", label: "a2a/conv-1" }, currentArtifact: "awaiting/release.md", nextAction: "watch release" })
+      const obligation = options.obligation === false ? null : createObligation(agentRoot, { origin: { friendId: "peer", channel: "a2a", key: "conv-1" }, owedTo: { friendId: "peer", channel: "a2a", key: "conv-1" }, requestId: "req-1", content: "watch release" })
+      if (obligation) advanceObligation(agentRoot, obligation.id, { currentSurface: { kind: "session", label: "a2a/conv-1" }, currentArtifact: "awaiting/release.md", nextAction: "watch release" })
+      if (options.notice !== false) {
+        const key = "owner-notice:delegated:req-1"
+        const effects = path.join(agentRoot, "state", "telegram", "effects")
+        fs.mkdirSync(effects, { recursive: true })
+        fs.writeFileSync(path.join(effects, `${createHash("sha256").update(key).digest("hex")}.json`), options.notice === "unreadable" ? "{not-json" : JSON.stringify({ idempotencyKey: key, authorClass: "butler", target: { friendId: options.notice === "other-friend" ? "someone-else" : "owner" } }))
+      }
       const provenance = options.provenance ?? "filed_from: a2a\nfiled_for_friend_id: peer\nfiled_from_key: conv-1\nrequest_id: req-1\n"
-      fs.writeFileSync(path.join(agentRoot, "awaiting", "release.md"), `---\ncondition: release landed\ncadence: 30m\nalert: a2a\nstatus: pending\n${provenance}obligation_id: ${obligation.id}\n---\n`, "utf8")
+      fs.writeFileSync(path.join(agentRoot, "awaiting", "release.md"), `---\ncondition: release landed\ncadence: 30m\nalert: a2a\nstatus: pending\n${provenance}${obligation ? `obligation_id: ${obligation.id}\n` : ""}---\n`, "utf8")
       mockGetToolsForChannel.mockReturnValue(a2aTools)
       return store
     }
@@ -2559,8 +2566,10 @@ describe("private runtime", () => {
       ["an agent with no resolvable owner", {}, false, /delegating owner cannot be resolved/u],
       ["an agent with two owners", {}, "second", /delegating owner cannot be resolved/u],
       ["a peer that is itself the owner profile", { capabilityProfileId: "sanctuary-owner" }, false, /delegating owner cannot be resolved/u],
-    ])("ends the await visibly for %s", async (_label, peer, owner, reason) => {
-      await setup({ peer: peer as Record<string, unknown>, owner: owner as boolean | "second" })
+      ["an ordinary peer chat that was never a delegated command", {}, true, /was not a delegated command the owner was notified of/u, false],
+      ["a delegated command noticed to a different friend", {}, true, /was not a delegated command the owner was notified of/u, "other-friend"],
+    ])("ends the await visibly for %s", async (_label, peer, owner, reason, notice = true) => {
+      await setup({ peer: peer as Record<string, unknown>, owner: owner as boolean | "second", notice: notice as boolean | "other-friend" })
       await expect(run()).rejects.toThrow(/relationship await authority/iu)
       expect(mockHandleInboundTurn).not.toHaveBeenCalled()
       const archived = fs.readFileSync(path.join(agentRoot, "awaiting", ".done", "release.md"), "utf8")
@@ -2585,10 +2594,51 @@ describe("private runtime", () => {
       expect(mockQueuePendingMessageOnce).toHaveBeenCalledTimes(1)
     })
 
+    it("keeps the await pending, and retries, when the friends directory or the notice record cannot be read", async () => {
+      await setup({ notice: "unreadable" })
+      await expect(run()).rejects.toThrow()
+      expect(fs.existsSync(path.join(agentRoot, "awaiting", "release.md"))).toBe(true)
+      expect(mockQueuePendingMessageOnce).not.toHaveBeenCalled()
+    })
+
+    it("keeps the await pending when an owner record is unreadable", async () => {
+      await setup()
+      fs.writeFileSync(path.join(agentRoot, "friends", "owner.json"), "{not-json", "utf8")
+      await expect(run()).rejects.toThrow(/could not be read completely/u)
+      expect(fs.existsSync(path.join(agentRoot, "awaiting", "release.md"))).toBe(true)
+      expect(mockQueuePendingMessageOnce).not.toHaveBeenCalled()
+    })
+
+    it("keeps the await pending when the friends directory cannot be listed", async () => {
+      await setup()
+      const friends = path.join(agentRoot, "friends")
+      const original = fs.readdirSync
+      const spy = vi.spyOn(fs, "readdirSync").mockImplementation(((target: any, ...rest: any[]) => {
+        if (String(target) === friends && rest.length === 0) throw Object.assign(new Error("EIO"), { code: "EIO" })
+        return (original as any)(target, ...rest)
+      }) as any)
+      try {
+        await expect(run()).rejects.toThrow()
+      } finally {
+        spy.mockRestore()
+      }
+      expect(fs.existsSync(path.join(agentRoot, "awaiting", "release.md"))).toBe(true)
+      expect(mockQueuePendingMessageOnce).not.toHaveBeenCalled()
+    })
+
+    it("ends an A2A await that has no obligation, visibly", async () => {
+      await setup({ obligation: false })
+      await expect(run()).rejects.toThrow(/binding is missing, stale, or ambiguous/u)
+      expect(mockHandleInboundTurn).not.toHaveBeenCalled()
+      expect(fs.readFileSync(path.join(agentRoot, "awaiting", ".done", "release.md"), "utf8")).toContain("status: canceled")
+      expect(mockQueuePendingMessageOnce).toHaveBeenCalledWith("/tmp/fake-pending-dir", expect.objectContaining({ packetId: "await-failed:release" }))
+    })
+
     it("fails when the A2A await has no live obligation binding", async () => {
       await setup({ provenance: "filed_from: a2a\nfiled_for_friend_id: peer\nfiled_from_key: conv-other\nrequest_id: req-1\n" })
       await expect(run()).rejects.toThrow(/binding is missing, stale, or ambiguous/u)
       expect(mockHandleInboundTurn).not.toHaveBeenCalled()
+      expect(mockQueuePendingMessageOnce).toHaveBeenCalledTimes(1)
     })
   })
 

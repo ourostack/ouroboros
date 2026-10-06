@@ -8,14 +8,14 @@ import { loadSession, postTurnTrim, deferPostTurnPersist, type UsageData } from 
 import { buildSystem, flattenSystemPrompt } from "../mind/prompt"
 import { getSharedMcpManager } from "../repertoire/mcp-manager"
 import { getToolsForChannel } from "../repertoire/tools"
-import { cancelStaleAwait, hasActiveExternalEventAwait, inspectRelationshipFollowUp } from "../repertoire/tools-awaiting"
+import { cancelStaleAwait, failBrokenAwait, hasActiveExternalEventAwait, inspectRelationshipFollowUp, isBrokenBindingReason } from "../repertoire/tools-awaiting"
+import { A2A_PRINCIPAL_PROFILE_ID, delegatedCommandWasNoticed } from "../a2a/delegated-command"
 import { renderRelationshipPreferences } from "../repertoire/relationship-authorization"
 import { appendRunLedgerRecordNonFatal, createRunLedgerRecord, usageMetadataFromUsageData } from "../heart/run-ledger"
 import { findNonCanonicalBundlePaths } from "../mind/bundle-manifest"
 import {
   drainPending,
   getPrivateRuntimePendingDir,
-  queuePendingMessageOnce,
   getDeferredReturnDir,
   getPendingDir,
   PRIVATE_RUNTIME_PENDING,
@@ -143,39 +143,12 @@ type RelationshipAwaitCoordinates = { friendId: string; channel: string; key: st
 /** The await file's provenance can never be satisfied; waking it again cannot help. */
 class InvalidRelationshipAwaitProvenanceError extends Error {}
 
-/** Profile that names the owner a delegated A2A peer acts for (see src/senses/a2a-entry.ts). */
-const A2A_PRINCIPAL_PROFILE_ID = "sanctuary-owner"
 const RELATIONSHIP_AWAIT_CHANNELS = new Set(["telegram", "a2a"])
 
 class StaleRelationshipAwaitError extends Error {
   constructor(readonly reason: string) {
     super(`Relationship await authority ${reason}`)
   }
-}
-
-/**
- * An await whose provenance or authority can never hold is ended, not retried: it is archived as canceled with the
- * reason, logged as an error, and the private runtime is told that the follow-up it promised will not happen. Without
- * this the await stayed pending and every scheduled wake failed again, silently, for days.
- */
-function failBrokenAwait(agentRoot: string, agentName: string, awaitName: string, reason: string): void {
-  cancelStaleAwait(agentRoot, agentName, awaitName, reason)
-  emitNervesEvent({
-    level: "error",
-    component: "senses",
-    event: "senses.relationship_await_failed",
-    message: "relationship await could not run and was canceled",
-    meta: { agentName, awaitName, reason },
-  })
-  queuePendingMessageOnce(getPrivateRuntimePendingDir(agentName), {
-    from: agentName,
-    friendId: "self",
-    channel: "inner",
-    key: "dialog",
-    content: `my await "${awaitName}" was canceled because it could not run (${reason}). the follow-up it promised did not happen; i should tell my owner and decide whether to file it again.`,
-    timestamp: Date.now(),
-    packetId: `await-failed:${awaitName}`,
-  })
 }
 
 function exactFriendFileIsMissing(agentRoot: string, friendId: string): boolean {
@@ -215,12 +188,18 @@ function relationshipAwaitCoordinates(awaitFile: AwaitFile): RelationshipAwaitCo
  * Only a peer still holding the operator-set principal-command grant keeps follow-up authority, and that authority
  * is the delegating owner's, resolved exactly as the delegated command resolved it. Revoking the grant ends it.
  */
-async function resolveA2APrincipal(store: FileFriendStore, peer: FriendRecord): Promise<FriendRecord> {
+async function resolveA2APrincipal(agentRoot: string, store: FileFriendStore, peer: FriendRecord, requestId: string): Promise<FriendRecord> {
   if (peer.delegationGrant?.scope !== "principal_commands" || peer.trustLevel !== "family") throw new StaleRelationshipAwaitError("A2A peer no longer holds a delegation grant")
-  const owners = (await store.listAll()).filter((candidate) => candidate.capabilityProfileId === A2A_PRINCIPAL_PROFILE_ID
+  // listAll() swallows an unreadable directory or record as "no friend": only a verified complete read may end an await.
+  const entries = fs.readdirSync(path.join(agentRoot, "friends")).filter((entry) => entry.endsWith(".json"))
+  const friends = await store.listAll()
+  if (friends.length !== entries.length) throw new Error("Relationship await authority friends could not be read completely")
+  const owners = friends.filter((candidate) => candidate.capabilityProfileId === A2A_PRINCIPAL_PROFILE_ID
     && candidate.trustLevel === "family" && candidate.admissionState === "active")
   if (owners.length !== 1 || owners[0]!.id === peer.id) throw new StaleRelationshipAwaitError("delegating owner cannot be resolved")
-  return owners[0]!
+  const owner = owners[0]!
+  if (!delegatedCommandWasNoticed(agentRoot, requestId, owner.id)) throw new StaleRelationshipAwaitError("request was not a delegated command the owner was notified of")
+  return owner
 }
 
 async function resolveRelationshipAwaitAuthority(agentRoot: string, store: FileFriendStore, registry: ReturnType<typeof loadRelationshipCapabilityRegistry>, coordinates: RelationshipAwaitCoordinates) {
@@ -235,7 +214,7 @@ async function resolveRelationshipAwaitAuthority(agentRoot: string, store: FileF
   if (coordinates.channel === "external-event" && (friend.capabilityProfileId !== "sanctuary-owner" || !registry.profiles["sanctuary-event"])) {
     throw new StaleRelationshipAwaitError("admission or profile is not active")
   }
-  const subjectFriend = coordinates.channel === "a2a" ? await resolveA2APrincipal(store, friend) : friend
+  const subjectFriend = coordinates.channel === "a2a" ? await resolveA2APrincipal(agentRoot, store, friend, coordinates.requestId!) : friend
   const authorization = coordinates.channel === "external-event"
     ? createRelationshipAuthorizationEvaluator({ friend, registry, profileId: "sanctuary-event", requestPhase: "follow_up" })
     : coordinates.channel === "a2a"
@@ -1344,7 +1323,8 @@ export async function runPrivateRuntimeTurn(options?: RunPrivateRuntimeTurnOptio
               now: now().getTime(),
             })
           if (!binding.active) {
-            cancelStaleAwait(agentRoot, agentName, parsedAwait!.name, binding.reason)
+            if (isBrokenBindingReason(binding.reason)) failBrokenAwait(agentRoot, agentName, parsedAwait!.name, binding.reason)
+            else cancelStaleAwait(agentRoot, agentName, parsedAwait!.name, binding.reason)
             throw new Error(`Relationship await authority binding is missing, stale, or ambiguous: ${binding.reason}`)
           }
         }
