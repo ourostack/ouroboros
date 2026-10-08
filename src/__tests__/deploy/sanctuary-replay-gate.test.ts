@@ -66,7 +66,33 @@ describe("readback helpers", () => {
       { idempotencyKey: "owner-notice:a", createdAt: at(500) }, { idempotencyKey: "owner-notice:b", createdAt: at(5000) },
       { idempotencyKey: "reply:c", createdAt: at(500) }, { idempotencyKey: "owner-notice:d", createdAt: "garbage" }, {},
     ]
-    expect(gate.telegramLeaks(effects, 0, 1000).map((e: { idempotencyKey: string }) => e.idempotencyKey)).toEqual(["owner-notice:a"])
+    expect(gate.ownerNoticeEffects(effects, 0, 1000).map((e: { idempotencyKey: string }) => e.idempotencyKey)).toEqual(["owner-notice:a"])
+  })
+
+  describe("no-telegram attribution", () => {
+    const created = "2026-10-08T03:03:00.876Z"
+    const ctx = { replayFriends: ["p", "s"], awaits: [{ name: "replay-wait.md", createdAt: created, filedFor: "p" }, { name: "chef_show_s2_landed.md", createdAt: created, filedFor: "real-friend" }] }
+    const classify = (key: string) => gate.classifyOwnerNotices([{ idempotencyKey: key, createdAt: new Date(500).toISOString() }], 0, 1000, ctx)
+    it("fails a replay-delegated owner notice", () => { expect(classify("owner-notice:delegated:cmd-1").leaks).toHaveLength(1) })
+    it("fails an await notice for an await a replay friend filed", () => { expect(classify(`owner-notice:await:replay-wait:asked_owner:${created}`).leaks).toHaveLength(1) })
+    it("passes the real owner await notice and reports it as info", () => {
+      const result = classify(`owner-notice:await:chef_show_s2_landed:asked_owner:${created}`)
+      expect(result.leaks).toEqual([])
+      expect(result.info).toHaveLength(1)
+    })
+    it("fails closed on an unknown owner-notice key and on an await it cannot find", () => {
+      expect(classify("owner-notice:mystery").leaks).toHaveLength(1)
+      expect(classify(`owner-notice:await:nowhere:asked_owner:${created}`).leaks).toHaveLength(1)
+    })
+    it("reports the info detail and passes the suite", async () => {
+      const clock = { t: 10_000 }
+      const key = `owner-notice:await:chef_show_s2_landed:asked_owner:${created}`
+      const obs = empty({ effects: [{ idempotencyKey: key, createdAt: new Date(10_000).toISOString() }], awaiting: [{ name: "chef_show_s2_landed.md", createdAt: created, filedFor: "real-friend" }] })
+      const { host } = fakeHost({ observations: [empty(), obs], clock })
+      const suite = await gate.runSuite(host, { cases: ["stall-kept"] })
+      expect(suite.results.at(-1)).toMatchObject({ id: "no-telegram", status: "pass" })
+      expect(suite.results.at(-1).checks[0].detail).toContain("info:")
+    })
   })
 
   it("finds awaits that appeared during a case, pending or archived", () => {
@@ -417,7 +443,7 @@ describe("provision and the real host", () => {
 
     fs.writeFileSync(path.join(bundle, "state/policy/steward.json"), "{}")
     fs.writeFileSync(path.join(bundle, "books/ledger.ndjson"), "a\nb\n")
-    fs.writeFileSync(path.join(bundle, "awaiting/live.md"), "---\nstatus: pending\ncreated_at: 2026-10-08T11:50:59.264Z\n---\n")
+    fs.writeFileSync(path.join(bundle, "awaiting/live.md"), "---\nstatus: pending\ncreated_at: 2026-10-08T11:50:59.264Z\nfiled_for_friend_id: friend-9\n---\n")
     fs.writeFileSync(path.join(bundle, "awaiting/.done/gone.md"), "---\nstatus: resolved\ncreated_at: 2026-10-08T05:00:00.000Z\ncancel_reason: gave up\n---\n")
     fs.writeFileSync(path.join(bundle, "awaiting/.done/nostatus.md"), "no frontmatter")
     fs.writeFileSync(path.join(bundle, "state/telegram/effects/a.json"), JSON.stringify({ idempotencyKey: "owner-notice:x", createdAt: "2026-10-08T00:00:00.000Z" }))
@@ -426,7 +452,7 @@ describe("provision and the real host", () => {
     fs.writeFileSync(path.join(bundle, "state/sessions/dir1/a2a/ctx-1.json"), JSON.stringify({ events: [] }))
     const observed = await host.observe()
     expect(observed).toMatchObject({ ledgerLines: 2, queue: null, awaiting: [{ name: "live.md", status: "pending" }], done: [{ name: "gone.md", status: "resolved" }, { name: "nostatus.md", status: "pending" }], effects: [{ idempotencyKey: "owner-notice:x" }] })
-    expect(observed.awaiting[0]).toMatchObject({ name: "live.md", createdAt: "2026-10-08T11:50:59.264Z" })
+    expect(observed.awaiting[0]).toMatchObject({ name: "live.md", createdAt: "2026-10-08T11:50:59.264Z", filedFor: "friend-9" })
     expect(observed.done.find((e: { name: string }) => e.name === "gone.md")).toMatchObject({ createdAt: "2026-10-08T05:00:00.000Z", reason: "gave up" })
     expect(observed.effectsReadable).toBe(true)
     expect(observed.containers).toEqual({ "ouro-butler": true, "calibre-web": true })

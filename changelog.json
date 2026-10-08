@@ -2,6 +2,12 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.871",
+      "changes": [
+        "Restating an already-recorded steward desired state is now a no-op (no version bump, audit row or source rewrite) and the tool says unchanged; the replay gate's no-telegram check fails only on owner notices attributable to the replay run."
+      ]
+    },
+    {
       "version": "0.1.0-alpha.870",
       "changes": [
         "Await ticks now say whether my owner was asked about this await (read from the runtime ask ledger for this await instance, never from model text) and that awaiting a decision is not true when they never were, and the ask_owner guidance counts a stall marked owner_decision_needed; media_queue marks confirmed stalls (no_peers, never_started, unfinished_for_days) with owner_decision_needed, likely_fix ask_owner and the keep_waiting, find_another_release, give_up choices shared with the diagnosis."

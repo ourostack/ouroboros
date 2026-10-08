@@ -104,6 +104,7 @@ export const stewardPolicyToolDefinition: ToolDefinition = {
         || ctx.currentSession?.key !== sessionKey || !sessionMatches() || ctx.currentExternalEvent) {
         throw new Error("steward policy owner authorization or session changed before mutation")
       }
+      const versionBefore = readStewardPolicy(agentRoot).version
       const result = updateStewardPolicy(agentRoot, {
         expectedVersion: expectedVersion ?? readStewardPolicy(agentRoot).version,
         actor: {
@@ -114,6 +115,11 @@ export const stewardPolicyToolDefinition: ToolDefinition = {
         mutation,
       })
       emitNervesEvent({ component: "repertoire", event: "repertoire.steward_policy_tool_call", message: "updated steward policy", meta: { action: args.action } })
+      if (mutation.kind === "set_desired_state" && result.version === versionBefore) {
+        // A same-value restatement writes nothing; the entry is necessarily present.
+        const existing = result.desiredStates[mutation.key]!
+        return JSON.stringify({ ...result, unchanged: true, note: `already recorded as ${existing.value} (source: ${existing.source})` })
+      }
       return JSON.stringify(result)
     })
   },
