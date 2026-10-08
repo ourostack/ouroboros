@@ -1,0 +1,12 @@
+== upgrade
+  ok   staged package verified
+
+!! upgrade FAILED: lifecycle step "switch" exited 1
+!! rolling back to the predecessor
+  ok   rollback: {"rolledBack":true}
+
+== preservation
+  ok   jellyfin unchanged
+  ok   butler: ghcr.io/ourostack/ouroboros-butler:0.1.0-alpha.868 running/healthy
+
+REFUSING: upgrade rolled back; the Butler is on its prior version (see above)

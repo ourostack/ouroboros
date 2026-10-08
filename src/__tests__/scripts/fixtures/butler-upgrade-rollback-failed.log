@@ -1,0 +1,8 @@
+== upgrade
+  ok   staged package verified
+
+!! upgrade FAILED: lifecycle step "switch" exited 1
+!! rolling back to the predecessor
+
+REFUSING: ROLLBACK FAILED: authority busy
+The journal is kept; the next authority boot (or `upgrade-rollback`) retries it.
