@@ -18,6 +18,8 @@ import {
 import { authorityArtifactDigest, signAuthorityPayload, verifyAuthorityPayload } from "../../../heart/daemon/sanctuary-authority-codec"
 import { FileSanctuaryHostAuthority, type HostProposalRequestV1 } from "../../../heart/daemon/sanctuary-host-authority"
 import { FIXED_ADMISSION_ACKNOWLEDGEMENT } from "../../../senses/telegram-effect-adapter"
+import { createLogger } from "../../../nerves"
+import { setRuntimeLogger } from "../../../nerves/runtime"
 import { TelegramApiError } from "../../../senses/telegram-client"
 import type { TelegramBotApi, TelegramUpdate } from "../../../senses/telegram-client"
 
@@ -891,6 +893,61 @@ describe("Sanctuary Telegram authority service", () => {
     expect(result).toMatchObject({ observation: { payload: { updateId: 10 } }, update: message(10) })
     client.close()
     await server.close()
+  })
+
+  it.each([["answers", false], ["fails", true]])("survives a client that disconnects before the dispatch %s", async (_name, throws) => {
+    const socketPath = path.join(root(), "authority.sock")
+    let release!: () => void
+    const gate = new Promise<void>((resolve) => { release = resolve })
+    const started = vi.fn()
+    const server = createSanctuaryTelegramAuthorityServer({
+      socketPath,
+      dispatch: async (method) => {
+        if (method !== "slow") return true
+        started()
+        await gate
+        if (throws) throw new Error("late failure")
+        return true
+      },
+    })
+    await server.listen()
+    const raw = net.createConnection(socketPath)
+    await new Promise<void>((resolve) => raw.once("connect", () => resolve()))
+    raw.write(`${JSON.stringify({ protocolVersion: 1, id: "1", method: "slow", params: {} })}\n`)
+    await vi.waitFor(() => expect(started).toHaveBeenCalled())
+    // Drop the connection (what a crashed or timed-out client looks like), then let the dispatch finish.
+    raw.destroy()
+    await new Promise((resolve) => setTimeout(resolve, 50))
+    release()
+    await new Promise((resolve) => setTimeout(resolve, 50))
+    // The server is still serving.
+    const client = new SocketSanctuaryTelegramAuthorityClient(socketPath)
+    await expect(client.request("ping", {})).resolves.toBe(true)
+    client.close()
+    await server.close()
+  })
+
+  it("logs a connection error instead of throwing it", async () => {
+    const socketPath = path.join(root(), "authority.sock")
+    const events: string[] = []
+    setRuntimeLogger(createLogger({ sinks: [(event) => { events.push(event.event) }] }))
+    const server = createSanctuaryTelegramAuthorityServer({ socketPath, dispatch: vi.fn(async () => true) })
+    await server.listen()
+    const accepted: net.Socket[] = []
+    const emit = net.Server.prototype.emit
+    const spy = vi.spyOn(net.Server.prototype, "emit").mockImplementation(function (this: net.Server, event: string | symbol, ...args: unknown[]) {
+      if (event === "connection") accepted.push(args[0] as net.Socket)
+      return emit.call(this, event, ...args)
+    } as never)
+    const raw = net.createConnection(socketPath)
+    await vi.waitFor(() => expect(accepted).toHaveLength(1))
+    spy.mockRestore()
+    expect(() => accepted[0].emit("error", Object.assign(new Error("write EPIPE"), { code: "EPIPE" }))).not.toThrow()
+    expect(accepted[0].emit("error", new Error("no code"))).toBe(true)
+    expect(events).toEqual(["daemon.sanctuary_authority_connection_error", "daemon.sanctuary_authority_connection_error"])
+    raw.destroy()
+    await server.close()
+    setRuntimeLogger(null)
   })
 
   it("returns closed errors for invalid protocol frames, dispatch failures, and oversized requests", async () => {
