@@ -1,6 +1,7 @@
 import * as fs from "node:fs"
 import os from "node:os"
 import path from "node:path"
+import { createHash } from "node:crypto"
 import { afterEach, describe, expect, it } from "vitest"
 import { inspectRoutineActionGrant, readStewardPolicy, updateStewardPolicy, type StewardPolicyActor } from "../../heart/steward-policy"
 import { stewardPolicyToolDefinition } from "../../repertoire/tools-steward-policy"
@@ -169,16 +170,23 @@ describe("audited provenance correction", () => {
     await expect(stewardPolicyToolDefinition.handler({ action: "correct_provenance", source: "x", correction: "y" }, toolContext(agentRoot, "real-peer", "task-4").context as any)).rejects.toThrow("key must be nonempty")
   })
 
-  it("rejects an audit row whose correction changes more than the source", () => {
+  it("rejects a self-consistent audit row whose correction changes more than the source", () => {
     const agentRoot = wrongSource()
     updateStewardPolicy(agentRoot, { expectedVersion: 1, actor: { ...ari, sessionEventId: "e2", authorization: { ...ari.authorization!, requestId: "r2" } }, mutation: correct })
     const lines = fs.readFileSync(auditFile(agentRoot), "utf8").trim().split("\n")
-    // Re-forge the correction row so it also flips the value, with self-consistent hashes, and the validator must still refuse it.
+    // Re-forge the correction row so it also flips the value, with every hash, fingerprint and transaction id recomputed, so only the expected-diff check can refuse it.
+    const sha = (text: string) => createHash("sha256").update(text, "utf8").digest("hex")
     const row = JSON.parse(lines[1]!)
     const post = JSON.parse(row.postimage)
-    post.desiredStates["container:calibre-web"].value = "off"
+    const entry = post.desiredStates["container:calibre-web"]
+    entry.value = "off"
     row.postimage = JSON.stringify(post, null, 2)
-    row.affectedKeyResult = post.desiredStates["container:calibre-web"]
+    row.postimageSha256 = sha(row.postimage)
+    row.affectedKeyResult = entry
+    row.affectedKeyResultSha256 = sha(JSON.stringify(entry))
+    const input = Object.fromEntries(Object.entries(entry).filter(([field]) => !["version", "issuer", "authorizedAt", "authorizingSessionEvent"].includes(field)).sort(([l], [r]) => l.localeCompare(r)))
+    row.mutationFingerprint = sha(JSON.stringify([row.mutationKind, row.key, input]))
+    row.transactionId = sha(JSON.stringify([JSON.stringify([row.issuer, row.authorizingSessionEvent, row.authorization.requestId, row.mutationKind, row.key]), row.mutationFingerprint]))
     fs.writeFileSync(auditFile(agentRoot), `${lines[0]}\n${JSON.stringify(row)}\n`)
     expect(() => readStewardPolicy(agentRoot)).toThrow("audit row is invalid")
   })
