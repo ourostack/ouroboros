@@ -120,6 +120,14 @@ describe("steward policy", () => {
     expect(expiring.version).toBe(changed.version + 1)
   })
 
+  it("writes a same-value restatement whose provenance upgrades the authority", () => {
+    const agentRoot = root()
+    const first = updateStewardPolicy(agentRoot, { expectedVersion: 0, actor: ari, mutation: { kind: "set_desired_state", key: "container:calibre", value: "off", provenance: "observed", source: "observed state" } })
+    const upgraded = updateStewardPolicy(agentRoot, { expectedVersion: first.version, actor: { ...ari, sessionEventId: "evt-up", authorization: { ...ari.authorization, requestId: "request-up" } }, mutation: { kind: "set_desired_state", key: "container:calibre", value: "off", provenance: "stated", source: "owner stated it" } })
+    expect(upgraded.version).toBe(first.version + 1)
+    expect(upgraded.desiredStates["container:calibre"]).toMatchObject({ provenance: "stated", source: "owner stated it" })
+  })
+
   it("tool result says unchanged when a restatement matches the recorded value", async () => {
     const agentRoot = root()
     const relationshipAuthorization = { profileId: "sanctuary-owner", requestId: "r1", authorizedContextScopes: [], advertisedToolNames: [], authorizeTool: () => ({ allowed: true as const, receiptId: "auth", profileVersion: 7 }), actor: { friendId: "ari", trustLevel: "family" as const, sessionEventId: "evt-1" } }

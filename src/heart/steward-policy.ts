@@ -435,7 +435,7 @@ export function updateStewardPolicy(agentRoot: string, input: { expectedVersion:
     if (current.version !== input.expectedVersion) throw new Error(`steward policy version changed: expected ${input.expectedVersion}, got ${current.version}`)
     if (input.mutation.kind === "set_desired_state") {
       const existing = current.desiredStates[key]
-      const sameValue = existing !== undefined && existing.value === (affectedKeyResult as DesiredStateEntry).value && existing.expiresAt === expiresAt
+      const sameValue = existing !== undefined && existing.provenance === input.mutation.provenance && existing.value === (affectedKeyResult as DesiredStateEntry).value && existing.expiresAt === expiresAt
       // Restating what is already recorded is a no-op: no version bump, no audit row, no provenance rewrite.
       if (sameValue) return current
     }
