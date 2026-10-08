@@ -54,8 +54,8 @@ function createdAt(name: string): string {
   return /created_at: (\S+)/u.exec(fs.readFileSync(path.join(agentRoot, "awaiting", `${name}.md`), "utf-8"))![1]!
 }
 
-async function putFriend(id: string, name: string, trustLevel: string, capabilityProfileId?: string): Promise<void> {
-  await new FileFriendStore(path.join(agentRoot, "friends")).put(id, { id, name, trustLevel, capabilityProfileId, admissionState: "active", externalIds: [], tenantMemberships: [], toolPreferences: {}, notes: {}, totalTokens: 0, createdAt: "2026-10-01T00:00:00.000Z", updatedAt: "2026-10-01T00:00:00.000Z", schemaVersion: 1 } as any)
+async function putFriend(id: string, name: string, trustLevel: string, capabilityProfileId?: string, admissionState = "active"): Promise<void> {
+  await new FileFriendStore(path.join(agentRoot, "friends")).put(id, { id, name, trustLevel, capabilityProfileId, admissionState, externalIds: [], tenantMemberships: [], toolPreferences: {}, notes: {}, totalTokens: 0, createdAt: "2026-10-01T00:00:00.000Z", updatedAt: "2026-10-01T00:00:00.000Z", schemaVersion: 1 } as any)
 }
 
 const ownerCtx = { currentSession: { friendId: "ari", channel: "telegram", key: "telegram:ari", sessionPath: "" } } as any
@@ -311,31 +311,66 @@ describe("resolve_await ask_owner", () => {
       return parse(await resolveAwaitDef.handler({ name, ...ASK }, ctx))
     }
 
-    it("allows three asks per requester per day, then refuses without sending, and counts other requesters separately", async () => {
-      for (const name of ["a", "b", "c"]) expect((await askOnce(name, ownerCtx)).asked).toBe(true)
-      await fileAwaitDef.handler({ name: "d", condition: "c", cadence: "30m", alert: "telegram" }, ownerCtx)
-      const refused = parse(await resolveAwaitDef.handler({ name: "d", ...ASK }, ownerCtx))
+    it("allows three asks per requester per day, then tells the Butler to resolve no instead, without sending", async () => {
+      for (const name of ["a", "b", "c"]) expect((await askOnce(name, kimCtx)).asked).toBe(true)
+      await fileAwaitDef.handler({ name: "d", condition: "c", cadence: "30m", alert: "telegram" }, kimCtx)
+      const refused = parse(await resolveAwaitDef.handler({ name: "d", ...ASK }, kimCtx))
       expect(refused.error).toMatch(/limit reached.*3 times in the last day/u)
+      expect(refused.error).toMatch(/do not retry ask_owner, resolve with verdict 'no' with an observation/u)
       expect(fs.existsSync(path.join(agentRoot, "awaiting", "d.md"))).toBe(true)
       expect(notifyOwner).toHaveBeenCalledTimes(3)
 
-      expect((await askOnce("e", kimCtx)).asked).toBe(true)
-      expect(notifyOwner).toHaveBeenCalledTimes(4)
+      // The refused await stays pending and the tick can keep polling with 'no'.
+      expect(parse(await resolveAwaitDef.handler({ name: "d", verdict: "no", observation: "still stalled" }, kimCtx))).toEqual({ verdict: "no", recorded: true })
+      expect(notifyOwner).toHaveBeenCalledTimes(3)
+    })
+
+    it("counts asks by a requester that reuses one await name, even though the archive is overwritten", async () => {
+      for (let round = 0; round < 3; round += 1) expect((await askOnce("same", kimCtx)).asked).toBe(true)
+      await fileAwaitDef.handler({ name: "same", condition: "c", cadence: "30m", alert: "telegram" }, kimCtx)
+      expect(parse(await resolveAwaitDef.handler({ name: "same", ...ASK }, kimCtx)).error).toMatch(/limit reached/u)
+      expect(notifyOwner).toHaveBeenCalledTimes(3)
+    })
+
+    it("counts other requesters separately", async () => {
+      for (const name of ["a", "b", "c"]) await askOnce(name, kimCtx)
+      expect((await askOnce("e", requestCtx("peer", "a2a", "conv-1", "req-p"))).asked).toBe(true)
+    })
+
+    it("never limits the owner's own awaits", async () => {
+      for (const name of ["a", "b", "c", "d", "e"]) expect((await askOnce(name, ownerCtx)).asked).toBe(true)
+      expect(notifyOwner).toHaveBeenCalledTimes(5)
+    })
+
+    it("does not treat an inactive owner record as the owner", async () => {
+      await putFriend("old", "Old Ari", "family", "sanctuary-owner", "revoked")
+      const oldCtx = { currentSession: { friendId: "old", channel: "telegram", key: "telegram:old", sessionPath: "" } } as any
+      for (const name of ["a", "b", "c"]) await askOnce(name, oldCtx)
+      await fileAwaitDef.handler({ name: "d", condition: "c", cadence: "30m", alert: "telegram" }, oldCtx)
+      expect(parse(await resolveAwaitDef.handler({ name: "d", ...ASK }, oldCtx)).error).toMatch(/limit reached/u)
+    })
+
+    it("treats an unreadable friend store as an unknown filer instead of failing the ask", async () => {
+      fs.rmSync(path.join(agentRoot, "friends"), { recursive: true, force: true })
+      fs.writeFileSync(path.join(agentRoot, "friends"), "not a directory")
+      const result = await askOnce("a", ownerCtx)
+      expect(result.asked).toBe(true)
+      expect(notifyOwner).toHaveBeenCalledWith(expect.objectContaining({ text: expect.stringContaining("(about the request from a friend)") }))
     })
 
     it("stops counting asks older than a day", async () => {
       vi.useFakeTimers()
       vi.setSystemTime(new Date("2026-10-08T00:00:00.000Z"))
-      for (const name of ["a", "b", "c"]) await askOnce(name, ownerCtx)
+      for (const name of ["a", "b", "c"]) await askOnce(name, kimCtx)
       vi.setSystemTime(new Date("2026-10-09T00:00:01.000Z"))
-      expect((await askOnce("d", ownerCtx)).asked).toBe(true)
+      expect((await askOnce("d", kimCtx)).asked).toBe(true)
     })
 
-    it("does not count other closures or unreadable files", async () => {
-      await fileAwaitDef.handler({ name: "x", condition: "c", cadence: "30m", alert: "telegram" }, ownerCtx)
-      await resolveAwaitDef.handler({ name: "x", verdict: "yes", observation: "o" }, ownerCtx)
-      fs.writeFileSync(path.join(agentRoot, "awaiting", ".done", "junk.md"), "not an await")
-      expect((await askOnce("y", ownerCtx)).asked).toBe(true)
+    it("ignores unreadable ledger lines and other closures", async () => {
+      await fileAwaitDef.handler({ name: "x", condition: "c", cadence: "30m", alert: "telegram" }, kimCtx)
+      await resolveAwaitDef.handler({ name: "x", verdict: "yes", observation: "o" }, kimCtx)
+      fs.appendFileSync(path.join(agentRoot, "awaiting", ".asks.jsonl"), "not json\n{\"filer\":\"kim\"}\n")
+      expect((await askOnce("y", kimCtx)).asked).toBe(true)
     })
   })
 

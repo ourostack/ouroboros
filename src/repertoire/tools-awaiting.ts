@@ -168,17 +168,30 @@ function failedAskOwner(agentName: string, name: string, error: unknown): string
 const ASK_OWNER_DAILY_LIMIT = 3
 const ASK_OWNER_WINDOW_MS = 24 * 60 * 60 * 1000
 
+function askLedgerPath(agentRoot: string): string {
+  return path.join(awaitingDir(agentRoot), ".asks.jsonl")
+}
+
+/** Every ask_owner closure is appended here, because the archive is overwritten when an await name is reused. */
+function recordAsk(agentRoot: string, entry: { filer: string | null; name: string; at: string }): void {
+  fs.mkdirSync(awaitingDir(agentRoot), { recursive: true })
+  fs.appendFileSync(askLedgerPath(agentRoot), `${JSON.stringify(entry)}\n`, "utf-8")
+}
+
 function recentAskCount(agentRoot: string, filer: string | null, now: number): number {
-  let entries: string[]
+  let raw: string
   try {
-    entries = fs.readdirSync(awaitingDoneDir(agentRoot))
+    raw = fs.readFileSync(askLedgerPath(agentRoot), "utf-8")
   } catch {
     return 0
   }
-  return entries.filter((entry) => {
-    const file = readAwaitDoneDefinition(agentRoot, path.basename(entry, ".md"))
-    const askedAt = file?.asked_at ? Date.parse(file.asked_at) : Number.NaN
-    return file?.status === "asked_owner" && (file.filed_for_friend_id ?? null) === filer && now - askedAt < ASK_OWNER_WINDOW_MS
+  return raw.split("\n").filter((line) => {
+    try {
+      const entry = JSON.parse(line) as { filer?: unknown; at?: unknown }
+      return (entry.filer ?? null) === filer && typeof entry.at === "string" && now - Date.parse(entry.at) < ASK_OWNER_WINDOW_MS
+    } catch {
+      return false
+    }
   }).length
 }
 
@@ -186,9 +199,14 @@ const askOwnerInFlight = new Set<string>()
 
 type Filer = { isOwner: boolean; name: string | null }
 
+/** A friend store that cannot be read makes the filer unknown, which is never the owner; it must not fail the ask. */
 async function lookupFiler(agentRoot: string, friendId: string | null): Promise<Filer> {
-  const friend = friendId ? await new FileFriendStore(path.join(agentRoot, "friends")).get(friendId) : null
-  return { isOwner: Boolean(friend && friend.trustLevel === "family" && friend.capabilityProfileId === "sanctuary-owner"), name: friend?.name ?? null }
+  try {
+    const friend = friendId ? await new FileFriendStore(path.join(agentRoot, "friends")).get(friendId) : null
+    return { isOwner: Boolean(friend && friend.admissionState === "active" && friend.trustLevel === "family" && friend.capabilityProfileId === "sanctuary-owner"), name: friend?.name ?? null }
+  } catch {
+    return { isOwner: false, name: null }
+  }
 }
 
 function delivered(alert: AwaitAlertResult | null): boolean {
@@ -212,10 +230,10 @@ async function askOwnerTool(name: string, observation: string, question: unknown
   askOwnerInFlight.add(inFlightKey)
   try {
     const filerId = existing.filed_for_friend_id ?? null
-    if (recentAskCount(agentRoot, filerId, Date.now()) >= ASK_OWNER_DAILY_LIMIT) {
-      return JSON.stringify({ error: `ask_owner limit reached: this requester has already had my owner asked ${ASK_OWNER_DAILY_LIMIT} times in the last day; use verdict 'no' with an observation and keep polling` })
-    }
     const filer = await lookupFiler(agentRoot, filerId)
+    if (!filer.isOwner && recentAskCount(agentRoot, filerId, Date.now()) >= ASK_OWNER_DAILY_LIMIT) {
+      return JSON.stringify({ error: `ask_owner limit reached: this requester has already had my owner asked ${ASK_OWNER_DAILY_LIMIT} times in the last day; do not retry ask_owner, resolve with verdict 'no' with an observation and keep polling` })
+    }
     const isA2A = existing.filed_from === "a2a"
     const noticeId = `await:${name}:asked_owner:${String(existing.created_at)}`
     const question = formatOwnerQuestion(parsed.question, parsed.choices)
@@ -249,15 +267,17 @@ async function askOwnerTool(name: string, observation: string, question: unknown
       }
     }
 
+    const askedAt = new Date().toISOString()
     const archive = archiveAwait(agentRoot, name, {
       status: "asked_owner",
-      asked_at: new Date().toISOString(),
+      asked_at: askedAt,
       ask_question: parsed.question,
       ask_choices: parsed.choices.join(" | "),
       resolution_observation: observation.trim(),
     })
     /* v8 ignore next -- defensive: archiveAwait only fails on the file-disappears-mid-call race already covered by v8 ignore inside archiveAwait @preserve */
     if (!archive.ok) return JSON.stringify({ error: archive.error })
+    recordAsk(agentRoot, { filer: filerId, name, at: askedAt })
     if (!tellsFriend || delivered(friendNotice)) fulfillAwaitObligation(agentRoot, archive.file)
 
     emitNervesEvent({
