@@ -1295,7 +1295,7 @@ export async function runPrivateRuntimeTurn(options?: RunPrivateRuntimeTurnOptio
           lastCheckedAt,
           lastObservation,
           checkedCount,
-          // No checkpoint: every await shares one inner session, so its last assistant text is whatever the previous
+          // No checkpoint: every await shares one private-runtime session, so its last assistant text is whatever the previous
           // (possibly different) await's tick said. An await's own state is its last observation and checked count.
           checkpoint: undefined,
           now,
