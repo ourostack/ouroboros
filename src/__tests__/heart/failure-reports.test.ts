@@ -324,6 +324,17 @@ describe("repeats", () => {
     expect(listFailureReports(agentRoot)[0]).toMatchObject({ occurrences: 4 })
   })
 
+  it("marks a repeat from a peer's session as untrusted and says who repeated it", async () => {
+    const { agentRoot, store, outbox } = await setup()
+    await fileFailureReport(agentRoot, store, input({ error: "peer 1" }), T0)
+    await fileFailureReport(agentRoot, store, input({ error: "peer 2", origin: { friendId: "peer-a", channel: "a2a", key: "k" } }), T0 + 1)
+    const repeat = outbox.list("claude").entries[1]!
+    expect(repeat.body).toContain("UNTRUSTED ORIGIN")
+    expect(repeat.meta).toMatchObject({ origin: { friendId: "peer-a", ownerOrigin: false } })
+    await fileFailureReport(agentRoot, store, input({ error: "peer 3" }), T0 + 25 * 60 * 60_000)
+    expect(outbox.list("claude").entries[2]!.body).not.toContain("UNTRUSTED")
+  })
+
   it("says it gave up when no tool failed", async () => {
     const { agentRoot, store, outbox } = await setup()
     await fileFailureReport(agentRoot, store, input({ failedTool: undefined, error: "no way 1" }), T0)

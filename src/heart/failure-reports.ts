@@ -202,7 +202,7 @@ export async function fileFailureReport(agentRoot: string, store: FriendStore, i
     // A replay conversation never folds: each gate run must leave a fresh report to read back.
     const open = replay ? undefined : existing.find((record) => !record.replay && record.fingerprint === fingerprint && record.status !== "closed")
     if (open) {
-      const folded = await foldRepeat(agentRoot, open.id, { error, failedTool }, now)
+      const folded = await foldRepeat(agentRoot, open.id, { error, failedTool, origin }, now)
       if (folded) return folded
     }
 
@@ -240,7 +240,7 @@ export async function fileFailureReport(agentRoot: string, store: FriendStore, i
 }
 
 /** Counts a repeat on the open report (re-read under the report's own lock) and tells the recipients, at most once a day per report. */
-async function foldRepeat(agentRoot: string, id: string, repeat: { error: string; failedTool: string | null }, now: number): Promise<FileReportResult | null> {
+async function foldRepeat(agentRoot: string, id: string, repeat: { error: string; failedTool: string | null; origin: ReportOrigin }, now: number): Promise<FileReportResult | null> {
   return withFileLock(lockDir(agentRoot), `report-${id}`, () => {
     const fresh = readFailureReport(agentRoot, id)
     if (!fresh || fresh.status === "closed") return null
@@ -251,8 +251,8 @@ async function foldRepeat(agentRoot: string, id: string, repeat: { error: string
       for (const recipient of fresh.recipients) {
         outbox.append(recipient, {
           kind: "report_repeat",
-          body: `Failure report ${fresh.shortId} happened again (${occurrences} times so far). ${repeat.failedTool ? `${repeat.failedTool} failed` : "I gave up"}: ${repeat.error}`,
-          meta: { reportId: fresh.id, shortId: fresh.shortId, occurrences, status: fresh.status },
+          body: `Failure report ${fresh.shortId} happened again (${occurrences} times so far)${repeat.origin.ownerOrigin ? "" : " - UNTRUSTED ORIGIN: not the owner's session"}. ${repeat.failedTool ? `${repeat.failedTool} failed` : "I gave up"}: ${repeat.error}`,
+          meta: { reportId: fresh.id, shortId: fresh.shortId, occurrences, status: fresh.status, origin: { friendId: repeat.origin.friendId, friendName: repeat.origin.friendName, trustLevel: repeat.origin.trustLevel, ownerOrigin: repeat.origin.ownerOrigin } },
         }, now)
       }
     }
