@@ -42,7 +42,7 @@
 
 import { execFileSync, spawnSync } from "node:child_process"
 import { createHash } from "node:crypto"
-import { mkdtempSync, rmSync, writeFileSync, readFileSync, existsSync, statSync, chmodSync, realpathSync } from "node:fs"
+import { mkdtempSync, rmSync, writeFileSync, readFileSync, existsSync, statSync, lstatSync, chmodSync, realpathSync } from "node:fs"
 import { fileURLToPath } from "node:url"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
@@ -416,6 +416,17 @@ function recreateResident(version) {
 // and the rest of the package-managed files). Without this, the target runtime reads an
 // unmigrated predecessor bundle and its context-loss sentinel goes critical, crash-looping the
 // resident telegram sense. Run while the resident is stopped (between recreate and activate).
+// The recursive chown above also hands state/replay to the resident, but the replay gate's trust rests on that
+// directory being root-owned and read-only to it. Put it back (the resident is stopped) and drop any window file.
+function restoreReplayRoot() {
+  const dir = `${BUNDLE}/state/replay`
+  let stat
+  try { stat = lstatSync(dir) } catch { return }
+  if (!stat.isDirectory()) return
+  rmSync(`${dir}/window.json`, { force: true })
+  sh("/bin/chown", ["-h", "0:0", dir])
+  chmodSync(dir, 0o755)
+}
 function migrateBundle(version, rollbackImage) {
   say(`migrate agent bundle to ${version}`)
   const pkgBundle = `${ROOT}/incoming-package/deploy/unraid/sanctuary.ouro`
@@ -427,6 +438,7 @@ function migrateBundle(version, rollbackImage) {
   sh("/usr/local/bin/node", [migrate, "--package-root", pkgBundle, "--agent-root", BUNDLE, "--operation", "commit"])
   // migrate/commit ran as root; the resident owns its bundle as uid 10001, so restore ownership
   sh("/bin/chown", ["-R", "10001:10001", BUNDLE])
+  restoreReplayRoot()
   ok("bundle committed (ownership restored to resident)")
 }
 
