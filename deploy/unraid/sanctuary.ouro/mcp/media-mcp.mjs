@@ -611,6 +611,9 @@ const rowPercent = (r) => ((r.size ?? 0) > 0 ? Math.round((((r.size ?? 0) - (r.s
 // surfaces. `previous` is the persisted progress memory for this download (or undefined).
 // Returns null while the download may still be moving; otherwise the kind, whether the stall
 // is confirmed (only confirmed stalls are acted on) and the facts the owner is told.
+// The owner's three choices when a download is confirmed dead; one source for every surface that asks.
+export const STALL_OWNER_CHOICES = ["keep_waiting", "find_another_release", "give_up"]
+
 export function classifyStall(row, nowMs, previous) {
   const why = stallReason(row, nowMs, previous)
   if (!why) return null
@@ -689,7 +692,7 @@ export function diagnose({ shelf, result, chain, entity, kind }) {
       })
       return { stuck_stage: "download", stuck_reason: "stalled_partial_download",
                likely_fix: "ask_owner", human_action_required: true,
-               choices: ["keep_waiting", "find_another_release", "give_up"],
+               choices: STALL_OWNER_CHOICES,
                percent_complete: result.download.percent_complete,
                detail: items,
                ...(neverStarted.length ? { never_started: { likely_fix: "blocklist_and_research", items: neverStarted } } : {}),
@@ -762,7 +765,7 @@ async function mediaDiagnoseAndFix(a) {
   }
   if (action === "ask_owner") {
     return { action, result: "owner_decision_needed", before, after: null, human_action_required: true,
-             choices: before.diagnosis?.choices ?? ["keep_waiting", "find_another_release", "give_up"],
+             choices: before.diagnosis?.choices ?? STALL_OWNER_CHOICES,
              ...(before.diagnosis?.never_started ? { never_started: before.diagnosis.never_started } : {}),
              human_action_reason: before.diagnosis?.summary ?? "The owner decides." }
   }
@@ -939,7 +942,8 @@ export function queueRowView(r, nowMs, previous) {
     percent: pct(r), timeleft: r.timeleft ?? null, size_left_bytes: r.sizeleft ?? 0, size_bytes: r.size ?? 0,
     protocol: r.protocol ?? null, download_client: r.downloadClient ?? null, indexer: r.indexer ?? null,
     added: r.added ?? null, stalled: Boolean(c?.confirmed),
-    ...(c ? { stall: { kind: c.kind, state: c.state, percent_complete: c.percent_complete, age_hours: c.age_hours, no_eta: c.no_eta, unchanged_since: c.unchanged_since } } : {}),
+    ...(c ? { stall: { kind: c.kind, state: c.state, percent_complete: c.percent_complete, age_hours: c.age_hours, no_eta: c.no_eta, unchanged_since: c.unchanged_since,
+      ...(c.confirmed ? { owner_decision_needed: true, likely_fix: "ask_owner", choices: STALL_OWNER_CHOICES } : {}) } } : {}),
     ...(r.errorMessage ? { error_message: String(r.errorMessage).slice(0, 300) } : {}),
   }
 }

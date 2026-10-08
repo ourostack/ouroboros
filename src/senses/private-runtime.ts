@@ -8,7 +8,7 @@ import { loadSession, postTurnTrim, deferPostTurnPersist, type UsageData } from 
 import { buildSystem, flattenSystemPrompt } from "../mind/prompt"
 import { getSharedMcpManager } from "../repertoire/mcp-manager"
 import { getToolsForChannel } from "../repertoire/tools"
-import { cancelStaleAwait, failBrokenAwait, hasActiveExternalEventAwait, inspectRelationshipFollowUp, isBrokenBindingReason } from "../repertoire/tools-awaiting"
+import { cancelStaleAwait, failBrokenAwait, readOwnerAskForAwait, hasActiveExternalEventAwait, inspectRelationshipFollowUp, isBrokenBindingReason } from "../repertoire/tools-awaiting"
 import { A2A_PRINCIPAL_PROFILE_ID, delegatedCommandWasNoticed } from "../a2a/delegated-command"
 import { renderRelationshipPreferences } from "../repertoire/relationship-authorization"
 import { appendRunLedgerRecordNonFatal, createRunLedgerRecord, usageMetadataFromUsageData } from "../heart/run-ledger"
@@ -1298,6 +1298,7 @@ export async function runPrivateRuntimeTurn(options?: RunPrivateRuntimeTurnOptio
           // No checkpoint: every await shares one private-runtime session, so its last assistant text is whatever the previous
           // (possibly different) await's tick said. An await's own state is its last observation and checked count.
           checkpoint: undefined,
+          ownerAsk: readOwnerAskForAwait(agentRoot, awaitName, parsedAwait?.created_at ?? null),
           now,
         })
       }

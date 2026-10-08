@@ -121,4 +121,35 @@ describe("buildAwaitTurnMessage", () => {
     })
     expect(result).toContain("last checkpoint: last looked at the inbox")
   })
+
+  describe("owner asked state", () => {
+    const base = (over: Record<string, unknown>) => buildAwaitTurnMessage({
+      awaitName: "chef", condition: "c", body: undefined, lastCheckedAt: "2026-05-10T19:30:00.000Z",
+      lastObservation: "No change: pack stalled. Awaiting Ari's decision.", checkedCount: 18, checkpoint: undefined,
+      now: () => new Date("2026-05-10T20:00:00.000Z"), ...over,
+    })
+
+    it("says the owner was never asked, and that awaiting a decision is not true", () => {
+      const result = base({ ownerAsk: null })
+      expect(result).toContain("owner asked: never")
+      expect(result).toContain("my owner has not been asked about this await")
+    })
+
+    it("does not accuse a plain observation of waiting on the owner", () => {
+      const result = base({ ownerAsk: null, lastObservation: "no peers yet" })
+      expect(result).toContain("owner asked: never")
+      expect(result).not.toContain("has not been asked")
+    })
+
+    it("states when and what the owner was asked", () => {
+      const result = base({ ownerAsk: { at: "2026-05-10T18:00:00.000Z", question: "Keep waiting?" } })
+      expect(result).toContain('owner asked: 2026-05-10T18:00:00.000Z ("Keep waiting?")')
+      expect(result).not.toContain("has not been asked")
+      expect(base({ ownerAsk: { at: "2026-05-10T18:00:00.000Z", question: null } })).toContain("owner asked: 2026-05-10T18:00:00.000Z\n")
+    })
+
+    it("treats an owner_decision_needed stall as a reason to ask", () => {
+      expect(base({}).split("\n").find((l) => l.includes("'ask_owner'"))).toContain("owner_decision_needed")
+    })
+  })
 })

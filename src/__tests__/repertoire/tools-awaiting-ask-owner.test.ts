@@ -32,7 +32,7 @@ vi.mock("../../senses/telegram", () => ({ sendTelegramOwnerNotice: mockSendTeleg
 
 import { FileFriendStore } from "@ouro.bot/friends"
 import { readVerifiedPendingObligations } from "../../arc/obligations"
-import { awaitingToolDefinitions, resetAwaitToolDeps, setAwaitToolDeps } from "../../repertoire/tools-awaiting"
+import { awaitingToolDefinitions, readOwnerAskForAwait, resetAwaitToolDeps, setAwaitToolDeps } from "../../repertoire/tools-awaiting"
 
 const fileAwaitDef = awaitingToolDefinitions.find((d) => d.tool.function.name === "await_condition")!
 const resolveAwaitDef = awaitingToolDefinitions.find((d) => d.tool.function.name === "resolve_await")!
@@ -380,6 +380,25 @@ describe("resolve_await ask_owner", () => {
     await fileAwaitDef.handler({ name: "chef", condition: "c", cadence: "30m", alert: "telegram" }, ownerCtx)
     await resolveAwaitDef.handler({ name: "chef", ...ASK }, ownerCtx)
     expect(mockSendTelegramOwnerNotice).toHaveBeenCalledWith("sanctuary", expect.objectContaining({ noticeId: expect.stringMatching(/^await:chef:asked_owner:/u), text: expect.stringContaining(QUESTION) }))
+  })
+
+  it("reads the ask for this await instance from the ledger, and not an earlier use of the name", async () => {
+    await fileAwaitDef.handler({ name: "chef", condition: "c", cadence: "30m", alert: "telegram" }, ownerCtx)
+    const created = createdAt("chef")
+    expect(readOwnerAskForAwait(agentRoot, "chef", created)).toBeNull()
+    await resolveAwaitDef.handler({ name: "chef", ...ASK }, ownerCtx)
+    const ask = readOwnerAskForAwait(agentRoot, "chef", created)
+    expect(ask).toMatchObject({ question: QUESTION })
+    expect(readOwnerAskForAwait(agentRoot, "other", created)).toBeNull()
+    expect(readOwnerAskForAwait(agentRoot, "chef", new Date(Date.parse(ask!.at) + 1000).toISOString())).toBeNull()
+    expect(readOwnerAskForAwait(agentRoot, "chef", null)).toMatchObject({ question: QUESTION })
+  })
+
+  it("skips unreadable ledger lines and keeps the latest ask when reading", () => {
+    fs.mkdirSync(path.join(agentRoot, "awaiting"), { recursive: true })
+    fs.writeFileSync(path.join(agentRoot, "awaiting", ".asks.jsonl"), ["bad", JSON.stringify({ name: "x", at: "2026-10-08T02:00:00.000Z" }), JSON.stringify({ name: "x", at: "2026-10-08T01:00:00.000Z", question: "old" }), JSON.stringify({ name: "x", at: "nope" })].join("\n"))
+    expect(readOwnerAskForAwait(agentRoot, "x", "2026-10-08T00:00:00.000Z")).toEqual({ at: "2026-10-08T02:00:00.000Z", question: null })
+    expect(readOwnerAskForAwait(agentRoot, "missing", null)).toBeNull()
   })
 
   it("leaves yes and no unchanged", async () => {
