@@ -2,6 +2,15 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.866",
+      "changes": [
+        "The Sanctuary lifecycle now relaunches a gateway that exits before readiness (backoff of 2, 10 and 30 seconds) within one 15-minute readiness deadline and, if every attempt fails, throws promptly with the gateway.log tail (token-shaped text masked before the tail is cut) instead of waiting out a fresh budget.",
+        "The Sanctuary Telegram authority retries getMe with backoff on network-class errors (fetch failed, ECONNRESET, ETIMEDOUT, 5xx) and still fails at once on auth errors such as 401.",
+        "The Sanctuary authority socket server handles client connection errors by logging them and skips writes to destroyed connections, so a client that disconnects mid-response no longer crashes the gateway with write EPIPE.",
+        "The Butler upgrade script checks that api.telegram.org is reachable before pausing host supervision and aborts early with a clear message if it is not; it skips the check when an upgrade journal exists (resume or rollback)."
+      ]
+    },
+    {
       "version": "0.1.0-alpha.865",
       "changes": [
         "Added an operator-set replay window: while the host's replay gate holds it open for a replay peer, that peer's delegated-command owner notices and A2A await deliveries go to a local sink instead of the owner's Telegram chat, with every authorization check unchanged, a failed sink write refusing the command, and a nerves event for each notice sunk. The window counts only when its directory is root-owned and not group- or other-writable and the window file, opened once with O_NOFOLLOW and checked by descriptor, is a root-owned regular file nobody else can write, and a sink record satisfies an await's noticed check only for the same friend inside such a window.",
