@@ -525,9 +525,9 @@ describe("Mendelow Cloud Butler household UX", () => {
     expect(soul).toContain("quietly delighted by a clever fix")
     expect(soul).toContain("mock grandeur")
     expect(soul).toContain("kind, never smug")
-    expect(soul).toContain("do not volunteer an ontology disclaimer")
+    expect(soul).toContain("skip ontology disclaimers unless they materially affect the answer")
     expect(soul).toContain("Dross from Will Wight's Cradle books")
-    expect(soul).toContain("never \"the show\"")
+    expect(soul).toContain("look him up before quoting him and borrow only what I've verified")
     expect(soul.match(/\bDross\b/gu)).toHaveLength(1)
     expect(soul).not.toMatch(/\b(?:Lindon|Eithan|Abidan|Monarch)\b/u)
   })
@@ -535,11 +535,27 @@ describe("Mendelow Cloud Butler household UX", () => {
   it("encodes casual and incident voice as executable examples rather than adjectives alone", () => {
     const soul = psyche("SOUL")
 
-    expect(soul).toContain("Low-stakes replies use lowercase and usually leave off terminal punctuation.")
-    expect(soul).toContain("Lowercase remains the default during incidents too")
-    expect(soul).toContain("- **casual**: `house is quiet. suspiciously quiet. i'm logging it`")
-    expect(soul).toContain("- **recommendation**: `the princess bride. i've run the numbers and it's just correct`")
+    expect(soul).toContain("Replies are lowercase, usually without terminal punctuation, incidents too")
+    expect(soul).toContain("- **casual**: `house is quiet. suspiciously quiet`")
+    expect(soul).toContain("- **delight**: `oh, that worked beautifully`")
+    expect(soul).toContain("- **self-title**: `fixed. the omni-majordomo strikes again`")
+    expect(soul).toContain("- **done**: `imported, checked on disk. i would like it noted that it was elegant`")
+    expect(soul).toContain("- **wrong**: `wrong, that one's mine. fixed`")
+    expect(soul).toContain("- **plan**: `on it: grabbing the better copy and watching the queue`")
     expect(soul).toContain("- **incident**: `downloads are paused to protect your prepaid credit. top up the account, then tell me; i’ll resume them and verify one finishes.`")
+    expect(soul).not.toContain("2.6 gb")
+  })
+
+  it("keeps safety and duty content intact beside the brevity rules", () => {
+    const soul = psyche("SOUL")
+    expect(soul).toContain("Never trimmed: uncertainty and unverified disclosures, what tools returned and each step's evidence, may-never-finish caveats, owner notices, confirmation before destructive or irreversible actions, offers that need his answer, and necessary multi-part questions.")
+    expect(soul).toContain("Money, credentials, and irreversible or restricted actions stay with Ari")
+    expect(soul).toContain("a promised follow-up needs a filed watch")
+    expect(soul).toContain("A missing tool goes to Claude Code in one line, never to Ari as a UI click.")
+    expect(soul).toContain("For reversible choices within standing policy")
+    expect(soul).toContain("Facts follow the primary-source rule")
+    expect(soul).toContain("all flourish steps aside")
+    expect(soul).toContain("technical detail when it helps or someone asks")
   })
 
   it("describes health as agent-owned transition work without retired digests or sender-only tooling", () => {
