@@ -132,6 +132,13 @@ describe("runSuite orchestration", () => {
     expect(log).toEqual(["open:30", "close"])
   })
 
+  it("waits for the Butler to answer before opening the window", async () => {
+    const { host, log } = fakeHost()
+    ;(host as Record<string, unknown>).waitReady = async () => { log.push("ready") }
+    await gate.runSuite(host, { cases: ["stall-kept"] })
+    expect(log.slice(0, 2)).toEqual(["ready", "open:30"])
+  })
+
   it("rejects unknown case names and unknown plant targets before opening a window", async () => {
     const { host, log } = fakeHost()
     await expect(gate.runSuite(host, { cases: ["nope"] })).rejects.toThrow(/unknown case.*nope/)
@@ -255,6 +262,12 @@ describe("provision and the real host", () => {
     const execCalls: string[][] = []
     const host = gate.makeHost({ bundle, log: () => undefined, exec: (file: string, args: string[]) => { execCalls.push([file, ...args]); return args[0] === "ps" ? "ouro-butler\ncalibre-web\n" : JSON.stringify({ text: "hello" }) } })
     expect(host.friends).toEqual({ principal: "friend-1", stranger: "friend-2" })
+    const realFetch = globalThis.fetch
+    let hits = 0
+    globalThis.fetch = (async () => { hits += 1; return { ok: hits > 1 } }) as unknown as typeof fetch
+    try { await host.waitReady(3, 1); expect(hits).toBe(2) } finally { globalThis.fetch = realFetch }
+    globalThis.fetch = (async () => { throw new Error("down") }) as unknown as typeof fetch
+    try { await expect(host.waitReady(2, 1)).rejects.toThrow(/did not answer/) } finally { globalThis.fetch = realFetch }
     host.openWindow(5)
     const window = JSON.parse(fs.readFileSync(path.join(bundle, "state/replay/window.json"), "utf8"))
     expect(Object.keys(window.friends).sort()).toEqual(["friend-1", "friend-2"])

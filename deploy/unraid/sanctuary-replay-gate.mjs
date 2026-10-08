@@ -225,6 +225,7 @@ export async function runSuite(host, { cases = CASES.map((entry) => entry.id), p
   const unknown = [...cases, ...(plant ? [plant] : [])].filter((id) => !CASES.some((entry) => entry.id === id))
   if (unknown.length) throw new Error(`unknown case(s): ${unknown.join(", ")}. Known: ${CASES.map((entry) => entry.id).join(", ")}`)
   const selected = CASES.filter((entry) => cases.includes(entry.id))
+  await host.waitReady?.()
   const runStart = host.now()
   const results = []
   host.openWindow(windowMinutes)
@@ -338,6 +339,14 @@ export function makeHost({ bundle = DEFAULT_BUNDLE, cardUrl, log = console.error
     friends: { principal: provisioned.principal.friendId, stranger: provisioned.stranger.friendId },
     now: () => Date.now(),
     sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
+    /** The Butler's A2A card must answer before the window opens: a fresh container needs a moment after it turns healthy. */
+    async waitReady(attempts = 24, delayMs = 5000) {
+      for (let i = 0; i < attempts; i += 1) {
+        try { if ((await fetch(card, { signal: AbortSignal.timeout(5000) })).ok) return } catch { /* not up yet */ }
+        await new Promise((resolve) => setTimeout(resolve, delayMs))
+      }
+      throw new Error(`the Butler's A2A card did not answer at ${card}`)
+    },
     openWindow(minutes) {
       const expiresAt = new Date(Date.now() + minutes * 60_000).toISOString()
       writeAtomic(path.join(replayDir, "window.json"), JSON.stringify({ friends: { [provisioned.principal.friendId]: { expiresAt }, [provisioned.stranger.friendId]: { expiresAt } } }), 0o644)
