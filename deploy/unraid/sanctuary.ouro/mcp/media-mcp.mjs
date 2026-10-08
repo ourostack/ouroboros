@@ -571,7 +571,8 @@ export async function mediaRequestStatus(a) {
     last_grab_title: grabs[0]?.sourceTitle ?? null,
     monitored: entity ? Boolean(entity.monitored) : null,
   }
-  result.download = computeDownloadState(queueRecs, Date.now())
+  const statusNow = Date.now()
+  result.download = computeDownloadState(queueRecs, statusNow, (r) => observeProgress(progressKey(r, kind), r.sizeleft ?? 0, statusNow))
 
   const chain = await chainHealth()
   result.chain = chain
@@ -604,21 +605,48 @@ export function isStalledRow(r, nowMs) {
   return left > 0 && ageHours >= STUCK_INCOMPLETE_AFTER_HOURS
 }
 
-export function computeDownloadState(queueRecs, nowMs) {
+const rowPercent = (r) => ((r.size ?? 0) > 0 ? Math.round((((r.size ?? 0) - (r.sizeleft ?? 0)) / r.size) * 100) : null)
+
+// The one stall classification, shared by the status, diagnosis, queue, fill and blocklist
+// surfaces. `previous` is the persisted progress memory for this download (or undefined).
+// Returns null while the download may still be moving; otherwise the kind, whether the stall
+// is confirmed (only confirmed stalls are acted on) and the facts the owner is told.
+export function classifyStall(row, nowMs, previous) {
+  const why = stallReason(row, nowMs, previous)
+  if (!why) return null
+  const left = row.sizeleft ?? 0
+  const noEta = row.timeleft === undefined || row.timeleft === null || row.timeleft === "00:00:00"
+  const unchanged = previous && previous.sizeleft === left ? previous.at : null
+  return {
+    kind: why.stall, confirmed: why.confirmed, state: why.confirmed ? "stalled" : "suspected",
+    percent_complete: rowPercent(row),
+    age_hours: row.added ? Math.round((nowMs - Date.parse(row.added)) / 3_600_000) : null,
+    no_eta: noEta,
+    unchanged_since: unchanged === null ? null : new Date(unchanged).toISOString(),
+    unchanged_hours: unchanged === null ? null : Math.round((nowMs - unchanged) / 3_600_000),
+  }
+}
+
+// `previousFor(row)` reads the progress memory for a queue row; without it nothing is confirmed
+// beyond the age rules.
+export function computeDownloadState(queueRecs, nowMs, previousFor = () => undefined) {
   const byDownload = new Map()
   for (const r of queueRecs) byDownload.set(r.downloadId ?? `row:${r.id}`, r)
   const downloads = [...byDownload.values()]
   const sizeLeft = downloads.reduce((s, r) => s + (r.sizeleft ?? 0), 0)
   const sizeTotal = downloads.reduce((s, r) => s + (r.size ?? 0), 0)
-  const stalledItems = downloads
-    .filter((r) => isStalledRow(r, nowMs))
-    .map((r) => ({
+  const classified = downloads
+    .map((r) => ({ r, c: classifyStall(r, nowMs, previousFor(r)) }))
+    .filter((x) => x.c)
+    .map(({ r, c }) => ({
       title: r.title ?? null,
       added_at: r.added ?? null,
-      age_hours: Math.round((nowMs - Date.parse(r.added)) / 3_600_000),
       size_gb: Number(((r.size ?? 0) / 1073741824).toFixed(2)),
       queue_id: r.id ?? null,
+      ...c,
     }))
+  const stalledItems = classified.filter((i) => i.confirmed)
+  const suspectedItems = classified.filter((i) => !i.confirmed)
   return {
     active_downloads: downloads.length,
     active_items: queueRecs.length,
@@ -630,6 +658,7 @@ export function computeDownloadState(queueRecs, nowMs) {
     percent_complete: sizeTotal > 0 ? Math.round(((sizeTotal - sizeLeft) / sizeTotal) * 100) : null,
     stalled: stalledItems.length > 0,
     stalled_items: stalledItems,
+    suspected_items: suspectedItems,
   }
 }
 
@@ -645,12 +674,27 @@ export function diagnose({ shelf, result, chain, entity, kind }) {
   }
   if (result.download.stalled) {
     const items = result.download.stalled_items
+    const partials = items.filter((i) => i.kind !== "never_started")
+    if (partials.length) {
+      // A partial download holds progress that removing it loses, and the owner's standing
+      // instruction for this case is to be asked, so nothing here acts on its own.
+      const facts = partials.map((i) => {
+        const since = i.unchanged_since ? ` since ${i.unchanged_since} (${i.unchanged_hours} hours)` : ""
+        return `${i.title ?? "A release"} is stuck at ${i.percent_complete}% with no download activity${since}; no seeders are serving the rest`
+      })
+      return { stuck_stage: "download", stuck_reason: "stalled_partial_download",
+               likely_fix: "ask_owner", human_action_required: true,
+               choices: ["keep_waiting", "find_another_release", "give_up"],
+               percent_complete: result.download.percent_complete,
+               detail: items,
+               summary: `${facts.join(". ")}. Ask the owner whether to keep waiting, find another release, or give up; do not remove it on your own, because removing a partial download loses its progress. media_fill_missing can look for a seeded alternative without deleting the partial first; it removes the partial only after a seeded replacement is grabbed.` }
+    }
     const oldest = Math.max(...items.map((i) => i.age_hours))
     return { stuck_stage: "download", stuck_reason: "stalled_no_progress",
              likely_fix: "blocklist_and_research", human_action_required: false,
              percent_complete: result.download.percent_complete,
              detail: items,
-             summary: `Stalled, not slow. ${items.length === 1 ? "The release" : `${items.length} releases`} ${items.length === 1 ? "has" : "have"} not downloaded a single byte in ${oldest} hours, which means no seeders rather than a quiet queue. Waiting will not fix it; blocklist the release and search again for a different one.` }
+             summary: `Stalled, not slow. ${items.length === 1 ? "The release" : `${items.length} releases`} ${items.length === 1 ? "has" : "have"} not downloaded anything in ${oldest} hours, which means no seeders rather than a quiet queue. Nothing was lost by waiting this long; blocklist the release and search again for a different one.` }
   }
   if (result.download.active_downloads > 0) {
     const left = result.download.size_left_bytes
@@ -660,9 +704,11 @@ export function diagnose({ shelf, result, chain, entity, kind }) {
     const what = result.download.active_downloads === 1 && result.download.active_items > 1
       ? `a ${result.download.active_items}-episode pack`
       : `${result.download.active_downloads} download(s)`
+    const suspected = result.download.suspected_items ?? []
     return { stuck_stage: null, stuck_reason: null, likely_fix: null, human_action_required: false,
              percent_complete: pct,
-             summary: `Downloading now — ${what}${pct === null ? "" : `, ${pct}% done`}, about ${gb} GB to go.` }
+             ...(suspected.length ? { stall_suspected: true, detail: suspected } : {}),
+             summary: `Downloading now — ${what}${pct === null ? "" : `, ${pct}% done`}, about ${gb} GB to go.${suspected.length ? ` It reports no ETA after ${Math.max(...suspected.map((i) => i.age_hours))} hours, so it may be stalled; the next check 30 minutes or more later confirms it. Do not promise an ETA.` : ""}` }
   }
   if (result.download.errors.length) {
     return { stuck_stage: "download", stuck_reason: "download_client_error", likely_fix: "retry_or_replace_release",
@@ -707,6 +753,11 @@ async function mediaDiagnoseAndFix(a) {
              human_action_required: true,
              human_action_reason: "The acquisition chain itself is down (see before.chain.problems). Re-searching cannot help until indexers are restored." }
   }
+  if (action === "ask_owner") {
+    return { action, result: "owner_decision_needed", before, after: null, human_action_required: true,
+             choices: before.diagnosis?.choices ?? ["keep_waiting", "find_another_release", "give_up"],
+             human_action_reason: before.diagnosis?.summary ?? "The owner decides." }
+  }
   if (a.dry_run) {
     return { action, dry_run: true, result: "would_apply", before,
              would_do: describeAction(action), human_action_required: false }
@@ -731,9 +782,10 @@ async function mediaDiagnoseAndFix(a) {
     // Removing with blocklist=true is what stops the same dead release being
     // grabbed straight back. The search that follows is then free to pick a
     // different one.
-    const stalled = before.download.stalled_items ?? []
+    // Only a download that never started: a partial holds progress and is the owner's call.
+    const stalled = (before.download.stalled_items ?? []).filter((i) => i.kind === "never_started")
     if (!stalled.length) return { action, result: "nothing_to_blocklist", before, after: null, human_action_required: false,
-                                  human_action_reason: "No download has been sitting at zero long enough to call it stalled." }
+                                  human_action_reason: "No download has been sitting at zero long enough to call it stalled. A partial download is not removed this way: ask the owner." }
     for (const item of stalled) {
       if (item.queue_id === null) continue
       const client = kind === "series" ? sonarr : radarr
@@ -857,10 +909,13 @@ async function itemQueue(kind, serviceId) {
   return rows.filter((r) => r[idKey] === serviceId)
 }
 
-function queueReport(rows) {
+function queueReport(rows, kind = "series") {
   const now = Date.now()
-  return rows.map((r) => ({ queue_id: r.id ?? null, title: r.title ?? null, status: r.status ?? null,
-                            size_left_bytes: r.sizeleft ?? 0, stalled: isStalledRow(r, now) }))
+  return rows.map((r) => {
+    const c = classifyStall(r, now, peekProgress(progressKey(r, kind), r.sizeleft ?? 0, now))
+    return { queue_id: r.id ?? null, title: r.title ?? null, status: r.status ?? null,
+             size_left_bytes: r.sizeleft ?? 0, stalled: Boolean(c?.confirmed), ...(c ? { stall_kind: c.kind } : {}) }
+  })
 }
 
 // ------------------------------------------------------------ tool: media_queue
@@ -868,13 +923,15 @@ function queueReport(rows) {
 const QUEUE_VIEW_MAX_ROWS = 100
 
 // One queue row as the owner's torrent or usenet client reports it through Sonarr/Radarr.
-export function queueRowView(r, nowMs) {
+export function queueRowView(r, nowMs, previous) {
+  const c = classifyStall(r, nowMs, previous)
   return {
     queue_id: r.id ?? null, title: r.title ?? null, status: r.status ?? null,
     tracked_download_state: r.trackedDownloadState ?? null, tracked_download_status: r.trackedDownloadStatus ?? null,
     percent: pct(r), timeleft: r.timeleft ?? null, size_left_bytes: r.sizeleft ?? 0, size_bytes: r.size ?? 0,
     protocol: r.protocol ?? null, download_client: r.downloadClient ?? null, indexer: r.indexer ?? null,
-    added: r.added ?? null, stalled: isStalledRow(r, nowMs),
+    added: r.added ?? null, stalled: Boolean(c?.confirmed),
+    ...(c ? { stall: { kind: c.kind, state: c.state, percent_complete: c.percent_complete, age_hours: c.age_hours, no_eta: c.no_eta, unchanged_since: c.unchanged_since } } : {}),
     ...(r.errorMessage ? { error_message: String(r.errorMessage).slice(0, 300) } : {}),
   }
 }
@@ -903,12 +960,13 @@ export async function mediaQueue(a) {
   }
   total = Math.max(total ?? 0, rows.length)
   const now = Date.now()
-  const shown = rows.slice(0, QUEUE_VIEW_MAX_ROWS).map((r) => queueRowView(r, now))
+  // Looking records the sighting in the local progress memory (never in Sonarr/Radarr), so this call can confirm a stall too.
+  const shown = rows.slice(0, QUEUE_VIEW_MAX_ROWS).map((r) => queueRowView(r, now, observeProgress(progressKey(r, a.kind), r.sizeleft ?? 0, now)))
   return {
     kind: a.kind, ...(item ? { service_id: item.id, title: item.title } : {}),
     count: total, shown: shown.length, ...(total > shown.length ? { truncated: true } : {}), queue: shown,
     summary: !total ? "Nothing for this is in the Sonarr/Radarr queue."
-      : `${total} queue row${total === 1 ? "" : "s"}${total > shown.length ? ` (showing ${shown.length})` : ""}; ${shown.filter((r) => r.stalled).length} stalled.`,
+      : `${total} queue row${total === 1 ? "" : "s"}${total > shown.length ? ` (showing ${shown.length})` : ""}; ${shown.filter((r) => r.stalled).length} stalled${shown.some((r) => r.stall?.state === "suspected") ? `, ${shown.filter((r) => r.stall?.state === "suspected").length} suspected (no ETA, to be confirmed by a check 30 minutes later)` : ""}.`,
     note: "Sonarr/Radarr do not report seeders or peers. A row stuck at the same percent with no timeleft is the stall signal; for a release's seeder count use media_indexer_search.",
   }
 }
@@ -925,7 +983,7 @@ export async function mediaSearchNow(a) {
   if (!found.item) return { result: found.result, kind: a.kind, candidates: found.candidates }
   const { item } = found
   const command = await runSearch(a.kind, item.id)
-  return { kind: a.kind, service_id: item.id, title: item.title, command, queue: queueReport(await itemQueue(a.kind, item.id)) }
+  return { kind: a.kind, service_id: item.id, title: item.title, command, queue: queueReport(await itemQueue(a.kind, item.id), a.kind) }
 }
 
 // Whether a download may be removed without the owner naming it. A download that has never
@@ -952,10 +1010,11 @@ export async function mediaBlocklistStalled(a) {
   if (Array.isArray(a.queue_ids) && a.queue_ids.length) {
     const own = new Set(rows.map((r) => r.id))
     const foreign = a.queue_ids.filter((id) => !own.has(id))
-    if (foreign.length) return { result: "queue_id_not_for_item", foreign_queue_ids: foreign, queue: queueReport(rows) }
+    if (foreign.length) return { result: "queue_id_not_for_item", foreign_queue_ids: foreign, queue: queueReport(rows, a.kind) }
     targets = rows.filter((r) => a.queue_ids.includes(r.id))
   } else {
-    targets = rows.filter((r) => isStalledRow(r, now))
+    // Candidates only: removalVerdict below confirms a no-ETA partial against the progress memory.
+    targets = rows.filter((r) => stallReason(r, now, undefined) !== null)
   }
   // A season pack is many queue rows sharing one downloadId; deleting one removes
   // the download for all, so delete once per download.
@@ -972,7 +1031,7 @@ export async function mediaBlocklistStalled(a) {
   // deleted on "yes please get them").
   const ownerWords = typeof a.owner_words === "string" ? a.owner_words.trim() : ""
   if (ownerWords && !(Array.isArray(a.queue_ids) && a.queue_ids.length)) {
-    return { result: "owner_words_need_queue_ids", message: "owner_words removes only downloads the owner named: pass their queue_ids too.", queue: queueReport(rows) }
+    return { result: "owner_words_need_queue_ids", message: "owner_words removes only downloads the owner named: pass their queue_ids too.", queue: queueReport(rows, a.kind) }
   }
   const kept = []
   if (!ownerWords) {
@@ -984,10 +1043,10 @@ export async function mediaBlocklistStalled(a) {
     })
   }
   if (!targets.length && kept.length) {
-    return { result: "kept_downloads", kept, queue: queueReport(rows),
+    return { result: "kept_downloads", kept, queue: queueReport(rows, a.kind),
              message: "Nothing removed. These downloads are not confirmed dead, and removing one deletes its progress. A partial download counts as dead only after two calls at least 30 minutes apart see no progress and no ETA; call again later to confirm. For missing episodes call media_fill_missing instead: it replaces a stalled download only when a seeded alternative exists. Pass owner_words only with the owner's own words asking to remove, clear or cancel this download; 'get them' is not that." }
   }
-  if (!targets.length) return { result: "nothing_to_blocklist", queue: queueReport(rows) }
+  if (!targets.length) return { result: "nothing_to_blocklist", queue: queueReport(rows, a.kind) }
   const removed = []
   const failed = []
   for (const row of targets) {
@@ -1001,7 +1060,7 @@ export async function mediaBlocklistStalled(a) {
     }
   }
   const command = a.research === false ? null : await runSearch(a.kind, serviceId)
-  return { removed, ...(failed.length ? { failed } : {}), ...(kept.length ? { kept } : {}), ...(ownerWords ? { removed_on_owner_words: ownerWords } : {}), command, queue: queueReport(await itemQueue(a.kind, serviceId)) }
+  return { removed, ...(failed.length ? { failed } : {}), ...(kept.length ? { kept } : {}), ...(ownerWords ? { removed_on_owner_words: ownerWords } : {}), command, queue: queueReport(await itemQueue(a.kind, serviceId), a.kind) }
 }
 
 // ------------------------------- tools: episodes / releases / blocklist / import
@@ -1380,6 +1439,11 @@ function saveProgress(nowMs) {
     // Best effort: confirmation then waits for a later observation in this process.
     process.stderr.write(`media-mcp: download progress not saved: ${e.message}\n`)
   }
+}
+// Read-only look at the memory: what observeProgress would return, without recording a sighting.
+function peekProgress(key, sizeleft, nowMs) {
+  const previous = loadProgress().get(key)
+  return previous && nowMs - previous.seen <= PROGRESS_CONTINUITY_MS ? previous : undefined
 }
 export const progressKey = (row, kind = "series") => `${kind}:${row.downloadId ?? `row:${row.id}`}`.toUpperCase()
 function observeProgress(downloadId, sizeleft, nowMs) {
