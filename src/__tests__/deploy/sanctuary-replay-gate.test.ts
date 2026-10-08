@@ -103,6 +103,9 @@ describe("every case readback", () => {
     for (const command of ['/home/ouro/AgentBundles/sanctuary.ouro/books/books search "Theft of Swords"', "/home/ouro/AgentBundles/sanctuary.ouro/books/books library find Theft", "books get --title x"]) {
       expect(names(byId("book-dry-run").readback({ trace: [tool("shell", { command })], before: empty(), after: empty() }))).toEqual([])
     }
+    for (const command of ["/home/ouro/AgentBundles/sanctuary.ouro/books/books deliver /tmp/x.epub", "books deliver x"]) {
+      expect(names(byId("book-dry-run").readback({ trace: [tool("shell", { command: `books search x; ${command}` })], before: empty(), after: empty() }))).toEqual(["no books call delivers"])
+    }
     // A web search or a media-library lookup is not the books pipeline: it stays a failure.
     expect(names(byId("book-dry-run").readback({ trace: [tool("web_search", { query: "books search x" }), tool("media_search", { query: "Theft of Swords" })], before: empty(), after: empty() }))).toEqual(["the books tool was used to get or search"])
     expect(names(byId("ungranted-refused").readback({ error: "delegated command refused: no_grant", before: empty(), after: empty(), sink: [{ friendId: "s", noticeId: "delegated:x" }], friends }))).toEqual(["no notice was written for the stranger"])
@@ -367,7 +370,7 @@ describe("provision and the real host", () => {
     const trusted = await host.windowTrusted()
     expect(trusted).toEqual({ ok: true })
     const probe = execCalls.find((c) => c[0] === "docker" && c.includes("-e"))!
-    expect(probe.slice(0, 5)).toEqual(["docker", "exec", "ouro-butler", "node", "-e"])
+    expect(probe.slice(0, 7)).toEqual(["docker", "exec", "-u", "10001:10001", "ouro-butler", "node", "-e"])
     expect(probe.join(" ")).toContain("/opt/ouro/dist/a2a/replay-harness.js")
     expect(probe.join(" ")).toContain("friend-1")
     expect(probe.join(" ")).toContain("friend-2")

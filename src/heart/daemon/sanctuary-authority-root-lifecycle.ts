@@ -869,9 +869,10 @@ export class SanctuaryAuthorityRootLifecycle {
     let stat: fs.Stats
     try { stat = fs.lstatSync(directory) } catch { return }
     if (!stat.isDirectory()) return
-    fs.rmSync(path.join(directory, "window.json"), { force: true })
+    // Ownership first: nothing the Butler left in the directory may stop it being put back under root.
     execFileSync("/bin/chown", ["-h", "0:0", directory], { stdio: "ignore" })
     fs.chmodSync(directory, 0o755)
+    fs.rmSync(path.join(directory, "window.json"), { force: true, recursive: true })
   }
 
   /** Start the gateway, then the resident, and prove both. */

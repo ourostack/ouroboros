@@ -423,9 +423,9 @@ function restoreReplayRoot() {
   let stat
   try { stat = lstatSync(dir) } catch { return }
   if (!stat.isDirectory()) return
-  rmSync(`${dir}/window.json`, { force: true })
   sh("/bin/chown", ["-h", "0:0", dir])
   chmodSync(dir, 0o755)
+  rmSync(`${dir}/window.json`, { force: true, recursive: true })
 }
 function migrateBundle(version, rollbackImage) {
   say(`migrate agent bundle to ${version}`)

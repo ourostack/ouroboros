@@ -1312,6 +1312,34 @@ describe("in-place authority upgrade", () => {
       expect(fs.existsSync(f.p(`${bundle}/state/replay/notices.ndjson`))).toBe(true)
     })
 
+    it("still restores the directory when the Butler left a directory where window.json belongs, and removes it", async () => {
+      const f = await upgradeFixture()
+      f.write(`${bundle}/state/replay/window.json/inner.txt`, "x")
+      await f.lifecycle.upgrade({ targetImageId: digest("next-image"), imageReference: nextReference })
+      expect(chowns().some((args) => args.join(" ") === `-h 0:0 ${f.p(`${bundle}/state/replay`)}`)).toBe(true)
+      expect(fs.statSync(f.p(`${bundle}/state/replay`)).mode & 0o777).toBe(0o755)
+      expect(fs.existsSync(f.p(`${bundle}/state/replay/window.json`))).toBe(false)
+    })
+
+    it("restores ownership before it removes anything, so a failed removal cannot leave the directory Butler-owned", async () => {
+      const f = await upgradeFixture()
+      f.write(`${bundle}/state/replay/window.json`, "{}")
+      const order: string[] = []
+      const realRm = fs.rmSync
+      vi.spyOn(fs, "rmSync").mockImplementation(((target: fs.PathLike, options?: fs.RmOptions) => {
+        if (String(target).endsWith("state/replay/window.json")) {
+          order.push(`rm:${JSON.stringify(options)}`)
+          throw new Error("EPERM")
+        }
+        return realRm(target, options)
+      }) as typeof fs.rmSync)
+      const chmod = vi.spyOn(fs, "chmodSync")
+      await expect(f.lifecycle.upgrade({ targetImageId: digest("next-image"), imageReference: nextReference })).rejects.toThrow("EPERM")
+      expect(chowns().some((args) => args.join(" ") === `-h 0:0 ${f.p(`${bundle}/state/replay`)}`)).toBe(true)
+      expect(chmod).toHaveBeenCalledWith(f.p(`${bundle}/state/replay`), 0o755)
+      expect(order).toEqual([`rm:${JSON.stringify({ force: true, recursive: true })}`])
+    })
+
     it("does nothing for a bundle without a replay directory, or where state/replay is a symlink", async () => {
       const f = await upgradeFixture()
       await f.lifecycle.upgrade({ targetImageId: digest("next-image"), imageReference: nextReference })
