@@ -6,6 +6,7 @@
  * what the turn actually read: a name that appears in no lookup result, and is not the house vocabulary or the
  * person's own words, is a name the model made up. Pure functions; the runtime calls them at settle.
  */
+import { emitNervesEvent } from "../nerves/runtime"
 
 export interface TurnToolRecord {
   name: string
@@ -93,6 +94,7 @@ export function sourceGroundingError(input: {
   const invented = names.filter((name) => !mentions(read, name) && !mentions(user, name))
   if (invented.length > 0) {
     const named = invented.join(", ")
+    emitNervesEvent({ level: "warn", component: "engine", event: "engine.unsourced_work_claim", message: "a reply named things from a work that the turn did not read", meta: { names: invented.length, lookups: lookups.length } })
     return lookups.length === 0
       ? `you named ${named} as part of a book, show, film or its cast, and you looked up nothing this turn. don't state facts about a work from memory. read a primary source first (web_search, or fetch the page), then answer only from what it says. if you can't find it, say so plainly.`
       : `${named} do not appear in anything you read this turn, so they may be made up. check them against the source you read, drop the ones it does not support, or look them up, then settle again.`

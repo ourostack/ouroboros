@@ -5,6 +5,7 @@
  * writes five bold-labelled paragraphs in the next has not kept it, so the runtime reads the request from what the
  * person said (or a saved communication preference) and holds the answer to it at settle.
  */
+import { emitNervesEvent } from "../nerves/runtime"
 
 export const BRIEF_MAX_CHARS = 600
 
@@ -32,6 +33,7 @@ export function briefStyleViolation(answer: string): string | null {
   if (answer.length > BRIEF_MAX_CHARS) problems.push(`about ${BRIEF_MAX_CHARS} characters at most (this one is ${answer.length})`)
   const sentences = answer.split(SENTENCE_END).filter((part) => part.trim())
   if (sentences.length > 1 && answer.trimEnd().endsWith("?")) problems.push("no closing question tacked onto an answer; answer and stop")
+  if (problems.length > 0) emitNervesEvent({ level: "warn", component: "engine", event: "engine.brief_style_violation", message: "a reply broke the person's brevity request", meta: { problems: problems.length, length: answer.length } })
   return problems.length === 0 ? null : `the person asked you to be brief. rewrite the reply: ${problems.join("; ")}. say the answer once, in your own voice, and settle again.`
 }
 
