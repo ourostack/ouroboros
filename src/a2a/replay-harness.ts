@@ -1,5 +1,6 @@
 import * as fs from "fs"
 import * as path from "path"
+import { emitNervesEvent } from "../nerves/runtime"
 
 /**
  * The replay gate drives the Butler over its real A2A path to check its behaviour after an upgrade. Every delegated
@@ -53,6 +54,12 @@ export function appendReplayNotice(agentRoot: string, notice: ReplayNotice, now:
   fs.mkdirSync(replayDir(agentRoot), { recursive: true })
   const line = JSON.stringify({ at: new Date(now).toISOString(), ...notice })
   fs.appendFileSync(replaySinkPath(agentRoot), `${line}\n`, { mode: 0o600 })
+  emitNervesEvent({
+    component: "senses",
+    event: "senses.a2a_replay_notice_sunk",
+    message: "wrote an owner notice to the replay sink instead of Telegram",
+    meta: { noticeId: notice.noticeId, friendId: notice.friendId },
+  })
 }
 
 /** True when the sink holds a notice with this id (a missing sink is "no"). */
