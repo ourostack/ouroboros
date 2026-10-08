@@ -167,6 +167,11 @@ export function usage(): string {
     "  ouro a2a serve [--agent <name>] [--host <host>] [--port <port>] [--base-url <url>] [--path <path>]",
     "  ouro a2a identity [--identity-file <path>] [--json]",
     "  ouro a2a message --to <card-url> --text <text> [--context <id>] [--delegated] [--identity-file <path>] [--json]",
+    "  ouro a2a outbox list --to <card-url> [--since <cursor>] [--identity-file <path>] [--json]",
+    "  ouro a2a outbox ack --to <card-url> --ids <id,id,...> [--identity-file <path>] [--json]",
+    "  ouro a2a outbox resolve --to <card-url> --report <id> --version <version> --note <text> [--identity-file <path>] [--json]",
+    "  ouro a2a escalation <grant|revoke> --friend <id> [--source <text>] [--agent <name>]",
+    "  ouro a2a escalation list [--agent <name>]",
     "  ouro whoami [--agent <name>]",
     "  ouro session list [--agent <name>]",
     "  ouro mcp list",
@@ -1516,6 +1521,50 @@ function parseA2ACommand(args: string[]): OuroCliCommand {
     return { kind: "a2a.message", to, text, ...(conversationId ? { conversationId } : {}), ...(delegated ? { delegated: true } : {}), ...(identityFile ? { identityFile } : {}), ...(json ? { json: true } : {}) }
   }
 
+  if (sub === "outbox") {
+    const usageText = "Usage: ouro a2a outbox <list|ack|resolve> --to <card-url> [--since <cursor>] [--ids <id,id,...>] [--report <id> --version <version> --note <text>] [--identity-file <path>] [--json]"
+    const action = rest[0]
+    if (action !== "list" && action !== "ack" && action !== "resolve") throw new Error(usageText)
+    const values: Record<string, string> = {}
+    let json = false
+    for (let i = 1; i < rest.length; i += 1) {
+      if (rest[i] === "--json") { json = true; continue }
+      const flag = rest[i]!
+      if (["--to", "--since", "--ids", "--report", "--version", "--note", "--identity-file"].includes(flag) && rest[i + 1]) { values[flag] = rest[++i]!; continue }
+      throw new Error(usageText)
+    }
+    const allowed: Record<typeof action, string[]> = { list: ["--to", "--since", "--identity-file"], ack: ["--to", "--ids", "--identity-file"], resolve: ["--to", "--report", "--version", "--note", "--identity-file"] }
+    const required: Record<typeof action, string[]> = { list: ["--to"], ack: ["--to", "--ids"], resolve: ["--to", "--report", "--version", "--note"] }
+    if (Object.keys(values).some((flag) => !allowed[action].includes(flag)) || required[action].some((flag) => !values[flag])) throw new Error(usageText)
+    const ids = values["--ids"]?.split(",").map((id) => id.trim()).filter(Boolean)
+    if (action === "ack" && (!ids || ids.length === 0)) throw new Error(usageText)
+    return {
+      kind: "a2a.outbox", action, to: values["--to"]!,
+      ...(values["--since"] ? { since: values["--since"] } : {}),
+      ...(action === "ack" ? { ids: ids! } : {}),
+      ...(values["--report"] ? { reportId: values["--report"] } : {}),
+      ...(values["--version"] ? { version: values["--version"] } : {}),
+      ...(values["--note"] ? { note: values["--note"] } : {}),
+      ...(values["--identity-file"] ? { identityFile: values["--identity-file"] } : {}),
+      ...(json ? { json: true } : {}),
+    }
+  }
+
+  if (sub === "escalation") {
+    const usageText = "Usage: ouro a2a escalation <grant|revoke> --friend <id> [--source <text>] [--agent <name>] | ouro a2a escalation list [--agent <name>]"
+    const action = rest[0]
+    if (action !== "grant" && action !== "revoke" && action !== "list") throw new Error(usageText)
+    let friendId: string | undefined
+    let source: string | undefined
+    for (let i = 1; i < rest.length; i += 1) {
+      if (rest[i] === "--friend" && rest[i + 1]) { friendId = rest[++i]; continue }
+      if (rest[i] === "--source" && rest[i + 1]) { source = rest[++i]; continue }
+      throw new Error(usageText)
+    }
+    if ((action === "list") === Boolean(friendId) || (source && action !== "grant")) throw new Error(usageText)
+    return { kind: "a2a.escalation", action, ...(agent ? { agent } : {}), ...(friendId ? { friendId } : {}), ...(source ? { source } : {}) }
+  }
+
   if (sub === "onboard") {
     let cardUrl: string | undefined
     let did: string | undefined
@@ -1577,7 +1626,7 @@ function parseA2ACommand(args: string[]): OuroCliCommand {
     return { kind: "a2a.serve", ...(agent ? { agent } : {}), ...(host ? { host } : {}), ...(port ? { port } : {}), ...(baseUrl ? { baseUrl } : {}), ...(path ? { path } : {}) }
   }
 
-  throw new Error("Usage: ouro a2a card|onboard|serve ...")
+  throw new Error("Usage: ouro a2a card|onboard|serve|message|identity|outbox|escalation ...")
 }
 
 function parseConfigCommand(args: string[]): OuroCliCommand {
