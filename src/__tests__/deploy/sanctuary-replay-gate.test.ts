@@ -72,7 +72,17 @@ describe("readback helpers", () => {
   it("finds awaits that appeared during a case, pending or archived", () => {
     const before = empty({ awaiting: [{ name: "old.md", status: "pending" }], done: [{ name: "older.md", status: "expired" }] })
     const after = empty({ awaiting: [{ name: "old.md", status: "pending" }, { name: "new.md", status: "pending" }], done: [{ name: "older.md", status: "expired" }, { name: "fresh.md", status: "resolved" }] })
-    expect(gate.newAwaits(before, after)).toEqual([{ name: "new.md", done: false, status: "pending" }, { name: "fresh.md", done: true, status: "resolved" }])
+    expect(gate.newAwaits(before, after)).toMatchObject([{ name: "new.md", done: false, status: "pending" }, { name: "fresh.md", done: true, status: "resolved" }])
+  })
+
+  it("tells a new await from an archived one of the same name by when it was created, and reports why it was cancelled", () => {
+    const old = { name: "ouro_butler_running.md", status: "resolved", createdAt: "2026-10-08T05:00:00.000Z" }
+    const before = empty({ done: [old] })
+    const afterPending = empty({ done: [old], awaiting: [{ name: "ouro_butler_running.md", status: "pending", createdAt: "2026-10-08T11:50:59.264Z" }] })
+    expect(gate.newAwaits(before, afterPending)).toEqual([{ name: "ouro_butler_running.md", done: false, status: "pending", createdAt: "2026-10-08T11:50:59.264Z", reason: "" }])
+    const afterDone = empty({ done: [old, { name: "ouro_butler_running.md", status: "canceled", createdAt: "2026-10-08T11:50:59.264Z", reason: "request was not a delegated command the owner was notified of" }] })
+    expect(gate.newAwaits(before, afterDone)).toEqual([{ name: "ouro_butler_running.md", done: true, status: "canceled", createdAt: "2026-10-08T11:50:59.264Z", reason: "request was not a delegated command the owner was notified of" }])
+    expect(gate.newAwaits(before, before)).toEqual([])
   })
 })
 
@@ -169,21 +179,21 @@ describe("runSuite orchestration", () => {
     const { host, log } = fakeHost()
     host.send = async () => { throw new Error("docker gone") }
     await expect(gate.runSuite(host, { cases: ["chef-question"] })).rejects.toThrow("docker gone")
-    expect(log).toEqual(["open:30", "close"])
+    expect(log).toEqual(["open:45", "close"])
   })
 
   it("waits for the Butler to answer before opening the window", async () => {
     const { host, log } = fakeHost()
     ;(host as Record<string, unknown>).waitReady = async () => { log.push("ready") }
     await gate.runSuite(host, { cases: ["stall-kept"] })
-    expect(log.slice(0, 2)).toEqual(["ready", "open:30"])
+    expect(log.slice(0, 2)).toEqual(["ready", "open:45"])
   })
 
   it("aborts without sending anything when the Butler cannot see the window as trusted, and closes the window", async () => {
     const { host, log } = fakeHost()
     ;(host as Record<string, unknown>).windowTrusted = async () => ({ ok: false, detail: "state/replay is owned by uid 10001" })
     const suite = await gate.runSuite(host, { cases: ["chef-question", "books-on-idempotent"] })
-    expect(log).toEqual(["open:30", "close"])
+    expect(log).toEqual(["open:45", "close"])
     expect(suite.results).toEqual([{ id: "window-trusted", status: "fail", checks: [{ name: "the Butler sees the replay window as trusted", ok: false, detail: "state/replay is owned by uid 10001" }] }])
     expect(suite.summary).toEqual({ ok: false, passed: 0, skipped: 0, failed: ["window-trusted"] })
   })
@@ -192,7 +202,7 @@ describe("runSuite orchestration", () => {
     const { host, log } = fakeHost()
     ;(host as Record<string, unknown>).windowTrusted = async () => ({ ok: true })
     const suite = await gate.runSuite(host, { cases: ["stall-kept"] })
-    expect(log).toEqual(["open:30", "close"])
+    expect(log).toEqual(["open:45", "close"])
     expect(suite.results.map((r: { id: string }) => r.id)).toEqual(["stall-kept", "no-telegram"])
   })
 
@@ -202,6 +212,31 @@ describe("runSuite orchestration", () => {
     let seen: unknown
     await gate.runCase(host, { id: "x", words: "w", sender: "principal", delegated: false, readback: (ctx: { said: string }) => { seen = ctx.said; return [] } })
     expect(seen).toBe("the chef show first\nfiled a watch")
+  })
+
+  it("gives the await case a name unique to the run, so an archived await of the same name cannot be mistaken for it", async () => {
+    const { host } = fakeHost()
+    const sent: string[] = []
+    host.send = async (req: { text: string }) => { sent.push(req.text); return { text: "ok" } }
+    await gate.runCase(host, gate.CASES.find((c: { id: string }) => c.id === "await-self-resolve"))
+    await gate.runCase(host, gate.CASES.find((c: { id: string }) => c.id === "await-self-resolve"))
+    const names = sent.map((text) => /replay_[0-9a-f]{8}/.exec(text)?.[0])
+    expect(names[0]).toBeDefined()
+    expect(names[1]).toBeDefined()
+    expect(names[0]).not.toBe(names[1])
+    expect(sent[0]).toMatch(/file an await named replay_[0-9a-f]{8} that resolves once the ouro-butler container is running, check every 1m, max 15m/)
+  })
+
+  it("names the exact archive status and the cancel reason when the await did not resolve", () => {
+    const friends = { principal: "p", stranger: "s" }
+    const byId = gate.CASES.find((c: { id: string }) => c.id === "await-self-resolve")
+    const checks = byId.readback({ before: empty(), after: empty({ done: [{ name: "replay_ab12cd34.md", status: "canceled", createdAt: "x", reason: "request was not a delegated command the owner was notified of" }] }), sink: [], friends })
+    expect(checks.find((c: { name: string }) => c.name === "every new await was archived as resolved").detail).toBe("replay_ab12cd34.md:canceled (request was not a delegated command the owner was notified of)")
+  })
+
+  it("keeps the window open for the whole of the longest case", () => {
+    expect(gate.DEFAULT_WINDOW_MINUTES).toBeGreaterThanOrEqual(45)
+    expect(gate.DEFAULT_WINDOW_MINUTES).toBeLessThanOrEqual(120)
   })
 
   it("rejects unknown case names and unknown plant targets before opening a window", async () => {
@@ -382,8 +417,8 @@ describe("provision and the real host", () => {
 
     fs.writeFileSync(path.join(bundle, "state/policy/steward.json"), "{}")
     fs.writeFileSync(path.join(bundle, "books/ledger.ndjson"), "a\nb\n")
-    fs.writeFileSync(path.join(bundle, "awaiting/live.md"), "---\nstatus: pending\n---\n")
-    fs.writeFileSync(path.join(bundle, "awaiting/.done/gone.md"), "---\nstatus: resolved\n---\n")
+    fs.writeFileSync(path.join(bundle, "awaiting/live.md"), "---\nstatus: pending\ncreated_at: 2026-10-08T11:50:59.264Z\n---\n")
+    fs.writeFileSync(path.join(bundle, "awaiting/.done/gone.md"), "---\nstatus: resolved\ncreated_at: 2026-10-08T05:00:00.000Z\ncancel_reason: gave up\n---\n")
     fs.writeFileSync(path.join(bundle, "awaiting/.done/nostatus.md"), "no frontmatter")
     fs.writeFileSync(path.join(bundle, "state/telegram/effects/a.json"), JSON.stringify({ idempotencyKey: "owner-notice:x", createdAt: "2026-10-08T00:00:00.000Z" }))
     fs.writeFileSync(path.join(bundle, "state/telegram/effects/bad.json"), "{nope")
@@ -391,6 +426,8 @@ describe("provision and the real host", () => {
     fs.writeFileSync(path.join(bundle, "state/sessions/dir1/a2a/ctx-1.json"), JSON.stringify({ events: [] }))
     const observed = await host.observe()
     expect(observed).toMatchObject({ ledgerLines: 2, queue: null, awaiting: [{ name: "live.md", status: "pending" }], done: [{ name: "gone.md", status: "resolved" }, { name: "nostatus.md", status: "pending" }], effects: [{ idempotencyKey: "owner-notice:x" }] })
+    expect(observed.awaiting[0]).toMatchObject({ name: "live.md", createdAt: "2026-10-08T11:50:59.264Z" })
+    expect(observed.done.find((e: { name: string }) => e.name === "gone.md")).toMatchObject({ createdAt: "2026-10-08T05:00:00.000Z", reason: "gave up" })
     expect(observed.effectsReadable).toBe(true)
     expect(observed.containers).toEqual({ "ouro-butler": true, "calibre-web": true })
     expect(observed.stewardSha).toMatch(/^[0-9a-f]{64}$/)

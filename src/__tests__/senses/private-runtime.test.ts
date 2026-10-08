@@ -2390,6 +2390,30 @@ describe("private runtime", () => {
     expect(input.runAgentOptions.toolContext.relationshipAuthorization).toBeUndefined()
   })
 
+  it("does not hand an await tick the shared session's last assistant text as its checkpoint (one await's verdict must not become another's)", async () => {
+    const awaitingDir = path.join(agentRoot, "awaiting")
+    fs.mkdirSync(awaitingDir, { recursive: true })
+    fs.writeFileSync(
+      path.join(awaitingDir, "fresh-wait.md"),
+      "---\ncondition: the container is running\ncadence: 1m\nstatus: pending\nfiled_from: unknown\nfiled_for_friend_id: null\nfiled_from_key: null\nrequest_id: null\n---\n\nready when up.",
+      "utf8",
+    )
+    mockLoadSession.mockReturnValue({
+      messages: [
+        { role: "system", content: "system prompt" },
+        { role: "assistant", content: "Await is already archived as yes; no further resolve_await needed." },
+      ],
+    })
+
+    await runApprovedPrivateRuntimeTurn({ reason: "await", awaitName: "fresh-wait", now: () => new Date("2026-03-06T12:00:00.000Z") })
+
+    const content = String(mockHandleInboundTurn.mock.calls[0][0].messages[0].content)
+    expect(content).toContain("await tick: fresh-wait")
+    expect(content).toContain("history: never checked. this is my first look.")
+    expect(content).not.toContain("already archived")
+    expect(content).not.toContain("last checkpoint")
+  })
+
   it("keeps the turn running without Sanctuary tools when the sanctuary agent has no machine runtime config", async () => {
     mockGetAgentName.mockReturnValue("sanctuary")
     cacheProviderCredentialRecords("sanctuary", [
