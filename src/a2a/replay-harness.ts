@@ -78,8 +78,9 @@ export function isReplayWindowOpen(agentRoot: string, friendId: string, now: num
   return Number.isFinite(expiresAt) && expiresAt > now && expiresAt <= now + REPLAY_WINDOW_MAX_MS
 }
 
-/** Appends one notice to the sink; throws when it cannot be written, so the caller refuses exactly as a failed Telegram send does. */
+/** Appends one notice to the sink, once per notice id and friend (a retry after a crash adds nothing); throws when it cannot be written, so the caller refuses exactly as a failed Telegram send does. */
 export function appendReplayNotice(agentRoot: string, notice: ReplayNotice, now: number = Date.now()): void {
+  if (replayNoticeRecorded(agentRoot, notice.noticeId, notice.friendId)) return
   fs.mkdirSync(replayDir(agentRoot), { recursive: true })
   const line = JSON.stringify({ at: new Date(now).toISOString(), ...notice })
   fs.appendFileSync(replaySinkPath(agentRoot), `${line}\n`, { mode: 0o600 })

@@ -12,6 +12,8 @@ export interface CrossChatDeliveryRequest {
   requestId?: string
   /** Stable identity for retry-safe direct delivery of one durable return. */
   deliveryId?: string
+  /** "asked_owner": the content is a question for the owner, so an owner-notice deliverer addresses the owner directly. */
+  noticeKind?: "asked_owner"
   intent: CrossChatDeliveryIntent
   authorizingSession?: {
     friendId: string

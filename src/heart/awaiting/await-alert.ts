@@ -28,6 +28,10 @@ export interface AwaitAlertOptions {
   agentName: string
   /** Cross-chat delivery dependencies (deliverers, queueing). */
   deliveryDeps: CrossChatDeliveryDeps
+  /** Replaces the generated message text (for reasons whose wording the caller owns). */
+  content?: string
+  /** Replaces the generated delivery id, for callers that must tie two sends to one id. */
+  deliveryId?: string
 }
 
 export interface AwaitAlertResult {
@@ -72,7 +76,7 @@ export function buildAlertContent(awaitFile: AwaitFile, reason: AwaitAlertReason
   const condition = awaitFile.condition ?? awaitFile.name
   const obs = readNonEmpty(observation)
   if (reason === "asked_owner") {
-    return `${condition} — I have asked the owner how to proceed.${obs ? `\n\n${obs}` : ""}`
+    return obs ? `${condition} — ${obs}` : `${condition} — I have asked the owner how to proceed.`
   }
   if (reason === "resolved") {
     return obs ? `${condition} — ready. ${obs}` : `${condition} — ready.`
@@ -125,7 +129,7 @@ export async function deliverAwaitAlert(options: AwaitAlertOptions): Promise<Awa
     return { attempted: false, skipped: "no session key" }
   }
 
-  const content = buildAlertContent(awaitFile, reason, observation)
+  const content = options.content ?? buildAlertContent(awaitFile, reason, observation)
   const delivery = await deliverCrossChatMessage(
     {
       friendId,
@@ -133,7 +137,8 @@ export async function deliverAwaitAlert(options: AwaitAlertOptions): Promise<Awa
       key,
       content,
       ...(awaitFile.request_id ? { requestId: awaitFile.request_id } : {}),
-      deliveryId: `await:${awaitFile.name}:${reason}`,
+      deliveryId: options.deliveryId ?? `await:${awaitFile.name}:${reason}`,
+      ...(reason === "asked_owner" ? { noticeKind: "asked_owner" as const } : {}),
       intent: "generic_outreach",
     },
     deliveryDeps,

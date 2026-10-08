@@ -13,7 +13,8 @@ import {
   deliverAwaitAlert,
   type AwaitAlertResult,
 } from "../heart/awaiting/await-alert"
-import { createA2AAwaitOwnerDeliverer, defaultNotifyOwner, type NotifyOwner } from "../heart/awaiting/a2a-await-delivery"
+import { FileFriendStore } from "@ouro.bot/friends"
+import { askedOwnerText, createA2AAwaitOwnerDeliverer, defaultNotifyOwner, type NotifyOwner } from "../heart/awaiting/a2a-await-delivery"
 import { getPrivateRuntimePendingDir, queuePendingMessageOnce } from "../mind/pending"
 import type { PendingMessage } from "../mind/pending"
 import type { ToolContext, ToolDefinition } from "./tools-base"
@@ -163,59 +164,120 @@ function failedAskOwner(agentName: string, name: string, error: unknown): string
   return JSON.stringify({ error: `the owner message could not be sent (${detail}); the await is still pending, so ask_owner can be retried` })
 }
 
+/** At most this many ask_owner closures per requester in a rolling day, so one requester cannot make the Butler pester the owner. */
+const ASK_OWNER_DAILY_LIMIT = 3
+const ASK_OWNER_WINDOW_MS = 24 * 60 * 60 * 1000
+
+function recentAskCount(agentRoot: string, filer: string | null, now: number): number {
+  let entries: string[]
+  try {
+    entries = fs.readdirSync(awaitingDoneDir(agentRoot))
+  } catch {
+    return 0
+  }
+  return entries.filter((entry) => {
+    const file = readAwaitDoneDefinition(agentRoot, path.basename(entry, ".md"))
+    const askedAt = file?.asked_at ? Date.parse(file.asked_at) : Number.NaN
+    return file?.status === "asked_owner" && (file.filed_for_friend_id ?? null) === filer && now - askedAt < ASK_OWNER_WINDOW_MS
+  }).length
+}
+
+const askOwnerInFlight = new Set<string>()
+
+type Filer = { isOwner: boolean; name: string | null }
+
+async function lookupFiler(agentRoot: string, friendId: string | null): Promise<Filer> {
+  const friend = friendId ? await new FileFriendStore(path.join(agentRoot, "friends")).get(friendId) : null
+  return { isOwner: Boolean(friend && friend.trustLevel === "family" && friend.capabilityProfileId === "sanctuary-owner"), name: friend?.name ?? null }
+}
+
+function delivered(alert: AwaitAlertResult | null): boolean {
+  return alert?.delivery?.status === "delivered_now" || alert?.delivery?.status === "queued_for_later"
+}
+
 /**
  * The await's condition cannot be met without the owner deciding. The owner is asked once, as the agent, in the
- * owner's own chat (the owner-notice path, keyed per await so a retry cannot double-send), and only then is the await
- * archived as asked_owner. An await filed from A2A goes through the A2A owner delivery instead, which writes the same
- * owner notice (or the replay sink during a replay window); the direct notice is only the fallback if that did not land.
+ * owner's own chat, and only then is the await archived as asked_owner. One notice id per await instance ties every
+ * path together: the A2A owner delivery, the direct owner message and the replay sink all dedupe on it, so a retry after
+ * a crash between send and archive sends nothing twice. An await filed from A2A goes through the A2A owner delivery,
+ * which writes the owner notice (or the replay sink during a replay window); the direct notice is only the fallback
+ * when that path blocked or failed. When someone other than the owner filed the await, the text says whose request it is
+ * about, and a non-A2A filer is also told that the owner was asked (the obligation stays open if that could not be said).
  */
 async function askOwnerTool(name: string, observation: string, question: unknown, choices: unknown, existing: AwaitFile, agentRoot: string, agentName: string): Promise<string> {
   const parsed = parseAskOwner(question, choices)
   if (!parsed.ok) return JSON.stringify({ error: parsed.error })
-  const text = formatOwnerQuestion(parsed.question, parsed.choices)
-
-  let alert: AwaitAlertResult | null = null
-  let delivered = false
-  if (existing.filed_from === "a2a") {
-    try {
-      alert = await deliverAwaitAlert({ awaitFile: { ...existing, alert: "a2a" }, reason: "asked_owner", observation: text, agentRoot, agentName, deliveryDeps: resolveDeliveryDeps(agentName) })
-    } catch (error) {
-      emitNervesEvent({ level: "error", component: "repertoire", event: "repertoire.await_alert_error", message: "await alert delivery threw", meta: { agent: agentName, name, error: error instanceof Error ? error.message : String(error) } })
+  const inFlightKey = `${agentRoot}\0${name}`
+  if (askOwnerInFlight.has(inFlightKey)) return JSON.stringify({ error: `await "${name}" is already being asked; wait for the owner's reply instead of asking again` })
+  askOwnerInFlight.add(inFlightKey)
+  try {
+    const filerId = existing.filed_for_friend_id ?? null
+    if (recentAskCount(agentRoot, filerId, Date.now()) >= ASK_OWNER_DAILY_LIMIT) {
+      return JSON.stringify({ error: `ask_owner limit reached: this requester has already had my owner asked ${ASK_OWNER_DAILY_LIMIT} times in the last day; use verdict 'no' with an observation and keep polling` })
     }
-    delivered = alert?.delivery?.status === "delivered_now"
-  }
-  if (!delivered) {
-    try {
-      await (injected.notifyOwner ? injected.notifyOwner(agentName) : defaultNotifyOwner(agentName))({ noticeId: `await-ask-owner:${name}`, text })
-    } catch (error) {
-      return failedAskOwner(agentName, name, error)
+    const filer = await lookupFiler(agentRoot, filerId)
+    const isA2A = existing.filed_from === "a2a"
+    const noticeId = `await:${name}:asked_owner:${String(existing.created_at)}`
+    const question = formatOwnerQuestion(parsed.question, parsed.choices)
+    const ownerText = filer.isOwner ? question : askedOwnerText(question, filer.name ?? (isA2A ? "a connected agent" : "a friend"))
+
+    let alert: AwaitAlertResult | null = null
+    let sent = false
+    if (isA2A) {
+      try {
+        alert = await deliverAwaitAlert({ awaitFile: { ...existing, alert: "a2a" }, reason: "asked_owner", observation: question, content: question, deliveryId: noticeId, agentRoot, agentName, deliveryDeps: resolveDeliveryDeps(agentName) })
+      } catch (error) {
+        emitNervesEvent({ level: "error", component: "repertoire", event: "repertoire.await_alert_error", message: "await alert delivery threw", meta: { agent: agentName, name, error: error instanceof Error ? error.message : String(error) } })
+      }
+      sent = delivered(alert)
     }
+    if (!sent) {
+      try {
+        await (injected.notifyOwner ? injected.notifyOwner(agentName) : defaultNotifyOwner(agentName))({ noticeId, text: ownerText })
+      } catch (error) {
+        return failedAskOwner(agentName, name, error)
+      }
+    }
+
+    let friendNotice: AwaitAlertResult | null = null
+    const tellsFriend = !isA2A && !filer.isOwner && Boolean(filerId)
+    if (tellsFriend) {
+      try {
+        friendNotice = await deliverAwaitAlert({ awaitFile: existing, reason: "asked_owner", observation: observation.trim(), content: `About "${existing.condition ?? name}": I have asked the owner how to proceed and will let you know what they decide.`, deliveryId: `${noticeId}:filer`, agentRoot, agentName, deliveryDeps: resolveDeliveryDeps(agentName) })
+      } catch (error) {
+        emitNervesEvent({ level: "error", component: "repertoire", event: "repertoire.await_alert_error", message: "await alert delivery threw", meta: { agent: agentName, name, error: error instanceof Error ? error.message : String(error) } })
+      }
+    }
+
+    const archive = archiveAwait(agentRoot, name, {
+      status: "asked_owner",
+      asked_at: new Date().toISOString(),
+      ask_question: parsed.question,
+      ask_choices: parsed.choices.join(" | "),
+      resolution_observation: observation.trim(),
+    })
+    /* v8 ignore next -- defensive: archiveAwait only fails on the file-disappears-mid-call race already covered by v8 ignore inside archiveAwait @preserve */
+    if (!archive.ok) return JSON.stringify({ error: archive.error })
+    if (!tellsFriend || delivered(friendNotice)) fulfillAwaitObligation(agentRoot, archive.file)
+
+    emitNervesEvent({
+      component: "repertoire",
+      event: "repertoire.await_asked_owner",
+      message: "await closed by asking the owner",
+      meta: { agent: agentName, name, choices: parsed.choices.length },
+    })
+
+    const summary = (result: AwaitAlertResult | null) => result ? { attempted: result.attempted, status: result.delivery?.status ?? null, skipped: result.skipped ?? null } : null
+    return JSON.stringify({
+      verdict: "ask_owner",
+      asked: true,
+      archived: awaitDoneFilePath(agentRoot, name),
+      alert: summary(alert),
+      ...(tellsFriend ? { filerNotice: summary(friendNotice) } : {}),
+    })
+  } finally {
+    askOwnerInFlight.delete(inFlightKey)
   }
-
-  const archive = archiveAwait(agentRoot, name, {
-    status: "asked_owner",
-    asked_at: new Date().toISOString(),
-    ask_question: parsed.question,
-    ask_choices: parsed.choices.join(" | "),
-    resolution_observation: observation.trim(),
-  })
-  /* v8 ignore next -- defensive: archiveAwait only fails on the file-disappears-mid-call race already covered by v8 ignore inside archiveAwait @preserve */
-  if (!archive.ok) return JSON.stringify({ error: archive.error })
-  fulfillAwaitObligation(agentRoot, archive.file)
-
-  emitNervesEvent({
-    component: "repertoire",
-    event: "repertoire.await_asked_owner",
-    message: "await closed by asking the owner",
-    meta: { agent: agentName, name, choices: parsed.choices.length },
-  })
-
-  return JSON.stringify({
-    verdict: "ask_owner",
-    asked: true,
-    archived: awaitDoneFilePath(agentRoot, name),
-    alert: alert ? { attempted: alert.attempted, status: alert.delivery?.status ?? null, skipped: alert.skipped ?? null } : null,
-  })
 }
 
 interface FileAwaitArgs {
