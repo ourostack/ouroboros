@@ -1,6 +1,9 @@
 import * as fs from "node:fs"
 import * as path from "node:path"
-import { afterEach, describe, expect, it } from "vitest"
+import { afterEach, describe, expect, it, vi } from "vitest"
+
+vi.mock("../../nerves/runtime", () => ({ emitNervesEvent: vi.fn() }))
+import { emitNervesEvent } from "../../nerves/runtime"
 import { createTmpBundle, type TmpBundleHandle } from "../test-helpers/tmpdir-bundle"
 import { FileOutboxStore, OUTBOX_LIST_MAX_CHARS, OUTBOX_MAX_BODY_CHARS, OUTBOX_MAX_ENTRIES, isOutboxEntryId, outboxRoot } from "../../a2a/outbox-store"
 
@@ -54,6 +57,17 @@ describe("peer outbox store", () => {
     for (let i = 0; i < OUTBOX_MAX_ENTRIES + 3; i += 1) outbox.append("q", { kind: "k", body: String(i) }, 1_760_000_100_000 + i)
     expect(fs.readdirSync(path.join(outboxRoot(agentRoot), "q"))).toHaveLength(OUTBOX_MAX_ENTRIES)
     expect(outbox.list("q", { limit: 1 }).entries[0]!.body).toBe("3")
+  })
+
+  it("warns once per append that drops unread entries, and says nothing below the cap", () => {
+    vi.mocked(emitNervesEvent).mockClear()
+    const { store: outbox } = store()
+    const warn = () => vi.mocked(emitNervesEvent).mock.calls.filter(([event]) => event.event === "senses.a2a_outbox_evicted")
+    for (let i = 0; i < OUTBOX_MAX_ENTRIES; i += 1) outbox.append("w", { kind: "k", body: String(i) }, 1_760_000_200_000 + i)
+    expect(warn()).toHaveLength(0)
+    outbox.append("w", { kind: "k", body: "over" }, 1_760_000_300_000)
+    expect(warn()).toHaveLength(1)
+    expect(warn()[0]![0]).toMatchObject({ level: "warn", meta: { friendId: "w", evicted: 1, cap: OUTBOX_MAX_ENTRIES } })
   })
 
   it("acks only this friend's own entries and reports the rest as unknown", () => {

@@ -87,7 +87,17 @@ export class FileOutboxStore {
     fs.writeFileSync(tmp, `${JSON.stringify(entry, null, 2)}\n`, { mode: 0o600 })
     fs.renameSync(tmp, file)
     const ids = sortedIds(dir)
-    for (const stale of ids.slice(0, Math.max(0, ids.length - OUTBOX_MAX_ENTRIES))) fs.rmSync(path.join(dir, `${stale}.json`), { force: true })
+    const evicted = ids.slice(0, Math.max(0, ids.length - OUTBOX_MAX_ENTRIES))
+    for (const stale of evicted) fs.rmSync(path.join(dir, `${stale}.json`), { force: true })
+    if (evicted.length > 0) {
+      emitNervesEvent({
+        level: "warn",
+        component: "senses",
+        event: "senses.a2a_outbox_evicted",
+        message: "a peer outbox is full, so its oldest unread entries were dropped",
+        meta: { friendId, evicted: evicted.length, oldestDropped: evicted[0], cap: OUTBOX_MAX_ENTRIES },
+      })
+    }
     emitNervesEvent({
       component: "senses",
       event: "senses.a2a_outbox_appended",
