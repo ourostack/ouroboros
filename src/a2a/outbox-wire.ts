@@ -53,13 +53,13 @@ const refuse = (message: string): OutboxOutcome => ({ ok: false, code: OUTBOX_ER
 const invalid = (message: string): OutboxOutcome => ({ ok: false, code: OUTBOX_ERROR_INVALID, message })
 
 /** Runs one verified outbox command for `friend`. `friend` must be the record found by the signed sender DID. */
-export function handleOutboxCommand(input: {
+export async function handleOutboxCommand(input: {
   agentRoot: string
   friend: FriendRecord | undefined
   method: OutboxMethod
   params: Record<string, unknown>
   now?: number
-}): OutboxOutcome {
+}): Promise<OutboxOutcome> {
   const { agentRoot, friend, method, params } = input
   if (!friend || friend.admissionState !== "active") {
     emitNervesEvent({ level: "warn", component: "senses", event: "senses.a2a_outbox_refused", message: "refused an outbox call from a peer that is not an active friend", meta: { method, friendId: friend?.id ?? null } })
@@ -83,6 +83,6 @@ export function handleOutboxCommand(input: {
   }
   const { id, version, note } = params
   if (typeof id !== "string" || typeof version !== "string" || typeof note !== "string") return invalid("id, version and note must be strings")
-  const resolved = resolveFailureReport(agentRoot, { id, version, note, byFriendId: friend.id }, input.now)
+  const resolved = await resolveFailureReport(agentRoot, { id, version, note, byFriendId: friend.id }, input.now)
   return resolved.ok ? { ok: true, result: { id: resolved.id, status: resolved.status } } : refuse(`report not resolved: ${resolved.reason}`)
 }

@@ -495,7 +495,7 @@ export async function startA2AServer(options: StartA2AServerOptions): Promise<A2
           writeJson(res, 200, errorResponse(rpc.id, OUTBOX_ERROR_INVALID, "the signed method does not match the requested method"))
           return
         }
-        const outcome = handleOutboxCommand({ agentRoot, friend: bridged.friend, method: command.method, params: command.params })
+        const outcome = await handleOutboxCommand({ agentRoot, friend: bridged.friend, method: command.method, params: command.params })
         if (!outcome.ok) {
           writeJson(res, 200, errorResponse(rpc.id, outcome.code, outcome.message))
           return

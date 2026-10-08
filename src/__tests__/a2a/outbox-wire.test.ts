@@ -35,35 +35,35 @@ describe("outbox command handling", () => {
     return { agentRoot: tmp.agentRoot, outbox: new FileOutboxStore(tmp.agentRoot) }
   }
 
-  it("refuses a missing, unverified or revoked friend", () => {
+  it("refuses a missing, unverified or revoked friend", async () => {
     const { agentRoot } = setup()
     for (const sender of [undefined, friend("p", { admissionState: "unverified" }), friend("p", { admissionState: "revoked" })]) {
-      expect(handleOutboxCommand({ agentRoot, friend: sender, method: "outbox/list", params: {} })).toMatchObject({ ok: false, code: -32003 })
+      expect(await handleOutboxCommand({ agentRoot, friend: sender, method: "outbox/list", params: {} })).toMatchObject({ ok: false, code: -32003 })
     }
   })
 
-  it("lists and acks only the caller's own outbox and ignores any parameter naming another peer", () => {
+  it("lists and acks only the caller's own outbox and ignores any parameter naming another peer", async () => {
     const { agentRoot, outbox } = setup()
     const mine = outbox.append("me", { kind: "await_outcome", body: "mine" }, 1_760_000_000_000)
     const secret = outbox.append("them", { kind: "failure_report", body: "secret" }, 1_760_000_000_001)
-    const listed = handleOutboxCommand({ agentRoot, friend: friend("me"), method: "outbox/list", params: { friendId: "them", peer: "them", limit: 500 } })
+    const listed = await handleOutboxCommand({ agentRoot, friend: friend("me"), method: "outbox/list", params: { friendId: "them", peer: "them", limit: 500 } })
     expect(listed).toEqual({ ok: true, result: { entries: [expect.objectContaining({ id: mine.id, body: "mine" })], nextCursor: mine.id, more: false } })
     expect(JSON.stringify(listed)).not.toContain("secret")
-    expect(handleOutboxCommand({ agentRoot, friend: friend("me"), method: "outbox/list", params: { since: mine.id, limit: 1 } })).toEqual({ ok: true, result: { entries: [], nextCursor: null, more: false } })
-    expect(handleOutboxCommand({ agentRoot, friend: friend("me"), method: "outbox/ack", params: { ids: [secret.id, mine.id] } })).toEqual({ ok: true, result: { acked: [mine.id], unknown: [secret.id] } })
+    expect(await handleOutboxCommand({ agentRoot, friend: friend("me"), method: "outbox/list", params: { since: mine.id, limit: 1 } })).toEqual({ ok: true, result: { entries: [], nextCursor: null, more: false } })
+    expect(await handleOutboxCommand({ agentRoot, friend: friend("me"), method: "outbox/ack", params: { ids: [secret.id, mine.id] } })).toEqual({ ok: true, result: { acked: [mine.id], unknown: [secret.id] } })
     expect(outbox.list("them").entries).toHaveLength(1)
   })
 
-  it("rejects malformed list and ack parameters", () => {
+  it("rejects malformed list and ack parameters", async () => {
     const { agentRoot } = setup()
     const call = (method: "outbox/list" | "outbox/ack", params: Record<string, unknown>) => handleOutboxCommand({ agentRoot, friend: friend("me"), method, params })
-    expect(call("outbox/list", { since: 5 })).toMatchObject({ ok: false, code: -32602 })
-    expect(call("outbox/list", { limit: "2" })).toMatchObject({ ok: false, code: -32602 })
-    expect(call("outbox/list", { limit: Number.POSITIVE_INFINITY })).toMatchObject({ ok: false, code: -32602 })
-    expect(call("outbox/ack", {})).toMatchObject({ ok: false, code: -32602 })
-    expect(call("outbox/ack", { ids: [] })).toMatchObject({ ok: false, code: -32602 })
-    expect(call("outbox/ack", { ids: [1] })).toMatchObject({ ok: false, code: -32602 })
-    expect(call("outbox/ack", { ids: Array.from({ length: 101 }, (_, i) => String(i)) })).toMatchObject({ ok: false, code: -32602 })
+    expect(await call("outbox/list", { since: 5 })).toMatchObject({ ok: false, code: -32602 })
+    expect(await call("outbox/list", { limit: "2" })).toMatchObject({ ok: false, code: -32602 })
+    expect(await call("outbox/list", { limit: Number.POSITIVE_INFINITY })).toMatchObject({ ok: false, code: -32602 })
+    expect(await call("outbox/ack", {})).toMatchObject({ ok: false, code: -32602 })
+    expect(await call("outbox/ack", { ids: [] })).toMatchObject({ ok: false, code: -32602 })
+    expect(await call("outbox/ack", { ids: [1] })).toMatchObject({ ok: false, code: -32602 })
+    expect(await call("outbox/ack", { ids: Array.from({ length: 101 }, (_, i) => String(i)) })).toMatchObject({ ok: false, code: -32602 })
   })
 
   it("lets only an escalation holder resolve its own report", async () => {
@@ -75,10 +75,10 @@ describe("outbox command handling", () => {
     const filed = await fileFailureReport(agentRoot, store, { ariWords: "a", tried: "b", error: "c", severity: "low", origin: { friendId: "ari", channel: "telegram", key: "k" } })
     if (!filed.ok) throw new Error("setup failed")
     const params = { id: filed.id, version: "0.1.0-alpha.9", note: "Fixed." }
-    expect(handleOutboxCommand({ agentRoot, friend: friend("ari"), method: "report/resolve", params })).toMatchObject({ ok: false, code: -32003, message: "report/resolve needs the escalation grant" })
-    expect(handleOutboxCommand({ agentRoot, friend: friend("claude"), method: "report/resolve", params: { id: 1, version: "x", note: "n" } })).toMatchObject({ ok: false, code: -32602 })
-    expect(handleOutboxCommand({ agentRoot, friend: friend("claude"), method: "report/resolve", params: { ...params, version: "soon" } })).toMatchObject({ ok: false, code: -32003, message: "report not resolved: bad_version" })
-    expect(handleOutboxCommand({ agentRoot, friend: friend("claude"), method: "report/resolve", params })).toEqual({ ok: true, result: { id: filed.id, status: "resolved" } })
+    expect(await handleOutboxCommand({ agentRoot, friend: friend("ari"), method: "report/resolve", params })).toMatchObject({ ok: false, code: -32003, message: "report/resolve needs the escalation grant" })
+    expect(await handleOutboxCommand({ agentRoot, friend: friend("claude"), method: "report/resolve", params: { id: 1, version: "x", note: "n" } })).toMatchObject({ ok: false, code: -32602 })
+    expect(await handleOutboxCommand({ agentRoot, friend: friend("claude"), method: "report/resolve", params: { ...params, version: "soon" } })).toMatchObject({ ok: false, code: -32003, message: "report not resolved: bad_version" })
+    expect(await handleOutboxCommand({ agentRoot, friend: friend("claude"), method: "report/resolve", params })).toEqual({ ok: true, result: { id: filed.id, status: "resolved" } })
     expect(readFailureReport(agentRoot, filed.id)).toMatchObject({ status: "resolved" })
   })
 })
