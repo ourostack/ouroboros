@@ -433,6 +433,12 @@ export function updateStewardPolicy(agentRoot: string, input: { expectedVersion:
       return current
     }
     if (current.version !== input.expectedVersion) throw new Error(`steward policy version changed: expected ${input.expectedVersion}, got ${current.version}`)
+    if (input.mutation.kind === "set_desired_state") {
+      const existing = current.desiredStates[key]
+      const sameValue = existing !== undefined && existing.value === (affectedKeyResult as DesiredStateEntry).value && existing.expiresAt === expiresAt
+      // Restating what is already recorded is a no-op: no version bump, no audit row, no provenance rewrite.
+      if (sameValue) return current
+    }
     optionalExpiry(expiresAt, now)
     const postimage = JSON.stringify(next, null, 2)
     if (Buffer.byteLength(postimage) > MAX_POLICY_BYTES) throw new Error("steward policy exceeds its bound")

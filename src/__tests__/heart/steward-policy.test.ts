@@ -102,6 +102,35 @@ describe("steward policy", () => {
     expect(readStewardPolicy(agentRoot).version).toBe(5)
   })
 
+  it("treats a same-value set_desired_state as an idempotent no-op", async () => {
+    const agentRoot = root()
+    const policyFile = path.join(agentRoot, "state", "policy", "steward.json")
+    const auditFile = path.join(agentRoot, "state", "policy", "policy-audit.ndjson")
+    const first = updateStewardPolicy(agentRoot, { expectedVersion: 0, actor: ari, mutation: { kind: "set_desired_state", key: "container:calibre", value: "off", provenance: "stated", source: "original source" } })
+    const bytes = fs.readFileSync(policyFile, "utf8")
+    const audit = fs.readFileSync(auditFile, "utf8")
+    const again = updateStewardPolicy(agentRoot, { expectedVersion: first.version, actor: { ...ari, sessionEventId: "evt-restate", authorization: { ...ari.authorization, requestId: "request-restate" } }, mutation: { kind: "set_desired_state", key: "container:calibre", value: "off", provenance: "stated", source: "restated later" } })
+    expect(again.version).toBe(first.version)
+    expect(again.desiredStates["container:calibre"]!.source).toBe("original source")
+    expect(fs.readFileSync(policyFile, "utf8")).toBe(bytes)
+    expect(fs.readFileSync(auditFile, "utf8")).toBe(audit)
+    const changed = updateStewardPolicy(agentRoot, { expectedVersion: first.version, actor: { ...ari, sessionEventId: "evt-change", authorization: { ...ari.authorization, requestId: "request-change" } }, mutation: { kind: "set_desired_state", key: "container:calibre", value: "on", provenance: "stated", source: "real change" } })
+    expect(changed.version).toBe(first.version + 1)
+    const expiring = updateStewardPolicy(agentRoot, { expectedVersion: changed.version, actor: { ...ari, sessionEventId: "evt-exp", authorization: { ...ari.authorization, requestId: "request-exp" } }, mutation: { kind: "set_desired_state", key: "container:calibre", value: "on", provenance: "stated", source: "now expiring", expiresAt: "2099-01-02T00:00:00.000Z" } })
+    expect(expiring.version).toBe(changed.version + 1)
+  })
+
+  it("tool result says unchanged when a restatement matches the recorded value", async () => {
+    const agentRoot = root()
+    const relationshipAuthorization = { profileId: "sanctuary-owner", requestId: "r1", authorizedContextScopes: [], advertisedToolNames: [], authorizeTool: () => ({ allowed: true as const, receiptId: "auth", profileVersion: 7 }), actor: { friendId: "ari", trustLevel: "family" as const, sessionEventId: "evt-1" } }
+    const context = { signin: async () => undefined, agentRoot, currentSession: { friendId: "ari", channel: "telegram", key: "telegram_owner" }, relationshipAuthorization }
+    const first = JSON.parse(await stewardPolicyToolDefinition.handler({ action: "set_desired_state", provenance: "stated", key: "container:calibre", value: "off", source: "first" }, context as any) as string)
+    expect(first.unchanged).toBeUndefined()
+    const later = { ...context, relationshipAuthorization: { ...relationshipAuthorization, requestId: "r2", actor: { ...relationshipAuthorization.actor, sessionEventId: "evt-2" } } }
+    const second = JSON.parse(await stewardPolicyToolDefinition.handler({ action: "set_desired_state", provenance: "stated", key: "container:calibre", value: "off", source: "second" }, later as any) as string)
+    expect(second).toMatchObject({ unchanged: true, version: first.version, note: "already recorded as off (source: first)" })
+  })
+
   it("accepts an admitted delegated owner command over A2A and records the delegated source", async () => {
     const agentRoot = root()
     const delegatedCommand = { principalFriendId: "ari", principalName: "Ari", delegateFriendId: "peer", delegateName: "Claude Code", delegateDid: "did:key:z6MkPeer", commandId: "task-1", noticeId: "delegated:task-1" }

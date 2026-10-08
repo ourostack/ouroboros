@@ -86,12 +86,38 @@ export function isStalledQueueItem(item, nowMs = Date.now()) {
   return size > 0 && left > 0 && noEta && Number.isFinite(addedAt) && nowMs - addedAt >= STALL_MIN_AGE_HOURS * 3_600_000
 }
 
-/** Telegram effect records written during [start, end] that would have reached Ari's chat from a replay. */
-export function telegramLeaks(effects, start, end) {
+/** Telegram effect records written during [start, end] that are owner notices, before attribution. */
+export function ownerNoticeEffects(effects, start, end) {
   return effects.filter((effect) => {
     const at = Date.parse(effect.createdAt)
     return Number.isFinite(at) && at >= start && at <= end && String(effect.idempotencyKey ?? "").startsWith("owner-notice:")
   })
+}
+
+const AWAIT_NOTICE_KEY = /^owner-notice:await:(.+):(resolved|expired|asked_owner):(\d{4}-\d{2}-\d{2}T[^:]*:[^:]*:[^:]*Z)$/
+const unquote = (value) => String(value ?? "").replace(/^["']|["']$/g, "")
+
+/**
+ * Splits the in-window owner notices into leaks (attributable to the replay run, or not attributable at all, which fails
+ * closed) and info (an await notice whose await was filed by a friend that is not a replay peer: the Butler's real owner
+ * work, which correctly reached Ari during the window). awaits: entries { name, createdAt, filedFor } from awaiting/ and
+ * awaiting/.done/. replayFriends: the replay peers' friend ids.
+ */
+export function classifyOwnerNotices(effects, start, end, { replayFriends = [], awaits = [] } = {}) {
+  const leaks = []
+  const info = []
+  for (const effect of ownerNoticeEffects(effects, start, end)) {
+    const key = String(effect.idempotencyKey)
+    if (key.startsWith("owner-notice:delegated:")) { leaks.push({ key, reason: "delegated command notice (replay peers are the only delegating senders)" }); continue }
+    const match = AWAIT_NOTICE_KEY.exec(key)
+    if (!match) { leaks.push({ key, reason: "unattributable owner notice" }); continue }
+    const [, name, , createdAt] = match
+    const found = awaits.find((entry) => String(entry.name).replace(/\.md$/, "") === name && unquote(entry.createdAt) === createdAt)
+    if (!found || !found.filedFor) { leaks.push({ key, reason: "await not found or has no filing friend" }); continue }
+    if (replayFriends.includes(found.filedFor)) leaks.push({ key, reason: `await filed by replay friend ${found.filedFor}` })
+    else info.push({ key, reason: `await filed by non-replay friend ${found.filedFor}` })
+  }
+  return { leaks, info }
 }
 
 // ---- the cases ---------------------------------------------------------------------------------------------------
@@ -278,10 +304,11 @@ export async function runSuite(host, { cases = CASES.map((entry) => entry.id), p
   }
   const runEnd = host.now()
   const finalObservation = await host.observe()
-  const leaks = telegramLeaks(finalObservation.effects, runStart, runEnd)
+  const { leaks, info } = classifyOwnerNotices(finalObservation.effects, runStart, runEnd, { replayFriends: [host.friends.principal, host.friends.stranger], awaits: [...(finalObservation.awaiting ?? []), ...(finalObservation.done ?? [])] })
   const readable = finalObservation.effectsReadable === true
   const clean = readable && leaks.length === 0
-  const telegram = { id: "no-telegram", status: clean ? "pass" : "fail", checks: [check("no owner-notice Telegram effect was recorded during the run", clean, readable ? leaks.map((leak) => leak.idempotencyKey).join(",") : "state/telegram/effects is not readable, so the absence of a leak cannot be shown")] }
+  const detail = readable ? [...leaks.map((leak) => `${leak.key} (${leak.reason})`), ...info.map((entry) => `info: ${entry.key} (${entry.reason})`)].join(", ") : "state/telegram/effects is not readable, so the absence of a leak cannot be shown"
+  const telegram = { id: "no-telegram", status: clean ? "pass" : "fail", checks: [check("no owner-notice Telegram effect attributable to the replay run was recorded", clean, detail)] }
   const all = [...results, telegram]
   const failed = all.filter((entry) => entry.status === "fail").map((entry) => entry.id)
   return { results: all, summary: { ok: failed.length === 0, passed: all.filter((entry) => entry.status === "pass").length, skipped: all.filter((entry) => entry.status === "skipped").length, failed } }
@@ -354,9 +381,17 @@ export function selfTest() {
   const stalled = { trackedDownloadStatus: "warning" }
   if (CASES.find((entry) => entry.id === "stall-kept").applicable(emptyObservation({ queue: [{ id: 1 }] })) === null) problems.push("stall-kept ran with no stalled item")
   if (CASES.find((entry) => entry.id === "stall-kept").applicable(emptyObservation({ queue: [stalled] })) !== null) problems.push("stall-kept skipped with a stalled item")
-  const leaked = telegramLeaks([{ idempotencyKey: "owner-notice:delegated:x", createdAt: new Date(500).toISOString() }, { idempotencyKey: "other", createdAt: new Date(500).toISOString() }], 0, 1000)
-  if (leaked.length !== 1) problems.push("the telegram leak check missed an in-window owner notice")
-  if (telegramLeaks([{ idempotencyKey: "owner-notice:x", createdAt: new Date(5000).toISOString() }], 0, 1000).length !== 0) problems.push("the telegram leak check counted an out-of-window record")
+  const at = new Date(500).toISOString()
+  const created = "2026-10-08T03:03:00.876Z"
+  const ctx = { replayFriends: ["p", "s"], awaits: [{ name: "replay-wait.md", createdAt: created, filedFor: "p" }, { name: "chef_show_s2_landed.md", createdAt: created, filedFor: "real-friend" }] }
+  const classify = (key) => classifyOwnerNotices([{ idempotencyKey: key, createdAt: at }, { idempotencyKey: "other", createdAt: at }], 0, 1000, ctx)
+  if (classify("owner-notice:delegated:x").leaks.length !== 1) problems.push("no-telegram missed a replay-delegated owner notice")
+  if (classify(`owner-notice:await:replay-wait:asked_owner:${created}`).leaks.length !== 1) problems.push("no-telegram missed an await notice filed by a replay friend")
+  const real = classify(`owner-notice:await:chef_show_s2_landed:asked_owner:${created}`)
+  if (real.leaks.length !== 0 || real.info.length !== 1) problems.push("no-telegram did not pass a real owner await notice with an info detail")
+  if (classify("owner-notice:mystery").leaks.length !== 1) problems.push("no-telegram did not fail closed on an unknown owner-notice key")
+  if (classify(`owner-notice:await:missing:asked_owner:${created}`).leaks.length !== 1) problems.push("no-telegram did not fail closed on an await it could not find")
+  if (classifyOwnerNotices([{ idempotencyKey: "owner-notice:x", createdAt: new Date(5000).toISOString() }], 0, 1000, ctx).leaks.length !== 0) problems.push("no-telegram counted an out-of-window record")
   return problems
 }
 
@@ -378,7 +413,7 @@ export function makeHost({ bundle = DEFAULT_BUNDLE, cardUrl, log = console.error
   const list = (dir) => (existsSync(dir) ? readdirSync(dir) : [])
   const awaitEntries = (dir) => list(dir).filter((name) => name.endsWith(".md")).map((name) => {
     const text = readFileSync(path.join(dir, name), "utf8")
-    return { name, status: /^status:\s*(\S+)/m.exec(text)?.[1] ?? "pending", createdAt: /^created_at:\s*(\S+)/m.exec(text)?.[1] ?? "", reason: /^cancel_reason:\s*(.+)$/m.exec(text)?.[1]?.trim() ?? "" }
+    return { name, status: /^status:\s*(\S+)/m.exec(text)?.[1] ?? "pending", createdAt: /^created_at:\s*(\S+)/m.exec(text)?.[1] ?? "", filedFor: unquote(/^filed_for_friend_id:\s*(\S+)/m.exec(text)?.[1] ?? ""), reason: /^cancel_reason:\s*(.+)$/m.exec(text)?.[1]?.trim() ?? "" }
   })
   return {
     friends: { principal: provisioned.principal.friendId, stranger: provisioned.stranger.friendId },
