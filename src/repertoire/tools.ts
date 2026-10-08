@@ -44,6 +44,7 @@ const SANCTUARY_RELATIONSHIP_BASE_TOOLS = new Set([
   "query_cares",
   "care_manage",
   "await_condition",
+  "report_failure",
   "resolve_await",
   "cancel_await",
   "list_recent_attachments",

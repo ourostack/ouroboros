@@ -81,6 +81,7 @@ exports[`tool registry contract > tool surface area snapshot 1`] = `
   "query_session",
   "read_config",
   "read_file",
+  "report_failure",
   "resolve_await",
   "restart_runtime",
   "revive_sense",
