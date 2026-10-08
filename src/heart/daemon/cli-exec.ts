@@ -7267,8 +7267,10 @@ async function executeA2ACommand(command: A2ACliCommand & { agent: string }, dep
 
   /* v8 ignore start -- foreground serve intentionally waits for process signals; a2a/server has route-level coverage @preserve */
   const { startA2AServer } = await import("../../a2a/server")
+  const { escalationOptionsFor, sendOwnerNoticeViaTelegram } = await import("../../a2a/escalation-wiring")
   const handle = await startA2AServer({
     agentName: command.agent,
+    ...escalationOptionsFor(command.agent, (notice) => sendOwnerNoticeViaTelegram(command.agent, notice)),
     ...(command.host ? { host: command.host } : {}),
     ...(command.port ? { port: command.port } : {}),
     ...(command.baseUrl ? { baseUrl: command.baseUrl } : {}),

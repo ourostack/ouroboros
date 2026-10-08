@@ -3,6 +3,7 @@ import * as path from "node:path"
 import { afterEach, describe, expect, it } from "vitest"
 import { FileFriendStore, type FriendRecord } from "@ouro.bot/friends"
 import { createTmpBundle, type TmpBundleHandle } from "../test-helpers/tmpdir-bundle"
+import { overrideTrustedUidForTests } from "../../a2a/trusted-files"
 import { escalationGrantsPath, escalationHolders, holdsEscalation, readEscalationGrants, setEscalationGrant } from "../../a2a/escalation-grants"
 
 let tmp: TmpBundleHandle | null = null
@@ -43,7 +44,7 @@ describe("escalation grants", () => {
     const first = setEscalationGrant(agentRoot, "peer", { grant: true, source: "Ari, test" }, new Date(NOW))
     expect(first).toEqual({ changed: true, backup: null })
     expect(readEscalationGrants(agentRoot)).toEqual({ peer: { scope: "escalation", grantedAt: NOW, source: "Ari, test" } })
-    expect(fs.statSync(escalationGrantsPath(agentRoot)).mode & 0o777).toBe(0o600)
+    expect(fs.statSync(escalationGrantsPath(agentRoot)).mode & 0o777).toBe(0o644)
     expect(setEscalationGrant(agentRoot, "peer", { grant: true, source: "again" })).toEqual({ changed: false, backup: null })
     const revoked = setEscalationGrant(agentRoot, "peer", { grant: false }, new Date("2026-10-09T00:00:00.000Z"))
     expect(revoked.changed).toBe(true)
@@ -65,5 +66,56 @@ describe("escalation grants", () => {
     expect((await escalationHolders(agentRoot, store)).map((holder) => holder.id)).toEqual(["claude"])
     const listless = { listAll: undefined } as unknown as FileFriendStore
     expect(await escalationHolders(agentRoot, listless)).toEqual([])
+  })
+})
+
+describe("escalation grants trust", () => {
+  const grant = { scope: "escalation", grantedAt: NOW, source: "owner" }
+  const write = (agentRoot: string, mode: number) => {
+    const file = escalationGrantsPath(agentRoot)
+    fs.mkdirSync(path.dirname(file), { recursive: true })
+    fs.writeFileSync(file, JSON.stringify({ grants: { peer: grant } }))
+    fs.chmodSync(file, mode)
+    return file
+  }
+
+  it("reads a file its trusted owner alone can write", () => {
+    const agentRoot = root()
+    write(agentRoot, 0o644)
+    expect(readEscalationGrants(agentRoot)).toEqual({ peer: grant })
+  })
+
+  it("ignores a file that group or other can write", () => {
+    const agentRoot = root()
+    write(agentRoot, 0o664)
+    expect(readEscalationGrants(agentRoot)).toEqual({})
+    write(agentRoot, 0o646)
+    expect(readEscalationGrants(agentRoot)).toEqual({})
+  })
+
+  it("ignores a directory that other users can write", () => {
+    const agentRoot = root()
+    const file = write(agentRoot, 0o644)
+    fs.chmodSync(path.dirname(file), 0o777)
+    expect(readEscalationGrants(agentRoot)).toEqual({})
+  })
+
+  it("ignores a symlinked file", () => {
+    const agentRoot = root()
+    const file = write(agentRoot, 0o644)
+    fs.renameSync(file, `${file}.real`)
+    fs.symlinkSync(`${file}.real`, file)
+    expect(readEscalationGrants(agentRoot)).toEqual({})
+  })
+
+  it("ignores a file owned by anyone but the trusted uid (the Butler's own uid is not trusted)", () => {
+    const agentRoot = root()
+    write(agentRoot, 0o644)
+    overrideTrustedUidForTests(process.getuid!() + 1)
+    try {
+      expect(readEscalationGrants(agentRoot)).toEqual({})
+    } finally {
+      overrideTrustedUidForTests(process.getuid!())
+    }
   })
 })

@@ -2,11 +2,13 @@ import * as fs from "node:fs"
 import * as path from "node:path"
 import type { FriendRecord, FriendStore } from "@ouro.bot/friends"
 import { emitNervesEvent } from "../nerves/runtime"
+import { isTrustedDirectory, readTrustedJson } from "./trusted-files"
 
 /**
  * The escalation grant lets one A2A peer (in practice the desk's Claude Code) receive this agent's failure reports and
  * close them with `report/resolve`. It is an operator-set statement kept in the bundle at
- * `state/a2a/escalation-grants.json`, written only by `ouro a2a escalation grant|revoke`. Trust tier never implies it:
+ * `state/a2a/escalation-grants.json`, written only by `ouro a2a escalation grant|revoke` run as root, so the file and its
+ * directory are root-owned and no one else can write them (the agent's own shell cannot forge a grant). Trust tier never implies it:
  * a peer holds the grant only while it is listed here AND its friend record is active family. A missing, unreadable or
  * malformed file means nobody holds it, so every read fails closed.
  */
@@ -31,12 +33,9 @@ function validGrant(value: unknown): value is EscalationGrant {
 
 /** Every well-formed grant in the file, keyed by friend id. Anything else in the file is ignored. */
 export function readEscalationGrants(agentRoot: string): Record<string, EscalationGrant> {
-  let parsed: unknown
-  try {
-    parsed = JSON.parse(fs.readFileSync(escalationGrantsPath(agentRoot), "utf8"))
-  } catch {
-    return {}
-  }
+  const file = escalationGrantsPath(agentRoot)
+  if (!isTrustedDirectory(path.dirname(file))) return {}
+  const parsed = readTrustedJson(file)
   const grants = (parsed as { grants?: unknown } | null)?.grants
   if (!grants || typeof grants !== "object" || Array.isArray(grants)) return {}
   return Object.fromEntries(Object.entries(grants).filter((entry): entry is [string, EscalationGrant] => validGrant(entry[1])))
@@ -48,7 +47,7 @@ export function setEscalationGrant(agentRoot: string, friendId: string, change: 
   const current = readEscalationGrants(agentRoot)
   const had = current[friendId]
   if (change.grant ? had !== undefined : had === undefined) return { changed: false, backup: null }
-  fs.mkdirSync(path.dirname(file), { recursive: true })
+  fs.mkdirSync(path.dirname(file), { recursive: true, mode: 0o755 })
   let backup: string | null = null
   if (fs.existsSync(file)) {
     backup = `${file}.bak-${now.toISOString().replace(/[:.]/gu, "-")}`
@@ -58,7 +57,7 @@ export function setEscalationGrant(agentRoot: string, friendId: string, change: 
   if (change.grant) next[friendId] = { scope: "escalation", grantedAt: now.toISOString(), source: change.source }
   else delete next[friendId]
   const tmp = `${file}.${process.pid}.tmp`
-  fs.writeFileSync(tmp, `${JSON.stringify({ schemaVersion: 1, grants: next }, null, 2)}\n`, { mode: 0o600 })
+  fs.writeFileSync(tmp, `${JSON.stringify({ schemaVersion: 1, grants: next }, null, 2)}\n`, { mode: 0o644 })
   fs.renameSync(tmp, file)
   emitNervesEvent({
     component: "senses",
