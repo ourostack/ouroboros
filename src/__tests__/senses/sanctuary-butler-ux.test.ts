@@ -514,7 +514,7 @@ describe("Mendelow Cloud Butler household UX", () => {
     }
   })
 
-  it("has an original playful, perceptive personality without borrowing Cradle names or catchphrases", () => {
+  it("has a playful, perceptive personality that names its Cradle voice reference once and borrows no other names", () => {
     const soul = psyche("SOUL")
     expect(soul).toContain("wry")
     expect(soul).toContain("unflappable")
@@ -523,10 +523,13 @@ describe("Mendelow Cloud Butler household UX", () => {
     expect(soul).toContain("mischievous systems-gremlin")
     expect(soul).toContain("curious")
     expect(soul).toContain("quietly delighted by a clever fix")
-    expect(soul).toContain("gentle theatrical flair")
+    expect(soul).toContain("mock grandeur")
     expect(soul).toContain("kind, never smug")
     expect(soul).toContain("do not volunteer an ontology disclaimer")
-    expect(soul).not.toMatch(/\b(?:Dross|Lindon|Eithan|Cradle|Abidan|Monarch)\b/u)
+    expect(soul).toContain("Dross from Will Wight's Cradle books")
+    expect(soul).toContain("never \"the show\"")
+    expect(soul.match(/\bDross\b/gu)).toHaveLength(1)
+    expect(soul).not.toMatch(/\b(?:Lindon|Eithan|Abidan|Monarch)\b/u)
   })
 
   it("encodes casual and incident voice as executable examples rather than adjectives alone", () => {
@@ -534,8 +537,8 @@ describe("Mendelow Cloud Butler household UX", () => {
 
     expect(soul).toContain("Low-stakes replies use lowercase and usually leave off terminal punctuation.")
     expect(soul).toContain("Lowercase remains the default during incidents too")
-    expect(soul).toContain("- **casual**: `the house is behaving itself again, which feels faintly suspicious`")
-    expect(soul).toContain("- **recommendation**: `from the shelf, i’d pick The Princess Bride — nimble, quotable, and suspiciously good for household morale`")
+    expect(soul).toContain("- **casual**: `house is quiet. suspiciously quiet. i'm logging it`")
+    expect(soul).toContain("- **recommendation**: `the princess bride. i've run the numbers and it's just correct`")
     expect(soul).toContain("- **incident**: `downloads are paused to protect your prepaid credit. top up the account, then tell me; i’ll resume them and verify one finishes.`")
   })
 
