@@ -173,9 +173,36 @@ function askLedgerPath(agentRoot: string): string {
 }
 
 /** Every ask_owner closure is appended here, because the archive is overwritten when an await name is reused. */
-function recordAsk(agentRoot: string, entry: { filer: string | null; name: string; at: string }): void {
+function recordAsk(agentRoot: string, entry: { filer: string | null; name: string; at: string; question?: string }): void {
   fs.mkdirSync(awaitingDir(agentRoot), { recursive: true })
   fs.appendFileSync(askLedgerPath(agentRoot), `${JSON.stringify(entry)}\n`, "utf-8")
+}
+
+/**
+ * The most recent time the owner was asked about this await instance, read from the runtime ask ledger (never from model text).
+ * An instance is the await name filed at `createdAt`; an ask recorded before that belongs to an earlier use of the name.
+ */
+export function readOwnerAskForAwait(agentRoot: string, name: string, createdAt: string | null): { at: string; question: string | null } | null {
+  let raw: string
+  try {
+    raw = fs.readFileSync(askLedgerPath(agentRoot), "utf-8")
+  } catch {
+    return null
+  }
+  const createdMs = createdAt ? Date.parse(createdAt) : Number.NaN
+  let found: { at: string; question: string | null } | null = null
+  for (const line of raw.split("\n")) {
+    try {
+      const entry = JSON.parse(line) as { name?: unknown; at?: unknown; question?: unknown }
+      if (entry.name !== name || typeof entry.at !== "string") continue
+      const atMs = Date.parse(entry.at)
+      if (!Number.isFinite(atMs) || (Number.isFinite(createdMs) && atMs < createdMs)) continue
+      if (!found || atMs >= Date.parse(found.at)) found = { at: entry.at, question: typeof entry.question === "string" && entry.question.length > 0 ? entry.question : null }
+    } catch {
+      continue
+    }
+  }
+  return found
 }
 
 function recentAskCount(agentRoot: string, filer: string | null, now: number): number {
@@ -277,7 +304,7 @@ async function askOwnerTool(name: string, observation: string, question: unknown
     })
     /* v8 ignore next -- defensive: archiveAwait only fails on the file-disappears-mid-call race already covered by v8 ignore inside archiveAwait @preserve */
     if (!archive.ok) return JSON.stringify({ error: archive.error })
-    recordAsk(agentRoot, { filer: filerId, name, at: askedAt })
+    recordAsk(agentRoot, { filer: filerId, name, at: askedAt, question: parsed.question })
     if (!tellsFriend || delivered(friendNotice)) fulfillAwaitObligation(agentRoot, archive.file)
 
     emitNervesEvent({

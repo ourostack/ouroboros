@@ -2414,6 +2414,20 @@ describe("private runtime", () => {
     expect(content).not.toContain("last checkpoint")
   })
 
+  it("tells an await tick whether the owner was asked, from the ask ledger and only for this await instance", async () => {
+    const awaitingDir = path.join(agentRoot, "awaiting")
+    fs.mkdirSync(awaitingDir, { recursive: true })
+    const write = (name: string, createdAt: string) => fs.writeFileSync(path.join(awaitingDir, `${name}.md`), `---\ncondition: c\ncadence: 30m\nstatus: pending\ncreated_at: ${createdAt}\nfiled_from: unknown\nfiled_for_friend_id: null\nfiled_from_key: null\nrequest_id: null\n---\n\nbody`, "utf8")
+    write("chef-a", "2026-03-06T10:00:00.000Z")
+    write("chef-b", "2026-03-06T10:00:00.000Z")
+    fs.writeFileSync(path.join(awaitingDir, ".asks.jsonl"), `${JSON.stringify({ filer: null, name: "chef-a", at: "2026-03-06T11:00:00.000Z", question: "Keep waiting?" })}\n${JSON.stringify({ filer: null, name: "chef-b", at: "2026-03-05T11:00:00.000Z", question: "older instance" })}\n`, "utf8")
+    mockLoadSession.mockReturnValue(null)
+    await runApprovedPrivateRuntimeTurn({ reason: "await", awaitName: "chef-a", now: () => new Date("2026-03-06T12:00:00.000Z") })
+    await runApprovedPrivateRuntimeTurn({ reason: "await", awaitName: "chef-b", now: () => new Date("2026-03-06T12:00:00.000Z") })
+    expect(String(mockHandleInboundTurn.mock.calls[0][0].messages[0].content)).toContain('owner asked: 2026-03-06T11:00:00.000Z ("Keep waiting?")')
+    expect(String(mockHandleInboundTurn.mock.calls[1][0].messages[0].content)).toContain("owner asked: never")
+  })
+
   it("keeps the turn running without Sanctuary tools when the sanctuary agent has no machine runtime config", async () => {
     mockGetAgentName.mockReturnValue("sanctuary")
     cacheProviderCredentialRecords("sanctuary", [

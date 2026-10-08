@@ -7,7 +7,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 // it has no TypeScript types. It is imported here for its two pure exports, which
 // are the deterministic core the agent must never have to reason out itself.
 // @ts-expect-error - untyped hand-written module deployed verbatim
-import { classifyStall, computeDownloadState, diagnose } from "../../../deploy/unraid/sanctuary.ouro/mcp/media-mcp.mjs"
+import { classifyStall, computeDownloadState, diagnose, queueRowView, STALL_OWNER_CHOICES } from "../../../deploy/unraid/sanctuary.ouro/mcp/media-mcp.mjs"
 
 const GB = 1073741824
 const hoursAgo = (now: number, h: number) => new Date(now - h * 3_600_000).toISOString()
@@ -87,6 +87,23 @@ describe("media MCP — one stall classification", () => {
     expect(dx.summary).toContain("no seeders are serving the rest")
     expect(dx.summary).toContain("media_fill_missing")
     expect(dx.summary).not.toMatch(/single byte|blocklist the release/iu)
+  })
+
+  it("media_queue marks a confirmed stall as needing the owner's decision, with the same choices as the diagnosis", () => {
+    const view = queueRowView(chef, now, seen)
+    expect(view.stall).toMatchObject({ kind: "no_peers", state: "stalled", owner_decision_needed: true, likely_fix: "ask_owner", choices: ["keep_waiting", "find_another_release", "give_up"] })
+    expect(view.stall.choices).toEqual(STALL_OWNER_CHOICES)
+    expect(status([chef], seen).dx.choices).toEqual(STALL_OWNER_CHOICES)
+    expect(queueRowView({ ...chef, sizeleft: chef.size, added: "2026-10-07T00:00:00Z" }, now, undefined).stall).toMatchObject({ kind: "never_started", owner_decision_needed: true })
+    expect(queueRowView({ ...chef, added: "2026-10-01T00:00:00Z" }, now, undefined).stall).toMatchObject({ kind: "unfinished_for_days", owner_decision_needed: true })
+  })
+
+  it("media_queue does not ask for a decision on a suspected or moving download", () => {
+    const suspected = queueRowView(chef, now, undefined)
+    expect(suspected.stall).toMatchObject({ state: "suspected" })
+    expect(suspected.stall).not.toHaveProperty("owner_decision_needed")
+    expect(suspected.stall).not.toHaveProperty("choices")
+    expect(queueRowView({ ...chef, timeleft: "01:20:00" }, now, seen)).not.toHaveProperty("stall")
   })
 
   it("reports a first sighting with no ETA as suspected only", () => {
