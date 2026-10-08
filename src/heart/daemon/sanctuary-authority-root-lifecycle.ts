@@ -37,7 +37,9 @@ const DIGEST = /^sha256:[a-f0-9]{64}$/u
 // (a 120 s budget failed a real rollback on 2026-09-24).
 const GATEWAY_READY_TIMEOUT_MS = 900_000
 const GATEWAY_START_BACKOFF_MS = [2_000, 10_000, 30_000]
-const GATEWAY_LOG_TAIL_BYTES = 2_000
+const GATEWAY_LOG_TAIL_CHARS = 2_000
+// Read more than is shown, so masking sees whole tokens before the tail is cut.
+const GATEWAY_LOG_READ_BYTES = 4_096
 const GATEWAY_LOG_MAX_BYTES = 5 * 1024 * 1024
 const TEMPLATE_JOURNAL = "/boot/config/custom/ouro-butler/docker-man-template-transaction.json"
 // In-place upgrade of an installed authority: same epoch (token, issuer, cursor,
@@ -472,10 +474,12 @@ export class SanctuaryAuthorityRootLifecycle {
       // The gateway can exit within seconds of launch (a transient Telegram network error at
       // getMe did, 863 -> 864). Retry the launch with backoff, and when every attempt fails
       // say so now, with the gateway's own output, instead of waiting out the readiness budget.
+      // One deadline bounds every launch: a relaunch only gets the budget that remains.
+      const deadline = Date.now() + GATEWAY_READY_TIMEOUT_MS
       for (let attempt = 0; ; attempt += 1) {
-        const failure = await this.#launchGatewayOnce()
+        const failure = await this.#launchGatewayOnce(deadline - Date.now())
         if (failure === null) return
-        if (attempt >= GATEWAY_START_BACKOFF_MS.length) {
+        if (attempt >= GATEWAY_START_BACKOFF_MS.length || Date.now() + GATEWAY_START_BACKOFF_MS[attempt] >= deadline) {
           throw new Error(`Sanctuary gateway ${failure} before readiness after ${attempt + 1} attempts; gateway.log tail:\n${this.#gatewayLogTail()}`)
         }
         emitNervesEvent({ level: "warn", component: "daemon", event: "daemon.sanctuary_gateway_start_retry", message: "Sanctuary gateway exited before readiness; retrying launch", meta: { attempt: attempt + 1, delayMs: GATEWAY_START_BACKOFF_MS[attempt], failure } })
@@ -484,7 +488,7 @@ export class SanctuaryAuthorityRootLifecycle {
     } else await this.#wait(() => this.#ready(), GATEWAY_READY_TIMEOUT_MS)
   }
   /** One launch: resolves null once the gateway is ready, or "exited"/"failed to launch" if the process ends first. */
-  async #launchGatewayOnce(): Promise<string | null> {
+  async #launchGatewayOnce(budgetMs: number): Promise<string | null> {
     this.#remove(`${this.#epochRoot()}/readiness.json`)
     const log = this.#gatewayLog()
     let child
@@ -501,7 +505,7 @@ export class SanctuaryAuthorityRootLifecycle {
     await this.#wait(async () => {
       if (ended !== null) { readiness = "ended"; return true }
       return this.#ready()
-    }, GATEWAY_READY_TIMEOUT_MS)
+    }, budgetMs)
     return readiness === "ended" ? ended : null
   }
   /** The last of gateway.log, with anything token-shaped masked, for an error message. */
@@ -511,10 +515,10 @@ export class SanctuaryAuthorityRootLifecycle {
     const size = fs.statSync(file).size
     const fd = fs.openSync(file, fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW)
     try {
-      const length = Math.min(size, GATEWAY_LOG_TAIL_BYTES)
+      const length = Math.min(size, GATEWAY_LOG_READ_BYTES)
       const buffer = Buffer.alloc(length)
       fs.readSync(fd, buffer, 0, length, size - length)
-      return buffer.toString("utf8").replace(/[0-9]{5,}:[A-Za-z0-9_-]{20,}/gu, "[token]").trim() || "(gateway.log is empty)"
+      return buffer.toString("utf8").replace(/[0-9]{5,}:[A-Za-z0-9_-]{20,}/gu, "[token]").slice(-GATEWAY_LOG_TAIL_CHARS).trim() || "(gateway.log is empty)"
     } finally { fs.closeSync(fd) }
   }
   /** The gateway's own output, kept root-only beside the token it guards and capped at two

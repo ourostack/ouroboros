@@ -927,6 +927,12 @@ export async function telegramApiReachable({ fetchImpl = globalThis.fetch, sleep
   return { ok: false, detail: `${detail} (${tries} attempts)` }
 }
 
+// A resume or rollback (an upgrade journal exists) must never be blocked by a network probe.
+export async function checkTelegramBeforePause({ journalExists, probe = telegramApiReachable }) {
+  if (journalExists) return { skipped: true, ok: true, detail: "upgrade journal present" }
+  return { skipped: false, ...(await probe()) }
+}
+
 async function upgrade(version, rehearse, { noGate = false, plant } = {}) {
   say(`in-place upgrade to ${version}${rehearse ? ` — REHEARSAL: stop after "${rehearse}", then roll back` : ""}`)
   if (rehearse && !UPGRADE_STEPS.includes(rehearse)) fail(`--rehearse takes one of: ${UPGRADE_STEPS.join(", ")}`)
@@ -955,9 +961,10 @@ async function upgrade(version, rehearse, { noGate = false, plant } = {}) {
   const priorImage = butlerState().split(" ")[0]
   const jellyfinBefore = docker(["inspect", "jellyfin", "--format", "{{.Id}}|{{.Image}}|{{.RestartCount}}|{{.State.StartedAt}}"]).trim()
   const policyBefore = existsSync(POLICY) ? sha12(POLICY) : fail("steward policy missing")
-  const telegram = await telegramApiReachable()
+  const telegram = await checkTelegramBeforePause({ journalExists: existsSync(UPGRADE_JOURNAL) })
   if (!telegram.ok) fail(`api.telegram.org is not reachable from this host (${telegram.detail}); the new gateway could not pass its Telegram identity check. Nothing was paused or changed; fix the network and re-run.`)
-  ok(`api.telegram.org reachable (${telegram.detail})`)
+  if (telegram.skipped) console.log("  note: resuming a pending upgrade; Telegram reachability not re-checked")
+  else ok(`api.telegram.org reachable (${telegram.detail})`)
   pauseSupervision()
   let failure = null
   try {

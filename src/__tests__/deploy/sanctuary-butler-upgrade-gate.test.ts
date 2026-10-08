@@ -198,9 +198,37 @@ describe("telegramApiReachable", () => {
   })
   it("is checked in the upgrade before host supervision is paused", () => {
     const body = source.slice(source.indexOf("async function upgrade(version, rehearse"))
-    const check = body.indexOf("await telegramApiReachable()")
+    const check = body.indexOf("await checkTelegramBeforePause(")
     expect(check).toBeGreaterThan(0)
     expect(check).toBeLessThan(body.indexOf("pauseSupervision()"))
     expect(body.slice(check, body.indexOf("pauseSupervision()"))).toContain("Nothing was paused or changed")
+  })
+})
+
+describe("checkTelegramBeforePause", () => {
+  it("probes Telegram on a fresh upgrade", async () => {
+    const probe = vi.fn(async () => ({ ok: true, detail: "HTTP 200" }))
+    await expect(upgrade.checkTelegramBeforePause({ journalExists: false, probe })).resolves.toEqual({ skipped: false, ok: true, detail: "HTTP 200" })
+    expect(probe).toHaveBeenCalledOnce()
+  })
+  it("passes a failed probe through", async () => {
+    const probe = async () => ({ ok: false, detail: "down (3 attempts)" })
+    await expect(upgrade.checkTelegramBeforePause({ journalExists: false, probe })).resolves.toEqual({ skipped: false, ok: false, detail: "down (3 attempts)" })
+  })
+  it("skips the probe when an upgrade journal exists, so a resume or rollback is never blocked by it", async () => {
+    const probe = vi.fn()
+    await expect(upgrade.checkTelegramBeforePause({ journalExists: true, probe })).resolves.toEqual({ skipped: true, ok: true, detail: "upgrade journal present" })
+    expect(probe).not.toHaveBeenCalled()
+  })
+  it("defaults to the real probe", async () => {
+    const real = globalThis.fetch
+    globalThis.fetch = vi.fn().mockResolvedValue(new Response("", { status: 200 })) as never
+    try { await expect(upgrade.checkTelegramBeforePause({ journalExists: false })).resolves.toMatchObject({ skipped: false, ok: true }) } finally { globalThis.fetch = real }
+  })
+  it("is what the upgrade calls before pausing, keyed on the upgrade journal", () => {
+    const body = source.slice(source.indexOf("async function upgrade(version, rehearse"))
+    const check = body.indexOf("await checkTelegramBeforePause({ journalExists: existsSync(UPGRADE_JOURNAL)")
+    expect(check).toBeGreaterThan(0)
+    expect(check).toBeLessThan(body.indexOf("pauseSupervision()"))
   })
 })

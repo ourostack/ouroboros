@@ -749,6 +749,45 @@ describe("fixed root installation effects", () => {
         expect(host.spawn).toHaveBeenCalledTimes(4)
         expect(host.exec.mock.calls.some((call) => call[1][0] === "start")).toBe(false)
       })
+      it("never extends the readiness budget: a gateway dying at 14:59 is not relaunched with a fresh 900 s", async () => {
+        const f = await preparedFixture()
+        vi.useFakeTimers()
+        host.spawn.mockImplementation(() => ({ unref: vi.fn(), once: (event: string, listener: (...args: unknown[]) => void) => { if (event === "exit") setTimeout(() => listener(1, null), 899_000) } }))
+        const apply = f.lifecycle.effect("start-gateway").apply()
+        const failure = expect(apply).rejects.toThrow(/exited \(code 1\) before readiness after 1 attempts/u)
+        await vi.advanceTimersByTimeAsync(900_000)
+        await failure
+        expect(host.spawn).toHaveBeenCalledOnce()
+      })
+      it("gives each relaunch only the budget that remains", async () => {
+        const f = await preparedFixture()
+        vi.useFakeTimers()
+        let launches = 0
+        host.spawn.mockImplementation(() => {
+          launches += 1
+          return { unref: vi.fn(), once: (event: string, listener: (...args: unknown[]) => void) => { if (event === "exit" && launches === 1) setTimeout(() => listener(1, null), 800_000) } }
+        })
+        const apply = f.lifecycle.effect("start-gateway").apply()
+        const failure = expect(apply).rejects.toThrow(/timed out/u)
+        // The second launch never exits or becomes ready; it must time out at the original deadline (900 s), not 800 s + 2 s + 900 s.
+        await vi.advanceTimersByTimeAsync(901_000)
+        await failure
+        expect(host.spawn).toHaveBeenCalledTimes(2)
+      })
+      it("masks a token before trimming the log tail, so a token cut at the boundary leaves no fragment", async () => {
+        const f = await preparedFixture()
+        vi.useFakeTimers()
+        const token = "123456789:ABCDEFGHIJKLMNOPQRSTUVWXYZabcdef"
+        // Unmasked, the last 2000 characters would begin with the final 12 characters of the token.
+        exiting(f, [], `${"x".repeat(500)} ${token}\n${"y".repeat(1_987)}`)
+        const apply = f.lifecycle.effect("start-gateway").apply()
+        const message = apply.then(() => "", (error: Error) => error.message)
+        await vi.advanceTimersByTimeAsync(60_000)
+        const text = await message
+        expect(text).toContain("gateway.log tail")
+        expect(text).not.toContain(token.slice(-12))
+        expect(text).toMatch(/y{1900}/u)
+      })
       it("reports a signal exit and an empty gateway.log honestly", async () => {
         const f = await preparedFixture()
         vi.useFakeTimers()
