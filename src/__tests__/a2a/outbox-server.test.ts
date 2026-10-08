@@ -91,6 +91,17 @@ describe("outbox/list and outbox/ack over the sealed wire", () => {
     expect(await rpc("outbox/list", { message: { kind: "message", role: "ROLE_USER", messageId: "m", parts: wrongRecipient.parts } })).toMatchObject({ error: { code: -32003 } })
   })
 
+  it("accepts a signed call that omits the optional message kind and context id", async () => {
+    const { peers, cardUrl, outbox } = await setup()
+    const entry = outbox.append(peers.stranger!.id, { kind: "await_outcome", body: "hello" })
+    const card = await (await fetch(cardUrl)).json() as { did: string }
+    const { parseDidKey } = await import("@ouro.bot/friends/a2a-client")
+    const sealed = sealChatMessage({ sodium, from: peers.stranger!.client, recipientDid: card.did, recipientEd25519Pub: parseDidKey(card.did)!.ed25519Pub, text: encodeOutboxCommand("outbox/list", {}) })
+    const reply = await postJsonRpc(new URL("/a2a", server!.url).toString(), { jsonrpc: "2.0", id: "1", method: "outbox/list", params: { message: { role: "ROLE_USER", messageId: "m", parts: sealed.parts } } } as never, fetch) as { result?: { contextId?: string } }
+    expect(reply.result?.contextId).toBe("default")
+    expect(entry.id).toBeTruthy()
+  })
+
   it("needs the agent to have a signing identity", async () => {
     const { cardUrl, peers } = await setup({ identity: false })
     await expect(callOutboxMethod({ cardUrl, method: "outbox/list", params: {}, identity: peers.claude!.client, sodium })).rejects.toThrow()

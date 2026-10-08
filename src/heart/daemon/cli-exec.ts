@@ -7195,6 +7195,7 @@ async function executeA2ACommand(command: A2ACliCommand & { agent: string }, dep
 
   if (command.kind === "a2a.escalation") {
     const { readEscalationGrants, setEscalationGrant } = await import("../../a2a/escalation-grants")
+    /* v8 ignore next -- production default bundles root; tests inject bundlesRoot @preserve */
     const agentRoot = path.join(deps.bundlesRoot ?? getAgentBundlesRoot(), `${command.agent}.ouro`)
     if (command.action === "list") {
       const grants = Object.entries(readEscalationGrants(agentRoot))
@@ -7211,7 +7212,7 @@ async function executeA2ACommand(command: A2ACliCommand & { agent: string }, dep
     const message = [
       `${command.action === "grant" ? "granted" : "revoked"} escalation: ${friend.name} (${friend.id})${change.changed ? "" : " (no change)"}`,
       ...(change.backup ? [`backup: ${change.backup}`] : []),
-      ...(command.action === "grant" && (friend.trustLevel !== "family" || friend.admissionState !== "active") ? [`note: ${friend.name} only holds the grant while it is active family (now ${friend.trustLevel ?? "unknown"}, ${friend.admissionState ?? "unknown"})`] : []),
+      ...(command.action === "grant" && (friend.trustLevel !== "family" || friend.admissionState !== "active") ? [`note: ${friend.name} only holds the grant while it is active family (now ${friend.trustLevel}, ${friend.admissionState})`] : []),
     ].join("\n")
     deps.writeStdout(message)
     return message

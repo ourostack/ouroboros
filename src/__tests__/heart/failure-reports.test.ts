@@ -195,3 +195,13 @@ describe("resolving and confirming", () => {
     expect(await confirmResolvedReports(agentRoot, { runningVersion: "9.9.9", notifyOwner: vi.fn() })).toEqual({ closed: [], waiting: [], failed: [] })
   })
 })
+
+describe("unreadable report files", () => {
+  it("lists only the reports it can read", async () => {
+    const { agentRoot } = await setup()
+    fs.mkdirSync(reportsDir(agentRoot), { recursive: true })
+    fs.writeFileSync(path.join(reportsDir(agentRoot), "broken.json"), "{not json")
+    fs.writeFileSync(path.join(reportsDir(agentRoot), "note.txt"), "ignored")
+    expect(listFailureReports(agentRoot)).toEqual([])
+  })
+})

@@ -6,7 +6,7 @@ import { startA2AServer, type A2AServerHandle } from "../../a2a/server"
 const confirm = vi.hoisted(() => ({ calls: 0 }))
 vi.mock("../../heart/failure-reports", async (importOriginal) => ({
   ...await importOriginal<typeof import("../../heart/failure-reports")>(),
-  confirmResolvedReports: async () => { confirm.calls += 1; throw new Error("reports unreadable") },
+  confirmResolvedReports: async () => { confirm.calls += 1; if (confirm.calls % 2 === 0) throw "reports unreadable"; throw new Error("reports unreadable") },
 }))
 
 let tmp: TmpBundleHandle | null = null
