@@ -2,7 +2,7 @@ import * as path from "path"
 import { parseFrontmatter } from "../../util/frontmatter"
 import { emitNervesEvent } from "../../nerves/runtime"
 
-export type AwaitStatus = "pending" | "resolved" | "expired" | "canceled"
+export type AwaitStatus = "pending" | "resolved" | "expired" | "canceled" | "asked_owner"
 export type AwaitMode = "full" | "quick"
 
 export interface AwaitFile {
@@ -33,10 +33,16 @@ export interface AwaitFile {
   // canceled-only
   canceled_at: string | null
   cancel_reason: string | null
+
+  // asked_owner-only: the await was closed by putting a decision to the owner
+  asked_at?: string | null
+  ask_question?: string | null
+  /** The choices offered, joined with " | " (choices never contain "|"). */
+  ask_choices?: string | null
 }
 
 function isAwaitStatus(value: string): value is AwaitStatus {
-  return value === "pending" || value === "resolved" || value === "expired" || value === "canceled"
+  return value === "pending" || value === "resolved" || value === "expired" || value === "canceled" || value === "asked_owner"
 }
 
 function isAwaitMode(value: string): value is AwaitMode {
@@ -126,6 +132,9 @@ export function parseAwaitFile(content: string, filePath: string): AwaitFile {
     last_observation_at_expiry: nonEmptyString(frontmatter.last_observation_at_expiry),
     canceled_at: nonEmptyString(frontmatter.canceled_at),
     cancel_reason: nonEmptyString(frontmatter.cancel_reason),
+    ...(nonEmptyString(frontmatter.asked_at) ? { asked_at: nonEmptyString(frontmatter.asked_at) } : {}),
+    ...(nonEmptyString(frontmatter.ask_question) ? { ask_question: nonEmptyString(frontmatter.ask_question) } : {}),
+    ...(nonEmptyString(frontmatter.ask_choices) ? { ask_choices: nonEmptyString(frontmatter.ask_choices) } : {}),
   }
 }
 

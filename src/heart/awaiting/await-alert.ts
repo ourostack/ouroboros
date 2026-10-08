@@ -9,7 +9,7 @@ import {
 import type { PendingMessage } from "../../mind/pending"
 import type { AwaitFile } from "./await-parser"
 
-export type AwaitAlertReason = "resolved" | "expired"
+export type AwaitAlertReason = "resolved" | "expired" | "asked_owner"
 
 export interface AwaitAlertOptions {
   /** The await file (post-archive or pre-archive — only the fields are read). */
@@ -71,6 +71,9 @@ export function resolveAlertKey(agentRoot: string, friendId: string, channel: st
 export function buildAlertContent(awaitFile: AwaitFile, reason: AwaitAlertReason, observation: string | null): string {
   const condition = awaitFile.condition ?? awaitFile.name
   const obs = readNonEmpty(observation)
+  if (reason === "asked_owner") {
+    return `${condition} — I have asked the owner how to proceed.${obs ? `\n\n${obs}` : ""}`
+  }
   if (reason === "resolved") {
     return obs ? `${condition} — ready. ${obs}` : `${condition} — ready.`
   }

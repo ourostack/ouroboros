@@ -369,3 +369,14 @@ describe("renderAwaitFile", () => {
     expect(reparsed.body).toBe(parsed.body)
   })
 })
+
+describe("asked_owner awaits", () => {
+  it("round-trips the asked_owner status with its question and choices", () => {
+    const content = renderAwaitFile({ condition: "c", status: "asked_owner", asked_at: "2026-10-07T00:00:00.000Z", ask_question: "What now?", ask_choices: "wait | give up" }, "")
+    expect(parseAwaitFile(content, "/x/awaiting/.done/chef.md")).toMatchObject({ status: "asked_owner", asked_at: "2026-10-07T00:00:00.000Z", ask_question: "What now?", ask_choices: "wait | give up" })
+  })
+
+  it("omits the asked fields when absent", () => {
+    expect(parseAwaitFile(renderAwaitFile({ condition: "c", status: "pending" }, ""), "/x/awaiting/a.md")).not.toHaveProperty("ask_question")
+  })
+})

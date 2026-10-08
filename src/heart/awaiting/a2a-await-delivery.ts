@@ -43,7 +43,7 @@ export function createA2AAwaitOwnerDeliverer(agentName: string, notifyOwner: Not
   }
 }
 
-function defaultNotifyOwner(agentName: string): NotifyOwner {
+export function defaultNotifyOwner(agentName: string): NotifyOwner {
   return async (input) => {
     const { sendTelegramOwnerNotice } = await import("../../senses/telegram")
     await sendTelegramOwnerNotice(agentName, { ...input, signal: AbortSignal.timeout(30_000) })

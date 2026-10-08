@@ -13,7 +13,7 @@ import {
   deliverAwaitAlert,
   type AwaitAlertResult,
 } from "../heart/awaiting/await-alert"
-import { createA2AAwaitOwnerDeliverer } from "../heart/awaiting/a2a-await-delivery"
+import { createA2AAwaitOwnerDeliverer, defaultNotifyOwner, type NotifyOwner } from "../heart/awaiting/a2a-await-delivery"
 import { getPrivateRuntimePendingDir, queuePendingMessageOnce } from "../mind/pending"
 import type { PendingMessage } from "../mind/pending"
 import type { ToolContext, ToolDefinition } from "./tools-base"
@@ -66,6 +66,15 @@ function relationshipScopeFor(ctx: ToolContext, awaitName: string): { session: {
   return { session: ctx.currentSession, requestId: ctx.relationshipAuthorization?.requestId }
 }
 
+function readAwaitDoneDefinition(agentRoot: string, name: string): AwaitFile | null {
+  const filePath = awaitDoneFilePath(agentRoot, name)
+  try {
+    return parseAwaitFile(fs.readFileSync(filePath, "utf-8"), filePath)
+  } catch {
+    return null
+  }
+}
+
 export function readAwaitDefinition(agentRoot: string, name: string): AwaitFile | null {
   const filePath = awaitFilePath(agentRoot, name)
   try {
@@ -102,6 +111,8 @@ function defaultDeliveryDeps(agentName: string): CrossChatDeliveryDeps {
 export interface AwaitToolDeps {
   /** Override the delivery deps factory (testing or daemon-wired live deliverers). */
   buildDeliveryDeps?: (agentName: string) => CrossChatDeliveryDeps
+  /** Override how an ask_owner question reaches the owner (default: the Butler's own Telegram owner notice). */
+  notifyOwner?: (agentName: string) => NotifyOwner
 }
 
 let injected: AwaitToolDeps = {}
@@ -117,6 +128,94 @@ export function resetAwaitToolDeps(): void {
 function resolveDeliveryDeps(agentName: string): CrossChatDeliveryDeps {
   const deps = injected.buildDeliveryDeps ? injected.buildDeliveryDeps(agentName) : defaultDeliveryDeps(agentName)
   return { ...deps, deliverers: { a2a: createA2AAwaitOwnerDeliverer(agentName), ...deps.deliverers } }
+}
+
+const ASK_OWNER_MIN_CHOICES = 2
+const ASK_OWNER_MAX_CHOICES = 4
+
+function oneLine(value: string): string {
+  return value.replace(/\s+/gu, " ").trim()
+}
+
+/**
+ * Validates an ask_owner request. The question and choices are collapsed to single lines because they are archived as
+ * frontmatter, and choices may not contain "|" because the archive joins them with " | ".
+ */
+function parseAskOwner(question: unknown, choices: unknown): { ok: true; question: string; choices: string[] } | { ok: false; error: string } {
+  const cleanQuestion = typeof question === "string" ? oneLine(question) : ""
+  if (!cleanQuestion) return { ok: false, error: "question is required for ask_owner: put the decision to the owner in plain words" }
+  if (!Array.isArray(choices) || choices.length < ASK_OWNER_MIN_CHOICES || choices.length > ASK_OWNER_MAX_CHOICES) {
+    return { ok: false, error: `ask_owner needs ${ASK_OWNER_MIN_CHOICES} to ${ASK_OWNER_MAX_CHOICES} choices` }
+  }
+  const cleanChoices = choices.map((choice) => typeof choice === "string" ? oneLine(choice) : "")
+  if (cleanChoices.some((choice) => !choice)) return { ok: false, error: "every ask_owner choice must be a non-empty string" }
+  if (cleanChoices.some((choice) => choice.includes("|"))) return { ok: false, error: 'ask_owner choices must not contain "|"' }
+  return { ok: true, question: cleanQuestion, choices: cleanChoices }
+}
+
+function formatOwnerQuestion(question: string, choices: string[]): string {
+  return `${question}\n\n${choices.map((choice) => `- ${choice}`).join("\n")}`
+}
+
+function failedAskOwner(agentName: string, name: string, error: unknown): string {
+  const detail = error instanceof Error ? error.message : String(error)
+  emitNervesEvent({ level: "error", component: "repertoire", event: "repertoire.await_ask_owner_error", message: "ask_owner could not reach the owner", meta: { agent: agentName, name, error: detail } })
+  return JSON.stringify({ error: `the owner message could not be sent (${detail}); the await is still pending, so ask_owner can be retried` })
+}
+
+/**
+ * The await's condition cannot be met without the owner deciding. The owner is asked once, as the agent, in the
+ * owner's own chat (the owner-notice path, keyed per await so a retry cannot double-send), and only then is the await
+ * archived as asked_owner. An await filed from A2A goes through the A2A owner delivery instead, which writes the same
+ * owner notice (or the replay sink during a replay window); the direct notice is only the fallback if that did not land.
+ */
+async function askOwnerTool(name: string, observation: string, question: unknown, choices: unknown, existing: AwaitFile, agentRoot: string, agentName: string): Promise<string> {
+  const parsed = parseAskOwner(question, choices)
+  if (!parsed.ok) return JSON.stringify({ error: parsed.error })
+  const text = formatOwnerQuestion(parsed.question, parsed.choices)
+
+  let alert: AwaitAlertResult | null = null
+  let delivered = false
+  if (existing.filed_from === "a2a") {
+    try {
+      alert = await deliverAwaitAlert({ awaitFile: { ...existing, alert: "a2a" }, reason: "asked_owner", observation: text, agentRoot, agentName, deliveryDeps: resolveDeliveryDeps(agentName) })
+    } catch (error) {
+      emitNervesEvent({ level: "error", component: "repertoire", event: "repertoire.await_alert_error", message: "await alert delivery threw", meta: { agent: agentName, name, error: error instanceof Error ? error.message : String(error) } })
+    }
+    delivered = alert?.delivery?.status === "delivered_now"
+  }
+  if (!delivered) {
+    try {
+      await (injected.notifyOwner ? injected.notifyOwner(agentName) : defaultNotifyOwner(agentName))({ noticeId: `await-ask-owner:${name}`, text })
+    } catch (error) {
+      return failedAskOwner(agentName, name, error)
+    }
+  }
+
+  const archive = archiveAwait(agentRoot, name, {
+    status: "asked_owner",
+    asked_at: new Date().toISOString(),
+    ask_question: parsed.question,
+    ask_choices: parsed.choices.join(" | "),
+    resolution_observation: observation.trim(),
+  })
+  /* v8 ignore next -- defensive: archiveAwait only fails on the file-disappears-mid-call race already covered by v8 ignore inside archiveAwait @preserve */
+  if (!archive.ok) return JSON.stringify({ error: archive.error })
+  fulfillAwaitObligation(agentRoot, archive.file)
+
+  emitNervesEvent({
+    component: "repertoire",
+    event: "repertoire.await_asked_owner",
+    message: "await closed by asking the owner",
+    meta: { agent: agentName, name, choices: parsed.choices.length },
+  })
+
+  return JSON.stringify({
+    verdict: "ask_owner",
+    asked: true,
+    archived: awaitDoneFilePath(agentRoot, name),
+    alert: alert ? { attempted: alert.attempted, status: alert.delivery?.status ?? null, skipped: alert.skipped ?? null } : null,
+  })
 }
 
 interface FileAwaitArgs {
@@ -249,25 +348,30 @@ function fulfillAwaitObligation(agentRoot: string, awaitFile: AwaitFile): void {
   if (awaitFile.obligation_id) fulfillObligation(agentRoot, awaitFile.obligation_id)
 }
 
-async function resolveAwaitTool(name: string, verdict: string, observation: string, agentRoot: string, agentName: string): Promise<string> {
+async function resolveAwaitTool(name: string, verdict: string, observation: string, agentRoot: string, agentName: string, ask?: { question: unknown; choices: unknown }): Promise<string> {
   const nameError = validateName(name)
   if (nameError) return JSON.stringify({ error: nameError })
 
   const existing = readAwaitDefinition(agentRoot, name)
   if (!existing) {
+    if (verdict === "ask_owner" && readAwaitDoneDefinition(agentRoot, name)?.status === "asked_owner") {
+      return JSON.stringify({ error: `await "${name}" has already asked the owner and is closed; wait for the owner's reply instead of asking again` })
+    }
     return JSON.stringify({ error: `await "${name}" not found in awaiting/` })
   }
   if (existing.status !== "pending") {
     return JSON.stringify({ error: `await "${name}" is not pending (status: ${existing.status})` })
   }
 
-  if (verdict !== "yes" && verdict !== "no") {
-    return JSON.stringify({ error: `verdict must be exactly "yes" or "no" (got ${JSON.stringify(verdict)}); use "no" with an observation while still waiting` })
+  if (verdict !== "yes" && verdict !== "no" && verdict !== "ask_owner") {
+    return JSON.stringify({ error: `verdict must be exactly "yes", "no", or "ask_owner" (got ${JSON.stringify(verdict)}); use "no" with an observation while still waiting` })
   }
 
   if (!observation || !observation.trim()) {
     return JSON.stringify({ error: "observation is required" })
   }
+
+  if (verdict === "ask_owner") return askOwnerTool(name, observation, ask?.question, ask?.choices, existing, agentRoot, agentName)
 
   if (verdict === "no") {
     // Update runtime state via recordAwaitCheck-style write
@@ -550,13 +654,15 @@ export const awaitingToolDefinitions: ToolDefinition[] = [
       type: "function",
       function: {
         name: "resolve_await",
-        description: "Resolve a pending await with a verdict. verdict='yes' archives and fires the alert. verdict='no' records the observation and continues polling; still pending is always 'no'.",
+        description: "Resolve a pending await with a verdict. verdict='yes' archives and fires the alert. verdict='no' records the observation and continues polling; still pending is always 'no'. verdict='ask_owner' (with question and choices) closes the await and asks my owner to decide, exactly once: use it when the condition cannot be met without the owner deciding, for example a confirmed dead download. Never use ask_owner for \"not yet\" or a merely suspected problem; that is 'no'.",
         parameters: {
           type: "object",
           properties: {
             name: { type: "string", description: "Await name (filename stem)." },
-            verdict: { type: "string", enum: ["yes", "no"], description: "Exactly 'yes' if the condition is met. Exactly 'no' for anything else, including still pending, not yet, or unable to tell: send 'no' with an observation and polling continues." },
+            verdict: { type: "string", enum: ["yes", "no", "ask_owner"], description: "Exactly 'yes' if the condition is met. Exactly 'no' for anything else, including still pending, not yet, or unable to tell: send 'no' with an observation and polling continues. 'ask_owner' only when the condition cannot be met without the owner deciding; it needs question and choices." },
             observation: { type: "string", description: "One-line summary of what I saw this tick." },
+            question: { type: "string", description: "Only for ask_owner: the decision I need from my owner, in plain words." },
+            choices: { type: "array", items: { type: "string" }, minItems: 2, maxItems: 4, description: "Only for ask_owner: 2 to 4 short options the owner can pick from." },
           },
           required: ["name", "verdict", "observation"],
         },
@@ -586,7 +692,7 @@ export const awaitingToolDefinitions: ToolDefinition[] = [
         }
         if (!binding?.active) return JSON.stringify({ error: "resolve_await is limited to the current relationship request or bound external event" })
       }
-      return resolveAwaitTool(a.name, a.verdict, a.observation, agentRoot, agentName)
+      return resolveAwaitTool(a.name, a.verdict, a.observation, agentRoot, agentName, { question: a.question, choices: a.choices })
     },
     riskProfile: {
       mutates: ["durable_state_write", "external_side_effect"] as const,

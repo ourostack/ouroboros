@@ -337,3 +337,10 @@ describe("buildAwaitDeliveryDeps", () => {
     expect(deps.now).toBeUndefined()
   })
 })
+
+describe("buildAlertContent asked_owner", () => {
+  it("says the owner was asked and carries the question", () => {
+    expect(buildAlertContent(makeAwaitFile(), "asked_owner", "Q?\n\n- a\n- b")).toContain("I have asked the owner how to proceed.\n\nQ?\n\n- a\n- b")
+    expect(buildAlertContent(makeAwaitFile(), "asked_owner", null)).toMatch(/asked the owner how to proceed\.$/u)
+  })
+})
