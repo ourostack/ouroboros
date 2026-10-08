@@ -243,8 +243,10 @@ function auditRow(value: unknown): value is PolicyAuditRow {
   if ("action" in result && (result.issuer !== value.issuer || result.authorizingSessionEvent !== value.authorizingSessionEvent || result.authorizedAt !== value.at)) return false
   if (value.mutationKind === "correct_provenance") {
     // A correction changes the source and records its note on one existing entry, and nothing else about it.
+    // A missing prior entry spreads to nothing, so the comparison fails without a separate branch.
     const prior = before.desiredStates[value.key]
-    if (!prior || !("correction" in result) || !isDeepStrictEqual(result, { ...prior, source: result.source, correction: result.correction, version: after.version })) return false
+    const corrected = result as DesiredStateEntry
+    if (!isDeepStrictEqual(result, { ...prior, source: corrected.source, correction: corrected.correction, version: after.version })) return false
   }
   const expected = {
     ...before, version: after.version, updatedAt: value.at,
