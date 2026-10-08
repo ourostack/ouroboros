@@ -2,7 +2,7 @@
   "version": 2,
   "profiles": {
     "sanctuary-owner": {
-      "version": 13,
+      "version": 14,
       "contextScopes": [
         "household.status",
         "household.policy",
@@ -66,6 +66,7 @@
         "media_chain_health",
         "media_play_or_resolve",
         "media_search_now",
+        "media_queue",
         "media_blocklist_stalled",
         "media_episodes",
         "media_indexer_search",
@@ -141,7 +142,7 @@
       ]
     },
     "sanctuary-agent-peer": {
-      "version": 4,
+      "version": 5,
       "toolNames": [
         "external_event_disposition",
         "query_active_work",
@@ -198,6 +199,7 @@
         "media_chain_health",
         "media_play_or_resolve",
         "media_search_now",
+        "media_queue",
         "media_blocklist_stalled",
         "media_episodes",
         "media_indexer_search",

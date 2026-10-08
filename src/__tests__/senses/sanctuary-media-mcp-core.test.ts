@@ -223,6 +223,47 @@ describe("media MCP — search_now and blocklist_stalled", () => {
     expect(out.service_id).toBe(3)
   })
 
+  describe("media_queue (read-only)", () => {
+    it("shows an item's torrent row with percent, timeleft and trackedDownloadState, and sends no write", async () => {
+      queues.sonarr = [stalledRow(1, { size: 100, sizeleft: 24, status: "downloading", trackedDownloadState: "downloading", trackedDownloadStatus: "warning", timeleft: "02:10:00", protocol: "torrent", downloadClient: "Deluge", indexer: "idx", errorMessage: "slow".padEnd(500, "x"), added: hoursAgo(now, 24 * 36) }), stalledRow(3, { seriesId: 99 })]
+      const out = await mod.mediaQueue({ kind: "series", title: "severance" })
+      expect(out).toMatchObject({ kind: "series", service_id: 7, title: "Severance", count: 1, summary: "1 queue row; 1 stalled." })
+      expect(out.queue[0]).toMatchObject({ queue_id: 1, status: "downloading", tracked_download_state: "downloading", tracked_download_status: "warning", percent: 76, timeleft: "02:10:00", protocol: "torrent", download_client: "Deluge" })
+      expect(out.queue[0].error_message).toHaveLength(300)
+      expect(out.note).toMatch(/seeders or peers/u)
+      expect(calls.filter((c) => c.method !== "GET")).toEqual([])
+    })
+
+    it("reports an empty queue, a missing title, a bad kind and null fields without throwing", async () => {
+      expect((await mod.mediaQueue({ kind: "series", service_id: 7 })).summary).toBe("Nothing for this is in the Sonarr/Radarr queue.")
+      expect((await mod.mediaQueue({ kind: "series", title: "Zebra" })).result).toBe("not_found")
+      expect((await mod.mediaQueue({ kind: "show" })).result).toBe("invalid_kind")
+      queues.sonarr = [{ id: 5, seriesId: 7 }]
+      const out = await mod.mediaQueue({ kind: "series", service_id: 7 })
+      expect(out.queue[0]).toMatchObject({ title: null, status: null, percent: null, timeleft: null, stalled: false, size_left_bytes: 0 })
+      expect(out.queue[0]).not.toHaveProperty("error_message")
+    })
+
+    it("lists the whole queue of a kind when no item is named, truncated at the cap", async () => {
+      queues.sonarr = Array.from({ length: 230 }, (_, i) => ({ id: i + 1, seriesId: 7, title: `R${i}` }))
+      const sonarr = await mod.mediaQueue({ kind: "series" })
+      expect(sonarr).toMatchObject({ count: 230, shown: 100, truncated: true, summary: expect.stringContaining("230 queue rows (showing 100)") })
+      expect(sonarr.queue).toHaveLength(100)
+      queues.radarr = [{ id: 1, movieId: 3, title: "M" }]
+      const radarr = await mod.mediaQueue({ kind: "movie" })
+      expect(radarr).toMatchObject({ count: 1, summary: "1 queue row; 0 stalled." })
+      expect(radarr).not.toHaveProperty("truncated")
+      expect(calls.filter((c) => c.method !== "GET")).toEqual([])
+    })
+
+    it("is declared as a closed read-only tool", () => {
+      const tool = mod.TOOLS.find((t: any) => t.name === "media_queue")
+      expect(tool.inputSchema.additionalProperties).toBe(false)
+      expect(tool.description).toMatch(/Read-only/u)
+      expect(tool.description).toMatch(/sanctuary_get_download_queue only sees the usenet/u)
+    })
+  })
+
   it("rejects a bad kind", async () => {
     expect((await mod.mediaSearchNow({ kind: "show" })).result).toBe("invalid_kind")
     expect((await mod.mediaBlocklistStalled({ kind: "show", service_id: 1 })).result).toBe("invalid_kind")

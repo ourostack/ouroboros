@@ -612,6 +612,42 @@ describe("tools-awaiting", () => {
       }))
     })
 
+    it("lets a tick resolve and cancel the await it is ticking even though the pipeline rewrote currentSession to the private-runtime session", async () => {
+      const filing = {
+        currentSession: { friendId: "peer", channel: "a2a", key: "conv-1", sessionPath: "/tmp/session.json" },
+        relationshipAuthorization: { requestId: "request-tick", authorizedContextScopes: ["own_requests"], advertisedToolNames: ["resolve_await"], authorizeTool: vi.fn() },
+      }
+      await fileAwaitDef.handler({ name: "ticked", condition: "ready", cadence: "5m" }, filing as any)
+      await fileAwaitDef.handler({ name: "bystander", condition: "ready", cadence: "5m" }, { ...filing, relationshipAuthorization: { ...filing.relationshipAuthorization, requestId: "request-bystander" } } as any)
+      const tick = (awaitName: string, requestId: string | null) => ({
+        currentSession: { friendId: "self", channel: "inner", key: "dialog", sessionPath: "/tmp/inner.json" },
+        awaitTick: { awaitName, friendId: "peer", channel: "a2a", key: "conv-1", requestId },
+        relationshipAuthorization: filing.relationshipAuthorization,
+      })
+
+      // The tick covers exactly its own await: an unrelated pending await in the same turn is still refused.
+      expect(parse(await resolveAwaitDef.handler({ name: "bystander", verdict: "yes", observation: "x" }, tick("ticked", "request-tick") as any) as string).error).toMatch(/current relationship request/u)
+      expect(parse(cancelAwaitDef.handler({ name: "bystander" }, tick("ticked", "request-tick") as any) as string).error).toMatch(/current relationship request/u)
+      expect(fs.existsSync(path.join(agentRoot, "awaiting", "bystander.md"))).toBe(true)
+      // A tick whose request does not match the await's filed request is refused too.
+      expect(parse(await resolveAwaitDef.handler({ name: "ticked", verdict: "yes", observation: "x" }, tick("ticked", "request-other") as any) as string).error).toMatch(/current relationship request/u)
+
+      expect(parse(await resolveAwaitDef.handler({ name: "ticked", verdict: "no", observation: "still downloading" }, tick("ticked", "request-tick") as any) as string)).toMatchObject({ verdict: "no", recorded: true })
+      expect(parse(cancelAwaitDef.handler({ name: "ticked" }, tick("ticked", "request-tick") as any) as string).canceled).toBe("ticked")
+    })
+
+    it("refuses a tick that carries no request for a request-bound await", async () => {
+      await fileAwaitDef.handler({ name: "no_request", condition: "ready", cadence: "5m" }, {
+        currentSession: { friendId: "peer", channel: "a2a", key: "conv-1", sessionPath: "/tmp/session.json" },
+        relationshipAuthorization: { requestId: "request-nr", authorizedContextScopes: [], advertisedToolNames: ["resolve_await"], authorizeTool: vi.fn() },
+      } as any)
+      const ctx = {
+        awaitTick: { awaitName: "no_request", friendId: "peer", channel: "a2a", key: "conv-1", requestId: null },
+        relationshipAuthorization: { authorizedContextScopes: [], advertisedToolNames: ["resolve_await"], authorizeTool: vi.fn() },
+      }
+      expect(parse(await resolveAwaitDef.handler({ name: "no_request", verdict: "no", observation: "x" }, ctx as any) as string).error).toMatch(/current relationship request/u)
+    })
+
     it("terminally cancels an await whose exact request obligation became stale before dispatch", async () => {
       const ctx = {
         currentSession: { friendId: "sibling", channel: "telegram", key: "telegram:777:888", sessionPath: "/tmp/session.json" },

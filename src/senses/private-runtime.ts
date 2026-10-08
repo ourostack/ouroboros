@@ -1481,8 +1481,9 @@ export async function runPrivateRuntimeTurn(options?: RunPrivateRuntimeTurnOptio
     })
       .filter((tool) => !externalEventExcludedTools.has(tool.function.name))
     : undefined
+  // The await tick is relationship-scoped but still needs the MCP tools its profile allows (media_queue for a download await).
   const relationshipAwaitToolsResolved = relationshipAwait
-    ? getToolsForChannel(innerCapabilities, undefined, undefined, undefined, undefined, undefined, {
+    ? getToolsForChannel(innerCapabilities, undefined, undefined, undefined, mcpManager, undefined, {
       agentName, relationshipAuthorization: relationshipAwait.relationshipAuthorization,
     })
     : undefined
@@ -1609,6 +1610,14 @@ export async function runPrivateRuntimeTurn(options?: RunPrivateRuntimeTurnOptio
           friendStore: relationshipAwait.store,
           context: relationshipAwait.context,
           currentSession: relationshipAwait.currentSession,
+          // The pipeline rewrites currentSession to the private-runtime session; resolve_await/cancel_await need the await's own binding.
+          awaitTick: Object.freeze({
+            awaitName: parsedAwait!.name,
+            friendId: relationshipAwait.currentSession.friendId,
+            channel: relationshipAwait.currentSession.channel,
+            key: relationshipAwait.currentSession.key,
+            requestId: relationshipAwaitCoordinatesValue!.requestId,
+          }),
           relationshipAuthorization: relationshipAwait.relationshipAuthorization,
         } : {}),
         ...(options?.externalEvent ? {

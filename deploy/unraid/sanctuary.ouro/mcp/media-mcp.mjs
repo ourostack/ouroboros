@@ -863,6 +863,56 @@ function queueReport(rows) {
                             size_left_bytes: r.sizeleft ?? 0, stalled: isStalledRow(r, now) }))
 }
 
+// ------------------------------------------------------------ tool: media_queue
+
+const QUEUE_VIEW_MAX_ROWS = 100
+
+// One queue row as the owner's torrent or usenet client reports it through Sonarr/Radarr.
+export function queueRowView(r, nowMs) {
+  return {
+    queue_id: r.id ?? null, title: r.title ?? null, status: r.status ?? null,
+    tracked_download_state: r.trackedDownloadState ?? null, tracked_download_status: r.trackedDownloadStatus ?? null,
+    percent: pct(r), timeleft: r.timeleft ?? null, size_left_bytes: r.sizeleft ?? 0, size_bytes: r.size ?? 0,
+    protocol: r.protocol ?? null, download_client: r.downloadClient ?? null, indexer: r.indexer ?? null,
+    added: r.added ?? null, stalled: isStalledRow(r, nowMs),
+    ...(r.errorMessage ? { error_message: String(r.errorMessage).slice(0, 300) } : {}),
+  }
+}
+
+// Read-only: the Sonarr/Radarr download queue (torrent and usenet alike). Grabs, removes and blocklists nothing.
+export async function mediaQueue(a) {
+  if (a.kind !== "series" && a.kind !== "movie") return { result: "invalid_kind", message: "kind must be 'series' or 'movie'." }
+  let rows
+  let item = null
+  let total = null
+  if ((a.service_id !== undefined && a.service_id !== null) || a.tmdb_id || a.title) {
+    const found = await resolveLibraryItem(a)
+    if (!found.item) return { result: found.result, kind: a.kind, candidates: found.candidates }
+    item = found.item
+    rows = await itemQueue(a.kind, item.id)
+  } else {
+    rows = []
+    const client = arrFor(a.kind)
+    for (let page = 1; page <= QUEUE_MAX_PAGES; page++) {
+      const q = await client("/queue", { query: { page, pageSize: QUEUE_PAGE_SIZE, ...(a.kind === "series" ? { includeSeries: true } : {}) } })
+      const records = q?.records ?? []
+      rows.push(...records)
+      if (Number.isFinite(Number(q?.totalRecords))) total = Number(q.totalRecords)
+      if (!records.length || !(Number(q?.totalRecords) > page * QUEUE_PAGE_SIZE) || rows.length >= QUEUE_VIEW_MAX_ROWS) break
+    }
+  }
+  total = Math.max(total ?? 0, rows.length)
+  const now = Date.now()
+  const shown = rows.slice(0, QUEUE_VIEW_MAX_ROWS).map((r) => queueRowView(r, now))
+  return {
+    kind: a.kind, ...(item ? { service_id: item.id, title: item.title } : {}),
+    count: total, shown: shown.length, ...(total > shown.length ? { truncated: true } : {}), queue: shown,
+    summary: !total ? "Nothing for this is in the Sonarr/Radarr queue."
+      : `${total} queue row${total === 1 ? "" : "s"}${total > shown.length ? ` (showing ${shown.length})` : ""}; ${shown.filter((r) => r.stalled).length} stalled.`,
+    note: "Sonarr/Radarr do not report seeders or peers. A row stuck at the same percent with no timeleft is the stall signal; for a release's seeder count use media_indexer_search.",
+  }
+}
+
 async function runSearch(kind, serviceId) {
   const body = kind === "series" ? { name: "SeriesSearch", seriesId: serviceId } : { name: "MoviesSearch", movieIds: [serviceId] }
   const c = await arrFor(kind)("/command", { method: "POST", body })
@@ -1731,6 +1781,16 @@ const TOOL_LIST = [
     } },
   },
   {
+    name: "media_queue",
+    description: "Read-only view of the Sonarr/Radarr download queue, torrent and usenet alike: for each row the title, status, trackedDownloadState, percent, timeleft, size left, download client and whether it is stalled. Use this to see whether a series or movie download is progressing (this is the tool for torrent downloads; sanctuary_get_download_queue only sees the usenet/SABnzbd queue). Give service_id, tmdb_id or title for one item, or omit them for the whole queue of that kind. It grabs, removes and blocklists nothing. Seeders and peers are not reported by Sonarr/Radarr; use media_indexer_search for a release's seeders.",
+    inputSchema: { type: "object", properties: {
+      kind: { type: "string", enum: ["series", "movie"] },
+      service_id: { type: "number", description: "Sonarr series id or Radarr movie id." },
+      tmdb_id: { type: "number" },
+      title: { type: "string", description: "Exact or near-exact library title." },
+    }, required: ["kind"] },
+  },
+  {
     name: "media_search_now",
     description: "Trigger a Sonarr/Radarr search for a series or movie that is already in the library, and report its queue. Use this when the owner asks to search, re-search, or look again for something already in Sonarr/Radarr; no Jellyseerr request id is needed. Identify it by service_id, tmdb_id, or exact title. Never adds anything new: zero or several matches come back as 'not_found' or 'ambiguous' with candidates. Never tell the owner to click Search in the web UI.",
     inputSchema: { type: "object", properties: {
@@ -1856,6 +1916,7 @@ const HANDLERS = {
   media_chain_health: mediaChainHealth,
   media_play_or_resolve: mediaPlayOrResolve,
   media_search_now: mediaSearchNow,
+  media_queue: mediaQueue,
   media_blocklist_stalled: mediaBlocklistStalled,
   media_episodes: mediaEpisodes,
   media_fill_missing: mediaFillMissing,
