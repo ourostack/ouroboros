@@ -36,6 +36,30 @@ describe("readback helpers", () => {
     [{ trackedDownloadStatus: "Warning" }, true], [{ status: "failed" }, true], [{ statusMessages: [{}] }, true], [{ status: "downloading", statusMessages: [] }, false], [null, false],
   ])("flags stalled queue item %j as %s", (item, stalled) => expect(gate.isStalledQueueItem(item)).toBe(stalled))
 
+  describe("a partial download with no ETA that has sat for hours (the live Chef Show pack)", () => {
+    const now = Date.parse("2026-10-08T12:00:00.000Z")
+    const ago = (hours: number) => new Date(now - hours * 3_600_000).toISOString()
+    const pack = (overrides: Record<string, unknown> = {}) => ({ status: "downloading", size: 100, sizeleft: 24, timeleft: "00:00:00", added: ago(72), ...overrides })
+    it.each([
+      [pack(), true], [pack({ timeleft: undefined }), true], [pack({ timeleft: null }), true], [pack({ added: ago(6) }), true],
+      [pack({ added: ago(5) }), false], [pack({ timeleft: "00:40:00" }), false], [pack({ sizeleft: 0 }), false], [pack({ size: 0 }), false], [pack({ added: undefined }), false], [pack({ added: "garbage" }), false],
+    ])("classifies %j as stalled=%s", (item, stalled) => expect(gate.isStalledQueueItem(item, now)).toBe(stalled))
+    it("lets the stall case run when the queue holds one, and skips it when only a healthy download is there", () => {
+      const stall = gate.CASES.find((c: { id: string }) => c.id === "stall-kept")
+      expect(stall.applicable(empty({ queue: [pack({ added: new Date(Date.now() - 72 * 3_600_000).toISOString() })] }))).toBeNull()
+      expect(stall.applicable(empty({ queue: [pack({ timeleft: "00:10:00", added: new Date().toISOString() })] }))).toMatch(/no stalled item/)
+    })
+  })
+
+  it("collects everything the assistant said in a session, in order, and nothing the tools or the user said", () => {
+    const session = { events: [
+      { role: "user", content: "hello" }, { role: "assistant", content: "first" }, { role: "assistant", content: null, toolCalls: [] },
+      { role: "tool", content: "tool said this" }, { role: "assistant", content: "second" }, { role: "assistant", content: [{ type: "text" }] },
+    ] }
+    expect(gate.extractReplies(session)).toBe("first\nsecond")
+    expect(gate.extractReplies(null)).toBe("")
+  })
+
   it("counts only owner-notice effects created inside the window", () => {
     const at = (ms: number) => new Date(ms).toISOString()
     const effects = [
@@ -75,6 +99,15 @@ describe("every case readback", () => {
     const tool = (name: string, args: unknown, result = "") => ({ name, args: JSON.stringify(args), result })
     expect(names(byId("book-dry-run").readback({ trace: [tool("shell", { command: "books get --deliver" })], before: empty(), after: empty() }))).toContain("no books call delivers")
     expect(names(byId("book-dry-run").readback({ trace: [], before: empty(), after: empty() }))).toContain("the books tool was used to get or search")
+    // The real Butler runs the books tool by absolute path, with JSON-quoted arguments, and looks titles up with `library find`.
+    for (const command of ['/home/ouro/AgentBundles/sanctuary.ouro/books/books search "Theft of Swords"', "/home/ouro/AgentBundles/sanctuary.ouro/books/books library find Theft", "books get --title x"]) {
+      expect(names(byId("book-dry-run").readback({ trace: [tool("shell", { command })], before: empty(), after: empty() }))).toEqual([])
+    }
+    for (const command of ["/home/ouro/AgentBundles/sanctuary.ouro/books/books deliver /tmp/x.epub", "books deliver x"]) {
+      expect(names(byId("book-dry-run").readback({ trace: [tool("shell", { command: `books search x; ${command}` })], before: empty(), after: empty() }))).toEqual(["no books call delivers"])
+    }
+    // A web search or a media-library lookup is not the books pipeline: it stays a failure.
+    expect(names(byId("book-dry-run").readback({ trace: [tool("web_search", { query: "books search x" }), tool("media_search", { query: "Theft of Swords" })], before: empty(), after: empty() }))).toEqual(["the books tool was used to get or search"])
     expect(names(byId("ungranted-refused").readback({ error: "delegated command refused: no_grant", before: empty(), after: empty(), sink: [{ friendId: "s", noticeId: "delegated:x" }], friends }))).toEqual(["no notice was written for the stranger"])
     expect(names(byId("books-on-idempotent").readback({ error: "boom", before: empty({ stewardSha: null }), after: empty({ stewardSha: null }), sink: [], friends }))).toEqual(["the command was admitted", "the steward policy is unchanged", "the owner notice went to the sink"])
     expect(names(byId("books-up").readback({ trace: [], reply: "Books is down", after: empty() }))).toEqual(["the container list tool was used", "the reply's up/down claim matches docker ps"])
@@ -85,6 +118,10 @@ describe("every case readback", () => {
     expect(names(byId("await-self-resolve").readback({ before: empty(), after: empty({ done: [{ name: "w", status: "canceled" }] }), sink: [{ friendId: "p", noticeId: "delegated:z" }], friends }))).toEqual(["every new await was archived as resolved", "its delivery went to the sink"])
     expect(names(byId("chef-question").readback({ trace: [tool("media_search", { query: "chef 191 episodes" }, "season 191 of something")], reply: "Chef Show" }))).toEqual(["a media tool call names Sonarr series 191 or TMDB 89557"])
     expect(names(byId("chef-question").readback({ trace: [tool("media_episodes", { seriesId: 191 })], reply: "Chef Show" }))).toEqual([])
+    // The live tools take the Sonarr id as service_id, and the answer may be spread over several assistant messages.
+    expect(names(byId("chef-question").readback({ trace: [tool("media_fill_missing", { series: "The Chef Show", service_id: 191 })], reply: "filed a watch", said: "the chef show has 20 of 25\nfiled a watch" }))).toEqual([])
+    expect(names(byId("chef-question").readback({ trace: [tool("media_search", { query: "x", tmdb_id: 89557 })], reply: "nothing", said: "still nothing" }))).toEqual(["the reply names the Chef Show"])
+    expect(names(byId("chef-question").readback({ trace: [tool("media_search", { service_id: 1910 })], reply: "Chef Show" }))).toEqual(["a media tool call names Sonarr series 191 or TMDB 89557"])
     expect(names(byId("chef-question").readback({ trace: [tool("media_search", {}, '{"results":[{"tmdbId":89557}]}')], reply: "Chef Show" }))).toEqual([])
     expect(names(byId("chef-question").readback({ trace: [], reply: undefined }))).toEqual(["a media tool call names Sonarr series 191 or TMDB 89557", "the reply names the Chef Show"])
   })
@@ -140,6 +177,31 @@ describe("runSuite orchestration", () => {
     ;(host as Record<string, unknown>).waitReady = async () => { log.push("ready") }
     await gate.runSuite(host, { cases: ["stall-kept"] })
     expect(log.slice(0, 2)).toEqual(["ready", "open:30"])
+  })
+
+  it("aborts without sending anything when the Butler cannot see the window as trusted, and closes the window", async () => {
+    const { host, log } = fakeHost()
+    ;(host as Record<string, unknown>).windowTrusted = async () => ({ ok: false, detail: "state/replay is owned by uid 10001" })
+    const suite = await gate.runSuite(host, { cases: ["chef-question", "books-on-idempotent"] })
+    expect(log).toEqual(["open:30", "close"])
+    expect(suite.results).toEqual([{ id: "window-trusted", status: "fail", checks: [{ name: "the Butler sees the replay window as trusted", ok: false, detail: "state/replay is owned by uid 10001" }] }])
+    expect(suite.summary).toEqual({ ok: false, passed: 0, skipped: 0, failed: ["window-trusted"] })
+  })
+
+  it("runs the cases when the Butler sees the window as trusted", async () => {
+    const { host, log } = fakeHost()
+    ;(host as Record<string, unknown>).windowTrusted = async () => ({ ok: true })
+    const suite = await gate.runSuite(host, { cases: ["stall-kept"] })
+    expect(log).toEqual(["open:30", "close"])
+    expect(suite.results.map((r: { id: string }) => r.id)).toEqual(["stall-kept", "no-telegram"])
+  })
+
+  it("gives each case the whole transcript of what the Butler said", async () => {
+    const session = { events: [{ role: "assistant", content: "the chef show first" }, { role: "assistant", content: "filed a watch" }] }
+    const { host } = fakeHost({ sessions: { "*": session }, replies: () => ({ text: "filed a watch" }) })
+    let seen: unknown
+    await gate.runCase(host, { id: "x", words: "w", sender: "principal", delegated: false, readback: (ctx: { said: string }) => { seen = ctx.said; return [] } })
+    expect(seen).toBe("the chef show first\nfiled a watch")
   })
 
   it("rejects unknown case names and unknown plant targets before opening a window", async () => {
@@ -207,7 +269,11 @@ describe("runSuite orchestration", () => {
     const result = await gate.runCase(host, gate.CASES.find((c: { id: string }) => c.id === "await-self-resolve"))
     expect(result.status).toBe("pass")
     expect(clock.t).toBe(1_000_000 + 2 * 15_000)
-    expect(log).toEqual(["send:principal:false"])
+    expect(log).toEqual(["send:principal:true"])
+  })
+
+  it("files the await as a delegated principal command, because only that carries follow-up authority", () => {
+    expect(gate.CASES.find((c: { id: string }) => c.id === "await-self-resolve")).toMatchObject({ sender: "principal", delegated: true })
   })
 
   it("gives up on a polled case at its timeout and fails it", async () => {
@@ -292,7 +358,7 @@ describe("provision and the real host", () => {
   it("opens and closes the window file, observes machine state and finds sessions", async () => {
     gate.provision({ bundle, cardUrl: "http://card", log: () => undefined, run: fakeCli().run, ...uid() })
     const execCalls: string[][] = []
-    const host = gate.makeHost({ bundle, log: () => undefined, exec: (file: string, args: string[]) => { execCalls.push([file, ...args]); return args[0] === "ps" ? "ouro-butler\ncalibre-web\n" : JSON.stringify({ text: "hello" }) } })
+    const host = gate.makeHost({ bundle, log: () => undefined, exec: (file: string, args: string[]) => { execCalls.push([file, ...args]); return args[0] === "ps" ? "ouro-butler\ncalibre-web\n" : args.includes("-e") ? JSON.stringify({ "friend-1": true, "friend-2": true }) : JSON.stringify({ text: "hello" }) } })
     expect(host.friends).toEqual({ principal: "friend-1", stranger: "friend-2" })
     const realFetch = globalThis.fetch
     let hits = 0
@@ -301,6 +367,13 @@ describe("provision and the real host", () => {
     globalThis.fetch = (async () => { throw new Error("down") }) as unknown as typeof fetch
     try { await expect(host.waitReady(2, 1)).rejects.toThrow(/did not answer/) } finally { globalThis.fetch = realFetch }
     host.openWindow(5)
+    const trusted = await host.windowTrusted()
+    expect(trusted).toEqual({ ok: true })
+    const probe = execCalls.find((c) => c[0] === "docker" && c.includes("-e"))!
+    expect(probe.slice(0, 7)).toEqual(["docker", "exec", "-u", "10001:10001", "ouro-butler", "node", "-e"])
+    expect(probe.join(" ")).toContain("/opt/ouro/dist/a2a/replay-harness.js")
+    expect(probe.join(" ")).toContain("friend-1")
+    expect(probe.join(" ")).toContain("friend-2")
     const window = JSON.parse(fs.readFileSync(path.join(bundle, "state/replay/window.json"), "utf8"))
     expect(Object.keys(window.friends).sort()).toEqual(["friend-1", "friend-2"])
     expect(Date.parse(window.friends["friend-1"].expiresAt)).toBeGreaterThan(Date.now())
@@ -325,6 +398,15 @@ describe("provision and the real host", () => {
     expect(await host.send({ who: "stranger", text: "hi", delegated: true, context: "c9" })).toEqual({ text: "hello" })
     const sent = execCalls.find((c) => c.includes("message"))!
     expect(sent).toEqual(expect.arrayContaining(["--to", "http://card", "--context", "c9", "--delegated", "--json", "--identity-file", "/home/ouro/AgentBundles/sanctuary.ouro/state/replay-client/stranger.json"]))
+    for (const [out, expected] of [
+      [JSON.stringify({ "friend-1": true, "friend-2": false }), { ok: false, detail: "the Butler's own view of state/replay does not open the window for: friend-2 (the directory or window.json is not root-owned and read-only to the Butler)" }],
+      ["not json", { ok: false, detail: "the trust probe inside the container failed: Unexpected token 'o', \"not json\" is not valid JSON" }],
+    ] as const) {
+      const probing = gate.makeHost({ bundle, log: () => undefined, exec: () => out })
+      expect(await probing.windowTrusted()).toEqual(expected)
+    }
+    const broken = gate.makeHost({ bundle, log: () => undefined, exec: () => { throw new Error("no container") } })
+    expect(await broken.windowTrusted()).toEqual({ ok: false, detail: "the trust probe inside the container failed: no container" })
     expect(await host.readSession("ctx-1")).toEqual({ events: [] })
     expect(await host.readSession("missing")).toBeNull()
     fs.rmSync(path.join(bundle, "state/telegram/effects"), { recursive: true })

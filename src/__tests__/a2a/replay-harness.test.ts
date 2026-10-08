@@ -171,6 +171,9 @@ describe("replay window is not settable by any model-facing path", () => {
     const importers = sources.filter((f) => /replay-harness"/.test(fs.readFileSync(f, "utf8"))).map((f) => path.relative(path.join(__dirname, "..", ".."), f)).sort()
     expect(importers).toEqual(["a2a/delegated-command.ts", "heart/awaiting/a2a-await-delivery.ts"])
     const writers = sources.filter((f) => /"window\.json"/.test(fs.readFileSync(f, "utf8"))).map((f) => path.basename(f))
-    expect(writers).toEqual(["replay-harness.ts"])
+    // The lifecycle only deletes a stale window file when it puts the directory back under root; it never writes one.
+    expect(writers).toEqual(["replay-harness.ts", "sanctuary-authority-root-lifecycle.ts"])
+    const lifecycle = fs.readFileSync(path.join(__dirname, "..", "..", "heart", "daemon", "sanctuary-authority-root-lifecycle.ts"), "utf8")
+    expect(lifecycle).not.toMatch(/(writeFile|appendFile|rename|copyFile|symlink)[A-Za-z]*\([^)]*window\.json/)
   })
 })

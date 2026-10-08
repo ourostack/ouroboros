@@ -19,6 +19,8 @@ import { fileURLToPath } from "node:url"
 export const DEFAULT_BUNDLE = "/mnt/user/appdata/ouro-butler/agent/sanctuary.ouro"
 export const CONTAINER_BUNDLE = "/home/ouro/AgentBundles/sanctuary.ouro"
 export const CONTAINER = "ouro-butler"
+// The uid the A2A sense runs as inside the container; the trust probe must see the window exactly as that process does.
+export const BUTLER_USER = "10001:10001"
 export const CLI_ENTRY = "/opt/ouro/dist/heart/daemon/ouro-entry.js"
 export const DEFAULT_WINDOW_MINUTES = 30
 export const AWAIT_TIMEOUT_MS = 6 * 60 * 1000
@@ -59,10 +61,27 @@ export function upDownClaim(text) {
   return null
 }
 
-/** A queue record that Sonarr itself flags as stuck or failing. */
-export function isStalledQueueItem(item) {
+/** Everything the assistant said across a session, in order (a reply may be spread over several messages). */
+export function extractReplies(session) {
+  const events = Array.isArray(session?.events) ? session.events : []
+  return events.filter((event) => event.role === "assistant" && typeof event.content === "string" && event.content.length > 0).map((event) => event.content).join("\n")
+}
+
+export const STALL_MIN_AGE_HOURS = 6
+
+/**
+ * A queue record that is stuck: Sonarr flags it, or it is a partial download with no ETA that has sat for hours. The
+ * second form is how a torrent with no peers looks (Sonarr keeps calling it "downloading", with timeleft 00:00:00), and
+ * is the same shape media-mcp's classifyStall reports as a stall.
+ */
+export function isStalledQueueItem(item, nowMs = Date.now()) {
   const flagged = (value) => ["warning", "error", "failed"].includes(String(value ?? "").toLowerCase())
-  return flagged(item?.trackedDownloadStatus) || flagged(item?.status) || (Array.isArray(item?.statusMessages) && item.statusMessages.length > 0)
+  if (flagged(item?.trackedDownloadStatus) || flagged(item?.status) || (Array.isArray(item?.statusMessages) && item.statusMessages.length > 0)) return true
+  const size = Number(item?.size ?? 0)
+  const left = Number(item?.sizeleft ?? 0)
+  const noEta = item?.timeleft === undefined || item?.timeleft === null || item?.timeleft === "00:00:00"
+  const addedAt = Date.parse(item?.added)
+  return size > 0 && left > 0 && noEta && Number.isFinite(addedAt) && nowMs - addedAt >= STALL_MIN_AGE_HOURS * 3_600_000
 }
 
 /** Telegram effect records written during [start, end] that would have reached Ari's chat from a replay. */
@@ -78,7 +97,7 @@ export function telegramLeaks(effects, start, end) {
 // ctx: { trace, reply, error, before, after, sink (lines inside this case's window), friends: { principal, stranger } }
 
 const callsNamed = (trace, pattern) => trace.filter((call) => pattern.test(call.name))
-const shellBooks = (trace) => trace.filter((call) => /(^|[\s/])books\s+(get|search|series)\b/.test(`${call.name === "shell" ? call.args : ""}`.replace(/\\"/g, '"')))
+const shellBooks = (trace) => trace.filter((call) => /(^|[\s/"'])books\s+(get|search|series|library\s+(find|search))\b/.test(`${call.name === "shell" ? call.args : ""}`.replace(/\\"/g, '"')))
 
 export const CASES = [
   {
@@ -86,11 +105,12 @@ export const CASES = [
     words: "hi bud!! why don't we have all eps of chef?",
     sender: "principal",
     delegated: false,
-    readback: ({ trace, reply }) => {
-      const media = trace.filter((call) => /^(media_|sanctuary_search_media_catalog)/.test(call.name) && /\b(seriesId|tmdbId)\W{1,4}(191|89557)\b/i.test(`${call.args} ${call.result}`))
+    readback: ({ trace, reply, said }) => {
+      // The live media tools take the Sonarr id as service_id; older ones used seriesId or tmdbId.
+      const media = trace.filter((call) => /^(media_|sanctuary_search_media_catalog)/.test(call.name) && /\b(seriesId|series_id|service_id|tmdbId|tmdb_id)\W{1,4}(191|89557)\b/i.test(`${call.args} ${call.result}`))
       return [
         check("a media tool call names Sonarr series 191 or TMDB 89557", media.length > 0, `${trace.length} tool calls`),
-        check("the reply names the Chef Show", /chef show/i.test(reply ?? "")),
+        check("the reply names the Chef Show", /chef show/i.test(said || reply || "")),
       ]
     },
   },
@@ -139,7 +159,7 @@ export const CASES = [
       const books = shellBooks(trace)
       return [
         check("the books tool was used to get or search", books.length > 0),
-        check("no books call delivers", !trace.some((call) => call.name === "shell" && /\bbooks\b/.test(call.args) && /--deliver/.test(call.args))),
+        check("no books call delivers", !trace.some((call) => call.name === "shell" && /\bbooks\b/.test(call.args) && (/--deliver/.test(call.args) || /\bbooks\s+deliver\b/.test(call.args)))),
         check("the ledger line count is unchanged", before.ledgerLines === after.ledgerLines, `${before.ledgerLines} -> ${after.ledgerLines}`),
       ]
     },
@@ -152,7 +172,7 @@ export const CASES = [
     // An unreadable queue is not "nothing stalled": the case runs and its readback fails.
     applicable: (before) => {
       if (!Array.isArray(before.queue)) return null
-      return before.queue.some(isStalledQueueItem) ? null : "no stalled item in the Sonarr queue"
+      return before.queue.some((item) => isStalledQueueItem(item)) ? null : "no stalled item in the Sonarr queue"
     },
     readback: ({ trace, before, after }) => {
       const ids = (queue) => (Array.isArray(queue) ? queue.map((item) => item.id).sort((a, b) => a - b).join(",") : null)
@@ -166,7 +186,9 @@ export const CASES = [
     id: "await-self-resolve",
     words: "file an await that resolves once the ouro-butler container is running, check every 1m, max 15m",
     sender: "principal",
-    delegated: false,
+    // An await filed from a plain A2A chat has no request id, so the runtime cancels it as legacy provenance. Only a
+    // delegated principal command carries the follow-up authority an await needs.
+    delegated: true,
     poll: {
       timeoutMs: AWAIT_TIMEOUT_MS,
       intervalMs: AWAIT_POLL_MS,
@@ -215,10 +237,11 @@ export async function runCase(host, testCase, { plant } = {}) {
   const endedAt = host.now()
   const session = await host.readSession(context)
   const trace = extractTrace(session)
+  const said = extractReplies(session)
   const sink = after.sink.filter((line) => Date.parse(line.at) >= startedAt - 1000 && Date.parse(line.at) <= endedAt + 1000)
   let checks
   try {
-    checks = testCase.readback({ trace, reply: sent.text ?? "", error: sent.error ?? null, before, after, sink, friends: host.friends })
+    checks = testCase.readback({ trace, said, reply: sent.text ?? "", error: sent.error ?? null, before, after, sink, friends: host.friends })
   } catch (error) {
     checks = [check("readback ran", false, String(error?.message ?? error))]
   }
@@ -236,6 +259,13 @@ export async function runSuite(host, { cases = CASES.map((entry) => entry.id), p
   const results = []
   host.openWindow(windowMinutes)
   try {
+    // The owner notice must reach the sink, never Telegram. Ask the Butler, through its own code, whether it sees the
+    // window as trusted before any command is sent: a window it distrusts would leak a real notice to the owner.
+    const trusted = (await host.windowTrusted?.()) ?? { ok: true }
+    if (!trusted.ok) {
+      const entry = { id: "window-trusted", status: "fail", checks: [check("the Butler sees the replay window as trusted", false, trusted.detail)] }
+      return { results: [entry], summary: { ok: false, passed: 0, skipped: 0, failed: ["window-trusted"] } }
+    }
     for (const testCase of selected) results.push(await runCase(host, testCase, { plant }))
   } finally {
     host.closeWindow()
@@ -364,6 +394,19 @@ export function makeHost({ bundle = DEFAULT_BUNDLE, cardUrl, log = console.error
     closeWindow() {
       rmSync(path.join(replayDir, "window.json"), { force: true })
       log("replay window closed")
+    },
+    /** Asks the Butler's own replay code, inside the container, whether it opens the window for both peers. */
+    async windowTrusted() {
+      const ids = [provisioned.principal.friendId, provisioned.stranger.friendId]
+      const script = `const h=require("/opt/ouro/dist/a2a/replay-harness.js");const o={};for(const id of ${JSON.stringify(ids)})o[id]=h.isReplayWindowOpen(${JSON.stringify(CONTAINER_BUNDLE)},id);console.log(JSON.stringify(o))`
+      try {
+        const seen = JSON.parse(exec("docker", ["exec", "-u", BUTLER_USER, CONTAINER, "node", "-e", script], { timeout: 60_000 }).trim().split("\n").at(-1))
+        const closed = ids.filter((id) => seen[id] !== true)
+        if (closed.length === 0) return { ok: true }
+        return { ok: false, detail: `the Butler's own view of state/replay does not open the window for: ${closed.join(", ")} (the directory or window.json is not root-owned and read-only to the Butler)` }
+      } catch (error) {
+        return { ok: false, detail: `the trust probe inside the container failed: ${error.message}` }
+      }
     },
     async send({ who, text, delegated, context }) {
       const peer = provisioned[who]

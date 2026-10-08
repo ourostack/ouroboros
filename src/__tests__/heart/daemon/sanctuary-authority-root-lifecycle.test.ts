@@ -1293,6 +1293,66 @@ describe("in-place authority upgrade", () => {
     await expect(f.lifecycleFor().boot()).resolves.toBe(true)
   })
 
+  describe("the replay window directory across the recursive ownership restore", () => {
+    const chowns = () => host.exec.mock.calls.filter(([file]: [string]) => file === "/bin/chown").map(([, args]: [string, string[]]) => args)
+    it("puts state/replay back under root, read-only to the Butler, and drops any window file, after the recursive chown", async () => {
+      const f = await upgradeFixture()
+      f.write(`${bundle}/state/replay/window.json`, JSON.stringify({ friends: {} }))
+      f.write(`${bundle}/state/replay/notices.ndjson`, "")
+      fs.chmodSync(f.p(`${bundle}/state/replay`), 0o775)
+      await f.lifecycle.upgrade({ targetImageId: digest("next-image"), imageReference: nextReference })
+      const calls = chowns()
+      const recursive = calls.findIndex((args) => args[0] === "-R")
+      const reassert = calls.findIndex((args) => args.join(" ") === `-h 0:0 ${f.p(`${bundle}/state/replay`)}`)
+      expect(recursive).toBeGreaterThanOrEqual(0)
+      expect(reassert).toBeGreaterThan(recursive)
+      expect(fs.statSync(f.p(`${bundle}/state/replay`)).mode & 0o777).toBe(0o755)
+      // A window never survives an upgrade (the gate opens and closes its own), so nothing the Butler could have forged is kept as root's.
+      expect(fs.existsSync(f.p(`${bundle}/state/replay/window.json`))).toBe(false)
+      expect(fs.existsSync(f.p(`${bundle}/state/replay/notices.ndjson`))).toBe(true)
+    })
+
+    it("still restores the directory when the Butler left a directory where window.json belongs, and removes it", async () => {
+      const f = await upgradeFixture()
+      f.write(`${bundle}/state/replay/window.json/inner.txt`, "x")
+      await f.lifecycle.upgrade({ targetImageId: digest("next-image"), imageReference: nextReference })
+      expect(chowns().some((args) => args.join(" ") === `-h 0:0 ${f.p(`${bundle}/state/replay`)}`)).toBe(true)
+      expect(fs.statSync(f.p(`${bundle}/state/replay`)).mode & 0o777).toBe(0o755)
+      expect(fs.existsSync(f.p(`${bundle}/state/replay/window.json`))).toBe(false)
+    })
+
+    it("restores ownership before it removes anything, so a failed removal cannot leave the directory Butler-owned", async () => {
+      const f = await upgradeFixture()
+      f.write(`${bundle}/state/replay/window.json`, "{}")
+      const order: string[] = []
+      const realRm = fs.rmSync
+      vi.spyOn(fs, "rmSync").mockImplementation(((target: fs.PathLike, options?: fs.RmOptions) => {
+        if (String(target).endsWith("state/replay/window.json")) {
+          order.push(`rm:${JSON.stringify(options)}`)
+          throw new Error("EPERM")
+        }
+        return realRm(target, options)
+      }) as typeof fs.rmSync)
+      const chmod = vi.spyOn(fs, "chmodSync")
+      await expect(f.lifecycle.upgrade({ targetImageId: digest("next-image"), imageReference: nextReference })).rejects.toThrow("EPERM")
+      expect(chowns().some((args) => args.join(" ") === `-h 0:0 ${f.p(`${bundle}/state/replay`)}`)).toBe(true)
+      expect(chmod).toHaveBeenCalledWith(f.p(`${bundle}/state/replay`), 0o755)
+      expect(order).toEqual([`rm:${JSON.stringify({ force: true, recursive: true })}`])
+    })
+
+    it("does nothing for a bundle without a replay directory, or where state/replay is a symlink", async () => {
+      const f = await upgradeFixture()
+      await f.lifecycle.upgrade({ targetImageId: digest("next-image"), imageReference: nextReference })
+      expect(chowns().filter((args) => args[0] === "-h")).toEqual([])
+      host.exec.mockClear()
+      const g = await upgradeFixture()
+      fs.mkdirSync(g.p(`${bundle}/state`), { recursive: true })
+      fs.symlinkSync("/elsewhere", g.p(`${bundle}/state/replay`))
+      await g.lifecycle.upgrade({ targetImageId: digest("next-image"), imageReference: nextReference })
+      expect(chowns().filter((args) => args[0] === "-h")).toEqual([])
+    })
+  })
+
   it("cannot roll back a completed upgrade: the journal and the predecessor's records are already gone", async () => {
     const f = await upgradeFixture()
     await f.lifecycle.upgrade({ targetImageId: digest("next-image"), imageReference: nextReference })

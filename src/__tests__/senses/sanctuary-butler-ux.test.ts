@@ -655,6 +655,14 @@ describe("Mendelow Cloud Butler household UX", () => {
     expect(expectedOff.reply).toContain("applies only to Books")
     expect(psyche("LORE")).toContain("Books maps to the exact containers `calibre` and `calibre-web`")
     expect(psyche("LORE")).toContain("Jellyfin is the household media shelf")
+    // Every conversation reads the lore, A2A peers included, so this is where a peer learns to use the books tool for a book lookup.
+    const lore = psyche("LORE")
+    expect(lore).toContain("/home/ouro/AgentBundles/sanctuary.ouro/books/books")
+    expect(lore).toMatch(/`books search "[^"]+"`/u)
+    expect(lore).toMatch(/`books library find "[^"]+"`/u)
+    expect(lore).toMatch(/`books get --title/u)
+    expect(lore).toMatch(/never add `--deliver`[^.]*unless[^.]*(asks|asked)/iu)
+    expect(lore).toMatch(/before (a|any) web search/iu)
     expect(expectedOff.tools).toEqual(["steward_policy_manage"])
     const reminder = transcripts.find((entry) => entry.id === "specified-snooze")!
     expect(reminder.reply).toContain("Friday at 10:00 AM")

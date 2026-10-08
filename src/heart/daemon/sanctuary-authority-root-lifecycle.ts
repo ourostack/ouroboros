@@ -855,6 +855,24 @@ export class SanctuaryAuthorityRootLifecycle {
       encoding: "utf8", timeout: 300_000, stdio: ["ignore", "pipe", "pipe"], env: { PATH: "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin" }, cwd: "/",
     })
     execFileSync("/bin/chown", ["-R", "10001:10001", this.#p(BUNDLE)], { stdio: "ignore" })
+    this.#restoreReplayRoot()
+  }
+
+  /**
+   * The recursive restore above hands the whole bundle to the resident, including state/replay. That directory is the
+   * replay gate's trust anchor: the resident only believes a replay window while the directory is root-owned and not
+   * writable by it. Put it back under root after every restore (the resident is stopped here), and drop any window
+   * file, since the gate writes its own for each run and a file the resident could have written must not be kept as root's.
+   */
+  #restoreReplayRoot(): void {
+    const directory = this.#p(`${BUNDLE}/state/replay`)
+    let stat: fs.Stats
+    try { stat = fs.lstatSync(directory) } catch { return }
+    if (!stat.isDirectory()) return
+    // Ownership first: nothing the Butler left in the directory may stop it being put back under root.
+    execFileSync("/bin/chown", ["-h", "0:0", directory], { stdio: "ignore" })
+    fs.chmodSync(directory, 0o755)
+    fs.rmSync(path.join(directory, "window.json"), { force: true, recursive: true })
   }
 
   /** Start the gateway, then the resident, and prove both. */
