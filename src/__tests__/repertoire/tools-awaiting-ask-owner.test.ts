@@ -27,6 +27,9 @@ vi.mock("../../heart/awaiting/await-alert", async (original) => {
   }
 })
 
+const mockSendTelegramOwnerNotice = vi.hoisted(() => vi.fn())
+vi.mock("../../senses/telegram", () => ({ sendTelegramOwnerNotice: mockSendTelegramOwnerNotice }))
+
 import { awaitingToolDefinitions, resetAwaitToolDeps, setAwaitToolDeps } from "../../repertoire/tools-awaiting"
 
 const fileAwaitDef = awaitingToolDefinitions.find((d) => d.tool.function.name === "await_condition")!
@@ -191,6 +194,21 @@ describe("resolve_await ask_owner", () => {
     const result = parse(await resolveAwaitDef.handler({ name: "chef", verdict: "ask_owner", observation: "o", question: QUESTION, choices: CHOICES }, a2aCtx))
     expect(result.asked).toBe(true)
     expect(notifyOwner).toHaveBeenCalledTimes(1)
+  })
+
+  it("reports a skipped A2A delivery and still asks the owner directly", async () => {
+    const noFriend = { currentSession: { friendId: "", channel: "a2a", key: "conv-1", sessionPath: "" } } as any
+    await fileAwaitDef.handler({ name: "chef", condition: "c", cadence: "30m" }, noFriend)
+    const result = parse(await resolveAwaitDef.handler({ name: "chef", verdict: "ask_owner", observation: "o", question: QUESTION, choices: CHOICES }, noFriend))
+    expect(result).toMatchObject({ asked: true, alert: { attempted: false, status: null, skipped: "no friend id" } })
+    expect(notifyOwner).toHaveBeenCalledTimes(1)
+  })
+
+  it("by default sends through the Butler's Telegram owner notice", async () => {
+    resetAwaitToolDeps()
+    await fileAwaitDef.handler({ name: "chef", condition: "c", cadence: "30m", alert: "telegram" }, telegramCtx)
+    await resolveAwaitDef.handler({ name: "chef", verdict: "ask_owner", observation: "o", question: QUESTION, choices: CHOICES }, telegramCtx)
+    expect(mockSendTelegramOwnerNotice).toHaveBeenCalledWith("sanctuary", expect.objectContaining({ noticeId: "await-ask-owner:chef", text: expect.stringContaining(QUESTION) }))
   })
 
   it("leaves yes and no unchanged", async () => {
