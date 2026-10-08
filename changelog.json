@@ -2,6 +2,13 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.864",
+      "changes": [
+        "Butler media status, diagnosis and queue now share one stall classification (never_started, unfinished_for_days, no_peers): a partial download with no ETA is reported as stalled with its percent, age and unchanged-since time instead of as downloading, and the diagnosis asks the owner (keep_waiting, find_another_release, give_up) instead of steering to a blocklist that would delete the partial.",
+        "A partial download older than 72 hours that still reports a real ETA is now reported as slow but moving, not stalled, and a stalled partial reported beside a never-started download keeps the blocklist advice for the latter."
+      ]
+    },
+    {
       "version": "0.1.0-alpha.863",
       "changes": [
         "Fixed await ticks always failing resolve_await and cancel_await: the inbound pipeline rewrote the turn's current session to the private-runtime session, so the relationship guard never matched the await being ticked. The tick now carries its own binding, covering only the await being ticked.",
