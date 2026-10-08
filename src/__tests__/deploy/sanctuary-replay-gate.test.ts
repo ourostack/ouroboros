@@ -192,8 +192,8 @@ describe("runSuite orchestration", () => {
     const { host, log } = fakeHost({ sessions: { "*": trace } })
     const suite = await gate.runSuite(host, { cases: ["chef-question"], windowMinutes: 12 })
     expect(log).toEqual(["open:12", "send:principal:false", "close"])
-    expect(suite.results.map((r: { id: string; status: string }) => `${r.id}:${r.status}`)).toEqual(["chef-question:pass", "no-telegram:pass"])
-    expect(suite.summary).toEqual({ ok: true, passed: 2, skipped: 0, failed: [] })
+    expect(suite.results.map((r: { id: string; status: string }) => `${r.id}:${r.status}`)).toEqual(["chef-question:pass", "owner-policy-untouched:pass", "no-telegram:pass"])
+    expect(suite.summary).toEqual({ ok: true, passed: 3, skipped: 0, failed: [] })
   })
 
   it("fails the run when a Telegram owner notice was recorded during it, and still closes the window", async () => {
@@ -201,9 +201,25 @@ describe("runSuite orchestration", () => {
     const leak = empty({ effects: [{ idempotencyKey: "owner-notice:delegated:x", createdAt: new Date(10_000).toISOString() }] })
     const { host, log } = fakeHost({ observations: [empty(), leak], clock })
     const suite = await gate.runSuite(host, { cases: ["stall-kept"] })
-    expect(suite.results.map((r: { status: string }) => r.status)).toEqual(["skipped", "fail"])
+    expect(suite.results.map((r: { status: string }) => r.status)).toEqual(["skipped", "pass", "fail"])
     expect(suite.summary).toMatchObject({ ok: false, skipped: 1, failed: ["no-telegram"] })
     expect(log.at(-1)).toBe("close")
+  })
+
+  it("fails owner-policy-untouched when the steward or audit bytes differ between the first case and the last", async () => {
+    for (const changed of [{ stewardSha: "bbb" }, { auditSha: "zzz" }]) {
+      const { host, log } = fakeHost({ observations: [empty({ auditSha: "aud" }), empty({ auditSha: "aud" }), empty({ auditSha: "aud", ...changed })] })
+      const suite = await gate.runSuite(host, { cases: ["stall-kept"] })
+      expect(suite.results.find((r: { id: string }) => r.id === "owner-policy-untouched")).toMatchObject({ status: "fail" })
+      expect(suite.summary).toMatchObject({ ok: false, failed: expect.arrayContaining(["owner-policy-untouched"]) })
+      expect(log.at(-1)).toBe("close")
+    }
+  })
+
+  it("passes owner-policy-untouched when both files are absent before and after", async () => {
+    const { host } = fakeHost({ observations: [empty({ stewardSha: null, auditSha: null })] })
+    const suite = await gate.runSuite(host, { cases: ["stall-kept"] })
+    expect(suite.results.find((r: { id: string }) => r.id === "owner-policy-untouched")).toMatchObject({ status: "pass" })
   })
 
   it("closes the window when a case throws", async () => {
@@ -234,7 +250,7 @@ describe("runSuite orchestration", () => {
     ;(host as Record<string, unknown>).windowTrusted = async () => ({ ok: true })
     const suite = await gate.runSuite(host, { cases: ["stall-kept"] })
     expect(log).toEqual(["open:45", "close"])
-    expect(suite.results.map((r: { id: string }) => r.id)).toEqual(["stall-kept", "no-telegram"])
+    expect(suite.results.map((r: { id: string }) => r.id)).toEqual(["stall-kept", "owner-policy-untouched", "no-telegram"])
   })
 
   it("gives each case the whole transcript of what the Butler said", async () => {
@@ -389,12 +405,22 @@ describe("provision and the real host", () => {
     expect(calls.filter((a) => a[1] === "onboard").map((a) => a[a.indexOf("--trust") + 1])).toEqual(["family", "friend"])
     expect(calls.filter((a) => a[0] === "friend").every((a) => a.includes("sanctuary-agent-peer") && a.includes("active"))).toBe(true)
     expect(fs.existsSync(path.join(bundle, "state/replay/notices.ndjson"))).toBe(true)
+    const registry = JSON.parse(fs.readFileSync(path.join(bundle, "state/replay/identities.json"), "utf8"))
+    expect(Object.keys(registry.friends)).toEqual(["friend-1", "friend-2"])
+    expect(fs.statSync(path.join(bundle, "state/replay/identities.json")).mode & 0o777).toBe(0o644)
     expect(fs.statSync(path.join(bundle, "state/replay/notices.ndjson")).mode & 0o777).toBe(0o600)
     expect(fs.statSync(path.join(bundle, "state/replay-client")).mode & 0o777).toBe(0o700)
     const again = fakeCli()
     gate.provision({ bundle, log: () => undefined, run: again.run, ...uid() })
     expect(again.calls.filter((a) => a[1] === "onboard")).toEqual([])
     expect(JSON.parse(fs.readFileSync(path.join(bundle, "state/replay-client/provision.json"), "utf8")).cardUrl).toBe("http://card/x")
+  })
+
+  it("keeps earlier replay identities in the registry when provisioning again", () => {
+    fs.mkdirSync(path.join(bundle, "state/replay"), { recursive: true })
+    fs.writeFileSync(path.join(bundle, "state/replay/identities.json"), JSON.stringify({ friends: { "old-replay": { name: "retired" } } }))
+    gate.provision({ bundle, cardUrl: "c", log: () => undefined, run: fakeCli().run, ...uid() })
+    expect(Object.keys(JSON.parse(fs.readFileSync(path.join(bundle, "state/replay/identities.json"), "utf8")).friends).sort()).toEqual(["friend-1", "friend-2", "old-replay"])
   })
 
   it("forces the replay directory to 0755 even if a looser one already exists", () => {
@@ -462,6 +488,9 @@ describe("provision and the real host", () => {
     expect(observed.effectsReadable).toBe(true)
     expect(observed.containers).toEqual({ "ouro-butler": true, "calibre-web": true })
     expect(observed.stewardSha).toMatch(/^[0-9a-f]{64}$/)
+    expect(observed.auditSha).toBeNull()
+    fs.writeFileSync(path.join(bundle, "state/policy/policy-audit.ndjson"), "row\n")
+    expect((await host.observe()).auditSha).toMatch(/^[0-9a-f]{64}$/)
     expect(observed.sink).toEqual([{ noticeId: "n", friendId: "friend-1", at: "x" }])
     expect(await host.send({ who: "stranger", text: "hi", delegated: true, context: "c9" })).toEqual({ text: "hello" })
     const sent = execCalls.find((c) => c.includes("message"))!
@@ -529,7 +558,7 @@ describe("cli", () => {
     const a = io()
     const makeHost = () => fakeHost({ sessions: { "*": trace } }).host
     expect(await gate.main(["run", "--cases", "chef-question"], a.io, { makeHost, provision: () => undefined })).toBe(0)
-    expect(a.out.map((l) => JSON.parse(l)).map((r) => r.id ?? "summary")).toEqual(["chef-question", "no-telegram", "summary"])
+    expect(a.out.map((l) => JSON.parse(l)).map((r) => r.id ?? "summary")).toEqual(["chef-question", "owner-policy-untouched", "no-telegram", "summary"])
     const b = io()
     expect(await gate.main(["run", "--cases", "chef-question", "--plant", "chef-question", "--window-minutes", "3", "--bundle", "/b", "--card-url", "c"], b.io, { makeHost, provision: () => undefined })).toBe(1)
     const c = io()

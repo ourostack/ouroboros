@@ -3,7 +3,7 @@ import * as os from "os"
 import * as path from "path"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { mockOwners } from "../test-helpers/replay-owners"
-import { appendReplayNotice, isReplayWindowOpen, REPLAY_WINDOW_MAX_MS, replayNoticeRecorded, replaySinkPath, replayWindowPath } from "../../a2a/replay-harness"
+import { appendReplayNotice, isReplayIdentity, replayIdentitiesPath, isReplayWindowOpen, REPLAY_WINDOW_MAX_MS, replayNoticeRecorded, replaySinkPath, replayWindowPath } from "../../a2a/replay-harness"
 
 vi.mock("node:fs", async (original) => ({ ...await original<typeof fs>() }))
 
@@ -169,11 +169,54 @@ describe("replay window is not settable by any model-facing path", () => {
   it("only the notice routing files import the harness, and nothing in src writes the window file", () => {
     const sources = walk(path.join(__dirname, "..", ".."))
     const importers = sources.filter((f) => /replay-harness"/.test(fs.readFileSync(f, "utf8"))).map((f) => path.relative(path.join(__dirname, "..", ".."), f)).sort()
-    expect(importers).toEqual(["a2a/delegated-command.ts", "heart/awaiting/a2a-await-delivery.ts"])
+    expect(importers).toEqual(["a2a/delegated-command.ts", "heart/awaiting/a2a-await-delivery.ts", "heart/steward-policy.ts"])
     const writers = sources.filter((f) => /"window\.json"/.test(fs.readFileSync(f, "utf8"))).map((f) => path.basename(f))
     // The lifecycle only deletes a stale window file when it puts the directory back under root; it never writes one.
     expect(writers).toEqual(["replay-harness.ts", "sanctuary-authority-root-lifecycle.ts"])
     const lifecycle = fs.readFileSync(path.join(__dirname, "..", "..", "heart", "daemon", "sanctuary-authority-root-lifecycle.ts"), "utf8")
     expect(lifecycle).not.toMatch(/(writeFile|appendFile|rename|copyFile|symlink)[A-Za-z]*\([^)]*window\.json/)
   })
+
+})
+
+describe("replay identity marker", () => {
+  beforeEach(() => { root = fs.mkdtempSync(path.join(os.tmpdir(), "replay-identity-")) })
+  afterEach(() => { fs.rmSync(root, { recursive: true, force: true }) })
+  {
+    function writeIdentities(content: string): void {
+      fs.mkdirSync(path.dirname(replayIdentitiesPath(root)), { recursive: true })
+      fs.writeFileSync(replayIdentitiesPath(root), content)
+    }
+
+    it("is not a replay identity with no registry and no window", () => {
+      expect(isReplayIdentity(root, "p")).toBe(false)
+    })
+
+    it("lists permanent replay identities regardless of any window", () => {
+      writeIdentities(JSON.stringify({ friends: { p: { name: "replay-principal" } } }))
+      expect(isReplayIdentity(root, "p")).toBe(true)
+      expect(isReplayIdentity(root, "real-friend")).toBe(false)
+    })
+
+    it("counts any window entry, open or expired", () => {
+      writeWindow(JSON.stringify({ friends: { p: { expiresAt: iso(-60_000) } } }))
+      expect(isReplayIdentity(root, "p")).toBe(true)
+      expect(isReplayIdentity(root, "other")).toBe(false)
+    })
+
+    it("does not treat inherited object keys as identities", () => {
+      writeIdentities(JSON.stringify({ friends: {} }))
+      expect(isReplayIdentity(root, "toString")).toBe(false)
+    })
+
+    it.each([["no friends map", "{}"], ["friends not an object", JSON.stringify({ friends: "p" })], ["null document", "null"]])("is not a replay identity when the registry has %s", (_name, content) => {
+      writeIdentities(content)
+      expect(isReplayIdentity(root, "p")).toBe(false)
+    })
+
+    it("fails closed when a marker file exists but cannot be parsed", () => {
+      writeIdentities("{not json")
+      expect(isReplayIdentity(root, "real-friend")).toBe(true)
+    })
+  }
 })

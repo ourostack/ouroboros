@@ -4,6 +4,7 @@ import { createHash, randomUUID } from "node:crypto"
 import { isDeepStrictEqual } from "node:util"
 import type { TrustLevel } from "@ouro.bot/friends"
 import { emitNervesEvent } from "../nerves/runtime"
+import { isReplayIdentity } from "../a2a/replay-harness"
 import { readSessionTransaction, withImmediateSessionTurnLease, withSessionTurnLease, writeSessionTransaction, type SessionTurnLease } from "../mind/session-transaction"
 
 export type LearnedPolicyProvenance = "stated" | "observed" | "default"
@@ -14,6 +15,8 @@ export interface DesiredStateEntry {
   provenance: LearnedPolicyProvenance
   version: number
   source: string
+  /** Present only after an audited provenance correction: names what was corrected and why. */
+  correction?: string
   expiresAt?: string
 }
 
@@ -63,6 +66,7 @@ export interface StewardPolicyDelegation {
 
 export type StewardPolicyMutation =
   | { kind: "set_desired_state"; key: string; value: string; provenance: LearnedPolicyProvenance; source: string; expiresAt?: string }
+  | { kind: "correct_provenance"; key: string; source: string; correction: string }
   | { kind: "grant_routine_action"; key: string; action: string; targets: string[]; maxCount: number; windowMs: number; verificationRequired: boolean; exclusions: string[]; provenance: ActionGrantProvenance | "observed" | "default"; expiresAt?: string }
 
 export type RoutineActionRequester =
@@ -176,8 +180,8 @@ function delegation(value: unknown): value is StewardPolicyDelegation {
 }
 
 function desiredEntry(value: unknown, version: number): value is DesiredStateEntry {
-  return record(value) && exactKeys(value, ["value", "provenance", "version", "source"], ["expiresAt"])
-    && text(value.value) && text(value.source) && positiveInteger(value.version) && value.version <= version
+  return record(value) && exactKeys(value, ["value", "provenance", "version", "source"], ["correction", "expiresAt"])
+    && text(value.value) && text(value.source) && (value.correction === undefined || text(value.correction)) && positiveInteger(value.version) && value.version <= version
     && (value.provenance === "stated" || value.provenance === "observed" || value.provenance === "default")
     && (value.expiresAt === undefined || canonicalTime(value.expiresAt))
 }
@@ -222,13 +226,13 @@ function operationIdentity(issuer: string, event: string, requestId: string, kin
 
 function auditRow(value: unknown): value is PolicyAuditRow {
   if (!record(value) || !exactKeys(value, ["schemaVersion", "transactionId", "precedingBytesSha256", "mutationKind", "key", "mutationFingerprint", "affectedKeyResult", "affectedKeyResultSha256", "issuer", "authorizingSessionEvent", "authorization", "preimage", "preimageVersion", "preimageSha256", "postimage", "postimageVersion", "postimageSha256", "at"], ["delegatedVia"])
-    || value.schemaVersion !== 2 || (value.mutationKind !== "set_desired_state" && value.mutationKind !== "grant_routine_action")
+    || value.schemaVersion !== 2 || (value.mutationKind !== "set_desired_state" && value.mutationKind !== "grant_routine_action" && value.mutationKind !== "correct_provenance")
     || !text(value.key) || !text(value.issuer) || !text(value.authorizingSessionEvent) || !ownerAuthorization(value.authorization)
     || (value.delegatedVia !== undefined && !delegation(value.delegatedVia))
     || typeof value.preimage !== "string" || typeof value.postimage !== "string" || !canonicalTime(value.at)) return false
   const before = policyImage(value.preimage)
   const after = policyImage(value.postimage)
-  const result = value.mutationKind === "set_desired_state" ? after.desiredStates[value.key] : after.routineActionGrants[value.key]
+  const result = value.mutationKind === "grant_routine_action" ? after.routineActionGrants[value.key] : after.desiredStates[value.key]
   if (!result || value.preimageVersion !== before.version || value.postimageVersion !== after.version
     || after.version !== before.version + 1 || result.version !== after.version || after.updatedAt !== value.at
     || value.preimageSha256 !== sha256(value.preimage) || value.postimageSha256 !== sha256(value.postimage)
@@ -237,9 +241,14 @@ function auditRow(value: unknown): value is PolicyAuditRow {
     || value.mutationFingerprint !== mutationFingerprint(value.mutationKind, value.key, result)
     || value.transactionId !== sha256(JSON.stringify([operationIdentity(value.issuer, value.authorizingSessionEvent, value.authorization.requestId, value.mutationKind, value.key), value.mutationFingerprint]))) return false
   if ("action" in result && (result.issuer !== value.issuer || result.authorizingSessionEvent !== value.authorizingSessionEvent || result.authorizedAt !== value.at)) return false
+  if (value.mutationKind === "correct_provenance") {
+    // A correction changes the source and records its note on one existing entry, and nothing else about it.
+    const prior = before.desiredStates[value.key]
+    if (!prior || !("correction" in result) || !isDeepStrictEqual(result, { ...prior, source: result.source, correction: result.correction, version: after.version })) return false
+  }
   const expected = {
     ...before, version: after.version, updatedAt: value.at,
-    desiredStates: value.mutationKind === "set_desired_state" ? { ...before.desiredStates, [value.key]: result } : before.desiredStates,
+    desiredStates: value.mutationKind !== "grant_routine_action" ? { ...before.desiredStates, [value.key]: result } : before.desiredStates,
     routineActionGrants: value.mutationKind === "grant_routine_action" ? { ...before.routineActionGrants, [value.key]: result } : before.routineActionGrants,
   }
   return isDeepStrictEqual(after, expected)
@@ -379,26 +388,37 @@ export function readStewardPolicy(agentRoot: string): StewardPolicyRecord {
   return readPolicyState(agentRoot).policy
 }
 
+/** Replay identities (the gate's test peers) can never write owner policy: the marker comes from the friend ids, never from model text. */
+export function assertNotReplayIdentity(agentRoot: string, friendIds: readonly (string | undefined)[]): void {
+  if (friendIds.some((friendId) => friendId !== undefined && isReplayIdentity(agentRoot, friendId))) throw new Error("replay identities cannot write owner policy")
+}
+
 export function updateStewardPolicy(agentRoot: string, input: { expectedVersion: number; actor: StewardPolicyActor; mutation: StewardPolicyMutation; now?: string }): StewardPolicyRecord {
+  assertNotReplayIdentity(agentRoot, [input.actor.friendId, input.actor.delegatedVia?.delegateFriendId])
   if (input.actor.trustLevel !== "family") throw new Error("steward policy mutation requires family authority")
   const authorizingSessionEvent = requireText(input.actor.sessionEventId, "authorizing session event")
   const issuer = requireText(input.actor.friendId, "issuer")
   const authorization = input.actor.authorization
   if (!ownerAuthorization(authorization)) throw new Error("steward policy mutation requires current owner authorization")
   if (input.actor.delegatedVia !== undefined && !delegation(input.actor.delegatedVia)) throw new Error("steward policy delegation is invalid")
-  if (input.mutation.kind !== "set_desired_state" && input.mutation.kind !== "grant_routine_action") throw new Error("steward policy mutation kind is invalid")
+  if (input.mutation.kind !== "set_desired_state" && input.mutation.kind !== "grant_routine_action" && input.mutation.kind !== "correct_provenance") throw new Error("steward policy mutation kind is invalid")
   return withImmediateSessionTurnLease(policyPath(agentRoot), (lease) => {
     const snapshot = readAuditedPolicy(agentRoot, lease)
     const current = snapshot.policy
     const now = input.now ?? new Date().toISOString()
     if (!canonicalTime(now)) throw new Error("policy update time must be canonical")
-    const expiresAt = optionalExpiry(input.mutation.expiresAt)
+    const expiresAt = input.mutation.kind === "correct_provenance" ? undefined : optionalExpiry(input.mutation.expiresAt)
     const version = current.version + 1
     if (!positiveInteger(version)) throw new Error("steward policy version is exhausted")
     const next: StewardPolicyRecord = { ...current, version, desiredStates: { ...current.desiredStates }, routineActionGrants: { ...current.routineActionGrants }, updatedAt: now }
-    const key = requireText(input.mutation.key, input.mutation.kind === "set_desired_state" ? "desired state key" : "routine action key")
+    const key = requireText(input.mutation.key, input.mutation.kind === "grant_routine_action" ? "routine action key" : "desired state key")
     let affectedKeyResult: DesiredStateEntry | RoutineActionGrant
-    if (input.mutation.kind === "set_desired_state") {
+    if (input.mutation.kind === "correct_provenance") {
+      const existing = current.desiredStates[key]
+      if (!existing) throw new Error("provenance correction requires an existing desired state key")
+      affectedKeyResult = { ...existing, source: requireText(input.mutation.source, "corrected source"), correction: requireText(input.mutation.correction, "correction"), version }
+      next.desiredStates = { ...current.desiredStates, [key]: affectedKeyResult }
+    } else if (input.mutation.kind === "set_desired_state") {
       if (input.mutation.provenance !== "stated" && input.mutation.provenance !== "observed" && input.mutation.provenance !== "default") throw new Error("desired state provenance is invalid")
       affectedKeyResult = {
         value: requireText(input.mutation.value, "desired state value"),
@@ -427,7 +447,7 @@ export function updateStewardPolicy(agentRoot: string, input: { expectedVersion:
     const previousIndex = snapshot.rows.findIndex((row) => operationIdentity(row.issuer, row.authorizingSessionEvent, row.authorization.requestId, row.mutationKind, row.key) === identity)
     if (previousIndex >= 0) {
       const previous = snapshot.rows[previousIndex]!
-      const currentResult = previous.mutationKind === "set_desired_state" ? current.desiredStates[key] : current.routineActionGrants[key]
+      const currentResult = previous.mutationKind === "grant_routine_action" ? current.routineActionGrants[key] : current.desiredStates[key]
       if (previous.mutationFingerprint !== fingerprint || snapshot.rows.slice(previousIndex + 1).some((row) => row.mutationKind === previous.mutationKind && row.key === key)
         || !isDeepStrictEqual(currentResult, previous.affectedKeyResult)) throw new Error("steward policy transaction replay changed")
       return current
@@ -491,8 +511,8 @@ function currentRequester(value: unknown, target: string): value is RoutineActio
     && text(value.event.observationRevision) && text(value.event.claimOwner)
 }
 
-function appliedEntry(rows: readonly PolicyAuditRow[], kind: StewardPolicyMutation["kind"], key: string, entry: DesiredStateEntry | RoutineActionGrant): boolean {
-  return rows.some((row) => row.mutationKind === kind && row.key === key && row.postimageVersion === entry.version && isDeepStrictEqual(row.affectedKeyResult, entry))
+function appliedEntry(rows: readonly PolicyAuditRow[], kinds: readonly StewardPolicyMutation["kind"][], key: string, entry: DesiredStateEntry | RoutineActionGrant): boolean {
+  return rows.some((row) => kinds.includes(row.mutationKind) && row.key === key && row.postimageVersion === entry.version && isDeepStrictEqual(row.affectedKeyResult, entry))
 }
 
 const UNRESOLVED_ACTION_STATES = new Set<RoutineActionReceipt["state"]>(["reserved", "attempting", "effect_acknowledged", "recovery_pending", "indeterminate"])
@@ -519,11 +539,11 @@ function inspectRoutineActionGrantSnapshot(
   const fallback = input.requester.kind === "owner" ? { approvalFallback: true as const } : {}
   if (!grant) return { allowed: false, reason: "routine action grant is missing", ...fallback }
   if (grant.provenance !== "stated") return { allowed: false, reason: "routine action grant must be owner-stated" }
-  if (!appliedEntry(rows, "grant_routine_action", input.key, grant)) return { allowed: false, reason: "routine action grant has no applied owner authorization" }
+  if (!appliedEntry(rows, ["grant_routine_action"], input.key, grant)) return { allowed: false, reason: "routine action grant has no applied owner authorization" }
   if (grant.action !== input.action) return { allowed: false, reason: "routine action does not match the grant" }
   if (!grant.targets.includes(input.target) || grant.exclusions.includes(input.target)) return { allowed: false, reason: "routine action target is not authorized" }
   if (grant.expiresAt && Date.parse(grant.expiresAt) <= Date.parse(now)) return { allowed: false, reason: "routine action grant expired", ...fallback }
-  if (!activeDesired || desired.provenance !== "stated" || !appliedEntry(rows, "set_desired_state", desiredKey, desired)) return { allowed: false, reason: "container has no active applied owner-stated desired state" }
+  if (!activeDesired || desired.provenance !== "stated" || !appliedEntry(rows, ["set_desired_state", "correct_provenance"], desiredKey, desired)) return { allowed: false, reason: "container has no active applied owner-stated desired state" }
   if (!["on", "always_on", "expected_on"].includes(desiredValue!) && !(desiredValue === "on_demand" && input.requester.kind !== "owner_event")) return { allowed: false, reason: "container desired state does not authorize this request" }
   if (receipts.some((receipt) => receipt.action === input.action && receipt.target === input.target && UNRESOLVED_ACTION_STATES.has(receipt.state))) {
     return { allowed: false, reason: "routine action has an unresolved receipt for this target" }
