@@ -1200,6 +1200,30 @@ describe("in-place authority upgrade", () => {
     await expect(f.lifecycleFor().boot()).resolves.toBe(true)
   })
 
+  it("cannot roll back a completed upgrade: the journal and the predecessor's records are already gone", async () => {
+    const f = await upgradeFixture()
+    await f.lifecycle.upgrade({ targetImageId: digest("next-image"), imageReference: nextReference })
+    await expect(f.lifecycleFor().rollbackUpgrade()).resolves.toBe(false)
+    expect(f.resident.image).toBe(digest("next-image"))
+  })
+
+  it("holds the commit open when asked, rolls back exactly from that point, and commits when resumed", async () => {
+    const f = await upgradeFixture()
+    const before = f.snapshot()
+    await f.lifecycle.upgrade({ targetImageId: digest("next-image"), imageReference: nextReference, holdCommit: true })
+    expect(f.bundleOps).toEqual(["migrate"])
+    expect(f.resident).toMatchObject({ image: digest("next-image"), running: true })
+    expect(fs.existsSync(f.p(`${rootPath}/upgrade.json`))).toBe(true)
+    expect(fs.existsSync(f.p(`${rootPath}/upgrade-previous`))).toBe(true)
+    await expect(f.lifecycleFor().rollbackUpgrade()).resolves.toBe(true)
+    expect(f.snapshot()).toEqual(before)
+    expect(f.resident).toMatchObject({ image: digest("new-image"), reference: currentReference, running: true })
+    await f.lifecycleFor().upgrade({ targetImageId: digest("next-image"), imageReference: nextReference, holdCommit: true })
+    await f.lifecycleFor().upgrade({ targetImageId: digest("next-image"), imageReference: nextReference })
+    expect(f.bundleOps.slice(-1)).toEqual(["commit"])
+    for (const leftover of ["upgrade.json", "upgrade-previous", "package-next"]) expect(fs.existsSync(f.p(`${rootPath}/${leftover}`))).toBe(false)
+  })
+
   it.each(steps)("rolls back exactly after the %s step and can upgrade again", async (step) => {
     const f = await upgradeFixture()
     const before = f.snapshot()
@@ -1408,7 +1432,7 @@ describe("in-place authority upgrade", () => {
     vi.spyOn(sessions, "withSessionTurnLease").mockImplementation(async (_file, work) => work({} as never))
     vi.spyOn(process, "getuid").mockReturnValue(0)
     vi.spyOn(process, "getgid").mockReturnValue(0)
-    for (const args of [["upgrade"], ["upgrade", digest("x")], ["upgrade", digest("x"), nextReference, "--fail-after"], ["upgrade", digest("x"), nextReference, "--other", "stop"], ["upgrade-rollback", "extra"]]) await expect(runSanctuaryAuthorityRootCli(args)).rejects.toThrow(/Usage/u)
+    for (const args of [["upgrade"], ["upgrade", digest("x")], ["upgrade", digest("x"), nextReference, "--fail-after"], ["upgrade", digest("x"), nextReference, "--other", "stop"], ["upgrade", digest("x"), nextReference, "--hold-commit", "extra"], ["upgrade-rollback", "extra"]]) await expect(runSanctuaryAuthorityRootCli(args)).rejects.toThrow(/Usage/u)
     const exists = fs.existsSync
     const existsMock = vi.spyOn(fs, "existsSync").mockImplementation((file) => String(file) === `${rootPath}/activation.json` ? false : exists(file))
     await expect(runSanctuaryAuthorityRootCli(["upgrade", digest("x"), nextReference])).rejects.toThrow(/not active/u)
@@ -1428,9 +1452,11 @@ describe("in-place authority upgrade", () => {
     expect(upgrade).toHaveBeenLastCalledWith({ targetImageId: digest("x"), imageReference: nextReference })
     await runSanctuaryAuthorityRootCli(["upgrade", digest("x"), nextReference, "--fail-after", "switch"], write)
     expect(upgrade).toHaveBeenLastCalledWith({ targetImageId: digest("x"), imageReference: nextReference, failAfter: "switch" })
+    await runSanctuaryAuthorityRootCli(["upgrade", digest("x"), nextReference, "--hold-commit"], write)
+    expect(upgrade).toHaveBeenLastCalledWith({ targetImageId: digest("x"), imageReference: nextReference, holdCommit: true })
     await runSanctuaryAuthorityRootCli(["upgrade-rollback"], write)
     expect(rollback).toHaveBeenCalledOnce()
-    expect(write.mock.calls).toEqual([[`{"upgraded":"${nextReference}"}\n`], [`{"upgraded":"${nextReference}"}\n`], ['{"rolledBack":true}\n']])
+    expect(write.mock.calls).toEqual([[`{"upgraded":"${nextReference}"}\n`], [`{"upgraded":"${nextReference}"}\n`], [`{"upgraded":"${nextReference}","held":true}\n`], ['{"rolledBack":true}\n']])
     expect(sessions.withSessionTurnLease).toHaveBeenLastCalledWith("/boot/config/custom/ouro-butler/docker-man-template-transaction.json", expect.any(Function), { timeoutMs: 600_000, confinementRoot: "/boot/config/custom/ouro-butler" })
   })
 })

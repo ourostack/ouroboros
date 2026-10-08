@@ -3,6 +3,7 @@ import * as fs from "fs"
 import * as path from "path"
 import type { FriendRecord, FriendStore } from "@ouro.bot/friends"
 import { emitNervesEvent } from "../nerves/runtime"
+import { appendReplayNotice, isReplayWindowOpen, replayNoticeRecorded } from "./replay-harness"
 import {
   createRelationshipAuthorizationEvaluator,
   type RelationshipAuthorizationEvaluator,
@@ -35,6 +36,8 @@ export interface A2ADelegationOptions {
   principalProfileId: string
   /** Delivers the audit notice to the principal; must throw when delivery fails. */
   notifyPrincipal(input: { noticeId: string; text: string }): Promise<void>
+  /** When set, a notice for a sender with an open replay window is written to the local replay sink instead of `notifyPrincipal`. */
+  agentRoot?: string
 }
 
 export type DelegationRefusal = "not_enabled" | "no_grant" | "not_family" | "principal_unresolved" | "notice_failed"
@@ -54,14 +57,14 @@ export const A2A_PRINCIPAL_PROFILE_ID = "sanctuary-owner"
  * command id. A request id with no such record never came through a signed, owner-notified delegated command.
  * A missing record is `false`; an unreadable or malformed one throws, so the caller retries instead of deciding.
  */
-export function delegatedCommandWasNoticed(agentRoot: string, commandId: string, principalFriendId: string): boolean {
+export function delegatedCommandWasNoticed(agentRoot: string, commandId: string, principalFriendId: string, delegateFriendId?: string): boolean {
   const idempotencyKey = `owner-notice:delegated:${commandId}`
   const file = path.join(agentRoot, "state", "telegram", "effects", `${createHash("sha256").update(idempotencyKey).digest("hex")}.json`)
   let raw: string
   try {
     raw = fs.readFileSync(file, "utf8")
   } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === "ENOENT") return false
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return delegateFriendId !== undefined && isReplayWindowOpen(agentRoot, delegateFriendId) && replayNoticeRecorded(agentRoot, `delegated:${commandId}`, delegateFriendId)
     throw error
   }
   const artifact = JSON.parse(raw) as { idempotencyKey?: unknown; authorClass?: unknown; target?: { friendId?: unknown } }
@@ -117,7 +120,10 @@ export async function admitDelegatedCommand(input: {
   if (!principal || principal.id === input.friend.id) return refuse("principal_unresolved")
   const noticeId = `delegated:${input.commandId}`
   try {
-    await input.options.notifyPrincipal({ noticeId, text: delegatedCommandNotice({ delegateName: input.friend.name, text: input.text }) })
+    const text = delegatedCommandNotice({ delegateName: input.friend.name, text: input.text })
+    const agentRoot = input.options.agentRoot
+    if (agentRoot && isReplayWindowOpen(agentRoot, input.friend.id)) appendReplayNotice(agentRoot, { noticeId, text, friendId: input.friend.id })
+    else await input.options.notifyPrincipal({ noticeId, text })
   } catch {
     return refuse("notice_failed")
   }

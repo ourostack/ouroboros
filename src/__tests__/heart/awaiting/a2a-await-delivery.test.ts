@@ -1,7 +1,9 @@
-import * as fs from "fs"
+import * as fs from "node:fs"
 import * as os from "os"
 import * as path from "path"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
+
+vi.mock("node:fs", async (original) => ({ ...await original<typeof fs>() }))
 
 const mockEmitNervesEvent = vi.fn()
 vi.mock("../../../nerves/runtime", () => ({ emitNervesEvent: (...args: any[]) => mockEmitNervesEvent(...args) }))
@@ -13,6 +15,8 @@ const mockSendTelegramOwnerNotice = vi.fn()
 vi.mock("../../../senses/telegram", () => ({ sendTelegramOwnerNotice: (...args: any[]) => mockSendTelegramOwnerNotice(...args) }))
 
 import { FileFriendStore } from "@ouro.bot/friends"
+import { mockOwners } from "../../test-helpers/replay-owners"
+import { replaySinkPath, replayWindowPath } from "../../../a2a/replay-harness"
 import { createA2AAwaitOwnerDeliverer } from "../../../heart/awaiting/a2a-await-delivery"
 
 const request = { friendId: "peer", channel: "a2a", key: "conv-1", content: "release landed", requestId: "req-1", deliveryId: "await:release:resolved", intent: "generic_outreach" as const }
@@ -53,5 +57,48 @@ describe("A2A await owner delivery", () => {
     mockSendTelegramOwnerNotice.mockResolvedValue(undefined)
     await expect(createA2AAwaitOwnerDeliverer("sanctuary")(request)).resolves.toMatchObject({ status: "delivered_now" })
     expect(mockSendTelegramOwnerNotice).toHaveBeenCalledWith("sanctuary", expect.objectContaining({ noticeId: "await:release:resolved", signal: expect.any(AbortSignal) }))
+  })
+
+  describe("replay window", () => {
+    const openWindow = (uid = 0) => {
+      const dir = path.dirname(replayWindowPath(agentRoot))
+      fs.mkdirSync(dir, { recursive: true })
+      fs.writeFileSync(replayWindowPath(agentRoot), JSON.stringify({ friends: { peer: { expiresAt: new Date(Date.now() + 600_000).toISOString() } } }))
+      fs.chmodSync(dir, 0o755)
+      fs.chmodSync(replayWindowPath(agentRoot), 0o644)
+      mockOwners(fs, (file) => (file.startsWith(dir) ? uid : fs.statSync(file).uid))
+    }
+    afterEach(() => vi.restoreAllMocks())
+
+    it("ignores a window in a Butler-owned replay directory", async () => {
+      openWindow(10001)
+      const notify = vi.fn(async () => undefined)
+      await createA2AAwaitOwnerDeliverer("sanctuary", notify)(request)
+      expect(notify).toHaveBeenCalled()
+      expect(fs.existsSync(replaySinkPath(agentRoot))).toBe(false)
+    })
+
+    it("writes the follow-up to the sink instead of the owner's chat while the filing peer's window is open", async () => {
+      openWindow()
+      const notify = vi.fn(async () => undefined)
+      await expect(createA2AAwaitOwnerDeliverer("sanctuary", notify)(request)).resolves.toMatchObject({ status: "delivered_now", detail: expect.stringContaining("replay") })
+      expect(notify).not.toHaveBeenCalled()
+      expect(fs.readFileSync(replaySinkPath(agentRoot), "utf8")).toContain('"noticeId":"await:release:resolved"')
+    })
+
+    it("still uses the owner's chat for a peer without an open window", async () => {
+      openWindow()
+      const notify = vi.fn(async () => undefined)
+      await createA2AAwaitOwnerDeliverer("sanctuary", notify)({ ...request, friendId: "gone" })
+      expect(notify).toHaveBeenCalled()
+    })
+
+    it("reports a failed sink write as a failed delivery", async () => {
+      openWindow()
+      fs.mkdirSync(replaySinkPath(agentRoot), { recursive: true })
+      const notify = vi.fn(async () => undefined)
+      await expect(createA2AAwaitOwnerDeliverer("sanctuary", notify)(request)).resolves.toMatchObject({ status: "failed" })
+      expect(notify).not.toHaveBeenCalled()
+    })
   })
 })

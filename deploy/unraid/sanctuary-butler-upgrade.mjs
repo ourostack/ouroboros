@@ -29,11 +29,21 @@
 // refuses without a rotated incoming-token. Run `upgrade` detached so an SSH drop
 // cannot interrupt it:  setsid nohup node <this> upgrade <version> > /var/log/ouro-upgrade.log 2>&1 &
 //
-// Usage: sanctuary-butler-upgrade.mjs <preflight|prepare|install|verify|upgrade> <version> [--rehearse <step>]
+// An `upgrade` ends with the replay gate (sanctuary-replay-gate.mjs): the new Butler is held UNCOMMITTED (the lifecycle
+// keeps its journal and the predecessor's records, because a committed upgrade cannot be rolled back), the gate replays
+// real requests over A2A and reads the outcome back from machine state, and only a pass commits, pins the template and
+// prunes images. A failed gate runs `upgrade-rollback`, confirms the predecessor is healthy, and exits 1.
+//   --no-gate         skip the gate and commit straight away (emergencies; logged loudly)
+//   --plant <case>    make that gate case fail on purpose, proving the rollback end to end
+//   verify --gate     run the gate against the live version without upgrading
+//
+// Usage: sanctuary-butler-upgrade.mjs <preflight|prepare|install|verify|upgrade> <version> [--rehearse <step>] [--no-gate] [--plant <case>]
+//        sanctuary-butler-upgrade.mjs verify [--gate]
 
-import { execFileSync } from "node:child_process"
+import { execFileSync, spawnSync } from "node:child_process"
 import { createHash } from "node:crypto"
-import { mkdtempSync, rmSync, writeFileSync, readFileSync, existsSync, statSync, chmodSync } from "node:fs"
+import { mkdtempSync, rmSync, writeFileSync, readFileSync, existsSync, statSync, chmodSync, realpathSync } from "node:fs"
+import { fileURLToPath } from "node:url"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 
@@ -61,6 +71,10 @@ const UPGRADE_JOURNAL = `${ROOT}/upgrade.json`
 const MAINTENANCE = "/run/ouro-authority-maintenance"
 // The stop hook's flag: every keeper watchdog version stands down while it exists.
 const SHUTDOWN_FLAG = "/run/ouro-authority-shutdown"
+const GATE_SCRIPT = `${ROOT}/package/deploy/unraid/sanctuary-replay-gate.mjs`
+const GATE_PROVISION = `${BUNDLE}/state/replay-client/provision.json`
+// The whole gate (every case, including the six-minute await wait) must finish well inside this; a hung gate is a failed gate.
+export const GATE_TIMEOUT_MS = 45 * 60 * 1000
 const UPGRADE_STEPS = ["stop", "switch", "resident", "migrate", "start"]
 
 const sh = (file, args, opts = {}) => execFileSync(file, args, { encoding: "utf8", maxBuffer: 64 << 20, ...opts })
@@ -845,9 +859,62 @@ function lifecycleFailure(e) {
   return `${detail || e.message}${last ? `\n   last root failure: ${last}` : ""}`
 }
 
-function upgrade(version, rehearse) {
+/**
+ * The end of a gated upgrade, with every side effect injected so the decision is testable: a pass commits the held
+ * upgrade, pins the template and prunes; a fail rolls back to the predecessor and confirms it is healthy. Nothing is
+ * committed, pinned or pruned unless the gate passed.
+ */
+export function completeGatedUpgrade({ runGate, commit, rollback, confirmRollback, pin, prune, log = console.log }) {
+  const gate = runGate()
+  if (gate.ok) {
+    commit()
+    pin()
+    prune()
+    log("GATE PASS")
+    return { passed: true }
+  }
+  log(`gate failed: ${gate.detail ?? "see the case lines above"}`)
+  rollback()
+  const restored = confirmRollback()
+  log(`GATE FAIL — ROLLED BACK to ${restored}`)
+  return { passed: false, rolledBackTo: restored }
+}
+
+export function runReplayGate(plant, { spawn = spawnSync, exists = existsSync } = {}) {
+  if (!exists(GATE_SCRIPT)) return { ok: false, detail: `the replay gate is missing from the live package (${GATE_SCRIPT})` }
+  const result = spawn("/usr/local/bin/node", [GATE_SCRIPT, "run", ...(plant ? ["--plant", plant] : [])], { stdio: "inherit", timeout: GATE_TIMEOUT_MS, killSignal: "SIGKILL" })
+  return result.status === 0 ? { ok: true } : { ok: false, detail: `the replay gate exited ${result.status ?? result.signal}` }
+}
+
+/**
+ * The commit step runs the lifecycle's `upgrade` again, which would START A FRESH UNGATED UPGRADE if the keeper had
+ * rolled the held one back mid-gate. So commit only while the journal still exists and the new image is still live.
+ */
+export function heldUpgradeProblem({ journalExists, liveImage, expectedImage }) {
+  if (!journalExists) return "the held upgrade's journal is gone (the keeper or a boot rolled it back mid-gate)"
+  if (liveImage !== expectedImage) return `the live Butler is ${liveImage}, not the held ${expectedImage}`
+  return null
+}
+
+function butlerState() {
+  try { return docker(["inspect", CONTAINER, "--format", "{{.Config.Image}} {{.State.Status}}/{{.State.Health.Status}}"], { stdio: ["ignore", "pipe", "ignore"] }).trim() } catch { return "? ?/?" }
+}
+
+function waitForButler(imageRef, seconds) {
+  for (let waited = 0; waited <= seconds; waited += 10) {
+    const [liveImage, state] = butlerState().split(" ")
+    if (liveImage === imageRef && state === "running/healthy") return true
+    sh("/bin/sleep", ["10"])
+  }
+  return false
+}
+
+function upgrade(version, rehearse, { noGate = false, plant } = {}) {
   say(`in-place upgrade to ${version}${rehearse ? ` — REHEARSAL: stop after "${rehearse}", then roll back` : ""}`)
   if (rehearse && !UPGRADE_STEPS.includes(rehearse)) fail(`--rehearse takes one of: ${UPGRADE_STEPS.join(", ")}`)
+  const gated = !rehearse && !noGate
+  if (noGate && !rehearse) console.log("\n!! --no-gate: this upgrade will NOT be replay-gated or auto-rolled-back on a behavioural regression")
+  if (gated && !existsSync(GATE_PROVISION)) fail(`replay peers are not provisioned (${GATE_PROVISION}); run \`sanctuary-replay-gate.mjs provision\` first, or pass --no-gate`)
   if (!existsSync(`${ROOT}/active.json`) || !existsSync(`${ROOT}/activation.json`)) fail("no installed authority; use prepare + install")
   if (existsSync(JOURNAL)) fail("a template transaction is pending; resolve it first")
   let id = imageId(version)
@@ -867,13 +934,14 @@ function upgrade(version, rehearse) {
     ok("new package staged beside the live one and verified")
   }
   const lifecycle = `${ROOT}/incoming-package/dist/heart/daemon/sanctuary-authority-root-lifecycle.js`
+  const priorImage = butlerState().split(" ")[0]
   const jellyfinBefore = docker(["inspect", "jellyfin", "--format", "{{.Id}}|{{.Image}}|{{.RestartCount}}|{{.State.StartedAt}}"]).trim()
   const policyBefore = existsSync(POLICY) ? sha12(POLICY) : fail("steward policy missing")
   pauseSupervision()
   let failure = null
   try {
-    say("lifecycle upgrade (stop → switch → resident → migrate → start)")
-    ok(sh("/usr/local/bin/node", [lifecycle, "upgrade", id, image(version), ...(rehearse ? ["--fail-after", rehearse] : [])], { stdio: ["ignore", "pipe", "pipe"] }).trim())
+    say(`lifecycle upgrade (stop → switch → resident → migrate → start${gated ? ", held uncommitted for the gate" : ""})`)
+    ok(sh("/usr/local/bin/node", [lifecycle, "upgrade", id, image(version), ...(rehearse ? ["--fail-after", rehearse] : gated ? ["--hold-commit"] : [])], { stdio: ["ignore", "pipe", "pipe"] }).trim())
   } catch (e) { failure = e }
   // Only the lifecycle's own rehearsal stop is planned; anything else is a real failure,
   // even during a rehearsal (the first 830 -> 835 rehearsal was mislabelled "as planned").
@@ -886,20 +954,58 @@ function upgrade(version, rehearse) {
       resumeSupervision()
       fail(`ROLLBACK FAILED: ${lifecycleFailure(e)}\nThe journal is kept; the next authority boot (or \`upgrade-rollback\`) retries it.`)
     }
-  } else { pinTemplate(version); pruneButlerImages() }
+  } else if (!gated) { pinTemplate(version); pruneButlerImages() }
   resumeSupervision()
   say("preservation")
-  docker(["inspect", "jellyfin", "--format", "{{.Id}}|{{.Image}}|{{.RestartCount}}|{{.State.StartedAt}}"]).trim() === jellyfinBefore ? ok("jellyfin unchanged") : fail("JELLYFIN CHANGED")
-  sha12(POLICY) === policyBefore ? ok("steward policy unchanged") : fail("STEWARD POLICY CHANGED")
+  const preserved = []
+  const jellyfinNow = docker(["inspect", "jellyfin", "--format", "{{.Id}}|{{.Image}}|{{.RestartCount}}|{{.State.StartedAt}}"]).trim()
+  jellyfinNow === jellyfinBefore ? ok("jellyfin unchanged") : (gated && !failure ? (bad("JELLYFIN CHANGED"), preserved.push("jellyfin changed")) : fail("JELLYFIN CHANGED"))
+  sha12(POLICY) === policyBefore ? ok("steward policy unchanged") : (gated && !failure ? (bad("STEWARD POLICY CHANGED"), preserved.push("steward policy changed")) : fail("STEWARD POLICY CHANGED"))
   const live = docker(["inspect", CONTAINER, "--format", "{{.Config.Image}} {{.State.Status}}/{{.State.Health.Status}}"]).trim()
   ok(`butler: ${live}`)
   if (failure && !planned) fail("upgrade rolled back; the Butler is on its prior version (see above)")
-  console.log(rehearse ? "\nREHEARSAL done — the upgrade reached the planned step and the rollback restored the predecessor." : `\nUPGRADE done — ${version} live. Run verify.`)
+  if (gated && !failure) {
+    say(`replay gate${plant ? ` (planted failure: ${plant})` : ""}`)
+    const stillHeld = () => heldUpgradeProblem({ journalExists: existsSync(UPGRADE_JOURNAL), liveImage: butlerState().split(" ")[0], expectedImage: image(version) })
+    const outcome = completeGatedUpgrade({
+      runGate: () => {
+        if (preserved.length) return { ok: false, detail: preserved.join("; ") }
+        if (!waitForButler(image(version), 300)) return { ok: false, detail: `the new Butler did not become healthy on ${image(version)}` }
+        const result = runReplayGate(plant)
+        if (!result.ok) return result
+        const problem = stillHeld()
+        return problem ? { ok: false, detail: problem } : result
+      },
+      commit: () => {
+        const problem = stillHeld()
+        if (problem) throw new Error(`refusing to commit: ${problem}`)
+        pauseSupervision()
+        try { ok(`commit: ${sh("/usr/local/bin/node", [lifecycle, "upgrade", id, image(version)], { stdio: ["ignore", "pipe", "pipe"] }).trim()}`) }
+        finally { resumeSupervision() }
+      },
+      rollback: () => {
+        pauseSupervision()
+        try { ok(`rollback: ${sh("/usr/local/bin/node", [lifecycle, "upgrade-rollback"], { stdio: ["ignore", "pipe", "pipe"] }).trim()}`) }
+        catch (e) { fail(`ROLLBACK FAILED: ${lifecycleFailure(e)}\nThe journal is kept; the next authority boot (or \`upgrade-rollback\`) retries it.`) }
+        finally { resumeSupervision() }
+      },
+      confirmRollback: () => {
+        if (!waitForButler(priorImage, 300)) fail(`rolled back, but ${priorImage} is not running healthy; inspect \`docker logs ${CONTAINER}\``)
+        return priorImage
+      },
+      pin: () => pinTemplate(version),
+      prune: () => pruneButlerImages(),
+    })
+    if (!outcome.passed) process.exit(1)
+    console.log(`\nUPGRADE done — ${version} live and gate-verified. Run verify.`)
+    return
+  }
+  console.log(rehearse ? "\nREHEARSAL done — the upgrade reached the planned step and the rollback restored the predecessor." : `\nUPGRADE done — ${version} live (NOT gate-verified). Run verify.`)
 }
 
 // ---- verify ---------------------------------------------------------------
 
-function verify() {
+function verify(withGate = false) {
   say("verify")
   const st = docker(["inspect", CONTAINER, "--format", "{{.Config.Image}} {{.State.Status}}/{{.State.Health.Status}} restarts={{.RestartCount}}"]).trim()
   ok(`butler: ${st}`)
@@ -908,6 +1014,11 @@ function verify() {
   existsSync(POLICY) ? ok(`steward policy ${sha12(POLICY)}`) : bad("steward policy missing")
   const jf = docker(["inspect", "jellyfin", "--format", "{{.State.Status}} restarts={{.RestartCount}}"]).trim()
   ok(`jellyfin ${jf}`)
+  if (withGate) {
+    say("replay gate (live version, no upgrade)")
+    const gate = runReplayGate(undefined)
+    gate.ok ? ok("replay gate passed") : bad(`replay gate failed: ${gate.detail}`)
+  }
   process.exit(RED === 0 ? 0 : 1)
 }
 
@@ -915,19 +1026,35 @@ function fail(m) { console.error(`\nREFUSING: ${m}`); process.exit(1) }
 
 // ---- entry ----------------------------------------------------------------
 
-const [phase, version, flag, rehearse] = process.argv.slice(2)
-if (!phase || !["preflight", "prepare", "install", "verify", "upgrade"].includes(phase) || (flag !== undefined && !(phase === "upgrade" && flag === "--rehearse" && rehearse))) {
-  console.error("Usage: sanctuary-butler-upgrade.mjs <preflight|prepare|install|verify|upgrade> <version> [--rehearse <step>]")
-  process.exit(2)
+export function parseUpgradeArgs(argv) {
+  const usage = "Usage: sanctuary-butler-upgrade.mjs <preflight|prepare|install|upgrade> <version> [--rehearse <step>] [--no-gate] [--plant <case>] | verify [--gate]"
+  const [phase, ...rest] = argv
+  if (!phase || !["preflight", "prepare", "install", "verify", "upgrade"].includes(phase)) throw new Error(usage)
+  const parsed = { phase, version: undefined, rehearse: undefined, noGate: false, plant: undefined, gate: false }
+  for (let i = 0; i < rest.length; i += 1) {
+    const arg = rest[i]
+    if (arg === "--rehearse" && phase === "upgrade" && rest[i + 1]) parsed.rehearse = rest[++i]
+    else if (arg === "--no-gate" && phase === "upgrade") parsed.noGate = true
+    else if (arg === "--plant" && phase === "upgrade" && rest[i + 1]) parsed.plant = rest[++i]
+    else if (arg === "--gate" && phase === "verify") parsed.gate = true
+    else if (!arg.startsWith("--") && parsed.version === undefined && phase !== "verify") parsed.version = arg
+    else throw new Error(usage)
+  }
+  if (parsed.noGate && parsed.plant) throw new Error("--plant needs the gate; it cannot be combined with --no-gate")
+  if (parsed.rehearse && (parsed.noGate || parsed.plant)) throw new Error("--rehearse does not use the gate; do not combine it with --no-gate or --plant")
+  if (phase !== "verify" && !/^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$/.test(parsed.version || "")) throw new Error("a semver version is required, e.g. 0.1.0-alpha.829")
+  return parsed
 }
-if (phase !== "verify" && !/^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$/.test(version || "")) {
-  console.error("a semver version is required, e.g. 0.1.0-alpha.829")
-  process.exit(2)
-}
-requireRoot()
 
-if (phase === "preflight") preflight(version)
-else if (phase === "prepare") prepare(version)
-else if (phase === "install") install(version)
-else if (phase === "verify") verify()
-else if (phase === "upgrade") upgrade(version, rehearse)
+function run(argv) {
+  let args
+  try { args = parseUpgradeArgs(argv) } catch (error) { console.error(error.message); process.exit(2) }
+  requireRoot()
+  if (args.phase === "preflight") preflight(args.version)
+  else if (args.phase === "prepare") prepare(args.version)
+  else if (args.phase === "install") install(args.version)
+  else if (args.phase === "verify") verify(args.gate)
+  else if (args.phase === "upgrade") upgrade(args.version, args.rehearse, { noGate: args.noGate, plant: args.plant })
+}
+
+if (process.argv[1] && fileURLToPath(import.meta.url) === realpathSync(process.argv[1])) run(process.argv.slice(2))

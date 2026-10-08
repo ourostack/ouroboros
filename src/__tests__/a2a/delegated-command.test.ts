@@ -4,7 +4,7 @@
 import { createHash } from "node:crypto"
 import * as fs from "node:fs"
 import * as path from "node:path"
-import { afterEach, beforeAll, describe, expect, it } from "vitest"
+import { afterEach, beforeAll, describe, expect, it, vi } from "vitest"
 import { didKeyIdentityFromEd25519, ready, type DidKeyIdentity, type Sodium } from "@ouro.bot/friends/a2a-client"
 import { FileFriendStore, upsertAgentPeer, type FriendRecord } from "@ouro.bot/friends"
 import { createTmpBundle, type TmpBundleHandle } from "../test-helpers/tmpdir-bundle"
@@ -12,9 +12,13 @@ import { startA2AServer, type A2AServerHandle, type A2ATurnRunnerInput } from ".
 import { sendSealedA2AChat } from "../../a2a/client"
 import { loadOrMintA2AIdentityFile, type A2AIdentity } from "../../a2a/identity"
 import { admitDelegatedCommand, delegatedCommandNotice, delegatedCommandWasNoticed, type A2ADelegationOptions } from "../../a2a/delegated-command"
+import { replaySinkPath, replayWindowPath } from "../../a2a/replay-harness"
+import { mockOwners } from "../test-helpers/replay-owners"
 import { loadRelationshipCapabilityRegistry } from "../../repertoire/relationship-authorization"
 import { stewardPolicyToolDefinition } from "../../repertoire/tools-steward-policy"
 import { readStewardPolicy } from "../../heart/steward-policy"
+
+vi.mock("node:fs", async (original) => ({ ...await original<typeof fs>() }))
 
 let sodium: Sodium
 let tmp: TmpBundleHandle | null = null
@@ -135,6 +139,13 @@ describe("delegated principal commands over sealed A2A chat", () => {
   })
 })
 
+/** The tests are not root: report the replay directory and window as root-owned unless a test says otherwise. */
+const realUid = (file: string): number => fs.statSync(file).uid
+function rootOwns(replayDir: string, uid = 0): void {
+  vi.restoreAllMocks()
+  mockOwners(fs, (file) => (file.startsWith(replayDir) ? uid : realUid(file)))
+}
+
 describe("admitDelegatedCommand", () => {
   it("refuses when the delegate is itself the principal, and when the registry is missing at the server", async () => {
     tmp = createTmpBundle({ agentName: `delegated-self-${Date.now()}` })
@@ -196,6 +207,82 @@ describe("admitDelegatedCommand", () => {
       const admission = await admitDelegatedCommand({ friend, did: "did:key:z6MkPeer", text: "x", commandId: "c1", store, registry, options })
       expect(admission).toEqual({ ok: false, reason: "principal_unresolved" })
     }
+  })
+
+  describe("replay window", () => {
+    async function replaySetup(window: unknown) {
+      tmp = createTmpBundle({ agentName: `delegated-replay-${Date.now()}` })
+      fs.writeFileSync(path.join(tmp.agentRoot, "tool-profiles.json"), JSON.stringify(PROFILES))
+      const store = new FileFriendStore(`${tmp.agentRoot}/friends`)
+      await store.put("owner-ari", owner())
+      if (window !== undefined) {
+        fs.mkdirSync(path.dirname(replayWindowPath(tmp.agentRoot)), { recursive: true })
+        fs.writeFileSync(replayWindowPath(tmp.agentRoot), JSON.stringify(window))
+        fs.chmodSync(path.dirname(replayWindowPath(tmp.agentRoot)), 0o755)
+        fs.chmodSync(replayWindowPath(tmp.agentRoot), 0o644)
+        rootOwns(path.dirname(replayWindowPath(tmp.agentRoot)))
+      }
+      const telegram: string[] = []
+      const admit = (friendOverrides: Partial<FriendRecord> = {}) => admitDelegatedCommand({
+        friend: owner({ id: "replay-principal", name: "Replay", capabilityProfileId: "sanctuary-agent-peer", delegationGrant: GRANT, ...friendOverrides }),
+        did: "did:key:z6MkReplay", text: "Books stays on", commandId: "cmd-r1", store, registry: loadRelationshipCapabilityRegistry(tmp!.agentRoot),
+        options: { principalProfileId: "sanctuary-owner", agentRoot: tmp!.agentRoot, notifyPrincipal: async (n) => { telegram.push(n.noticeId) } },
+      })
+      return { admit, telegram, agentRoot: tmp.agentRoot }
+    }
+    const open = { friends: { "replay-principal": { expiresAt: new Date(Date.now() + 600_000).toISOString() } } }
+
+    it("writes the notice to the sink, not Telegram, while the window is open, and the sink counts as noticed", async () => {
+      const { admit, telegram, agentRoot } = await replaySetup(open)
+      expect((await admit()).ok).toBe(true)
+      expect(telegram).toEqual([])
+      expect(fs.readFileSync(replaySinkPath(agentRoot), "utf8")).toContain('"noticeId":"delegated:cmd-r1"')
+      expect(delegatedCommandWasNoticed(agentRoot, "cmd-r1", "owner-ari", "replay-principal")).toBe(true)
+      expect(delegatedCommandWasNoticed(agentRoot, "cmd-other", "owner-ari", "replay-principal")).toBe(false)
+    })
+
+    it.each([["absent", undefined], ["expired", { friends: { "replay-principal": { expiresAt: "2020-01-01T00:00:00.000Z" } } }], ["another friend", { friends: { someone: open.friends["replay-principal"] } }]])("uses Telegram when the window is %s", async (_n, window) => {
+      const { admit, telegram, agentRoot } = await replaySetup(window)
+      expect((await admit()).ok).toBe(true)
+      expect(telegram).toEqual(["delegated:cmd-r1"])
+      expect(fs.existsSync(replaySinkPath(agentRoot))).toBe(false)
+    })
+
+    it("treats a Butler-owned replay directory as closed and sends the notice to Telegram", async () => {
+      const { admit, telegram, agentRoot } = await replaySetup(open)
+      rootOwns(path.dirname(replayWindowPath(agentRoot)), 10001)
+      expect((await admit()).ok).toBe(true)
+      expect(telegram).toEqual(["delegated:cmd-r1"])
+      expect(fs.existsSync(replaySinkPath(agentRoot))).toBe(false)
+    })
+
+    it("does not accept a forged sink line for a friend outside a trusted window", async () => {
+      const { agentRoot } = await replaySetup({ friends: { someone: open.friends["replay-principal"] } })
+      fs.writeFileSync(replaySinkPath(agentRoot), `${JSON.stringify({ noticeId: "delegated:cmd-f", friendId: "peer-x", at: "x" })}\n`)
+      expect(delegatedCommandWasNoticed(agentRoot, "cmd-f", "owner-ari", "peer-x")).toBe(false)
+      expect(delegatedCommandWasNoticed(agentRoot, "cmd-f", "owner-ari")).toBe(false)
+    })
+
+    it("does not accept a sink line written for a different friend than the command's", async () => {
+      const { admit, agentRoot } = await replaySetup(open)
+      await admit()
+      expect(delegatedCommandWasNoticed(agentRoot, "cmd-r1", "owner-ari", "replay-principal")).toBe(true)
+      expect(delegatedCommandWasNoticed(agentRoot, "cmd-r1", "owner-ari", "someone")).toBe(false)
+    })
+
+    it("refuses with notice_failed when the sink cannot be written", async () => {
+      const { admit, telegram, agentRoot } = await replaySetup(open)
+      fs.mkdirSync(replaySinkPath(agentRoot), { recursive: true })
+      expect(await admit()).toEqual({ ok: false, reason: "notice_failed" })
+      expect(telegram).toEqual([])
+    })
+
+    it("does not relax any other check while the window is open", async () => {
+      const { admit, agentRoot } = await replaySetup(open)
+      expect(await admit({ delegationGrant: undefined })).toEqual({ ok: false, reason: "no_grant" })
+      expect(await admit({ trustLevel: "friend" })).toEqual({ ok: false, reason: "not_family" })
+      expect(fs.existsSync(replaySinkPath(agentRoot))).toBe(false)
+    })
   })
 
   it("quotes a long command as a flattened excerpt", () => {

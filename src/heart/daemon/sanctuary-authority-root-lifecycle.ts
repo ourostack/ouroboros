@@ -631,7 +631,7 @@ export class SanctuaryAuthorityRootLifecycle {
    * pins and the resident image change. Resumable from its journal; any failure is
    * left for `rollbackUpgrade` (or the next boot) to undo exactly.
    */
-  async upgrade(input: { targetImageId: string; imageReference: string; failAfter?: string }): Promise<void> {
+  async upgrade(input: { targetImageId: string; imageReference: string; failAfter?: string; holdCommit?: boolean }): Promise<void> {
     if (!DIGEST.test(input.targetImageId) || !IMAGE_REFERENCE.test(input.imageReference)
       || (input.failAfter !== undefined && !(SANCTUARY_UPGRADE_STEPS as readonly string[]).includes(input.failAfter))) throw new Error("Sanctuary upgrade request is invalid")
     if (fs.existsSync(this.#p(TEMPLATE_JOURNAL))) throw new Error("Finish the pending installation before upgrading")
@@ -657,6 +657,9 @@ export class SanctuaryAuthorityRootLifecycle {
       }
       if (input.failAfter === step) throw new Error(`Sanctuary upgrade rehearsal stopped after ${step}`)
     }
+    // A held upgrade is live but uncommitted: its journal and the predecessor's records stay, so `upgrade-rollback`
+    // still undoes it exactly. Running `upgrade` again without the hold commits it. A completed upgrade cannot be rolled back.
+    if (input.holdCommit) return
     target().#bundle(["--operation", "commit"])
     // A copy of the live token must not linger as if it were a fresh rotation (D-044).
     this.#remove(`${ROOT}/incoming-token`)
@@ -979,9 +982,10 @@ export async function runSanctuaryAuthorityRootCli(argv: string[], write = (text
     return
   }
   const repin = argv.length === 3 && argv[0] === "repin-execution"
-  const upgrade = argv[0] === "upgrade" && (argv.length === 3 || (argv.length === 5 && argv[3] === "--fail-after"))
+  const holdCommit = argv[0] === "upgrade" && argv.length === 4 && argv[3] === "--hold-commit"
+  const upgrade = argv[0] === "upgrade" && (argv.length === 3 || holdCommit || (argv.length === 5 && argv[3] === "--fail-after"))
   const rollback = argv.length === 1 && argv[0] === "upgrade-rollback"
-  if (!repin && !upgrade && !rollback && (argv.length !== 1 || argv[0] !== "boot")) throw new Error("Usage: sanctuary-authority-root-lifecycle <boot|repin-execution <prlimit-sha256> <setsid-sha256>|upgrade <target-image-id> <image-reference> [--fail-after <step>]|upgrade-rollback|vault snapshot|vault presence|vault remove|vault restore>")
+  if (!repin && !upgrade && !rollback && (argv.length !== 1 || argv[0] !== "boot")) throw new Error("Usage: sanctuary-authority-root-lifecycle <boot|repin-execution <prlimit-sha256> <setsid-sha256>|upgrade <target-image-id> <image-reference> [--fail-after <step>|--hold-commit]|upgrade-rollback|vault snapshot|vault presence|vault remove|vault restore>")
   // Boot never waits: the host keeper retries it. An operator upgrade waits out a boot in flight.
   await withSessionTurnLease(TEMPLATE_JOURNAL, async () => {
     const activationPath = `${ROOT}/activation.json`
@@ -995,8 +999,8 @@ export async function runSanctuaryAuthorityRootCli(argv: string[], write = (text
       lifecycle.repinExecution(argv[1]!, argv[2]!)
       write('{"repinned":true,"gatewayRestartRequired":true}\n')
     } else if (upgrade) {
-      await lifecycle.upgrade({ targetImageId: argv[1]!, imageReference: argv[2]!, ...(argv[4] ? { failAfter: argv[4] } : {}) })
-      write(`${JSON.stringify({ upgraded: argv[2] })}\n`)
+      await lifecycle.upgrade({ targetImageId: argv[1]!, imageReference: argv[2]!, ...(argv[4] ? { failAfter: argv[4] } : {}), ...(holdCommit ? { holdCommit: true } : {}) })
+      write(`${JSON.stringify({ upgraded: argv[2], ...(holdCommit ? { held: true } : {}) })}\n`)
     } else if (rollback) {
       write(`${JSON.stringify({ rolledBack: await lifecycle.rollbackUpgrade() })}\n`)
     } else await lifecycle.boot()
