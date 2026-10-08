@@ -2,7 +2,7 @@
   "version": 2,
   "profiles": {
     "sanctuary-owner": {
-      "version": 14,
+      "version": 15,
       "contextScopes": [
         "household.status",
         "household.policy",
@@ -74,6 +74,7 @@
         "media_release_grab",
         "media_blocklist",
         "media_manual_import",
+        "media_quality_profile",
         "media_fill_missing"
       ],
       "effectScopes": [
@@ -142,7 +143,7 @@
       ]
     },
     "sanctuary-agent-peer": {
-      "version": 5,
+      "version": 6,
       "toolNames": [
         "external_event_disposition",
         "query_active_work",
@@ -207,6 +208,7 @@
         "media_release_grab",
         "media_blocklist",
         "media_manual_import",
+        "media_quality_profile",
         "media_fill_missing"
       ],
       "contextScopes": [

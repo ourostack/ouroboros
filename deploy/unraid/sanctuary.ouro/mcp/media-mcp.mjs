@@ -1797,6 +1797,112 @@ async function fillPass(a, seriesId, seriesTitle, { nowMs = Date.now(), deadline
            ...(errors.length ? { errors } : {}), ...(incomplete ? { incomplete: true } : {}), summary, next_step: nextStep + blockedHint }
 }
 
+// ------------------------------------------------- tool: quality profiles
+
+// Radarr and Sonarr keep the upgrade rules (whether a better release may replace a file, and the quality at which they
+// stop) in a quality profile. The Butler once told the owner this was "config-screen-only"; it is an ordinary API, so it
+// is a typed tool: read profiles, set cutoff and upgradeAllowed, and put a movie or series on a profile. Writes are a
+// dry run unless dry_run is false, and return before, after and applied_at like media_diagnose_and_fix.
+
+const itemQualityId = (i) => i.quality?.id ?? i.id
+const itemQualityName = (i) => i.quality?.name ?? i.name
+
+function profileView(p) {
+  const items = p.items ?? []
+  const cutoffItem = items.find((i) => itemQualityId(i) === p.cutoff)
+  return { id: p.id, name: p.name, upgrade_allowed: Boolean(p.upgradeAllowed), cutoff: p.cutoff ?? null,
+           cutoff_name: cutoffItem ? itemQualityName(cutoffItem) : null,
+           qualities: items.map((i) => ({ id: itemQualityId(i), name: itemQualityName(i), allowed: Boolean(i.allowed), ...(i.items?.length ? { group: true } : {}) })) }
+}
+
+const profileNotFound = (id) => ({ result: "no_such_profile", profile_id: id, message: "No quality profile has that id; call media_quality_profile with action read to list them." })
+const isHttp404 = (e) => /_http_404$/.test(e?.code ?? "")
+
+async function getProfile(kind, id) {
+  try { return await arrFor(kind)(`/qualityprofile/${id}`) } catch (e) { if (isHttp404(e)) return null; throw e }
+}
+
+async function getItem(kind, serviceId) {
+  try { return await arrFor(kind)(`/${kind === "series" ? "series" : "movie"}/${serviceId}`) } catch (e) { if (isHttp404(e)) return null; throw e }
+}
+
+const itemView = (item) => ({ service_id: item.id, title: item.title ?? null, quality_profile_id: item.qualityProfileId ?? null })
+const UPGRADE_NEXT_STEP = "The profile now allows the upgrade. Call media_search_now (or media_release_search) for the item so Radarr/Sonarr looks for a better release; do not ask the owner to open a settings page."
+
+export async function mediaQualityProfile(a) {
+  if (!kindOk(a)) return invalidKind()
+  const action = a.action ?? "read"
+  const dryRun = a.dry_run !== false
+  const hasProfileId = a.profile_id !== undefined && a.profile_id !== null
+  const hasServiceId = a.service_id !== undefined && a.service_id !== null
+  const client = arrFor(a.kind)
+
+  if (action === "read") {
+    let profiles
+    if (hasProfileId) {
+      const one = await getProfile(a.kind, Number(a.profile_id))
+      if (!one) return profileNotFound(Number(a.profile_id))
+      profiles = [one]
+    } else {
+      profiles = await client("/qualityprofile")
+    }
+    const out = { kind: a.kind, result: "profiles", profiles: profiles.map(profileView) }
+    if (hasServiceId) {
+      const item = await getItem(a.kind, Number(a.service_id))
+      if (!item) return { result: "no_such_item", kind: a.kind, service_id: Number(a.service_id) }
+      out.item = itemView(item)
+    }
+    return out
+  }
+
+  if (action === "set_upgrade") {
+    if (!hasProfileId) return { result: "profile_id_required" }
+    const wantsCutoff = a.cutoff !== undefined || a.cutoff_name !== undefined
+    if (!wantsCutoff && a.upgrade_allowed === undefined) {
+      return { result: "no_change_requested", message: "Pass upgrade_allowed and/or cutoff (a quality id) or cutoff_name." }
+    }
+    const current = await getProfile(a.kind, Number(a.profile_id))
+    if (!current) return profileNotFound(Number(a.profile_id))
+    const next = { ...current }
+    if (wantsCutoff) {
+      const wanted = (current.items ?? []).find((i) => (a.cutoff !== undefined ? itemQualityId(i) === Number(a.cutoff) : String(itemQualityName(i)).toLowerCase() === String(a.cutoff_name).toLowerCase()))
+      if (!wanted) return { result: "cutoff_not_in_profile", profile_id: current.id, qualities: profileView(current).qualities }
+      next.cutoff = itemQualityId(wanted)
+    }
+    if (a.upgrade_allowed !== undefined) next.upgradeAllowed = Boolean(a.upgrade_allowed)
+    const before = profileView(current)
+    const after = profileView(next)
+    if (before.cutoff === after.cutoff && before.upgrade_allowed === after.upgrade_allowed) return { action, dry_run: dryRun, result: "unchanged", before, after: before }
+    if (dryRun) {
+      return { action, dry_run: true, result: "would_apply", before, after,
+               would_do: `Set ${a.kind === "series" ? "Sonarr" : "Radarr"} profile "${current.name}" to upgrade_allowed=${after.upgrade_allowed} with cutoff ${after.cutoff_name ?? after.cutoff}. Call again with dry_run false to apply.` }
+    }
+    const saved = await client(`/qualityprofile/${current.id}`, { method: "PUT", body: next })
+    return { action, dry_run: false, applied_at: new Date().toISOString(), result: "applied", before, after: profileView(saved ?? next), next_step: UPGRADE_NEXT_STEP }
+  }
+
+  if (action === "assign") {
+    if (!hasServiceId) return { result: "service_id_required" }
+    if (!hasProfileId) return { result: "profile_id_required" }
+    const item = await getItem(a.kind, Number(a.service_id))
+    if (!item) return { result: "no_such_item", kind: a.kind, service_id: Number(a.service_id) }
+    const profile = await getProfile(a.kind, Number(a.profile_id))
+    if (!profile) return profileNotFound(Number(a.profile_id))
+    const before = itemView(item)
+    const after = itemView({ ...item, qualityProfileId: profile.id })
+    if (before.quality_profile_id === profile.id) return { action, dry_run: dryRun, result: "unchanged", before, after: before }
+    if (dryRun) {
+      return { action, dry_run: true, result: "would_apply", before, after, profile: profileView(profile),
+               would_do: `Put "${item.title ?? item.id}" on the "${profile.name}" profile. Call again with dry_run false to apply.` }
+    }
+    const saved = await client(`/${a.kind === "series" ? "series" : "movie"}/${item.id}`, { method: "PUT", body: { ...item, qualityProfileId: profile.id } })
+    return { action, dry_run: false, applied_at: new Date().toISOString(), result: "applied", before, after: itemView(saved ?? { ...item, qualityProfileId: profile.id }),
+             profile: profileView(profile), next_step: UPGRADE_NEXT_STEP }
+  }
+
+  return { result: "invalid_action", message: "action must be read, set_upgrade or assign." }
+}
+
 // ------------------------------------------------------------------- schema
 
 // The harness waits 30 s for a tool call unless the tool declares longer; indexer searches can take minutes.
@@ -1959,6 +2065,20 @@ const TOOL_LIST = [
     }, required: ["kind", "service_id"] },
   },
   {
+    name: "media_quality_profile",
+    description: "Read and change the Radarr/Sonarr quality profiles that decide whether a better release may replace a file ('Quality Profile does not allow upgrades'). This is a normal API, never a settings screen the owner has to click through. action read (default) lists the profiles for the kind with their cutoff, upgrade flag and ordered qualities, or one profile with profile_id; add service_id to also see which profile a movie or series is on. action set_upgrade changes upgrade_allowed and/or the cutoff (a quality id from the profile, or cutoff_name) of profile_id. action assign puts the movie or series service_id on profile_id. Both writes are a dry run that shows before and after and changes nothing until dry_run is false; a change to a shared profile affects every title on it, so prefer assign to move one title when the owner asked about one title. After an applied change, call media_search_now so the upgrade is searched for.",
+    inputSchema: { type: "object", properties: {
+      kind: { type: "string", enum: ["movie", "series"], description: "movie = Radarr, series = Sonarr." },
+      action: { type: "string", enum: ["read", "set_upgrade", "assign"], description: "Default read." },
+      profile_id: { type: "number", description: "Quality profile id (from action read)." },
+      service_id: { type: "number", description: "Radarr movie id or Sonarr series id (media_search returns it)." },
+      upgrade_allowed: { type: "boolean", description: "set_upgrade: whether a better release may replace the file." },
+      cutoff: { type: "number", description: "set_upgrade: quality id from the profile at which upgrades stop." },
+      cutoff_name: { type: "string", description: "set_upgrade: the same, by quality name (for example Bluray-1080p)." },
+      dry_run: { type: "boolean", description: "Writes only. Default true: report before and after without changing anything. Pass false to apply." },
+    }, required: ["kind"] },
+  },
+  {
     name: "media_manual_import",
     description: "Map downloaded files to episodes by hand when their names carry the wrong numbering (Sonarr only). mode 'preview' lists the files of a download with the parsed and mapped episodes and rejections. mode 'import' takes files [{path, episode_ids}]: paths must come from that download's preview and episode_ids must belong to the series; quality and languages come from the preview. Match files to episodes by title using media_episodes.",
     inputSchema: { type: "object", properties: {
@@ -2006,6 +2126,7 @@ const HANDLERS = {
   media_release_grab: mediaReleaseGrab,
   media_blocklist: mediaBlocklist,
   media_manual_import: mediaManualImport,
+  media_quality_profile: mediaQualityProfile,
 }
 
 // ------------------------------------------------------------ jsonrpc stdio

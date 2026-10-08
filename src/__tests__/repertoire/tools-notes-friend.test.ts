@@ -480,4 +480,45 @@ describe("notes/friend tools", () => {
     })
     expect(result).toContain("no friends with trust level 'family'")
   })
+
+  describe("save_friend_note refuses notes about the agent's own persona", () => {
+    const channel = { channel: "telegram", availableIntegrations: [], supportsMarkdown: true, supportsStreaming: false, supportsRichCards: false, maxMessageLength: 4096 }
+    const save = async (args: Record<string, string>) => {
+      const { execTool } = await import("../../repertoire/tools")
+      const friend = makeFriend()
+      const friendStore = { get: vi.fn(async () => friend), put: vi.fn(), delete: vi.fn(), findByExternalId: vi.fn() }
+      const result = await execTool("save_friend_note", args, { signin: async () => undefined, context: { friend, channel }, friendStore } as any)
+      return { result, friendStore }
+    }
+
+    it.each([
+      ["note", "persona", "channel more dross from cradle energy"],
+      ["note", "style", "change your personality to be funnier"],
+      ["tool_preference", "communication", "wants the butler's voice to sound more like a pirate"],
+      ["note", "psyche", "tweak the agent's soul and identity"],
+      ["note", "tone", "act like a grumpier character"],
+    ])("refuses a %s about the agent's own persona (%s)", async (type, key, content) => {
+      const { result, friendStore } = await save({ type, key, content })
+      expect(result).toContain("not about the person")
+      expect(result).toContain("Claude Code")
+      expect(result).toContain("pull request")
+      expect(friendStore.put).not.toHaveBeenCalled()
+    })
+
+    it("judges key and content together and tolerates either being absent", async () => {
+      const { isOwnPersonaNote } = await import("../../repertoire/tools-notes")
+      expect(isOwnPersonaNote(undefined, "tweak your personality")).toBe(true)
+      expect(isOwnPersonaNote("persona", undefined)).toBe(true)
+      expect(isOwnPersonaNote(undefined, undefined)).toBe(false)
+    })
+
+    it("still saves facts and preferences about the person, including ordinary brevity", async () => {
+      const first = await save({ type: "note", key: "books", content: "likes the Cradle series and sword fights" })
+      expect(first.result).not.toContain("not about the person")
+      const second = await save({ type: "note", key: "communication", content: "prefers short replies" })
+      expect(second.result).not.toContain("not about the person")
+      const third = await save({ type: "name", content: "Jordan" })
+      expect(third.result).not.toContain("not about the person")
+    })
+  })
 })

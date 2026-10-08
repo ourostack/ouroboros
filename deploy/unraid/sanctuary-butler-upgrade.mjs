@@ -73,8 +73,8 @@ const MAINTENANCE = "/run/ouro-authority-maintenance"
 const SHUTDOWN_FLAG = "/run/ouro-authority-shutdown"
 const GATE_SCRIPT = `${ROOT}/package/deploy/unraid/sanctuary-replay-gate.mjs`
 const GATE_PROVISION = `${BUNDLE}/state/replay-client/provision.json`
-// The whole gate (every case, including the six-minute await wait) must finish well inside this; a hung gate is a failed gate.
-export const GATE_TIMEOUT_MS = 60 * 60 * 1000
+// The whole gate (every case, including the eight-minute await wait) must finish well inside this; a hung gate is a failed gate.
+export const GATE_TIMEOUT_MS = 95 * 60 * 1000
 const UPGRADE_STEPS = ["stop", "switch", "resident", "migrate", "start"]
 
 const sh = (file, args, opts = {}) => execFileSync(file, args, { encoding: "utf8", maxBuffer: 64 << 20, ...opts })

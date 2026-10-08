@@ -3427,3 +3427,93 @@ describe("runAgent tool loop guard", () => {
     })
   })
 })
+
+describe("settle answers about a work are checked against what the turn read", () => {
+  beforeEach(async () => {
+    vi.resetModules()
+    vi.mocked(fs.readFileSync).mockImplementation(defaultReadFileSync)
+    mockCreate.mockReset()
+    mockResponsesCreate.mockReset()
+    await setupMinimax()
+  })
+
+  const settleCall = (id: string, answer: string) => makeStream([makeChunk(undefined, [{ index: 0, id, function: { name: "settle", arguments: JSON.stringify({ answer, intent: "complete" }) } }])])
+  const INVENTED = "the show has Philomena, Magma and Bunty. same energy."
+  const GROUNDED = "the books have Lindon and Yerin. same energy."
+  const searchTool = [{ type: "function", function: { name: "web_search", description: "search", parameters: { type: "object", properties: { query: { type: "string" } } } } }]
+  const run = async (execTool: any, extra: Record<string, unknown> = {}) => {
+    const visible: string[] = []
+    const { runAgent } = await import("../../heart/core")
+    const result = await runAgent([{ role: "user", content: "channel more dross from cradle energy" }] as any[], makeCallbacks({ onTextChunk: vi.fn((text: string) => { visible.push(text) }), onClearText: vi.fn(() => { visible.length = 0 }) }), "telegram", undefined, { tools: searchTool as any, execTool, toolContext: { signin: async () => undefined }, ...extra })
+    return { result, visible }
+  }
+
+  it("sends the model back to look when it names an invented cast, then delivers the sourced answer", async () => {
+    mockCreate.mockReturnValueOnce(settleCall("s1", INVENTED))
+    mockCreate.mockReturnValueOnce(makeStream([makeChunk(undefined, [{ index: 0, id: "ws", function: { name: "web_search", arguments: JSON.stringify({ query: "cradle characters" }) } }])]))
+    mockCreate.mockReturnValueOnce(settleCall("s2", GROUNDED))
+    const execTool = vi.fn(async () => "Lindon and Yerin are the leads of Cradle")
+    const { result, visible } = await run(execTool)
+    expect(result.outcome).toBe("settled")
+    expect(execTool).toHaveBeenCalledTimes(1)
+    expect(JSON.stringify(mockCreate.mock.calls[1][0].messages)).toContain("looked up nothing this turn")
+    expect(visible.join("")).toBe(GROUNDED)
+  })
+
+  it("rejects at most twice, then delivers what the model settled", async () => {
+    for (const id of ["a", "b", "c"]) mockCreate.mockReturnValueOnce(settleCall(id, INVENTED))
+    const { result, visible } = await run(vi.fn())
+    expect(result.outcome).toBe("settled")
+    expect(mockCreate).toHaveBeenCalledTimes(3)
+    expect(visible.join("")).toBe(INVENTED)
+  })
+
+  it("never spends the last provider iteration on the grounding retry", async () => {
+    const { MAX_PROVIDER_ITERATIONS } = await import("../../heart/core")
+    for (let i = 0; i < MAX_PROVIDER_ITERATIONS - 2; i++) mockCreate.mockReturnValueOnce(makeStream([makeChunk(undefined, [{ index: 0, id: `look_${i}`, function: { name: "web_search", arguments: JSON.stringify({ query: `q${i}` }) } }])]))
+    mockCreate.mockReturnValueOnce(settleCall("late", INVENTED))
+    const { result, visible } = await run(vi.fn(async () => "nothing useful"))
+    expect(result.outcome).toBe("settled")
+    expect(visible.at(-1)).toBe(INVENTED)
+  })
+
+  it("passes replies that are not about a work", async () => {
+    mockCreate.mockReturnValueOnce(settleCall("ok", "ten minutes. nothing to read."))
+    const { result, visible } = await run(vi.fn())
+    expect(result.outcome).toBe("settled")
+    expect(mockCreate).toHaveBeenCalledTimes(1)
+    expect(visible.join("")).toBe("ten minutes. nothing to read.")
+  })
+
+  it("leaves answers to a request-specific contract that validates its own terminal answer", async () => {
+    mockCreate.mockReturnValueOnce(settleCall("contract", INVENTED))
+    const { result, visible } = await run(vi.fn(), { requiredToolCalls: { names: [], retryMessage: "none" } })
+    expect(result.outcome).toBe("settled")
+    expect(mockCreate).toHaveBeenCalledTimes(1)
+    expect(visible.join("")).toBe(INVENTED)
+  })
+
+  it("holds a reply to a brevity request made earlier in the conversation, then delivers the short one", async () => {
+    const LONG = `## Plan\n${"this is a long section. ".repeat(40)}Want me to go on?`
+    mockCreate.mockReturnValueOnce(settleCall("long", LONG))
+    mockCreate.mockReturnValueOnce(settleCall("short", "The library closes at nine."))
+    const visible: string[] = []
+    const { runAgent } = await import("../../heart/core")
+    const result = await runAgent([{ role: "user", content: "be brief from now on, no sections" }, { role: "assistant", content: "ok." }, { role: "user", content: "when does the library close?" }] as any[], makeCallbacks({ onTextChunk: vi.fn((text: string) => { visible.push(text) }), onClearText: vi.fn(() => { visible.length = 0 }) }), "telegram", undefined, { tools: [], execTool: vi.fn(), toolContext: { signin: async () => undefined } })
+    expect(result.outcome).toBe("settled")
+    expect(JSON.stringify(mockCreate.mock.calls[1][0].messages)).toContain("the person asked you to be brief")
+    expect(visible.join("")).toBe("The library closes at nine.")
+  })
+
+  it("reads brevity from the person's saved communication preference", async () => {
+    mockCreate.mockReturnValueOnce(settleCall("long", "x".repeat(700)))
+    mockCreate.mockReturnValueOnce(settleCall("short", "fine."))
+    const friend = { id: "f1", name: "Ari", trustLevel: "family", relationshipPolicy: { schemaVersion: 1, version: 1, preferences: { communication: { value: "keep replies short", provenance: "stated", source: "x", version: 1 } } }, externalIds: [], tenantMemberships: [], toolPreferences: {}, notes: {}, totalTokens: 0, createdAt: "", updatedAt: "", schemaVersion: 1 }
+    const { runAgent } = await import("../../heart/core")
+    const visible: string[] = []
+    const result = await runAgent([{ role: "user", content: "hello" }] as any[], makeCallbacks({ onTextChunk: vi.fn((text: string) => { visible.push(text) }), onClearText: vi.fn(() => { visible.length = 0 }) }), "telegram", undefined, { tools: [], execTool: vi.fn(), toolContext: { signin: async () => undefined, context: { friend, channel: {} } } as any })
+    expect(result.outcome).toBe("settled")
+    expect(visible.join("")).toBe("fine.")
+  })
+})
+

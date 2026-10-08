@@ -3,6 +3,8 @@ import {
   getContextConfig,
 } from "./config";
 import { loadAgentConfig } from "./identity";
+import { isLookupToolCall, sourceGroundingError, type TurnToolRecord } from "./source-grounding";
+import { briefStyleRequested, briefStyleViolation, savedCommunicationPreference } from "./reply-style";
 import { classifyApprovalForInvocation, executeTool, preflightToolCall, summarizeArgs, buildToolResultSummary, restTool, selectToolsForChannel, reduceToolSelection, ToolSelectionError, riskProfileForToolName, resolveToolDefinition } from "../repertoire/tools";
 import type { HabitSessionToolContext, ToolContext, ToolRiskProfile, ToolSelection } from "../repertoire/tools-base";
 import { digestJson, validateAdvertisedToolArguments } from "../repertoire/tool-arguments";
@@ -973,6 +975,16 @@ function historicalFailedEffectsForExactRepeatedRequest(messages: OpenAI.ChatCom
   return [...failedEffects.values()]
 }
 
+const ANSWER_GATE_MAX_REJECTIONS = 2
+
+function userTexts(messages: OpenAI.ChatCompletionMessageParam[]): string[] {
+  return messages.filter((message) => message.role === "user").map((message) => messageContentText(message.content))
+}
+
+function systemMessageText(messages: OpenAI.ChatCompletionMessageParam[]): string {
+  return messages.filter((message) => message.role === "system").map((message) => messageContentText(message.content)).join("\n")
+}
+
 function latestUserMessageText(messages: OpenAI.ChatCompletionMessageParam[]): string {
   for (let i = messages.length - 1; i >= 0; i -= 1) {
     const message = messages[i]
@@ -1543,6 +1555,8 @@ export async function runAgent(
   let sawQuerySession = false;
   let sawBridgeManage = false;
   let sawExternalStateQuery = false;
+  const turnToolRecords: TurnToolRecord[] = [];
+  let answerGateRejections = 0;
   const privateReturnHeldTokens = new Set<string>();
   // Once-per-turn flag for the fresh-work rest gate. Without this, an agent
   // that called rest, was told "fresh work arrived", processed the items,
@@ -2381,7 +2395,18 @@ export async function runAgent(
             sawSettleContentMismatch = true
             emitNervesEvent({ level: "warn", component: "engine", event: "engine.settle_content_mismatch", message: "settle answer differs from the reply text written beside it; asking once for the reply as the answer", meta: { answerLength: deliveredAnswer.length, contentLength: (msg.content as string).length } })
           }
+          // A request-specific contract (options.requiredToolCalls) already validates its own terminal answer against the reads it requires.
+          // Never spend the last provider iteration on these optional retries: delivering the answer beats delivering nothing.
+          const answerGateError = options?.requiredToolCalls || answerGateRejections >= ANSWER_GATE_MAX_REJECTIONS || providerIterations >= stepBudget - 1 ? null : (
+            sourceGroundingError({ answer: deliveredAnswer, userText: userTexts(messages).join("\n"), systemText: systemMessageText(messages), tools: turnToolRecords })
+            ?? (briefStyleRequested(userTexts(messages), savedCommunicationPreference(options?.toolContext?.context?.friend)) ? briefStyleViolation(deliveredAnswer) : null)
+          )
+          if (answerGateError) {
+            answerGateRejections += 1
+            emitNervesEvent({ level: "warn", component: "engine", event: "engine.answer_gate_rejected", message: "settle answer failed a delivery check (an unsourced claim about a work, or the person's brevity request); sending the model back", meta: { rejection: answerGateRejections, cap: ANSWER_GATE_MAX_REJECTIONS, lookupsRun: turnToolRecords.filter(isLookupToolCall).length } })
+          }
           const retryError = contentMismatch
+            ?? answerGateError
             ?? privateReturnAckLeakError(deliveredAnswer, privateReturnHeldTokens)
             ?? privateReturnMissingPonderError({
               latestUserRequest: latestUserMessageText(messages),
@@ -2905,6 +2930,7 @@ export async function runAgent(
             success = false;
           }
           if (invoked && requiredToolCallNames.includes(tc.name) && !options?.requiredToolCalls?.requireSuccessfulResults) dispatchedRequiredToolCalls.add(tc.name);
+          turnToolRecords.push({ name: tc.name, args, result: toolResult });
           const modelResult = rewriteToolResultForModel(tc.name, toolResult, toolFrictionLedger);
           pushGenerated({ role: "tool", tool_call_id: tc.id, content: modelResult });
           providerRuntime.appendToolOutput(tc.id, modelResult);
