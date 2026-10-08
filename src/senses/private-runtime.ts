@@ -221,6 +221,8 @@ async function resolveRelationshipAwaitAuthority(agentRoot: string, store: FileF
   }
   // A plain peer await carries the peer's own authority and nobody else's: no principal, no delegation grant.
   const plainPeerAwait = coordinates.channel === "a2a" && coordinates.requestId === null
+  // A peer the operator switched to no contact at all is not ticked; every other policy is held to following up on this one internal request.
+  if (plainPeerAwait && friend.initiativePolicy === "none") throw new StaleRelationshipAwaitError("initiative policy denies contact")
   const subjectFriend = coordinates.channel === "a2a" && !plainPeerAwait ? await resolveA2APrincipal(agentRoot, store, friend, coordinates.requestId!) : friend
   const authorization = coordinates.channel === "external-event"
     ? createRelationshipAuthorizationEvaluator({ friend, registry, profileId: "sanctuary-event", requestPhase: "follow_up" })

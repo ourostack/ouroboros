@@ -2680,6 +2680,20 @@ describe("private runtime", () => {
         expect(fs.existsSync(path.join(agentRoot, "awaiting", "release.md"))).toBe(true)
       })
 
+      it("never widens a peer set to no contact: the await ends instead of ticking", async () => {
+        await plainSetup({ initiativePolicy: "none" })
+        await expect(run()).rejects.toThrow()
+        expect(fs.readFileSync(path.join(agentRoot, "awaiting", ".done", "release.md"), "utf8")).toContain("status: canceled")
+        expect(mockHandleInboundTurn).not.toHaveBeenCalled()
+      })
+
+      it.each(["proactive", "reactive_only", "request_follow_up_only"])("ticks a %s peer held to following up on its own internal request", async (initiativePolicy) => {
+        await plainSetup({ initiativePolicy })
+        await run()
+        const runOptions = mockHandleInboundTurn.mock.calls[0][0].runAgentOptions
+        await expect(runOptions.toolContext.relationshipAuthorization.authorizeTool("resolve_await", {})).resolves.toMatchObject({ allowed: true })
+      })
+
       it("ends the await when the peer is no longer active", async () => {
         await plainSetup({ admissionState: "revoked" })
         await expect(run()).rejects.toThrow()
