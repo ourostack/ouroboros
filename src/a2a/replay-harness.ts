@@ -32,6 +32,32 @@ export function replaySinkPath(agentRoot: string): string {
   return path.join(replayDir(agentRoot), "notices.ndjson")
 }
 
+/** Permanent registry of replay identities, written by the host's provisioning and never cleared. */
+export function replayIdentitiesPath(agentRoot: string): string {
+  return path.join(replayDir(agentRoot), "identities.json")
+}
+
+function listsFriend(file: string, friendId: string): boolean {
+  let parsed: unknown
+  try {
+    parsed = JSON.parse(fs.readFileSync(file, "utf8"))
+  } catch (error) {
+    // A missing file lists nobody; a file that exists but cannot be read or parsed fails closed.
+    return (error as NodeJS.ErrnoException).code !== "ENOENT"
+  }
+  const friends = (parsed as { friends?: unknown } | null)?.friends
+  return !!friends && typeof friends === "object" && Object.hasOwn(friends, friendId)
+}
+
+/**
+ * True when `friendId` is a replay identity: listed in the permanent registry, or holding any window entry (open or
+ * expired). Unlike the window check this needs no trusted-owner proof, because the marker only ever restricts: forging
+ * an entry can block a friend from writing owner policy, never grant anything. Owner policy writes refuse these identities.
+ */
+export function isReplayIdentity(agentRoot: string, friendId: string): boolean {
+  return listsFriend(replayIdentitiesPath(agentRoot), friendId) || listsFriend(replayWindowPath(agentRoot), friendId)
+}
+
 /** A root-controlled directory: a real directory (no symlink), owned by the trusted uid, writable by neither group nor other. */
 function isTrustedDirectory(target: string, trustedUid: number): boolean {
   try {

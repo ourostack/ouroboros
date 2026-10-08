@@ -2,6 +2,12 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.874",
+      "changes": [
+        "Replay identities (the replay gate's test peers) can no longer write the real owner steward policy, even by a no-op restatement; a new steward_policy_manage correct_provenance action fixes a wrong attribution with an audited, value-preserving write; and the replay gate gains an owner-policy-untouched case that hashes steward.json and its audit file before the first case and after the last"
+      ]
+    },
+    {
       "version": "0.1.0-alpha.873",
       "changes": [
         "A new butler:ship command (npm run butler:ship -- <version>) ships a Butler release through the replay gate in one step: it waits for the release's coverage-gate and the image on the host, stages that release's upgrade and gate scripts, runs preflight, starts the detached gated upgrade, follows the case lines until the upgrade process has exited, and verifies, then prints one JSON result (kept, rolled_back, refused or failed); it stops early with a clear message when no push-triggered coverage-gate run exists for the merge commit, because the image would never be published."

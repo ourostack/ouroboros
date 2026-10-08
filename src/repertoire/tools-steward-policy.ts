@@ -1,5 +1,5 @@
 import type { ToolDefinition } from "./tools-base"
-import { readStewardPolicy, updateStewardPolicy, type StewardPolicyMutation } from "../heart/steward-policy"
+import { assertNotReplayIdentity, readStewardPolicy, updateStewardPolicy, type StewardPolicyMutation } from "../heart/steward-policy"
 import { emitNervesEvent } from "../nerves/runtime"
 
 function arrayArgument(raw: string | undefined, label: string): string[] {
@@ -14,16 +14,17 @@ export const stewardPolicyToolDefinition: ToolDefinition = {
     type: "function",
     function: {
       name: "steward_policy_manage",
-      description: "Read or update the household steward's typed desired-state and routine-action policy. Updates require the current authenticated owner Telegram request and fresh authorization. expectedVersion is optional; omit it to apply against the current policy version, or supply a version from read for explicit stale-write detection.",
+      description: "Read or update the household steward's typed desired-state and routine-action policy. Updates require the current authenticated owner Telegram request and fresh authorization. Replay identities can never update it. correct_provenance (key, source, correction) is only for fixing a wrong attribution on an existing desired state: it replaces the recorded source and records the correction note, never changes the value, and leaves an audit row; do not use it to change a value. expectedVersion is optional; omit it to apply against the current policy version, or supply a version from read for explicit stale-write detection.",
       parameters: {
         type: "object",
         properties: {
-          action: { type: "string", enum: ["read", "set_desired_state", "grant_routine_action"] },
+          action: { type: "string", enum: ["read", "set_desired_state", "grant_routine_action", "correct_provenance"] },
           expectedVersion: { type: "integer", minimum: 0, description: "Optional version returned by read. When omitted, the runtime uses the current policy version." },
           key: { type: "string" },
           value: { type: "string" },
           provenance: { type: "string", enum: ["stated", "observed", "default", "installed_explicit_policy"] },
-          source: { type: "string" },
+          source: { type: "string", description: "Who or what stated this. For correct_provenance, the corrected attribution that replaces the recorded source." },
+          correction: { type: "string", description: "correct_provenance only: required note naming what is being corrected and why." },
           routineAction: { type: "string" },
           targetsJson: { type: "string", description: "JSON array of exact target names" },
           maxCount: { type: "integer", minimum: 1 },
@@ -49,6 +50,7 @@ export const stewardPolicyToolDefinition: ToolDefinition = {
     if (!actor) throw new Error("steward policy mutation requires authenticated relationship authority")
     const { friendId, trustLevel, sessionEventId } = actor
     const { profileId, requestId } = relationship
+    assertNotReplayIdentity(ctx.agentRoot, [friendId, ctx.delegatedCommand?.delegateFriendId])
     const sessionKey = ctx.currentSession?.key
     const delegated = ctx.delegatedCommand
     // Two ways to hold owner authority: the owner's own Telegram turn, or a delegated
@@ -74,6 +76,8 @@ export const stewardPolicyToolDefinition: ToolDefinition = {
     if (args.action === "set_desired_state") {
       if (args.provenance !== "stated" && args.provenance !== "observed" && args.provenance !== "default") throw new Error("desired state provenance is invalid")
       mutation = { kind: "set_desired_state", key: args.key ?? "", value: args.value ?? "", provenance: args.provenance, source: sourceFor(args.source), ...(args.expiresAt ? { expiresAt: args.expiresAt } : {}) }
+    } else if (args.action === "correct_provenance") {
+      mutation = { kind: "correct_provenance", key: args.key ?? "", source: sourceFor(args.source), correction: args.correction ?? "" }
     } else if (args.action === "grant_routine_action") {
       if (args.provenance !== "stated" && args.provenance !== "installed_explicit_policy") throw new Error("routine action provenance is invalid")
       const targets = arrayArgument(args.targetsJson, "targetsJson")

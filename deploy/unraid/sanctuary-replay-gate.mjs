@@ -245,6 +245,18 @@ export function newAwaits(before, after) {
   return [...after.awaiting.filter((entry) => !known.has(key(entry))).map((entry) => view(entry, false)), ...after.done.filter((entry) => !known.has(key(entry))).map((entry) => view(entry, true))]
 }
 
+/**
+ * Cross-cutting proof that the replay run never wrote the real owner policy: the sha256 of the steward.json bytes and of
+ * the audit file, taken before the first case and after the last, must be identical. No case may change them, whatever
+ * the Butler decided inside its turn (a refused policy write is fine; a written one is not).
+ */
+export function ownerPolicyUntouched(before, after) {
+  return [
+    check("the real steward.json bytes are unchanged", before.stewardSha === after.stewardSha, `${before.stewardSha?.slice(0, 12) ?? "absent"} -> ${after.stewardSha?.slice(0, 12) ?? "absent"}`),
+    check("the policy audit file bytes are unchanged", before.auditSha === after.auditSha, `${before.auditSha?.slice(0, 12) ?? "absent"} -> ${after.auditSha?.slice(0, 12) ?? "absent"}`),
+  ]
+}
+
 // ---- orchestration (all I/O is behind `host`) --------------------------------------------------------------------
 
 export async function runCase(host, testCase, { plant } = {}) {
@@ -289,6 +301,7 @@ export async function runSuite(host, { cases = CASES.map((entry) => entry.id), p
   const selected = CASES.filter((entry) => cases.includes(entry.id))
   await host.waitReady?.()
   const runStart = host.now()
+  const baseline = await host.observe()
   const results = []
   host.openWindow(windowMinutes)
   try {
@@ -310,7 +323,9 @@ export async function runSuite(host, { cases = CASES.map((entry) => entry.id), p
   const clean = readable && leaks.length === 0
   const detail = readable ? [...leaks.map((leak) => `${leak.key} (${leak.reason})`), ...info.map((entry) => `info: ${entry.key} (${entry.reason})`)].join(", ") : "state/telegram/effects is not readable, so the absence of a leak cannot be shown"
   const telegram = { id: "no-telegram", status: clean ? "pass" : "fail", checks: [check("no owner-notice Telegram effect attributable to the replay run was recorded", clean, detail)] }
-  const all = [...results, telegram]
+  const policyChecks = ownerPolicyUntouched(baseline, finalObservation)
+  const policy = { id: "owner-policy-untouched", status: policyChecks.every((entry) => entry.ok) ? "pass" : "fail", checks: policyChecks }
+  const all = [...results, policy, telegram]
   const failed = all.filter((entry) => entry.status === "fail").map((entry) => entry.id)
   return { results: all, summary: { ok: failed.length === 0, passed: all.filter((entry) => entry.status === "pass").length, skipped: all.filter((entry) => entry.status === "skipped").length, failed } }
 }
@@ -378,6 +393,11 @@ export function selfTest() {
       const pass = checks.every((entry) => entry.ok)
       if (pass !== (kind === "pass")) problems.push(`${testCase.id}: the ${kind} fixture ${pass ? "passed" : "failed"} (${checks.filter((entry) => !entry.ok).map((entry) => entry.name).join("; ")})`)
     }
+  }
+  const same = ownerPolicyUntouched(emptyObservation({ auditSha: "x" }), emptyObservation({ auditSha: "x" }))
+  if (!same.every((entry) => entry.ok)) problems.push("owner-policy-untouched failed on identical policy bytes")
+  for (const [name, changed] of [["steward.json", { stewardSha: "bbb" }], ["audit file", { auditSha: "y" }]]) {
+    if (ownerPolicyUntouched(emptyObservation({ auditSha: "x" }), emptyObservation({ auditSha: "x", ...changed })).every((entry) => entry.ok)) problems.push(`owner-policy-untouched passed with different ${name} bytes`)
   }
   const stalled = { trackedDownloadStatus: "warning" }
   if (CASES.find((entry) => entry.id === "stall-kept").applicable(emptyObservation({ queue: [{ id: 1 }] })) === null) problems.push("stall-kept ran with no stalled item")
@@ -471,6 +491,7 @@ export function makeHost({ bundle = DEFAULT_BUNDLE, cardUrl, log = console.error
     },
     async observe() {
       const policy = path.join(state, "policy", "steward.json")
+      const audit = path.join(state, "policy", "policy-audit.ndjson")
       const ledger = path.join(bundle, "books", "ledger.ndjson")
       let queue = null
       try {
@@ -487,6 +508,7 @@ export function makeHost({ bundle = DEFAULT_BUNDLE, cardUrl, log = console.error
       })
       return {
         stewardSha: existsSync(policy) ? sha256(readFileSync(policy)) : null,
+        auditSha: existsSync(audit) ? sha256(readFileSync(audit)) : null,
         ledgerLines: readLines(ledger).length,
         queue,
         containers,
@@ -536,6 +558,7 @@ export function provision({ bundle = DEFAULT_BUNDLE, cardUrl, log = console.log,
   const sink = path.join(replayDir, "notices.ndjson")
   writeFileSync(sink, "", { flag: "a", mode: 0o600 }); chownSync(sink, owner.uid, owner.gid)
   mkdirSync(clientDir, { recursive: true, mode: 0o700 }); chownSync(clientDir, owner.uid, owner.gid)
+  const replayIdentities = {}
   const previous = existsSync(path.join(clientDir, "provision.json")) ? JSON.parse(readFileSync(path.join(clientDir, "provision.json"), "utf8")) : {}
   const resolvedCard = cardUrl ?? previous.cardUrl ?? discover()
   const out = { cardUrl: resolvedCard }
@@ -555,8 +578,15 @@ export function provision({ bundle = DEFAULT_BUNDLE, cardUrl, log = console.log,
     if (grant && record.delegationGrant?.scope !== "principal_commands") grantPrincipalCommands(file)
     if (!grant && record.delegationGrant) throw new Error(`${name} must not hold a delegation grant`)
     out[who] = { friendId, did, containerIdentityFile, hostIdentity }
+    replayIdentities[friendId] = { name, who }
     log(`${name}: friend ${friendId} (${trust}${grant ? ", principal_commands" : ", no grant"})`)
   }
+  // Permanent marker, root-owned and never cleared with the window: the Butler refuses every owner-policy write from these friends (src/a2a/replay-harness.ts isReplayIdentity).
+  const registry = path.join(replayDir, "identities.json")
+  let known = {}
+  try { known = JSON.parse(readFileSync(registry, "utf8")).friends ?? {} } catch { /* first provision */ }
+  writeAtomic(registry, JSON.stringify({ friends: { ...known, ...replayIdentities } }, null, 2), 0o644)
+  chownSync(registry, rootUid, rootGid)
   writeAtomic(path.join(clientDir, "provision.json"), JSON.stringify(out, null, 2), 0o644)
   log(`provisioned; card ${resolvedCard}`)
   return out
