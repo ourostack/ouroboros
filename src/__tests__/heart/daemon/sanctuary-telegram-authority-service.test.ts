@@ -911,15 +911,27 @@ describe("Sanctuary Telegram authority service", () => {
       },
     })
     await server.listen()
+    const accepted: net.Socket[] = []
+    const emit = net.Server.prototype.emit
+    const spy = vi.spyOn(net.Server.prototype, "emit").mockImplementation(function (this: net.Server, event: string | symbol, ...args: unknown[]) {
+      if (event === "connection") accepted.push(args[0] as net.Socket)
+      return emit.call(this, event, ...args)
+    } as never)
     const raw = net.createConnection(socketPath)
     await new Promise<void>((resolve) => raw.once("connect", () => resolve()))
     raw.write(`${JSON.stringify({ protocolVersion: 1, id: "1", method: "slow", params: {} })}\n`)
     await vi.waitFor(() => expect(started).toHaveBeenCalled())
-    // Drop the connection (what a crashed or timed-out client looks like), then let the dispatch finish.
+    spy.mockRestore()
+    // The client drops (what a crashed or timed-out client looks like) and the server's end is gone too
+    // by the time the dispatch finishes; the late response must be skipped, not written.
     raw.destroy()
+    accepted[0].destroy()
     await new Promise((resolve) => setTimeout(resolve, 50))
+    expect(accepted[0].destroyed).toBe(true)
+    const write = vi.spyOn(accepted[0], "write")
     release()
     await new Promise((resolve) => setTimeout(resolve, 50))
+    expect(write).not.toHaveBeenCalled()
     // The server is still serving.
     const client = new SocketSanctuaryTelegramAuthorityClient(socketPath)
     await expect(client.request("ping", {})).resolves.toBe(true)
