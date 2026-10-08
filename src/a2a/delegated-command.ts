@@ -57,14 +57,14 @@ export const A2A_PRINCIPAL_PROFILE_ID = "sanctuary-owner"
  * command id. A request id with no such record never came through a signed, owner-notified delegated command.
  * A missing record is `false`; an unreadable or malformed one throws, so the caller retries instead of deciding.
  */
-export function delegatedCommandWasNoticed(agentRoot: string, commandId: string, principalFriendId: string): boolean {
+export function delegatedCommandWasNoticed(agentRoot: string, commandId: string, principalFriendId: string, delegateFriendId?: string): boolean {
   const idempotencyKey = `owner-notice:delegated:${commandId}`
   const file = path.join(agentRoot, "state", "telegram", "effects", `${createHash("sha256").update(idempotencyKey).digest("hex")}.json`)
   let raw: string
   try {
     raw = fs.readFileSync(file, "utf8")
   } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === "ENOENT") return replayNoticeRecorded(agentRoot, `delegated:${commandId}`)
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return delegateFriendId !== undefined && isReplayWindowOpen(agentRoot, delegateFriendId) && replayNoticeRecorded(agentRoot, `delegated:${commandId}`, delegateFriendId)
     throw error
   }
   const artifact = JSON.parse(raw) as { idempotencyKey?: unknown; authorClass?: unknown; target?: { friendId?: unknown } }

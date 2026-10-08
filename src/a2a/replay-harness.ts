@@ -1,4 +1,4 @@
-import * as fs from "fs"
+import * as fs from "node:fs"
 import * as path from "path"
 import { emitNervesEvent } from "../nerves/runtime"
 
@@ -32,8 +32,22 @@ export function replaySinkPath(agentRoot: string): string {
   return path.join(replayDir(agentRoot), "notices.ndjson")
 }
 
-/** True only when the window file lists `friendId` with an expiry that is in the future and within the cap. Any unreadable or malformed file means "closed". */
-export function isReplayWindowOpen(agentRoot: string, friendId: string, now: number = Date.now()): boolean {
+/** A root-controlled file: a real file or directory (no symlink), owned by the trusted uid, writable by neither group nor other. */
+function isTrustedPath(target: string, trustedUid: number): boolean {
+  try {
+    const stat = fs.lstatSync(target)
+    return !stat.isSymbolicLink() && stat.uid === trustedUid && (stat.mode & 0o022) === 0
+  } catch {
+    return false
+  }
+}
+
+/**
+ * True only when the window file lists `friendId` with an expiry that is in the future and within the cap. Any unreadable or malformed file means "closed". */
+export function isReplayWindowOpen(agentRoot: string, friendId: string, now: number = Date.now(), trustedUid: number = 0): boolean {
+  // The state directory is the Butler's own, so it could swap in a directory and window of its own making. Only a replay
+  // directory and window file that root owns, and nobody else can write, count; anything else fails toward Telegram.
+  if (!isTrustedPath(replayDir(agentRoot), trustedUid) || !isTrustedPath(replayWindowPath(agentRoot), trustedUid)) return false
   let parsed: unknown
   try {
     parsed = JSON.parse(fs.readFileSync(replayWindowPath(agentRoot), "utf8"))
@@ -62,8 +76,8 @@ export function appendReplayNotice(agentRoot: string, notice: ReplayNotice, now:
   })
 }
 
-/** True when the sink holds a notice with this id (a missing sink is "no"). */
-export function replayNoticeRecorded(agentRoot: string, noticeId: string): boolean {
+/** True when the sink holds a notice with this id for this friend (a missing sink is "no"). The sink is Butler-writable: callers must also require a trusted window. */
+export function replayNoticeRecorded(agentRoot: string, noticeId: string, friendId: string): boolean {
   let raw: string
   try {
     raw = fs.readFileSync(replaySinkPath(agentRoot), "utf8")
@@ -73,8 +87,8 @@ export function replayNoticeRecorded(agentRoot: string, noticeId: string): boole
   return raw.split("\n").some((line) => {
     if (!line) return false
     try {
-      const entry = JSON.parse(line) as { noticeId?: unknown }
-      return entry.noticeId === noticeId
+      const entry = JSON.parse(line) as { noticeId?: unknown; friendId?: unknown }
+      return entry.noticeId === noticeId && entry.friendId === friendId
     } catch {
       return false
     }

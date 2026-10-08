@@ -12,7 +12,7 @@ type Gate = any
 let gate: Gate
 beforeEach(async () => { gate = await import(/* @vite-ignore */ SCRIPT) })
 
-const empty = (overrides: Record<string, unknown> = {}) => ({ stewardSha: "aaa", ledgerLines: 3, queue: [], containers: { "calibre-web": true }, awaiting: [], done: [], effects: [], sink: [], ...overrides })
+const empty = (overrides: Record<string, unknown> = {}) => ({ effectsReadable: true, stewardSha: "aaa", ledgerLines: 3, queue: [], containers: { "calibre-web": true }, awaiting: [], done: [], effects: [], sink: [], ...overrides })
 
 describe("readback helpers", () => {
   it("pairs each tool call with its result and ignores sessions without events", () => {
@@ -29,7 +29,7 @@ describe("readback helpers", () => {
   })
 
   it.each([
-    ["Books is up and running", "up"], ["calibre-web is down", "down"], ["it is not running", "down"], ["Books is up, though the other is down", null], ["no idea", null], [undefined, null],
+    ["Books isn't down", "up"], ["Books is not down", "up"], ["Books is no longer down", "up"], ["Books is up and running", "up"], ["calibre-web is down", "down"], ["it is not running", "down"], ["Books is up, though the other is down", null], ["no idea", null], [undefined, null],
   ])("reads the up/down claim of %s", (text, claim) => expect(gate.upDownClaim(text)).toBe(claim))
 
   it.each([
@@ -80,9 +80,12 @@ describe("every case readback", () => {
     expect(names(byId("books-up").readback({ trace: [], reply: "Books is down", after: empty() }))).toEqual(["the container list tool was used", "the reply's up/down claim matches docker ps"])
     expect(names(byId("books-up").readback({ trace: [], reply: "up", after: empty({ containers: {} }) }))).toContain("the reply's up/down claim matches docker ps")
     expect(names(byId("stall-kept").readback({ trace: [tool("shell", { method: "DELETE" })], before: empty({ queue: null }), after: empty({ queue: null }) }))).toEqual(["the Sonarr queue ids are unchanged", "nothing was blocklisted or deleted"])
-    expect(byId("stall-kept").applicable(empty({ queue: null }))).toMatch(/could not be read/)
+    expect(byId("stall-kept").applicable(empty({ queue: null }))).toBeNull()
     expect(names(byId("await-self-resolve").readback({ before: empty(), after: empty(), sink: [], friends }))).toEqual(["an await was filed", "every new await was archived as resolved", "its delivery went to the sink"])
     expect(names(byId("await-self-resolve").readback({ before: empty(), after: empty({ done: [{ name: "w", status: "canceled" }] }), sink: [{ friendId: "p", noticeId: "delegated:z" }], friends }))).toEqual(["every new await was archived as resolved", "its delivery went to the sink"])
+    expect(names(byId("chef-question").readback({ trace: [tool("media_search", { query: "chef 191 episodes" }, "season 191 of something")], reply: "Chef Show" }))).toEqual(["a media tool call names Sonarr series 191 or TMDB 89557"])
+    expect(names(byId("chef-question").readback({ trace: [tool("media_episodes", { seriesId: 191 })], reply: "Chef Show" }))).toEqual([])
+    expect(names(byId("chef-question").readback({ trace: [tool("media_search", {}, '{"results":[{"tmdbId":89557}]}')], reply: "Chef Show" }))).toEqual([])
     expect(names(byId("chef-question").readback({ trace: [], reply: undefined }))).toEqual(["a media tool call names Sonarr series 191 or TMDB 89557", "the reply names the Chef Show"])
   })
 })
@@ -107,7 +110,7 @@ function fakeHost(opts: { sessions?: Record<string, unknown>; replies?: (req: { 
 
 describe("runSuite orchestration", () => {
   it("opens the window, runs the chosen cases, closes the window and adds the Telegram check", async () => {
-    const trace = { events: [{ role: "assistant", toolCalls: [{ id: "1", function: { name: "media_search", arguments: "{\"id\":191}" } }] }, { role: "tool", toolCallId: "1", content: "ok" }] }
+    const trace = { events: [{ role: "assistant", toolCalls: [{ id: "1", function: { name: "media_search", arguments: "{\"seriesId\":191}" } }] }, { role: "tool", toolCallId: "1", content: "ok" }] }
     const { host, log } = fakeHost({ sessions: { "*": trace } })
     const suite = await gate.runSuite(host, { cases: ["chef-question"], windowMinutes: 12 })
     expect(log).toEqual(["open:12", "send:principal:false", "close"])
@@ -147,7 +150,7 @@ describe("runSuite orchestration", () => {
   })
 
   it("--plant makes only the named case fail, with a clear reason", async () => {
-    const trace = { events: [{ role: "assistant", toolCalls: [{ id: "1", function: { name: "media_search", arguments: "191" } }] }, { role: "tool", toolCallId: "1", content: "" }] }
+    const trace = { events: [{ role: "assistant", toolCalls: [{ id: "1", function: { name: "media_search", arguments: "{\"seriesId\":191}" } }] }, { role: "tool", toolCallId: "1", content: "" }] }
     const { host } = fakeHost({ sessions: { "*": trace } })
     const suite = await gate.runSuite(host, { cases: ["chef-question"], plant: "chef-question" })
     const chef = suite.results[0]
@@ -163,6 +166,28 @@ describe("runSuite orchestration", () => {
     expect(result.checks[0]).toMatchObject({ name: "readback ran", ok: false, detail: "bad" })
     const result2 = await gate.runCase(host, { id: "y", words: "w", sender: "principal", delegated: false, readback: () => { throw "plain" } })
     expect(result2.checks[0].detail).toBe("plain")
+  })
+
+  it("fails, rather than passes, a planted case that was skipped", async () => {
+    const { host } = fakeHost()
+    const result = await gate.runCase(host, gate.CASES.find((c: { id: string }) => c.id === "stall-kept"), { plant: "stall-kept" })
+    expect(result.status).toBe("fail")
+    expect(result.reason).toMatch(/skipped/)
+    const unplanted = await gate.runCase(host, gate.CASES.find((c: { id: string }) => c.id === "stall-kept"))
+    expect(unplanted.status).toBe("skipped")
+  })
+
+  it("fails the stall case when the Sonarr queue cannot be read", async () => {
+    const { host } = fakeHost({ observations: [empty({ queue: null }), empty({ queue: null })] })
+    const result = await gate.runCase(host, gate.CASES.find((c: { id: string }) => c.id === "stall-kept"))
+    expect(result.status).toBe("fail")
+  })
+
+  it("fails the no-telegram check when the effects directory could not be read", async () => {
+    const { host } = fakeHost({ observations: [empty(), empty({ effectsReadable: false })] })
+    const suite = await gate.runSuite(host, { cases: ["stall-kept"] })
+    expect(suite.results.at(-1)).toMatchObject({ id: "no-telegram", status: "fail" })
+    expect(suite.results.at(-1).checks[0].detail).toMatch(/not readable/)
   })
 
   it("keeps only sink lines written during the case", async () => {
@@ -240,6 +265,13 @@ describe("provision and the real host", () => {
     expect(JSON.parse(fs.readFileSync(path.join(bundle, "state/replay-client/provision.json"), "utf8")).cardUrl).toBe("http://card/x")
   })
 
+  it("forces the replay directory to 0755 even if a looser one already exists", () => {
+    fs.mkdirSync(path.join(bundle, "state/replay"), { recursive: true, mode: 0o777 })
+    fs.chmodSync(path.join(bundle, "state/replay"), 0o777)
+    gate.provision({ bundle, cardUrl: "c", log: () => undefined, run: fakeCli().run, ...uid() })
+    expect(fs.statSync(path.join(bundle, "state/replay")).mode & 0o777).toBe(0o755)
+  })
+
   it("discovers the card url when none is given and refuses a stranger that holds a grant", () => {
     const { run } = fakeCli()
     const out = gate.provision({ bundle, log: () => undefined, run, discover: () => "http://found/card", ...uid() })
@@ -286,6 +318,7 @@ describe("provision and the real host", () => {
     fs.writeFileSync(path.join(bundle, "state/sessions/dir1/a2a/ctx-1.json"), JSON.stringify({ events: [] }))
     const observed = await host.observe()
     expect(observed).toMatchObject({ ledgerLines: 2, queue: null, awaiting: [{ name: "live.md", status: "pending" }], done: [{ name: "gone.md", status: "resolved" }, { name: "nostatus.md", status: "pending" }], effects: [{ idempotencyKey: "owner-notice:x" }] })
+    expect(observed.effectsReadable).toBe(true)
     expect(observed.containers).toEqual({ "ouro-butler": true, "calibre-web": true })
     expect(observed.stewardSha).toMatch(/^[0-9a-f]{64}$/)
     expect(observed.sink).toEqual([{ noticeId: "n", friendId: "friend-1", at: "x" }])
@@ -294,6 +327,8 @@ describe("provision and the real host", () => {
     expect(sent).toEqual(expect.arrayContaining(["--to", "http://card", "--context", "c9", "--delegated", "--json", "--identity-file", "/home/ouro/AgentBundles/sanctuary.ouro/state/replay-client/stranger.json"]))
     expect(await host.readSession("ctx-1")).toEqual({ events: [] })
     expect(await host.readSession("missing")).toBeNull()
+    fs.rmSync(path.join(bundle, "state/telegram/effects"), { recursive: true })
+    expect((await host.observe()).effectsReadable).toBe(false)
     fs.rmSync(path.join(bundle, "state/policy/steward.json"))
     fs.rmSync(path.join(bundle, "books/ledger.ndjson"))
     expect(await host.observe()).toMatchObject({ stewardSha: null, ledgerLines: 0 })
@@ -340,7 +375,7 @@ describe("cli", () => {
   })
 
   it("run prints one line per case plus a summary and exits by verdict", async () => {
-    const trace = { events: [{ role: "assistant", toolCalls: [{ id: "1", function: { name: "media_search", arguments: "191" } }] }, { role: "tool", toolCallId: "1", content: "" }] }
+    const trace = { events: [{ role: "assistant", toolCalls: [{ id: "1", function: { name: "media_search", arguments: "{\"seriesId\":191}" } }] }, { role: "tool", toolCallId: "1", content: "" }] }
     const a = io()
     const makeHost = () => fakeHost({ sessions: { "*": trace } }).host
     expect(await gate.main(["run", "--cases", "chef-question"], a.io, { makeHost, provision: () => undefined })).toBe(0)

@@ -1,7 +1,9 @@
-import * as fs from "fs"
+import * as fs from "node:fs"
 import * as os from "os"
 import * as path from "path"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
+
+vi.mock("node:fs", async (original) => ({ ...await original<typeof fs>() }))
 
 const mockEmitNervesEvent = vi.fn()
 vi.mock("../../../nerves/runtime", () => ({ emitNervesEvent: (...args: any[]) => mockEmitNervesEvent(...args) }))
@@ -57,10 +59,27 @@ describe("A2A await owner delivery", () => {
   })
 
   describe("replay window", () => {
-    const openWindow = () => {
-      fs.mkdirSync(path.dirname(replayWindowPath(agentRoot)), { recursive: true })
+    const openWindow = (uid = 0) => {
+      const dir = path.dirname(replayWindowPath(agentRoot))
+      fs.mkdirSync(dir, { recursive: true })
       fs.writeFileSync(replayWindowPath(agentRoot), JSON.stringify({ friends: { peer: { expiresAt: new Date(Date.now() + 600_000).toISOString() } } }))
+      fs.chmodSync(dir, 0o755)
+      fs.chmodSync(replayWindowPath(agentRoot), 0o644)
+      const lstat = fs.lstatSync
+      vi.spyOn(fs, "lstatSync").mockImplementation(((file: fs.PathLike, options?: unknown) => {
+        const stat = (lstat as (f: fs.PathLike, o?: unknown) => fs.Stats)(file, options)
+        return String(file).startsWith(dir) ? Object.assign(Object.create(Object.getPrototypeOf(stat)), stat, { uid }) : stat
+      }) as typeof fs.lstatSync)
     }
+    afterEach(() => vi.restoreAllMocks())
+
+    it("ignores a window in a Butler-owned replay directory", async () => {
+      openWindow(10001)
+      const notify = vi.fn(async () => undefined)
+      await createA2AAwaitOwnerDeliverer("sanctuary", notify)(request)
+      expect(notify).toHaveBeenCalled()
+      expect(fs.existsSync(replaySinkPath(agentRoot))).toBe(false)
+    })
 
     it("writes the follow-up to the sink instead of the owner's chat while the filing peer's window is open", async () => {
       openWindow()

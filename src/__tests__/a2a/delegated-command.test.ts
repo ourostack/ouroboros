@@ -4,7 +4,7 @@
 import { createHash } from "node:crypto"
 import * as fs from "node:fs"
 import * as path from "node:path"
-import { afterEach, beforeAll, describe, expect, it } from "vitest"
+import { afterEach, beforeAll, describe, expect, it, vi } from "vitest"
 import { didKeyIdentityFromEd25519, ready, type DidKeyIdentity, type Sodium } from "@ouro.bot/friends/a2a-client"
 import { FileFriendStore, upsertAgentPeer, type FriendRecord } from "@ouro.bot/friends"
 import { createTmpBundle, type TmpBundleHandle } from "../test-helpers/tmpdir-bundle"
@@ -16,6 +16,8 @@ import { replaySinkPath, replayWindowPath } from "../../a2a/replay-harness"
 import { loadRelationshipCapabilityRegistry } from "../../repertoire/relationship-authorization"
 import { stewardPolicyToolDefinition } from "../../repertoire/tools-steward-policy"
 import { readStewardPolicy } from "../../heart/steward-policy"
+
+vi.mock("node:fs", async (original) => ({ ...await original<typeof fs>() }))
 
 let sodium: Sodium
 let tmp: TmpBundleHandle | null = null
@@ -136,6 +138,16 @@ describe("delegated principal commands over sealed A2A chat", () => {
   })
 })
 
+/** The tests are not root: report the replay directory and window as root-owned unless a test says otherwise. */
+function rootOwns(replayDir: string, uid = 0): void {
+  vi.restoreAllMocks()
+  const lstat = fs.lstatSync
+  vi.spyOn(fs, "lstatSync").mockImplementation(((file: fs.PathLike, options?: unknown) => {
+    const stat = (lstat as (f: fs.PathLike, o?: unknown) => fs.Stats)(file, options)
+    return String(file).startsWith(replayDir) ? Object.assign(Object.create(Object.getPrototypeOf(stat)), stat, { uid }) : stat
+  }) as typeof fs.lstatSync)
+}
+
 describe("admitDelegatedCommand", () => {
   it("refuses when the delegate is itself the principal, and when the registry is missing at the server", async () => {
     tmp = createTmpBundle({ agentName: `delegated-self-${Date.now()}` })
@@ -208,6 +220,9 @@ describe("admitDelegatedCommand", () => {
       if (window !== undefined) {
         fs.mkdirSync(path.dirname(replayWindowPath(tmp.agentRoot)), { recursive: true })
         fs.writeFileSync(replayWindowPath(tmp.agentRoot), JSON.stringify(window))
+        fs.chmodSync(path.dirname(replayWindowPath(tmp.agentRoot)), 0o755)
+        fs.chmodSync(replayWindowPath(tmp.agentRoot), 0o644)
+        rootOwns(path.dirname(replayWindowPath(tmp.agentRoot)))
       }
       const telegram: string[] = []
       const admit = (friendOverrides: Partial<FriendRecord> = {}) => admitDelegatedCommand({
@@ -224,8 +239,8 @@ describe("admitDelegatedCommand", () => {
       expect((await admit()).ok).toBe(true)
       expect(telegram).toEqual([])
       expect(fs.readFileSync(replaySinkPath(agentRoot), "utf8")).toContain('"noticeId":"delegated:cmd-r1"')
-      expect(delegatedCommandWasNoticed(agentRoot, "cmd-r1", "owner-ari")).toBe(true)
-      expect(delegatedCommandWasNoticed(agentRoot, "cmd-other", "owner-ari")).toBe(false)
+      expect(delegatedCommandWasNoticed(agentRoot, "cmd-r1", "owner-ari", "replay-principal")).toBe(true)
+      expect(delegatedCommandWasNoticed(agentRoot, "cmd-other", "owner-ari", "replay-principal")).toBe(false)
     })
 
     it.each([["absent", undefined], ["expired", { friends: { "replay-principal": { expiresAt: "2020-01-01T00:00:00.000Z" } } }], ["another friend", { friends: { someone: open.friends["replay-principal"] } }]])("uses Telegram when the window is %s", async (_n, window) => {
@@ -233,6 +248,28 @@ describe("admitDelegatedCommand", () => {
       expect((await admit()).ok).toBe(true)
       expect(telegram).toEqual(["delegated:cmd-r1"])
       expect(fs.existsSync(replaySinkPath(agentRoot))).toBe(false)
+    })
+
+    it("treats a Butler-owned replay directory as closed and sends the notice to Telegram", async () => {
+      const { admit, telegram, agentRoot } = await replaySetup(open)
+      rootOwns(path.dirname(replayWindowPath(agentRoot)), 10001)
+      expect((await admit()).ok).toBe(true)
+      expect(telegram).toEqual(["delegated:cmd-r1"])
+      expect(fs.existsSync(replaySinkPath(agentRoot))).toBe(false)
+    })
+
+    it("does not accept a forged sink line for a friend outside a trusted window", async () => {
+      const { agentRoot } = await replaySetup({ friends: { someone: open.friends["replay-principal"] } })
+      fs.writeFileSync(replaySinkPath(agentRoot), `${JSON.stringify({ noticeId: "delegated:cmd-f", friendId: "peer-x", at: "x" })}\n`)
+      expect(delegatedCommandWasNoticed(agentRoot, "cmd-f", "owner-ari", "peer-x")).toBe(false)
+      expect(delegatedCommandWasNoticed(agentRoot, "cmd-f", "owner-ari")).toBe(false)
+    })
+
+    it("does not accept a sink line written for a different friend than the command's", async () => {
+      const { admit, agentRoot } = await replaySetup(open)
+      await admit()
+      expect(delegatedCommandWasNoticed(agentRoot, "cmd-r1", "owner-ari", "replay-principal")).toBe(true)
+      expect(delegatedCommandWasNoticed(agentRoot, "cmd-r1", "owner-ari", "someone")).toBe(false)
     })
 
     it("refuses with notice_failed when the sink cannot be written", async () => {

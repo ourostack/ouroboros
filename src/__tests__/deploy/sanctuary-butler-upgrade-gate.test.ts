@@ -67,6 +67,33 @@ describe("completeGatedUpgrade", () => {
   })
 })
 
+describe("heldUpgradeProblem", () => {
+  it("is empty only while the journal exists and the new image is live", () => {
+    expect(upgrade.heldUpgradeProblem({ journalExists: true, liveImage: "img:865", expectedImage: "img:865" })).toBeNull()
+    expect(upgrade.heldUpgradeProblem({ journalExists: false, liveImage: "img:865", expectedImage: "img:865" })).toMatch(/journal is gone/)
+    expect(upgrade.heldUpgradeProblem({ journalExists: true, liveImage: "img:864", expectedImage: "img:865" })).toMatch(/img:864.*img:865/)
+  })
+})
+
+describe("runReplayGate", () => {
+  const spawned: Array<{ file: string; args: string[]; options: Record<string, unknown> }> = []
+  const spawn = (status: number | null, signal: string | null = null) => (file: string, args: string[], options: Record<string, unknown>) => { spawned.push({ file, args, options }); return { status, signal } }
+
+  it("runs the live package's gate with an overall timeout and passes --plant through", () => {
+    spawned.length = 0
+    expect(upgrade.runReplayGate("chef-question", { spawn: spawn(0), exists: () => true })).toEqual({ ok: true })
+    expect(spawned[0]!.args.slice(1)).toEqual(["run", "--plant", "chef-question"])
+    expect(spawned[0]!.options).toMatchObject({ stdio: "inherit", timeout: upgrade.GATE_TIMEOUT_MS, killSignal: "SIGKILL" })
+    expect(upgrade.GATE_TIMEOUT_MS).toBeGreaterThan(20 * 60 * 1000)
+  })
+
+  it("fails on a non-zero exit, a timeout kill, or a missing gate", () => {
+    expect(upgrade.runReplayGate(undefined, { spawn: spawn(1), exists: () => true })).toMatchObject({ ok: false, detail: expect.stringContaining("exited 1") })
+    expect(upgrade.runReplayGate(undefined, { spawn: spawn(null, "SIGKILL"), exists: () => true })).toMatchObject({ ok: false, detail: expect.stringContaining("SIGKILL") })
+    expect(upgrade.runReplayGate(undefined, { spawn: spawn(0), exists: () => false })).toMatchObject({ ok: false, detail: expect.stringContaining("missing") })
+  })
+})
+
 describe("parseUpgradeArgs", () => {
   it("accepts the documented forms", () => {
     expect(upgrade.parseUpgradeArgs(["upgrade", "0.1.0-alpha.865"])).toMatchObject({ phase: "upgrade", version: "0.1.0-alpha.865", noGate: false, plant: undefined, rehearse: undefined })
@@ -115,6 +142,12 @@ describe("upgrade script contract", () => {
   it("runs the live package's gate and passes --plant through", () => {
     expect(source).toContain("const GATE_SCRIPT = `${ROOT}/package/deploy/unraid/sanctuary-replay-gate.mjs`")
     expect(source).toContain('[GATE_SCRIPT, "run", ...(plant ? ["--plant", plant] : [])]')
+    const body = source.slice(source.indexOf("function upgrade(version, rehearse"))
+    // the held upgrade must still be the live one right before the gate may commit it, and again inside commit
+    expect(body).toContain("const stillHeld = () => heldUpgradeProblem(")
+    expect(body).toContain("expectedImage: image(version)")
+    expect(body.slice(body.indexOf("runGate: () => {"), body.indexOf("commit: () => {"))).toContain("stillHeld()")
+    expect(body.slice(body.indexOf("commit: () => {"), body.indexOf("rollback: () => {"))).toContain("stillHeld()")
   })
 
   it("does nothing when imported, and the gate it calls ships in the same directory", () => {

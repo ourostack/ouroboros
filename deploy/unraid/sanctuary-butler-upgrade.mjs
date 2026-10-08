@@ -73,6 +73,8 @@ const MAINTENANCE = "/run/ouro-authority-maintenance"
 const SHUTDOWN_FLAG = "/run/ouro-authority-shutdown"
 const GATE_SCRIPT = `${ROOT}/package/deploy/unraid/sanctuary-replay-gate.mjs`
 const GATE_PROVISION = `${BUNDLE}/state/replay-client/provision.json`
+// The whole gate (every case, including the six-minute await wait) must finish well inside this; a hung gate is a failed gate.
+export const GATE_TIMEOUT_MS = 45 * 60 * 1000
 const UPGRADE_STEPS = ["stop", "switch", "resident", "migrate", "start"]
 
 const sh = (file, args, opts = {}) => execFileSync(file, args, { encoding: "utf8", maxBuffer: 64 << 20, ...opts })
@@ -878,10 +880,20 @@ export function completeGatedUpgrade({ runGate, commit, rollback, confirmRollbac
   return { passed: false, rolledBackTo: restored }
 }
 
-function runReplayGate(plant) {
-  if (!existsSync(GATE_SCRIPT)) return { ok: false, detail: `the replay gate is missing from the live package (${GATE_SCRIPT})` }
-  const result = spawnSync("/usr/local/bin/node", [GATE_SCRIPT, "run", ...(plant ? ["--plant", plant] : [])], { stdio: "inherit" })
+export function runReplayGate(plant, { spawn = spawnSync, exists = existsSync } = {}) {
+  if (!exists(GATE_SCRIPT)) return { ok: false, detail: `the replay gate is missing from the live package (${GATE_SCRIPT})` }
+  const result = spawn("/usr/local/bin/node", [GATE_SCRIPT, "run", ...(plant ? ["--plant", plant] : [])], { stdio: "inherit", timeout: GATE_TIMEOUT_MS, killSignal: "SIGKILL" })
   return result.status === 0 ? { ok: true } : { ok: false, detail: `the replay gate exited ${result.status ?? result.signal}` }
+}
+
+/**
+ * The commit step runs the lifecycle's `upgrade` again, which would START A FRESH UNGATED UPGRADE if the keeper had
+ * rolled the held one back mid-gate. So commit only while the journal still exists and the new image is still live.
+ */
+export function heldUpgradeProblem({ journalExists, liveImage, expectedImage }) {
+  if (!journalExists) return "the held upgrade's journal is gone (the keeper or a boot rolled it back mid-gate)"
+  if (liveImage !== expectedImage) return `the live Butler is ${liveImage}, not the held ${expectedImage}`
+  return null
 }
 
 function butlerState() {
@@ -954,13 +966,19 @@ function upgrade(version, rehearse, { noGate = false, plant } = {}) {
   if (failure && !planned) fail("upgrade rolled back; the Butler is on its prior version (see above)")
   if (gated && !failure) {
     say(`replay gate${plant ? ` (planted failure: ${plant})` : ""}`)
+    const stillHeld = () => heldUpgradeProblem({ journalExists: existsSync(UPGRADE_JOURNAL), liveImage: butlerState().split(" ")[0], expectedImage: image(version) })
     const outcome = completeGatedUpgrade({
       runGate: () => {
         if (preserved.length) return { ok: false, detail: preserved.join("; ") }
         if (!waitForButler(image(version), 300)) return { ok: false, detail: `the new Butler did not become healthy on ${image(version)}` }
-        return runReplayGate(plant)
+        const result = runReplayGate(plant)
+        if (!result.ok) return result
+        const problem = stillHeld()
+        return problem ? { ok: false, detail: problem } : result
       },
       commit: () => {
+        const problem = stillHeld()
+        if (problem) throw new Error(`refusing to commit: ${problem}`)
         pauseSupervision()
         try { ok(`commit: ${sh("/usr/local/bin/node", [lifecycle, "upgrade", id, image(version)], { stdio: ["ignore", "pipe", "pipe"] }).trim()}`) }
         finally { resumeSupervision() }

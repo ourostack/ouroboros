@@ -198,7 +198,7 @@ async function resolveA2APrincipal(agentRoot: string, store: FileFriendStore, pe
     && candidate.trustLevel === "family" && candidate.admissionState === "active")
   if (owners.length !== 1 || owners[0]!.id === peer.id) throw new StaleRelationshipAwaitError("delegating owner cannot be resolved")
   const owner = owners[0]!
-  if (!delegatedCommandWasNoticed(agentRoot, requestId, owner.id)) throw new StaleRelationshipAwaitError("request was not a delegated command the owner was notified of")
+  if (!delegatedCommandWasNoticed(agentRoot, requestId, owner.id, peer.id)) throw new StaleRelationshipAwaitError("request was not a delegated command the owner was notified of")
   return owner
 }
 

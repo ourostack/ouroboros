@@ -12,7 +12,7 @@
 // here, as root, into a root-owned directory the Butler process cannot modify; it expires on its own.
 import { execFileSync } from "node:child_process"
 import { createHash, randomUUID } from "node:crypto"
-import { chownSync, existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs"
+import { chmodSync, chownSync, existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs"
 import path from "node:path"
 import { fileURLToPath } from "node:url"
 
@@ -51,8 +51,9 @@ const isDelegatedNotice = (line) => String(line.noticeId).startsWith("delegated:
 export function upDownClaim(text) {
   const t = String(text ?? "")
   const negated = /\b(not|isn't|aren't|no longer)\s+(up|running|online|available|on)\b/gi
-  const down = /\b(down|offline|stopped)\b/i.test(t) || negated.test(t)
-  const up = /\b(up|running|online|is on|available)\b/i.test(t.replace(negated, " "))
+  const negatedDown = /\b(not|isn't|aren't|no longer)\s+(down|offline|stopped)\b/gi
+  const down = /\b(down|offline|stopped)\b/i.test(t.replace(negatedDown, " ")) || negated.test(t)
+  const up = /\b(up|running|online|is on|available)\b/i.test(t.replace(negated, " ")) || negatedDown.test(t)
   if (up && !down) return "up"
   if (down && !up) return "down"
   return null
@@ -86,7 +87,7 @@ export const CASES = [
     sender: "principal",
     delegated: false,
     readback: ({ trace, reply }) => {
-      const media = trace.filter((call) => /^(media_|sanctuary_search_media_catalog)/.test(call.name) && /\b(191|89557)\b/.test(`${call.args} ${call.result}`))
+      const media = trace.filter((call) => /^(media_|sanctuary_search_media_catalog)/.test(call.name) && /\b(seriesId|tmdbId)\W{1,4}(191|89557)\b/i.test(`${call.args} ${call.result}`))
       return [
         check("a media tool call names Sonarr series 191 or TMDB 89557", media.length > 0, `${trace.length} tool calls`),
         check("the reply names the Chef Show", /chef show/i.test(reply ?? "")),
@@ -148,8 +149,9 @@ export const CASES = [
     words: "the Chef Show season 2 download looks stuck, what should we do?",
     sender: "principal",
     delegated: false,
+    // An unreadable queue is not "nothing stalled": the case runs and its readback fails.
     applicable: (before) => {
-      if (!Array.isArray(before.queue)) return "the Sonarr queue could not be read"
+      if (!Array.isArray(before.queue)) return null
       return before.queue.some(isStalledQueueItem) ? null : "no stalled item in the Sonarr queue"
     },
     readback: ({ trace, before, after }) => {
@@ -195,7 +197,11 @@ export async function runCase(host, testCase, { plant } = {}) {
   const startedAt = host.now()
   const before = await host.observe()
   const skipReason = testCase.applicable ? testCase.applicable(before) : null
-  if (skipReason) return { id: testCase.id, status: "skipped", reason: skipReason, checks: [] }
+  if (skipReason) {
+    // A planted failure on a case that never ran would pass vacuously and prove nothing about the rollback.
+    if (plant === testCase.id) return { id: testCase.id, status: "fail", reason: `planted case was skipped (${skipReason}); choose a case that runs`, checks: [check("planted case ran", false, skipReason)] }
+    return { id: testCase.id, status: "skipped", reason: skipReason, checks: [] }
+  }
   const context = randomUUID()
   const sent = await host.send({ who: testCase.sender, text: testCase.words, delegated: testCase.delegated, context })
   let after = await host.observe()
@@ -235,8 +241,11 @@ export async function runSuite(host, { cases = CASES.map((entry) => entry.id), p
     host.closeWindow()
   }
   const runEnd = host.now()
-  const leaks = telegramLeaks((await host.observe()).effects, runStart, runEnd)
-  const telegram = { id: "no-telegram", status: leaks.length === 0 ? "pass" : "fail", checks: [check("no owner-notice Telegram effect was recorded during the run", leaks.length === 0, leaks.map((leak) => leak.idempotencyKey).join(","))] }
+  const finalObservation = await host.observe()
+  const leaks = telegramLeaks(finalObservation.effects, runStart, runEnd)
+  const readable = finalObservation.effectsReadable === true
+  const clean = readable && leaks.length === 0
+  const telegram = { id: "no-telegram", status: clean ? "pass" : "fail", checks: [check("no owner-notice Telegram effect was recorded during the run", clean, readable ? leaks.map((leak) => leak.idempotencyKey).join(",") : "state/telegram/effects is not readable, so the absence of a leak cannot be shown")] }
   const all = [...results, telegram]
   const failed = all.filter((entry) => entry.status === "fail").map((entry) => entry.id)
   return { results: all, summary: { ok: failed.length === 0, passed: all.filter((entry) => entry.status === "pass").length, skipped: all.filter((entry) => entry.status === "skipped").length, failed } }
@@ -253,7 +262,7 @@ const sessionOf = (calls) => ({
 })
 
 function emptyObservation(overrides = {}) {
-  return { stewardSha: "aaa", ledgerLines: 3, queue: [], containers: { "calibre-web": true }, awaiting: [], done: [], effects: [], sink: [], ...overrides }
+  return { effectsReadable: true, stewardSha: "aaa", ledgerLines: 3, queue: [], containers: { "calibre-web": true }, awaiting: [], done: [], effects: [], sink: [], ...overrides }
 }
 
 /** Fixtures: for each case a passing and a failing outcome. Returns the list of problems (empty means the readbacks behave). */
@@ -387,6 +396,7 @@ export function makeHost({ bundle = DEFAULT_BUNDLE, cardUrl, log = console.error
       const containers = {}
       for (const name of exec("docker", ["ps", "--format", "{{.Names}}"]).split("\n").filter(Boolean)) containers[name] = true
       const effectsDir = path.join(state, "telegram", "effects")
+      const effectsReadable = existsSync(effectsDir)
       const effects = list(effectsDir).filter((name) => name.endsWith(".json")).flatMap((name) => {
         try { const record = readJson(path.join(effectsDir, name)); return [{ idempotencyKey: record.idempotencyKey, createdAt: record.createdAt }] } catch { return [] }
       })
@@ -398,6 +408,7 @@ export function makeHost({ bundle = DEFAULT_BUNDLE, cardUrl, log = console.error
         awaiting: awaitEntries(path.join(bundle, "awaiting")),
         done: awaitEntries(path.join(bundle, "awaiting", ".done")),
         effects,
+        effectsReadable,
         sink: readLines(path.join(replayDir, "notices.ndjson")).flatMap((line) => { try { return [JSON.parse(line)] } catch { return [] } }),
       }
     },
@@ -436,7 +447,7 @@ export function provision({ bundle = DEFAULT_BUNDLE, cardUrl, log = console.log,
   const clientDir = path.join(state, "replay-client")
   const owner = statSync(state)
   // The replay directory is root-owned so the Butler process cannot create or edit the window file; only the sink is its own.
-  mkdirSync(replayDir, { recursive: true, mode: 0o755 }); chownSync(replayDir, rootUid, rootGid)
+  mkdirSync(replayDir, { recursive: true, mode: 0o755 }); chownSync(replayDir, rootUid, rootGid); chmodSync(replayDir, 0o755)
   const sink = path.join(replayDir, "notices.ndjson")
   writeFileSync(sink, "", { flag: "a", mode: 0o600 }); chownSync(sink, owner.uid, owner.gid)
   mkdirSync(clientDir, { recursive: true, mode: 0o700 }); chownSync(clientDir, owner.uid, owner.gid)
