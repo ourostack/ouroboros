@@ -141,6 +141,13 @@ describe("replay harness window and sink", () => {
     expect(replayNoticeRecorded(root, "delegated:zzz", "p")).toBe(false)
   })
 
+  it("appends a notice id once per friend, so a retry adds nothing", () => {
+    appendReplayNotice(root, { noticeId: "n1", text: "hello", friendId: "p" }, NOW)
+    appendReplayNotice(root, { noticeId: "n1", text: "hello", friendId: "p" }, NOW)
+    appendReplayNotice(root, { noticeId: "n1", text: "hello", friendId: "q" }, NOW)
+    expect(fs.readFileSync(replaySinkPath(root), "utf8").trim().split("\n")).toHaveLength(2)
+  })
+
   it("reports no recorded notice for a missing sink and skips blank or malformed lines", () => {
     expect(replayNoticeRecorded(root, "x", "p")).toBe(false)
     fs.mkdirSync(path.dirname(replaySinkPath(root)), { recursive: true })

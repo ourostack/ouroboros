@@ -173,6 +173,21 @@ describe("deliverAwaitAlert", () => {
     )
   })
 
+  it("lets the caller own the text and the delivery id, and marks a question for the owner", async () => {
+    mockDeliver.mockResolvedValue({ status: "delivered_now", detail: "ok" })
+    await deliverAwaitAlert({
+      awaitFile: makeAwaitFile({ filed_from_key: "key-1" }),
+      reason: "asked_owner",
+      observation: "ignored",
+      content: "Keep waiting?",
+      deliveryId: "custom-id",
+      agentRoot: "/nowhere",
+      agentName: "slugger",
+      deliveryDeps: { agentName: "slugger", queuePending: () => {} },
+    })
+    expect(mockDeliver).toHaveBeenCalledWith(expect.objectContaining({ content: "Keep waiting?", deliveryId: "custom-id", noticeKind: "asked_owner" }), expect.any(Object))
+  })
+
   it("delivers an expired alert with last_observation fallback", async () => {
     const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "await-deliver-"))
     cleanup.push(tmp)
@@ -339,8 +354,8 @@ describe("buildAwaitDeliveryDeps", () => {
 })
 
 describe("buildAlertContent asked_owner", () => {
-  it("says the owner was asked and carries the question", () => {
-    expect(buildAlertContent(makeAwaitFile(), "asked_owner", "Q?\n\n- a\n- b")).toContain("I have asked the owner how to proceed.\n\nQ?\n\n- a\n- b")
+  it("leads with the condition and carries the observation", () => {
+    expect(buildAlertContent(makeAwaitFile(), "asked_owner", "I asked")).toContain(" — I asked")
     expect(buildAlertContent(makeAwaitFile(), "asked_owner", null)).toMatch(/asked the owner how to proceed\.$/u)
   })
 })
