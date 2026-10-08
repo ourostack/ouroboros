@@ -151,7 +151,8 @@ export const CASES = [
       const claim = upDownClaim(reply)
       const actual = after.containers["calibre-web"] ? "up" : "down"
       return [
-        check("the container list tool was used", callsNamed(trace, /^unraid_list_containers$/).length > 0),
+        // Either live check counts: the container list, or the service probe of the Books URL. An answer from memory does not.
+        check("a live status tool was used", callsNamed(trace, /^unraid_(list_containers|check_services)$/).length > 0),
         check("the reply's up/down claim matches docker ps", claim === actual, `claimed ${claim}, docker says ${actual}`),
       ]
     },
