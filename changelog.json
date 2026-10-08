@@ -2,6 +2,14 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.868",
+      "changes": [
+        "Replay gate: state/replay stays root-owned across the lifecycle's recursive ownership restore (it was handed to the Butler, so the window failed closed and a real owner notice reached Telegram), a window file or directory left there is removed only after ownership is restored, and the gate asks the Butler's own code, run as the Butler's uid, whether it trusts the window before sending anything, aborting as failed if not.",
+        "Replay gate readbacks match the live tools: the Chef Show check accepts service_id and reads everything the Butler said, the books check accepts library lookups and fails on books deliver as well as --deliver, the await case now runs as a delegated principal command (an await from a plain A2A chat has no request id and is cancelled as legacy), and a stalled download is recognised by shape (partial, no ETA, at least 6 hours old) as well as by Sonarr flags.",
+        "The Butler's lore now tells every conversation, A2A peers included, to look a book up with the books tool (books search, books library find) before a web search, to fetch with books get, and never to deliver unless Ari asks; a replay peer asked to find a book without sending it had used only a web search."
+      ]
+    },
+    {
       "version": "0.1.0-alpha.867",
       "changes": [
         "Butler awaits can now ask the owner to decide: resolve_await accepts verdict ask_owner with a plain-words question and 2 to 4 choices, which closes the await as asked_owner (once per await instance, at most 3 per requester per day) and sends the question to the owner's own Telegram chat as the Butler, instead of an await tick repeating verdict no forever on a confirmed dead download.",
