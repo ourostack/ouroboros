@@ -20,6 +20,8 @@ import { isMissionResultDataPart, receiveInboundMissionResult } from "./mission-
 import { delegationStoresFor } from "./delegation-stores"
 import { FileA2ATaskStore } from "./task-store"
 import { admitDelegatedCommand, DELEGATED_BANNER, type A2ADelegationOptions, type DelegatedCommandContext } from "./delegated-command"
+import { handleOutboxCommand, isOutboxMethod, parseOutboxCommand, OUTBOX_ERROR_INVALID, OUTBOX_ERROR_REFUSED } from "./outbox-wire"
+import { confirmResolvedReports, type ConfirmDeps } from "../heart/failure-reports"
 import type { A2AJsonRpcRequest, A2AJsonRpcResponse, A2AMessage, A2ATask } from "./types"
 
 const MAX_A2A_REQUEST_BYTES = 128 * 1024
@@ -60,7 +62,11 @@ export interface StartA2AServerOptions {
   identity?: A2AIdentity
   /** Enables delegated principal commands. Absent: every delegated marker is refused. */
   delegation?: A2ADelegationOptions
+  /** Enables telling the owner when a resolved failure report's fix is live. Absent: reports can be resolved but never confirmed. */
+  escalation?: ConfirmDeps & { confirmIntervalMs?: number }
 }
+
+export const ESCALATION_CONFIRM_INTERVAL_MS = 5 * 60 * 1000
 
 export interface A2AServerHandle {
   server: http.Server
@@ -420,6 +426,18 @@ export async function startA2AServer(options: StartA2AServerOptions): Promise<A2
     }
   }
 
+  // Resolved failure reports are confirmed to the owner once the running version reaches the fix: now, after each
+  // resolution, and on a timer, so a fix that lands with a restart is announced without anyone calling again.
+  const confirmReports = async (): Promise<void> => {
+    if (!options.escalation) return
+    try {
+      await confirmResolvedReports(agentRoot, options.escalation)
+    } catch (error) {
+      emitNervesEvent({ level: "warn", component: "channels", event: "channel.a2a_escalation_confirm_error", message: "confirming resolved failure reports failed", meta: { agentName: options.agentName, error: error instanceof Error ? error.message : String(error) } })
+    }
+  }
+  let confirmTimer: NodeJS.Timeout | undefined
+
   let publicBaseUrl = options.baseUrl
   const server = http.createServer(async (req, res) => {
     /* v8 ignore next -- Node always supplies url/host for accepted HTTP requests; fallback keeps malformed local calls safe @preserve */
@@ -456,6 +474,48 @@ export async function startA2AServer(options: StartA2AServerOptions): Promise<A2
     }
 
     try {
+      if (isOutboxMethod(rpc.method)) {
+        // Peer outbox methods: signed and sealed like a chat, access decided here from the verified friend record.
+        const outboxInbound = messageFromParams(rpc.params)
+        if (!outboxInbound || !inboundShareDeps) {
+          writeJson(res, 200, errorResponse(rpc.id, OUTBOX_ERROR_REFUSED, "outbox calls need a signed message and an A2A identity"))
+          return
+        }
+        const bridged = await receiveInboundShare({ ...outboxInbound, kind: outboxInbound.kind ?? "message" }, inboundShareDeps)
+        if (bridged.outcome === "rejected") {
+          writeJson(res, 200, errorResponse(rpc.id, rejectionErrorCode(bridged.reason), `A2A outbox call rejected: ${bridged.reason}`))
+          return
+        }
+        if (bridged.outcome !== "completed" || !bridged.message) {
+          writeJson(res, 200, errorResponse(rpc.id, OUTBOX_ERROR_REFUSED, "outbox calls must be a signed chat message"))
+          return
+        }
+        const command = parseOutboxCommand(bridged.message.text)
+        if (!command || command.method !== rpc.method) {
+          writeJson(res, 200, errorResponse(rpc.id, OUTBOX_ERROR_INVALID, "the signed method does not match the requested method"))
+          return
+        }
+        const outcome = handleOutboxCommand({ agentRoot, friend: bridged.friend, method: command.method, params: command.params })
+        if (!outcome.ok) {
+          writeJson(res, 200, errorResponse(rpc.id, outcome.code, outcome.message))
+          return
+        }
+        if (command.method === "report/resolve") await confirmReports()
+        /* v8 ignore next -- receiveShare pins the verified sender before it reports a completed message @preserve */
+        const outboxPinned = inboundShareDeps.pinStore.get(bridged.verifiedDid)!
+        const contextId = outboxInbound.contextId ?? "default"
+        const reply = sealChatMessage({
+          sodium: inboundShareDeps.sodium,
+          from: options.identity!,
+          recipientDid: bridged.verifiedDid,
+          recipientEd25519Pub: outboxPinned.ed25519Pub,
+          text: JSON.stringify(outcome.result),
+          conversationId: contextId,
+        })
+        writeJson(res, 200, jsonResponse(rpc.id, { kind: "message", role: "ROLE_AGENT", messageId: randomUUID(), contextId, parts: reply.parts }))
+        return
+      }
+
       if (rpc.method === "SendMessage" || rpc.method === "message/send") {
         const responseStyle: A2AResponseStyle = rpc.method === "message/send" ? "legacy" : "latest"
         const parsedInbound = messageFromParams(rpc.params)
@@ -700,6 +760,12 @@ export async function startA2AServer(options: StartA2AServerOptions): Promise<A2
   endpointUrl.search = ""
   endpointUrl.hash = ""
 
+  if (options.escalation) {
+    await confirmReports()
+    confirmTimer = setInterval(() => { void confirmReports() }, options.escalation.confirmIntervalMs ?? ESCALATION_CONFIRM_INTERVAL_MS)
+    confirmTimer.unref()
+  }
+
   emitNervesEvent({
     component: "channels",
     event: "channel.a2a_server_started",
@@ -712,6 +778,7 @@ export async function startA2AServer(options: StartA2AServerOptions): Promise<A2
     url: publicBaseUrl,
     endpointUrl: endpointUrl.toString(),
     close: () => new Promise<void>((resolve, reject) => {
+      if (confirmTimer) clearInterval(confirmTimer)
       server.close((error) => {
         if (error) {
           reject(error)
