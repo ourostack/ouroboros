@@ -14,10 +14,13 @@ import type { CrossChatDeliveryRequest, CrossChatDirectDeliveryResult } from "..
  *
  * An await filed in a plain A2A conversation (no request id) was not delegated by the owner, so the owner hears nothing
  * and the outcome goes to the peer instead: into its own outbox, which it reads with `outbox/list`. A question that needs
- * the owner's decision is the exception, because only the owner can answer it: the peer is told it is pending and the
- * owner is asked as before.
+ * the owner's decision is the exception, because only the owner can answer it: the peer is told, in one fixed
+ * sentence that never repeats the question, that the owner was asked, and the owner is asked as before.
  */
 const NOTICE_ID_MAX_BYTES = 512
+
+/** The owner's question can carry anything the Butler read or wrote, so a plain peer is told only that the owner was asked. */
+export const PEER_ASKED_OWNER_TEXT = "I've asked my owner and will let you know."
 
 /** A question for the owner reads as the owner's own question, with a pointer to the request it is about; every other outcome is a follow-up report. */
 export function askedOwnerText(question: string, about: string): string {
@@ -42,7 +45,7 @@ export function createA2AAwaitOwnerDeliverer(agentName: string, notifyOwner: Not
       const peerAwait = !request.requestId
       if (peerAwait) {
         const body = request.noticeKind === "asked_owner"
-          ? `About your request: I need my owner to decide something before I can finish it, so I have asked them. ${request.content}`
+          ? PEER_ASKED_OWNER_TEXT
           : request.content
         new FileOutboxStore(agentRoot).appendOnce(request.friendId, request.deliveryId, { kind: "await_outcome", body, meta: { outcome: request.noticeKind ?? "follow_up" } })
         if (request.noticeKind !== "asked_owner") return { status: "delivered_now", detail: "posted to the peer's outbox" }

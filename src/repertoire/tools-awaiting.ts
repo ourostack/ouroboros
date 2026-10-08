@@ -167,13 +167,15 @@ function failedAskOwner(agentName: string, name: string, error: unknown): string
 /** At most this many ask_owner closures per requester in a rolling day, so one requester cannot make the Butler pester the owner. */
 const ASK_OWNER_DAILY_LIMIT = 3
 const ASK_OWNER_WINDOW_MS = 24 * 60 * 60 * 1000
+/** Across every requester who is not the owner, so many requesters together cannot flood the owner either. */
+const ASK_OWNER_NON_OWNER_DAILY_LIMIT = 6
 
 function askLedgerPath(agentRoot: string): string {
   return path.join(awaitingDir(agentRoot), ".asks.jsonl")
 }
 
 /** Every ask_owner closure is appended here, because the archive is overwritten when an await name is reused. */
-function recordAsk(agentRoot: string, entry: { filer: string | null; name: string; at: string; question?: string }): void {
+function recordAsk(agentRoot: string, entry: { filer: string | null; owner: boolean; name: string; at: string; question?: string }): void {
   fs.mkdirSync(awaitingDir(agentRoot), { recursive: true })
   fs.appendFileSync(askLedgerPath(agentRoot), `${JSON.stringify(entry)}\n`, "utf-8")
 }
@@ -205,7 +207,7 @@ export function readOwnerAskForAwait(agentRoot: string, name: string, createdAt:
   return found
 }
 
-function recentAskCount(agentRoot: string, filer: string | null, now: number): number {
+function recentAskCount(agentRoot: string, filer: string | null | undefined, now: number): number {
   let raw: string
   try {
     raw = fs.readFileSync(askLedgerPath(agentRoot), "utf-8")
@@ -214,8 +216,9 @@ function recentAskCount(agentRoot: string, filer: string | null, now: number): n
   }
   return raw.split("\n").filter((line) => {
     try {
-      const entry = JSON.parse(line) as { filer?: unknown; at?: unknown }
-      return (entry.filer ?? null) === filer && typeof entry.at === "string" && now - Date.parse(entry.at) < ASK_OWNER_WINDOW_MS
+      const entry = JSON.parse(line) as { filer?: unknown; owner?: unknown; at?: unknown }
+      const who = filer === undefined ? entry.owner === false : (entry.filer ?? null) === filer
+      return who && typeof entry.at === "string" && now - Date.parse(entry.at) < ASK_OWNER_WINDOW_MS
     } catch {
       return false
     }
@@ -261,6 +264,9 @@ async function askOwnerTool(name: string, observation: string, question: unknown
     if (!filer.isOwner && recentAskCount(agentRoot, filerId, Date.now()) >= ASK_OWNER_DAILY_LIMIT) {
       return JSON.stringify({ error: `ask_owner limit reached: this requester has already had my owner asked ${ASK_OWNER_DAILY_LIMIT} times in the last day; do not retry ask_owner, resolve with verdict 'no' with an observation and keep polling` })
     }
+    if (!filer.isOwner && recentAskCount(agentRoot, undefined, Date.now()) >= ASK_OWNER_NON_OWNER_DAILY_LIMIT) {
+      return JSON.stringify({ error: `ask_owner limit reached: my owner has already been asked ${ASK_OWNER_NON_OWNER_DAILY_LIMIT} times today on behalf of other requesters; do not retry ask_owner, resolve with verdict 'no' with an observation and keep polling` })
+    }
     const isA2A = existing.filed_from === "a2a"
     const noticeId = `await:${name}:asked_owner:${String(existing.created_at)}`
     const question = formatOwnerQuestion(parsed.question, parsed.choices)
@@ -304,7 +310,7 @@ async function askOwnerTool(name: string, observation: string, question: unknown
     })
     /* v8 ignore next -- defensive: archiveAwait only fails on the file-disappears-mid-call race already covered by v8 ignore inside archiveAwait @preserve */
     if (!archive.ok) return JSON.stringify({ error: archive.error })
-    recordAsk(agentRoot, { filer: filerId, name, at: askedAt, question: parsed.question })
+    recordAsk(agentRoot, { filer: filerId, owner: filer.isOwner, name, at: askedAt, question: parsed.question })
     if (!tellsFriend || delivered(friendNotice)) fulfillAwaitObligation(agentRoot, archive.file)
 
     emitNervesEvent({

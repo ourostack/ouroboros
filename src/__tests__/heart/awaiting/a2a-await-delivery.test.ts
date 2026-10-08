@@ -88,7 +88,8 @@ describe("A2A await owner delivery", () => {
       const notify = vi.fn(async () => undefined)
       await createA2AAwaitOwnerDeliverer("sanctuary", notify)({ ...plainRequest, content: "Keep waiting?", noticeKind: "asked_owner" })
       expect(notify).toHaveBeenCalledWith({ noticeId: "await:release:resolved", text: "Keep waiting?\n\n(about the request from Claude Code)" })
-      expect(new FileOutboxStore(agentRoot).list("peer").entries[0]).toMatchObject({ body: expect.stringContaining("I need my owner to decide"), meta: { outcome: "asked_owner" } })
+      expect(JSON.stringify(new FileOutboxStore(agentRoot).list("peer").entries)).not.toContain("Keep waiting")
+      expect(new FileOutboxStore(agentRoot).list("peer").entries[0]).toMatchObject({ body: "I've asked my owner and will let you know.", meta: { outcome: "asked_owner" } })
     })
 
     it("posts to the peer's outbox during a replay window too, and keeps the owner question in the sink", async () => {
