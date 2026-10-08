@@ -645,6 +645,9 @@ export function computeDownloadState(queueRecs, nowMs, previousFor = () => undef
       queue_id: r.id ?? null,
       ...c,
     }))
+  const slowItems = downloads
+    .filter((r) => isStalledRow(r, nowMs) && (r.sizeleft ?? 0) < (r.size ?? 0) && !classifyStall(r, nowMs, previousFor(r)))
+    .map((r) => ({ title: r.title ?? null, percent_complete: rowPercent(r), timeleft: r.timeleft ?? null, age_hours: Math.round((nowMs - Date.parse(r.added)) / 3_600_000) }))
   const stalledItems = classified.filter((i) => i.confirmed)
   const suspectedItems = classified.filter((i) => !i.confirmed)
   return {
@@ -659,6 +662,7 @@ export function computeDownloadState(queueRecs, nowMs, previousFor = () => undef
     stalled: stalledItems.length > 0,
     stalled_items: stalledItems,
     suspected_items: suspectedItems,
+    slow_items: slowItems,
   }
 }
 
@@ -675,6 +679,7 @@ export function diagnose({ shelf, result, chain, entity, kind }) {
   if (result.download.stalled) {
     const items = result.download.stalled_items
     const partials = items.filter((i) => i.kind !== "never_started")
+    const neverStarted = items.filter((i) => i.kind === "never_started")
     if (partials.length) {
       // A partial download holds progress that removing it loses, and the owner's standing
       // instruction for this case is to be asked, so nothing here acts on its own.
@@ -687,7 +692,8 @@ export function diagnose({ shelf, result, chain, entity, kind }) {
                choices: ["keep_waiting", "find_another_release", "give_up"],
                percent_complete: result.download.percent_complete,
                detail: items,
-               summary: `${facts.join(". ")}. Ask the owner whether to keep waiting, find another release, or give up; do not remove it on your own, because removing a partial download loses its progress. media_fill_missing can look for a seeded alternative without deleting the partial first; it removes the partial only after a seeded replacement is grabbed.` }
+               ...(neverStarted.length ? { never_started: { likely_fix: "blocklist_and_research", items: neverStarted } } : {}),
+               summary: `${facts.join(". ")}. Ask the owner whether to keep waiting, find another release, or give up; do not remove it on your own, because removing a partial download loses its progress.${neverStarted.length ? ` Separately, ${neverStarted.length} download(s) never started (${neverStarted.map((i) => i.title ?? "a release").join("; ")}); those can be blocklisted and searched again (blocklist_and_research) without asking.` : ""} media_fill_missing can look for a seeded alternative without deleting the partial first; it removes the partial only after a seeded replacement is grabbed.` }
     }
     const oldest = Math.max(...items.map((i) => i.age_hours))
     return { stuck_stage: "download", stuck_reason: "stalled_no_progress",
@@ -705,10 +711,11 @@ export function diagnose({ shelf, result, chain, entity, kind }) {
       ? `a ${result.download.active_items}-episode pack`
       : `${result.download.active_downloads} download(s)`
     const suspected = result.download.suspected_items ?? []
+    const slow = result.download.slow_items ?? []
     return { stuck_stage: null, stuck_reason: null, likely_fix: null, human_action_required: false,
              percent_complete: pct,
              ...(suspected.length ? { stall_suspected: true, detail: suspected } : {}),
-             summary: `Downloading now — ${what}${pct === null ? "" : `, ${pct}% done`}, about ${gb} GB to go.${suspected.length ? ` It reports no ETA after ${Math.max(...suspected.map((i) => i.age_hours))} hours, so it may be stalled; the next check 30 minutes or more later confirms it. Do not promise an ETA.` : ""}` }
+             summary: `Downloading now — ${what}${pct === null ? "" : `, ${pct}% done`}, about ${gb} GB to go.${slow.length ? ` Slow but still moving: ${slow.map((i) => `${i.title ?? "a release"} is ${i.percent_complete}% done after ${i.age_hours} hours with an ETA of ${i.timeleft}`).join("; ")}.` : ""}${suspected.length ? ` It reports no ETA after ${Math.max(...suspected.map((i) => i.age_hours))} hours, so it may be stalled; the next check 30 minutes or more later confirms it. Do not promise an ETA.` : ""}` }
   }
   if (result.download.errors.length) {
     return { stuck_stage: "download", stuck_reason: "download_client_error", likely_fix: "retry_or_replace_release",
@@ -756,6 +763,7 @@ async function mediaDiagnoseAndFix(a) {
   if (action === "ask_owner") {
     return { action, result: "owner_decision_needed", before, after: null, human_action_required: true,
              choices: before.diagnosis?.choices ?? ["keep_waiting", "find_another_release", "give_up"],
+             ...(before.diagnosis?.never_started ? { never_started: before.diagnosis.never_started } : {}),
              human_action_reason: before.diagnosis?.summary ?? "The owner decides." }
   }
   if (a.dry_run) {
@@ -1391,11 +1399,16 @@ function matchUnblocked(release, { seriesId, seriesTitle, seriesYear, wanted, ha
 // `confirmed` is false when the only sign is a missing ETA not yet seen to persist; such a
 // download is reported but never replaced.
 export function stallReason(row, nowMs, previous) {
-  if (isStalledRow(row, nowMs)) return { stall: (row.sizeleft ?? 0) >= (row.size ?? 0) ? "never_started" : "unfinished_for_days", confirmed: true }
   const left = row.sizeleft ?? 0
+  const noEta = row.timeleft === undefined || row.timeleft === null || row.timeleft === "00:00:00"
+  const unchangedFor30 = Boolean(previous && previous.sizeleft === left && nowMs - previous.at >= FILL_STALL_CONFIRM_MS)
+  if (isStalledRow(row, nowMs)) {
+    if (left >= (row.size ?? 0)) return { stall: "never_started", confirmed: true }
+    // Old and unfinished is not dead by age alone: a slow torrent with a real ETA is still moving.
+    return noEta || unchangedFor30 ? { stall: "unfinished_for_days", confirmed: true } : null
+  }
   const ageHours = row.added ? (nowMs - Date.parse(row.added)) / 3_600_000 : 0
   const moving = row.status === "downloading" || row.status === "warning"
-  const noEta = row.timeleft === undefined || row.timeleft === null || row.timeleft === "00:00:00"
   if (!(moving && left > 0 && noEta && ageHours >= STALL_AFTER_HOURS)) return null
   const unchanged = previous && previous.sizeleft === left && nowMs - previous.at >= FILL_STALL_CONFIRM_MS
   return { stall: "no_peers", confirmed: Boolean(unchanged) }

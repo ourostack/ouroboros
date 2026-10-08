@@ -112,10 +112,27 @@ describe("media MCP — one stall classification", () => {
     expect(dx.summary).toContain("27 hours")
   })
 
-  it("classifies a partial older than 72 hours as unfinished_for_days and still asks the owner", () => {
-    const { download, dx } = status([{ ...chef, added: "2026-10-01T00:00:00Z", timeleft: "03:00:00" }])
+  it("classifies an old partial with no ETA as unfinished_for_days and still asks the owner", () => {
+    const { download, dx } = status([{ ...chef, added: "2026-10-01T00:00:00Z" }])
     expect(download.stalled_items[0]).toMatchObject({ kind: "unfinished_for_days" })
     expect(dx.likely_fix).toBe("ask_owner")
+  })
+
+  it("calls a 73 hour partial with a real ETA slow but moving, not stalled", () => {
+    const { download, dx } = status([{ ...chef, added: "2026-10-05T01:00:00Z", timeleft: "03:00:00" }])
+    expect(download.stalled).toBe(false)
+    expect(download.slow_items[0]).toMatchObject({ percent_complete: 76, timeleft: "03:00:00" })
+    expect(dx).toMatchObject({ stuck_stage: null, human_action_required: false })
+    expect(dx.summary).toContain("Slow but still moving: The Chef Show [Season 2] (2020) [WEB-DL 1080p] is 76% done after 74 hours with an ETA of 03:00:00")
+    expect(dx.summary).not.toContain("no seeders")
+  })
+
+  it("keeps the blocklist advice for a never-started download beside an ask for a stalled partial", () => {
+    const dead = { id: 2, downloadId: "DEAD", status: "downloading", title: "Dead.Release", size: 2 * GB, sizeleft: 2 * GB, added: "2026-10-07T00:00:00Z", timeleft: "00:00:00" }
+    const { dx } = status([chef, dead], seen)
+    expect(dx).toMatchObject({ likely_fix: "ask_owner", human_action_required: true, never_started: { likely_fix: "blocklist_and_research", items: [{ title: "Dead.Release", kind: "never_started" }] } })
+    expect(dx.summary).toContain("Dead.Release")
+    expect(dx.summary).toContain("blocklist_and_research")
   })
 })
 
@@ -277,7 +294,7 @@ describe("media MCP — search_now and blocklist_stalled", () => {
     it("shows an item's torrent row with percent, timeleft and trackedDownloadState, and sends no write", async () => {
       queues.sonarr = [stalledRow(1, { size: 100, sizeleft: 24, status: "downloading", trackedDownloadState: "downloading", trackedDownloadStatus: "warning", timeleft: "02:10:00", protocol: "torrent", downloadClient: "Deluge", indexer: "idx", errorMessage: "slow".padEnd(500, "x"), added: hoursAgo(now, 24 * 36) }), stalledRow(3, { seriesId: 99 })]
       const out = await mod.mediaQueue({ kind: "series", title: "severance" })
-      expect(out).toMatchObject({ kind: "series", service_id: 7, title: "Severance", count: 1, summary: "1 queue row; 1 stalled." })
+      expect(out).toMatchObject({ kind: "series", service_id: 7, title: "Severance", count: 1, summary: "1 queue row; 0 stalled." })
       expect(out.queue[0]).toMatchObject({ queue_id: 1, status: "downloading", tracked_download_state: "downloading", tracked_download_status: "warning", percent: 76, timeleft: "02:10:00", protocol: "torrent", download_client: "Deluge" })
       expect(out.queue[0].error_message).toHaveLength(300)
       expect(out.note).toMatch(/seeders or peers/u)
@@ -1154,6 +1171,18 @@ describe("media MCP — media_fill_missing", () => {
     expect(out.in_flight.map((x: any) => x.state)).toEqual(["just_grabbed"])
   })
 
+  it("keeps a slow partial older than 72 hours that still has an ETA, even with a seeded alternative", async () => {
+    queue = [packRow(1, 14460, { timeleft: "05:00:00", added: "2026-10-01T00:00:00Z" })]
+    history = [14472, 14473, 14474, 14475, 14476].map((episodeId) => ({ episodeId, downloadId: "743E301E", date: "2026-10-01T00:00:00Z" }))
+    releases["seasonNumber=2"].push(rel("g-alt", "The Chef Show Season 2 2020 1080p NF WEB-DL", 12, { fullSeason: true, seasonNumber: 2 }))
+    for (const [i, at] of [now, now + 31 * 60_000].entries()) {
+      queue = [packRow(1, 14460, { timeleft: "05:00:00", added: "2026-10-01T00:00:00Z", sizeleft: 1426063360 - i * 1_000_000 })]
+      const out = await mod.mediaFillMissing({ service_id: 191 }, { nowMs: at })
+      expect(out.in_flight[0].state).not.toBe("stalled")
+      expect(posts()).toEqual([])
+    }
+  })
+
   it("trusts the grab history over a queue row's re-parsed episodes and does not search while a download moves", async () => {
     queue = [packRow(1, 14460, { timeleft: "02:00:00", added: "2026-10-05T07:00:00Z" })]
     history = [14472, 14473, 14474, 14475, 14476].map((episodeId) => ({ episodeId, downloadId: "743e301e", date: "2026-10-05T07:00:00Z" }))
@@ -1251,7 +1280,9 @@ describe("media MCP — media_fill_missing", () => {
     expect(mod.stallReason(row({ added: "2026-10-05T06:00:00Z" }), now)).toBeNull()
     expect(mod.stallReason(row({ status: "paused" }), now)).toBeNull()
     expect(mod.stallReason(row({ sizeleft: 100, timeleft: "01:00:00" }), now)).toEqual({ stall: "never_started", confirmed: true })
-    expect(mod.stallReason(row({ added: "2026-09-30T00:00:00Z", timeleft: "01:00:00" }), now)).toEqual({ stall: "unfinished_for_days", confirmed: true })
+    expect(mod.stallReason(row({ added: "2026-09-30T00:00:00Z", timeleft: "01:00:00" }), now)).toBeNull()
+    expect(mod.stallReason(row({ added: "2026-09-30T00:00:00Z", timeleft: "01:00:00" }), now, { sizeleft: 40, at: now - 31 * 60_000 })).toEqual({ stall: "unfinished_for_days", confirmed: true })
+    expect(mod.stallReason(row({ added: "2026-09-30T00:00:00Z" }), now)).toEqual({ stall: "unfinished_for_days", confirmed: true })
   })
 
   it("keeps the stalled download when the replacement grab fails, and still returns what it did", async () => {
