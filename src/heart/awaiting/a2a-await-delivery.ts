@@ -1,6 +1,7 @@
 import * as path from "path"
 import { FileFriendStore } from "@ouro.bot/friends"
 import { getAgentRoot } from "../identity"
+import { appendReplayNotice, isReplayWindowOpen } from "../../a2a/replay-harness"
 import { emitNervesEvent } from "../../nerves/runtime"
 import type { CrossChatDeliveryRequest, CrossChatDirectDeliveryResult } from "../cross-chat-delivery"
 
@@ -21,6 +22,11 @@ export function createA2AAwaitOwnerDeliverer(agentName: string, notifyOwner: Not
     }
     try {
       const peer = await new FileFriendStore(path.join(getAgentRoot(agentName), "friends")).get(request.friendId)
+      const agentRoot = getAgentRoot(agentName)
+      if (isReplayWindowOpen(agentRoot, request.friendId)) {
+        appendReplayNotice(agentRoot, { noticeId: request.deliveryId, text: request.content, friendId: request.friendId })
+        return { status: "delivered_now", detail: "written to the replay sink (replay window open for this peer)" }
+      }
       const from = peer?.name ?? "a connected agent"
       await notifyOwner({ noticeId: request.deliveryId, text: `Follow-up on a request from ${from}: ${request.content}` })
       return { status: "delivered_now", detail: "sent to the owner's Telegram chat as the agent" }
