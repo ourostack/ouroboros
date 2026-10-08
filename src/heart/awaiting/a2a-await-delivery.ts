@@ -13,6 +13,15 @@ import type { CrossChatDeliveryRequest, CrossChatDirectDeliveryResult } from "..
  */
 const NOTICE_ID_MAX_BYTES = 512
 
+/** A question for the owner reads as the owner's own question, with a pointer to the request it is about; every other outcome is a follow-up report. */
+export function askedOwnerText(question: string, about: string): string {
+  return `${question}\n\n(about the request from ${about})`
+}
+
+function ownerNoticeText(request: CrossChatDeliveryRequest, from: string): string {
+  return request.noticeKind === "asked_owner" ? askedOwnerText(request.content, from) : `Follow-up on a request from ${from}: ${request.content}`
+}
+
 export type NotifyOwner = (input: { noticeId: string; text: string }) => Promise<void>
 
 export function createA2AAwaitOwnerDeliverer(agentName: string, notifyOwner: NotifyOwner = defaultNotifyOwner(agentName)) {
@@ -23,12 +32,12 @@ export function createA2AAwaitOwnerDeliverer(agentName: string, notifyOwner: Not
     try {
       const peer = await new FileFriendStore(path.join(getAgentRoot(agentName), "friends")).get(request.friendId)
       const agentRoot = getAgentRoot(agentName)
+      const from = peer?.name ?? "a connected agent"
       if (isReplayWindowOpen(agentRoot, request.friendId)) {
-        appendReplayNotice(agentRoot, { noticeId: request.deliveryId, text: request.content, friendId: request.friendId })
+        appendReplayNotice(agentRoot, { noticeId: request.deliveryId, text: request.noticeKind === "asked_owner" ? ownerNoticeText(request, from) : request.content, friendId: request.friendId })
         return { status: "delivered_now", detail: "written to the replay sink (replay window open for this peer)" }
       }
-      const from = peer?.name ?? "a connected agent"
-      await notifyOwner({ noticeId: request.deliveryId, text: `Follow-up on a request from ${from}: ${request.content}` })
+      await notifyOwner({ noticeId: request.deliveryId, text: ownerNoticeText(request, from) })
       return { status: "delivered_now", detail: "sent to the owner's Telegram chat as the agent" }
     } catch (error) {
       emitNervesEvent({
@@ -43,7 +52,7 @@ export function createA2AAwaitOwnerDeliverer(agentName: string, notifyOwner: Not
   }
 }
 
-function defaultNotifyOwner(agentName: string): NotifyOwner {
+export function defaultNotifyOwner(agentName: string): NotifyOwner {
   return async (input) => {
     const { sendTelegramOwnerNotice } = await import("../../senses/telegram")
     await sendTelegramOwnerNotice(agentName, { ...input, signal: AbortSignal.timeout(30_000) })

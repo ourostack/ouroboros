@@ -35,6 +35,12 @@ describe("A2A await owner delivery", () => {
     expect(notify).toHaveBeenCalledWith({ noticeId: "await:release:resolved", text: "Follow-up on a request from Claude Code: release landed" })
   })
 
+  it("addresses the owner directly for a question, pointing at the request it is about", async () => {
+    const notify = vi.fn(async () => undefined)
+    await createA2AAwaitOwnerDeliverer("sanctuary", notify)({ ...request, content: "Keep waiting?\n\n- yes\n- no", noticeKind: "asked_owner" })
+    expect(notify).toHaveBeenCalledWith({ noticeId: "await:release:resolved", text: "Keep waiting?\n\n- yes\n- no\n\n(about the request from Claude Code)" })
+  })
+
   it("still tells the owner when the peer record is gone", async () => {
     const notify = vi.fn(async () => undefined)
     await createA2AAwaitOwnerDeliverer("sanctuary", notify)({ ...request, friendId: "gone" })

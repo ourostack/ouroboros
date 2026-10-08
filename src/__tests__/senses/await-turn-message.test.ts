@@ -22,6 +22,8 @@ describe("buildAwaitTurnMessage", () => {
     expect(result).not.toContain("\ncondition: HEY export download visible")
     expect(result).toContain("history: never checked")
     expect(result).toContain("call resolve_await")
+    expect(result.split("\n").filter((line) => line.includes("'yes'") && line.includes("'no'") && line.includes("'ask_owner'"))).toHaveLength(1)
+    expect(result).toContain("confirmed dead download")
   })
 
   it("includes the body when present (what would count as ready)", () => {
