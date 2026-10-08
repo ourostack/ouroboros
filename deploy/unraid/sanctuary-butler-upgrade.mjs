@@ -909,7 +909,31 @@ function waitForButler(imageRef, seconds) {
   return false
 }
 
-function upgrade(version, rehearse, { noGate = false, plant } = {}) {
+// The new gateway asks Telegram who it is (getMe) before it reports ready. When the host cannot reach
+// Telegram, that fails and the whole upgrade rolls back after host supervision was already paused
+// (the 863 -> 864 upgrade). Any HTTP answer from the API host proves the network path; no token is sent.
+export const TELEGRAM_API_URL = "https://api.telegram.org/"
+export async function telegramApiReachable({ fetchImpl = globalThis.fetch, sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms)), tries = 3, timeoutMs = 8000, retryDelayMs = 3000 } = {}) {
+  let detail = "no attempt made"
+  for (let attempt = 1; attempt <= tries; attempt += 1) {
+    try {
+      const response = await fetchImpl(TELEGRAM_API_URL, { method: "GET", signal: AbortSignal.timeout(timeoutMs) })
+      return { ok: true, detail: `HTTP ${response.status}` }
+    } catch (error) {
+      detail = error instanceof Error ? (error.cause instanceof Error ? `${error.message}: ${error.cause.message}` : error.message) : String(error)
+      if (attempt < tries) await sleep(retryDelayMs)
+    }
+  }
+  return { ok: false, detail: `${detail} (${tries} attempts)` }
+}
+
+// A resume or rollback (an upgrade journal exists) must never be blocked by a network probe.
+export async function checkTelegramBeforePause({ journalExists, probe = telegramApiReachable }) {
+  if (journalExists) return { skipped: true, ok: true, detail: "upgrade journal present" }
+  return { skipped: false, ...(await probe()) }
+}
+
+async function upgrade(version, rehearse, { noGate = false, plant } = {}) {
   say(`in-place upgrade to ${version}${rehearse ? ` — REHEARSAL: stop after "${rehearse}", then roll back` : ""}`)
   if (rehearse && !UPGRADE_STEPS.includes(rehearse)) fail(`--rehearse takes one of: ${UPGRADE_STEPS.join(", ")}`)
   const gated = !rehearse && !noGate
@@ -937,6 +961,10 @@ function upgrade(version, rehearse, { noGate = false, plant } = {}) {
   const priorImage = butlerState().split(" ")[0]
   const jellyfinBefore = docker(["inspect", "jellyfin", "--format", "{{.Id}}|{{.Image}}|{{.RestartCount}}|{{.State.StartedAt}}"]).trim()
   const policyBefore = existsSync(POLICY) ? sha12(POLICY) : fail("steward policy missing")
+  const telegram = await checkTelegramBeforePause({ journalExists: existsSync(UPGRADE_JOURNAL) })
+  if (!telegram.ok) fail(`api.telegram.org is not reachable from this host (${telegram.detail}); the new gateway could not pass its Telegram identity check. Nothing was paused or changed; fix the network and re-run.`)
+  if (telegram.skipped) console.log("  note: resuming a pending upgrade; Telegram reachability not re-checked")
+  else ok(`api.telegram.org reachable (${telegram.detail})`)
   pauseSupervision()
   let failure = null
   try {
@@ -1046,7 +1074,7 @@ export function parseUpgradeArgs(argv) {
   return parsed
 }
 
-function run(argv) {
+async function run(argv) {
   let args
   try { args = parseUpgradeArgs(argv) } catch (error) { console.error(error.message); process.exit(2) }
   requireRoot()
@@ -1054,7 +1082,7 @@ function run(argv) {
   else if (args.phase === "prepare") prepare(args.version)
   else if (args.phase === "install") install(args.version)
   else if (args.phase === "verify") verify(args.gate)
-  else if (args.phase === "upgrade") upgrade(args.version, args.rehearse, { noGate: args.noGate, plant: args.plant })
+  else if (args.phase === "upgrade") await upgrade(args.version, args.rehearse, { noGate: args.noGate, plant: args.plant })
 }
 
-if (process.argv[1] && fileURLToPath(import.meta.url) === realpathSync(process.argv[1])) run(process.argv.slice(2))
+if (process.argv[1] && fileURLToPath(import.meta.url) === realpathSync(process.argv[1])) run(process.argv.slice(2)).catch((error) => { console.error(error); process.exit(1) })

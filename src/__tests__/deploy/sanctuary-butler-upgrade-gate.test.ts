@@ -2,7 +2,7 @@
 // and a source contract that pins the order the live host depends on (hold, preserve, gate, commit, pin, prune).
 import * as fs from "node:fs"
 import * as path from "node:path"
-import { beforeAll, describe, expect, it } from "vitest"
+import { beforeAll, describe, expect, it, vi } from "vitest"
 
 const SCRIPT = path.resolve(__dirname, "../../../deploy/unraid/sanctuary-butler-upgrade.mjs")
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -151,7 +151,84 @@ describe("upgrade script contract", () => {
   })
 
   it("does nothing when imported, and the gate it calls ships in the same directory", () => {
-    expect(source).toContain("if (process.argv[1] && fileURLToPath(import.meta.url) === realpathSync(process.argv[1])) run(process.argv.slice(2))")
+    expect(source).toContain("if (process.argv[1] && fileURLToPath(import.meta.url) === realpathSync(process.argv[1])) run(process.argv.slice(2)).catch(")
     expect(fs.existsSync(path.join(path.dirname(SCRIPT), "sanctuary-replay-gate.mjs"))).toBe(true)
+  })
+})
+
+describe("telegramApiReachable", () => {
+  const sleeps: number[] = []
+  const sleep = async (ms: number) => { sleeps.push(ms) }
+  it("is reachable on any HTTP answer, probing the bare API host without a token", async () => {
+    sleeps.length = 0
+    const fetchImpl = vi.fn(async () => new Response("", { status: 404 }))
+    await expect(upgrade.telegramApiReachable({ fetchImpl, sleep })).resolves.toEqual({ ok: true, detail: "HTTP 404" })
+    expect(fetchImpl).toHaveBeenCalledOnce()
+    expect(fetchImpl.mock.calls[0]![0]).toBe("https://api.telegram.org/")
+    expect(fetchImpl.mock.calls[0]![1]).toMatchObject({ method: "GET" })
+    expect(sleeps).toEqual([])
+  })
+  it("retries a transient failure and then succeeds", async () => {
+    sleeps.length = 0
+    const fetchImpl = vi.fn()
+      .mockRejectedValueOnce(new TypeError("fetch failed", { cause: new Error("getaddrinfo EAI_AGAIN api.telegram.org") }))
+      .mockResolvedValueOnce(new Response("", { status: 302 }))
+    await expect(upgrade.telegramApiReachable({ fetchImpl, sleep, retryDelayMs: 7 })).resolves.toEqual({ ok: true, detail: "HTTP 302" })
+    expect(sleeps).toEqual([7])
+  })
+  it("reports unreachable after every try, with the underlying cause", async () => {
+    sleeps.length = 0
+    const fetchImpl = vi.fn(async () => { throw new TypeError("fetch failed", { cause: new Error("getaddrinfo EAI_AGAIN api.telegram.org") }) })
+    const result = await upgrade.telegramApiReachable({ fetchImpl, sleep, tries: 3, retryDelayMs: 5 })
+    expect(result).toEqual({ ok: false, detail: "fetch failed: getaddrinfo EAI_AGAIN api.telegram.org (3 attempts)" })
+    expect(fetchImpl).toHaveBeenCalledTimes(3)
+    expect(sleeps).toEqual([5, 5])
+  })
+  it("describes non-Error and cause-less failures, and never claims reachability with zero tries", async () => {
+    const strings = await upgrade.telegramApiReachable({ fetchImpl: async () => { throw "boom" }, sleep, tries: 1 })
+    expect(strings).toEqual({ ok: false, detail: "boom (1 attempts)" })
+    const plain = await upgrade.telegramApiReachable({ fetchImpl: async () => { throw new Error("timed out") }, sleep, tries: 1 })
+    expect(plain.detail).toBe("timed out (1 attempts)")
+    expect((await upgrade.telegramApiReachable({ tries: 0 })).ok).toBe(false)
+  })
+  it("uses the real timer and fetch by default", async () => {
+    const real = globalThis.fetch
+    globalThis.fetch = vi.fn().mockRejectedValueOnce(new Error("down")).mockResolvedValueOnce(new Response("", { status: 200 })) as never
+    try { await expect(upgrade.telegramApiReachable({ retryDelayMs: 1 })).resolves.toMatchObject({ ok: true }) } finally { globalThis.fetch = real }
+  })
+  it("is checked in the upgrade before host supervision is paused", () => {
+    const body = source.slice(source.indexOf("async function upgrade(version, rehearse"))
+    const check = body.indexOf("await checkTelegramBeforePause(")
+    expect(check).toBeGreaterThan(0)
+    expect(check).toBeLessThan(body.indexOf("pauseSupervision()"))
+    expect(body.slice(check, body.indexOf("pauseSupervision()"))).toContain("Nothing was paused or changed")
+  })
+})
+
+describe("checkTelegramBeforePause", () => {
+  it("probes Telegram on a fresh upgrade", async () => {
+    const probe = vi.fn(async () => ({ ok: true, detail: "HTTP 200" }))
+    await expect(upgrade.checkTelegramBeforePause({ journalExists: false, probe })).resolves.toEqual({ skipped: false, ok: true, detail: "HTTP 200" })
+    expect(probe).toHaveBeenCalledOnce()
+  })
+  it("passes a failed probe through", async () => {
+    const probe = async () => ({ ok: false, detail: "down (3 attempts)" })
+    await expect(upgrade.checkTelegramBeforePause({ journalExists: false, probe })).resolves.toEqual({ skipped: false, ok: false, detail: "down (3 attempts)" })
+  })
+  it("skips the probe when an upgrade journal exists, so a resume or rollback is never blocked by it", async () => {
+    const probe = vi.fn()
+    await expect(upgrade.checkTelegramBeforePause({ journalExists: true, probe })).resolves.toEqual({ skipped: true, ok: true, detail: "upgrade journal present" })
+    expect(probe).not.toHaveBeenCalled()
+  })
+  it("defaults to the real probe", async () => {
+    const real = globalThis.fetch
+    globalThis.fetch = vi.fn().mockResolvedValue(new Response("", { status: 200 })) as never
+    try { await expect(upgrade.checkTelegramBeforePause({ journalExists: false })).resolves.toMatchObject({ skipped: false, ok: true }) } finally { globalThis.fetch = real }
+  })
+  it("is what the upgrade calls before pausing, keyed on the upgrade journal", () => {
+    const body = source.slice(source.indexOf("async function upgrade(version, rehearse"))
+    const check = body.indexOf("await checkTelegramBeforePause({ journalExists: existsSync(UPGRADE_JOURNAL)")
+    expect(check).toBeGreaterThan(0)
+    expect(check).toBeLessThan(body.indexOf("pauseSupervision()"))
   })
 })

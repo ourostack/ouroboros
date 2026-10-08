@@ -543,6 +543,17 @@ export function createSanctuaryTelegramAuthorityServer(options: {
     connection.setEncoding("utf8")
     connection.setTimeout(connectionTimeoutMs, () => connection.destroy())
     connection.once("close", () => connections.delete(connection))
+    // A client that vanishes mid-response (reset, timeout, crash) surfaces as EPIPE/ECONNRESET on this
+    // socket; unhandled, that killed the whole gateway. Log it and let the connection close.
+    connection.on("error", (error: NodeJS.ErrnoException) => {
+      emitNervesEvent({
+        level: "warn",
+        component: "daemon",
+        event: "daemon.sanctuary_authority_connection_error",
+        message: "Sanctuary authority client connection failed; dropping it",
+        meta: { code: error.code ?? "unknown" },
+      })
+    })
     let buffer = ""
     connection.on("data", (chunk) => {
       buffer += chunk
@@ -595,14 +606,14 @@ export function createSanctuaryTelegramAuthorityServer(options: {
         const response = dispatchTail.then(async () => {
           try {
             const result = await options.dispatch(frame.method as string, frame.params as Record<string, unknown>)
-            connection.write(`${JSON.stringify({
+            if (!connection.destroyed) connection.write(`${JSON.stringify({
               protocolVersion: PROTOCOL_VERSION,
               id: frame.id,
               ok: true,
               result,
             })}\n`)
           } catch {
-            connection.write(`${JSON.stringify({
+            if (!connection.destroyed) connection.write(`${JSON.stringify({
               protocolVersion: PROTOCOL_VERSION,
               id: frame.id,
               ok: false,

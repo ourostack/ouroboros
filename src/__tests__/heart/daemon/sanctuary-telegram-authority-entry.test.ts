@@ -16,6 +16,7 @@ import {
 } from "../../../heart/daemon/sanctuary-telegram-authority-gateway"
 import { FileSanctuaryHostAuthority } from "../../../heart/daemon/sanctuary-host-authority"
 import { authorityArtifactDigest, signAuthorityPayload } from "../../../heart/daemon/sanctuary-authority-codec"
+import { TelegramApiError } from "../../../senses/telegram-client"
 import { SocketSanctuaryTelegramAuthorityClient } from "../../../heart/daemon/sanctuary-telegram-authority-service"
 
 const roots: string[] = []
@@ -724,5 +725,82 @@ describe("Sanctuary Telegram authority process", () => {
     await vi.waitFor(() => expect(exit.mock.calls.filter(([code]) => code === 0).length).toBeGreaterThan(2))
     processOnce.mockRestore()
     processExit.mockRestore()
+  })
+})
+
+describe("getMe startup retry", () => {
+  afterEach(() => { for (const root of roots.splice(0)) fs.rmSync(root, { recursive: true, force: true }) })
+  async function start(failures: unknown[], extra: { sleep?: (ms: number) => Promise<void> } = {}) {
+    const f = fixture()
+    const queue = [...failures]
+    const request = vi.fn(async (method: string) => {
+      if (method !== "getMe") return []
+      if (queue.length) throw queue.shift()
+      return { id: 123456 }
+    })
+    const sleep = extra.sleep ?? vi.fn(async () => undefined)
+    const server = { listen: vi.fn(async () => undefined), close: vi.fn(async () => undefined) }
+    const result = startSanctuaryTelegramAuthority({
+      configPath: f.configPath,
+      expectedUid: process.getuid?.() ?? 0,
+      createApi: () => ({ request, stop: vi.fn() }),
+      createServer: () => server,
+      setSocketOwnership: () => undefined,
+      sleep,
+    })
+    return { result, request, sleep, getMe: () => request.mock.calls.filter(([method]) => method === "getMe").length }
+  }
+  const getMeCalls = (request: ReturnType<typeof vi.fn>) => request.mock.calls.filter(([method]) => method === "getMe").length
+
+  it("retries transient network failures with backoff and then starts", async () => {
+    const h = await start([new TelegramApiError("fetch failed"), new TelegramApiError("read ECONNRESET")])
+    const authority = await h.result
+    expect(getMeCalls(h.request)).toBe(3)
+    expect(h.sleep).toHaveBeenNthCalledWith(1, 5_000)
+    expect(h.sleep).toHaveBeenNthCalledWith(2, 10_000)
+    await authority.close()
+  })
+  it.each([
+    ["a 502 response", new TelegramApiError("Telegram request failed (HTTP 502)", { status: 502 })],
+    ["a timeout", new TelegramApiError("connect ETIMEDOUT 149.154.167.220:443")],
+  ])("retries %s", async (_name, error) => {
+    const h = await start([error])
+    await (await h.result).close()
+    expect(getMeCalls(h.request)).toBe(2)
+  })
+  it("gives up after five attempts and surfaces the last error", async () => {
+    const h = await start(Array.from({ length: 5 }, () => new TelegramApiError("fetch failed")))
+    await expect(h.result).rejects.toThrow(/fetch failed/u)
+    expect(getMeCalls(h.request)).toBe(5)
+    expect(vi.mocked(h.sleep).mock.calls.map(([ms]) => ms)).toEqual([5_000, 10_000, 20_000, 30_000])
+  })
+  it.each([
+    ["an unauthorized response", new TelegramApiError("Unauthorized", { status: 401, errorCode: 401 })],
+    ["a non-Telegram error", new Error("boom")],
+    ["an unrecognised network-free failure", new TelegramApiError("Bad Request", { status: 400 })],
+    ["an unrecognised message without status", new TelegramApiError("something else entirely")],
+  ])("fails at once on %s", async (_name, error) => {
+    const h = await start([error])
+    await expect(h.result).rejects.toThrow()
+    expect(getMeCalls(h.request)).toBe(1)
+    expect(h.sleep).not.toHaveBeenCalled()
+  })
+  it("waits with real timers by default", async () => {
+    vi.useFakeTimers()
+    try {
+      const f = fixture()
+      const request = vi.fn(async (method: string) => {
+        if (method === "getMe" && request.mock.calls.filter(([m]) => m === "getMe").length === 1) throw new TelegramApiError("fetch failed")
+        return method === "getMe" ? { id: 123456 } : []
+      })
+      const pending = startSanctuaryTelegramAuthority({
+        configPath: f.configPath, expectedUid: process.getuid?.() ?? 0,
+        createApi: () => ({ request, stop: vi.fn() }),
+        createServer: () => ({ listen: vi.fn(async () => undefined), close: vi.fn(async () => undefined) }),
+        setSocketOwnership: () => undefined,
+      })
+      await vi.advanceTimersByTimeAsync(5_000)
+      await (await pending).close()
+    } finally { vi.useRealTimers() }
   })
 })

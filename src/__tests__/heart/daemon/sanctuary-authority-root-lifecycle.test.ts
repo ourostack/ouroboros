@@ -703,9 +703,11 @@ describe("fixed root installation effects", () => {
     })
     it("surfaces spawn failure and bounded absent-gateway timeout without resident startup", async () => {
       const f = await preparedFixture()
-      host.spawn.mockImplementation(() => ({ unref: vi.fn(), once: (_event: string, listener: () => void) => { listener() } }))
-      await expect(f.lifecycle.effect("start-gateway").apply()).rejects.toThrow(/launch/u)
       vi.useFakeTimers()
+      host.spawn.mockImplementation(() => ({ unref: vi.fn(), once: (event: string, listener: () => void) => { if (event === "error") listener() } }))
+      const launch = expect(f.lifecycle.effect("start-gateway").apply()).rejects.toThrow(/failed to launch/u)
+      await vi.advanceTimersByTimeAsync(60_000)
+      await launch
       host.spawn.mockImplementation(() => ({ unref: vi.fn(), once: vi.fn() }))
       const pending = f.lifecycle.effect("start-gateway").apply()
       const failure = expect(pending).rejects.toThrow(/timed out/u)
@@ -714,6 +716,97 @@ describe("fixed root installation effects", () => {
       await vi.advanceTimersByTimeAsync(900_100)
       await failure
       expect(host.exec.mock.calls.some((call) => call[1][0] === "start")).toBe(false)
+    })
+    describe("a gateway that exits before readiness", () => {
+      const exiting = (f: Awaited<ReturnType<typeof preparedFixture>>, outcomes: Array<"ready" | "exit" | "signal">, log = "") => {
+        host.spawn.mockImplementation(() => {
+          const outcome = outcomes.shift() ?? "exit"
+          if (log) fs.appendFileSync(f.p(`${rootPath}/gateway.log`), log)
+          const listeners: Record<string, (...args: unknown[]) => void> = {}
+          if (outcome === "ready") f.publish()
+          else setTimeout(() => listeners.exit?.(outcome === "signal" ? null : 1, outcome === "signal" ? "SIGKILL" : null), 3_000)
+          return { unref: vi.fn(), once: (event: string, listener: (...args: unknown[]) => void) => { listeners[event] = listener } }
+        })
+      }
+      it("relaunches with backoff and succeeds once a later attempt becomes ready", async () => {
+        const f = await preparedFixture()
+        vi.useFakeTimers()
+        exiting(f, ["exit", "signal", "ready"])
+        const apply = f.lifecycle.effect("start-gateway").apply()
+        await vi.advanceTimersByTimeAsync(3_000 + 2_000 + 3_000 + 10_000 + 1_000)
+        await apply
+        expect(host.spawn).toHaveBeenCalledTimes(3)
+      })
+      it("fails promptly after the last attempt, naming the exit and quoting the masked gateway.log tail", async () => {
+        const f = await preparedFixture()
+        vi.useFakeTimers()
+        exiting(f, [], `${"x".repeat(3_000)}\nfetch failed for 123456:abcdefghijklmnopqrstuvwxyz0123\n`)
+        const apply = f.lifecycle.effect("start-gateway").apply()
+        const failure = expect(apply).rejects.toThrow(/exited \(code 1\) before readiness after 4 attempts; gateway\.log tail:\n[^]*fetch failed for \[token\]$/u)
+        // 4 launches x 3 s to exit, plus 2 + 10 + 30 s of backoff: far below the 900 s readiness budget.
+        await vi.advanceTimersByTimeAsync(12_000 + 42_000 + 1_000)
+        await failure
+        expect(host.spawn).toHaveBeenCalledTimes(4)
+        expect(host.exec.mock.calls.some((call) => call[1][0] === "start")).toBe(false)
+      })
+      it("never extends the readiness budget: a gateway dying at 14:59 is not relaunched with a fresh 900 s", async () => {
+        const f = await preparedFixture()
+        vi.useFakeTimers()
+        host.spawn.mockImplementation(() => ({ unref: vi.fn(), once: (event: string, listener: (...args: unknown[]) => void) => { if (event === "exit") setTimeout(() => listener(1, null), 899_000) } }))
+        const apply = f.lifecycle.effect("start-gateway").apply()
+        const failure = expect(apply).rejects.toThrow(/exited \(code 1\) before readiness after 1 attempts/u)
+        await vi.advanceTimersByTimeAsync(900_000)
+        await failure
+        expect(host.spawn).toHaveBeenCalledOnce()
+      })
+      it("gives each relaunch only the budget that remains", async () => {
+        const f = await preparedFixture()
+        vi.useFakeTimers()
+        let launches = 0
+        host.spawn.mockImplementation(() => {
+          launches += 1
+          return { unref: vi.fn(), once: (event: string, listener: (...args: unknown[]) => void) => { if (event === "exit" && launches === 1) setTimeout(() => listener(1, null), 800_000) } }
+        })
+        const apply = f.lifecycle.effect("start-gateway").apply()
+        const failure = expect(apply).rejects.toThrow(/timed out/u)
+        // The second launch never exits or becomes ready; it must time out at the original deadline (900 s), not 800 s + 2 s + 900 s.
+        await vi.advanceTimersByTimeAsync(901_000)
+        await failure
+        expect(host.spawn).toHaveBeenCalledTimes(2)
+      })
+      it("masks a token before trimming the log tail, so a token cut at the boundary leaves no fragment", async () => {
+        const f = await preparedFixture()
+        vi.useFakeTimers()
+        const token = "123456789:ABCDEFGHIJKLMNOPQRSTUVWXYZabcdef"
+        // Unmasked, the last 2000 characters would begin with the final 12 characters of the token.
+        exiting(f, [], `${"x".repeat(500)} ${token}\n${"y".repeat(1_987)}`)
+        const apply = f.lifecycle.effect("start-gateway").apply()
+        const message = apply.then(() => "", (error: Error) => error.message)
+        await vi.advanceTimersByTimeAsync(60_000)
+        const text = await message
+        expect(text).toContain("gateway.log tail")
+        expect(text).not.toContain(token.slice(-12))
+        expect(text).toMatch(/y{1900}/u)
+      })
+      it("reports a signal exit and an empty gateway.log honestly", async () => {
+        const f = await preparedFixture()
+        vi.useFakeTimers()
+        exiting(f, ["signal", "signal", "signal", "signal"])
+        const apply = f.lifecycle.effect("start-gateway").apply()
+        const failure = expect(apply).rejects.toThrow(/exited \(SIGKILL\)[^]*\(gateway\.log is empty\)/u)
+        await vi.advanceTimersByTimeAsync(60_000)
+        await failure
+      })
+      it("reports a missing gateway.log", async () => {
+        const f = await preparedFixture()
+        vi.useFakeTimers()
+        host.spawn.mockImplementation(() => ({ unref: vi.fn(), once: (event: string, listener: (...args: unknown[]) => void) => { if (event === "exit") setTimeout(() => { fs.rmSync(f.p(`${rootPath}/gateway.log`), { force: true }); listener(1, null) }, 10) } }))
+        const apply = f.lifecycle.effect("start-gateway").apply()
+        // The last attempt's log is removed just before its exit is reported, so the tail finds none.
+        const failure = expect(apply).rejects.toThrow(/\(no gateway\.log\)/u)
+        await vi.advanceTimersByTimeAsync(60_000)
+        await failure
+      })
     })
     it("adopts one already-live gateway and refuses changed token custody before starting another", async () => {
       const f = await preparedFixture()

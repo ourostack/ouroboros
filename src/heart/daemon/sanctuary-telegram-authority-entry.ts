@@ -4,7 +4,7 @@ import * as fs from "node:fs"
 import * as path from "node:path"
 import { emitNervesEvent } from "../../nerves/runtime"
 
-import { createTelegramBotApi, type TelegramBotApi } from "../../senses/telegram-client"
+import { createTelegramBotApi, TelegramApiError, type TelegramBotApi } from "../../senses/telegram-client"
 import { FileSanctuaryTelegramAuthorityGateway, sanctuaryTelegramAuthorityStatePath } from "./sanctuary-telegram-authority-gateway"
 import { FileSanctuaryHostAuthority } from "./sanctuary-host-authority"
 import { FileSanctuaryAuthorityLedger } from "./sanctuary-authority-ledger"
@@ -73,6 +73,8 @@ interface StartOptions {
     gateway: FileSanctuaryTelegramAuthorityGateway
   }) => SanctuaryTelegramAuthorityServer
   fetch?: typeof globalThis.fetch
+  /** Backoff between getMe attempts; tests inject an instant one. */
+  sleep?: (milliseconds: number) => Promise<void>
   now?: () => string
   processAlive?: (pid: number) => boolean
   setSocketOwnership?: (config: SanctuaryTelegramAuthorityConfig) => void
@@ -236,6 +238,35 @@ async function readBoundedFileResponse(response: Response): Promise<{ body: Buff
   return { body: Buffer.concat(chunks, total), ...(contentType ? { contentType } : {}) }
 }
 
+const GET_ME_BACKOFF_MS = [5_000, 10_000, 20_000, 30_000]
+const NETWORK_FAILURE = /fetch failed|ECONNRESET|ECONNREFUSED|ETIMEDOUT|ENOTFOUND|EAI_AGAIN|ENETUNREACH|EHOSTUNREACH|EPIPE|socket hang up|network|timed out/iu
+
+/** A getMe failure worth another try: Telegram 5xx, or no HTTP answer at all (the client reports a
+ * transport failure as a status-less TelegramApiError). Auth and other 4xx answers are never retried. */
+function isTransientTelegramFailure(error: unknown): boolean {
+  if (!(error instanceof TelegramApiError)) return false
+  if (error.status !== null) return error.status >= 500
+  return error.errorCode === null && NETWORK_FAILURE.test(error.message)
+}
+
+async function getMeWithRetry(api: TelegramBotApi, sleep: (milliseconds: number) => Promise<void>): Promise<unknown> {
+  for (let attempt = 0; ; attempt += 1) {
+    try {
+      return await api.request<{ id?: unknown }>("getMe", {})
+    } catch (error) {
+      if (attempt >= GET_ME_BACKOFF_MS.length || !isTransientTelegramFailure(error)) throw error
+      emitNervesEvent({
+        level: "warn",
+        component: "daemon",
+        event: "daemon.sanctuary_authority_getme_retry",
+        message: "Telegram getMe failed with a transient error; retrying",
+        meta: { attempt: attempt + 1, delayMs: GET_ME_BACKOFF_MS[attempt] },
+      })
+      await sleep(GET_ME_BACKOFF_MS[attempt])
+    }
+  }
+}
+
 export async function startSanctuaryTelegramAuthority(options: StartOptions): Promise<SanctuaryTelegramAuthorityProcess> {
   emitNervesEvent({ component: "daemon", event: "daemon.sanctuary_authority_boot_requested", message: "Sanctuary authority boot requested; prerequisite verification pending" })
   const expectedUid = options.expectedUid ?? 0
@@ -279,7 +310,7 @@ export async function startSanctuaryTelegramAuthority(options: StartOptions): Pr
     const publicKey = createPublicKey(privateKey)
     if (!options.retireOnly) {
       api = (options.createApi ?? ((value) => createTelegramBotApi({ token: value })))(token)
-      const identity = await api.request<{ id?: unknown }>("getMe", {})
+      const identity = await getMeWithRetry(api, options.sleep ?? ((ms) => new Promise<void>((resolve) => setTimeout(resolve, ms))))
       if (!isObject(identity) || String(identity.id) !== config.botId) {
         throw new Error("Sanctuary Telegram authority bot identity changed")
       }
