@@ -2,6 +2,12 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.872",
+      "changes": [
+        "The replay gate's books-up case accepts a live service probe as well as the container list, so a correct live answer no longer fails the upgrade."
+      ]
+    },
+    {
       "version": "0.1.0-alpha.871",
       "changes": [
         "Restating an already-recorded steward desired state is now a no-op (no version bump, audit row or source rewrite) and the tool says unchanged; the replay gate's no-telegram check fails only on owner notices attributable to the replay run."
