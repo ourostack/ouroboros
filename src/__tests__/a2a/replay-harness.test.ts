@@ -2,6 +2,7 @@ import * as fs from "node:fs"
 import * as os from "os"
 import * as path from "path"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
+import { mockOwners } from "../test-helpers/replay-owners"
 import { appendReplayNotice, isReplayWindowOpen, REPLAY_WINDOW_MAX_MS, replayNoticeRecorded, replaySinkPath, replayWindowPath } from "../../a2a/replay-harness"
 
 vi.mock("node:fs", async (original) => ({ ...await original<typeof fs>() }))
@@ -15,14 +16,7 @@ function writeWindow(content: string): void {
   fs.chmodSync(path.dirname(replayWindowPath(root)), 0o755)
   fs.chmodSync(replayWindowPath(root), 0o644)
 }
-/** The tests are not root: report every file as owned by the uid chosen for its path. */
-function owners(uidFor: (file: string) => number): void {
-  const lstat = fs.lstatSync
-  vi.spyOn(fs, "lstatSync").mockImplementation(((file: fs.PathLike, options?: unknown) => {
-    const stat = (lstat as (f: fs.PathLike, o?: unknown) => fs.Stats)(file, options)
-    return Object.assign(Object.create(Object.getPrototypeOf(stat)), stat, { uid: uidFor(String(file)) })
-  }) as typeof fs.lstatSync)
-}
+const owners = (uidFor: (file: string) => number) => mockOwners(fs, uidFor)
 const asOwnedBy = (uid: number) => owners(() => uid)
 const iso = (offsetMs: number) => new Date(NOW + offsetMs).toISOString()
 
@@ -99,6 +93,34 @@ describe("replay harness window and sink", () => {
       fs.renameSync(dir, path.join(root, "elsewhere"))
       fs.symlinkSync(path.join(root, "elsewhere"), dir)
       expect(isReplayWindowOpen(root, "p", NOW)).toBe(false)
+    })
+
+    it("refuses a window file that is not a regular file", () => {
+      writeWindow(open())
+      fs.rmSync(replayWindowPath(root))
+      fs.mkdirSync(replayWindowPath(root))
+      fs.chmodSync(replayWindowPath(root), 0o755)
+      expect(isReplayWindowOpen(root, "p", NOW)).toBe(false)
+    })
+
+    it("judges the file it opened, not the path: a swap after the open cannot change the verdict", () => {
+      writeWindow(open())
+      vi.restoreAllMocks()
+      // lstat of the directory says trusted, but the opened descriptor belongs to another uid (a file swapped in by rename)
+      owners((file) => (file === replayWindowPath(root) ? 4242 : 0))
+      expect(isReplayWindowOpen(root, "p", NOW)).toBe(false)
+    })
+
+    it("reads through the descriptor it checked and closes it, even when reading fails", () => {
+      writeWindow(open())
+      const closed: number[] = []
+      const close = fs.closeSync
+      vi.spyOn(fs, "closeSync").mockImplementation(((fd: number) => { closed.push(fd); return close(fd) }) as typeof fs.closeSync)
+      expect(isReplayWindowOpen(root, "p", NOW)).toBe(true)
+      expect(closed).toHaveLength(1)
+      vi.spyOn(fs, "readFileSync").mockImplementation((() => { throw new Error("EIO") }) as typeof fs.readFileSync)
+      expect(isReplayWindowOpen(root, "p", NOW)).toBe(false)
+      expect(closed).toHaveLength(2)
     })
 
     it("honours an explicit trusted uid", () => {

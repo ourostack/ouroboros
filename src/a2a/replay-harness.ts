@@ -32,28 +32,43 @@ export function replaySinkPath(agentRoot: string): string {
   return path.join(replayDir(agentRoot), "notices.ndjson")
 }
 
-/** A root-controlled file: a real file or directory (no symlink), owned by the trusted uid, writable by neither group nor other. */
-function isTrustedPath(target: string, trustedUid: number): boolean {
+/** A root-controlled directory: a real directory (no symlink), owned by the trusted uid, writable by neither group nor other. */
+function isTrustedDirectory(target: string, trustedUid: number): boolean {
   try {
     const stat = fs.lstatSync(target)
-    return !stat.isSymbolicLink() && stat.uid === trustedUid && (stat.mode & 0o022) === 0
+    return stat.isDirectory() && !stat.isSymbolicLink() && stat.uid === trustedUid && (stat.mode & 0o022) === 0
   } catch {
     return false
   }
 }
 
 /**
- * True only when the window file lists `friendId` with an expiry that is in the future and within the cap. Any unreadable or malformed file means "closed". */
-export function isReplayWindowOpen(agentRoot: string, friendId: string, now: number = Date.now(), trustedUid: number = 0): boolean {
-  // The state directory is the Butler's own, so it could swap in a directory and window of its own making. Only a replay
-  // directory and window file that root owns, and nobody else can write, count; anything else fails toward Telegram.
-  if (!isTrustedPath(replayDir(agentRoot), trustedUid) || !isTrustedPath(replayWindowPath(agentRoot), trustedUid)) return false
-  let parsed: unknown
+ * Reads the window file only if the file actually opened is trusted. The path is opened once with O_NOFOLLOW, then the
+ * descriptor itself is checked (regular file, trusted owner, not group- or other-writable) and read, so a rename loop on
+ * the Butler's own state directory cannot swap a different file in between the check and the read. Any error is "no window".
+ */
+function readTrustedWindow(file: string, trustedUid: number): unknown {
+  let fd: number | undefined
   try {
-    parsed = JSON.parse(fs.readFileSync(replayWindowPath(agentRoot), "utf8"))
+    fd = fs.openSync(file, fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW)
+    const stat = fs.fstatSync(fd)
+    if (!stat.isFile() || stat.uid !== trustedUid || (stat.mode & 0o022) !== 0) return undefined
+    return JSON.parse(fs.readFileSync(fd, "utf8"))
   } catch {
-    return false
+    return undefined
+  } finally {
+    if (fd !== undefined) fs.closeSync(fd)
   }
+}
+
+/**
+ * True only when the window file lists `friendId` with an expiry that is in the future and within the cap. Any unreadable or malformed file means "closed".
+ * The state directory is the Butler's own, so it could swap in a directory and window of its own making: only a replay
+ * directory and window file that root owns, and nobody else can write, count; anything else fails toward Telegram.
+ */
+export function isReplayWindowOpen(agentRoot: string, friendId: string, now: number = Date.now(), trustedUid: number = 0): boolean {
+  if (!isTrustedDirectory(replayDir(agentRoot), trustedUid)) return false
+  const parsed = readTrustedWindow(replayWindowPath(agentRoot), trustedUid)
   const friends = (parsed as { friends?: unknown } | null)?.friends
   if (!friends || typeof friends !== "object") return false
   const entry = (friends as Record<string, unknown>)[friendId]

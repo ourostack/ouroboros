@@ -15,6 +15,7 @@ const mockSendTelegramOwnerNotice = vi.fn()
 vi.mock("../../../senses/telegram", () => ({ sendTelegramOwnerNotice: (...args: any[]) => mockSendTelegramOwnerNotice(...args) }))
 
 import { FileFriendStore } from "@ouro.bot/friends"
+import { mockOwners } from "../../test-helpers/replay-owners"
 import { replaySinkPath, replayWindowPath } from "../../../a2a/replay-harness"
 import { createA2AAwaitOwnerDeliverer } from "../../../heart/awaiting/a2a-await-delivery"
 
@@ -65,11 +66,7 @@ describe("A2A await owner delivery", () => {
       fs.writeFileSync(replayWindowPath(agentRoot), JSON.stringify({ friends: { peer: { expiresAt: new Date(Date.now() + 600_000).toISOString() } } }))
       fs.chmodSync(dir, 0o755)
       fs.chmodSync(replayWindowPath(agentRoot), 0o644)
-      const lstat = fs.lstatSync
-      vi.spyOn(fs, "lstatSync").mockImplementation(((file: fs.PathLike, options?: unknown) => {
-        const stat = (lstat as (f: fs.PathLike, o?: unknown) => fs.Stats)(file, options)
-        return String(file).startsWith(dir) ? Object.assign(Object.create(Object.getPrototypeOf(stat)), stat, { uid }) : stat
-      }) as typeof fs.lstatSync)
+      mockOwners(fs, (file) => (file.startsWith(dir) ? uid : fs.statSync(file).uid))
     }
     afterEach(() => vi.restoreAllMocks())
 

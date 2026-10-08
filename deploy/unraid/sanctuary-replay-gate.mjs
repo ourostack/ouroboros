@@ -392,7 +392,7 @@ export function makeHost({ bundle = DEFAULT_BUNDLE, cardUrl, log = console.error
         const creds = readJson(path.join(bundle, "mcp", "media-credentials.json")).sonarr
         const response = await fetch(`${creds.url}/api/v3/queue?pageSize=200`, { headers: { "X-Api-Key": creds.apiKey }, signal: AbortSignal.timeout(15_000) })
         if (response.ok) queue = (await response.json()).records ?? []
-      } catch { /* queue stays null: the stall case skips */ }
+      } catch { /* queue stays null: the stall case runs and fails its readback */ }
       const containers = {}
       for (const name of exec("docker", ["ps", "--format", "{{.Names}}"]).split("\n").filter(Boolean)) containers[name] = true
       const effectsDir = path.join(state, "telegram", "effects")

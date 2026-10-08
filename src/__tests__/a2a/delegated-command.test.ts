@@ -13,6 +13,7 @@ import { sendSealedA2AChat } from "../../a2a/client"
 import { loadOrMintA2AIdentityFile, type A2AIdentity } from "../../a2a/identity"
 import { admitDelegatedCommand, delegatedCommandNotice, delegatedCommandWasNoticed, type A2ADelegationOptions } from "../../a2a/delegated-command"
 import { replaySinkPath, replayWindowPath } from "../../a2a/replay-harness"
+import { mockOwners } from "../test-helpers/replay-owners"
 import { loadRelationshipCapabilityRegistry } from "../../repertoire/relationship-authorization"
 import { stewardPolicyToolDefinition } from "../../repertoire/tools-steward-policy"
 import { readStewardPolicy } from "../../heart/steward-policy"
@@ -139,13 +140,10 @@ describe("delegated principal commands over sealed A2A chat", () => {
 })
 
 /** The tests are not root: report the replay directory and window as root-owned unless a test says otherwise. */
+const realUid = (file: string): number => fs.statSync(file).uid
 function rootOwns(replayDir: string, uid = 0): void {
   vi.restoreAllMocks()
-  const lstat = fs.lstatSync
-  vi.spyOn(fs, "lstatSync").mockImplementation(((file: fs.PathLike, options?: unknown) => {
-    const stat = (lstat as (f: fs.PathLike, o?: unknown) => fs.Stats)(file, options)
-    return String(file).startsWith(replayDir) ? Object.assign(Object.create(Object.getPrototypeOf(stat)), stat, { uid }) : stat
-  }) as typeof fs.lstatSync)
+  mockOwners(fs, (file) => (file.startsWith(replayDir) ? uid : realUid(file)))
 }
 
 describe("admitDelegatedCommand", () => {
