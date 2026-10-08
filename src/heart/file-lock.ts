@@ -13,6 +13,16 @@ const DEFAULT_STALE_MS = 120_000
 const DEFAULT_WAIT_MS = 45_000
 const DEFAULT_POLL_MS = 25
 
+/** The lock directory is always empty, so removing it never recurses; another process may already have broken it as stale. */
+function removeLock(lock: string): void {
+  try {
+    fs.rmdirSync(lock)
+  } catch {
+    /* v8 ignore next -- a lock broken as stale by another process is already gone @preserve */
+    return
+  }
+}
+
 /**
  * Runs `fn` while holding a named lock in `dir`. The lock is a directory, because creating one is atomic across
  * processes, which matters here: the Butler's senses (Telegram, A2A, the private runtime) are separate processes that
@@ -34,7 +44,7 @@ export async function withFileLock<T>(dir: string, name: string, fn: () => Promi
       /* v8 ignore next -- a holder releasing between the failed mkdir and this stat reads as an old lock, which is then simply retried @preserve */
       const heldSince = fs.statSync(lock, { throwIfNoEntry: false })?.mtimeMs ?? 0
       if (Date.now() - heldSince > staleMs) {
-        fs.rmSync(lock, { recursive: true, force: true })
+        removeLock(lock)
         continue
       }
       if (Date.now() >= deadline) throw new Error(`timed out waiting for the ${name} lock`)
@@ -44,6 +54,6 @@ export async function withFileLock<T>(dir: string, name: string, fn: () => Promi
   try {
     return await fn()
   } finally {
-    fs.rmSync(lock, { recursive: true, force: true })
+    removeLock(lock)
   }
 }
