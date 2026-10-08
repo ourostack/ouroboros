@@ -1,0 +1,14 @@
+== upgrade
+  ok   staged package verified
+{"id":"chef-question","status":"pass"}
+{"id":"books-up","status":"pass"}
+{"id":"books-on-idempotent","status":"pass"}
+{"id":"ungranted-refused","status":"pass"}
+{"id":"book-dry-run","status":"pass"}
+{"id":"stall-kept","status":"pass"}
+{"id":"await-self-resolve","status":"pass"}
+{"id":"no-telegram","status":"pass"}
+{"summary":{"ok":true,"passed":8,"skipped":0,"failed":[]}}
+GATE PASS
+
+UPGRADE done — 0.1.0-alpha.870 live and gate-verified. Run verify.

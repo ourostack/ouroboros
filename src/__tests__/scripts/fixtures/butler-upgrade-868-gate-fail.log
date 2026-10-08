@@ -1,0 +1,14 @@
+== upgrade
+  ok   staged package verified
+{"id":"chef-question","status":"pass"}
+{"id":"books-up","status":"fail"}
+{"id":"books-on-idempotent","status":"pass"}
+{"id":"ungranted-refused","status":"pass"}
+{"id":"book-dry-run","status":"pass"}
+{"id":"stall-kept","status":"pass"}
+{"id":"await-self-resolve","status":"pass"}
+{"id":"no-telegram","status":"pass"}
+{"summary":{"ok":false,"passed":7,"skipped":0,"failed":["books-up"]}}
+gate failed: the replay gate exited 1
+  ok   rollback: {"rolledBack":true}
+GATE FAIL — ROLLED BACK to ghcr.io/ourostack/ouroboros-butler:0.1.0-alpha.868

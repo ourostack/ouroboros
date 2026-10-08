@@ -2981,3 +2981,13 @@ Audit and safety verification:
   key can be adopted after process death. Raw recovery proof is durably deleted
   only after the exact authentication rejection and its redacted replayable
   receipt are fsynced. Never substitute names for IDs when revoking keys.
+
+Shipping a Butler release (one command)
+
+  From the Mac, after the release PR has merged to main:
+
+    npm run butler:ship -- <version> [--host sanctuary] [--no-gate] [--plant <case>] [--dry-run]
+
+  It resolves the release merge commit, waits for that commit's coverage-gate and for the GHCR image to resolve on the host, backs up the host's /tmp/butler-upgrade.mjs and /tmp/sanctuary-replay-gate.mjs to .bak-<previous>, stages the release's own copies, runs preflight, starts the gated upgrade detached with its log at /var/log/ouro-upgrade-<version>.log, follows the case lines to a terminal line and runs verify. The last stdout line is one JSON result: {version, result: kept|rolled_back|refused|failed, running_image, cases, verify, log}. Exit 0 only when the result is kept and verify is green. --dry-run runs only the read-only steps. BUTLER_HOST overrides the default host alias.
+
+  Manual fallback (the script automates exactly these): wait for coverage-gate and `docker manifest inspect ghcr.io/ourostack/ouroboros-butler:<version>` on the host; copy deploy/unraid/sanctuary-butler-upgrade.mjs to /tmp/butler-upgrade.mjs and deploy/unraid/sanctuary-replay-gate.mjs to /tmp/sanctuary-replay-gate.mjs; run `node /tmp/butler-upgrade.mjs preflight <version>`; start `setsid nohup /usr/local/bin/node /tmp/butler-upgrade.mjs upgrade <version> > /var/log/ouro-upgrade-<version>.log 2>&1 < /dev/null &`; read the log for GATE PASS, GATE FAIL (rolled back), UPGRADE done, REFUSING or FAILED; then run `node /tmp/butler-upgrade.mjs verify`. Check for a live upgrade with pgrep -f "[b]utler-upgrade.mjs upgrade" so the check does not match its own shell.

@@ -1,0 +1,3 @@
+== verify
+  ok   butler: ghcr.io/ourostack/ouroboros-butler:0.1.0-alpha.868 running/healthy restarts=0
+  ok   jellyfin preserved

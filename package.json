@@ -1,6 +1,6 @@
 {
   "name": "@ouro.bot/cli",
-  "version": "0.1.0-alpha.872",
+  "version": "0.1.0-alpha.873",
   "engines": {
     "node": ">=22"
   },
@@ -46,6 +46,7 @@
     "lint": "eslint src/",
     "package:verify-assets": "node scripts/package-assets.cjs",
     "prepack": "npm run build && npm run package:verify-assets",
+    "butler:ship": "node scripts/butler-ship.mjs",
     "release:bump": "node scripts/release-bump.cjs",
     "release:preflight": "node scripts/release-preflight.cjs",
     "release:trust:check": "node scripts/npm-trusted-publishers.cjs check",
