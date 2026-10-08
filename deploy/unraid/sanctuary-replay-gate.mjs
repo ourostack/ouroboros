@@ -22,8 +22,10 @@ export const CONTAINER = "ouro-butler"
 // The uid the A2A sense runs as inside the container; the trust probe must see the window exactly as that process does.
 export const BUTLER_USER = "10001:10001"
 export const CLI_ENTRY = "/opt/ouro/dist/heart/daemon/ouro-entry.js"
-export const DEFAULT_WINDOW_MINUTES = 30
-export const AWAIT_TIMEOUT_MS = 6 * 60 * 1000
+// Long enough for every case at its slowest (five chat cases at up to 5.5 minutes each, plus the await case's 8 minute wait),
+// and well inside the 2 hour cap: an await that has not resolved when the window closes is cancelled by the Butler.
+export const DEFAULT_WINDOW_MINUTES = 45
+export const AWAIT_TIMEOUT_MS = 8 * 60 * 1000
 export const AWAIT_POLL_MS = 15 * 1000
 export const MESSAGE_TIMEOUT_MS = 330 * 1000
 const PEER_PROFILE = "sanctuary-agent-peer"
@@ -184,7 +186,9 @@ export const CASES = [
   },
   {
     id: "await-self-resolve",
-    words: "file an await that resolves once the ouro-butler container is running, check every 1m, max 15m",
+    // A name unique to the run: an earlier run leaves an archived await of the same name behind, and the Butler's
+    // shared inner session remembers it.
+    words: ({ context }) => `file an await named replay_${context.slice(0, 8)} that resolves once the ouro-butler container is running, check every 1m, max 15m`,
     sender: "principal",
     // An await filed from a plain A2A chat has no request id, so the runtime cancels it as legacy provenance. Only a
     // delegated principal command carries the follow-up authority an await needs.
@@ -198,7 +202,7 @@ export const CASES = [
       const filed = newAwaits(before, after)
       return [
         check("an await was filed", filed.length > 0),
-        check("every new await was archived as resolved", filed.length > 0 && filed.every((entry) => entry.done && entry.status === "resolved"), filed.map((entry) => `${entry.name}:${entry.done ? entry.status : "pending"}`).join(",")),
+        check("every new await was archived as resolved", filed.length > 0 && filed.every((entry) => entry.done && entry.status === "resolved"), filed.map((entry) => `${entry.name}:${entry.done ? entry.status : "pending"}${entry.reason ? ` (${entry.reason})` : ""}`).join(",")),
         check("its delivery went to the sink", sinkFor(sink, friends.principal, (line) => !isDelegatedNotice(line)).length > 0),
       ]
     },
@@ -207,10 +211,11 @@ export const CASES = [
 
 /** Awaits present after the case that were not present before it, with their archive state. */
 export function newAwaits(before, after) {
-  const known = new Set([...before.awaiting.map((entry) => entry.name), ...before.done.map((entry) => entry.name)])
-  const pending = after.awaiting.filter((entry) => !known.has(entry.name)).map((entry) => ({ name: entry.name, done: false, status: entry.status }))
-  const archived = after.done.filter((entry) => !known.has(entry.name)).map((entry) => ({ name: entry.name, done: true, status: entry.status }))
-  return [...pending, ...archived]
+  // Name alone is not identity: an archived await from an earlier run can share a name with a new one.
+  const key = (entry) => `${entry.name}|${entry.createdAt ?? ""}`
+  const known = new Set([...before.awaiting, ...before.done].map(key))
+  const view = (entry, done) => ({ name: entry.name, done, status: entry.status, createdAt: entry.createdAt ?? "", reason: entry.reason ?? "" })
+  return [...after.awaiting.filter((entry) => !known.has(key(entry))).map((entry) => view(entry, false)), ...after.done.filter((entry) => !known.has(key(entry))).map((entry) => view(entry, true))]
 }
 
 // ---- orchestration (all I/O is behind `host`) --------------------------------------------------------------------
@@ -225,7 +230,8 @@ export async function runCase(host, testCase, { plant } = {}) {
     return { id: testCase.id, status: "skipped", reason: skipReason, checks: [] }
   }
   const context = randomUUID()
-  const sent = await host.send({ who: testCase.sender, text: testCase.words, delegated: testCase.delegated, context })
+  const text = typeof testCase.words === "function" ? testCase.words({ context }) : testCase.words
+  const sent = await host.send({ who: testCase.sender, text, delegated: testCase.delegated, context })
   let after = await host.observe()
   if (testCase.poll) {
     const deadline = host.now() + testCase.poll.timeoutMs
@@ -372,7 +378,7 @@ export function makeHost({ bundle = DEFAULT_BUNDLE, cardUrl, log = console.error
   const list = (dir) => (existsSync(dir) ? readdirSync(dir) : [])
   const awaitEntries = (dir) => list(dir).filter((name) => name.endsWith(".md")).map((name) => {
     const text = readFileSync(path.join(dir, name), "utf8")
-    return { name, status: /^status:\s*(\S+)/m.exec(text)?.[1] ?? "pending" }
+    return { name, status: /^status:\s*(\S+)/m.exec(text)?.[1] ?? "pending", createdAt: /^created_at:\s*(\S+)/m.exec(text)?.[1] ?? "", reason: /^cancel_reason:\s*(.+)$/m.exec(text)?.[1]?.trim() ?? "" }
   })
   return {
     friends: { principal: provisioned.principal.friendId, stranger: provisioned.stranger.friendId },
