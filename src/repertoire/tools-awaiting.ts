@@ -658,6 +658,24 @@ export function inspectRelationshipFollowUp(agentRoot: string, input: { friendId
   return { active: true }
 }
 
+/**
+ * The binding of an await filed in a plain A2A conversation: it has no request id and no obligation, only the peer's friend
+ * id and conversation key as provenance. It is live while it is still pending, was filed by that peer in that conversation,
+ * and has not outlived its max age.
+ */
+export function inspectPeerAwait(agentRoot: string, input: { friendId: string; key: string; awaitName: string; allowElapsed?: boolean; now?: number }): AwaitBindingInspection {
+  const awaiting = readAwaitDefinition(agentRoot, input.awaitName)
+  if (!awaiting) throw new Error(`Await ${input.awaitName} could not be verified`)
+  const matches = awaiting.status === "pending" && !awaiting.request_id && !awaiting.obligation_id
+    && awaiting.filed_for_friend_id === input.friendId && awaiting.filed_from === "a2a" && awaiting.filed_from_key === input.key
+  if (!matches) return { active: false, reason: "request obligation binding no longer matches" }
+  const maxAge = parseCadenceToMs(awaiting.max_age)
+  if (input.allowElapsed !== true && maxAge !== null && awaiting.created_at && (input.now ?? Date.now()) >= Date.parse(awaiting.created_at) + maxAge) {
+    return { active: false, reason: "request obligation await expired" }
+  }
+  return { active: true }
+}
+
 export function hasActiveRelationshipFollowUp(agentRoot: string, input: { friendId: string; channel: string; key: string; requestId: string; awaitName?: string; allowElapsed?: boolean; now?: number }): boolean {
   if (input.awaitName) return inspectRelationshipFollowUp(agentRoot, { ...input, awaitName: input.awaitName }).active
   const obligation = readVerifiedPendingObligations(agentRoot).find((candidate) => candidate.requestId === input.requestId
@@ -787,6 +805,10 @@ export const awaitingToolDefinitions: ToolDefinition[] = [
         let binding: AwaitBindingInspection | null = null
         if (session?.channel === "external-event" && existing?.wake_at) {
           binding = inspectExternalEventAwait(agentName, { recordPath: session.key, awaitName, wakeAt: existing.wake_at })
+        } else if (session?.channel === "a2a" && ctx.awaitTick && !requestId && existing && !existing.request_id
+          && existing.filed_for_friend_id === session.friendId && existing.filed_from === "a2a" && existing.filed_from_key === session.key) {
+          // A plain peer await is resolved only by its own tick, never from a chat turn.
+          binding = inspectPeerAwait(agentRoot, { friendId: session.friendId, key: session.key, awaitName })
         } else if (session && requestId) {
           if (existing?.filed_for_friend_id !== session.friendId || existing.filed_from !== session.channel
             || existing.filed_from_key !== session.key || existing.request_id !== requestId) {

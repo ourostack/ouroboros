@@ -2663,6 +2663,47 @@ describe("private runtime", () => {
       await expect(runOptions.toolContext.relationshipAuthorization.authorizeTool("shell", {})).resolves.toMatchObject({ allowed: false })
     })
 
+    describe("plain peer awaits (no request id)", () => {
+      const plain = "filed_from: a2a\nfiled_for_friend_id: peer\nfiled_from_key: conv-1\nrequest_id: null\n"
+      const plainSetup = (peer: Record<string, unknown> = {}) => setup({ owner: false, obligation: false, notice: false, provenance: plain, peer: { delegationGrant: undefined, ...peer } })
+
+      it("runs the tick with the peer's own authority: no principal, no grant, no owner", async () => {
+        await plainSetup()
+        await run()
+        const runOptions = mockHandleInboundTurn.mock.calls[0][0].runAgentOptions
+        expect(runOptions.toolContext.awaitTick).toEqual({ awaitName: "release", friendId: "peer", channel: "a2a", key: "conv-1", requestId: null })
+        expect(runOptions.toolContext.context.friend).toMatchObject({ id: "peer" })
+        expect(runOptions.toolContext.relationshipAuthorization.requestId).toBeUndefined()
+        expect(runOptions.toolContext.relationshipAuthorization.profileId).toBe("sanctuary-agent-peer")
+        await expect(runOptions.toolContext.relationshipAuthorization.authorizeTool("resolve_await", {})).resolves.toMatchObject({ allowed: true, friendId: "peer" })
+        await expect(runOptions.toolContext.relationshipAuthorization.authorizeTool("shell", {})).resolves.toMatchObject({ allowed: false })
+        expect(fs.existsSync(path.join(agentRoot, "awaiting", "release.md"))).toBe(true)
+      })
+
+      it("ends the await when the peer is no longer active", async () => {
+        await plainSetup({ admissionState: "revoked" })
+        await expect(run()).rejects.toThrow()
+        expect(fs.readFileSync(path.join(agentRoot, "awaiting", ".done", "release.md"), "utf8")).toContain("status: canceled")
+        expect(mockHandleInboundTurn).not.toHaveBeenCalled()
+      })
+
+      it("ends the await when the file no longer matches the peer's conversation", async () => {
+        await setup({ owner: false, obligation: false, notice: false, provenance: plain })
+        const file = path.join(agentRoot, "awaiting", "release.md")
+        fs.writeFileSync(file, fs.readFileSync(file, "utf8").replace("filed_from_key: conv-1", "filed_from_key: conv-1\nobligation_id: ob-x"))
+        await expect(run()).rejects.toThrow(/binding is missing, stale, or ambiguous/u)
+      })
+
+      it.each([
+        ["an oversized conversation key", `filed_from: a2a\nfiled_for_friend_id: peer\nfiled_from_key: ${"k".repeat(1_025)}\nrequest_id: null\n`],
+        ["an oversized friend id", `filed_from: a2a\nfiled_for_friend_id: ${"f".repeat(257)}\nfiled_from_key: conv-1\nrequest_id: null\n`],
+      ])("rejects %s", async (_label, provenance) => {
+        await setup({ owner: false, obligation: false, notice: false, provenance })
+        await expect(run()).rejects.toThrow(/provenance/u)
+        expect(fs.readFileSync(path.join(agentRoot, "awaiting", ".done", "release.md"), "utf8")).toContain("status: canceled")
+      })
+    })
+
     it("offers the media MCP tools in the await tick by handing the shared MCP manager to tool selection, still filtered by the profile", async () => {
       await setup()
       fs.writeFileSync(path.join(agentRoot, "tool-profiles.json"), JSON.stringify({ version: 2, profiles: {

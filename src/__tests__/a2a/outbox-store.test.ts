@@ -72,4 +72,15 @@ describe("peer outbox store", () => {
     expect(() => outbox.list("a/b")).toThrow("outbox friend id is invalid")
     expect(isOutboxEntryId(5)).toBe(false)
   })
+
+  it("appendOnce posts a delivery once while it is unacked and again after the peer has cleared it", () => {
+    const { store: outbox } = store()
+    const first = outbox.appendOnce("peer-a", "await:x:resolved", { kind: "await_outcome", body: "done", meta: { awaitName: "x" } }, 1_760_000_000_000)
+    expect(first.meta).toEqual({ awaitName: "x", dedupeKey: "await:x:resolved" })
+    expect(outbox.appendOnce("peer-a", "await:x:resolved", { kind: "await_outcome", body: "done" }, 1_760_000_000_500).id).toBe(first.id)
+    expect(outbox.appendOnce("peer-a", "await:y:resolved", { kind: "await_outcome", body: "other" }, 1_760_000_001_000).id).not.toBe(first.id)
+    expect(outbox.list("peer-a").entries).toHaveLength(2)
+    outbox.ack("peer-a", [first.id])
+    expect(outbox.appendOnce("peer-a", "await:x:resolved", { kind: "await_outcome", body: "done" }, 1_760_000_002_000).id).not.toBe(first.id)
+  })
 })

@@ -97,6 +97,16 @@ export class FileOutboxStore {
     return entry
   }
 
+  /** Like `append`, but a second call with the same `dedupeKey` while the first entry is still unacked returns that entry, so a retried delivery cannot double-post. */
+  appendOnce(friendId: string, dedupeKey: string, input: { kind: string; body: string; meta?: Record<string, unknown> }, now: number = Date.now()): OutboxEntry {
+    const dir = entryDir(this.agentRoot, friendId)
+    for (const id of sortedIds(dir)) {
+      const entry = readEntry(path.join(dir, `${id}.json`))
+      if (entry?.meta?.dedupeKey === dedupeKey) return entry
+    }
+    return this.append(friendId, { ...input, meta: { ...input.meta, dedupeKey } }, now)
+  }
+
   /** Entries after `since` (exclusive), oldest first, within the count and size limits. */
   list(friendId: string, options: { since?: string; limit?: number } = {}): OutboxListing {
     const dir = entryDir(this.agentRoot, friendId)
