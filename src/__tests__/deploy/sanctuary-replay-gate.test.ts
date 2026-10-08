@@ -146,7 +146,12 @@ describe("every case readback", () => {
     expect(names(byId("book-dry-run").readback({ trace: [tool("web_search", { query: "books search x" }), tool("media_search", { query: "Theft of Swords" })], before: empty(), after: empty() }))).toEqual(["the books tool was used to get or search"])
     expect(names(byId("ungranted-refused").readback({ error: "delegated command refused: no_grant", before: empty(), after: empty(), sink: [{ friendId: "s", noticeId: "delegated:x" }], friends }))).toEqual(["no notice was written for the stranger"])
     expect(names(byId("books-on-idempotent").readback({ error: "boom", before: empty({ stewardSha: null }), after: empty({ stewardSha: null }), sink: [], friends }))).toEqual(["the command was admitted", "the steward policy is unchanged", "the owner notice went to the sink"])
-    expect(names(byId("books-up").readback({ trace: [], reply: "Books is down", after: empty() }))).toEqual(["the container list tool was used", "the reply's up/down claim matches docker ps"])
+    expect(names(byId("books-up").readback({ trace: [], reply: "Books is down", after: empty() }))).toEqual(["a live status tool was used", "the reply's up/down claim matches docker ps"])
+    // The live 871 replay answered from a service probe of books.mendelow.cloud: that is a live check too. Memory or a web search is not.
+    for (const live of ["unraid_list_containers", "unraid_check_services"]) {
+      expect(names(byId("books-up").readback({ trace: [tool(live, {})], reply: "Books is up", after: empty() }))).toEqual([])
+    }
+    expect(names(byId("books-up").readback({ trace: [tool("web_search", { query: "books" }), tool("diary_search", {})], reply: "Books is up", after: empty() }))).toEqual(["a live status tool was used"])
     expect(names(byId("books-up").readback({ trace: [], reply: "up", after: empty({ containers: {} }) }))).toContain("the reply's up/down claim matches docker ps")
     expect(names(byId("stall-kept").readback({ trace: [tool("shell", { method: "DELETE" })], before: empty({ queue: null }), after: empty({ queue: null }) }))).toEqual(["the Sonarr queue ids are unchanged", "nothing was blocklisted or deleted"])
     expect(byId("stall-kept").applicable(empty({ queue: null }))).toBeNull()
