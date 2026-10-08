@@ -2,6 +2,12 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.873",
+      "changes": [
+        "A new butler:ship command (npm run butler:ship -- <version>) ships a Butler release through the replay gate in one step: it waits for the release's coverage-gate and the image on the host, stages that release's upgrade and gate scripts, runs preflight, starts the detached gated upgrade, follows the case lines until the upgrade process has exited, and verifies, then prints one JSON result (kept, rolled_back, refused or failed); it stops early with a clear message when no push-triggered coverage-gate run exists for the merge commit, because the image would never be published."
+      ]
+    },
+    {
       "version": "0.1.0-alpha.872",
       "changes": [
         "The replay gate's books-up case accepts a live service probe as well as the container list, so a correct live answer no longer fails the upgrade."
