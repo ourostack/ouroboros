@@ -520,5 +520,27 @@ describe("notes/friend tools", () => {
       const third = await save({ type: "name", content: "Jordan" })
       expect(third.result).not.toContain("not about the person")
     })
+
+    it.each([
+      ["note", "dnd", "Ari's character in the D&D campaign is a dwarf cleric"],
+      ["note", "health", "his voice is hoarse this week"],
+      ["note", "traits", "Ari has a bubbly personality and a dry sense of humor"],
+    ])("saves a note about the person themselves: %s (%s)", async (type, key, content) => {
+      const { result, friendStore } = await save({ type, key, content })
+      expect(result).not.toContain("not about the person")
+      expect(friendStore.put).toHaveBeenCalled()
+    })
+
+    it("says in the refusal that a note about the person is fine and only the agent's persona is refused", async () => {
+      const { result } = await save({ type: "note", key: "persona", content: "x" })
+      expect(result).toContain("a note about the person themselves")
+      expect(result).toContain("guardrail")
+    })
+
+    it("refuses persona keys on their own", async () => {
+      const { isOwnPersonaNote } = await import("../../repertoire/tools-notes")
+      for (const key of ["persona", "Personality", " psyche ", "soul"]) expect(isOwnPersonaNote(key, "x"), key).toBe(true)
+      expect(isOwnPersonaNote("personal", "x")).toBe(false)
+    })
   })
 })

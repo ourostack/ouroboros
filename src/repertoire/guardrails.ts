@@ -27,6 +27,7 @@ const REASONS = {
   readBeforeEdit: "i need to read that file first before i can edit it.",
   readBeforeOverwrite: "i need to read that file first before i can overwrite it.",
   protectedPath: "that path is protected — i can read it but not modify it.",
+  psychePath: "my psyche files ship from the repository through a pull request and the replay gate; i can read them but not change them. i file the change request with Claude Code instead.",
   destructiveCommand: "that command is too dangerous to run — it could cause irreversible damage.",
   // Trust reasons (vary by relationship)
   needsTrust: "i'd need a closer friend to vouch for you before i can do that.",
@@ -46,6 +47,14 @@ const PROTECTED_PATH_SEGMENTS = [
   "state/policy/",
 ]
 const PROTECTED_FILENAMES = ["agent.json", "tool-profiles.json"]
+
+/** The agent's psyche folder ships only from the repository (a pull request and the replay gate), so no tool writes into it. */
+function isPsychePath(filePath: string, agentRoot: string | undefined): boolean {
+  if (!agentRoot || !filePath) return false
+  const psyche = path.resolve(agentRoot, "psyche")
+  const target = path.resolve(agentRoot, filePath)
+  return target === psyche || target.startsWith(`${psyche}${path.sep}`)
+}
 
 function isProtectedPath(filePath: string): boolean {
   for (const segment of PROTECTED_PATH_SEGMENTS) {
@@ -82,12 +91,13 @@ function splitShellCommands(command: string): string[] {
 
 // --- shell commands that write to protected paths ---
 
-function shellWritesToProtectedPath(command: string): boolean {
+function shellWritesToProtectedPath(command: string, agentRoot?: string): boolean {
+  const protectedTarget = (target: string) => isProtectedPath(target) || isPsychePath(target, agentRoot)
   const redirectMatch = command.match(/>\s*(\S+)/)
-  if (redirectMatch && isProtectedPath(redirectMatch[1])) return true
+  if (redirectMatch && protectedTarget(redirectMatch[1])) return true
 
   const teeMatch = command.match(/tee\s+(?:-\w+\s+)*(\S+)/)
-  if (teeMatch && isProtectedPath(teeMatch[1])) return true
+  if (teeMatch && protectedTarget(teeMatch[1])) return true
 
   return false
 }
@@ -120,22 +130,23 @@ function checkDestructiveShellPatterns(toolName: string, args: Record<string, st
   return allow
 }
 
-function checkProtectedPaths(toolName: string, args: Record<string, string>): GuardResult {
+function checkProtectedPaths(toolName: string, args: Record<string, string>, context: GuardContext): GuardResult {
   if (toolName === "write_file" || toolName === "edit_file") {
     const filePath = args.path || ""
+    if (isPsychePath(filePath, context.agentRoot)) return deny(REASONS.psychePath)
     if (isProtectedPath(filePath)) return deny(REASONS.protectedPath)
   }
 
   if (toolName === "shell") {
     const command = args.command || ""
-    if (shellWritesToProtectedPath(command)) return deny(REASONS.protectedPath)
+    if (shellWritesToProtectedPath(command, context.agentRoot)) return deny(REASONS.protectedPath)
   }
 
   return allow
 }
 
 function checkStructuralGuardrails(toolName: string, args: Record<string, string>, context: GuardContext): GuardResult {
-  const protectedResult = checkProtectedPaths(toolName, args)
+  const protectedResult = checkProtectedPaths(toolName, args, context)
   if (!protectedResult.allowed) return protectedResult
 
   const destructiveResult = checkDestructiveShellPatterns(toolName, args)

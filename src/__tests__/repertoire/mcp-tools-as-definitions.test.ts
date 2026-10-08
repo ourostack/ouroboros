@@ -327,4 +327,15 @@ describe("mcpToolsAsDefinitions", () => {
       ])
     })
   })
+
+  it("refuses an owner-only write from a caller who is not the owner, before it reaches the server", async () => {
+    const mgr = makeMockMcpManager(
+      [{ server: "media", tools: [{ name: "media_quality_profile", description: "q", inputSchema: { type: "object", properties: { dry_run: { type: "boolean" } } } }] }],
+      { content: [{ type: "text", text: "ok" }] },
+    )
+    const [tool] = mcpToolsAsDefinitions(mgr)
+    const peer = { ...MCP_CONTEXT, relationshipAuthorization: { profileId: "sanctuary-agent-peer", authorizedContextScopes: [], advertisedToolNames: [], authorizeTool: () => ({ allowed: false as const, reason: "x" }) } }
+    await expect(tool.handler({ kind: "movie", dry_run: false }, peer as any)).rejects.toMatchObject({ name: "McpCallRejectedError" })
+    await expect(tool.handler({ kind: "movie" }, peer as any)).resolves.toBe("ok")
+  })
 })

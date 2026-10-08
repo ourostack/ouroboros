@@ -1208,4 +1208,30 @@ describe("OURO_CLI_TRUST_MANIFEST — rollback and versions", () => {
     })
     expect(result.allowed).toBe(false)
   })
+
+  describe("the psyche folder ships only from the repository", () => {
+    const ctx = (over: Record<string, unknown> = {}) => ({ readPaths: new Set(["/bundle/psyche/SOUL.md"]), agentRoot: "/bundle", trustLevel: "family" as const, ...over })
+    it.each(["/bundle/psyche/SOUL.md", "psyche/LORE.md", "/bundle/psyche/../psyche/TACIT.md", "/bundle/psyche"])("refuses write_file and edit_file to %s for everyone, family included", async (target) => {
+      const { guardInvocation } = await import("../../repertoire/guardrails")
+      for (const tool of ["write_file", "edit_file"]) {
+        const result = guardInvocation(tool, { path: target }, ctx({ readPaths: new Set([target]) }))
+        expect(result).toMatchObject({ allowed: false })
+        expect((result as { reason: string }).reason).toContain("pull request")
+      }
+    })
+    it("refuses shell redirects and tee into the psyche folder", async () => {
+      const { guardInvocation } = await import("../../repertoire/guardrails")
+      expect(guardInvocation("shell", { command: "echo x > /bundle/psyche/SOUL.md" }, ctx())).toMatchObject({ allowed: false })
+      expect(guardInvocation("shell", { command: "echo x | tee -a psyche/LORE.md" }, ctx())).toMatchObject({ allowed: false })
+    })
+    it("leaves other paths, a lookalike folder, reads, and calls with no agent root alone", async () => {
+      const { guardInvocation } = await import("../../repertoire/guardrails")
+      expect(guardInvocation("write_file", { path: "/bundle/notes/psyche.md" }, ctx())).toEqual({ allowed: true })
+      expect(guardInvocation("write_file", { path: "/bundle/psyche-old/x.md" }, ctx())).toEqual({ allowed: true })
+      expect(guardInvocation("write_file", { path: "/bundle/psyche/SOUL.md" }, ctx({ agentRoot: undefined, readPaths: new Set() }))).toEqual({ allowed: true })
+      expect(guardInvocation("write_file", { path: "" }, ctx({ readPaths: new Set() }))).toEqual({ allowed: true })
+      expect(guardInvocation("read_file", { path: "/bundle/psyche/SOUL.md" }, ctx())).toEqual({ allowed: true })
+      expect(guardInvocation("shell", { command: "cat /bundle/psyche/SOUL.md" }, ctx())).toEqual({ allowed: true })
+    })
+  })
 })

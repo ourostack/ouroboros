@@ -182,7 +182,7 @@ async function appendAcceptanceAttempt(agentRoot: string, attempt: UnraidRestart
   try { await current } finally { if (acceptanceLedgerTails.get(filePath) === current) acceptanceLedgerTails.delete(filePath) }
 }
 
-export function createSanctuaryToolContext(agentName: string): Pick<ToolContext, "agentRoot" | "sanctuary"> {
+export function createSanctuaryToolContext(agentName: string): Pick<ToolContext, "agentRoot" | "sanctuary" | "answerGates"> {
   emitNervesEvent({
     component: "senses",
     event: "senses.sanctuary_runtime_create",
@@ -229,6 +229,8 @@ export function createSanctuaryToolContext(agentName: string): Pick<ToolContext,
   })
   return {
     agentRoot,
+    // The Sanctuary profile opts in to the settle-time checks: replies about a work are held to what the turn looked up, and a brevity request is honored.
+    answerGates: { sourceGrounding: true, brevity: true },
     sanctuary: {
       listContainers: acceptanceRead("unraid_list_containers", reads.listContainers),
       getContainerLogs: acceptanceRead("unraid_get_container_logs", reads.getContainerLogs),

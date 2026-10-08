@@ -15,6 +15,11 @@ describe("briefStyleRequested", () => {
     expect(briefStyleRequested(["be brief", "actually give me more detail on this one"])).toBe(false)
     expect(briefStyleRequested(["be brief", "you can be longer now", "ok be concise again"])).toBe(true)
   })
+  it("reads a negation as a request to stop being brief", () => {
+    for (const text of ["don't be brief", "do not be so brief", "no more brevity", "stop being terse", "not so short please", "less concise"])
+      expect(briefStyleRequested(["be brief", text]), text).toBe(false)
+    expect(briefStyleRequested(["don't be brief", "ok be brief again"])).toBe(true)
+  })
   it("reads a saved communication preference as the same request", () => {
     expect(briefStyleRequested(["hi"], "Keep replies short")).toBe(true)
     expect(briefStyleRequested(["hi"], "texts after 9pm")).toBe(false)
@@ -41,6 +46,16 @@ describe("briefStyleViolation", () => {
   })
   it("rejects a question tacked onto an answer, but not a lone clarifying question", () => {
     expect(briefStyleViolation("It is nine. Want me to set a reminder?")).toContain("question")
+  })
+  it("does not apply to a blocked reply or to a reply that asks for a confirmation or a choice", () => {
+    const long = `## Plan\n${"y".repeat(BRIEF_MAX_CHARS)}. Want me to go on?`
+    expect(briefStyleViolation(long, "blocked")).toBeNull()
+    expect(briefStyleViolation(long, "complete")).toContain("section")
+    for (const ask of ["Please confirm.", "Are you sure?", "Did you mean the movie?", "Which one: the 2019 or the 2023?", "Do you want me to apply it?", "Should I proceed?", "Before I delete anything, say so."])
+      expect(briefStyleViolation(`${long} ${ask}`), ask).toBeNull()
+  })
+  it("tells the model to keep warnings, uncertainty and required confirmations", () => {
+    expect(briefStyleViolation("## A\nb")).toContain("keep every warning, uncertainty and required confirmation, cut everything else")
   })
   it("lists every problem at once", () => {
     const error = briefStyleViolation(`## Plan\n${"y".repeat(BRIEF_MAX_CHARS)}. Want more?`)!
