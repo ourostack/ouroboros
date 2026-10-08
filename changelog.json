@@ -2,6 +2,13 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.869",
+      "changes": [
+        "Await ticks no longer inherit the last assistant text of the shared inner session as their checkpoint: a true note about one await (\"already archived as yes\") was handed to every later tick, so the replay await never checked its condition and the Butler's own awaits could be skipped the same way; an await now carries only its own last observation and check count.",
+        "Replay gate await case: the await has a name unique to the run, new awaits are told from archived ones by creation time instead of name alone, the readback reports the exact archive status and cancel reason, the case waits up to 8 minutes, and the replay window default is 45 minutes so it covers that wait."
+      ]
+    },
+    {
       "version": "0.1.0-alpha.868",
       "changes": [
         "Replay gate: state/replay stays root-owned across the lifecycle's recursive ownership restore (it was handed to the Butler, so the window failed closed and a real owner notice reached Telegram), a window file or directory left there is removed only after ownership is restored, and the gate asks the Butler's own code, run as the Butler's uid, whether it trusts the window before sending anything, aborting as failed if not.",
