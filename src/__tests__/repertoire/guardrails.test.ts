@@ -391,11 +391,22 @@ describe("guardInvocation — structural guardrails", () => {
     "/bundle/state/policy/steward.json",
     "/bundle/state/policy/action-receipts.ndjson",
     "/bundle/tool-profiles.json",
+    "/bundle/state/a2a/escalation-grants.json",
+    "/bundle/state/outbox/claude/1760000000000-abcdef.json",
+    "/bundle/state/reports/3f2b8c10-aaaa-4bbb-8ccc-1234567890ab.json",
+    "state/outbox/claude/x.json",
   ])("blocks generic writes to steward authority path %s", async (protectedPath) => {
     const { guardInvocation } = await import("../../repertoire/guardrails")
     expect(guardInvocation("write_file", { path: protectedPath }, { readPaths: new Set() })).toMatchObject({ allowed: false })
     expect(guardInvocation("edit_file", { path: protectedPath }, { readPaths: new Set([protectedPath]) })).toMatchObject({ allowed: false })
     expect(guardInvocation("shell", { command: `printf x > ${protectedPath}` }, { readPaths: new Set() })).toMatchObject({ allowed: false })
+  })
+
+  it("still lets the model read what it may not write", async () => {
+    const { guardInvocation } = await import("../../repertoire/guardrails")
+    expect(guardInvocation("read_file", { path: "/bundle/state/reports/x.json" }, { readPaths: new Set() })).toMatchObject({ allowed: true })
+    expect(guardInvocation("shell", { command: "cat /bundle/state/outbox/claude/x.json" }, { readPaths: new Set() })).toMatchObject({ allowed: true })
+    expect(guardInvocation("shell", { command: "tee /bundle/state/outbox/claude/x.json" }, { readPaths: new Set() })).toMatchObject({ allowed: false })
   })
 
   // --- local vault unlock stores are protected ---

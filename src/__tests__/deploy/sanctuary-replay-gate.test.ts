@@ -5,6 +5,7 @@ import * as fs from "node:fs"
 import * as os from "node:os"
 import * as path from "node:path"
 import { afterEach, beforeEach, describe, expect, it } from "vitest"
+import { readEscalationGrants } from "../../a2a/escalation-grants"
 
 const SCRIPT = path.resolve(__dirname, "../../../deploy/unraid/sanctuary-replay-gate.mjs")
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -534,11 +535,14 @@ describe("provision and the real host", () => {
     const grants = JSON.parse(fs.readFileSync(path.join(bundle, "state/a2a/escalation-grants.json"), "utf8"))
     expect(Object.keys(grants.grants)).toEqual(["friend-3"])
     expect(grants.grants["friend-3"]).toMatchObject({ scope: "escalation", source: "replay gate provisioning (host root)" })
+    expect(fs.statSync(path.join(bundle, "state/a2a/escalation-grants.json")).mode & 0o777).toBe(0o644)
     expect(JSON.parse(fs.readFileSync(path.join(bundle, "friends", "friend-3.json"), "utf8")).delegationGrant).toBeUndefined()
     expect(calls.filter((a) => a[0] === "friend").every((a) => a.includes("sanctuary-agent-peer") && a.includes("active"))).toBe(true)
     expect(fs.existsSync(path.join(bundle, "state/replay/notices.ndjson"))).toBe(true)
     const registry = JSON.parse(fs.readFileSync(path.join(bundle, "state/replay/identities.json"), "utf8"))
-    expect(Object.keys(registry.friends)).toEqual(["friend-1", "friend-2"])
+    // the escalation peer is registered too, so real failure reports are never routed to it
+    expect(Object.keys(registry.friends)).toEqual(["friend-1", "friend-2", "friend-3"])
+    expect(registry.friends["friend-3"]).toMatchObject({ who: "escalation" })
     expect(fs.statSync(path.join(bundle, "state/replay/identities.json")).mode & 0o777).toBe(0o644)
     expect(fs.statSync(path.join(bundle, "state/replay/notices.ndjson")).mode & 0o777).toBe(0o600)
     expect(fs.statSync(path.join(bundle, "state/replay-client")).mode & 0o777).toBe(0o700)
@@ -552,7 +556,7 @@ describe("provision and the real host", () => {
     fs.mkdirSync(path.join(bundle, "state/replay"), { recursive: true })
     fs.writeFileSync(path.join(bundle, "state/replay/identities.json"), JSON.stringify({ friends: { "old-replay": { name: "retired" } } }))
     gate.provision({ bundle, cardUrl: "c", log: () => undefined, run: fakeCli().run, ...uid() })
-    expect(Object.keys(JSON.parse(fs.readFileSync(path.join(bundle, "state/replay/identities.json"), "utf8")).friends).sort()).toEqual(["friend-1", "friend-2", "old-replay"])
+    expect(Object.keys(JSON.parse(fs.readFileSync(path.join(bundle, "state/replay/identities.json"), "utf8")).friends).sort()).toEqual(["friend-1", "friend-2", "friend-3", "old-replay"])
   })
 
   it("forces the replay directory to 0755 even if a looser one already exists", () => {
@@ -649,20 +653,27 @@ describe("provision and the real host", () => {
 })
 
 describe("escalation, outbox and the act path", () => {
+  const readEscalationGrantsForTest = (bundle: string) => readEscalationGrants(bundle)
   const tmpBundle = () => { const dir = fs.mkdtempSync(path.join(os.tmpdir(), "replay-gate-esc-")); fs.mkdirSync(path.join(dir, "state"), { recursive: true }); return dir }
 
-  it("grants escalation once, keeps other grants and the file's owner, and is idempotent", () => {
+  it("grants escalation once, keeps other grants, leaves the file and directory root-owned and read-only to others, and is idempotent", () => {
     const bundle = tmpBundle()
+    const root = { rootUid: process.getuid!(), rootGid: process.getgid!() }
     try {
-      gate.grantEscalation(bundle, "e1", new Date("2026-10-08T00:00:00.000Z"))
-      gate.grantEscalation(bundle, "e2", new Date("2026-10-08T01:00:00.000Z"))
-      gate.grantEscalation(bundle, "e1", new Date("2026-10-09T00:00:00.000Z"))
+      gate.grantEscalation(bundle, "e1", new Date("2026-10-08T00:00:00.000Z"), root)
+      gate.grantEscalation(bundle, "e2", new Date("2026-10-08T01:00:00.000Z"), root)
+      fs.chmodSync(path.join(bundle, "state/a2a/escalation-grants.json"), 0o666)
+      fs.chmodSync(path.join(bundle, "state/a2a"), 0o777)
+      gate.grantEscalation(bundle, "e1", new Date("2026-10-09T00:00:00.000Z"), root)
+      expect(fs.statSync(path.join(bundle, "state/a2a")).mode & 0o777).toBe(0o755)
       const file = path.join(bundle, "state/a2a/escalation-grants.json")
       const grants = JSON.parse(fs.readFileSync(file, "utf8"))
       expect(grants.schemaVersion).toBe(1)
       expect(grants.grants.e1.grantedAt).toBe("2026-10-08T00:00:00.000Z")
       expect(Object.keys(grants.grants)).toEqual(["e1", "e2"])
-      expect(fs.statSync(file).mode & 0o777).toBe(0o600)
+      expect(fs.statSync(file).mode & 0o777).toBe(0o644)
+      expect(fs.statSync(file).uid).toBe(root.rootUid)
+      expect(readEscalationGrantsForTest(bundle)).toEqual(grants.grants)
     } finally { fs.rmSync(bundle, { recursive: true, force: true }) }
   })
 

@@ -92,6 +92,24 @@ describe("escalation CLI execution", () => {
     expect(readEscalationGrants(agentRoot)[friendId]!.source).toMatch(/^ouro a2a escalation grant, \d{4}-/u)
     await expect(runOuroCli(["a2a", "escalation", "grant", "--agent", "sanctuary", "--friend", "nobody"], deps({ bundlesRoot }))).rejects.toThrow("friend not found: nobody")
   })
+
+  it("warns when the written grant will not be honoured because it is not root-owned", async () => {
+    const { overrideTrustedUidForTests } = await import("../../../a2a/trusted-files")
+    const { bundlesRoot, friendId } = await withFriend("family", "active")
+    overrideTrustedUidForTests(process.getuid!() + 1)
+    try {
+      const granted = await runOuroCli(["a2a", "escalation", "grant", "--agent", "sanctuary", "--friend", friendId], deps({ bundlesRoot }))
+      expect(granted).toContain("WARNING: the grant is written but will not be honoured")
+      expect(granted).toContain("owned by root")
+    } finally {
+      overrideTrustedUidForTests(process.getuid!())
+    }
+  })
+
+  it("does not warn when the grant is trusted", async () => {
+    const { bundlesRoot, friendId } = await withFriend("family", "active")
+    expect(await runOuroCli(["a2a", "escalation", "grant", "--agent", "sanctuary", "--friend", friendId], deps({ bundlesRoot }))).not.toContain("WARNING")
+  })
 })
 
 describe("outbox CLI execution against a live server", () => {
