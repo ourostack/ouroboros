@@ -69,7 +69,7 @@ const SHELL_SEGMENT_SEPARATOR = /&&|\|\||[;|\n]/
 export const shellCommandOf = (args) => { try { const parsed = JSON.parse(String(args ?? "")); return typeof parsed?.command === "string" ? parsed.command : "" } catch { return String(args ?? "") } }
 export const isLookupCall = (call) => call.name === "web_search" || call.name === "media_search" || call.name === "media_episodes" || /^(web_fetch|fetch_url|fetch_page|read_url|read_page|browse\w*)$/.test(call.name) || (call.name === "shell" && shellCommandOf(call.args).split(SHELL_SEGMENT_SEPARATOR).some((segment) => SHELL_LOOKUP_SEGMENT.test(segment)))
 
-const HOUSE_WORDS = "Ari Butler Claude Code Sonarr Radarr Jellyfin Sanctuary Telegram Unraid Mendelow Cloud Calibre Books Jellyseerr Prowlarr"
+const HOUSE_WORDS = "Ari Butler Claude Code Sonarr Radarr Jellyfin Sanctuary Telegram Unraid Mendelow Cloud Calibre Books Jellyseerr Prowlarr calibre-web readarr lidarr overseerr tautulli sabnzbd deluge delugevpn binhex"
 const CAPITALISED = /\p{Lu}[\p{L}\p{M}'\u2019]*/gu
 // Ordinary words that open a sentence or a bullet; any other capitalised word there is a candidate name only with a sign it is one (the runtime check does the same, and a test keeps the two in step).
 export const STARTERS = new Set(("the this that these those it its i so and but or yes no not sure okay ok here there what when where why how who which if then now also both one two my your our we you he she they " +
@@ -116,7 +116,7 @@ export function lowercaseEmphasisNames(text, known = "") {
   const out = []
   const phrases = [...body.matchAll(EMPHASIS_SPAN)].map((match) => match[2].trim().replace(/[:,.]$/, "")).concat([...body.matchAll(LEAD_PHRASE)].map((match) => match[1]))
   for (const phrase of phrases) {
-    if (!EMPHASIS_PHRASE.test(phrase)) continue
+    if (!EMPHASIS_PHRASE.test(phrase) || /^[a-z0-9]+(?:-[a-z0-9]+)+$/.test(phrase)) continue
     const words = phrase.split(" ")
     if (words.some((word) => word.length < 3 || STARTERS.has(word) || EXEMPT_WORDS.has(word) || LABEL_WORDS.has(word) || EMPHASIS_STOP.has(word) || mentionsWord(known, word))) continue
     if (!out.includes(phrase)) out.push(phrase)
@@ -411,7 +411,8 @@ export const CASES = [
       const known = `${WORK_WORDS} ${HOUSE_WORDS}`
       const firstLookup = timeline.findIndex((entry) => entry.kind === "call" && isLookupCall(entry))
       const early = timeline.slice(0, firstLookup < 0 ? timeline.length : firstLookup).filter((entry) => entry.kind === "reply").flatMap((entry) => properNouns(entry.text, known))
-      const ungrounded = properNouns(said || reply, known).filter((name) => !mentionsWord(sources, name))
+      // A name is grounded when every word of it appears in a lookup result ("fisher gesha" is found by "Fisher" and "Gesha" separately).
+      const ungrounded = properNouns(said || reply, known).filter((name) => !name.split(" ").every((word) => mentionsWord(sources, word)))
       return [
         check("a web lookup (search, fetch or read of a page) ran", lookups.length > 0, `${trace.length} tool calls`),
         check("no reply named the work's entities before the first lookup", early.length === 0, early.join(", ")),

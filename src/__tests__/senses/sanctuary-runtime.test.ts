@@ -383,9 +383,20 @@ describe("Sanctuary runtime tool context", () => {
     await context.sanctuary!.listContainers(new AbortController().signal)
     expect(runtimeMocks.readTools.listContainers).toHaveBeenLastCalledWith(expect.any(AbortSignal))
     expect(runtimeMocks.state.restartOptions?.listContainers).toBe(runtimeMocks.readTools.listContainers)
+    // A busy policy read is retried once, then the last good policy is used; with none cached the list is returned plain.
     runtimeMocks.readStewardPolicy.mockImplementationOnce(() => { throw new Error("policy locked") })
-    const unread = await context.sanctuary!.listContainers() as typeof listed
-    expect(unread.data.containers[1]).toEqual({ id: "Docker:b", name: "calibre", state: "created" })
+    runtimeMocks.readStewardPolicy.mockReturnValueOnce({ desiredStates: { "container:calibre": { value: "off" } } })
+    const retried = await context.sanctuary!.listContainers() as typeof listed
+    expect(retried.data.containers[1]).toMatchObject({ desired: "stopped" })
+    expect(runtimeMocks.readStewardPolicy).toHaveBeenCalledTimes(4)
+    runtimeMocks.readStewardPolicy.mockImplementation(() => { throw new Error("policy locked") })
+    const cached = await context.sanctuary!.listContainers() as typeof listed
+    expect(cached.data.containers[1]).toMatchObject({ desired: "stopped" })
+    runtimeMocks.getAgentRoot.mockReturnValue(fs.mkdtempSync(path.join(os.tmpdir(), "ouro-sanctuary-runtime-fresh-")))
+    const fresh = await createSanctuaryToolContext("slugger").sanctuary!.listContainers() as typeof listed
+    expect(fresh.data.containers[1]).toEqual({ id: "Docker:b", name: "calibre", state: "created" })
+    runtimeMocks.readStewardPolicy.mockReset()
+    runtimeMocks.readStewardPolicy.mockReturnValue({ desiredStates: {} })
     runtimeMocks.readTools.listContainers.mockReset()
   })
 

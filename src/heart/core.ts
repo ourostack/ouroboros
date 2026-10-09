@@ -981,6 +981,12 @@ function userTexts(messages: OpenAI.ChatCompletionMessageParam[]): string[] {
   return messages.filter((message) => message.role === "user").map((message) => messageContentText(message.content))
 }
 
+/** What earlier turns already said or read: assistant replies and tool results before the latest user message. Names in them are not new to this turn. */
+function priorTurnsText(messages: OpenAI.ChatCompletionMessageParam[]): string {
+  const latest = messages.findLastIndex((message) => message.role === "user")
+  return messages.slice(0, Math.max(latest, 0)).filter((message) => message.role === "assistant" || message.role === "tool").map((message) => messageContentText(message.content)).join("\n")
+}
+
 function latestUserMessageText(messages: OpenAI.ChatCompletionMessageParam[]): string {
   for (let i = messages.length - 1; i >= 0; i -= 1) {
     const message = messages[i]
@@ -2397,7 +2403,7 @@ export async function runAgent(
           const retriesLeft = providerIterations < stepBudget - 1
           let groundingError: string | null = null
           let unverifiedNames: readonly string[] | null = null
-          const grounding = gates?.sourceGrounding ? sourceGroundingFinding({ answer: deliveredAnswer, userText: userTexts(messages).join("\n"), tools: turnToolRecords }) : null
+          const grounding = gates?.sourceGrounding ? sourceGroundingFinding({ answer: deliveredAnswer, userText: userTexts(messages).join("\n"), latestUserText: latestUserMessageText(messages), knownText: priorTurnsText(messages), tools: turnToolRecords }) : null
           if (grounding) {
             if (groundingRejections < ANSWER_GATE_MAX_REJECTIONS && retriesLeft) {
               groundingRejections += 1

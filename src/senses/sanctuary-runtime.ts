@@ -183,8 +183,20 @@ async function appendAcceptanceAttempt(agentRoot: string, attempt: UnraidRestart
   try { await current } finally { if (acceptanceLedgerTails.get(filePath) === current) acceptanceLedgerTails.delete(filePath) }
 }
 
+/**
+ * steward.json is agent state, and the container annotation built from it is advisory: the restart path reads the policy itself under its own lease.
+ * A busy read is retried once, then the last good policy this process saw is used; with neither, the list is returned unannotated.
+ */
+const lastGoodPolicy = new Map<string, ReturnType<typeof readStewardPolicy>>()
 function currentStewardPolicy(agentRoot: string): ReturnType<typeof readStewardPolicy> | null {
-  try { return readStewardPolicy(agentRoot) } catch { return null }
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    try {
+      const policy = readStewardPolicy(agentRoot)
+      lastGoodPolicy.set(agentRoot, policy)
+      return policy
+    } catch { /* busy or unreadable: retry once, then fall back */ }
+  }
+  return lastGoodPolicy.get(agentRoot) ?? null
 }
 
 export function createSanctuaryToolContext(agentName: string): Pick<ToolContext, "agentRoot" | "sanctuary" | "answerGates"> {
