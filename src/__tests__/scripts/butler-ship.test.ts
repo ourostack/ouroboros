@@ -257,6 +257,36 @@ describe("butler-ship orchestrator", () => {
     expect(h.calls.some((c) => c.includes("setsid") || c.includes("cp -p"))).toBe(false)
   })
 
+  it("falls back to package.json: the oldest commit of the newest run carrying the version", async () => {
+    const { findReleaseCommitByPackage } = await lib()
+    const commits = [{ sha: "n4" }, { sha: "n3" }, {}, { sha: "n2" }, { sha: "n1" }, { sha: "n0" }]
+    const versions: Record<string, string | undefined> = { n4: "9.9.9", n3: "1.0.0", n2: "1.0.0", n1: "0.9.0", n0: "1.0.0" }
+    const seen: string[] = []
+    const read = async (sha: string) => { seen.push(sha); return versions[sha] }
+    expect(await findReleaseCommitByPackage(commits, "1.0.0", read)).toBe("n2")
+    expect(seen).toEqual(["n4", "n3", "n2", "n1"])
+    expect(await findReleaseCommitByPackage(commits, "2.0.0", read)).toBeUndefined()
+    expect(await findReleaseCommitByPackage(commits, "1.0.0", read, 1)).toBeUndefined()
+    expect(await findReleaseCommitByPackage(undefined, "1.0.0", read)).toBeUndefined()
+  })
+
+  it("ship uses the package.json fallback when a stale PR title hides the version", async () => {
+    const stale = JSON.stringify([
+      { sha: "newer", commit: { message: "Later thing (0.1.0-alpha.871) (#2)" } },
+      { sha: SHA, commit: { message: "Stale title (0.1.0-alpha.868) (#1)", committer: { date: "2026-10-08T12:00:00Z" } } },
+      { sha: "older", commit: { message: "Before (0.1.0-alpha.867) (#0)" } },
+    ])
+    const pkg = (ref: string) => (ref === "newer" || ref === SHA ? ok(JSON.stringify({ version: V })) : ref === "older" ? nok("gone") : ok("not json"))
+    const h = await harness({ gh: (a) => {
+      if (a[0] === "api" && a[1].includes("commits?")) return ok(stale)
+      const m = /contents\/package\.json\?ref=(\S+)/.exec(a.join(" "))
+      return m ? pkg(m[1]) : undefined
+    } })
+    await h.run()
+    expect(h.out.some((l) => l.includes(`${V} is ${SHA}`))).toBe(true)
+    expect(h.calls.some((c) => c.includes("contents/package.json?ref=newer"))).toBe(true)
+  })
+
   it("stops when no commit names the release", async () => {
     const h = await harness({ gh: (a) => (a[1]?.includes("commits?") ? ok("[]") : (undefined as unknown as Res)) })
     await expect(h.run()).rejects.toThrow(/no commit on main names/)

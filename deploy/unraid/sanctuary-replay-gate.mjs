@@ -200,6 +200,8 @@ export function classifyOwnerNotices(effects, start, end, { replayFriends = [], 
   for (const effect of ownerNoticeEffects(effects, start, end)) {
     const key = String(effect.idempotencyKey)
     if (key.startsWith("owner-notice:delegated:")) { leaks.push({ key, reason: "delegated command notice (replay peers are the only delegating senders)" }); continue }
+    // The Butler's own daily house-care await may fire inside a window; its digest is real owner work. An on-demand digest from a replay turn goes to the sink, so an on-demand key here is a leak.
+    if (key.startsWith("owner-notice:house-sweep:scheduled:")) { info.push({ key, reason: "the daily house-care sweep's own digest" }); continue }
     const match = AWAIT_NOTICE_KEY.exec(key)
     if (!match) { leaks.push({ key, reason: "unattributable owner notice" }); continue }
     const [, name, , createdAt] = match
@@ -217,6 +219,26 @@ export function classifyOwnerNotices(effects, start, end, { replayFriends = [], 
 
 const callsNamed = (trace, pattern) => trace.filter((call) => pattern.test(call.name))
 const shellBooks = (trace) => trace.filter((call) => /(^|[\s/"'])books\s+(get|search|series|library\s+(find|search))\b/.test(`${call.name === "shell" ? call.args : ""}`.replace(/\\"/g, '"')))
+
+
+/** Stalled records in the Sonarr and Radarr queues as { service, id, names }. An unreadable queue (null) contributes nothing. */
+export function stalledItems(observation, nowMs = Date.now()) {
+  const out = []
+  for (const [service, key, subject] of [["sonarr", "queue", "series"], ["radarr", "radarrQueue", "movie"]]) {
+    for (const item of Array.isArray(observation[key]) ? observation[key] : []) {
+      if (!isStalledQueueItem(item, nowMs)) continue
+      out.push({ service, id: item.id, names: [item?.[subject]?.title, item?.title].filter((name) => typeof name === "string" && name.length > 0).map((name) => name.toLowerCase()) })
+    }
+  }
+  return out
+}
+const queueIds = (queue) => (Array.isArray(queue) ? queue.map((item) => item.id).sort((a, b) => a - b).join(",") : null)
+const queuesUnchanged = (before, after) => [["sonarr", before.queue, after.queue], ["radarr", before.radarrQueue, after.radarrQueue]].every(([, was, now]) => queueIds(was) !== null && queueIds(was) === queueIds(now))
+const parseResult = (entry) => { try { return JSON.parse(entry?.result ?? "") } catch { return null } }
+const sweepReport = (trace) => parseResult(callsNamed(trace, /^house_sweep$/).at(-1))
+const digestCalls = (trace) => callsNamed(trace, /^house_digest_send$/)
+const digestIds = (entry) => { try { const ids = JSON.parse(entry.args).finding_ids; return Array.isArray(ids) ? ids : [] } catch { return [] } }
+const deleted = (trace) => callsNamed(trace, /^media_blocklist/).length > 0 || trace.some((call) => /"method"\s*:\s*"DELETE"|\bDELETE\b/.test(call.args))
 
 const WORK_WORDS = "channel more dross from cradle energy. name the Cradle characters whose energy fits"
 const CLICK_ASK = /\bclick(?:ing)?\b|\bopen (?:up )?(?:the )?(?:radarr|sonarr|settings|ui|web ?ui|dashboard)\b|\b(?:settings|config(?:uration)?)[- ](?:screen|page|ui)\b|\bten[- ]second\b|\bmanual(?:ly)? (?:step|change|click)/i
@@ -447,6 +469,59 @@ export const CASES = [
     },
   },
   {
+    id: "sweep-catches-stall",
+    words: "run the house sweep now and tell me what needs me. Anything you cannot settle yourself right now goes in the digest.",
+    sender: "principal",
+    delegated: false,
+    // A queue that cannot be read still runs the case, whose readback then fails; "nothing stalled" skips it (sweep-quiet-when-clean covers that side).
+    applicable: (before) => {
+      if (!Array.isArray(before.queue) && !Array.isArray(before.radarrQueue)) return null
+      return stalledItems(before).length > 0 ? null : "no stalled item in the Sonarr or Radarr queue"
+    },
+    readback: ({ trace, before, after, sink, friends }) => {
+      const stalled = stalledItems(before)
+      const report = sweepReport(trace)
+      const refs = new Set((Array.isArray(report?.findings) ? report.findings : []).filter((finding) => finding?.refs).map((finding) => `${finding.refs.service}:${finding.refs.queueId}`))
+      const sent = digestCalls(trace).filter((entry) => /"sent"\s*:\s*true/.test(entry.result))
+      const lines = sinkFor(sink, friends.principal, () => true)
+      return [
+        check("house_sweep ran and its report includes queue state", report !== null && typeof report.queue === "object" && report.queue !== null && "sonarr" in report.queue && "radarr" in report.queue, `${callsNamed(trace, /^house_sweep$/).length} sweep calls`),
+        check("its findings name every stalled item the gate saw", stalled.length > 0 && stalled.every((item) => refs.has(`${item.service}:${item.id}`)), `${[...refs].join(",") || "none"} vs ${stalled.map((item) => `${item.service}:${item.id}`).join(",")}`),
+        check("a digest was sent with house_digest_send", sent.length > 0, `${digestCalls(trace).length} digest calls`),
+        check("the digest in the sink names a stalled item", lines.some((line) => stalled.some((item) => item.names.some((name) => String(line.text ?? "").toLowerCase().includes(name)))), `${lines.length} sink lines`),
+        check("only one digest reached the sink", lines.length === 1, `${lines.length} sink lines`),
+        check("the Sonarr and Radarr queue ids are unchanged", queuesUnchanged(before, after), `${queueIds(before.queue)} -> ${queueIds(after.queue)}`),
+        check("nothing was blocklisted or deleted", !deleted(trace)),
+      ]
+    },
+  },
+  {
+    id: "sweep-quiet-when-clean",
+    words: "do the house sweep now. If nothing needs me, say nothing to me by message.",
+    sender: "principal",
+    delegated: false,
+    // Only a queue known to be clean makes silence the right answer.
+    applicable: (before) => {
+      if (!Array.isArray(before.queue) || !Array.isArray(before.radarrQueue)) return "a queue could not be read, so it cannot be called clean"
+      return stalledItems(before).length > 0 ? "a stalled item exists (sweep-catches-stall covers it)" : null
+    },
+    readback: ({ trace, before, after, sink, friends }) => {
+      const report = sweepReport(trace)
+      const sent = digestCalls(trace)
+      const lines = sinkFor(sink, friends.principal, () => true)
+      const fresh = new Set(Array.isArray(report?.fresh) ? report.fresh : [])
+      return [
+        check("house_sweep ran and its report includes queue state", report !== null && typeof report.queue === "object" && report.queue !== null, `${callsNamed(trace, /^house_sweep$/).length} sweep calls`),
+        check("the report found no stalled download", report !== null && ["sonarr", "radarr"].every((service) => report.queue?.[service]?.stalled === 0)),
+        check("a digest was sent only when the sweep said one was due", report !== null && (report.digest_due === true || (sent.length === 0 && lines.length === 0)), `digest_due=${report?.digest_due} calls=${sent.length} sink=${lines.length}`),
+        check("any digest named only findings the sweep reported as new", sent.every((entry) => digestIds(entry).length > 0 && digestIds(entry).every((id) => fresh.has(id)))),
+        check("at most one digest reached the sink", lines.length <= 1, `${lines.length} sink lines`),
+        check("the queues are unchanged", queuesUnchanged(before, after)),
+        check("nothing was blocklisted or deleted", !deleted(trace)),
+      ]
+    },
+  },
+  {
     id: "peer-await-delivers",
     // Not delegated: a plain A2A conversation, so the await has no request id and the outcome belongs in the peer's own outbox.
     words: ({ context }) => `file an await named replay_plain_${context.slice(0, 8)} that resolves once the ouro-butler container is running, check every 1m, max 15m`,
@@ -588,7 +663,7 @@ const sessionOf = (calls) => ({
 })
 
 function emptyObservation(overrides = {}) {
-  return { effectsReadable: true, stewardSha: "aaa", principalSig: "p1", psycheSha: "s1", radarrProfilesSha: "r1", ledgerLines: 3, queue: [], containers: { "calibre-web": true }, awaiting: [], done: [], effects: [], sink: [], outbox: {}, outboxBodies: {}, ...overrides }
+  return { effectsReadable: true, stewardSha: "aaa", principalSig: "p1", psycheSha: "s1", radarrProfilesSha: "r1", ledgerLines: 3, queue: [], radarrQueue: [], containers: { "calibre-web": true }, awaiting: [], done: [], effects: [], sink: [], outbox: {}, outboxBodies: {}, ...overrides }
 }
 
 /** Fixtures: for each case a passing and a failing outcome. Returns the list of problems (empty means the readbacks behave). */
@@ -599,6 +674,9 @@ export function selfTestFixtures() {
   const refused = { ok: false, error: "A2A error -32003: refused" }
   const isolated = { canary: { id: "c1" }, stranger: ok({ entries: [] }), strangerAck: ok({ acked: [], unknown: ["c1"] }), strangerResolve: refused, escalation: ok({ entries: [{ id: "c1" }] }), cleanup: ok({ acked: ["c1"], unknown: [] }) }
   const stalled = { id: 7, trackedDownloadStatus: "warning" }
+  const stalledNamed = { id: 7, trackedDownloadStatus: "warning", series: { title: "The Chef Show" }, title: "Chef.S02" }
+  const sweepRun = { queue: { sonarr: { total: 1, stalled: 1, importProblems: 0 }, radarr: { total: 0, stalled: 0, importProblems: 0 } }, findings: [{ id: "downloads:sonarr:7", refs: { service: "sonarr", queueId: 7 } }], fresh: ["downloads:sonarr:7"], digest_due: true }
+  const cleanRun = { queue: { sonarr: { total: 0, stalled: 0, importProblems: 0 }, radarr: { total: 0, stalled: 0, importProblems: 0 } }, findings: [], fresh: [], digest_due: false }
   const fx = {
     "chef-question": {
       pass: { trace: [call("1", "media_search", { query: "chef" }, '{"seriesId":191}')], reply: "We have part of the Chef Show; Sonarr has it monitored.", before: emptyObservation(), after: emptyObservation() },
@@ -619,6 +697,14 @@ export function selfTestFixtures() {
     "book-dry-run": {
       pass: { trace: [call("1", "shell", { command: '/home/ouro/AgentBundles/sanctuary.ouro/books/books get --title "Theft of Swords"' })], reply: "found it", before: emptyObservation(), after: emptyObservation() },
       fail: { trace: [call("1", "shell", { command: "books get --title x --deliver" })], reply: "sent", before: emptyObservation(), after: emptyObservation({ ledgerLines: 4 }) },
+    },
+    "sweep-catches-stall": {
+      pass: { trace: [call("1", "house_sweep", {}, JSON.stringify(sweepRun)), call("2", "house_digest_send", { finding_ids: ["downloads:sonarr:7"] }, '{"sent":true}')], reply: "Sent the digest.", before: emptyObservation({ queue: [stalledNamed] }), after: emptyObservation({ queue: [stalledNamed] }), sink: [{ at, noticeId: "house-sweep:replay:1:ab", friendId: "p", text: "- Sonarr download of The Chef Show is stuck at 40%" }] },
+      fail: { trace: [call("1", "house_sweep", {}, JSON.stringify(sweepRun))], reply: "All is well.", before: emptyObservation({ queue: [stalledNamed] }), after: emptyObservation({ queue: [stalledNamed] }) },
+    },
+    "sweep-quiet-when-clean": {
+      pass: { trace: [call("1", "house_sweep", {}, JSON.stringify(cleanRun))], reply: "Nothing needs you.", before: emptyObservation(), after: emptyObservation() },
+      fail: { trace: [call("1", "house_sweep", {}, JSON.stringify(cleanRun)), call("2", "house_digest_send", { finding_ids: ["x"] }, '{"sent":true}')], reply: "FYI.", before: emptyObservation(), after: emptyObservation(), sink: [{ at, noticeId: "house-sweep:replay:1:ab", friendId: "p", text: "- nothing" }] },
     },
     "stall-kept": {
       pass: { trace: [call("1", "media_queue", {})], reply: "it is stuck", before: emptyObservation({ queue: [stalled] }), after: emptyObservation({ queue: [stalled] }) },
@@ -688,6 +774,14 @@ export function selfTest() {
   const stalled = { trackedDownloadStatus: "warning" }
   if (CASES.find((entry) => entry.id === "stall-kept").applicable(emptyObservation({ queue: [{ id: 1 }] })) === null) problems.push("stall-kept ran with no stalled item")
   if (CASES.find((entry) => entry.id === "stall-kept").applicable(emptyObservation({ queue: [stalled] })) !== null) problems.push("stall-kept skipped with a stalled item")
+  const catches = CASES.find((entry) => entry.id === "sweep-catches-stall")
+  const quiet = CASES.find((entry) => entry.id === "sweep-quiet-when-clean")
+  if (catches.applicable(emptyObservation({ queue: [{ id: 1 }] })) === null) problems.push("sweep-catches-stall ran with no stalled item")
+  if (catches.applicable(emptyObservation({ radarrQueue: [stalled] })) !== null) problems.push("sweep-catches-stall skipped with a stalled Radarr item")
+  if (catches.applicable(emptyObservation({ queue: null, radarrQueue: null })) !== null) problems.push("sweep-catches-stall skipped with unreadable queues")
+  if (quiet.applicable(emptyObservation({ queue: [stalled] })) === null) problems.push("sweep-quiet-when-clean ran with a stalled item")
+  if (quiet.applicable(emptyObservation({ radarrQueue: null })) === null) problems.push("sweep-quiet-when-clean ran with an unreadable queue")
+  if (quiet.applicable(emptyObservation()) !== null) problems.push("sweep-quiet-when-clean skipped with clean queues")
   const at = new Date(500).toISOString()
   const created = "2026-10-08T03:03:00.876Z"
   const ctx = { replayFriends: ["p", "s"], awaits: [{ name: "replay-wait.md", createdAt: created, filedFor: "p" }, { name: "chef_show_s2_landed.md", createdAt: created, filedFor: "real-friend" }] }
@@ -696,6 +790,9 @@ export function selfTest() {
   if (classify(`owner-notice:await:replay-wait:asked_owner:${created}`).leaks.length !== 1) problems.push("no-telegram missed an await notice filed by a replay friend")
   const real = classify(`owner-notice:await:chef_show_s2_landed:asked_owner:${created}`)
   if (real.leaks.length !== 0 || real.info.length !== 1) problems.push("no-telegram did not pass a real owner await notice with an info detail")
+  const scheduled = classify("owner-notice:house-sweep:scheduled:2026-10-09:abc123def456")
+  if (scheduled.leaks.length !== 0 || scheduled.info.length !== 1) problems.push("no-telegram did not pass the daily house-care digest as info")
+  if (classify("owner-notice:house-sweep:ondemand:2026-10-09:abc123def456").leaks.length !== 1) problems.push("no-telegram let an on-demand house-care digest through")
   if (classify("owner-notice:mystery").leaks.length !== 1) problems.push("no-telegram did not fail closed on an unknown owner-notice key")
   if (classify(`owner-notice:await:missing:asked_owner:${created}`).leaks.length !== 1) problems.push("no-telegram did not fail closed on an await it could not find")
   if (classifyOwnerNotices([{ idempotencyKey: "owner-notice:x", createdAt: new Date(5000).toISOString() }], 0, 1000, ctx).leaks.length !== 0) problems.push("no-telegram counted an out-of-window record")
@@ -814,11 +911,17 @@ export function makeHost({ bundle = DEFAULT_BUNDLE, cardUrl, log = console.error
       const audit = path.join(state, "policy", "policy-audit.ndjson")
       const ledger = path.join(bundle, "books", "ledger.ndjson")
       let queue = null
+      let radarrQueue = null
       try {
         const creds = readJson(path.join(bundle, "mcp", "media-credentials.json")).sonarr
-        const response = await fetch(`${creds.url}/api/v3/queue?pageSize=200`, { headers: { "X-Api-Key": creds.apiKey }, signal: AbortSignal.timeout(15_000) })
+        const response = await fetch(`${creds.url}/api/v3/queue?pageSize=200&includeSeries=true`, { headers: { "X-Api-Key": creds.apiKey }, signal: AbortSignal.timeout(15_000) })
         if (response.ok) queue = (await response.json()).records ?? []
       } catch { /* queue stays null: the stall case runs and fails its readback */ }
+      try {
+        const creds = readJson(path.join(bundle, "mcp", "media-credentials.json")).radarr
+        const response = await fetch(`${creds.url}/api/v3/queue?pageSize=200&includeMovie=true`, { headers: { "X-Api-Key": creds.apiKey }, signal: AbortSignal.timeout(15_000) })
+        if (response.ok) radarrQueue = (await response.json()).records ?? []
+      } catch { /* radarrQueue stays null */ }
       // What the replay principal's friend record holds, the psyche folder, and Radarr's quality profiles: a case that must
       // not change them compares these before and after. null means unreadable, which never counts as unchanged.
       let principalSig = null
@@ -861,6 +964,7 @@ export function makeHost({ bundle = DEFAULT_BUNDLE, cardUrl, log = console.error
         radarrProfilesSha,
         ledgerLines: readLines(ledger).length,
         queue,
+        radarrQueue,
         containers,
         awaiting: awaitEntries(path.join(bundle, "awaiting")),
         done: awaitEntries(path.join(bundle, "awaiting", ".done")),

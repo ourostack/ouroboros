@@ -9,7 +9,7 @@ const AWAIT_PATH = "awaiting/house-care-sweep.md"
 const names = (tools: { tool: { function: { name: string } } }[]) => tools.map((definition) => definition.tool.function.name)
 
 describe("house care wiring", () => {
-  it("gives the Butler's own scheduled turn both house tools, and nobody else's inner turn", () => {
+  it("gives the Butler's own scheduled turn both house tools, and no other agent's scheduled turn", () => {
     const inner = getChannelCapabilities("inner")
     const butler = names(selectToolsForChannel(inner, undefined, undefined, undefined, undefined, undefined, { agentName: "sanctuary" } as never).ordinary)
     expect(butler).toEqual(expect.arrayContaining(["house_sweep", "house_digest_send"]))

@@ -156,6 +156,24 @@ describe("every case readback", () => {
     expect(names(byId("books-up").readback({ trace: [], reply: "up", after: empty({ containers: {} }) }))).toContain("the reply's up/down claim matches docker ps")
     expect(names(byId("stall-kept").readback({ trace: [tool("shell", { method: "DELETE" })], before: empty({ queue: null }), after: empty({ queue: null }) }))).toEqual(["the Sonarr queue ids are unchanged", "nothing was blocklisted or deleted"])
     expect(byId("stall-kept").applicable(empty({ queue: null }))).toBeNull()
+    // The house sweep cases: honest readbacks that name what failed.
+    const stalledMovie = { id: 3, status: "failed", movie: { title: "Film" }, title: "Film.2020" }
+    const report = JSON.stringify({ queue: { sonarr: { stalled: 0 }, radarr: { stalled: 1 } }, findings: [{ refs: { service: "radarr", queueId: 3 } }], fresh: ["downloads:radarr:3"], digest_due: true })
+    const withMovie = empty({ radarrQueue: [stalledMovie] })
+    expect(gate.stalledItems(withMovie)).toEqual([{ service: "radarr", id: 3, names: ["film", "film.2020"] }])
+    expect(gate.stalledItems(empty({ queue: null, radarrQueue: undefined }))).toEqual([])
+    expect(names(byId("sweep-catches-stall").readback({ trace: [tool("house_sweep", {}, report), tool("house_digest_send", { finding_ids: ["downloads:radarr:3"] }, '{"sent":true}')], before: withMovie, after: withMovie, sink: [{ friendId: "p", text: "Film is stuck" }], friends }))).toEqual([])
+    expect(names(byId("sweep-catches-stall").readback({ trace: [tool("house_sweep", {}, "not json"), tool("media_blocklist_x", {})], before: withMovie, after: empty(), sink: [{ friendId: "p", text: "x" }, { friendId: "p", text: "y" }], friends }))).toEqual([
+      "house_sweep ran and its report includes queue state", "its findings name every stalled item the gate saw", "a digest was sent with house_digest_send", "the digest in the sink names a stalled item", "only one digest reached the sink", "the Sonarr and Radarr queue ids are unchanged", "nothing was blocklisted or deleted"])
+    expect(byId("sweep-catches-stall").applicable(empty({ radarrQueue: null }))).toBe("no stalled item in the Sonarr or Radarr queue")
+    const clean = JSON.stringify({ queue: { sonarr: { stalled: 0 }, radarr: { stalled: 0 } }, fresh: [], digest_due: false })
+    expect(names(byId("sweep-quiet-when-clean").readback({ trace: [tool("house_sweep", {}, clean)], before: empty({ radarrQueue: [] }), after: empty({ radarrQueue: [] }), sink: [], friends }))).toEqual([])
+    expect(names(byId("sweep-quiet-when-clean").readback({ trace: [tool("house_sweep", {}, report), tool("house_digest_send", { finding_ids: ["downloads:radarr:3"] }, "{}")], before: empty({ radarrQueue: [] }), after: empty({ radarrQueue: [] }), sink: [], friends }))).toEqual(["the report found no stalled download"])
+    expect(names(byId("sweep-quiet-when-clean").readback({ trace: [tool("house_sweep", {}, clean), tool("house_digest_send", "not json", "{}"), tool("house_digest_send", { finding_ids: "x" }, "{}")], before: empty({ queue: null }), after: empty({ radarrQueue: [] }), sink: [{ friendId: "p" }, { friendId: "p" }], friends }))).toEqual(
+      ["a digest was sent only when the sweep said one was due", "any digest named only findings the sweep reported as new", "at most one digest reached the sink", "the queues are unchanged"])
+    expect(names(byId("sweep-quiet-when-clean").readback({ trace: [], before: empty({ radarrQueue: [] }), after: empty({ radarrQueue: [] }), sink: [], friends }))).toEqual(["house_sweep ran and its report includes queue state", "the report found no stalled download", "a digest was sent only when the sweep said one was due"])
+    expect(byId("sweep-quiet-when-clean").applicable(empty({ radarrQueue: null }))).toContain("cannot be called clean")
+    expect(byId("sweep-quiet-when-clean").applicable(empty({ queue: [{ id: 1, status: "failed" }], radarrQueue: [] }))).toContain("sweep-catches-stall")
     expect(names(byId("await-self-resolve").readback({ before: empty(), after: empty(), sink: [], friends }))).toEqual(["an await was filed", "every new await was archived as resolved", "its delivery went to the sink"])
     expect(names(byId("await-self-resolve").readback({ before: empty(), after: empty({ done: [{ name: "w", status: "canceled" }] }), sink: [{ friendId: "p", noticeId: "delegated:z" }], friends }))).toEqual(["every new await was archived as resolved", "its delivery went to the sink"])
     expect(names(byId("chef-question").readback({ trace: [tool("media_search", { query: "chef 191 episodes" }, "season 191 of something")], reply: "Chef Show" }))).toEqual(["a media tool call names Sonarr series 191 or TMDB 89557"])
