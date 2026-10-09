@@ -4,7 +4,7 @@
     {
       "version": "0.1.0-alpha.876",
       "changes": [
-        "Butler psyche fixes: Sanctuary replies about a book or show are checked against lookups the turn made, friend notes refuse persona content, owner-only media_quality_profile with audit, psyche/ is root-owned and shell-guarded (read-only commands only), a brevity request is held at settle, and the replay gate gains four hermetic cases"
+        "Butler psyche fixes: Sanctuary replies about a book or show are checked against lookups the turn made, friend notes refuse persona content, owner-only media_quality_profile with audit, psyche/ is root-owned and shell-guarded, a brevity request is held at settle, and the replay gate gains four hermetic cases"
       ]
     },
     {
