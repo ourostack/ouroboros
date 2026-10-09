@@ -132,9 +132,9 @@ function psycheShellWriteRefused(command: string, agentRoot: string | undefined)
       }
       continue
     }
-    if ("op" in entry && SEGMENT_OPERATORS.has(entry.op)) { expectCommandWord = true; continue }
-    if ("op" in entry && entry.op === "glob") continue
-    return true
+    const op = "op" in entry ? entry.op : "comment"
+    if (SEGMENT_OPERATORS.has(op)) expectCommandWord = true
+    else if (op !== "glob") return true
   }
   return false
 }
