@@ -166,6 +166,26 @@ export async function loadSelfA2AIdentity(input: { agentName: string; sodium?: S
 }
 
 /**
+ * This agent's own A2A DID if its seed can be read, else null. Read-only: unlike `loadSelfA2AIdentity` it never mints a
+ * seed or writes the machine config, because an operator command only wants to compare, not to create an identity.
+ */
+/* v8 ignore start -- reads the agent's vault-backed machine config; the unit tests inject the DID instead @preserve */
+export async function readOwnA2ADid(agentName: string): Promise<string | null> {
+  try {
+    const sodium = await ready()
+    const machineId = loadOrCreateMachineIdentity({ homeDir: os.homedir() }).machineId
+    const cached = readMachineRuntimeCredentialConfig(agentName)
+    const read = cached.ok && readStoredA2ASeed(cached.config) ? cached : await refreshMachineRuntimeCredentialConfig(agentName, machineId)
+    if (!read.ok || !readStoredA2ASeed(read.config)) return null
+    const identity = await loadOrMintA2AIdentity({ agentName, sodium, config: read.config, upsert: async () => { throw new Error("readOwnA2ADid never mints") } })
+    return identity.did
+  } catch {
+    return null
+  }
+}
+/* v8 ignore stop */
+
+/**
  * A file-backed A2A identity for a client that is not an ouro agent (for example a
  * coding harness talking to an agent over A2A). The file holds the Ed25519 seed, so
  * it is treated like an SSH private key: created 0600 inside a 0700 directory, and

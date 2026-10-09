@@ -170,8 +170,12 @@ export function usage(): string {
     "  ouro a2a outbox list --to <card-url> [--since <cursor>] [--identity-file <path>] [--json]",
     "  ouro a2a outbox ack --to <card-url> --ids <id,id,...> [--identity-file <path>] [--json]",
     "  ouro a2a outbox resolve --to <card-url> --report <id> --version <version> --note <text> [--identity-file <path>] [--json]",
-    "  ouro a2a escalation <grant|revoke> --friend <id> [--source <text>] [--agent <name>]",
+    "  ouro a2a escalation grant --friend <id> --did <did:key> [--source <text>] [--agent <name>]   (run as root)",
+    "  ouro a2a escalation revoke --friend <id> [--agent <name>]   (run as root)",
     "  ouro a2a escalation list [--agent <name>]",
+    "  ouro a2a delegated-commands grant --friend <id> --did <did:key> [--expires <ISO date>] [--source <text>] [--agent <name>]   (run as root)",
+    "  ouro a2a delegated-commands revoke --friend <id> [--agent <name>]   (run as root)",
+    "  ouro a2a delegated-commands list [--json] [--agent <name>]",
     "  ouro whoami [--agent <name>]",
     "  ouro session list [--agent <name>]",
     "  ouro mcp list",
@@ -1551,18 +1555,44 @@ function parseA2ACommand(args: string[]): OuroCliCommand {
   }
 
   if (sub === "escalation") {
-    const usageText = "Usage: ouro a2a escalation <grant|revoke> --friend <id> [--source <text>] [--agent <name>] | ouro a2a escalation list [--agent <name>]"
+    const usageText = "Usage: ouro a2a escalation grant --friend <id> --did <did:key> [--source <text>] [--agent <name>] | ouro a2a escalation revoke --friend <id> [--agent <name>] | ouro a2a escalation list [--agent <name>]"
     const action = rest[0]
     if (action !== "grant" && action !== "revoke" && action !== "list") throw new Error(usageText)
     let friendId: string | undefined
     let source: string | undefined
+    let did: string | undefined
     for (let i = 1; i < rest.length; i += 1) {
       if (rest[i] === "--friend" && rest[i + 1]) { friendId = rest[++i]; continue }
       if (rest[i] === "--source" && rest[i + 1]) { source = rest[++i]; continue }
+      if (rest[i] === "--did" && rest[i + 1]) { did = rest[++i]; continue }
       throw new Error(usageText)
     }
-    if ((action === "list") === Boolean(friendId) || (source && action !== "grant")) throw new Error(usageText)
-    return { kind: "a2a.escalation", action, ...(agent ? { agent } : {}), ...(friendId ? { friendId } : {}), ...(source ? { source } : {}) }
+    if ((action === "list") === Boolean(friendId) || ((source || did) && action !== "grant") || (action === "grant" && !did)) throw new Error(usageText)
+    return { kind: "a2a.escalation", action, ...(agent ? { agent } : {}), ...(friendId ? { friendId } : {}), ...(did ? { did } : {}), ...(source ? { source } : {}) }
+  }
+
+  if (sub === "delegated-commands") {
+    const usageText = "Usage: ouro a2a delegated-commands grant --friend <id> --did <did:key> [--expires <ISO date>] [--source <text>] [--agent <name>] | ouro a2a delegated-commands revoke --friend <id> [--agent <name>] | ouro a2a delegated-commands list [--json] [--agent <name>]"
+    const action = rest[0]
+    if (action !== "grant" && action !== "revoke" && action !== "list") throw new Error(usageText)
+    const values: Record<string, string> = {}
+    let json = false
+    for (let i = 1; i < rest.length; i += 1) {
+      if (rest[i] === "--json") { json = true; continue }
+      if (["--friend", "--did", "--expires", "--source"].includes(rest[i]) && rest[i + 1]) { values[rest[i]] = rest[++i]; continue }
+      throw new Error(usageText)
+    }
+    const allowed: Record<typeof action, string[]> = { grant: ["--friend", "--did", "--expires", "--source"], revoke: ["--friend"], list: [] }
+    const required: Record<typeof action, string[]> = { grant: ["--friend", "--did"], revoke: ["--friend"], list: [] }
+    if (Object.keys(values).some((flag) => !allowed[action].includes(flag)) || required[action].some((flag) => !values[flag]) || (json && action !== "list")) throw new Error(usageText)
+    return {
+      kind: "a2a.delegatedCommands", action, ...(agent ? { agent } : {}),
+      ...(values["--friend"] ? { friendId: values["--friend"] } : {}),
+      ...(values["--did"] ? { did: values["--did"] } : {}),
+      ...(values["--expires"] ? { expires: values["--expires"] } : {}),
+      ...(values["--source"] ? { source: values["--source"] } : {}),
+      ...(json ? { json: true } : {}),
+    }
   }
 
   if (sub === "onboard") {
@@ -1626,7 +1656,7 @@ function parseA2ACommand(args: string[]): OuroCliCommand {
     return { kind: "a2a.serve", ...(agent ? { agent } : {}), ...(host ? { host } : {}), ...(port ? { port } : {}), ...(baseUrl ? { baseUrl } : {}), ...(path ? { path } : {}) }
   }
 
-  throw new Error("Usage: ouro a2a card|onboard|serve|message|identity|outbox|escalation ...")
+  throw new Error("Usage: ouro a2a card|onboard|serve|message|identity|outbox|escalation|delegated-commands ...")
 }
 
 function parseConfigCommand(args: string[]): OuroCliCommand {

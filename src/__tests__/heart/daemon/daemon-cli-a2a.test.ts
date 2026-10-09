@@ -268,6 +268,15 @@ describe("ouro A2A client commands (identity + sealed message)", () => {
       // --delegated signs the principal marker; this agent has no delegation, so it refuses.
       await expect(runOuroCli(["a2a", "message", "--to", cardUrl, "--text", "books on", "--delegated", "--identity-file", identityFile], createMockDeps({ fetchImpl: fetch })))
         .rejects.toThrow("delegated command refused: not_enabled")
+      // With --json a refusal is a result on stdout, not a stack trace, and the exit code is 1.
+      const setExitCode = vi.fn()
+      const writeStdout = vi.fn()
+      const refused = JSON.parse(await runOuroCli(["a2a", "message", "--to", cardUrl, "--text", "books on", "--delegated", "--identity-file", identityFile, "--json"], createMockDeps({ fetchImpl: fetch, setExitCode, writeStdout })))
+      expect(refused).toMatchObject({ ok: false, reason: "not_enabled", nothingRan: true })
+      expect(typeof refused.message).toBe("string")
+      expect(typeof refused.next).toBe("string")
+      expect(setExitCode).toHaveBeenCalledWith(1)
+      expect(writeStdout).toHaveBeenCalledTimes(1)
     } finally {
       await server.close()
       rmSync(dir, { recursive: true, force: true })
