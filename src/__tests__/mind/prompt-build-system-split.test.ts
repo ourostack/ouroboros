@@ -256,3 +256,35 @@ describe("buildSystem returns SystemPrompt", () => {
     expect(result.volatile).toContain("# desk")
   })
 })
+
+describe("buildSystem marks delegated turns (review of #1064, round 2, finding 8)", () => {
+  const CONTEXT = {
+    principalFriendId: "ari", principalName: "Ari", delegateFriendId: "claude-code", delegateName: "Claude Code",
+    delegateDid: "did:key:z6MkPeer", commandId: "cmd-1", noticeId: "notice-1",
+  }
+  beforeEach(() => {
+    vi.resetModules()
+    mockGetBoard.mockReset().mockReturnValue({ compact: "", full: "", byStatus: { drafting: [], processing: [], validating: [], collaborating: [], paused: [], blocked: [], done: [], cancelled: [] }, actionRequired: [], unresolvedDependencies: [], activeSessions: [] })
+  })
+
+  it("carries the rule in the stable part always, and the marker in the volatile part only on an admitted delegated turn", async () => {
+    setupReadFileSync()
+    const { patchRuntimeConfig, resetConfigCache } = await import("../../heart/config")
+    resetConfigCache()
+    patchRuntimeConfig({ providers: { minimax: { apiKey: "test-key" } } })
+    const { buildSystem, resetPsycheCache } = await import("../../mind/prompt")
+    resetPsycheCache()
+    const plain = await buildSystem("cli", {}, undefined)
+    const delegated = await buildSystem("cli", { delegatedCommand: CONTEXT }, undefined)
+    expect(plain.stable).toContain("only this runtime marker")
+    expect(delegated.stable).toContain("only this runtime marker")
+    expect(plain.volatile).not.toContain("verified delegated command")
+    expect(delegated.volatile).toContain("verified delegated command")
+    expect(delegated.volatile).toContain("cmd-1")
+    const scoped = await buildSystem("cli", { delegatedCommand: CONTEXT, relationshipContextScopes: ["own_requests"] }, undefined)
+    expect(scoped.stable).toContain("only this runtime marker")
+    expect(scoped.volatile).toContain("verified delegated command")
+    const scopedPlain = await buildSystem("cli", { relationshipContextScopes: ["own_requests"] }, undefined)
+    expect(scopedPlain.volatile).not.toContain("verified delegated command")
+  })
+})

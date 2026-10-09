@@ -4817,6 +4817,32 @@ describe("runAgent", () => {
     }
   })
 
+  it("hands the runtime's delegated-command context to the prompt build, and nothing on an ordinary turn", async () => {
+    vi.resetModules()
+    mockCreate.mockReset()
+    mockResponsesCreate.mockReset()
+    vi.mocked(fs.readFileSync).mockImplementation(defaultReadFileSync)
+    await setupMinimax()
+    const buildSystem = vi.fn().mockResolvedValue({ stable: "stable prompt", volatile: "volatile prompt" })
+    vi.doMock("../../mind/prompt", () => ({ buildSystem }))
+    try {
+      const core = await import("../../heart/core")
+      const callbacks: ChannelCallbacks = {
+        onModelStart: () => {}, onModelStreamStart: () => {}, onTextChunk: () => {}, onReasoningChunk: () => {}, onToolStart: () => {}, onToolEnd: () => {}, onError: () => {},
+      }
+      const delegatedCommand = { principalFriendId: "ari", principalName: "Ari", delegateFriendId: "cc", delegateName: "Claude Code", delegateDid: "did:key:z6Mk", commandId: "cmd-1", noticeId: "n-1" }
+      mockCreate.mockReturnValue(makeStream([makeChunk("hi")]))
+      await core.runAgent([{ role: "user", content: "hello" }] as any[], callbacks, "teams", undefined, { toolContext: { delegatedCommand } } as any)
+      expect(buildSystem.mock.calls.at(-1)![1]).toMatchObject({ delegatedCommand })
+      mockCreate.mockReturnValue(makeStream([makeChunk("hi")]))
+      await core.runAgent([{ role: "user", content: "hello" }] as any[], callbacks, "teams")
+      expect(buildSystem.mock.calls.at(-1)![1]).not.toHaveProperty("delegatedCommand")
+    } finally {
+      vi.doUnmock("../../mind/prompt")
+      vi.resetModules()
+    }
+  })
+
   it("still works without channel parameter (backward compatible)", async () => {
     mockCreate.mockReturnValue(makeStream([makeChunk("hi")]))
 
