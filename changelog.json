@@ -2,6 +2,12 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.878",
+      "changes": [
+        "The Butler files his own failures to Claude Code through a peer outbox, plain A2A awaits deliver to the peer, and the replay gate covers both"
+      ]
+    },
+    {
       "version": "0.1.0-alpha.877",
       "changes": [
         "The Butler's SOUL is retuned for brevity and a little Dross energy from Will Wight's Cradle, grounded in primary sources, with every duty and safety line kept. Three adversarial reviewers (a Cradle fact-checker, an Ari proxy and a safety and duties reviewer) passed it."
