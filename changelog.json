@@ -2,6 +2,12 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.879",
+      "changes": [
+        "The upgrade lifecycle puts state/a2a and the escalation grant back under root after its recursive ownership restore, so escalation holders are honoured on a shipped release; the replay gate seeds outbox directories as the Butler and asks psyche-via-pr a concrete question"
+      ]
+    },
+    {
       "version": "0.1.0-alpha.878",
       "changes": [
         "The Butler files his own failures to Claude Code through a peer outbox, plain A2A awaits deliver to the peer, and the replay gate covers both"
