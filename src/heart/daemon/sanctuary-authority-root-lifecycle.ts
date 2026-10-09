@@ -17,6 +17,8 @@ const BUNDLE = "/mnt/user/appdata/ouro-butler/agent/sanctuary.ouro"
 const RUNTIME = "/mnt/user/appdata/ouro-butler/runtime/.ouro-cli"
 const OFFSET = `${BUNDLE}/state/senses/telegram/offset.json`
 const SOCKET = "/run/ouro-authority"
+// Operator-set grants, root-owned on the host and mounted read-only into the Butler at /etc/ouro/trust/sanctuary.
+const TRUST = "/mnt/user/appdata/ouro-butler/trust/sanctuary"
 const STAGING = "/var/lib/ouro-authority/staging"
 const CGROUP = "/sys/fs/cgroup/ouro-authority"
 const BOOT = "/boot/config/custom/ouro-authority/start.sh"
@@ -844,7 +846,8 @@ export class SanctuaryAuthorityRootLifecycle {
       "-l", "net.unraid.docker.managed=dockerman", "-l", `net.unraid.docker.icon=${ICON}`, "-l", "org.opencontainers.image.source=https://github.com/ourostack/ouroboros",
       "-v", `${RUNTIME}:/home/ouro/.ouro-cli:rw`, "-v", `${BUNDLE}:/home/ouro/AgentBundles/sanctuary.ouro:rw`,
       "-v", `${EVENTS}:/run/ouro-events:ro`, "-v", `${SOCKET}:${SOCKET}:ro`,
-      "-v", `${BUNDLE}/psyche:/home/ouro/AgentBundles/sanctuary.ouro/psyche:ro`, reference])
+      "-v", `${BUNDLE}/psyche:/home/ouro/AgentBundles/sanctuary.ouro/psyche:ro`,
+      "-v", `${TRUST}:/etc/ouro/trust/sanctuary:ro`, reference])
     const resident = this.#containers().find((container) => container.Name === "/ouro-butler")
     if (resident?.Image !== imageId || resident.State.Running) throw new Error("Sanctuary resident recreation readback failed")
   }

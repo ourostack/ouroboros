@@ -43,10 +43,11 @@ describe("Mendelow Cloud Butler Community Apps release", () => {
 
     expect(template.match(/<Name>[^<]+<\/Name>/gu)).toEqual(["<Name>ouro-butler</Name>"])
     expect(template.match(/<Repository>[^<]+<\/Repository>/gu)).toEqual([`<Repository>ghcr.io/ourostack/ouroboros-butler:${packageVersion.version}</Repository>`])
-    expect(template.match(/<Config\b/gu)).toHaveLength(5)
+    expect(template.match(/<Config\b/gu)).toHaveLength(6)
     expect(template).toContain('Target="/run/ouro-authority"')
     expect(template).toContain('Default="/run/ouro-authority" Mode="ro"')
     expect(template).toContain('Target="/home/ouro/AgentBundles/sanctuary.ouro/psyche" Default="/mnt/user/appdata/ouro-butler/agent/sanctuary.ouro/psyche" Mode="ro"')
+    expect(template).toContain('Target="/etc/ouro/trust/sanctuary" Default="/mnt/user/appdata/ouro-butler/trust/sanctuary" Mode="ro"')
     expect(template).toContain("<Category>Tools:Utilities</Category>")
     expect(template).toContain("<Beta>true</Beta>")
     expect(template).toContain("<Overview>Mendelow Cloud Butler")

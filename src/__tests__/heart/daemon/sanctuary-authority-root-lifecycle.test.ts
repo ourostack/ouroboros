@@ -1565,6 +1565,7 @@ describe("in-place authority upgrade", () => {
     const args = creates[creates.length - 1]!
     const mounts = args.flatMap((arg, index) => (arg === "-v" ? [args[index + 1]!] : []))
     expect(mounts).toContain("/mnt/user/appdata/ouro-butler/agent/sanctuary.ouro/psyche:/home/ouro/AgentBundles/sanctuary.ouro/psyche:ro")
+    expect(mounts).toContain("/mnt/user/appdata/ouro-butler/trust/sanctuary:/etc/ouro/trust/sanctuary:ro")
     expect(mounts.indexOf("/mnt/user/appdata/ouro-butler/agent/sanctuary.ouro:/home/ouro/AgentBundles/sanctuary.ouro:rw")).toBeLessThan(mounts.findIndex((m) => m.endsWith("/psyche:ro")))
   })
 
