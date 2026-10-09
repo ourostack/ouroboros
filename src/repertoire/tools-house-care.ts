@@ -116,8 +116,11 @@ export const houseDigestToolDefinition: ToolDefinition = {
       return entry !== undefined && entry.fingerprint === finding.fingerprint && now - Date.parse(entry.reportedAt) < REMIND_DAYS * DAY_MS
     })
     if (told.length > 0) return JSON.stringify({ sent: false, error: `the owner was already told about ${told.map((finding) => finding.id).join(", ")} unchanged in the last ${REMIND_DAYS} days; leave ${told.length === 1 ? "it" : "them"} out` })
-    // Only the daily house-care await's own tick, with no friend or relationship behind it, is "scheduled" and takes the one-per-day slot; on-demand digests are limited by the per-finding dedupe above.
-    const kind = ctx.autonomousTurnKind === "await" && ctx.autonomousAwaitName === HOUSE_CARE_AWAIT && !ctx.relationshipAuthorization && !friendId ? "scheduled" : "ondemand"
+    // Only the daily house-care await's own tick is "scheduled" and takes the one-per-day slot; on-demand digests are limited by the per-finding dedupe above.
+    // The package-managed await may run under the owner's own relationship authorization (the live runtime binds it that way), which does not downgrade it;
+    // any other relationship (a peer, a friend) or a friend with no authorization behind the tick does.
+    const ownerBound = ctx.relationshipAuthorization?.profileId === "sanctuary-owner"
+    const kind = ctx.autonomousTurnKind === "await" && ctx.autonomousAwaitName === HOUSE_CARE_AWAIT && (ownerBound || (!ctx.relationshipAuthorization && !friendId)) ? "scheduled" : "ondemand"
     if (kind === "scheduled" && sameUtcDay(priorStamp, stamp)) return JSON.stringify({ sent: false, error: "the daily house digest already went out today; at most one scheduled digest is sent per day" })
     const day = stamp.slice(0, 10)
     // Reserve before sending so a crash or a concurrent turn cannot send twice; a failed send rolls the reservation back.

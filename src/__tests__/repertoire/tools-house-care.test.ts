@@ -104,16 +104,23 @@ describe("house_digest_send tool", () => {
     fs.writeFileSync(path.join(root, "state", "house-sweep", "reported.json"), JSON.stringify({ entries: { [finding.id]: entry("fp1"), b: entry("fpb") } }))
     expect((await digest({ finding_ids: [finding.id, "b"] })).error).toContain("leave them out")
   })
-  it("is scheduled only for an await tick with no friend or relationship behind it", async () => {
+  it("stays scheduled when the managed await ticks under the owner's own relationship authorization (the live path)", async () => {
     writeReport("live", [finding])
-    await digest({ finding_ids: [finding.id] }, ctx({ ...SCHEDULED, relationshipAuthorization: { profileId: "sanctuary-owner" } }))
+    // What private-runtime builds for the await tick: the owner as the friend, the owner profile as the authorization.
+    await digest({ finding_ids: [finding.id] }, ctx({ ...SCHEDULED, context: { friend: { id: "owner" } }, relationshipAuthorization: { profileId: "sanctuary-owner" } }))
+    expect(sent[0].noticeId).toContain("house-sweep:scheduled:")
+    fs.rmSync(path.join(root, "state", "house-sweep", "reported.json"))
+    fs.rmSync(path.join(root, "state", "house-sweep", "last-digest.json"), { force: true })
+    await digest({ finding_ids: [finding.id] }, ctx({ ...SCHEDULED, relationshipAuthorization: { profileId: "sanctuary-agent-peer" }, context: { friend: { id: "peer" } } }))
+    expect(sent[1].noticeId).toContain("house-sweep:ondemand:")
+  })
+  it("is scheduled only for an await tick with no friend or non-owner relationship behind it", async () => {
+    writeReport("live", [finding])
+    await digest({ finding_ids: [finding.id] }, ctx({ ...SCHEDULED, context: { friend: { id: "f1" } } }))
     expect(sent[0].noticeId).toContain("house-sweep:ondemand:")
     fs.rmSync(path.join(root, "state", "house-sweep", "reported.json"))
-    await digest({ finding_ids: [finding.id] }, ctx({ ...SCHEDULED, context: { friend: { id: "f1" } } }))
-    expect(sent[1].noticeId).toContain("house-sweep:ondemand:")
-    fs.rmSync(path.join(root, "state", "house-sweep", "reported.json"))
     await digest({ finding_ids: [finding.id] }, ctx({ autonomousTurnKind: "await", autonomousAwaitName: "some-other-await" }))
-    expect(sent[2].noticeId).toContain("house-sweep:ondemand:")
+    expect(sent[1].noticeId).toContain("house-sweep:ondemand:")
   })
   it("prefixes a peer's digest with the peer's name", async () => {
     writeReport("live", [finding])
