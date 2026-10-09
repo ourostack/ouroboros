@@ -157,6 +157,8 @@ interface PendingEntry {
  */
 export class PendingVoiceCalls {
   private readonly entries = new Map<string, PendingEntry>()
+  private readonly connected = new Map<string, number>()
+  private readonly rejected = new Map<string, number>()
   private readonly ttlMs: number
   private readonly maxEntries: number
   private readonly now: () => number
@@ -183,7 +185,29 @@ export class PendingVoiceCalls {
     const entry = this.live(callSid)
     if (!entry || !entry.nonces.has(nonce)) return null
     this.entries.delete(callSid)
+    this.remember(this.connected, callSid)
     return entry.identity
+  }
+
+  /**
+   * Remember that a stream for this call was refused, so the call's end can say so. Ignored for a
+   * call that already connected: a replayed token must not turn a good call into a failure.
+   */
+  markRejected(callSid: string): void {
+    if (this.recalls(this.connected, callSid)) return
+    this.remember(this.rejected, callSid)
+  }
+
+  /**
+   * Called when the stream's `<Connect>` ends. Returns true when the call never connected to a
+   * session (still waiting, or its stream was refused); forgets everything known about the call.
+   */
+  settle(callSid: string): boolean {
+    const failed = this.live(callSid) !== undefined || this.recalls(this.rejected, callSid)
+    this.entries.delete(callSid)
+    this.connected.delete(callSid)
+    this.rejected.delete(callSid)
+    return failed
   }
 
   has(callSid: string): boolean {
@@ -198,6 +222,22 @@ export class PendingVoiceCalls {
     return this.entries.size
   }
 
+  private remember(marks: Map<string, number>, callSid: string): void {
+    marks.delete(callSid)
+    marks.set(callSid, this.now() + this.ttlMs)
+    while (marks.size > this.maxEntries) marks.delete(marks.keys().next().value as string)
+  }
+
+  private recalls(marks: Map<string, number>, callSid: string): boolean {
+    const expiresAtMs = marks.get(callSid)
+    if (expiresAtMs === undefined) return false
+    if (this.now() > expiresAtMs) {
+      marks.delete(callSid)
+      return false
+    }
+    return true
+  }
+
   private live(callSid: string): PendingEntry | undefined {
     const entry = this.entries.get(callSid)
     if (!entry) return undefined
@@ -206,5 +246,25 @@ export class PendingVoiceCalls {
       return undefined
     }
     return entry
+  }
+}
+
+/** Bounded, TTL'd "have I seen this id" set, used to ignore replayed or duplicate webhooks. */
+export class RecentIds {
+  private readonly seen = new Map<string, number>()
+
+  constructor(private readonly options: { ttlMs?: number; maxEntries?: number; now?: () => number } = {}) {}
+
+  /** Returns true when the id is new (and remembers it), false when it was already seen. */
+  add(id: string): boolean {
+    const now = (this.options.now ?? Date.now)()
+    const expiresAtMs = this.seen.get(id)
+    if (expiresAtMs !== undefined && now <= expiresAtMs) return false
+    this.seen.delete(id)
+    this.seen.set(id, now + (this.options.ttlMs ?? 600_000))
+    while (this.seen.size > (this.options.maxEntries ?? 1_024)) {
+      this.seen.delete(this.seen.keys().next().value as string)
+    }
+    return true
   }
 }

@@ -2,6 +2,7 @@ import * as crypto from "node:crypto"
 import { describe, expect, it } from "vitest"
 import {
   PendingVoiceCalls,
+  RecentIds,
   mintVoiceCallToken,
   newVoiceCallNonce,
   verifyVoiceCallToken,
@@ -183,5 +184,60 @@ describe("PendingVoiceCalls", () => {
     small.record(identity("C"), "c")
     expect(small.consume("B", "b")).toBeNull()
     expect(small.consume("A", "a1")).not.toBeNull()
+  })
+})
+
+describe("PendingVoiceCalls call outcome", () => {
+  it("settles a connected call as ok even if a replayed token was refused", () => {
+    const pending = new PendingVoiceCalls()
+    pending.record(identity("CA1"), "n1")
+    expect(pending.consume("CA1", "n1")).not.toBeNull()
+    pending.markRejected("CA1")
+    expect(pending.settle("CA1")).toBe(false)
+  })
+
+  it("settles a refused stream or a never-connected call as failed, once", () => {
+    const pending = new PendingVoiceCalls()
+    pending.markRejected("CA1")
+    expect(pending.settle("CA1")).toBe(true)
+    expect(pending.settle("CA1")).toBe(false)
+    pending.record(identity("CA2"), "n2")
+    expect(pending.settle("CA2")).toBe(true)
+    expect(pending.has("CA2")).toBe(false)
+    expect(pending.settle("CA3")).toBe(false)
+  })
+
+  it("forgets marks after the ttl and bounds how many it keeps", () => {
+    let now = 0
+    const pending = new PendingVoiceCalls({ ttlMs: 1_000, maxEntries: 2, now: () => now })
+    pending.markRejected("A")
+    now = 1_001
+    expect(pending.settle("A")).toBe(false)
+    now = 0
+    pending.markRejected("A")
+    pending.markRejected("B")
+    pending.markRejected("C")
+    expect(pending.settle("A")).toBe(false)
+    expect(pending.settle("C")).toBe(true)
+  })
+})
+
+describe("RecentIds", () => {
+  it("accepts an id once, then reports it as seen until it expires", () => {
+    let now = 0
+    const ids = new RecentIds({ ttlMs: 1_000, maxEntries: 2, now: () => now })
+    expect(ids.add("a")).toBe(true)
+    expect(ids.add("a")).toBe(false)
+    now = 1_001
+    expect(ids.add("a")).toBe(true)
+  })
+
+  it("forgets the oldest id past the cap and works with defaults", () => {
+    const ids = new RecentIds({ maxEntries: 2 })
+    ids.add("a")
+    ids.add("b")
+    ids.add("c")
+    expect(ids.add("a")).toBe(true)
+    expect(new RecentIds().add("x")).toBe(true)
   })
 })

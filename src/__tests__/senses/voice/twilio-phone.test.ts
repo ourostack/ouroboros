@@ -17,7 +17,7 @@ import {
   computeOpenAIWebhookSignature,
   computeTwilioSignature,
   createTwilioOutboundCall,
-  createTwilioPhoneBridge,
+  createTwilioPhoneBridge as createTwilioPhoneBridgeUnsigned,
   defaultTwilioRecordingDownloader,
   normalizeTwilioE164PhoneNumber,
   normalizeTwilioPhoneBasePath,
@@ -33,7 +33,7 @@ import {
   twilioOutboundCallJobPath,
   twilioOutboundCallStatusCallbackUrl,
   twilioOutboundCallWebhookUrl,
-  startTwilioPhoneBridgeServer,
+  startTwilioPhoneBridgeServer as startTwilioPhoneBridgeServerUnsigned,
   twilioPhoneWebhookUrl,
   twilioPhoneVoiceSessionKey,
   twilioRecordingMediaUrl,
@@ -42,7 +42,135 @@ import {
   writeTwilioOutboundCallJob,
 } from "../../../senses/voice/twilio-phone"
 import type { VoiceTtsService, VoiceTranscriber } from "../../../senses/voice"
+import { PendingVoiceCalls, mintVoiceCallToken, newVoiceCallNonce, type VoiceCallIdentity } from "../../../senses/voice/call-auth"
 import type { VoiceRunSenseTurn } from "../../../senses/voice/turn"
+
+
+const TEST_TWILIO_AUTH_TOKEN = "twilio-test-auth-token"
+
+interface BridgeTestContext {
+  pending: PendingVoiceCalls
+  options: { agentName: string; publicBaseUrl: string; twilioAuthToken?: string; conversationEngine?: string; outboundConversationEngine?: string }
+}
+const bridgeContexts = new WeakMap<object, BridgeTestContext>()
+let lastBridge: object | undefined
+
+function withTestCallAuth<T extends { twilioAuthToken?: string; pendingVoiceCalls?: PendingVoiceCalls }>(options: T): T {
+  // Mutate in place: some tests install getters on the options they pass in.
+  if (!("twilioAuthToken" in options)) options.twilioAuthToken = TEST_TWILIO_AUTH_TOKEN
+  options.pendingVoiceCalls ??= new PendingVoiceCalls()
+  return options
+}
+
+/** Sign Twilio webhook POSTs the way Twilio does, so route tests exercise the real signature check. */
+function signingBridge<B extends { handle(request: { method: string; path: string; headers: Record<string, string | string[] | undefined>; body: string | Uint8Array | AsyncIterable<Uint8Array> }): Promise<unknown> }>(
+  bridge: B,
+  options: BridgeTestContext["options"] & { pendingVoiceCalls?: PendingVoiceCalls },
+): B {
+  bridgeContexts.set(bridge, { pending: options.pendingVoiceCalls!, options })
+  lastBridge = bridge
+  const handle = bridge.handle.bind(bridge)
+  bridge.handle = (request) => {
+    const token = options.twilioAuthToken?.trim()
+    if (request.method.toUpperCase() !== "POST" || !token || "x-twilio-signature" in request.headers || "webhook-signature" in request.headers || (request.body !== undefined && typeof request.body !== "string")) {
+      return handle(request)
+    }
+    const rawBody = (request.body as string | undefined) ?? ""
+    const path = request.path.startsWith("/") ? request.path : `/${request.path}`
+    const params: Record<string, string> = {}
+    for (const [key, value] of new URLSearchParams(rawBody)) params[key] = value
+    const signature = computeTwilioSignature({ authToken: token, url: new URL(path, options.publicBaseUrl).toString(), params })
+    return handle({ ...request, headers: { ...request.headers, "x-twilio-signature": signature } })
+  }
+  return bridge
+}
+
+function createTwilioPhoneBridge(options: Parameters<typeof createTwilioPhoneBridgeUnsigned>[0]) {
+  const prepared = withTestCallAuth(options)
+  return signingBridge(createTwilioPhoneBridgeUnsigned(prepared), prepared as never)
+}
+
+async function startTwilioPhoneBridgeServer(options: Parameters<typeof startTwilioPhoneBridgeServerUnsigned>[0]) {
+  const prepared = withTestCallAuth(options)
+  const server = await startTwilioPhoneBridgeServerUnsigned(prepared)
+  signingBridge(server.bridge, prepared as never)
+  return server
+}
+
+/**
+ * Build a Media Stream `start` message the way a real call produces one: the identity lives in the
+ * server-side registry and the stream carries only a token. Legacy-style custom parameters are
+ * translated into the recorded identity so these tests describe the call, not the wire.
+ */
+function startMessage(
+  start: { streamSid: string; callSid: string; customParameters?: Record<string, string> },
+  extra: { engine?: VoiceCallIdentity["engine"]; token?: (callSid: string) => string } = {},
+): Record<string, unknown> {
+  const context = bridgeContexts.get(lastBridge!)!
+  const cp = start.customParameters ?? {}
+  const direction = cp.Direction === "outbound" ? "outbound" : "inbound"
+  const identity: VoiceCallIdentity = {
+    callSid: start.callSid,
+    agentName: context.options.agentName,
+    direction,
+    from: direction === "outbound" ? cp.Remote || cp.To || "" : cp.From ?? "",
+    to: direction === "outbound" ? cp.Line || cp.From || "" : cp.To ?? "",
+    ...(cp.OutboundId ? { outboundId: cp.OutboundId } : {}),
+    ...(cp.FriendId ? { friendId: cp.FriendId } : {}),
+    ...(cp.Reason ? { reason: cp.Reason } : {}),
+    ...(cp.InitialAudio ? { initialAudio: cp.InitialAudio } : {}),
+    ...(cp.GreetingJobId ? { greetingJobId: cp.GreetingJobId } : {}),
+    engine: extra.engine ?? (context.options.conversationEngine === "openai-realtime" ? "openai-realtime" : "cascade"),
+  }
+  const nonce = newVoiceCallNonce()
+  context.pending.record(identity, nonce)
+  const token = mintVoiceCallToken({
+    secret: context.options.twilioAuthToken!, purpose: "stream", agentName: identity.agentName, callSid: identity.callSid,
+    direction, outboundId: identity.outboundId, nowMs: Date.now(), nonce,
+  })
+  return { event: "start", start: { streamSid: start.streamSid, callSid: start.callSid, customParameters: { OuroToken: token } } }
+}
+
+let sipCallCounter = 0
+
+/**
+ * SIP headers as the signed Twilio webhook would put them on the `<Sip>` URI: only the agent, the
+ * CallSid and a token. The caller details travel in the server-side record.
+ */
+function sipHeaders(headers: Array<{ name: string; value: string }>, overrides: { callSid?: string; token?: string } = {}): Array<{ name: string; value: string }> {
+  const context = bridgeContexts.get(lastBridge!)!
+  const get = (name: string) => headers.find((header) => header.name.toLowerCase() === name.toLowerCase())?.value ?? ""
+  const direction = get("X-Ouro-Direction") === "outbound" ? "outbound" : "inbound"
+  const callSid = overrides.callSid ?? `CASIP${++sipCallCounter}`
+  const identity: VoiceCallIdentity = {
+    callSid, agentName: context.options.agentName, direction, from: get("X-Ouro-From"), to: get("X-Ouro-To"), engine: "openai-sip",
+    ...(get("X-Ouro-Outbound-Id") ? { outboundId: get("X-Ouro-Outbound-Id") } : {}),
+    ...(get("X-Ouro-Friend-Id") ? { friendId: get("X-Ouro-Friend-Id") } : {}),
+    ...(get("X-Ouro-Reason") ? { reason: get("X-Ouro-Reason") } : {}),
+  }
+  const nonce = newVoiceCallNonce()
+  context.pending.record(identity, nonce)
+  const token = overrides.token ?? mintVoiceCallToken({
+    secret: context.options.twilioAuthToken!, purpose: "sip", agentName: identity.agentName, callSid, direction,
+    outboundId: identity.outboundId, from: identity.from, to: identity.to, nowMs: Date.now(), nonce,
+  })
+  return [
+    { name: "X-Ouro-Agent", value: identity.agentName },
+    { name: "X-Ouro-Call-Sid", value: callSid },
+    { name: "X-Ouro-Call-Token", value: token },
+  ]
+}
+
+function twimlToken(body: unknown): string {
+  const match = String(body).match(/<Parameter name="OuroToken" value="([^"]+)"/)
+  if (!match) throw new Error(`missing OuroToken in ${String(body)}`)
+  return match[1]!
+}
+
+/** A `start` message for the stream a webhook's TwiML just invited, carrying only that TwiML's token. */
+function startFromTwiml(body: unknown, start: { streamSid: string; callSid: string }): Record<string, unknown> {
+  return { event: "start", start: { ...start, customParameters: { OuroToken: twimlToken(body) } } }
+}
 
 function formBody(values: Record<string, string>): string {
   const params = new URLSearchParams()
@@ -241,10 +369,10 @@ async function startToolSelectionVoice(outputDir: string, transport: "openai-sip
   let socket: WebSocket | undefined
   if (transport === "openai-sip") {
     const payload = JSON.stringify({
-      type: "realtime.call.incoming", data: { call_id: callId, sip_headers: [
+      type: "realtime.call.incoming", data: { call_id: callId, sip_headers: sipHeaders([
         { name: "X-Ouro-From", value: caller.from }, { name: "X-Ouro-To", value: caller.to }, { name: "X-Ouro-Friend-Id", value: caller.friendId },
         { name: "X-Ouro-Direction", value: caller.direction }, { name: "X-Ouro-Outbound-Id", value: caller.outboundId },
-      ] },
+      ]) },
     })
     const timestamp = String(Math.floor(Date.now() / 1_000))
     const response = await server.bridge.handle({
@@ -255,9 +383,7 @@ async function startToolSelectionVoice(outputDir: string, transport: "openai-sip
   } else {
     socket = new WebSocket(`${server.localUrl.replace("http:", "ws:")}/voice/twilio/media-stream?engine=openai-realtime`)
     await waitForSocketOpen(socket)
-    sendSocketJson(socket, {
-      event: "start", start: { streamSid: "MZSELECTION", callSid: callId, customParameters: { From: caller.from, To: caller.to, FriendId: caller.friendId } },
-    })
+    sendSocketJson(socket, startMessage({ streamSid: "MZSELECTION", callSid: callId, customParameters: { From: caller.from, To: caller.to, FriendId: caller.friendId } }))
   }
   return {
     owner: { agentName: base.agentName, agentRoot: base.agentRoot },
@@ -1087,8 +1213,8 @@ describe("Twilio phone voice bridge", () => {
       expect(options.runSenseTurn).toHaveBeenCalledWith(expect.objectContaining({
         agentName: "slugger",
         channel: "voice",
-        friendId: "twilio-15551234567",
-        sessionKey: "twilio-phone-15551234567-via-15557654321",
+        friendId: expect.stringMatching(/^[0-9a-f-]{36}$/),
+        sessionKey: expect.stringMatching(/^twilio-phone-[0-9a-f-]{36}-via-15557654321$/),
         userMessage: expect.stringContaining("A Twilio phone voice call just connected."),
       }))
       expect(options.tts.synthesize).toHaveBeenCalledWith({
@@ -1118,8 +1244,8 @@ describe("Twilio phone voice bridge", () => {
       expect(options.runSenseTurn).toHaveBeenCalledWith(expect.objectContaining({
         agentName: "slugger",
         channel: "voice",
-        friendId: "twilio-incoming",
-        sessionKey: "twilio-phone-incoming",
+        friendId: expect.stringMatching(/^[0-9a-f-]{36}$/),
+        sessionKey: expect.stringMatching(/^twilio-phone-[0-9a-f-]{36}$/),
         userMessage: expect.stringContaining("Twilio did not provide caller ID."),
       }))
       expect(options.runSenseTurn).toHaveBeenCalledWith(expect.objectContaining({
@@ -1144,11 +1270,13 @@ describe("Twilio phone voice bridge", () => {
     })
 
     expect(response.statusCode).toBe(200)
-    expect(String(response.body)).toContain("<Connect><Stream url=\"wss://voice.example.com/voice/twilio/media-stream\">")
-    expect(String(response.body)).toContain("<Parameter name=\"From\" value=\"+15551234567\" />")
-    expect(String(response.body)).toContain("<Parameter name=\"To\" value=\"+15557654321\" />")
-    expect(String(response.body)).toContain("<Parameter name=\"Agent\" value=\"slugger\" />")
-    expect(String(response.body)).toContain("<Parameter name=\"GreetingJobId\" value=\"twilio-CA123-connected\" />")
+    expect(String(response.body)).toContain("<Connect action=\"https://voice.example.com/voice/twilio/stream-ended\" method=\"POST\"><Stream url=\"wss://voice.example.com/voice/twilio/media-stream\">")
+    expect(String(response.body)).toContain("<Parameter name=\"OuroToken\" value=\"")
+    // Identity stays on the server: nothing about the caller or the greeting rides on the stream.
+    for (const name of ["From", "To", "Agent", "FriendId", "GreetingJobId", "Direction", "OutboundId"]) {
+      expect(String(response.body)).not.toContain(`<Parameter name="${name}"`)
+    }
+    expect(String(response.body)).not.toContain("+15551234567")
     expect(String(response.body)).not.toContain("<Record")
     expect(String(response.body)).not.toContain("<Play>")
   })
@@ -1173,9 +1301,12 @@ describe("Twilio phone voice bridge", () => {
     expect(String(response.body)).not.toContain("answerOnBridge")
     expect(String(response.body)).toContain("sip:proj_test@sip.api.openai.com;transport=tls?")
     expect(String(response.body)).toContain("X-Ouro-Agent=slugger")
-    expect(String(response.body)).toContain("X-Ouro-Direction=inbound")
-    expect(String(response.body)).toContain("X-Ouro-From=%2B15551234567")
-    expect(String(response.body)).toContain("X-Ouro-To=%2B15557654321")
+    expect(String(response.body)).toContain("X-Ouro-Call-Sid=CA123")
+    expect(String(response.body)).toMatch(/X-Ouro-Call-Token=[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+/)
+    // Caller details are recorded server-side, not placed in SIP headers.
+    for (const name of ["X-Ouro-Direction", "X-Ouro-From", "X-Ouro-To", "X-Ouro-Friend-Id"]) {
+      expect(String(response.body)).not.toContain(name)
+    }
     expect(String(response.body)).not.toContain("<Connect><Stream")
     expect(String(response.body)).not.toContain("<Record")
   })
@@ -1329,11 +1460,11 @@ describe("Twilio phone voice bridge", () => {
         type: "realtime.call.incoming",
         data: {
           call_id: "call_123",
-          sip_headers: [
+          sip_headers: sipHeaders([
             { name: "X-Ouro-From", value: "+15551234567" },
             { name: "X-Ouro-To", value: "+15557654321" },
             { name: "X-Ouro-Friend-Id", value: "ari" },
-          ],
+          ]),
         },
       })
       const timestamp = String(Math.floor(Date.now() / 1_000))
@@ -1525,14 +1656,14 @@ describe("Twilio phone voice bridge", () => {
           type: "realtime.call.incoming",
           data: {
             call_id: "call_human",
-            sip_headers: [
+            sip_headers: sipHeaders([
               { name: "X-Ouro-Direction", value: "outbound" },
               { name: "X-Ouro-From", value: "+15551234567" },
               { name: "X-Ouro-To", value: "+15557654321" },
               { name: "X-Ouro-Friend-Id", value: "ari" },
               { name: "X-Ouro-Outbound-Id", value: "out-sip-human" },
               { name: "X-Ouro-Reason", value: "quick voice check" },
-            ],
+            ]),
           },
         }),
       })
@@ -1603,14 +1734,14 @@ describe("Twilio phone voice bridge", () => {
           type: "realtime.call.incoming",
           data: {
             call_id: "call_unknown_human",
-            sip_headers: [
+            sip_headers: sipHeaders([
               { name: "X-Ouro-Direction", value: "outbound" },
               { name: "X-Ouro-From", value: "+15551234567" },
               { name: "X-Ouro-To", value: "+15557654321" },
               { name: "X-Ouro-Friend-Id", value: "ari" },
               { name: "X-Ouro-Outbound-Id", value: "out-sip-unknown-human" },
               { name: "X-Ouro-Reason", value: "quick voice check" },
-            ],
+            ]),
           },
         }),
       })
@@ -1681,14 +1812,14 @@ describe("Twilio phone voice bridge", () => {
           type: "realtime.call.incoming",
           data: {
             call_id: "call_machine",
-            sip_headers: [
+            sip_headers: sipHeaders([
               { name: "X-Ouro-Direction", value: "outbound" },
               { name: "X-Ouro-From", value: "+15551234567" },
               { name: "X-Ouro-To", value: "+15557654321" },
               { name: "X-Ouro-Friend-Id", value: "ari" },
               { name: "X-Ouro-Outbound-Id", value: "out-sip-machine" },
               { name: "X-Ouro-Reason", value: "quick voice check" },
-            ],
+            ]),
           },
         }),
       })
@@ -1739,24 +1870,14 @@ describe("Twilio phone voice bridge", () => {
         body: formBody({ CallSid: "CA123", From: "+15551234567", To: "+15557654321" }),
       })
       const body = String(response.body)
-      expect(body).toContain("<Parameter name=\"GreetingJobId\" value=\"twilio-CA123-connected\" />")
+      expect(body).toContain("<Parameter name=\"OuroToken\"")
+      expect(body).not.toContain("GreetingJobId")
       expect(options.runSenseTurn).toHaveBeenCalledTimes(1)
 
       socket = new WebSocket(`${server.localUrl.replace("http:", "ws:")}/voice/twilio/media-stream`)
       const messages = collectSocketMessages(socket)
       await waitForSocketOpen(socket)
-      sendSocketJson(socket, {
-        event: "start",
-        start: {
-          streamSid: "MZ123",
-          callSid: "CA123",
-          customParameters: {
-            From: "+15551234567",
-            To: "+15557654321",
-            GreetingJobId: "twilio-CA123-connected",
-          },
-        },
-      })
+      sendSocketJson(socket, startFromTwiml(body, { streamSid: "MZ123", callSid: "CA123" }))
       await vi.waitFor(() => expect(messages.length).toBeGreaterThanOrEqual(2))
 
       expect(messages[0]).toEqual({
@@ -1847,24 +1968,21 @@ describe("Twilio phone voice bridge", () => {
         body: formBody({ CallSid: "CAREALTIME", From: "+15551234567", To: "+15557654321" }),
       })
       expect(response.statusCode).toBe(200)
-      expect(String(response.body)).toContain("<Connect><Stream url=\"wss://voice.example.com/voice/twilio/media-stream\">")
+      expect(String(response.body)).toContain("<Connect action=\"https://voice.example.com/voice/twilio/stream-ended\" method=\"POST\"><Stream url=\"wss://voice.example.com/voice/twilio/media-stream\">")
       expect(String(response.body)).not.toContain("GreetingJobId")
       expect(options.runSenseTurn).not.toHaveBeenCalled()
 
       socket = new WebSocket(`${server.localUrl.replace("http:", "ws:")}/voice/twilio/media-stream`)
       const twilioMessages = collectSocketMessages(socket)
       await waitForSocketOpen(socket)
-      sendSocketJson(socket, {
-        event: "start",
-        start: {
+      sendSocketJson(socket, startMessage({
           streamSid: "MZREALTIME",
           callSid: "CAREALTIME",
           customParameters: {
             From: "+15551234567",
             To: "+15557654321",
           },
-        },
-      })
+        }))
 
       await vi.waitFor(() => expect(openaiMessages.some((event) => event.type === "session.update")).toBe(true), { timeout: 10_000 })
       const sessionUpdate = openaiMessages.find((event) => event.type === "session.update") as { session: Record<string, unknown> }
@@ -2045,14 +2163,11 @@ describe("Twilio phone voice bridge", () => {
         const socket = new WebSocket(`${server!.localUrl.replace("http:", "ws:")}/voice/twilio/media-stream`)
         twilioSockets.push(socket)
         await waitForSocketOpen(socket)
-        sendSocketJson(socket, {
-          event: "start",
-          start: {
+        sendSocketJson(socket, startMessage({
             streamSid: `MZ${callSid}`,
             callSid,
             customParameters,
-          },
-        })
+          }))
         await vi.waitFor(() => {
           expect(openaiMessages.filter((event) => event.type === "session.update")).toHaveLength(expectedSessionUpdates)
         }, { timeout: 10_000 })
@@ -2065,20 +2180,12 @@ describe("Twilio phone voice bridge", () => {
       const sessionUpdates = openaiMessages.filter((event): event is { session: { instructions?: string } } =>
         event.type === "session.update" && typeof (event as { session?: { instructions?: unknown } }).session?.instructions === "string",
       )
-      expect(sessionUpdates.some((event) => event.session.instructions?.includes("Resolved voice friend: local-voice-friend"))).toBe(true)
-      expect(sessionUpdates.some((event) => event.session.instructions?.includes("Resolved voice friend: fallback-local"))).toBe(true)
-
-      const friendDir = path.join(agentRoot, "friends")
-      const friendRecords = await Promise.all((await fs.readdir(friendDir)).filter((entry) => entry.endsWith(".json")).map(async (entry) => (
-        JSON.parse(await fs.readFile(path.join(friendDir, entry), "utf8")) as {
-          name?: string
-          externalIds?: Array<{ provider?: string; externalId?: string }>
-        }
-      )))
-      const localIds = friendRecords.flatMap((record) =>
-        record.externalIds?.filter((identity) => identity.provider === "local").map((identity) => identity.externalId) ?? [],
-      )
-      expect(localIds).toEqual(expect.arrayContaining(["local-voice-friend", "fallback-local"]))
+      const resolved = sessionUpdates.map((event) => event.session.instructions?.match(/friendId=([^,)\s]+)/)?.[1])
+      // Neither the client-claimed FriendId nor defaultFriendId decides who an inbound caller is.
+      expect(resolved).toHaveLength(2)
+      expect(resolved.every((id) => typeof id === "string" && /^[0-9a-f-]{36}$/.test(id))).toBe(true)
+      expect(new Set(resolved).size).toBe(2)
+      expect(sessionUpdates.some((event) => event.session.instructions?.includes("local-voice-friend") || event.session.instructions?.includes("fallback-local"))).toBe(false)
     } finally {
       for (const socket of twilioSockets) {
         if (socket.readyState === WebSocket.OPEN) await closeSocket(socket)
@@ -2139,9 +2246,7 @@ describe("Twilio phone voice bridge", () => {
       socket = new WebSocket(`${server.localUrl.replace("http:", "ws:")}/voice/twilio/media-stream`)
       const twilioMessages = collectSocketMessages(socket)
       await waitForSocketOpen(socket)
-      sendSocketJson(socket, {
-        event: "start",
-        start: {
+      sendSocketJson(socket, startMessage({
           streamSid: "MZINITIAL",
           callSid: "CAINITIAL",
           customParameters: {
@@ -2149,8 +2254,7 @@ describe("Twilio phone voice bridge", () => {
             To: "+15557654321",
             InitialAudio: JSON.stringify({ source: "tone", label: "hello tone", toneHz: 440, durationMs: 80 }),
           },
-        },
-      })
+        }))
 
       await vi.waitFor(() => expect(openaiMessages.some((event) => event.type === "session.update")).toBe(true), { timeout: 10_000 })
       await vi.waitFor(() => expect(twilioMessages.some((event) =>
@@ -2198,14 +2302,11 @@ describe("Twilio phone voice bridge", () => {
       })
 
       expect(response.statusCode).toBe(200)
-      expect(String(response.body)).toContain("<Connect><Stream url=\"wss://voice.example.com/voice/twilio/media-stream\">")
-      expect(String(response.body)).toContain("<Parameter name=\"Direction\" value=\"outbound\" />")
-      expect(String(response.body)).toContain("<Parameter name=\"Remote\" value=\"+15551234567\" />")
-      expect(String(response.body)).toContain("<Parameter name=\"Line\" value=\"+15557654321\" />")
-      expect(String(response.body)).toContain("<Parameter name=\"FriendId\" value=\"ari\" />")
-      expect(String(response.body)).toContain("<Parameter name=\"OutboundId\" value=\"out-1\" />")
-      expect(String(response.body)).toContain("<Parameter name=\"InitialAudio\" value=\"{&quot;source&quot;:&quot;tone&quot;,&quot;label&quot;:&quot;hello tone&quot;,&quot;toneHz&quot;:440,&quot;durationMs&quot;:80}\" />")
-      expect(String(response.body)).toContain("<Parameter name=\"GreetingJobId\" value=\"twilio-CAOUT-outbound-connected\" />")
+      expect(String(response.body)).toContain("<Connect action=\"https://voice.example.com/voice/twilio/stream-ended\" method=\"POST\"><Stream url=\"wss://voice.example.com/voice/twilio/media-stream\">")
+      expect(String(response.body)).toContain("<Parameter name=\"OuroToken\" value=\"")
+      for (const name of ["Direction", "Remote", "Line", "FriendId", "OutboundId", "Reason", "InitialAudio", "GreetingJobId"]) {
+        expect(String(response.body)).not.toContain(`<Parameter name="${name}"`)
+      }
       expect(options.runSenseTurn).toHaveBeenCalledWith(expect.objectContaining({
         friendId: "ari",
         sessionKey: "twilio-phone-ari-via-15557654321",
@@ -2273,28 +2374,14 @@ describe("Twilio phone voice bridge", () => {
       })
 
       expect(response.statusCode).toBe(200)
-      expect(String(response.body)).toContain("<Connect><Stream url=\"wss://voice.example.com/voice/twilio/media-stream?engine=openai-realtime\">")
+      expect(String(response.body)).toContain("<Connect action=\"https://voice.example.com/voice/twilio/stream-ended\" method=\"POST\"><Stream url=\"wss://voice.example.com/voice/twilio/media-stream\">")
       expect(String(response.body)).not.toContain("<Dial><Sip>")
-      expect(String(response.body)).toContain("<Parameter name=\"Direction\" value=\"outbound\" />")
-      expect(String(response.body)).toContain("<Parameter name=\"OutboundId\" value=\"out-realtime-override\" />")
+      expect(String(response.body)).toContain("<Parameter name=\"OuroToken\"")
 
-      socket = new WebSocket(`${server.localUrl.replace("http:", "ws:")}/voice/twilio/media-stream?engine=openai-realtime`)
+      // The engine for this outbound call rides in the server-side record, not in the stream URL.
+      socket = new WebSocket(`${server.localUrl.replace("http:", "ws:")}/voice/twilio/media-stream`)
       await waitForSocketOpen(socket)
-      sendSocketJson(socket, {
-        event: "start",
-        start: {
-          streamSid: "MZOUTREALTIME",
-          callSid: "CAOUTREALTIME",
-          customParameters: {
-            Direction: "outbound",
-            Remote: "+15551234567",
-            Line: "+15557654321",
-            FriendId: "ari",
-            OutboundId: "out-realtime-override",
-            Reason: "avoid second-ring SIP bridgeback",
-          },
-        },
-      })
+      sendSocketJson(socket, startFromTwiml(response.body, { streamSid: "MZOUTREALTIME", callSid: "CAOUTREALTIME" }))
       await vi.waitFor(() => expect(openaiMessages.some((event) => event.type === "session.update")).toBe(true), { timeout: 10_000 })
       expect(options.runSenseTurn).not.toHaveBeenCalled()
     } finally {
@@ -2426,13 +2513,11 @@ describe("Twilio phone voice bridge", () => {
         body: formBody({ CallSid: "CAOUTPRE", From: "+15557654321", To: "+15551234567" }),
       })
       expect(options.runSenseTurn).not.toHaveBeenCalled()
-      expect(String(response.body)).toContain("<Parameter name=\"GreetingJobId\" value=\"twilio-CAOUTPRE-outbound-connected\" />")
+      expect(String(response.body)).toContain("<Parameter name=\"OuroToken\"")
 
       socket = new WebSocket(`${server.localUrl.replace("http:", "ws:")}/voice/twilio/media-stream`)
       await waitForSocketOpen(socket)
-      sendSocketJson(socket, {
-        event: "start",
-        start: {
+      sendSocketJson(socket, startMessage({
           streamSid: "MZ123",
           callSid: "CAOUTPRE",
           customParameters: {
@@ -2445,8 +2530,7 @@ describe("Twilio phone voice bridge", () => {
             OutboundId: "out-prewarm",
             GreetingJobId: "twilio-CAOUTPRE-outbound-connected",
           },
-        },
-      })
+        }))
       const media = await waitForSocketMessage(socket)
       expect(media).toEqual({
         event: "media",
@@ -2494,7 +2578,7 @@ describe("Twilio phone voice bridge", () => {
       })
 
       expect(response.statusCode).toBe(200)
-      expect(String(response.body)).toContain("<Parameter name=\"GreetingJobId\" value=\"twilio-CAOUTMISS-outbound-connected\" />")
+      expect(String(response.body)).toContain("<Parameter name=\"OuroToken\"")
       expect(options.runSenseTurn).toHaveBeenCalledTimes(1)
     } finally {
       await fs.rm(outputDir, { recursive: true, force: true })
@@ -2532,14 +2616,12 @@ describe("Twilio phone voice bridge", () => {
         headers: {},
         body: formBody({ CallSid: "CAOUT2", From: "+15557654321", To: "+15551234567" }),
       })
-      expect(String(response.body)).toContain("<Parameter name=\"GreetingJobId\" value=\"twilio-CAOUT2-outbound-connected\" />")
+      expect(String(response.body)).toContain("<Parameter name=\"OuroToken\"")
 
       socket = new WebSocket(`${server.localUrl.replace("http:", "ws:")}/voice/twilio/media-stream`)
       const messages = collectSocketMessages(socket)
       await waitForSocketOpen(socket)
-      sendSocketJson(socket, {
-        event: "start",
-        start: {
+      sendSocketJson(socket, startMessage({
           streamSid: "MZ123",
           callSid: "CAOUT2",
           customParameters: {
@@ -2552,8 +2634,7 @@ describe("Twilio phone voice bridge", () => {
             OutboundId: "out-2",
             GreetingJobId: "twilio-CAOUT2-outbound-connected",
           },
-        },
-      })
+        }))
       await vi.waitFor(() => expect(messages.length).toBeGreaterThanOrEqual(2))
       expect(messages[0]).toEqual({
         event: "media",
@@ -2678,14 +2759,11 @@ describe("Twilio phone voice bridge", () => {
       socket = new WebSocket(`${server.localUrl.replace("http:", "ws:")}/voice/twilio/media-stream`)
       const messages = collectSocketMessages(socket)
       await waitForSocketOpen(socket)
-      sendSocketJson(socket, {
-        event: "start",
-        start: {
+      sendSocketJson(socket, startMessage({
           streamSid: "MZ123",
           callSid: "CA123",
           customParameters: { From: "+15551234567", To: "+15557654321" },
-        },
-      })
+        }))
       await vi.waitFor(() => expect(messages.length).toBeGreaterThanOrEqual(2))
       const media = messages[0]
       const mark = messages[1]
@@ -2701,8 +2779,8 @@ describe("Twilio phone voice bridge", () => {
       })
       expect(options.runSenseTurn).toHaveBeenCalledWith(expect.objectContaining({
         channel: "voice",
-        friendId: "twilio-15551234567",
-        sessionKey: "twilio-phone-15551234567-via-15557654321",
+        friendId: expect.stringMatching(/^[0-9a-f-]{36}$/),
+        sessionKey: expect.stringMatching(/^twilio-phone-[0-9a-f-]{36}-via-15557654321$/),
         userMessage: expect.stringContaining("A Twilio phone voice call just connected."),
       }))
 
@@ -2765,14 +2843,11 @@ describe("Twilio phone voice bridge", () => {
       socket = new WebSocket(`${server.localUrl.replace("http:", "ws:")}/voice/twilio/media-stream`)
       const messages = collectSocketMessages(socket)
       await waitForSocketOpen(socket)
-      sendSocketJson(socket, {
-        event: "start",
-        start: {
+      sendSocketJson(socket, startMessage({
           streamSid: "MZ123",
           callSid: "CA123",
           customParameters: { From: "+15551234567", To: "+15557654321" },
-        },
-      })
+        }))
 
       const greetingMedia = await waitForSocketMessage(socket)
       expect(greetingMedia).toMatchObject({ event: "media" })
@@ -2845,14 +2920,11 @@ describe("Twilio phone voice bridge", () => {
       socket = new WebSocket(`${server.localUrl.replace("http:", "ws:")}/voice/twilio/media-stream`)
       const messages = collectSocketMessages(socket)
       await waitForSocketOpen(socket)
-      sendSocketJson(socket, {
-        event: "start",
-        start: {
+      sendSocketJson(socket, startMessage({
           streamSid: "MZ123",
           callSid: "CAEND",
           customParameters: { From: "+15551234567", To: "+15557654321" },
-        },
-      })
+        }))
       await vi.waitFor(() => expect(messages.length).toBeGreaterThanOrEqual(2))
 
       const media = messages[0]
@@ -2950,14 +3022,11 @@ describe("Twilio phone voice bridge", () => {
       })
       socket = new WebSocket(`${server.localUrl.replace("http:", "ws:")}/voice/twilio/media-stream`)
       await waitForSocketOpen(socket)
-      sendSocketJson(socket, {
-        event: "start",
-        start: {
+      sendSocketJson(socket, startMessage({
           streamSid: "MZ123",
           callSid: "CACANCEL",
           customParameters: { From: "+15551234567", To: "+15557654321" },
-        },
-      })
+        }))
 
       const goodbye = await waitForSocketMessage(socket)
       expect(goodbye).toMatchObject({ event: "media", streamSid: "MZ123" })
@@ -3018,9 +3087,7 @@ describe("Twilio phone voice bridge", () => {
       })
       socket = new WebSocket(`${server.localUrl.replace("http:", "ws:")}/voice/twilio/media-stream`)
       await waitForSocketOpen(socket)
-      sendSocketJson(socket, {
-        event: "start",
-        start: {
+      sendSocketJson(socket, startMessage({
           streamSid: "MZ123",
           callSid: "CAOUTMENU",
           customParameters: {
@@ -3032,8 +3099,7 @@ describe("Twilio phone voice bridge", () => {
             FriendId: "ari",
             OutboundId: "out-menu",
           },
-        },
-      })
+        }))
       await vi.waitFor(() => expect(options.runSenseTurn).toHaveBeenCalledTimes(1))
       vi.mocked(options.runSenseTurn).mockClear()
 
@@ -3081,9 +3147,7 @@ describe("Twilio phone voice bridge", () => {
       })
       socket = new WebSocket(`${server.localUrl.replace("http:", "ws:")}/voice/twilio/media-stream`)
       await waitForSocketOpen(socket)
-      sendSocketJson(socket, {
-        event: "start",
-        start: {
+      sendSocketJson(socket, startMessage({
           streamSid: "MZ123",
           callSid: "CAASYNC",
           customParameters: {
@@ -3095,8 +3159,7 @@ describe("Twilio phone voice bridge", () => {
             FriendId: "ari",
             OutboundId: "out-async-machine",
           },
-        },
-      })
+        }))
       await vi.waitFor(() => expect(options.runSenseTurn).toHaveBeenCalledTimes(1))
       vi.mocked(options.runSenseTurn).mockClear()
 
@@ -3265,7 +3328,7 @@ describe("Twilio phone voice bridge", () => {
     const response = await bridge.handle({
       method: "POST",
       path: "/voice/twilio/incoming",
-      headers: {},
+      headers: { "x-twilio-signature": "" },
       body: formBody({ CallSid: "CA123", From: "+15551234567" }),
     })
 
@@ -3360,13 +3423,13 @@ describe("Twilio phone voice bridge", () => {
     expect(String(response.body)).toContain("<Record")
   })
 
-  it("treats blank Twilio auth tokens as local unsigned mode", () => {
+  it("fails closed when the Twilio auth token is blank", () => {
     expect(validateTwilioSignature({
       authToken: "   ",
       url: "https://voice.example.com/voice/twilio/incoming",
       params: {},
       signature: "",
-    })).toBe(true)
+    })).toBe(false)
   })
 
   it("downloads Twilio recordings with optional Basic auth", async () => {
@@ -3453,7 +3516,7 @@ describe("Twilio phone voice bridge", () => {
 
       expect(options.downloadRecording).toHaveBeenCalledWith({
         accountSid: undefined,
-        authToken: undefined,
+        authToken: TEST_TWILIO_AUTH_TOKEN,
         recordingUrl: "https://api.twilio.com/2010-04-01/Accounts/AC/Recordings/RE222.wav",
       })
       expect(options.transcriber.transcribe).toHaveBeenCalledWith({
@@ -3463,8 +3526,8 @@ describe("Twilio phone voice bridge", () => {
       expect(options.runSenseTurn).toHaveBeenCalledWith(expect.objectContaining({
         agentName: "slugger",
         channel: "voice",
-        friendId: "twilio-15551234567",
-        sessionKey: "twilio-phone-15551234567-via-15557654321",
+        friendId: expect.stringMatching(/^[0-9a-f-]{36}$/),
+        sessionKey: expect.stringMatching(/^twilio-phone-[0-9a-f-]{36}-via-15557654321$/),
         userMessage: "hello over the phone",
       }))
       expect(options.tts.synthesize).toHaveBeenCalledWith({
@@ -3543,7 +3606,7 @@ describe("Twilio phone voice bridge", () => {
 
       expect(Buffer.concat(rest).toString("utf8")).toBe("late")
       expect(options.runSenseTurn).toHaveBeenCalledWith(expect.objectContaining({
-        sessionKey: "twilio-phone-15551234567-via-15557654321",
+        sessionKey: expect.stringMatching(/^twilio-phone-[0-9a-f-]{36}-via-15557654321$/),
       }))
       expect(await fs.readFile(path.join(outputDir, "CA111", "twilio-ca111-re222.mp3"), "utf8")).toBe("early-late")
     } finally {
@@ -3679,7 +3742,7 @@ describe("Twilio phone voice bridge", () => {
       expect(await collectBridgeBody(streamResponse.body)).toEqual(Buffer.from("mp3-response"))
       expect(options.runSenseTurn).toHaveBeenCalledWith(expect.objectContaining({
         userMessage: expect.stringContaining("A Twilio phone voice call just connected."),
-        sessionKey: "twilio-phone-15551234567-via-15557654321",
+        sessionKey: expect.stringMatching(/^twilio-phone-[0-9a-f-]{36}-via-15557654321$/),
       }))
       expect(await fs.readFile(path.join(outputDir, "CA123", "twilio-ca123-connected.mp3"), "utf8")).toBe("mp3-response")
     } finally {
@@ -3943,7 +4006,7 @@ describe("Twilio phone voice bridge", () => {
       expect(await collectBridgeBody(streamResponse.body)).toEqual(Buffer.from("mp3-response"))
       expect(options.runSenseTurn).toHaveBeenCalledWith(expect.objectContaining({
         userMessage: expect.stringContaining("no intelligible speech"),
-        sessionKey: "twilio-phone-15551234567",
+        sessionKey: expect.stringMatching(/^twilio-phone-[0-9a-f-]{36}$/),
       }))
     } finally {
       await fs.rm(outputDir, { recursive: true, force: true })
@@ -4028,8 +4091,8 @@ describe("Twilio phone voice bridge", () => {
       expect(options.runSenseTurn).toHaveBeenCalledWith(expect.objectContaining({
         agentName: "slugger",
         channel: "voice",
-        friendId: "twilio-15551234567",
-        sessionKey: "twilio-phone-15551234567",
+        friendId: expect.stringMatching(/^[0-9a-f-]{36}$/),
+        sessionKey: expect.stringMatching(/^twilio-phone-[0-9a-f-]{36}$/),
         userMessage: expect.stringContaining("no intelligible speech"),
       }))
       expect(options.runSenseTurn).not.toHaveBeenCalledWith(expect.objectContaining({
@@ -4047,7 +4110,7 @@ describe("Twilio phone voice bridge", () => {
     }
   })
 
-  it("passes Twilio credentials to recording downloads and can pin the voice friend", async () => {
+  it("passes Twilio credentials to recording downloads and ignores the configured default friend for inbound callers", async () => {
     const outputDir = await fs.mkdtemp(path.join(os.tmpdir(), "ouro-twilio-phone-"))
     try {
       const body = formBody({
@@ -4084,8 +4147,9 @@ describe("Twilio phone voice bridge", () => {
         recordingUrl: "https://api.twilio.com/Recordings/RE222.wav",
       })
       expect(options.runSenseTurn).toHaveBeenCalledWith(expect.objectContaining({
-        friendId: "ari",
+        friendId: expect.stringMatching(/^[0-9a-f-]{36}$/),
       }))
+      expect(options.runSenseTurn).not.toHaveBeenCalledWith(expect.objectContaining({ friendId: "ari" }))
     } finally {
       await fs.rm(outputDir, { recursive: true, force: true })
     }
@@ -4149,8 +4213,8 @@ describe("Twilio phone voice bridge", () => {
         audioPath: path.join(outputDir, "unknown", "unknown.wav"),
       })
       expect(options.runSenseTurn).toHaveBeenCalledWith(expect.objectContaining({
-        friendId: "twilio-unknown",
-        sessionKey: "twilio-phone-unknown",
+        friendId: expect.stringMatching(/^[0-9a-f-]{36}$/),
+        sessionKey: expect.stringMatching(/^twilio-phone-[0-9a-f-]{36}$/),
       }))
       expect(await fs.readFile(path.join(outputDir, "unknown", "twilio-unknown-unknown.mp3"), "utf8")).toBe("mp3-response")
     } finally {
@@ -4402,16 +4466,24 @@ describe("Twilio phone voice bridge", () => {
       host: "127.0.0.1",
     })
     try {
+      const recordingBody = formBody({
+        CallSid: "CA111",
+        RecordingSid: "RE222",
+        RecordingUrl: "https://api.twilio.com/Recordings/RE222",
+        From: "+15551234567",
+        To: "+15557654321",
+      })
       const twimlResponse = await fetch(`${server.localUrl}/voice/twilio/recording`, {
         method: "POST",
-        headers: { "content-type": "application/x-www-form-urlencoded" },
-        body: formBody({
-          CallSid: "CA111",
-          RecordingSid: "RE222",
-          RecordingUrl: "https://api.twilio.com/Recordings/RE222",
-          From: "+15551234567",
-          To: "+15557654321",
-        }),
+        headers: {
+          "content-type": "application/x-www-form-urlencoded",
+          "x-twilio-signature": computeTwilioSignature({
+            authToken: TEST_TWILIO_AUTH_TOKEN,
+            url: new URL("/voice/twilio/recording", baseBridgeOptions(outputDir).publicBaseUrl).toString(),
+            params: Object.fromEntries(new URLSearchParams(recordingBody)),
+          }),
+        },
+        body: recordingBody,
       })
 
       expect(twimlResponse.status).toBe(200)
@@ -4536,14 +4608,11 @@ describe("Twilio phone voice bridge", () => {
       socket = new WebSocket(`${server.localUrl.replace("http:", "ws:")}/voice/twilio/media-stream`)
       const twilioMessages = collectSocketMessages(socket)
       await waitForSocketOpen(socket)
-      sendSocketJson(socket, {
-        event: "start",
-        start: {
+      sendSocketJson(socket, startMessage({
           streamSid: "MZGATE",
           callSid: "CAGATE",
           customParameters: { From: "+15551234567", To: "+15557654321" },
-        },
-      })
+        }))
 
       await vi.waitFor(() => expect(openaiMessages.filter((e) => e.type === "response.create").length).toBeGreaterThanOrEqual(1), { timeout: 10_000 })
       await vi.waitFor(() => expect(twilioMessages.some((event) =>
@@ -4650,14 +4719,11 @@ describe("Twilio phone voice bridge", () => {
       socket = new WebSocket(`${server.localUrl.replace("http:", "ws:")}/voice/twilio/media-stream`)
       const twilioMessages = collectSocketMessages(socket)
       await waitForSocketOpen(socket)
-      sendSocketJson(socket, {
-        event: "start",
-        start: {
+      sendSocketJson(socket, startMessage({
           streamSid: "MZGATEHU",
           callSid: "CAGATEHU",
           customParameters: { From: "+15551234567", To: "+15557654321" },
-        },
-      })
+        }))
 
       await vi.waitFor(() => expect(twilioMessages.some((event) =>
         event.event === "media" && (event as { media?: { payload?: string } }).media?.payload === realtimeGreetingPayload,
@@ -4768,14 +4834,11 @@ describe("Twilio phone voice bridge", () => {
       socket = new WebSocket(`${server.localUrl.replace("http:", "ws:")}/voice/twilio/media-stream`)
       const twilioMessages = collectSocketMessages(socket)
       await waitForSocketOpen(socket)
-      sendSocketJson(socket, {
-        event: "start",
-        start: {
+      sendSocketJson(socket, startMessage({
           streamSid: "MZBARGE",
           callSid: "CABARGE",
           customParameters: { From: "+15551234567", To: "+15557654321" },
-        },
-      })
+        }))
 
       // Wait until the greeting response.create has been sent and at least one
       // audio frame has been forwarded to Twilio.
@@ -4897,14 +4960,11 @@ describe("Twilio phone voice bridge", () => {
       socket = new WebSocket(`${server.localUrl.replace("http:", "ws:")}/voice/twilio/media-stream`)
       const twilioMessages = collectSocketMessages(socket)
       await waitForSocketOpen(socket)
-      sendSocketJson(socket, {
-        event: "start",
-        start: {
+      sendSocketJson(socket, startMessage({
           streamSid: "MZDONEFIRST",
           callSid: "CADONEFIRST",
           customParameters: { From: "+15551234567", To: "+15557654321" },
-        },
-      })
+        }))
 
       await vi.waitFor(() => expect(twilioMessages.some((event) =>
         event.event === "media" && (event as { media?: { payload?: string } }).media?.payload === realtimeGreetingPayload,
@@ -4999,14 +5059,11 @@ describe("Twilio phone voice bridge", () => {
       socket = new WebSocket(`${server.localUrl.replace("http:", "ws:")}/voice/twilio/media-stream`)
       const twilioMessages = collectSocketMessages(socket)
       await waitForSocketOpen(socket)
-      sendSocketJson(socket, {
-        event: "start",
-        start: {
+      sendSocketJson(socket, startMessage({
           streamSid: "MZSTOPPED",
           callSid: "CASTOPPED",
           customParameters: { From: "+15551234567", To: "+15557654321" },
-        },
-      })
+        }))
 
       // Greeting completes.
       await vi.waitFor(() => expect(twilioMessages.some((event) =>
