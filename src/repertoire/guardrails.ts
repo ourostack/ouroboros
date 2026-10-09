@@ -91,14 +91,51 @@ function splitShellCommands(command: string): string[] {
 
 // --- shell commands that write to protected paths ---
 
-function shellWritesToProtectedPath(command: string, agentRoot?: string): boolean {
-  const protectedTarget = (target: string) => isProtectedPath(target) || isPsychePath(target, agentRoot)
+function shellWritesToProtectedPath(command: string): boolean {
   const redirectMatch = command.match(/>\s*(\S+)/)
-  if (redirectMatch && protectedTarget(redirectMatch[1])) return true
+  if (redirectMatch && isProtectedPath(redirectMatch[1])) return true
 
   const teeMatch = command.match(/tee\s+(?:-\w+\s+)*(\S+)/)
-  if (teeMatch && protectedTarget(teeMatch[1])) return true
+  if (teeMatch && isProtectedPath(teeMatch[1])) return true
 
+  return false
+}
+
+// --- the psyche folder in shell commands ---
+// The files are root-owned and read-only to the resident at the OS level (the upgrade installs them that way). This is the
+// defence in depth in front of that: a shell command that mentions the psyche folder at all runs only if every part of it is
+// a read-only command, because enumerating the ways to write a file (>, >>, tee, cp, mv, sed -i, node -e, python, cd then
+// redirect) is a list the model can always step around.
+const PSYCHE_READ_ONLY_COMMANDS = new Set(["cat", "ls", "head", "tail", "grep", "wc", "sha256sum", "stat", "cd", "pwd"])
+const SEGMENT_OPERATORS = new Set(["&&", "||", ";", "|"])
+
+function commandMentionsPsyche(command: string, words: readonly string[], agentRoot: string): boolean {
+  const psyche = path.resolve(agentRoot, "psyche")
+  if (command.includes(psyche) || words.some((word) => word.includes(psyche))) return true
+  if (words.some((word) => word === "psyche" || isPsychePath(word, agentRoot))) return true
+  // A relative "psyche/..." inside code or a quoted argument, when this agent has such a folder.
+  return /(?:^|[\s'"=(])psyche\//.test(command) && fs.existsSync(psyche)
+}
+
+function psycheShellWriteRefused(command: string, agentRoot: string | undefined): boolean {
+  if (!agentRoot) return false
+  const entries = parseShell(command)
+  const words = entries.filter((entry): entry is string => typeof entry === "string")
+  if (!commandMentionsPsyche(command, words, agentRoot)) return false
+  if (/\$\(|`|<\(|<<|\$\{/.test(command)) return true
+  let expectCommandWord = true
+  for (const entry of entries) {
+    if (typeof entry === "string") {
+      if (expectCommandWord && !/^\w+=/.test(entry)) {
+        if (!PSYCHE_READ_ONLY_COMMANDS.has(entry)) return true
+        expectCommandWord = false
+      }
+      continue
+    }
+    if ("op" in entry && SEGMENT_OPERATORS.has(entry.op)) { expectCommandWord = true; continue }
+    if ("op" in entry && entry.op === "glob") continue
+    return true
+  }
   return false
 }
 
@@ -139,7 +176,8 @@ function checkProtectedPaths(toolName: string, args: Record<string, string>, con
 
   if (toolName === "shell") {
     const command = args.command || ""
-    if (shellWritesToProtectedPath(command, context.agentRoot)) return deny(REASONS.protectedPath)
+    if (psycheShellWriteRefused(command, context.agentRoot)) return deny(REASONS.psychePath)
+    if (shellWritesToProtectedPath(command)) return deny(REASONS.protectedPath)
   }
 
   return allow

@@ -61,35 +61,65 @@ export function extractTimeline(session) {
   return timeline
 }
 
-/** A call that read a web source: a web search, a page fetch or read, or a curl of a URL. The same notion the runtime's source check uses. */
-export const isLookupCall = (call) => call.name === "web_search" || /^(web_fetch|fetch_url|fetch_page|read_url|read_page|browse\w*)$/.test(call.name) || (call.name === "shell" && /\b(curl|wget)\b|https?:\/\//.test(call.args ?? ""))
+/** A call that read a web source: a web search, a page fetch or read, or a curl or wget as a command word (echoing a URL is not a lookup). The same notion the runtime's source check uses. */
+const SHELL_LOOKUP_SEGMENT = /^\s*(?:\w+=\S*\s+)*(?:(?:sudo|env|command|time|nohup)\s+)*(?:(?:curl|wget)\b|books\s+(?:get|search|series|library\s+(?:find|search))\b)/
+const SHELL_SEGMENT_SEPARATOR = /&&|\|\||[;|\n]/
+/** A trace call's shell command: the recorded arguments are JSON text. */
+export const shellCommandOf = (args) => { try { const parsed = JSON.parse(String(args ?? "")); return typeof parsed?.command === "string" ? parsed.command : "" } catch { return String(args ?? "") } }
+export const isLookupCall = (call) => call.name === "web_search" || call.name === "media_search" || call.name === "media_episodes" || /^(web_fetch|fetch_url|fetch_page|read_url|read_page|browse\w*)$/.test(call.name) || (call.name === "shell" && shellCommandOf(call.args).split(SHELL_SEGMENT_SEPARATOR).some((segment) => SHELL_LOOKUP_SEGMENT.test(segment)))
 
 const HOUSE_WORDS = "Ari Butler Claude Code Sonarr Radarr Jellyfin Sanctuary Telegram Unraid Mendelow Cloud Calibre Books Jellyseerr Prowlarr"
 const CAPITALISED = /\p{Lu}[\p{L}\p{M}'\u2019]*/gu
-// Ordinary words that open a sentence or a bullet; any other capitalised word there is a candidate name (the runtime check does the same).
-const STARTERS = new Set(("the this that these those it its i so and but or yes no not sure okay ok here there what when where why how who which if then now also both one two my your our we you he she they " +
+// Ordinary words that open a sentence or a bullet; any other capitalised word there is a candidate name only with a sign it is one (the runtime check does the same, and a test keeps the two in step).
+export const STARTERS = new Set(("the this that these those it its i so and but or yes no not sure okay ok here there what when where why how who which if then now also both one two my your our we you he she they " +
   "got thanks thank done understood noted good great fine sorry will can could would should let yeah yep nope right well anyway still just all any some each every for from with without to in on at by as is are " +
   "was were do does did have has had maybe probably honestly unfortunately looks seems see check try use make keep stop start once first next last before after because since while though although however " +
   "otherwise instead meanwhile today tonight tomorrow yesterday more most many other another such only even about over under between like nothing something everything anything everyone someone anyone " +
-  "overall basically actually generally usually often sometimes never always note tip warning update summary answer plan status result results source sources todo").split(" "))
+  "overall basically actually generally usually often sometimes never always note tip warning update summary answer plan status result results source sources todo among per plus either neither whether yet nobody heads").split(" "))
+// Status verbs and media nouns that fill ordinary replies; never names, wherever they sit.
+export const EXEMPT_WORDS = new Set(("added adding found finding sent sending searching searched grabbing grabbed grab season seasons episode episodes queued queueing monitoring monitored imported importing " +
+  "downloading downloaded download downloads requested requesting removed removing deleted updated updating checking checked looking looked started starting finished finishing waiting stalled retrying retried " +
+  "marked set setting assigned assigning movie movies show shows book books series film films less tell ready missing available unavailable specials special").split(" "))
+export const LABEL_WORDS = new Set(("note notes tip warning update summary answer plan status result results source sources todo next why how what done reply title healthy snoozed down up broken failed pending " +
+  "running stopped paused queued cast characters authors books series shows movies episodes tldr caveat caveats options option").split(" "))
+const CONTRACTION = /^\p{L}+['\u2019](?:ll|m|re|ve|d|t)$/iu
+const COPULA_AFTER = /^(?:['\u2019]s\b|\s+(?:is|was|are|were|isn['\u2019]t|wasn['\u2019]t|has|had|does|did)\b)/i
 
 const escapeRegExp = (text) => text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")
 /** Whole-word, case-insensitive, Unicode-aware: "Dross" is not found inside "Drossel". */
 export const mentionsWord = (haystack, name) => new RegExp(`(?<![\\p{L}\\p{N}])${escapeRegExp(name)}(?![\\p{L}\\p{N}])`, "iu").test(String(haystack ?? ""))
 
-/** Capitalised words that read as names (not short acronyms), skipping any word in `known`. Sentence and bullet starts count unless they are ordinary words. */
+const strip = (word) => word.replace(/['\u2019]s$/i, "").replace(/['\u2019]$/, "")
+const opensSentence = (body, index) => { const before = body.slice(0, index).replace(/[ \t"'\u201c\u2018(\[*_#>-]+$/u, ""); return before === "" || /[.!?:\n]$/.test(before) }
+function midSentenceCapitalised(body, lower) {
+  for (const match of body.matchAll(CAPITALISED)) if (strip(match[0]).toLowerCase() === lower && !opensSentence(body, match.index)) return true
+  return false
+}
+// A sentence-opening word is a name only with a sign: capitalised elsewhere mid-sentence, in a quote or emphasis, opening a bullet, followed by a colon, a copula or a list continuation.
+function startsLikeName(body, index, after, lower) {
+  const raw = index > 0 ? body[index - 1] : ""
+  if (/["\u201c\u2018'*_]/.test(raw)) return true
+  const line = body.slice(body.lastIndexOf("\n", index - 1) + 1, index)
+  if (/^\s*(?:[-*\u2022>]|\d+[.)])\s+$/.test(line)) return true
+  if (after.startsWith(":") || COPULA_AFTER.test(after) || /^(?:,|\s+and|\s*&)\s*\p{Lu}/u.test(after)) return true
+  return midSentenceCapitalised(body, lower)
+}
+
+/** Capitalised words that read as names (not short acronyms, contractions or status words), skipping any word in `known`. */
 export function properNouns(text, known = "") {
   const seen = new Set()
   const out = []
   const body = String(text ?? "")
   for (const match of body.matchAll(CAPITALISED)) {
-    const word = match[0].replace(/['\u2019]s$/i, "").replace(/['\u2019]$/, "")
+    const word = strip(match[0])
     if (word.length < 3 || (word.length <= 5 && word === word.toUpperCase())) continue
     const lower = word.toLowerCase()
-    const before = body.slice(0, match.index).replace(/[ \t"'\u201c\u2018(\[*_#>-]+$/u, "")
-    const startsSentence = before === "" || /[.!?:\n]$/.test(before)
-    if (startsSentence && STARTERS.has(lower)) continue
-    if (seen.has(lower) || mentionsWord(known, word)) continue
+    if (lower === "the" || CONTRACTION.test(word) || EXEMPT_WORDS.has(lower) || seen.has(lower) || mentionsWord(known, word)) continue
+    const starts = opensSentence(body, match.index)
+    const after = body.slice(match.index + match[0].length)
+    if (starts && STARTERS.has(lower)) continue
+    if (starts && LABEL_WORDS.has(lower) && after.startsWith(":")) continue
+    if (starts && !startsLikeName(body, match.index, after, lower)) continue
     seen.add(lower)
     out.push(word)
   }

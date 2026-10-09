@@ -27,13 +27,15 @@ export interface GroundingFinding {
 
 const LOOKUP_TOOL_NAMES = new Set(["web_search", "media_search", "media_episodes"])
 const LOOKUP_TOOL_PATTERN = /^(web_fetch|fetch_url|fetch_page|read_url|read_page|browse\w*)$/
-const SHELL_LOOKUP = /\b(curl|wget)\b|https?:\/\/|\bbooks\s+(get|search|series|library\s+(find|search))\b/
+/** A lookup is a command whose command word is curl or wget, or the books tool; echoing a URL, a here-string or a grep over text is not one. */
+const SHELL_LOOKUP_SEGMENT = /^\s*(?:\w+=\S*\s+)*(?:(?:sudo|env|command|time|nohup)\s+)*(?:(?:curl|wget)\b|books\s+(?:get|search|series|library\s+(?:find|search))\b)/
+const SHELL_SEGMENT_SEPARATOR = /&&|\|\||[;|\n]/
 
 const STRONG_CUE = /\b(books?|novels?|movies?|films?|anime|saga|trilogy|albums?|episodes?|protagonists?)\b/i
 const WORK_CUE = /\b(books?|novels?|series|saga|trilogy|shows?|movies?|films?|anime|characters?|protagonists?|authors?|episodes?|seasons?|albums?|bands?|lore)\b/i
 const COPULA_AFTER_NAME = /^(?:['’]s\b|\s+(?:is|was|are|were|isn['’]t|wasn['’]t|has|had|does|did)\b)/i
 /** Words that start a sentence or a bullet without being a name. */
-const COMMON_STARTERS = new Set([
+export const COMMON_STARTERS = new Set([
   "the", "this", "that", "these", "those", "it", "its", "i", "so", "and", "but", "or", "yes", "no", "not", "sure", "okay", "ok", "here", "there",
   "what", "when", "where", "why", "how", "who", "which", "if", "then", "now", "also", "both", "one", "two", "my", "your", "our", "we", "you", "he", "she", "they",
   "got", "thanks", "thank", "done", "understood", "noted", "good", "great", "fine", "sorry", "will", "can", "could", "would", "should", "let", "yeah", "yep", "nope",
@@ -46,12 +48,12 @@ const COMMON_STARTERS = new Set([
   "note", "tip", "warning", "heads", "update", "summary", "answer", "plan", "status", "result", "results", "source", "sources", "todo",
 ])
 /** A sentence-opening "Word:" is a label when the word is one of these; any other "Name:" is treated as a name. */
-const LABEL_WORDS = new Set([
+export const LABEL_WORDS = new Set([
   "note", "notes", "tip", "warning", "update", "summary", "answer", "plan", "status", "result", "results", "source", "sources", "todo", "next", "why", "how", "what",
   "done", "reply", "title", "healthy", "snoozed", "down", "up", "broken", "failed", "pending", "running", "stopped", "paused", "queued", "cast", "characters", "authors", "books", "series", "shows", "movies", "episodes", "tldr", "caveat", "caveats", "options", "option",
 ])
 /** Words that read as names but are not about a work: the house, the tools it uses, months, weekdays, common brands and services. */
-const HOUSE_VOCABULARY = new Set([
+export const HOUSE_VOCABULARY = new Set([
   "ari", "butler", "claude", "code", "sanctuary", "jellyfin", "sonarr", "radarr", "prowlarr", "jellyseerr", "calibre", "books", "telegram", "unraid", "docker",
   "mendelow", "cloud", "pocketbook", "astraweb", "usenet", "sabnzbd", "bazarr", "tmdb", "tvdb", "libgen", "plex", "github", "google", "apple", "amazon", "netflix",
   "hulu", "disney", "youtube", "spotify", "kindle", "kobo", "goodreads", "audible", "python", "javascript", "typescript", "node", "lodash", "vitest", "react",
@@ -59,6 +61,15 @@ const HOUSE_VOCABULARY = new Set([
   "january", "february", "march", "april", "may", "june", "july", "august", "september", "october", "november", "december",
   "monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday",
 ])
+/** Status verbs and media nouns that open or fill ordinary replies about media work ("Added the show Silo. Season 1 is grabbing now."): never names, wherever they sit. */
+export const EXEMPT_WORDS = new Set([
+  "added", "adding", "found", "finding", "sent", "sending", "searching", "searched", "grabbing", "grabbed", "grab", "season", "seasons", "episode", "episodes", "queued", "queueing",
+  "monitoring", "monitored", "imported", "importing", "downloading", "downloaded", "download", "downloads", "requested", "requesting", "removed", "removing", "deleted", "updated", "updating",
+  "checking", "checked", "looking", "looked", "started", "starting", "finished", "finishing", "waiting", "stalled", "retrying", "retried", "marked", "set", "setting", "assigned", "assigning",
+  "movie", "movies", "show", "shows", "book", "books", "series", "film", "films", "less", "tell", "ready", "missing", "available", "unavailable", "specials", "special",
+])
+/** Contractions are never names: I'll, I'm, They're. */
+const CONTRACTION = /^\p{L}+['’](?:ll|m|re|ve|d|t)$/iu
 const MIN_NAME_LENGTH = 3
 const MAX_ACRONYM_LENGTH = 5
 const LOWERCASE_LIST_INTRO = /\b(?:characters?|cast|names?|authors?|protagonists?|bands?|members?)\b[ \t]*(?::|—|-|are|includes?|including|like|such as)[ \t]+([^.!?\n]+)/gi
@@ -68,7 +79,7 @@ const LOWERCASE_LIST_STOP = new Set(["others", "etc", "more", "many", "several",
 /** True when the call read a primary source: a web search or page fetch, a catalog lookup, a curl, or the books tool. */
 export function isLookupToolCall(record: TurnToolRecord): boolean {
   if (LOOKUP_TOOL_NAMES.has(record.name) || LOOKUP_TOOL_PATTERN.test(record.name)) return true
-  return record.name === "shell" && SHELL_LOOKUP.test(record.args.command ?? "")
+  return record.name === "shell" && (record.args.command ?? "").split(SHELL_SEGMENT_SEPARATOR).some((segment) => SHELL_LOOKUP_SEGMENT.test(segment))
 }
 
 const escapeRegExp = (text: string): string => text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")
@@ -89,15 +100,41 @@ export function candidateNames(text: string): string[] {
     if (word.length < MIN_NAME_LENGTH) continue
     if (word.length <= MAX_ACRONYM_LENGTH && word === word.toUpperCase()) continue
     const lower = word.toLowerCase()
-    if (HOUSE_VOCABULARY.has(lower) || seen.has(lower)) continue
+    if (lower === "the" || CONTRACTION.test(word) || HOUSE_VOCABULARY.has(lower) || EXEMPT_WORDS.has(lower) || seen.has(lower)) continue
     const before = text.slice(0, match.index).replace(/[ \t"'“‘(\[*_#>-]+$/u, "")
     const startsSentence = before === "" || /[.!?:\n]$/.test(before)
+    const after = text.slice(match.index! + match[0].length)
     if (startsSentence && COMMON_STARTERS.has(lower)) continue
-    if (startsSentence && LABEL_WORDS.has(lower) && text[match.index! + match[0].length] === ":") continue
+    if (startsSentence && LABEL_WORDS.has(lower) && after.startsWith(":")) continue
+    if (startsSentence && !startsLikeName(text, match.index!, after, lower)) continue
     seen.add(lower)
     names.push(word)
   }
   return names
+}
+
+/**
+ * An ordinary sentence opens with a capital whether or not the word is a name ("Silo is in Sonarr", "Remember to..."). A sentence-opening word
+ * therefore counts as a name only with a sign it is one: it is capitalised elsewhere mid-sentence, it sits in a quote or emphasis or opens a bullet,
+ * it is followed by a colon, a copula, or a list continuation ("Lindon and Yerin").
+ */
+function startsLikeName(text: string, index: number, after: string, lower: string): boolean {
+  const rawBefore = index > 0 ? text[index - 1]! : ""
+  if (/["“‘'*_]/.test(rawBefore)) return true
+  const line = text.slice(text.lastIndexOf("\n", index - 1) + 1, index)
+  if (/^\s*(?:[-*•>]|\d+[.)])\s+$/.test(line)) return true
+  if (after.startsWith(":") || COPULA_AFTER_NAME.test(after) || /^(?:,|\s+and|\s*&)\s*\p{Lu}/u.test(after)) return true
+  return midSentenceCapitalised(text, lower)
+}
+
+function midSentenceCapitalised(text: string, lower: string): boolean {
+  for (const match of text.matchAll(TOKEN)) {
+    const word = match[0].replace(/['’]s$/i, "").replace(/['’]$/, "")
+    if (word.toLowerCase() !== lower) continue
+    const before = text.slice(0, match.index).replace(/[ \t"'“‘(\[*_#>-]+$/u, "")
+    if (!(before === "" || /[.!?:\n]$/.test(before))) return true
+  }
+  return false
 }
 
 /** Lowercase items in a list a work cue introduces ("characters: lindon, yerin and eithan"): two or more are treated as names. */

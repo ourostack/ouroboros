@@ -232,3 +232,44 @@ describe("checkTelegramBeforePause", () => {
     expect(check).toBeLessThan(body.indexOf("pauseSupervision()"))
   })
 })
+
+describe("the psyche folder is root-owned and read-only to the resident", () => {
+  const node = (uid: number, mode: number, kind: "dir" | "file" | "link", children: Record<string, ReturnType<typeof node>> = {}) => ({ uid, mode, kind, children })
+  const fsFor = (tree: ReturnType<typeof node>) => {
+    const find = (p: string) => p.split("/").filter(Boolean).slice(1).reduce((cur, part) => cur.children[part]!, tree)
+    return {
+      lstat: (p: string) => { const n = find(p); return { uid: n.uid, mode: n.mode, isSymbolicLink: () => n.kind === "link", isDirectory: () => n.kind === "dir" } },
+      readdir: (p: string) => Object.keys(find(p).children),
+    }
+  }
+  const sound = () => node(0, 0o755, "dir", { "SOUL.md": node(0, 0o644, "file"), sub: node(0, 0o755, "dir", { "LORE.md": node(0, 0o644, "file") }) })
+
+  it("finds nothing wrong with a root-owned 0755/0644 tree", () => {
+    expect(upgrade.psycheProblems("/p", fsFor(sound()))).toEqual([])
+  })
+  it("reports a file owned by the resident, a group-writable directory and a symlink", () => {
+    const tree = sound()
+    tree.children["SOUL.md"] = node(10001, 0o644, "file")
+    tree.children.sub!.mode = 0o775
+    tree.children.link = node(0, 0o777, "link")
+    const problems = upgrade.psycheProblems("/p", fsFor(tree))
+    expect(problems).toEqual(expect.arrayContaining(["/p/SOUL.md is owned by uid 10001, not root", "/p/sub is writable by group or others (mode 775)", "/p/link is a symlink"]))
+    expect(problems).toHaveLength(3)
+  })
+  it("uses the real filesystem by default", () => {
+    const dir = fs.mkdtempSync(path.join(require("node:os").tmpdir(), "psyche-own-"))
+    fs.writeFileSync(path.join(dir, "a.md"), "x")
+    fs.chmodSync(path.join(dir, "a.md"), 0o666)
+    expect(upgrade.psycheProblems(dir).some((line: string) => line.includes("writable by group or others"))).toBe(true)
+    fs.rmSync(dir, { recursive: true, force: true })
+  })
+  it("is restored after the bundle is handed back to the resident, and checked by verify", () => {
+    const migrate = source.slice(source.indexOf("function migrateBundle("), source.indexOf("// Host supervision for the root-authority gateway"))
+    expect(migrate.indexOf('"-R", "10001:10001", BUNDLE')).toBeLessThan(migrate.indexOf("restorePsycheRoot()"))
+    expect(source).toContain('"-R", "-h", "0:0", dir')
+    expect(source).toContain("find '${dir}' -type d -exec chmod 755 {} + && find '${dir}' -type f -exec chmod 644 {} +")
+    const verifyBody = source.slice(source.indexOf("function verify("), source.indexOf("function fail("))
+    expect(verifyBody).toContain("psycheProblems(psycheDir)")
+    expect(verifyBody).toContain("psyche files are root-owned and read-only to the resident")
+  })
+})

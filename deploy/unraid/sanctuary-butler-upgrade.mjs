@@ -42,7 +42,7 @@
 
 import { execFileSync, spawnSync } from "node:child_process"
 import { createHash } from "node:crypto"
-import { mkdtempSync, rmSync, writeFileSync, readFileSync, existsSync, statSync, lstatSync, chmodSync, realpathSync } from "node:fs"
+import { mkdtempSync, rmSync, writeFileSync, readFileSync, existsSync, statSync, lstatSync, chmodSync, realpathSync, readdirSync } from "node:fs"
 import { fileURLToPath } from "node:url"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
@@ -427,6 +427,29 @@ function restoreReplayRoot() {
   chmodSync(dir, 0o755)
   rmSync(`${dir}/window.json`, { force: true, recursive: true })
 }
+// The psyche files ship from the repository and nobody on the box edits them, the resident least of all. The recursive chown
+// above hands them to uid 10001; put them back as root-owned, directories 0755 and files 0644, so the resident cannot write
+// them at the OS level (the shell guard in the runtime is only the second line of defence).
+function restorePsycheRoot() {
+  const dir = `${BUNDLE}/psyche`
+  if (!existsSync(dir)) return
+  sh("/bin/chown", ["-R", "-h", "0:0", dir])
+  sh("/bin/sh", ["-c", `find '${dir}' -type d -exec chmod 755 {} + && find '${dir}' -type f -exec chmod 644 {} +`])
+}
+
+/** What is wrong with the psyche folder's ownership and modes: anything not root-owned, writable by group or others, or a symlink. Empty when it is sound. */
+export function psycheProblems(dir, { lstat = lstatSync, readdir = readdirSync } = {}) {
+  const problems = []
+  const walk = (current) => {
+    const stat = lstat(current)
+    if (stat.isSymbolicLink()) { problems.push(`${current} is a symlink`); return }
+    if (stat.uid !== 0) problems.push(`${current} is owned by uid ${stat.uid}, not root`)
+    if ((stat.mode & 0o022) !== 0) problems.push(`${current} is writable by group or others (mode ${(stat.mode & 0o777).toString(8)})`)
+    if (stat.isDirectory()) for (const name of readdir(current)) walk(`${current}/${name}`)
+  }
+  walk(dir)
+  return problems
+}
 function migrateBundle(version, rollbackImage) {
   say(`migrate agent bundle to ${version}`)
   const pkgBundle = `${ROOT}/incoming-package/deploy/unraid/sanctuary.ouro`
@@ -439,6 +462,7 @@ function migrateBundle(version, rollbackImage) {
   // migrate/commit ran as root; the resident owns its bundle as uid 10001, so restore ownership
   sh("/bin/chown", ["-R", "10001:10001", BUNDLE])
   restoreReplayRoot()
+  restorePsycheRoot()
   ok("bundle committed (ownership restored to resident)")
 }
 
@@ -1052,6 +1076,11 @@ function verify(withGate = false) {
   const auth = docker(["logs", CONTAINER, "--since", "2m"], { stdio: ["ignore","pipe","pipe"] }).split("\n").filter((l) => l.includes("401")).length
   auth === 0 ? ok("no Telegram auth failures in the last 2m") : bad(`${auth} 401s in the last 2m`)
   existsSync(POLICY) ? ok(`steward policy ${sha12(POLICY)}`) : bad("steward policy missing")
+  const psycheDir = `${BUNDLE}/psyche`
+  if (existsSync(psycheDir)) {
+    const psycheIssues = psycheProblems(psycheDir)
+    psycheIssues.length === 0 ? ok("psyche files are root-owned and read-only to the resident") : bad(`psyche files are writable by the resident: ${psycheIssues.slice(0, 3).join("; ")}`)
+  } else bad("psyche folder missing from the bundle")
   const jf = docker(["inspect", "jellyfin", "--format", "{{.State.Status}} restarts={{.RestartCount}}"]).trim()
   ok(`jellyfin ${jf}`)
   if (withGate) {

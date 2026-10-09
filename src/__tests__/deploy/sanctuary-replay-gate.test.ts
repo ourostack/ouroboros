@@ -191,9 +191,17 @@ describe("psyche conversation cases (work-sourced, psyche-via-pr, no-click-quali
     [{ name: "shell", args: undefined }, false], [{ name: "search_facts", args: "{}" }, false],
   ])("tells a lookup call from other calls: %j", (call, expected) => expect(gate.isLookupCall(call)).toBe(expected))
 
+  it("does not treat an echoed URL, a here-string or a grep as a lookup, and reads a wrapped command", () => {
+    for (const command of ["echo Lindon https://x", "printf https://x", "cat <<< https://x", "grep http f"]) expect(gate.isLookupCall({ name: "shell", args: JSON.stringify({ command }) })).toBe(false)
+    expect(gate.isLookupCall({ name: "shell", args: JSON.stringify({ command: "cd /tmp && wget https://x" }) })).toBe(true)
+    expect(gate.isLookupCall({ name: "shell", args: JSON.stringify({ command: "books search hobbit" }) })).toBe(true)
+    expect(gate.isLookupCall({ name: "shell", args: "curl https://x" })).toBe(true)
+    expect(gate.isLookupCall({ name: "media_search", args: "{}" })).toBe(true)
+  })
+
   it("finds names in text, skipping sentence starts, short acronyms and words already known", () => {
     expect(gate.properNouns("Honestly, I like Lindon and Yerin's sword. Philomena is new. OK AX Cradle dross Lindon", "cradle")).toEqual(["Lindon", "Yerin", "Philomena"])
-    expect(gate.properNouns("Wick fights.\n- Sloane too\n* The Mercy", "")).toEqual(["Wick", "Sloane", "Mercy"])
+    expect(gate.properNouns("Wick fights.\n- Sloane too\n* The Mercy", "")).toEqual(["Sloane", "Mercy"])
     expect(gate.properNouns("Drossel, Dross and Gross", "Dross")).toEqual(["Drossel", "Gross"])
     expect(gate.properNouns(undefined)).toEqual([])
     expect(gate.properNouns("x \"Bunty\" y", "")).toEqual(["Bunty"])
@@ -691,5 +699,39 @@ describe("cli", () => {
   it("runs as a script: self-test exits 0 and an unknown command exits 2", () => {
     expect(spawnSync("node", [SCRIPT, "self-test"], { encoding: "utf8" })).toMatchObject({ status: 0 })
     expect(spawnSync("node", [SCRIPT, "bogus"], { encoding: "utf8" }).status).toBe(2)
+  })
+})
+
+describe("the gate's name finder stays in step with the runtime's", () => {
+  const corpus = [
+    "Added the show Silo to Sonarr. Season 1 is grabbing now.", "Silo is in Sonarr. Searching for Season 2 now, Radarr untouched.", "Found the movie Dune: Part Two (2024). Grabbing it.",
+    "Sent the book The Hobbit to your PocketBook.", "The book Dune by Frank Herbert is on your Kindle.", "I'll grab the show. I'm adding it now. Less than a minute. Tell me.",
+    "Lindon and Yerin train. \"Eithan\" smiles. Wei: calm. Mira fights, Zed runs.", "Remember Orsa. Orsa waits.", "Some options:\n- Philomena\n- Magma\nLindon too", "Note: Honestly it is fine. Tuesday in March, Lodash and Vitest.",
+    "For Cradle the characters with that energy are Lindon, Yerin, and Eithan, plus Wei Shi Lindon's old master Dross.",
+  ]
+  it("finds the same names for the same text and the same house words", async () => {
+    const grounding = await import("../../heart/source-grounding")
+    const known = [...grounding.HOUSE_VOCABULARY].join(" ")
+    for (const text of corpus) expect(gate.properNouns(text, known), text).toEqual(grounding.candidateNames(text))
+  })
+  it("shares the same sentence-opener, status-word and label lists", async () => {
+    const grounding = await import("../../heart/source-grounding")
+    expect([...gate.STARTERS].sort()).toEqual([...grounding.COMMON_STARTERS].sort())
+    expect([...gate.EXEMPT_WORDS].sort()).toEqual([...grounding.EXEMPT_WORDS].sort())
+    expect([...gate.LABEL_WORDS].sort()).toEqual([...grounding.LABEL_WORDS].sort())
+  })
+  it("tells lookups from other shell commands the same way", async () => {
+    const grounding = await import("../../heart/source-grounding")
+    for (const command of ["curl https://x", "echo https://x", "wget -q u | head", "books get 1", "ls", "sudo curl x", "FOO=1 curl x", "echo a && curl b"]) {
+      expect(gate.isLookupCall({ name: "shell", args: JSON.stringify({ command }) }), command).toBe(grounding.isLookupToolCall({ name: "shell", args: { command }, result: "" }))
+    }
+  })
+})
+
+describe("the butler's LORE describes the psyche protection accurately", () => {
+  it("says the files are read-only to it and the runtime refuses edits, without claiming more", () => {
+    const lore = fs.readFileSync(path.resolve(__dirname, "../../../deploy/unraid/sanctuary.ouro/psyche/LORE.md"), "utf8")
+    expect(lore).toContain("The files are read-only to me and the runtime refuses edits.")
+    expect(lore).not.toContain("I must not edit them")
   })
 })

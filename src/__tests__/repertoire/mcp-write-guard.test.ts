@@ -2,7 +2,7 @@ import * as fs from "node:fs"
 import * as os from "node:os"
 import * as path from "node:path"
 import { afterEach, beforeEach, describe, expect, it } from "vitest"
-import { guardMcpArgs, OWNER_ONLY_WRITE_TOOLS } from "../../repertoire/mcp-write-guard"
+import { guardMcpArgs, OWNER_ONLY_WRITE_TOOLS, REPLAY_REFUSED_WRITE_TOOLS } from "../../repertoire/mcp-write-guard"
 
 let root: string
 beforeEach(() => {
@@ -54,5 +54,19 @@ describe("guardMcpArgs", () => {
     expect(guardMcpArgs({ toolName: "media_diagnose_and_fix", declaresDryRun: true, args: { dry_run: false }, ctx: ctxFor("someone") })).toEqual({ args: { dry_run: false } })
     expect(guardMcpArgs({ toolName: "media_search", declaresDryRun: false, args: { q: "x" }, ctx: ctxFor("replay-1") })).toEqual({ args: { q: "x" } })
     expect(guardMcpArgs({ toolName: "media_diagnose_and_fix", declaresDryRun: true, args: { dry_run: false }, ctx: { signin: async () => undefined } as any })).toEqual({ args: { dry_run: false } })
+  })
+
+  it("refuses a replay identity every media write tool that has no dry run, and lets others call them", () => {
+    expect([...REPLAY_REFUSED_WRITE_TOOLS].sort()).toEqual(["media_blocklist", "media_blocklist_stalled", "media_fill_missing", "media_manual_import", "media_release_grab", "media_request", "media_search_now"])
+    for (const toolName of ["media_request", "media_search_now", "media_blocklist", "media_blocklist_stalled", "media_fill_missing", "media_release_grab"]) {
+      expect(guardMcpArgs({ toolName, declaresDryRun: false, args: {}, ctx: ctxFor("replay-1", "sanctuary-owner") }), toolName).toMatchObject({ rejected: expect.stringContaining("no dry run") })
+      expect(guardMcpArgs({ toolName, declaresDryRun: false, args: {}, ctx: ctxFor("someone") }), toolName).toEqual({ args: {} })
+    }
+  })
+
+  it("lets a replay identity preview a manual import but not apply one", () => {
+    expect(guardMcpArgs({ toolName: "media_manual_import", declaresDryRun: false, args: { mode: "import" }, ctx: ctxFor("replay-1") })).toHaveProperty("rejected")
+    expect(guardMcpArgs({ toolName: "media_manual_import", declaresDryRun: false, args: { mode: "preview" }, ctx: ctxFor("replay-1") })).toEqual({ args: { mode: "preview" } })
+    expect(guardMcpArgs({ toolName: "media_manual_import", declaresDryRun: false, args: {}, ctx: ctxFor("replay-1") })).toEqual({ args: {} })
   })
 })

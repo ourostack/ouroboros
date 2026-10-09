@@ -1836,6 +1836,8 @@ function auditQualityChange(entry) {
   } catch (e) { return `${e.code ?? e.message}` }
 }
 const titlesUsing = async (kind, profileId) => (await arrFor(kind)(kind === "series" ? "/series" : "/movie")).filter((t) => t.qualityProfileId === profileId).length
+const OWNER_WORDS_NOTE = "owner_words is logged as the caller's claim in the audit file; the tool cannot verify the owner said it."
+const OWNER_WORDS_NOTE_AUDIT = "claimed by the caller; not verified"
 const OWNER_WORDS_REQUIRED = { result: "owner_words_required", message: "Pass owner_words with the owner's own words asking for this change (a verbatim quote), or leave dry_run true. Nothing was changed." }
 
 const itemView = (item) => ({ service_id: item.id, title: item.title ?? null, quality_profile_id: item.qualityProfileId ?? null })
@@ -1851,8 +1853,8 @@ export async function mediaQualityProfile(a) {
   const ownerWords = typeof a.owner_words === "string" ? a.owner_words.trim() : ""
   if (!dryRun && action !== "read" && !ownerWords) return OWNER_WORDS_REQUIRED
   const audit = (entry) => {
-    const failed = auditQualityChange({ at: new Date().toISOString(), tool: "media_quality_profile", action, kind: a.kind, owner_words: ownerWords, caller: typeof a.caller === "string" ? a.caller : "unknown", ...entry })
-    return failed ? { audit_error: failed } : {}
+    const failed = auditQualityChange({ at: new Date().toISOString(), tool: "media_quality_profile", action, kind: a.kind, owner_words: ownerWords, owner_words_note: OWNER_WORDS_NOTE_AUDIT, caller: typeof a.caller === "string" ? a.caller : "unknown", ...entry })
+    return failed ? { audit_error: failed, owner_words_note: OWNER_WORDS_NOTE } : { owner_words_note: OWNER_WORDS_NOTE }
   }
 
   if (action === "read") {
@@ -2098,7 +2100,7 @@ const TOOL_LIST = [
       cutoff: { type: "number", description: "set_upgrade: quality id from the profile at which upgrades stop." },
       cutoff_name: { type: "string", description: "set_upgrade: the same, by quality name (for example Bluray-1080p)." },
       dry_run: { type: "boolean", description: "Writes only. Default true: report before and after without changing anything. Pass false to apply." },
-      owner_words: { type: "string", description: "Required to apply (dry_run false): the owner's exact words asking for this change. A verbatim quote, not a paraphrase." },
+      owner_words: { type: "string", description: "Required to apply (dry_run false): the owner's exact words asking for this change. A verbatim quote, not a paraphrase. It is logged as your claim and is not verified, so never invent it." },
       caller: { type: "string", description: "Filled in by the runtime for the audit line; leave it out." },
     }, required: ["kind"] },
   },

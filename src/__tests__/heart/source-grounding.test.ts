@@ -110,7 +110,7 @@ describe("sourceGroundingError", () => {
 
   it("flags names at the start of a sentence or a bullet that are not common words", () => {
     expect(sourceGroundingError({ ...base, answer: "Some options from the books:\n- Philomena\n- Magma\nLindon too", tools: [] })).toContain("Philomena")
-    expect(sourceGroundingError({ ...base, answer: "Wick fights in the book. Sloane lies.", tools: [] })).toContain("Wick")
+    expect(sourceGroundingError({ ...base, answer: "Wick fights in the book. Sloane lies, Wick wins.", tools: [] })).toContain("Wick")
   })
 
   it("flags a lowercase list of names next to a work cue", () => {
@@ -160,5 +160,54 @@ describe("sourceGroundingFinding and withUnverifiedDisclosure", () => {
   it("prefixes a plain disclosure naming what could not be verified", () => {
     expect(withUnverifiedDisclosure("Wick fights.", ["Wick"])).toBe("I couldn't verify Wick against a source, so treat that as unconfirmed.\n\nWick fights.")
     expect(withUnverifiedDisclosure("x", ["Wick", "Sloane"])).toContain("treat those as unconfirmed")
+  })
+})
+
+describe("ordinary media replies are not flagged (round 2)", () => {
+  const ms = (result: string): TurnToolRecord => ({ name: "media_search", args: {}, result })
+  const books = (result: string): TurnToolRecord => ({ name: "shell", args: { command: "books search hobbit" }, result })
+  const cases: Array<[string, string, TurnToolRecord[]]> = [
+    ["Added the show Silo to Sonarr. Season 1 is grabbing now.", "add silo", [ms('[{"title":"Silo","year":2023}]')]],
+    ["Silo is in Sonarr. Searching for Season 2 now, Radarr untouched.", "add silo", [ms('[{"title":"Silo"}]')]],
+    ["Found the movie Dune: Part Two (2024). Grabbing it. Jellyfin will have it in a few minutes.", "get dune 2", [ms("Dune: Part Two 2024")]],
+    ["Sent the book The Hobbit to your PocketBook. Check Calibre if it does not show.", "send hobbit", [books("The Hobbit - Tolkien")]],
+    ["Sent the book The Hobbit by Tolkien to your PocketBook.", "send hobbit", [books("Hobbit J.R.R. Tolkien")]],
+    ["The show finished downloading. Episode 4 is on Jellyfin. Sonarr says Season 2 is next.", "x", [ms("x")]],
+    ["The book Dune by Frank Herbert is on your Kindle.", "send dune", [books("Dune Frank Herbert")]],
+    ["I'll grab the show. I'm adding it now. Less than a minute. Tell me if the movie looks wrong.", "x", [ms("x")]],
+  ]
+  it.each(cases)("passes %s", (answer, userText, tools) => {
+    expect(sourceGroundingFinding({ answer, userText, tools })).toBeNull()
+  })
+  it("still flags the same book reply with no books lookup", () => {
+    expect(sourceGroundingFinding({ answer: "The book Dune by Frank Herbert is on your Kindle.", userText: "send dune", tools: [{ name: "shell", args: { command: "ls" }, result: "Dune.epub" }] })).toMatchObject({ kind: "invented", names: ["Frank", "Herbert"] })
+  })
+  it("never lists contractions or ordinary openers as names", () => {
+    expect(candidateNames("I'll look. I'm here. Less is more. Tell me. Remember the book.")).toEqual([])
+  })
+  it("counts a sentence opener as a name only with a sign it is one", () => {
+    expect(candidateNames("Lindon and Yerin train. \"Eithan\" smiles. Wei: calm. Mira fights, Zed runs.")).toEqual(["Lindon", "Yerin", "Eithan", "Wei", "Zed"])
+    expect(candidateNames("Remember Orsa. Orsa waits.")).toEqual(["Orsa"])
+    expect(candidateNames("Remember it.")).toEqual([])
+  })
+  it("still catches the original fabricated reply", () => {
+    expect(sourceGroundingFinding({ userText: REAL_USER, answer: "For Cradle the characters with that energy are Lindon, Yerin, and Eithan, plus Wei Shi Lindon's old master Dross.", tools: [] })).toMatchObject({ kind: "invented" })
+  })
+})
+
+describe("what counts as a shell lookup (round 2)", () => {
+  const sh = (command: string) => isLookupToolCall({ name: "shell", args: { command }, result: "" })
+  it("requires curl, wget or the books tool as a command word", () => {
+    expect(sh("curl -s https://x.org")).toBe(true)
+    expect(sh("cd /tmp && wget https://x.org")).toBe(true)
+    expect(sh("FOO=1 sudo curl https://x.org | head")).toBe(true)
+    expect(sh("books get --id 4")).toBe(true)
+  })
+  it("rejects echo, printf, here-strings, grep and ls that merely mention a URL", () => {
+    for (const command of ["echo Lindon Yerin https://x.org", "printf 'https://x.org'", "cat <<< https://x.org", "grep -r http file", "ls books", "echo books search x"]) expect(sh(command)).toBe(false)
+  })
+  it("does not let an echoed URL clear names", () => {
+    const echo: TurnToolRecord = { name: "shell", args: { command: "echo Lindon Yerin Eithan https://x" }, result: "Lindon Yerin Eithan https://x" }
+    expect(sourceGroundingFinding({ userText: "tell me about cradle", answer: "The books: Lindon and Yerin and Eithan are the main characters.", tools: [echo] })).toMatchObject({ kind: "invented" })
   })
 })

@@ -195,8 +195,14 @@ describe("media MCP: quality profiles", () => {
     const lines = readFileSync(auditPath, "utf8").trim().split("\n").map((l) => JSON.parse(l))
     expect(lines).toHaveLength(2)
     expect(lines[0]).toMatchObject({ tool: "media_quality_profile", action: "set_upgrade", kind: "movie", profile_id: 4, owner_words: OWNER, caller: "friend-1 (Ari)", before: { upgrade_allowed: false }, after: { upgrade_allowed: true } })
+    expect(lines[0].owner_words_note).toMatch(/claimed by the caller.*not verified/)
     expect(Number.isNaN(Date.parse(lines[0].at))).toBe(false)
     expect(lines[1]).toMatchObject({ action: "assign", service_id: 777, caller: "unknown", before: { quality_profile_id: 4 }, after: { quality_profile_id: 5 } })
+  })
+
+  it("describes the owner's words as a logged claim in the applied result", async () => {
+    const out = await mod.mediaQualityProfile({ kind: "movie", action: "set_upgrade", profile_id: 4, upgrade_allowed: true, dry_run: false, owner_words: OWNER })
+    expect(out.owner_words_note).toMatch(/logged as the caller's claim/)
   })
 
   it("reports an audit write that failed instead of hiding it", async () => {
