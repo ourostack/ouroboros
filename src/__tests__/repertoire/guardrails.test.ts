@@ -1235,6 +1235,39 @@ describe("OURO_CLI_TRUST_MANIFEST — rollback and versions", () => {
       expect(guardInvocation("shell", { command: "echo x > /bundle/friends/peer.json" }, ctx())).toMatchObject({ allowed: false })
       expect(guardInvocation("shell", { command: "echo x | tee friends/peer.json" }, ctx())).toMatchObject({ allowed: false })
     })
+    it.each([
+      ["append redirect", "echo x >> /bundle/friends/peer.json"],
+      ["append redirect without a space", "echo x >>/bundle/friends/peer.json"],
+      ["a second redirect after a stderr redirect", "echo a 2>/dev/null > /bundle/friends/peer.json"],
+      ["cp", "cp /tmp/forged.json /bundle/friends/peer.json"],
+      ["mv", "mv /tmp/forged.json /bundle/friends/peer.json"],
+      ["sed -i", "sed -i s/acquaintance/family/ /bundle/friends/peer.json"],
+      ["node -e", "node -e \"require('fs').writeFileSync('/bundle/friends/peer.json','{}')\""],
+      ["cd then redirect", "cd /bundle/friends && echo x > peer.json"],
+      ["cd into the store by a relative name", "cd friends && echo x > peer.json"],
+      ["a dot segment", "echo x > /bundle/./friends/peer.json"],
+      ["a dotdot segment", "echo x > /bundle/notes/../friends/peer.json"],
+      ["a relative path in code", "node -e \"require('fs').writeFileSync('friends/peer.json','{}')\""],
+      ["a variable", "echo x > $BUNDLE/friends/peer.json"],
+      ["a command substitution", "echo x > $(echo /bundle/friends)/peer.json"],
+      ["a heredoc", "cat <<EOF > /bundle/friends/peer.json\nx\nEOF"],
+      ["python", "python3 -c \"open('/bundle/friends/peer.json','w').write('{}')\""],
+    ])("refuses a shell write to the friends store by %s", async (_name, command) => {
+      const { guardInvocation } = await import("../../repertoire/guardrails")
+      expect(guardInvocation("shell", { command }, ctx())).toMatchObject({ allowed: false })
+    })
+    it("refuses a home-relative path that lands in the friends store", async () => {
+      const { guardInvocation } = await import("../../repertoire/guardrails")
+      const root = `${os.homedir()}/AgentBundles/sanctuary.ouro`
+      expect(guardInvocation("shell", { command: "echo x > ~/AgentBundles/sanctuary.ouro/friends/peer.json" }, ctx({ agentRoot: root }))).toMatchObject({ allowed: false })
+      expect(guardInvocation("shell", { command: "cat ~/AgentBundles/sanctuary.ouro/friends/peer.json && ls ~/AgentBundles" }, ctx({ agentRoot: root }))).toEqual({ allowed: true })
+    })
+    it("still allows read-only commands and writes outside the friends store", async () => {
+      const { guardInvocation } = await import("../../repertoire/guardrails")
+      for (const command of ["ls /bundle/friends | head -5", "grep -r family /bundle/friends", "cd /bundle/friends && cat peer.json", "echo x > /bundle/notes/friends/a.md", "git -C /home/ari/Projects/friends status", "echo my friends are kind > /tmp/out.md"]) {
+        expect(guardInvocation("shell", { command }, ctx()), command).toEqual({ allowed: true })
+      }
+    })
     it("leaves other directories named friends alone, and reads", async () => {
       const { guardInvocation } = await import("../../repertoire/guardrails")
       const read = (target: string) => ctx({ readPaths: new Set([target]) })
