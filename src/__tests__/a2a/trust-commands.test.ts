@@ -30,6 +30,36 @@ const ctx = (overrides: Partial<TrustCommandContext> = {}): TrustCommandContext 
 const grant = (friend: string, extra: Partial<Parameters<typeof executeDelegatedCommandsCommand>[0]> = {}, c: Partial<TrustCommandContext> = {}) =>
   executeDelegatedCommandsCommand({ kind: "a2a.delegatedCommands", action: "grant", friendId: friend, did: DID, ...extra } as never, ctx(c))
 
+describe("delegated-commands grant, edge cases", () => {
+  it("refuses a missing --did by name", async () => {
+    const friend = await peer()
+    await expect(grant(friend.id, { did: undefined })).rejects.toThrow("(missing) is not a DID")
+  })
+
+  it("warns when the written grant would not be honoured", async () => {
+    const friend = await peer()
+    overrideOwnerForTests((target) => (target.endsWith("delegated-command-grants.json") ? process.getuid!() + 1 : undefined))
+    expect(await grant(friend.id)).toContain("WARNING: the grant is written but will not be honoured")
+  })
+
+  it("works against a store that cannot list, treating it as empty", async () => {
+    const friend = await peer()
+    const noList = { get: store.get.bind(store) } as never
+    expect(await grant(friend.id, {}, { store: noList, ownDid: async () => null })).toContain("could not read this agent's own DID")
+    expect(await executeDelegatedCommandsCommand({ kind: "a2a.delegatedCommands", action: "list" } as never, ctx({ store: noList }))).toContain(friend.id)
+  })
+
+  it("says a granted friend record without a DID names no DID", async () => {
+    const friend = await peer()
+    setDelegatedCommandGrant(tmp.agentRoot, friend.id, { grant: true, did: DID, source: "Ari" })
+    const bare = { ...friend } as { a2a?: unknown; agentMeta?: unknown }
+    delete bare.a2a
+    delete bare.agentMeta
+    await store.put(friend.id, bare as FriendRecord)
+    expect(await executeDelegatedCommandsCommand({ kind: "a2a.delegatedCommands", action: "list" } as never, ctx())).toContain(`names no DID, but the grant pins ${DID}`)
+  })
+})
+
 describe("delegated-commands grant", () => {
   it("writes a trusted grant pinned to the DID, and says what it did", async () => {
     const friend = await peer()
@@ -321,6 +351,15 @@ describe("escalation grant and revoke", () => {
     expect(out).toContain(`revoked escalation: ${friend.id} (no friend record)`)
     expect(readEscalationGrants(tmp.agentRoot)).toEqual({})
     expect(await esc("revoke", friend.id)).toContain("(no change)")
+  })
+
+  it("keeps a backup when an escalation grant is replaced, and flags an untrusted file in the list", async () => {
+    const friend = await peer()
+    await esc("grant", friend.id, { did: DID })
+    const other = await peer({ name: "Other", did: "did:key:z6MkOther" })
+    expect(await esc("grant", other.id, { did: "did:key:z6MkOther" })).toContain(`backup: ${escalationGrantsPath(tmp.agentRoot)}.bak-`)
+    fs.chmodSync(escalationGrantsPath(tmp.agentRoot), 0o666)
+    expect(await esc("list", undefined, {}, { isRoot: false })).toContain("NOT TRUSTED")
   })
 
   it("warns when the written grant would not be honoured", async () => {

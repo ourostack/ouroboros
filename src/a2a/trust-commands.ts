@@ -213,9 +213,7 @@ export async function executeEscalationCommand(command: EscalationCommandInput, 
   const friend = await requireFriend(ctx, command.friendId)
   const did = checkedDid(friend, command.did)
   const selfNotes = await vetPinnedDid(ctx, friend, did, readEscalationGrants(ctx.agentRoot))
-  const change = command.action === "grant"
-    ? setEscalationGrant(ctx.agentRoot, friend.id, { grant: true, source: command.source ?? `ouro a2a escalation grant, ${ctx.now.toISOString()}`, did: did! }, ctx.now)
-    : setEscalationGrant(ctx.agentRoot, friend.id, { grant: false }, ctx.now)
+  const change = setEscalationGrant(ctx.agentRoot, friend.id, { grant: true, source: command.source ?? `ouro a2a escalation grant, ${ctx.now.toISOString()}`, did }, ctx.now)
   emitNervesEvent({ component: "senses", event: "senses.a2a_trust_grant_changed", message: "operator changed a trust grant", meta: { action: "grant", scope: "escalation" } })
   return [
     `granted escalation: ${friend.name} (${friend.id})${change.changed ? "" : " (no change)"}`,

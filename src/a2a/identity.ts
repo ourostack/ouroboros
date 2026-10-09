@@ -175,6 +175,7 @@ export async function readOwnA2ADid(agentName: string): Promise<string | null> {
   try {
     const cached = readMachineRuntimeCredentialConfig(agentName)
     if (!cached.ok || !readStoredA2ASeed(cached.config)) return null
+    /* v8 ignore next -- the seed is already stored here, so the load never reaches upsert; it exists only to make minting impossible @preserve */
     const identity = await loadOrMintA2AIdentity({ agentName, sodium: await ready(), config: cached.config, upsert: async () => { throw new Error("readOwnA2ADid never mints") } })
     return identity.did
   } catch {

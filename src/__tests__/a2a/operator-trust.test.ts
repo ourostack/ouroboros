@@ -5,7 +5,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { createTmpBundle, type TmpBundleHandle } from "../test-helpers/tmpdir-bundle"
 import { overrideOwnerForTests } from "../../a2a/trusted-files"
 import {
-  agentNameFromRoot, describeGrantFile, ensureTrustDirectory, overrideDirectoryFlushForTests, overrideLockTimeoutForTests, withTrustedWriteLock, operatorTrustDir, operatorTrustFile, overrideTrustRootForTests, readGrantFile, TrustDirectoryError, writeTrustedFile,
+  agentNameFromRoot, describeGrantFile, ensureTrustDirectory, overrideDirectoryFlushForTests, overrideFchownForTests, overrideLockTimeoutForTests, withTrustedWriteLock, operatorTrustDir, operatorTrustFile, overrideTrustRootForTests, readGrantFile, TrustDirectoryError, writeTrustedFile,
 } from "../../a2a/operator-trust"
 
 let tmp: TmpBundleHandle
@@ -196,6 +196,7 @@ describe("serialising writers and making renames durable (review of #1064, findi
     vi.stubEnv("VITEST", undefined as unknown as string)
     expect(() => overrideDirectoryFlushForTests(undefined)).toThrow("tests only")
     expect(() => overrideLockTimeoutForTests(1)).toThrow("tests only")
+    expect(() => overrideFchownForTests(undefined)).toThrow("tests only")
   })
 
   it("holds an exclusive lock file while a command writes, and releases it afterwards, also when the write throws", () => {
@@ -217,6 +218,15 @@ describe("serialising writers and making renames durable (review of #1064, findi
       expect(() => withTrustedWriteLock(tmp.agentRoot, () => "never")).toThrow(/another grant command is writing.*\.lock/s)
     } finally { overrideLockTimeoutForTests(undefined) }
     expect(fs.existsSync(path.join(dir, ".lock"))).toBe(true)
+  })
+
+  it("passes on a lock error that is not 'already exists'", () => {
+    const dir = operatorTrustDir(tmp.agentRoot)
+    fs.mkdirSync(dir, { recursive: true, mode: 0o755 })
+    fs.chmodSync(dir, 0o555)
+    try {
+      expect(() => withTrustedWriteLock(tmp.agentRoot, () => "never")).toThrow(/EACCES/)
+    } finally { fs.chmodSync(dir, 0o755) }
   })
 
   it("takes over a stale lock left by a crashed writer", () => {

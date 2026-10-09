@@ -99,11 +99,12 @@ export function overrideFchownForTests(hook: ((fd: number, uid: number, gid: num
   fchownHook = hook
 }
 
+/* v8 ignore start -- the real fchown only succeeds as root; tests watch the hook instead @preserve */
 function chownToRoot(fd: number): void {
   if (fchownHook) fchownHook(fd, 0, 0)
-  /* v8 ignore next -- the real fchown only succeeds as root; tests watch the hook instead @preserve */
   else fs.fchownSync(fd, 0, 0)
 }
+/* v8 ignore stop */
 
 /**
  * Makes sure the trust directory exists and is trusted. A missing directory is created root-owned 0755, one component
@@ -184,6 +185,7 @@ export function withTrustedWriteLock<T>(agentRoot: string, fn: () => T): T {
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error
       let age = 0
+      /* v8 ignore next -- the holder removing its lock between our EEXIST and this stat is a race tests cannot stage @preserve */
       try { age = Date.now() - fs.lstatSync(lock).mtimeMs } catch { continue }
       if (age > LOCK_STALE_MS) { fs.rmSync(lock, { force: true }); continue }
       if (Date.now() >= deadline) throw new TrustDirectoryError(`refusing to write: another grant command is writing to ${dir} (lock file ${lock}). If none is running, remove that file and retry. Nothing was written.`)

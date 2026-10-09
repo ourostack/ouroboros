@@ -141,6 +141,10 @@ describe("inspecting a trusted file", () => {
     expect(inspectTrustedJson(dir, me)).toMatchObject({ state: "untrusted" })
   })
 
+  it("treats a path it cannot inspect for any other reason as untrusted", () => {
+    expect(inspectTrustedDirectory(path.join(dir, "x".repeat(300)), me)).toEqual({ state: "untrusted", reason: expect.stringContaining("cannot inspect") })
+  })
+
   it("refuses a file that is itself a symlink", () => {
     const real = put("real.json", "{}")
     const link = path.join(dir, "link.json")
