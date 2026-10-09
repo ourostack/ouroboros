@@ -145,7 +145,7 @@ describe("Sanctuary acceptance harness", () => {
         schemaVersion: "sanctuary-containment-audit-v2", keyCount: 2, keyInventoryDigest: "d".repeat(64), readScopeDigest: "9914469afdcb574937d1020a03faa82e3c02d767169d3eccae4b81863dafa06e", writeScopeDigest: "1de873b2bc3c7769010c32c69fcc8ea55343a5647cfdb0294769e831142945ec", keyRoleAssignmentCount: 0,
         profileBoundaries: sanctuaryContainmentBoundariesFixture(),
         auditPathDigest: "1cb8f1a00c544a5d10b0577090dbf070a07a5b6a99de13ccd27c11a257f84b75", auditLedgerDigest: "d".repeat(64), auditRecordCount: 2, auditLifecyclePairCount: 1,
-        containerUser: "10001:10001", liveProcessUser: "10001:10001", mountCount: 4, publishedPortCount: 0, networkMode: "host", readOnlyRoot: false, mountsExact: true, securityExact: true, updaterDisabled: true, writableKeyExposure: false,
+        containerUser: "10001:10001", liveProcessUser: "10001:10001", mountCount: 5, publishedPortCount: 0, networkMode: "host", readOnlyRoot: false, mountsExact: true, securityExact: true, updaterDisabled: true, writableKeyExposure: false,
         rawWriteMaterialFieldCount: 0, typedWriteExecutorCount: 1, writeApprovalPolicyDigest: "e".repeat(64), writeApprovalPolicyExact: true, sensitiveMaterialObserved: false, mutationCount: 0,
       }
       case "unit-16e-1-stop-denial": case "unit-16e-2-restart-denial": return { attemptCount: 1, cursorBoundaryCount: 7, denied: true, mutationCount: 0, restartCountUnchanged: true, resumed: true }
@@ -402,8 +402,8 @@ describe("Sanctuary acceptance harness", () => {
     reject("unit-16e-containment-audit", { liveProcessUser: "0:0" }, /identity/u)
     reject("unit-16e-containment-audit", { writableKeyExposure: true }, /must be false/u)
     reject("unit-16e-containment-audit", { networkMode: "bridge" }, /network/u)
-    reject("unit-16e-containment-audit", { mountCount: 2 }, /must equal 4/u)
-    reject("unit-16e-containment-audit", { mountCount: 3 }, /must equal 4/u)
+    reject("unit-16e-containment-audit", { mountCount: 2 }, /must equal 5/u)
+    reject("unit-16e-containment-audit", { mountCount: 3 }, /must equal 5/u)
     reject("unit-16e-containment-audit", { readOnlyRoot: true }, /readOnlyRoot must be false/u)
     for (const readOnlyRoot of [null, undefined, 0, "false"]) {
       reject("unit-16e-containment-audit", { readOnlyRoot }, /readOnlyRoot must be boolean/u)

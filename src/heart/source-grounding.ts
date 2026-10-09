@@ -32,7 +32,7 @@ const SHELL_LOOKUP_SEGMENT = /^\s*(?:\w+=\S*\s+)*(?:(?:sudo|env|command|time|noh
 const SHELL_SEGMENT_SEPARATOR = /&&|\|\||[;|\n]/
 
 const STRONG_CUE = /\b(books?|novels?|movies?|films?|anime|saga|trilogy|albums?|episodes?|protagonists?)\b/i
-const WORK_CUE = /\b(books?|novels?|series|saga|trilogy|shows?|movies?|films?|anime|characters?|protagonists?|authors?|episodes?|seasons?|albums?|bands?|lore)\b/i
+const WORK_CUE = /\b(books?|novels?|series|saga|trilogy|shows?|movies?|films?|anime|characters?|protagonists?|authors?|episodes?|seasons?|albums?|bands?|lore|cast)\b/i
 const COPULA_AFTER_NAME = /^(?:['’]s\b|\s+(?:is|was|are|were|isn['’]t|wasn['’]t|has|had|does|did)\b)/i
 /** Words that start a sentence or a bullet without being a name. */
 export const COMMON_STARTERS = new Set([

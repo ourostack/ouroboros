@@ -1235,6 +1235,7 @@ describe("OURO_CLI_TRUST_MANIFEST — rollback and versions", () => {
         "python3 - <<< 'open(\"/bundle/psyche/SOUL.md\",\"w\")'", "echo x > '/bundle/psyche/SOUL.md'", "cat /bundle/psyche/SOUL.md > /tmp/x; rm /bundle/psyche/SOUL.md",
         "echo x > /bundle/x/../psyche/SOUL.md", "ls /bundle/psyche $(cp a /bundle/psyche/SOUL.md)", "cat psyche/SOUL.md | tee psyche/SOUL.md", "python3 -c \"open('psyche/SOUL.md','w')\"",
         "cat /bundle/psyche/SOUL.md & cp a /bundle/psyche/b", "FOO=1 cp a /bundle/psyche/b", "echo `cp a /bundle/psyche/b`", "cat /bundle/psyche/SOUL.md >/dev/null",
+        "X=/bundle/psyche/SOUL.md; cat psyche/LORE.md $X", "cat psyche/SOUL.md $TARGET", "cat psyche/SOUL.md ${TARGET}", "cat psyche/SOUL.md $_",
       ]
       it.each(bypasses)("refuses %s", async (command) => {
         const { guardInvocation } = await import("../../repertoire/guardrails")

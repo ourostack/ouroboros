@@ -8,6 +8,7 @@ const image = `sha256:${"a".repeat(64)}`
 const reference = "ghcr.io/ourostack/ouroboros-butler:0.1.0-alpha.816"
 const icon = "https://raw.githubusercontent.com/ourostack/ouroboros/main/assets/ouroboros.png"
 const socketMount = { Type: "bind", Source: "/run/ouro-authority", Destination: "/run/ouro-authority", RW: false, Propagation: "rprivate" }
+const psycheMount = { Type: "bind", Source: "/mnt/user/appdata/ouro-butler/agent/sanctuary.ouro/psyche", Destination: "/home/ouro/AgentBundles/sanctuary.ouro/psyche", RW: false, Propagation: "rprivate" }
 const socketBind = "/run/ouro-authority:/run/ouro-authority:ro"
 const policy = '{"scheduler":"supercronic","updates":"disabled"}'
 
@@ -15,7 +16,7 @@ function spec(gateway: boolean) {
   const value = sanctuaryContainerInspectFixture()
   value.Config.Image = reference
   value.Mounts.splice(3)
-  if (gateway) value.Mounts.push({ ...socketMount })
+  if (gateway) value.Mounts.push({ ...socketMount }, { ...psycheMount })
   return value
 }
 
@@ -29,7 +30,7 @@ function template(gateway: boolean, repository = image) {
 <Config Target="/home/ouro/.ouro-cli" Mode="rw" Type="Path">/mnt/user/appdata/ouro-butler/runtime/.ouro-cli</Config>
 <Config Target="/home/ouro/AgentBundles/sanctuary.ouro" Mode="rw" Type="Path">/mnt/user/appdata/ouro-butler/agent/sanctuary.ouro</Config>
 <Config Target="/run/ouro-events" Mode="ro" Type="Path">/boot/config/custom/ouro-events/spool</Config>
-${gateway ? '<Config Target="/run/ouro-authority" Mode="ro" Type="Path">/run/ouro-authority</Config>' : ""}
+${gateway ? '<Config Target="/run/ouro-authority" Mode="ro" Type="Path">/run/ouro-authority</Config>\n<Config Target="/home/ouro/AgentBundles/sanctuary.ouro/psyche" Mode="ro" Type="Path">/mnt/user/appdata/ouro-butler/agent/sanctuary.ouro/psyche</Config>' : ""}
 </Container>`
 }
 
@@ -37,8 +38,9 @@ describe("versioned Sanctuary gateway deployment mounts", () => {
   it("runs packaged-image CI against the exact gateway mounts and every explicit audit mode", () => {
     const workflow = fs.readFileSync(".github/workflows/coverage.yml", "utf8")
     const create = workflow.match(/docker create --pull=never --name ouro-butler[\s\S]*?"\$AUDIT_VERSION_IMAGE"/u)?.[0] ?? ""
-    expect(create.match(/--mount type=bind,/gu)).toHaveLength(4)
+    expect(create.match(/--mount type=bind,/gu)).toHaveLength(5)
     expect(create).toContain("--mount type=bind,src=/run/ouro-authority,dst=/run/ouro-authority,readonly")
+    expect(create).toContain("--mount type=bind,src=/mnt/user/appdata/ouro-butler/agent/sanctuary.ouro/psyche,dst=/home/ouro/AgentBundles/sanctuary.ouro/psyche,readonly")
     const preparation = workflow.slice(workflow.indexOf("for AUDIT_SOURCE in"), workflow.indexOf('AUDIT_ICON='))
     expect(preparation.match(/\/run\/ouro-authority/gu)).toHaveLength(3)
     for (const mode of ["--inspect", "--persistent-template", "--template"]) {

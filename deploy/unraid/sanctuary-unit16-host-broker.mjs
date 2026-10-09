@@ -505,6 +505,7 @@ async function containerSnapshot(expectedImage) {
     { destination: "/home/ouro/AgentBundles/sanctuary.ouro", source: PRODUCTION_BUNDLE_SOURCE, propagation: "rprivate", rw: true, type: "bind" },
     { destination: "/run/ouro-events", source: PRODUCTION_EVENT_SPOOL_SOURCE, propagation: "rprivate", rw: false, type: "bind" },
     { destination: "/run/ouro-authority", source: "/run/ouro-authority", propagation: "rprivate", rw: false, type: "bind" },
+    { destination: "/home/ouro/AgentBundles/sanctuary.ouro/psyche", source: `${PRODUCTION_BUNDLE_SOURCE}/psyche`, propagation: "rprivate", rw: false, type: "bind" },
   ]
   const mountsExact = mounts.length === expectedMounts.length && expectedMounts.every((expected) => mounts.some((mount) => mount.destination === expected.destination && mount.source === expected.source && mount.propagation === expected.propagation && mount.rw === expected.rw && mount.type === expected.type))
   const securityExact = value.privileged === false && (value.capAdd === null || (Array.isArray(value.capAdd) && value.capAdd.length === 0))

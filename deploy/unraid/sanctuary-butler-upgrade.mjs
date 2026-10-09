@@ -392,6 +392,11 @@ function enableResidentAutostart() {
 // verify-install and the final commit proof are all satisfied. The container is created
 // stopped; start-resident starts it. #target asserts: target image, user 10001:10001, no
 // token env, exactly one read-only /run/ouro-authority mount, no docker.sock/${ROOT} mounts.
+// The psyche folder is mounted read-only over the writable bundle mount: files that are root-owned cannot be edited, and a
+// read-only mount point cannot be renamed or removed from inside the container, so the folder cannot be swapped for another.
+// Nothing in the container writes psyche while it runs: the package-managed bundle migration runs on the host in migrateBundle,
+// and the container's own check only writes when the bundle is not already exact, which now fails loudly (EROFS) instead.
+export const PSYCHE_MOUNT = `${BUNDLE}/psyche:/home/ouro/AgentBundles/sanctuary.ouro/psyche:ro`
 function recreateResident(version) {
   say("recreate resident container (tokenless, gateway socket mounted)")
   disableResidentAutostart()
@@ -405,6 +410,7 @@ function recreateResident(version) {
     "-v", "/mnt/user/appdata/ouro-butler/agent/sanctuary.ouro:/home/ouro/AgentBundles/sanctuary.ouro:rw",
     "-v", "/boot/config/custom/ouro-events/spool:/run/ouro-events:ro",
     "-v", "/run/ouro-authority:/run/ouro-authority:ro",
+    "-v", PSYCHE_MOUNT,
     image(version)])
   const ref = docker(["inspect", CONTAINER, "--format", "{{.Config.Image}}"]).trim()
   if (ref !== image(version)) fail(`recreated resident is ${ref}, expected ${image(version)}`)
@@ -449,6 +455,12 @@ export function psycheProblems(dir, { lstat = lstatSync, readdir = readdirSync }
   }
   walk(dir)
   return problems
+}
+/** What is wrong with the resident's psyche mount, from `docker inspect` Mounts, or null when it is mounted read-only. */
+export function psycheMountIssue(mounts) {
+  const mount = (Array.isArray(mounts) ? mounts : []).find((entry) => entry?.Destination === "/home/ouro/AgentBundles/sanctuary.ouro/psyche")
+  if (!mount) return "psyche is not mounted separately in the resident, so it could be renamed or replaced"
+  return mount.RW === false ? null : "psyche is mounted read-write in the resident"
 }
 function migrateBundle(version, rollbackImage) {
   say(`migrate agent bundle to ${version}`)
@@ -1076,6 +1088,8 @@ function verify(withGate = false) {
   const auth = docker(["logs", CONTAINER, "--since", "2m"], { stdio: ["ignore","pipe","pipe"] }).split("\n").filter((l) => l.includes("401")).length
   auth === 0 ? ok("no Telegram auth failures in the last 2m") : bad(`${auth} 401s in the last 2m`)
   existsSync(POLICY) ? ok(`steward policy ${sha12(POLICY)}`) : bad("steward policy missing")
+  const psycheMount = JSON.parse(docker(["inspect", CONTAINER, "--format", "{{json .Mounts}}"]) || "[]")
+  psycheMountIssue(psycheMount) === null ? ok("psyche is mounted read-only in the resident") : bad(psycheMountIssue(psycheMount))
   const psycheDir = `${BUNDLE}/psyche`
   if (existsSync(psycheDir)) {
     const psycheIssues = psycheProblems(psycheDir)

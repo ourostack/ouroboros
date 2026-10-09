@@ -1,12 +1,12 @@
 Mendelow Cloud Butler operator runbook
 
-The production container is ouro-butler. It runs as UID/GID 10001, publishes no ports, uses host networking only so its loopback-only Unraid GraphQL client can reach 127.0.0.1, mounts the runtime and sanctuary.ouro bundle read-write plus the privileged event spool read-only, and uses restart policy unless-stopped. The canonical-gateway image appends exactly /run/ouro-authority -> /run/ouro-authority, readonly, rprivate. The pinned alpha.816 predecessor has only the first three mounts. Root token, issuer, package and authority state are never mounted into the resident.
+The production container is ouro-butler. It runs as UID/GID 10001, publishes no ports, uses host networking only so its loopback-only Unraid GraphQL client can reach 127.0.0.1, mounts the runtime and sanctuary.ouro bundle read-write, the bundle psyche folder read-only over it so the Butler can neither edit nor replace its psyche, plus the privileged event spool read-only, and uses restart policy unless-stopped. The canonical-gateway image appends /run/ouro-authority -> /run/ouro-authority, readonly, rprivate, and the psyche mount (<bundle>/psyche -> /home/ouro/AgentBundles/sanctuary.ouro/psyche, readonly, rprivate). The pinned alpha.816 predecessor has only the first three mounts. Root token, issuer, package and authority state are never mounted into the resident.
 
 Root authority lifecycle
 
 The existing DockerMan transaction owns authority-install, authority-activate, authority-retire and authority-restore. A complete exact-image package, including dist and production dependencies, must remain at its package-relative paths; extracting only the old five deployment assets cannot execute this lifecycle. The reviewed root-only inputs are /mnt/user/appdata/ouro-authority/incoming-package, package-manifest.json, request.json and incoming-token. They are not a new resident credential policy. The human rotates the existing bot token directly into root custody; the root owner proves the previous token returns 401 and the fresh token belongs to the same numeric bot before continuing.
 
-During installation the resident is stopped, the root gateway is installed and proven, tokenless readiness runs, and authority-activate starts the exact four-mount target. On failure, authority-retire must finish before restoring bundle/config/mounts or starting the exact three-mount predecessor; authority-restore proves that rollback before the outer template journal is removed. An uncertain or interrupted handoff leaves autostart disabled and preserves both journals and root inputs for the same reviewed recovery, never a raw old-template start. Retired keys, policy, history and Jellyfin remain untouched. Re-enabling authority requires a new human token rotation and issuer epoch, not reuse of retired authority.
+During installation the resident is stopped, the root gateway is installed and proven, tokenless readiness runs, and authority-activate starts the exact five-mount target. On failure, authority-retire must finish before restoring bundle/config/mounts or starting the exact three-mount predecessor; authority-restore proves that rollback before the outer template journal is removed. An uncertain or interrupted handoff leaves autostart disabled and preserves both journals and root inputs for the same reviewed recovery, never a raw old-template start. Retired keys, policy, history and Jellyfin remain untouched. Re-enabling authority requires a new human token rotation and issuer epoch, not reuse of retired authority.
 
 On installed cold boot, the original unless-stopped and DockerMan autostart remain unchanged: /boot/config/custom/ouro-authority/start.sh --boot waits for the array and responsive Docker, then starts the fenced root gateway. Docker may already have started the tokenless resident; it fails closed until the gateway is ready. There is no pre-Docker gate, whole-array gate, resident direct poller or resident token fallback.
 
@@ -326,7 +326,7 @@ Effective-spec audit helper:
       test "$(sanctuary_image_mount_contract "$CREATE_IMAGE_ID")" = "$CREATE_MOUNT_CONTRACT" || return 1
       test "$(docker image inspect --format '{{.Id}}' "$CREATE_IMAGE_REFERENCE")" = "$CREATE_IMAGE_ID" || return 1
       case "$CREATE_MOUNT_CONTRACT" in
-        canonical-gateway) set -- --mount "type=bind,src=/run/ouro-authority,dst=/run/ouro-authority,readonly" ;;
+        canonical-gateway) set -- --mount "type=bind,src=/run/ouro-authority,dst=/run/ouro-authority,readonly" --mount "type=bind,src=/mnt/user/appdata/ouro-butler/agent/sanctuary.ouro/psyche,dst=/home/ouro/AgentBundles/sanctuary.ouro/psyche,readonly" ;;
         canonical-pre-gateway) set -- ;;
         *) return 1 ;;
       esac
@@ -1669,7 +1669,7 @@ NODE
       TELEGRAM_READINESS_CONTRACT=$(sanctuary_image_mount_contract "$TELEGRAM_READINESS_IMAGE_ID") || return $?
       TELEGRAM_READINESS_CONTEXT=${2-}
       case "$TELEGRAM_READINESS_CONTRACT" in
-        canonical-gateway) TELEGRAM_READINESS_CONTEXT=${TELEGRAM_READINESS_CONTEXT:-strict}; set -- --mount "type=bind,src=/run/ouro-authority,dst=/run/ouro-authority,readonly" ;;
+        canonical-gateway) TELEGRAM_READINESS_CONTEXT=${TELEGRAM_READINESS_CONTEXT:-strict}; set -- --mount "type=bind,src=/run/ouro-authority,dst=/run/ouro-authority,readonly" --mount "type=bind,src=/mnt/user/appdata/ouro-butler/agent/sanctuary.ouro/psyche,dst=/home/ouro/AgentBundles/sanctuary.ouro/psyche,readonly" ;;
         canonical-pre-gateway) TELEGRAM_READINESS_CONTEXT=${TELEGRAM_READINESS_CONTEXT:-live-precutover}; set -- ;;
         *) return 1 ;;
       esac
@@ -2794,7 +2794,7 @@ Packaged Unit 16 acceptance execution:
   the config from the packaged fixed contract and requires byte-for-byte equality.
   Unit 16d-2 stops at the pre-model quarantine boundary: use a genuinely distinct private Telegram sender, confirm the fixed acknowledgement and owner admission card, and do not approve the contact during this scenario. The production-identical allow-to-one-turn continuation is covered by the Telegram admission integration suite when a second live account is unavailable. Unit 16h is acceptance-only: it exercises the delivery path against isolated state, restores exact health and cron bytes, and does not activate a production daily digest.
   The cursor snapshot is deliberately materialized and executed twice around the live scenario. Every telegram-offset proof uses the fresh signed telegram.cursor.snapshot logical progress digest, excluding snapshot time/signature rather than hashing a fixed resident offset file. Stale, absent or frozen resident offsets cannot satisfy cursor evidence. Telegram bootstrap confirms the already pinned root owner through gateway poll/settle; it performs no token acquisition, vault credential write or direct getUpdates. Its one-shot has network=none and a readonly runtime mount. Callback injection alone maps reviewed saved callback-update JSON from host fd 3 through Docker stdin to in-container fd 3.
-  Allow the 90-second config materializer budget and the existing 65-second gateway socket wait; do not replace timeout failure with resident token readiness. Unit16b is explicitly retired as a production containment assertion and remains runtime-vault-readiness. Unit16e is the exact four-mount production snapshot with readOnlyRoot=false; mountsExact remains strict.
+  Allow the 90-second config materializer budget and the existing 65-second gateway socket wait; do not replace timeout failure with resident token readiness. Unit16b is explicitly retired as a production containment assertion and remains runtime-vault-readiness. Unit16e is the exact five-mount production snapshot with readOnlyRoot=false; mountsExact remains strict.
   Stage the reviewed callback JSON at the fixed path below in the root-owned
   tmpfs inbox, then use this single fail-closed helper. It opens the input once,
   validates the opened descriptor and its original path refer to the same

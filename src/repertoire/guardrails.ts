@@ -122,7 +122,8 @@ function psycheShellWriteRefused(command: string, agentRoot: string | undefined)
   const entries = parseShell(command)
   const words = entries.filter((entry): entry is string => typeof entry === "string")
   if (!commandMentionsPsyche(command, words, agentRoot)) return false
-  if (/\$\(|`|<\(|<<|\$\{/.test(command)) return true
+  // Substitution, heredocs and any $VAR or ${VAR} expansion: the shell could build a psyche path or a command word we cannot see.
+  if (/\$[({A-Za-z_]|`|<\(|<</.test(command)) return true
   let expectCommandWord = true
   for (const entry of entries) {
     if (typeof entry === "string") {

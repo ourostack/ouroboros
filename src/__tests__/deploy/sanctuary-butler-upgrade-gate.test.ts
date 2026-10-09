@@ -273,3 +273,31 @@ describe("the psyche folder is root-owned and read-only to the resident", () => 
     expect(verifyBody).toContain("psyche files are root-owned and read-only to the resident")
   })
 })
+
+describe("the resident mounts psyche read-only over the writable bundle", () => {
+  const dest = "/home/ouro/AgentBundles/sanctuary.ouro/psyche"
+  it("passes the mount argument to docker create", () => {
+    expect(upgrade.PSYCHE_MOUNT).toMatch(/\/psyche:\/home\/ouro\/AgentBundles\/sanctuary\.ouro\/psyche:ro$/)
+    const recreate = source.slice(source.indexOf("function recreateResident("), source.indexOf("export function psycheProblems"))
+    expect(recreate).toContain('"-v", PSYCHE_MOUNT')
+    expect(recreate.indexOf('"-v", PSYCHE_MOUNT')).toBeLessThan(recreate.indexOf("image(version)])"))
+  })
+  it("reports nothing for a read-only psyche mount", () => {
+    expect(upgrade.psycheMountIssue([{ Destination: dest, RW: false }, { Destination: "/other", RW: true }])).toBeNull()
+  })
+  it("reports a read-write psyche mount", () => {
+    expect(upgrade.psycheMountIssue([{ Destination: dest, RW: true }])).toBe("psyche is mounted read-write in the resident")
+  })
+  it("reports a missing mount, including for malformed input", () => {
+    const missing = "psyche is not mounted separately in the resident, so it could be renamed or replaced"
+    expect(upgrade.psycheMountIssue([{ Destination: "/other", RW: false }])).toBe(missing)
+    expect(upgrade.psycheMountIssue([])).toBe(missing)
+    expect(upgrade.psycheMountIssue(null)).toBe(missing)
+    expect(upgrade.psycheMountIssue([null, undefined])).toBe(missing)
+  })
+  it("is checked by verify", () => {
+    const verifyBody = source.slice(source.indexOf("function verify("), source.indexOf("function fail("))
+    expect(verifyBody).toContain("psycheMountIssue(psycheMount)")
+    expect(verifyBody).toContain("psyche is mounted read-only in the resident")
+  })
+})

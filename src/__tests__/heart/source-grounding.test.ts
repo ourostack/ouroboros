@@ -71,6 +71,14 @@ describe("sourceGroundingError", () => {
     expect(sourceGroundingError({ ...base, answer: "the characters are a mystery.", tools: [] })).toBeNull()
   })
 
+  it("treats every word that introduces a lowercase name list as a work cue (cast included)", () => {
+    for (const intro of ["characters", "cast", "authors", "protagonists", "bands"]) {
+      const error = sourceGroundingError({ ...base, answer: `${intro}: sloane, wick and mercy`, tools: [] })
+      expect(error, intro).toContain("sloane")
+    }
+    expect(sourceGroundingError({ ...base, answer: "From the cast, Philomena, Magma and Bunty fit.", tools: [] })).toContain("Philomena")
+  })
+
   it("passes house vocabulary even in a reply that mentions a show", () => {
     expect(sourceGroundingError({ ...base, answer: "the show is on the shelf; Radarr and Sonarr agree, Ari.", tools: [] })).toBeNull()
   })

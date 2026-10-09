@@ -19,6 +19,8 @@ const EXPECTED_BINDS = [
   "/mnt/user/appdata/ouro-butler/agent/sanctuary.ouro:/home/ouro/AgentBundles/sanctuary.ouro:rw",
   "/boot/config/custom/ouro-events/spool:/run/ouro-events:ro",
   "/run/ouro-authority:/run/ouro-authority:ro",
+  // The psyche folder, read-only inside the Butler: a read-only mount point cannot be renamed or removed from inside the container.
+  "/mnt/user/appdata/ouro-butler/agent/sanctuary.ouro/psyche:/home/ouro/AgentBundles/sanctuary.ouro/psyche:ro",
 ] as const
 
 const EXPECTED_MOUNTS = [
@@ -26,6 +28,7 @@ const EXPECTED_MOUNTS = [
   ["/mnt/user/appdata/ouro-butler/agent/sanctuary.ouro", "/home/ouro/AgentBundles/sanctuary.ouro", true, "rprivate"],
   ["/boot/config/custom/ouro-events/spool", "/run/ouro-events", false, "rprivate"],
   ["/run/ouro-authority", "/run/ouro-authority", false, "rprivate"],
+  ["/mnt/user/appdata/ouro-butler/agent/sanctuary.ouro/psyche", "/home/ouro/AgentBundles/sanctuary.ouro/psyche", false, "rprivate"],
 ] as const
 
 const PRE_GATEWAY_BINDS = EXPECTED_BINDS.slice(0, 3)
