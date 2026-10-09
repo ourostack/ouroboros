@@ -2,6 +2,12 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.880",
+      "changes": [
+        "The Butler runs a daily house-care sweep (house_sweep, house_digest_send) and sends one owner digest only when something needs a choice; the replay gate gains sweep cases; butler:ship resolves a release commit when a stale PR title hides the version"
+      ]
+    },
+    {
       "version": "0.1.0-alpha.879",
       "changes": [
         "The upgrade lifecycle puts state/a2a and the escalation grant back under root after its recursive ownership restore, so escalation holders are honoured on a shipped release; the replay gate seeds outbox directories as the Butler and asks psyche-via-pr a concrete question"
