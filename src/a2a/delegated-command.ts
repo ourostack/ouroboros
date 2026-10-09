@@ -3,6 +3,7 @@ import * as fs from "fs"
 import * as path from "path"
 import type { FriendRecord, FriendStore } from "@ouro.bot/friends"
 import { emitNervesEvent } from "../nerves/runtime"
+import { checkDelegatedCommandGrant, type DelegatedCommandGrantRefusal } from "./delegated-command-grants"
 import { appendReplayNotice, isReplayWindowOpen, replayNoticeRecorded } from "./replay-harness"
 import {
   createRelationshipAuthorizationEvaluator,
@@ -15,8 +16,9 @@ import {
  * agent's principal (its owner). Three things must hold before the turn runs with
  * the principal's authority:
  *   1. the sealed envelope carries `onBehalfOf: "principal"` (signed with the text),
- *   2. the sender's own friend record carries an operator-set `delegationGrant`
- *      (trust tier alone never qualifies), and the sender is active family,
+ *   2. the operator's trusted grant file (outside the agent bundle) pins the DID the message was
+ *      verified as, and the sender is active family. The friend record's own `delegationGrant` is
+ *      never consulted: the agent can write it, so it is a note of intent and not authority,
  *   3. the principal has been told, in their own chat, before anything happens.
  * If the notice cannot be delivered the command is refused, so every accepted
  * delegated command leaves a trace the principal can disown.
@@ -36,11 +38,11 @@ export interface A2ADelegationOptions {
   principalProfileId: string
   /** Delivers the audit notice to the principal; must throw when delivery fails. */
   notifyPrincipal(input: { noticeId: string; text: string }): Promise<void>
-  /** When set, a notice for a sender with an open replay window is written to the local replay sink instead of `notifyPrincipal`. */
-  agentRoot?: string
+  /** The agent's bundle root: names the operator trust directory, and a notice for a sender with an open replay window goes to the local replay sink instead of `notifyPrincipal`. */
+  agentRoot: string
 }
 
-export type DelegationRefusal = "not_enabled" | "no_grant" | "not_family" | "principal_unresolved" | "notice_failed"
+export type DelegationRefusal = "not_enabled" | DelegatedCommandGrantRefusal | "principal_unresolved" | "notice_failed"
 
 export type DelegatedCommandAdmission =
   | { ok: true; relationship: RelationshipAuthorizationEvaluator & { readonly requestId: string }; context: DelegatedCommandContext; turnText: string }
@@ -71,6 +73,46 @@ export function delegatedCommandWasNoticed(agentRoot: string, commandId: string,
   return artifact.idempotencyKey === idempotencyKey && artifact.authorClass === "butler" && artifact.target?.friendId === principalFriendId
 }
 
+export interface DelegationRefusalGuidance {
+  /** What happened, in a sentence the sender can act on. */
+  message: string
+  /** The one thing to do next. */
+  next: string
+  /** True when sending the same command again, unchanged, may work. */
+  retry: boolean
+}
+
+/**
+ * What a refused sender is told. Every refusal says that nothing ran and names the next step; the reason code stays
+ * first on the wire (`delegated command refused: <reason>`) because the replay gate and older CLIs match it.
+ */
+export function delegationRefusalGuidance(reason: DelegationRefusal, hints: { legacyRecordGrant: boolean }): DelegationRefusalGuidance {
+  switch (reason) {
+    case "not_enabled":
+      return { message: "this agent does not accept delegated commands", next: "Send the message without --delegated, or ask the agent's operator to enable delegated commands.", retry: false }
+    case "no_grant":
+      return {
+        message: hints.legacyRecordGrant
+          ? "the operator has not granted you delegated commands; a grant on your friend record is not honoured, because the agent could have written it"
+          : "the operator has not granted you delegated commands",
+        next: `Ask the operator to run, as root on the agent's host: ouro a2a delegated-commands grant --friend <your friend id> --did <your DID> (your DID is in: ouro a2a identity --json).${hints.legacyRecordGrant ? " Grants live in the operator trust directory now, not on the friend record." : ""}`,
+        retry: false,
+      }
+    case "grants_untrusted":
+      return { message: "the agent cannot trust its grant file, so it honours no delegated-command grants", next: "Ask the operator to run: ouro a2a delegated-commands list, and fix the owner or mode it reports.", retry: false }
+    case "grant_did_mismatch":
+      return { message: "this message was signed by a different key than the one the operator granted", next: "Send from the host whose DID the operator pinned, or ask the operator to re-grant with your current DID: ouro a2a delegated-commands grant --friend <your friend id> --did <your DID>.", retry: false }
+    case "grant_expired":
+      return { message: "your delegated-command grant has expired or is not in force", next: "Ask the operator to re-grant: ouro a2a delegated-commands grant --friend <your friend id> --did <your DID> [--expires <ISO date>].", retry: false }
+    case "not_family":
+      return { message: "you are not active family on this agent's records, so the grant is suspended", next: "Ask the operator to restore your trust and admission, then try again.", retry: false }
+    case "principal_unresolved":
+      return { message: "the agent cannot tell whose command this is (its owner record is missing or ambiguous)", next: "Ask the operator to check the owner's friend record on the agent's host.", retry: false }
+    case "notice_failed":
+      return { message: "the agent could not tell its owner about this command first, so it did not run it", next: "Retry in a minute. If it keeps failing, the owner's chat channel is down: tell the operator.", retry: true }
+  }
+}
+
 /** Matches the banner only the server may put in front of an admitted command. */
 export const DELEGATED_BANNER = /^\s*\[\s*delegated command/iu
 
@@ -78,10 +120,6 @@ export function delegatedCommandNotice(input: { delegateName: string; text: stri
   const flat = input.text.replace(/\s+/gu, " ").trim()
   const excerpt = flat.length > NOTICE_EXCERPT_CHARS ? `${flat.slice(0, NOTICE_EXCERPT_CHARS)}…` : flat
   return `Delegated command from you via ${input.delegateName}: "${excerpt}". If this wasn't you, say so here: it is on record, and the grant can be revoked.`
-}
-
-function hasPrincipalGrant(friend: FriendRecord): boolean {
-  return friend.delegationGrant?.scope === "principal_commands"
 }
 
 async function resolvePrincipal(store: FriendStore, profileId: string): Promise<FriendRecord | null> {
@@ -100,6 +138,8 @@ export async function admitDelegatedCommand(input: {
   /** Undefined when the agent has no valid capability registry: nothing can be authorized. */
   registry: RelationshipCapabilityRegistry | undefined
   options: A2ADelegationOptions | undefined
+  /** Defaults to the current time. */
+  now?: number
 }): Promise<DelegatedCommandAdmission> {
   const refuse = (reason: DelegationRefusal): DelegatedCommandAdmission => {
     emitNervesEvent({
@@ -112,8 +152,8 @@ export async function admitDelegatedCommand(input: {
     return { ok: false, reason }
   }
   if (!input.options) return refuse("not_enabled")
-  if (!hasPrincipalGrant(input.friend)) return refuse("no_grant")
-  if (input.friend.trustLevel !== "family" || input.friend.admissionState === "revoked") return refuse("not_family")
+  const granted = checkDelegatedCommandGrant(input.options.agentRoot, input.friend, input.did, input.now)
+  if (!granted.ok) return refuse(granted.reason)
   const registry = input.registry
   if (!registry) return refuse("principal_unresolved")
   const principal = await resolvePrincipal(input.store, input.options.principalProfileId)
@@ -122,7 +162,7 @@ export async function admitDelegatedCommand(input: {
   try {
     const text = delegatedCommandNotice({ delegateName: input.friend.name, text: input.text })
     const agentRoot = input.options.agentRoot
-    if (agentRoot && isReplayWindowOpen(agentRoot, input.friend.id)) appendReplayNotice(agentRoot, { noticeId, text, friendId: input.friend.id })
+    if (isReplayWindowOpen(agentRoot, input.friend.id)) appendReplayNotice(agentRoot, { noticeId, text, friendId: input.friend.id })
     else await input.options.notifyPrincipal({ noticeId, text })
   } catch {
     return refuse("notice_failed")

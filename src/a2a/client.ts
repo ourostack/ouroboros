@@ -43,6 +43,17 @@ export async function fetchA2AAgentCard(cardUrl: string, fetchImpl: typeof fetch
   return parsed
 }
 
+/** A JSON-RPC error answer from the peer. `data` carries the peer's structured detail (for a refused delegated command: reason, nothingRan, retry, next). */
+export class A2ARpcError extends Error {
+  readonly code: number
+  readonly data: unknown
+  constructor(error: { code: number; message: string; data?: unknown }) {
+    super(`A2A error ${error.code}: ${error.message}`)
+    this.code = error.code
+    this.data = error.data
+  }
+}
+
 export async function postJsonRpc(endpointUrl: string, request: A2AJsonRpcRequest, fetchImpl: typeof fetch, protocolVersion = "1.0"): Promise<A2AJsonRpcResponse> {
   const response = await fetchImpl(endpointUrl, {
     method: "POST",
@@ -124,7 +135,7 @@ export async function sendA2AMessage(input: {
     }, fetchImpl)
   }
   if ("error" in rpc) {
-    throw new Error(`A2A error ${rpc.error.code}: ${rpc.error.message}`)
+    throw new A2ARpcError(rpc.error)
   }
   const result = rpc.result as A2ATask | { task?: A2ATask }
   const task = "task" in result && result.task ? result.task : result as A2ATask
@@ -168,7 +179,7 @@ export async function postA2AMessageEnvelope(input: {
     rpc = await postJsonRpc(input.endpointUrl, { ...request, method: "SendMessage" }, fetchImpl)
   }
   if ("error" in rpc) {
-    throw new Error(`A2A error ${rpc.error.code}: ${rpc.error.message}`)
+    throw new A2ARpcError(rpc.error)
   }
   emitNervesEvent({
     component: "channels",
@@ -210,7 +221,7 @@ export async function getA2ATask(input: {
     rpc = await postJsonRpc(input.endpointUrl, { ...request, method: "GetTask" }, fetchImpl)
   }
   if ("error" in rpc) {
-    throw new Error(`A2A error ${rpc.error.code}: ${rpc.error.message}`)
+    throw new A2ARpcError(rpc.error)
   }
   return rpc.result as A2ATask
 }
@@ -268,7 +279,7 @@ export async function sendSealedA2AChat(input: {
   }
   emitNervesEvent({ component: "channels", event: "channel.a2a_chat_send_start", message: "sending sealed A2A chat message", meta: { endpointUrl, peerDid } })
   const rpc = await postJsonRpc(endpointUrl, request, fetchImpl)
-  if ("error" in rpc) throw new Error(`A2A error ${rpc.error.code}: ${rpc.error.message}`)
+  if ("error" in rpc) throw new A2ARpcError(rpc.error)
   const task = rpc.result as A2ATask
   const replyMessage = task?.status?.message as A2AMessage | undefined
   if (!replyMessage) throw new Error("A2A chat returned no reply message")

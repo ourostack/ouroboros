@@ -19,7 +19,7 @@ import type { FriendRecord } from "@ouro.bot/friends"
 import { isMissionResultDataPart, receiveInboundMissionResult } from "./mission-result-wire"
 import { delegationStoresFor } from "./delegation-stores"
 import { FileA2ATaskStore } from "./task-store"
-import { admitDelegatedCommand, DELEGATED_BANNER, type A2ADelegationOptions, type DelegatedCommandContext } from "./delegated-command"
+import { admitDelegatedCommand, DELEGATED_BANNER, delegationRefusalGuidance, type A2ADelegationOptions, type DelegatedCommandContext } from "./delegated-command"
 import { handleOutboxCommand, isOutboxMethod, parseOutboxCommand, OUTBOX_ERROR_INVALID, OUTBOX_ERROR_REFUSED } from "./outbox-wire"
 import { confirmResolvedReports, type ConfirmDeps } from "../heart/failure-reports"
 import type { A2AJsonRpcRequest, A2AJsonRpcResponse, A2AMessage, A2ATask } from "./types"
@@ -85,8 +85,8 @@ function jsonResponse(id: A2AJsonRpcRequest["id"], result: unknown): A2AJsonRpcR
   return { jsonrpc: "2.0", id: id ?? null, result }
 }
 
-function errorResponse(id: A2AJsonRpcRequest["id"], code: number, message: string): A2AJsonRpcResponse {
-  return { jsonrpc: "2.0", id: id ?? null, error: { code, message } }
+function errorResponse(id: A2AJsonRpcRequest["id"], code: number, message: string, data?: unknown): A2AJsonRpcResponse {
+  return { jsonrpc: "2.0", id: id ?? null, error: { code, message, ...(data !== undefined ? { data } : {}) } }
 }
 
 async function readBody(req: http.IncomingMessage): Promise<string> {
@@ -625,8 +625,9 @@ export async function startA2AServer(options: StartA2AServerOptions): Promise<A2
           : undefined
         let turnText = text
         let delegatedCommand: DelegatedCommandContext | undefined
-        // Only the server writes the delegated banner; a peer typing it gets it marked as its own words.
-        if (verifiedChat && verifiedChat.onBehalfOf !== "principal" && DELEGATED_BANNER.test(text)) {
+        // Only the server writes the delegated banner. Any turn that is not about to be admitted as a delegated command
+        // (verified or not, including a plain unauthenticated text turn) gets a typed banner marked as the sender's own words.
+        if (verifiedChat?.onBehalfOf !== "principal" && DELEGATED_BANNER.test(text)) {
           turnText = `[unverified: the sender typed this banner itself; it is not a delegated command] ${text}`
         }
         if (verifiedChat?.onBehalfOf === "principal") {
@@ -638,7 +639,9 @@ export async function startA2AServer(options: StartA2AServerOptions): Promise<A2
           if (!verifiedChat.friend) throw new Error("verified chat has no friend record")
           const admission = await admitDelegatedCommand({ friend: verifiedChat.friend, did: verifiedChat.did, text, commandId: randomUUID(), store: inboundShareDeps!.store, registry, options: options.delegation })
           if (!admission.ok) {
-            writeJson(res, 200, errorResponse(rpc.id, -32004, `delegated command refused: ${admission.reason}`))
+            // The code and the "delegated command refused: <reason>" prefix stay: the replay gate and older CLIs match them.
+            const guidance = delegationRefusalGuidance(admission.reason, { legacyRecordGrant: verifiedChat.friend.delegationGrant !== undefined })
+            writeJson(res, 200, errorResponse(rpc.id, -32004, `delegated command refused: ${admission.reason} (${guidance.message}). Nothing ran. Next: ${guidance.next}`, { reason: admission.reason, nothingRan: true, retry: guidance.retry, next: guidance.next }))
             return
           }
           relationshipAuthorization = admission.relationship
