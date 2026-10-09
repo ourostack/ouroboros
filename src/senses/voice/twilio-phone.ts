@@ -16,6 +16,7 @@ import { validateAdvertisedToolArguments } from "../../repertoire/tool-arguments
 import type { JsonObject } from "../../heart/approval-store"
 import { sanitizeKey } from "../../heart/config"
 import { emitNervesEvent } from "../../nerves/runtime"
+import { createRealtimeToolAdvertiser, type RealtimeFunctionTool, type RealtimeToolAdvertiser } from "./realtime-tool-schema"
 import { writeVoicePlaybackArtifact } from "./playback"
 import { buildVoiceTranscript } from "./transcript"
 import { runVoiceLoopbackTurn, type VoiceLoopbackTurnResult, type VoiceRunSenseTurn } from "./turn"
@@ -1896,17 +1897,15 @@ async function prepareRealtimeToolContext(context: RealtimeToolContext): Promise
   return selectRealtimeToolContext(context, mcpManager)
 }
 
-function realtimeToolsFromSelection(selection: ToolSelection): Array<{ type: "function"; name: string; description?: string; parameters?: unknown }> {
-  return selection.ordinary.map(({ tool }) => ({
-      type: "function" as const,
-      name: tool.function.name,
-      ...(tool.function.description ? { description: tool.function.description } : {}),
-      parameters: tool.function.parameters ?? { type: "object", properties: {} },
-    }))
+function realtimeToolsFromSelection(selection: ToolSelection, advertiser: RealtimeToolAdvertiser): RealtimeFunctionTool[] {
+  return advertiser.tools(selection.ordinary.map(({ tool }) => tool))
 }
 
-function parseToolArguments(raw: unknown, name: string, selection: ToolSelection): JsonObject {
+export function parseToolArguments(raw: unknown, name: string, selection: ToolSelection, advertiser: RealtimeToolAdvertiser): JsonObject {
   if (typeof raw !== "string") throw new Error("invalid tool arguments: expected a JSON object string")
+  if (!advertiser.isAdvertised(selection.ordinary.map(({ tool }) => tool), name)) {
+    throw new Error(`tool ${name} is not advertised in this voice session`)
+  }
   const schema = selection.ordinary.find((definition) => definition.tool.function.name === name)?.tool.function.parameters ?? {}
   const validation = validateAdvertisedToolArguments(raw, schema)
   if (!validation.ok) throw new Error(`invalid tool arguments: ${validation.reason}`)
@@ -2057,6 +2056,11 @@ export class TwilioOpenAIRealtimeMediaStreamSession implements TwilioMediaStream
   private pendingAudioPayloads: string[] = []
   private openaiWs: WebSocket | null = null
   private toolContext!: RealtimeToolContext
+  private advertiser: RealtimeToolAdvertiser | undefined
+  private get toolAdvertiser(): RealtimeToolAdvertiser {
+    this.advertiser ??= createRealtimeToolAdvertiser({ agentName: this.options.agentName, callSid: safeSegment(this.callSid) })
+    return this.advertiser
+  }
   private friendStore: FileFriendStore | undefined
   private resolvedContext: ResolvedContext | undefined
   private sessionMessages: OpenAI.ChatCompletionMessageParam[] = []
@@ -2293,7 +2297,7 @@ export class TwilioOpenAIRealtimeMediaStreamSession implements TwilioMediaStream
           session: {
             type: "realtime",
             instructions: fullInstructions,
-            tools: realtimeToolsFromSelection(fullContext.toolSelection),
+            tools: realtimeToolsFromSelection(fullContext.toolSelection, this.toolAdvertiser),
             tool_choice: "auto",
           },
         })
@@ -2329,7 +2333,7 @@ export class TwilioOpenAIRealtimeMediaStreamSession implements TwilioMediaStream
           },
           output: realtimeOutputAudioConfig(realtime, { type: "audio/pcmu" }),
         },
-        tools: realtimeToolsFromSelection(toolContext.toolSelection),
+        tools: realtimeToolsFromSelection(toolContext.toolSelection, this.toolAdvertiser),
         tool_choice: "auto",
         max_output_tokens: OPENAI_REALTIME_MAX_OUTPUT_TOKENS,
         ...(realtime.reasoningEffort ? { reasoning: { effort: realtime.reasoningEffort } } : {}),
@@ -2746,7 +2750,7 @@ export class TwilioOpenAIRealtimeMediaStreamSession implements TwilioMediaStream
     })
     let output: string
     try {
-      const args = parseToolArguments(event.arguments, name, this.toolContext.toolSelection)
+      const args = parseToolArguments(event.arguments, name, this.toolContext.toolSelection, this.toolAdvertiser)
       emitNervesEvent({
         component: "senses",
         event: "senses.voice_twilio_realtime_tool_start",
@@ -3113,6 +3117,11 @@ class OpenAISipPhoneSession {
   private autoResponsesSuppressedForAmd = false
   private openaiWs: WebSocket | null = null
   private toolContext!: RealtimeToolContext
+  private advertiser: RealtimeToolAdvertiser | undefined
+  private get toolAdvertiser(): RealtimeToolAdvertiser {
+    this.advertiser ??= createRealtimeToolAdvertiser({ agentName: this.options.agentName, callId: safeSegment(this.metadata.callId) })
+    return this.advertiser
+  }
   private friendStore: FileFriendStore | undefined
   private resolvedContext: ResolvedContext | undefined
   private sessionMessages: OpenAI.ChatCompletionMessageParam[] = []
@@ -3290,7 +3299,7 @@ class OpenAISipPhoneSession {
           },
           output: realtimeOutputAudioConfig(realtime),
         },
-        tools: realtimeToolsFromSelection(toolContext.toolSelection),
+        tools: realtimeToolsFromSelection(toolContext.toolSelection, this.toolAdvertiser),
         tool_choice: "auto",
         max_output_tokens: OPENAI_REALTIME_MAX_OUTPUT_TOKENS,
       }),
@@ -3383,7 +3392,7 @@ class OpenAISipPhoneSession {
             session: {
               type: "realtime",
               instructions,
-              tools: realtimeToolsFromSelection(toolContext.toolSelection),
+              tools: realtimeToolsFromSelection(toolContext.toolSelection, this.toolAdvertiser),
               tool_choice: "auto",
               ...(realtime.reasoningEffort ? { reasoning: { effort: realtime.reasoningEffort } } : {}),
             },
@@ -3860,7 +3869,7 @@ class OpenAISipPhoneSession {
     })
     let output: string
     try {
-      const args = parseToolArguments(event.arguments, name, this.toolContext.toolSelection)
+      const args = parseToolArguments(event.arguments, name, this.toolContext.toolSelection, this.toolAdvertiser)
       emitNervesEvent({
         component: "senses",
         event: "senses.voice_openai_sip_tool_start",
@@ -5680,7 +5689,15 @@ export function createTwilioPhoneBridge(options: TwilioPhoneBridgeOptions): Twil
       if (routePath === `${basePath}/stream-ended`) {
         // `<Connect action>` fires when the stream ends. A normal end just hangs up; a call whose
         // stream was refused (or never connected) hears the failure line instead of dead air.
-        return xmlResponse(pendingCalls.settle(params.CallSid?.trim() ?? "") ? streamFailureTwiml() : "<Hangup />")
+        const callSid = params.CallSid?.trim() ?? ""
+        const settledPending = pendingCalls.settle(callSid)
+        emitNervesEvent({
+          component: "senses",
+          event: "senses.voice_twilio_stream_ended",
+          message: "Twilio reported the call's media stream ended",
+          meta: { agentName: options.agentName, callSid: safeSegment(callSid), settledPending },
+        })
+        return xmlResponse(settledPending ? streamFailureTwiml() : "<Hangup />")
       }
       if (routePath.startsWith(`${basePath}/outgoing/`)) {
         const outgoingRest = routePath.slice(`${basePath}/outgoing/`.length)

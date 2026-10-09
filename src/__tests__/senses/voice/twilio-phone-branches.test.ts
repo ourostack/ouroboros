@@ -204,6 +204,18 @@ describe("more webhook edges", () => {
     expect(String(response.body)).toContain("<Sip>")
   })
 
+  it("logs an info event when Twilio reports the media stream ended", async () => {
+    const f = await fixture()
+    const events = vi.spyOn(nerves, "emitNervesEvent")
+    await f.post("/voice/twilio/stream-ended", { CallSid: "CAended1", DialCallStatus: "completed" })
+    expect(events).toHaveBeenCalledWith(expect.objectContaining({
+      component: "senses",
+      event: "senses.voice_twilio_stream_ended",
+      meta: expect.objectContaining({ callSid: "CAended1", settledPending: false }),
+    }))
+    events.mockRestore()
+  })
+
   it("settles a stream-ended callback that carries no CallSid", async () => {
     const f = await fixture()
     expect(String((await f.post("/voice/twilio/stream-ended", {})).body)).toContain("<Hangup />")
