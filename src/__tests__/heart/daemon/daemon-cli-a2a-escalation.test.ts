@@ -8,6 +8,7 @@ import { parseOuroCommand, runOuroCli, type OuroCliDeps } from "../../../heart/d
 import { startA2AServer, type A2AServerHandle } from "../../../a2a/server"
 import { loadOrMintA2AIdentityFile } from "../../../a2a/identity"
 import { escalationGrantsPath, readEscalationGrants } from "../../../a2a/escalation-grants"
+import { operatorTrustDir } from "../../../a2a/operator-trust"
 import { FileOutboxStore } from "../../../a2a/outbox-store"
 import { fileFailureReport } from "../../../heart/failure-reports"
 
@@ -18,12 +19,14 @@ beforeAll(async () => { sodium = await ready() })
 afterEach(async () => {
   if (server) { await server.close(); server = null }
   for (const dir of roots.splice(0)) rmSync(dir, { recursive: true, force: true })
+  // The trust directory is keyed by agent name and shared by every test here; each starts without the last one's grants.
+  rmSync(operatorTrustDir("/x/sanctuary.ouro"), { recursive: true, force: true })
 })
 function root(): string { const dir = mkdtempSync(join(tmpdir(), "ouro-escalation-cli-")); roots.push(dir); return dir }
 function deps(overrides: Partial<OuroCliDeps> = {}): OuroCliDeps {
   return {
     socketPath: "/tmp/ouro-test.sock", sendCommand: vi.fn().mockResolvedValue({ ok: true, summary: "ok" }), startDaemonProcess: vi.fn().mockResolvedValue({ pid: 1 }),
-    writeStdout: vi.fn(), checkSocketAlive: vi.fn().mockResolvedValue(true), cleanupStaleSocket: vi.fn(), fallbackPendingMessage: vi.fn().mockReturnValue("pending"), ...overrides,
+    writeStdout: vi.fn(), checkSocketAlive: vi.fn().mockResolvedValue(true), cleanupStaleSocket: vi.fn(), fallbackPendingMessage: vi.fn().mockReturnValue("pending"), ownA2ADid: () => "did:key:zOwn", ...overrides,
   }
 }
 function bundle(bundlesRoot: string, agent = "sanctuary"): string {

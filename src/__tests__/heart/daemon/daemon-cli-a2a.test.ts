@@ -256,7 +256,8 @@ describe("ouro A2A client commands (identity + sealed message)", () => {
     const agent = { ...didKeyIdentityFromEd25519({ sodium, ed25519Pub: kp.publicKey, ed25519Priv: kp.privateKey }), seed: "unused" }
     const client = await loadOrMintA2AIdentityFile({ filePath: identityFile, sodium })
     const store = new FileFriendStore(join(agentRoot, "friends"))
-    await upsertAgentPeer(store, { name: "Client", agentId: client.did, trustLevel: "friend", a2a: { did: client.did, agentId: client.did, endpointUrl: "https://client.example/a2a" } })
+    const clientPeer = await upsertAgentPeer(store, { name: "Client", agentId: client.did, trustLevel: "family", a2a: { did: client.did, agentId: client.did, endpointUrl: "https://client.example/a2a" } })
+    await store.put(clientPeer.id, { ...clientPeer, admissionState: "active" })
     const server = await startA2AServer({ agentName: "chatty", agentRoot, port: 0, identity: agent, turnRunner: async ({ message }) => ({ response: `pong:${message}` }) })
     try {
       const cardUrl = new URL("/.well-known/agent-card.json", server.url).toString()

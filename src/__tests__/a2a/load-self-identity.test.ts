@@ -210,3 +210,19 @@ describe("loadSelfA2AIdentity (wrapper glue over loadOrMintA2AIdentity)", () => 
     expect(raw).toContain("must-not-be-replaced")
   })
 })
+
+describe("readOwnA2ADid is read-only", () => {
+  it("returns the DID from the cached machine config, null when nothing is cached, and null for a malformed seed, without touching the vault or the machine identity", async () => {
+    const credentials = await import("../../heart/runtime-credentials")
+    const { readOwnA2ADid } = await import("../../a2a/identity")
+    credentials.resetRuntimeCredentialConfigCache()
+    expect(await readOwnA2ADid("readonly-agent")).toBeNull()
+    credentials.cacheMachineRuntimeCredentialConfig("readonly-agent", { a2a: { identity: { ed25519Seed: Buffer.alloc(32, 7).toString("base64url") } } })
+    const did = await readOwnA2ADid("readonly-agent")
+    expect(did).toMatch(/^did:key:/)
+    expect(await readOwnA2ADid("readonly-agent")).toBe(did)
+    credentials.cacheMachineRuntimeCredentialConfig("readonly-agent", { a2a: { identity: { ed25519Seed: "short" } } })
+    expect(await readOwnA2ADid("readonly-agent")).toBeNull()
+    credentials.resetRuntimeCredentialConfigCache()
+  })
+})

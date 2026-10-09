@@ -249,6 +249,25 @@ describe("delegated-commands list", () => {
   })
 })
 
+describe("when the agent's own DID cannot be read", () => {
+  const unknownSelf = { ownDid: async () => null }
+  it("still grants, says the own-DID check was skipped, and compares --did with every DID on file", async () => {
+    const friend = await peer()
+    const out = await grant(friend.id, {}, unknownSelf)
+    expect(out).toContain("could not read this agent's own DID")
+    expect(out).toContain("compared --did with every DID in the friend records")
+    expect(readDelegatedCommandGrants(tmp.agentRoot)[friend.id]?.did).toBe(DID)
+  })
+
+  it("refuses a DID that another friend record also carries, since it may be this agent's own key", async () => {
+    const friend = await peer()
+    await store.put("twin", { ...friend, id: "twin", name: "Other record" })
+    await expect(grant(friend.id, {}, unknownSelf)).rejects.toThrow(/another friend record.*Other record/s)
+    await expect(executeEscalationCommand({ kind: "a2a.escalation", action: "grant", friendId: friend.id, did: DID } as never, ctx(unknownSelf))).rejects.toThrow("another friend record")
+    expect(readDelegatedCommandGrants(tmp.agentRoot)).toEqual({})
+  })
+})
+
 describe("escalation grant and revoke", () => {
   const esc = (action: "grant" | "revoke" | "list", friendId: string | undefined, extra: Record<string, unknown> = {}, c: Partial<TrustCommandContext> = {}) =>
     executeEscalationCommand({ kind: "a2a.escalation", action, ...(friendId ? { friendId } : {}), ...extra } as never, ctx(c))
@@ -283,6 +302,25 @@ describe("escalation grant and revoke", () => {
     expect(revoked).toContain(`revoked escalation: Claude Code (${friend.id})`)
     expect(revoked).toContain("backup: ")
     await expect(esc("revoke", friend.id, {}, { isRoot: false })).rejects.toThrow("must run as root")
+  })
+
+  it("refuses this agent's own DID and a DID another holder already has", async () => {
+    const friend = await peer()
+    await expect(esc("grant", friend.id, { did: DID }, { ownDid: async () => DID })).rejects.toThrow("this agent's own DID")
+    await esc("grant", friend.id, { did: DID })
+    await store.put("clash", { ...friend, id: "clash", name: "Clash" })
+    await expect(esc("grant", "clash", { did: DID })).rejects.toThrow(`already pinned by ${friend.id}'s grant`)
+    expect(Object.keys(readEscalationGrants(tmp.agentRoot))).toEqual([friend.id])
+  })
+
+  it("revokes a grant whose friend record is gone, by id", async () => {
+    const friend = await peer()
+    await esc("grant", friend.id, { did: DID })
+    fs.rmSync(path.join(tmp.agentRoot, "friends", `${friend.id}.json`))
+    const out = await esc("revoke", friend.id)
+    expect(out).toContain(`revoked escalation: ${friend.id} (no friend record)`)
+    expect(readEscalationGrants(tmp.agentRoot)).toEqual({})
+    expect(await esc("revoke", friend.id)).toContain("(no change)")
   })
 
   it("warns when the written grant would not be honoured", async () => {

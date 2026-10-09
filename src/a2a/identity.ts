@@ -166,24 +166,21 @@ export async function loadSelfA2AIdentity(input: { agentName: string; sodium?: S
 }
 
 /**
- * This agent's own A2A DID if its seed can be read, else null. Read-only: unlike `loadSelfA2AIdentity` it never mints a
- * seed or writes the machine config, because an operator command only wants to compare, not to create an identity.
+ * This agent's own A2A DID if its seed is already in this process's cached machine config, else null. Strictly read-only: it
+ * never mints a seed, never creates the machine identity file and never refreshes the vault, because an operator command only
+ * wants to compare, not to create or fetch anything. A one-off root command has no cached config, so it gets null and the caller
+ * falls back to comparing the DID against the friend records.
  */
-/* v8 ignore start -- reads the agent's vault-backed machine config; the unit tests inject the DID instead @preserve */
 export async function readOwnA2ADid(agentName: string): Promise<string | null> {
   try {
-    const sodium = await ready()
-    const machineId = loadOrCreateMachineIdentity({ homeDir: os.homedir() }).machineId
     const cached = readMachineRuntimeCredentialConfig(agentName)
-    const read = cached.ok && readStoredA2ASeed(cached.config) ? cached : await refreshMachineRuntimeCredentialConfig(agentName, machineId)
-    if (!read.ok || !readStoredA2ASeed(read.config)) return null
-    const identity = await loadOrMintA2AIdentity({ agentName, sodium, config: read.config, upsert: async () => { throw new Error("readOwnA2ADid never mints") } })
+    if (!cached.ok || !readStoredA2ASeed(cached.config)) return null
+    const identity = await loadOrMintA2AIdentity({ agentName, sodium: await ready(), config: cached.config, upsert: async () => { throw new Error("readOwnA2ADid never mints") } })
     return identity.did
   } catch {
     return null
   }
 }
-/* v8 ignore stop */
 
 /**
  * A file-backed A2A identity for a client that is not an ouro agent (for example a

@@ -63,6 +63,24 @@ function checkedDid(friend: FriendRecord, did: string | undefined): string {
   return did
 }
 
+/**
+ * The checks both grant commands share before they pin a DID. It may not be this agent's own, and it may not already be pinned by
+ * another holder's grant in the same file. When this agent's own DID cannot be read (a one-off root container has no vault) the
+ * own-DID check cannot run, so the command instead refuses any DID that a second friend record also carries (a sender's key is on
+ * exactly one record), and says so in its output.
+ */
+async function vetPinnedDid(ctx: TrustCommandContext, friend: FriendRecord, did: string, held: Record<string, { did: string }>): Promise<string[]> {
+  const own = await ctx.ownDid()
+  if (own === did) throw new Error("refusing: that is this agent's own DID. A grant must pin the sender's key, not this agent's. Nothing was written.")
+  const holder = Object.entries(held).find(([id, existing]) => id !== friend.id && existing.did === did)
+  if (holder) throw new Error(`refusing: that DID is already pinned by ${holder[0]}'s grant. Revoke it first if the sender really moved to a different friend record. Nothing was written.`)
+  if (own !== null) return []
+  const records = await ctx.store.listAll?.() ?? []
+  const twin = records.find((record) => record.id !== friend.id && friendDid(record) === did)
+  if (twin) throw new Error(`refusing: this agent's own DID could not be read here, and another friend record (${twin.name}, ${twin.id}) carries that same DID, so it may be this agent's own key. Check it with: ouro a2a identity --agent ${ctx.agentName} --json. Nothing was written.`)
+  return ["note: could not read this agent's own DID here, so the own-DID check was skipped; compared --did with every DID in the friend records instead, and no other record carries it"]
+}
+
 function notActiveFamilyNote(friend: FriendRecord, what: string): string[] {
   return friend.trustLevel === "family" && friend.admissionState === "active"
     ? []
@@ -83,9 +101,7 @@ export async function executeDelegatedCommandsCommand(command: DelegatedCommands
   const expiresAt = parseExpiry(command.expires, ctx.now)
   const friend = await requireFriend(ctx, command.friendId)
   const did = checkedDid(friend, command.did)
-  if (await ctx.ownDid() === did) throw new Error("refusing: that is this agent's own DID. A grant must pin the sender's key, not this agent's. Nothing was written.")
-  const holder = Object.entries(readDelegatedCommandGrants(ctx.agentRoot)).find(([id, existing]) => id !== friend.id && existing.did === did)
-  if (holder) throw new Error(`refusing: that DID is already pinned by ${holder[0]}'s grant. Revoke it first if the sender really moved to a different friend record. Nothing was written.`)
+  const selfNotes = await vetPinnedDid(ctx, friend, did, readDelegatedCommandGrants(ctx.agentRoot))
   const change = setDelegatedCommandGrant(ctx.agentRoot, friend.id, { grant: true, did, source: command.source ?? `ouro a2a delegated-commands grant, ${ctx.now.toISOString()}`, ...(expiresAt ? { expiresAt } : {}) }, ctx.now)
   emitNervesEvent({ component: "senses", event: "senses.a2a_trust_grant_changed", message: "operator changed a trust grant", meta: { action: "grant", scope: "delegated_commands" } })
   return [
@@ -94,6 +110,7 @@ export async function executeDelegatedCommandsCommand(command: DelegatedCommands
     `expires: ${expiresAt ?? "never"}`,
     `trust directory: ${operatorTrustDir(ctx.agentRoot)}`,
     ...(change.backup ? [`backup: ${change.backup}`] : []),
+    ...selfNotes,
     ...(readDelegatedCommandGrants(ctx.agentRoot)[friend.id] === undefined ? [`WARNING: the grant is written but will not be honoured: ${delegatedCommandGrantsPath(ctx.agentRoot)} and every directory above it must be owned by root and writable by no one else. Run \`ouro a2a delegated-commands list\` for what the harness sees.`] : []),
     ...notActiveFamilyNote(friend, ""),
   ].join("\n")
@@ -192,17 +209,31 @@ export async function executeEscalationCommand(command: EscalationCommandInput, 
     return (grants.length === 0 ? "no escalation grants" : grants.map(([id, grant]) => `${id}  granted ${grant.grantedAt}  ${grant.did}  ${grant.source}`).join("\n")) + note
   }
   requireRoot(ctx)
+  if (command.action === "revoke") return revokeEscalation(command.friendId!, ctx)
   const friend = await requireFriend(ctx, command.friendId)
-  const did = command.action === "grant" ? checkedDid(friend, command.did) : null
+  const did = checkedDid(friend, command.did)
+  const selfNotes = await vetPinnedDid(ctx, friend, did, readEscalationGrants(ctx.agentRoot))
   const change = command.action === "grant"
     ? setEscalationGrant(ctx.agentRoot, friend.id, { grant: true, source: command.source ?? `ouro a2a escalation grant, ${ctx.now.toISOString()}`, did: did! }, ctx.now)
     : setEscalationGrant(ctx.agentRoot, friend.id, { grant: false }, ctx.now)
-  emitNervesEvent({ component: "senses", event: "senses.a2a_trust_grant_changed", message: "operator changed a trust grant", meta: { action: command.action, scope: "escalation" } })
+  emitNervesEvent({ component: "senses", event: "senses.a2a_trust_grant_changed", message: "operator changed a trust grant", meta: { action: "grant", scope: "escalation" } })
   return [
-    `${command.action === "grant" ? "granted" : "revoked"} escalation: ${friend.name} (${friend.id})${change.changed ? "" : " (no change)"}`,
-    ...(did ? [`pinned DID: ${did}`] : []),
+    `granted escalation: ${friend.name} (${friend.id})${change.changed ? "" : " (no change)"}`,
+    `pinned DID: ${did}`,
     ...(change.backup ? [`backup: ${change.backup}`] : []),
-    ...(command.action === "grant" && readEscalationGrants(ctx.agentRoot)[friend.id] === undefined ? [`WARNING: the grant is written but will not be honoured: ${escalationGrantsPath(ctx.agentRoot)} and every directory above it must be owned by root and writable by no one else.`] : []),
-    ...(command.action === "grant" && (friend.trustLevel !== "family" || friend.admissionState !== "active") ? [`note: ${friend.name} only holds the grant while it is active family (now ${friend.trustLevel}, ${friend.admissionState})`] : []),
+    ...selfNotes,
+    ...(readEscalationGrants(ctx.agentRoot)[friend.id] === undefined ? [`WARNING: the grant is written but will not be honoured: ${escalationGrantsPath(ctx.agentRoot)} and every directory above it must be owned by root and writable by no one else.`] : []),
+    ...(friend.trustLevel !== "family" || friend.admissionState !== "active" ? [`note: ${friend.name} only holds the grant while it is active family (now ${friend.trustLevel}, ${friend.admissionState})`] : []),
+  ].join("\n")
+}
+
+/** Revoke needs no friend record: a grant for a friend that was deleted must still be removable by its id. */
+async function revokeEscalation(friendId: string, ctx: TrustCommandContext): Promise<string> {
+  const friend = await ctx.store.get(friendId)
+  const change = setEscalationGrant(ctx.agentRoot, friendId, { grant: false }, ctx.now)
+  emitNervesEvent({ component: "senses", event: "senses.a2a_trust_grant_changed", message: "operator changed a trust grant", meta: { action: "revoke", scope: "escalation" } })
+  return [
+    `revoked escalation: ${friend ? `${friend.name} (${friend.id})` : `${friendId} (no friend record)`}${change.changed ? "" : " (no change)"}`,
+    ...(change.backup ? [`backup: ${change.backup}`] : []),
   ].join("\n")
 }
