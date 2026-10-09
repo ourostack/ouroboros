@@ -857,6 +857,7 @@ export class SanctuaryAuthorityRootLifecycle {
     })
     execFileSync("/bin/chown", ["-R", "10001:10001", this.#p(BUNDLE)], { stdio: "ignore" })
     this.#restoreReplayRoot()
+    this.#restoreEscalationGrantRoot()
   }
 
   /**
@@ -874,6 +875,33 @@ export class SanctuaryAuthorityRootLifecycle {
     execFileSync("/bin/chown", ["-h", "0:0", directory], { stdio: "ignore" })
     fs.chmodSync(directory, 0o755)
     fs.rmSync(path.join(directory, "window.json"), { force: true, recursive: true })
+  }
+
+  /**
+   * The same recursive restore hands state/a2a and the escalation grant file to the resident. The Butler honours a grant
+   * only while the file and its directory are root-owned and closed to everyone else (src/a2a/trusted-files.ts), so
+   * after every restore they go back under root, and a prompt-injected model running as the resident cannot mint one.
+   * The subdirectories the resident writes (tasks, pins, seen) are created first and stay with it, so it never needs to
+   * create anything inside the root-owned directory. Missing this is what made every report_failure and outbox case of
+   * the alpha.878 replay gate fail: no peer held the grant, so no peer was an escalation holder.
+   */
+  #restoreEscalationGrantRoot(): void {
+    const directory = this.#p(`${BUNDLE}/state/a2a`)
+    let stat: fs.Stats
+    try { stat = fs.lstatSync(directory) } catch { return }
+    if (!stat.isDirectory()) return
+    for (const sub of ["tasks", "pins", "seen"]) {
+      fs.mkdirSync(path.join(directory, sub), { recursive: true })
+      execFileSync("/bin/chown", ["-R", "10001:10001", path.join(directory, sub)], { stdio: "ignore" })
+    }
+    // Ownership first, before anything else can fail: nothing the Butler left in the directory may stop it going back under root.
+    execFileSync("/bin/chown", ["-h", "0:0", directory], { stdio: "ignore" })
+    fs.chmodSync(directory, 0o755)
+    const grants = path.join(directory, "escalation-grants.json")
+    if (fs.existsSync(grants)) {
+      execFileSync("/bin/chown", ["-h", "0:0", grants], { stdio: "ignore" })
+      fs.chmodSync(grants, 0o644)
+    }
   }
 
   /** Start the gateway, then the resident, and prove both. */

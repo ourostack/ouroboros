@@ -698,6 +698,17 @@ describe("escalation, outbox and the act path", () => {
     } finally { fs.rmSync(bundle, { recursive: true, force: true }) }
   })
 
+  it("hands every directory it creates under state/ to the Butler, so a root-run seed never leaves state/outbox closed to him", () => {
+    const made: string[] = []
+    const chowned: string[] = []
+    const present = new Set(["/b/state"])
+    const owner = { uid: 10001, gid: 10001 }
+    gate.mkdirOwned("/b/state", "/b/state/outbox/e", owner, { mkdir: (d: string, o: { mode: number }) => { expect(o.mode).toBe(0o700); made.push(d); present.add(d) }, chown: (d: string, u: number, g: number) => chowned.push(`${d} ${u}:${g}`), exists: (d: string) => present.has(d) })
+    expect(made).toEqual(["/b/state/outbox", "/b/state/outbox/e"])
+    expect(chowned).toEqual(["/b/state/outbox 10001:10001", "/b/state/outbox/e 10001:10001"])
+    gate.mkdirOwned("/b/state", "/b/state/outbox/e", owner, { mkdir: () => { throw new Error("nothing is missing") }, chown: () => { throw new Error("nothing was made") }, exists: (d: string) => present.has(d) })
+  })
+
   it("refuses a host provisioned before the escalation peer existed", () => {
     const bundle = tmpBundle()
     try {
