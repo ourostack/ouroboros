@@ -7223,7 +7223,7 @@ async function executeA2ACommand(command: A2ACliCommand & { agent: string }, dep
       /* v8 ignore next -- production reads the real euid; tests inject isRoot @preserve */
       isRoot: deps.isRoot ? deps.isRoot() : process.geteuid?.() === 0,
       /* v8 ignore next -- production reads the stored identity; tests inject ownA2ADid @preserve */
-      ownDid: async () => deps.ownA2ADid ? deps.ownA2ADid(command.agent) : (await import("../../a2a/identity")).readOwnA2ADid(command.agent),
+      ownDid: async () => deps.ownA2ADid ? deps.ownA2ADid(command.agent) : (await import("../../a2a/identity")).readOwnA2ADid(command.agent, agentRoot),
     }
     const message = command.kind === "a2a.escalation" ? await executeEscalationCommand(command, context) : await executeDelegatedCommandsCommand(command, context)
     deps.writeStdout(message)
