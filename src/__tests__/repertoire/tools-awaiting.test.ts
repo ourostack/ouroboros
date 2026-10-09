@@ -305,6 +305,15 @@ describe("tools-awaiting", () => {
       expect(fn.description).toContain("still pending")
     })
 
+    it("the managed house-care sweep can only ever be resolved 'no', and never cancelled", async () => {
+      for (const verdict of ["yes", "ask_owner"]) {
+        const result = parse(await resolveAwaitDef.handler({ name: "house-care-sweep.md", verdict, observation: "x" }, undefined) as string)
+        expect(String(result.error)).toContain("never resolves")
+      }
+      expect(String(parse(cancelAwaitDef.handler({ name: "house-care-sweep" }, undefined) as string).error)).toContain("cannot be cancelled")
+      expect(String(parse(await resolveAwaitDef.handler({ name: "house-care-sweep", verdict: "no", observation: "quiet" }, undefined) as string).error ?? "")).not.toContain("never resolves")
+    })
+
     it("a bad verdict returns an explicit error and records nothing", async () => {
       await file("bad_verdict")
       const result = parse(await resolveAwaitDef.handler({ name: "bad_verdict", verdict: "pending", observation: "not yet" }, undefined) as string)

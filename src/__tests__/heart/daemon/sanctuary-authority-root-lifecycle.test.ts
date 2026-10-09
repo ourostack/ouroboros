@@ -1386,6 +1386,60 @@ describe("in-place authority upgrade", () => {
       expect(chowns().some((args) => args.endsWith("escalation-grants.json"))).toBe(false)
     })
 
+    it("never follows a symlinked or non-regular grant file, nor a symlinked or odd subdirectory", async () => {
+      const f = await upgradeFixture()
+      const dir = f.p(`${bundle}/state/a2a`)
+      fs.mkdirSync(dir, { recursive: true })
+      const victim = path.join(path.dirname(dir), "victim.txt")
+      fs.writeFileSync(victim, "keep")
+      fs.chmodSync(victim, 0o600)
+      fs.symlinkSync(victim, `${dir}/escalation-grants.json`)
+      fs.symlinkSync(path.dirname(dir), `${dir}/tasks`)
+      fs.writeFileSync(`${dir}/pins`, "not a directory")
+      await f.lifecycle.upgrade({ targetImageId: digest("next-image"), imageReference: nextReference })
+      const calls = chowns()
+      expect(calls).toContain(`-h 0:0 ${dir}`)
+      expect(calls.some((args) => args.endsWith("escalation-grants.json"))).toBe(false)
+      expect(calls).not.toContain(`-R 10001:10001 ${dir}/tasks`)
+      expect(calls).not.toContain(`-R 10001:10001 ${dir}/pins`)
+      expect(calls).toContain(`-R 10001:10001 ${dir}/seen`)
+      expect(fs.statSync(victim).mode & 0o777).toBe(0o600)
+    })
+
+    it("refuses a grant path that is a directory", async () => {
+      const f = await upgradeFixture()
+      const dir = f.p(`${bundle}/state/a2a`)
+      fs.mkdirSync(`${dir}/escalation-grants.json`, { recursive: true })
+      await f.lifecycle.upgrade({ targetImageId: digest("next-image"), imageReference: nextReference })
+      expect(chowns().some((args) => args.endsWith("escalation-grants.json"))).toBe(false)
+      expect(fs.statSync(`${dir}/escalation-grants.json`).mode & 0o777).not.toBe(0o644)
+    })
+
+    it("refuses state/replay and state/a2a when state itself is a link to somewhere else", async () => {
+      const f = await upgradeFixture()
+      const elsewhere = fs.mkdtempSync(path.join(os.tmpdir(), "elsewhere-"))
+      fs.mkdirSync(`${elsewhere}/a2a`)
+      fs.mkdirSync(`${elsewhere}/replay`)
+      fs.writeFileSync(`${elsewhere}/replay/window.json`, "{}")
+      fs.mkdirSync(path.dirname(f.p(`${bundle}/state`)), { recursive: true })
+      fs.rmSync(f.p(`${bundle}/state`), { recursive: true, force: true })
+      fs.symlinkSync(elsewhere, f.p(`${bundle}/state`))
+      try {
+        await f.lifecycle.upgrade({ targetImageId: digest("next-image"), imageReference: nextReference })
+        expect(chowns().filter((args) => args.startsWith("-h "))).toEqual([])
+        expect(fs.existsSync(`${elsewhere}/replay/window.json`)).toBe(true)
+        expect(fs.existsSync(`${elsewhere}/a2a/tasks`)).toBe(false)
+      } finally { fs.rmSync(elsewhere, { recursive: true, force: true }) }
+    })
+
+    it("refuses a state/a2a that is a regular file", async () => {
+      const f = await upgradeFixture()
+      fs.mkdirSync(f.p(`${bundle}/state`), { recursive: true })
+      fs.writeFileSync(f.p(`${bundle}/state/a2a`), "x")
+      await f.lifecycle.upgrade({ targetImageId: digest("next-image"), imageReference: nextReference })
+      expect(chowns().filter((args) => args.startsWith("-h "))).toEqual([])
+    })
+
     it("does nothing for a bundle without state/a2a, or where it is a symlink", async () => {
       const f = await upgradeFixture()
       await f.lifecycle.upgrade({ targetImageId: digest("next-image"), imageReference: nextReference })

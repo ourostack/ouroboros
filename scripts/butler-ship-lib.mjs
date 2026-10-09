@@ -39,6 +39,26 @@ export function findReleaseCommit(commits, version) {
   return hit ? hit.sha : undefined
 }
 
+export const FALLBACK_COMMIT_WALK = 30
+
+/**
+ * Fallback when no subject names the version (a stale PR title leaves the squash subject naming an older one):
+ * walk main newest-first, read package.json's version at each commit, and pick the OLDEST commit of the newest
+ * contiguous run that carries the version. `readVersion(sha)` resolves to a version string or undefined.
+ */
+export async function findReleaseCommitByPackage(commits, version, readVersion, limit = FALLBACK_COMMIT_WALK, unreadable = []) {
+  let oldest
+  for (const c of (Array.isArray(commits) ? commits : []).slice(0, limit)) {
+    if (!c?.sha) continue
+    const read = await readVersion(c.sha)
+    // An unreadable commit (gh failed, not JSON, no version) is inconclusive: it neither joins nor ends the run.
+    if (typeof read !== "string") { unreadable.push(c.sha); continue }
+    if (read === version) oldest = c.sha
+    else if (oldest) break
+  }
+  return oldest
+}
+
 export const PUSH_RUN_GRACE_MS = 10 * 60_000
 
 export function commitDate(commits, sha) {
@@ -151,7 +171,17 @@ export async function ship(opts, deps, timing = {}) {
 
   say("1. resolve the release commit")
   const commits = JSON.parse(must(await deps.gh(["api", `repos/${REPO}/commits?sha=main&per_page=100`]), "listing main commits"))
-  const sha = findReleaseCommit(commits, version)
+  let sha = findReleaseCommit(commits, version)
+  if (!sha) {
+    deps.log(`  no subject names ${version}; reading package.json at the latest main commits`)
+    const unreadable = []
+    sha = await findReleaseCommitByPackage(commits, version, async (ref) => {
+      const r = await deps.gh(["api", "-H", "Accept: application/vnd.github.raw", `repos/${REPO}/contents/package.json?ref=${ref}`])
+      if (r.code !== 0) return null
+      try { return JSON.parse(r.stdout).version } catch { return null }
+    }, FALLBACK_COMMIT_WALK, unreadable)
+    if (unreadable.length > 0) deps.log(`  WARN package.json could not be read at ${unreadable.join(", ")}${sha ? `; chose ${sha} without them, so check it is the release merge` : ""}`)
+  }
   if (!sha) throw new ShipError(`no commit on main names ${version} in its subject (looked at the latest 100); is the release merged?`)
   const mergedAt = commitDate(commits, sha)
   deps.log(`  ok   ${version} is ${sha}`)

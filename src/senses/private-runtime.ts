@@ -1621,6 +1621,7 @@ export async function runPrivateRuntimeTurn(options?: RunPrivateRuntimeTurnOptio
         // Every private-runtime turn is autonomous; restart_runtime refuses to act on one.
         autonomousTurnKind: options?.externalEvent ? "external-event" as const
           : reason === "await" || reason === "habit" || reason === "instinct" ? reason : "scheduler" as const,
+        ...(reason === "await" && options?.awaitName ? { autonomousAwaitName: options.awaitName } : {}),
         // The Butler's Sanctuary read tools need the typed runtime on every private turn
         // (await, habit, instinct, external-event), not only on sanctuary external events.
         ...(sanctuaryToolContextFor(agentName, options?.externalEvent?.source)),

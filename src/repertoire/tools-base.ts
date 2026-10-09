@@ -154,6 +154,8 @@ export interface ToolContext {
   readonly noSend?: true;
   habitSession?: HabitSessionToolContext;
   /** Set only on autonomous private-runtime turns (no person present); absent on owner-initiated turns. */
+  /** The name of the await this turn ticks, set by the private runtime for every await turn (relationship or system). */
+  readonly autonomousAwaitName?: string;
   readonly autonomousTurnKind?: "await" | "habit" | "external-event" | "instinct" | "scheduler";
   daemonSocketPath?: string;
   agentName?: string;

@@ -463,6 +463,10 @@ function fulfillAwaitObligation(agentRoot: string, awaitFile: AwaitFile): void {
   if (awaitFile.obligation_id) fulfillObligation(agentRoot, awaitFile.obligation_id)
 }
 
+/** The package-managed daily sweep must stay a byte-exact pending file in awaiting/, so it can only ever be resolved 'no'. */
+export const HOUSE_CARE_AWAIT = "house-care-sweep"
+const isHouseCareAwait = (name: unknown): boolean => String(name ?? "").replace(/\.md$/u, "") === HOUSE_CARE_AWAIT
+
 async function resolveAwaitTool(name: string, verdict: string, observation: string, agentRoot: string, agentName: string, ask?: { question: unknown; choices: unknown }): Promise<string> {
   const nameError = validateName(name)
   if (nameError) return JSON.stringify({ error: nameError })
@@ -804,6 +808,7 @@ export const awaitingToolDefinitions: ToolDefinition[] = [
     handler: async (a, ctx) => {
       const agentRoot = getAgentRoot()
       const agentName = getAgentName()
+      if (isHouseCareAwait(a.name) && a.verdict !== "no") return JSON.stringify({ error: `${HOUSE_CARE_AWAIT} is the package-managed daily house-care sweep and never resolves: finish every tick with verdict 'no' and a one-line observation, and send any owner digest with house_digest_send` })
       if (ctx?.relationshipAuthorization) {
         const awaitName = String(a.name ?? "")
         const { session, requestId } = relationshipScopeFor(ctx, awaitName)
@@ -856,6 +861,7 @@ export const awaitingToolDefinitions: ToolDefinition[] = [
     handler: (a, ctx) => {
       const agentRoot = getAgentRoot()
       const agentName = getAgentName()
+      if (isHouseCareAwait(a.name)) return JSON.stringify({ error: `${HOUSE_CARE_AWAIT} is the package-managed daily house-care sweep and cannot be cancelled` })
       if (ctx?.relationshipAuthorization) {
         const { session, requestId } = relationshipScopeFor(ctx, String(a.name ?? ""))
         if (!session || !requestId || !hasActiveRelationshipFollowUp(agentRoot, {

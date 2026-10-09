@@ -215,6 +215,19 @@ describe("release-smoke", () => {
     expect(deps.sleepSync).toHaveBeenCalledWith(5000)
   })
 
+  it("retries a registry propagation miss (ETARGET) with a bounded backoff, then gives up", () => {
+    const etarget = () => Object.assign(new Error("npm error code ETARGET\nnpm error notarget No matching version found for ouro.bot@0.1.0-alpha.880"), {})
+    const { deps } = makeDeps([etarget(), etarget(), "/Users/me/.npm/_npx/hash/node_modules/.bin/ouro.bot\n", "installing @ouro.bot/cli@0.1.0-alpha.327...\n\n0.1.0-alpha.327\n"])
+    const result = runPublishedBinVersionSmoke({ packageRef: "ouro.bot@0.1.0-alpha.327", binName: "ouro.bot", expectedVersion: "0.1.0-alpha.327" }, deps)
+    expect(result.ok).toBe(true)
+    expect(deps.sleepSync).toHaveBeenNthCalledWith(1, 10000)
+    expect(deps.sleepSync).toHaveBeenNthCalledWith(2, 20000)
+    const never = makeDeps(Array.from({ length: 8 }, etarget))
+    expect(() => runPublishedBinVersionSmoke({ packageRef: "ouro.bot@0.1.0-alpha.327", binName: "ouro.bot", expectedVersion: "0.1.0-alpha.327" }, never.deps)).toThrow(/ETARGET/)
+    expect(never.deps.execFileSync).toHaveBeenCalledTimes(6)
+    expect(never.deps.sleepSync).toHaveBeenCalledTimes(5)
+  })
+
   it("isolates every asset, resolution, version, and retry child from the operator home", () => {
     const childEnv = {
       HOME: "/real/operator/home",

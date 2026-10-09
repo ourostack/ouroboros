@@ -57,8 +57,16 @@ function isRetryableNpmExecError(error) {
   )
 }
 
+// A just-published version can miss the registry for a minute or two: npm answers ETARGET / notarget until it propagates.
+function isRegistryPropagationError(error) {
+  return /\b(ETARGET|notarget)\b|No matching version found/i.test(npmExecErrorText(error))
+}
+
+const PROPAGATION_BACKOFF_MS = [10000, 20000, 40000, 60000, 60000]
+
 function runNpmExec(deps, prefixDir, packageRef, command, args = []) {
-  const maxAttempts = 3
+  const maxAttempts = PROPAGATION_BACKOFF_MS.length + 1
+  let transientFailures = 0
   for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
     try {
       return deps.execFileSync(
@@ -76,7 +84,13 @@ function runNpmExec(deps, prefixDir, packageRef, command, args = []) {
         },
       )
     } catch (error) {
-      if (attempt === maxAttempts || !isRetryableNpmExecError(error)) throw error
+      if (isRegistryPropagationError(error)) {
+        if (attempt === maxAttempts) throw error
+        deps.sleepSync(PROPAGATION_BACKOFF_MS[attempt - 1])
+        continue
+      }
+      transientFailures += 1
+      if (!isRetryableNpmExecError(error) || transientFailures >= 3) throw error
       deps.sleepSync(5000)
     }
   }
@@ -238,6 +252,7 @@ module.exports = {
   buildNpmExecArgs,
   isNpmExecBinPath,
   isRetryableNpmExecError,
+  isRegistryPropagationError,
   lastNonEmptyLine,
   runPublishedBinResolutionSmoke,
   runPublishedPackageAssetSmoke,
