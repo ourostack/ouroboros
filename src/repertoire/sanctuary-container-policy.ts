@@ -4,6 +4,7 @@
  * container, so a question about Books is answered from calibre-web alone. Pure functions; the runtime wraps the model-facing container list.
  */
 import type { StewardPolicyRecord } from "../heart/steward-policy"
+import { emitNervesEvent } from "../nerves/runtime"
 
 /** House service name to the one container that is that service. */
 export const SERVICE_CONTAINERS: Readonly<Record<string, string>> = { Books: "calibre-web" }
@@ -31,6 +32,7 @@ export function desiredContainerState(policy: Pick<StewardPolicyRecord, "desired
 export function annotateContainers<T>(result: T, policy: Pick<StewardPolicyRecord, "desiredStates"> | null, nowMs: number): T {
   const value = result as { ok?: unknown; data?: { containers?: unknown } } | null
   if (!value || value.ok !== true || !Array.isArray(value.data?.containers)) return result
+  emitNervesEvent({ component: "repertoire", event: "repertoire.sanctuary_container_policy_annotated", message: "annotated the container list with steward-policy desired state", meta: { containers: value.data.containers.length, policyRead: policy !== null } })
   const services = Object.entries(SERVICE_CONTAINERS)
   const containers = value.data.containers.map((entry) => {
     const item = entry as { name?: unknown; state?: unknown }
