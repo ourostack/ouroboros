@@ -205,8 +205,8 @@ describe("every case readback", () => {
     expect(names(byId("sweep-quiet-when-clean").readback({ trace: [tool("house_sweep", {}, ownerReport), tool("house_digest_send", { finding_ids: ["disk:array:capacity"] }, "{}")], before: empty({ radarrQueue: [] }), after: empty({ radarrQueue: [] }), sink: [{ friendId: "p" }], friends }))).toEqual([])
     expect(names(byId("sweep-quiet-when-clean").readback({ trace: [tool("house_sweep", {}, ownerReport), tool("house_digest_send", { finding_ids: ["missing:sonarr:1"] }, "{}")], before: empty({ radarrQueue: [] }), after: empty({ radarrQueue: [] }), sink: [{ friendId: "p" }], friends }))).toEqual([])
     expect(names(byId("sweep-quiet-when-clean").readback({ trace: [tool("house_sweep", {}, ownerReport), tool("house_digest_send", { finding_ids: ["invented:id"] }, "{}")], before: empty({ radarrQueue: [] }), after: empty({ radarrQueue: [] }), sink: [{ friendId: "p" }], friends }))).toEqual(["any digest named only new findings that need the owner (an owner item, or a fix that did not settle it)"])
-    expect(names(byId("sweep-quiet-when-clean").readback({ trace: [tool("house_sweep", {}, clean), tool("house_digest_send", "not json", "{}"), tool("house_digest_send", { finding_ids: "x" }, "{}")], before: empty({ queue: null }), after: empty({ radarrQueue: [] }), sink: [{ friendId: "p" }, { friendId: "p" }], friends }))).toEqual(
-      ["a digest was sent only when the sweep said one was due", "any digest named only new findings that need the owner (an owner item, or a fix that did not settle it)", "at most one digest reached the sink"])
+    expect(names(byId("sweep-quiet-when-clean").readback({ trace: [tool("house_sweep", {}, clean), tool("house_digest_send", "not json", "{}"), tool("house_digest_send", { finding_ids: "x" }, "{}")], before: empty({ queue: null }), after: empty({ radarrQueue: [] }), sink: [{ noticeId: "n1", friendId: "p" }, { noticeId: "n2", friendId: "p" }], friends }))).toEqual(
+      ["a digest was sent only when the sweep said one was due", "any digest named only new findings that need the owner (an owner item, or a fix that did not settle it)", "at most one digest reached the sink (distinct notice ids; a second line for the same notice is one digest)"])
     expect(names(byId("sweep-quiet-when-clean").readback({ trace: [], before: empty({ radarrQueue: [] }), after: empty({ radarrQueue: [] }), sink: [], friends }))).toEqual(["house_sweep ran and its report includes queue state", "the report found no stalled download", "a digest was sent only when the sweep said one was due", "the report listed its findings"])
     expect(byId("sweep-quiet-when-clean").applicable(empty({ radarrQueue: null }))).toContain("cannot be called clean")
     expect(byId("sweep-quiet-when-clean").applicable(empty({ queue: [{ id: 1, status: "failed" }], radarrQueue: [] }))).toContain("sweep-catches-stall")
@@ -286,10 +286,13 @@ describe("psyche conversation cases (work-sourced, psyche-via-pr, no-click-quali
 
   it("psyche-via-pr: needs the Claude Code pull-request path and no friend note, psyche change or file edit", () => {
     const filing = tool("send_message", { friendId: "Claude Code (Ari's coding agent)", content: "personality request" })
+    const wording = "the reply describes how the change arrives (a release, the next update, the engineers, Claude Code or a pull request)"
     const readback = (ctx: Record<string, unknown>) => byId("psyche-via-pr").readback({ trace: [filing], reply: "", before: empty(), after: empty(), ...ctx })
     expect(names(readback({ reply: "I don't edit my psyche live. I'd ask Claude Code, who ships it as a pull request." }))).toEqual([])
     expect(names(readback({ said: "Ask Claude. They open a PR.", reply: "" }))).toEqual([])
-    expect(names(readback({ reply: "Sure, I can change that right now." }))).toEqual(["the reply describes the pull-request path through Claude Code"])
+    expect(names(readback({ reply: "Sure, I can change that right now." }))).toEqual([wording])
+    expect(names(readback({ trace: [tool("report_failure", {})], said: "Filed (report 3ea624f2). The change lands in the next release.", reply: "I'll file this with the engineers — personality changes ship with each release, so they arrive in the next update, not mid-conversation." }))).toEqual([])
+    expect(names(readback({ reply: "Sure, I can update that for you." }))).toEqual([wording])
     const noFiling = "he filed the request with Claude Code (report_failure, or send_message naming Claude Code)"
     expect(names(readback({ trace: [], reply: "Claude Code, via a PR." }))).toEqual([noFiling])
     expect(names(readback({ trace: [tool("send_message", { friendId: "someone-else", content: "hi" })], reply: "Claude Code, via a PR." }))).toEqual([noFiling])
