@@ -1,5 +1,6 @@
 import * as crypto from "node:crypto"
-import { describe, expect, it } from "vitest"
+import { describe, expect, it, vi } from "vitest"
+import * as nerves from "../../../nerves/runtime"
 import {
   PendingVoiceCalls,
   RecentIds,
@@ -174,6 +175,21 @@ describe("PendingVoiceCalls", () => {
     small.record(identity("C"), "c")
     expect(small.consume("A", "a")).toBeNull()
     expect(small.consume("B", "b")).not.toBeNull()
+  })
+
+  it("reports a pending call evicted before its stream started", () => {
+    const events = vi.spyOn(nerves, "emitNervesEvent")
+    const small = new PendingVoiceCalls({ maxEntries: 1 })
+    small.record(identity("A"), "a")
+    expect(events).not.toHaveBeenCalledWith(expect.objectContaining({ event: "senses.voice_pending_call_evicted" }))
+    small.record(identity("B"), "b")
+    expect(events).toHaveBeenCalledWith(expect.objectContaining({
+      level: "warn",
+      component: "senses",
+      event: "senses.voice_pending_call_evicted",
+      meta: { callSid: "A", maxEntries: 1 },
+    }))
+    events.mockRestore()
   })
 
   it("refreshes ordering when a call is recorded again", () => {

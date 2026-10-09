@@ -1,3 +1,5 @@
+import type * as net from "node:net"
+import { FriendResolver } from "@ouro.bot/friends"
 import { WebSocket } from "ws"
 import { afterEach, describe, expect, it, vi } from "vitest"
 import { buildVoiceTranscript } from "../../../senses/voice"
@@ -172,6 +174,53 @@ describe("authenticated Media Stream starts", () => {
     expect(mediaStarts(events)).toHaveLength(1)
     expect(first.readyState).toBe(WebSocket.OPEN)
     first.close()
+  })
+
+  it("refuses a second stream for the same CallSid that arrives while the first is still resolving its friend", async () => {
+    let release!: () => void
+    const gate = new Promise<void>((resolve) => { release = resolve })
+    const realResolve = FriendResolver.prototype.resolve
+    vi.spyOn(FriendResolver.prototype, "resolve").mockImplementation(async function (this: FriendResolver) {
+      await gate
+      return realResolve.call(this)
+    })
+    const f = await fixture()
+    const events = vi.spyOn(nerves, "emitNervesEvent")
+    const nonceA = record(f.pending, "CArace")
+    const first = await f.connect()
+    first.send(start("CArace", { OuroToken: mint({ callSid: "CArace", nonce: nonceA }) }))
+    await settle()
+
+    const nonceB = record(f.pending, "CArace")
+    const second = await f.connect()
+    second.send(start("CArace", { OuroToken: mint({ callSid: "CArace", nonce: nonceB }) }))
+    await closed(second)
+
+    expect(rejections(events)).toContain("duplicate_call")
+    release()
+    await vi.waitFor(() => expect(mediaStarts(events)).toHaveLength(1))
+    await settle(300)
+    first.close()
+    await closed(first)
+  })
+
+  it("survives a malformed frame from an unauthenticated client", async () => {
+    const f = await fixture()
+    const events = vi.spyOn(nerves, "emitNervesEvent")
+    const uncaught = vi.fn()
+    process.on("uncaughtException", uncaught)
+    try {
+      const socket = await f.connect()
+      // An unmasked client frame is a protocol violation; ws emits `error` for it.
+      const raw = (socket as unknown as { _socket: net.Socket })._socket
+      raw.write(Buffer.from([0x81, 0x02, 0x68, 0x69]))
+      await closed(socket)
+      await settle()
+      expect(uncaught).not.toHaveBeenCalled()
+      expect(events.mock.calls.some(([event]) => (event as { event: string }).event === "senses.voice_media_stream_socket_error")).toBe(true)
+    } finally {
+      process.off("uncaughtException", uncaught)
+    }
   })
 
   it("plays the failure line after a refused stream, and a plain hangup after a normal call", async () => {

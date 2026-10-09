@@ -85,6 +85,12 @@ describe("outgoing webhook branches", () => {
     expect((await f.post("/voice/twilio/outgoing/nope", { CallSid: "CAx" })).statusCode).toBe(404)
   })
 
+  it("answers 404 for an unknown suffix under an outgoing call", async () => {
+    const f = await fixture()
+    await writeTwilioOutboundCallJob(f.outputDir, job())
+    expect((await f.post("/voice/twilio/outgoing/out-1/bogus", { CallSid: "CAx" })).statusCode).toBe(404)
+  })
+
   it("hangs up on voicemail and records the verdict", async () => {
     const f = await fixture()
     await writeTwilioOutboundCallJob(f.outputDir, job())
@@ -606,6 +612,8 @@ describe("OpenAI Realtime media stream session over a VoiceSessionSocket", () =>
     fake.handlers.error!(new Error("twilio side broke"))
     expect(events.mock.calls.some(([event]) => (event as { event: string }).event === "senses.voice_twilio_realtime_socket_error")).toBe(true)
     expect(events.mock.calls.some(([event]) => (event as { event: string }).event === "senses.voice_twilio_realtime_message_rejected")).toBe(true)
+    session.handleRawMessage(JSON.stringify({ event: "connected" }))
+    expect(lifecycle.onClose).not.toHaveBeenCalled()
     session.handleRawMessage(JSON.stringify({ event: "stop" }))
     expect(lifecycle.onClose).toHaveBeenCalled()
     expect(openaiSockets).toHaveLength(1)

@@ -1,4 +1,5 @@
 import * as crypto from "node:crypto"
+import { emitNervesEvent } from "../../nerves/runtime"
 import type { TwilioPhoneConversationEngine } from "./twilio-phone"
 
 /**
@@ -177,7 +178,16 @@ export class PendingVoiceCalls {
     this.entries.delete(identity.callSid)
     this.entries.set(identity.callSid, { identity, nonces, expiresAtMs: this.now() + this.ttlMs })
     while (this.entries.size > this.maxEntries) {
-      this.entries.delete(this.entries.keys().next().value as string)
+      const evicted = this.entries.keys().next().value as string
+      this.entries.delete(evicted)
+      // An evicted call's stream will be refused, so make the pressure visible.
+      emitNervesEvent({
+        level: "warn",
+        component: "senses",
+        event: "senses.voice_pending_call_evicted",
+        message: "evicted a pending voice call before its stream started",
+        meta: { callSid: evicted, maxEntries: this.maxEntries },
+      })
     }
   }
 

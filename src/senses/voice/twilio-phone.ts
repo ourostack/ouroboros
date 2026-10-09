@@ -4186,6 +4186,8 @@ class ActiveOpenAISipSessions implements OpenAISipPhoneSessionRegistry {
 interface ActiveTwilioMediaStreams {
   byCallSid: Map<string, TwilioMediaStreamLifecycleSession>
   byOutboundId: Map<string, TwilioMediaStreamLifecycleSession>
+  /** CallSids claimed at admission, before the session finishes resolving its friend. */
+  reserved: Set<string>
 }
 
 function parseRecordingParams(params: Record<string, string>): RecordingCallbackParams | null {
@@ -5550,7 +5552,8 @@ function admitMediaStreamStart(
   if (identity.direction !== verified.direction || (identity.outboundId ?? "") !== (verified.outboundId ?? "")) {
     return refuse("record_mismatch", true)
   }
-  if (activeMediaStreams.byCallSid.has(callSid)) return refuse("duplicate_call", false)
+  if (activeMediaStreams.reserved.has(callSid) || activeMediaStreams.byCallSid.has(callSid)) return refuse("duplicate_call", false)
+  activeMediaStreams.reserved.add(callSid)
   return identity
 }
 
@@ -5563,24 +5566,36 @@ export function createTwilioPhoneBridge(options: TwilioPhoneBridgeOptions): Twil
   const activeMediaStreams: ActiveTwilioMediaStreams = {
     byCallSid: new Map(),
     byOutboundId: new Map(),
+    reserved: new Set(),
   }
   const activeSipSessions = new ActiveOpenAISipSessions()
   const pendingCalls = options.pendingVoiceCalls ?? new PendingVoiceCalls()
   const recentSipWebhooks = new RecentIds()
 
   mediaStreams.on("connection", (ws: WebSocket) => {
+    // A malformed frame makes `ws` emit `error`; with no listener that is an uncaught exception,
+    // and this socket is reachable before any start has been verified.
+    ws.on("error", (error: Error) => {
+      emitNervesEvent({
+        level: "warn",
+        component: "senses",
+        event: "senses.voice_media_stream_socket_error",
+        message: "a Twilio Media Stream socket raised an error",
+        meta: { agentName: options.agentName, error: error.message },
+      })
+    })
+    let reservedCallSid = ""
     const lifecycle: {
       onIdentityChange: (session: TwilioMediaStreamLifecycleSession, identity: { callSid: string; outboundId: string }) => void
       onClose: (session: TwilioMediaStreamLifecycleSession, identity: { callSid: string; outboundId: string }) => void
     } = {
       onIdentityChange: (activeSession, identity) => {
-        if (identity.callSid) activeMediaStreams.byCallSid.set(identity.callSid, activeSession)
+        activeMediaStreams.byCallSid.set(identity.callSid, activeSession)
         if (identity.outboundId) activeMediaStreams.byOutboundId.set(identity.outboundId, activeSession)
       },
       onClose: (activeSession, identity) => {
-        if (identity.callSid && activeMediaStreams.byCallSid.get(identity.callSid) === activeSession) {
-          activeMediaStreams.byCallSid.delete(identity.callSid)
-        }
+        // The CallSid reservation and single-use token mean no other session can hold this CallSid.
+        activeMediaStreams.byCallSid.delete(identity.callSid)
         if (identity.outboundId && activeMediaStreams.byOutboundId.get(identity.outboundId) === activeSession) {
           activeMediaStreams.byOutboundId.delete(identity.outboundId)
         }
@@ -5598,7 +5613,10 @@ export function createTwilioPhoneBridge(options: TwilioPhoneBridgeOptions): Twil
       })
       socket.close()
     }, MEDIA_STREAM_START_TIMEOUT_MS)
-    ws.on("close", () => clearTimeout(startTimer))
+    ws.on("close", () => {
+      clearTimeout(startTimer)
+      if (reservedCallSid) activeMediaStreams.reserved.delete(reservedCallSid)
+    })
     // Nothing is decided about a stream until its first `start` is verified; the session class
     // is chosen from the consumed record, and the verified start is replayed into it.
     const gate = (raw: RawData): void => {
@@ -5611,6 +5629,7 @@ export function createTwilioPhoneBridge(options: TwilioPhoneBridgeOptions): Twil
         socket.close()
         return
       }
+      reservedCallSid = identity.callSid
       const realtime = identity.engine === "openai-realtime" || (!identity.engine && usesOpenAIRealtimeConversationEngine(options))
       const session = realtime
         ? new TwilioOpenAIRealtimeMediaStreamSession(socket, identity, options, lifecycle)
