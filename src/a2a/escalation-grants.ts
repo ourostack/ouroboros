@@ -2,7 +2,7 @@ import type { FriendRecord, FriendStore } from "@ouro.bot/friends"
 import { emitNervesEvent } from "../nerves/runtime"
 import { isReplayGrantSource } from "./delegated-command-grants"
 import { isReplayIdentity } from "./replay-harness"
-import { operatorTrustFile, readGrantFile, writeTrustedFile, type GrantFileView } from "./operator-trust"
+import { operatorTrustFile, readGrantFile, withTrustedWriteLock, writeTrustedFile, type GrantFileView } from "./operator-trust"
 
 /**
  * The escalation grant lets one A2A peer (in practice the desk's Claude Code) receive this agent's failure reports and
@@ -52,6 +52,10 @@ export function readEscalationGrants(agentRoot: string): Record<string, Escalati
 
 /** Writes or removes one grant. The previous file is kept beside it as a timestamped backup before the change. */
 export function setEscalationGrant(agentRoot: string, friendId: string, change: { grant: true; source: string; did: string; expiresAt?: string } | { grant: false }, now: Date = new Date()): { changed: boolean; backup: string | null } {
+  return withTrustedWriteLock(agentRoot, () => setEscalationGrantLocked(agentRoot, friendId, change, now))
+}
+
+function setEscalationGrantLocked(agentRoot: string, friendId: string, change: { grant: true; source: string; did: string; expiresAt?: string } | { grant: false }, now: Date): { changed: boolean; backup: string | null } {
   const current = readEscalationGrants(agentRoot)
   const had = current[friendId]
   if (change.grant ? had?.did === change.did && had.expiresAt === change.expiresAt : had === undefined) return { changed: false, backup: null }

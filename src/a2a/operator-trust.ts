@@ -132,6 +132,72 @@ export function ensureTrustDirectory(dir: string): void {
   }
 }
 
+/** Flushes a directory's entries to disk, so a rename or a new file in it survives a crash. */
+function fsyncDirectory(dir: string): void {
+  const fd = fs.openSync(dir, fs.constants.O_RDONLY | fs.constants.O_DIRECTORY | fs.constants.O_NOFOLLOW)
+  try {
+    fs.fsyncSync(fd)
+    directoryFlushHook?.(dir)
+  } finally {
+    fs.closeSync(fd)
+  }
+}
+
+let directoryFlushHook: ((dir: string) => void) | undefined
+
+/** Tests watch directory flushes (the ESM fs namespace cannot be spied on). Refused outside a test runner. */
+export function overrideDirectoryFlushForTests(hook: ((dir: string) => void) | undefined): void {
+  if (process.env.VITEST === undefined) throw new Error("overrideDirectoryFlushForTests is for tests only")
+  directoryFlushHook = hook
+}
+
+const LOCK_FILE = ".lock"
+const LOCK_STALE_MS = 2 * 60_000
+let lockTimeoutMs = 5000
+let lockWaitHook: (() => void) | undefined
+
+/** Tests shorten the wait for a held lock and can act while it waits. Refused outside a test runner. */
+export function overrideLockTimeoutForTests(timeoutMs: number | undefined, onWait?: () => void): void {
+  if (process.env.VITEST === undefined) throw new Error("overrideLockTimeoutForTests is for tests only")
+  lockTimeoutMs = timeoutMs ?? 5000
+  lockWaitHook = onWait
+}
+
+function sleepSync(ms: number): void {
+  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms)
+}
+
+/**
+ * Runs a read-modify-write of the trust files under an exclusive lock file in the trust directory, so two grant commands
+ * cannot both read the old file and then overwrite each other. The lock is created with O_EXCL; a lock older than two minutes
+ * belongs to a writer that died and is taken over. A lock that stays held past the wait names the file to remove.
+ */
+export function withTrustedWriteLock<T>(agentRoot: string, fn: () => T): T {
+  const dir = operatorTrustDir(agentRoot)
+  ensureTrustDirectory(dir)
+  const lock = path.join(dir, LOCK_FILE)
+  const deadline = Date.now() + lockTimeoutMs
+  for (;;) {
+    try {
+      createExclusive(lock, `pid ${process.pid} at ${new Date().toISOString()}\n`)
+      break
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error
+      let age = 0
+      try { age = Date.now() - fs.lstatSync(lock).mtimeMs } catch { continue }
+      if (age > LOCK_STALE_MS) { fs.rmSync(lock, { force: true }); continue }
+      if (Date.now() >= deadline) throw new TrustDirectoryError(`refusing to write: another grant command is writing to ${dir} (lock file ${lock}). If none is running, remove that file and retry. Nothing was written.`)
+      lockWaitHook?.()
+      sleepSync(25)
+    }
+  }
+  try {
+    return fn()
+  } finally {
+    fs.rmSync(lock, { force: true })
+  }
+}
+
 /** Creates `file` exclusively (never through a link or over anything), owned by root with mode 0644 when run as root, and fsyncs it. */
 function createExclusive(file: string, body: string | Buffer): void {
   const fd = fs.openSync(file, fs.constants.O_WRONLY | fs.constants.O_CREAT | fs.constants.O_EXCL | fs.constants.O_NOFOLLOW, 0o600)
@@ -171,11 +237,13 @@ export function writeTrustedFile(agentRoot: string, fileName: string, body: stri
   if (previous) {
     backup = `${file}.bak-${now.toISOString().replace(/[:.]/gu, "-")}`
     createExclusive(backup, previous)
+    fsyncDirectory(dir)
   }
   const tmp = path.join(dir, `.${fileName}.${randomBytes(8).toString("hex")}.tmp`)
   try {
     createExclusive(tmp, body)
     fs.renameSync(tmp, file)
+    fsyncDirectory(dir)
   } catch (error) {
     fs.rmSync(tmp, { force: true })
     throw error

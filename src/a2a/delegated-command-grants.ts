@@ -1,6 +1,6 @@
 import type { FriendRecord } from "@ouro.bot/friends"
 import { emitNervesEvent } from "../nerves/runtime"
-import { operatorTrustFile, readGrantFile, writeTrustedFile, type GrantFileView } from "./operator-trust"
+import { operatorTrustFile, readGrantFile, withTrustedWriteLock, writeTrustedFile, type GrantFileView } from "./operator-trust"
 import { isReplayIdentity, isReplayWindowOpen } from "./replay-harness"
 
 /**
@@ -87,6 +87,10 @@ export interface DelegatedCommandGrantChange {
 
 /** Writes or removes one grant. The previous file is kept beside it as a timestamped backup before the change. */
 export function setDelegatedCommandGrant(agentRoot: string, friendId: string, change: DelegatedCommandGrantChange | { grant: false }, now: Date = new Date()): { changed: boolean; backup: string | null } {
+  return withTrustedWriteLock(agentRoot, () => setDelegatedCommandGrantLocked(agentRoot, friendId, change, now))
+}
+
+function setDelegatedCommandGrantLocked(agentRoot: string, friendId: string, change: DelegatedCommandGrantChange | { grant: false }, now: Date): { changed: boolean; backup: string | null } {
   const current = readDelegatedCommandGrants(agentRoot)
   const had = current[friendId]
   const next = { ...current }

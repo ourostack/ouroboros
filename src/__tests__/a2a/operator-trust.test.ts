@@ -5,7 +5,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { createTmpBundle, type TmpBundleHandle } from "../test-helpers/tmpdir-bundle"
 import { overrideOwnerForTests } from "../../a2a/trusted-files"
 import {
-  agentNameFromRoot, describeGrantFile, ensureTrustDirectory, operatorTrustDir, operatorTrustFile, overrideTrustRootForTests, readGrantFile, TrustDirectoryError, writeTrustedFile,
+  agentNameFromRoot, describeGrantFile, ensureTrustDirectory, overrideDirectoryFlushForTests, overrideLockTimeoutForTests, withTrustedWriteLock, operatorTrustDir, operatorTrustFile, overrideTrustRootForTests, readGrantFile, TrustDirectoryError, writeTrustedFile,
 } from "../../a2a/operator-trust"
 
 let tmp: TmpBundleHandle
@@ -175,5 +175,69 @@ describe("writing a trust file", () => {
     fs.mkdirSync(dir, { recursive: true })
     fs.chmodSync(dir, 0o777)
     expect(() => writeTrustedFile(tmp.agentRoot, "g.json", "x", NOW)).toThrow(TrustDirectoryError)
+  })
+})
+
+describe("serialising writers and making renames durable (review of #1064, finding 8)", () => {
+  it("fsyncs the trust directory after a backup and after the rename", () => {
+    writeTrustedFile(tmp.agentRoot, "g.json", "one\n", NOW)
+    const flushed: string[] = []
+    overrideDirectoryFlushForTests((dir) => flushed.push(dir))
+    try {
+      writeTrustedFile(tmp.agentRoot, "g.json", "two\n", NOW)
+      writeTrustedFile(tmp.agentRoot, "fresh.json", "x\n", NOW)
+    } finally { overrideDirectoryFlushForTests(undefined) }
+    const dir = operatorTrustDir(tmp.agentRoot)
+    // backup + rename for the replaced file, rename only for the new one
+    expect(flushed).toEqual([dir, dir, dir])
+  })
+
+  it("refuses the test seams outside a test runner", () => {
+    vi.stubEnv("VITEST", undefined as unknown as string)
+    expect(() => overrideDirectoryFlushForTests(undefined)).toThrow("tests only")
+    expect(() => overrideLockTimeoutForTests(1)).toThrow("tests only")
+  })
+
+  it("holds an exclusive lock file while a command writes, and releases it afterwards, also when the write throws", () => {
+    const dir = operatorTrustDir(tmp.agentRoot)
+    let inside = false
+    withTrustedWriteLock(tmp.agentRoot, () => { inside = fs.existsSync(path.join(dir, ".lock")) })
+    expect(inside).toBe(true)
+    expect(fs.existsSync(path.join(dir, ".lock"))).toBe(false)
+    expect(() => withTrustedWriteLock(tmp.agentRoot, () => { throw new Error("boom") })).toThrow("boom")
+    expect(fs.existsSync(path.join(dir, ".lock"))).toBe(false)
+  })
+
+  it("refuses to write while another writer holds a fresh lock, and says how to clear a stuck one", () => {
+    const dir = operatorTrustDir(tmp.agentRoot)
+    fs.mkdirSync(dir, { recursive: true, mode: 0o755 })
+    fs.writeFileSync(path.join(dir, ".lock"), "pid 1\n")
+    overrideLockTimeoutForTests(40)
+    try {
+      expect(() => withTrustedWriteLock(tmp.agentRoot, () => "never")).toThrow(/another grant command is writing.*\.lock/s)
+    } finally { overrideLockTimeoutForTests(undefined) }
+    expect(fs.existsSync(path.join(dir, ".lock"))).toBe(true)
+  })
+
+  it("takes over a stale lock left by a crashed writer", () => {
+    const dir = operatorTrustDir(tmp.agentRoot)
+    fs.mkdirSync(dir, { recursive: true, mode: 0o755 })
+    const lock = path.join(dir, ".lock")
+    fs.writeFileSync(lock, "pid 1\n")
+    const old = new Date(Date.now() - 10 * 60_000)
+    fs.utimesSync(lock, old, old)
+    expect(withTrustedWriteLock(tmp.agentRoot, () => "ran")).toBe("ran")
+    expect(fs.existsSync(lock)).toBe(false)
+  })
+
+  it("waits for a lock that is released while it waits", () => {
+    const dir = operatorTrustDir(tmp.agentRoot)
+    fs.mkdirSync(dir, { recursive: true, mode: 0o755 })
+    const lock = path.join(dir, ".lock")
+    fs.writeFileSync(lock, "pid 1\n")
+    overrideLockTimeoutForTests(2000, () => fs.rmSync(lock, { force: true }))
+    try {
+      expect(withTrustedWriteLock(tmp.agentRoot, () => "ran")).toBe("ran")
+    } finally { overrideLockTimeoutForTests(undefined) }
   })
 })

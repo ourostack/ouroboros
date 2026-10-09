@@ -137,8 +137,8 @@ describe("escalation grants written as root", () => {
     const geteuid = vi.spyOn(process, "geteuid").mockReturnValue(0)
     try {
       setEscalationGrant(agentRoot, "claude", { grant: true, source: "test", did: DID })
-      // the directory, then the temporary file that becomes the grants file
-      expect(calls).toEqual([[0, 0], [0, 0]])
+      // the directory, the lock file that serialises writers, then the temporary file that becomes the grants file
+      expect(calls).toEqual([[0, 0], [0, 0], [0, 0]])
       expect(fs.statSync(dir).mode & 0o777).toBe(0o755)
       expect(fs.statSync(escalationGrantsPath(agentRoot)).mode & 0o777).toBe(0o644)
       expect(fs.readdirSync(dir)).toEqual(["escalation-grants.json"])
