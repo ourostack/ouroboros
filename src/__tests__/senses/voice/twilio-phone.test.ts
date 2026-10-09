@@ -2209,6 +2209,7 @@ describe("Twilio phone voice bridge", () => {
       fixture = await startToolSelectionVoice(outputDir, transport)
       await vi.waitFor(() => expect(fixture!.mock.openaiSockets).toHaveLength(1))
       await vi.waitFor(() => expect(fixture!.publications().length).toBeGreaterThan(0))
+      fixture.send({ type: "conversation.item.input_audio_transcription.completed", transcript: "   " })
       const save = vi.spyOn(context, "saveSession").mockImplementation(() => { throw new Error("disk full") })
       fixture.send({ type: "conversation.item.input_audio_transcription.completed", transcript: "hello there" })
       await vi.waitFor(() => expect(events.mock.calls.some(([event]) => (event as { event: string }).event === "senses.voice_transcript_save_error")).toBe(true))

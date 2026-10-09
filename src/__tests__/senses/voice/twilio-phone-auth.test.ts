@@ -1,142 +1,19 @@
-import * as fs from "fs/promises"
-import * as os from "os"
-import * as path from "path"
 import { WebSocket } from "ws"
 import { afterEach, describe, expect, it, vi } from "vitest"
-import { buildVoiceTranscript, closeTwilioPhoneBridgeServer } from "../../../senses/voice"
+import { buildVoiceTranscript } from "../../../senses/voice"
 import * as nerves from "../../../nerves/runtime"
-import {
-  PendingVoiceCalls,
-  mintVoiceCallToken,
-  newVoiceCallNonce,
-  type VoiceCallIdentity,
-} from "../../../senses/voice/call-auth"
+import { type VoiceCallIdentity } from "../../../senses/voice/call-auth"
 import {
   TwilioAudioStreamJobStore,
   TwilioMediaStreamSession,
-  computeTwilioSignature,
-  startTwilioPhoneBridgeServer,
   writeTwilioOutboundCallJob,
-  type TwilioPhoneBridgeOptions,
   type VoiceSessionSocket,
 } from "../../../senses/voice/twilio-phone"
+import {
+  CALLER, HANGUP, LINE, cleanupFixtures, closed, fixture, mediaStarts, mint, record, rejections, settle, start, tokenFrom,
+} from "./twilio-auth-fixture"
 
-const AUTH_TOKEN = "twilio-auth-token-for-tests"
-const BASE_URL = "https://voice.example.com"
-const LINE = "+15557654321"
-const CALLER = "+15551234567"
-
-const dirs: string[] = []
-const closers: Array<() => Promise<void>> = []
-
-afterEach(async () => {
-  vi.restoreAllMocks()
-  vi.useRealTimers()
-  while (closers.length) await closers.pop()!()
-  while (dirs.length) await fs.rm(dirs.pop()!, { recursive: true, force: true })
-})
-
-async function fixture(overrides: Partial<TwilioPhoneBridgeOptions> = {}) {
-  const outputDir = await fs.mkdtemp(path.join(os.tmpdir(), "ouro-voice-auth-"))
-  dirs.push(outputDir)
-  const pending = new PendingVoiceCalls()
-  const runSenseTurn = vi.fn(async (request: { userMessage?: string }) => ({
-    response: `heard: ${request.userMessage ?? ""}`,
-    ponderDeferred: false,
-  }))
-  const options = {
-    agentName: "slugger",
-    agentRoot: path.join(outputDir, "slugger.ouro"),
-    publicBaseUrl: BASE_URL,
-    outputDir,
-    transcriber: { transcribe: vi.fn(async (request: { utteranceId: string; audioPath: string }) => buildVoiceTranscript({ utteranceId: request.utteranceId, text: "hi", audioPath: request.audioPath, source: "whisper.cpp" })) },
-    tts: {
-      synthesize: vi.fn(async (request: { utteranceId: string }) => ({
-        utteranceId: request.utteranceId, audio: Buffer.from("mp3"), byteLength: 3, chunkCount: 1,
-        modelId: "m", voiceId: "v", mimeType: "audio/mpeg",
-      })),
-    },
-    runSenseTurn,
-    downloadRecording: vi.fn(async () => Buffer.from("wav")),
-    playbackMode: "buffered" as const,
-    transportMode: "media-stream" as const,
-    twilioAuthToken: AUTH_TOKEN,
-    pendingVoiceCalls: pending,
-    port: 0,
-    host: "127.0.0.1",
-    ...overrides,
-  } as unknown as TwilioPhoneBridgeOptions & { port: number }
-  const server = await startTwilioPhoneBridgeServer(options)
-  closers.push(() => closeTwilioPhoneBridgeServer(server))
-  const sockets: WebSocket[] = []
-  closers.push(async () => { for (const socket of sockets) socket.terminate() })
-  return {
-    options, pending, runSenseTurn, outputDir, server,
-    async post(route: string, params: Record<string, string>) {
-      const body = new URLSearchParams(params).toString()
-      return server.bridge.handle({
-        method: "POST", path: route, body,
-        headers: { "x-twilio-signature": computeTwilioSignature({ authToken: AUTH_TOKEN, url: new URL(route, BASE_URL).toString(), params }) },
-      })
-    },
-    async connect(query = ""): Promise<WebSocket> {
-      const socket = new WebSocket(`${server.localUrl.replace("http:", "ws:")}/voice/twilio/media-stream${query}`)
-      sockets.push(socket)
-      await new Promise<void>((resolve, reject) => { socket.once("open", resolve); socket.once("error", reject) })
-      return socket
-    },
-  }
-}
-
-function tokenFrom(twiml: unknown): string {
-  const match = String(twiml).match(/<Parameter name="OuroToken" value="([^"]+)"/)
-  if (!match) throw new Error(`no OuroToken in ${String(twiml)}`)
-  return match[1]!
-}
-
-function start(callSid: string, customParameters: Record<string, string>, streamSid = `MZ${callSid}`): string {
-  return JSON.stringify({ event: "start", start: { streamSid, callSid, customParameters } })
-}
-
-function closed(socket: WebSocket): Promise<void> {
-  return new Promise((resolve) => {
-    if (socket.readyState === WebSocket.CLOSED) return resolve()
-    socket.once("close", () => resolve())
-  })
-}
-
-async function settle(ms = 150): Promise<void> {
-  await new Promise((resolve) => setTimeout(resolve, ms))
-}
-
-function mint(opts: { callSid: string; direction?: "inbound" | "outbound"; nowMs?: number; nonce?: string; outboundId?: string; agentName?: string }): string {
-  return mintVoiceCallToken({
-    secret: AUTH_TOKEN, purpose: "stream", agentName: opts.agentName ?? "slugger", callSid: opts.callSid,
-    direction: opts.direction ?? "inbound", outboundId: opts.outboundId, nowMs: opts.nowMs ?? Date.now(), nonce: opts.nonce ?? newVoiceCallNonce(),
-  })
-}
-
-function record(pending: PendingVoiceCalls, callSid: string, extra: Partial<VoiceCallIdentity> = {}): string {
-  const nonce = newVoiceCallNonce()
-  pending.record({ callSid, agentName: "slugger", direction: "inbound", from: CALLER, to: LINE, engine: "cascade", ...extra }, nonce)
-  return nonce
-}
-
-function rejections(spy: ReturnType<typeof vi.spyOn>): string[] {
-  return spy.mock.calls
-    .map(([event]) => event as { event: string; meta?: { reason?: string } })
-    .filter((event) => event.event === "senses.voice_media_stream_rejected")
-    .map((event) => event.meta?.reason ?? "")
-}
-
-function mediaStarts(spy: ReturnType<typeof vi.spyOn>): Array<{ callSid: string; sessionKey: string }> {
-  return spy.mock.calls
-    .map(([event]) => event as { event: string; meta?: { callSid?: string; sessionKey?: string } })
-    .filter((event) => event.event === "senses.voice_twilio_media_start")
-    .map((event) => ({ callSid: event.meta?.callSid ?? "", sessionKey: event.meta?.sessionKey ?? "" }))
-}
-
-const HANGUP = "<Response><Hangup /></Response>"
+afterEach(cleanupFixtures)
 
 describe("authenticated Media Stream starts", () => {
   it("mints a token into the TwiML and leaves identity parameters out", async () => {
@@ -444,6 +321,72 @@ describe("media stream session over a VoiceSessionSocket", () => {
     fake.handlers.error!(new Error("socket broke"))
     fake.handlers.close!()
     session.end()
+    expect(fake.isOpen()).toBe(false)
+  })
+
+  function frame(byte: number): string {
+    return JSON.stringify({ event: "media", media: { payload: Buffer.alloc(160, byte).toString("base64") } })
+  }
+
+  it("plays a turn, lets the caller barge in, answers the utterance and closes on stop", async () => {
+    const f = await fixture({ mediaMinSpeechMs: 20, mediaSilenceEndMs: 40 })
+    const fake = fakeSocket()
+    const lifecycle = { onIdentityChange: vi.fn(), onClose: vi.fn() }
+    const identity: VoiceCallIdentity = { callSid: "CAflow", agentName: "slugger", direction: "inbound", from: CALLER, to: LINE, engine: "cascade" }
+    const session = new TwilioMediaStreamSession(fake.socket, identity, f.options, new TwilioAudioStreamJobStore(), lifecycle)
+    session.attach()
+    session.handleRawMessage("not json")
+    fake.handlers.message!(start("CAflow", {}) as never)
+
+    const sentEvents = () => fake.sent.map((raw) => JSON.parse(raw) as { event: string; mark?: { name: string } })
+    await vi.waitFor(() => expect(sentEvents().some((event) => event.event === "mark")).toBe(true))
+    expect(lifecycle.onIdentityChange).toHaveBeenCalledWith(session, { callSid: "CAflow", outboundId: "" })
+
+    // The caller talks over the greeting: playback is cleared and the speech becomes a turn.
+    const turnsBefore = f.runSenseTurn.mock.calls.length
+    for (let i = 0; i < 3; i += 1) session.handleRawMessage(frame(0x00))
+    expect(sentEvents().some((event) => event.event === "clear")).toBe(true)
+    for (let i = 0; i < 4; i += 1) session.handleRawMessage(frame(0xff))
+    await vi.waitFor(() => expect(f.runSenseTurn.mock.calls.length).toBeGreaterThan(turnsBefore))
+    await vi.waitFor(() => expect(sentEvents().filter((event) => event.event === "mark").length).toBeGreaterThan(1))
+
+    const mark = sentEvents().filter((event) => event.event === "mark").at(-1)!.mark!.name
+    session.handleRawMessage(JSON.stringify({ event: "mark", mark: { name: mark } }))
+    session.handleRawMessage(JSON.stringify({ event: "mark", mark: { name: "voice-0-stale" } }))
+    session.handleRawMessage(JSON.stringify({ event: "stop" }))
+    expect(lifecycle.onClose).toHaveBeenCalledWith(session, { callSid: "CAflow", outboundId: "" })
+    fake.handlers.close!()
+    session.end()
+  })
+
+  it("hangs up on a voicemail menu heard on an outbound call", async () => {
+    const f = await fixture({
+      mediaMinSpeechMs: 20,
+      mediaSilenceEndMs: 40,
+      transcriber: { transcribe: vi.fn(async (request: { utteranceId: string; audioPath: string }) => buildVoiceTranscript({ utteranceId: request.utteranceId, text: "If you're satisfied with the message, press one.", audioPath: request.audioPath, source: "whisper.cpp" })) },
+    } as never)
+    const fake = fakeSocket()
+    const identity: VoiceCallIdentity = { callSid: "CAvm", agentName: "slugger", direction: "outbound", outboundId: "out-vm", from: CALLER, to: LINE, friendId: "job-friend", engine: "cascade" }
+    const session = new TwilioMediaStreamSession(fake.socket, identity, f.options, new TwilioAudioStreamJobStore())
+    session.attach()
+    session.handleRawMessage(start("CAvm", {}))
+    await vi.waitFor(() => expect(fake.sent.some((raw) => raw.includes('"mark"'))).toBe(true))
+
+    for (let i = 0; i < 3; i += 1) session.handleRawMessage(frame(0x00))
+    for (let i = 0; i < 4; i += 1) session.handleRawMessage(frame(0xff))
+    await vi.waitFor(() => expect(fake.isOpen()).toBe(false))
+  })
+
+  it("ends the session when the call directory cannot be created", async () => {
+    const f = await fixture()
+    f.options.outputDir = "/dev/null/not-a-dir"
+    const fake = fakeSocket()
+    const events = vi.spyOn(nerves, "emitNervesEvent")
+    const identity: VoiceCallIdentity = { callSid: "CAbroken", agentName: "slugger", direction: "inbound", from: CALLER, to: LINE, engine: "cascade" }
+    const session = new TwilioMediaStreamSession(fake.socket, identity, f.options, new TwilioAudioStreamJobStore())
+    session.attach()
+    session.handleRawMessage(start("CAbroken", {}))
+    await vi.waitFor(() => expect(events.mock.calls.some(([event]) => (event as { event: string }).event === "senses.voice_twilio_media_start_error")).toBe(true))
     expect(fake.isOpen()).toBe(false)
   })
 })
