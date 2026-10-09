@@ -23,6 +23,11 @@ export interface TrustCommandContext {
   isRoot: boolean
   /** This agent's own A2A DID, or null when it cannot be read; a grant may never pin it. */
   ownDid(): Promise<string | null>
+  /**
+   * The DID the running agent published in its own bundle, or null. Advisory: the agent can write its bundle, so it never replaces the twin
+   * check against the friend records and never decides anything by itself; it only adds a warning that names where it came from.
+   */
+  publishedDid?(): Promise<string | null>
 }
 
 export interface DelegatedCommandsCommandInput {
@@ -76,10 +81,16 @@ async function vetPinnedDid(ctx: TrustCommandContext, friend: FriendRecord, did:
   const holder = Object.entries(held).find(([id, existing]) => id !== friend.id && existing.did === did)
   if (holder) throw new Error(`refusing: that DID is already pinned by ${holder[0]}'s grant. Revoke it first if the sender really moved to a different friend record. Nothing was written.`)
   if (own !== null) return []
+  // The own DID is not available from the machine config here. A DID the agent published in its bundle is only a hint (the agent can write
+  // that file), so the friend-record comparison always runs as well, and the published value is reported with its source.
+  const published = await ctx.publishedDid?.() ?? null
   const records = await ctx.store.listAll?.() ?? []
   const twin = records.find((record) => record.id !== friend.id && friendDid(record) === did)
-  if (twin) throw new Error(`refusing: this agent's own DID could not be read here, and another friend record (${twin.name}, ${twin.id}) carries that same DID, so it may be this agent's own key. Check it with: ouro a2a identity --agent ${ctx.agentName} --json. Nothing was written.`)
-  return ["note: could not read this agent's own DID here, so the own-DID check was skipped; compared --did with every DID in the friend records instead, and no other record carries it"]
+  if (twin) throw new Error(`refusing: this agent's own DID could not be read from its machine config here, and another friend record (${twin.name}, ${twin.id}) carries that same DID, so it may be this agent's own key. Check it with: ouro a2a identity --agent ${ctx.agentName} --json. Nothing was written.`)
+  const notes = ["note: could not read this agent's own DID from its machine config here, so the own-DID check was skipped; compared --did with every DID in the friend records instead, and no other record carries it"]
+  if (published === did) notes.push("warning: --did equals the DID published in the agent's bundle (source: bundle-published, which the agent itself can write, so this is advisory). Granting it would pin the agent's own key; check with ouro a2a identity --agent " + ctx.agentName + " --json before relying on this grant")
+  else if (published !== null) notes.push(`note: the DID published in the agent's bundle (source: bundle-published, advisory) is ${published}, which differs from --did`)
+  return notes
 }
 
 function notActiveFamilyNote(friend: FriendRecord, what: string): string[] {

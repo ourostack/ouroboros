@@ -302,6 +302,40 @@ describe("when the agent's own DID cannot be read", () => {
     await expect(executeEscalationCommand({ kind: "a2a.escalation", action: "grant", friendId: friend.id, did: DID } as never, ctx(unknownSelf))).rejects.toThrow("another friend record")
     expect(readDelegatedCommandGrants(tmp.agentRoot)).toEqual({})
   })
+
+  describe("a DID the agent published in its bundle is advisory (review of #1064, round 3, finding 2)", () => {
+    it("still runs the twin check when a bogus DID is published, so a published value cannot switch the check off", async () => {
+      const friend = await peer()
+      await store.put("twin", { ...friend, id: "twin", name: "Other record" })
+      const published = { ...unknownSelf, publishedDid: async () => "did:key:z6MkBogusPublished" }
+      await expect(grant(friend.id, {}, published)).rejects.toThrow(/another friend record.*Other record/s)
+      await expect(executeEscalationCommand({ kind: "a2a.escalation", action: "grant", friendId: friend.id, did: DID } as never, ctx(published))).rejects.toThrow("another friend record")
+      expect(readDelegatedCommandGrants(tmp.agentRoot)).toEqual({})
+    })
+
+    it("warns, naming the source, when the published DID equals the granted DID, without blocking the grant", async () => {
+      const friend = await peer()
+      const out = await grant(friend.id, {}, { ...unknownSelf, publishedDid: async () => DID })
+      expect(out).toContain("granted delegated commands")
+      expect(out).toMatch(/warning: --did equals the DID published in the agent's bundle \(source: bundle-published/)
+      expect(readDelegatedCommandGrants(tmp.agentRoot)[friend.id]?.did).toBe(DID)
+    })
+
+    it("reports a differing published DID as a note with its source, and says nothing when none is published", async () => {
+      const friend = await peer()
+      const differing = await grant(friend.id, {}, { ...unknownSelf, publishedDid: async () => "did:key:z6MkSomeoneElse" })
+      expect(differing).toContain("source: bundle-published, advisory) is did:key:z6MkSomeoneElse, which differs from --did")
+      expect(differing).not.toContain("warning:")
+      const none = await grant(friend.id, {}, { ...unknownSelf, publishedDid: async () => null })
+      expect(none).not.toContain("bundle-published")
+    })
+
+    it("ignores the published DID when the machine config supplies the real one", async () => {
+      const friend = await peer()
+      const out = await grant(friend.id, {}, { publishedDid: async () => DID })
+      expect(out).not.toContain("bundle-published")
+    })
+  })
 })
 
 describe("escalation grant and revoke", () => {

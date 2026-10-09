@@ -227,8 +227,8 @@ describe("readOwnA2ADid is read-only", () => {
   })
 })
 
-describe("readOwnA2ADid falls back to the DID published in the bundle", () => {
-  it("reads the public identity file when no seed is cached, never mints, and ignores a missing, malformed or non-did value", async () => {
+describe("the DID published in the bundle is advisory and separate from readOwnA2ADid", () => {
+  it("readOwnA2ADid never reads the bundle; readPublishedA2ADid reads the public identity file, and publishing is best effort and idempotent", async () => {
     const fs = await import("node:fs")
     const os = await import("node:os")
     const path = await import("node:path")
@@ -237,27 +237,22 @@ describe("readOwnA2ADid falls back to the DID published in the bundle", () => {
     credentials.resetRuntimeCredentialConfigCache()
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "own-did-"))
     try {
-      expect(await readOwnA2ADid("published-agent", root)).toBeNull()
+      expect(readPublishedA2ADid(root)).toBeNull()
       publishOwnA2ADid(root, "did:key:z6MkPublished")
       expect(JSON.parse(fs.readFileSync(path.join(root, PUBLIC_A2A_IDENTITY_FILE), "utf8"))).toEqual({ did: "did:key:z6MkPublished" })
-      expect(await readOwnA2ADid("published-agent", root)).toBe("did:key:z6MkPublished")
+      expect(readPublishedA2ADid(root)).toBe("did:key:z6MkPublished")
+      // a published DID never stands in for the config DID
+      expect(await readOwnA2ADid("published-agent")).toBeNull()
       const before = fs.statSync(path.join(root, PUBLIC_A2A_IDENTITY_FILE)).mtimeMs
       publishOwnA2ADid(root, "did:key:z6MkPublished")
       expect(fs.statSync(path.join(root, PUBLIC_A2A_IDENTITY_FILE)).mtimeMs).toBe(before)
-      // a cached seed wins over the published file
-      credentials.cacheMachineRuntimeCredentialConfig("published-agent", { a2a: { identity: { ed25519Seed: Buffer.alloc(32, 9).toString("base64url") } } })
-      expect(await readOwnA2ADid("published-agent", root)).not.toBe("did:key:z6MkPublished")
-      credentials.resetRuntimeCredentialConfigCache()
       fs.writeFileSync(path.join(root, PUBLIC_A2A_IDENTITY_FILE), JSON.stringify({ did: "not-a-did" }))
       expect(readPublishedA2ADid(root)).toBeNull()
       fs.writeFileSync(path.join(root, PUBLIC_A2A_IDENTITY_FILE), "{broken")
       expect(readPublishedA2ADid(root)).toBeNull()
-      // a read-only bundle: publishing is a silent no-op
       const blocked = path.join(root, "blocked")
       fs.writeFileSync(blocked, "file, not a directory")
       expect(() => publishOwnA2ADid(blocked, "did:key:z6MkX")).not.toThrow()
-      // the default root comes from the agent name
-      expect(await readOwnA2ADid("no-such-published-agent")).toBeNull()
     } finally {
       fs.rmSync(root, { recursive: true, force: true })
     }

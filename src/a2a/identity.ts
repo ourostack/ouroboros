@@ -11,7 +11,6 @@ import {
   type RuntimeCredentialConfig,
 } from "../heart/runtime-credentials"
 import { loadOrCreateMachineIdentity } from "../heart/machine-identity"
-import { getAgentRoot } from "../heart/identity"
 
 /**
  * The agent's self A2A cryptographic identity: a did:key over an Ed25519 seed.
@@ -184,7 +183,10 @@ export function publishOwnA2ADid(agentRoot: string, did: string): void {
   }
 }
 
-/** The DID published in the bundle's public identity file, or null when it is absent or malformed. Read-only. */
+/**
+ * The DID published in the bundle's public identity file, or null when it is absent or malformed. Read-only and ADVISORY: the agent can
+ * write its own bundle, so this value is never proof of which key is the agent's. Operator checks may report it, never rely on it alone.
+ */
 export function readPublishedA2ADid(agentRoot: string): string | null {
   try {
     const parsed = JSON.parse(fs.readFileSync(path.join(agentRoot, PUBLIC_A2A_IDENTITY_FILE), "utf8")) as { did?: unknown }
@@ -195,23 +197,21 @@ export function readPublishedA2ADid(agentRoot: string): string | null {
 }
 
 /**
- * This agent's own A2A DID: from the cached machine config when its seed is there, else from the public identity file the
- * running agent published in its bundle (readable through the read-only bundle mount), else null. Strictly read-only: it never
- * mints a seed, never creates the machine identity file and never refreshes the vault, because an operator command only wants
- * to compare, not to create or fetch anything. Null makes the caller fall back to comparing against the friend records.
+ * This agent's own A2A DID if its seed is already in this process's cached machine config, else null. Strictly read-only: it
+ * never mints a seed, never creates the machine identity file and never refreshes the vault, because an operator command only
+ * wants to compare, not to create or fetch anything. A one-off root command has no cached config, so it gets null and the caller
+ * falls back to the published DID (advisory only, see `readPublishedA2ADid`) and to comparing the DID against the friend records.
  */
-export async function readOwnA2ADid(agentName: string, agentRoot?: string): Promise<string | null> {
+export async function readOwnA2ADid(agentName: string): Promise<string | null> {
   try {
     const cached = readMachineRuntimeCredentialConfig(agentName)
-    if (cached.ok && readStoredA2ASeed(cached.config)) {
-      /* v8 ignore next -- the seed is already stored here, so the load never reaches upsert; it exists only to make minting impossible @preserve */
-      const identity = await loadOrMintA2AIdentity({ agentName, sodium: await ready(), config: cached.config, upsert: async () => { throw new Error("readOwnA2ADid never mints") } })
-      return identity.did
-    }
+    if (!cached.ok || !readStoredA2ASeed(cached.config)) return null
+    /* v8 ignore next -- the seed is already stored here, so the load never reaches upsert; it exists only to make minting impossible @preserve */
+    const identity = await loadOrMintA2AIdentity({ agentName, sodium: await ready(), config: cached.config, upsert: async () => { throw new Error("readOwnA2ADid never mints") } })
+    return identity.did
   } catch {
-    // fall through to the published DID
+    return null
   }
-  return readPublishedA2ADid(agentRoot ?? getAgentRoot(agentName))
 }
 
 /**
