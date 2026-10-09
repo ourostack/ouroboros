@@ -5,8 +5,8 @@ import { emitNervesEvent } from "../nerves/runtime"
 import { inspectTrustedDirectory, inspectTrustedJson, type TrustedJson } from "./trusted-files"
 
 /**
- * Operator-set grants live in a trust directory outside the agent bundle: `/etc/ouro/trust/<agent>/` by default, or the
- * directory named by `OURO_OPERATOR_TRUST_DIR`. The agent's own uid cannot write there, and the bundle's recursive
+ * Operator-set grants live in a trust directory outside the agent bundle: `/etc/ouro/trust/<agent>/` by default, or
+ * `<OURO_OPERATOR_TRUST_DIR>/<agent>/` when that variable replaces the trust root. The agent's own uid cannot write there, and the bundle's recursive
  * `chown` during an in-place upgrade cannot reach it. A file in it counts only when the whole chain above it passes
  * the trusted-files check (real directories, root-owned, closed to group and other writes, up to `/`).
  */
@@ -26,10 +26,32 @@ export function agentNameFromRoot(agentRoot: string): string {
   return path.basename(agentRoot).replace(/\.ouro$/u, "")
 }
 
-/** Where this agent's operator-set grants live. */
+/**
+ * The real path of `target`, resolved once. The deepest ancestor that exists is resolved through every symlink and the rest of
+ * the (not yet created) tail is appended, so a configured `/etc/ouro/trust` becomes `/private/etc/ouro/trust` on macOS and the
+ * ancestor check then walks the directories the grants actually sit in.
+ */
+function resolveReal(target: string): string {
+  const tail: string[] = []
+  for (let current = path.resolve(target); ; current = path.dirname(current)) {
+    try {
+      return path.join(fs.realpathSync(current), ...tail)
+    } catch {
+      /* v8 ignore next -- the filesystem root always resolves, so this loop never runs out of ancestors @preserve */
+      if (path.dirname(current) === current) return path.resolve(target)
+      tail.unshift(path.basename(current))
+    }
+  }
+}
+
+/**
+ * Where this agent's operator-set grants live: `<trust root>/<agent>`. `OURO_OPERATOR_TRUST_DIR` replaces the trust root
+ * (`/etc/ouro/trust`) and keeps the per-agent subdirectory, so one setting serves every agent on the host.
+ */
 export function operatorTrustDir(agentRoot: string): string {
   const override = process.env[TRUST_DIR_ENV]
-  return override && override.trim().length > 0 ? path.resolve(override) : path.join(trustRoot, agentNameFromRoot(agentRoot))
+  const root = override && override.trim().length > 0 ? override : trustRoot
+  return path.join(resolveReal(root), agentNameFromRoot(agentRoot))
 }
 
 export function operatorTrustFile(agentRoot: string, fileName: string): string {

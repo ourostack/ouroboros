@@ -1,4 +1,5 @@
 import * as fs from "node:fs"
+import * as os from "node:os"
 import * as path from "node:path"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { createTmpBundle, type TmpBundleHandle } from "../test-helpers/tmpdir-bundle"
@@ -23,13 +24,47 @@ describe("where the trust directory is", () => {
   it("defaults to /etc/ouro/trust/<agent>, honours OURO_OPERATOR_TRUST_DIR, and ignores a blank override", () => {
     overrideTrustRootForTests(undefined)
     try {
-      expect(operatorTrustDir("/b/sanctuary.ouro")).toBe("/etc/ouro/trust/sanctuary")
+      const etc = fs.realpathSync("/etc")
+      expect(operatorTrustDir("/b/sanctuary.ouro")).toBe(`${etc}/ouro/trust/sanctuary`)
       vi.stubEnv("OURO_OPERATOR_TRUST_DIR", "/mnt/trust/x")
-      expect(operatorTrustFile("/b/sanctuary.ouro", "g.json")).toBe("/mnt/trust/x/g.json")
+      // The override names the parent: each agent still gets its own subdirectory under it.
+      expect(operatorTrustDir("/b/sanctuary.ouro")).toBe("/mnt/trust/x/sanctuary")
+      expect(operatorTrustFile("/b/sanctuary.ouro", "g.json")).toBe("/mnt/trust/x/sanctuary/g.json")
       vi.stubEnv("OURO_OPERATOR_TRUST_DIR", "  ")
-      expect(operatorTrustDir("/b/sanctuary.ouro")).toBe("/etc/ouro/trust/sanctuary")
+      expect(operatorTrustDir("/b/sanctuary.ouro")).toBe(`${etc}/ouro/trust/sanctuary`)
     } finally {
       overrideTrustRootForTests(path.join(process.env.OURO_TEST_ISOLATED_ROOT!, "operator-trust"))
+    }
+  })
+
+  it("resolves a symlinked trust root once (macOS /etc is /private/etc) and keeps a missing tail", () => {
+    const base = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "trust-real-")))
+    try {
+      fs.mkdirSync(path.join(base, "real", "ouro"), { recursive: true })
+      fs.symlinkSync(path.join(base, "real"), path.join(base, "etc"))
+      overrideTrustRootForTests(path.join(base, "etc", "ouro", "trust"))
+      expect(operatorTrustDir("/b/sanctuary.ouro")).toBe(path.join(base, "real", "ouro", "trust", "sanctuary"))
+      vi.stubEnv("OURO_OPERATOR_TRUST_DIR", path.join(base, "etc", "ouro", "elsewhere"))
+      expect(operatorTrustDir("/b/sanctuary.ouro")).toBe(path.join(base, "real", "ouro", "elsewhere", "sanctuary"))
+      vi.stubEnv("OURO_OPERATOR_TRUST_DIR", path.join(base, "etc", "ouro"))
+      expect(operatorTrustFile("/b/sanctuary.ouro", "g.json")).toBe(path.join(base, "real", "ouro", "sanctuary", "g.json"))
+    } finally {
+      overrideTrustRootForTests(path.join(process.env.OURO_TEST_ISOLATED_ROOT!, "operator-trust"))
+      fs.rmSync(base, { recursive: true, force: true })
+    }
+  })
+
+  it("accepts a grant file reached through a symlinked configured root once the resolved chain is trusted", () => {
+    const base = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "trust-link-")))
+    try {
+      fs.mkdirSync(path.join(base, "real", "sanctuary"), { recursive: true, mode: 0o755 })
+      fs.writeFileSync(path.join(base, "real", "sanctuary", "g.json"), JSON.stringify({ schemaVersion: 1, grants: { a: { ok: true } } }), { mode: 0o644 })
+      fs.symlinkSync(path.join(base, "real"), path.join(base, "etc"))
+      overrideTrustRootForTests(path.join(base, "etc"))
+      expect(readGrantFile("/b/sanctuary.ouro", "g.json", anyEntry).state).toBe("trusted")
+    } finally {
+      overrideTrustRootForTests(path.join(process.env.OURO_TEST_ISOLATED_ROOT!, "operator-trust"))
+      fs.rmSync(base, { recursive: true, force: true })
     }
   })
 
