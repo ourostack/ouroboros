@@ -109,10 +109,12 @@ export function mentions(haystack: string, name: string): boolean {
   return new RegExp(`(?<![\\p{L}\\p{N}])${escapeRegExp(name)}(?![\\p{L}\\p{N}])`, "iu").test(haystack)
 }
 
+/** Ordinary sentence openers that strict mode still does not take for names. */
+export const STRICT_OPENERS = new Set("too mock very just same such quite rather really kind sort bit less fairly mostly almost simply much little big small high low hard pure plain cheap".split(" "))
 const TOKEN = /\p{Lu}[\p{L}\p{M}'’]*/gu
 
 /** Capitalised words that read as names, in order of first appearance, case-insensitively de-duplicated. House vocabulary is not a name. */
-export function candidateNames(text: string): string[] {
+export function candidateNames(text: string, strict = false): string[] {
   const seen = new Set<string>()
   const names: string[] = []
   for (const match of text.matchAll(TOKEN)) {
@@ -126,7 +128,8 @@ export function candidateNames(text: string): string[] {
     const after = text.slice(match.index! + match[0].length)
     if (startsSentence && COMMON_STARTERS.has(lower)) continue
     if (startsSentence && LABEL_WORDS.has(lower) && after.startsWith(":")) continue
-    if (startsSentence && !startsLikeName(text, match.index!, after, lower)) continue
+    // Strict mode (the person asked for names): a reply that opens each paragraph with a name ("Eithan, no contest.") has no copula to show it, so any non-ordinary capitalised opener counts.
+    if (startsSentence && !(strict && !STRICT_OPENERS.has(lower)) && !startsLikeName(text, match.index!, after, lower)) continue
     seen.add(lower)
     names.push(word)
   }
@@ -232,7 +235,7 @@ export function sourceGroundingFinding(input: { answer: string; userText: string
   const houseRead = input.tools.filter((record) => HOUSE_READ_TOOL.test(record.name)).map((record) => record.result).join("\n")
   const sawNothing = lookups.length === 0
   const proseNames = askedAboutWork && sawNothing && input.answer.length >= MIN_PROSE_LENGTH ? lowercaseProseNames(input.answer) : []
-  const names = [...new Set([...candidateNames(input.answer), ...lowercaseListNames(input.answer), ...proseNames])]
+  const names = [...new Set([...candidateNames(input.answer, askedAboutWork), ...lowercaseListNames(input.answer), ...proseNames])]
   // Output of this turn's non-lookup tools (a calibredb listing, a sweep) is the house's record; memory tools are excluded because they may hold an earlier fabrication.
   const otherRead = input.tools.filter((record) => !isLookupToolCall(record) && !MEMORY_TOOL.test(record.name) && !ECHO_COMMAND.test(record.args.command ?? "")).map((record) => record.result).join("\n")
   // A name already said or read in an earlier turn is known by design: the rule judges what this turn introduces, not what the conversation already holds.

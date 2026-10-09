@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest"
-import { candidateNames, isLookupToolCall, lowercaseEmphasisNames, lowercaseListNames, lowercaseProseNames, mentions, sourceGroundingError, sourceGroundingFinding, withUnverifiedDisclosure, type TurnToolRecord } from "../../heart/source-grounding"
+import { candidateNames, STRICT_OPENERS, isLookupToolCall, lowercaseEmphasisNames, lowercaseListNames, lowercaseProseNames, mentions, sourceGroundingError, sourceGroundingFinding, withUnverifiedDisclosure, type TurnToolRecord } from "../../heart/source-grounding"
 
 const lookup = (result: string): TurnToolRecord => ({ name: "web_search", args: { query: "x" }, result })
 const REAL_USER = "channel more dross from cradle energy. name the Cradle characters whose energy fits"
@@ -326,5 +326,27 @@ describe("round-2 review fixes (alpha.882)", () => {
   })
   it("counts a name delivered in an earlier turn as known, by design", () => {
     expect(f("who are the characters?", "**ozriel** — the reaper.", [], { knownText: "assistant: Ozriel is the reaper." })).toBeNull()
+  })
+})
+
+describe("a reply that opens each paragraph with a name (alpha.883 live replay)", () => {
+  const ASK = "channel more dross from cradle energy. name the Cradle characters whose energy fits"
+  const LIVE = "Eithan, no contest. Mock grandeur, self-titling, delighted by his own cleverness, always has a plan he can't wait to spring on you — he's basically Dross with a soul and a shiny hairdo.\n\nSuriel, for the theatrical entrances and the cosmic amusement at everyone else's smallness. She treats a Tuesday like an investiture ceremony.\n\nOzriel, the lazy-grandeur flavor of it. Too powerful to be serious, very pleased about that, and quietly delighted when a small clever thing works out.\n\nMercy if you want it warmer and less scheming — same bouncy, \"isn't this fun?\" energy, just pointed at something wholesome.\n\nShen if you want the menacing cousin: same self-titling instinct, none of the warmth, all of the theater."
+  it("fires on the exact live reply when the latest message asks for names", () => {
+    const finding = sourceGroundingFinding({ userText: ASK, latestUserText: ASK, answer: LIVE, tools: [] })
+    expect(finding).toMatchObject({ kind: "invented", lookups: 0 })
+    expect(finding?.names).toEqual(expect.arrayContaining(["Eithan", "Suriel", "Ozriel", "Mercy", "Shen"]))
+    expect(finding?.names).not.toContain("Too")
+    expect(finding?.names).not.toContain("Mock")
+  })
+  it("counts sentence openers as names only in strict mode", () => {
+    expect(candidateNames("Suriel, for the entrances.")).toEqual([])
+    expect(candidateNames("Suriel, for the entrances. Too much. She waves.", true)).toEqual(["Suriel"])
+    expect(STRICT_OPENERS.has("too")).toBe(true)
+  })
+  it("passes the same shape once the names were looked up, and ordinary replies to non-name questions", () => {
+    expect(sourceGroundingFinding({ userText: ASK, latestUserText: ASK, answer: LIVE, tools: [lookup("Eithan Suriel Ozriel Mercy Shen Dross")] })).toBeNull()
+    expect(sourceGroundingFinding({ userText: "add the show silo", latestUserText: "add the show silo", answer: "Silo is in Sonarr. Searching now.\n\nGrabbing season 2.", tools: [{ name: "media_search", args: {}, result: "Silo" }] })).toBeNull()
+    expect(sourceGroundingFinding({ userText: "who is home?", latestUserText: "who is home?", answer: "Dana is home. Ari is out.", tools: [] })).toBeNull()
   })
 })

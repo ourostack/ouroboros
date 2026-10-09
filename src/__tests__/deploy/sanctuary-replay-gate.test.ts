@@ -893,6 +893,15 @@ describe("the gate's name finder stays in step with the runtime's", () => {
     expect(run("Fisher is a title; Gesha is a name")).toBe(true)
     expect(run("Fisher only")).toBe(false)
   })
+  it("strict mode counts paragraph-opening names the same way as the runtime", async () => {
+    const grounding = await import("../../heart/source-grounding")
+    const known = [...grounding.HOUSE_VOCABULARY].join(" ")
+    const text = "Eithan, no contest. Too much.\n\nSuriel, for the entrances. She waves.\n\nMercy if you want it warmer."
+    expect(gate.properNouns(text, known, true)).toEqual(grounding.candidateNames(text, true))
+    expect(gate.properNouns(text, known, true)).toEqual(["Eithan", "Suriel", "Mercy"])
+    expect(gate.properNouns(text, known)).toEqual([])
+    expect([...gate.STRICT_OPENERS].sort()).toEqual([...grounding.STRICT_OPENERS].sort())
+  })
   it("shares the same sentence-opener, status-word and label lists", async () => {
     const grounding = await import("../../heart/source-grounding")
     expect([...gate.STARTERS].sort()).toEqual([...grounding.COMMON_STARTERS].sort())

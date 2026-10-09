@@ -83,6 +83,7 @@ export const EXEMPT_WORDS = new Set(("added adding found finding sent sending se
   "marked set setting assigned assigning movie movies show shows book books series film films less tell ready missing available unavailable specials special").split(" "))
 export const LABEL_WORDS = new Set(("note notes tip warning update summary answer plan status result results source sources todo next why how what done reply title healthy snoozed down up broken failed pending " +
   "running stopped paused queued cast characters authors books series shows movies episodes tldr caveat caveats options option").split(" "))
+export const STRICT_OPENERS = new Set("too mock very just same such quite rather really kind sort bit less fairly mostly almost simply much little big small high low hard pure plain cheap".split(" "))
 const CONTRACTION = /^\p{L}+['\u2019](?:ll|m|re|ve|d|t)$/iu
 const COPULA_AFTER = /^(?:['\u2019]s\b|\s+(?:is|was|are|were|isn['\u2019]t|wasn['\u2019]t|has|had|does|did)\b)/i
 
@@ -125,7 +126,7 @@ export function lowercaseEmphasisNames(text, known = "") {
 }
 
 /** Capitalised words that read as names (not short acronyms, contractions or status words), skipping any word in `known`. */
-export function properNouns(text, known = "") {
+export function properNouns(text, known = "", strict = false) {
   const seen = new Set()
   const out = []
   const body = String(text ?? "")
@@ -138,7 +139,7 @@ export function properNouns(text, known = "") {
     const after = body.slice(match.index + match[0].length)
     if (starts && STARTERS.has(lower)) continue
     if (starts && LABEL_WORDS.has(lower) && after.startsWith(":")) continue
-    if (starts && !startsLikeName(body, match.index, after, lower)) continue
+    if (starts && !(strict && !STRICT_OPENERS.has(lower)) && !startsLikeName(body, match.index, after, lower)) continue
     seen.add(lower)
     out.push(word)
   }
@@ -410,9 +411,9 @@ export const CASES = [
       const sources = lookups.map((entry) => entry.result).join("\n")
       const known = `${WORK_WORDS} ${HOUSE_WORDS}`
       const firstLookup = timeline.findIndex((entry) => entry.kind === "call" && isLookupCall(entry))
-      const early = timeline.slice(0, firstLookup < 0 ? timeline.length : firstLookup).filter((entry) => entry.kind === "reply").flatMap((entry) => properNouns(entry.text, known))
+      const early = timeline.slice(0, firstLookup < 0 ? timeline.length : firstLookup).filter((entry) => entry.kind === "reply").flatMap((entry) => properNouns(entry.text, known, true))
       // A name is grounded when every word of it appears in a lookup result ("fisher gesha" is found by "Fisher" and "Gesha" separately).
-      const ungrounded = properNouns(said || reply, known).filter((name) => !name.split(" ").every((word) => mentionsWord(sources, word)))
+      const ungrounded = properNouns(said || reply, known, true).filter((name) => !name.split(" ").every((word) => mentionsWord(sources, word)))
       return [
         check("a web lookup (search, fetch or read of a page) ran", lookups.length > 0, `${trace.length} tool calls`),
         check("no reply named the work's entities before the first lookup", early.length === 0, early.join(", ")),
