@@ -173,7 +173,9 @@ describe("delegated-commands grant", () => {
       const dir = operatorTrustDir(tmp.agentRoot)
       fs.mkdirSync(dir, { recursive: true })
       fs.chmodSync(dir, 0o777)
-      await expect(grant(friend.id)).rejects.toThrow("not trusted")
+      await expect(grant(friend.id, { expires: "2030-01-01T00:00:00Z" })).rejects.toThrow("not trusted")
+      // without an expiry the replay list cannot be relied on either, so a permanent grant is refused with that reason first
+      await expect(grant(friend.id)).rejects.toThrow(/list in .* is present but not trustworthy|or that list is present but not trustworthy/)
       expect(fs.statSync(dir).mode & 0o777).toBe(0o777)
       expect(fs.readdirSync(dir)).toEqual([])
     })

@@ -112,7 +112,7 @@ export async function executeDelegatedCommandsCommand(command: DelegatedCommands
   if (command.action === "revoke") return revokeDelegatedCommands(command.friendId!, ctx)
   const expiresAt = parseExpiry(command.expires, ctx.now)
   const friend = await requireFriend(ctx, command.friendId)
-  if (expiresAt === undefined && isReplayGrantHolder(ctx.agentRoot, friend.id)) throw new Error(`refusing: ${friend.name} is a replay peer (it is on the replay gate's list in ${operatorTrustDir(ctx.agentRoot)}), and a replay peer's grant must expire. Pass --expires <ISO date>. Nothing was written.`)
+  if (expiresAt === undefined && isReplayGrantHolder(ctx.agentRoot, friend.id)) throw new Error(`refusing: ${friend.name} is a replay peer (it is on the replay gate's list in ${operatorTrustDir(ctx.agentRoot)}), or that list is present but not trustworthy, and a replay peer's grant must expire. Pass --expires <ISO date>. Nothing was written.`)
   const did = checkedDid(friend, command.did)
   const selfNotes = await vetPinnedDid(ctx, friend, did, readDelegatedCommandGrants(ctx.agentRoot))
   const change = setDelegatedCommandGrant(ctx.agentRoot, friend.id, { grant: true, did, source: command.source ?? `ouro a2a delegated-commands grant, ${ctx.now.toISOString()}`, ...(expiresAt ? { expiresAt } : {}) }, ctx.now)

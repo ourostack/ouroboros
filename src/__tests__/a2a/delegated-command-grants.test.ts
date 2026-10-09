@@ -127,13 +127,36 @@ describe("checkDelegatedCommandGrant", () => {
       expect(check(friend(), DID, NOW + 700_000)).toEqual({ ok: false, reason: "grant_expired" })
     })
 
-    it("ignores malformed entries in the replay list, so only a well-formed holder forces an expiry", () => {
+    it("fails closed on a replay list that is present but cannot be trusted, and on a malformed entry for the friend, but not on an absent list (review of #1064, round 3, finding 4)", () => {
       writeFile({ peer: entry({ source: "Replay gate provisioning" }) })
       const listFile = path.join(path.dirname(delegatedCommandGrantsPath(tmp.agentRoot)), "replay-identities.json")
+      expect(check()).toEqual({ ok: true })
+      // a malformed entry names the friend, so it cannot be told apart from a holder: the permanent grant is refused
       for (const bad of [null, "peer", [], { who: 1, name: "p", did: DID }]) {
         fs.writeFileSync(listFile, JSON.stringify({ schemaVersion: 1, grants: { peer: bad } }), { mode: 0o644 })
-        expect(check()).toEqual({ ok: true })
+        expect(check()).toEqual({ ok: false, reason: "grant_expired" })
       }
+      // a malformed entry for somebody else leaves this friend alone
+      fs.writeFileSync(listFile, JSON.stringify({ schemaVersion: 1, grants: { other: null } }), { mode: 0o644 })
+      expect(check()).toEqual({ ok: true })
+      // the list as a whole is untrusted: wrong shape, not JSON, writable by others, or a symlink
+      for (const text of ["{\"schemaVersion\":2,\"grants\":{}}", "{not json", "[]"]) {
+        fs.writeFileSync(listFile, text, { mode: 0o644 })
+        expect(check()).toEqual({ ok: false, reason: "grant_expired" })
+      }
+      fs.writeFileSync(listFile, JSON.stringify({ schemaVersion: 1, grants: {} }), { mode: 0o644 })
+      expect(check()).toEqual({ ok: true })
+      fs.chmodSync(listFile, 0o666)
+      expect(check()).toEqual({ ok: false, reason: "grant_expired" })
+      fs.rmSync(listFile)
+      fs.symlinkSync(delegatedCommandGrantsPath(tmp.agentRoot), listFile)
+      expect(check()).toEqual({ ok: false, reason: "grant_expired" })
+      fs.rmSync(listFile)
+      expect(check()).toEqual({ ok: true })
+      // a grant that carries its own expiry does not depend on the list at all
+      fs.writeFileSync(listFile, "{not json", { mode: 0o644 })
+      writeFile({ peer: entry({ expiresAt: new Date(NOW + 600_000).toISOString() }) })
+      expect(check()).toEqual({ ok: true })
       fs.rmSync(listFile)
     })
 
