@@ -1,4 +1,5 @@
 import type { FriendRecord, FriendStore } from "@ouro.bot/friends"
+import { emitNervesEvent } from "../nerves/runtime"
 import {
   checkDelegatedCommandGrant, delegatedCommandGrantsPath, readDelegatedCommandGrants, setDelegatedCommandGrant, viewDelegatedCommandGrants,
   type DelegatedCommandGrant,
@@ -86,6 +87,7 @@ export async function executeDelegatedCommandsCommand(command: DelegatedCommands
   const holder = Object.entries(readDelegatedCommandGrants(ctx.agentRoot)).find(([id, existing]) => id !== friend.id && existing.did === did)
   if (holder) throw new Error(`refusing: that DID is already pinned by ${holder[0]}'s grant. Revoke it first if the sender really moved to a different friend record. Nothing was written.`)
   const change = setDelegatedCommandGrant(ctx.agentRoot, friend.id, { grant: true, did, source: command.source ?? `ouro a2a delegated-commands grant, ${ctx.now.toISOString()}`, ...(expiresAt ? { expiresAt } : {}) }, ctx.now)
+  emitNervesEvent({ component: "senses", event: "senses.a2a_trust_grant_changed", message: "operator changed a trust grant", meta: { action: "grant", scope: "delegated_commands" } })
   return [
     `granted delegated commands: ${friend.name} (${friend.id})${change.changed ? "" : " (no change)"}`,
     `pinned DID: ${did}`,
@@ -107,6 +109,7 @@ async function revokeDelegatedCommands(friendId: string, ctx: TrustCommandContex
     await ctx.store.put(friend.id, rest)
     clearedLegacy = true
   }
+  emitNervesEvent({ component: "senses", event: "senses.a2a_trust_grant_changed", message: "operator changed a trust grant", meta: { action: "revoke", scope: "delegated_commands" } })
   return [
     `revoked delegated commands: ${friend ? `${friend.name} (${friend.id})` : `${friendId} (no friend record)`}${change.changed || clearedLegacy ? "" : " (no change)"}`,
     ...(clearedLegacy ? ["cleared the legacy delegationGrant on the friend record (an older harness would otherwise honour it after a rollback)"] : []),
@@ -179,6 +182,7 @@ export async function executeEscalationCommand(command: EscalationCommandInput, 
   const change = command.action === "grant"
     ? setEscalationGrant(ctx.agentRoot, friend.id, { grant: true, source: command.source ?? `ouro a2a escalation grant, ${ctx.now.toISOString()}`, did: did! }, ctx.now)
     : setEscalationGrant(ctx.agentRoot, friend.id, { grant: false }, ctx.now)
+  emitNervesEvent({ component: "senses", event: "senses.a2a_trust_grant_changed", message: "operator changed a trust grant", meta: { action: command.action, scope: "escalation" } })
   return [
     `${command.action === "grant" ? "granted" : "revoked"} escalation: ${friend.name} (${friend.id})${change.changed ? "" : " (no change)"}`,
     ...(did ? [`pinned DID: ${did}`] : []),
