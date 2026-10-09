@@ -127,7 +127,7 @@ describe("upgrade script contract", () => {
     const order = [body.indexOf('"--hold-commit"'), body.indexOf("resumeSupervision()\n  say(\"preservation\")"), body.indexOf("completeGatedUpgrade({")]
     expect(order.every((n) => n >= 0)).toBe(true)
     expect([...order].sort((a, b) => a - b)).toEqual(order)
-    expect(body.match(/pinTemplate\(version\)/g)).toHaveLength(3)
+    expect(body.match(/pinTemplate\(version\)/g)).toHaveLength(2)
     expect(body).toContain("} else if (!gated) { pinTemplate(version); pruneButlerImages() }")
     expect(body).toContain('"upgrade-rollback"')
     expect(body).toContain("pin: () => pinTemplate(version)")
