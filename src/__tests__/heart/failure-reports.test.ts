@@ -311,6 +311,16 @@ describe("resolving and confirming", () => {
       expect((await closedOrNot(agentRoot)).notifyOwner).not.toHaveBeenCalled()
     })
 
+    it("warns once per report, not on every tick, when the holder no longer holds escalation", async () => {
+      const { agentRoot, id } = await resolvedRecord()
+      setEscalationGrant(agentRoot, "claude", { grant: false, source: "test" })
+      const sink: LogEvent[] = []
+      const stop = registerGlobalLogSink((entry) => { sink.push(entry) })
+      for (let tick = 0; tick < 3; tick += 1) await closedOrNot(agentRoot)
+      stop()
+      expect(sink.filter((e) => e.event === "senses.failure_report_resolution_unverified" && e.meta?.reportId === id)).toHaveLength(1)
+    })
+
     it("names the rejection in a warn event", async () => {
       const sink: LogEvent[] = []
       const stop = registerGlobalLogSink((entry) => { sink.push(entry) })

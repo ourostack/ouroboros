@@ -301,10 +301,17 @@ export interface ConfirmDeps {
   notifyOwner(input: { noticeId: string; text: string }): Promise<void>
 }
 
+// Reports are rate limited and pruned, so this set stays small.
+const warnedSkips = new Set<string>()
+
 /** The owner hears "fixed" only if the escalation holder signed it and still holds escalation; a file the Butler's own uid can write proves nothing. */
 async function resolutionIsSigned(agentRoot: string, deps: ConfirmDeps, record: FailureReportRecord): Promise<boolean> {
   const resolution = record.resolution!
   const skip = (reason: string): false => {
+    // The confirm tick runs every few minutes, so each report warns once per process, not once per tick.
+    const key = `${record.id}:${reason}`
+    if (warnedSkips.has(key)) return false
+    warnedSkips.add(key)
     emitNervesEvent({ level: "warn", component: "senses", event: "senses.failure_report_resolution_unverified", message: "skipped a resolved report that the holder's signature does not vouch for", meta: { reportId: record.id, by: resolution.by, reason } })
     return false
   }

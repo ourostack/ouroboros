@@ -7220,6 +7220,7 @@ async function executeA2ACommand(command: A2ACliCommand & { agent: string }, dep
       : setEscalationGrant(agentRoot, friend.id, { grant: false }, at)
     const message = [
       `${command.action === "grant" ? "granted" : "revoked"} escalation: ${friend.name} (${friend.id})${change.changed ? "" : " (no change)"}`,
+      ...(holderDid ? [`pinned DID: ${holderDid} (compare it with the holder's real DID)`] : []),
       ...(change.backup ? [`backup: ${change.backup}`] : []),
       ...(command.action === "grant" && readEscalationGrants(agentRoot)[friend.id] === undefined ? [`WARNING: the grant is written but will not be honoured: ${path.join(agentRoot, "state", "a2a")} and escalation-grants.json must be owned by root and writable by no one else. Run this command as root (docker exec as root) or chown root:root and chmod 755/644 them.`] : []),
       ...(command.action === "grant" && (friend.trustLevel !== "family" || friend.admissionState !== "active") ? [`note: ${friend.name} only holds the grant while it is active family (now ${friend.trustLevel}, ${friend.admissionState})`] : []),
