@@ -61,7 +61,7 @@ const SANCTUARY_RELATIONSHIP_BASE_TOOLS = new Set([
 export const SANCTUARY_MCP_PROVIDED_TOOLS: ReadonlySet<string> = new Set([
   "media_search", "media_request", "media_request_status",
   "media_diagnose_and_fix", "media_chain_health", "media_play_or_resolve",
-  "media_search_now", "media_queue", "media_blocklist_stalled", "media_episodes", "media_indexer_search", "media_release_search", "media_release_grab", "media_blocklist", "media_manual_import", "media_fill_missing",
+  "media_search_now", "media_queue", "media_blocklist_stalled", "media_episodes", "media_indexer_search", "media_release_search", "media_release_grab", "media_blocklist", "media_manual_import", "media_quality_profile", "media_fill_missing",
 ])
 
 /** Channels a Sanctuary turn can arrive on from the host itself, not from a remote party. */

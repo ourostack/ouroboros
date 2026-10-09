@@ -1457,6 +1457,17 @@ describe("in-place authority upgrade", () => {
     expect(programs.map((name) => fs.readFileSync(f.p(`${rootPath}/package/${name}`), "utf8"))).toEqual(programs.map(next))
   })
 
+  it("recreates the resident with the psyche folder mounted read-only over the bundle", async () => {
+    const f = await upgradeFixture()
+    await f.lifecycle.upgrade({ targetImageId: digest("next-image"), imageReference: nextReference })
+    const creates = host.exec.mock.calls.filter(([file, args]) => file === "/usr/bin/docker" && (args as string[])[0] === "create").map(([, args]) => args as string[])
+    expect(creates.length).toBeGreaterThan(0)
+    const args = creates[creates.length - 1]!
+    const mounts = args.flatMap((arg, index) => (arg === "-v" ? [args[index + 1]!] : []))
+    expect(mounts).toContain("/mnt/user/appdata/ouro-butler/agent/sanctuary.ouro/psyche:/home/ouro/AgentBundles/sanctuary.ouro/psyche:ro")
+    expect(mounts.indexOf("/mnt/user/appdata/ouro-butler/agent/sanctuary.ouro:/home/ouro/AgentBundles/sanctuary.ouro:rw")).toBeLessThan(mounts.findIndex((m) => m.endsWith("/psyche:ro")))
+  })
+
   describe("cgroup keep child (D-026)", () => {
     const keep = "/sys/fs/cgroup/ouro-authority/ouro-keep"
     async function keepAware() {

@@ -22,9 +22,9 @@ export const CONTAINER = "ouro-butler"
 // The uid the A2A sense runs as inside the container; the trust probe must see the window exactly as that process does.
 export const BUTLER_USER = "10001:10001"
 export const CLI_ENTRY = "/opt/ouro/dist/heart/daemon/ouro-entry.js"
-// Long enough for every case at its slowest (five chat cases at up to 5.5 minutes each, plus the await case's 8 minute wait),
+// Long enough for every case at its slowest (nine chat messages at up to 5.5 minutes each, plus the await case's 8 minute wait),
 // and well inside the 2 hour cap: an await that has not resolved when the window closes is cancelled by the Butler.
-export const DEFAULT_WINDOW_MINUTES = 45
+export const DEFAULT_WINDOW_MINUTES = 85
 export const AWAIT_TIMEOUT_MS = 8 * 60 * 1000
 export const AWAIT_POLL_MS = 15 * 1000
 export const MESSAGE_TIMEOUT_MS = 330 * 1000
@@ -45,6 +45,85 @@ export function extractTrace(session) {
     for (const call of event.toolCalls ?? []) trace.push({ name: call.function?.name ?? "", args: call.function?.arguments ?? "", result: results.get(call.id) ?? "" })
   }
   return trace
+}
+
+/** Tool calls and assistant text in the order they happened: { kind: "call", name, args, result } and { kind: "reply", text }. */
+export function extractTimeline(session) {
+  const events = Array.isArray(session?.events) ? session.events : []
+  const results = new Map()
+  for (const event of events) if (event.role === "tool" && event.toolCallId) results.set(event.toolCallId, typeof event.content === "string" ? event.content : JSON.stringify(event.content ?? ""))
+  const timeline = []
+  for (const event of events) {
+    if (event.role !== "assistant") continue
+    if (typeof event.content === "string" && event.content.length > 0) timeline.push({ kind: "reply", text: event.content })
+    for (const call of event.toolCalls ?? []) timeline.push({ kind: "call", name: call.function?.name ?? "", args: call.function?.arguments ?? "", result: results.get(call.id) ?? "" })
+  }
+  return timeline
+}
+
+/** A call that read a web source: a web search, a page fetch or read, or a curl or wget as a command word (echoing a URL is not a lookup). The same notion the runtime's source check uses. */
+const SHELL_LOOKUP_SEGMENT = /^\s*(?:\w+=\S*\s+)*(?:(?:sudo|env|command|time|nohup)\s+)*(?:(?:curl|wget)\b|books\s+(?:get|search|series|library\s+(?:find|search))\b)/
+const SHELL_SEGMENT_SEPARATOR = /&&|\|\||[;|\n]/
+/** A trace call's shell command: the recorded arguments are JSON text. */
+export const shellCommandOf = (args) => { try { const parsed = JSON.parse(String(args ?? "")); return typeof parsed?.command === "string" ? parsed.command : "" } catch { return String(args ?? "") } }
+export const isLookupCall = (call) => call.name === "web_search" || call.name === "media_search" || call.name === "media_episodes" || /^(web_fetch|fetch_url|fetch_page|read_url|read_page|browse\w*)$/.test(call.name) || (call.name === "shell" && shellCommandOf(call.args).split(SHELL_SEGMENT_SEPARATOR).some((segment) => SHELL_LOOKUP_SEGMENT.test(segment)))
+
+const HOUSE_WORDS = "Ari Butler Claude Code Sonarr Radarr Jellyfin Sanctuary Telegram Unraid Mendelow Cloud Calibre Books Jellyseerr Prowlarr"
+const CAPITALISED = /\p{Lu}[\p{L}\p{M}'\u2019]*/gu
+// Ordinary words that open a sentence or a bullet; any other capitalised word there is a candidate name only with a sign it is one (the runtime check does the same, and a test keeps the two in step).
+export const STARTERS = new Set(("the this that these those it its i so and but or yes no not sure okay ok here there what when where why how who which if then now also both one two my your our we you he she they " +
+  "got thanks thank done understood noted good great fine sorry will can could would should let yeah yep nope right well anyway still just all any some each every for from with without to in on at by as is are " +
+  "was were do does did have has had maybe probably honestly unfortunately looks seems see check try use make keep stop start once first next last before after because since while though although however " +
+  "otherwise instead meanwhile today tonight tomorrow yesterday more most many other another such only even about over under between like nothing something everything anything everyone someone anyone " +
+  "overall basically actually generally usually often sometimes never always note tip warning update summary answer plan status result results source sources todo among per plus either neither whether yet nobody heads").split(" "))
+// Status verbs and media nouns that fill ordinary replies; never names, wherever they sit.
+export const EXEMPT_WORDS = new Set(("added adding found finding sent sending searching searched grabbing grabbed grab season seasons episode episodes queued queueing monitoring monitored imported importing " +
+  "downloading downloaded download downloads requested requesting removed removing deleted updated updating checking checked looking looked started starting finished finishing waiting stalled retrying retried " +
+  "marked set setting assigned assigning movie movies show shows book books series film films less tell ready missing available unavailable specials special").split(" "))
+export const LABEL_WORDS = new Set(("note notes tip warning update summary answer plan status result results source sources todo next why how what done reply title healthy snoozed down up broken failed pending " +
+  "running stopped paused queued cast characters authors books series shows movies episodes tldr caveat caveats options option").split(" "))
+const CONTRACTION = /^\p{L}+['\u2019](?:ll|m|re|ve|d|t)$/iu
+const COPULA_AFTER = /^(?:['\u2019]s\b|\s+(?:is|was|are|were|isn['\u2019]t|wasn['\u2019]t|has|had|does|did)\b)/i
+
+const escapeRegExp = (text) => text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")
+/** Whole-word, case-insensitive, Unicode-aware: "Dross" is not found inside "Drossel". */
+export const mentionsWord = (haystack, name) => new RegExp(`(?<![\\p{L}\\p{N}])${escapeRegExp(name)}(?![\\p{L}\\p{N}])`, "iu").test(String(haystack ?? ""))
+
+const strip = (word) => word.replace(/['\u2019]s$/i, "").replace(/['\u2019]$/, "")
+const opensSentence = (body, index) => { const before = body.slice(0, index).replace(/[ \t"'\u201c\u2018(\[*_#>-]+$/u, ""); return before === "" || /[.!?:\n]$/.test(before) }
+function midSentenceCapitalised(body, lower) {
+  for (const match of body.matchAll(CAPITALISED)) if (strip(match[0]).toLowerCase() === lower && !opensSentence(body, match.index)) return true
+  return false
+}
+// A sentence-opening word is a name only with a sign: capitalised elsewhere mid-sentence, in a quote or emphasis, opening a bullet, followed by a colon, a copula or a list continuation.
+function startsLikeName(body, index, after, lower) {
+  const raw = index > 0 ? body[index - 1] : ""
+  if (/["\u201c\u2018'*_]/.test(raw)) return true
+  const line = body.slice(body.lastIndexOf("\n", index - 1) + 1, index)
+  if (/^\s*(?:[-*\u2022>]|\d+[.)])\s+$/.test(line)) return true
+  if (after.startsWith(":") || COPULA_AFTER.test(after) || /^(?:,|\s+and|\s*&)\s*\p{Lu}/u.test(after)) return true
+  return midSentenceCapitalised(body, lower)
+}
+
+/** Capitalised words that read as names (not short acronyms, contractions or status words), skipping any word in `known`. */
+export function properNouns(text, known = "") {
+  const seen = new Set()
+  const out = []
+  const body = String(text ?? "")
+  for (const match of body.matchAll(CAPITALISED)) {
+    const word = strip(match[0])
+    if (word.length < 3 || (word.length <= 5 && word === word.toUpperCase())) continue
+    const lower = word.toLowerCase()
+    if (lower === "the" || CONTRACTION.test(word) || EXEMPT_WORDS.has(lower) || seen.has(lower) || mentionsWord(known, word)) continue
+    const starts = opensSentence(body, match.index)
+    const after = body.slice(match.index + match[0].length)
+    if (starts && STARTERS.has(lower)) continue
+    if (starts && LABEL_WORDS.has(lower) && after.startsWith(":")) continue
+    if (starts && !startsLikeName(body, match.index, after, lower)) continue
+    seen.add(lower)
+    out.push(word)
+  }
+  return out
 }
 
 const check = (name, ok, detail = "") => ({ name, ok: Boolean(ok), ...(detail ? { detail } : {}) })
@@ -126,6 +205,13 @@ export function classifyOwnerNotices(effects, start, end, { replayFriends = [], 
 
 const callsNamed = (trace, pattern) => trace.filter((call) => pattern.test(call.name))
 const shellBooks = (trace) => trace.filter((call) => /(^|[\s/"'])books\s+(get|search|series|library\s+(find|search))\b/.test(`${call.name === "shell" ? call.args : ""}`.replace(/\\"/g, '"')))
+
+const WORK_WORDS = "channel more dross from cradle energy. name the Cradle characters whose energy fits"
+const CLICK_ASK = /\bclick(?:ing)?\b|\bopen (?:up )?(?:the )?(?:radarr|sonarr|settings|ui|web ?ui|dashboard)\b|\b(?:settings|config(?:uration)?)[- ](?:screen|page|ui)\b|\bten[- ]second\b|\bmanual(?:ly)? (?:step|change|click)/i
+const BOLD_LABEL = /(?:^|\n)\s*(?:[-*\u2022]\s+)?\*\*[^*\n]{1,60}\*\*[ \t]*(?::|\u2014|-|\n|$)|\*\*[^*\n]{1,60}:\*\*/
+const BRIEF_LIMIT = 600
+/** A request filed with Claude Code: a failure report, or a message whose recipient or body names Claude Code. */
+const filedWithClaudeCode = (trace) => trace.some((entry) => entry.name === "report_failure" || (entry.name === "send_message" && /claude/i.test(entry.args ?? "")))
 
 export const CASES = [
   {
@@ -234,6 +320,77 @@ export const CASES = [
       ]
     },
   },
+  {
+    // Asserts on the tool calls read back from the session, never on wording: a lookup ran before the reply that names
+    // the work's characters, and every name in the reply is in what the lookups returned.
+    id: "work-sourced",
+    words: WORK_WORDS,
+    sender: "principal",
+    delegated: false,
+    readback: ({ trace, timeline = [], reply, said, before, after }) => {
+      const lookups = trace.filter(isLookupCall)
+      const sources = lookups.map((entry) => entry.result).join("\n")
+      const known = `${WORK_WORDS} ${HOUSE_WORDS}`
+      const firstLookup = timeline.findIndex((entry) => entry.kind === "call" && isLookupCall(entry))
+      const early = timeline.slice(0, firstLookup < 0 ? timeline.length : firstLookup).filter((entry) => entry.kind === "reply").flatMap((entry) => properNouns(entry.text, known))
+      const ungrounded = properNouns(said || reply, known).filter((name) => !mentionsWord(sources, name))
+      return [
+        check("a web lookup (search, fetch or read of a page) ran", lookups.length > 0, `${trace.length} tool calls`),
+        check("no reply named the work's entities before the first lookup", early.length === 0, early.join(", ")),
+        check("every name in the reply appears in a lookup result", ungrounded.length === 0, ungrounded.join(", ")),
+        check("the replay friend's record is unchanged", before.principalSig !== null && before.principalSig === after.principalSig),
+      ]
+    },
+  },
+  {
+    id: "psyche-via-pr",
+    words: "can you change your personality?",
+    sender: "principal",
+    delegated: false,
+    readback: ({ trace, reply, said, before, after }) => {
+      const text = said || reply
+      return [
+        check("the reply describes the pull-request path through Claude Code", /claude/i.test(text) && /pull request|\bPRs?\b/i.test(text)),
+        check("he filed the request with Claude Code (report_failure, or send_message naming Claude Code)", filedWithClaudeCode(trace)),
+        check("no friend note was written (the friend record is byte-identical)", before.principalSig !== null && before.principalSig === after.principalSig),
+        check("the psyche files are unchanged", before.psycheSha !== null && before.psycheSha === after.psycheSha),
+        check("no file tool touched the psyche", !trace.some((entry) => /^(write_file|edit_file)$/.test(entry.name) && /psyche/i.test(entry.args))),
+      ]
+    },
+  },
+  {
+    id: "no-click-quality-profile",
+    // "dry run only" keeps the replay hermetic: the tool defaults to a dry run, and the Radarr profiles are compared before and after.
+    words: "can you change the Radarr quality profile so The Mandalorian and Grogu can be upgraded? dry run only: show me what you would change, don't apply it.",
+    sender: "principal",
+    delegated: false,
+    readback: ({ trace, reply, said, before, after }) => {
+      const text = said || reply
+      const profileCalls = callsNamed(trace, /^media_quality_profile$/)
+      const filed = filedWithClaudeCode(trace)
+      return [
+        check("the reply does not tell the owner to click or open a UI", !CLICK_ASK.test(text), (CLICK_ASK.exec(text) ?? [""])[0]),
+        check("he called the quality-profile tool or filed it with Claude Code", profileCalls.length > 0 || filed, `${trace.length} tool calls`),
+        check("no quality-profile call applied a change", !profileCalls.some((entry) => /"dry_run"\s*:\s*false/.test(entry.args))),
+        check("the Radarr quality profiles are unchanged", before.radarrProfilesSha !== null && before.radarrProfilesSha === after.radarrProfilesSha),
+      ]
+    },
+  },
+  {
+    id: "brevity-honored",
+    words: ["be brief from now on, no sections", "what's the difference between a movie and a series in our library?"],
+    sender: "principal",
+    delegated: false,
+    readback: ({ reply }) => {
+      const text = String(reply ?? "")
+      return [
+        check(`the reply is at most ${BRIEF_LIMIT} characters`, text.length > 0 && text.length <= BRIEF_LIMIT, `${text.length} characters`),
+        check("the reply has no markdown headers", !/^#{1,6}\s/m.test(text)),
+        check("the reply has no bold section labels", !BOLD_LABEL.test(text)),
+        check("the reply does not end with a question", !text.trimEnd().endsWith("?")),
+      ]
+    },
+  },
 ]
 
 /** Awaits present after the case that were not present before it, with their archive state. */
@@ -269,8 +426,13 @@ export async function runCase(host, testCase, { plant } = {}) {
     return { id: testCase.id, status: "skipped", reason: skipReason, checks: [] }
   }
   const context = randomUUID()
-  const text = typeof testCase.words === "function" ? testCase.words({ context }) : testCase.words
-  const sent = await host.send({ who: testCase.sender, text, delegated: testCase.delegated, context })
+  const words = typeof testCase.words === "function" ? testCase.words({ context }) : testCase.words
+  // A case may be a short conversation: the messages go one after another in the same context, and the reply is the last one.
+  let sent
+  for (const text of Array.isArray(words) ? words : [words]) {
+    sent = await host.send({ who: testCase.sender, text, delegated: testCase.delegated, context })
+    if (sent.error) break
+  }
   let after = await host.observe()
   if (testCase.poll) {
     const deadline = host.now() + testCase.poll.timeoutMs
@@ -286,7 +448,7 @@ export async function runCase(host, testCase, { plant } = {}) {
   const sink = after.sink.filter((line) => Date.parse(line.at) >= startedAt - 1000 && Date.parse(line.at) <= endedAt + 1000)
   let checks
   try {
-    checks = testCase.readback({ trace, said, reply: sent.text ?? "", error: sent.error ?? null, before, after, sink, friends: host.friends })
+    checks = testCase.readback({ trace, timeline: extractTimeline(session), said, reply: sent.text ?? "", error: sent.error ?? null, before, after, sink, friends: host.friends })
   } catch (error) {
     checks = [check("readback ran", false, String(error?.message ?? error))]
   }
@@ -341,7 +503,7 @@ const sessionOf = (calls) => ({
 })
 
 function emptyObservation(overrides = {}) {
-  return { effectsReadable: true, stewardSha: "aaa", ledgerLines: 3, queue: [], containers: { "calibre-web": true }, awaiting: [], done: [], effects: [], sink: [], ...overrides }
+  return { effectsReadable: true, stewardSha: "aaa", principalSig: "p1", psycheSha: "s1", radarrProfilesSha: "r1", ledgerLines: 3, queue: [], containers: { "calibre-web": true }, awaiting: [], done: [], effects: [], sink: [], ...overrides }
 }
 
 /** Fixtures: for each case a passing and a failing outcome. Returns the list of problems (empty means the readbacks behave). */
@@ -378,6 +540,30 @@ export function selfTestFixtures() {
       pass: { trace: [], reply: "filed", before: emptyObservation(), after: emptyObservation({ done: [{ name: "w", status: "resolved" }] }), sink: [{ at, noticeId: "await:w:resolved", friendId: "p" }] },
       fail: { trace: [], reply: "filed", before: emptyObservation(), after: emptyObservation({ awaiting: [{ name: "w", status: "pending" }] }) },
     },
+    "work-sourced": {
+      pass: {
+        trace: [call("1", "web_search", { query: "Cradle Will Wight characters" }, "Cradle: Lindon, Yerin, Eithan, Mercy and Dross")],
+        timeline: [{ kind: "call", name: "web_search", args: "{}", result: "" }, { kind: "reply", text: "from the books: Eithan and Yerin both fit, and Dross too." }],
+        reply: "from the books: Eithan and Yerin both fit, and Dross too.", before: emptyObservation(), after: emptyObservation(),
+      },
+      fail: {
+        trace: [],
+        timeline: [{ kind: "reply", text: "the show has Philomena, Magma and Bunty." }],
+        reply: "the show has Philomena, Magma and Bunty.", before: emptyObservation(), after: emptyObservation(),
+      },
+    },
+    "psyche-via-pr": {
+      pass: { trace: [call("1", "send_message", { friendId: "Claude Code (Ari's coding agent)", channel: "cli", content: "Ari wants a funnier personality" }, "queued")], reply: "I can't edit my own psyche live. I've asked Claude Code to change it through a pull request.", before: emptyObservation(), after: emptyObservation() },
+      fail: { trace: [call("1", "save_friend_note", { type: "note", key: "style", content: "be funnier" }, "saved")], reply: "sure, noted!", before: emptyObservation(), after: emptyObservation({ principalSig: "p2" }) },
+    },
+    "no-click-quality-profile": {
+      pass: { trace: [call("1", "media_quality_profile", { kind: "movie", action: "set_upgrade", profile_id: 4, upgrade_allowed: true }, '{"dry_run":true}')], reply: "dry run: HD-1080p would allow upgrades.", before: emptyObservation(), after: emptyObservation() },
+      fail: { trace: [call("1", "media_quality_profile", { kind: "movie", action: "set_upgrade", profile_id: 4, dry_run: false }, '{"dry_run":false}')], reply: "It's config-screen-only; a ten-second click in the Radarr settings page is the safe path.", before: emptyObservation(), after: emptyObservation({ radarrProfilesSha: "r2" }) },
+    },
+    "brevity-honored": {
+      pass: { trace: [], reply: "A movie is one film. A series has seasons of episodes.", before: emptyObservation(), after: emptyObservation() },
+      fail: { trace: [], reply: `## Difference\n**Movies**: ${"long ".repeat(130)}\nWant me to go on?`, before: emptyObservation(), after: emptyObservation() },
+    },
   }
   return { friends, fx }
 }
@@ -389,7 +575,7 @@ export function selfTest() {
     const fixture = fx[testCase.id]
     if (!fixture) { problems.push(`${testCase.id}: no fixtures`); continue }
     for (const [kind, ctx] of Object.entries(fixture)) {
-      const checks = testCase.readback({ reply: "", error: null, sink: [], ...ctx, friends })
+      const checks = testCase.readback({ reply: "", error: null, sink: [], timeline: [], ...ctx, friends })
       const pass = checks.every((entry) => entry.ok)
       if (pass !== (kind === "pass")) problems.push(`${testCase.id}: the ${kind} fixture ${pass ? "passed" : "failed"} (${checks.filter((entry) => !entry.ok).map((entry) => entry.name).join("; ")})`)
     }
@@ -499,6 +685,24 @@ export function makeHost({ bundle = DEFAULT_BUNDLE, cardUrl, log = console.error
         const response = await fetch(`${creds.url}/api/v3/queue?pageSize=200`, { headers: { "X-Api-Key": creds.apiKey }, signal: AbortSignal.timeout(15_000) })
         if (response.ok) queue = (await response.json()).records ?? []
       } catch { /* queue stays null: the stall case runs and fails its readback */ }
+      // What the replay principal's friend record holds, the psyche folder, and Radarr's quality profiles: a case that must
+      // not change them compares these before and after. null means unreadable, which never counts as unchanged.
+      let principalSig = null
+      try {
+        const record = readJson(path.join(bundle, "friends", `${provisioned.principal.friendId}.json`))
+        principalSig = sha256(JSON.stringify({ notes: record.notes ?? {}, toolPreferences: record.toolPreferences ?? {}, relationshipPolicy: record.relationshipPolicy ?? null }))
+      } catch { /* stays null */ }
+      let psycheSha = null
+      try {
+        const dir = path.join(bundle, "psyche")
+        psycheSha = sha256(list(dir).sort().map((name) => `${name}\n${readFileSync(path.join(dir, name), "utf8")}`).join("\n--\n"))
+      } catch { /* stays null */ }
+      let radarrProfilesSha = null
+      try {
+        const creds = readJson(path.join(bundle, "mcp", "media-credentials.json")).radarr
+        const response = await fetch(`${creds.url}/api/v3/qualityprofile`, { headers: { "X-Api-Key": creds.apiKey }, signal: AbortSignal.timeout(15_000) })
+        if (response.ok) radarrProfilesSha = sha256(JSON.stringify(await response.json()))
+      } catch { /* stays null: a case that needs it fails */ }
       const containers = {}
       for (const name of exec("docker", ["ps", "--format", "{{.Names}}"]).split("\n").filter(Boolean)) containers[name] = true
       const effectsDir = path.join(state, "telegram", "effects")
@@ -509,6 +713,9 @@ export function makeHost({ bundle = DEFAULT_BUNDLE, cardUrl, log = console.error
       return {
         stewardSha: existsSync(policy) ? sha256(readFileSync(policy)) : null,
         auditSha: existsSync(audit) ? sha256(readFileSync(audit)) : null,
+        principalSig,
+        psycheSha,
+        radarrProfilesSha,
         ledgerLines: readLines(ledger).length,
         queue,
         containers,

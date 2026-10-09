@@ -27,6 +27,7 @@ const REASONS = {
   readBeforeEdit: "i need to read that file first before i can edit it.",
   readBeforeOverwrite: "i need to read that file first before i can overwrite it.",
   protectedPath: "that path is protected — i can read it but not modify it.",
+  psychePath: "my psyche files ship from the repository through a pull request and the replay gate; i can read them but not change them. i file the change request with Claude Code instead.",
   destructiveCommand: "that command is too dangerous to run — it could cause irreversible damage.",
   // Trust reasons (vary by relationship)
   needsTrust: "i'd need a closer friend to vouch for you before i can do that.",
@@ -46,6 +47,14 @@ const PROTECTED_PATH_SEGMENTS = [
   "state/policy/",
 ]
 const PROTECTED_FILENAMES = ["agent.json", "tool-profiles.json"]
+
+/** The agent's psyche folder ships only from the repository (a pull request and the replay gate), so no tool writes into it. */
+function isPsychePath(filePath: string, agentRoot: string | undefined): boolean {
+  if (!agentRoot || !filePath) return false
+  const psyche = path.resolve(agentRoot, "psyche")
+  const target = path.resolve(agentRoot, filePath)
+  return target === psyche || target.startsWith(`${psyche}${path.sep}`)
+}
 
 function isProtectedPath(filePath: string): boolean {
   for (const segment of PROTECTED_PATH_SEGMENTS) {
@@ -92,6 +101,45 @@ function shellWritesToProtectedPath(command: string): boolean {
   return false
 }
 
+// --- the psyche folder in shell commands ---
+// The psyche folder is mounted read-only into the resident at the OS level (the upgrade recreates the container that way). This is the
+// defence in depth in front of that: a shell command that mentions the psyche folder at all runs only if every part of it is
+// a read-only command, because enumerating the ways to write a file (>, >>, tee, cp, mv, sed -i, node -e, python, cd then
+// redirect) is a list the model can always step around.
+const PSYCHE_READ_ONLY_COMMANDS = new Set(["cat", "ls", "head", "tail", "grep", "wc", "sha256sum", "stat", "cd", "pwd"])
+const SEGMENT_OPERATORS = new Set(["&&", "||", ";", "|"])
+
+function commandMentionsPsyche(command: string, words: readonly string[], agentRoot: string): boolean {
+  const psyche = path.resolve(agentRoot, "psyche")
+  if (command.includes(psyche) || words.some((word) => word.includes(psyche))) return true
+  if (words.some((word) => word === "psyche" || isPsychePath(word, agentRoot))) return true
+  // A relative "psyche/..." inside code or a quoted argument, when this agent has such a folder.
+  return /(?:^|[\s'"=(])psyche\//.test(command) && fs.existsSync(psyche)
+}
+
+function psycheShellWriteRefused(command: string, agentRoot: string | undefined): boolean {
+  if (!agentRoot) return false
+  const entries = parseShell(command)
+  const words = entries.filter((entry): entry is string => typeof entry === "string")
+  if (!commandMentionsPsyche(command, words, agentRoot)) return false
+  // Substitution, heredocs and any $VAR or ${VAR} expansion: the shell could build a psyche path or a command word we cannot see.
+  if (/\$[({A-Za-z_]|`|<\(|<</.test(command)) return true
+  let expectCommandWord = true
+  for (const entry of entries) {
+    if (typeof entry === "string") {
+      if (expectCommandWord && !/^\w+=/.test(entry)) {
+        if (!PSYCHE_READ_ONLY_COMMANDS.has(entry)) return true
+        expectCommandWord = false
+      }
+      continue
+    }
+    const op = "op" in entry ? entry.op : "comment"
+    if (SEGMENT_OPERATORS.has(op)) expectCommandWord = true
+    else if (op !== "glob") return true
+  }
+  return false
+}
+
 // --- structural guardrail checks (always on, all trust levels) ---
 
 function checkReadBeforeWrite(toolName: string, args: Record<string, string>, context: GuardContext): GuardResult {
@@ -120,14 +168,16 @@ function checkDestructiveShellPatterns(toolName: string, args: Record<string, st
   return allow
 }
 
-function checkProtectedPaths(toolName: string, args: Record<string, string>): GuardResult {
+function checkProtectedPaths(toolName: string, args: Record<string, string>, context: GuardContext): GuardResult {
   if (toolName === "write_file" || toolName === "edit_file") {
     const filePath = args.path || ""
+    if (isPsychePath(filePath, context.agentRoot)) return deny(REASONS.psychePath)
     if (isProtectedPath(filePath)) return deny(REASONS.protectedPath)
   }
 
   if (toolName === "shell") {
     const command = args.command || ""
+    if (psycheShellWriteRefused(command, context.agentRoot)) return deny(REASONS.psychePath)
     if (shellWritesToProtectedPath(command)) return deny(REASONS.protectedPath)
   }
 
@@ -135,7 +185,7 @@ function checkProtectedPaths(toolName: string, args: Record<string, string>): Gu
 }
 
 function checkStructuralGuardrails(toolName: string, args: Record<string, string>, context: GuardContext): GuardResult {
-  const protectedResult = checkProtectedPaths(toolName, args)
+  const protectedResult = checkProtectedPaths(toolName, args, context)
   if (!protectedResult.allowed) return protectedResult
 
   const destructiveResult = checkDestructiveShellPatterns(toolName, args)

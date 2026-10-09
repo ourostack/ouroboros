@@ -191,7 +191,7 @@ describe("Sanctuary package-managed bundle migration", () => {
     write(agentRoot, "state/sessions/owner.json", "private history\n")
     const tacit = fs.readFileSync(path.join(agentRoot, "psyche/TACIT.md"), "utf8")
     const result = migrateSanctuaryPackageManagedBundle({ packageRoot, agentRoot })
-    expect(JSON.parse(fs.readFileSync(path.join(agentRoot, "tool-profiles.json"), "utf8")).profiles["sanctuary-owner"].version).toBe(14)
+    expect(JSON.parse(fs.readFileSync(path.join(agentRoot, "tool-profiles.json"), "utf8")).profiles["sanctuary-owner"].version).toBe(15)
     expect(result.managedFilesUpdated).toBe(2)
     for (const relative of SANCTUARY_PACKAGE_MANAGED_FILES) {
       expect(fs.readFileSync(path.join(agentRoot, relative), "utf8")).toBe(fs.readFileSync(path.join(packageRoot, relative), "utf8"))
@@ -1126,4 +1126,17 @@ describe("Sanctuary package-managed bundle migration", () => {
     expect(commit).toHaveBeenCalledWith("/live")
   })
 
+  it("treats the bundle as ready in exactly the state the upgrade leaves psyche in (resident-owned, 0600 files, 0755 directories)", async () => {
+    const packageRoot = makePackageRoot()
+    const agentRoot = makeExactAgentRoot(packageRoot)
+    const psyche = path.join(agentRoot, "psyche")
+    // The state before the upgrade script puts modes back: loose modes, as after a recursive chown on the host.
+    for (const name of fs.readdirSync(psyche)) fs.chmodSync(path.join(psyche, name), 0o644)
+    fs.chmodSync(psyche, 0o700)
+    expect(inspect(packageRoot, agentRoot)).toMatchObject({ data: { ready: false } })
+    const upgrade = await import(/* @vite-ignore */ path.resolve(__dirname, "../../../../deploy/unraid/sanctuary-butler-upgrade.mjs"))
+    upgrade.restorePsycheModes(psyche)
+    expect(upgrade.psycheProblems(psyche).filter((line: string) => !line.includes("owned by uid"))).toEqual([])
+    expect(inspect(packageRoot, agentRoot)).toMatchObject({ ok: true, data: { parity: "exact", ready: true } })
+  })
 })

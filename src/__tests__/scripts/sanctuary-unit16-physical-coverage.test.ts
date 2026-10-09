@@ -122,6 +122,7 @@ function containerFixture() {
       ["/mnt/user/appdata/ouro-butler/runtime/.ouro-cli", "/home/ouro/.ouro-cli", true],
       ["/mnt/user/appdata/ouro-butler/agent/sanctuary.ouro", "/home/ouro/AgentBundles/sanctuary.ouro", true],
       ["/boot/config/custom/ouro-events/spool", "/run/ouro-events", false], ["/run/ouro-authority", "/run/ouro-authority", false],
+      ["/mnt/user/appdata/ouro-butler/agent/sanctuary.ouro/psyche", "/home/ouro/AgentBundles/sanctuary.ouro/psyche", false],
     ].map(([Source, Destination, RW]) => ({ Source, Destination, RW, Type: "bind", Mode: "", Propagation: "rprivate" })),
   }
   m.put("/proc/4242/status", "Uid:\t10001\t10001\t10001\t10001\nGid:\t10001\t10001\t10001\t10001\n")
@@ -555,10 +556,10 @@ describe("physical health probe lifecycle", () => {
 })
 
 describe("native container and root owner observations", () => {
-  it("observes one exact four-mount gateway container and all root readiness owners", async () => {
+  it("observes one exact five-mount gateway container and all root readiness owners", async () => {
     const f = containerFixture()
     const snapshot = await f.call("containerSnapshot")(f.inspection.imageId)
-    expect(snapshot).toMatchObject({ mountCount: 4, mountsExact: true, securityExact: true, readOnlyRoot: false, vaultUnlocked: true, updaterDisabled: true, autostartExact: true })
+    expect(snapshot).toMatchObject({ mountCount: 5, mountsExact: true, securityExact: true, readOnlyRoot: false, vaultUnlocked: true, updaterDisabled: true, autostartExact: true })
     expect(f.call("observeRebootPreflight()")).toMatchObject({ safe: true, mutationActive: false })
     expect(f.fetch).toHaveBeenCalledOnce()
     expect(f.m.descriptors.size).toBe(0)

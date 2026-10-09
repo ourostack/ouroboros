@@ -177,6 +177,8 @@ export interface ToolContext {
     authorizeTool(name: string, args: Record<string, string>): { allowed: true; receiptId: string; profileVersion?: number; friendId?: string; profileId?: string; requestId?: string | null } | { allowed: false; reason: string } | Promise<{ allowed: true; receiptId: string; profileVersion?: number; friendId?: string; profileId?: string; requestId?: string | null } | { allowed: false; reason: string }>;
     readonly actor?: Readonly<{ friendId: string; trustLevel: import("@ouro.bot/friends").TrustLevel; sessionEventId: string }>;
   };
+  /** Delivery checks on settle answers, opted in per agent profile (the Sanctuary tool context sets both). Absent means off. */
+  answerGates?: { sourceGrounding?: boolean; brevity?: boolean };
   /** Set only by the A2A server after it admitted a delegated principal command. */
   readonly delegatedCommand?: Readonly<import("../a2a/delegated-command").DelegatedCommandContext>;
   commerceAuthority?: {

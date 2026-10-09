@@ -3427,3 +3427,163 @@ describe("runAgent tool loop guard", () => {
     })
   })
 })
+
+describe("settle answer gates (opt-in per agent)", () => {
+  beforeEach(async () => {
+    vi.resetModules()
+    vi.mocked(fs.readFileSync).mockImplementation(defaultReadFileSync)
+    mockCreate.mockReset()
+    mockResponsesCreate.mockReset()
+    await setupMinimax()
+  })
+
+  const settleCall = (id: string, answer: string, intent = "complete") => makeStream([makeChunk(undefined, [{ index: 0, id, function: { name: "settle", arguments: JSON.stringify({ answer, intent }) } }])])
+  const INVENTED = "the show has Philomena, Magma and Bunty. same energy."
+  const GROUNDED = "the books have Lindon and Yerin. same energy."
+  const DISCLOSED = "I couldn't verify Philomena, Magma, Bunty against a source, so treat those as unconfirmed.\n\n" + INVENTED
+  const searchTool = [{ type: "function", function: { name: "web_search", description: "search", parameters: { type: "object", properties: { query: { type: "string" } } } } }]
+  const GATES = { sourceGrounding: true, brevity: true }
+  const searchCall = (id: string) => makeStream([makeChunk(undefined, [{ index: 0, id, function: { name: "web_search", arguments: JSON.stringify({ query: id }) } }])])
+  const run = async (opts: { execTool?: any; gates?: Record<string, boolean> | undefined; user?: string[]; extra?: Record<string, unknown>; context?: Record<string, unknown> } = {}) => {
+    const visible: string[] = []
+    const { runAgent } = await import("../../heart/core")
+    const messages = (opts.user ?? ["channel more dross from cradle energy"]).flatMap((text, index) => (index === 0 ? [] : [{ role: "assistant", content: "ok." }]).concat([{ role: "user", content: text }]) as any[])
+    const result = await runAgent([{ role: "user", content: opts.user?.[0] ?? "channel more dross from cradle energy" }, ...messages.slice(0)] as any[], makeCallbacks({ onTextChunk: vi.fn((text: string) => { visible.push(text) }), onClearText: vi.fn(() => { visible.length = 0 }) }), "telegram", undefined, {
+      tools: searchTool as any, execTool: opts.execTool ?? vi.fn(), toolContext: { signin: async () => undefined, ...(opts.gates ? { answerGates: opts.gates } : {}), ...(opts.context ? { context: opts.context as any } : {}) }, ...opts.extra,
+    })
+    return { result, visible }
+  }
+
+  describe("source grounding", () => {
+    it("sends the model back to look when it names an invented cast, then delivers the sourced answer", async () => {
+      mockCreate.mockReturnValueOnce(settleCall("s1", INVENTED))
+      mockCreate.mockReturnValueOnce(searchCall("ws"))
+      mockCreate.mockReturnValueOnce(settleCall("s2", GROUNDED))
+      const execTool = vi.fn(async () => "Lindon and Yerin are the leads of Cradle")
+      const { result, visible } = await run({ execTool, gates: GATES })
+      expect(result.outcome).toBe("settled")
+      expect(execTool).toHaveBeenCalledTimes(1)
+      expect(JSON.stringify(mockCreate.mock.calls[1][0].messages)).toContain("looked up nothing this turn")
+      expect(visible.join("")).toBe(GROUNDED)
+    })
+
+    it("rejects at most twice, then delivers the answer with a plain disclosure instead of the names as fact", async () => {
+      for (const id of ["a", "b", "c"]) mockCreate.mockReturnValueOnce(settleCall(id, INVENTED))
+      const { result, visible } = await run({ gates: GATES })
+      expect(result.outcome).toBe("settled")
+      expect(mockCreate).toHaveBeenCalledTimes(3)
+      expect(visible.join("")).toBe(DISCLOSED)
+    })
+
+    it("clears text that was already streamed before it adds the disclosure", async () => {
+      for (const id of ["a", "b", "c"]) mockCreate.mockReturnValueOnce(settleCall(id, INVENTED))
+      const { result, visible } = await run({ gates: GATES })
+      expect(result.outcome).toBe("settled")
+      expect(visible.join("")).toContain("I couldn't verify")
+      expect(visible.join("").match(/Philomena/g)).toHaveLength(2)
+    })
+
+    it("never spends the last provider iteration on the retry, and discloses instead", async () => {
+      const { MAX_PROVIDER_ITERATIONS } = await import("../../heart/core")
+      for (let i = 0; i < MAX_PROVIDER_ITERATIONS - 2; i++) mockCreate.mockReturnValueOnce(searchCall(`look_${i}`))
+      mockCreate.mockReturnValueOnce(settleCall("late", INVENTED))
+      const { result, visible } = await run({ execTool: vi.fn(async () => "nothing useful"), gates: GATES })
+      expect(result.outcome).toBe("settled")
+      expect(visible.at(-1)).toBe(DISCLOSED)
+    })
+
+    it("passes replies that are not about a work", async () => {
+      mockCreate.mockReturnValueOnce(settleCall("ok", "ten minutes. nothing to read."))
+      const { result, visible } = await run({ gates: GATES })
+      expect(result.outcome).toBe("settled")
+      expect(mockCreate).toHaveBeenCalledTimes(1)
+      expect(visible.join("")).toBe("ten minutes. nothing to read.")
+    })
+
+    it("does nothing for an agent that has not opted in", async () => {
+      mockCreate.mockReturnValueOnce(settleCall("plain", INVENTED))
+      const { result, visible } = await run({})
+      expect(result.outcome).toBe("settled")
+      expect(mockCreate).toHaveBeenCalledTimes(1)
+      expect(visible.join("")).toBe(INVENTED)
+    })
+
+    it("leaves a developer reply alone whether or not the agent opted in", async () => {
+      const dev = "escape the special characters; use Lodash and Vitest."
+      for (const gates of [undefined, GATES]) {
+        mockCreate.mockReset()
+        mockCreate.mockReturnValueOnce(settleCall("dev", dev))
+        const { visible } = await run({ gates, user: ["how do I escape regex input?"] })
+        expect(mockCreate).toHaveBeenCalledTimes(1)
+        expect(visible.join("")).toBe(dev)
+      }
+    })
+
+    it("leaves answers to a request-specific contract that validates its own terminal answer", async () => {
+      mockCreate.mockReturnValueOnce(settleCall("contract", INVENTED))
+      const { result, visible } = await run({ gates: GATES, extra: { requiredToolCalls: { names: [], retryMessage: "none" } } })
+      expect(result.outcome).toBe("settled")
+      expect(mockCreate).toHaveBeenCalledTimes(1)
+      expect(visible.join("")).toBe(INVENTED)
+    })
+  })
+
+  describe("brevity", () => {
+    const LONG = `## Plan\n${"this is a long section. ".repeat(40)}Want me to go on?`
+    const ask = ["be brief from now on, no sections", "when does the library close?"]
+
+    it("holds a reply to a brevity request made earlier in the conversation, then delivers the short one", async () => {
+      mockCreate.mockReturnValueOnce(settleCall("long", LONG))
+      mockCreate.mockReturnValueOnce(settleCall("short", "The library closes at nine."))
+      const { result, visible } = await run({ gates: GATES, user: ask })
+      expect(result.outcome).toBe("settled")
+      expect(JSON.stringify(mockCreate.mock.calls[1][0].messages)).toContain("the person asked you to be brief")
+      expect(visible.join("")).toBe("The library closes at nine.")
+    })
+
+    it("does nothing for an agent that has not opted in, in a group chat, or without a brevity request", async () => {
+      for (const [gates, user, context] of [[undefined, ask, undefined], [GATES, ask, { isGroupChat: true }], [GATES, ["when does the library close?"], undefined]] as const) {
+        mockCreate.mockReset()
+        mockCreate.mockReturnValueOnce(settleCall("long", LONG))
+        const { visible } = await run({ gates: gates as any, user: [...user], context: context as any })
+        expect(mockCreate).toHaveBeenCalledTimes(1)
+        expect(visible.join("")).toBe(LONG)
+      }
+    })
+
+    it("lets a blocked reply through, and keeps a long reply that asks for a confirmation", async () => {
+      mockCreate.mockReturnValueOnce(settleCall("blocked", LONG, "blocked"))
+      expect((await run({ gates: GATES, user: ask })).visible.join("")).toBe(LONG)
+      mockCreate.mockReset()
+      const confirm = `${"detail. ".repeat(100)}Should I proceed?`
+      mockCreate.mockReturnValueOnce(settleCall("confirm", confirm))
+      expect((await run({ gates: GATES, user: ask })).visible.join("")).toBe(confirm)
+    })
+
+    it("gives up after two rejections and delivers what the model settled", async () => {
+      for (const id of ["a", "b", "c"]) mockCreate.mockReturnValueOnce(settleCall(id, LONG))
+      const { result, visible } = await run({ gates: GATES, user: ask })
+      expect(result.outcome).toBe("settled")
+      expect(mockCreate).toHaveBeenCalledTimes(3)
+      expect(visible.join("")).toBe(LONG)
+    })
+
+    it("reads brevity from the person's saved communication preference", async () => {
+      mockCreate.mockReturnValueOnce(settleCall("long", "x".repeat(700)))
+      mockCreate.mockReturnValueOnce(settleCall("short", "fine."))
+      const friend = { id: "f1", name: "Ari", trustLevel: "family", relationshipPolicy: { schemaVersion: 1, version: 1, preferences: { communication: { value: "keep replies short", provenance: "stated", source: "x", version: 1 } } }, externalIds: [], tenantMemberships: [], toolPreferences: {}, notes: {}, totalTokens: 0, createdAt: "", updatedAt: "", schemaVersion: 1 }
+      const { result, visible } = await run({ gates: GATES, user: ["hello"], context: { friend, channel: {} } })
+      expect(result.outcome).toBe("settled")
+      expect(visible.join("")).toBe("fine.")
+    })
+
+    it("counts its rejections separately from source grounding", async () => {
+      mockCreate.mockReturnValueOnce(settleCall("a", INVENTED))
+      mockCreate.mockReturnValueOnce(settleCall("b", INVENTED))
+      mockCreate.mockReturnValueOnce(settleCall("c", `${INVENTED} ${"padding words here. ".repeat(40)}`))
+      mockCreate.mockReturnValueOnce(settleCall("d", "short."))
+      const { visible } = await run({ gates: GATES, user: ["be brief", "name the cradle characters"] })
+      expect(visible.join("")).toBe("short.")
+    })
+  })
+})

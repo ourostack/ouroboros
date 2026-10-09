@@ -42,7 +42,7 @@
 
 import { execFileSync, spawnSync } from "node:child_process"
 import { createHash } from "node:crypto"
-import { mkdtempSync, rmSync, writeFileSync, readFileSync, existsSync, statSync, lstatSync, chmodSync, realpathSync } from "node:fs"
+import { mkdtempSync, rmSync, writeFileSync, readFileSync, existsSync, statSync, lstatSync, chmodSync, realpathSync, readdirSync } from "node:fs"
 import { fileURLToPath } from "node:url"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
@@ -73,8 +73,8 @@ const MAINTENANCE = "/run/ouro-authority-maintenance"
 const SHUTDOWN_FLAG = "/run/ouro-authority-shutdown"
 const GATE_SCRIPT = `${ROOT}/package/deploy/unraid/sanctuary-replay-gate.mjs`
 const GATE_PROVISION = `${BUNDLE}/state/replay-client/provision.json`
-// The whole gate (every case, including the six-minute await wait) must finish well inside this; a hung gate is a failed gate.
-export const GATE_TIMEOUT_MS = 60 * 60 * 1000
+// The whole gate (every case, including the eight-minute await wait) must finish well inside this; a hung gate is a failed gate.
+export const GATE_TIMEOUT_MS = 95 * 60 * 1000
 const UPGRADE_STEPS = ["stop", "switch", "resident", "migrate", "start"]
 
 const sh = (file, args, opts = {}) => execFileSync(file, args, { encoding: "utf8", maxBuffer: 64 << 20, ...opts })
@@ -392,6 +392,11 @@ function enableResidentAutostart() {
 // verify-install and the final commit proof are all satisfied. The container is created
 // stopped; start-resident starts it. #target asserts: target image, user 10001:10001, no
 // token env, exactly one read-only /run/ouro-authority mount, no docker.sock/${ROOT} mounts.
+// The psyche folder is mounted read-only over the writable bundle mount, so its files cannot be edited and the folder cannot be
+// renamed, removed or swapped from inside the container. The files stay owned by the resident at mode 0600 because the
+// resident's boot check requires exactly that. On a normal boot the files already match the package, so the check writes
+// nothing; if they ever drift, its repair write fails with EROFS and startup fails loudly rather than silently rewriting psyche.
+export const PSYCHE_MOUNT = `${BUNDLE}/psyche:/home/ouro/AgentBundles/sanctuary.ouro/psyche:ro`
 function recreateResident(version) {
   say("recreate resident container (tokenless, gateway socket mounted)")
   disableResidentAutostart()
@@ -405,6 +410,7 @@ function recreateResident(version) {
     "-v", "/mnt/user/appdata/ouro-butler/agent/sanctuary.ouro:/home/ouro/AgentBundles/sanctuary.ouro:rw",
     "-v", "/boot/config/custom/ouro-events/spool:/run/ouro-events:ro",
     "-v", "/run/ouro-authority:/run/ouro-authority:ro",
+    "-v", PSYCHE_MOUNT,
     image(version)])
   const ref = docker(["inspect", CONTAINER, "--format", "{{.Config.Image}}"]).trim()
   if (ref !== image(version)) fail(`recreated resident is ${ref}, expected ${image(version)}`)
@@ -427,6 +433,47 @@ function restoreReplayRoot() {
   chmodSync(dir, 0o755)
   rmSync(`${dir}/window.json`, { force: true, recursive: true })
 }
+// The psyche files are package-managed: the resident's own boot check (prepareSanctuaryPackageManagedBundle) requires every one
+// to be exactly mode 0600, so they must stay owned by the resident (uid 10001) at 0600. What stops the resident editing or
+// replacing them is the read-only bind mount of psyche/ (PSYCHE_MOUNT), not file ownership. The recursive chown above already
+// handed them to 10001; this puts the modes back (directories 0755, files 0600) and is the state psycheProblems checks.
+export function restorePsycheModes(dir, { lstat = lstatSync, readdir = readdirSync, chmod = chmodSync } = {}) {
+  const walk = (current) => {
+    const stat = lstat(current)
+    if (stat.isSymbolicLink()) return
+    if (stat.isDirectory()) {
+      chmod(current, 0o755)
+      for (const name of readdir(current)) walk(`${current}/${name}`)
+    } else chmod(current, 0o600)
+  }
+  walk(dir)
+}
+function restorePsycheRoot() {
+  const dir = `${BUNDLE}/psyche`
+  if (existsSync(dir)) restorePsycheModes(dir)
+}
+
+/** What is wrong with the psyche folder as the resident's boot check needs it: files owned by the resident at exactly 0600, directories not writable by group or others, no symlinks. Empty when it is sound. */
+export function psycheProblems(dir, { lstat = lstatSync, readdir = readdirSync } = {}) {
+  const problems = []
+  const walk = (current) => {
+    const stat = lstat(current)
+    if (stat.isSymbolicLink()) { problems.push(`${current} is a symlink`); return }
+    if (stat.uid !== 10001) problems.push(`${current} is owned by uid ${stat.uid}, not the resident (10001)`)
+    if (stat.isDirectory()) {
+      if ((stat.mode & 0o022) !== 0) problems.push(`${current} is writable by group or others (mode ${(stat.mode & 0o777).toString(8)})`)
+      for (const name of readdir(current)) walk(`${current}/${name}`)
+    } else if ((stat.mode & 0o777) !== 0o600) problems.push(`${current} is mode ${(stat.mode & 0o777).toString(8)}, not 600`)
+  }
+  walk(dir)
+  return problems
+}
+/** What is wrong with the resident's psyche mount, from `docker inspect` Mounts, or null when it is mounted read-only. */
+export function psycheMountIssue(mounts) {
+  const mount = (Array.isArray(mounts) ? mounts : []).find((entry) => entry?.Destination === "/home/ouro/AgentBundles/sanctuary.ouro/psyche")
+  if (!mount) return "psyche is not mounted separately in the resident, so it could be renamed or replaced"
+  return mount.RW === false ? null : "psyche is mounted read-write in the resident"
+}
 function migrateBundle(version, rollbackImage) {
   say(`migrate agent bundle to ${version}`)
   const pkgBundle = `${ROOT}/incoming-package/deploy/unraid/sanctuary.ouro`
@@ -439,6 +486,7 @@ function migrateBundle(version, rollbackImage) {
   // migrate/commit ran as root; the resident owns its bundle as uid 10001, so restore ownership
   sh("/bin/chown", ["-R", "10001:10001", BUNDLE])
   restoreReplayRoot()
+  restorePsycheRoot()
   ok("bundle committed (ownership restored to resident)")
 }
 
@@ -1052,6 +1100,13 @@ function verify(withGate = false) {
   const auth = docker(["logs", CONTAINER, "--since", "2m"], { stdio: ["ignore","pipe","pipe"] }).split("\n").filter((l) => l.includes("401")).length
   auth === 0 ? ok("no Telegram auth failures in the last 2m") : bad(`${auth} 401s in the last 2m`)
   existsSync(POLICY) ? ok(`steward policy ${sha12(POLICY)}`) : bad("steward policy missing")
+  const psycheMount = JSON.parse(docker(["inspect", CONTAINER, "--format", "{{json .Mounts}}"]) || "[]")
+  psycheMountIssue(psycheMount) === null ? ok("psyche is mounted read-only in the resident") : bad(psycheMountIssue(psycheMount))
+  const psycheDir = `${BUNDLE}/psyche`
+  if (existsSync(psycheDir)) {
+    const psycheIssues = psycheProblems(psycheDir)
+    psycheIssues.length === 0 ? ok("psyche files are resident-owned 0600 (read-only through the mount)") : bad(`psyche files do not match what the resident boot check requires: ${psycheIssues.slice(0, 3).join("; ")}`)
+  } else bad("psyche folder missing from the bundle")
   const jf = docker(["inspect", "jellyfin", "--format", "{{.State.Status}} restarts={{.RestartCount}}"]).trim()
   ok(`jellyfin ${jf}`)
   if (withGate) {

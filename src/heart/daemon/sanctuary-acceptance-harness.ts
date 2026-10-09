@@ -39,7 +39,7 @@ type JsonObject = Record<string, unknown>
 export function exactSanctuaryContainmentProfileBoundaries(value: unknown): boolean {
   if (!value || typeof value !== "object" || Array.isArray(value)) return false
   const boundaries = value as JsonObject
-  const versions = { "sanctuary-owner": 14, "sanctuary-household": 5, "sanctuary-event": 4 }
+  const versions = { "sanctuary-owner": 15, "sanctuary-household": 5, "sanctuary-event": 4 }
   if (!isDeepStrictEqual(Object.keys(boundaries).sort(), Object.keys(versions).sort())) return false
   const packageRoot = path.resolve(__dirname, "../../../deploy/unraid/sanctuary.ouro")
   const registry = loadRelationshipCapabilityRegistry(packageRoot)
@@ -464,7 +464,7 @@ export function validateSanctuaryUnit16EvidenceAssertions(label: SanctuaryUnit16
       integer(value.auditRecordCount, `${label} auditRecordCount`, 2)
       integer(value.auditLifecyclePairCount, `${label} auditLifecyclePairCount`, 1)
       if (text(value.containerUser, `${label} containerUser`) !== "10001:10001" || text(value.liveProcessUser, `${label} liveProcessUser`) !== "10001:10001" || text(value.networkMode, `${label} networkMode`) !== "host") throw new Error(`${label} container identity or network is invalid`)
-      requiredInteger(value, "mountCount", 4, label)
+      requiredInteger(value, "mountCount", 5, label)
       requiredInteger(value, "typedWriteExecutorCount", 1, label)
       allTrue(["writeApprovalPolicyExact", "mountsExact", "securityExact", "updaterDisabled"])
       break

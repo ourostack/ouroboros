@@ -843,7 +843,8 @@ export class SanctuaryAuthorityRootLifecycle {
     this.#docker(["create", "--name", "ouro-butler", "--network", "host", "--restart", "unless-stopped", "--user", "10001:10001",
       "-l", "net.unraid.docker.managed=dockerman", "-l", `net.unraid.docker.icon=${ICON}`, "-l", "org.opencontainers.image.source=https://github.com/ourostack/ouroboros",
       "-v", `${RUNTIME}:/home/ouro/.ouro-cli:rw`, "-v", `${BUNDLE}:/home/ouro/AgentBundles/sanctuary.ouro:rw`,
-      "-v", `${EVENTS}:/run/ouro-events:ro`, "-v", `${SOCKET}:${SOCKET}:ro`, reference])
+      "-v", `${EVENTS}:/run/ouro-events:ro`, "-v", `${SOCKET}:${SOCKET}:ro`,
+      "-v", `${BUNDLE}/psyche:/home/ouro/AgentBundles/sanctuary.ouro/psyche:ro`, reference])
     const resident = this.#containers().find((container) => container.Name === "/ouro-butler")
     if (resident?.Image !== imageId || resident.State.Running) throw new Error("Sanctuary resident recreation readback failed")
   }

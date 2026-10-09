@@ -232,3 +232,82 @@ describe("checkTelegramBeforePause", () => {
     expect(check).toBeLessThan(body.indexOf("pauseSupervision()"))
   })
 })
+
+describe("the psyche folder is resident-owned 0600 and read-only through the mount", () => {
+  const node = (uid: number, mode: number, kind: "dir" | "file" | "link", children: Record<string, ReturnType<typeof node>> = {}) => ({ uid, mode, kind, children })
+  const fsFor = (tree: ReturnType<typeof node>) => {
+    const find = (p: string) => p.split("/").filter(Boolean).slice(1).reduce((cur, part) => cur.children[part]!, tree)
+    return {
+      lstat: (p: string) => { const n = find(p); return { uid: n.uid, mode: n.mode, isSymbolicLink: () => n.kind === "link", isDirectory: () => n.kind === "dir" } },
+      readdir: (p: string) => Object.keys(find(p).children),
+    }
+  }
+  const sound = () => node(10001, 0o755, "dir", { "SOUL.md": node(10001, 0o600, "file"), sub: node(10001, 0o755, "dir", { "LORE.md": node(10001, 0o600, "file") }) })
+
+  it("finds nothing wrong with a resident-owned 0755/0600 tree", () => {
+    expect(upgrade.psycheProblems("/p", fsFor(sound()))).toEqual([])
+  })
+  it("reports a root-owned file, a 0644 file, a group-writable directory and a symlink", () => {
+    const tree = sound()
+    tree.children["SOUL.md"] = node(0, 0o644, "file")
+    tree.children.sub!.mode = 0o775
+    tree.children.link = node(10001, 0o777, "link")
+    const problems = upgrade.psycheProblems("/p", fsFor(tree))
+    expect(problems).toEqual(expect.arrayContaining(["/p/SOUL.md is owned by uid 0, not the resident (10001)", "/p/SOUL.md is mode 644, not 600", "/p/sub is writable by group or others (mode 775)", "/p/link is a symlink"]))
+    expect(problems).toHaveLength(4)
+  })
+  it("uses the real filesystem by default", () => {
+    const dir = fs.mkdtempSync(path.join(require("node:os").tmpdir(), "psyche-own-"))
+    fs.writeFileSync(path.join(dir, "a.md"), "x")
+    fs.chmodSync(path.join(dir, "a.md"), 0o666)
+    expect(upgrade.psycheProblems(dir).some((line: string) => line.includes("not 600"))).toBe(true)
+    fs.rmSync(dir, { recursive: true, force: true })
+  })
+  it("is restored after the bundle is handed back to the resident, and checked by verify", () => {
+    const migrate = source.slice(source.indexOf("function migrateBundle("), source.indexOf("// Host supervision for the root-authority gateway"))
+    expect(migrate.indexOf('"-R", "10001:10001", BUNDLE')).toBeLessThan(migrate.indexOf("restorePsycheRoot()"))
+    expect(source).not.toContain('"-R", "-h", "0:0", dir')
+    const verifyBody = source.slice(source.indexOf("function verify("), source.indexOf("function fail("))
+    expect(verifyBody).toContain("psycheProblems(psycheDir)")
+    expect(verifyBody).toContain("psyche files are resident-owned 0600")
+  })
+  it("restorePsycheModes sets directories 0755 and files 0600 and leaves symlinks alone", () => {
+    const dir = fs.mkdtempSync(path.join(require("node:os").tmpdir(), "psyche-modes-"))
+    fs.mkdirSync(path.join(dir, "sub"))
+    fs.writeFileSync(path.join(dir, "sub", "a.md"), "x"); fs.chmodSync(path.join(dir, "sub", "a.md"), 0o644)
+    fs.chmodSync(path.join(dir, "sub"), 0o700)
+    fs.symlinkSync("sub/a.md", path.join(dir, "link"))
+    upgrade.restorePsycheModes(dir)
+    expect(fs.statSync(path.join(dir, "sub")).mode & 0o777).toBe(0o755)
+    expect(fs.statSync(path.join(dir, "sub", "a.md")).mode & 0o777).toBe(0o600)
+    fs.rmSync(dir, { recursive: true, force: true })
+  })
+})
+
+describe("the resident mounts psyche read-only over the writable bundle", () => {
+  const dest = "/home/ouro/AgentBundles/sanctuary.ouro/psyche"
+  it("passes the mount argument to docker create", () => {
+    expect(upgrade.PSYCHE_MOUNT).toMatch(/\/psyche:\/home\/ouro\/AgentBundles\/sanctuary\.ouro\/psyche:ro$/)
+    const recreate = source.slice(source.indexOf("function recreateResident("), source.indexOf("export function psycheProblems"))
+    expect(recreate).toContain('"-v", PSYCHE_MOUNT')
+    expect(recreate.indexOf('"-v", PSYCHE_MOUNT')).toBeLessThan(recreate.indexOf("image(version)])"))
+  })
+  it("reports nothing for a read-only psyche mount", () => {
+    expect(upgrade.psycheMountIssue([{ Destination: dest, RW: false }, { Destination: "/other", RW: true }])).toBeNull()
+  })
+  it("reports a read-write psyche mount", () => {
+    expect(upgrade.psycheMountIssue([{ Destination: dest, RW: true }])).toBe("psyche is mounted read-write in the resident")
+  })
+  it("reports a missing mount, including for malformed input", () => {
+    const missing = "psyche is not mounted separately in the resident, so it could be renamed or replaced"
+    expect(upgrade.psycheMountIssue([{ Destination: "/other", RW: false }])).toBe(missing)
+    expect(upgrade.psycheMountIssue([])).toBe(missing)
+    expect(upgrade.psycheMountIssue(null)).toBe(missing)
+    expect(upgrade.psycheMountIssue([null, undefined])).toBe(missing)
+  })
+  it("is checked by verify", () => {
+    const verifyBody = source.slice(source.indexOf("function verify("), source.indexOf("function fail("))
+    expect(verifyBody).toContain("psycheMountIssue(psycheMount)")
+    expect(verifyBody).toContain("psyche is mounted read-only in the resident")
+  })
+})

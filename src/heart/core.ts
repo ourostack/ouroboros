@@ -3,6 +3,8 @@ import {
   getContextConfig,
 } from "./config";
 import { loadAgentConfig } from "./identity";
+import { sourceGroundingFinding, withUnverifiedDisclosure, type TurnToolRecord } from "./source-grounding";
+import { briefStyleRequested, briefStyleViolation, savedCommunicationPreference } from "./reply-style";
 import { classifyApprovalForInvocation, executeTool, preflightToolCall, summarizeArgs, buildToolResultSummary, restTool, selectToolsForChannel, reduceToolSelection, ToolSelectionError, riskProfileForToolName, resolveToolDefinition } from "../repertoire/tools";
 import type { HabitSessionToolContext, ToolContext, ToolRiskProfile, ToolSelection } from "../repertoire/tools-base";
 import { digestJson, validateAdvertisedToolArguments } from "../repertoire/tool-arguments";
@@ -973,6 +975,12 @@ function historicalFailedEffectsForExactRepeatedRequest(messages: OpenAI.ChatCom
   return [...failedEffects.values()]
 }
 
+const ANSWER_GATE_MAX_REJECTIONS = 2
+
+function userTexts(messages: OpenAI.ChatCompletionMessageParam[]): string[] {
+  return messages.filter((message) => message.role === "user").map((message) => messageContentText(message.content))
+}
+
 function latestUserMessageText(messages: OpenAI.ChatCompletionMessageParam[]): string {
   for (let i = messages.length - 1; i >= 0; i -= 1) {
     const message = messages[i]
@@ -1543,6 +1551,8 @@ export async function runAgent(
   let sawQuerySession = false;
   let sawBridgeManage = false;
   let sawExternalStateQuery = false;
+  const turnToolRecords: TurnToolRecord[] = [];
+  let groundingRejections = 0; let brevityRejections = 0;
   const privateReturnHeldTokens = new Set<string>();
   // Once-per-turn flag for the fresh-work rest gate. Without this, an agent
   // that called rest, was told "fresh work arrived", processed the items,
@@ -2381,7 +2391,35 @@ export async function runAgent(
             sawSettleContentMismatch = true
             emitNervesEvent({ level: "warn", component: "engine", event: "engine.settle_content_mismatch", message: "settle answer differs from the reply text written beside it; asking once for the reply as the answer", meta: { answerLength: deliveredAnswer.length, contentLength: (msg.content as string).length } })
           }
+          // Answer gates run only for agents that opt in (ToolContext.answerGates). A request-specific contract (options.requiredToolCalls)
+          // already validates its own terminal answer. Each gate has its own bounded retry, and none spends the last provider iteration.
+          const gates = options?.requiredToolCalls ? undefined : options?.toolContext?.answerGates
+          const retriesLeft = providerIterations < stepBudget - 1
+          let groundingError: string | null = null
+          let unverifiedNames: readonly string[] | null = null
+          const grounding = gates?.sourceGrounding ? sourceGroundingFinding({ answer: deliveredAnswer, userText: userTexts(messages).join("\n"), tools: turnToolRecords }) : null
+          if (grounding) {
+            if (groundingRejections < ANSWER_GATE_MAX_REJECTIONS && retriesLeft) {
+              groundingRejections += 1
+              groundingError = grounding.message
+              emitNervesEvent({ level: "warn", component: "engine", event: "engine.answer_gate_rejected", message: "settle answer named things from a work that the turn did not look up; sending the model back", meta: { gate: "source_grounding", rejection: groundingRejections, cap: ANSWER_GATE_MAX_REJECTIONS, lookupsRun: grounding.lookups } })
+            } else {
+              unverifiedNames = grounding.names
+              emitNervesEvent({ level: "warn", component: "engine", event: "engine.answer_gate_disclosed", message: "unsourced names survived the retries; delivering with a disclosure", meta: { gate: "source_grounding", names: grounding.names.length } })
+            }
+          }
+          let brevityError: string | null = null
+          if (!groundingError && gates?.brevity && !options?.toolContext?.context?.isGroupChat && brevityRejections < ANSWER_GATE_MAX_REJECTIONS && retriesLeft
+            && briefStyleRequested(userTexts(messages), savedCommunicationPreference(options?.toolContext?.context?.friend))) {
+            brevityError = briefStyleViolation(deliveredAnswer, intent)
+            if (brevityError) {
+              brevityRejections += 1
+              emitNervesEvent({ level: "warn", component: "engine", event: "engine.answer_gate_rejected", message: "settle answer broke the person's brevity request; sending the model back", meta: { gate: "brevity", rejection: brevityRejections, cap: ANSWER_GATE_MAX_REJECTIONS } })
+            }
+          }
+          const answerGateError = groundingError ?? brevityError
           const retryError = contentMismatch
+            ?? answerGateError
             ?? privateReturnAckLeakError(deliveredAnswer, privateReturnHeldTokens)
             ?? privateReturnMissingPonderError({
               latestUserRequest: latestUserMessageText(messages),
@@ -2403,10 +2441,12 @@ export async function runAgent(
           const validDirectReply = mustResolveBeforeHandoffActive && intent === "direct_reply" && sawSteeringFollowUp;
 
           if (retryError === null) {
+            const finalAnswer = unverifiedNames ? withUnverifiedDisclosure(deliveredAnswer, unverifiedNames) : deliveredAnswer
             try {
-              if (!result.settleStreamed) {
+              if (unverifiedNames && result.settleStreamed) callbacks.onClearText?.()
+              if (unverifiedNames || !result.settleStreamed) {
                 const acceptedOutputCallbacks = streamCallbackBuffer?.callbacks ?? callbacks
-                acceptedOutputCallbacks.onTextChunk(deliveredAnswer)
+                acceptedOutputCallbacks.onTextChunk(finalAnswer)
               }
               await streamCallbackBuffer?.flush()
             } catch (error) {
@@ -2420,7 +2460,7 @@ export async function runAgent(
             }
             callbacks.onToolEnd("settle", summarizeArgs("settle", settleArgs, toolSelection), true);
             completion = {
-              answer: deliveredAnswer,
+              answer: finalAnswer,
               intent: validDirectReply ? "direct_reply" : intent === "blocked" ? "blocked" : "complete",
             };
             // Retractable owners already hold the validated answer. Final-only
@@ -2905,6 +2945,7 @@ export async function runAgent(
             success = false;
           }
           if (invoked && requiredToolCallNames.includes(tc.name) && !options?.requiredToolCalls?.requireSuccessfulResults) dispatchedRequiredToolCalls.add(tc.name);
+          turnToolRecords.push({ name: tc.name, args, result: toolResult });
           const modelResult = rewriteToolResultForModel(tc.name, toolResult, toolFrictionLedger);
           pushGenerated({ role: "tool", tool_call_id: tc.id, content: modelResult });
           providerRuntime.appendToolOutput(tc.id, modelResult);

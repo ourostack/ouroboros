@@ -1,5 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from "vitest"
 import * as fs from "node:fs"
+import * as os from "node:os"
+import * as path from "node:path"
 
 vi.mock("node:fs", async () => {
   const actual = await vi.importActual<typeof import("node:fs")>("node:fs")
@@ -1207,5 +1209,81 @@ describe("OURO_CLI_TRUST_MANIFEST — rollback and versions", () => {
       trustLevel: "stranger",
     })
     expect(result.allowed).toBe(false)
+  })
+
+  describe("the psyche folder ships only from the repository", () => {
+    const ctx = (over: Record<string, unknown> = {}) => ({ readPaths: new Set(["/bundle/psyche/SOUL.md"]), agentRoot: "/bundle", trustLevel: "family" as const, ...over })
+    it.each(["/bundle/psyche/SOUL.md", "psyche/LORE.md", "/bundle/psyche/../psyche/TACIT.md", "/bundle/psyche"])("refuses write_file and edit_file to %s for everyone, family included", async (target) => {
+      const { guardInvocation } = await import("../../repertoire/guardrails")
+      for (const tool of ["write_file", "edit_file"]) {
+        const result = guardInvocation(tool, { path: target }, ctx({ readPaths: new Set([target]) }))
+        expect(result).toMatchObject({ allowed: false })
+        expect((result as { reason: string }).reason).toContain("pull request")
+      }
+    })
+    it("refuses shell redirects and tee into the psyche folder", async () => {
+      const { guardInvocation } = await import("../../repertoire/guardrails")
+      expect(guardInvocation("shell", { command: "echo x > /bundle/psyche/SOUL.md" }, ctx())).toMatchObject({ allowed: false })
+      expect(guardInvocation("shell", { command: "echo x | tee -a psyche/LORE.md" }, ctx())).toMatchObject({ allowed: false })
+    })
+    describe("shell commands that mention the psyche folder run only when every part is read-only", () => {
+      beforeEach(() => { vi.mocked(fs.existsSync).mockReturnValue(false) })
+      const bypasses = [
+        "echo x > /bundle/psyche/SOUL.md", "echo x >> /bundle/psyche/SOUL.md", "echo x>/bundle/psyche/SOUL.md", "cp /tmp/x /bundle/psyche/SOUL.md", "mv /tmp/x /bundle/psyche/SOUL.md",
+        "sed -i 's/a/b/' /bundle/psyche/SOUL.md", "node -e \"require('fs').writeFileSync('/bundle/psyche/SOUL.md','x')\"", "cd /bundle/psyche && echo x > SOUL.md",
+        "cd psyche && echo x > SOUL.md", "echo a > /tmp/a; echo x > /bundle/psyche/SOUL.md", "printf x | tee /bundle/psyche/SOUL.md", "echo x > \"/bundle/psyche/SOUL.md\"",
+        "python3 - <<< 'open(\"/bundle/psyche/SOUL.md\",\"w\")'", "echo x > '/bundle/psyche/SOUL.md'", "cat /bundle/psyche/SOUL.md > /tmp/x; rm /bundle/psyche/SOUL.md",
+        "echo x > /bundle/x/../psyche/SOUL.md", "ls /bundle/psyche $(cp a /bundle/psyche/SOUL.md)", "cat psyche/SOUL.md | tee psyche/SOUL.md", "python3 -c \"open('psyche/SOUL.md','w')\"",
+        "cat /bundle/psyche/SOUL.md & cp a /bundle/psyche/b", "FOO=1 cp a /bundle/psyche/b", "echo `cp a /bundle/psyche/b`", "cat /bundle/psyche/SOUL.md >/dev/null",
+        "X=/bundle/psyche/SOUL.md; cat psyche/LORE.md $X", "cat psyche/SOUL.md $TARGET", "cat psyche/SOUL.md ${TARGET}", "cat psyche/SOUL.md $_",
+      ]
+      it.each(bypasses)("refuses %s", async (command) => {
+        const { guardInvocation } = await import("../../repertoire/guardrails")
+        const root = fs.mkdtempSync(path.join(os.tmpdir(), "psyche-guard-"))
+        vi.mocked(fs.existsSync).mockReturnValue(true)
+        const swap = (text: string) => text.split("/bundle").join(root)
+        const result = guardInvocation("shell", { command: swap(command) }, ctx({ agentRoot: root, readPaths: new Set() }))
+        fs.rmSync(root, { recursive: true, force: true })
+        expect(result).toMatchObject({ allowed: false })
+        expect((result as { reason: string }).reason).toContain("pull request")
+      })
+      it.each([
+        "cat /bundle/psyche/SOUL.md", "ls -la /bundle/psyche", "head -n 5 psyche/LORE.md", "tail -f /bundle/psyche/LORE.md", "grep -rn Butler /bundle/psyche", "wc -l psyche/*.md",
+        "sha256sum /bundle/psyche/LORE.md", "stat /bundle/psyche", "cd /bundle/psyche && ls && cat LORE.md | head -3", "cat \"/bundle/psyche/SOUL.md\"", "FOO=1 cat psyche/SOUL.md; pwd",
+      ])("allows the read-only %s", async (command) => {
+        const { guardInvocation } = await import("../../repertoire/guardrails")
+        vi.mocked(fs.existsSync).mockReturnValue(true)
+        expect(guardInvocation("shell", { command }, ctx({ readPaths: new Set() }))).toEqual({ allowed: true })
+      })
+      it("leaves commands that never mention the folder, and agents with no root, alone", async () => {
+        const { guardInvocation } = await import("../../repertoire/guardrails")
+        const root = fs.mkdtempSync(path.join(os.tmpdir(), "psyche-guard-"))
+        vi.mocked(fs.existsSync).mockReturnValue(true)
+        for (const command of ["echo hello > /tmp/out.txt", "cp a b", "git commit -m 'psyche is fine'", "cp src/psyche/a.ts src/psyche/b.ts", "cp psyche-old/a b"]) {
+          expect(guardInvocation("shell", { command }, ctx({ agentRoot: root, readPaths: new Set() })), command).toEqual({ allowed: true })
+        }
+        expect(guardInvocation("shell", { command: "cp a /bundle/psyche/b" }, ctx({ agentRoot: undefined, readPaths: new Set() }))).toEqual({ allowed: true })
+        fs.rmSync(root, { recursive: true, force: true })
+      })
+      it("does not treat a relative psyche path in code as the agent's when it has no psyche folder", async () => {
+        const { guardInvocation } = await import("../../repertoire/guardrails")
+        const root = fs.mkdtempSync(path.join(os.tmpdir(), "psyche-guard-"))
+        expect(guardInvocation("shell", { command: "python3 -c \"open('psyche/x','w')\"" }, ctx({ agentRoot: root, readPaths: new Set() }))).toEqual({ allowed: true })
+        fs.rmSync(root, { recursive: true, force: true })
+      })
+      it("treats unparseable or commented commands that mention the folder as writes", async () => {
+        const { guardInvocation } = await import("../../repertoire/guardrails")
+        expect(guardInvocation("shell", { command: "cat /bundle/psyche/SOUL.md # fine" }, ctx({ readPaths: new Set() }))).toMatchObject({ allowed: false })
+      })
+    })
+    it("leaves other paths, a lookalike folder, reads, and calls with no agent root alone", async () => {
+      const { guardInvocation } = await import("../../repertoire/guardrails")
+      expect(guardInvocation("write_file", { path: "/bundle/notes/psyche.md" }, ctx())).toEqual({ allowed: true })
+      expect(guardInvocation("write_file", { path: "/bundle/psyche-old/x.md" }, ctx())).toEqual({ allowed: true })
+      expect(guardInvocation("write_file", { path: "/bundle/psyche/SOUL.md" }, ctx({ agentRoot: undefined, readPaths: new Set() }))).toEqual({ allowed: true })
+      expect(guardInvocation("write_file", { path: "" }, ctx({ readPaths: new Set() }))).toEqual({ allowed: true })
+      expect(guardInvocation("read_file", { path: "/bundle/psyche/SOUL.md" }, ctx())).toEqual({ allowed: true })
+      expect(guardInvocation("shell", { command: "cat /bundle/psyche/SOUL.md" }, ctx())).toEqual({ allowed: true })
+    })
   })
 })

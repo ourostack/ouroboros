@@ -202,7 +202,7 @@ record token-boundary`
     } finally { fs.rmSync(root, { recursive: true, force: true }) }
   }, 300_000)
 
-  it("retains authority custody across every failure in the executable activation and four-to-three rollback arm", () => {
+  it("retains authority custody across every failure in the executable activation and five-to-three rollback arm", () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "s6-runbook-rollback-"))
     const update = runbook.slice(runbook.indexOf("Update:"), runbook.indexOf("\nBackup:"))
     const start = update.indexOf('    if test "$(inspect_registry_manifest_digest "$VERSION_IMAGE")')
@@ -285,7 +285,7 @@ ${activation}`
         }
         if (fs.existsSync(path.join(state, "new-mounts"))) {
           const mounts = fs.readFileSync(path.join(state, "new-mounts"), "utf8")
-          expect(mounts.match(/--mount /gu)).toHaveLength(4)
+          expect(mounts.match(/--mount /gu)).toHaveLength(5)
           expect(mounts).toContain("src=/run/ouro-authority,dst=/run/ouro-authority,readonly")
         }
       }
@@ -364,7 +364,7 @@ sanctuary_image_mount_contract "$IMAGE"`
     expect(template).toContain("retire_sanctuary_authority_if_pending")
   })
 
-  it("executes the real create and rollback shell fixtures with four then three mounts", () => {
+  it("executes the real create and rollback shell fixtures with five then three mounts", () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "s6-runbook-mounts-"))
     try {
       const source = helper("create_sanctuary_container")
@@ -383,7 +383,7 @@ create_sanctuary_container "$OLD" old canonical-pre-gateway`
       expect(result.status, result.stderr).toBe(0)
       const calls = fs.readFileSync(log, "utf8").trim().split("\n")
       expect(calls).toHaveLength(2)
-      expect(calls.map((call) => (call.match(/--mount /gu) ?? []).length)).toEqual([4, 3])
+      expect(calls.map((call) => (call.match(/--mount /gu) ?? []).length)).toEqual([5, 3])
       expect(calls[0]).toContain("type=bind,src=/run/ouro-authority,dst=/run/ouro-authority,readonly")
       expect(calls[1]).not.toContain("/run/ouro-authority")
       for (const call of calls) expect(call).toContain("--restart unless-stopped --user 10001:10001")

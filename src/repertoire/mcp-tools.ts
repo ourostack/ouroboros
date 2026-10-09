@@ -8,6 +8,7 @@ import type { McpToolInfo } from "./mcp-client"
 import type { ToolDefinition } from "./tools-base"
 import { emitNervesEvent } from "../nerves/runtime"
 import { digestJson } from "./tool-arguments"
+import { guardMcpArgs } from "./mcp-write-guard"
 
 export class McpCallRejectedError extends Error {
   constructor(message: string) {
@@ -90,8 +91,11 @@ export function mcpToolsAsDefinitions(view: McpTurnView): ToolDefinition[] {
           meta: { server: entry.server, tool: tool.name },
         })
 
+        const guarded = guardMcpArgs({ toolName: tool.name, declaresDryRun: Object.hasOwn((tool.inputSchema?.properties ?? {}) as object, "dry_run"), args, ctx })
+        if (guarded.rejected !== undefined) throw new McpCallRejectedError(guarded.rejected)
+
         try {
-          const result = await view.manager.callTool(binding, args, { agentName: ctx.agentName, agentRoot: ctx.agentRoot })
+          const result = await view.manager.callTool(binding, guarded.args as Record<string, string>, { agentName: ctx.agentName, agentRoot: ctx.agentRoot })
           const text = result.content
             .filter((c: { type: string; text?: string }) => c.type === "text" && c.text)
             .map((c: { text: string }) => c.text)
