@@ -67,6 +67,7 @@ import { createObligation, createReturnObligation, generateObligationId, readRet
 import { createToolLoopState, detectToolLoop, hasRecordedToolCall, recordToolOutcome } from "./tool-loop";
 import { advancePonderPacket, createPonderPacket, findHarnessFrictionPacket, revisePonderPacket, type PonderPacket, type PonderPacketKind } from "../arc/packets";
 import { createToolFrictionLedger, rewriteToolResultForModel } from "./tool-friction";
+import { shieldDelegatedBanner } from "../a2a/delegated-command";
 import { getDefaultModelForProvider, getProviderModelMismatchMessage } from "./provider-models";
 import {
   readProviderCredentialRecord,
@@ -2327,7 +2328,7 @@ export async function runAgent(
             terminalSucceeded,
           )
           pushGenerated(msg)
-          pushGenerated({ role: "tool", tool_call_id: soleTerminalCall.id, content: terminalResult })
+          pushGenerated({ role: "tool", tool_call_id: soleTerminalCall.id, content: shieldDelegatedBanner(terminalResult) })
           providerRuntime.appendToolOutput(soleTerminalCall.id, terminalResult)
           callbacks.onTextChunk(terminalResult)
           completion = { answer: terminalResult, intent: terminalSucceeded ? "complete" : "blocked" }
@@ -2922,7 +2923,7 @@ export async function runAgent(
             }
 
             callbacks.onToolEnd(tc.name, argSummary, success);
-            pushGenerated({ role: "tool", tool_call_id: tc.id, content: toolResult });
+            pushGenerated({ role: "tool", tool_call_id: tc.id, content: shieldDelegatedBanner(toolResult) });
             providerRuntime.appendToolOutput(tc.id, toolResult);
             continue;
           }
@@ -2955,7 +2956,7 @@ export async function runAgent(
           }
           if (invoked && requiredToolCallNames.includes(tc.name) && !options?.requiredToolCalls?.requireSuccessfulResults) dispatchedRequiredToolCalls.add(tc.name);
           turnToolRecords.push({ name: tc.name, args, result: toolResult });
-          const modelResult = rewriteToolResultForModel(tc.name, toolResult, toolFrictionLedger);
+          const modelResult = shieldDelegatedBanner(rewriteToolResultForModel(tc.name, toolResult, toolFrictionLedger));
           pushGenerated({ role: "tool", tool_call_id: tc.id, content: modelResult });
           providerRuntime.appendToolOutput(tc.id, modelResult);
           if (!success) augmentedToolContext?.habitSession?.recordError?.(toolResult);

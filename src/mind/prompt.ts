@@ -940,9 +940,15 @@ export function delegatedAuthoritySection(): string {
 }
 
 /** The runtime's own mark that this turn is an admitted delegated command. Empty on every other turn. */
+/** A friend's display name as one short plain line: no line breaks, brackets or heading marks, so it cannot forge a section or a marker. */
+function plainDelegateName(name: string): string {
+  const flat = name.replace(/[\p{C}\u2028\u2029]+/gu, " ").replace(/[[\]#]/gu, "").replace(/\s+/gu, " ").trim()
+  return flat.length > 60 ? `${flat.slice(0, 60)}…` : flat
+}
+
 export function delegatedCommandSection(options?: BuildSystemOptions): string {
-  const delegated = options?.delegatedCommand
-  if (!delegated) return ""
+  if (!options?.delegatedCommand) return ""
+  const delegated = { ...options.delegatedCommand, delegateName: plainDelegateName(options.delegatedCommand.delegateName), principalName: plainDelegateName(options.delegatedCommand.principalName) }
   return [
     "## verified delegated command",
     `this turn is a verified delegated command: ${delegated.delegateName} relays a request for ${delegated.principalName}, the signature and the delegation grant are verified, and ${delegated.principalName} has been notified (command ${delegated.commandId}). act on the request as ${delegated.principalName}'s own request, within what they may ask.`,
