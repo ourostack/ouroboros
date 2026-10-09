@@ -5,6 +5,7 @@ import * as fs from "node:fs"
 import * as os from "node:os"
 import * as path from "node:path"
 import { afterEach, beforeEach, describe, expect, it } from "vitest"
+import { readEscalationGrants } from "../../a2a/escalation-grants"
 
 const SCRIPT = path.resolve(__dirname, "../../../deploy/unraid/sanctuary-replay-gate.mjs")
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -508,7 +509,7 @@ describe("provision and the real host", () => {
     let next = 0
     const run = (args: string[]) => {
       calls.push(args)
-      if (args[1] === "identity") return JSON.stringify({ did: `did:key:${args[3].includes("principal") ? "P" : "S"}` })
+      if (args[1] === "identity") return JSON.stringify({ did: `did:key:${args[3].includes("principal") ? "P" : args[3].includes("escalation") ? "E" : "S"}` })
       if (args[1] === "onboard") {
         const id = `friend-${++next}`
         fs.writeFileSync(path.join(bundle, "friends", `${id}.json`), JSON.stringify({ id, name: args[args.indexOf("--name") + 1], trustLevel: args[args.indexOf("--trust") + 1] }))
@@ -520,7 +521,7 @@ describe("provision and the real host", () => {
   }
   const uid = () => ({ rootUid: process.getuid!(), rootGid: process.getgid!() })
 
-  it("creates a granted principal and an ungranted stranger, and is idempotent", () => {
+  it("creates a granted principal, an ungranted stranger and an escalation peer, and is idempotent", () => {
     const { run, calls } = fakeCli()
     const out = gate.provision({ bundle, cardUrl: "http://card/x", log: () => undefined, run, ...uid() })
     expect(out.principal.friendId).toBe("friend-1")
@@ -529,11 +530,19 @@ describe("provision and the real host", () => {
     const stranger = JSON.parse(fs.readFileSync(path.join(bundle, "friends", "friend-2.json"), "utf8"))
     expect(principal.delegationGrant).toMatchObject({ scope: "principal_commands" })
     expect(stranger.delegationGrant).toBeUndefined()
-    expect(calls.filter((a) => a[1] === "onboard").map((a) => a[a.indexOf("--trust") + 1])).toEqual(["family", "friend"])
+    expect(calls.filter((a) => a[1] === "onboard").map((a) => a[a.indexOf("--trust") + 1])).toEqual(["family", "friend", "family"])
+    expect(out.escalation.friendId).toBe("friend-3")
+    const grants = JSON.parse(fs.readFileSync(path.join(bundle, "state/a2a/escalation-grants.json"), "utf8"))
+    expect(Object.keys(grants.grants)).toEqual(["friend-3"])
+    expect(grants.grants["friend-3"]).toMatchObject({ scope: "escalation", source: "replay gate provisioning (host root)", did: expect.stringMatching(/^did:/) })
+    expect(fs.statSync(path.join(bundle, "state/a2a/escalation-grants.json")).mode & 0o777).toBe(0o644)
+    expect(JSON.parse(fs.readFileSync(path.join(bundle, "friends", "friend-3.json"), "utf8")).delegationGrant).toBeUndefined()
     expect(calls.filter((a) => a[0] === "friend").every((a) => a.includes("sanctuary-agent-peer") && a.includes("active"))).toBe(true)
     expect(fs.existsSync(path.join(bundle, "state/replay/notices.ndjson"))).toBe(true)
     const registry = JSON.parse(fs.readFileSync(path.join(bundle, "state/replay/identities.json"), "utf8"))
-    expect(Object.keys(registry.friends)).toEqual(["friend-1", "friend-2"])
+    // the escalation peer is registered too, so real failure reports are never routed to it
+    expect(Object.keys(registry.friends)).toEqual(["friend-1", "friend-2", "friend-3"])
+    expect(registry.friends["friend-3"]).toMatchObject({ who: "escalation" })
     expect(fs.statSync(path.join(bundle, "state/replay/identities.json")).mode & 0o777).toBe(0o644)
     expect(fs.statSync(path.join(bundle, "state/replay/notices.ndjson")).mode & 0o777).toBe(0o600)
     expect(fs.statSync(path.join(bundle, "state/replay-client")).mode & 0o777).toBe(0o700)
@@ -547,7 +556,7 @@ describe("provision and the real host", () => {
     fs.mkdirSync(path.join(bundle, "state/replay"), { recursive: true })
     fs.writeFileSync(path.join(bundle, "state/replay/identities.json"), JSON.stringify({ friends: { "old-replay": { name: "retired" } } }))
     gate.provision({ bundle, cardUrl: "c", log: () => undefined, run: fakeCli().run, ...uid() })
-    expect(Object.keys(JSON.parse(fs.readFileSync(path.join(bundle, "state/replay/identities.json"), "utf8")).friends).sort()).toEqual(["friend-1", "friend-2", "old-replay"])
+    expect(Object.keys(JSON.parse(fs.readFileSync(path.join(bundle, "state/replay/identities.json"), "utf8")).friends).sort()).toEqual(["friend-1", "friend-2", "friend-3", "old-replay"])
   })
 
   it("forces the replay directory to 0755 even if a looser one already exists", () => {
@@ -577,8 +586,8 @@ describe("provision and the real host", () => {
   it("opens and closes the window file, observes machine state and finds sessions", async () => {
     gate.provision({ bundle, cardUrl: "http://card", log: () => undefined, run: fakeCli().run, ...uid() })
     const execCalls: string[][] = []
-    const host = gate.makeHost({ bundle, log: () => undefined, exec: (file: string, args: string[]) => { execCalls.push([file, ...args]); return args[0] === "ps" ? "ouro-butler\ncalibre-web\n" : args.includes("-e") ? JSON.stringify({ "friend-1": true, "friend-2": true }) : JSON.stringify({ text: "hello" }) } })
-    expect(host.friends).toEqual({ principal: "friend-1", stranger: "friend-2" })
+    const host = gate.makeHost({ bundle, log: () => undefined, exec: (file: string, args: string[]) => { execCalls.push([file, ...args]); return args[0] === "ps" ? "ouro-butler\ncalibre-web\n" : args.includes("-e") ? JSON.stringify({ "friend-1": true, "friend-2": true, "friend-3": true }) : JSON.stringify({ text: "hello" }) } })
+    expect(host.friends).toEqual({ principal: "friend-1", stranger: "friend-2", escalation: "friend-3" })
     const realFetch = globalThis.fetch
     let hits = 0
     globalThis.fetch = (async () => { hits += 1; return { ok: hits > 1 } }) as unknown as typeof fetch
@@ -594,7 +603,7 @@ describe("provision and the real host", () => {
     expect(probe.join(" ")).toContain("friend-1")
     expect(probe.join(" ")).toContain("friend-2")
     const window = JSON.parse(fs.readFileSync(path.join(bundle, "state/replay/window.json"), "utf8"))
-    expect(Object.keys(window.friends).sort()).toEqual(["friend-1", "friend-2"])
+    expect(Object.keys(window.friends).sort()).toEqual(["friend-1", "friend-2", "friend-3"])
     expect(Date.parse(window.friends["friend-1"].expiresAt)).toBeGreaterThan(Date.now())
     host.closeWindow()
     expect(fs.existsSync(path.join(bundle, "state/replay/window.json"))).toBe(false)
@@ -623,7 +632,7 @@ describe("provision and the real host", () => {
     const sent = execCalls.find((c) => c.includes("message"))!
     expect(sent).toEqual(expect.arrayContaining(["--to", "http://card", "--context", "c9", "--delegated", "--json", "--identity-file", "/home/ouro/AgentBundles/sanctuary.ouro/state/replay-client/stranger.json"]))
     for (const [out, expected] of [
-      [JSON.stringify({ "friend-1": true, "friend-2": false }), { ok: false, detail: "the Butler's own view of state/replay does not open the window for: friend-2 (the directory or window.json is not root-owned and read-only to the Butler)" }],
+      [JSON.stringify({ "friend-1": true, "friend-2": false, "friend-3": true }), { ok: false, detail: "the Butler's own view of state/replay does not open the window for: friend-2 (the directory or window.json is not root-owned and read-only to the Butler)" }],
       ["not json", { ok: false, detail: "the trust probe inside the container failed: Unexpected token 'o', \"not json\" is not valid JSON" }],
     ] as const) {
       const probing = gate.makeHost({ bundle, log: () => undefined, exec: () => out })
@@ -640,6 +649,95 @@ describe("provision and the real host", () => {
     expect(await host.observe()).toMatchObject({ stewardSha: null, ledgerLines: 0 })
     const failing = gate.makeHost({ bundle, log: () => undefined, exec: () => { throw Object.assign(new Error("exit 1"), { stderr: "delegated command refused: no_grant", stdout: "" }) } })
     expect((await failing.send({ who: "principal", text: "x", delegated: false, context: "c" })).error).toContain("delegated command refused: no_grant")
+  })
+})
+
+describe("escalation, outbox and the act path", () => {
+  const readEscalationGrantsForTest = (bundle: string) => readEscalationGrants(bundle)
+  const tmpBundle = () => { const dir = fs.mkdtempSync(path.join(os.tmpdir(), "replay-gate-esc-")); fs.mkdirSync(path.join(dir, "state"), { recursive: true }); return dir }
+
+  it("grants escalation once, keeps other grants, leaves the file and directory root-owned and read-only to others, and is idempotent", () => {
+    const bundle = tmpBundle()
+    const root = { rootUid: process.getuid!(), rootGid: process.getgid!() }
+    try {
+      gate.grantEscalation(bundle, "e1", "did:key:e1", new Date("2026-10-08T00:00:00.000Z"), root)
+      gate.grantEscalation(bundle, "e2", "did:key:e2", new Date("2026-10-08T01:00:00.000Z"), root)
+      fs.chmodSync(path.join(bundle, "state/a2a/escalation-grants.json"), 0o666)
+      fs.chmodSync(path.join(bundle, "state/a2a"), 0o777)
+      gate.grantEscalation(bundle, "e1", "did:key:e1", new Date("2026-10-09T00:00:00.000Z"), root)
+      expect(fs.statSync(path.join(bundle, "state/a2a")).mode & 0o777).toBe(0o755)
+      const file = path.join(bundle, "state/a2a/escalation-grants.json")
+      const grants = JSON.parse(fs.readFileSync(file, "utf8"))
+      expect(grants.schemaVersion).toBe(1)
+      expect(grants.grants.e1.grantedAt).toBe("2026-10-08T00:00:00.000Z")
+      expect(Object.keys(grants.grants)).toEqual(["e1", "e2"])
+      expect(fs.statSync(file).mode & 0o777).toBe(0o644)
+      expect(fs.statSync(file).uid).toBe(root.rootUid)
+      expect(readEscalationGrantsForTest(bundle)).toEqual(grants.grants)
+    } finally { fs.rmSync(bundle, { recursive: true, force: true }) }
+  })
+
+  it("seeds only replay peers, lists outboxes through the CLI as the chosen peer, and observes outbox ids and bodies", async () => {
+    const bundle = tmpBundle()
+    try {
+      const provision = { cardUrl: "http://card", principal: { friendId: "p", containerIdentityFile: "/id/p.json" }, stranger: { friendId: "s", containerIdentityFile: "/id/s.json" }, escalation: { friendId: "e", containerIdentityFile: "/id/e.json" } }
+      fs.mkdirSync(path.join(bundle, "state/replay-client"), { recursive: true })
+      fs.writeFileSync(path.join(bundle, "state/replay-client/provision.json"), JSON.stringify(provision))
+      const calls: string[][] = []
+      const host = gate.makeHost({ bundle, log: () => undefined, exec: (_file: string, args: string[]) => { calls.push(args); if (args[0] === "ps") return ""; if (args.includes("boom")) throw Object.assign(new Error("exit 1"), { stderr: "A2A error -32003: refused" }); return JSON.stringify({ acked: ["x"], unknown: [] }) } })
+      await expect(host.seedOutbox("real-claude-code", "x")).rejects.toThrow(/non-replay/)
+      const seeded = await host.seedOutbox("e", "ISOLATION-CANARY")
+      expect(seeded.id).toMatch(/^\d{13}-[0-9a-f]{6}$/)
+      expect(fs.statSync(path.join(bundle, "state/outbox/e")).mode & 0o777).toBe(0o700)
+      expect(await host.outbox("stranger", ["ack", "--ids", seeded.id])).toEqual({ ok: true, value: { acked: ["x"], unknown: [] } })
+      expect(calls.at(-1)).toEqual(["exec", "ouro-butler", "node", gate.CLI_ENTRY, "a2a", "outbox", "ack", "--to", "http://card", "--ids", seeded.id, "--identity-file", "/id/s.json", "--json"])
+      expect(await host.outbox("stranger", ["ack", "--ids", "boom"])).toEqual({ ok: false, error: expect.stringContaining("-32003") })
+      const observed = await host.observe()
+      expect(observed.outbox).toEqual({ e: [seeded.id] })
+      expect(observed.outboxBodies.e).toBe("ISOLATION-CANARY")
+    } finally { fs.rmSync(bundle, { recursive: true, force: true }) }
+  })
+
+  it("refuses a host provisioned before the escalation peer existed", () => {
+    const bundle = tmpBundle()
+    try {
+      fs.mkdirSync(path.join(bundle, "state/replay-client"), { recursive: true })
+      fs.writeFileSync(path.join(bundle, "state/replay-client/provision.json"), JSON.stringify({ cardUrl: "c", principal: { friendId: "p" }, stranger: { friendId: "s" } }))
+      expect(() => gate.makeHost({ bundle })).toThrow(/escalation peer is not provisioned/)
+    } finally { fs.rmSync(bundle, { recursive: true, force: true }) }
+  })
+
+  it("runs an act-only case without sending a message, and fails it when the action throws", async () => {
+    const c = gate.CASES.find((x: { id: string }) => x.id === "outbox-isolation")
+    const ok = (value: unknown) => ({ ok: true, value })
+    const sent: string[] = []
+    const host = {
+      ...fakeHost().host,
+      friends: { principal: "p", stranger: "s", escalation: "e" },
+      send: async () => { sent.push("sent"); return {} },
+      seedOutbox: async () => ({ id: "c1" }),
+      outbox: async (who: string, args: string[]) => who === "stranger" ? (args[0] === "list" ? ok({ entries: [] }) : args[0] === "ack" ? ok({ acked: [], unknown: ["c1"] }) : { ok: false, error: "refused" }) : args[0] === "list" ? ok({ entries: [{ id: "c1" }] }) : ok({ acked: ["c1"], unknown: [] }),
+    }
+    expect(await gate.runCase(host, c)).toMatchObject({ id: "outbox-isolation", status: "pass" })
+    expect(sent).toEqual([])
+    const broken = await gate.runCase({ ...host, seedOutbox: async () => { throw new Error("disk full") } }, c)
+    expect(broken.status).toBe("fail")
+    expect(JSON.stringify(broken.checks)).toContain("readback ran")
+  })
+
+  it("compares outbox snapshots per friend", () => {
+    expect(gate.newOutboxEntries({ outbox: { a: ["1"] } }, { outbox: { a: ["1", "2"], b: ["3"], c: [] } })).toEqual({ a: ["2"], b: ["3"] })
+    expect(gate.newOutboxEntries({}, {})).toEqual({})
+  })
+
+  it("flags a failure report that went to a real peer, a missing filing and an await that was cancelled", () => {
+    const byId = (id: string) => gate.CASES.find((c: { id: string }) => c.id === id)
+    const names = (checks: { ok: boolean; name: string }[]) => checks.filter((c) => !c.ok).map((c) => c.name)
+    const friends = { principal: "p", stranger: "s", escalation: "e" }
+    const empty = { awaiting: [], done: [], outbox: {}, outboxBodies: {} }
+    expect(names(byId("failure-report").readback({ trace: [], before: empty, after: empty, friends }))).toEqual(expect.arrayContaining(["the Butler filed a report with report_failure", "exactly one new report reached the replay escalation peer's outbox"]))
+    expect(names(byId("failure-report").readback({ trace: [], before: empty, after: { ...empty, outbox: { e: ["1"], real: ["2"] } }, friends }))).toContain("no other friend's outbox received anything")
+    expect(names(byId("peer-await-delivers").readback({ before: empty, after: { ...empty, done: [{ name: "w", status: "canceled", reason: "legacy" }] }, sink: [{ friendId: "p", noticeId: "x" }], friends }))).toEqual(["every new await was archived as resolved, none cancelled", "its outcome landed in the peer's own outbox", "nothing was sent toward the owner (the sink has no line for it)"])
   })
 })
 

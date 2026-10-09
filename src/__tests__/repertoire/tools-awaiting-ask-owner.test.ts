@@ -366,10 +366,32 @@ describe("resolve_await ask_owner", () => {
       expect((await askOnce("d", kimCtx)).asked).toBe(true)
     })
 
+    it("caps asks on behalf of everyone who is not the owner, across requesters, but not the owner's own", async () => {
+      const ledger = path.join(agentRoot, "awaiting", ".asks.jsonl")
+      fs.mkdirSync(path.dirname(ledger), { recursive: true })
+      const at = new Date().toISOString()
+      const lines = ["a", "b", "c", "d", "e", "f"].map((filer) => JSON.stringify({ filer, owner: false, name: filer, at }))
+      fs.writeFileSync(ledger, `${lines.join("\n")}\n`)
+      await fileAwaitDef.handler({ name: "x", condition: "c", cadence: "30m", alert: "telegram" }, kimCtx)
+      expect(parse(await resolveAwaitDef.handler({ name: "x", ...ASK }, kimCtx)).error).toMatch(/limit reached.*6 times today on behalf of other requesters/u)
+      expect(notifyOwner).not.toHaveBeenCalled()
+      expect((await askOnce("own", ownerCtx)).asked).toBe(true)
+      expect(fs.readFileSync(ledger, "utf8")).toContain('"owner":true')
+    })
+
+    it("does not count older owner asks or older entries without an owner flag against the cap", async () => {
+      const ledger = path.join(agentRoot, "awaiting", ".asks.jsonl")
+      fs.mkdirSync(path.dirname(ledger), { recursive: true })
+      const at = new Date().toISOString()
+      const lines = ["a", "b", "c", "d", "e", "f"].map((filer, index) => JSON.stringify(index % 2 ? { filer, owner: true, name: filer, at } : { filer, name: filer, at }))
+      fs.writeFileSync(ledger, `${lines.join("\n")}\n`)
+      expect((await askOnce("fresh", kimCtx)).asked).toBe(true)
+    })
+
     it("ignores unreadable ledger lines and other closures", async () => {
       await fileAwaitDef.handler({ name: "x", condition: "c", cadence: "30m", alert: "telegram" }, kimCtx)
       await resolveAwaitDef.handler({ name: "x", verdict: "yes", observation: "o" }, kimCtx)
-      fs.appendFileSync(path.join(agentRoot, "awaiting", ".asks.jsonl"), "not json\n{\"filer\":\"kim\"}\n")
+      fs.appendFileSync(path.join(agentRoot, "awaiting", ".asks.jsonl"), "not json\n{\"filer\":\"kim\"}\n{\"owner\":true,\"at\":\"2026-10-08T00:00:00.000Z\"}\n")
       expect((await askOnce("y", kimCtx)).asked).toBe(true)
     })
   })

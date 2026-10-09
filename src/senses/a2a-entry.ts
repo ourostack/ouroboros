@@ -33,6 +33,7 @@ Promise.all([
   import("../heart/runtime-credentials"),
   import("../heart/machine-identity"),
   import("@ouro.bot/friends/a2a-client"),
+  import("../a2a/escalation-wiring"),
 ])
   .then(async ([
     { startA2AServer },
@@ -40,6 +41,7 @@ Promise.all([
     { waitForRuntimeCredentialBootstrap, readMachineRuntimeCredentialConfig, refreshMachineRuntimeCredentialConfig, mergeMachineRuntimeCredentialConfig },
     { loadOrCreateMachineIdentity },
     { ready },
+    { escalationOptionsFor, sendOwnerNoticeViaTelegram },
   ]) => {
     const os = await import("node:os")
     // Wait for the daemon to deliver the machine-local runtime config (carrying the
@@ -89,6 +91,7 @@ Promise.all([
           },
         },
       } : {}),
+      ...escalationOptionsFor(agentName, (notice) => sendOwnerNoticeViaTelegram(agentName, notice)),
       ...(argValue("--host") ? { host: argValue("--host") } : {}),
       ...(Number.isInteger(port) ? { port } : {}),
       ...(argValue("--base-url") ? { baseUrl: argValue("--base-url") } : {}),

@@ -8,7 +8,7 @@ import { loadSession, postTurnTrim, deferPostTurnPersist, type UsageData } from 
 import { buildSystem, flattenSystemPrompt } from "../mind/prompt"
 import { getSharedMcpManager } from "../repertoire/mcp-manager"
 import { getToolsForChannel } from "../repertoire/tools"
-import { cancelStaleAwait, failBrokenAwait, readOwnerAskForAwait, hasActiveExternalEventAwait, inspectRelationshipFollowUp, isBrokenBindingReason } from "../repertoire/tools-awaiting"
+import { cancelStaleAwait, failBrokenAwait, readOwnerAskForAwait, hasActiveExternalEventAwait, inspectPeerAwait, inspectRelationshipFollowUp, isBrokenBindingReason } from "../repertoire/tools-awaiting"
 import { A2A_PRINCIPAL_PROFILE_ID, delegatedCommandWasNoticed } from "../a2a/delegated-command"
 import { renderRelationshipPreferences } from "../repertoire/relationship-authorization"
 import { appendRunLedgerRecordNonFatal, createRunLedgerRecord, usageMetadataFromUsageData } from "../heart/run-ledger"
@@ -169,6 +169,11 @@ function relationshipAwaitCoordinates(awaitFile: AwaitFile): RelationshipAwaitCo
       if (Buffer.byteLength(awaitFile.filed_for_friend_id) > 256 || Buffer.byteLength(awaitFile.filed_from_key) > 1_024) throw new InvalidRelationshipAwaitProvenanceError("Relationship await provenance is invalid")
       return { friendId: awaitFile.filed_for_friend_id, channel: awaitFile.filed_from, key: awaitFile.filed_from_key, requestId: null }
     }
+    if (awaitFile.filed_from === "a2a" && awaitFile.filed_for_friend_id && awaitFile.filed_from_key) {
+      // Filed in a plain (non-delegated) A2A conversation: the peer and conversation are its whole provenance.
+      if (Buffer.byteLength(awaitFile.filed_for_friend_id) > 256 || Buffer.byteLength(awaitFile.filed_from_key) > 1_024) throw new InvalidRelationshipAwaitProvenanceError("Relationship await provenance is invalid")
+      return { friendId: awaitFile.filed_for_friend_id, channel: "a2a", key: awaitFile.filed_from_key, requestId: null }
+    }
     const isSystemAwait = awaitFile.filed_for_friend_id === null
       && awaitFile.filed_from_key === null
       && (awaitFile.filed_from === null || awaitFile.filed_from === "unknown" || awaitFile.filed_from === "cli")
@@ -214,9 +219,17 @@ async function resolveRelationshipAwaitAuthority(agentRoot: string, store: FileF
   if (coordinates.channel === "external-event" && (friend.capabilityProfileId !== "sanctuary-owner" || !registry.profiles["sanctuary-event"])) {
     throw new StaleRelationshipAwaitError("admission or profile is not active")
   }
-  const subjectFriend = coordinates.channel === "a2a" ? await resolveA2APrincipal(agentRoot, store, friend, coordinates.requestId!) : friend
+  // A plain peer await carries the peer's own authority and nobody else's: no principal, no delegation grant.
+  const plainPeerAwait = coordinates.channel === "a2a" && coordinates.requestId === null
+  // A peer the operator switched to no contact at all is not ticked; every other policy is held to following up on this one internal request.
+  if (plainPeerAwait && friend.initiativePolicy === "none") throw new StaleRelationshipAwaitError("initiative policy denies contact")
+  const subjectFriend = coordinates.channel === "a2a" && !plainPeerAwait ? await resolveA2APrincipal(agentRoot, store, friend, coordinates.requestId!) : friend
   const authorization = coordinates.channel === "external-event"
     ? createRelationshipAuthorizationEvaluator({ friend, registry, profileId: "sanctuary-event", requestPhase: "follow_up" })
+    : plainPeerAwait
+      // The peer's own profile and trust, nothing wider. Following up is reading its own outbox, not contacting it, so the
+      // follow-up phase is opened with an internal request id that exists only for this await and is never shown to the peer.
+      ? createRelationshipAuthorizationEvaluator({ friend: { ...friend, initiativePolicy: "request_follow_up_only" }, registry, profileId: friend.capabilityProfileId, requestId: `peer-await:${coordinates.key}`, requestPhase: "follow_up" })
     : coordinates.channel === "a2a"
       // The follow-up carries the delegating owner's authority (as the delegated command did), but the turn profile
       // is the peer's own, which can only narrow it: never wider than a peer chat turn or the original command.
@@ -1337,6 +1350,8 @@ export async function runPrivateRuntimeTurn(options?: RunPrivateRuntimeTurnOptio
             ? parsedAwait!.wake_at && hasActiveExternalEventAwait(agentName, { recordPath: relationshipAwaitCoordinatesValue.key, awaitName: parsedAwait!.name, wakeAt: parsedAwait!.wake_at })
               ? { active: true as const }
               : { active: false as const, reason: "external event disposition is no longer active" }
+            : relationshipAwaitCoordinatesValue.channel === "a2a" && relationshipAwaitCoordinatesValue.requestId === null
+              ? inspectPeerAwait(agentRoot, { friendId: relationshipAwaitCoordinatesValue.friendId, key: relationshipAwaitCoordinatesValue.key, awaitName: parsedAwait!.name, now: now().getTime() })
             : inspectRelationshipFollowUp(agentRoot, {
               friendId: relationshipAwaitCoordinatesValue.friendId,
               channel: relationshipAwaitCoordinatesValue.channel,

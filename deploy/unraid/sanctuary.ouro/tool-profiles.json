@@ -2,7 +2,7 @@
   "version": 2,
   "profiles": {
     "sanctuary-owner": {
-      "version": 15,
+      "version": 16,
       "contextScopes": [
         "household.status",
         "household.policy",
@@ -16,6 +16,7 @@
         "query_cares",
         "care_manage",
         "await_condition",
+        "report_failure",
         "resolve_await",
         "cancel_await",
         "list_recent_attachments",
@@ -143,7 +144,7 @@
       ]
     },
     "sanctuary-agent-peer": {
-      "version": 6,
+      "version": 7,
       "toolNames": [
         "external_event_disposition",
         "query_active_work",
@@ -152,6 +153,7 @@
         "query_cares",
         "care_manage",
         "await_condition",
+        "report_failure",
         "resolve_await",
         "cancel_await",
         "list_recent_attachments",

@@ -17,6 +17,7 @@ vi.mock("../../../senses/telegram", () => ({ sendTelegramOwnerNotice: (...args: 
 import { FileFriendStore } from "@ouro.bot/friends"
 import { mockOwners } from "../../test-helpers/replay-owners"
 import { replaySinkPath, replayWindowPath } from "../../../a2a/replay-harness"
+import { FileOutboxStore } from "../../../a2a/outbox-store"
 import { createA2AAwaitOwnerDeliverer } from "../../../heart/awaiting/a2a-await-delivery"
 
 const request = { friendId: "peer", channel: "a2a", key: "conv-1", content: "release landed", requestId: "req-1", deliveryId: "await:release:resolved", intent: "generic_outreach" as const }
@@ -63,6 +64,55 @@ describe("A2A await owner delivery", () => {
     mockSendTelegramOwnerNotice.mockResolvedValue(undefined)
     await expect(createA2AAwaitOwnerDeliverer("sanctuary")(request)).resolves.toMatchObject({ status: "delivered_now" })
     expect(mockSendTelegramOwnerNotice).toHaveBeenCalledWith("sanctuary", expect.objectContaining({ noticeId: "await:release:resolved", signal: expect.any(AbortSignal) }))
+  })
+
+  describe("plain peer awaits (no request id)", () => {
+    const plainRequest = { friendId: "peer", channel: "a2a", key: "conv-1", content: "release landed", deliveryId: "await:release:resolved", intent: "generic_outreach" as const }
+
+    it("posts the outcome to the peer's own outbox and leaves the owner alone", async () => {
+      const notify = vi.fn(async () => undefined)
+      await expect(createA2AAwaitOwnerDeliverer("sanctuary", notify)(plainRequest)).resolves.toEqual({ status: "delivered_now", detail: "posted to the peer's outbox" })
+      expect(notify).not.toHaveBeenCalled()
+      expect(new FileOutboxStore(agentRoot).list("peer").entries).toMatchObject([{ kind: "await_outcome", body: "release landed", meta: { outcome: "follow_up", dedupeKey: "await:release:resolved" } }])
+      expect(new FileOutboxStore(agentRoot).list("someone-else").entries).toEqual([])
+    })
+
+    it("does not double-post when the same delivery is retried", async () => {
+      const deliver = createA2AAwaitOwnerDeliverer("sanctuary", vi.fn(async () => undefined))
+      await deliver(plainRequest)
+      await deliver(plainRequest)
+      expect(new FileOutboxStore(agentRoot).list("peer").entries).toHaveLength(1)
+    })
+
+    it("tells the peer a question is with the owner and still asks the owner, who alone can answer it", async () => {
+      const notify = vi.fn(async () => undefined)
+      await createA2AAwaitOwnerDeliverer("sanctuary", notify)({ ...plainRequest, content: "Keep waiting?", noticeKind: "asked_owner" })
+      expect(notify).toHaveBeenCalledWith({ noticeId: "await:release:resolved", text: "Keep waiting?\n\n(about the request from Claude Code)" })
+      expect(JSON.stringify(new FileOutboxStore(agentRoot).list("peer").entries)).not.toContain("Keep waiting")
+      expect(new FileOutboxStore(agentRoot).list("peer").entries[0]).toMatchObject({ body: "I've asked my owner and will let you know.", meta: { outcome: "asked_owner" } })
+    })
+
+    it("posts to the peer's outbox during a replay window too, and keeps the owner question in the sink", async () => {
+      const dir = path.dirname(replayWindowPath(agentRoot))
+      fs.mkdirSync(dir, { recursive: true })
+      fs.writeFileSync(replayWindowPath(agentRoot), JSON.stringify({ friends: { peer: { expiresAt: new Date(Date.now() + 600_000).toISOString() } } }))
+      fs.chmodSync(dir, 0o755)
+      fs.chmodSync(replayWindowPath(agentRoot), 0o644)
+      mockOwners(fs, (file) => (file.startsWith(dir) ? 0 : fs.statSync(file).uid))
+      const notify = vi.fn(async () => undefined)
+      await createA2AAwaitOwnerDeliverer("sanctuary", notify)(plainRequest)
+      await createA2AAwaitOwnerDeliverer("sanctuary", notify)({ ...plainRequest, deliveryId: "await:release:asked", noticeKind: "asked_owner" })
+      expect(notify).not.toHaveBeenCalled()
+      expect(new FileOutboxStore(agentRoot).list("peer").entries).toHaveLength(2)
+      expect(fs.readFileSync(replaySinkPath(agentRoot), "utf8")).toContain("await:release:asked")
+      vi.restoreAllMocks()
+    })
+
+    it("reports a failed outbox write as a failed delivery", async () => {
+      fs.mkdirSync(path.join(agentRoot, "state"), { recursive: true })
+      fs.writeFileSync(path.join(agentRoot, "state", "outbox"), "not a directory")
+      await expect(createA2AAwaitOwnerDeliverer("sanctuary", vi.fn(async () => undefined))(plainRequest)).resolves.toMatchObject({ status: "failed" })
+    })
   })
 
   describe("replay window", () => {

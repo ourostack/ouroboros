@@ -45,6 +45,10 @@ const PROTECTED_PATH_SEGMENTS = [
   ".ouro-cli/vault-unlock/",
   ".ouro-cli/vault-unlock-dpapi/",
   "state/policy/",
+  // What the Butler tells its escalation peers, and who may hear it: only the harness writes these, never the model.
+  "state/a2a/escalation-grants.json",
+  "state/outbox/",
+  "state/reports/",
 ]
 const PROTECTED_FILENAMES = ["agent.json", "tool-profiles.json"]
 

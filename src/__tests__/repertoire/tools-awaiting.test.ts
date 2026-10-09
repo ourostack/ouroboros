@@ -27,6 +27,7 @@ import {
   hasActiveExternalEventAwait,
   hasActiveRelationshipFollowUp,
   inspectExternalEventAwait,
+  inspectPeerAwait,
   inspectRelationshipFollowUp,
   setAwaitToolDeps,
   resetAwaitToolDeps,
@@ -634,6 +635,61 @@ describe("tools-awaiting", () => {
 
       expect(parse(await resolveAwaitDef.handler({ name: "ticked", verdict: "no", observation: "still downloading" }, tick("ticked", "request-tick") as any) as string)).toMatchObject({ verdict: "no", recorded: true })
       expect(parse(cancelAwaitDef.handler({ name: "ticked" }, tick("ticked", "request-tick") as any) as string).canceled).toBe("ticked")
+    })
+
+    describe("plain peer awaits", () => {
+      const filing = { currentSession: { friendId: "peer", channel: "a2a", key: "conv-1", sessionPath: "/tmp/session.json" }, relationshipAuthorization: { authorizedContextScopes: [], advertisedToolNames: ["await_condition"], authorizeTool: vi.fn() } }
+      const tick = (awaitName = "plain", overrides: Record<string, unknown> = {}) => ({
+        currentSession: { friendId: "self", channel: "inner", key: "dialog", sessionPath: "/tmp/inner.json" },
+        awaitTick: { awaitName, friendId: "peer", channel: "a2a", key: "conv-1", requestId: null, ...overrides },
+        relationshipAuthorization: filing.relationshipAuthorization,
+      })
+      const file = async (extra: Record<string, unknown> = {}) => {
+        await fileAwaitDef.handler({ name: "plain", condition: "ready", cadence: "5m", ...extra }, filing as any)
+        return fs.readFileSync(path.join(agentRoot, "awaiting", "plain.md"), "utf8")
+      }
+
+      it("files with the peer and conversation as provenance, no request id and no obligation", async () => {
+        const text = await file()
+        expect(text).toMatch(/filed_from: a2a/u)
+        expect(text).toMatch(/filed_for_friend_id: peer/u)
+        expect(text).toMatch(/filed_from_key: conv-1/u)
+        expect(text).not.toMatch(/obligation_id/u)
+        expect(readVerifiedPendingObligations(agentRoot)).toEqual([])
+      })
+
+      it("lets the peer's own tick record a no and resolve with a yes, delivering through the await alert", async () => {
+        await file()
+        expect(parse(await resolveAwaitDef.handler({ name: "plain", verdict: "no", observation: "not yet" }, tick() as any) as string)).toMatchObject({ verdict: "no", recorded: true })
+        expect(parse(await resolveAwaitDef.handler({ name: "plain", verdict: "yes", observation: "it landed" }, tick() as any) as string)).toMatchObject({ verdict: "yes", archived: expect.stringContaining("plain.md") })
+        expect(mockDeliverAwaitAlert).toHaveBeenCalledWith(expect.objectContaining({ awaitFile: expect.objectContaining({ filed_for_friend_id: "peer", filed_from: "a2a", request_id: null }) }))
+      })
+
+      it("refuses a chat turn, another peer's tick and an unrelated await", async () => {
+        await file()
+        await fileAwaitDef.handler({ name: "other", condition: "ready", cadence: "5m" }, filing as any)
+        const chat = { ...filing, relationshipAuthorization: { ...filing.relationshipAuthorization } }
+        expect(parse(await resolveAwaitDef.handler({ name: "plain", verdict: "yes", observation: "x" }, chat as any) as string).error).toMatch(/current relationship request/u)
+        expect(parse(await resolveAwaitDef.handler({ name: "other", verdict: "yes", observation: "x" }, tick() as any) as string).error).toMatch(/current relationship request/u)
+        expect(fs.existsSync(path.join(agentRoot, "awaiting", "plain.md"))).toBe(true)
+        expect(fs.existsSync(path.join(agentRoot, "awaiting", "other.md"))).toBe(true)
+        expect(parse(cancelAwaitDef.handler({ name: "plain" }, tick() as any) as string).error).toMatch(/current relationship request/u)
+      })
+
+      it("ends an await whose conversation no longer matches, and one that outlived its max age", async () => {
+        await file()
+        const result = parse(await resolveAwaitDef.handler({ name: "plain", verdict: "yes", observation: "x" }, tick("plain", { friendId: "intruder" }) as any) as string)
+        expect(result.error).toMatch(/current relationship request/u)
+        await file({ name: "aged", max_age: "1m" })
+        const aged = path.join(agentRoot, "awaiting", "aged.md")
+        fs.writeFileSync(aged, fs.readFileSync(aged, "utf8").replace(/created_at: .*/u, "created_at: 2020-01-01T00:00:00.000Z"))
+        const expired = parse(await resolveAwaitDef.handler({ name: "aged", verdict: "yes", observation: "x" }, tick("aged") as any) as string)
+        expect(expired.error).toMatch(/expired/u)
+      })
+
+      it("inspects a plain await directly", () => {
+        expect(() => inspectPeerAwait(agentRoot, { friendId: "peer", key: "conv-1", awaitName: "nope" })).toThrow(/could not be verified/u)
+      })
     })
 
     it("refuses a tick that carries no request for a request-bound await", async () => {

@@ -258,7 +258,7 @@ describe("tool registry contract", () => {
     expect(names).toContain("list_delegations");
     expect(names).toContain("send_result");
 
-    // Exact count: 118 tools
-    expect(names).toHaveLength(118);
+    // Exact count: 119 tools
+    expect(names).toHaveLength(119);
   });
 });

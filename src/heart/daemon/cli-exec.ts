@@ -643,6 +643,7 @@ type MissingAgentResolvableKind =
   | "a2a.card"
   | "a2a.onboard"
   | "a2a.serve"
+  | "a2a.escalation"
 
 type ResolvedAgentCommand<T extends { agent?: string }> = Omit<T, "agent"> & { agent: string }
 type MissingAgentResolvableCommand = Extract<OuroCliCommand, { kind: MissingAgentResolvableKind }>
@@ -728,6 +729,7 @@ function agentResolutionFailureMode(command: OuroCliCommand): AgentResolutionFai
     case "a2a.card":
     case "a2a.onboard":
     case "a2a.serve":
+    case "a2a.escalation":
       return "throw"
     case "provider.use":
     case "provider.check":
@@ -7141,6 +7143,26 @@ async function executeA2AClientCommand(command: A2AClientCliCommand, deps: OuroC
     deps.writeStdout(message)
     return message
   }
+  if (command.kind === "a2a.outbox") {
+    const { callOutboxMethod } = await import("../../a2a/outbox-client")
+    const call = command.action === "list" ? { method: "outbox/list" as const, params: { ...(command.since ? { since: command.since } : {}) } }
+      : command.action === "ack" ? { method: "outbox/ack" as const, params: { ids: command.ids } }
+        : await (async () => {
+          // The resolution is signed with this machine's key: the Butler tells its owner "fixed" only for a holder's signature.
+          const { signResolution } = await import("../../a2a/resolution-proof")
+          const { ready } = await import("@ouro.bot/friends/a2a-client")
+          const claim = { reportId: command.reportId!, version: command.version!, note: command.note!, resolvedAt: new Date().toISOString() }
+          return { method: "report/resolve" as const, params: { id: claim.reportId, version: claim.version, note: claim.note, resolvedAt: claim.resolvedAt, proof: signResolution({ sodium: await ready(), identity, claim }) } }
+        })()
+    const result = await callOutboxMethod({
+      cardUrl: command.to, ...call, identity,
+      /* v8 ignore next -- production CLI uses global fetch; tests inject fetch for a hermetic peer @preserve */
+      ...(deps.fetchImpl ? { fetchImpl: deps.fetchImpl } : {}),
+    })
+    const message = command.json ? JSON.stringify(result) : JSON.stringify(result, null, 2)
+    deps.writeStdout(message)
+    return message
+  }
   const { sendSealedA2AChat } = await import("../../a2a/client")
   const reply = await sendSealedA2AChat({
     cardUrl: command.to,
@@ -7173,6 +7195,36 @@ async function executeA2ACommand(command: A2ACliCommand & { agent: string }, dep
           `endpoint: ${endpoint}`,
           JSON.stringify(card, null, 2),
         ].join("\n")
+    deps.writeStdout(message)
+    return message
+  }
+
+  if (command.kind === "a2a.escalation") {
+    const { readEscalationGrants, setEscalationGrant } = await import("../../a2a/escalation-grants")
+    /* v8 ignore next -- production default bundles root; tests inject bundlesRoot @preserve */
+    const agentRoot = path.join(deps.bundlesRoot ?? getAgentBundlesRoot(), `${command.agent}.ouro`)
+    if (command.action === "list") {
+      const grants = Object.entries(readEscalationGrants(agentRoot))
+      const message = grants.length === 0 ? "no escalation grants" : grants.map(([id, grant]) => `${id}  granted ${grant.grantedAt}  ${grant.did}  ${grant.source}`).join("\n")
+      deps.writeStdout(message)
+      return message
+    }
+    const friend = await new FileFriendStore(path.join(agentRoot, "friends")).get(command.friendId!)
+    if (!friend) throw new Error(`friend not found: ${command.friendId}`)
+    const at = new Date(deps.now?.() ?? Date.now())
+    const { friendDid } = await import("../../a2a/resolution-proof")
+    const holderDid = command.action === "grant" ? friendDid(friend) : null
+    if (command.action === "grant" && !holderDid) throw new Error(`${friend.name} has no pinned DID yet; onboard it with a DID before granting escalation`)
+    const change = command.action === "grant"
+      ? setEscalationGrant(agentRoot, friend.id, { grant: true, source: command.source ?? `ouro a2a escalation grant, ${at.toISOString()}`, did: holderDid! }, at)
+      : setEscalationGrant(agentRoot, friend.id, { grant: false }, at)
+    const message = [
+      `${command.action === "grant" ? "granted" : "revoked"} escalation: ${friend.name} (${friend.id})${change.changed ? "" : " (no change)"}`,
+      ...(holderDid ? [`pinned DID: ${holderDid} (compare it with the holder's real DID)`] : []),
+      ...(change.backup ? [`backup: ${change.backup}`] : []),
+      ...(command.action === "grant" && readEscalationGrants(agentRoot)[friend.id] === undefined ? [`WARNING: the grant is written but will not be honoured: ${path.join(agentRoot, "state", "a2a")} and escalation-grants.json must be owned by root and writable by no one else. Run this command as root (docker exec as root) or chown root:root and chmod 755/644 them.`] : []),
+      ...(command.action === "grant" && (friend.trustLevel !== "family" || friend.admissionState !== "active") ? [`note: ${friend.name} only holds the grant while it is active family (now ${friend.trustLevel}, ${friend.admissionState})`] : []),
+    ].join("\n")
     deps.writeStdout(message)
     return message
   }
@@ -7226,8 +7278,10 @@ async function executeA2ACommand(command: A2ACliCommand & { agent: string }, dep
 
   /* v8 ignore start -- foreground serve intentionally waits for process signals; a2a/server has route-level coverage @preserve */
   const { startA2AServer } = await import("../../a2a/server")
+  const { escalationOptionsFor, sendOwnerNoticeViaTelegram } = await import("../../a2a/escalation-wiring")
   const handle = await startA2AServer({
     agentName: command.agent,
+    ...escalationOptionsFor(command.agent, (notice) => sendOwnerNoticeViaTelegram(command.agent, notice)),
     ...(command.host ? { host: command.host } : {}),
     ...(command.port ? { port: command.port } : {}),
     ...(command.baseUrl ? { baseUrl: command.baseUrl } : {}),
@@ -8290,7 +8344,7 @@ export async function runOuroCli(args: string[], deps: OuroCliDeps = createDefau
   }
 
   // ── a2a client commands (this machine talks to an agent as a verified friend; no agent, no daemon) ──
-  if (command.kind === "a2a.identity" || command.kind === "a2a.message") {
+  if (command.kind === "a2a.identity" || command.kind === "a2a.message" || command.kind === "a2a.outbox") {
     return executeA2AClientCommand(command, deps)
   }
 
@@ -9038,7 +9092,7 @@ export async function runOuroCli(args: string[], deps: OuroCliDeps = createDefau
     return message
   }
 
-  if (command.kind === "a2a.card" || command.kind === "a2a.onboard" || command.kind === "a2a.serve") {
+  if (command.kind === "a2a.card" || command.kind === "a2a.onboard" || command.kind === "a2a.serve" || command.kind === "a2a.escalation") {
     return executeA2ACommand(command, deps)
   }
 

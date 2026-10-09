@@ -30,6 +30,7 @@ import { tripToolDefinitions } from "./tools-trip"
 import { a2aToolDefinitions } from "./tools-a2a"
 import { commerceToolDefinitions } from "./tools-commerce"
 import { awaitingToolDefinitions } from "./tools-awaiting"
+import { reportFailureToolDefinition } from "./tools-escalation"
 import { obligationToolDefinitions } from "./tools-obligations"
 import { evolutionToolDefinitions } from "./tools-evolution"
 import { runtimeToolDefinitions } from "./tools-runtime"
@@ -303,6 +304,7 @@ export const baseToolDefinitions: ToolDefinition[] = [
   ...a2aToolDefinitions,
   ...commerceToolDefinitions,
   ...awaitingToolDefinitions,
+  reportFailureToolDefinition,
   ...obligationToolDefinitions,
   ...evolutionToolDefinitions,
   ...orientationToolDefinitions,

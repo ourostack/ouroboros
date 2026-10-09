@@ -43,7 +43,7 @@ export async function fetchA2AAgentCard(cardUrl: string, fetchImpl: typeof fetch
   return parsed
 }
 
-async function postJsonRpc(endpointUrl: string, request: A2AJsonRpcRequest, fetchImpl: typeof fetch, protocolVersion = "1.0"): Promise<A2AJsonRpcResponse> {
+export async function postJsonRpc(endpointUrl: string, request: A2AJsonRpcRequest, fetchImpl: typeof fetch, protocolVersion = "1.0"): Promise<A2AJsonRpcResponse> {
   const response = await fetchImpl(endpointUrl, {
     method: "POST",
     headers: { "content-type": "application/json", "A2A-Version": protocolVersion },

@@ -169,7 +169,7 @@ describe("replay window is not settable by any model-facing path", () => {
   it("only the notice routing files import the harness, and nothing in src writes the window file", () => {
     const sources = walk(path.join(__dirname, "..", ".."))
     const importers = sources.filter((f) => /replay-harness"/.test(fs.readFileSync(f, "utf8"))).map((f) => path.relative(path.join(__dirname, "..", ".."), f)).sort()
-    expect(importers).toEqual(["a2a/delegated-command.ts", "heart/awaiting/a2a-await-delivery.ts", "heart/steward-policy.ts", "repertoire/mcp-write-guard.ts"])
+    expect(importers).toEqual(["a2a/delegated-command.ts", "heart/awaiting/a2a-await-delivery.ts", "heart/failure-reports.ts", "heart/steward-policy.ts", "repertoire/mcp-write-guard.ts"])
     const writers = sources.filter((f) => /"window\.json"/.test(fs.readFileSync(f, "utf8"))).map((f) => path.basename(f))
     // The lifecycle only deletes a stale window file when it puts the directory back under root; it never writes one.
     expect(writers).toEqual(["replay-harness.ts", "sanctuary-authority-root-lifecycle.ts"])
