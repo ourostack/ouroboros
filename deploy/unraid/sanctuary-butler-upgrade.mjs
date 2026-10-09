@@ -177,6 +177,12 @@ function preflight(version) {
     warnings.length === 0 ? ok("no friend record relies on the old delegationGrant") : warnings.forEach((line) => console.log(`  WARNING: ${line}`))
   }
 
+  say("escalation holders the upgrade would drop")
+  {
+    const dropped = escalationGrantProblems()
+    dropped.length === 0 ? ok("every escalation holder in the bundle is already in the trusted file") : dropped.forEach((line) => bad(line))
+  }
+
   say("required programs in the target image")
   try {
     const missing = REQUIRED_PROGRAMS.filter((p) => {
@@ -449,6 +455,22 @@ export function legacyDelegationGrantWarnings(friendRecords, trustedGrants) {
   return Object.entries(friendRecords)
     .filter(([id, record]) => record?.delegationGrant && !(id in trustedGrants))
     .map(([id, record]) => `${record.name ?? id} (${id}) has a delegationGrant on its friend record that is no longer honoured; grant it with \`ouro a2a delegated-commands grant --friend ${id} --did <did:key>\` as root`)
+}
+
+/**
+ * Escalation holders the old harness honoured (the bundle's state/a2a/escalation-grants.json) that the trusted file does not list. The
+ * upgrade never copies a grant out of the bundle, so each of these loses the escalation grant until the operator re-grants it.
+ */
+export function legacyEscalationGrantProblems(legacyGrants, trustedGrants) {
+  return Object.entries(legacyGrants ?? {})
+    .filter(([id]) => !(id in (trustedGrants ?? {})))
+    .map(([id, grant]) => `escalation holder ${id} is in the bundle's state/a2a/escalation-grants.json but not in ${TRUST_HOST_DIR}/escalation-grants.json, so the upgrade would drop it; grant it as root first with \`ouro a2a escalation grant --agent sanctuary --friend ${id} --did ${typeof grant?.did === "string" ? grant.did : "<did:key>"}\` (the one-off container form is in deploy/unraid/README.txt)`)
+}
+
+/** Reads the legacy bundle file and the trusted file from the host and returns the holders the upgrade would drop. */
+function escalationGrantProblems() {
+  const read = (file) => { try { return JSON.parse(readFileSync(file, "utf8")).grants ?? {} } catch { return {} } }
+  return legacyEscalationGrantProblems(read(`${BUNDLE}/state/a2a/escalation-grants.json`), read(`${TRUST_HOST_DIR}/escalation-grants.json`))
 }
 
 function recreateResident(version) {
@@ -1176,6 +1198,8 @@ function verify(withGate = false) {
   trustMountIssue(trustMount) === null ? ok("the operator trust directory is mounted read-only in the resident") : bad(trustMountIssue(trustMount))
   const trustIssue = existsSync(TRUST_HOST_DIR) ? trustDirIssue(lstatSync(TRUST_HOST_DIR)) : `${TRUST_HOST_DIR} is missing`
   trustIssue === null ? ok("the host trust directory is root-owned and closed to group and other writes") : bad(trustIssue)
+  const droppedHolders = escalationGrantProblems()
+  droppedHolders.length === 0 ? ok("every escalation holder is in the trusted file") : droppedHolders.forEach((line) => bad(line))
   const psycheDir = `${BUNDLE}/psyche`
   if (existsSync(psycheDir)) {
     const psycheIssues = psycheProblems(psycheDir)

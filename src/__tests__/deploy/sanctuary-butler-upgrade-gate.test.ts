@@ -127,7 +127,7 @@ describe("upgrade script contract", () => {
     const order = [body.indexOf('"--hold-commit"'), body.indexOf("resumeSupervision()\n  say(\"preservation\")"), body.indexOf("completeGatedUpgrade({")]
     expect(order.every((n) => n >= 0)).toBe(true)
     expect([...order].sort((a, b) => a - b)).toEqual(order)
-    expect(body.match(/pinTemplate\(version\)/g)).toHaveLength(2)
+    expect(body.match(/pinTemplate\(version\)/g)).toHaveLength(3)
     expect(body).toContain("} else if (!gated) { pinTemplate(version); pruneButlerImages() }")
     expect(body).toContain('"upgrade-rollback"')
     expect(body).toContain("pin: () => pinTemplate(version)")
@@ -154,7 +154,10 @@ describe("upgrade script contract", () => {
     const migrate = source.slice(source.indexOf("function migrateBundle("), source.indexOf("// Host supervision for the root-authority"))
     expect(migrate).not.toContain("restoreEscalationGrantRoot")
     expect(source).not.toContain("function restoreEscalationGrantRoot")
-    expect(source).not.toContain("escalation-grants.json")
+    // The legacy bundle file is only read, by the check that stops the upgrade dropping a holder; the upgrade never changes or copies it.
+    expect(migrate).not.toContain("escalation-grants.json")
+    expect(source.match(/state\/a2a\/escalation-grants\.json/g)).toHaveLength(3)
+    expect(source).not.toMatch(/(chown|chmod|copyFile|rename)[^\n]*escalation-grants/)
   })
 })
 
@@ -232,6 +235,27 @@ describe("the operator trust directory", () => {
     ])
     expect(upgrade.legacyDelegationGrantWarnings({}, {})).toEqual([])
     expect(source.slice(source.indexOf("function preflight("), source.indexOf("function preflight(") + 9000)).toContain("legacyDelegationGrantWarnings(")
+  })
+})
+
+describe("escalation holders the upgrade would drop", () => {
+  it("names each legacy holder missing from the trusted file with the exact grant command", () => {
+    const legacy = { claude: { did: "did:key:z6MkClaude" }, other: { did: "did:key:z6MkOther" }, odd: {} }
+    const problems = upgrade.legacyEscalationGrantProblems(legacy, { other: {} })
+    expect(problems).toHaveLength(2)
+    expect(problems[0]).toContain("ouro a2a escalation grant --agent sanctuary --friend claude --did did:key:z6MkClaude")
+    expect(problems[0]).toContain("/mnt/user/appdata/ouro-butler/trust/sanctuary/escalation-grants.json")
+    expect(problems[1]).toContain("--friend odd --did <did:key>")
+    expect(upgrade.legacyEscalationGrantProblems(legacy, { claude: {}, other: {}, odd: {} })).toEqual([])
+    expect(upgrade.legacyEscalationGrantProblems(undefined, undefined)).toEqual([])
+    expect(upgrade.legacyEscalationGrantProblems({ x: { did: "did:key:x" } }, undefined)).toHaveLength(1)
+  })
+
+  it("fails preflight and verify on a dropped holder", () => {
+    const preflight = source.slice(source.indexOf("function preflight("), source.indexOf("function preflight(") + 12000)
+    expect(preflight).toMatch(/escalationGrantProblems\(\)[\s\S]*dropped\.forEach\(\(line\) => bad\(line\)\)/)
+    const verify = source.slice(source.indexOf("function verify("), source.indexOf("function verify(") + 4000)
+    expect(verify).toMatch(/escalationGrantProblems\(\)[\s\S]*droppedHolders\.forEach\(\(line\) => bad\(line\)\)/)
   })
 })
 
