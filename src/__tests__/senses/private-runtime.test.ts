@@ -6,6 +6,8 @@ import * as os from "os"
 import * as path from "path"
 import type OpenAI from "openai"
 import { FileFriendStore, type FriendRecord } from "@ouro.bot/friends"
+import { setDelegatedCommandGrant } from "../../a2a/delegated-command-grants"
+import { operatorTrustDir } from "../../a2a/operator-trust"
 import { currentTestObservedNervesEvent } from "../helpers/current-test-nerves"
 import { cacheMachineRuntimeCredentialConfig } from "../../heart/runtime-credentials"
 import { parseHabitFile } from "../../heart/habits/habit-parser"
@@ -2629,16 +2631,19 @@ describe("private runtime", () => {
       "sanctuary-owner": { version: 3, contextScopes: ["household.status"], toolNames: ["await_condition", "resolve_await", "shell", "send_message"], effectScopes: ["telegram.owner_event"] },
       "sanctuary-agent-peer": { version: 4, contextScopes: ["household.status"], toolNames: ["await_condition", "resolve_await", "send_message"], effectScopes: [] },
     } }
-    const grant = { scope: "principal_commands" as const, grantedAt: "2026-10-02T00:00:00.000Z", source: "owner stated" }
+    const peerDid = "did:key:z6MkAwaitPeer"
     const base = { externalIds: [], tenantMemberships: [], toolPreferences: {}, notes: {}, totalTokens: 0, createdAt: "2026-08-29T00:00:00.000Z", updatedAt: "2026-08-29T00:00:00.000Z", schemaVersion: 1 as const }
     const a2aTools = ["await_condition", "resolve_await", "shell", "send_message"].map((name) => ({ type: "function", function: { name, description: name, parameters: {} } }))
 
-    async function setup(options: { peer?: Record<string, unknown>; owner?: boolean | "second"; provenance?: string; obligation?: boolean; notice?: boolean | "other-friend" | "unreadable" } = {}) {
+    async function setup(options: { peer?: Record<string, unknown>; grant?: boolean | "other-did"; owner?: boolean | "second"; provenance?: string; obligation?: boolean; notice?: boolean | "other-friend" | "unreadable" } = {}) {
       fs.writeFileSync(path.join(agentRoot, "tool-profiles.json"), JSON.stringify(profiles))
+      // The trust directory is per agent name, and every test here shares one: start from no grants.
+      fs.rmSync(operatorTrustDir(agentRoot), { recursive: true, force: true })
       const store = new FileFriendStore(path.join(agentRoot, "friends"))
       if (options.owner !== false) await store.put("owner", { id: "owner", name: "Ari", trustLevel: "family", admissionState: "active", initiativePolicy: "proactive", capabilityProfileId: "sanctuary-owner", ...base })
       if (options.owner === "second") await store.put("owner-2", { id: "owner-2", name: "Ari 2", trustLevel: "family", admissionState: "active", initiativePolicy: "proactive", capabilityProfileId: "sanctuary-owner", ...base })
-      await store.put("peer", { id: "peer", name: "Claude Code", trustLevel: "family", admissionState: "active", initiativePolicy: "reactive_only", capabilityProfileId: "sanctuary-agent-peer", delegationGrant: grant, ...base, ...options.peer } as any)
+      await store.put("peer", { id: "peer", name: "Claude Code", trustLevel: "family", admissionState: "active", initiativePolicy: "reactive_only", capabilityProfileId: "sanctuary-agent-peer", kind: "agent", agentMeta: { bundleName: "peer", familiarity: 0, sharedMissions: [], outcomes: [], a2a: { did: peerDid, agentId: peerDid, endpointUrl: "https://peer.example/a2a" } }, ...base, ...options.peer } as any)
+      if (options.grant !== false) setDelegatedCommandGrant(agentRoot, "peer", { grant: true, did: options.grant === "other-did" ? "did:key:z6MkSomeoneElse" : peerDid, source: "test operator" })
       fs.mkdirSync(path.join(agentRoot, "awaiting"), { recursive: true })
       const obligation = options.obligation === false ? null : createObligation(agentRoot, { origin: { friendId: "peer", channel: "a2a", key: "conv-1" }, owedTo: { friendId: "peer", channel: "a2a", key: "conv-1" }, requestId: "req-1", content: "watch release" })
       if (obligation) advanceObligation(agentRoot, obligation.id, { currentSurface: { kind: "session", label: "a2a/conv-1" }, currentArtifact: "awaiting/release.md", nextAction: "watch release" })
@@ -2671,7 +2676,7 @@ describe("private runtime", () => {
 
     describe("plain peer awaits (no request id)", () => {
       const plain = "filed_from: a2a\nfiled_for_friend_id: peer\nfiled_from_key: conv-1\nrequest_id: null\n"
-      const plainSetup = (peer: Record<string, unknown> = {}) => setup({ owner: false, obligation: false, notice: false, provenance: plain, peer: { delegationGrant: undefined, ...peer } })
+      const plainSetup = (peer: Record<string, unknown> = {}) => setup({ owner: false, obligation: false, notice: false, provenance: plain, peer })
 
       it("runs the tick with the peer's own authority: no principal, no grant, no owner", async () => {
         await plainSetup()
@@ -2747,8 +2752,10 @@ describe("private runtime", () => {
     })
 
     it.each([
-      ["a peer without a delegation grant", { delegationGrant: undefined }, true, /no longer holds a delegation grant/u],
-      ["a peer that is no longer family", { trustLevel: "friend" }, true, /no longer holds a delegation grant/u],
+      ["a peer without a trusted delegation grant", { grant: false }, true, /no longer holds a delegation grant \(no_grant\)/u],
+      ["a peer whose record names a different DID than the grant pins", { grant: "other-did" }, true, /no longer holds a delegation grant \(grant_did_mismatch\)/u],
+      ["a peer whose only grant is the legacy one on its own record", { grant: false, delegationGrant: { scope: "principal_commands", grantedAt: "2026-10-02T00:00:00.000Z", source: "agent-written" } }, true, /no longer holds a delegation grant \(no_grant\)/u],
+      ["a peer that is no longer family", { trustLevel: "friend" }, true, /no longer holds a delegation grant \(not_family\)/u],
       ["a peer whose admission was revoked", { admissionState: "revoked" }, true, /admission or profile is not active/u],
       ["an agent with no resolvable owner", {}, false, /delegating owner cannot be resolved/u],
       ["an agent with two owners", {}, "second", /delegating owner cannot be resolved/u],
@@ -2756,7 +2763,8 @@ describe("private runtime", () => {
       ["an ordinary peer chat that was never a delegated command", {}, true, /was not a delegated command the owner was notified of/u, false],
       ["a delegated command noticed to a different friend", {}, true, /was not a delegated command the owner was notified of/u, "other-friend"],
     ])("ends the await visibly for %s", async (_label, peer, owner, reason, notice = true) => {
-      await setup({ peer: peer as Record<string, unknown>, owner: owner as boolean | "second", notice: notice as boolean | "other-friend" })
+      const { grant, ...record } = peer as { grant?: boolean | "other-did" } & Record<string, unknown>
+      await setup({ peer: record, ...(grant !== undefined ? { grant } : {}), owner: owner as boolean | "second", notice: notice as boolean | "other-friend" })
       await expect(run()).rejects.toThrow(/relationship await authority/iu)
       expect(mockHandleInboundTurn).not.toHaveBeenCalled()
       const archived = fs.readFileSync(path.join(agentRoot, "awaiting", ".done", "release.md"), "utf8")

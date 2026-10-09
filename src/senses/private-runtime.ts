@@ -11,6 +11,8 @@ import { getToolsForChannel } from "../repertoire/tools"
 import { SELF_FRIEND_ID } from "../repertoire/tools-base"
 import { cancelStaleAwait, failBrokenAwait, readOwnerAskForAwait, hasActiveExternalEventAwait, inspectPeerAwait, inspectRelationshipFollowUp, isBrokenBindingReason } from "../repertoire/tools-awaiting"
 import { A2A_PRINCIPAL_PROFILE_ID, delegatedCommandWasNoticed } from "../a2a/delegated-command"
+import { checkDelegatedCommandGrant } from "../a2a/delegated-command-grants"
+import { friendDid } from "../a2a/resolution-proof"
 import { renderRelationshipPreferences } from "../repertoire/relationship-authorization"
 import { appendRunLedgerRecordNonFatal, createRunLedgerRecord, usageMetadataFromUsageData } from "../heart/run-ledger"
 import { findNonCanonicalBundlePaths } from "../mind/bundle-manifest"
@@ -191,11 +193,15 @@ function relationshipAwaitCoordinates(awaitFile: AwaitFile): RelationshipAwaitCo
 
 /**
  * An A2A peer is reactive-only: it cannot be pushed to, and on its own it has no authority to be followed up with.
- * Only a peer still holding the operator-set principal-command grant keeps follow-up authority, and that authority
- * is the delegating owner's, resolved exactly as the delegated command resolved it. Revoking the grant ends it.
+ * Only a peer still holding the operator's trusted principal-command grant keeps follow-up authority (the same shared
+ * check admission used), and that authority is the delegating owner's, resolved exactly as the delegated command
+ * resolved it. Revoking the grant, or an expired one, ends it.
  */
 async function resolveA2APrincipal(agentRoot: string, store: FileFriendStore, peer: FriendRecord, requestId: string): Promise<FriendRecord> {
-  if (peer.delegationGrant?.scope !== "principal_commands" || peer.trustLevel !== "family") throw new StaleRelationshipAwaitError("A2A peer no longer holds a delegation grant")
+  // TODO(friends 0.1.0-alpha.15): the signer DID here is the one the friend record names, which the agent can write. Phase 2
+  // re-verifies the signed envelope stored with the await against the grant's pinned DID instead.
+  const granted = checkDelegatedCommandGrant(agentRoot, peer, friendDid(peer) ?? "")
+  if (!granted.ok) throw new StaleRelationshipAwaitError(`A2A peer no longer holds a delegation grant (${granted.reason})`)
   // listAll() swallows an unreadable directory or record as "no friend": only a verified complete read may end an await.
   const entries = fs.readdirSync(path.join(agentRoot, "friends")).filter((entry) => entry.endsWith(".json"))
   const friends = await store.listAll()
