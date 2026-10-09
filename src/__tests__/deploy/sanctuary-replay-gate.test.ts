@@ -739,9 +739,11 @@ describe("provision and the real host", () => {
 
   describe("the trust-directory lock (review of #1064, round 2, finding 6)", () => {
     const lockPath = () => path.join(trust, ".lock")
-    const hold = (ageMs = 0) => {
+    const deadPid = () => spawnSync(process.execPath, ["-e", ""]).pid as number
+    const body = (pid: number, host: string = os.hostname()) => `pid ${pid} host ${host} at 2026-10-09T00:00:00.000Z\n`
+    const hold = (ageMs = 0, text: string = body(deadPid())) => {
       fs.mkdirSync(trust, { recursive: true, mode: 0o755 })
-      fs.writeFileSync(lockPath(), "pid 1\n")
+      fs.writeFileSync(lockPath(), text)
       const at = new Date(Date.now() - ageMs)
       fs.utimesSync(lockPath(), at, at)
     }
@@ -771,6 +773,35 @@ describe("provision and the real host", () => {
       expect(() => grant({ lockTimeoutMs: 60, onBeforeReclaim: () => { fs.rmSync(lockPath()); fs.writeFileSync(lockPath(), "pid A\n") } })).toThrow(/another grant command is writing/)
       expect(fs.readFileSync(lockPath(), "utf8")).toBe("pid A\n")
       expect(fs.existsSync(`${lockPath()}.reclaim`)).toBe(false)
+    })
+
+    it("keeps the lock of a slow writer that is still running, and of a writer on another host until it is an hour old (review of #1064, round 3, finding 5)", () => {
+      grant()
+      hold(30 * 60_000, body(process.pid))
+      expect(() => grant({ lockTimeoutMs: 60 })).toThrow(/another grant command is writing/)
+      expect(fs.readFileSync(lockPath(), "utf8")).toBe(body(process.pid))
+      hold(30 * 60_000, body(deadPid(), "some-other-host"))
+      expect(() => grant({ lockTimeoutMs: 60 })).toThrow(/another grant command is writing/)
+      hold(2 * 60 * 60_000, body(deadPid(), "some-other-host"))
+      grant()
+      expect(fs.existsSync(lockPath())).toBe(false)
+      for (const text of ["", "garbage", "pid 1\n"]) {
+        hold(10 * 60_000, text)
+        grant()
+        expect(fs.existsSync(lockPath())).toBe(false)
+      }
+    })
+
+    it("treats a process it may not signal as running and a lock it cannot read as not its to take", () => {
+      const realKill = process.kill
+      process.kill = (() => { throw Object.assign(new Error("not yours"), { code: "EPERM" }) }) as never
+      try {
+        hold(30 * 60_000, body(4242))
+        expect(() => grant({ lockTimeoutMs: 60 })).toThrow(/another grant command is writing/)
+      } finally { process.kill = realKill }
+      hold(10 * 60_000)
+      fs.chmodSync(lockPath(), 0o000)
+      try { expect(() => grant({ lockTimeoutMs: 60 })).toThrow(/another grant command is writing/) } finally { fs.chmodSync(lockPath(), 0o644) }
     })
 
     it("waits on a reclaim file another writer holds, and clears one a dead writer left", () => {

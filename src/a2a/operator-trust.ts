@@ -1,5 +1,6 @@
 import { randomBytes } from "node:crypto"
 import * as fs from "node:fs"
+import * as os from "node:os"
 import * as path from "node:path"
 import { emitNervesEvent } from "../nerves/runtime"
 import { inspectTrustedDirectory, inspectTrustedJson, type TrustedJson } from "./trusted-files"
@@ -154,6 +155,8 @@ export function overrideDirectoryFlushForTests(hook: ((dir: string) => void) | u
 
 const LOCK_FILE = ".lock"
 const LOCK_STALE_MS = 2 * 60_000
+/** A lock written by another host or pid namespace (a different hostname in its body) cannot be checked for a live holder, so it is only taken over after this long. */
+const LOCK_FOREIGN_STALE_MS = 60 * 60_000
 let lockTimeoutMs = 5000
 let lockWaitHook: (() => void) | undefined
 let beforeReclaimHook: (() => void) | undefined
@@ -171,6 +174,34 @@ function ageMs(file: string): number {
   try { return Date.now() - fs.lstatSync(file).mtimeMs } catch { return 0 }
 }
 
+const lockBody = (): string => `pid ${process.pid} host ${os.hostname()} at ${new Date().toISOString()}\n`
+
+/** True when a process with this pid exists on this host. EPERM means it exists but is someone else's. */
+function processAlive(pid: number): boolean {
+  try {
+    process.kill(pid, 0)
+    return true
+  } catch (error) {
+    return (error as NodeJS.ErrnoException).code !== "ESRCH"
+  }
+}
+
+/**
+ * Whether `lock` was left by a writer that is gone. Age alone is not enough: a slow writer can hold the lock for longer than two
+ * minutes. So a lock older than that is stale only when the pid in its body is no longer running on this host. A body that cannot be
+ * read as `pid N host H at T` names no holder at all, and a lock from another host or pid namespace cannot be checked, so it waits
+ * out a much longer age.
+ */
+function lockIsStale(lock: string): boolean {
+  const age = ageMs(lock)
+  if (age <= LOCK_STALE_MS) return false
+  let held: RegExpExecArray | null = null
+  try { held = /^pid (\d+) host (\S+) at /.exec(fs.readFileSync(lock, "utf8")) } catch { return false }
+  if (!held) return true
+  if (held[2] !== os.hostname()) return age > LOCK_FOREIGN_STALE_MS
+  return !processAlive(Number(held[1]))
+}
+
 /**
  * Removes a lock that looked stale, but only while holding a second exclusive file (`.lock.reclaim`) and only after looking again:
  * two writers that both judged the same lock stale cannot then each delete it, which would let the second delete the fresh lock
@@ -179,13 +210,13 @@ function ageMs(file: string): number {
 function reclaimStaleLock(lock: string): void {
   const guard = `${lock}.reclaim`
   try {
-    createExclusive(guard, `pid ${process.pid} at ${new Date().toISOString()}\n`)
+    createExclusive(guard, lockBody())
   } catch {
     if (ageMs(guard) > LOCK_STALE_MS) fs.rmSync(guard, { force: true })
     return
   }
   try {
-    if (ageMs(lock) > LOCK_STALE_MS) fs.rmSync(lock, { force: true })
+    if (lockIsStale(lock)) fs.rmSync(lock, { force: true })
   } finally {
     fs.rmSync(guard, { force: true })
   }
@@ -197,8 +228,8 @@ function sleepSync(ms: number): void {
 
 /**
  * Runs a read-modify-write of the trust files under an exclusive lock file in the trust directory, so two grant commands
- * cannot both read the old file and then overwrite each other. The lock is created with O_EXCL; a lock older than two minutes
- * belongs to a writer that died and is taken over. A lock that stays held past the wait names the file to remove.
+ * cannot both read the old file and then overwrite each other. The lock is created with O_EXCL and records the writer's pid and host;
+ * a lock older than two minutes whose writer is no longer running is taken over. A lock that stays held past the wait names the file to remove.
  */
 export function withTrustedWriteLock<T>(agentRoot: string, fn: () => T): T {
   const dir = operatorTrustDir(agentRoot)
@@ -207,11 +238,11 @@ export function withTrustedWriteLock<T>(agentRoot: string, fn: () => T): T {
   const deadline = Date.now() + lockTimeoutMs
   for (;;) {
     try {
-      createExclusive(lock, `pid ${process.pid} at ${new Date().toISOString()}\n`)
+      createExclusive(lock, lockBody())
       break
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error
-      if (ageMs(lock) > LOCK_STALE_MS) { beforeReclaimHook?.(); reclaimStaleLock(lock) }
+      if (lockIsStale(lock)) { beforeReclaimHook?.(); reclaimStaleLock(lock) }
       if (Date.now() >= deadline) throw new TrustDirectoryError(`refusing to write: another grant command is writing to ${dir} (lock file ${lock}). If none is running, remove that file and retry. Nothing was written.`)
       lockWaitHook?.()
       sleepSync(25)

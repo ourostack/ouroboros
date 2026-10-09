@@ -14,6 +14,7 @@
 // replay conversation goes only to the replay escalation peer's outbox, never to a real escalation holder (Claude Code). The window file is written
 // here, as root, into a root-owned directory the Butler process cannot modify; it expires on its own.
 import { execFileSync } from "node:child_process"
+import { hostname } from "node:os"
 import { createHash, randomUUID } from "node:crypto"
 import { chmodSync, chownSync, closeSync, constants as fsConstants, existsSync, fchmodSync, fchownSync, fstatSync, lstatSync, mkdirSync, openSync, readdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs"
 import path from "node:path"
@@ -1298,15 +1299,38 @@ function friendFile(bundle, friendId) {
 }
 
 const TRUST_LOCK_STALE_MS = 2 * 60_000
+// A lock written on another host or pid namespace cannot be checked for a live holder, so it is only taken over after this long.
+const TRUST_LOCK_FOREIGN_STALE_MS = 60 * 60_000
 
 function lockAgeMs(file) {
   const stat = lstatOrNull(file)
   return stat ? Date.now() - stat.mtimeMs : 0
 }
 
+const lockBody = () => `pid ${process.pid} host ${hostname()} at ${new Date().toISOString()}\n`
+
+function processAlive(pid) {
+  try { process.kill(pid, 0); return true } catch (error) { return error.code !== "ESRCH" }
+}
+
+/**
+ * A lock older than two minutes is stale only when the pid in its body (`pid N host H at T`, the format src/a2a/operator-trust.ts also
+ * writes) is no longer running on this host: a slow writer can hold the lock longer than that. A body that names no holder is stale;
+ * a lock written on another host is stale only after an hour.
+ */
+function lockIsStale(file) {
+  const age = lockAgeMs(file)
+  if (age <= TRUST_LOCK_STALE_MS) return false
+  let held
+  try { held = /^pid (\d+) host (\S+) at /.exec(readTextNoFollow(file)) } catch { return false }
+  if (!held) return true
+  if (held[2] !== hostname()) return age > TRUST_LOCK_FOREIGN_STALE_MS
+  return !processAlive(Number(held[1]))
+}
+
 function createLockFile(file, { rootUid, rootGid }) {
   const fd = openNoFollow(file, fsConstants.O_WRONLY | fsConstants.O_CREAT | fsConstants.O_EXCL, 0o644)
-  try { ops.fchown(fd, rootUid, rootGid); fchmodSync(fd, 0o644); writeFileSync(fd, `pid ${process.pid} at ${new Date().toISOString()}\n`) } finally { closeSync(fd) }
+  try { ops.fchown(fd, rootUid, rootGid); fchmodSync(fd, 0o644); writeFileSync(fd, lockBody()) } finally { closeSync(fd) }
 }
 
 /**
@@ -1325,11 +1349,11 @@ function withTrustLock(trustDir, { rootUid = 0, rootGid = 0, lockTimeoutMs = 500
       break
     } catch (error) {
       if (error.code !== "EEXIST") throw error
-      if (lockAgeMs(lock) > TRUST_LOCK_STALE_MS) {
+      if (lockIsStale(lock)) {
         onBeforeReclaim?.()
         try {
           createLockFile(guard, { rootUid, rootGid })
-          try { if (lockAgeMs(lock) > TRUST_LOCK_STALE_MS) rmSync(lock, { force: true }) } finally { rmSync(guard, { force: true }) }
+          try { if (lockIsStale(lock)) rmSync(lock, { force: true }) } finally { rmSync(guard, { force: true }) }
         } catch (guardError) {
           if (guardError.code !== "EEXIST") throw guardError
           if (lockAgeMs(guard) > TRUST_LOCK_STALE_MS) rmSync(guard, { force: true })

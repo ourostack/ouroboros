@@ -1,3 +1,4 @@
+import { spawnSync } from "node:child_process"
 import * as fs from "node:fs"
 import * as os from "node:os"
 import * as path from "node:path"
@@ -13,6 +14,14 @@ beforeEach(() => { tmp = createTmpBundle({ agentName: `trust-${Date.now()}` }) }
 afterEach(() => { vi.unstubAllEnvs(); overrideOwnerForTests(undefined); tmp.cleanup() })
 
 const NOW = new Date("2026-10-09T00:00:00.000Z")
+
+/** A pid that belonged to a real process which has exited, so it names a writer that is gone. */
+const deadPid = (): number => {
+  const child = spawnSync(process.execPath, ["-e", ""])
+  return child.pid
+}
+const writerBody = (pid: number, host: string = os.hostname()) => `pid ${pid} host ${host} at 2026-10-09T00:00:00.000Z\n`
+const deadWriterBody = () => writerBody(deadPid())
 const anyEntry = (value: unknown): value is { ok: true } => (value as { ok?: unknown } | null)?.ok === true
 
 describe("where the trust directory is", () => {
@@ -233,7 +242,7 @@ describe("serialising writers and making renames durable (review of #1064, findi
     const dir = operatorTrustDir(tmp.agentRoot)
     fs.mkdirSync(dir, { recursive: true, mode: 0o755 })
     const lock = path.join(dir, ".lock")
-    fs.writeFileSync(lock, "pid 1\n")
+    fs.writeFileSync(lock, deadWriterBody())
     const old = new Date(Date.now() - 10 * 60_000)
     fs.utimesSync(lock, old, old)
     expect(withTrustedWriteLock(tmp.agentRoot, () => "ran")).toBe("ran")
@@ -245,11 +254,72 @@ describe("serialising writers and making renames durable (review of #1064, findi
       const dir = operatorTrustDir(tmp.agentRoot)
       fs.mkdirSync(dir, { recursive: true, mode: 0o755 })
       const lock = path.join(dir, ".lock")
-      fs.writeFileSync(lock, "pid 1\n")
+      fs.writeFileSync(lock, deadWriterBody())
       const old = new Date(Date.now() - 10 * 60_000)
       fs.utimesSync(lock, old, old)
       return { dir, lock, old }
     }
+
+    describe("age alone is not enough (review of #1064, round 3, finding 5)", () => {
+      const aged = (body: string, minutes: number) => {
+        const { dir, lock } = staleLock()
+        fs.writeFileSync(lock, body)
+        const when = new Date(Date.now() - minutes * 60_000)
+        fs.utimesSync(lock, when, when)
+        return { dir, lock }
+      }
+
+      it("leaves the lock of a slow writer that is still running, however old it is", () => {
+        const { lock } = aged(writerBody(process.pid), 30)
+        overrideLockTimeoutForTests(80)
+        try {
+          let ran = false
+          expect(() => withTrustedWriteLock(tmp.agentRoot, () => { ran = true })).toThrow(/another grant command is writing/)
+          expect(ran).toBe(false)
+          expect(fs.readFileSync(lock, "utf8")).toBe(writerBody(process.pid))
+          expect(fs.existsSync(`${lock}.reclaim`)).toBe(false)
+        } finally { overrideLockTimeoutForTests(undefined) }
+      })
+
+      it("takes over the lock of a writer whose pid is gone, and of an old lock whose body names no holder on a host", () => {
+        const dead = aged(writerBody(deadPid()), 10)
+        expect(withTrustedWriteLock(tmp.agentRoot, () => "ran")).toBe("ran")
+        expect(fs.existsSync(dead.lock)).toBe(false)
+        for (const body of ["", "garbage", "pid 1\n", "pid 12 at 2026-10-09T00:00:00.000Z\n"]) {
+          const { lock } = aged(body, 10)
+          expect(withTrustedWriteLock(tmp.agentRoot, () => "ran")).toBe("ran")
+          expect(fs.existsSync(lock)).toBe(false)
+        }
+      })
+
+      it("cannot check a lock written on another host, so it takes it over only after an hour", () => {
+        const young = aged(writerBody(deadPid(), "some-other-host"), 30)
+        overrideLockTimeoutForTests(80)
+        try { expect(() => withTrustedWriteLock(tmp.agentRoot, () => "never")).toThrow(/another grant command is writing/) } finally { overrideLockTimeoutForTests(undefined) }
+        expect(fs.existsSync(young.lock)).toBe(true)
+        const old = aged(writerBody(deadPid(), "some-other-host"), 120)
+        expect(withTrustedWriteLock(tmp.agentRoot, () => "ran")).toBe("ran")
+        expect(fs.existsSync(old.lock)).toBe(false)
+      })
+
+      it("treats a process it may not signal as running", () => {
+        const kill = vi.spyOn(process, "kill").mockImplementation(() => { throw Object.assign(new Error("not yours"), { code: "EPERM" }) })
+        try {
+          const { lock } = aged(writerBody(4242), 30)
+          overrideLockTimeoutForTests(80)
+          try { expect(() => withTrustedWriteLock(tmp.agentRoot, () => "never")).toThrow(/another grant command is writing/) } finally { overrideLockTimeoutForTests(undefined) }
+          expect(fs.existsSync(lock)).toBe(true)
+        } finally { kill.mockRestore() }
+      })
+
+      it("does not reclaim a lock it cannot read", () => {
+        const { lock } = aged(writerBody(deadPid()), 10)
+        fs.chmodSync(lock, 0o000)
+        overrideLockTimeoutForTests(80)
+        try { expect(() => withTrustedWriteLock(tmp.agentRoot, () => "never")).toThrow(/another grant command is writing/) } finally { overrideLockTimeoutForTests(undefined); fs.chmodSync(lock, 0o644) }
+        expect(fs.existsSync(lock)).toBe(true)
+      })
+    })
 
     it("two writers that both judge the lock stale cannot both take it: the second leaves the first one's fresh lock alone", () => {
       const { lock } = staleLock()
