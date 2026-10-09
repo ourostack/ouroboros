@@ -689,6 +689,66 @@ describe("provision and the real host", () => {
     expect(calls.map((c) => c.slice(0, 4))).toEqual([["docker", "exec", "-u", "0"], ["docker", "exec", "-u", "0"]])
   })
 
+  describe("planted symlinks (review of #1064, round 2, finding 2)", () => {
+    const decoy = () => { const dir = fs.mkdtempSync(path.join(os.tmpdir(), "replay-gate-decoy-")); fs.chmodSync(dir, 0o755); return dir }
+    const modeOf = (target: string) => fs.statSync(target).mode & 0o777
+    afterEach(() => { for (const name of fs.readdirSync(os.tmpdir())) if (name.startsWith("replay-gate-decoy-")) fs.rmSync(path.join(os.tmpdir(), name), { recursive: true, force: true }) })
+
+    it("refuses a symlinked state/replay-client and leaves its target alone", () => {
+      const target = decoy()
+      fs.symlinkSync(target, path.join(bundle, "state/replay-client"))
+      expect(() => gate.provision({ bundle, cardUrl: "c", log: () => undefined, run: fakeCli().run, ...uid() })).toThrow(/symlink/)
+      expect(modeOf(target)).toBe(0o755)
+      expect(fs.readdirSync(target)).toEqual([])
+    })
+
+    it("refuses a symlinked state/replay directory and a symlinked notices sink", () => {
+      const target = decoy()
+      fs.symlinkSync(target, path.join(bundle, "state/replay"))
+      expect(() => gate.provision({ bundle, cardUrl: "c", log: () => undefined, run: fakeCli().run, ...uid() })).toThrow(/symlink/)
+      expect(modeOf(target)).toBe(0o755)
+      fs.rmSync(path.join(bundle, "state/replay"))
+      fs.mkdirSync(path.join(bundle, "state/replay"))
+      const victim = path.join(target, "victim")
+      fs.writeFileSync(victim, "keep", { mode: 0o644 })
+      fs.symlinkSync(victim, path.join(bundle, "state/replay/notices.ndjson"))
+      expect(() => gate.provision({ bundle, cardUrl: "c", log: () => undefined, run: fakeCli().run, ...uid() })).toThrow(/symlink|ELOOP/)
+      expect(modeOf(victim)).toBe(0o644)
+      expect(fs.readFileSync(victim, "utf8")).toBe("keep")
+    })
+
+    it("refuses a symlinked replay identity file and a client directory of the wrong type", () => {
+      const target = decoy()
+      const victim = path.join(target, "victim")
+      fs.writeFileSync(victim, "{}", { mode: 0o644 })
+      fs.mkdirSync(path.join(bundle, "state/replay-client"), { mode: 0o700 })
+      fs.symlinkSync(victim, path.join(bundle, "state/replay-client/principal.json"))
+      expect(() => gate.provision({ bundle, cardUrl: "c", log: () => undefined, run: fakeCli().run, ...uid() })).toThrow(/symlink|ELOOP/)
+      expect(modeOf(victim)).toBe(0o644)
+      fs.rmSync(path.join(bundle, "state/replay-client"), { recursive: true })
+      fs.writeFileSync(path.join(bundle, "state/replay-client"), "not a directory")
+      expect(() => gate.provision({ bundle, cardUrl: "c", log: () => undefined, run: fakeCli().run, ...uid() })).toThrow(/not a directory/)
+    })
+
+    it("refuses to seed an outbox through a planted symlink", async () => {
+      const target = decoy()
+      fs.rmSync(path.join(bundle, "state/outbox"), { recursive: true, force: true })
+      fs.symlinkSync(target, path.join(bundle, "state/outbox"))
+      gate.provision({ bundle, cardUrl: "c", log: () => undefined, run: fakeCli().run, ...uid() })
+      const host = gate.makeHost({ bundle, log: () => undefined, ...uid() })
+      await expect(host.seedOutbox("friend-1", "x")).rejects.toThrow(/symlink/)
+      expect(fs.readdirSync(target)).toEqual([])
+    })
+
+    it("refuses a symlinked bundle state directory", () => {
+      const target = decoy()
+      fs.rmSync(path.join(bundle, "state"), { recursive: true })
+      fs.symlinkSync(target, path.join(bundle, "state"))
+      expect(() => gate.provision({ bundle, cardUrl: "c", log: () => undefined, run: fakeCli().run, ...uid() })).toThrow(/symlink/)
+      expect(fs.readdirSync(target)).toEqual([])
+    })
+  })
+
   it("fails clearly when the friend id cannot be read from onboarding", () => {
     expect(() => gate.provision({ bundle, cardUrl: "c", log: () => undefined, run: (a: string[]) => (a[1] === "identity" ? '{"did":"d"}' : "nothing useful"), ...uid() })).toThrow(/could not read the friend id/)
   })

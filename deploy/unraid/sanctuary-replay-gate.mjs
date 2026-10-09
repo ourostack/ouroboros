@@ -13,7 +13,7 @@
 // here, as root, into a root-owned directory the Butler process cannot modify; it expires on its own.
 import { execFileSync } from "node:child_process"
 import { createHash, randomUUID } from "node:crypto"
-import { chmodSync, chownSync, existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs"
+import { chmodSync, chownSync, closeSync, constants as fsConstants, existsSync, fchmodSync, fchownSync, fstatSync, lstatSync, mkdirSync, openSync, readdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs"
 import path from "node:path"
 import { fileURLToPath } from "node:url"
 
@@ -986,10 +986,13 @@ export function makeHost({ bundle = DEFAULT_BUNDLE, trustDir = DEFAULT_TRUST_DIR
       if (!replayPeers.includes(friendId)) throw new Error(`refusing to seed the outbox of a non-replay friend: ${friendId}`)
       const dir = path.join(state, "outbox", friendId)
       const owner = statSync(state)
+      for (const part of [state, path.join(state, "outbox"), dir]) refuseLinkOrWrongType(part, "directory")
       mkdirOwned(state, dir, owner)
       const id = `${String(Date.now()).padStart(13, "0")}-${randomUUID().replace(/-/g, "").slice(0, 6)}`
       writeAtomic(path.join(dir, `${id}.json`), JSON.stringify({ id, kind: "isolation_canary", createdAt: new Date().toISOString(), body }), 0o600)
-      chownSync(dir, owner.uid, owner.gid); chownSync(path.join(dir, `${id}.json`), owner.uid, owner.gid)
+      const dirFd = openNoFollow(dir, fsConstants.O_RDONLY | fsConstants.O_DIRECTORY)
+      try { fchownSync(dirFd, owner.uid, owner.gid) } finally { closeSync(dirFd) }
+      handOverFile(path.join(dir, `${id}.json`), { uid: owner.uid, gid: owner.gid })
       return { id }
     },
     /** Calls the outbox methods as one replay peer, through the same CLI an operator uses. */
@@ -1080,9 +1083,61 @@ export function makeHost({ bundle = DEFAULT_BUNDLE, trustDir = DEFAULT_TRUST_DIR
   }
 }
 
+
+// ---- root-safe file handling -------------------------------------------------------------------------------------
+// The gate runs as root inside paths the Butler's user can write (state/replay, state/replay-client and the files in them). A plain
+// chown/chmod/mkdir/open follows a symlink the Butler planted there, so every such step looks at the path first and acts through a
+// descriptor opened with O_NOFOLLOW.
+
+function lstatOrNull(target) {
+  try { return lstatSync(target) } catch (error) { if (error.code === "ENOENT") return null; throw error }
+}
+
+/** Refuses a symlink or a wrong type at `target`; returns its stat, or null when it does not exist. */
+function refuseLinkOrWrongType(target, wanted) {
+  const stat = lstatOrNull(target)
+  if (!stat) return null
+  if (stat.isSymbolicLink()) throw new Error(`refusing: ${target} is a symlink. Nothing was changed. Remove it (the Butler's user can plant one) and run provision again.`)
+  if (wanted === "directory" ? !stat.isDirectory() : !stat.isFile()) throw new Error(`refusing: ${target} is not a ${wanted}. Nothing was changed.`)
+  return stat
+}
+
+function openNoFollow(target, flags, mode) {
+  try { return openSync(target, flags | fsConstants.O_NOFOLLOW, mode) } catch (error) {
+    if (error.code === "ELOOP") throw new Error(`refusing: ${target} is a symlink. Nothing was changed. Remove it and run provision again.`)
+    throw error
+  }
+}
+
+/** Makes `dir` a real directory owned by root with `mode`, creating it when missing; never follows a symlink. */
+function rootDirectory(dir, mode, { rootUid = 0, rootGid = 0 } = {}) {
+  if (!refuseLinkOrWrongType(dir, "directory")) mkdirSync(dir, { recursive: true, mode })
+  const fd = openNoFollow(dir, fsConstants.O_RDONLY | fsConstants.O_DIRECTORY)
+  try { fchownSync(fd, rootUid, rootGid); fchmodSync(fd, mode) } finally { closeSync(fd) }
+}
+
+/** Hands an existing regular file to `uid:gid` with `mode` (or only the owner when `mode` is undefined), through a no-follow descriptor. `create` makes it first. */
+function handOverFile(file, { uid, gid, mode, create = false }) {
+  if (!create && !lstatOrNull(file)) return
+  refuseLinkOrWrongType(file, "file")
+  const fd = openNoFollow(file, create ? fsConstants.O_WRONLY | fsConstants.O_CREAT | fsConstants.O_APPEND : fsConstants.O_RDONLY, 0o600)
+  try {
+    if (!fstatSync(fd).isFile()) throw new Error(`refusing: ${file} is not a file. Nothing was changed.`)
+    fchownSync(fd, uid, gid)
+    if (mode !== undefined) fchmodSync(fd, mode)
+  } finally { closeSync(fd) }
+}
+
+function readJsonNoFollow(file) {
+  refuseLinkOrWrongType(file, "file")
+  const fd = openNoFollow(file, fsConstants.O_RDONLY)
+  try { return JSON.parse(readFileSync(fd, "utf8")) } finally { closeSync(fd) }
+}
+
 function writeAtomic(file, text, mode) {
   const tmp = `${file}.${process.pid}.tmp`
-  writeFileSync(tmp, text, { mode })
+  rmSync(tmp, { force: true })
+  writeFileSync(tmp, text, { mode, flag: "wx" })
   renameSync(tmp, file)
 }
 
@@ -1105,25 +1160,25 @@ function friendFile(bundle, friendId) {
  */
 function writeTrustGrant(trustDir, fileName, friendId, scope, did, now, source, { rootUid = 0, rootGid = 0, expiresAt } = {}) {
   const file = path.join(trustDir, fileName)
-  mkdirSync(trustDir, { recursive: true, mode: 0o755 }); chownSync(trustDir, rootUid, rootGid); chmodSync(trustDir, 0o755)
-  const current = existsSync(file) ? JSON.parse(readFileSync(file, "utf8")) : { schemaVersion: 1, grants: {} }
+  rootDirectory(trustDir, 0o755, { rootUid, rootGid })
+  const current = lstatOrNull(file) ? readJsonNoFollow(file) : { schemaVersion: 1, grants: {} }
   const had = current.grants?.[friendId]
   if (had?.scope !== scope || had.did !== did || had.expiresAt !== expiresAt) {
     current.grants = { ...current.grants, [friendId]: { scope, did, grantedAt: now.toISOString(), source, ...(expiresAt ? { expiresAt } : {}) } }
     writeAtomic(file, `${JSON.stringify(current, null, 2)}\n`, 0o644)
   }
-  chownSync(file, rootUid, rootGid); chmodSync(file, 0o644)
+  handOverFile(file, { uid: rootUid, gid: rootGid, mode: 0o644 })
 }
 
 /** Removes a friend's entry from one trust file (a no-op when it is absent), leaving the file root-owned. */
 function revokeTrustGrant(trustDir, fileName, friendId, { rootUid = 0, rootGid = 0 } = {}) {
   const file = path.join(trustDir, fileName)
-  if (!existsSync(file)) return
-  const current = JSON.parse(readFileSync(file, "utf8"))
+  if (!lstatOrNull(file)) return
+  const current = readJsonNoFollow(file)
   if (current.grants?.[friendId] === undefined) return
   const { [friendId]: _removed, ...rest } = current.grants
   writeAtomic(file, `${JSON.stringify({ ...current, grants: rest }, null, 2)}\n`, 0o644)
-  chownSync(file, rootUid, rootGid); chmodSync(file, 0o644)
+  handOverFile(file, { uid: rootUid, gid: rootGid, mode: 0o644 })
 }
 
 const REPLAY_GRANT_SOURCE = "replay gate provisioning (host root)"
@@ -1152,17 +1207,17 @@ export function provision({ bundle = DEFAULT_BUNDLE, trustDir = DEFAULT_TRUST_DI
   const state = path.join(bundle, "state")
   const replayDir = path.join(state, "replay")
   const clientDir = path.join(state, "replay-client")
+  refuseLinkOrWrongType(state, "directory")
   const owner = statSync(state)
   // The replay directory is root-owned so the Butler process cannot create or edit the window file; only the sink is its own.
-  mkdirSync(replayDir, { recursive: true, mode: 0o755 }); chownSync(replayDir, rootUid, rootGid); chmodSync(replayDir, 0o755)
-  const sink = path.join(replayDir, "notices.ndjson")
-  writeFileSync(sink, "", { flag: "a", mode: 0o600 }); chownSync(sink, owner.uid, owner.gid)
+  rootDirectory(replayDir, 0o755, { rootUid, rootGid })
+  handOverFile(path.join(replayDir, "notices.ndjson"), { uid: owner.uid, gid: owner.gid, create: true })
   // The replay client keys are root-owned: the Butler's uid must not read the seed of a peer that can hold a grant.
-  mkdirSync(clientDir, { recursive: true, mode: 0o700 }); chownSync(clientDir, rootUid, rootGid); chmodSync(clientDir, 0o700)
+  rootDirectory(clientDir, 0o700, { rootUid, rootGid })
   const replayIdentities = {}
   let knownRegistry = {}
-  try { knownRegistry = JSON.parse(readFileSync(path.join(replayDir, "identities.json"), "utf8")).friends ?? {} } catch { /* first provision */ }
-  const previous = existsSync(path.join(clientDir, "provision.json")) ? JSON.parse(readFileSync(path.join(clientDir, "provision.json"), "utf8")) : {}
+  if (lstatOrNull(path.join(replayDir, "identities.json"))) knownRegistry = readJsonNoFollow(path.join(replayDir, "identities.json")).friends ?? {}
+  const previous = lstatOrNull(path.join(clientDir, "provision.json")) ? readJsonNoFollow(path.join(clientDir, "provision.json")) : {}
   const resolvedCard = cardUrl ?? previous.cardUrl ?? discover()
   const out = { cardUrl: resolvedCard }
   for (const [who, trust, grant, name, escalate] of [["principal", "family", true, "replay-principal", false], ["stranger", "friend", false, "replay-stranger", false], ["escalation", "family", false, "replay-escalation", true]]) {
@@ -1183,17 +1238,16 @@ export function provision({ bundle = DEFAULT_BUNDLE, trustDir = DEFAULT_TRUST_DI
     const recorded = knownRegistry[friendId]?.did
     if (recorded !== undefined && recorded !== did) throw new Error(`the ${name} DID changed (recorded ${recorded}, now ${did}); refusing to re-grant it`)
     // Provisioning grants nothing: the replay peers receive their trusted grants, bounded by the window, only while a run is open.
-    if (existsSync(hostIdentity)) { chownSync(hostIdentity, rootUid, rootGid); chmodSync(hostIdentity, 0o600) }
+    handOverFile(hostIdentity, { uid: rootUid, gid: rootGid, mode: 0o600 })
     out[who] = { friendId, did, containerIdentityFile, hostIdentity }
     replayIdentities[friendId] = { name, who, did }
     log(`${name}: friend ${friendId} (${trust}${grant ? ", principal_commands" : escalate ? ", escalation" : ", no grant"})`)
   }
   // Permanent marker, root-owned and never cleared with the window: the Butler refuses every owner-policy write from these friends (src/a2a/replay-harness.ts isReplayIdentity).
   const registry = path.join(replayDir, "identities.json")
-  let known = {}
-  try { known = JSON.parse(readFileSync(registry, "utf8")).friends ?? {} } catch { /* first provision */ }
+  const known = lstatOrNull(registry) ? readJsonNoFollow(registry).friends ?? {} : {}
   writeAtomic(registry, JSON.stringify({ friends: { ...known, ...replayIdentities } }, null, 2), 0o644)
-  chownSync(registry, rootUid, rootGid)
+  handOverFile(registry, { uid: rootUid, gid: rootGid })
   writeAtomic(path.join(clientDir, "provision.json"), JSON.stringify(out, null, 2), 0o644)
   log(`provisioned; card ${resolvedCard}`)
   return out
