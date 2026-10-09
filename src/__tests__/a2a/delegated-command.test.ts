@@ -150,7 +150,7 @@ describe("delegated principal commands over sealed A2A chat", () => {
   ])("refuses with %s and runs no turn", async (reason, options) => {
     const { client, cardUrl, turns } = await setup(options)
     await expect(sendSealedA2AChat({ cardUrl, text: "Books stays on.", identity: client, sodium, onBehalfOf: "principal" }))
-      .rejects.toThrow(`delegated command refused: ${reason}`)
+      .rejects.toThrow(`delegated command refused: ${reason === "not_family" ? "no_grant" : reason}`)
     expect(turns).toHaveLength(0)
   })
 
@@ -195,6 +195,22 @@ describe("delegated principal commands over sealed A2A chat", () => {
       expect(error!.message).toContain(`delegated command refused: ${reason}`)
       expect((error!.data as { reason: string; next: string })).toMatchObject({ reason, nothingRan: true, retry: false })
       expect((error!.data as { next: string }).next.toLowerCase()).toContain(word)
+    })
+
+    it.each(["grants_untrusted", "grant_did_mismatch", "grant_expired", "not_family"])("a peer that is not active family sees only no_grant, never %s", async (reason) => {
+      const { client, cardUrl, turns } = await setup()
+      const store = new FileFriendStore(`${tmp.agentRoot}/friends`)
+      const peer = (await store.listAll!()).find((f) => f.name === "Claude Code")!
+      await store.put(peer.id, { ...peer, trustLevel: "friend" })
+      if (reason === "grant_expired") setDelegatedCommandGrant(tmp.agentRoot, peer.id, { grant: true, did: client.did, source: "x", expiresAt: "2020-01-01T00:00:00.000Z" })
+      else if (reason === "grant_did_mismatch") setDelegatedCommandGrant(tmp.agentRoot, peer.id, { grant: true, did: "did:key:z6MkSomeoneElse", source: "x" })
+      else if (reason === "grants_untrusted") fs.chmodSync(delegatedCommandGrantsPath(tmp.agentRoot), 0o666)
+      const error = await sendSealedA2AChat({ cardUrl, text: "x", identity: client, sodium, onBehalfOf: "principal" }).then(() => null, (caught: unknown) => caught as A2ARpcError)
+      expect(turns).toHaveLength(0)
+      expect(error!.message).toContain("delegated command refused: no_grant")
+      expect(error!.message).not.toContain(reason)
+      expect(error!.data).toMatchObject({ reason: "no_grant", nothingRan: true })
+      expect(JSON.stringify(error!.data)).not.toContain(reason)
     })
 
     it("marks a notice failure as worth retrying", async () => {

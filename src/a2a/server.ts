@@ -640,8 +640,11 @@ export async function startA2AServer(options: StartA2AServerOptions): Promise<A2
           const admission = await admitDelegatedCommand({ friend: verifiedChat.friend, did: verifiedChat.did, text, commandId: randomUUID(), store: inboundShareDeps!.store, registry, options: options.delegation })
           if (!admission.ok) {
             // The code and the "delegated command refused: <reason>" prefix stay: the replay gate and older CLIs match them.
-            const guidance = delegationRefusalGuidance(admission.reason, { legacyRecordGrant: verifiedChat.friend.delegationGrant !== undefined })
-            writeJson(res, 200, errorResponse(rpc.id, -32004, `delegated command refused: ${admission.reason} (${guidance.message}). Nothing ran. Next: ${guidance.next}`, { reason: admission.reason, nothingRan: true, retry: guidance.retry, next: guidance.next }))
+            // Only an active family peer is told why: anyone else gets no_grant whatever the real reason was (a broken trust file, a key mismatch), which stays in the local log and nerves.
+            const activeFamily = verifiedChat.friend.trustLevel === "family" && verifiedChat.friend.admissionState === "active"
+            const shown = activeFamily ? admission.reason : "no_grant"
+            const guidance = delegationRefusalGuidance(shown, { legacyRecordGrant: activeFamily && verifiedChat.friend.delegationGrant !== undefined })
+            writeJson(res, 200, errorResponse(rpc.id, -32004, `delegated command refused: ${shown} (${guidance.message}). Nothing ran. Next: ${guidance.next}`, { reason: shown, nothingRan: true, retry: guidance.retry, next: guidance.next }))
             return
           }
           relationshipAuthorization = admission.relationship
