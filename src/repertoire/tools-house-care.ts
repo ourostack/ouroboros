@@ -45,16 +45,16 @@ function sweepYieldsToReplay(ctx: ToolContext | undefined, now: number): boolean
 
 const REPLAY_YIELD = JSON.stringify({ skipped: true, reason: "a replay-gate window is open, so the daily house-care sweep does nothing now. Finish with resolve_await verdict 'no' and the word quiet; do not send anything to the owner." })
 
-/** Digest lines: identical summaries collapse into one line with a count, at most DIGEST_MAX_LINES lines, then one pointer to the rest. */
+/** Digest lines: identical summaries collapse into one line with a count, at most DIGEST_MAX_LINES lines, then one pointer to the rest. `shownSummaries` are the summaries whose lines are in the digest. */
 export const DIGEST_MAX_LINES = 8
-export function digestLines(summaries: string[]): string[] {
+export function digestLines(summaries: string[]): { lines: string[]; shownSummaries: Set<string> } {
   const counts = new Map<string, number>()
   for (const summary of summaries) counts.set(summary, (counts.get(summary) ?? 0) + 1)
-  const lines = [...counts].map(([summary, count]) => `- ${summary}${count > 1 ? ` (x${count})` : ""}`)
-  if (lines.length <= DIGEST_MAX_LINES) return lines
-  const shown = [...counts].slice(0, DIGEST_MAX_LINES)
-  const hidden = summaries.length - shown.reduce((sum, [, count]) => sum + count, 0)
-  return [...shown.map(([summary, count]) => `- ${summary}${count > 1 ? ` (x${count})` : ""}`), `and ${hidden} more (ask me for the full list)`]
+  const groups = [...counts].slice(0, DIGEST_MAX_LINES)
+  const lines = groups.map(([summary, count]) => `- ${summary}${count > 1 ? ` (x${count})` : ""}`)
+  const hidden = summaries.length - groups.reduce((sum, [, count]) => sum + count, 0)
+  if (hidden > 0) lines.push(`and ${hidden} more (ask me for the full list)`)
+  return { lines, shownSummaries: new Set(groups.map(([summary]) => summary)) }
 }
 
 function replayAsker(ctx: ToolContext | undefined): boolean {
@@ -123,7 +123,11 @@ export const houseDigestToolDefinition: ToolDefinition = {
     const agentName = ctx.agentName ?? "sanctuary"
     // A peer's digest says whose it is; the body is only ever the stored finding summaries.
     const peer = ctx.relationshipAuthorization?.profileId === "sanctuary-agent-peer" ? `From ${clip(safe(ctx.context?.friend?.name ?? friendId ?? "a peer"), PEER_NAME_MAX) || "a peer"}:\n` : ""
-    const body = `${peer}${leadIn ? `${leadIn}\n` : ""}${digestLines(chosen.map((finding) => clip(safe(finding.summary), 220))).join("\n")}`
+    const clipped = chosen.map((finding) => clip(safe(finding.summary), 220))
+    const rendered = digestLines(clipped)
+    // Only the findings whose lines are in the digest count as told; the ones behind "and N more" stay fresh for the next digest.
+    const shown = chosen.filter((_, i) => rendered.shownSummaries.has(clipped[i]!))
+    const body = `${peer}${leadIn ? `${leadIn}\n` : ""}${rendered.lines.join("\n")}`
 
     if (replay) {
       // A replay identity's digest never reaches the owner: it goes to the sink while the window is open, and is refused when it is not.
@@ -152,7 +156,7 @@ export const houseDigestToolDefinition: ToolDefinition = {
     const day = stamp.slice(0, 10)
     // Reserve before sending so a crash or a concurrent turn cannot send twice; a failed send rolls the reservation back.
     const reserved = { ...ledger }
-    for (const finding of chosen) reserved[finding.id] = { fingerprint: finding.fingerprint, reportedAt: stamp }
+    for (const finding of shown) reserved[finding.id] = { fingerprint: finding.fingerprint, reportedAt: stamp }
     writeLedger(agentRoot, reserved, kind === "scheduled" ? stamp : priorStamp)
     try {
       await (injected.notifyOwner ? injected.notifyOwner(agentName) : defaultNotifyOwner(agentName))({ noticeId: `house-sweep:${kind}:${day}:${digest}`, text: body })

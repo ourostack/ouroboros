@@ -145,13 +145,13 @@ describe("house_digest_send tool", () => {
     expect((await digest({ finding_ids: [finding.id] }, ctx(SCHEDULED))).sent).toBe(true)
   })
   it("collapses identical summaries into one counted line, caps the lines, and points to the rest", async () => {
-    expect(digestLines(["a", "a", "a", "b"])).toEqual(["- a (x3)", "- b"])
+    expect(digestLines(["a", "a", "a", "b"]).lines).toEqual(["- a (x3)", "- b"])
     const many = Array.from({ length: 24 }, (_, i) => `item ${i}`)
-    const lines = digestLines(many)
+    const lines = digestLines(many).lines
     expect(lines).toHaveLength(DIGEST_MAX_LINES + 1)
     expect(lines.at(-1)).toBe(`and ${24 - DIGEST_MAX_LINES} more (ask me for the full list)`)
     const dupes = [...Array.from({ length: 5 }, () => "Sonarr recorded a failed download: The Chef Show"), ...many]
-    const out = digestLines(dupes)
+    const out = digestLines(dupes).lines
     expect(out[0]).toBe("- Sonarr recorded a failed download: The Chef Show (x5)")
     expect(out.at(-1)).toBe(`and ${29 - 5 - (DIGEST_MAX_LINES - 1)} more (ask me for the full list)`)
     const findings = dupes.map((summary, i) => ({ id: `f${i}`, fingerprint: `p${i}`, summary }))
@@ -160,6 +160,17 @@ describe("house_digest_send tool", () => {
     expect(sent).toHaveLength(1)
     expect(sent[0].text.length).toBeLessThan(4096)
     expect(sent[0].text.split("\n")).toHaveLength(DIGEST_MAX_LINES + 1)
+  })
+  it("records as told only the findings whose lines were shown; the hidden ones stay fresh for the next digest", async () => {
+    const findings = Array.from({ length: 12 }, (_, i) => ({ id: `f${i}`, fingerprint: `p${i}`, summary: `item ${i}` }))
+    writeReport("live", findings)
+    await digest({ finding_ids: findings.map((f) => f.id) })
+    expect(sent[0].text).toContain("and 4 more (ask me for the full list)")
+    const told = Object.keys(readLedger(root)).sort()
+    expect(told).toEqual(findings.slice(0, DIGEST_MAX_LINES).map((f) => f.id).sort())
+    // The hidden four can be sent next: they are not "already told".
+    const next = await digest({ finding_ids: findings.slice(DIGEST_MAX_LINES).map((f) => f.id) })
+    expect(next.sent).toBe(true)
   })
   it("prefixes a peer's digest with the peer's name", async () => {
     writeReport("live", [finding])
