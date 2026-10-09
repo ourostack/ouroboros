@@ -1222,6 +1222,31 @@ describe("OURO_CLI_TRUST_MANIFEST — rollback and versions", () => {
     expect(result.allowed).toBe(false)
   })
 
+  describe("the friends store is written by the harness, never by a model's file tools", () => {
+    const ctx = (over: Record<string, unknown> = {}) => ({ readPaths: new Set(["/bundle/friends/peer.json"]), agentRoot: "/bundle", trustLevel: "family" as const, ...over })
+    it.each(["/bundle/friends/peer.json", "friends/peer.json", "/bundle/friends/../friends/peer.json", "/bundle/friends"])("refuses write_file and edit_file to %s for everyone, family included", async (target) => {
+      const { guardInvocation } = await import("../../repertoire/guardrails")
+      for (const tool of ["write_file", "edit_file"]) {
+        expect(guardInvocation(tool, { path: target }, ctx({ readPaths: new Set([target]) }))).toMatchObject({ allowed: false, reason: expect.stringContaining("protected") })
+      }
+    })
+    it("refuses shell redirects and tee into the friends store", async () => {
+      const { guardInvocation } = await import("../../repertoire/guardrails")
+      expect(guardInvocation("shell", { command: "echo x > /bundle/friends/peer.json" }, ctx())).toMatchObject({ allowed: false })
+      expect(guardInvocation("shell", { command: "echo x | tee friends/peer.json" }, ctx())).toMatchObject({ allowed: false })
+    })
+    it("leaves other directories named friends alone, and reads", async () => {
+      const { guardInvocation } = await import("../../repertoire/guardrails")
+      const read = (target: string) => ctx({ readPaths: new Set([target]) })
+      for (const target of ["/home/ari/Projects/friends/src/a.ts", "/bundle/notes/friends/a.md", "/bundle/friends-notes.md"]) {
+        expect(guardInvocation("write_file", { path: target }, read(target))).toEqual({ allowed: true })
+      }
+      expect(guardInvocation("read_file", { path: "/bundle/friends/peer.json" }, ctx())).toEqual({ allowed: true })
+      expect(guardInvocation("shell", { command: "cat /bundle/friends/peer.json" }, ctx())).toEqual({ allowed: true })
+      expect(guardInvocation("write_file", { path: "/x/friends/a.json" }, ctx({ agentRoot: undefined, readPaths: new Set(["/x/friends/a.json"]) }))).toEqual({ allowed: true })
+    })
+  })
+
   describe("the psyche folder ships only from the repository", () => {
     const ctx = (over: Record<string, unknown> = {}) => ({ readPaths: new Set(["/bundle/psyche/SOUL.md"]), agentRoot: "/bundle", trustLevel: "family" as const, ...over })
     it.each(["/bundle/psyche/SOUL.md", "psyche/LORE.md", "/bundle/psyche/../psyche/TACIT.md", "/bundle/psyche"])("refuses write_file and edit_file to %s for everyone, family included", async (target) => {

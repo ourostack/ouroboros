@@ -45,7 +45,7 @@ const PROTECTED_PATH_SEGMENTS = [
   ".ouro-cli/vault-unlock/",
   ".ouro-cli/vault-unlock-dpapi/",
   "state/policy/",
-  // What the Butler tells its escalation peers, and who may hear it: only the harness writes these, never the model.
+  // The pre-trust-directory home of the escalation grants; the file is no longer read, and a model must not recreate it.
   "state/a2a/escalation-grants.json",
   "state/outbox/",
   "state/reports/",
@@ -58,6 +58,19 @@ function isPsychePath(filePath: string, agentRoot: string | undefined): boolean 
   const psyche = path.resolve(agentRoot, "psyche")
   const target = path.resolve(agentRoot, filePath)
   return target === psyche || target.startsWith(`${psyche}${path.sep}`)
+}
+
+/**
+ * The friends store (`friends/` under the agent root) is written by the harness's own code, which the model's file tools and
+ * shell redirects must not reach: a model talked into editing a record could rewrite trust, admission or a legacy grant.
+ * Scoped to this agent's root, so a project directory that happens to be named `friends` stays editable. Defence in depth
+ * only: a shell can still write anywhere its uid can, which is why delegated-command authority lives outside the bundle.
+ */
+function isFriendsStorePath(filePath: string, agentRoot: string | undefined): boolean {
+  if (!agentRoot || !filePath) return false
+  const store = path.resolve(agentRoot, "friends")
+  const target = path.resolve(agentRoot, filePath)
+  return target === store || target.startsWith(`${store}${path.sep}`)
 }
 
 function isProtectedPath(filePath: string): boolean {
@@ -95,12 +108,12 @@ function splitShellCommands(command: string): string[] {
 
 // --- shell commands that write to protected paths ---
 
-function shellWritesToProtectedPath(command: string): boolean {
+function shellWritesToProtectedPath(command: string, agentRoot?: string): boolean {
   const redirectMatch = command.match(/>\s*(\S+)/)
-  if (redirectMatch && isProtectedPath(redirectMatch[1])) return true
+  if (redirectMatch && (isProtectedPath(redirectMatch[1]) || isFriendsStorePath(redirectMatch[1], agentRoot))) return true
 
   const teeMatch = command.match(/tee\s+(?:-\w+\s+)*(\S+)/)
-  if (teeMatch && isProtectedPath(teeMatch[1])) return true
+  if (teeMatch && (isProtectedPath(teeMatch[1]) || isFriendsStorePath(teeMatch[1], agentRoot))) return true
 
   return false
 }
@@ -176,13 +189,13 @@ function checkProtectedPaths(toolName: string, args: Record<string, string>, con
   if (toolName === "write_file" || toolName === "edit_file") {
     const filePath = args.path || ""
     if (isPsychePath(filePath, context.agentRoot)) return deny(REASONS.psychePath)
-    if (isProtectedPath(filePath)) return deny(REASONS.protectedPath)
+    if (isProtectedPath(filePath) || isFriendsStorePath(filePath, context.agentRoot)) return deny(REASONS.protectedPath)
   }
 
   if (toolName === "shell") {
     const command = args.command || ""
     if (psycheShellWriteRefused(command, context.agentRoot)) return deny(REASONS.psychePath)
-    if (shellWritesToProtectedPath(command)) return deny(REASONS.protectedPath)
+    if (shellWritesToProtectedPath(command, context.agentRoot)) return deny(REASONS.protectedPath)
   }
 
   return allow
