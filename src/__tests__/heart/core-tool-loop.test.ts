@@ -3444,11 +3444,11 @@ describe("settle answer gates (opt-in per agent)", () => {
   const searchTool = [{ type: "function", function: { name: "web_search", description: "search", parameters: { type: "object", properties: { query: { type: "string" } } } } }]
   const GATES = { sourceGrounding: true, brevity: true }
   const searchCall = (id: string) => makeStream([makeChunk(undefined, [{ index: 0, id, function: { name: "web_search", arguments: JSON.stringify({ query: id }) } }])])
-  const run = async (opts: { execTool?: any; gates?: Record<string, boolean> | undefined; user?: string[]; extra?: Record<string, unknown>; context?: Record<string, unknown> } = {}) => {
+  const run = async (opts: { execTool?: any; gates?: Record<string, boolean> | undefined; user?: string[]; prior?: any[]; extra?: Record<string, unknown>; context?: Record<string, unknown> } = {}) => {
     const visible: string[] = []
     const { runAgent } = await import("../../heart/core")
     const messages = (opts.user ?? ["channel more dross from cradle energy"]).flatMap((text, index) => (index === 0 ? [] : [{ role: "assistant", content: "ok." }]).concat([{ role: "user", content: text }]) as any[])
-    const result = await runAgent([{ role: "user", content: opts.user?.[0] ?? "channel more dross from cradle energy" }, ...messages.slice(0)] as any[], makeCallbacks({ onTextChunk: vi.fn((text: string) => { visible.push(text) }), onClearText: vi.fn(() => { visible.length = 0 }) }), "telegram", undefined, {
+    const result = await runAgent([...(opts.prior ?? []), { role: "user", content: opts.user?.[0] ?? "channel more dross from cradle energy" }, ...messages.slice(0)] as any[], makeCallbacks({ onTextChunk: vi.fn((text: string) => { visible.push(text) }), onClearText: vi.fn(() => { visible.length = 0 }) }), "telegram", undefined, {
       tools: searchTool as any, execTool: opts.execTool ?? vi.fn(), toolContext: { signin: async () => undefined, ...(opts.gates ? { answerGates: opts.gates } : {}), ...(opts.context ? { context: opts.context as any } : {}) }, ...opts.extra,
     })
     return { result, visible }
@@ -3490,6 +3490,29 @@ describe("settle answer gates (opt-in per agent)", () => {
       const { result, visible } = await run({ execTool: vi.fn(async () => "nothing useful"), gates: GATES })
       expect(result.outcome).toBe("settled")
       expect(visible.at(-1)).toBe(DISCLOSED)
+    })
+
+    it("treats names from earlier turns as known and arms the name rule from the latest message only", async () => {
+      const prior = [{ role: "user", content: "what movies could I watch?" }, { role: "assistant", content: "Ozriel is in Cradle." }, { role: "tool", content: "Eithan too", tool_call_id: "t" }, { role: "assistant", content: "ok." }]
+      const answer = "**ozriel** and **eithan** fit the cast. who else."
+      mockCreate.mockReturnValueOnce(settleCall("known", answer))
+      const known = await run({ gates: GATES, prior, user: ["who is in the cast?"] })
+      expect(mockCreate).toHaveBeenCalledTimes(1)
+      expect(known.visible.join("")).toBe(answer)
+      mockCreate.mockReset()
+      mockCreate.mockReturnValueOnce(settleCall("fresh", "**ozriel** — the reaper."))
+      mockCreate.mockReturnValueOnce(searchCall("ws"))
+      mockCreate.mockReturnValueOnce(settleCall("again", "nothing found."))
+      await run({ gates: GATES, user: ["who is in the cast?"], execTool: vi.fn(async () => "nothing") })
+      expect(JSON.stringify(mockCreate.mock.calls[1][0].messages)).toContain("looked up nothing this turn")
+    })
+
+    it("ends the person's turn where it began, so the engine's own nudges and earlier attempts do not launder a name", async () => {
+      for (const id of ["a", "b", "c"]) mockCreate.mockReturnValueOnce(settleCall(id, "**ozriel** — the reaper."))
+      const { result, visible } = await run({ gates: GATES, user: ["who is in the cast?"] })
+      expect(result.outcome).toBe("settled")
+      expect(mockCreate).toHaveBeenCalledTimes(3)
+      expect(visible.join("")).toContain("I couldn't verify ozriel")
     })
 
     it("passes replies that are not about a work", async () => {

@@ -28,6 +28,7 @@ const runtimeMocks = vi.hoisted(() => {
       state.restartOptions = options
       return restart
     }),
+    readStewardPolicy: vi.fn((): unknown => ({ desiredStates: {} })),
     consumeRoutineActionGrant: vi.fn(() => ({ state: "reserved" })),
     transitionRoutineActionReceipt: vi.fn(() => ({ state: "verified" })),
     withRoutineActionAttempt: vi.fn(async (_root: string, _reservation: unknown, validate: () => Promise<void>, attempt: () => Promise<void>) => {
@@ -67,6 +68,7 @@ vi.mock("../../repertoire/unraid-restart", () => ({
   createApprovedUnraidRestartExecutor: runtimeMocks.createApprovedUnraidRestartExecutor,
 }))
 vi.mock("../../heart/steward-policy", () => ({
+  readStewardPolicy: runtimeMocks.readStewardPolicy,
   consumeRoutineActionGrant: runtimeMocks.consumeRoutineActionGrant,
   transitionRoutineActionReceipt: runtimeMocks.transitionRoutineActionReceipt,
   withRoutineActionAttempt: runtimeMocks.withRoutineActionAttempt,
@@ -367,6 +369,45 @@ describe("Sanctuary runtime tool context", () => {
     expect(runtimeMocks.emitNervesEvent).toHaveBeenCalledWith(expect.objectContaining({ meta: expect.objectContaining({ semanticCode: "unknown" }) }))
   })
 
+  it("annotates the model-facing container list with the steward policy and leaves the plain list for the restart path", async () => {
+    const listed = { ok: true, data: { containers: [{ id: "Docker:a", name: "calibre-web", state: "running" }, { id: "Docker:b", name: "calibre", state: "created" }, { id: "Docker:c", name: "other", state: "running" }], truncated: false } }
+    runtimeMocks.readTools.listContainers.mockResolvedValue(listed)
+    runtimeMocks.readStewardPolicy.mockReturnValueOnce({ desiredStates: { "container:calibre": { value: "intentionally_off" }, "container:calibre-web": { value: "on" } } })
+    const context = createSanctuaryToolContext("slugger")
+    const result = await context.sanctuary!.listContainers() as typeof listed
+    expect(result.data.containers).toEqual([
+      { id: "Docker:a", name: "calibre-web", state: "running", desired: "running", serves: "Books" },
+      { id: "Docker:b", name: "calibre", state: "created", desired: "stopped", note: expect.stringContaining("do not offer to start") },
+      { id: "Docker:c", name: "other", state: "running" },
+    ])
+    await context.sanctuary!.listContainers(new AbortController().signal)
+    expect(runtimeMocks.readTools.listContainers).toHaveBeenLastCalledWith(expect.any(AbortSignal))
+    expect(runtimeMocks.state.restartOptions?.listContainers).toBe(runtimeMocks.readTools.listContainers)
+    // A busy policy read is retried once, then the last good policy is used; with none cached the list is returned plain.
+    runtimeMocks.readStewardPolicy.mockImplementationOnce(() => { throw new Error("policy locked") })
+    runtimeMocks.readStewardPolicy.mockReturnValueOnce({ desiredStates: { "container:calibre": { value: "off" } } })
+    const retried = await context.sanctuary!.listContainers() as typeof listed
+    expect(retried.data.containers[1]).toMatchObject({ desired: "stopped" })
+    expect(runtimeMocks.readStewardPolicy).toHaveBeenCalledTimes(4)
+    runtimeMocks.readStewardPolicy.mockImplementation(() => { throw new Error("policy locked") })
+    const cached = await context.sanctuary!.listContainers() as typeof listed
+    expect(cached.data.containers[1]).toMatchObject({ desired: "stopped" })
+    runtimeMocks.getAgentRoot.mockReturnValue(fs.mkdtempSync(path.join(os.tmpdir(), "ouro-sanctuary-runtime-fresh-")))
+    const fresh = await createSanctuaryToolContext("slugger").sanctuary!.listContainers() as typeof listed
+    expect(fresh.data.containers[1]).toEqual({ id: "Docker:b", name: "calibre", state: "created" })
+    runtimeMocks.readStewardPolicy.mockReset()
+    runtimeMocks.readStewardPolicy.mockReturnValue({ desiredStates: {} })
+    runtimeMocks.readTools.listContainers.mockReset()
+  })
+
+  it("names the container behind the Books service probe", async () => {
+    runtimeMocks.probeSanctuaryEndpoint.mockImplementation(async (url: string) => ({ url, ok: true, status: 200 }))
+    const context = createSanctuaryToolContext("slugger")
+    const result = await context.sanctuary!.checkServices() as { data: { services: Array<{ name: string; container?: string }> } }
+    expect(result.data.services.map((service) => [service.name, service.container])).toEqual([["media", undefined], ["books", "calibre-web"]])
+    runtimeMocks.probeSanctuaryEndpoint.mockReset()
+  })
+
   it("checks every fixed public service endpoint on demand and records one bounded read receipt", async () => {
     runtimeMocks.probeSanctuaryEndpoint
       .mockResolvedValueOnce({ url: "https://media.mendelow.cloud/", ok: true, status: 200 })
@@ -379,7 +420,7 @@ describe("Sanctuary runtime tool context", () => {
         observedAt: expect.stringMatching(/^\d{4}-/u),
         services: [
           { name: "media", url: "https://media.mendelow.cloud/", ok: true, status: 200 },
-          { name: "books", url: "https://books.mendelow.cloud/", ok: false, status: 503 },
+          { name: "books", container: "calibre-web", url: "https://books.mendelow.cloud/", ok: false, status: 503 },
         ],
         degraded: true,
       },

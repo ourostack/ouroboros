@@ -31,6 +31,8 @@ const LOOKUP_TOOL_PATTERN = /^(web_fetch|fetch_url|fetch_page|read_url|read_page
 const SHELL_LOOKUP_SEGMENT = /^\s*(?:\w+=\S*\s+)*(?:(?:sudo|env|command|time|nohup)\s+)*(?:(?:curl|wget)\b|books\s+(?:get|search|series|library\s+(?:find|search))\b)/
 const SHELL_SEGMENT_SEPARATOR = /&&|\|\||[;|\n]/
 
+/** The house's own catalog and status tools: what they return is the house's record, not a claim about a work. */
+const HOUSE_READ_TOOL = /^(?:media_|sanctuary_|unraid_|house_)/
 const STRONG_CUE = /\b(books?|novels?|movies?|films?|anime|saga|trilogy|albums?|episodes?|protagonists?)\b/i
 const WORK_CUE = /\b(books?|novels?|series|saga|trilogy|shows?|movies?|films?|anime|characters?|protagonists?|authors?|episodes?|seasons?|albums?|bands?|lore|cast)\b/i
 const COPULA_AFTER_NAME = /^(?:['’]s\b|\s+(?:is|was|are|were|isn['’]t|wasn['’]t|has|had|does|did)\b)/i
@@ -57,7 +59,7 @@ export const HOUSE_VOCABULARY = new Set([
   "ari", "butler", "claude", "code", "sanctuary", "jellyfin", "sonarr", "radarr", "prowlarr", "jellyseerr", "calibre", "books", "telegram", "unraid", "docker",
   "mendelow", "cloud", "pocketbook", "astraweb", "usenet", "sabnzbd", "bazarr", "tmdb", "tvdb", "libgen", "plex", "github", "google", "apple", "amazon", "netflix",
   "hulu", "disney", "youtube", "spotify", "kindle", "kobo", "goodreads", "audible", "python", "javascript", "typescript", "node", "lodash", "vitest", "react",
-  "linux", "windows", "macos", "android", "chrome", "firefox", "safari", "slack", "discord", "wikipedia", "english", "ouro", "ouroboros", "a2a", "radarr", "http", "https",
+  "linux", "windows", "macos", "android", "chrome", "firefox", "safari", "slack", "discord", "wikipedia", "english", "ouro", "ouroboros", "a2a", "radarr", "http", "https", "calibre-web", "readarr", "lidarr", "overseerr", "tautulli", "sabnzbd", "deluge", "delugevpn", "binhex",
   "january", "february", "march", "april", "may", "june", "july", "august", "september", "october", "november", "december",
   "monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday",
 ])
@@ -74,6 +76,24 @@ const MIN_NAME_LENGTH = 3
 const MAX_ACRONYM_LENGTH = 5
 const LOWERCASE_LIST_INTRO = /\b(?:characters?|cast|names?|authors?|protagonists?|bands?|members?)\b[ \t]*(?::|—|-|are|includes?|including|like|such as)[ \t]+([^.!?\n]+)/gi
 const LOWERCASE_LIST_ITEM = /^[a-z][a-z'’-]{3,}$/
+/** A container-style slug ("calibre-web", "binhex-delugevpn") is a service, not a name. */
+const SLUG = /^[a-z0-9]+(?:-[a-z0-9]+)+$/
+/** The latest message must ask for names, not merely mention media: "who", "cast", "characters", "name the ...". */
+const NAME_QUESTION_CUE = /\b(characters?|cast|protagonists?|lore|who|name)\b/i
+/** A command that only repeats text it was given proves nothing. */
+const ECHO_COMMAND = /^\s*(?:echo|printf)\b/
+const MIN_PROSE_LENGTH = 40
+/** Tools whose output may hold an earlier fabrication, so it never clears a name. */
+const MEMORY_TOOL = /^(?:search_facts|consult_\w+|get_friend_note|save_\w+|recall\w*|diary\w*|note\w*)$/
+const PROSE_LIST_INTRO = /\b(?:(?:are|is|fits?|like|includes?|including)\s+)+([a-z][^.!?\n]*)/g
+const PROSE_SUBJECT = /(?:^|[.!?;,]\s*|\n\s*)(?:(?:and|but)\s+)?([a-z][a-z'’-]{2,})\s+(?:is|was)\s+(?:the|a|an)\b/g
+const EMPHASIS_PHRASE = /^[a-z][a-z'’-]*(?: [a-z][a-z'’-]*){0,2}$/
+/** A span in **bold**, *italic*, __bold__ or _italic_ ("**fisher gesha**"); the delimiters must not sit inside a word, so snake_case is not emphasis. */
+const EMPHASIS_SPAN = /(?<![\p{L}\p{N}*_])(\*\*|__|\*|_)(?=[^\s*_])([^*_\n]{3,40}?)\1(?![\p{L}\p{N}*_])/gu
+/** A bullet or numbered line that opens with a lowercase name-like phrase and a separator ("- ozriel — the reaper"). */
+const LEAD_PHRASE = /^[ \t]*(?:[-*•]|\d+[.)])[ \t]+([a-z][a-z'’-]*(?: [a-z][a-z'’-]*){0,2})[ \t]*(?::|—|–|[ ]-[ ])/gmu
+/** Lowercase words that are emphasised or lead a bullet without being a name. */
+const EMPHASIS_STOP = new Set(["important", "careful", "caution", "bottom", "line", "short", "version", "mostly", "definitely", "exactly", "really", "very", "free", "new", "heads", "tip"])
 const LOWERCASE_LIST_STOP = new Set(["others", "etc", "more", "many", "several", "various", "everyone", "anyone", "someone", "people", "these", "those", "them", "others", "similar", "same", "like"])
 
 /** True when the call read a primary source: a web search or page fetch, a catalog lookup, a curl, or the books tool. */
@@ -109,6 +129,28 @@ export function candidateNames(text: string): string[] {
     if (startsSentence && !startsLikeName(text, match.index!, after, lower)) continue
     seen.add(lower)
     names.push(word)
+  }
+  for (const name of lowercaseEmphasisNames(text)) {
+    const lower = name.toLowerCase()
+    if (seen.has(lower)) continue
+    seen.add(lower)
+    names.push(name)
+  }
+  return names
+}
+
+/**
+ * Lowercase names the writer typed in emphasis ("**fisher gesha** — ...") or at the head of a bullet ("- ozriel — ..."): a model that writes in lowercase
+ * still names things, and these are the positions where a name is set apart. House vocabulary, sentence starters and status words are not names.
+ */
+export function lowercaseEmphasisNames(text: string): string[] {
+  const names: string[] = []
+  const phrases = [...text.matchAll(EMPHASIS_SPAN)].map((match) => match[2]!.trim().replace(/[:,.]$/, "")).concat([...text.matchAll(LEAD_PHRASE)].map((match) => match[1]!))
+  for (const phrase of phrases) {
+    if (!EMPHASIS_PHRASE.test(phrase) || SLUG.test(phrase)) continue
+    const words = phrase.split(" ")
+    const stop = words.some((word) => word.length < MIN_NAME_LENGTH || COMMON_STARTERS.has(word) || EXEMPT_WORDS.has(word) || HOUSE_VOCABULARY.has(word) || LABEL_WORDS.has(word) || LOWERCASE_LIST_STOP.has(word) || EMPHASIS_STOP.has(word))
+    if (!stop && !names.some((name) => name.toLowerCase() === phrase)) names.push(phrase)
   }
   return names
 }
@@ -148,6 +190,22 @@ export function lowercaseListNames(text: string): string[] {
   return [...new Set(names)]
 }
 
+/**
+ * Lowercase names in plain prose after a name question: a comma or "and" list after are/is/fits/like ("the closest fits are eithan, ozriel and fisher gesha"),
+ * or the subject of "<name> is the ..." ("eithan is the polished one"). Every item must read as a name, so ordinary sentences do not match.
+ */
+export function lowercaseProseNames(text: string): string[] {
+  const names: string[] = []
+  const nameLike = (word: string): boolean => LOWERCASE_LIST_ITEM.test(word) && !COMMON_STARTERS.has(word) && !EXEMPT_WORDS.has(word) && !HOUSE_VOCABULARY.has(word)
+    && !LABEL_WORDS.has(word) && !LOWERCASE_LIST_STOP.has(word) && !EMPHASIS_STOP.has(word) && !SLUG.test(word)
+  for (const intro of text.matchAll(PROSE_LIST_INTRO)) {
+    const items = intro[1]!.split(/\s*,\s*(?:and\s+|or\s+)?|\s+and\s+|\s+or\s+/).map((item) => item.trim()).filter(Boolean)
+    if (items.length >= 2 && items.every((item) => item.split(/\s+/).length <= 2 && item.split(/\s+/).every(nameLike))) names.push(...items)
+  }
+  for (const subject of text.matchAll(PROSE_SUBJECT)) if (nameLike(subject[1]!)) names.push(subject[1]!)
+  return [...new Set(names)]
+}
+
 function claimsSomethingAbout(answer: string, name: string): boolean {
   const lower = answer.toLowerCase()
   const needle = name.toLowerCase()
@@ -161,24 +219,38 @@ function claimsSomethingAbout(answer: string, name: string): boolean {
  * What is wrong with a reply about an external work, or null: it names things no lookup this turn contains (invented),
  * or states something about a work the person only named, with no lookup at all (unsourced_claim).
  */
-export function sourceGroundingFinding(input: { answer: string; userText: string; tools: readonly TurnToolRecord[] }): GroundingFinding | null {
-  if (!WORK_CUE.test(input.answer)) return null
+export function sourceGroundingFinding(input: { answer: string; userText: string; tools: readonly TurnToolRecord[]; latestUserText?: string; knownText?: string }): GroundingFinding | null {
+  const answerCue = WORK_CUE.test(input.answer)
+  // Only the latest message arms the name rule, and only when it asks for names; an old "what movies could I watch?" must not arm every later reply.
+  // "who" and "name" alone are house questions too ("who's home?"), so a name question counts only beside a work cue in that message or the reply.
+  const latest = input.latestUserText ?? input.userText
+  const askedAboutWork = NAME_QUESTION_CUE.test(latest) && (WORK_CUE.test(latest) || answerCue)
+  if (!answerCue && !askedAboutWork) return null
   const lookups = input.tools.filter(isLookupToolCall)
   const lookedUp = lookups.map((record) => record.result).join("\n")
-  const names = [...candidateNames(input.answer), ...lowercaseListNames(input.answer)]
-  const invented = names.filter((name) => !mentions(lookedUp, name) && !mentions(input.userText, name))
-  if (invented.length > 0 && (invented.length >= 2 || STRONG_CUE.test(input.answer))) {
-    const named = invented.join(", ")
+  // What the house's own catalog and status tools returned is the house's record, not a claim about a work.
+  const houseRead = input.tools.filter((record) => HOUSE_READ_TOOL.test(record.name)).map((record) => record.result).join("\n")
+  const sawNothing = lookups.length === 0
+  const proseNames = askedAboutWork && sawNothing && input.answer.length >= MIN_PROSE_LENGTH ? lowercaseProseNames(input.answer) : []
+  const names = [...new Set([...candidateNames(input.answer), ...lowercaseListNames(input.answer), ...proseNames])]
+  // Output of this turn's non-lookup tools (a calibredb listing, a sweep) is the house's record; memory tools are excluded because they may hold an earlier fabrication.
+  const otherRead = input.tools.filter((record) => !isLookupToolCall(record) && !MEMORY_TOOL.test(record.name) && !ECHO_COMMAND.test(record.args.command ?? "")).map((record) => record.result).join("\n")
+  // A name already said or read in an earlier turn is known by design: the rule judges what this turn introduces, not what the conversation already holds.
+  const invented = names.filter((name) => !mentions(lookedUp, name) && !mentions(houseRead, name) && !mentions(otherRead, name) && !mentions(input.userText, name) && !mentions(input.knownText ?? "", name))
+  // The person asked for names and the turn read nothing: one name they, the conversation and this turn's tools did not give is enough.
+  const fromMemory = askedAboutWork && sawNothing ? invented : []
+  if ((answerCue && invented.length > 0 && (invented.length >= 2 || STRONG_CUE.test(input.answer))) || fromMemory.length > 0) {
+    const named = (fromMemory.length > 0 && !(answerCue && invented.length >= 2) ? fromMemory : invented).join(", ")
     emitNervesEvent({ level: "warn", component: "engine", event: "engine.unsourced_work_claim", message: "a reply named things from a work that the turn did not look up", meta: { names: invented.length, lookups: lookups.length } })
     return {
-      kind: "invented", names: invented, lookups: lookups.length,
+      kind: "invented", names: fromMemory.length > 0 && !(answerCue && invented.length >= 2) ? fromMemory : invented, lookups: lookups.length,
       message: lookups.length === 0
         ? `you named ${named} as part of a book, show, film or its cast, and you looked up nothing this turn. don't state facts about a work from memory. read a primary source first (web_search, or fetch the page), then answer only from what it says. if you can't find it, say so plainly.`
         : `${named} do not appear in anything you looked up this turn, so they may be made up. check them against the source you read, drop the ones it does not support, or look them up, then settle again.`,
     }
   }
   const unsourced = names.filter((name) => mentions(input.userText, name) && !mentions(lookedUp, name) && claimsSomethingAbout(input.answer, name))
-  if (lookups.length === 0 && unsourced.length > 0) {
+  if (answerCue && lookups.length === 0 && unsourced.length > 0) {
     return {
       kind: "unsourced_claim", names: unsourced, lookups: 0,
       message: `you stated something about ${unsourced.join(", ")} and looked up nothing this turn. read a primary source first (web_search, or fetch the page), then answer only from what it says. if you can't find it, say so plainly.`,

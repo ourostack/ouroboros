@@ -9,7 +9,8 @@ import { resolveSanctuaryPackageManagedRoots } from "../heart/daemon/sanctuary-p
 import { loadOrCreateMachineIdentity } from "../heart/machine-identity"
 import { readMachineRuntimeCredentialConfig, refreshMachineRuntimeCredentialConfig } from "../heart/runtime-credentials"
 import { createApprovedUnraidRestartExecutor, type UnraidRestartAttempt } from "../repertoire/unraid-restart"
-import { consumeRoutineActionGrant, recoverRoutineActionReceipts, transitionRoutineActionReceipt, withRoutineActionAttempt, withStewardPolicyLease } from "../heart/steward-policy"
+import { annotateContainers, SERVICE_CONTAINERS } from "../repertoire/sanctuary-container-policy"
+import { consumeRoutineActionGrant, readStewardPolicy, recoverRoutineActionReceipts, transitionRoutineActionReceipt, withRoutineActionAttempt, withStewardPolicyLease } from "../heart/steward-policy"
 import { UnraidClient } from "../repertoire/unraid-client"
 import { createUnraidReadTools } from "../repertoire/tools-unraid"
 import type { ToolContext } from "../repertoire/tools-base"
@@ -182,6 +183,22 @@ async function appendAcceptanceAttempt(agentRoot: string, attempt: UnraidRestart
   try { await current } finally { if (acceptanceLedgerTails.get(filePath) === current) acceptanceLedgerTails.delete(filePath) }
 }
 
+/**
+ * steward.json is agent state, and the container annotation built from it is advisory: the restart path reads the policy itself under its own lease.
+ * A busy read is retried once, then the last good policy this process saw is used; with neither, the list is returned unannotated.
+ */
+const lastGoodPolicy = new Map<string, ReturnType<typeof readStewardPolicy>>()
+function currentStewardPolicy(agentRoot: string): ReturnType<typeof readStewardPolicy> | null {
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    try {
+      const policy = readStewardPolicy(agentRoot)
+      lastGoodPolicy.set(agentRoot, policy)
+      return policy
+    } catch { /* busy or unreadable: retry once, then fall back */ }
+  }
+  return lastGoodPolicy.get(agentRoot) ?? null
+}
+
 export function createSanctuaryToolContext(agentName: string): Pick<ToolContext, "agentRoot" | "sanctuary" | "answerGates"> {
   emitNervesEvent({
     component: "senses",
@@ -232,7 +249,8 @@ export function createSanctuaryToolContext(agentName: string): Pick<ToolContext,
     // The Sanctuary profile opts in to the settle-time checks: replies about a work are held to what the turn looked up, and a brevity request is honored.
     answerGates: { sourceGrounding: true, brevity: true },
     sanctuary: {
-      listContainers: acceptanceRead("unraid_list_containers", reads.listContainers),
+      // The model-facing list carries the steward policy's desired state beside docker's: a container kept stopped on purpose is not a fault. The restart path reads the plain list.
+      listContainers: acceptanceRead("unraid_list_containers", async (signal?: AbortSignal) => annotateContainers(signal ? await reads.listContainers(signal) : await reads.listContainers(), currentStewardPolicy(agentRoot), Date.now())),
       getContainerLogs: acceptanceRead("unraid_get_container_logs", reads.getContainerLogs),
       getStorage: acceptanceRead("unraid_get_storage", reads.getStorage),
       getDisks: acceptanceRead("unraid_get_disks", reads.getDisks),
@@ -243,7 +261,11 @@ export function createSanctuaryToolContext(agentName: string): Pick<ToolContext,
         runtimePackageVersion: getPackageVersion(),
       })),
       checkServices: acceptanceRead("unraid_check_services", async () => {
-        const services = await Promise.all(SANCTUARY_PUBLIC_ENDPOINTS.map(async (url) => ({ name: new URL(url).hostname.split(".")[0]!, ...await probeSanctuaryEndpoint(url) })))
+        const services = await Promise.all(SANCTUARY_PUBLIC_ENDPOINTS.map(async (url) => {
+          const name = new URL(url).hostname.split(".")[0]!
+          const container = SERVICE_CONTAINERS[name.charAt(0).toUpperCase() + name.slice(1)]
+          return { name, ...(container ? { container } : {}), ...await probeSanctuaryEndpoint(url) }
+        }))
         return { ok: true, data: { observedAt: new Date().toISOString(), services, degraded: services.some((service) => !service.ok) } }
       }),
       getDownloadQueue: acceptanceRead("sanctuary_get_download_queue", async () => {

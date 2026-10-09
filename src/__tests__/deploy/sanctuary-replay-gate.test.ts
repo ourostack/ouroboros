@@ -33,6 +33,27 @@ describe("readback helpers", () => {
     ["Books isn't down", "up"], ["Books is not down", "up"], ["Books is no longer down", "up"], ["Books is up and running", "up"], ["calibre-web is down", "down"], ["it is not running", "down"], ["Books is up, though the other is down", null], ["no idea", null], [undefined, null],
   ])("reads the up/down claim of %s", (text, claim) => expect(gate.upDownClaim(text)).toBe(claim))
 
+  describe("the Books reply that offered to start a container the policy keeps stopped (alpha.879)", () => {
+    const reply879 = "calibre-web is up (healthy, 7 days). calibre itself is sitting in \"Created\" state and not running, so the backend behind the web UI isn't currently up. want me to start it?"
+    const subject = /calibre-web|\bbooks\b/i
+    it("reads the claim from the sentence that names calibre-web or Books", () => {
+      expect(gate.upDownClaim(reply879)).toBeNull()
+      expect(gate.upDownClaim(reply879, subject)).toBe("up")
+      expect(gate.upDownClaim("calibre is stopped.\nBooks is up", subject)).toBe("up")
+      expect(gate.upDownClaim("the library is up and the other is down", subject)).toBeNull()
+      expect(gate.upDownClaim("Books is down. calibre is up.", subject)).toBe("down")
+    })
+    it.each([
+      [reply879, true], ["Books is up. Want me to start calibre?", true], ["I can turn on calibre if you like.", true], ["Shall I spin up Calibre?", true],
+      ["Books is up. Want me to start calibre-web?", false], ["Books is up; calibre is stopped on purpose.", false], ["calibre-web is up. want me to restart it?", false], ["Books is up. Want me to start the download?", false], [undefined, false],
+    ])("flags an offer to start the stopped container in %s: %s", (text, offered) => expect(gate.offersToStartStoppedContainer(text)).toBe(offered))
+    it("fails the books-up case on the 879 reply even though its claim about calibre-web is right", () => {
+      const books = gate.CASES.find((c: { id: string }) => c.id === "books-up")
+      const checks = books.readback({ trace: [{ name: "unraid_list_containers", args: "{}", result: "" }], reply: reply879, after: { containers: { "calibre-web": true } } })
+      expect(checks.filter((c: { ok: boolean }) => !c.ok).map((c: { name: string }) => c.name)).toEqual(["the reply does not offer to start a container the steward policy keeps stopped"])
+    })
+  })
+
   it.each([
     [{ trackedDownloadStatus: "Warning" }, true], [{ status: "failed" }, true], [{ statusMessages: [{}] }, true], [{ status: "downloading", statusMessages: [] }, false], [null, false],
   ])("flags stalled queue item %j as %s", (item, stalled) => expect(gate.isStalledQueueItem(item)).toBe(stalled))
@@ -850,11 +871,27 @@ describe("the gate's name finder stays in step with the runtime's", () => {
     "Sent the book The Hobbit to your PocketBook.", "The book Dune by Frank Herbert is on your Kindle.", "I'll grab the show. I'm adding it now. Less than a minute. Tell me.",
     "Lindon and Yerin train. \"Eithan\" smiles. Wei: calm. Mira fights, Zed runs.", "Remember Orsa. Orsa waits.", "Some options:\n- Philomena\n- Magma\nLindon too", "Note: Honestly it is fine. Tuesday in March, Lodash and Vitest.",
     "For Cradle the characters with that energy are Lindon, Yerin, and Eithan, plus Wei Shi Lindon's old master Dross.",
+    "Books is up. **calibre-web** and **binhex-delugevpn** run fine.",
+    "the ones reaching for the same drawer:\n\n**eithan** — the polished form.\n\n**ozriel** — the reaper.\n\n**fisher gesha** — quiet.", "- mercy: calm\n2. wick - fights\n* __dross__ and _yerin_ and my_var_name", "**done** — grabbing season 2; **important**: **the show** is *ok*; sonarr and **Sonarr**",
   ]
   it("finds the same names for the same text and the same house words", async () => {
     const grounding = await import("../../heart/source-grounding")
     const known = [...grounding.HOUSE_VOCABULARY].join(" ")
     for (const text of corpus) expect(gate.properNouns(text, known), text).toEqual(grounding.candidateNames(text))
+  })
+  it("finds the same lowercase emphasised names as the runtime", async () => {
+    const grounding = await import("../../heart/source-grounding")
+    const known = [...grounding.HOUSE_VOCABULARY].join(" ")
+    for (const text of corpus) expect(gate.lowercaseEmphasisNames(text, known), text).toEqual(grounding.lowercaseEmphasisNames(text))
+    expect(gate.lowercaseEmphasisNames(undefined)).toEqual([])
+    expect(gate.properNouns(corpus[corpus.length - 3], "channel more dross from cradle energy")).toEqual(["eithan", "ozriel", "fisher gesha"])
+  })
+  it("grounds a multiword name by its words, not the whole phrase", () => {
+    const work = gate.CASES.find((c: { id: string }) => c.id === "work-sourced")
+    const run = (source: string) => work.readback({ trace: [{ name: "web_search", args: "{}", result: source }], timeline: [], reply: "**fisher gesha** — quiet.", before: { principalSig: "a" }, after: { principalSig: "a" } })
+      .find((c: { name: string }) => c.name === "every name in the reply appears in a lookup result").ok
+    expect(run("Fisher is a title; Gesha is a name")).toBe(true)
+    expect(run("Fisher only")).toBe(false)
   })
   it("shares the same sentence-opener, status-word and label lists", async () => {
     const grounding = await import("../../heart/source-grounding")

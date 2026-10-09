@@ -672,7 +672,8 @@ describe("Mendelow Cloud Butler household UX", () => {
     const transcripts = JSON.parse(fs.readFileSync(transcriptPath, "utf8")) as Transcript[]
     const expectedOff = transcripts.find((entry) => entry.id === "expected-off")!
     expect(expectedOff.reply).toContain("applies only to Books")
-    expect(psyche("LORE")).toContain("Books maps to the exact containers `calibre` and `calibre-web`")
+    expect(psyche("LORE")).toContain("Books is the `calibre-web` container. Answer \"is Books up?\" from `calibre-web` alone")
+    expect(psyche("LORE")).toContain("record `container:calibre-web` with that state and keep `container:calibre` off unless Ari explicitly says otherwise")
     expect(psyche("LORE")).toContain("Jellyfin is the household media shelf")
     // Every conversation reads the lore, A2A peers included, so this is where a peer learns to use the books tool for a book lookup.
     const lore = psyche("LORE")
