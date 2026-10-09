@@ -2199,6 +2199,50 @@ describe("Twilio phone voice bridge", () => {
     }
   }, 15_000)
 
+  it.each(["openai-sip", "openai-realtime"] as const)("keeps a call alive when saving the transcript fails: %s", async (transport) => {
+    const outputDir = await fs.mkdtemp(path.join(os.tmpdir(), "ouro-voice-save-fail-"))
+    const context = await import("../../../mind/context")
+    const events = vi.spyOn(nerves, "emitNervesEvent")
+    vi.spyOn(mcp, "getSharedMcpManager").mockResolvedValue(null)
+    let fixture: Awaited<ReturnType<typeof startToolSelectionVoice>> | undefined
+    try {
+      fixture = await startToolSelectionVoice(outputDir, transport)
+      await vi.waitFor(() => expect(fixture!.mock.openaiSockets).toHaveLength(1))
+      await vi.waitFor(() => expect(fixture!.publications().length).toBeGreaterThan(0))
+      const save = vi.spyOn(context, "saveSession").mockImplementation(() => { throw new Error("disk full") })
+      fixture.send({ type: "conversation.item.input_audio_transcription.completed", transcript: "hello there" })
+      await vi.waitFor(() => expect(events.mock.calls.some(([event]) => (event as { event: string }).event === "senses.voice_transcript_save_error")).toBe(true))
+      expect(save).toHaveBeenCalled()
+      // The session survived: a later tool call still gets an answer.
+      save.mockRestore()
+      expect(await fixture.call("unadvertised_probe", {}, "after-save-failure")).toMatch(/not advertised|unknown/i)
+    } finally {
+      if (fixture) await fixture.close()
+      vi.restoreAllMocks()
+      await fs.rm(outputDir, { recursive: true, force: true })
+    }
+  })
+
+  it.each(["openai-sip", "openai-realtime"] as const)("never reads the friend store for an unsafe outbound friend id: %s", async (transport) => {
+    const outputDir = await fs.mkdtemp(path.join(os.tmpdir(), "ouro-voice-traversal-"))
+    const { FileFriendStore } = await import("@ouro.bot/friends")
+    const get = vi.spyOn(FileFriendStore.prototype, "get")
+    vi.spyOn(mcp, "getSharedMcpManager").mockResolvedValue(null)
+    let fixture: Awaited<ReturnType<typeof startToolSelectionVoice>> | undefined
+    try {
+      fixture = await startToolSelectionVoice(outputDir, transport, undefined, {
+        caller: { friendId: "../agent.json/x", direction: "outbound", outboundId: "out-unsafe" },
+      })
+      await vi.waitFor(() => expect(fixture!.mock.openaiSockets).toHaveLength(1))
+      expect(get.mock.calls.map(([id]) => id)).not.toContain("../agent.json/x")
+      expect(get.mock.calls.every(([id]) => /^[A-Za-z0-9._-]{1,128}$/.test(String(id)) && id !== "." && id !== "..")).toBe(true)
+    } finally {
+      if (fixture) await fixture.close()
+      vi.restoreAllMocks()
+      await fs.rm(outputDir, { recursive: true, force: true })
+    }
+  })
+
   it("plays configured initial audio after an OpenAI Realtime greeting", async () => {
     const outputDir = await fs.mkdtemp(path.join(os.tmpdir(), "ouro-twilio-phone-"))
     const realtimeGreetingPayload = Buffer.alloc(160, 0x7f).toString("base64")

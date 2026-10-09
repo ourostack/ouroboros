@@ -14,7 +14,10 @@ if (!agentName) {
 import { configureDaemonRuntimeLogger } from "../heart/daemon/runtime-logging"
 import { emitNervesEvent } from "../nerves/runtime"
 
+import { installVoiceProcessGuards } from "./voice/process-guards"
+
 configureDaemonRuntimeLogger("voice")
+installVoiceProcessGuards(process)
 emitNervesEvent({
   component: "senses",
   event: "senses.entry_boot",

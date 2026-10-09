@@ -1200,6 +1200,24 @@ describe("Twilio phone transport runtime", () => {
     expect(deps.startBridgeServer).not.toHaveBeenCalled()
   })
 
+  it.each([undefined, "", "   "])("stays disabled for inbound calls without a Twilio auth token (%j)", async (twilioAuthToken) => {
+    const deps = fakeDeps(
+      { ...configuredRuntime, voice: { ...configuredRuntime.voice, twilioAuthToken } },
+      configuredMachine,
+    )
+
+    const result = await startConfiguredTwilioPhoneTransport({
+      agentName: "slugger",
+      defaultBasePath: agentScopedTwilioPhoneBasePath("slugger"),
+    }, deps)
+
+    expect(result).toEqual({
+      status: "disabled",
+      reason: "voice.twilioAuthToken is required for inbound calls",
+    })
+    expect(deps.startBridgeServer).not.toHaveBeenCalled()
+  })
+
   it("continues with cached runtime config when refresh calls fail", async () => {
     const deps = fakeDeps(configuredRuntime, configuredMachine)
     deps.refreshRuntimeConfig = vi.fn(async () => {
@@ -1326,6 +1344,7 @@ describe("Twilio phone transport runtime", () => {
         integrations: {
           openaiApiKey: "openai-secret",
         },
+        voice: { twilioAuthToken: "twilio-secret" },
       },
       {
         voice: {
@@ -1373,6 +1392,7 @@ describe("Twilio phone transport runtime", () => {
         integrations: {
           openaiEmbeddingsApiKey: "openai-compat-key",
         },
+        voice: { twilioAuthToken: "twilio-secret" },
       },
       {
         voice: {
