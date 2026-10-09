@@ -2,15 +2,10 @@ import * as fs from "node:fs"
 import * as path from "node:path"
 import { afterEach, describe, expect, it, vi } from "vitest"
 
-const fsHooks = vi.hoisted(() => ({ chown: null as null | ((...args: unknown[]) => void) }))
-vi.mock("node:fs", async (importOriginal) => {
-  const actual = await importOriginal<typeof import("node:fs")>()
-  const patched = { ...actual, chownSync: (...args: Parameters<typeof actual.chownSync>) => (fsHooks.chown ? fsHooks.chown(...args) : actual.chownSync(...args)) }
-  return { ...patched, default: patched }
-})
 import { FileFriendStore, type FriendRecord } from "@ouro.bot/friends"
 import { createTmpBundle, type TmpBundleHandle } from "../test-helpers/tmpdir-bundle"
 import { overrideTrustedUidForTests } from "../../a2a/trusted-files"
+import { overrideFchownForTests } from "../../a2a/operator-trust"
 import { escalationGrantsPath, escalationHolders, holdsEscalation, pinnedHolderDid, readEscalationGrants, setEscalationGrant } from "../../a2a/escalation-grants"
 
 let tmp: TmpBundleHandle | null = null
@@ -34,12 +29,12 @@ describe("escalation grants", () => {
     fs.mkdirSync(path.dirname(file), { recursive: true })
     fs.writeFileSync(file, "not json")
     expect(readEscalationGrants(agentRoot)).toEqual({})
-    fs.writeFileSync(file, JSON.stringify({ grants: [] }))
+    fs.writeFileSync(file, JSON.stringify({ schemaVersion: 1, grants: [] }))
     expect(readEscalationGrants(agentRoot)).toEqual({})
     fs.writeFileSync(file, "null")
     expect(readEscalationGrants(agentRoot)).toEqual({})
     const good = { scope: "escalation", grantedAt: NOW, source: "owner", did: DID }
-    fs.writeFileSync(file, JSON.stringify({ grants: {
+    fs.writeFileSync(file, JSON.stringify({ schemaVersion: 1, grants: {
       ok: good, widened: { ...good, extra: true }, wrongScope: { ...good, scope: "principal_commands" }, badDate: { ...good, grantedAt: "nope" },
       noSource: { ...good, source: " " }, noDid: { scope: "escalation", grantedAt: NOW, source: "owner" }, badDid: { ...good, did: "z6Mk" }, longDid: { ...good, did: `did:${"x".repeat(600)}` }, numberDid: { ...good, did: 5 }, notAnObject: "yes", nullGrant: null, listGrant: [],
     } }))
@@ -87,7 +82,7 @@ describe("escalation grants trust", () => {
   const write = (agentRoot: string, mode: number) => {
     const file = escalationGrantsPath(agentRoot)
     fs.mkdirSync(path.dirname(file), { recursive: true })
-    fs.writeFileSync(file, JSON.stringify({ grants: { peer: grant } }))
+    fs.writeFileSync(file, JSON.stringify({ schemaVersion: 1, grants: { peer: grant } }))
     fs.chmodSync(file, mode)
     return file
   }
@@ -134,32 +129,42 @@ describe("escalation grants trust", () => {
 })
 
 describe("escalation grants written as root", () => {
-  it("leaves the directory and the file root-owned and closed to everyone else", () => {
+  it("creates a missing trust directory and the file root-owned and closed to everyone else, through descriptors", () => {
     const agentRoot = root()
     const dir = path.dirname(escalationGrantsPath(agentRoot))
     const calls: unknown[][] = []
-    fsHooks.chown = (...args) => { calls.push(args) }
+    overrideFchownForTests((_fd, uid, gid) => { calls.push([uid, gid]) })
     const geteuid = vi.spyOn(process, "geteuid").mockReturnValue(0)
     try {
-      fs.mkdirSync(dir, { recursive: true, mode: 0o777 })
-      fs.chmodSync(dir, 0o777)
       setEscalationGrant(agentRoot, "claude", { grant: true, source: "test", did: DID })
-      expect(calls).toEqual([[dir, 0, 0], [escalationGrantsPath(agentRoot), 0, 0]])
+      // the directory, then the temporary file that becomes the grants file
+      expect(calls).toEqual([[0, 0], [0, 0]])
       expect(fs.statSync(dir).mode & 0o777).toBe(0o755)
       expect(fs.statSync(escalationGrantsPath(agentRoot)).mode & 0o777).toBe(0o644)
+      expect(fs.readdirSync(dir)).toEqual(["escalation-grants.json"])
     } finally {
       geteuid.mockRestore()
-      fsHooks.chown = null
+      overrideFchownForTests(undefined)
     }
   })
 
   it("does not touch ownership when not root", () => {
     const agentRoot = root()
     const calls: unknown[][] = []
-    fsHooks.chown = (...args) => { calls.push(args) }
+    overrideFchownForTests((...args) => { calls.push(args) })
     try {
       setEscalationGrant(agentRoot, "claude", { grant: true, source: "test", did: DID })
       expect(calls).toEqual([])
-    } finally { fsHooks.chown = null }
+    } finally { overrideFchownForTests(undefined) }
+  })
+
+  it("refuses an existing trust directory the agent could have made, and never takes it over", () => {
+    const agentRoot = root()
+    const dir = path.dirname(escalationGrantsPath(agentRoot))
+    fs.mkdirSync(dir, { recursive: true, mode: 0o777 })
+    fs.chmodSync(dir, 0o777)
+    expect(() => setEscalationGrant(agentRoot, "claude", { grant: true, source: "test", did: DID })).toThrow("not trusted")
+    expect(fs.statSync(dir).mode & 0o777).toBe(0o777)
+    expect(fs.readdirSync(dir)).toEqual([])
   })
 })

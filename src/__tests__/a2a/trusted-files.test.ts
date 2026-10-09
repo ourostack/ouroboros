@@ -2,7 +2,8 @@ import * as fs from "node:fs"
 import * as os from "node:os"
 import * as path from "node:path"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
-import { isTrustedDirectory, overrideTrustedUidForTests, readTrustedJson, TRUSTED_UID } from "../../a2a/trusted-files"
+
+import { inspectTrustedJson, isTrustedDirectory, overrideOwnerForTests, overrideTrustChainRootForTests, overrideTrustedUidForTests, readTrustedJson, TRUSTED_UID } from "../../a2a/trusted-files"
 
 let dir = ""
 const me = process.getuid!()
@@ -63,5 +64,89 @@ describe("trusted files", () => {
     } finally {
       fs.rmSync(link, { force: true })
     }
+  })
+})
+
+describe("the ancestor chain", () => {
+  const AGENT_UID = me + 4242
+  const nested = () => {
+    const a = path.join(dir, "a")
+    const b = path.join(a, "b")
+    fs.mkdirSync(b, { recursive: true, mode: 0o755 })
+    const file = path.join(b, "x.json")
+    fs.writeFileSync(file, "{\"a\":1}", { mode: 0o644 })
+    return { a, b, file }
+  }
+  afterEach(() => { vi.restoreAllMocks(); overrideOwnerForTests(undefined) })
+
+  it("refuses a directory when any ancestor is owned by someone else, however trusted the directory itself is", () => {
+    const { a, b, file } = nested()
+    overrideOwnerForTests((target) => (target === a ? AGENT_UID : undefined))
+    expect(isTrustedDirectory(b, me)).toBe(false)
+    expect(readTrustedJson(file, me)).toBeUndefined()
+    expect(inspectTrustedJson(file, me)).toMatchObject({ state: "untrusted" })
+  })
+
+  it("refuses a directory when any ancestor is group- or other-writable", () => {
+    const { a, b, file } = nested()
+    fs.chmodSync(a, 0o775)
+    expect(isTrustedDirectory(b, me)).toBe(false)
+    expect(inspectTrustedJson(file, me)).toMatchObject({ state: "untrusted" })
+  })
+
+  it("refuses a path that runs through a symlinked ancestor", () => {
+    const { a, file } = nested()
+    const link = path.join(dir, "link")
+    fs.symlinkSync(a, link)
+    expect(isTrustedDirectory(path.join(link, "b"), me)).toBe(false)
+    expect(inspectTrustedJson(path.join(link, "b", "x.json"), me)).toMatchObject({ state: "untrusted" })
+    expect(inspectTrustedJson(file, me)).toMatchObject({ state: "trusted", value: { a: 1 } })
+  })
+
+  it("walks all the way to / unless a test names a chain root, and then fails closed", () => {
+    const { b } = nested()
+    overrideTrustChainRootForTests(undefined)
+    expect(isTrustedDirectory(b, me)).toBe(false)
+    overrideTrustChainRootForTests(process.env.OURO_TEST_ISOLATED_ROOT)
+    expect(isTrustedDirectory(b, me)).toBe(true)
+  })
+
+  it("refuses to set the chain root or an owner outside a test runner", () => {
+    vi.stubEnv("VITEST", undefined as unknown as string)
+    try {
+      expect(() => overrideTrustChainRootForTests(dir)).toThrow("tests only")
+      expect(() => overrideOwnerForTests(() => 0)).toThrow("tests only")
+    } finally { vi.unstubAllEnvs() }
+  })
+})
+
+describe("inspecting a trusted file", () => {
+  const put = (name: string, body: string, mode = 0o644) => { const file = path.join(dir, name); fs.writeFileSync(file, body); fs.chmodSync(file, mode); return file }
+
+  it("tells a missing file from an untrusted one and from a trusted one", () => {
+    expect(inspectTrustedJson(path.join(dir, "nope.json"), me)).toEqual({ state: "missing" })
+    expect(inspectTrustedJson(path.join(dir, "nodir", "nope.json"), me)).toEqual({ state: "missing" })
+    expect(inspectTrustedJson(put("ok.json", "{\"a\":1}"), me)).toEqual({ state: "trusted", value: { a: 1 } })
+    expect(inspectTrustedJson(put("loose.json", "{}", 0o666), me)).toMatchObject({ state: "untrusted" })
+    expect(inspectTrustedJson(put("bad.json", "not json"), me)).toMatchObject({ state: "untrusted", reason: expect.stringContaining("JSON") })
+    expect(inspectTrustedJson(dir, me)).toMatchObject({ state: "untrusted" })
+  })
+
+  it("refuses a file that is itself a symlink", () => {
+    const real = put("real.json", "{}")
+    const link = path.join(dir, "link.json")
+    fs.symlinkSync(real, link)
+    expect(inspectTrustedJson(link, me)).toMatchObject({ state: "untrusted" })
+  })
+
+  it("warns once per target and reason inside the rate-limit window", async () => {
+    const { __resetRejectionRateLimitForTests } = await import("../../a2a/trusted-files")
+    __resetRejectionRateLimitForTests()
+    const file = put("loose2.json", "{}", 0o666)
+    const warn = vi.spyOn(await import("../../nerves/runtime"), "emitNervesEvent")
+    inspectTrustedJson(file, me)
+    inspectTrustedJson(file, me)
+    const rejections = warn.mock.calls.filter(([event]) => event.event === "senses.a2a_trusted_file_rejected")
+    expect(rejections).toHaveLength(1)
   })
 })
