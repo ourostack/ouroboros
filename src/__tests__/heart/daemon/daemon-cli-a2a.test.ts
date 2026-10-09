@@ -277,6 +277,8 @@ describe("ouro A2A client commands (identity + sealed message)", () => {
       expect(typeof refused.next).toBe("string")
       expect(setExitCode).toHaveBeenCalledWith(1)
       expect(writeStdout).toHaveBeenCalledTimes(1)
+      // Anything that is not a refusal still throws, even with --json.
+      await expect(runOuroCli(["a2a", "message", "--to", "http://127.0.0.1:9/.well-known/agent-card.json", "--text", "x", "--identity-file", identityFile, "--json"], createMockDeps({ fetchImpl: fetch }))).rejects.toThrow()
     } finally {
       await server.close()
       rmSync(dir, { recursive: true, force: true })

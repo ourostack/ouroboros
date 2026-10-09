@@ -79,6 +79,7 @@ export function overrideFchownForTests(hook: ((fd: number, uid: number, gid: num
 
 function chownToRoot(fd: number): void {
   if (fchownHook) fchownHook(fd, 0, 0)
+  /* v8 ignore next -- the real fchown only succeeds as root; tests watch the hook instead @preserve */
   else fs.fchownSync(fd, 0, 0)
 }
 

@@ -7182,9 +7182,7 @@ async function executeA2AClientCommand(command: A2AClientCliCommand, deps: OuroC
     const data = error instanceof A2ARpcError ? (error.data as { reason?: unknown; nothingRan?: unknown; retry?: unknown; next?: unknown } | undefined) : undefined
     if (!command.json || typeof data?.reason !== "string") throw error
     return returnCliFailure(deps, JSON.stringify({
-      ok: false, reason: data.reason, nothingRan: data.nothingRan === true, message: (error as Error).message,
-      ...(typeof data.retry === "string" ? { retry: data.retry } : {}),
-      ...(typeof data.next === "string" ? { next: data.next } : {}),
+      ok: false, reason: data.reason, nothingRan: data.nothingRan, message: (error as Error).message, retry: data.retry, next: data.next,
     }))
   }
   const message = command.json ? JSON.stringify(reply) : `${reply.peerName}: ${reply.text}\n[conversation: ${reply.conversationId}]`

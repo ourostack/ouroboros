@@ -55,7 +55,7 @@ export type DelegatedCommandGrantCheck = { ok: true } | { ok: false; reason: Del
  * DID the operator pinned. Order: file trusted, grant exists, DID matches, not expired (an expiry that is not a finite
  * time counts as expired, and so does a replay identity whose root-owned window is closed), then family and active.
  */
-export function checkDelegatedCommandGrant(agentRoot: string, friend: FriendRecord, signerDid: string, now: number = Date.now()): DelegatedCommandGrantCheck {
+export function checkDelegatedCommandGrant(agentRoot: string, friend: FriendRecord, signerDid: string | null, now: number = Date.now()): DelegatedCommandGrantCheck {
   const view = viewDelegatedCommandGrants(agentRoot)
   if (view.state === "untrusted") return { ok: false, reason: "grants_untrusted" }
   const grant = view.grants[friend.id]

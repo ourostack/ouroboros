@@ -3,7 +3,7 @@ import * as os from "node:os"
 import * as path from "node:path"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 
-import { inspectTrustedJson, isTrustedDirectory, overrideOwnerForTests, overrideTrustChainRootForTests, overrideTrustedUidForTests, readTrustedJson, TRUSTED_UID } from "../../a2a/trusted-files"
+import { inspectTrustedDirectory, inspectTrustedJson, isTrustedDirectory, overrideOwnerForTests, overrideTrustChainRootForTests, overrideTrustedUidForTests, readTrustedJson, TRUSTED_UID } from "../../a2a/trusted-files"
 
 let dir = ""
 const me = process.getuid!()
@@ -109,6 +109,15 @@ describe("the ancestor chain", () => {
     expect(isTrustedDirectory(b, me)).toBe(false)
     overrideTrustChainRootForTests(process.env.OURO_TEST_ISOLATED_ROOT)
     expect(isTrustedDirectory(b, me)).toBe(true)
+  })
+
+  it("reaches / when every directory on the way is trusted, and reads a path through a plain file as missing", () => {
+    overrideTrustChainRootForTests(undefined)
+    expect(inspectTrustedDirectory("/", fs.lstatSync("/").uid)).toEqual({ state: "trusted" })
+    overrideTrustChainRootForTests(process.env.OURO_TEST_ISOLATED_ROOT)
+    const file = path.join(dir, "plain")
+    fs.writeFileSync(file, "x")
+    expect(inspectTrustedDirectory(path.join(file, "below"), me)).toEqual({ state: "missing" })
   })
 
   it("refuses to set the chain root or an owner outside a test runner", () => {

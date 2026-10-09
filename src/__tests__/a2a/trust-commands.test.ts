@@ -204,7 +204,7 @@ describe("delegated-commands list", () => {
   it("reports an expired grant as not honoured", async () => {
     const friend = await peer()
     setDelegatedCommandGrant(tmp.agentRoot, friend.id, { grant: true, did: DID, source: "Ari", expiresAt: "2026-10-09T11:00:00.000Z" })
-    expect(await list()).toContain("NOT HONOURED: the grant expired")
+    expect(await list()).toContain("NOT HONOURED: the grant is not in force: it expired")
   })
 
   it("flags an untrusted file and honours nothing in it", async () => {

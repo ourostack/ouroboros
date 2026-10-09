@@ -121,17 +121,15 @@ type GrantStatus = { status: "honoured" } | { status: "suspended"; reason: strin
 
 function statusOf(friendId: string, grant: DelegatedCommandGrant, friend: FriendRecord | null, ctx: TrustCommandContext): GrantStatus {
   if (!friend) return { status: "not_honoured", reason: "no_friend_record", text: `no friend record for ${friendId}` }
-  const check = checkDelegatedCommandGrant(ctx.agentRoot, friend, friendDid(friend) ?? "", ctx.now.getTime())
+  const check = checkDelegatedCommandGrant(ctx.agentRoot, friend, friendDid(friend), ctx.now.getTime())
   if (check.ok) return { status: "honoured" }
   switch (check.reason) {
     case "not_family":
       return { status: "suspended", reason: check.reason, text: `${friend.name} is trust ${friend.trustLevel}, admission ${friend.admissionState}; the grant is kept and applies again once it is family and active` }
     case "grant_did_mismatch":
       return { status: "not_honoured", reason: check.reason, text: `the friend record names ${friendDid(friend) ?? "no DID"}, but the grant pins ${grant.did}` }
-    case "grant_expired":
-      return { status: "not_honoured", reason: check.reason, text: "the grant expired (or this is a replay identity outside its window)" }
     default:
-      return { status: "not_honoured", reason: check.reason, text: "the grant is not in force" }
+      return { status: "not_honoured", reason: check.reason, text: "the grant is not in force: it expired, this is a replay identity outside its window, or the grant file stopped being trusted" }
   }
 }
 
