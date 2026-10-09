@@ -293,6 +293,7 @@ describe("resolving and confirming", () => {
         (r: Record<string, unknown>) => ({ resolution: { ...r, note: "Different words." } }),
         (r: Record<string, unknown>) => ({ resolution: { ...r, signedNote: undefined } }),
         (r: Record<string, unknown>) => ({ resolution: { ...r, version: "v0.1.0-alpha.1" } }),
+        (r: Record<string, unknown>) => ({ resolution: { ...r, resolvedAt: undefined } }),
         (r: Record<string, unknown>) => ({ resolution: r, closedAt: new Date(T0).toISOString() }),
       ]) {
         const { agentRoot, id } = await resolvedRecord()
