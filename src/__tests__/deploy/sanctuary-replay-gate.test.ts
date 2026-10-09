@@ -689,6 +689,58 @@ describe("provision and the real host", () => {
     expect(calls.map((c) => c.slice(0, 4))).toEqual([["docker", "exec", "-u", "0"], ["docker", "exec", "-u", "0"]])
   })
 
+  describe("rotating the replay identities (review of #1064, round 2, finding 3)", () => {
+    const generation = (gen: number) => {
+      const calls: string[][] = []
+      let next = gen * 10
+      const run = (args: string[]) => {
+        calls.push(args)
+        if (args[1] === "identity") return JSON.stringify({ did: `did:key:${args[3].split("/").at(-1)}-gen${gen}` })
+        if (args[1] === "onboard") {
+          const id = `friend-g${gen}-${++next}`
+          fs.writeFileSync(path.join(bundle, "friends", `${id}.json`), JSON.stringify({ id, name: args[args.indexOf("--name") + 1] }))
+          return `friend id: ${id}`
+        }
+        return ""
+      }
+      return { run, calls }
+    }
+
+    it("with --rotate-replay-identities, mints new seeds, re-onboards, regrants and retires the old peers", () => {
+      const first = generation(1)
+      gate.provision({ bundle, cardUrl: "c", log: () => undefined, run: first.run, ...uid() })
+      const host = gate.makeHost({ bundle, log: () => undefined, ...uid() })
+      host.openWindow(5)
+      const oldIds = JSON.parse(fs.readFileSync(path.join(bundle, "state/replay-client/provision.json"), "utf8"))
+      expect(Object.keys(JSON.parse(fs.readFileSync(path.join(trust, "delegated-command-grants.json"), "utf8")).grants)).toEqual([oldIds.principal.friendId])
+      for (const who of ["principal", "stranger", "escalation"]) fs.writeFileSync(path.join(bundle, `state/replay-client/${who}.json`), "{\"seed\":\"leaked\"}", { mode: 0o600 })
+
+      const second = generation(2)
+      gate.provision({ bundle, log: () => undefined, run: second.run, rotate: true, ...uid() })
+      const now = JSON.parse(fs.readFileSync(path.join(bundle, "state/replay-client/provision.json"), "utf8"))
+      for (const who of ["principal", "stranger", "escalation"]) {
+        expect(now[who].friendId).not.toBe(oldIds[who].friendId)
+        expect(now[who].did).toContain("gen2")
+      }
+      // the old seeds are moved aside, not left in place, and the old friends can no longer be admitted or granted
+      expect(fs.readdirSync(path.join(bundle, "state/replay-client")).filter((name) => name.includes("retired")).length).toBe(3)
+      expect(second.calls.filter((a) => a[0] === "friend" && a.includes("revoked")).map((a) => a[2]).sort()).toEqual(["escalation", "principal", "stranger"].map((who) => oldIds[who].friendId).sort())
+      expect(JSON.parse(fs.readFileSync(path.join(trust, "delegated-command-grants.json"), "utf8")).grants).toEqual({})
+      expect(JSON.parse(fs.readFileSync(path.join(trust, "escalation-grants.json"), "utf8")).grants).toEqual({})
+      const registry = JSON.parse(fs.readFileSync(path.join(bundle, "state/replay/identities.json"), "utf8")).friends
+      expect(Object.keys(registry)).toHaveLength(6)
+      expect(fs.existsSync(path.join(bundle, "state/replay-client/principal.json"))).toBe(false)
+    })
+
+    it("parses the flag and passes it to provision", async () => {
+      expect(gate.parseArgs(["provision", "--rotate-replay-identities"])).toMatchObject({ command: "provision", rotate: true })
+      const seen: unknown[] = []
+      const code = await gate.main(["provision", "--rotate-replay-identities"], { out: () => undefined, err: () => undefined }, { makeHost: gate.makeHost, provision: (options: unknown) => { seen.push(options) } })
+      expect(code).toBe(0)
+      expect(seen[0]).toMatchObject({ rotate: true })
+    })
+  })
+
   describe("planted symlinks (review of #1064, round 2, finding 2)", () => {
     const decoy = () => { const dir = fs.mkdtempSync(path.join(os.tmpdir(), "replay-gate-decoy-")); fs.chmodSync(dir, 0o755); return dir }
     const modeOf = (target: string) => fs.statSync(target).mode & 0o777

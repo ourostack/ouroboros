@@ -3,7 +3,9 @@
 // upgrade, and reads the outcome back from machine state (tool traces, policy hashes, ledgers, queues), never from
 // reply text alone. Host-side, root, plain Node, no dependencies. Subcommands:
 //
-//   provision                         mint three replay peers (a granted principal, an ungranted stranger, an escalation peer); idempotent
+//   provision [--rotate-replay-identities]
+//                                     mint three replay peers (a granted principal, an ungranted stranger, an escalation peer); idempotent.
+//                                     --rotate-replay-identities retires the old three (seeds moved aside, grants removed, records revoked) and mints new ones
 //   run [--cases a,b] [--plant <id>]  open the replay window, run the cases, close the window, print one JSON line per case
 //   self-test                         run every case's readback against built-in pass and fail fixtures (used by CI)
 //
@@ -1203,7 +1205,7 @@ export function revokeEscalation(trustDir, friendId, root = {}) {
   revokeTrustGrant(trustDir, "escalation-grants.json", friendId, root)
 }
 
-export function provision({ bundle = DEFAULT_BUNDLE, trustDir = DEFAULT_TRUST_DIR, cardUrl, log = console.log, run = ctr, discover = discoverCardUrl, rootUid = 0, rootGid = 0 } = {}) {
+export function provision({ bundle = DEFAULT_BUNDLE, trustDir = DEFAULT_TRUST_DIR, cardUrl, log = console.log, run = ctr, discover = discoverCardUrl, rootUid = 0, rootGid = 0, rotate = false, now = new Date() } = {}) {
   const state = path.join(bundle, "state")
   const replayDir = path.join(state, "replay")
   const clientDir = path.join(state, "replay-client")
@@ -1217,8 +1219,25 @@ export function provision({ bundle = DEFAULT_BUNDLE, trustDir = DEFAULT_TRUST_DI
   const replayIdentities = {}
   let knownRegistry = {}
   if (lstatOrNull(path.join(replayDir, "identities.json"))) knownRegistry = readJsonNoFollow(path.join(replayDir, "identities.json")).friends ?? {}
-  const previous = lstatOrNull(path.join(clientDir, "provision.json")) ? readJsonNoFollow(path.join(clientDir, "provision.json")) : {}
+  let previous = lstatOrNull(path.join(clientDir, "provision.json")) ? readJsonNoFollow(path.join(clientDir, "provision.json")) : {}
   const resolvedCard = cardUrl ?? previous.cardUrl ?? discover()
+  if (rotate) {
+    // One-time rotation: the old seeds may have been readable by the Butler's user, so every replay peer is retired (its seed moved
+    // aside, its grants removed, its friend record revoked) and minted again below under a new DID and a new friend id.
+    const stamp = now.toISOString().replace(/[:.]/g, "-")
+    for (const who of ["principal", "stranger", "escalation"]) {
+      const old = previous[who]
+      if (old?.friendId) {
+        revokeDelegatedCommands(trustDir, old.friendId, { rootUid, rootGid })
+        revokeEscalation(trustDir, old.friendId, { rootUid, rootGid })
+        run(["friend", "update", old.friendId, "--agent", "sanctuary", "--admission", "revoked"])
+        log(`${who}: retired friend ${old.friendId}`)
+      }
+      const seed = path.join(clientDir, `${who}.json`)
+      if (refuseLinkOrWrongType(seed, "file")) renameSync(seed, `${seed}.retired-${stamp}`)
+    }
+    previous = { cardUrl: resolvedCard }
+  }
   const out = { cardUrl: resolvedCard }
   for (const [who, trust, grant, name, escalate] of [["principal", "family", true, "replay-principal", false], ["stranger", "friend", false, "replay-stranger", false], ["escalation", "family", false, "replay-escalation", true]]) {
     const hostIdentity = path.join(clientDir, `${who}.json`)
@@ -1272,6 +1291,7 @@ export function parseArgs(argv) {
     else if (flag === "--bundle" && rest[i + 1]) options.bundle = rest[++i]
     else if (flag === "--trust-dir" && rest[i + 1]) options.trustDir = rest[++i]
     else if (flag === "--card-url" && rest[i + 1]) options.cardUrl = rest[++i]
+    else if (flag === "--rotate-replay-identities") options.rotate = true
     else if (flag === "--window-minutes" && rest[i + 1]) options.windowMinutes = Number(rest[++i])
     else throw new Error(`unknown argument: ${flag}`)
   }
@@ -1288,7 +1308,7 @@ export async function main(argv, io = { out: (text) => console.log(text), err: (
     return problems.length === 0 ? 0 : 1
   }
   if (options.command === "provision") {
-    try { deps.provision({ ...(options.bundle ? { bundle: options.bundle } : {}), ...(options.trustDir ? { trustDir: options.trustDir } : {}), ...(options.cardUrl ? { cardUrl: options.cardUrl } : {}), log: io.out }); return 0 } catch (error) { io.err(`provision failed: ${error.message}`); return 1 }
+    try { deps.provision({ ...(options.bundle ? { bundle: options.bundle } : {}), ...(options.trustDir ? { trustDir: options.trustDir } : {}), ...(options.cardUrl ? { cardUrl: options.cardUrl } : {}), ...(options.rotate ? { rotate: true } : {}), log: io.out }); return 0 } catch (error) { io.err(`provision failed: ${error.message}`); return 1 }
   }
   if (options.command === "run") {
     let host
@@ -1301,7 +1321,7 @@ export async function main(argv, io = { out: (text) => console.log(text), err: (
     io.out(JSON.stringify({ summary: suite.summary }))
     return suite.summary.ok ? 0 : 1
   }
-  io.err("Usage: sanctuary-replay-gate.mjs <provision|run [--cases a,b] [--plant <case>] [--window-minutes n]|self-test> [--bundle <dir>] [--trust-dir <dir>] [--card-url <url>]")
+  io.err("Usage: sanctuary-replay-gate.mjs <provision [--rotate-replay-identities]|run [--cases a,b] [--plant <case>] [--window-minutes n]|self-test> [--bundle <dir>] [--trust-dir <dir>] [--card-url <url>]")
   return 2
 }
 

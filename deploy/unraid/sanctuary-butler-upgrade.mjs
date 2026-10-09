@@ -1090,7 +1090,7 @@ async function upgrade(version, rehearse, { noGate = false, plant } = {}) {
   if (rehearse && !UPGRADE_STEPS.includes(rehearse)) fail(`--rehearse takes one of: ${UPGRADE_STEPS.join(", ")}`)
   const gated = !rehearse && !noGate
   if (noGate && !rehearse) console.log("\n!! --no-gate: this upgrade will NOT be replay-gated or auto-rolled-back on a behavioural regression")
-  if (gated && !existsSync(GATE_PROVISION)) fail(`replay peers are not provisioned (${GATE_PROVISION}); run \`sanctuary-replay-gate.mjs provision\` first, or pass --no-gate`)
+  if (gated && !existsSync(GATE_PROVISION)) fail(`replay peers are not provisioned (${GATE_PROVISION}); run \`sanctuary-replay-gate.mjs provision\` first (once, on the upgrade that introduces the root-owned replay seeds, run \`provision --rotate-replay-identities\` instead so no earlier seed survives), or pass --no-gate`)
   if (!existsSync(`${ROOT}/active.json`) || !existsSync(`${ROOT}/activation.json`)) fail("no installed authority; use prepare + install")
   if (existsSync(JOURNAL)) fail("a template transaction is pending; resolve it first")
   let id = imageId(version)
