@@ -1,5 +1,6 @@
 import * as fs from "node:fs"
 import * as path from "node:path"
+import { emitNervesEvent } from "../nerves/runtime"
 
 export interface FileLockOptions {
   /** A lock held longer than this is taken to belong to a dead process and is broken. */
@@ -44,6 +45,7 @@ export async function withFileLock<T>(dir: string, name: string, fn: () => Promi
       /* v8 ignore next -- a holder releasing between the failed mkdir and this stat reads as an old lock, which is then simply retried @preserve */
       const heldSince = fs.statSync(lock, { throwIfNoEntry: false })?.mtimeMs ?? 0
       if (Date.now() - heldSince > staleMs) {
+        emitNervesEvent({ level: "warn", component: "heart", event: "heart.file_lock_broken", message: "broke a lock whose holder never released it", meta: { name, heldMs: Date.now() - heldSince } })
         removeLock(lock)
         continue
       }

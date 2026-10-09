@@ -391,7 +391,7 @@ describe("resolve_await ask_owner", () => {
     it("ignores unreadable ledger lines and other closures", async () => {
       await fileAwaitDef.handler({ name: "x", condition: "c", cadence: "30m", alert: "telegram" }, kimCtx)
       await resolveAwaitDef.handler({ name: "x", verdict: "yes", observation: "o" }, kimCtx)
-      fs.appendFileSync(path.join(agentRoot, "awaiting", ".asks.jsonl"), "not json\n{\"filer\":\"kim\"}\n")
+      fs.appendFileSync(path.join(agentRoot, "awaiting", ".asks.jsonl"), "not json\n{\"filer\":\"kim\"}\n{\"owner\":true,\"at\":\"2026-10-08T00:00:00.000Z\"}\n")
       expect((await askOnce("y", kimCtx)).asked).toBe(true)
     })
   })
