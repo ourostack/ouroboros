@@ -321,6 +321,13 @@ describe("escalation grant and revoke", () => {
     expect(escalationGrantsPath(tmp.agentRoot).startsWith(operatorTrustDir(tmp.agentRoot))).toBe(true)
   })
 
+  it("records a default source naming the command when no --source is given", async () => {
+    const friend = await peer()
+    await esc("grant", friend.id, { did: DID })
+    expect(readEscalationGrants(tmp.agentRoot)[friend.id].source).toMatch(/^ouro a2a escalation grant, /)
+    expect(await esc("grant", friend.id, { did: DID, source: readEscalationGrants(tmp.agentRoot)[friend.id].source })).toContain("(no change)")
+  })
+
   it("refuses a record with no DID, an unknown friend and a missing --did, and notes a friend that is not active family", async () => {
     const noDid = await peer({ did: null })
     await expect(esc("grant", noDid.id, { did: DID })).rejects.toThrow("has no DID on record")

@@ -127,6 +127,16 @@ describe("checkDelegatedCommandGrant", () => {
       expect(check(friend(), DID, NOW + 700_000)).toEqual({ ok: false, reason: "grant_expired" })
     })
 
+    it("ignores malformed entries in the replay list, so only a well-formed holder forces an expiry", () => {
+      writeFile({ peer: entry({ source: "Replay gate provisioning" }) })
+      const listFile = path.join(path.dirname(delegatedCommandGrantsPath(tmp.agentRoot)), "replay-identities.json")
+      for (const bad of [null, "peer", [], { who: 1, name: "p", did: DID }]) {
+        fs.writeFileSync(listFile, JSON.stringify({ schemaVersion: 1, grants: { peer: bad } }), { mode: 0o644 })
+        expect(check()).toEqual({ ok: true })
+      }
+      fs.rmSync(listFile)
+    })
+
     it("refuses a replay grant with no trusted expiry when the root-owned replay list names the friend", () => {
       writeFile({ peer: entry({ source: "Replay gate provisioning" }) })
       expect(check()).toEqual({ ok: true })
