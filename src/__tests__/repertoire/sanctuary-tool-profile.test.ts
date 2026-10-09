@@ -25,9 +25,9 @@ describe("Sanctuary active tool profile", () => {
     const packaged = JSON.parse(fs.readFileSync("deploy/unraid/sanctuary.ouro/tool-profiles.json", "utf8"))
     const owner = packaged.profiles["sanctuary-owner"]
     const digest = (value: unknown) => createHash("sha256").update(JSON.stringify(value)).digest("hex")
-    expect(owner.version).toBe(15)
-    expect(owner.toolNames).toHaveLength(67)
-    expect(new Set(owner.toolNames).size).toBe(67)
+    expect(owner.version).toBe(16)
+    expect(owner.toolNames).toHaveLength(68)
+    expect(new Set(owner.toolNames).size).toBe(68)
     expect(owner.toolNames).toContain("sanctuary_host_execute")
     expect(owner.toolNames).toEqual(expect.arrayContaining(SANCTUARY_OWNER_ADDITIONS))
     expect(owner.toolNames).toEqual(expect.arrayContaining([...SANCTUARY_MEDIA_MCP_TOOLS]))
@@ -46,7 +46,7 @@ describe("Sanctuary active tool profile", () => {
     expect(names.toSorted()).toEqual(withoutMediaMcp(packaged.profiles["sanctuary-owner"].toolNames).filter((name: string) => name !== "rest" && name !== "sanctuary_host_execute").toSorted())
     expect(names).toContain("send_message")
     expect(packaged.version).toBe(2)
-    expect(packaged.profiles["sanctuary-owner"].version).toBe(15)
+    expect(packaged.profiles["sanctuary-owner"].version).toBe(16)
     expect(packaged.profiles["sanctuary-household"].version).toBe(5)
     expect(packaged.profiles["sanctuary-event"].version).toBe(4)
     expect(packaged.profiles["sanctuary-owner"].toolNames).toEqual(expect.arrayContaining(names))
@@ -78,7 +78,7 @@ describe("Sanctuary active tool profile", () => {
     const packaged = JSON.parse(fs.readFileSync("deploy/unraid/sanctuary.ouro/tool-profiles.json", "utf8"))
     const owner = packaged.profiles["sanctuary-owner"]
     const peer = packaged.profiles["sanctuary-agent-peer"]
-    expect(peer.version).toBe(6)
+    expect(peer.version).toBe(7)
     expect(peer.toolNames).toEqual(owner.toolNames.filter((name: string) => name !== "sanctuary_host_execute" && name !== "unraid_restart_container"))
     expect(peer.contextScopes).toEqual(owner.contextScopes)
     expect(peer.effectScopes).toEqual(owner.effectScopes)
