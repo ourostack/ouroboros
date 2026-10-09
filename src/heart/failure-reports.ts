@@ -4,9 +4,9 @@ import * as path from "node:path"
 import * as semver from "semver"
 import type { FriendStore } from "@ouro.bot/friends"
 import { ready } from "@ouro.bot/friends/a2a-client"
-import { escalationHolders, holdsEscalation } from "../a2a/escalation-grants"
+import { escalationHolders, holdsEscalation, pinnedHolderDid } from "../a2a/escalation-grants"
 import { FileOutboxStore } from "../a2a/outbox-store"
-import { friendDid, verifyResolution } from "../a2a/resolution-proof"
+import { verifyResolution } from "../a2a/resolution-proof"
 import { isReplayIdentity, isReplayWindowOpen } from "../a2a/replay-harness"
 import { emitNervesEvent } from "../nerves/runtime"
 import { withFileLock } from "./file-lock"
@@ -277,7 +277,7 @@ function resolveLocked(agentRoot: string, input: { id: string; version: string; 
   if (!record.recipients.includes(input.byFriendId)) return { ok: false, reason: "not_recipient" }
   if (record.status === "closed") return { ok: false, reason: "already_closed" }
   const version = semver.valid(input.version)
-  if (!version) return { ok: false, reason: "bad_version" }
+  if (!version || version !== input.version) return { ok: false, reason: "bad_version" }
   const note = cap(input.note)
   if (!note) return { ok: false, reason: "bad_note" }
   writeReport(agentRoot, { ...record, status: "resolved", resolution: { version, note, by: input.byFriendId, at: new Date(now).toISOString(), resolvedAt: input.resolvedAt, signedNote: input.note, proof: input.proof } })
@@ -304,16 +304,23 @@ export interface ConfirmDeps {
 /** The owner hears "fixed" only if the escalation holder signed it and still holds escalation; a file the Butler's own uid can write proves nothing. */
 async function resolutionIsSigned(agentRoot: string, deps: ConfirmDeps, record: FailureReportRecord): Promise<boolean> {
   const resolution = record.resolution!
-  const friend = deps.friends ? await deps.friends.get(resolution.by) : null
-  if (!friend || !holdsEscalation(agentRoot, friend)) {
-    emitNervesEvent({ level: "warn", component: "senses", event: "senses.failure_report_resolution_unverified", message: "skipped a resolved report whose holder no longer holds escalation", meta: { reportId: record.id, by: resolution.by } })
+  const skip = (reason: string): false => {
+    emitNervesEvent({ level: "warn", component: "senses", event: "senses.failure_report_resolution_unverified", message: "skipped a resolved report that the holder's signature does not vouch for", meta: { reportId: record.id, by: resolution.by, reason } })
     return false
   }
+  // A report that was ever closed already told the owner; a resolved status on it is a forgery or a replay.
+  if (record.closedAt !== undefined) return skip("report was closed before")
+  // The owner is told exactly what was signed: the stored note must be the signed note, and the version its canonical form.
+  if (typeof resolution.signedNote !== "string" || resolution.note !== cap(resolution.signedNote)) return skip("note is not the signed note")
+  if (semver.valid(resolution.version) !== resolution.version) return skip("version is not canonical")
+  const friend = deps.friends ? await deps.friends.get(resolution.by) : null
+  if (!friend || !holdsEscalation(agentRoot, friend)) return skip("holder no longer holds escalation")
+  // The key comes from the root-owned grant. The friend record is writable by the Butler's own uid and is never consulted for it.
   const checked = verifyResolution({
     sodium: await ready(),
-    claim: { reportId: record.id, version: resolution.version, note: resolution.signedNote ?? resolution.note, resolvedAt: resolution.resolvedAt ?? "" },
+    claim: { reportId: record.id, version: resolution.version, note: resolution.signedNote, resolvedAt: resolution.resolvedAt ?? "" },
     proof: resolution.proof,
-    holderDid: friendDid(friend),
+    holderDid: pinnedHolderDid(agentRoot, resolution.by),
   })
   return checked.ok
 }

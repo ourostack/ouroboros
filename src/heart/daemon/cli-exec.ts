@@ -7205,15 +7205,18 @@ async function executeA2ACommand(command: A2ACliCommand & { agent: string }, dep
     const agentRoot = path.join(deps.bundlesRoot ?? getAgentBundlesRoot(), `${command.agent}.ouro`)
     if (command.action === "list") {
       const grants = Object.entries(readEscalationGrants(agentRoot))
-      const message = grants.length === 0 ? "no escalation grants" : grants.map(([id, grant]) => `${id}  granted ${grant.grantedAt}  ${grant.source}`).join("\n")
+      const message = grants.length === 0 ? "no escalation grants" : grants.map(([id, grant]) => `${id}  granted ${grant.grantedAt}  ${grant.did}  ${grant.source}`).join("\n")
       deps.writeStdout(message)
       return message
     }
     const friend = await new FileFriendStore(path.join(agentRoot, "friends")).get(command.friendId!)
     if (!friend) throw new Error(`friend not found: ${command.friendId}`)
     const at = new Date(deps.now?.() ?? Date.now())
+    const { friendDid } = await import("../../a2a/resolution-proof")
+    const holderDid = command.action === "grant" ? friendDid(friend) : null
+    if (command.action === "grant" && !holderDid) throw new Error(`${friend.name} has no pinned DID yet; onboard it with a DID before granting escalation`)
     const change = command.action === "grant"
-      ? setEscalationGrant(agentRoot, friend.id, { grant: true, source: command.source ?? `ouro a2a escalation grant, ${at.toISOString()}` }, at)
+      ? setEscalationGrant(agentRoot, friend.id, { grant: true, source: command.source ?? `ouro a2a escalation grant, ${at.toISOString()}`, did: holderDid! }, at)
       : setEscalationGrant(agentRoot, friend.id, { grant: false }, at)
     const message = [
       `${command.action === "grant" ? "granted" : "revoked"} escalation: ${friend.name} (${friend.id})${change.changed ? "" : " (no change)"}`,

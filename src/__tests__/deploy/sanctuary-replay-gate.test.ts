@@ -534,7 +534,7 @@ describe("provision and the real host", () => {
     expect(out.escalation.friendId).toBe("friend-3")
     const grants = JSON.parse(fs.readFileSync(path.join(bundle, "state/a2a/escalation-grants.json"), "utf8"))
     expect(Object.keys(grants.grants)).toEqual(["friend-3"])
-    expect(grants.grants["friend-3"]).toMatchObject({ scope: "escalation", source: "replay gate provisioning (host root)" })
+    expect(grants.grants["friend-3"]).toMatchObject({ scope: "escalation", source: "replay gate provisioning (host root)", did: expect.stringMatching(/^did:/) })
     expect(fs.statSync(path.join(bundle, "state/a2a/escalation-grants.json")).mode & 0o777).toBe(0o644)
     expect(JSON.parse(fs.readFileSync(path.join(bundle, "friends", "friend-3.json"), "utf8")).delegationGrant).toBeUndefined()
     expect(calls.filter((a) => a[0] === "friend").every((a) => a.includes("sanctuary-agent-peer") && a.includes("active"))).toBe(true)
@@ -660,11 +660,11 @@ describe("escalation, outbox and the act path", () => {
     const bundle = tmpBundle()
     const root = { rootUid: process.getuid!(), rootGid: process.getgid!() }
     try {
-      gate.grantEscalation(bundle, "e1", new Date("2026-10-08T00:00:00.000Z"), root)
-      gate.grantEscalation(bundle, "e2", new Date("2026-10-08T01:00:00.000Z"), root)
+      gate.grantEscalation(bundle, "e1", "did:key:e1", new Date("2026-10-08T00:00:00.000Z"), root)
+      gate.grantEscalation(bundle, "e2", "did:key:e2", new Date("2026-10-08T01:00:00.000Z"), root)
       fs.chmodSync(path.join(bundle, "state/a2a/escalation-grants.json"), 0o666)
       fs.chmodSync(path.join(bundle, "state/a2a"), 0o777)
-      gate.grantEscalation(bundle, "e1", new Date("2026-10-09T00:00:00.000Z"), root)
+      gate.grantEscalation(bundle, "e1", "did:key:e1", new Date("2026-10-09T00:00:00.000Z"), root)
       expect(fs.statSync(path.join(bundle, "state/a2a")).mode & 0o777).toBe(0o755)
       const file = path.join(bundle, "state/a2a/escalation-grants.json")
       const grants = JSON.parse(fs.readFileSync(file, "utf8"))

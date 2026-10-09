@@ -890,13 +890,13 @@ export function grantPrincipalCommands(file, now = new Date()) {
  * Gives a friend the escalation grant in the agent's grant file, as root. The directory and file stay root-owned and
  * read-only to everyone else, because the Butler only honours a grant it could not have written itself.
  */
-export function grantEscalation(bundle, friendId, now = new Date(), { rootUid = 0, rootGid = 0 } = {}) {
+export function grantEscalation(bundle, friendId, did, now = new Date(), { rootUid = 0, rootGid = 0 } = {}) {
   const dir = path.join(bundle, "state", "a2a")
   const file = path.join(dir, "escalation-grants.json")
   mkdirSync(dir, { recursive: true, mode: 0o755 }); chownSync(dir, rootUid, rootGid); chmodSync(dir, 0o755)
   const current = existsSync(file) ? JSON.parse(readFileSync(file, "utf8")) : { schemaVersion: 1, grants: {} }
-  if (current.grants?.[friendId]?.scope !== "escalation") {
-    current.grants = { ...current.grants, [friendId]: { scope: "escalation", grantedAt: now.toISOString(), source: "replay gate provisioning (host root)" } }
+  if (current.grants?.[friendId]?.scope !== "escalation" || current.grants[friendId].did !== did) {
+    current.grants = { ...current.grants, [friendId]: { scope: "escalation", grantedAt: now.toISOString(), source: "replay gate provisioning (host root)", did } }
     writeAtomic(file, `${JSON.stringify(current, null, 2)}\n`, 0o644)
   }
   chownSync(file, rootUid, rootGid); chmodSync(file, 0o644)
@@ -931,7 +931,7 @@ export function provision({ bundle = DEFAULT_BUNDLE, cardUrl, log = console.log,
     const record = JSON.parse(readFileSync(file, "utf8"))
     if (grant && record.delegationGrant?.scope !== "principal_commands") grantPrincipalCommands(file)
     if (!grant && record.delegationGrant) throw new Error(`${name} must not hold a delegation grant`)
-    if (escalate) grantEscalation(bundle, friendId, new Date(), { rootUid, rootGid })
+    if (escalate) grantEscalation(bundle, friendId, did, new Date(), { rootUid, rootGid })
     out[who] = { friendId, did, containerIdentityFile, hostIdentity }
     replayIdentities[friendId] = { name, who }
     log(`${name}: friend ${friendId} (${trust}${grant ? ", principal_commands" : escalate ? ", escalation" : ", no grant"})`)

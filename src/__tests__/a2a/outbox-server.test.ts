@@ -42,7 +42,7 @@ async function setup(options: { escalation?: Parameters<typeof startA2AServer>[0
     await store.put(peer.id, { ...peer, admissionState: name === "revoked" ? "revoked" : "active", initiativePolicy: "reactive_only", capabilityProfileId: "sanctuary-agent-peer" })
     peers[name] = { client, id: peer.id }
   }
-  setEscalationGrant(tmp.agentRoot, peers.claude!.id, { grant: true, source: "test" })
+  setEscalationGrant(tmp.agentRoot, peers.claude!.id, { grant: true, source: "test", did: peers.claude!.client.did })
   server = await startA2AServer({
     agentName: tmp.agentName, agentRoot: tmp.agentRoot, port: 0, ...(options.identity === false ? {} : { identity: asSelf() }),
     ...(options.escalation ? { escalation: options.escalation } : {}),

@@ -34,7 +34,7 @@ describe("report_failure tool", () => {
 
   it("files into the escalation holder's outbox, taking the session from the runtime and defaulting severity", async () => {
     const { agentRoot, peerId } = await withPeer()
-    setEscalationGrant(agentRoot, peerId, { grant: true, source: "test" })
+    setEscalationGrant(agentRoot, peerId, { grant: true, source: "test", did: "did:key:z6MkHolderOne" })
     const out = JSON.parse(await run({ ari_words: "dim the lights", tried: "searched tools", error: "no lights tool", failed_tool: "lights", severity: "bogus" }, agentRoot, { friendId: "ari", channel: "telegram", key: "chat-1" }))
     expect(out).toMatchObject({ filed: true, duplicate: false, recipients: 1 })
     const entries = new FileOutboxStore(agentRoot).list(peerId).entries

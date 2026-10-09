@@ -11,12 +11,13 @@ vi.mock("node:fs", async (importOriginal) => {
 import { FileFriendStore, type FriendRecord } from "@ouro.bot/friends"
 import { createTmpBundle, type TmpBundleHandle } from "../test-helpers/tmpdir-bundle"
 import { overrideTrustedUidForTests } from "../../a2a/trusted-files"
-import { escalationGrantsPath, escalationHolders, holdsEscalation, readEscalationGrants, setEscalationGrant } from "../../a2a/escalation-grants"
+import { escalationGrantsPath, escalationHolders, holdsEscalation, pinnedHolderDid, readEscalationGrants, setEscalationGrant } from "../../a2a/escalation-grants"
 
 let tmp: TmpBundleHandle | null = null
 afterEach(() => { tmp?.cleanup(); tmp = null })
 
 const NOW = "2026-10-08T00:00:00.000Z"
+const DID = "did:key:z6MkHolderOne"
 function friend(id: string, overrides: Partial<FriendRecord> = {}): FriendRecord {
   return {
     id, name: id, role: "friend", trustLevel: "family", admissionState: "active", initiativePolicy: "reactive_only", connections: [], externalIds: [],
@@ -37,10 +38,10 @@ describe("escalation grants", () => {
     expect(readEscalationGrants(agentRoot)).toEqual({})
     fs.writeFileSync(file, "null")
     expect(readEscalationGrants(agentRoot)).toEqual({})
-    const good = { scope: "escalation", grantedAt: NOW, source: "owner" }
+    const good = { scope: "escalation", grantedAt: NOW, source: "owner", did: DID }
     fs.writeFileSync(file, JSON.stringify({ grants: {
       ok: good, widened: { ...good, extra: true }, wrongScope: { ...good, scope: "principal_commands" }, badDate: { ...good, grantedAt: "nope" },
-      noSource: { ...good, source: " " }, notAnObject: "yes", nullGrant: null, listGrant: [],
+      noSource: { ...good, source: " " }, noDid: { scope: "escalation", grantedAt: NOW, source: "owner" }, badDid: { ...good, did: "z6Mk" }, longDid: { ...good, did: `did:${"x".repeat(600)}` }, numberDid: { ...good, did: 5 }, notAnObject: "yes", nullGrant: null, listGrant: [],
     } }))
     expect(readEscalationGrants(agentRoot)).toEqual({ ok: good })
   })
@@ -48,11 +49,16 @@ describe("escalation grants", () => {
   it("grants and revokes with a backup of the previous file, and reports no-ops without writing", () => {
     const agentRoot = root()
     expect(setEscalationGrant(agentRoot, "peer", { grant: false })).toEqual({ changed: false, backup: null })
-    const first = setEscalationGrant(agentRoot, "peer", { grant: true, source: "Ari, test" }, new Date(NOW))
+    const first = setEscalationGrant(agentRoot, "peer", { grant: true, source: "Ari, test", did: DID }, new Date(NOW))
     expect(first).toEqual({ changed: true, backup: null })
-    expect(readEscalationGrants(agentRoot)).toEqual({ peer: { scope: "escalation", grantedAt: NOW, source: "Ari, test" } })
+    expect(readEscalationGrants(agentRoot)).toEqual({ peer: { scope: "escalation", grantedAt: NOW, source: "Ari, test", did: DID } })
     expect(fs.statSync(escalationGrantsPath(agentRoot)).mode & 0o777).toBe(0o644)
-    expect(setEscalationGrant(agentRoot, "peer", { grant: true, source: "again" })).toEqual({ changed: false, backup: null })
+    expect(setEscalationGrant(agentRoot, "peer", { grant: true, source: "again", did: DID })).toEqual({ changed: false, backup: null })
+    // granting the same friend a different DID re-pins it
+    expect(setEscalationGrant(agentRoot, "peer", { grant: true, source: "rekeyed", did: "did:key:z6MkHolderTwo" }).changed).toBe(true)
+    expect(pinnedHolderDid(agentRoot, "peer")).toBe("did:key:z6MkHolderTwo")
+    expect(pinnedHolderDid(agentRoot, "nobody")).toBeNull()
+    setEscalationGrant(agentRoot, "peer", { grant: true, source: "Ari, test", did: DID }, new Date(NOW))
     const revoked = setEscalationGrant(agentRoot, "peer", { grant: false }, new Date("2026-10-09T00:00:00.000Z"))
     expect(revoked.changed).toBe(true)
     expect(JSON.parse(fs.readFileSync(revoked.backup!, "utf8")).grants.peer.source).toBe("Ari, test")
@@ -61,9 +67,9 @@ describe("escalation grants", () => {
 
   it("is held only by an active family friend the operator listed", async () => {
     const agentRoot = root()
-    setEscalationGrant(agentRoot, "claude", { grant: true, source: "owner" })
-    setEscalationGrant(agentRoot, "pending", { grant: true, source: "owner" })
-    setEscalationGrant(agentRoot, "acquaintance", { grant: true, source: "owner" })
+    setEscalationGrant(agentRoot, "claude", { grant: true, source: "owner", did: DID })
+    setEscalationGrant(agentRoot, "pending", { grant: true, source: "owner", did: DID })
+    setEscalationGrant(agentRoot, "acquaintance", { grant: true, source: "owner", did: DID })
     expect(holdsEscalation(agentRoot, friend("claude"))).toBe(true)
     expect(holdsEscalation(agentRoot, friend("pending", { admissionState: "unverified" }))).toBe(false)
     expect(holdsEscalation(agentRoot, friend("acquaintance", { trustLevel: "friend" }))).toBe(false)
@@ -77,7 +83,7 @@ describe("escalation grants", () => {
 })
 
 describe("escalation grants trust", () => {
-  const grant = { scope: "escalation", grantedAt: NOW, source: "owner" }
+  const grant = { scope: "escalation", grantedAt: NOW, source: "owner", did: DID }
   const write = (agentRoot: string, mode: number) => {
     const file = escalationGrantsPath(agentRoot)
     fs.mkdirSync(path.dirname(file), { recursive: true })
@@ -137,7 +143,7 @@ describe("escalation grants written as root", () => {
     try {
       fs.mkdirSync(dir, { recursive: true, mode: 0o777 })
       fs.chmodSync(dir, 0o777)
-      setEscalationGrant(agentRoot, "claude", { grant: true, source: "test" })
+      setEscalationGrant(agentRoot, "claude", { grant: true, source: "test", did: DID })
       expect(calls).toEqual([[dir, 0, 0], [escalationGrantsPath(agentRoot), 0, 0]])
       expect(fs.statSync(dir).mode & 0o777).toBe(0o755)
       expect(fs.statSync(escalationGrantsPath(agentRoot)).mode & 0o777).toBe(0o644)
@@ -152,7 +158,7 @@ describe("escalation grants written as root", () => {
     const calls: unknown[][] = []
     fsHooks.chown = (...args) => { calls.push(args) }
     try {
-      setEscalationGrant(agentRoot, "claude", { grant: true, source: "test" })
+      setEscalationGrant(agentRoot, "claude", { grant: true, source: "test", did: DID })
       expect(calls).toEqual([])
     } finally { fsHooks.chown = null }
   })

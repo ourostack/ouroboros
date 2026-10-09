@@ -75,14 +75,23 @@ describe("escalation CLI execution", () => {
     expect(await runOuroCli(["a2a", "escalation", "list", "--agent", "sanctuary"], d)).toBe("no escalation grants")
     const granted = await runOuroCli(["a2a", "escalation", "grant", "--agent", "sanctuary", "--friend", friendId, "--source", "Ari, test"], d)
     expect(granted).toBe(`granted escalation: Claude Code (${friendId})`)
-    expect(readEscalationGrants(agentRoot)[friendId]).toMatchObject({ scope: "escalation", grantedAt: "2026-10-08T12:00:00.000Z", source: "Ari, test" })
+    expect(readEscalationGrants(agentRoot)[friendId]).toMatchObject({ scope: "escalation", grantedAt: "2026-10-08T12:00:00.000Z", source: "Ari, test", did: "did:key:zX" })
     expect(await runOuroCli(["a2a", "escalation", "grant", "--agent", "sanctuary", "--friend", friendId], d)).toBe(`granted escalation: Claude Code (${friendId}) (no change)`)
-    expect(await runOuroCli(["a2a", "escalation", "list", "--agent", "sanctuary"], d)).toBe(`${friendId}  granted 2026-10-08T12:00:00.000Z  Ari, test`)
+    expect(await runOuroCli(["a2a", "escalation", "list", "--agent", "sanctuary"], d)).toBe(`${friendId}  granted 2026-10-08T12:00:00.000Z  did:key:zX  Ari, test`)
     const revoked = await runOuroCli(["a2a", "escalation", "revoke", "--agent", "sanctuary", "--friend", friendId], d)
     expect(revoked).toContain(`revoked escalation: Claude Code (${friendId})`)
     expect(revoked).toContain(`backup: ${escalationGrantsPath(agentRoot)}.bak-`)
     expect(readEscalationGrants(agentRoot)).toEqual({})
     expect(JSON.parse(readFileSync(escalationGrantsPath(agentRoot), "utf8")).grants).toEqual({})
+  })
+
+  it("pins the friend's DID and refuses to grant a friend that has none", async () => {
+    const { bundlesRoot, agentRoot, friendId } = await withFriend()
+    const store = new FileFriendStore(join(agentRoot, "friends"))
+    const friend = (await store.get(friendId))!
+    await store.put(friendId, { ...friend, agentMeta: undefined })
+    await expect(runOuroCli(["a2a", "escalation", "grant", "--agent", "sanctuary", "--friend", friendId], deps({ bundlesRoot }))).rejects.toThrow("no pinned DID")
+    expect(readEscalationGrants(agentRoot)).toEqual({})
   })
 
   it("defaults the grant source and timestamp, warns when the friend is not active family, and refuses an unknown friend", async () => {
@@ -132,7 +141,7 @@ describe("outbox CLI execution against a live server", () => {
     expect(await runOuroCli(["a2a", "outbox", "list", "--to", cardUrl, "--identity-file", identityFile, "--since", entry.id], d)).toContain('"entries": []')
     expect(JSON.parse(await runOuroCli(["a2a", "outbox", "ack", "--to", cardUrl, "--ids", entry.id, "--identity-file", identityFile, "--json"], d))).toEqual({ acked: [entry.id], unknown: [] })
     const { setEscalationGrant } = await import("../../../a2a/escalation-grants")
-    setEscalationGrant(agentRoot, peer.id, { grant: true, source: "test" })
+    setEscalationGrant(agentRoot, peer.id, { grant: true, source: "test", did: client.did })
     const filed = await fileFailureReport(agentRoot, store, { ariWords: "a", tried: "b", error: "c", severity: "low", origin: { friendId: null, channel: null, key: null } })
     if (!filed.ok) throw new Error("setup failed")
     expect(JSON.parse(await runOuroCli(["a2a", "outbox", "resolve", "--to", cardUrl, "--report", filed.id, "--version", "0.1.0-alpha.9", "--note", "Fixed.", "--identity-file", identityFile, "--json"], d))).toEqual({ id: filed.id, status: "resolved" })

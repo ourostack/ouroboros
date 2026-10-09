@@ -8,6 +8,12 @@ import { emitNervesEvent } from "../nerves/runtime"
  * the Butler keeps the signature next to the resolution. The holder's private key never leaves the holder's machine,
  * so a forged report file cannot carry a valid one.
  */
+const PURPOSE = "ouro.report-resolve.v1"
+
+function envelopeOf(claim: ResolutionClaim): Record<string, string> {
+  return { purpose: PURPOSE, reportId: claim.reportId, version: claim.version, note: claim.note, resolvedAt: claim.resolvedAt }
+}
+
 export interface ResolutionClaim {
   reportId: string
   version: string
@@ -21,14 +27,14 @@ export function signResolution(input: { sodium: Sodium; identity: DidKeyIdentity
   const { claim } = input
   return signEnvelope({
     sodium: input.sodium,
-    envelope: { reportId: claim.reportId, version: claim.version, note: claim.note, resolvedAt: claim.resolvedAt },
+    envelope: envelopeOf(claim),
     signerEd25519Priv: input.identity.ed25519Priv,
     signerDid: input.identity.did,
     signerKeyId: input.identity.keyId,
   })
 }
 
-/** The DID a holder's friend record names; the signer must be exactly this one. */
+/** The DID a friend record names. Used only by the operator command that pins it into the grant; never to verify a resolution. */
 export function friendDid(friend: FriendRecord): string | null {
   return resolveAgentIdentity(friend.agentMeta).did ?? null
 }
@@ -47,7 +53,7 @@ export function verifyResolution(input: { sodium: Sodium; claim: ResolutionClaim
   if (!parsed || (proof as { signerDid?: unknown }).signerDid !== input.holderDid) return fail("wrong_signer")
   const valid = verifyEnvelopeSignature({
     sodium: input.sodium,
-    envelope: { reportId: input.claim.reportId, version: input.claim.version, note: input.claim.note, resolvedAt: input.claim.resolvedAt },
+    envelope: envelopeOf(input.claim),
     proof: proof as StructuredProof,
     signerEd25519Pub: parsed.ed25519Pub,
   })

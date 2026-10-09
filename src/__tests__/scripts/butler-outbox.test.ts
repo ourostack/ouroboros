@@ -30,7 +30,7 @@ describe("butler-outbox parseArgs", () => {
   it("parses list with every flag", async () => {
     const { parseArgs } = await lib()
     expect(parseArgs(["list", "--since", "c1", "--json", "--fail-if-empty", "--card-url", "http://x", "--identity-file", "/i.json", "--ouro", "/bin/ouro"])).toEqual({
-      command: "list", since: "c1", json: true, failIfEmpty: true, cardUrl: "http://x", identityFile: "/i.json", ouro: "/bin/ouro", host: undefined, bundle: undefined, ids: [],
+      command: "list", since: "c1", json: true, failIfEmpty: true, cardUrl: "http://x", identityFile: "/i.json", ouro: "/bin/ouro", host: undefined, bundle: undefined, owner: undefined, ids: [],
     })
   })
 
@@ -57,7 +57,7 @@ describe("butler-outbox config and ids", () => {
   it("resolves flags over env over defaults", async () => {
     const { resolveConfig, parseArgs } = await lib()
     const none = parseArgs(["list"])
-    expect(resolveConfig(none, {}, "/h")).toEqual({ host: "sanctuary", bundle: "/mnt/user/appdata/ouro-butler/agent/sanctuary.ouro", cardUrl: CARD, identityFile: "/h/.ouro-cli/a2a/client-identity.json", ouro: "/h/.ouro-cli/bin/ouro" })
+    expect(resolveConfig(none, {}, "/h")).toMatchObject({ host: "sanctuary", bundle: "/mnt/user/appdata/ouro-butler/agent/sanctuary.ouro", cardUrl: CARD, identityFile: "/h/.ouro-cli/a2a/client-identity.json", ouro: "/h/.ouro-cli/bin/ouro" })
     const env = { BUTLER_OUTBOX_CARD_URL: "e-card", BUTLER_OUTBOX_IDENTITY_FILE: "e-id", BUTLER_OUTBOX_OURO: "e-ouro" }
     expect(resolveConfig(none, env, "/h")).toMatchObject({ cardUrl: "e-card", identityFile: "e-id", ouro: "e-ouro" })
     const flags = parseArgs(["list", "--card-url", "f-card", "--identity-file", "f-id", "--ouro", "f-ouro"])
@@ -252,7 +252,8 @@ describe("butler-outbox entry module", () => {
 describe("butler-outbox verify-origin", () => {
   const ID = "1760000000000-abc123"
   const FRIEND = "a62b7678-a7b0-4948-8ea7-388def767bd1"
-  const owned = (extra: Record<string, unknown> = {}) => entry(ID, { meta: { origin: { friendId: FRIEND, ownerOrigin: true }, conversation: { channel: "telegram", key: "telegram:12:34" }, ariWords: "turn the porch light on", ...extra } })
+  const OWNER = "93f90239-3c50-4666-86d5-4b8ec38fae4a"
+  const owned = (extra: Record<string, unknown> = {}) => entry(ID, { meta: { origin: { friendId: OWNER, ownerOrigin: true }, conversation: { channel: "telegram", key: "telegram:12:34" }, ariWords: "turn the porch light on", ...extra } })
   const listOf = (e: unknown, more = false) => JSON.stringify({ entries: [e], nextCursor: ID, more })
   const session = (text: unknown, role = "user") => JSON.stringify({ events: [{ role: "assistant", content: "ok" }, { role, content: text }] })
 
@@ -268,7 +269,7 @@ describe("butler-outbox verify-origin", () => {
     const h = verifyHarness(listOf(owned()), session("hey, please turn the porch light on tonight"))
     expect(await run(["verify-origin", ID, "--json"], h.io, h.deps)).toBe(0)
     expect(JSON.parse(h.out.join(""))).toMatchObject({ id: ID, ownerClaimed: true, ownerVerified: true })
-    expect(h.sshCalls).toEqual([{ host: "sanctuary", command: `cat -- '/mnt/user/appdata/ouro-butler/agent/sanctuary.ouro/state/sessions/${FRIEND}/telegram/telegram_12_34.json'` }])
+    expect(h.sshCalls).toEqual([{ host: "sanctuary", command: `cat -- '/mnt/user/appdata/ouro-butler/agent/sanctuary.ouro/state/sessions/${OWNER}/telegram/telegram_12_34.json'` }])
     expect(h.calls.every((c) => !c.args.includes("ack"))).toBe(true)
   })
 
@@ -309,7 +310,7 @@ describe("butler-outbox verify-origin", () => {
       ["words missing", { ariWords: undefined }],
       ["path traversal", { conversation: { channel: "telegram", key: "../../etc/passwd" } }],
       ["shell characters", { conversation: { channel: "telegram;rm -rf /", key: "k" } }],
-      ["quote in friend", { origin: { friendId: "x'; id #", ownerOrigin: true } }],
+      
       ["no conversation", { conversation: undefined }],
     ]
     for (const [label, meta] of unsafe) {
@@ -317,6 +318,13 @@ describe("butler-outbox verify-origin", () => {
       expect(await run(["verify-origin", ID, "--json"], h.io, h.deps), label).toBe(5)
       expect(h.sshCalls, label).toEqual([])
     }
+  })
+
+  it("never builds a remote command from an unsafe friend id, even when it is configured as the owner", async () => {
+    const { run } = await lib()
+    const h = verifyHarness(listOf(owned({ origin: { friendId: "x'; id #", ownerOrigin: true } })), session("turn the porch light on"))
+    expect(await run(["verify-origin", ID, "--owner", "x'; id #"], h.io, h.deps)).toBe(5)
+    expect(h.sshCalls).toEqual([])
   })
 
   it("refuses a report that is not a failure report, a missing entry, an unsafe bundle or host, and bad arguments", async () => {
@@ -361,5 +369,33 @@ describe("butler-outbox verify-origin", () => {
     expect(h.out.join("")).toContain("owner claimed: yes")
     expect(USAGE).toContain("verify-origin")
     expect(USAGE).toContain("butler-outbox-WORKER.md")
+  })
+
+  it("requires the origin friend to be the owner, specific words, and direct user text only", async () => {
+    const { run } = await lib()
+    const notOwner = verifyHarness(listOf(owned({ origin: { friendId: FRIEND, ownerOrigin: true } })), session("turn the porch light on"))
+    expect(await run(["verify-origin", ID], notOwner.io, notOwner.deps)).toBe(5)
+    expect(notOwner.out.join("")).toContain("not the owner")
+    expect(notOwner.sshCalls).toEqual([])
+    // the owner id is configurable by flag or env
+    const byFlag = verifyHarness(listOf(owned({ origin: { friendId: FRIEND, ownerOrigin: true } })), session("turn the porch light on"))
+    expect(await run(["verify-origin", ID, "--owner", FRIEND], byFlag.io, byFlag.deps)).toBe(0)
+    const byEnv = verifyHarness(listOf(owned({ origin: { friendId: FRIEND, ownerOrigin: true } })), session("turn the porch light on"), { BUTLER_OUTBOX_OWNER_FRIEND_ID: FRIEND })
+    expect(await run(["verify-origin", ID], byEnv.io, byEnv.deps)).toBe(0)
+    for (const ariWords of ["ok", "do it now", "twelve-chars-only", "a b"]) {
+      const h = verifyHarness(listOf(owned({ ariWords })), session(`well ${ariWords} please`))
+      expect(await run(["verify-origin", ID], h.io, h.deps), ariWords).toBe(5)
+      expect(h.sshCalls).toEqual([])
+    }
+    for (const content of [[{ type: "tool_result", text: "turn the porch light on" }], [{ type: "text", content: [{ type: "text", text: "turn the porch light on" }] }], 5, null]) {
+      const h = verifyHarness(listOf(owned()), session(content))
+      expect(await run(["verify-origin", ID], h.io, h.deps)).toBe(5)
+    }
+    // words must sit inside one text part, not be stitched from two
+    const split = verifyHarness(listOf(owned()), session([{ type: "text", text: "turn the porch" }, { type: "text", text: "light on" }]))
+    expect(await run(["verify-origin", ID], split.io, split.deps)).toBe(5)
+    const honest = verifyHarness(listOf(owned()), session("turn the porch light on"))
+    await run(["verify-origin", ID], honest.io, honest.deps)
+    expect(honest.out.join("")).toContain("not cryptographic proof")
   })
 })

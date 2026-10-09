@@ -1,7 +1,7 @@
 import type { FriendRecord } from "@ouro.bot/friends"
 import { ready } from "@ouro.bot/friends/a2a-client"
-import { holdsEscalation } from "./escalation-grants"
-import { friendDid, verifyResolution } from "./resolution-proof"
+import { holdsEscalation, pinnedHolderDid } from "./escalation-grants"
+import { verifyResolution } from "./resolution-proof"
 import { FileOutboxStore, OUTBOX_LIST_MAX_LIMIT } from "./outbox-store"
 import { resolveFailureReport } from "../heart/failure-reports"
 import { emitNervesEvent } from "../nerves/runtime"
@@ -60,6 +60,8 @@ export async function handleOutboxCommand(input: {
   friend: FriendRecord | undefined
   method: OutboxMethod
   params: Record<string, unknown>
+  /** The DID the A2A layer verified for the caller; report/resolve requires it to equal the grant's pinned DID. */
+  verifiedDid?: string
   now?: number
 }): Promise<OutboxOutcome> {
   const { agentRoot, friend, method, params } = input
@@ -85,7 +87,13 @@ export async function handleOutboxCommand(input: {
   }
   const { id, version, note, resolvedAt, proof } = params
   if (typeof id !== "string" || typeof version !== "string" || typeof note !== "string" || typeof resolvedAt !== "string") return invalid("id, version, note and resolvedAt must be strings")
-  const checked = verifyResolution({ sodium: await ready(), claim: { reportId: id, version, note, resolvedAt }, proof, holderDid: friendDid(friend) })
+  // The key is the DID the operator pinned in the root-owned grant, never the friend record; and the A2A-verified caller must be that same DID.
+  const holderDid = pinnedHolderDid(agentRoot, friend.id)
+  if (!holderDid || input.verifiedDid !== holderDid) {
+    emitNervesEvent({ level: "warn", component: "senses", event: "senses.a2a_report_resolve_refused", message: "refused report/resolve from a caller whose verified DID is not the pinned holder DID", meta: { friendId: friend.id } })
+    return refuse("report not resolved: the caller is not the pinned escalation holder")
+  }
+  const checked = verifyResolution({ sodium: await ready(), claim: { reportId: id, version, note, resolvedAt }, proof, holderDid })
   if (!checked.ok) return refuse(`report not resolved: the resolution is not signed by your key (${checked.reason})`)
   const resolved = await resolveFailureReport(agentRoot, { id, version, note, byFriendId: friend.id, resolvedAt, proof }, input.now)
   return resolved.ok ? { ok: true, result: { id: resolved.id, status: resolved.status } } : refuse(`report not resolved: ${resolved.reason}`)

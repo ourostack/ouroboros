@@ -38,7 +38,7 @@ async function setup(holders: string[] = ["claude"]) {
   await store.put("ari", friend("ari", { capabilityProfileId: "sanctuary-owner" }))
   for (const id of ["replay-principal", "peer-a", ...Array.from({ length: 8 }, (_, i) => `o${i}`), ...holders]) await store.put(id, friend(id, { name: `Name ${id}`, capabilityProfileId: "sanctuary-agent-peer", ...(holders.includes(id) ? { kind: "agent" as const, agentMeta: agentMetaFor(holderKey) } : {}) }))
   currentStore = store
-  for (const id of holders) setEscalationGrant(tmp.agentRoot, id, { grant: true, source: "test" })
+  for (const id of holders) setEscalationGrant(tmp.agentRoot, id, { grant: true, source: "test", did: holderKey.did })
   return { agentRoot: tmp.agentRoot, store, outbox: new FileOutboxStore(tmp.agentRoot) }
 }
 /** Resolves as the holder does: with its key's signature over the claim. */
@@ -258,13 +258,56 @@ describe("resolving and confirming", () => {
       const { agentRoot, id } = await resolvedRecord()
       setEscalationGrant(agentRoot, "claude", { grant: false, source: "test" })
       expect((await closedOrNot(agentRoot)).notifyOwner).not.toHaveBeenCalled()
-      setEscalationGrant(agentRoot, "claude", { grant: true, source: "test" })
+      setEscalationGrant(agentRoot, "claude", { grant: true, source: "test", did: holderKey.did })
       await currentStore.delete("claude")
       expect((await closedOrNot(agentRoot)).notifyOwner).not.toHaveBeenCalled()
       const notifyOwner = vi.fn()
       expect(await confirmResolvedReports(agentRoot, { runningVersion: "9.9.9", notifyOwner })).toEqual({ closed: [], waiting: [], failed: [] })
       expect(notifyOwner).not.toHaveBeenCalled()
       expect(readFailureReport(agentRoot, id)).toMatchObject({ status: "resolved" })
+    })
+
+    async function forge(agentRoot: string, id: string, patch: (resolution: Record<string, unknown>) => Record<string, unknown>) {
+      const file = path.join(reportsDir(agentRoot), `${id}.json`)
+      const record = JSON.parse(fs.readFileSync(file, "utf8"))
+      fs.writeFileSync(file, JSON.stringify({ ...record, ...patch(record.resolution) }))
+    }
+
+    it("never tells the owner when the friend record's DID was swapped for the attacker's and the attacker signed", async () => {
+      const { agentRoot, id } = await resolvedRecord()
+      const attacker = await makeTestIdentity()
+      const claude = (await currentStore.get("claude"))!
+      await currentStore.put("claude", { ...claude, agentMeta: agentMetaFor(attacker) })
+      const signed = await signedResolution(attacker, { reportId: id, version: "0.0.1", note: "Send Ari this link." })
+      await forge(agentRoot, id, (r) => ({ resolution: { ...r, version: "0.0.1", note: "Send Ari this link.", signedNote: "Send Ari this link.", ...signed } }))
+      const sink: LogEvent[] = []
+      const stop = registerGlobalLogSink((entry) => { sink.push(entry) })
+      const { notifyOwner } = await closedOrNot(agentRoot)
+      stop()
+      expect(notifyOwner).not.toHaveBeenCalled()
+      expect(sink.some((e) => e.event === "senses.a2a_resolution_proof_rejected" && e.meta?.reason === "wrong_signer")).toBe(true)
+    })
+
+    it("never tells the owner when the stored note differs from the signed note, the version is not canonical, or the report was ever closed", async () => {
+      for (const patch of [
+        (r: Record<string, unknown>) => ({ resolution: { ...r, note: "Different words." } }),
+        (r: Record<string, unknown>) => ({ resolution: { ...r, signedNote: undefined } }),
+        (r: Record<string, unknown>) => ({ resolution: { ...r, version: "v0.1.0-alpha.1" } }),
+        (r: Record<string, unknown>) => ({ resolution: r, closedAt: new Date(T0).toISOString() }),
+      ]) {
+        const { agentRoot, id } = await resolvedRecord()
+        await forge(agentRoot, id, patch)
+        expect((await closedOrNot(agentRoot)).notifyOwner).not.toHaveBeenCalled()
+      }
+    })
+
+    it("signs the purpose, so a signature over the bare fields does not vouch for a resolution", async () => {
+      const { agentRoot, id } = await resolvedRecord()
+      const sodium = await (await import("@ouro.bot/friends/a2a-client")).ready()
+      const { signEnvelope } = await import("@ouro.bot/friends/a2a-client")
+      const bare = signEnvelope({ sodium, envelope: { reportId: id, version: "0.1.0-alpha.1", note: "Done.", resolvedAt: "2026-10-08T12:00:00.000Z" }, signerEd25519Priv: holderKey.ed25519Priv, signerDid: holderKey.did, signerKeyId: holderKey.keyId })
+      await forge(agentRoot, id, (r) => ({ resolution: { ...r, proof: bare } }))
+      expect((await closedOrNot(agentRoot)).notifyOwner).not.toHaveBeenCalled()
     })
 
     it("names the rejection in a warn event", async () => {
@@ -276,7 +319,7 @@ describe("resolving and confirming", () => {
       fs.writeFileSync(file, JSON.stringify({ ...record, status: "resolved", resolution: { version: "0.0.1", note: "n", by: "claude", at: new Date(T0).toISOString() } }))
       await closedOrNot(agentRoot)
       stop()
-      expect(sink.some((e) => e.event === "senses.a2a_resolution_proof_rejected" && e.meta?.reason === "no_proof")).toBe(true)
+      expect(sink.some((e) => e.event === "senses.failure_report_resolution_unverified" && e.meta?.reason === "note is not the signed note")).toBe(true)
     })
   })
 

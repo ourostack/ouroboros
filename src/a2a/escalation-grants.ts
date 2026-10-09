@@ -16,6 +16,8 @@ export interface EscalationGrant {
   scope: "escalation"
   grantedAt: string
   source: string
+  /** The holder's DID, pinned here by the operator at grant time. The friend record is writable by the Butler's own uid, so nothing else may name the key a resolution is checked against. */
+  did: string
 }
 
 export function escalationGrantsPath(agentRoot: string): string {
@@ -25,7 +27,8 @@ export function escalationGrantsPath(agentRoot: string): string {
 function validGrant(value: unknown): value is EscalationGrant {
   if (!value || typeof value !== "object" || Array.isArray(value)) return false
   const grant = value as Record<string, unknown>
-  return Object.keys(grant).sort().join(",") === "grantedAt,scope,source"
+  return Object.keys(grant).sort().join(",") === "did,grantedAt,scope,source"
+    && typeof grant.did === "string" && grant.did.startsWith("did:") && grant.did.length <= 512
     && grant.scope === "escalation"
     && typeof grant.grantedAt === "string" && !Number.isNaN(Date.parse(grant.grantedAt))
     && typeof grant.source === "string" && grant.source.trim().length > 0
@@ -48,21 +51,21 @@ function ownAsRoot(target: string, mode: number): void {
 }
 
 /** Writes or removes one grant. The previous file is kept beside it as a timestamped backup before the change. */
-export function setEscalationGrant(agentRoot: string, friendId: string, change: { grant: true; source: string } | { grant: false }, now: Date = new Date()): { changed: boolean; backup: string | null } {
+export function setEscalationGrant(agentRoot: string, friendId: string, change: { grant: true; source: string; did: string } | { grant: false }, now: Date = new Date()): { changed: boolean; backup: string | null } {
   const file = escalationGrantsPath(agentRoot)
   // Root repairs the directory first; a grants file the resident owns stays untrusted and is replaced, never blessed.
   fs.mkdirSync(path.dirname(file), { recursive: true, mode: 0o755 })
   if (process.geteuid?.() === 0) ownAsRoot(path.dirname(file), 0o755)
   const current = readEscalationGrants(agentRoot)
   const had = current[friendId]
-  if (change.grant ? had !== undefined : had === undefined) return { changed: false, backup: null }
+  if (change.grant ? had?.did === change.did : had === undefined) return { changed: false, backup: null }
   let backup: string | null = null
   if (fs.existsSync(file)) {
     backup = `${file}.bak-${now.toISOString().replace(/[:.]/gu, "-")}`
     fs.copyFileSync(file, backup)
   }
   const next = { ...current }
-  if (change.grant) next[friendId] = { scope: "escalation", grantedAt: now.toISOString(), source: change.source }
+  if (change.grant) next[friendId] = { scope: "escalation", grantedAt: now.toISOString(), source: change.source, did: change.did }
   else delete next[friendId]
   const tmp = `${file}.${process.pid}.tmp`
   fs.writeFileSync(tmp, `${JSON.stringify({ schemaVersion: 1, grants: next }, null, 2)}\n`, { mode: 0o644 })
@@ -77,7 +80,12 @@ export function setEscalationGrant(agentRoot: string, friendId: string, change: 
   return { changed: true, backup }
 }
 
-/** True only for an active family friend that the operator listed in the grants file. */
+/** The DID the operator pinned for this holder, or null when it holds no (complete) grant. */
+export function pinnedHolderDid(agentRoot: string, friendId: string): string | null {
+  return readEscalationGrants(agentRoot)[friendId]?.did ?? null
+}
+
+/** True only for an active family friend that the operator listed in the grants file, with a pinned DID. */
 export function holdsEscalation(agentRoot: string, friend: FriendRecord): boolean {
   return readEscalationGrants(agentRoot)[friend.id] !== undefined
     && friend.trustLevel === "family"

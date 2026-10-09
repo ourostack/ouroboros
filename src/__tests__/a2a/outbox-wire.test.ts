@@ -1,3 +1,4 @@
+import * as fs from "node:fs"
 import * as path from "node:path"
 import { afterEach, describe, expect, it } from "vitest"
 import { FileFriendStore, type FriendRecord } from "@ouro.bot/friends"
@@ -74,12 +75,12 @@ describe("outbox command handling", () => {
     const holder = friend("claude", { kind: "agent", agentMeta: agentMetaFor(key) })
     await store.put("claude", holder)
     await store.put("ari", friend("ari"))
-    setEscalationGrant(agentRoot, "claude", { grant: true, source: "test" })
+    setEscalationGrant(agentRoot, "claude", { grant: true, source: "test", did: key.did })
     const filed = await fileFailureReport(agentRoot, store, { ariWords: "a", tried: "b", error: "c", severity: "low", origin: { friendId: "ari", channel: "telegram", key: "k" } })
     if (!filed.ok) throw new Error("setup failed")
     const claim = { reportId: filed.id, version: "0.1.0-alpha.9", note: "Fixed." }
     const params = { id: filed.id, version: claim.version, note: claim.note, ...await signedResolution(key, claim) }
-    const call = (who: FriendRecord, p: Record<string, unknown>) => handleOutboxCommand({ agentRoot, friend: who, method: "report/resolve", params: p })
+    const call = (who: FriendRecord, p: Record<string, unknown>, verifiedDid: string | undefined = key.did) => handleOutboxCommand({ agentRoot, friend: who, method: "report/resolve", params: p, ...(verifiedDid ? { verifiedDid } : {}) })
     expect(await call(friend("ari"), params)).toMatchObject({ ok: false, code: -32003, message: "report/resolve needs the escalation grant" })
     expect(await call(holder, { id: 1, version: "x", note: "n" })).toMatchObject({ ok: false, code: -32602 })
     expect(await call(holder, { id: filed.id, version: claim.version, note: claim.note })).toMatchObject({ ok: false, code: -32602 })
@@ -87,10 +88,36 @@ describe("outbox command handling", () => {
     const attacker = await makeTestIdentity()
     expect(await call(holder, { ...params, ...await signedResolution(attacker, claim) })).toMatchObject({ ok: false, code: -32003, message: expect.stringContaining("wrong_signer") })
     expect(await call(holder, { ...params, note: "Changed after signing." })).toMatchObject({ ok: false, code: -32003, message: expect.stringContaining("bad_signature") })
-    expect(await call(friend("claude", { kind: "agent" }), params)).toMatchObject({ ok: false, code: -32003, message: expect.stringContaining("no_holder_did") })
+    // the friend record is writable by the Butler's own uid: a swapped DID there, signed with the new key, must not pass
+    const swapped = await makeTestIdentity()
+    const swappedFriend = friend("claude", { kind: "agent", agentMeta: agentMetaFor(swapped) })
+    expect(await call(swappedFriend, { ...params, ...await signedResolution(swapped, claim) }, swapped.did)).toMatchObject({ ok: false, code: -32003, message: expect.stringContaining("pinned escalation holder") })
+    // the verified caller must be the pinned DID even when the signature is the pinned key's
+    expect(await call(holder, params, swapped.did)).toMatchObject({ ok: false, code: -32003, message: expect.stringContaining("pinned escalation holder") })
+    expect(await call(holder, params, "")).toMatchObject({ ok: false, code: -32003, message: expect.stringContaining("pinned escalation holder") })
+    // purpose binding: a signature over the same fields without the purpose does not verify
+    expect(await call(holder, { ...params, proof: { ...(params.proof as object), sig: "AAAA" } })).toMatchObject({ ok: false, code: -32003, message: expect.stringContaining("bad_signature") })
     const bad = { reportId: filed.id, version: "soon", note: "n" }
+    const loose = { reportId: filed.id, version: "v0.1.0-alpha.9", note: "n" }
+    expect(await call(holder, { id: filed.id, version: "v0.1.0-alpha.9", note: "n", ...await signedResolution(key, loose) })).toMatchObject({ ok: false, code: -32003, message: "report not resolved: bad_version" })
     expect(await call(holder, { id: filed.id, version: "soon", note: "n", ...await signedResolution(key, bad) })).toMatchObject({ ok: false, code: -32003, message: "report not resolved: bad_version" })
     expect(await call(holder, params)).toEqual({ ok: true, result: { id: filed.id, status: "resolved" } })
     expect(readFailureReport(agentRoot, filed.id)).toMatchObject({ status: "resolved", resolution: { proof: expect.objectContaining({ signerDid: key.did }) } })
+  })
+})
+
+describe("a grant without a pinned DID", () => {
+  it("is not held, so the holder cannot resolve", async () => {
+    tmp = createTmpBundle({ agentName: `wire-nodid-${Date.now()}` })
+    const agentRoot = tmp.agentRoot
+    const key = await makeTestIdentity()
+    const holder = friend("claude", { kind: "agent", agentMeta: agentMetaFor(key) })
+    setEscalationGrant(agentRoot, "claude", { grant: true, source: "test", did: key.did })
+    const file = path.join(agentRoot, "state", "a2a", "escalation-grants.json")
+    const written = JSON.parse(fs.readFileSync(file, "utf8"))
+    delete written.grants.claude.did
+    fs.writeFileSync(file, JSON.stringify(written))
+    const params = { id: "x", version: "0.1.0", note: "n", ...await signedResolution(key, { reportId: "x", version: "0.1.0", note: "n" }) }
+    expect(await handleOutboxCommand({ agentRoot, friend: holder, method: "report/resolve", params, verifiedDid: key.did })).toMatchObject({ ok: false, code: -32003, message: "report/resolve needs the escalation grant" })
   })
 })
