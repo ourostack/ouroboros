@@ -1155,14 +1155,62 @@ function friendFile(bundle, friendId) {
   return path.join(bundle, "friends", `${friendId}.json`)
 }
 
+const TRUST_LOCK_STALE_MS = 2 * 60_000
+
+function lockAgeMs(file) {
+  const stat = lstatOrNull(file)
+  return stat ? Date.now() - stat.mtimeMs : 0
+}
+
+function createLockFile(file, { rootUid, rootGid }) {
+  const fd = openNoFollow(file, fsConstants.O_WRONLY | fsConstants.O_CREAT | fsConstants.O_EXCL, 0o644)
+  try { fchownSync(fd, rootUid, rootGid); fchmodSync(fd, 0o644); writeFileSync(fd, `pid ${process.pid} at ${new Date().toISOString()}\n`) } finally { closeSync(fd) }
+}
+
+/**
+ * Runs a read-modify-write of one trust file under the same exclusive `.lock` the `ouro a2a ... grant|revoke` commands take
+ * (src/a2a/operator-trust.ts withTrustedWriteLock): O_EXCL create, a lock older than two minutes is reclaimed while holding a
+ * second `.lock.reclaim` file and only after looking again, and a lock held past the wait names the file to remove.
+ */
+function withTrustLock(trustDir, { rootUid = 0, rootGid = 0, lockTimeoutMs = 5000, onBeforeReclaim, createLock = createLockFile } = {}, fn) {
+  rootDirectory(trustDir, 0o755, { rootUid, rootGid })
+  const lock = path.join(trustDir, ".lock")
+  const guard = `${lock}.reclaim`
+  const deadline = Date.now() + lockTimeoutMs
+  for (;;) {
+    try {
+      createLock(lock, { rootUid, rootGid })
+      break
+    } catch (error) {
+      if (error.code !== "EEXIST") throw error
+      if (lockAgeMs(lock) > TRUST_LOCK_STALE_MS) {
+        onBeforeReclaim?.()
+        try {
+          createLockFile(guard, { rootUid, rootGid })
+          try { if (lockAgeMs(lock) > TRUST_LOCK_STALE_MS) rmSync(lock, { force: true }) } finally { rmSync(guard, { force: true }) }
+        } catch (guardError) {
+          if (guardError.code !== "EEXIST") throw guardError
+          if (lockAgeMs(guard) > TRUST_LOCK_STALE_MS) rmSync(guard, { force: true })
+        }
+      }
+      if (Date.now() >= deadline) throw new Error(`refusing to write: another grant command is writing to ${trustDir} (lock file ${lock}). If none is running, remove that file and retry. Nothing was written.`)
+      Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 25)
+    }
+  }
+  try { return fn() } finally { rmSync(lock, { force: true }) }
+}
+
 /**
  * Gives a friend a grant in one of the agent's trust files, as root. The directory and file stay root-owned and read-only
  * to everyone else, because the Butler only honours a grant it could not have written itself. A grant already pinned to
  * the same DID is left alone (idempotent); a different DID replaces it.
  */
-function writeTrustGrant(trustDir, fileName, friendId, scope, did, now, source, { rootUid = 0, rootGid = 0, expiresAt } = {}) {
+function writeTrustGrant(trustDir, fileName, friendId, scope, did, now, source, { rootUid = 0, rootGid = 0, expiresAt, ...lockOptions } = {}) {
+  return withTrustLock(trustDir, { rootUid, rootGid, ...lockOptions }, () => writeTrustGrantLocked(trustDir, fileName, friendId, scope, did, now, source, { rootUid, rootGid, expiresAt }))
+}
+
+function writeTrustGrantLocked(trustDir, fileName, friendId, scope, did, now, source, { rootUid, rootGid, expiresAt }) {
   const file = path.join(trustDir, fileName)
-  rootDirectory(trustDir, 0o755, { rootUid, rootGid })
   const current = lstatOrNull(file) ? readJsonNoFollow(file) : { schemaVersion: 1, grants: {} }
   const had = current.grants?.[friendId]
   if (had?.scope !== scope || had.did !== did || had.expiresAt !== expiresAt) {
@@ -1173,7 +1221,12 @@ function writeTrustGrant(trustDir, fileName, friendId, scope, did, now, source, 
 }
 
 /** Removes a friend's entry from one trust file (a no-op when it is absent), leaving the file root-owned. */
-function revokeTrustGrant(trustDir, fileName, friendId, { rootUid = 0, rootGid = 0 } = {}) {
+function revokeTrustGrant(trustDir, fileName, friendId, { rootUid = 0, rootGid = 0, ...lockOptions } = {}) {
+  if (!lstatOrNull(trustDir)) return
+  return withTrustLock(trustDir, { rootUid, rootGid, ...lockOptions }, () => revokeTrustGrantLocked(trustDir, fileName, friendId, { rootUid, rootGid }))
+}
+
+function revokeTrustGrantLocked(trustDir, fileName, friendId, { rootUid, rootGid }) {
   const file = path.join(trustDir, fileName)
   if (!lstatOrNull(file)) return
   const current = readJsonNoFollow(file)
@@ -1268,12 +1321,13 @@ export function provision({ bundle = DEFAULT_BUNDLE, trustDir = DEFAULT_TRUST_DI
   writeAtomic(registry, JSON.stringify({ friends: { ...known, ...replayIdentities } }, null, 2), 0o644)
   handOverFile(registry, { uid: rootUid, gid: rootGid })
   // The same list, inside the root-owned trust directory: the Butler reads this copy, not the bundle's, to decide that a grant for these friends must expire.
-  rootDirectory(trustDir, 0o755, { rootUid, rootGid })
   const holdersFile = path.join(trustDir, "replay-identities.json")
-  const heldBefore = lstatOrNull(holdersFile) ? readJsonNoFollow(holdersFile).grants ?? {} : {}
-  const holders = { ...heldBefore, ...Object.fromEntries(Object.entries(replayIdentities).map(([id, entry]) => [id, { who: entry.who, name: entry.name, did: entry.did }])) }
-  writeAtomic(holdersFile, `${JSON.stringify({ schemaVersion: 1, grants: holders }, null, 2)}\n`, 0o644)
-  handOverFile(holdersFile, { uid: rootUid, gid: rootGid, mode: 0o644 })
+  withTrustLock(trustDir, { rootUid, rootGid }, () => {
+    const heldBefore = lstatOrNull(holdersFile) ? readJsonNoFollow(holdersFile).grants ?? {} : {}
+    const holders = { ...heldBefore, ...Object.fromEntries(Object.entries(replayIdentities).map(([id, entry]) => [id, { who: entry.who, name: entry.name, did: entry.did }])) }
+    writeAtomic(holdersFile, `${JSON.stringify({ schemaVersion: 1, grants: holders }, null, 2)}\n`, 0o644)
+    handOverFile(holdersFile, { uid: rootUid, gid: rootGid, mode: 0o644 })
+  })
   writeAtomic(path.join(clientDir, "provision.json"), JSON.stringify(out, null, 2), 0o644)
   log(`provisioned; card ${resolvedCard}`)
   return out

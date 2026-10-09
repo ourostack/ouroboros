@@ -240,6 +240,54 @@ describe("serialising writers and making renames durable (review of #1064, findi
     expect(fs.existsSync(lock)).toBe(false)
   })
 
+  describe("taking over a stale lock (review of #1064, round 2, finding 6)", () => {
+    const staleLock = () => {
+      const dir = operatorTrustDir(tmp.agentRoot)
+      fs.mkdirSync(dir, { recursive: true, mode: 0o755 })
+      const lock = path.join(dir, ".lock")
+      fs.writeFileSync(lock, "pid 1\n")
+      const old = new Date(Date.now() - 10 * 60_000)
+      fs.utimesSync(lock, old, old)
+      return { dir, lock, old }
+    }
+
+    it("two writers that both judge the lock stale cannot both take it: the second leaves the first one's fresh lock alone", () => {
+      const { lock } = staleLock()
+      // Writer A finishes its takeover (stale lock gone, its own fresh lock in place) after writer B judged the lock stale and before B reclaims.
+      overrideLockTimeoutForTests(60, undefined, () => { fs.rmSync(lock); fs.writeFileSync(lock, "pid A\n") })
+      try {
+        let ran = false
+        expect(() => withTrustedWriteLock(tmp.agentRoot, () => { ran = true })).toThrow(/another grant command is writing/)
+        expect(ran).toBe(false)
+        expect(fs.readFileSync(lock, "utf8")).toBe("pid A\n")
+        expect(fs.existsSync(`${lock}.reclaim`)).toBe(false)
+      } finally { overrideLockTimeoutForTests(undefined) }
+    })
+
+    it("carries on when the stale lock disappears before it can be reclaimed", () => {
+      const { lock } = staleLock()
+      overrideLockTimeoutForTests(2000, undefined, () => fs.rmSync(lock))
+      try {
+        expect(withTrustedWriteLock(tmp.agentRoot, () => "ran")).toBe("ran")
+      } finally { overrideLockTimeoutForTests(undefined) }
+    })
+
+    it("waits while another writer holds the reclaim file, and clears a reclaim file left by a dead one", () => {
+      const { dir, lock, old } = staleLock()
+      const guard = path.join(dir, ".lock.reclaim")
+      fs.writeFileSync(guard, "pid 2\n")
+      overrideLockTimeoutForTests(60)
+      try {
+        expect(() => withTrustedWriteLock(tmp.agentRoot, () => "never")).toThrow(/another grant command is writing/)
+        expect(fs.existsSync(lock)).toBe(true)
+        fs.utimesSync(guard, old, old)
+        overrideLockTimeoutForTests(2000)
+        expect(withTrustedWriteLock(tmp.agentRoot, () => "ran")).toBe("ran")
+        expect(fs.existsSync(guard)).toBe(false)
+      } finally { overrideLockTimeoutForTests(undefined) }
+    })
+  })
+
   it("waits for a lock that is released while it waits", () => {
     const dir = operatorTrustDir(tmp.agentRoot)
     fs.mkdirSync(dir, { recursive: true, mode: 0o755 })

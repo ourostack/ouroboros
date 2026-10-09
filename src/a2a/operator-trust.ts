@@ -156,12 +156,39 @@ const LOCK_FILE = ".lock"
 const LOCK_STALE_MS = 2 * 60_000
 let lockTimeoutMs = 5000
 let lockWaitHook: (() => void) | undefined
+let beforeReclaimHook: (() => void) | undefined
 
-/** Tests shorten the wait for a held lock and can act while it waits. Refused outside a test runner. */
-export function overrideLockTimeoutForTests(timeoutMs: number | undefined, onWait?: () => void): void {
+/** Tests shorten the wait for a held lock, can act while it waits, and can act between judging a lock stale and reclaiming it. Refused outside a test runner. */
+export function overrideLockTimeoutForTests(timeoutMs: number | undefined, onWait?: () => void, onBeforeReclaim?: () => void): void {
   if (process.env.VITEST === undefined) throw new Error("overrideLockTimeoutForTests is for tests only")
   lockTimeoutMs = timeoutMs ?? 5000
   lockWaitHook = onWait
+  beforeReclaimHook = onBeforeReclaim
+}
+
+/** How long ago `file` was last written; a file that is gone counts as brand new, so nobody treats it as stale. */
+function ageMs(file: string): number {
+  try { return Date.now() - fs.lstatSync(file).mtimeMs } catch { return 0 }
+}
+
+/**
+ * Removes a lock that looked stale, but only while holding a second exclusive file (`.lock.reclaim`) and only after looking again:
+ * two writers that both judged the same lock stale cannot then each delete it, which would let the second delete the fresh lock
+ * the first had just taken. A reclaim file that is itself stale belongs to a writer that died and is removed.
+ */
+function reclaimStaleLock(lock: string): void {
+  const guard = `${lock}.reclaim`
+  try {
+    createExclusive(guard, `pid ${process.pid} at ${new Date().toISOString()}\n`)
+  } catch {
+    if (ageMs(guard) > LOCK_STALE_MS) fs.rmSync(guard, { force: true })
+    return
+  }
+  try {
+    if (ageMs(lock) > LOCK_STALE_MS) fs.rmSync(lock, { force: true })
+  } finally {
+    fs.rmSync(guard, { force: true })
+  }
 }
 
 function sleepSync(ms: number): void {
@@ -184,10 +211,7 @@ export function withTrustedWriteLock<T>(agentRoot: string, fn: () => T): T {
       break
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error
-      let age = 0
-      /* v8 ignore next -- the holder removing its lock between our EEXIST and this stat is a race tests cannot stage @preserve */
-      try { age = Date.now() - fs.lstatSync(lock).mtimeMs } catch { continue }
-      if (age > LOCK_STALE_MS) { fs.rmSync(lock, { force: true }); continue }
+      if (ageMs(lock) > LOCK_STALE_MS) { beforeReclaimHook?.(); reclaimStaleLock(lock) }
       if (Date.now() >= deadline) throw new TrustDirectoryError(`refusing to write: another grant command is writing to ${dir} (lock file ${lock}). If none is running, remove that file and retry. Nothing was written.`)
       lockWaitHook?.()
       sleepSync(25)

@@ -703,6 +703,62 @@ describe("provision and the real host", () => {
     expect(() => gate.provision({ bundle, cardUrl: "c", log: () => undefined, run: fakeCli().run, ...uid() })).toThrow(/symlink/)
   })
 
+  describe("the trust-directory lock (review of #1064, round 2, finding 6)", () => {
+    const lockPath = () => path.join(trust, ".lock")
+    const hold = (ageMs = 0) => {
+      fs.mkdirSync(trust, { recursive: true, mode: 0o755 })
+      fs.writeFileSync(lockPath(), "pid 1\n")
+      const at = new Date(Date.now() - ageMs)
+      fs.utimesSync(lockPath(), at, at)
+    }
+    const grant = (extra: Record<string, unknown> = {}) => gate.grantDelegatedCommands(trust, "friend-1", "did:key:P", new Date("2026-10-09T00:00:00Z"), { ...uid(), expiresAt: "2030-01-01T00:00:00.000Z", ...extra })
+
+    it("takes the same lock file the operator commands take, and releases it", () => {
+      grant()
+      expect(fs.existsSync(lockPath())).toBe(false)
+      expect(Object.keys(JSON.parse(fs.readFileSync(path.join(trust, "delegated-command-grants.json"), "utf8")).grants)).toEqual(["friend-1"])
+      gate.revokeDelegatedCommands(trust, "friend-1", uid())
+      expect(fs.existsSync(lockPath())).toBe(false)
+    })
+
+    it("refuses to write while another writer holds a fresh lock, for grants and for revokes", () => {
+      grant()
+      hold()
+      expect(() => grant({ lockTimeoutMs: 60 })).toThrow(/another grant command is writing/)
+      expect(() => gate.revokeDelegatedCommands(trust, "friend-1", { ...uid(), lockTimeoutMs: 60 })).toThrow(/another grant command is writing/)
+      expect(Object.keys(JSON.parse(fs.readFileSync(path.join(trust, "delegated-command-grants.json"), "utf8")).grants)).toEqual(["friend-1"])
+    })
+
+    it("takes over a stale lock, but a second writer that judged it stale leaves the first one's fresh lock alone", () => {
+      hold(10 * 60_000)
+      grant()
+      expect(fs.existsSync(lockPath())).toBe(false)
+      hold(10 * 60_000)
+      expect(() => grant({ lockTimeoutMs: 60, onBeforeReclaim: () => { fs.rmSync(lockPath()); fs.writeFileSync(lockPath(), "pid A\n") } })).toThrow(/another grant command is writing/)
+      expect(fs.readFileSync(lockPath(), "utf8")).toBe("pid A\n")
+      expect(fs.existsSync(`${lockPath()}.reclaim`)).toBe(false)
+    })
+
+    it("waits on a reclaim file another writer holds, and clears one a dead writer left", () => {
+      hold(10 * 60_000)
+      fs.writeFileSync(`${lockPath()}.reclaim`, "pid 2\n")
+      expect(() => grant({ lockTimeoutMs: 60 })).toThrow(/another grant command is writing/)
+      const old = new Date(Date.now() - 10 * 60_000)
+      fs.utimesSync(`${lockPath()}.reclaim`, old, old)
+      grant()
+      expect(fs.existsSync(`${lockPath()}.reclaim`)).toBe(false)
+      expect(fs.existsSync(lockPath())).toBe(false)
+    })
+
+    it("surfaces a lock error that is not 'already exists', and does nothing for a revoke when there is no trust directory", () => {
+      fs.mkdirSync(trust, { recursive: true, mode: 0o755 })
+      expect(() => grant({ createLock: () => { throw Object.assign(new Error("EACCES: permission denied"), { code: "EACCES" }) } })).toThrow(/EACCES/)
+      fs.rmSync(trust, { recursive: true })
+      expect(() => gate.revokeDelegatedCommands(trust, "friend-1", uid())).not.toThrow()
+      expect(fs.existsSync(trust)).toBe(false)
+    })
+  })
+
   describe("rotating the replay identities (review of #1064, round 2, finding 3)", () => {
     const generation = (gen: number) => {
       const calls: string[][] = []
