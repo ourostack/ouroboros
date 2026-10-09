@@ -8,6 +8,7 @@ export const SANCTUARY_PACKAGE_MANAGED_FILES = [
   "tool-profiles.json",
   "mcp/media-mcp.mjs",
   "habits/sanctuary-health.md",
+  "awaiting/house-care-sweep.md",
   "psyche/ASPIRATIONS.md",
   "psyche/IDENTITY.md",
   "psyche/LORE.md",

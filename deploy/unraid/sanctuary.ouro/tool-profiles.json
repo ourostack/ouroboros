@@ -2,7 +2,7 @@
   "version": 2,
   "profiles": {
     "sanctuary-owner": {
-      "version": 16,
+      "version": 17,
       "contextScopes": [
         "household.status",
         "household.policy",
@@ -36,6 +36,8 @@
         "sanctuary_resume_download_queue",
         "unraid_restart_container",
         "steward_policy_manage",
+        "house_sweep",
+        "house_digest_send",
         "send_message",
         "ponder",
         "rest",
@@ -144,7 +146,7 @@
       ]
     },
     "sanctuary-agent-peer": {
-      "version": 7,
+      "version": 8,
       "toolNames": [
         "external_event_disposition",
         "query_active_work",
@@ -172,6 +174,8 @@
         "sanctuary_get_download_queue",
         "sanctuary_resume_download_queue",
         "steward_policy_manage",
+        "house_sweep",
+        "house_digest_send",
         "send_message",
         "ponder",
         "rest",

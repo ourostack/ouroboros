@@ -22,6 +22,7 @@ import { detectDestructivePatterns } from "./shell-sessions";
 import { unraidToolDefinitions } from "./tools-unraid";
 import { observeTool, ponderTool, restTool, settleTool, speakTool } from "./tools-flow";
 import { stewardPolicyToolDefinition } from "./tools-steward-policy";
+import { houseCareToolDefinitions } from "./tools-house-care";
 import type { ToolHighRiskMutationKind, ToolRiskProfile } from "./tools-base";
 import { inspectRoutineActionGrant } from "../heart/steward-policy";
 import { authorizeRoutineActionRequester } from "./relationship-authorization";
@@ -82,7 +83,7 @@ export type { ToolContext, ToolHandler, ToolDefinition, ToolExecutionOutcome, To
 export { surfaceToolDef } from "./tools-surface";
 
 // All tool definitions in a single registry
-const additionalDefinitions: ToolDefinition[] = [...bluebubblesToolDefinitions, ...teamsToolDefinitions, ...adoSemanticToolDefinitions, ...githubToolDefinitions, ...bundleToolDefinitions, ...voiceToolDefinitions, ...unraidToolDefinitions, stewardPolicyToolDefinition, surfaceToolDefinition];
+const additionalDefinitions: ToolDefinition[] = [...bluebubblesToolDefinitions, ...teamsToolDefinitions, ...adoSemanticToolDefinitions, ...githubToolDefinitions, ...bundleToolDefinitions, ...voiceToolDefinitions, ...unraidToolDefinitions, stewardPolicyToolDefinition, ...houseCareToolDefinitions, surfaceToolDefinition];
 const COMMERCE_AUTHORITY_TOOLS = new Set(["stripe_create_card", "flight_hold", "flight_book"])
 
 export class ToolSelectionError extends Error {}
@@ -156,7 +157,7 @@ export function selectToolsForChannel(
         ...baseToolDefinitions.filter((definition) =>
           SANCTUARY_RELATIONSHIP_BASE_TOOLS.has(definition.tool.function.name)
           || (ownerLike && SANCTUARY_OWNER_ADDITIONS.has(definition.tool.function.name))),
-        ...unraidToolDefinitions, stewardPolicyToolDefinition, ...(ownerLike ? mcp : []),
+        ...unraidToolDefinitions, stewardPolicyToolDefinition, ...(ownerLike ? houseCareToolDefinitions : []), ...(ownerLike ? mcp : []),
       ]
       : []
   } else {
@@ -179,6 +180,8 @@ export function selectToolsForChannel(
     : undefined
   if (hostTool) ordinary.push(hostTool)
   const inner = capabilities?.channel === "inner"
+  // The Butler's own scheduled turns (the daily house-care await) carry no relationship, so they cannot take the owner profile's menu.
+  if (inner && !sanctuary && context?.agentName === "sanctuary") ordinary.push(...houseCareToolDefinitions)
   const habit = context?.habitSession
   if (inner) {
     const canSend = habit?.toolPolicy.outwardMessagingAllowed === true && habit.toolPolicy.grantedTools.includes("send_message")
