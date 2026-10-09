@@ -127,8 +127,41 @@ function shellWritesToProtectedPath(command: string): boolean {
 const PSYCHE_READ_ONLY_COMMANDS = new Set(["cat", "ls", "head", "tail", "grep", "wc", "sha256sum", "stat", "cd", "pwd"])
 const SEGMENT_OPERATORS = new Set(["&&", "||", ";", "|"])
 
+// --- globs and expansions that could land inside a protected folder ---
+// A word such as /bundle/fr*nds/x.json, /bundle/friend?/x.json or ${F}ends/x.json names no protected folder literally, but the
+// shell could resolve it into one. A word like that counts as mentioning the folder when its directory part can match the folder's
+// path, so the read-only rule below applies to the command.
+const EXPANSION = "\u0001"
+const STABLE_VARIABLES = ["HOME", "TMPDIR", "USER"]
+
+function neutraliseExpansions(command: string): string {
+  return command.replace(/\$\([^)]*\)|`[^`]*`|\$\{([A-Za-z_]\w*)\}|\$([A-Za-z_]\w*)|\$\{[^}]*\}/g, (_match, braced: string | undefined, plain: string | undefined) => {
+    const name = braced ?? plain
+    if (name !== undefined && STABLE_VARIABLES.includes(name) && !new RegExp(`\\b${name}=`).test(command) && process.env[name]) return process.env[name]!
+    return EXPANSION
+  })
+}
+
+function wordPattern(word: string): RegExp {
+  const generalised = word.replace(/\{[^}]*\}/g, EXPANSION).replace(/\[[^\]]*\]/g, "?")
+  let source = ""
+  for (const char of generalised) source += char === EXPANSION ? ".*" : char === "*" ? "[^/]*" : char === "?" ? "[^/]" : char.replace(/[.+^$()|\\\]{}[]/g, "\\$&")
+  return new RegExp(`^${source}$`)
+}
+
+function globOrExpansionCouldReach(command: string, folder: string, agentRoot: string): boolean {
+  const tokens = neutraliseExpansions(command).split(/[\s<>|;&()'"]+/).filter((token) => /[*?[{\u0001]/.test(token))
+  return tokens.some((token) => {
+    const word = token.startsWith("~") ? expandHome(token) : token
+    const absolute = word.startsWith("/") || word.startsWith(EXPANSION) ? word : `${agentRoot}/${word}`
+    const dir = absolute.slice(0, Math.max(absolute.lastIndexOf("/"), 0))
+    return wordPattern(absolute).test(folder) || wordPattern(dir).test(folder)
+  })
+}
+
 function commandMentionsPsyche(command: string, words: readonly string[], agentRoot: string): boolean {
   const psyche = path.resolve(agentRoot, "psyche")
+  if (globOrExpansionCouldReach(command, psyche, agentRoot)) return true
   if (command.includes(psyche) || words.some((word) => word.includes(psyche))) return true
   if (words.some((word) => word === "psyche" || isPsychePath(word, agentRoot))) return true
   // A relative "psyche/..." inside code or a quoted argument, when this agent has such a folder.
@@ -174,6 +207,7 @@ function expandHome(word: string): string {
 }
 
 function commandMentionsFriendsStore(command: string, words: readonly string[], agentRoot: string): boolean {
+  if (globOrExpansionCouldReach(command, path.resolve(agentRoot, "friends"), agentRoot)) return true
   // Only path-shaped words resolve against the store: an ordinary word such as "friends" in prose is not a path.
   if (words.some((word) => word.includes("/") && isFriendsStorePath(expandHome(word), agentRoot))) return true
   // A bare `friends` names the store only as the target of a cd; elsewhere it is an ordinary word ("my friends are kind").

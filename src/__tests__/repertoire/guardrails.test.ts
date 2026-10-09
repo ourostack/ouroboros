@@ -1256,6 +1256,59 @@ describe("OURO_CLI_TRUST_MANIFEST — rollback and versions", () => {
       const { guardInvocation } = await import("../../repertoire/guardrails")
       expect(guardInvocation("shell", { command }, ctx())).toMatchObject({ allowed: false })
     })
+    describe("a glob or an expansion that could resolve into a protected store (review of #1064, round 2, finding 7)", () => {
+      beforeEach(() => { vi.mocked(fs.existsSync).mockReturnValue(false) })
+      const probes = [
+        "F=/bundle/fri; cp /tmp/f.json ${F}ends/peer.json",
+        "cp /tmp/f.json /bundle/fr*nds/peer.json",
+        "cp /tmp/f.json /bundle/friend?/peer.json",
+        "cp /tmp/f.json /bundle/[f]riends/peer.json",
+        "cp /tmp/f.json /bundle/*/peer.json",
+        "cp /tmp/f.json fr*nds/peer.json",
+        "cd /bundle && mv /tmp/f.json f*/peer.json",
+        "echo x > /bundle/f{r,}iends/peer.json",
+        "B=/bundle; echo x > $B/fr*nds/peer.json",
+        "echo x > ${HOME}/AgentBundles/sanctuary.ouro/friends/peer.json",
+        "cp /tmp/f.json /bundle/$(echo friends)/peer.json",
+        "cp /tmp/f.json /bundle/`echo friends`/peer.json",
+      ]
+      it.each(probes)("refuses the friends-store probe %s", async (command) => {
+        const { guardInvocation } = await import("../../repertoire/guardrails")
+        expect(guardInvocation("shell", { command }, ctx())).toMatchObject({ allowed: false })
+      })
+      it.each([
+        "cp /tmp/f.json /bundle/ps*che/SOUL.md",
+        "P=/bundle/psy; echo x > ${P}che/SOUL.md",
+        "echo x > /bundle/p?yche/SOUL.md",
+      ])("refuses the same probe against the psyche folder: %s", async (command) => {
+        const { guardInvocation } = await import("../../repertoire/guardrails")
+        expect(guardInvocation("shell", { command }, ctx())).toMatchObject({ allowed: false })
+      })
+      it("treats HOME, TMPDIR and USER as their real values unless the command sets them, and any other expansion as unknown", async () => {
+        const { guardInvocation } = await import("../../repertoire/guardrails")
+        const prior = { HOME: process.env.HOME, TMPDIR: process.env.TMPDIR }
+        process.env.HOME = "/home/ari"
+        delete process.env.TMPDIR
+        try {
+          expect(guardInvocation("shell", { command: "echo x > $HOME/out.txt" }, ctx())).toEqual({ allowed: true })
+          expect(guardInvocation("shell", { command: "echo x > ${HOME}/out.txt" }, ctx())).toEqual({ allowed: true })
+          expect(guardInvocation("shell", { command: "echo x > $TMPDIR/out.txt" }, ctx())).toMatchObject({ allowed: false })
+          expect(guardInvocation("shell", { command: "HOME=/bundle/friends; echo x > $HOME/p.json" }, ctx())).toMatchObject({ allowed: false })
+          expect(guardInvocation("shell", { command: "echo x > ${X:-/tmp}/a" }, ctx())).toMatchObject({ allowed: false })
+          expect(guardInvocation("shell", { command: "echo x > ~/n*/a" }, ctx({ agentRoot: `${os.homedir()}/AgentBundles/sanctuary.ouro` }))).toEqual({ allowed: true })
+          expect(guardInvocation("shell", { command: "echo x > ~/AgentBundles/sanctuary.ouro/fr*/a" }, ctx({ agentRoot: `${os.homedir()}/AgentBundles/sanctuary.ouro` }))).toMatchObject({ allowed: false })
+        } finally {
+          if (prior.HOME === undefined) delete process.env.HOME; else process.env.HOME = prior.HOME
+          if (prior.TMPDIR !== undefined) process.env.TMPDIR = prior.TMPDIR
+        }
+      })
+      it("lets read-only commands and writes that cannot reach a store through", async () => {
+        const { guardInvocation } = await import("../../repertoire/guardrails")
+        for (const command of ["cat /bundle/fr*nds/peer.json", "ls /bundle/f*", "cp /tmp/a.json /bundle/notes/*.json", "echo x > /bundle/notes/[ab].md", "echo x > /tmp/$USER.log", "rm /bundle/state/*.tmp", "cp a.txt /bundle/n*/b.txt"]) {
+          expect(JSON.stringify(guardInvocation("shell", { command }, ctx())), command).toBe(JSON.stringify({ allowed: true }))
+        }
+      })
+    })
     it("refuses a home-relative path that lands in the friends store", async () => {
       const { guardInvocation } = await import("../../repertoire/guardrails")
       const root = `${os.homedir()}/AgentBundles/sanctuary.ouro`
