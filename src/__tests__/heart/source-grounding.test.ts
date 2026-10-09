@@ -30,6 +30,10 @@ describe("mentions", () => {
 })
 
 describe("candidateNames", () => {
+  it("outside strict mode a word that only ever opens sentences, even at the very start of the text, is not a name", () => {
+    expect(candidateNames("Rain stays. Rain goes.")).toEqual([])
+    expect(candidateNames("Rain stays. Rain goes.", true)).toEqual(["Rain"])
+  })
   it("finds capitalised names mid-sentence and drops possessives", () => {
     expect(candidateNames("i like Lindon and Yerin's sword")).toEqual(["Lindon", "Yerin"])
   })
