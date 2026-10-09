@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest"
-import { candidateNames, isLookupToolCall, lowercaseListNames, mentions, sourceGroundingError, sourceGroundingFinding, withUnverifiedDisclosure, type TurnToolRecord } from "../../heart/source-grounding"
+import { candidateNames, isLookupToolCall, lowercaseEmphasisNames, lowercaseListNames, mentions, sourceGroundingError, sourceGroundingFinding, withUnverifiedDisclosure, type TurnToolRecord } from "../../heart/source-grounding"
 
 const lookup = (result: string): TurnToolRecord => ({ name: "web_search", args: { query: "x" }, result })
 const REAL_USER = "channel more dross from cradle energy. name the Cradle characters whose energy fits"
@@ -217,5 +217,49 @@ describe("what counts as a shell lookup (round 2)", () => {
   it("does not let an echoed URL clear names", () => {
     const echo: TurnToolRecord = { name: "shell", args: { command: "echo Lindon Yerin Eithan https://x" }, result: "Lindon Yerin Eithan https://x" }
     expect(sourceGroundingFinding({ userText: "tell me about cradle", answer: "The books: Lindon and Yerin and Eithan are the main characters.", tools: [echo] })).toMatchObject({ kind: "invented" })
+  })
+})
+
+describe("a lowercase reply to a question about a work (alpha.881)", () => {
+  const ASK = "channel more dross from cradle energy. name the Cradle characters whose energy fits"
+  const REPLY879 = "the ones reaching for the same drawer:\n\n**eithan** — the polished form of it. theatrical self-titling ... dross with ambition and a body.\n\n**ozriel** — the reaper himself. dross is canonically a fragment of his personality ...\n\n**fisher gesha** — the quiet one."
+  it("finds lowercase names in emphasis and at the head of bullets, multiword allowed", () => {
+    expect(lowercaseEmphasisNames(REPLY879)).toEqual(["eithan", "ozriel", "fisher gesha"])
+    expect(lowercaseEmphasisNames("- ozriel — the reaper\n2. fisher gesha: quiet\n* __mercy__ and _wick_ too")).toEqual(["mercy", "wick", "ozriel", "fisher gesha"])
+    expect(candidateNames(REPLY879)).toEqual(["eithan", "ozriel", "fisher gesha"])
+  })
+  it("lists a name once when it appears both capitalised and in lowercase emphasis", () => {
+    expect(candidateNames("Eithan is here. **eithan** — again")).toEqual(["Eithan"])
+  })
+  it("ignores starters, status words, house words, snake_case and ordinary lines", () => {
+    expect(lowercaseEmphasisNames("**done** — grabbing season 2")).toEqual([])
+    expect(lowercaseEmphasisNames("**sonarr** is **important** and **the show** and *ok* and use my_var_name here")).toEqual([])
+    expect(lowercaseEmphasisNames("- added the show silo\n- grabbing season 2: ok\n- remember to check")).toEqual([])
+    expect(lowercaseEmphasisNames("**Eithan** and **x**")).toEqual([])
+  })
+  it("rejects the 879 reply: the ask names a work, the answer names unseen characters, nothing was looked up", () => {
+    const finding = sourceGroundingFinding({ userText: ASK, answer: REPLY879, tools: [] })
+    expect(finding).toMatchObject({ kind: "invented", lookups: 0 })
+    expect(finding?.names).toEqual(expect.arrayContaining(["eithan", "ozriel", "fisher gesha"]))
+    expect(finding?.message).toContain("looked up nothing")
+  })
+  it("rejects a single unseen name once the ask names a work and the answer has no cue word", () => {
+    expect(sourceGroundingFinding({ userText: "who plays the lead in the show?", answer: "**ozriel** — he is great.", tools: [] })).toMatchObject({ kind: "invented" })
+  })
+  it("passes when the turn looked it up, or the person gave the name", () => {
+    expect(sourceGroundingFinding({ userText: ASK, answer: REPLY879, tools: [lookup("Eithan, Ozriel, Fisher Gesha, Dross")] })).toBeNull()
+    expect(sourceGroundingFinding({ userText: "tell me about the character ozriel", answer: "**ozriel** — fine.", tools: [] })).toBeNull()
+  })
+  it("does not trip on ordinary media-ops replies", () => {
+    const ms = (result: string): TurnToolRecord => ({ name: "media_search", args: {}, result })
+    expect(sourceGroundingFinding({ userText: "add the show silo", answer: "Added the show Silo to Sonarr. Season 1 is grabbing now.", tools: [] })).toBeNull()
+    expect(sourceGroundingFinding({ userText: "grab season 2 of the show", answer: "**done** — grabbing season 2", tools: [] })).toBeNull()
+    expect(sourceGroundingFinding({ userText: "grab the next episode", answer: "- added the show silo\n- grabbing season 2: queued", tools: [] })).toBeNull()
+    expect(sourceGroundingFinding({ userText: "what shows are downloading?", answer: "**severance** — season 2 at 40%", tools: [{ name: "media_queue", args: {}, result: "Severance S02 40%" }] })).toBeNull()
+    expect(sourceGroundingFinding({ userText: "add silo", answer: "**silo** — added", tools: [ms("Silo")] })).toBeNull()
+  })
+  it("keeps the old behaviour when only the answer carries the cue", () => {
+    expect(sourceGroundingFinding({ userText: "?", answer: "the books feature Yorick.", tools: [lookup("nothing")] })).toMatchObject({ kind: "invented" })
+    expect(sourceGroundingFinding({ userText: "?", answer: "Radarr is fine. **sloane** was here.", tools: [] })).toBeNull()
   })
 })

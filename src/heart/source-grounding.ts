@@ -31,6 +31,8 @@ const LOOKUP_TOOL_PATTERN = /^(web_fetch|fetch_url|fetch_page|read_url|read_page
 const SHELL_LOOKUP_SEGMENT = /^\s*(?:\w+=\S*\s+)*(?:(?:sudo|env|command|time|nohup)\s+)*(?:(?:curl|wget)\b|books\s+(?:get|search|series|library\s+(?:find|search))\b)/
 const SHELL_SEGMENT_SEPARATOR = /&&|\|\||[;|\n]/
 
+/** The house's own catalog and status tools: what they return is the house's record, not a claim about a work. */
+const HOUSE_READ_TOOL = /^(?:media_|sanctuary_|unraid_)/
 const STRONG_CUE = /\b(books?|novels?|movies?|films?|anime|saga|trilogy|albums?|episodes?|protagonists?)\b/i
 const WORK_CUE = /\b(books?|novels?|series|saga|trilogy|shows?|movies?|films?|anime|characters?|protagonists?|authors?|episodes?|seasons?|albums?|bands?|lore|cast)\b/i
 const COPULA_AFTER_NAME = /^(?:['’]s\b|\s+(?:is|was|are|were|isn['’]t|wasn['’]t|has|had|does|did)\b)/i
@@ -74,6 +76,13 @@ const MIN_NAME_LENGTH = 3
 const MAX_ACRONYM_LENGTH = 5
 const LOWERCASE_LIST_INTRO = /\b(?:characters?|cast|names?|authors?|protagonists?|bands?|members?)\b[ \t]*(?::|—|-|are|includes?|including|like|such as)[ \t]+([^.!?\n]+)/gi
 const LOWERCASE_LIST_ITEM = /^[a-z][a-z'’-]{3,}$/
+const EMPHASIS_PHRASE = /^[a-z][a-z'’-]*(?: [a-z][a-z'’-]*){0,2}$/
+/** A span in **bold**, *italic*, __bold__ or _italic_ ("**fisher gesha**"); the delimiters must not sit inside a word, so snake_case is not emphasis. */
+const EMPHASIS_SPAN = /(?<![\p{L}\p{N}*_])(\*\*|__|\*|_)(?=[^\s*_])([^*_\n]{3,40}?)\1(?![\p{L}\p{N}*_])/gu
+/** A bullet or numbered line that opens with a lowercase name-like phrase and a separator ("- ozriel — the reaper"). */
+const LEAD_PHRASE = /^[ \t]*(?:[-*•]|\d+[.)])[ \t]+([a-z][a-z'’-]*(?: [a-z][a-z'’-]*){0,2})[ \t]*(?::|—|–|[ ]-[ ])/gmu
+/** Lowercase words that are emphasised or lead a bullet without being a name. */
+const EMPHASIS_STOP = new Set(["important", "careful", "caution", "bottom", "line", "short", "version", "mostly", "definitely", "exactly", "really", "very", "free", "new", "heads", "tip"])
 const LOWERCASE_LIST_STOP = new Set(["others", "etc", "more", "many", "several", "various", "everyone", "anyone", "someone", "people", "these", "those", "them", "others", "similar", "same", "like"])
 
 /** True when the call read a primary source: a web search or page fetch, a catalog lookup, a curl, or the books tool. */
@@ -109,6 +118,28 @@ export function candidateNames(text: string): string[] {
     if (startsSentence && !startsLikeName(text, match.index!, after, lower)) continue
     seen.add(lower)
     names.push(word)
+  }
+  for (const name of lowercaseEmphasisNames(text)) {
+    const lower = name.toLowerCase()
+    if (seen.has(lower)) continue
+    seen.add(lower)
+    names.push(name)
+  }
+  return names
+}
+
+/**
+ * Lowercase names the writer typed in emphasis ("**fisher gesha** — ...") or at the head of a bullet ("- ozriel — ..."): a model that writes in lowercase
+ * still names things, and these are the positions where a name is set apart. House vocabulary, sentence starters and status words are not names.
+ */
+export function lowercaseEmphasisNames(text: string): string[] {
+  const names: string[] = []
+  const phrases = [...text.matchAll(EMPHASIS_SPAN)].map((match) => match[2]!.trim().replace(/[:,.]$/, "")).concat([...text.matchAll(LEAD_PHRASE)].map((match) => match[1]!))
+  for (const phrase of phrases) {
+    if (!EMPHASIS_PHRASE.test(phrase)) continue
+    const words = phrase.split(" ")
+    const stop = words.some((word) => word.length < MIN_NAME_LENGTH || COMMON_STARTERS.has(word) || EXEMPT_WORDS.has(word) || HOUSE_VOCABULARY.has(word) || LABEL_WORDS.has(word) || LOWERCASE_LIST_STOP.has(word) || EMPHASIS_STOP.has(word))
+    if (!stop && !names.some((name) => name.toLowerCase() === phrase)) names.push(phrase)
   }
   return names
 }
@@ -162,12 +193,17 @@ function claimsSomethingAbout(answer: string, name: string): boolean {
  * or states something about a work the person only named, with no lookup at all (unsourced_claim).
  */
 export function sourceGroundingFinding(input: { answer: string; userText: string; tools: readonly TurnToolRecord[] }): GroundingFinding | null {
-  if (!WORK_CUE.test(input.answer)) return null
+  const answerCue = WORK_CUE.test(input.answer)
+  const askedAboutWork = WORK_CUE.test(input.userText)
+  if (!answerCue && !askedAboutWork) return null
   const lookups = input.tools.filter(isLookupToolCall)
   const lookedUp = lookups.map((record) => record.result).join("\n")
   const names = [...candidateNames(input.answer), ...lowercaseListNames(input.answer)]
   const invented = names.filter((name) => !mentions(lookedUp, name) && !mentions(input.userText, name))
-  if (invented.length > 0 && (invented.length >= 2 || STRONG_CUE.test(input.answer))) {
+  // The person asked about a work and the turn read nothing: one name they did not give is enough (the house's own catalog tools clear names they returned).
+  const houseRead = input.tools.filter((record) => HOUSE_READ_TOOL.test(record.name)).map((record) => record.result).join("\n")
+  const fromMemory = askedAboutWork && lookups.length === 0 ? invented.filter((name) => !mentions(houseRead, name)) : []
+  if (invented.length > 0 && ((answerCue && (invented.length >= 2 || STRONG_CUE.test(input.answer))) || fromMemory.length > 0)) {
     const named = invented.join(", ")
     emitNervesEvent({ level: "warn", component: "engine", event: "engine.unsourced_work_claim", message: "a reply named things from a work that the turn did not look up", meta: { names: invented.length, lookups: lookups.length } })
     return {
@@ -178,7 +214,7 @@ export function sourceGroundingFinding(input: { answer: string; userText: string
     }
   }
   const unsourced = names.filter((name) => mentions(input.userText, name) && !mentions(lookedUp, name) && claimsSomethingAbout(input.answer, name))
-  if (lookups.length === 0 && unsourced.length > 0) {
+  if (answerCue && lookups.length === 0 && unsourced.length > 0) {
     return {
       kind: "unsourced_claim", names: unsourced, lookups: 0,
       message: `you stated something about ${unsourced.join(", ")} and looked up nothing this turn. read a primary source first (web_search, or fetch the page), then answer only from what it says. if you can't find it, say so plainly.`,
