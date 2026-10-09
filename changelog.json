@@ -7,7 +7,8 @@
         "The Butler runs a daily house-care sweep (house_sweep, house_digest_send) and sends one owner digest only when something needs a choice; the replay gate gains sweep cases; butler:ship resolves a release commit when a stale PR title hides the version",
         "The daily sweep await can only ever be resolved with verdict 'no' and cannot be cancelled, so the package-managed file stays in place; the digest dedupes (7 days, unchanged findings) and caps at one per day at send time, is built only from stored finding summaries with an optional one-line lead-in, and the ledger is kept for sources that could not be read",
         "The escalation-grant restore (root lifecycle and the legacy upgrade script) lstats state/a2a, its subdirectories and escalation-grants.json and refuses to follow a symlink or a non-regular file",
-        "The release smoke retries npm ETARGET (registry propagation after a publish) with a bounded backoff of about three minutes; the ship fallback skips an unreadable commit instead of ending the run"
+        "The release smoke retries npm ETARGET (registry propagation after a publish) with a bounded backoff of about three minutes; the ship fallback skips an unreadable commit instead of ending the run",
+        "The house digest is built only from the sweep this process ran (the on-disk files are untrusted bookkeeping) and re-sanitized at send time; the one-per-day slot belongs to the daily house-care await alone and is reserved before sending and rolled back on failure; the escalation and replay root restores compare realpaths so a linked state directory is never chowned or chmodded, and the upgrade log says so with a WARN line"
       ]
     },
     {

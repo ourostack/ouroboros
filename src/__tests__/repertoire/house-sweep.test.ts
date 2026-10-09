@@ -31,7 +31,7 @@ vi.mock("../../heart/steward-policy", () => ({
 }))
 vi.mock("../../a2a/escalation-grants", () => ({ readEscalationGrants: () => state.escalation }))
 
-import { draftDigest, lastReportPath, LIST_CAP, queueProblem, readLedger, runHouseSweep, safe, writeLedger, progressPath, type HouseSweepDeps } from "../../repertoire/house-sweep"
+import { draftDigest, recallSweep, LIST_CAP, queueProblem, readLedger, runHouseSweep, safe, writeLedger, progressPath, type HouseSweepDeps } from "../../repertoire/house-sweep"
 
 const NOW = Date.parse("2026-10-09T12:00:00.000Z")
 const HOUR = 3_600_000
@@ -106,7 +106,9 @@ describe("runHouseSweep queue findings", () => {
     expect(report.digest_due).toBe(true)
     expect(report.digest_draft).toContain("Show")
     expect(report.fresh).toContain("downloads:sonarr:11")
-    expect(JSON.parse(fs.readFileSync(lastReportPath(root, "live"), "utf8")).findings.map((f: { id: string }) => f.id)).toContain("downloads:sonarr:11")
+    expect(recallSweep(root, "live")!.map((f) => f.id)).toContain("downloads:sonarr:11")
+    expect(recallSweep(root, "replay")).toBeUndefined()
+    expect(fs.existsSync(path.join(root, "state", "house-sweep", "last-report.json"))).toBe(false)
   })
   it("treats a stalled movie as an owner item and reads an array payload", async () => {
     const report = await sweep({}, { radarr: { queue: [{ id: 3, movieId: 9, movie: { title: "Film" }, title: "Film.2020", size: 10, sizeleft: 5, status: "failed" }, { noid: true }] } })
@@ -352,7 +354,7 @@ describe("runHouseSweep reporting ledger", () => {
     expect(replay.scope).toBe("replay")
     expect(replay.digest_due).toBe(true)
     expect(Object.keys(readLedger(root)).sort()).toEqual(["downloads:sonarr:11", "gone"])
-    expect(fs.existsSync(lastReportPath(root, "replay"))).toBe(true)
+    expect(recallSweep(root, "replay")!.length).toBeGreaterThan(0)
   })
   it("caps a long list", async () => {
     const records = Array.from({ length: LIST_CAP * 3 + 4 }, (_, i) => ({ id: i + 1, seriesId: i + 1, series: { title: `S${i}` }, title: "t", size: 10, sizeleft: 5, status: "failed" }))

@@ -424,14 +424,27 @@ function recreateResident(version) {
 // resident telegram sense. Run while the resident is stopped (between recreate and activate).
 // The recursive chown above also hands state/replay to the resident, but the replay gate's trust rests on that
 // directory being root-owned and read-only to it. Put it back (the resident is stopped) and drop any window file.
-function restoreReplayRoot() {
-  const dir = `${BUNDLE}/state/replay`
+// The recursive restore runs while the resident owns the bundle, so state/<name>, or state itself, may be a link it planted.
+// A WARN line in the upgrade log says plainly that a restore step refused; nothing is chowned or chmodded through a link.
+const warn = (m) => console.log(`\nWARN ${m}`)
+export function trustedStateChild(bundle, name, { lstat = lstatSync, realpath = realpathSync, log = warn } = {}) {
+  const dir = `${bundle}/state/${name}`
+  const refuse = (reason) => { log(`upgrade restore REFUSED ${dir}: ${reason}; no chown or chmod was applied through it`); return null }
   let stat
-  try { stat = lstatSync(dir) } catch { return }
-  if (!stat.isDirectory()) return
-  sh("/bin/chown", ["-h", "0:0", dir])
-  chmodSync(dir, 0o755)
-  rmSync(`${dir}/window.json`, { force: true, recursive: true })
+  try { stat = lstat(dir) } catch { return null }
+  if (!stat.isDirectory()) return refuse(stat.isSymbolicLink() ? "it is a symlink" : "it is not a directory")
+  let resolved = ""
+  let expected = ""
+  try { resolved = realpath(dir); expected = `${realpath(bundle)}/state/${name}` } catch { /* unresolvable: refused below */ }
+  if (!resolved || resolved !== expected) return refuse("it resolves outside the bundle's own state directory")
+  return dir
+}
+export function restoreReplayRoot(bundle = BUNDLE, { lstat = lstatSync, realpath = realpathSync, chmod = chmodSync, rm = rmSync, run = sh, log = warn } = {}) {
+  const dir = trustedStateChild(bundle, "replay", { lstat, realpath, log })
+  if (!dir) return
+  run("/bin/chown", ["-h", "0:0", dir])
+  chmod(dir, 0o755)
+  rm(`${dir}/window.json`, { force: true, recursive: true })
 }
 // The psyche files are package-managed: the resident's own boot check (prepareSanctuaryPackageManagedBundle) requires every one
 // to be exactly mode 0600, so they must stay owned by the resident (uid 10001) at 0600. What stops the resident editing or
@@ -479,13 +492,11 @@ export function psycheMountIssue(mounts) {
 // a grant only when the file and its directory are root-owned and writable by no one else, so a prompt-injected model
 // running as uid 10001 cannot mint one. Put them back; the subdirectories the resident writes stay with it, created
 // first so it never needs to mkdir inside the root-owned directory.
-export function restoreEscalationGrantRoot(bundle = BUNDLE, { lstat = lstatSync, chmod = chmodSync, run = sh, log = say } = {}) {
-  const dir = `${bundle}/state/a2a`
-  const refuse = (target, reason) => log(`  skip ${target}: ${reason}; the escalation grant restore never follows it`)
-  let stat
-  try { stat = lstat(dir) } catch { return }
+export function restoreEscalationGrantRoot(bundle = BUNDLE, { lstat = lstatSync, chmod = chmodSync, run = sh, log = warn, realpath = realpathSync } = {}) {
   // lstat, never stat or exists: a link the resident planted must not carry the chown or chmod to its target.
-  if (!stat.isDirectory()) { refuse(dir, stat.isSymbolicLink() ? "symlink" : "not a directory"); return }
+  const dir = trustedStateChild(bundle, "a2a", { lstat, realpath, log })
+  if (!dir) return
+  const refuse = (target, reason) => log(`upgrade restore REFUSED ${target}: ${reason}; no chown or chmod was applied through it`)
   for (const sub of ["tasks", "pins", "seen"]) {
     const target = `${dir}/${sub}`
     let existing = null

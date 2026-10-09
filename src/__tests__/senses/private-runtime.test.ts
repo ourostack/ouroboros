@@ -2462,6 +2462,7 @@ describe("private runtime", () => {
     await runSanctuaryTurn({ reason: "await", awaitName: "chef-show" })
     const awaitCtx = mockHandleInboundTurn.mock.calls[0][0].runAgentOptions.toolContext
     expect(awaitCtx.autonomousTurnKind).toBe("await")
+    expect(awaitCtx.autonomousAwaitName).toBe("chef-show")
     expect(typeof awaitCtx.sanctuary.getDownloadQueue).toBe("function")
     const queueTool = (await import("../../repertoire/tools-unraid")).unraidToolDefinitions.find((d) => d.tool.function.name === "sanctuary_get_download_queue")!
     const queueResult = JSON.parse(await queueTool.handler({}, awaitCtx))
@@ -2469,6 +2470,7 @@ describe("private runtime", () => {
     await runSanctuaryTurn({ reason: "instinct" })
     const instinctCtx = mockHandleInboundTurn.mock.calls[1][0].runAgentOptions.toolContext
     expect(instinctCtx.autonomousTurnKind).toBe("instinct")
+    expect(instinctCtx.autonomousAwaitName).toBeUndefined()
     expect(instinctCtx.sanctuary).toBeDefined()
     await runSanctuaryTurn({ reason: "heartbeat" })
     expect(mockHandleInboundTurn.mock.calls[2][0].runAgentOptions.toolContext.autonomousTurnKind).toBe("scheduler")

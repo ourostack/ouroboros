@@ -1,9 +1,8 @@
-import * as fs from "node:fs"
 import { createHash } from "node:crypto"
 import { appendReplayNotice, isReplayIdentity, isReplayWindowOpen } from "../a2a/replay-harness"
 import { defaultNotifyOwner, type NotifyOwner } from "../heart/awaiting/a2a-await-delivery"
 import { emitNervesEvent } from "../nerves/runtime"
-import { lastReportPath, readLastDigestAt, readLedger, REMIND_DAYS, runHouseSweep, safe, sameUtcDay, writeLedger, type HouseSweepDeps } from "./house-sweep"
+import { clip, readLastDigestAt, readLedger, recallSweep, REMIND_DAYS, runHouseSweep, safe, sameUtcDay, writeLedger, type HouseSweepDeps } from "./house-sweep"
 import type { ToolContext, ToolDefinition } from "./tools-base"
 
 /**
@@ -15,6 +14,10 @@ import type { ToolContext, ToolDefinition } from "./tools-base"
 
 export const LEAD_IN_MAX_CHARS = 140
 const DAY_MS = 86_400_000
+const HOUSE_CARE_AWAIT = "house-care-sweep"
+const PEER_NAME_MAX = 40
+/** Addresses a lead-in must not carry: a bare domain (word.tld), an @mention, mailto:, or any bidi, zero-width or invisible character. */
+const LEAD_IN_FORBIDDEN = /\b[a-z0-9-]+\.[a-z]{2,}\b|@\w|mailto:|[\u200b-\u200f\u202a-\u202e\u2060-\u206f\ufeff]/iu
 
 export interface HouseCareToolDeps {
   notifyOwner?: (agentName: string) => NotifyOwner
@@ -78,22 +81,23 @@ export const houseDigestToolDefinition: ToolDefinition = {
     if (ids.length === 0) return JSON.stringify({ sent: false, error: "no digest: name at least one finding id from the latest house_sweep. When nothing needs the owner, say nothing." })
     const replay = replayAsker(ctx)
     const scope = replay ? "replay" : "live"
-    let last: { findings?: { id: string; fingerprint: string; summary: string }[] } = {}
-    try { last = JSON.parse(fs.readFileSync(lastReportPath(agentRoot, scope), "utf8")) } catch { /* no sweep yet */ }
-    const known = new Map((last.findings ?? []).map((finding) => [finding.id, finding]))
+    // The digest comes only from the sweep THIS process ran. Files under state/house-sweep/ are writable by the resident's uid: untrusted bookkeeping, never a source of owner-facing text.
+    const last = recallSweep(agentRoot, scope)
+    if (!last) return JSON.stringify({ sent: false, error: "no sweep has run in this session: run house_sweep first and use its finding ids." })
+    const known = new Map(last.map((finding) => [finding.id, finding]))
     const unknown = ids.filter((id) => !known.has(id))
     if (unknown.length > 0) return JSON.stringify({ sent: false, error: `unknown finding ids: ${unknown.join(", ")}. Run house_sweep first and use its ids.` })
     const chosen = ids.map((id) => known.get(id)!)
     const rawLead = (args as unknown as { lead_in?: unknown }).lead_in
     const leadIn = typeof rawLead === "string" ? rawLead.trim() : ""
-    if (leadIn.length > LEAD_IN_MAX_CHARS || safe(leadIn) !== leadIn) return JSON.stringify({ sent: false, error: `lead_in must be one plain line of at most ${LEAD_IN_MAX_CHARS} characters, with no links or line breaks` })
+    if (leadIn.length > LEAD_IN_MAX_CHARS || safe(leadIn) !== leadIn || LEAD_IN_FORBIDDEN.test(leadIn)) return JSON.stringify({ sent: false, error: `lead_in must be one plain line of at most ${LEAD_IN_MAX_CHARS} characters, with no links, addresses, mentions or hidden characters` })
     const now = (injected.now ?? Date.now)()
     const digest = createHash("sha256").update(chosen.map((finding) => finding.fingerprint).sort().join(",")).digest("hex").slice(0, 12)
     const friendId = askerFriendId(ctx)
     const agentName = ctx.agentName ?? "sanctuary"
     // A peer's digest says whose it is; the body is only ever the stored finding summaries.
-    const peer = ctx.relationshipAuthorization?.profileId === "sanctuary-agent-peer" ? `From ${safe(ctx.context?.friend?.name ?? friendId ?? "a peer") || "a peer"}:\n` : ""
-    const body = `${peer}${leadIn ? `${leadIn}\n` : ""}${chosen.map((finding) => `- ${finding.summary}`).join("\n")}`
+    const peer = ctx.relationshipAuthorization?.profileId === "sanctuary-agent-peer" ? `From ${clip(safe(ctx.context?.friend?.name ?? friendId ?? "a peer"), PEER_NAME_MAX) || "a peer"}:\n` : ""
+    const body = `${peer}${leadIn ? `${leadIn}\n` : ""}${chosen.map((finding) => `- ${clip(safe(finding.summary), 220)}`).join("\n")}`
 
     if (replay) {
       // A replay identity's digest never reaches the owner: it goes to the sink while the window is open, and is refused when it is not.
@@ -105,23 +109,27 @@ export const houseDigestToolDefinition: ToolDefinition = {
 
     // Enforced here, not only in the sweep: the ledger is reloaded at send time.
     const ledger = readLedger(agentRoot)
+    const priorStamp = readLastDigestAt(agentRoot)
     const stamp = new Date(now).toISOString()
     const told = chosen.filter((finding) => {
       const entry = ledger[finding.id]
       return entry !== undefined && entry.fingerprint === finding.fingerprint && now - Date.parse(entry.reportedAt) < REMIND_DAYS * DAY_MS
     })
     if (told.length > 0) return JSON.stringify({ sent: false, error: `the owner was already told about ${told.map((finding) => finding.id).join(", ")} unchanged in the last ${REMIND_DAYS} days; leave ${told.length === 1 ? "it" : "them"} out` })
-    if (sameUtcDay(readLastDigestAt(agentRoot), stamp)) return JSON.stringify({ sent: false, error: "a house digest already went out today; at most one is sent per day" })
-    // Only the daily await tick, with no friend or relationship behind it, is "scheduled".
-    const kind = ctx.autonomousTurnKind === "await" && !ctx.relationshipAuthorization && !friendId ? "scheduled" : "ondemand"
+    // Only the daily house-care await's own tick, with no friend or relationship behind it, is "scheduled" and takes the one-per-day slot; on-demand digests are limited by the per-finding dedupe above.
+    const kind = ctx.autonomousTurnKind === "await" && ctx.autonomousAwaitName === HOUSE_CARE_AWAIT && !ctx.relationshipAuthorization && !friendId ? "scheduled" : "ondemand"
+    if (kind === "scheduled" && sameUtcDay(priorStamp, stamp)) return JSON.stringify({ sent: false, error: "the daily house digest already went out today; at most one scheduled digest is sent per day" })
     const day = stamp.slice(0, 10)
+    // Reserve before sending so a crash or a concurrent turn cannot send twice; a failed send rolls the reservation back.
+    const reserved = { ...ledger }
+    for (const finding of chosen) reserved[finding.id] = { fingerprint: finding.fingerprint, reportedAt: stamp }
+    writeLedger(agentRoot, reserved, kind === "scheduled" ? stamp : priorStamp)
     try {
       await (injected.notifyOwner ? injected.notifyOwner(agentName) : defaultNotifyOwner(agentName))({ noticeId: `house-sweep:${kind}:${day}:${digest}`, text: body })
     } catch (error) {
+      writeLedger(agentRoot, ledger, priorStamp)
       return JSON.stringify({ sent: false, error: `the owner notice could not be sent: ${error instanceof Error ? error.message : String(error)}. Nothing was recorded as told, so the next sweep will try again.` })
     }
-    for (const finding of chosen) ledger[finding.id] = { fingerprint: finding.fingerprint, reportedAt: stamp }
-    writeLedger(agentRoot, ledger, stamp)
     emitNervesEvent({ component: "repertoire", event: "repertoire.house_digest_sent", message: "house digest sent to the owner", meta: { findings: ids.length, destination: "owner", kind } })
     return JSON.stringify({ sent: true, destination: "owner", findings: ids.length })
   },

@@ -75,9 +75,9 @@ const list = (value: unknown): unknown[] => (Array.isArray(value) ? value : [])
 const text = (value: unknown): string => (typeof value === "string" ? value : "")
 const num = (value: unknown): number | null => (typeof value === "number" && Number.isFinite(value) ? value : null)
 const lower = (value: unknown): string => text(value).toLowerCase()
-const clip = (value: string, max: number): string => (value.length > max ? `${value.slice(0, max - 3)}...` : value)
+export const clip = (value: string, max: number): string => (value.length > max ? `${value.slice(0, max - 3)}...` : value)
 /** Names and messages come from outside (release titles, friend names): strip control characters, newlines and links before they can reach a digest. */
-export const safe = (value: string): string => value.replace(/\b[a-z][a-z0-9+.-]*:\/\/\S*/giu, "").replace(/[\u0000-\u001f\u007f-\u009f]+/gu, " ").replace(/\s+/gu, " ").trim()
+export const safe = (value: string): string => value.replace(/mailto:\S*/giu, "").replace(/[\u200b-\u200f\u202a-\u202e\u2060-\u206f\ufeff]/gu, "").replace(/\b[a-z][a-z0-9+.-]*:\/\/\S*/giu, "").replace(/[\u0000-\u001f\u007f-\u009f]+/gu, " ").replace(/\s+/gu, " ").trim()
 const fingerprintOf = (id: string, detail: string): string => createHash("sha256").update(`${id}\0${detail}`).digest("hex").slice(0, 12)
 
 // ---- bookkeeping -------------------------------------------------------------------------------------------------
@@ -97,7 +97,16 @@ function writeJson(file: string, value: unknown): void {
 
 export const progressPath = (agentRoot: string): string => path.join(houseSweepDir(agentRoot), "queue-progress.json")
 export const ledgerPath = (agentRoot: string): string => path.join(houseSweepDir(agentRoot), "reported.json")
-export const lastReportPath = (agentRoot: string, scope: "live" | "replay"): string => path.join(houseSweepDir(agentRoot), scope === "live" ? "last-report.json" : "last-report-replay.json")
+
+/**
+ * The last sweep this process ran, per bundle and scope. The digest is built only from this: everything under
+ * state/house-sweep/ is writable by the resident's uid, so those files are untrusted bookkeeping and never a source of
+ * text for the owner.
+ */
+export interface RememberedFinding { id: string; fingerprint: string; summary: string }
+const lastSweeps = new Map<string, RememberedFinding[]>()
+export const rememberSweep = (agentRoot: string, scope: "live" | "replay", findings: readonly RememberedFinding[]): void => { lastSweeps.set(`${path.resolve(agentRoot)}\0${scope}`, findings.map(({ id, fingerprint, summary }) => ({ id, fingerprint, summary }))) }
+export const recallSweep = (agentRoot: string, scope: "live" | "replay"): RememberedFinding[] | undefined => lastSweeps.get(`${path.resolve(agentRoot)}\0${scope}`)
 
 export interface LedgerEntry { fingerprint: string; reportedAt: string }
 export const readLedger = (agentRoot: string): Record<string, LedgerEntry> => dict(readJson(ledgerPath(agentRoot)).entries) as Record<string, LedgerEntry>
@@ -440,7 +449,7 @@ export async function runHouseSweep(deps: HouseSweepDeps): Promise<HouseSweepRep
     digest_draft: draftDigest(fresh.filter((finding) => shownIds.has(finding.id))),
     guidance: `${sentToday ? "A digest already went out today, so none is due. " : ""}Try every finding with a fix first (the fix never deletes a partial download). Anything still unsettled, and every finding without a fix, goes in ONE short digest with house_digest_send using the finding ids. If digest_due is false, say nothing to the owner. Never remove a download or delete anything.`,
   }
-  writeJson(lastReportPath(deps.agentRoot, scope), { schemaVersion: 1, at: report.checkedAt, findings: shown.map((finding) => ({ id: finding.id, fingerprint: finding.fingerprint, summary: finding.summary })) })
+  rememberSweep(deps.agentRoot, scope, shown)
   emitNervesEvent({ component: "repertoire", event: "repertoire.house_sweep_run", message: "house sweep gathered", meta: { scope, findings: ordered.length, fresh: fresh.length, digestDue: report.digest_due } })
   return report
 }

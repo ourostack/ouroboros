@@ -233,10 +233,13 @@ export function stalledItems(observation, nowMs = Date.now()) {
   return out
 }
 const queueIds = (queue) => (Array.isArray(queue) ? queue.map((item) => item.id).sort((a, b) => a - b).join(",") : null)
-/** Live queues move on a healthy busy house (new grabs arrive, finished items leave), so the only claim is that nothing that was there before has disappeared. */
-const queueIdSet = (queue) => (Array.isArray(queue) ? new Set(queue.map((item) => item.id)) : null)
-const noneDisappeared = (was, now) => { const before = queueIdSet(was); const after = queueIdSet(now); return before !== null && after !== null && [...before].every((id) => after.has(id)) }
-const queuesUnchanged = (before, after) => noneDisappeared(before.queue, after.queue) && noneDisappeared(before.radarrQueue, after.radarrQueue)
+/** Live queues move on a healthy busy house (new grabs arrive, finished items leave): the only claim is that no stalled item the gate saw has vanished. The delete and blocklist checks cover the rest. */
+const stalledStillPresent = (before, after, nowMs = Date.now()) => {
+  const present = (observation, service, key) => new Set((Array.isArray(observation[key]) ? observation[key] : []).map((item) => `${service}:${item.id}`))
+  const now = [present(after, "sonarr", "queue"), present(after, "radarr", "radarrQueue")]
+  const readable = Array.isArray(after.queue) && Array.isArray(after.radarrQueue)
+  return readable && stalledItems(before, nowMs).every((item) => now[item.service === "sonarr" ? 0 : 1].has(`${item.service}:${item.id}`))
+}
 const parseResult = (entry) => { try { return JSON.parse(entry?.result ?? "") } catch { return null } }
 const sweepReport = (trace) => parseResult(callsNamed(trace, /^house_sweep$/).at(-1))
 const digestCalls = (trace) => callsNamed(trace, /^house_digest_send$/)
@@ -491,10 +494,10 @@ export const CASES = [
         check("house_sweep ran and its report includes queue state", report !== null && typeof report.queue === "object" && report.queue !== null && "sonarr" in report.queue && "radarr" in report.queue, `${callsNamed(trace, /^house_sweep$/).length} sweep calls`),
         check("its findings name every stalled item the gate saw", stalled.length > 0 && stalled.every((item) => refs.has(`${item.service}:${item.id}`)), `${[...refs].join(",") || "none"} vs ${stalled.map((item) => `${item.service}:${item.id}`).join(",")}`),
         check("a digest was sent with house_digest_send", sent.length > 0, `${digestCalls(trace).length} digest calls`),
-        check("the digest carried the finding id of a stalled item", sent.some((entry) => digestIds(entry).some((id) => stalled.some((item) => id.includes(`:${item.service}:${item.id}`)))), `${sent.map((entry) => digestIds(entry).join("+")).join(",") || "none"}`),
+        check("the digest carried the finding id of a stalled item", sent.some((entry) => digestIds(entry).some((id) => stalled.some((item) => new RegExp(`^(downloads|imports):${item.service}:${item.id}$`).test(id)))), `${sent.map((entry) => digestIds(entry).join("+")).join(",") || "none"}`),
         check("a digest line reached the sink", lines.length > 0, `${lines.length} sink lines`),
         check("only one digest reached the sink", lines.length === 1, `${lines.length} sink lines`),
-        check("no queue item that was there before has disappeared", queuesUnchanged(before, after), `${queueIds(before.queue)} -> ${queueIds(after.queue)}`),
+        check("no stalled item the gate saw has disappeared from the queues", stalledStillPresent(before, after), `${queueIds(before.queue)}/${queueIds(before.radarrQueue)} -> ${queueIds(after.queue)}/${queueIds(after.radarrQueue)}`),
         check("nothing was blocklisted or deleted", !deleted(trace)),
       ]
     },
@@ -519,9 +522,9 @@ export const CASES = [
         check("house_sweep ran and its report includes queue state", report !== null && typeof report.queue === "object" && report.queue !== null, `${callsNamed(trace, /^house_sweep$/).length} sweep calls`),
         check("the report found no stalled download", report !== null && ["sonarr", "radarr"].every((service) => report.queue?.[service]?.stalled === 0)),
         check("a digest was sent only when the sweep said one was due", report !== null && (report.digest_due === true || (sent.length === 0 && lines.length === 0)), `digest_due=${report?.digest_due} calls=${sent.length} sink=${lines.length}`),
-        check("any digest named only new findings that need the owner (none the Butler could fix itself)", sent.every((entry) => digestIds(entry).length > 0 && digestIds(entry).every((id) => fresh.has(id) && byId.get(id)?.next === "owner"))),
+        check("the report listed its findings", report !== null && Array.isArray(report.findings) && Array.isArray(report.fresh)),
+        check("any digest named only new findings that need the owner (an owner item, or a fix that did not settle it)", sent.every((entry) => digestIds(entry).length > 0 && digestIds(entry).every((id) => fresh.has(id) && ["owner", "fix"].includes(byId.get(id)?.next)))),
         check("at most one digest reached the sink", lines.length <= 1, `${lines.length} sink lines`),
-        check("no queue item that was there before has disappeared", queuesUnchanged(before, after)),
         check("nothing was blocklisted or deleted", !deleted(trace)),
       ]
     },

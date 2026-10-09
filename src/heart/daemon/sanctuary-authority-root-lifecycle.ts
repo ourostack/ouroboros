@@ -866,11 +866,30 @@ export class SanctuaryAuthorityRootLifecycle {
    * writable by it. Put it back under root after every restore (the resident is stopped here), and drop any window
    * file, since the gate writes its own for each run and a file the resident could have written must not be kept as root's.
    */
-  #restoreReplayRoot(): void {
-    const directory = this.#p(`${BUNDLE}/state/replay`)
+  /**
+   * `state/<name>` as a real directory inside this bundle's own state directory, or null (silently when absent, with a
+   * warning when it is a link or resolves anywhere else). The resident owns the bundle during the recursive restore, so
+   * `state` itself may be a link too: compare realpaths before any chown or chmod ever runs.
+   */
+  #stateChild(name: string): string | null {
+    const bundle = this.#p(BUNDLE)
+    const directory = path.join(bundle, "state", name)
     let stat: fs.Stats
-    try { stat = fs.lstatSync(directory) } catch { return }
-    if (!stat.isDirectory()) return
+    try { stat = fs.lstatSync(directory) } catch { return null }
+    if (!stat.isDirectory()) { this.#refuseRestore(directory, stat.isSymbolicLink() ? "symlink" : "not a directory"); return null }
+    let inside = false
+    try { inside = fs.realpathSync(directory) === path.join(fs.realpathSync(bundle), "state", name) } catch { /* unresolvable: refused below */ }
+    if (!inside) { this.#refuseRestore(directory, "resolves outside the bundle's state directory"); return null }
+    return directory
+  }
+
+  #refuseRestore(target: string, reason: string): void {
+    emitNervesEvent({ level: "warn", component: "daemon", event: "daemon.sanctuary_escalation_root_refused", message: "Sanctuary root restore refused a path it will not follow", meta: { target, reason } })
+  }
+
+  #restoreReplayRoot(): void {
+    const directory = this.#stateChild("replay")
+    if (!directory) return
     // Ownership first: nothing the Butler left in the directory may stop it being put back under root.
     execFileSync("/bin/chown", ["-h", "0:0", directory], { stdio: "ignore" })
     fs.chmodSync(directory, 0o755)
@@ -886,12 +905,9 @@ export class SanctuaryAuthorityRootLifecycle {
    * the alpha.878 replay gate fail: no peer held the grant, so no peer was an escalation holder.
    */
   #restoreEscalationGrantRoot(): void {
-    const directory = this.#p(`${BUNDLE}/state/a2a`)
-    const refuse = (target: string, reason: string): void => emitNervesEvent({ level: "warn", component: "daemon", event: "daemon.sanctuary_escalation_root_refused", message: "Sanctuary escalation grant restore refused a path it will not follow", meta: { target, reason } })
-    let stat: fs.Stats
-    try { stat = fs.lstatSync(directory) } catch { return }
-    // lstat, never stat: a link the Butler planted here must not carry the chown or chmod to its target.
-    if (!stat.isDirectory()) { refuse(directory, stat.isSymbolicLink() ? "symlink" : "not a directory"); return }
+    const directory = this.#stateChild("a2a")
+    if (!directory) return
+    const refuse = (target: string, reason: string): void => this.#refuseRestore(target, reason)
     for (const sub of ["tasks", "pins", "seen"]) {
       const target = path.join(directory, sub)
       let existing: fs.Stats | null = null

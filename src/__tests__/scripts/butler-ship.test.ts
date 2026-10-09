@@ -274,7 +274,9 @@ describe("butler-ship orchestrator", () => {
     const { findReleaseCommitByPackage } = await lib()
     const commits = [{ sha: "a" }, { sha: "b" }, { sha: "c" }, { sha: "d" }]
     const versions: Record<string, unknown> = { a: "1.0.0", b: null, c: "1.0.0", d: "0.9.0" }
-    expect(await findReleaseCommitByPackage(commits, "1.0.0", async (sha: string) => versions[sha])).toBe("c")
+    const unreadable: string[] = []
+    expect(await findReleaseCommitByPackage(commits, "1.0.0", async (sha: string) => versions[sha], 30, unreadable)).toBe("c")
+    expect(unreadable).toEqual(["b"])
     expect(await findReleaseCommitByPackage([{ sha: "x" }, { sha: "y" }], "1.0.0", async () => undefined)).toBeUndefined()
   })
 
@@ -292,7 +294,17 @@ describe("butler-ship orchestrator", () => {
     } })
     await h.run()
     expect(h.out.some((l) => l.includes(`${V} is ${SHA}`))).toBe(true)
+    expect(h.out.some((l) => l.includes("WARN package.json could not be read at older") && l.includes(`chose ${SHA}`))).toBe(true)
     expect(h.calls.some((c) => c.includes("contents/package.json?ref=newer"))).toBe(true)
+  })
+
+  it("warns about unreadable commits even when the fallback finds nothing", async () => {
+    const h = await harness({ gh: (a) => {
+      if (a[0] === "api" && a[1].includes("commits?")) return ok(JSON.stringify([{ sha: "z1", commit: { message: "x" } }]))
+      return a.join(" ").includes("package.json") ? nok("gone") : (undefined as unknown as Res)
+    } })
+    await expect(h.run()).rejects.toThrow(/no commit on main names/)
+    expect(h.out.some((l) => l.includes("WARN package.json could not be read at z1") && !l.includes("chose"))).toBe(true)
   })
 
   it("stops when no commit names the release", async () => {

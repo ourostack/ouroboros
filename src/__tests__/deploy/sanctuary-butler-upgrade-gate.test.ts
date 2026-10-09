@@ -155,7 +155,7 @@ describe("upgrade script contract", () => {
     expect(migrate.indexOf('["-R", "10001:10001", BUNDLE]')).toBeGreaterThanOrEqual(0)
     expect(migrate.indexOf('["-R", "10001:10001", BUNDLE]')).toBeLessThan(migrate.indexOf("restoreEscalationGrantRoot()"))
     const restore = source.slice(source.indexOf("export function restoreEscalationGrantRoot("), source.indexOf("function migrateBundle("))
-    expect(restore).toContain("`${bundle}/state/a2a`")
+    expect(restore).toContain('trustedStateChild(bundle, "a2a"')
     expect(restore).toContain('run("/bin/chown", ["-h", "0:0", dir])')
     expect(restore).toContain("chmod(dir, 0o755)")
     expect(restore).toContain("`${dir}/escalation-grants.json`")
@@ -172,6 +172,7 @@ describe("upgrade script contract", () => {
       const logs: string[] = []
       upgrade.restoreEscalationGrantRoot("/b", {
         lstat: (p: string) => { const k = kinds[p]; if (!k) throw new Error("ENOENT"); return stat(k) },
+        realpath: (p: string) => p,
         chmod: (p: string, m: number) => { calls.push(`chmod ${m.toString(8)} ${p}`) },
         run: (_f: string, args: string[]) => { calls.push(args.join(" ")) },
         log: (l: string) => { logs.push(l) },
@@ -180,7 +181,7 @@ describe("upgrade script contract", () => {
     }
     const dir = "/b/state/a2a"
     // a symlinked state/a2a, or a non-directory: nothing is touched
-    expect(run({ [dir]: "link" })).toEqual({ calls: [], logs: [expect.stringContaining("symlink")] })
+    expect(run({ [dir]: "link" })).toEqual({ calls: [], logs: [expect.stringContaining("REFUSED /b/state/a2a: it is a symlink")] })
     expect(run({ [dir]: "file" }).logs[0]).toContain("not a directory")
     expect(run({})).toEqual({ calls: [], logs: [] })
     // a symlinked or odd subdirectory is skipped, the rest are restored
@@ -201,6 +202,42 @@ describe("upgrade script contract", () => {
     expect(fine.logs).toEqual([])
     // the real defaults are wired
     expect(typeof upgrade.restoreEscalationGrantRoot).toBe("function")
+  })
+
+  it("refuses to restore state/replay or state/a2a when state itself, or the directory, resolves elsewhere, with a loud WARN", () => {
+    const dir = (kind: string) => ({ isDirectory: () => kind === "dir", isSymbolicLink: () => kind === "link", isFile: () => kind === "file" })
+    const harnessFor = (name: "replay" | "a2a", real: string | "throw", kind = "dir") => {
+      const calls: string[] = []
+      const logs: string[] = []
+      const deps = {
+        lstat: (p: string) => { if (p !== `/b/state/${name}`) throw new Error("ENOENT"); return dir(kind) },
+        realpath: (p: string) => { if (real === "throw") throw new Error("ELOOP"); return p === "/b" ? "/real/b" : real },
+        chmod: (p: string, m: number) => { calls.push(`chmod ${m.toString(8)} ${p}`) },
+        rm: (p: string) => { calls.push(`rm ${p}`) },
+        run: (_f: string, args: string[]) => { calls.push(args.join(" ")) },
+        log: (l: string) => { logs.push(l) },
+      }
+      if (name === "replay") upgrade.restoreReplayRoot("/b", deps)
+      else upgrade.restoreEscalationGrantRoot("/b", deps)
+      return { calls, logs }
+    }
+    for (const name of ["replay", "a2a"] as const) {
+      // state is a link to somewhere else: the child's realpath is not the bundle's own
+      const escaped = harnessFor(name, "/elsewhere/state/" + name)
+      expect(escaped.calls).toEqual([])
+      expect(escaped.logs).toEqual([expect.stringContaining("resolves outside the bundle's own state directory")])
+      expect(harnessFor(name, "throw").calls).toEqual([])
+      expect(harnessFor(name, "throw").logs).toHaveLength(1)
+      expect(harnessFor(name, "x", "link").logs[0]).toContain("symlink")
+    }
+    // the legitimate replay directory is put back under root and its window file dropped
+    const good = harnessFor("replay", "/real/b/state/replay")
+    expect(good.calls).toEqual(["-h 0:0 /b/state/replay", "chmod 755 /b/state/replay", "rm /b/state/replay/window.json"])
+    expect(good.logs).toEqual([])
+    expect(harnessFor("replay", "/real/b/state/replay", "file").logs[0]).toContain("not a directory")
+    expect(typeof upgrade.trustedStateChild).toBe("function")
+    // defaults: a bundle that does not exist yields nothing and no WARN
+    expect(upgrade.trustedStateChild("/definitely/not/here", "replay")).toBeNull()
   })
 
   it("does nothing when imported, and the gate it calls ships in the same directory", () => {
