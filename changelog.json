@@ -2,6 +2,13 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.883",
+      "changes": [
+        "The Butler's answer gate now catches lowercase character names in bold, bullets and plain prose when the latest message asks for names and nothing was looked up, and no longer flags container or service names the house tools returned.",
+        "The container list tells the Butler each container's steward-policy desired state and that calibre-web is Books, so it no longer offers to start the calibre container the policy keeps stopped; the Books lore line and the release replay gate match."
+      ]
+    },
+    {
       "version": "0.1.0-alpha.882",
       "changes": [
         "Live phone calls work again on both the OpenAI SIP and Media Streams paths: every tool offered to OpenAI Realtime now has a Realtime-valid schema (a top-level oneOf in external_event_disposition had made Realtime reject the whole session setup, which dropped SIP calls and left Media Streams audio as noise), folded schemas explain their alternatives in the description, a tool that cannot be advertised is dropped with one warning per call and cannot be executed, and the bridge logs when Twilio reports a stream ended."
