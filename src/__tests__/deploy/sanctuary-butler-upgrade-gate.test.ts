@@ -150,63 +150,18 @@ describe("upgrade script contract", () => {
     expect(body.slice(body.indexOf("commit: () => {"), body.indexOf("rollback: () => {"))).toContain("stillHeld()")
   })
 
-  it("puts the escalation grant's directory and file back to root after the recursive chown to the resident", () => {
+  it("no longer reaches into the bundle for grants: they live in the trust directory outside it", () => {
     const migrate = source.slice(source.indexOf("function migrateBundle("), source.indexOf("// Host supervision for the root-authority"))
-    expect(migrate.indexOf('["-R", "10001:10001", BUNDLE]')).toBeGreaterThanOrEqual(0)
-    expect(migrate.indexOf('["-R", "10001:10001", BUNDLE]')).toBeLessThan(migrate.indexOf("restoreEscalationGrantRoot()"))
-    const restore = source.slice(source.indexOf("export function restoreEscalationGrantRoot("), source.indexOf("function migrateBundle("))
-    expect(restore).toContain('trustedStateChild(bundle, "a2a"')
-    expect(restore).toContain('run("/bin/chown", ["-h", "0:0", dir])')
-    expect(restore).toContain("chmod(dir, 0o755)")
-    expect(restore).toContain("`${dir}/escalation-grants.json`")
-    expect(restore).toContain('run("/bin/chown", ["-h", "0:0", grants])')
-    expect(restore).toContain("chmod(grants, 0o644)")
-    // the resident's own subdirectories stay writable to it
-    expect(restore).toContain('["tasks", "pins", "seen"]')
+    expect(migrate).not.toContain("restoreEscalationGrantRoot")
+    expect(source).not.toContain("function restoreEscalationGrantRoot")
+    expect(source).not.toContain("escalation-grants.json")
   })
+})
 
-  it("never follows a symlink or a non-regular file while restoring the escalation grant root", () => {
-    const stat = (kind: "dir" | "link" | "file") => ({ isDirectory: () => kind === "dir", isSymbolicLink: () => kind === "link", isFile: () => kind === "file" })
-    const run = (kinds: Record<string, "dir" | "link" | "file" | undefined>) => {
-      const calls: string[] = []
-      const logs: string[] = []
-      upgrade.restoreEscalationGrantRoot("/b", {
-        lstat: (p: string) => { const k = kinds[p]; if (!k) throw new Error("ENOENT"); return stat(k) },
-        realpath: (p: string) => p,
-        chmod: (p: string, m: number) => { calls.push(`chmod ${m.toString(8)} ${p}`) },
-        run: (_f: string, args: string[]) => { calls.push(args.join(" ")) },
-        log: (l: string) => { logs.push(l) },
-      })
-      return { calls, logs }
-    }
-    const dir = "/b/state/a2a"
-    // a symlinked state/a2a, or a non-directory: nothing is touched
-    expect(run({ [dir]: "link" })).toEqual({ calls: [], logs: [expect.stringContaining("REFUSED /b/state/a2a: it is a symlink")] })
-    expect(run({ [dir]: "file" }).logs[0]).toContain("not a directory")
-    expect(run({})).toEqual({ calls: [], logs: [] })
-    // a symlinked or odd subdirectory is skipped, the rest are restored
-    const subs = run({ [dir]: "dir", [`${dir}/tasks`]: "link", [`${dir}/pins`]: "file", [`${dir}/seen`]: "dir" })
-    expect(subs.logs).toHaveLength(2)
-    expect(subs.calls.join("|")).not.toContain("tasks")
-    expect(subs.calls).toContain(`-R 10001:10001 ${dir}/seen`)
-    expect(subs.calls).toContain(`-h 0:0 ${dir}`)
-    // a symlinked or odd grant file is refused: the directory is restored, the file is not touched
-    for (const [kind, word] of [["link", "symlink"], ["file", "x"], ["dir", "not a regular file"]] as const) {
-      const odd = run({ [dir]: "dir", [`${dir}/escalation-grants.json`]: kind === "file" ? "file" : kind })
-      if (kind === "file") expect(odd.calls).toContain(`-h 0:0 ${dir}/escalation-grants.json`)
-      else { expect(odd.logs).toEqual([expect.stringContaining(word)]); expect(odd.calls.join("|")).not.toContain("escalation-grants.json") }
-    }
-    // a regular grant file goes back under root, 0644, with no log
-    const fine = run({ [dir]: "dir", [`${dir}/escalation-grants.json`]: "file" })
-    expect(fine.calls).toEqual(expect.arrayContaining([`-h 0:0 ${dir}/escalation-grants.json`, `chmod 644 ${dir}/escalation-grants.json`]))
-    expect(fine.logs).toEqual([])
-    // the real defaults are wired
-    expect(typeof upgrade.restoreEscalationGrantRoot).toBe("function")
-  })
-
-  it("refuses to restore state/replay or state/a2a when state itself, or the directory, resolves elsewhere, with a loud WARN", () => {
+describe("the replay root restore", () => {
+  it("refuses to restore state/replay when state itself, or the directory, resolves elsewhere, with a loud WARN", () => {
     const dir = (kind: string) => ({ isDirectory: () => kind === "dir", isSymbolicLink: () => kind === "link", isFile: () => kind === "file" })
-    const harnessFor = (name: "replay" | "a2a", real: string | "throw", kind = "dir") => {
+    const harnessFor = (name: "replay", real: string | "throw", kind = "dir") => {
       const calls: string[] = []
       const logs: string[] = []
       const deps = {
@@ -217,11 +172,10 @@ describe("upgrade script contract", () => {
         run: (_f: string, args: string[]) => { calls.push(args.join(" ")) },
         log: (l: string) => { logs.push(l) },
       }
-      if (name === "replay") upgrade.restoreReplayRoot("/b", deps)
-      else upgrade.restoreEscalationGrantRoot("/b", deps)
+      upgrade.restoreReplayRoot("/b", deps)
       return { calls, logs }
     }
-    for (const name of ["replay", "a2a"] as const) {
+    for (const name of ["replay"] as const) {
       // state is a link to somewhere else: the child's realpath is not the bundle's own
       const escaped = harnessFor(name, "/elsewhere/state/" + name)
       expect(escaped.calls).toEqual([])
@@ -239,7 +193,49 @@ describe("upgrade script contract", () => {
     // defaults: a bundle that does not exist yields nothing and no WARN
     expect(upgrade.trustedStateChild("/definitely/not/here", "replay")).toBeNull()
   })
+})
 
+describe("the operator trust directory", () => {
+  const dest = "/etc/ouro/trust/sanctuary"
+  it("is mounted read-only by docker create, after the psyche mount", () => {
+    expect(upgrade.TRUST_MOUNT).toBe("/mnt/user/appdata/ouro-butler/trust/sanctuary:/etc/ouro/trust/sanctuary:ro")
+    const recreate = source.slice(source.indexOf("function recreateResident("), source.indexOf("export function psycheProblems"))
+    expect(recreate).toContain('"-v", TRUST_MOUNT')
+    expect(recreate.indexOf('"-v", PSYCHE_MOUNT')).toBeLessThan(recreate.indexOf('"-v", TRUST_MOUNT'))
+    expect(recreate.indexOf('"-v", TRUST_MOUNT')).toBeLessThan(recreate.indexOf("image(version)])"))
+    expect(recreate.indexOf("ensureTrustHostDir()")).toBeLessThan(recreate.indexOf('docker(["create"'))
+  })
+  it("reports nothing for a read-only mount and names each problem otherwise", () => {
+    expect(upgrade.trustMountIssue([{ Destination: dest, RW: false, Source: "/mnt/user/appdata/ouro-butler/trust/sanctuary" }])).toBeNull()
+    expect(upgrade.trustMountIssue([{ Destination: dest, RW: true, Source: "/mnt/user/appdata/ouro-butler/trust/sanctuary" }])).toBe("the operator trust directory is mounted read-write in the resident")
+    expect(upgrade.trustMountIssue([{ Destination: dest, RW: false, Source: "/elsewhere" }])).toBe("the operator trust directory is mounted from /elsewhere, not the root-owned host directory")
+    const missing = "the operator trust directory is not mounted in the resident, so no grant would be honoured"
+    expect(upgrade.trustMountIssue([])).toBe(missing)
+    expect(upgrade.trustMountIssue(null)).toBe(missing)
+    expect(upgrade.trustMountIssue([null])).toBe(missing)
+  })
+  it("is checked by verify", () => {
+    const verifyBody = source.slice(source.indexOf("function verify("), source.indexOf("function fail("))
+    expect(verifyBody).toContain("trustMountIssue(trustMount)")
+  })
+  it("accepts only a real root-owned directory closed to group and other writes", () => {
+    expect(upgrade.trustDirIssue({ isDirectory: () => true, isSymbolicLink: () => false, uid: 0, mode: 0o40755 })).toBeNull()
+    expect(upgrade.trustDirIssue({ isDirectory: () => true, isSymbolicLink: () => false, uid: 10001, mode: 0o40755 })).toContain("must be owned by root")
+    expect(upgrade.trustDirIssue({ isDirectory: () => true, isSymbolicLink: () => false, uid: 0, mode: 0o40775 })).toContain("writable by group or other")
+    expect(upgrade.trustDirIssue({ isDirectory: () => true, isSymbolicLink: () => true, uid: 0, mode: 0o40755 })).toContain("symlink")
+    expect(upgrade.trustDirIssue({ isDirectory: () => false, isSymbolicLink: () => false, uid: 0, mode: 0o100644 })).toContain("not a directory")
+  })
+  it("warns about a friend whose record still carries the old delegationGrant and has no trusted grant", () => {
+    const friends = { a: { name: "A", delegationGrant: { scope: "principal_commands" } }, b: { name: "B" }, c: { name: "C", delegationGrant: { scope: "principal_commands" } } }
+    expect(upgrade.legacyDelegationGrantWarnings(friends, { c: {} })).toEqual([
+      "A (a) has a delegationGrant on its friend record that is no longer honoured; grant it with `ouro a2a delegated-commands grant --friend a --did <did:key>` as root",
+    ])
+    expect(upgrade.legacyDelegationGrantWarnings({}, {})).toEqual([])
+    expect(source.slice(source.indexOf("function preflight("), source.indexOf("function preflight(") + 9000)).toContain("legacyDelegationGrantWarnings(")
+  })
+})
+
+describe("the upgrade script wiring", () => {
   it("does nothing when imported, and the gate it calls ships in the same directory", () => {
     expect(source).toContain("if (process.argv[1] && fileURLToPath(import.meta.url) === realpathSync(process.argv[1])) run(process.argv.slice(2)).catch(")
     expect(fs.existsSync(path.join(path.dirname(SCRIPT), "sanctuary-replay-gate.mjs"))).toBe(true)

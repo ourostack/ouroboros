@@ -18,6 +18,8 @@ import path from "node:path"
 import { fileURLToPath } from "node:url"
 
 export const DEFAULT_BUNDLE = "/mnt/user/appdata/ouro-butler/agent/sanctuary.ouro"
+// Root-owned host directory the Butler mounts read-only at /etc/ouro/trust/sanctuary; the only place a grant is honoured from.
+export const DEFAULT_TRUST_DIR = "/mnt/user/appdata/ouro-butler/trust/sanctuary"
 export const CONTAINER_BUNDLE = "/home/ouro/AgentBundles/sanctuary.ouro"
 export const CONTAINER = "ouro-butler"
 // The uid the A2A sense runs as inside the container; the trust probe must see the window exactly as that process does.
@@ -910,7 +912,7 @@ export function mkdirOwned(root, dir, owner, { mkdir = mkdirSync, chown = chownS
   for (const made of missing) { mkdir(made, { mode: 0o700 }); chown(made, owner.uid, owner.gid) }
 }
 
-export function makeHost({ bundle = DEFAULT_BUNDLE, cardUrl, log = console.error, exec = sh } = {}) {
+export function makeHost({ bundle = DEFAULT_BUNDLE, trustDir = DEFAULT_TRUST_DIR, cardUrl, log = console.error, exec = sh, rootUid = 0, rootGid = 0 } = {}) {
   const state = path.join(bundle, "state")
   const replayDir = path.join(state, "replay")
   const clientDir = path.join(state, "replay-client")
@@ -918,6 +920,10 @@ export function makeHost({ bundle = DEFAULT_BUNDLE, cardUrl, log = console.error
   if (!provisioned) throw new Error("replay peers are not provisioned; run `provision` first")
   if (!provisioned.escalation) throw new Error("the replay escalation peer is not provisioned; run `provision` again")
   const replayPeers = [provisioned.principal.friendId, provisioned.stranger.friendId, provisioned.escalation.friendId]
+  if (!provisioned.principal.did || !provisioned.escalation.did) throw new Error("the replay peers have no recorded DID; run `provision` again")
+  // Idempotent: the trusted grants are what makes the replay principal and escalation peer count, and the upgrade never copies them.
+  grantDelegatedCommands(trustDir, provisioned.principal.friendId, provisioned.principal.did, new Date(), { rootUid, rootGid })
+  grantEscalation(trustDir, provisioned.escalation.friendId, provisioned.escalation.did, new Date(), { rootUid, rootGid })
   const card = cardUrl ?? provisioned.cardUrl
   const readJson = (file) => JSON.parse(readFileSync(file, "utf8"))
   const readLines = (file) => (existsSync(file) ? readFileSync(file, "utf8").split("\n").filter(Boolean) : [])
@@ -1086,33 +1092,35 @@ function friendFile(bundle, friendId) {
   return path.join(bundle, "friends", `${friendId}.json`)
 }
 
-/** Adds the operator-set delegation grant to a friend record, as root, keeping the file's owner and mode. */
-export function grantPrincipalCommands(file, now = new Date()) {
-  const owner = statSync(file)
-  const record = JSON.parse(readFileSync(file, "utf8"))
-  record.delegationGrant = { scope: "principal_commands", grantedAt: now.toISOString(), source: "replay gate provisioning (host root)" }
-  record.updatedAt = now.toISOString()
-  writeAtomic(file, `${JSON.stringify(record, null, 2)}\n`, owner.mode & 0o777)
-  chownSync(file, owner.uid, owner.gid)
-}
-
 /**
- * Gives a friend the escalation grant in the agent's grant file, as root. The directory and file stay root-owned and
- * read-only to everyone else, because the Butler only honours a grant it could not have written itself.
+ * Gives a friend a grant in one of the agent's trust files, as root. The directory and file stay root-owned and read-only
+ * to everyone else, because the Butler only honours a grant it could not have written itself. A grant already pinned to
+ * the same DID is left alone (idempotent); a different DID replaces it.
  */
-export function grantEscalation(bundle, friendId, did, now = new Date(), { rootUid = 0, rootGid = 0 } = {}) {
-  const dir = path.join(bundle, "state", "a2a")
-  const file = path.join(dir, "escalation-grants.json")
-  mkdirSync(dir, { recursive: true, mode: 0o755 }); chownSync(dir, rootUid, rootGid); chmodSync(dir, 0o755)
+function writeTrustGrant(trustDir, fileName, friendId, scope, did, now, source, { rootUid = 0, rootGid = 0 } = {}) {
+  const file = path.join(trustDir, fileName)
+  mkdirSync(trustDir, { recursive: true, mode: 0o755 }); chownSync(trustDir, rootUid, rootGid); chmodSync(trustDir, 0o755)
   const current = existsSync(file) ? JSON.parse(readFileSync(file, "utf8")) : { schemaVersion: 1, grants: {} }
-  if (current.grants?.[friendId]?.scope !== "escalation" || current.grants[friendId].did !== did) {
-    current.grants = { ...current.grants, [friendId]: { scope: "escalation", grantedAt: now.toISOString(), source: "replay gate provisioning (host root)", did } }
+  if (current.grants?.[friendId]?.scope !== scope || current.grants[friendId].did !== did) {
+    current.grants = { ...current.grants, [friendId]: { scope, did, grantedAt: now.toISOString(), source } }
     writeAtomic(file, `${JSON.stringify(current, null, 2)}\n`, 0o644)
   }
   chownSync(file, rootUid, rootGid); chmodSync(file, 0o644)
 }
 
-export function provision({ bundle = DEFAULT_BUNDLE, cardUrl, log = console.log, run = ctr, discover = discoverCardUrl, rootUid = 0, rootGid = 0 } = {}) {
+const REPLAY_GRANT_SOURCE = "replay gate provisioning (host root)"
+
+/** Gives the replay principal the principal_commands grant in the trust directory, pinned to the DID it signs with. */
+export function grantDelegatedCommands(trustDir, friendId, did, now = new Date(), root = {}) {
+  writeTrustGrant(trustDir, "delegated-command-grants.json", friendId, "principal_commands", did, now, REPLAY_GRANT_SOURCE, root)
+}
+
+/** Gives the replay escalation peer the escalation grant in the trust directory, pinned to its DID. */
+export function grantEscalation(trustDir, friendId, did, now = new Date(), root = {}) {
+  writeTrustGrant(trustDir, "escalation-grants.json", friendId, "escalation", did, now, REPLAY_GRANT_SOURCE, root)
+}
+
+export function provision({ bundle = DEFAULT_BUNDLE, trustDir = DEFAULT_TRUST_DIR, cardUrl, log = console.log, run = ctr, discover = discoverCardUrl, rootUid = 0, rootGid = 0 } = {}) {
   const state = path.join(bundle, "state")
   const replayDir = path.join(state, "replay")
   const clientDir = path.join(state, "replay-client")
@@ -1123,6 +1131,8 @@ export function provision({ bundle = DEFAULT_BUNDLE, cardUrl, log = console.log,
   writeFileSync(sink, "", { flag: "a", mode: 0o600 }); chownSync(sink, owner.uid, owner.gid)
   mkdirSync(clientDir, { recursive: true, mode: 0o700 }); chownSync(clientDir, owner.uid, owner.gid)
   const replayIdentities = {}
+  let knownRegistry = {}
+  try { knownRegistry = JSON.parse(readFileSync(path.join(replayDir, "identities.json"), "utf8")).friends ?? {} } catch { /* first provision */ }
   const previous = existsSync(path.join(clientDir, "provision.json")) ? JSON.parse(readFileSync(path.join(clientDir, "provision.json"), "utf8")) : {}
   const resolvedCard = cardUrl ?? previous.cardUrl ?? discover()
   const out = { cardUrl: resolvedCard }
@@ -1137,13 +1147,16 @@ export function provision({ bundle = DEFAULT_BUNDLE, cardUrl, log = console.log,
       if (!friendId) throw new Error(`could not read the friend id from: ${onboarded}`)
     }
     run(["friend", "update", friendId, "--agent", "sanctuary", "--admission", "active", "--initiative", "reactive_only", "--profile", PEER_PROFILE])
-    const file = friendFile(bundle, friendId)
-    const record = JSON.parse(readFileSync(file, "utf8"))
-    if (grant && record.delegationGrant?.scope !== "principal_commands") grantPrincipalCommands(file)
-    if (!grant && record.delegationGrant) throw new Error(`${name} must not hold a delegation grant`)
-    if (escalate) grantEscalation(bundle, friendId, did, new Date(), { rootUid, rootGid })
+    const record = JSON.parse(readFileSync(friendFile(bundle, friendId), "utf8"))
+    // The record's own delegationGrant is only a hint the Butler ignores; nobody here may hold one.
+    if (record.delegationGrant && !grant) throw new Error(`${name} must not hold a delegation grant`)
+    // The replay state is root-owned: once a replay peer's DID is recorded, a different DID under the same friend is a swap.
+    const recorded = knownRegistry[friendId]?.did
+    if (recorded !== undefined && recorded !== did) throw new Error(`the ${name} DID changed (recorded ${recorded}, now ${did}); refusing to re-grant it`)
+    if (grant) grantDelegatedCommands(trustDir, friendId, did, new Date(), { rootUid, rootGid })
+    if (escalate) grantEscalation(trustDir, friendId, did, new Date(), { rootUid, rootGid })
     out[who] = { friendId, did, containerIdentityFile, hostIdentity }
-    replayIdentities[friendId] = { name, who }
+    replayIdentities[friendId] = { name, who, did }
     log(`${name}: friend ${friendId} (${trust}${grant ? ", principal_commands" : escalate ? ", escalation" : ", no grant"})`)
   }
   // Permanent marker, root-owned and never cleared with the window: the Butler refuses every owner-policy write from these friends (src/a2a/replay-harness.ts isReplayIdentity).
@@ -1174,6 +1187,7 @@ export function parseArgs(argv) {
     if (flag === "--cases" && rest[i + 1]) options.cases = rest[++i].split(",").filter(Boolean)
     else if (flag === "--plant" && rest[i + 1]) options.plant = rest[++i]
     else if (flag === "--bundle" && rest[i + 1]) options.bundle = rest[++i]
+    else if (flag === "--trust-dir" && rest[i + 1]) options.trustDir = rest[++i]
     else if (flag === "--card-url" && rest[i + 1]) options.cardUrl = rest[++i]
     else if (flag === "--window-minutes" && rest[i + 1]) options.windowMinutes = Number(rest[++i])
     else throw new Error(`unknown argument: ${flag}`)
@@ -1191,11 +1205,11 @@ export async function main(argv, io = { out: (text) => console.log(text), err: (
     return problems.length === 0 ? 0 : 1
   }
   if (options.command === "provision") {
-    try { deps.provision({ ...(options.bundle ? { bundle: options.bundle } : {}), ...(options.cardUrl ? { cardUrl: options.cardUrl } : {}), log: io.out }); return 0 } catch (error) { io.err(`provision failed: ${error.message}`); return 1 }
+    try { deps.provision({ ...(options.bundle ? { bundle: options.bundle } : {}), ...(options.trustDir ? { trustDir: options.trustDir } : {}), ...(options.cardUrl ? { cardUrl: options.cardUrl } : {}), log: io.out }); return 0 } catch (error) { io.err(`provision failed: ${error.message}`); return 1 }
   }
   if (options.command === "run") {
     let host
-    try { host = deps.makeHost({ ...(options.bundle ? { bundle: options.bundle } : {}), ...(options.cardUrl ? { cardUrl: options.cardUrl } : {}), log: io.err }) } catch (error) { io.err(error.message); return 1 }
+    try { host = deps.makeHost({ ...(options.bundle ? { bundle: options.bundle } : {}), ...(options.trustDir ? { trustDir: options.trustDir } : {}), ...(options.cardUrl ? { cardUrl: options.cardUrl } : {}), log: io.err }) } catch (error) { io.err(error.message); return 1 }
     let suite
     try {
       suite = await runSuite(host, { ...(options.cases ? { cases: options.cases } : {}), ...(options.plant ? { plant: options.plant } : {}), ...(options.windowMinutes ? { windowMinutes: options.windowMinutes } : {}) })
@@ -1204,7 +1218,7 @@ export async function main(argv, io = { out: (text) => console.log(text), err: (
     io.out(JSON.stringify({ summary: suite.summary }))
     return suite.summary.ok ? 0 : 1
   }
-  io.err("Usage: sanctuary-replay-gate.mjs <provision|run [--cases a,b] [--plant <case>] [--window-minutes n]|self-test> [--bundle <dir>] [--card-url <url>]")
+  io.err("Usage: sanctuary-replay-gate.mjs <provision|run [--cases a,b] [--plant <case>] [--window-minutes n]|self-test> [--bundle <dir>] [--trust-dir <dir>] [--card-url <url>]")
   return 2
 }
 

@@ -163,6 +163,20 @@ function preflight(version) {
     } catch { bad(`${f} is missing`) }
   }
 
+  say("delegated-command grants the Butler will still honour")
+  {
+    const friendRecords = {}
+    try {
+      for (const file of readdirSync(`${BUNDLE}/friends`).filter((name) => name.endsWith(".json"))) {
+        try { friendRecords[file.replace(/\.json$/u, "")] = JSON.parse(readFileSync(`${BUNDLE}/friends/${file}`, "utf8")) } catch { /* unreadable record: not a grant source */ }
+      }
+    } catch { /* no friends folder yet */ }
+    let trustedGrants = {}
+    try { trustedGrants = JSON.parse(readFileSync(`${TRUST_HOST_DIR}/delegated-command-grants.json`, "utf8")).grants ?? {} } catch { /* no trusted grants yet */ }
+    const warnings = legacyDelegationGrantWarnings(friendRecords, trustedGrants)
+    warnings.length === 0 ? ok("no friend record relies on the old delegationGrant") : warnings.forEach((line) => console.log(`  WARNING: ${line}`))
+  }
+
   say("required programs in the target image")
   try {
     const missing = REQUIRED_PROGRAMS.filter((p) => {
@@ -397,9 +411,50 @@ function enableResidentAutostart() {
 // resident's boot check requires exactly that. On a normal boot the files already match the package, so the check writes
 // nothing; if they ever drift, its repair write fails with EROFS and startup fails loudly rather than silently rewriting psyche.
 export const PSYCHE_MOUNT = `${BUNDLE}/psyche:/home/ouro/AgentBundles/sanctuary.ouro/psyche:ro`
+// Operator-set grants (delegated commands, escalation) live outside the bundle, in a root-owned host directory mounted
+// read-only at /etc/ouro/trust/sanctuary. The bundle's recursive chown cannot reach it, and the resident cannot write it.
+export const TRUST_HOST_DIR = "/mnt/user/appdata/ouro-butler/trust/sanctuary"
+export const TRUST_MOUNT = `${TRUST_HOST_DIR}:/etc/ouro/trust/sanctuary:ro`
+
+/** What is wrong with a host trust directory's stat, or null when it is a real root-owned directory closed to group and other writes. */
+export function trustDirIssue(stat) {
+  if (stat.isSymbolicLink()) return `${TRUST_HOST_DIR} is a symlink`
+  if (!stat.isDirectory()) return `${TRUST_HOST_DIR} is not a directory`
+  if (stat.uid !== 0) return `${TRUST_HOST_DIR} must be owned by root`
+  if ((stat.mode & 0o022) !== 0) return `${TRUST_HOST_DIR} is writable by group or other`
+  return null
+}
+
+// Creates the host trust directory root-owned 0755 when it is missing; refuses one the resident could have made.
+function ensureTrustHostDir() {
+  if (!existsSync(TRUST_HOST_DIR)) {
+    sh("/bin/mkdir", ["-p", TRUST_HOST_DIR])
+    sh("/bin/chown", ["-h", "0:0", TRUST_HOST_DIR])
+    chmodSync(TRUST_HOST_DIR, 0o755)
+  }
+  const issue = trustDirIssue(lstatSync(TRUST_HOST_DIR))
+  if (issue) fail(`${issue}; fix it as root before the upgrade`)
+}
+
+/** What is wrong with the resident's trust mount, from `docker inspect` Mounts, or null when it is the read-only host directory. */
+export function trustMountIssue(mounts) {
+  const mount = (Array.isArray(mounts) ? mounts : []).find((entry) => entry?.Destination === "/etc/ouro/trust/sanctuary")
+  if (!mount) return "the operator trust directory is not mounted in the resident, so no grant would be honoured"
+  if (mount.Source !== TRUST_HOST_DIR) return `the operator trust directory is mounted from ${mount.Source}, not the root-owned host directory`
+  return mount.RW === false ? null : "the operator trust directory is mounted read-write in the resident"
+}
+
+/** Friends whose records still carry the old delegationGrant but have no trusted grant: the record is now only a hint, so they are refused. */
+export function legacyDelegationGrantWarnings(friendRecords, trustedGrants) {
+  return Object.entries(friendRecords)
+    .filter(([id, record]) => record?.delegationGrant && !(id in trustedGrants))
+    .map(([id, record]) => `${record.name ?? id} (${id}) has a delegationGrant on its friend record that is no longer honoured; grant it with \`ouro a2a delegated-commands grant --friend ${id} --did <did:key>\` as root`)
+}
+
 function recreateResident(version) {
   say("recreate resident container (tokenless, gateway socket mounted)")
   disableResidentAutostart()
+  ensureTrustHostDir()
   const icon = "https://raw.githubusercontent.com/ourostack/ouroboros/main/assets/ouroboros.png"
   docker(["rm", "-f", CONTAINER], { stdio: "ignore" })
   docker(["create", "--name", CONTAINER, "--network", "host", "--restart", "unless-stopped", "--user", "10001:10001",
@@ -411,6 +466,7 @@ function recreateResident(version) {
     "-v", "/boot/config/custom/ouro-events/spool:/run/ouro-events:ro",
     "-v", "/run/ouro-authority:/run/ouro-authority:ro",
     "-v", PSYCHE_MOUNT,
+    "-v", TRUST_MOUNT,
     image(version)])
   const ref = docker(["inspect", CONTAINER, "--format", "{{.Config.Image}}"]).trim()
   if (ref !== image(version)) fail(`recreated resident is ${ref}, expected ${image(version)}`)
@@ -488,33 +544,6 @@ export function psycheMountIssue(mounts) {
   return mount.RW === false ? null : "psyche is mounted read-write in the resident"
 }
 
-// The same recursive chown would also hand state/a2a and the escalation grant file to the resident. The Butler honours
-// a grant only when the file and its directory are root-owned and writable by no one else, so a prompt-injected model
-// running as uid 10001 cannot mint one. Put them back; the subdirectories the resident writes stay with it, created
-// first so it never needs to mkdir inside the root-owned directory.
-export function restoreEscalationGrantRoot(bundle = BUNDLE, { lstat = lstatSync, chmod = chmodSync, run = sh, log = warn, realpath = realpathSync } = {}) {
-  // lstat, never stat or exists: a link the resident planted must not carry the chown or chmod to its target.
-  const dir = trustedStateChild(bundle, "a2a", { lstat, realpath, log })
-  if (!dir) return
-  const refuse = (target, reason) => log(`upgrade restore REFUSED ${target}: ${reason}; no chown or chmod was applied through it`)
-  for (const sub of ["tasks", "pins", "seen"]) {
-    const target = `${dir}/${sub}`
-    let existing = null
-    try { existing = lstat(target) } catch { /* absent: created below */ }
-    if (existing && !existing.isDirectory()) { refuse(target, existing.isSymbolicLink() ? "symlink" : "not a directory"); continue }
-    run("/bin/mkdir", ["-p", target])
-    run("/bin/chown", ["-R", "10001:10001", target])
-  }
-  run("/bin/chown", ["-h", "0:0", dir])
-  chmod(dir, 0o755)
-  const grants = `${dir}/escalation-grants.json`
-  let grantStat = null
-  try { grantStat = lstat(grants) } catch { /* no grant written yet */ }
-  if (!grantStat) return
-  if (!grantStat.isFile()) { refuse(grants, grantStat.isSymbolicLink() ? "symlink" : "not a regular file"); return }
-  run("/bin/chown", ["-h", "0:0", grants])
-  chmod(grants, 0o644)
-}
 function migrateBundle(version, rollbackImage) {
   say(`migrate agent bundle to ${version}`)
   const pkgBundle = `${ROOT}/incoming-package/deploy/unraid/sanctuary.ouro`
@@ -528,7 +557,6 @@ function migrateBundle(version, rollbackImage) {
   sh("/bin/chown", ["-R", "10001:10001", BUNDLE])
   restoreReplayRoot()
   restorePsycheRoot()
-  restoreEscalationGrantRoot()
   ok("bundle committed (ownership restored to resident)")
 }
 
@@ -1144,6 +1172,10 @@ function verify(withGate = false) {
   existsSync(POLICY) ? ok(`steward policy ${sha12(POLICY)}`) : bad("steward policy missing")
   const psycheMount = JSON.parse(docker(["inspect", CONTAINER, "--format", "{{json .Mounts}}"]) || "[]")
   psycheMountIssue(psycheMount) === null ? ok("psyche is mounted read-only in the resident") : bad(psycheMountIssue(psycheMount))
+  const trustMount = JSON.parse(docker(["inspect", CONTAINER, "--format", "{{json .Mounts}}"]) || "[]")
+  trustMountIssue(trustMount) === null ? ok("the operator trust directory is mounted read-only in the resident") : bad(trustMountIssue(trustMount))
+  const trustIssue = existsSync(TRUST_HOST_DIR) ? trustDirIssue(lstatSync(TRUST_HOST_DIR)) : `${TRUST_HOST_DIR} is missing`
+  trustIssue === null ? ok("the host trust directory is root-owned and closed to group and other writes") : bad(trustIssue)
   const psycheDir = `${BUNDLE}/psyche`
   if (existsSync(psycheDir)) {
     const psycheIssues = psycheProblems(psycheDir)
