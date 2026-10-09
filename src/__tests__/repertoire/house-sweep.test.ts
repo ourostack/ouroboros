@@ -9,6 +9,7 @@ const state = vi.hoisted(() => ({
   policy: { desiredStates: {}, routineActionGrants: {} } as unknown,
   policyError: null as unknown,
   escalation: {} as Record<string, unknown>,
+  delegated: {} as Record<string, unknown>,
 }))
 
 vi.mock("@ouro.bot/friends", async (importOriginal) => {
@@ -29,6 +30,7 @@ vi.mock("../../heart/steward-policy", () => ({
     return state.policy
   },
 }))
+vi.mock("../../a2a/delegated-command-grants", () => ({ viewDelegatedCommandGrants: () => ({ state: "trusted", grants: state.delegated, ignored: [] }) }))
 vi.mock("../../a2a/escalation-grants", () => ({ readEscalationGrants: () => state.escalation }))
 
 import { draftDigest, recallSweep, LIST_CAP, queueProblem, readLedger, runHouseSweep, safe, writeLedger, progressPath, type HouseSweepDeps } from "../../repertoire/house-sweep"
@@ -46,6 +48,7 @@ beforeEach(() => {
   state.policy = { desiredStates: {}, routineActionGrants: {} }
   state.policyError = null
   state.escalation = {}
+  state.delegated = {}
   fs.mkdirSync(path.join(root, "mcp"), { recursive: true })
   fs.writeFileSync(path.join(root, "mcp", "media-credentials.json"), JSON.stringify({ sonarr: { url: "http://sonarr/", apiKey: "s" }, radarr: { url: "http://radarr", apiKey: "r" } }))
 })
@@ -306,17 +309,22 @@ describe("runHouseSweep grants", () => {
   })
   it("flags expiring and inert delegation and escalation grants", async () => {
     state.friends = [
-      friend("ana", { delegationGrant: { scope: "principal_commands", expiresAt: iso(2 * DAY) } }),
-      friend("bo", { trustLevel: "friend", delegationGrant: { scope: "principal_commands" } }),
+      friend("ana"),
+      friend("bo", { trustLevel: "friend" }),
       friend("cy", { admissionState: "blocked" }),
       friend("di"),
     ]
+    state.delegated = { ana: { expiresAt: iso(2 * DAY) }, bo: { grantedAt: "x" }, ghost: {} }
     state.escalation = { ana: { expiresAt: iso(-DAY) }, cy: { grantedAt: "x" }, ghost: {} }
     const report = await sweep()
     const ids = report.findings.map((f) => f.id)
     expect(ids).toEqual(expect.arrayContaining(["grants:delegation:ana", "grants:delegation:bo:inert", "grants:escalation:ana", "grants:escalation:cy:inert"]))
     expect(ids).not.toContain("grants:delegation:ana:inert")
     expect(ids).not.toContain("grants:escalation:di")
+  })
+  it("ignores the old delegationGrant on a friend record: only the trusted grant is warned about", async () => {
+    state.friends = [friend("ana", { delegationGrant: { scope: "principal_commands", expiresAt: iso(DAY) } })]
+    expect((await sweep()).findings.map((f) => f.id)).not.toContain("grants:delegation:ana")
   })
   it("reports unreadable friends", async () => {
     state.friendsError = new Error("no store")

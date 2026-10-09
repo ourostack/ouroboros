@@ -4,6 +4,7 @@ import { createHash } from "node:crypto"
 import { FileFriendStore } from "@ouro.bot/friends"
 import { emitNervesEvent } from "../nerves/runtime"
 import { readStewardPolicy } from "../heart/steward-policy"
+import { viewDelegatedCommandGrants } from "../a2a/delegated-command-grants"
 import { readEscalationGrants } from "../a2a/escalation-grants"
 import type { ToolContext } from "./tools-base"
 
@@ -324,11 +325,13 @@ async function sweepGrants(agentRoot: string, policy: ReturnType<typeof readStew
   try {
     const friends = await new FileFriendStore(path.join(agentRoot, "friends")).listAll()
     const escalation = readEscalationGrants(agentRoot)
+    // Delegated-command authority is the operator's trusted grant, so that is what is warned about; the old record field grants nothing.
+    const delegated = viewDelegatedCommandGrants(agentRoot).grants
     const active = (friend: { trustLevel?: string; admissionState?: string }): boolean => friend.trustLevel === "family" && friend.admissionState === "active"
     for (const friend of friends) {
-      const delegation = friend.delegationGrant
+      const delegation = delegated[friend.id]
       if (delegation) {
-        expiry(`grants:delegation:${friend.id}`, `${friend.name}'s delegation grant`, (delegation as { expiresAt?: unknown }).expiresAt)
+        expiry(`grants:delegation:${friend.id}`, `${friend.name}'s delegation grant`, delegation.expiresAt)
         if (!active(friend)) findings.push({ id: `grants:delegation:${friend.id}:inert`, area: "grants", severity: "info", next: "owner", summary: `${friend.name} holds a delegation grant but is no longer an active family friend, so it does nothing`, fingerprint: fingerprintOf(`grants:delegation:${friend.id}:inert`, "inert") })
       }
       const held = escalation[friend.id]

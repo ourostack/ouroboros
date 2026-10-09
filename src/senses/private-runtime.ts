@@ -198,8 +198,9 @@ function relationshipAwaitCoordinates(awaitFile: AwaitFile): RelationshipAwaitCo
  * resolved it. Revoking the grant, or an expired one, ends it.
  */
 async function resolveA2APrincipal(agentRoot: string, store: FileFriendStore, peer: FriendRecord, requestId: string): Promise<FriendRecord> {
-  // TODO(friends 0.1.0-alpha.15): the signer DID here is the one the friend record names, which the agent can write. Phase 2
-  // re-verifies the signed envelope stored with the await against the grant's pinned DID instead.
+  // TODO(phase 2 of the friends trust-layer hardening): the signer DID here is the one the friend record names, which the agent
+  // can write, so follow-up authority still trusts the record's key. Phase 2 re-verifies the signed envelope stored with the
+  // await against the grant's pinned DID instead.
   const granted = checkDelegatedCommandGrant(agentRoot, peer, friendDid(peer))
   if (!granted.ok) throw new StaleRelationshipAwaitError(`A2A peer no longer holds a delegation grant (${granted.reason})`)
   // listAll() swallows an unreadable directory or record as "no friend": only a verified complete read may end an await.
