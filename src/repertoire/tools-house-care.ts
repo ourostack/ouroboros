@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto"
-import { appendReplayNotice, isReplayIdentity, isReplayWindowOpen } from "../a2a/replay-harness"
+import { appendReplayNotice, isAnyReplayWindowOpen, isReplayIdentity, isReplayWindowOpen } from "../a2a/replay-harness"
 import { defaultNotifyOwner, type NotifyOwner } from "../heart/awaiting/a2a-await-delivery"
 import { emitNervesEvent } from "../nerves/runtime"
 import { clip, readLastDigestAt, readLedger, recallSweep, REMIND_DAYS, runHouseSweep, safe, sameUtcDay, writeLedger, type HouseSweepDeps } from "./house-sweep"
@@ -33,6 +33,30 @@ function askerFriendId(ctx: ToolContext | undefined): string | undefined {
   return ctx?.context?.friend?.id ?? ctx?.relationshipAuthorization?.actor?.friendId
 }
 
+/** The package-managed daily await's own tick: not a peer's or friend's request, and not the owner asking. */
+function isManagedSweepTick(ctx: ToolContext | undefined): boolean {
+  return ctx?.autonomousTurnKind === "await" && ctx.autonomousAwaitName === HOUSE_CARE_AWAIT
+}
+
+/** The replay gate is running: the managed tick must stay out of its way (it shares the await runner and the owner-notice path). */
+function sweepYieldsToReplay(ctx: ToolContext | undefined, now: number): boolean {
+  return isManagedSweepTick(ctx) && Boolean(ctx?.agentRoot) && isAnyReplayWindowOpen(ctx!.agentRoot!, now)
+}
+
+const REPLAY_YIELD = JSON.stringify({ skipped: true, reason: "a replay-gate window is open, so the daily house-care sweep does nothing now. Finish with resolve_await verdict 'no' and the word quiet; do not send anything to the owner." })
+
+/** Digest lines: identical summaries collapse into one line with a count, at most DIGEST_MAX_LINES lines, then one pointer to the rest. */
+export const DIGEST_MAX_LINES = 8
+export function digestLines(summaries: string[]): string[] {
+  const counts = new Map<string, number>()
+  for (const summary of summaries) counts.set(summary, (counts.get(summary) ?? 0) + 1)
+  const lines = [...counts].map(([summary, count]) => `- ${summary}${count > 1 ? ` (x${count})` : ""}`)
+  if (lines.length <= DIGEST_MAX_LINES) return lines
+  const shown = [...counts].slice(0, DIGEST_MAX_LINES)
+  const hidden = summaries.length - shown.reduce((sum, [, count]) => sum + count, 0)
+  return [...shown.map(([summary, count]) => `- ${summary}${count > 1 ? ` (x${count})` : ""}`), `and ${hidden} more (ask me for the full list)`]
+}
+
 function replayAsker(ctx: ToolContext | undefined): boolean {
   const friendId = askerFriendId(ctx)
   return Boolean(friendId && ctx?.agentRoot && isReplayIdentity(ctx.agentRoot, friendId))
@@ -49,6 +73,7 @@ export const houseSweepToolDefinition: ToolDefinition = {
   },
   handler: async (_args, ctx) => {
     if (!ctx?.agentRoot) return JSON.stringify({ error: "house sweep runtime is unavailable" })
+    if (sweepYieldsToReplay(ctx, (injected.now ?? Date.now)())) return REPLAY_YIELD
     const report = await runHouseSweep({ agentRoot: ctx.agentRoot, sanctuary: ctx.sanctuary, replay: replayAsker(ctx), now: injected.now, ...injected.sweepDeps })
     return JSON.stringify(report)
   },
@@ -92,12 +117,13 @@ export const houseDigestToolDefinition: ToolDefinition = {
     const leadIn = typeof rawLead === "string" ? rawLead.trim() : ""
     if (leadIn.length > LEAD_IN_MAX_CHARS || safe(leadIn) !== leadIn || LEAD_IN_FORBIDDEN.test(leadIn)) return JSON.stringify({ sent: false, error: `lead_in must be one plain line of at most ${LEAD_IN_MAX_CHARS} characters, with no links, addresses, mentions or hidden characters` })
     const now = (injected.now ?? Date.now)()
+    if (sweepYieldsToReplay(ctx, now)) return REPLAY_YIELD
     const digest = createHash("sha256").update(chosen.map((finding) => finding.fingerprint).sort().join(",")).digest("hex").slice(0, 12)
     const friendId = askerFriendId(ctx)
     const agentName = ctx.agentName ?? "sanctuary"
     // A peer's digest says whose it is; the body is only ever the stored finding summaries.
     const peer = ctx.relationshipAuthorization?.profileId === "sanctuary-agent-peer" ? `From ${clip(safe(ctx.context?.friend?.name ?? friendId ?? "a peer"), PEER_NAME_MAX) || "a peer"}:\n` : ""
-    const body = `${peer}${leadIn ? `${leadIn}\n` : ""}${chosen.map((finding) => `- ${clip(safe(finding.summary), 220)}`).join("\n")}`
+    const body = `${peer}${leadIn ? `${leadIn}\n` : ""}${digestLines(chosen.map((finding) => clip(safe(finding.summary), 220))).join("\n")}`
 
     if (replay) {
       // A replay identity's digest never reaches the owner: it goes to the sink while the window is open, and is refused when it is not.
@@ -120,7 +146,7 @@ export const houseDigestToolDefinition: ToolDefinition = {
     // The package-managed await may run under the owner's own relationship authorization (the live runtime binds it that way), which does not downgrade it;
     // any other relationship (a peer, a friend) or a friend with no authorization behind the tick does.
     const ownerBound = ctx.relationshipAuthorization?.profileId === "sanctuary-owner"
-    const kind = ctx.autonomousTurnKind === "await" && ctx.autonomousAwaitName === HOUSE_CARE_AWAIT && (ownerBound || (!ctx.relationshipAuthorization && !friendId)) ? "scheduled" : "ondemand"
+    const kind = isManagedSweepTick(ctx) && (ownerBound || (!ctx.relationshipAuthorization && !friendId)) ? "scheduled" : "ondemand"
     if (kind === "scheduled" && sameUtcDay(priorStamp, stamp)) return JSON.stringify({ sent: false, error: "the daily house digest already went out today; at most one scheduled digest is sent per day" })
     const day = stamp.slice(0, 10)
     // Reserve before sending so a crash or a concurrent turn cannot send twice; a failed send rolls the reservation back.

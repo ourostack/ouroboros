@@ -92,16 +92,28 @@ function readTrustedWindow(file: string, trustedUid: number): unknown {
  * The state directory is the Butler's own, so it could swap in a directory and window of its own making: only a replay
  * directory and window file that root owns, and nobody else can write, count; anything else fails toward Telegram.
  */
+const windowEntryOpen = (entry: unknown, now: number): boolean => {
+  const expiresAt = typeof (entry as { expiresAt?: unknown } | null)?.expiresAt === "string"
+    ? Date.parse((entry as { expiresAt: string }).expiresAt)
+    : Number.NaN
+  return Number.isFinite(expiresAt) && expiresAt > now && expiresAt <= now + REPLAY_WINDOW_MAX_MS
+}
+
 export function isReplayWindowOpen(agentRoot: string, friendId: string, now: number = Date.now(), trustedUid: number = 0): boolean {
   if (!isTrustedDirectory(replayDir(agentRoot), trustedUid)) return false
   const parsed = readTrustedWindow(replayWindowPath(agentRoot), trustedUid)
   const friends = (parsed as { friends?: unknown } | null)?.friends
   if (!friends || typeof friends !== "object") return false
-  const entry = (friends as Record<string, unknown>)[friendId]
-  const expiresAt = typeof (entry as { expiresAt?: unknown } | null)?.expiresAt === "string"
-    ? Date.parse((entry as { expiresAt: string }).expiresAt)
-    : Number.NaN
-  return Number.isFinite(expiresAt) && expiresAt > now && expiresAt <= now + REPLAY_WINDOW_MAX_MS
+  return windowEntryOpen((friends as Record<string, unknown>)[friendId], now)
+}
+
+/** True while any friend's replay window is open: the gate is running, and background work should stay out of its way. Same trust rules as `isReplayWindowOpen`. */
+export function isAnyReplayWindowOpen(agentRoot: string, now: number = Date.now(), trustedUid: number = 0): boolean {
+  if (!isTrustedDirectory(replayDir(agentRoot), trustedUid)) return false
+  const parsed = readTrustedWindow(replayWindowPath(agentRoot), trustedUid)
+  const friends = (parsed as { friends?: unknown } | null)?.friends
+  if (!friends || typeof friends !== "object") return false
+  return Object.values(friends as Record<string, unknown>).some((entry) => windowEntryOpen(entry, now))
 }
 
 /** Appends one notice to the sink, once per notice id and friend (a retry after a crash adds nothing); throws when it cannot be written, so the caller refuses exactly as a failed Telegram send does. */

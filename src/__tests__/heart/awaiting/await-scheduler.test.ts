@@ -292,7 +292,7 @@ describe("AwaitScheduler", () => {
       const readdir = vi.fn(() => ["x.md"])
       const readFile = vi.fn(() => "content")
       deps = makeDeps({ readdir, readFile })
-      mockParseAwaitFile.mockReturnValueOnce(makePending({ last_checked: null }))
+      mockParseAwaitFile.mockReturnValueOnce(makePending({ last_checked: null, created_at: "1969-01-01T00:00:00.000Z" }))
       const scheduler = new AwaitScheduler({
         agent: "slugger",
         awaitsDir: "/x",
@@ -303,6 +303,18 @@ describe("AwaitScheduler", () => {
       })
       scheduler.start()
       expect(onAwaitFire).toHaveBeenCalledWith("hey_export")
+    })
+
+    it.each([
+      ["created less than one cadence ago", "1970-01-01T00:00:00.000Z", false],
+      ["created over one cadence ago", "1969-12-31T00:00:00.000Z", true],
+      ["with no readable created_at", "not-a-date", true],
+    ])("a never-checked await %s waits for its cadence after a restart: fires=%s", (_name, createdAt, fires) => {
+      const readdir = vi.fn(() => ["x.md"])
+      deps = makeDeps({ readdir, readFile: vi.fn(() => "content"), now: () => 60_000 })
+      mockParseAwaitFile.mockReturnValueOnce(makePending({ last_checked: null, created_at: createdAt }))
+      new AwaitScheduler({ agent: "slugger", awaitsDir: "/x", osCronManager: cronManager, onAwaitFire, onAwaitExpire, deps }).start()
+      expect(onAwaitFire).toHaveBeenCalledTimes(fires ? 1 : 0)
     })
 
     it("fires overdue awaits on startup (checked but elapsed > cadence)", () => {
@@ -524,7 +536,7 @@ describe("AwaitScheduler", () => {
       const readFile = vi.fn(() => "content")
       deps = makeDeps({ readdir, readFile, now: () => nowMs })
       mockParseAwaitFile
-        .mockReturnValueOnce(makePending({ name: "due_await", last_checked: null }))
+        .mockReturnValueOnce(makePending({ name: "due_await", last_checked: null, created_at: "1969-01-01T00:00:00.000Z" }))
         .mockReturnValueOnce(makePending({
           name: "expired_await",
           max_age: "1h",

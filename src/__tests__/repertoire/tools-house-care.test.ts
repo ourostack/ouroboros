@@ -3,15 +3,16 @@ import * as os from "node:os"
 import * as path from "node:path"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 
-const replay = vi.hoisted(() => ({ identity: false, open: true, notices: [] as unknown[] }))
+const replay = vi.hoisted(() => ({ identity: false, open: true, any: false, notices: [] as unknown[] }))
 vi.mock("../../a2a/replay-harness", () => ({
   isReplayIdentity: () => replay.identity,
   isReplayWindowOpen: () => replay.open,
+  isAnyReplayWindowOpen: () => replay.any,
   appendReplayNotice: (_root: string, notice: unknown) => { replay.notices.push(notice) },
 }))
 vi.mock("../../heart/awaiting/a2a-await-delivery", () => ({ defaultNotifyOwner: () => async () => { throw new Error("default notifier used") } }))
 
-import { LEAD_IN_MAX_CHARS, houseCareToolDefinitions, houseDigestToolDefinition, houseSweepToolDefinition, setHouseCareToolDeps } from "../../repertoire/tools-house-care"
+import { DIGEST_MAX_LINES, LEAD_IN_MAX_CHARS, digestLines, houseCareToolDefinitions, houseDigestToolDefinition, houseSweepToolDefinition, setHouseCareToolDeps } from "../../repertoire/tools-house-care"
 import { readLedger, rememberSweep } from "../../repertoire/house-sweep"
 import type { ToolContext } from "../../repertoire/tools-base"
 
@@ -29,6 +30,7 @@ beforeEach(() => {
   root = fs.mkdtempSync(path.join(os.tmpdir(), "house-care-"))
   replay.identity = false
   replay.open = true
+  replay.any = false
   replay.notices = []
   sent.length = 0
   setHouseCareToolDeps({ now: () => NOW, notifyOwner: () => async (notice: { noticeId: string; text: string }) => { sent.push(notice) }, sweepDeps: { fetch: (async () => ({ ok: true, status: 200, json: async () => [] })) as unknown as typeof fetch } } as never)
@@ -121,6 +123,39 @@ describe("house_digest_send tool", () => {
     fs.rmSync(path.join(root, "state", "house-sweep", "reported.json"))
     await digest({ finding_ids: [finding.id] }, ctx({ autonomousTurnKind: "await", autonomousAwaitName: "some-other-await" }))
     expect(sent[1].noticeId).toContain("house-sweep:ondemand:")
+  })
+  it("the managed sweep tick does nothing while a replay window is open, and still works for the owner", async () => {
+    writeReport("live", [finding])
+    replay.any = true
+    const swept = JSON.parse(await houseSweepToolDefinition.handler({}, ctx(SCHEDULED)) as string)
+    expect(swept.skipped).toBe(true)
+    expect(swept.reason).toContain("resolve_await verdict 'no'")
+    const held = await digest({ finding_ids: [finding.id] }, ctx(SCHEDULED))
+    expect(held.skipped).toBe(true)
+    expect(sent).toHaveLength(0)
+    expect(fs.existsSync(path.join(root, "state", "house-sweep", "reported.json"))).toBe(false)
+    // An owner asking by hand is not the managed tick.
+    expect(JSON.parse(await houseSweepToolDefinition.handler({}, ctx()) as string).skipped).toBeUndefined()
+    replay.any = false
+    writeReport("live", [finding])
+    expect((await digest({ finding_ids: [finding.id] }, ctx(SCHEDULED))).sent).toBe(true)
+  })
+  it("collapses identical summaries into one counted line, caps the lines, and points to the rest", async () => {
+    expect(digestLines(["a", "a", "a", "b"])).toEqual(["- a (x3)", "- b"])
+    const many = Array.from({ length: 24 }, (_, i) => `item ${i}`)
+    const lines = digestLines(many)
+    expect(lines).toHaveLength(DIGEST_MAX_LINES + 1)
+    expect(lines.at(-1)).toBe(`and ${24 - DIGEST_MAX_LINES} more (ask me for the full list)`)
+    const dupes = [...Array.from({ length: 5 }, () => "Sonarr recorded a failed download: The Chef Show"), ...many]
+    const out = digestLines(dupes)
+    expect(out[0]).toBe("- Sonarr recorded a failed download: The Chef Show (x5)")
+    expect(out.at(-1)).toBe(`and ${29 - 5 - (DIGEST_MAX_LINES - 1)} more (ask me for the full list)`)
+    const findings = dupes.map((summary, i) => ({ id: `f${i}`, fingerprint: `p${i}`, summary }))
+    writeReport("live", findings)
+    await digest({ finding_ids: findings.map((f) => f.id) })
+    expect(sent).toHaveLength(1)
+    expect(sent[0].text.length).toBeLessThan(4096)
+    expect(sent[0].text.split("\n")).toHaveLength(DIGEST_MAX_LINES + 1)
   })
   it("prefixes a peer's digest with the peer's name", async () => {
     writeReport("live", [finding])

@@ -217,6 +217,10 @@ export class AwaitScheduler {
       const lastChecked = a.last_checked ?? null
 
       if (lastChecked === null) {
+        // Never checked is not overdue until one cadence has passed since the await was created: a daemon restart (every upgrade) must not fire
+        // a freshly installed or just-filed await at once. Without a readable created_at it fires as before.
+        const createdMs = a.created_at ? new Date(a.created_at).getTime() : Number.NaN
+        if (Number.isFinite(createdMs) && nowMs - createdMs < cadenceMs) continue
         emitNervesEvent({
           component: "daemon",
           event: "daemon.await_fire",
