@@ -4,7 +4,10 @@
     {
       "version": "0.1.0-alpha.880",
       "changes": [
-        "The Butler runs a daily house-care sweep (house_sweep, house_digest_send) and sends one owner digest only when something needs a choice; the replay gate gains sweep cases; butler:ship resolves a release commit when a stale PR title hides the version"
+        "The Butler runs a daily house-care sweep (house_sweep, house_digest_send) and sends one owner digest only when something needs a choice; the replay gate gains sweep cases; butler:ship resolves a release commit when a stale PR title hides the version",
+        "The daily sweep await can only ever be resolved with verdict 'no' and cannot be cancelled, so the package-managed file stays in place; the digest dedupes (7 days, unchanged findings) and caps at one per day at send time, is built only from stored finding summaries with an optional one-line lead-in, and the ledger is kept for sources that could not be read",
+        "The escalation-grant restore (root lifecycle and the legacy upgrade script) lstats state/a2a, its subdirectories and escalation-grants.json and refuses to follow a symlink or a non-regular file",
+        "The release smoke retries npm ETARGET (registry propagation after a publish) with a bounded backoff of about three minutes; the ship fallback skips an unreadable commit instead of ending the run"
       ]
     },
     {

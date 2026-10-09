@@ -50,8 +50,10 @@ export async function findReleaseCommitByPackage(commits, version, readVersion, 
   let oldest
   for (const c of (Array.isArray(commits) ? commits : []).slice(0, limit)) {
     if (!c?.sha) continue
-    const carries = (await readVersion(c.sha)) === version
-    if (carries) oldest = c.sha
+    const read = await readVersion(c.sha)
+    // An unreadable commit (gh failed, not JSON, no version) is inconclusive: it neither joins nor ends the run.
+    if (typeof read !== "string") continue
+    if (read === version) oldest = c.sha
     else if (oldest) break
   }
   return oldest
@@ -174,8 +176,8 @@ export async function ship(opts, deps, timing = {}) {
     deps.log(`  no subject names ${version}; reading package.json at the latest main commits`)
     sha = await findReleaseCommitByPackage(commits, version, async (ref) => {
       const r = await deps.gh(["api", "-H", "Accept: application/vnd.github.raw", `repos/${REPO}/contents/package.json?ref=${ref}`])
-      if (r.code !== 0) return undefined
-      try { return JSON.parse(r.stdout).version } catch { return undefined }
+      if (r.code !== 0) return null
+      try { return JSON.parse(r.stdout).version } catch { return null }
     })
   }
   if (!sha) throw new ShipError(`no commit on main names ${version} in its subject (looked at the latest 100); is the release merged?`)

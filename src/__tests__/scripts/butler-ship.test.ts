@@ -270,6 +270,14 @@ describe("butler-ship orchestrator", () => {
     expect(await findReleaseCommitByPackage(undefined, "1.0.0", read)).toBeUndefined()
   })
 
+  it("an unreadable commit in the middle of the run is skipped, never ending the run", async () => {
+    const { findReleaseCommitByPackage } = await lib()
+    const commits = [{ sha: "a" }, { sha: "b" }, { sha: "c" }, { sha: "d" }]
+    const versions: Record<string, unknown> = { a: "1.0.0", b: null, c: "1.0.0", d: "0.9.0" }
+    expect(await findReleaseCommitByPackage(commits, "1.0.0", async (sha: string) => versions[sha])).toBe("c")
+    expect(await findReleaseCommitByPackage([{ sha: "x" }, { sha: "y" }], "1.0.0", async () => undefined)).toBeUndefined()
+  })
+
   it("ship uses the package.json fallback when a stale PR title hides the version", async () => {
     const stale = JSON.stringify([
       { sha: "newer", commit: { message: "Later thing (0.1.0-alpha.871) (#2)" } },

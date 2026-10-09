@@ -887,21 +887,29 @@ export class SanctuaryAuthorityRootLifecycle {
    */
   #restoreEscalationGrantRoot(): void {
     const directory = this.#p(`${BUNDLE}/state/a2a`)
+    const refuse = (target: string, reason: string): void => emitNervesEvent({ level: "warn", component: "daemon", event: "daemon.sanctuary_escalation_root_refused", message: "Sanctuary escalation grant restore refused a path it will not follow", meta: { target, reason } })
     let stat: fs.Stats
     try { stat = fs.lstatSync(directory) } catch { return }
-    if (!stat.isDirectory()) return
+    // lstat, never stat: a link the Butler planted here must not carry the chown or chmod to its target.
+    if (!stat.isDirectory()) { refuse(directory, stat.isSymbolicLink() ? "symlink" : "not a directory"); return }
     for (const sub of ["tasks", "pins", "seen"]) {
-      fs.mkdirSync(path.join(directory, sub), { recursive: true })
-      execFileSync("/bin/chown", ["-R", "10001:10001", path.join(directory, sub)], { stdio: "ignore" })
+      const target = path.join(directory, sub)
+      let existing: fs.Stats | null = null
+      try { existing = fs.lstatSync(target) } catch { /* absent: created below */ }
+      if (existing && !existing.isDirectory()) { refuse(target, existing.isSymbolicLink() ? "symlink" : "not a directory"); continue }
+      fs.mkdirSync(target, { recursive: true })
+      execFileSync("/bin/chown", ["-R", "10001:10001", target], { stdio: "ignore" })
     }
     // Ownership first, before anything else can fail: nothing the Butler left in the directory may stop it going back under root.
     execFileSync("/bin/chown", ["-h", "0:0", directory], { stdio: "ignore" })
     fs.chmodSync(directory, 0o755)
     const grants = path.join(directory, "escalation-grants.json")
-    if (fs.existsSync(grants)) {
-      execFileSync("/bin/chown", ["-h", "0:0", grants], { stdio: "ignore" })
-      fs.chmodSync(grants, 0o644)
-    }
+    let grantStat: fs.Stats | null = null
+    try { grantStat = fs.lstatSync(grants) } catch { /* no grant written yet */ }
+    if (!grantStat) return
+    if (!grantStat.isFile()) { refuse(grants, grantStat.isSymbolicLink() ? "symlink" : "not a regular file"); return }
+    execFileSync("/bin/chown", ["-h", "0:0", grants], { stdio: "ignore" })
+    fs.chmodSync(grants, 0o644)
   }
 
   /** Start the gateway, then the resident, and prove both. */

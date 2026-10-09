@@ -76,6 +76,8 @@ const text = (value: unknown): string => (typeof value === "string" ? value : ""
 const num = (value: unknown): number | null => (typeof value === "number" && Number.isFinite(value) ? value : null)
 const lower = (value: unknown): string => text(value).toLowerCase()
 const clip = (value: string, max: number): string => (value.length > max ? `${value.slice(0, max - 3)}...` : value)
+/** Names and messages come from outside (release titles, friend names): strip control characters, newlines and links before they can reach a digest. */
+export const safe = (value: string): string => value.replace(/\b[a-z][a-z0-9+.-]*:\/\/\S*/giu, "").replace(/[\u0000-\u001f\u007f-\u009f]+/gu, " ").replace(/\s+/gu, " ").trim()
 const fingerprintOf = (id: string, detail: string): string => createHash("sha256").update(`${id}\0${detail}`).digest("hex").slice(0, 12)
 
 // ---- bookkeeping -------------------------------------------------------------------------------------------------
@@ -99,7 +101,10 @@ export const lastReportPath = (agentRoot: string, scope: "live" | "replay"): str
 
 export interface LedgerEntry { fingerprint: string; reportedAt: string }
 export const readLedger = (agentRoot: string): Record<string, LedgerEntry> => dict(readJson(ledgerPath(agentRoot)).entries) as Record<string, LedgerEntry>
-export const writeLedger = (agentRoot: string, entries: Record<string, LedgerEntry>): void => writeJson(ledgerPath(agentRoot), { schemaVersion: 1, entries })
+/** When the last live digest went out (ISO), or "" when none has. Kept beside the ledger so a retry or a second path cannot send two in a day. */
+export const readLastDigestAt = (agentRoot: string): string => text(readJson(ledgerPath(agentRoot)).lastDigestAt)
+export const writeLedger = (agentRoot: string, entries: Record<string, LedgerEntry>, lastDigestAt: string = readLastDigestAt(agentRoot)): void => writeJson(ledgerPath(agentRoot), { schemaVersion: 1, entries, ...(lastDigestAt ? { lastDigestAt } : {}) })
+export const sameUtcDay = (a: string, b: string): boolean => a.length > 0 && a.slice(0, 10) === b.slice(0, 10)
 
 // ---- Sonarr and Radarr -------------------------------------------------------------------------------------------
 
@@ -333,6 +338,16 @@ async function sweepGrants(agentRoot: string, policy: ReturnType<typeof readStew
 
 const SEVERITY_ORDER: Record<FindingSeverity, number> = { critical: 0, warn: 1, info: 2 }
 
+/** The sweep sources a ledger id depends on. */
+function sourcesFor(id: string): (keyof HouseSweepReport["sources"])[] {
+  const [area, second] = id.split(":")
+  if (area === "downloads" || area === "imports" || area === "missing") return second === "radarr" ? ["radarr"] : ["sonarr"]
+  if (area === "containers") return ["host", "policy"]
+  if (area === "disk" || area === "parity") return ["host"]
+  if (area === "grants") return ["grants", "policy"]
+  return []
+}
+
 export async function runHouseSweep(deps: HouseSweepDeps): Promise<HouseSweepReport> {
   const now = deps.now ?? Date.now
   const nowMs = now()
@@ -397,16 +412,18 @@ export async function runHouseSweep(deps: HouseSweepDeps): Promise<HouseSweepRep
     .map((finding): Finding => {
       const told = ledger[finding.id]
       const recent = told !== undefined && told.fingerprint === finding.fingerprint && nowMs - Date.parse(told.reportedAt) < REMIND_DAYS * DAY_MS
-      return { ...finding, alreadyReported: recent }
+      return { ...finding, summary: clip(safe(finding.summary), 220), alreadyReported: recent }
     })
     .sort((a, b) => SEVERITY_ORDER[a.severity] - SEVERITY_ORDER[b.severity] || a.id.localeCompare(b.id))
   if (!deps.replay) {
     // A finding that is gone is forgotten, so it is told again if it comes back.
+    // ...but only when its source was readable: an outage must not make every finding look new on recovery.
     const present = new Set(ordered.map((finding) => finding.id))
-    const kept = Object.fromEntries(Object.entries(ledger).filter(([id]) => present.has(id)))
+    const kept = Object.fromEntries(Object.entries(ledger).filter(([id]) => present.has(id) || sourcesFor(id).some((source) => sources[source] !== "ok")))
     if (Object.keys(kept).length !== Object.keys(ledger).length) writeLedger(deps.agentRoot, kept)
   }
 
+  const sentToday = !deps.replay && sameUtcDay(readLastDigestAt(deps.agentRoot), new Date(nowMs).toISOString())
   const fresh = ordered.filter((finding) => !finding.alreadyReported)
   const shown = ordered.slice(0, LIST_CAP * 3)
   const shownIds = new Set(shown.map((finding) => finding.id))
@@ -419,9 +436,9 @@ export async function runHouseSweep(deps: HouseSweepDeps): Promise<HouseSweepRep
     findings: shown,
     omitted: ordered.length - shown.length,
     fresh: fresh.filter((finding) => shownIds.has(finding.id)).map((finding) => finding.id),
-    digest_due: fresh.length > 0,
+    digest_due: fresh.length > 0 && !sentToday,
     digest_draft: draftDigest(fresh.filter((finding) => shownIds.has(finding.id))),
-    guidance: "Try every finding with a fix first (the fix never deletes a partial download). Anything still unsettled, and every finding without a fix, goes in ONE short digest with house_digest_send using the finding ids. If digest_due is false, say nothing to the owner. Never remove a download or delete anything.",
+    guidance: `${sentToday ? "A digest already went out today, so none is due. " : ""}Try every finding with a fix first (the fix never deletes a partial download). Anything still unsettled, and every finding without a fix, goes in ONE short digest with house_digest_send using the finding ids. If digest_due is false, say nothing to the owner. Never remove a download or delete anything.`,
   }
   writeJson(lastReportPath(deps.agentRoot, scope), { schemaVersion: 1, at: report.checkedAt, findings: shown.map((finding) => ({ id: finding.id, fingerprint: finding.fingerprint, summary: finding.summary })) })
   emitNervesEvent({ component: "repertoire", event: "repertoire.house_sweep_run", message: "house sweep gathered", meta: { scope, findings: ordered.length, fresh: fresh.length, digestDue: report.digest_due } })

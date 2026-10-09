@@ -31,7 +31,7 @@ vi.mock("../../heart/steward-policy", () => ({
 }))
 vi.mock("../../a2a/escalation-grants", () => ({ readEscalationGrants: () => state.escalation }))
 
-import { draftDigest, lastReportPath, LIST_CAP, queueProblem, readLedger, runHouseSweep, writeLedger, progressPath, type HouseSweepDeps } from "../../repertoire/house-sweep"
+import { draftDigest, lastReportPath, LIST_CAP, queueProblem, readLedger, runHouseSweep, safe, writeLedger, progressPath, type HouseSweepDeps } from "../../repertoire/house-sweep"
 
 const NOW = Date.parse("2026-10-09T12:00:00.000Z")
 const HOUR = 3_600_000
@@ -364,5 +364,35 @@ describe("runHouseSweep reporting ledger", () => {
   it("draftDigest handles empty and short lists", () => {
     expect(draftDigest([])).toBe("")
     expect(draftDigest([{ summary: "a" }])).toBe("- a")
+  })
+})
+
+describe("sanitizing, pruning, and the daily cap", () => {
+  it("strips links, control characters and newlines from outside text", async () => {
+    expect(safe("a\nb\u0007 https://evil.example/x?y=1 c")).toBe("a b c")
+    const report = await sweep({}, { sonarr: { queue: [{ id: 1, seriesId: 2, series: { title: "Evil\nShow http://x.test/p" }, title: "R", size: 10, sizeleft: 5, status: "failed" }] } })
+    const summary = report.findings.find((f) => f.id === "downloads:sonarr:1")!.summary
+    expect(summary).not.toMatch(/http|\n/u)
+    expect(summary).toContain("Evil Show")
+  })
+  it("keeps ledger entries whose source could not be read, and prunes those whose source is fine", async () => {
+    const entry = { fingerprint: "x", reportedAt: iso(-DAY) }
+    writeLedger(root, { "downloads:sonarr:1": entry, "downloads:radarr:2": entry, "missing:sonarr:3": entry, "containers:a": entry, "disk:array:capacity": entry, "grants:routine:z": entry, "sweep:host": entry, "parity:age": entry, "stale:other": entry })
+    const report = await sweep({ sanctuary: undefined }, { fail: "sonarr" })
+    expect(report.sources.sonarr).not.toBe("ok")
+    expect(Object.keys(readLedger(root)).sort()).toEqual(["containers:a", "disk:array:capacity", "downloads:sonarr:1", "missing:sonarr:3", "parity:age", "sweep:host"])
+  })
+  it("says no digest is due after one went out today, but not for a replay sweep", async () => {
+    const stalled = { id: 11, seriesId: 5, series: { title: "Show" }, title: "R", size: 1000, sizeleft: 400, status: "failed" }
+    writeLedger(root, {}, iso(-HOUR))
+    const today = await sweep({}, { sonarr: { queue: [stalled] } })
+    expect(today.digest_due).toBe(false)
+    expect(today.fresh).toContain("downloads:sonarr:11")
+    expect(today.guidance).toContain("already went out today")
+    expect((await sweep({ replay: true }, { sonarr: { queue: [stalled] } })).digest_due).toBe(true)
+    writeLedger(root, {}, iso(-2 * DAY))
+    const later = await sweep({}, { sonarr: { queue: [stalled] } })
+    expect(later.digest_due).toBe(true)
+    expect(later.guidance).not.toContain("already went out today")
   })
 })

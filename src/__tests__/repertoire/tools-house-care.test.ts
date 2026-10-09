@@ -11,11 +11,12 @@ vi.mock("../../a2a/replay-harness", () => ({
 }))
 vi.mock("../../heart/awaiting/a2a-await-delivery", () => ({ defaultNotifyOwner: () => async () => { throw new Error("default notifier used") } }))
 
-import { DIGEST_MAX_CHARS, houseCareToolDefinitions, houseDigestToolDefinition, houseSweepToolDefinition, setHouseCareToolDeps } from "../../repertoire/tools-house-care"
+import { LEAD_IN_MAX_CHARS, houseCareToolDefinitions, houseDigestToolDefinition, houseSweepToolDefinition, setHouseCareToolDeps } from "../../repertoire/tools-house-care"
 import { lastReportPath, readLedger } from "../../repertoire/house-sweep"
 import type { ToolContext } from "../../repertoire/tools-base"
 
 let root: string
+const DAY = 86_400_000
 const NOW = Date.parse("2026-10-09T12:00:00.000Z")
 const sent: { noticeId: string; text: string }[] = []
 
@@ -76,10 +77,11 @@ describe("house_digest_send tool", () => {
     expect(unknown.error).toContain("unknown finding ids: x")
     expect(sent).toHaveLength(0)
   })
-  it("refuses over-long text", async () => {
+  it("refuses a lead-in that is long, multi-line, or carries a link", async () => {
     writeReport("live", [finding])
-    const result = await digest({ finding_ids: [finding.id], text: "x".repeat(DIGEST_MAX_CHARS + 1) })
-    expect(result.error).toContain("too long")
+    for (const lead_in of ["x".repeat(LEAD_IN_MAX_CHARS + 1), "two\nlines", "see https://evil.example/x"]) {
+      expect((await digest({ finding_ids: [finding.id], lead_in })).error).toContain("lead_in must be one plain line")
+    }
     expect(sent).toHaveLength(0)
   })
   it("sends a scheduled digest, records the ledger, and dedupes ids", async () => {
@@ -90,11 +92,53 @@ describe("house_digest_send tool", () => {
     expect(sent[0].noticeId).toMatch(/^house-sweep:scheduled:2026-10-09:[0-9a-f]{12}$/u)
     expect(readLedger(root)[finding.id].fingerprint).toBe("fp1")
   })
-  it("sends supplied text on demand", async () => {
+  it("puts only a short lead-in above the stored summaries, on demand", async () => {
     writeReport("live", [finding])
-    await digest({ finding_ids: [finding.id], text: "  Plain version  " })
-    expect(sent[0].text).toBe("Plain version")
+    await digest({ finding_ids: [finding.id], lead_in: "  Two things  ", text: "ignored free text" })
+    expect(sent[0].text).toBe("Two things\n- Show is stuck")
     expect(sent[0].noticeId).toContain("house-sweep:ondemand:")
+  })
+  it("names every already-told finding", async () => {
+    writeReport("live", [finding, { id: "b", fingerprint: "fpb", summary: "B" }])
+    fs.mkdirSync(path.join(root, "state", "house-sweep"), { recursive: true })
+    const entry = (fingerprint: string) => ({ fingerprint, reportedAt: new Date(NOW - 1000).toISOString() })
+    fs.writeFileSync(path.join(root, "state", "house-sweep", "reported.json"), JSON.stringify({ entries: { [finding.id]: entry("fp1"), b: entry("fpb") } }))
+    expect((await digest({ finding_ids: [finding.id, "b"] })).error).toContain("leave them out")
+  })
+  it("is scheduled only for an await tick with no friend or relationship behind it", async () => {
+    writeReport("live", [finding])
+    await digest({ finding_ids: [finding.id] }, ctx({ autonomousTurnKind: "await", relationshipAuthorization: { profileId: "sanctuary-owner" } }))
+    expect(sent[0].noticeId).toContain("house-sweep:ondemand:")
+    fs.rmSync(path.join(root, "state", "house-sweep", "reported.json"))
+    await digest({ finding_ids: [finding.id] }, ctx({ autonomousTurnKind: "await", context: { friend: { id: "f1" } } }))
+    expect(sent[1].noticeId).toContain("house-sweep:ondemand:")
+  })
+  it("prefixes a peer's digest with the peer's name", async () => {
+    writeReport("live", [finding])
+    await digest({ finding_ids: [finding.id] }, ctx({ relationshipAuthorization: { profileId: "sanctuary-agent-peer" }, context: { friend: { id: "f9", name: "Slugger\nhttps://x.example" } } }))
+    expect(sent[0].text).toBe("From Slugger:\n- Show is stuck")
+    fs.rmSync(path.join(root, "state", "house-sweep", "reported.json"))
+    await digest({ finding_ids: [finding.id] }, ctx({ relationshipAuthorization: { profileId: "sanctuary-agent-peer" }, context: { friend: { id: "f9", name: "https://x.example" } } }))
+    expect(sent[1].text).toBe("From a peer:\n- Show is stuck")
+    fs.rmSync(path.join(root, "state", "house-sweep", "reported.json"))
+    await digest({ finding_ids: [finding.id] }, ctx({ relationshipAuthorization: { profileId: "sanctuary-agent-peer" } }))
+    expect(sent[2].text).toBe("From a peer:\n- Show is stuck")
+  })
+  it("enforces the 7-day dedupe and one live digest per day at send time", async () => {
+    writeReport("live", [finding, { id: "b", fingerprint: "fpb", summary: "B" }])
+    expect((await digest({ finding_ids: [finding.id] })).sent).toBe(true)
+    const again = await digest({ finding_ids: [finding.id] })
+    expect(again.error).toContain("already told about downloads:sonarr:1 unchanged")
+    expect(again.error).toContain("leave it out")
+    const second = await digest({ finding_ids: ["b"] })
+    expect(second.error).toContain("at most one is sent per day")
+    // Next day: a changed fingerprint may go out, an unchanged one still may not, and an old report may be repeated.
+    setHouseCareToolDeps({ now: () => NOW + DAY, notifyOwner: () => async (n: { noticeId: string; text: string }) => { sent.push(n) } } as never)
+    writeReport("live", [{ ...finding, fingerprint: "changed" }, { id: "b", fingerprint: "fpb", summary: "B" }])
+    expect((await digest({ finding_ids: [finding.id] })).sent).toBe(true)
+    setHouseCareToolDeps({ now: () => NOW + 9 * DAY, notifyOwner: () => async (n: { noticeId: string; text: string }) => { sent.push(n) } } as never)
+    writeReport("live", [{ ...finding, fingerprint: "changed" }])
+    expect((await digest({ finding_ids: [finding.id] })).sent).toBe(true)
   })
   it("uses the default agent name and the default notifier", async () => {
     writeReport("live", [finding])

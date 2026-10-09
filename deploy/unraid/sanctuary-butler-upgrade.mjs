@@ -479,22 +479,30 @@ export function psycheMountIssue(mounts) {
 // a grant only when the file and its directory are root-owned and writable by no one else, so a prompt-injected model
 // running as uid 10001 cannot mint one. Put them back; the subdirectories the resident writes stay with it, created
 // first so it never needs to mkdir inside the root-owned directory.
-function restoreEscalationGrantRoot() {
-  const dir = `${BUNDLE}/state/a2a`
+export function restoreEscalationGrantRoot(bundle = BUNDLE, { lstat = lstatSync, chmod = chmodSync, run = sh, log = say } = {}) {
+  const dir = `${bundle}/state/a2a`
+  const refuse = (target, reason) => log(`  skip ${target}: ${reason}; the escalation grant restore never follows it`)
   let stat
-  try { stat = lstatSync(dir) } catch { return }
-  if (!stat.isDirectory()) return
+  try { stat = lstat(dir) } catch { return }
+  // lstat, never stat or exists: a link the resident planted must not carry the chown or chmod to its target.
+  if (!stat.isDirectory()) { refuse(dir, stat.isSymbolicLink() ? "symlink" : "not a directory"); return }
   for (const sub of ["tasks", "pins", "seen"]) {
-    sh("/bin/mkdir", ["-p", `${dir}/${sub}`])
-    sh("/bin/chown", ["-R", "10001:10001", `${dir}/${sub}`])
+    const target = `${dir}/${sub}`
+    let existing = null
+    try { existing = lstat(target) } catch { /* absent: created below */ }
+    if (existing && !existing.isDirectory()) { refuse(target, existing.isSymbolicLink() ? "symlink" : "not a directory"); continue }
+    run("/bin/mkdir", ["-p", target])
+    run("/bin/chown", ["-R", "10001:10001", target])
   }
-  sh("/bin/chown", ["-h", "0:0", dir])
-  chmodSync(dir, 0o755)
+  run("/bin/chown", ["-h", "0:0", dir])
+  chmod(dir, 0o755)
   const grants = `${dir}/escalation-grants.json`
-  if (existsSync(grants)) {
-    sh("/bin/chown", ["-h", "0:0", grants])
-    chmodSync(grants, 0o644)
-  }
+  let grantStat = null
+  try { grantStat = lstat(grants) } catch { /* no grant written yet */ }
+  if (!grantStat) return
+  if (!grantStat.isFile()) { refuse(grants, grantStat.isSymbolicLink() ? "symlink" : "not a regular file"); return }
+  run("/bin/chown", ["-h", "0:0", grants])
+  chmod(grants, 0o644)
 }
 function migrateBundle(version, rollbackImage) {
   say(`migrate agent bundle to ${version}`)

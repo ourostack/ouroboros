@@ -154,15 +154,53 @@ describe("upgrade script contract", () => {
     const migrate = source.slice(source.indexOf("function migrateBundle("), source.indexOf("// Host supervision for the root-authority"))
     expect(migrate.indexOf('["-R", "10001:10001", BUNDLE]')).toBeGreaterThanOrEqual(0)
     expect(migrate.indexOf('["-R", "10001:10001", BUNDLE]')).toBeLessThan(migrate.indexOf("restoreEscalationGrantRoot()"))
-    const restore = source.slice(source.indexOf("function restoreEscalationGrantRoot()"), source.indexOf("function migrateBundle("))
-    expect(restore).toContain("`${BUNDLE}/state/a2a`")
-    expect(restore).toContain('sh("/bin/chown", ["-h", "0:0", dir])')
-    expect(restore).toContain("chmodSync(dir, 0o755)")
+    const restore = source.slice(source.indexOf("export function restoreEscalationGrantRoot("), source.indexOf("function migrateBundle("))
+    expect(restore).toContain("`${bundle}/state/a2a`")
+    expect(restore).toContain('run("/bin/chown", ["-h", "0:0", dir])')
+    expect(restore).toContain("chmod(dir, 0o755)")
     expect(restore).toContain("`${dir}/escalation-grants.json`")
-    expect(restore).toContain('sh("/bin/chown", ["-h", "0:0", grants])')
-    expect(restore).toContain("chmodSync(grants, 0o644)")
+    expect(restore).toContain('run("/bin/chown", ["-h", "0:0", grants])')
+    expect(restore).toContain("chmod(grants, 0o644)")
     // the resident's own subdirectories stay writable to it
     expect(restore).toContain('["tasks", "pins", "seen"]')
+  })
+
+  it("never follows a symlink or a non-regular file while restoring the escalation grant root", () => {
+    const stat = (kind: "dir" | "link" | "file") => ({ isDirectory: () => kind === "dir", isSymbolicLink: () => kind === "link", isFile: () => kind === "file" })
+    const run = (kinds: Record<string, "dir" | "link" | "file" | undefined>) => {
+      const calls: string[] = []
+      const logs: string[] = []
+      upgrade.restoreEscalationGrantRoot("/b", {
+        lstat: (p: string) => { const k = kinds[p]; if (!k) throw new Error("ENOENT"); return stat(k) },
+        chmod: (p: string, m: number) => { calls.push(`chmod ${m.toString(8)} ${p}`) },
+        run: (_f: string, args: string[]) => { calls.push(args.join(" ")) },
+        log: (l: string) => { logs.push(l) },
+      })
+      return { calls, logs }
+    }
+    const dir = "/b/state/a2a"
+    // a symlinked state/a2a, or a non-directory: nothing is touched
+    expect(run({ [dir]: "link" })).toEqual({ calls: [], logs: [expect.stringContaining("symlink")] })
+    expect(run({ [dir]: "file" }).logs[0]).toContain("not a directory")
+    expect(run({})).toEqual({ calls: [], logs: [] })
+    // a symlinked or odd subdirectory is skipped, the rest are restored
+    const subs = run({ [dir]: "dir", [`${dir}/tasks`]: "link", [`${dir}/pins`]: "file", [`${dir}/seen`]: "dir" })
+    expect(subs.logs).toHaveLength(2)
+    expect(subs.calls.join("|")).not.toContain("tasks")
+    expect(subs.calls).toContain(`-R 10001:10001 ${dir}/seen`)
+    expect(subs.calls).toContain(`-h 0:0 ${dir}`)
+    // a symlinked or odd grant file is refused: the directory is restored, the file is not touched
+    for (const [kind, word] of [["link", "symlink"], ["file", "x"], ["dir", "not a regular file"]] as const) {
+      const odd = run({ [dir]: "dir", [`${dir}/escalation-grants.json`]: kind === "file" ? "file" : kind })
+      if (kind === "file") expect(odd.calls).toContain(`-h 0:0 ${dir}/escalation-grants.json`)
+      else { expect(odd.logs).toEqual([expect.stringContaining(word)]); expect(odd.calls.join("|")).not.toContain("escalation-grants.json") }
+    }
+    // a regular grant file goes back under root, 0644, with no log
+    const fine = run({ [dir]: "dir", [`${dir}/escalation-grants.json`]: "file" })
+    expect(fine.calls).toEqual(expect.arrayContaining([`-h 0:0 ${dir}/escalation-grants.json`, `chmod 644 ${dir}/escalation-grants.json`]))
+    expect(fine.logs).toEqual([])
+    // the real defaults are wired
+    expect(typeof upgrade.restoreEscalationGrantRoot).toBe("function")
   })
 
   it("does nothing when imported, and the gate it calls ships in the same directory", () => {
