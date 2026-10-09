@@ -2,6 +2,12 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.882",
+      "changes": [
+        "Live phone calls work again on both the OpenAI SIP and Media Streams paths: every tool offered to OpenAI Realtime now has a Realtime-valid schema (a top-level oneOf in external_event_disposition had made Realtime reject the whole session setup, which dropped SIP calls and left Media Streams audio as noise), folded schemas explain their alternatives in the description, a tool that cannot be advertised is dropped with one warning per call and cannot be executed, and the bridge logs when Twilio reports a stream ended."
+      ]
+    },
+    {
       "version": "0.1.0-alpha.881",
       "changes": [
         "Voice calls are authenticated end to end: the signed Twilio webhook records who is calling and hands the Media Stream (or the OpenAI SIP leg) a short-lived single-use token, and a stream or SIP call without a valid token is refused, so the caller identity, friend, direction and greeting come from server state and never from stream parameters. defaultFriendId no longer decides who an inbound caller is on any transport, friend ids are validated before they touch the friend store, the voice transport stays off without voice.twilioAuthToken, a call that cannot connect now hears a short failure line instead of dead air, and a failed transcript save or stray rejection no longer takes the voice process down. A malformed frame from an unauthenticated client no longer crashes the voice process, a second stream for the same call is refused even while the first is still starting, and a burst of more than five uncaught exceptions in a minute makes the voice process exit so its supervisor restarts it."
