@@ -41,13 +41,21 @@ export function readEscalationGrants(agentRoot: string): Record<string, Escalati
   return Object.fromEntries(Object.entries(grants).filter((entry): entry is [string, EscalationGrant] => validGrant(entry[1])))
 }
 
+/** Run as root, the operator's grant leaves the file and its directory root-owned and closed to everyone else, even if an earlier recursive chown had handed them to the resident. */
+function ownAsRoot(target: string, mode: number): void {
+  fs.chownSync(target, 0, 0)
+  fs.chmodSync(target, mode)
+}
+
 /** Writes or removes one grant. The previous file is kept beside it as a timestamped backup before the change. */
 export function setEscalationGrant(agentRoot: string, friendId: string, change: { grant: true; source: string } | { grant: false }, now: Date = new Date()): { changed: boolean; backup: string | null } {
   const file = escalationGrantsPath(agentRoot)
+  // Root repairs the directory first; a grants file the resident owns stays untrusted and is replaced, never blessed.
+  fs.mkdirSync(path.dirname(file), { recursive: true, mode: 0o755 })
+  if (process.geteuid?.() === 0) ownAsRoot(path.dirname(file), 0o755)
   const current = readEscalationGrants(agentRoot)
   const had = current[friendId]
   if (change.grant ? had !== undefined : had === undefined) return { changed: false, backup: null }
-  fs.mkdirSync(path.dirname(file), { recursive: true, mode: 0o755 })
   let backup: string | null = null
   if (fs.existsSync(file)) {
     backup = `${file}.bak-${now.toISOString().replace(/[:.]/gu, "-")}`
@@ -59,6 +67,7 @@ export function setEscalationGrant(agentRoot: string, friendId: string, change: 
   const tmp = `${file}.${process.pid}.tmp`
   fs.writeFileSync(tmp, `${JSON.stringify({ schemaVersion: 1, grants: next }, null, 2)}\n`, { mode: 0o644 })
   fs.renameSync(tmp, file)
+  if (process.geteuid?.() === 0) ownAsRoot(file, 0o644)
   emitNervesEvent({
     component: "senses",
     event: "senses.a2a_escalation_grant_changed",

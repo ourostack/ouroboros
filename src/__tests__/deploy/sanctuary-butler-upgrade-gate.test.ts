@@ -150,6 +150,21 @@ describe("upgrade script contract", () => {
     expect(body.slice(body.indexOf("commit: () => {"), body.indexOf("rollback: () => {"))).toContain("stillHeld()")
   })
 
+  it("puts the escalation grant's directory and file back to root after the recursive chown to the resident", () => {
+    const migrate = source.slice(source.indexOf("function migrateBundle("), source.indexOf("// Host supervision for the root-authority"))
+    expect(migrate.indexOf('["-R", "10001:10001", BUNDLE]')).toBeGreaterThanOrEqual(0)
+    expect(migrate.indexOf('["-R", "10001:10001", BUNDLE]')).toBeLessThan(migrate.indexOf("restoreEscalationGrantRoot()"))
+    const restore = source.slice(source.indexOf("function restoreEscalationGrantRoot()"), source.indexOf("function migrateBundle("))
+    expect(restore).toContain("`${BUNDLE}/state/a2a`")
+    expect(restore).toContain('sh("/bin/chown", ["-h", "0:0", dir])')
+    expect(restore).toContain("chmodSync(dir, 0o755)")
+    expect(restore).toContain("`${dir}/escalation-grants.json`")
+    expect(restore).toContain('sh("/bin/chown", ["-h", "0:0", grants])')
+    expect(restore).toContain("chmodSync(grants, 0o644)")
+    // the resident's own subdirectories stay writable to it
+    expect(restore).toContain('["tasks", "pins", "seen"]')
+  })
+
   it("does nothing when imported, and the gate it calls ships in the same directory", () => {
     expect(source).toContain("if (process.argv[1] && fileURLToPath(import.meta.url) === realpathSync(process.argv[1])) run(process.argv.slice(2)).catch(")
     expect(fs.existsSync(path.join(path.dirname(SCRIPT), "sanctuary-replay-gate.mjs"))).toBe(true)

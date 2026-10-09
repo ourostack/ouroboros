@@ -31,6 +31,24 @@ describe("withFileLock", () => {
     expect(await withFileLock(dir, "y", () => "ok", { staleMs: 1_000 })).toBe("ok")
   })
 
+  it("lets only one of several waiters break the same stale lock, and leaves no debris", async () => {
+    const lock = path.join(dir, "w.lock")
+    fs.mkdirSync(lock)
+    const old = new Date(Date.now() - 10_000)
+    fs.utimesSync(lock, old, old)
+    const running: number[] = []
+    let overlap = 0
+    const hold = () => withFileLock(dir, "w", async () => {
+      running.push(1)
+      overlap = Math.max(overlap, running.length)
+      await new Promise((resolve) => setTimeout(resolve, 10))
+      running.pop()
+    }, { staleMs: 1_000, pollMs: 2 })
+    await Promise.all([hold(), hold(), hold(), hold()])
+    expect(overlap).toBe(1)
+    expect(fs.readdirSync(dir)).toEqual([])
+  })
+
   it("gives up on a lock that stays busy", async () => {
     fs.mkdirSync(path.join(dir, "z.lock"))
     await expect(withFileLock(dir, "z", () => "never", { waitMs: 20, pollMs: 5 })).rejects.toThrow("timed out waiting for the z lock")

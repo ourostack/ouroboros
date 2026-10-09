@@ -1,13 +1,26 @@
 import * as fs from "node:fs"
 import * as os from "node:os"
 import * as path from "node:path"
-import { afterEach, beforeEach, describe, expect, it } from "vitest"
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { isTrustedDirectory, overrideTrustedUidForTests, readTrustedJson, TRUSTED_UID } from "../../a2a/trusted-files"
 
 let dir = ""
 const me = process.getuid!()
 beforeEach(() => { dir = fs.mkdtempSync(path.join(os.tmpdir(), "trusted-files-")) })
 afterEach(() => { overrideTrustedUidForTests(me); fs.rmSync(dir, { recursive: true, force: true }) })
+
+describe("the test-only trusted uid", () => {
+  it("cannot be set, and is not honoured, outside a test runner", () => {
+    overrideTrustedUidForTests(me)
+    vi.stubEnv("VITEST", undefined as unknown as string)
+    try {
+      expect(() => overrideTrustedUidForTests(me)).toThrow("tests only")
+      // the override set earlier no longer counts: only root is trusted again
+      expect(isTrustedDirectory(dir)).toBe(me === 0)
+    } finally { vi.unstubAllEnvs() }
+    expect(isTrustedDirectory(dir)).toBe(true)
+  })
+})
 
 describe("trusted files", () => {
   it("trusts root by default and nobody else, so a file the agent's own user wrote never counts", () => {

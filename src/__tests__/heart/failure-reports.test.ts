@@ -3,8 +3,10 @@ import * as path from "node:path"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { FileFriendStore, type FriendRecord } from "@ouro.bot/friends"
 import { createTmpBundle, type TmpBundleHandle } from "../test-helpers/tmpdir-bundle"
+import { registerGlobalLogSink, type LogEvent } from "../../nerves"
 import { setEscalationGrant } from "../../a2a/escalation-grants"
 import { FileOutboxStore } from "../../a2a/outbox-store"
+import { agentMetaFor, makeTestIdentity, signedResolution } from "../test-helpers/resolution-signing"
 import {
   confirmResolvedReports, errorClass, fileFailureReport, fixLiveNoticeText, failureFingerprint, listFailureReports, readFailureReport,
   reportBody, reportsDir, resolveFailureReport, pruneClosedReports, CLOSED_REPORT_RETENTION_MS, REPORTS_PER_DAY, REPORTS_PER_HOUR, REPORTS_PER_ORIGIN_DAY, REPORTS_PER_ORIGIN_HOUR, type FailureReportInput,
@@ -17,7 +19,9 @@ vi.mock("../../a2a/replay-harness", () => ({
 }))
 
 let tmp: TmpBundleHandle | null = null
-beforeEach(() => { replay.open.clear(); replay.identities.clear() })
+let holderKey: Awaited<ReturnType<typeof makeTestIdentity>>
+let currentStore: FileFriendStore
+beforeEach(async () => { replay.open.clear(); replay.identities.clear(); holderKey = await makeTestIdentity() })
 afterEach(() => { tmp?.cleanup(); tmp = null })
 
 const T0 = Date.parse("2026-10-08T12:00:00.000Z")
@@ -32,10 +36,16 @@ async function setup(holders: string[] = ["claude"]) {
   tmp = createTmpBundle({ agentName: `reports-${Date.now()}` })
   const store = new FileFriendStore(path.join(tmp.agentRoot, "friends"))
   await store.put("ari", friend("ari", { capabilityProfileId: "sanctuary-owner" }))
-  for (const id of ["replay-principal", "peer-a", ...Array.from({ length: 8 }, (_, i) => `o${i}`), ...holders]) await store.put(id, friend(id, { name: `Name ${id}`, capabilityProfileId: "sanctuary-agent-peer" }))
+  for (const id of ["replay-principal", "peer-a", ...Array.from({ length: 8 }, (_, i) => `o${i}`), ...holders]) await store.put(id, friend(id, { name: `Name ${id}`, capabilityProfileId: "sanctuary-agent-peer", ...(holders.includes(id) ? { kind: "agent" as const, agentMeta: agentMetaFor(holderKey) } : {}) }))
+  currentStore = store
   for (const id of holders) setEscalationGrant(tmp.agentRoot, id, { grant: true, source: "test" })
   return { agentRoot: tmp.agentRoot, store, outbox: new FileOutboxStore(tmp.agentRoot) }
 }
+/** Resolves as the holder does: with its key's signature over the claim. */
+async function resolve(agentRoot: string, i: { id: string; version: string; note: string; byFriendId: string }, now?: number) {
+  return resolveFailureReport(agentRoot, { ...i, ...await signedResolution(holderKey, { reportId: i.id, version: i.version, note: i.note }) }, now)
+}
+const confirm = (agentRoot: string, deps: Omit<Parameters<typeof confirmResolvedReports>[1], "friends">, now?: number) => confirmResolvedReports(agentRoot, { ...deps, friends: currentStore }, now)
 const input = (overrides: Partial<FailureReportInput> = {}): FailureReportInput => ({
   ariWords: "turn the porch light on", tried: "searched the tool list for a lights tool", error: "no tool can control lights", failedTool: "hue_set", severity: "medium",
   origin: { friendId: "ari", channel: "telegram", key: "chat-1" }, ...overrides,
@@ -57,7 +67,7 @@ describe("filing failure reports", () => {
     if (!result.ok) throw new Error("unreachable")
     for (const holder of ["claude", "second"]) {
       const [entry] = outbox.list(holder).entries
-      expect(entry).toMatchObject({ kind: "failure_report", meta: { reportId: result.id, shortId: result.shortId, severity: "medium", failedTool: "hue_set" } })
+      expect(entry).toMatchObject({ kind: "failure_report", meta: { reportId: result.id, shortId: result.shortId, severity: "medium", failedTool: "hue_set", ariWords: "turn the porch light on" } })
       expect(entry!.body).toContain("Ari asked: turn the porch light on")
       expect(entry!.body).toContain("hue_set failed: no tool can control lights")
       expect(entry!.body).toContain("telegram/chat-1")
@@ -153,36 +163,36 @@ describe("resolving and confirming", () => {
 
   it("accepts a resolution only from a recipient, with a real version and a note", async () => {
     const { agentRoot, id } = await filed()
-    expect(await resolveFailureReport(agentRoot, { id: "00000000-0000-4000-8000-000000000000", version: "0.1.0-alpha.9", note: "n", byFriendId: "claude" })).toEqual({ ok: false, reason: "unknown_report" })
-    expect(await resolveFailureReport(agentRoot, { id, version: "0.1.0-alpha.9", note: "n", byFriendId: "ari" })).toEqual({ ok: false, reason: "not_recipient" })
-    expect(await resolveFailureReport(agentRoot, { id, version: "next week", note: "n", byFriendId: "claude" })).toEqual({ ok: false, reason: "bad_version" })
-    expect(await resolveFailureReport(agentRoot, { id, version: "0.1.0-alpha.9", note: "  ", byFriendId: "claude" })).toEqual({ ok: false, reason: "bad_note" })
-    expect(await resolveFailureReport(agentRoot, { id, version: "0.1.0-alpha.9", note: "Added a lights tool.", byFriendId: "claude" }, T0)).toEqual({ ok: true, id, status: "resolved" })
+    expect(await resolve(agentRoot, { id: "00000000-0000-4000-8000-000000000000", version: "0.1.0-alpha.9", note: "n", byFriendId: "claude" })).toEqual({ ok: false, reason: "unknown_report" })
+    expect(await resolve(agentRoot, { id, version: "0.1.0-alpha.9", note: "n", byFriendId: "ari" })).toEqual({ ok: false, reason: "not_recipient" })
+    expect(await resolve(agentRoot, { id, version: "next week", note: "n", byFriendId: "claude" })).toEqual({ ok: false, reason: "bad_version" })
+    expect(await resolve(agentRoot, { id, version: "0.1.0-alpha.9", note: "  ", byFriendId: "claude" })).toEqual({ ok: false, reason: "bad_note" })
+    expect(await resolve(agentRoot, { id, version: "0.1.0-alpha.9", note: "Added a lights tool.", byFriendId: "claude" }, T0)).toEqual({ ok: true, id, status: "resolved" })
     expect(readFailureReport(agentRoot, id)).toMatchObject({ status: "resolved", resolution: { version: "0.1.0-alpha.9", note: "Added a lights tool.", by: "claude" } })
   })
 
   it("waits until the running version reaches the fix, then tells the owner once and closes the report", async () => {
     const { agentRoot, id } = await filed()
-    await resolveFailureReport(agentRoot, { id, version: "0.1.0-alpha.875", note: "Added a lights tool.", byFriendId: "claude" }, T0)
+    await resolve(agentRoot, { id, version: "0.1.0-alpha.875", note: "Added a lights tool.", byFriendId: "claude" }, T0)
     const notices: { noticeId: string; text: string }[] = []
     const notifyOwner = async (notice: { noticeId: string; text: string }) => { notices.push(notice) }
-    expect(await confirmResolvedReports(agentRoot, { runningVersion: "0.1.0-alpha.874", notifyOwner })).toEqual({ closed: [], waiting: [id], failed: [] })
-    expect(await confirmResolvedReports(agentRoot, { runningVersion: "not-a-version", notifyOwner })).toEqual({ closed: [], waiting: [id], failed: [] })
+    expect(await confirm(agentRoot, { runningVersion: "0.1.0-alpha.874", notifyOwner })).toEqual({ closed: [], waiting: [id], failed: [] })
+    expect(await confirm(agentRoot, { runningVersion: "not-a-version", notifyOwner })).toEqual({ closed: [], waiting: [id], failed: [] })
     expect(notices).toEqual([])
-    expect(await confirmResolvedReports(agentRoot, { runningVersion: "0.1.0-alpha.876", notifyOwner }, T0)).toEqual({ closed: [id], waiting: [], failed: [] })
+    expect(await confirm(agentRoot, { runningVersion: "0.1.0-alpha.876", notifyOwner }, T0)).toEqual({ closed: [id], waiting: [], failed: [] })
     expect(notices).toEqual([{ noticeId: `failure-fixed:${id}`, text: fixLiveNoticeText(readFailureReport(agentRoot, id)!) }])
     expect(notices[0]!.text).toContain("version 0.1.0-alpha.875")
     expect(notices[0]!.text).toContain("You asked: turn the porch light on")
     expect(readFailureReport(agentRoot, id)).toMatchObject({ status: "closed" })
-    expect(await confirmResolvedReports(agentRoot, { runningVersion: "0.1.0-alpha.876", notifyOwner })).toEqual({ closed: [], waiting: [], failed: [] })
-    expect(await resolveFailureReport(agentRoot, { id, version: "0.1.0-alpha.9", note: "n", byFriendId: "claude" })).toEqual({ ok: false, reason: "already_closed" })
+    expect(await confirm(agentRoot, { runningVersion: "0.1.0-alpha.876", notifyOwner })).toEqual({ closed: [], waiting: [], failed: [] })
+    expect(await resolve(agentRoot, { id, version: "0.1.0-alpha.9", note: "n", byFriendId: "claude" })).toEqual({ ok: false, reason: "already_closed" })
   })
 
   it("keeps a report resolved when the owner cannot be told, so the next pass retries", async () => {
     const { agentRoot, id } = await filed()
-    await resolveFailureReport(agentRoot, { id, version: "0.1.0-alpha.1", note: "Done.", byFriendId: "claude" }, T0)
-    expect(await confirmResolvedReports(agentRoot, { runningVersion: "0.1.0-alpha.2", notifyOwner: async () => { throw new Error("telegram down") } })).toEqual({ closed: [], waiting: [], failed: [id] })
-    expect(await confirmResolvedReports(agentRoot, { runningVersion: "0.1.0-alpha.2", notifyOwner: async () => { throw "plain" } })).toEqual({ closed: [], waiting: [], failed: [id] })
+    await resolve(agentRoot, { id, version: "0.1.0-alpha.1", note: "Done.", byFriendId: "claude" }, T0)
+    expect(await confirm(agentRoot, { runningVersion: "0.1.0-alpha.2", notifyOwner: async () => { throw new Error("telegram down") } })).toEqual({ closed: [], waiting: [], failed: [id] })
+    expect(await confirm(agentRoot, { runningVersion: "0.1.0-alpha.2", notifyOwner: async () => { throw "plain" } })).toEqual({ closed: [], waiting: [], failed: [id] })
     expect(readFailureReport(agentRoot, id)).toMatchObject({ status: "resolved" })
   })
 
@@ -192,15 +202,87 @@ describe("resolving and confirming", () => {
     replay.open.add("replay-escalation")
     const result = await fileFailureReport(agentRoot, store, input({ origin: { friendId: "replay-principal", channel: "a2a", key: "c" } }), T0)
     if (!result.ok) throw new Error("setup failed")
-    await resolveFailureReport(agentRoot, { id: result.id, version: "0.1.0-alpha.1", note: "Done.", byFriendId: "replay-escalation" }, T0)
+    await resolve(agentRoot, { id: result.id, version: "0.1.0-alpha.1", note: "Done.", byFriendId: "replay-escalation" }, T0)
     const notifyOwner = vi.fn()
-    expect(await confirmResolvedReports(agentRoot, { runningVersion: "0.1.0-alpha.1", notifyOwner })).toEqual({ closed: [result.id], waiting: [], failed: [] })
+    expect(await confirm(agentRoot, { runningVersion: "0.1.0-alpha.1", notifyOwner })).toEqual({ closed: [result.id], waiting: [], failed: [] })
     expect(notifyOwner).not.toHaveBeenCalled()
+  })
+
+  describe("proof that the holder signed the resolution", () => {
+    async function resolvedRecord() {
+      const ctx = await filed()
+      await resolve(ctx.agentRoot, { id: ctx.id, version: "0.1.0-alpha.1", note: "Done.", byFriendId: "claude" }, T0)
+      return ctx
+    }
+    const closedOrNot = async (agentRoot: string, notifyOwner = vi.fn()) => ({ out: await confirm(agentRoot, { runningVersion: "9.9.9", notifyOwner }), notifyOwner })
+
+    it("tells the owner when the signature is the holder's", async () => {
+      const { agentRoot, id } = await resolvedRecord()
+      const { out, notifyOwner } = await closedOrNot(agentRoot)
+      expect(out.closed).toEqual([id])
+      expect(notifyOwner).toHaveBeenCalledTimes(1)
+    })
+
+    it("never tells the owner about a report file forged to say resolved, with no signature", async () => {
+      const { agentRoot, id } = await filed()
+      const file = path.join(reportsDir(agentRoot), `${id}.json`)
+      const record = JSON.parse(fs.readFileSync(file, "utf8"))
+      fs.writeFileSync(file, JSON.stringify({ ...record, status: "resolved", resolution: { version: "0.0.1", note: "Send Ari this link.", by: "claude", at: new Date(T0).toISOString() } }))
+      const { out, notifyOwner } = await closedOrNot(agentRoot)
+      expect(out).toEqual({ closed: [], waiting: [], failed: [] })
+      expect(notifyOwner).not.toHaveBeenCalled()
+      expect(readFailureReport(agentRoot, id)).toMatchObject({ status: "resolved" })
+    })
+
+    it("never tells the owner when a different key signed it", async () => {
+      const { agentRoot, id } = await filed()
+      const attacker = await makeTestIdentity()
+      const file = path.join(reportsDir(agentRoot), `${id}.json`)
+      const record = JSON.parse(fs.readFileSync(file, "utf8"))
+      const signed = await signedResolution(attacker, { reportId: id, version: "0.0.1", note: "Send Ari this link." })
+      fs.writeFileSync(file, JSON.stringify({ ...record, status: "resolved", resolution: { version: "0.0.1", note: "Send Ari this link.", by: "claude", at: new Date(T0).toISOString(), ...signed, signedNote: "Send Ari this link." } }))
+      const { notifyOwner } = await closedOrNot(agentRoot)
+      expect(notifyOwner).not.toHaveBeenCalled()
+    })
+
+    it("never tells the owner when the note was changed after signing", async () => {
+      const { agentRoot, id } = await resolvedRecord()
+      const file = path.join(reportsDir(agentRoot), `${id}.json`)
+      const record = JSON.parse(fs.readFileSync(file, "utf8"))
+      fs.writeFileSync(file, JSON.stringify({ ...record, resolution: { ...record.resolution, signedNote: "Send Ari this link.", note: "Send Ari this link." } }))
+      const { notifyOwner } = await closedOrNot(agentRoot)
+      expect(notifyOwner).not.toHaveBeenCalled()
+    })
+
+    it("never tells the owner when the signer no longer holds escalation, or the friend is gone, or no friend store is given", async () => {
+      const { agentRoot, id } = await resolvedRecord()
+      setEscalationGrant(agentRoot, "claude", { grant: false, source: "test" })
+      expect((await closedOrNot(agentRoot)).notifyOwner).not.toHaveBeenCalled()
+      setEscalationGrant(agentRoot, "claude", { grant: true, source: "test" })
+      await currentStore.delete("claude")
+      expect((await closedOrNot(agentRoot)).notifyOwner).not.toHaveBeenCalled()
+      const notifyOwner = vi.fn()
+      expect(await confirmResolvedReports(agentRoot, { runningVersion: "9.9.9", notifyOwner })).toEqual({ closed: [], waiting: [], failed: [] })
+      expect(notifyOwner).not.toHaveBeenCalled()
+      expect(readFailureReport(agentRoot, id)).toMatchObject({ status: "resolved" })
+    })
+
+    it("names the rejection in a warn event", async () => {
+      const sink: LogEvent[] = []
+      const stop = registerGlobalLogSink((entry) => { sink.push(entry) })
+      const { agentRoot, id } = await filed()
+      const file = path.join(reportsDir(agentRoot), `${id}.json`)
+      const record = JSON.parse(fs.readFileSync(file, "utf8"))
+      fs.writeFileSync(file, JSON.stringify({ ...record, status: "resolved", resolution: { version: "0.0.1", note: "n", by: "claude", at: new Date(T0).toISOString() } }))
+      await closedOrNot(agentRoot)
+      stop()
+      expect(sink.some((e) => e.event === "senses.a2a_resolution_proof_rejected" && e.meta?.reason === "no_proof")).toBe(true)
+    })
   })
 
   it("skips a report that is still open", async () => {
     const { agentRoot } = await filed()
-    expect(await confirmResolvedReports(agentRoot, { runningVersion: "9.9.9", notifyOwner: vi.fn() })).toEqual({ closed: [], waiting: [], failed: [] })
+    expect(await confirm(agentRoot, { runningVersion: "9.9.9", notifyOwner: vi.fn() })).toEqual({ closed: [], waiting: [], failed: [] })
   })
 })
 
@@ -259,7 +341,7 @@ describe("report origin", () => {
     const { agentRoot, store } = await setup()
     const result = await fileFailureReport(agentRoot, store, input({ origin: { friendId: "peer-a", channel: "a2a", key: "ctx" } }), T0)
     if (!result.ok) throw new Error("setup failed")
-    await resolveFailureReport(agentRoot, { id: result.id, version: "0.1.0-alpha.1", note: "Done.", byFriendId: "claude" }, T0)
+    await resolve(agentRoot, { id: result.id, version: "0.1.0-alpha.1", note: "Done.", byFriendId: "claude" }, T0)
     const notice = fixLiveNoticeText(readFailureReport(agentRoot, result.id)!)
     expect(notice).toContain("for Name peer-a")
     expect(notice).not.toContain("You asked")
@@ -382,7 +464,7 @@ describe("concurrent processes", () => {
     if (!first.ok) throw new Error("setup failed")
     await Promise.all([
       fileFailureReport(agentRoot, store, input({ error: "mix 2" }), T0 + 1),
-      resolveFailureReport(agentRoot, { id: first.id, version: "0.1.0-alpha.1", note: "Done.", byFriendId: "claude" }, T0 + 2),
+      resolve(agentRoot, { id: first.id, version: "0.1.0-alpha.1", note: "Done.", byFriendId: "claude" }, T0 + 2),
     ])
     const record = readFailureReport(agentRoot, first.id)!
     expect(record).toMatchObject({ status: "resolved", occurrences: 2 })
@@ -392,14 +474,14 @@ describe("concurrent processes", () => {
     const { agentRoot, store } = await setup()
     const first = await fileFailureReport(agentRoot, store, input(), T0)
     if (!first.ok) throw new Error("setup failed")
-    await resolveFailureReport(agentRoot, { id: first.id, version: "0.1.0-alpha.1", note: "Done.", byFriendId: "claude" }, T0)
+    await resolve(agentRoot, { id: first.id, version: "0.1.0-alpha.1", note: "Done.", byFriendId: "claude" }, T0)
     const file = path.join(reportsDir(agentRoot), `${first.id}.json`)
     const lock = path.join(reportsDir(agentRoot), ".locks", `report-${first.id}.lock`)
     const notifyOwner = vi.fn()
     const attempt = async (change: (record: Record<string, any>) => Record<string, any>) => {
       const before = fs.readFileSync(file, "utf8")
       fs.mkdirSync(lock, { recursive: true })
-      const pending = confirmResolvedReports(agentRoot, { runningVersion: "0.1.0-alpha.5", notifyOwner })
+      const pending = confirm(agentRoot, { runningVersion: "0.1.0-alpha.5", notifyOwner })
       await new Promise((resolve) => setTimeout(resolve, 80))
       fs.writeFileSync(file, JSON.stringify(change(JSON.parse(before))))
       fs.rmSync(lock, { recursive: true })
@@ -439,7 +521,7 @@ describe("pruning", () => {
     await fileFailureReport(agentRoot, store, input({ error: "new one" }), T0)
     expect(fs.existsSync(file)).toBe(false)
     fs.writeFileSync(file, JSON.stringify({ id: old.id, status: "closed", closedAt: new Date(T0 - CLOSED_REPORT_RETENTION_MS * 2).toISOString(), recipients: [], origin: {} }))
-    await confirmResolvedReports(agentRoot, { runningVersion: "1.0.0", notifyOwner: vi.fn() }, T0)
+    await confirm(agentRoot, { runningVersion: "1.0.0", notifyOwner: vi.fn() }, T0)
     expect(fs.existsSync(file)).toBe(false)
   })
 })

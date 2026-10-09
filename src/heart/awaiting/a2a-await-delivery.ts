@@ -47,7 +47,7 @@ export function createA2AAwaitOwnerDeliverer(agentName: string, notifyOwner: Not
         const body = request.noticeKind === "asked_owner"
           ? PEER_ASKED_OWNER_TEXT
           : request.content
-        new FileOutboxStore(agentRoot).appendOnce(request.friendId, request.deliveryId, { kind: "await_outcome", body, meta: { outcome: request.noticeKind ?? "follow_up" } })
+        await new FileOutboxStore(agentRoot).appendOnce(request.friendId, request.deliveryId, { kind: "await_outcome", body, meta: { outcome: request.noticeKind ?? "follow_up" } })
         if (request.noticeKind !== "asked_owner") return { status: "delivered_now", detail: "posted to the peer's outbox" }
       }
       if (isReplayWindowOpen(agentRoot, request.friendId)) {

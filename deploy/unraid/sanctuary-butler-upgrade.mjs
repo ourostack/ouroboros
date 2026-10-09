@@ -474,6 +474,28 @@ export function psycheMountIssue(mounts) {
   if (!mount) return "psyche is not mounted separately in the resident, so it could be renamed or replaced"
   return mount.RW === false ? null : "psyche is mounted read-write in the resident"
 }
+
+// The same recursive chown would also hand state/a2a and the escalation grant file to the resident. The Butler honours
+// a grant only when the file and its directory are root-owned and writable by no one else, so a prompt-injected model
+// running as uid 10001 cannot mint one. Put them back; the subdirectories the resident writes stay with it, created
+// first so it never needs to mkdir inside the root-owned directory.
+function restoreEscalationGrantRoot() {
+  const dir = `${BUNDLE}/state/a2a`
+  let stat
+  try { stat = lstatSync(dir) } catch { return }
+  if (!stat.isDirectory()) return
+  for (const sub of ["tasks", "pins", "seen"]) {
+    sh("/bin/mkdir", ["-p", `${dir}/${sub}`])
+    sh("/bin/chown", ["-R", "10001:10001", `${dir}/${sub}`])
+  }
+  sh("/bin/chown", ["-h", "0:0", dir])
+  chmodSync(dir, 0o755)
+  const grants = `${dir}/escalation-grants.json`
+  if (existsSync(grants)) {
+    sh("/bin/chown", ["-h", "0:0", grants])
+    chmodSync(grants, 0o644)
+  }
+}
 function migrateBundle(version, rollbackImage) {
   say(`migrate agent bundle to ${version}`)
   const pkgBundle = `${ROOT}/incoming-package/deploy/unraid/sanctuary.ouro`
@@ -487,6 +509,7 @@ function migrateBundle(version, rollbackImage) {
   sh("/bin/chown", ["-R", "10001:10001", BUNDLE])
   restoreReplayRoot()
   restorePsycheRoot()
+  restoreEscalationGrantRoot()
   ok("bundle committed (ownership restored to resident)")
 }
 

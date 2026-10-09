@@ -431,7 +431,7 @@ export async function startA2AServer(options: StartA2AServerOptions): Promise<A2
   const confirmReports = async (): Promise<void> => {
     if (!options.escalation) return
     try {
-      await confirmResolvedReports(agentRoot, options.escalation)
+      await confirmResolvedReports(agentRoot, { ...options.escalation, ...(inboundShareDeps ? { friends: inboundShareDeps.store } : {}) })
     } catch (error) {
       emitNervesEvent({ level: "warn", component: "channels", event: "channel.a2a_escalation_confirm_error", message: "confirming resolved failure reports failed", meta: { agentName: options.agentName, error: error instanceof Error ? error.message : String(error) } })
     }

@@ -14,6 +14,7 @@ import { loadOrMintA2AIdentityFile, type A2AIdentity } from "../../a2a/identity"
 import { setEscalationGrant } from "../../a2a/escalation-grants"
 import { FileOutboxStore } from "../../a2a/outbox-store"
 import { fileFailureReport, readFailureReport } from "../../heart/failure-reports"
+import { signedResolution } from "../test-helpers/resolution-signing"
 
 let sodium: Sodium
 let tmp: TmpBundleHandle | null = null
@@ -118,19 +119,22 @@ describe("report/resolve and the fix confirmation", () => {
     return { ...ctx, id: result.id }
   }
 
+  const signed = async (key: DidKeyIdentity, id: string) => ({ id, version: "0.1.0-alpha.5", note: "Added lights.", ...await signedResolution(key, { reportId: id, version: "0.1.0-alpha.5", note: "Added lights." }) })
+
   it("lets the escalation holder resolve, then tells the owner once the running version has the fix", async () => {
     const notices: { noticeId: string; text: string }[] = []
     const { peers, cardUrl, id, agentRoot } = await filed({ runningVersion: "0.1.0-alpha.1", notifyOwner: async (notice) => { notices.push(notice) } })
-    await expect(callOutboxMethod({ cardUrl, method: "report/resolve", params: { id, version: "0.1.0-alpha.5", note: "Added lights." }, identity: peers.ari!.client, sodium })).rejects.toThrow(/escalation grant/)
-    expect(await callOutboxMethod({ cardUrl, method: "report/resolve", params: { id, version: "0.1.0-alpha.5", note: "Added lights." }, identity: peers.claude!.client, sodium })).toEqual({ id, status: "resolved" })
+    await expect(callOutboxMethod({ cardUrl, method: "report/resolve", params: await signed(peers.ari!.client, id), identity: peers.ari!.client, sodium })).rejects.toThrow(/escalation grant/)
+    expect(await callOutboxMethod({ cardUrl, method: "report/resolve", params: await signed(peers.claude!.client, id), identity: peers.claude!.client, sodium })).toEqual({ id, status: "resolved" })
     expect(readFailureReport(agentRoot, id)).toMatchObject({ status: "resolved" })
     expect(notices).toEqual([])
+    await expect(callOutboxMethod({ cardUrl, method: "report/resolve", params: { id, version: "0.1.0-alpha.5", note: "Added lights." }, identity: peers.claude!.client, sodium })).rejects.toThrow(/invalid|resolvedAt/)
   })
 
   it("confirms at start and on a timer once the version is live", async () => {
     const notices: { noticeId: string; text: string }[] = []
     const ctx = await filed({ runningVersion: "0.1.0-alpha.9", confirmIntervalMs: 20, notifyOwner: async (notice) => { notices.push(notice) } })
-    await callOutboxMethod({ cardUrl: ctx.cardUrl, method: "report/resolve", params: { id: ctx.id, version: "0.1.0-alpha.5", note: "Added lights." }, identity: ctx.peers.claude!.client, sodium })
+    await callOutboxMethod({ cardUrl: ctx.cardUrl, method: "report/resolve", params: await signed(ctx.peers.claude!.client, ctx.id), identity: ctx.peers.claude!.client, sodium })
     expect(notices.map((notice) => notice.noticeId)).toEqual([`failure-fixed:${ctx.id}`])
     expect(readFailureReport(ctx.agentRoot, ctx.id)).toMatchObject({ status: "closed" })
   })
@@ -138,7 +142,7 @@ describe("report/resolve and the fix confirmation", () => {
   it("keeps trying on the timer when the owner notice fails", async () => {
     let attempts = 0
     const ctx = await filed({ runningVersion: "0.1.0-alpha.9", confirmIntervalMs: 15, notifyOwner: async () => { attempts += 1; if (attempts < 3) throw new Error("telegram down") } })
-    await callOutboxMethod({ cardUrl: ctx.cardUrl, method: "report/resolve", params: { id: ctx.id, version: "0.1.0-alpha.5", note: "Added lights." }, identity: ctx.peers.claude!.client, sodium })
+    await callOutboxMethod({ cardUrl: ctx.cardUrl, method: "report/resolve", params: await signed(ctx.peers.claude!.client, ctx.id), identity: ctx.peers.claude!.client, sodium })
     await vi.waitFor(() => expect(readFailureReport(ctx.agentRoot, ctx.id)).toMatchObject({ status: "closed" }), { timeout: 2000 })
     expect(attempts).toBe(3)
   })

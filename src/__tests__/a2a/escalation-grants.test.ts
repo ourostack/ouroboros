@@ -1,6 +1,13 @@
 import * as fs from "node:fs"
 import * as path from "node:path"
-import { afterEach, describe, expect, it } from "vitest"
+import { afterEach, describe, expect, it, vi } from "vitest"
+
+const fsHooks = vi.hoisted(() => ({ chown: null as null | ((...args: unknown[]) => void) }))
+vi.mock("node:fs", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("node:fs")>()
+  const patched = { ...actual, chownSync: (...args: Parameters<typeof actual.chownSync>) => (fsHooks.chown ? fsHooks.chown(...args) : actual.chownSync(...args)) }
+  return { ...patched, default: patched }
+})
 import { FileFriendStore, type FriendRecord } from "@ouro.bot/friends"
 import { createTmpBundle, type TmpBundleHandle } from "../test-helpers/tmpdir-bundle"
 import { overrideTrustedUidForTests } from "../../a2a/trusted-files"
@@ -117,5 +124,36 @@ describe("escalation grants trust", () => {
     } finally {
       overrideTrustedUidForTests(process.getuid!())
     }
+  })
+})
+
+describe("escalation grants written as root", () => {
+  it("leaves the directory and the file root-owned and closed to everyone else", () => {
+    const agentRoot = root()
+    const dir = path.dirname(escalationGrantsPath(agentRoot))
+    const calls: unknown[][] = []
+    fsHooks.chown = (...args) => { calls.push(args) }
+    const geteuid = vi.spyOn(process, "geteuid").mockReturnValue(0)
+    try {
+      fs.mkdirSync(dir, { recursive: true, mode: 0o777 })
+      fs.chmodSync(dir, 0o777)
+      setEscalationGrant(agentRoot, "claude", { grant: true, source: "test" })
+      expect(calls).toEqual([[dir, 0, 0], [escalationGrantsPath(agentRoot), 0, 0]])
+      expect(fs.statSync(dir).mode & 0o777).toBe(0o755)
+      expect(fs.statSync(escalationGrantsPath(agentRoot)).mode & 0o777).toBe(0o644)
+    } finally {
+      geteuid.mockRestore()
+      fsHooks.chown = null
+    }
+  })
+
+  it("does not touch ownership when not root", () => {
+    const agentRoot = root()
+    const calls: unknown[][] = []
+    fsHooks.chown = (...args) => { calls.push(args) }
+    try {
+      setEscalationGrant(agentRoot, "claude", { grant: true, source: "test" })
+      expect(calls).toEqual([])
+    } finally { fsHooks.chown = null }
   })
 })

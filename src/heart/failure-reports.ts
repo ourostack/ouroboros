@@ -3,8 +3,10 @@ import * as fs from "node:fs"
 import * as path from "node:path"
 import * as semver from "semver"
 import type { FriendStore } from "@ouro.bot/friends"
-import { escalationHolders } from "../a2a/escalation-grants"
+import { ready } from "@ouro.bot/friends/a2a-client"
+import { escalationHolders, holdsEscalation } from "../a2a/escalation-grants"
 import { FileOutboxStore } from "../a2a/outbox-store"
+import { friendDid, verifyResolution } from "../a2a/resolution-proof"
 import { isReplayIdentity, isReplayWindowOpen } from "../a2a/replay-harness"
 import { emitNervesEvent } from "../nerves/runtime"
 import { withFileLock } from "./file-lock"
@@ -64,7 +66,7 @@ export interface FailureReportRecord {
   recipients: string[]
   outboxEntries: Record<string, string>
   status: "open" | "resolved" | "closed"
-  resolution?: { version: string; note: string; by: string; at: string }
+  resolution?: { version: string; note: string; by: string; at: string; resolvedAt?: string; signedNote?: string; proof?: unknown }
   closedAt?: string
   /** When a repeat of this failure last told the recipients, so a recurring failure speaks at most once a day. */
   lastRepeatNoticeAt?: string
@@ -228,7 +230,7 @@ export async function fileFailureReport(agentRoot: string, store: FriendStore, i
         kind: "failure_report",
         body: reportBody(record),
         meta: {
-          reportId: id, shortId: record.shortId, severity: record.severity, failedTool, fingerprint, conversation: { channel: origin.channel, key: origin.key },
+          reportId: id, shortId: record.shortId, severity: record.severity, failedTool, fingerprint, ariWords: record.ariWords, conversation: { channel: origin.channel, key: origin.key },
           origin: { friendId: origin.friendId, friendName: origin.friendName, trustLevel: origin.trustLevel, ownerOrigin: origin.ownerOrigin },
         },
       }, now).id
@@ -263,12 +265,12 @@ async function foldRepeat(agentRoot: string, id: string, repeat: { error: string
 }
 
 /** Records the fix a recipient says is live from `version`; the owner is told only once the running version reaches it. */
-export async function resolveFailureReport(agentRoot: string, input: { id: string; version: string; note: string; byFriendId: string }, now: number = Date.now()): Promise<ResolveReportResult> {
+export async function resolveFailureReport(agentRoot: string, input: { id: string; version: string; note: string; byFriendId: string; resolvedAt: string; proof: unknown }, now: number = Date.now()): Promise<ResolveReportResult> {
   if (!readFailureReport(agentRoot, input.id)) return { ok: false, reason: "unknown_report" }
   return withFileLock(lockDir(agentRoot), `report-${input.id}`, () => resolveLocked(agentRoot, input, now))
 }
 
-function resolveLocked(agentRoot: string, input: { id: string; version: string; note: string; byFriendId: string }, now: number): ResolveReportResult {
+function resolveLocked(agentRoot: string, input: { id: string; version: string; note: string; byFriendId: string; resolvedAt: string; proof: unknown }, now: number): ResolveReportResult {
   const record = readFailureReport(agentRoot, input.id)
   /* v8 ignore next -- only a report pruned between the check above and taking its lock can be missing here @preserve */
   if (!record) return { ok: false, reason: "unknown_report" }
@@ -278,7 +280,7 @@ function resolveLocked(agentRoot: string, input: { id: string; version: string; 
   if (!version) return { ok: false, reason: "bad_version" }
   const note = cap(input.note)
   if (!note) return { ok: false, reason: "bad_note" }
-  writeReport(agentRoot, { ...record, status: "resolved", resolution: { version, note, by: input.byFriendId, at: new Date(now).toISOString() } })
+  writeReport(agentRoot, { ...record, status: "resolved", resolution: { version, note, by: input.byFriendId, at: new Date(now).toISOString(), resolvedAt: input.resolvedAt, signedNote: input.note, proof: input.proof } })
   emitNervesEvent({ component: "senses", event: "senses.failure_report_resolved", message: "an escalation peer resolved a failure report", meta: { reportId: record.id, version } })
   return { ok: true, id: record.id, status: "resolved" }
 }
@@ -293,8 +295,27 @@ export function fixLiveNoticeText(record: FailureReportRecord): string {
 
 export interface ConfirmDeps {
   runningVersion: string
+  /** Looks up friend records to check each resolution against its holder; the server supplies its friend store. */
+  friends?: Pick<FriendStore, "get">
   /** Sends the owner notice; throws when it cannot, which leaves the report resolved so the next pass retries. */
   notifyOwner(input: { noticeId: string; text: string }): Promise<void>
+}
+
+/** The owner hears "fixed" only if the escalation holder signed it and still holds escalation; a file the Butler's own uid can write proves nothing. */
+async function resolutionIsSigned(agentRoot: string, deps: ConfirmDeps, record: FailureReportRecord): Promise<boolean> {
+  const resolution = record.resolution!
+  const friend = deps.friends ? await deps.friends.get(resolution.by) : null
+  if (!friend || !holdsEscalation(agentRoot, friend)) {
+    emitNervesEvent({ level: "warn", component: "senses", event: "senses.failure_report_resolution_unverified", message: "skipped a resolved report whose holder no longer holds escalation", meta: { reportId: record.id, by: resolution.by } })
+    return false
+  }
+  const checked = verifyResolution({
+    sodium: await ready(),
+    claim: { reportId: record.id, version: resolution.version, note: resolution.signedNote ?? resolution.note, resolvedAt: resolution.resolvedAt ?? "" },
+    proof: resolution.proof,
+    holderDid: friendDid(friend),
+  })
+  return checked.ok
 }
 
 /** Tells the owner about each resolved report whose fix has reached the running version, then closes it. */
@@ -309,6 +330,7 @@ export async function confirmResolvedReports(agentRoot: string, deps: ConfirmDep
         const record = readFailureReport(agentRoot, listed.id)
         if (!record || record.status !== "resolved" || !record.resolution) return "skipped" as const
         if (!semver.gte(deps.runningVersion, record.resolution.version)) return "waiting" as const
+        if (!(await resolutionIsSigned(agentRoot, deps, record))) return "skipped" as const
         if (!record.replay) await deps.notifyOwner({ noticeId: `failure-fixed:${record.id}`, text: fixLiveNoticeText(record) })
         writeReport(agentRoot, { ...record, status: "closed", closedAt: new Date(now).toISOString() })
         emitNervesEvent({ component: "senses", event: "senses.failure_report_closed", message: "closed a failure report after its fix went live", meta: { reportId: record.id, version: record.resolution.version } })

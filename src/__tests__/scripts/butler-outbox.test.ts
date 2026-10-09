@@ -30,7 +30,7 @@ describe("butler-outbox parseArgs", () => {
   it("parses list with every flag", async () => {
     const { parseArgs } = await lib()
     expect(parseArgs(["list", "--since", "c1", "--json", "--fail-if-empty", "--card-url", "http://x", "--identity-file", "/i.json", "--ouro", "/bin/ouro"])).toEqual({
-      command: "list", since: "c1", json: true, failIfEmpty: true, cardUrl: "http://x", identityFile: "/i.json", ouro: "/bin/ouro", ids: [],
+      command: "list", since: "c1", json: true, failIfEmpty: true, cardUrl: "http://x", identityFile: "/i.json", ouro: "/bin/ouro", host: undefined, bundle: undefined, ids: [],
     })
   })
 
@@ -57,11 +57,11 @@ describe("butler-outbox config and ids", () => {
   it("resolves flags over env over defaults", async () => {
     const { resolveConfig, parseArgs } = await lib()
     const none = parseArgs(["list"])
-    expect(resolveConfig(none, {}, "/h")).toEqual({ cardUrl: CARD, identityFile: "/h/.ouro-cli/a2a/client-identity.json", ouro: "/h/.ouro-cli/bin/ouro" })
+    expect(resolveConfig(none, {}, "/h")).toEqual({ host: "sanctuary", bundle: "/mnt/user/appdata/ouro-butler/agent/sanctuary.ouro", cardUrl: CARD, identityFile: "/h/.ouro-cli/a2a/client-identity.json", ouro: "/h/.ouro-cli/bin/ouro" })
     const env = { BUTLER_OUTBOX_CARD_URL: "e-card", BUTLER_OUTBOX_IDENTITY_FILE: "e-id", BUTLER_OUTBOX_OURO: "e-ouro" }
-    expect(resolveConfig(none, env, "/h")).toEqual({ cardUrl: "e-card", identityFile: "e-id", ouro: "e-ouro" })
+    expect(resolveConfig(none, env, "/h")).toMatchObject({ cardUrl: "e-card", identityFile: "e-id", ouro: "e-ouro" })
     const flags = parseArgs(["list", "--card-url", "f-card", "--identity-file", "f-id", "--ouro", "f-ouro"])
-    expect(resolveConfig(flags, env, "/h")).toEqual({ cardUrl: "f-card", identityFile: "f-id", ouro: "f-ouro" })
+    expect(resolveConfig(flags, env, "/h")).toMatchObject({ cardUrl: "f-card", identityFile: "f-id", ouro: "f-ouro" })
   })
 
   it("validates ids", async () => {
@@ -246,5 +246,120 @@ describe("butler-outbox entry module", () => {
   it("exports main wired to injected io", async () => {
     const { main } = await cli()
     expect(typeof main).toBe("function")
+  })
+})
+
+describe("butler-outbox verify-origin", () => {
+  const ID = "1760000000000-abc123"
+  const FRIEND = "a62b7678-a7b0-4948-8ea7-388def767bd1"
+  const owned = (extra: Record<string, unknown> = {}) => entry(ID, { meta: { origin: { friendId: FRIEND, ownerOrigin: true }, conversation: { channel: "telegram", key: "telegram:12:34" }, ariWords: "turn the porch light on", ...extra } })
+  const listOf = (e: unknown, more = false) => JSON.stringify({ entries: [e], nextCursor: ID, more })
+  const session = (text: unknown, role = "user") => JSON.stringify({ events: [{ role: "assistant", content: "ok" }, { role, content: text }] })
+
+  function verifyHarness(list: string | Error | Array<string | Error>, sshOut: string | Error, env: Record<string, string> = {}) {
+    const h = harness(Array.isArray(list) ? list : [list], env)
+    const sshCalls: Array<{ host: string; command: string }> = []
+    const deps = { ...h.deps, ssh: async (host: string, command: string) => { sshCalls.push({ host, command }); if (sshOut instanceof Error) throw sshOut; return sshOut } }
+    return { ...h, deps, sshCalls }
+  }
+
+  it("verifies only when the claimed words are in that session's user messages, read-only over ssh", async () => {
+    const { run } = await lib()
+    const h = verifyHarness(listOf(owned()), session("hey, please turn the porch light on tonight"))
+    expect(await run(["verify-origin", ID, "--json"], h.io, h.deps)).toBe(0)
+    expect(JSON.parse(h.out.join(""))).toMatchObject({ id: ID, ownerClaimed: true, ownerVerified: true })
+    expect(h.sshCalls).toEqual([{ host: "sanctuary", command: `cat -- '/mnt/user/appdata/ouro-butler/agent/sanctuary.ouro/state/sessions/${FRIEND}/telegram/telegram_12_34.json'` }])
+    expect(h.calls.every((c) => !c.args.includes("ack"))).toBe(true)
+  })
+
+  it("accepts text parts, the older message list, and a host and bundle from flags or env", async () => {
+    const { run } = await lib()
+    const parts = verifyHarness(listOf(owned()), session([{ type: "text", text: "turn the porch light on" }, { type: "image_url" }]))
+    expect(await run(["verify-origin", ID, "--host", "box", "--bundle", "/srv/b"], parts.io, parts.deps)).toBe(0)
+    expect(parts.sshCalls[0]).toMatchObject({ host: "box" })
+    expect(parts.sshCalls[0]!.command).toContain("/srv/b/state/sessions/")
+    expect(parts.out.join("")).toContain("owner verified: yes")
+    const legacy = verifyHarness(listOf(owned()), JSON.stringify({ messages: [{ role: "user", content: "turn the porch light on" }] }), { BUTLER_OUTBOX_SSH_HOST: "env-host", BUTLER_OUTBOX_BUNDLE: "/srv/e" })
+    expect(await run(["verify-origin", ID], legacy.io, legacy.deps)).toBe(0)
+    expect(legacy.sshCalls[0]).toMatchObject({ host: "env-host" })
+  })
+
+  it("does not verify words that only the assistant said, or that are absent, or a session that is not JSON", async () => {
+    const { run } = await lib()
+    for (const sshOut of [session("turn the porch light on", "assistant"), session("something else"), "not json", JSON.stringify({ events: "nope" })]) {
+      const h = verifyHarness(listOf(owned()), sshOut)
+      expect(await run(["verify-origin", ID], h.io, h.deps)).toBe(5)
+      expect(h.out.join("")).toContain("owner verified: NO")
+    }
+  })
+
+  it("does not verify when ssh fails, and never calls ssh for a report that claims no owner or carries unsafe coordinates", async () => {
+    const { run } = await lib()
+    const down = verifyHarness(listOf(owned()), new Error("connection refused"))
+    expect(await run(["verify-origin", ID], down.io, down.deps)).toBe(5)
+    expect(down.out.join("")).toContain("connection refused")
+    const downPlain = verifyHarness(listOf(owned()), "x")
+    downPlain.deps.ssh = async () => { throw "plain failure" }
+    expect(await run(["verify-origin", ID], downPlain.io, downPlain.deps)).toBe(5)
+    expect(downPlain.out.join("")).toContain("plain failure")
+    const unsafe: Array<[string, Record<string, unknown>]> = [
+      ["not owner", { origin: { friendId: FRIEND, ownerOrigin: false } }],
+      ["no origin", { origin: undefined }],
+      ["no words", { ariWords: "  " }],
+      ["words missing", { ariWords: undefined }],
+      ["path traversal", { conversation: { channel: "telegram", key: "../../etc/passwd" } }],
+      ["shell characters", { conversation: { channel: "telegram;rm -rf /", key: "k" } }],
+      ["quote in friend", { origin: { friendId: "x'; id #", ownerOrigin: true } }],
+      ["no conversation", { conversation: undefined }],
+    ]
+    for (const [label, meta] of unsafe) {
+      const h = verifyHarness(listOf(owned(meta)), session("turn the porch light on"))
+      expect(await run(["verify-origin", ID, "--json"], h.io, h.deps), label).toBe(5)
+      expect(h.sshCalls, label).toEqual([])
+    }
+  })
+
+  it("refuses a report that is not a failure report, a missing entry, an unsafe bundle or host, and bad arguments", async () => {
+    const { run } = await lib()
+    const notReport = verifyHarness(listOf(entry(ID, { kind: "await_outcome" })), session("x"))
+    expect(await run(["verify-origin", ID], notReport.io, notReport.deps)).toBe(5)
+    const missing = verifyHarness(JSON.stringify({ entries: [], nextCursor: null, more: false }), session("x"))
+    expect(await run(["verify-origin", ID], missing.io, missing.deps)).toBe(1)
+    expect(missing.err.join("")).toContain("no outbox entry")
+    const badBundle = verifyHarness(listOf(owned()), session("turn the porch light on"))
+    expect(await run(["verify-origin", ID, "--bundle", "/srv/../etc"], badBundle.io, badBundle.deps)).toBe(5)
+    expect(badBundle.sshCalls).toEqual([])
+    const badHost = verifyHarness(listOf(owned()), session("turn the porch light on"))
+    expect(await run(["verify-origin", ID, "--host", "-oProxyCommand=x"], badHost.io, badHost.deps)).toBe(1)
+    expect(badHost.err.join("")).toContain("unsafe ssh host")
+    const bad = verifyHarness("x", "x")
+    for (const argv of [["verify-origin"], ["verify-origin", ID, "1760000000001-abc123"], ["verify-origin", "nope"], ["verify-origin", ID, "--since", "1"], ["list", "--host", "h"], ["ack", ID, "--bundle", "/b"]]) {
+      expect(await run(argv, bad.io, bad.deps), argv.join(" ")).toBe(2)
+    }
+  })
+
+  it("pages through the outbox to find the entry and stops when it runs out", async () => {
+    const { run } = await lib()
+    const other = entry("1760000000009-ffffff")
+    const paged = verifyHarness([listOf(other, true), listOf(owned())], session("turn the porch light on"))
+    expect(await run(["verify-origin", ID], paged.io, paged.deps)).toBe(0)
+    expect(paged.calls[1]!.args).toContain("--since")
+    const never = verifyHarness(() => listOf(other, true) as never, session("x"))
+    const loops = harness(() => listOf(other, true))
+    expect(await run(["verify-origin", ID], loops.io, { ...loops.deps, ssh: never.deps.ssh })).toBe(1)
+    expect(loops.calls).toHaveLength(20)
+    const badList = verifyHarness(JSON.stringify({ nope: true }), "x")
+    expect(await run(["verify-origin", ID], badList.io, badList.deps)).toBe(1)
+    const moreNoCursor = verifyHarness(JSON.stringify({ entries: [other], nextCursor: null, more: true }), "x")
+    expect(await run(["verify-origin", ID], moreNoCursor.io, moreNoCursor.deps)).toBe(1)
+  })
+
+  it("prints a readable verdict by default and explains itself in the usage text", async () => {
+    const { run, USAGE } = await lib()
+    const h = verifyHarness(listOf(owned()), session("something else"))
+    await run(["verify-origin", ID], h.io, h.deps)
+    expect(h.out.join("")).toContain("owner claimed: yes")
+    expect(USAGE).toContain("verify-origin")
+    expect(USAGE).toContain("butler-outbox-WORKER.md")
   })
 })

@@ -1,5 +1,7 @@
 import type { FriendRecord } from "@ouro.bot/friends"
+import { ready } from "@ouro.bot/friends/a2a-client"
 import { holdsEscalation } from "./escalation-grants"
+import { friendDid, verifyResolution } from "./resolution-proof"
 import { FileOutboxStore, OUTBOX_LIST_MAX_LIMIT } from "./outbox-store"
 import { resolveFailureReport } from "../heart/failure-reports"
 import { emitNervesEvent } from "../nerves/runtime"
@@ -13,7 +15,7 @@ import { emitNervesEvent } from "../nerves/runtime"
  *
  *   outbox/list     { since?: string, limit?: number }  -> { entries, nextCursor, more }       any active friend, own outbox
  *   outbox/ack      { ids: string[] }                    -> { acked, unknown }                  any active friend, own outbox
- *   report/resolve  { id, version, note }                -> { id, status: "resolved" }          escalation holders, own reports
+ *   report/resolve  { id, version, note, resolvedAt, proof }             -> { id, status: "resolved" }          escalation holders, own reports
  */
 export const OUTBOX_METHODS = ["outbox/list", "outbox/ack", "report/resolve"] as const
 export type OutboxMethod = typeof OUTBOX_METHODS[number]
@@ -81,8 +83,10 @@ export async function handleOutboxCommand(input: {
     emitNervesEvent({ level: "warn", component: "senses", event: "senses.a2a_report_resolve_refused", message: "refused report/resolve from a peer without the escalation grant", meta: { friendId: friend.id } })
     return refuse("report/resolve needs the escalation grant")
   }
-  const { id, version, note } = params
-  if (typeof id !== "string" || typeof version !== "string" || typeof note !== "string") return invalid("id, version and note must be strings")
-  const resolved = await resolveFailureReport(agentRoot, { id, version, note, byFriendId: friend.id }, input.now)
+  const { id, version, note, resolvedAt, proof } = params
+  if (typeof id !== "string" || typeof version !== "string" || typeof note !== "string" || typeof resolvedAt !== "string") return invalid("id, version, note and resolvedAt must be strings")
+  const checked = verifyResolution({ sodium: await ready(), claim: { reportId: id, version, note, resolvedAt }, proof, holderDid: friendDid(friend) })
+  if (!checked.ok) return refuse(`report not resolved: the resolution is not signed by your key (${checked.reason})`)
+  const resolved = await resolveFailureReport(agentRoot, { id, version, note, byFriendId: friend.id, resolvedAt, proof }, input.now)
   return resolved.ok ? { ok: true, result: { id: resolved.id, status: resolved.status } } : refuse(`report not resolved: ${resolved.reason}`)
 }

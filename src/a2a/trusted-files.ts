@@ -9,13 +9,19 @@ import { emitNervesEvent } from "../nerves/runtime"
 export const TRUSTED_UID = 0
 let uidOverride: number | undefined
 
-/** Tests run as an ordinary user, so they declare that user trusted; production never calls this. */
+/** Only a test runner sets VITEST; the running Butler (and its prompt-injected shell) cannot reach this process's environment. */
+const underTestRunner = (): boolean => process.env.VITEST !== undefined
+
+/** Tests run as an ordinary user, so they declare that user trusted. Refused outside a test runner, and ignored there too. */
 export function overrideTrustedUidForTests(uid: number | undefined): void {
+  if (!underTestRunner()) throw new Error("overrideTrustedUidForTests is for tests only")
   uidOverride = uid
 }
 
+const effectiveTrustedUid = (): number => (underTestRunner() ? uidOverride : undefined) ?? TRUSTED_UID
+
 /** A real directory (no symlink), owned by the trusted uid, writable by neither group nor other. */
-export function isTrustedDirectory(target: string, trustedUid: number = uidOverride ?? TRUSTED_UID): boolean {
+export function isTrustedDirectory(target: string, trustedUid: number = effectiveTrustedUid()): boolean {
   let stat: fs.Stats
   try {
     stat = fs.lstatSync(target)
@@ -36,7 +42,7 @@ function rejected(target: string, reason: string): void {
  * descriptor itself is checked (regular file, trusted owner, not group- or other-writable) and read, so a rename loop
  * cannot swap a different file in between the check and the read. Any error is `undefined`.
  */
-export function readTrustedJson(file: string, trustedUid: number = uidOverride ?? TRUSTED_UID): unknown {
+export function readTrustedJson(file: string, trustedUid: number = effectiveTrustedUid()): unknown {
   let fd: number | undefined
   try {
     fd = fs.openSync(file, fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW)

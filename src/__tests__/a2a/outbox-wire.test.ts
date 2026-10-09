@@ -6,6 +6,7 @@ import { setEscalationGrant } from "../../a2a/escalation-grants"
 import { FileOutboxStore } from "../../a2a/outbox-store"
 import { encodeOutboxCommand, handleOutboxCommand, isOutboxMethod, parseOutboxCommand } from "../../a2a/outbox-wire"
 import { fileFailureReport, readFailureReport } from "../../heart/failure-reports"
+import { agentMetaFor, makeTestIdentity, signedResolution } from "../test-helpers/resolution-signing"
 
 let tmp: TmpBundleHandle | null = null
 afterEach(() => { tmp?.cleanup(); tmp = null })
@@ -66,19 +67,30 @@ describe("outbox command handling", () => {
     expect(await call("outbox/ack", { ids: Array.from({ length: 101 }, (_, i) => String(i)) })).toMatchObject({ ok: false, code: -32602 })
   })
 
-  it("lets only an escalation holder resolve its own report", async () => {
+  it("lets only an escalation holder resolve its own report, and only with its own signature", async () => {
     const { agentRoot } = setup()
     const store = new FileFriendStore(path.join(agentRoot, "friends"))
-    await store.put("claude", friend("claude"))
+    const key = await makeTestIdentity()
+    const holder = friend("claude", { kind: "agent", agentMeta: agentMetaFor(key) })
+    await store.put("claude", holder)
     await store.put("ari", friend("ari"))
     setEscalationGrant(agentRoot, "claude", { grant: true, source: "test" })
     const filed = await fileFailureReport(agentRoot, store, { ariWords: "a", tried: "b", error: "c", severity: "low", origin: { friendId: "ari", channel: "telegram", key: "k" } })
     if (!filed.ok) throw new Error("setup failed")
-    const params = { id: filed.id, version: "0.1.0-alpha.9", note: "Fixed." }
-    expect(await handleOutboxCommand({ agentRoot, friend: friend("ari"), method: "report/resolve", params })).toMatchObject({ ok: false, code: -32003, message: "report/resolve needs the escalation grant" })
-    expect(await handleOutboxCommand({ agentRoot, friend: friend("claude"), method: "report/resolve", params: { id: 1, version: "x", note: "n" } })).toMatchObject({ ok: false, code: -32602 })
-    expect(await handleOutboxCommand({ agentRoot, friend: friend("claude"), method: "report/resolve", params: { ...params, version: "soon" } })).toMatchObject({ ok: false, code: -32003, message: "report not resolved: bad_version" })
-    expect(await handleOutboxCommand({ agentRoot, friend: friend("claude"), method: "report/resolve", params })).toEqual({ ok: true, result: { id: filed.id, status: "resolved" } })
-    expect(readFailureReport(agentRoot, filed.id)).toMatchObject({ status: "resolved" })
+    const claim = { reportId: filed.id, version: "0.1.0-alpha.9", note: "Fixed." }
+    const params = { id: filed.id, version: claim.version, note: claim.note, ...await signedResolution(key, claim) }
+    const call = (who: FriendRecord, p: Record<string, unknown>) => handleOutboxCommand({ agentRoot, friend: who, method: "report/resolve", params: p })
+    expect(await call(friend("ari"), params)).toMatchObject({ ok: false, code: -32003, message: "report/resolve needs the escalation grant" })
+    expect(await call(holder, { id: 1, version: "x", note: "n" })).toMatchObject({ ok: false, code: -32602 })
+    expect(await call(holder, { id: filed.id, version: claim.version, note: claim.note })).toMatchObject({ ok: false, code: -32602 })
+    expect(await call(holder, { ...params, proof: undefined })).toMatchObject({ ok: false, code: -32003, message: expect.stringContaining("no_proof") })
+    const attacker = await makeTestIdentity()
+    expect(await call(holder, { ...params, ...await signedResolution(attacker, claim) })).toMatchObject({ ok: false, code: -32003, message: expect.stringContaining("wrong_signer") })
+    expect(await call(holder, { ...params, note: "Changed after signing." })).toMatchObject({ ok: false, code: -32003, message: expect.stringContaining("bad_signature") })
+    expect(await call(friend("claude", { kind: "agent" }), params)).toMatchObject({ ok: false, code: -32003, message: expect.stringContaining("no_holder_did") })
+    const bad = { reportId: filed.id, version: "soon", note: "n" }
+    expect(await call(holder, { id: filed.id, version: "soon", note: "n", ...await signedResolution(key, bad) })).toMatchObject({ ok: false, code: -32003, message: "report not resolved: bad_version" })
+    expect(await call(holder, params)).toEqual({ ok: true, result: { id: filed.id, status: "resolved" } })
+    expect(readFailureReport(agentRoot, filed.id)).toMatchObject({ status: "resolved", resolution: { proof: expect.objectContaining({ signerDid: key.did }) } })
   })
 })

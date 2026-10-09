@@ -1,6 +1,7 @@
 import { randomBytes } from "node:crypto"
 import * as fs from "node:fs"
 import * as path from "node:path"
+import { withFileLock } from "../heart/file-lock"
 import { emitNervesEvent } from "../nerves/runtime"
 
 /**
@@ -108,13 +109,16 @@ export class FileOutboxStore {
   }
 
   /** Like `append`, but a second call with the same `dedupeKey` while the first entry is still unacked returns that entry, so a retried delivery cannot double-post. */
-  appendOnce(friendId: string, dedupeKey: string, input: { kind: string; body: string; meta?: Record<string, unknown> }, now: number = Date.now()): OutboxEntry {
+  async appendOnce(friendId: string, dedupeKey: string, input: { kind: string; body: string; meta?: Record<string, unknown> }, now: number = Date.now()): Promise<OutboxEntry> {
     const dir = entryDir(this.agentRoot, friendId)
-    for (const id of sortedIds(dir)) {
-      const entry = readEntry(path.join(dir, `${id}.json`))
-      if (entry?.meta?.dedupeKey === dedupeKey) return entry
-    }
-    return this.append(friendId, { ...input, meta: { ...input.meta, dedupeKey } }, now)
+    // The check and the append happen under one cross-process lock, so two senses retrying the same delivery cannot both miss it.
+    return withFileLock(path.join(this.agentRoot, "state", "outbox", ".locks"), `once-${friendId}`, () => {
+      for (const id of sortedIds(dir)) {
+        const entry = readEntry(path.join(dir, `${id}.json`))
+        if (entry?.meta?.dedupeKey === dedupeKey) return entry
+      }
+      return this.append(friendId, { ...input, meta: { ...input.meta, dedupeKey } }, now)
+    })
   }
 
   /** Entries after `since` (exclusive), oldest first, within the count and size limits. */

@@ -14,6 +14,23 @@ const DEFAULT_STALE_MS = 120_000
 const DEFAULT_WAIT_MS = 45_000
 const DEFAULT_POLL_MS = 25
 
+/**
+ * Breaks a stale lock by renaming it to a name only this caller knows, then removing that. Two waiters both seeing the
+ * same stale lock cannot both break it: only one rename succeeds, and the loser never touches a lock a third process
+ * has since taken under the original name.
+ */
+function breakStaleLock(lock: string): boolean {
+  const broken = `${lock}.broken-${process.pid}-${Math.random().toString(36).slice(2)}`
+  try {
+    fs.renameSync(lock, broken)
+  } catch {
+    /* v8 ignore next -- the loser of a break race finds the lock already renamed away, and simply retries @preserve */
+    return false
+  }
+  removeLock(broken)
+  return true
+}
+
 /** The lock directory is always empty, so removing it never recurses; another process may already have broken it as stale. */
 function removeLock(lock: string): void {
   try {
@@ -45,8 +62,8 @@ export async function withFileLock<T>(dir: string, name: string, fn: () => Promi
       /* v8 ignore next -- a holder releasing between the failed mkdir and this stat reads as an old lock, which is then simply retried @preserve */
       const heldSince = fs.statSync(lock, { throwIfNoEntry: false })?.mtimeMs ?? 0
       if (Date.now() - heldSince > staleMs) {
-        emitNervesEvent({ level: "warn", component: "heart", event: "heart.file_lock_broken", message: "broke a lock whose holder never released it", meta: { name, heldMs: Date.now() - heldSince } })
-        removeLock(lock)
+        /* v8 ignore next -- only the waiter whose rename won reports the break @preserve */
+        if (breakStaleLock(lock)) emitNervesEvent({ level: "warn", component: "heart", event: "heart.file_lock_broken", message: "broke a lock whose holder never released it", meta: { name, heldMs: Date.now() - heldSince } })
         continue
       }
       if (Date.now() >= deadline) throw new Error(`timed out waiting for the ${name} lock`)

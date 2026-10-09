@@ -7147,7 +7147,13 @@ async function executeA2AClientCommand(command: A2AClientCliCommand, deps: OuroC
     const { callOutboxMethod } = await import("../../a2a/outbox-client")
     const call = command.action === "list" ? { method: "outbox/list" as const, params: { ...(command.since ? { since: command.since } : {}) } }
       : command.action === "ack" ? { method: "outbox/ack" as const, params: { ids: command.ids } }
-        : { method: "report/resolve" as const, params: { id: command.reportId, version: command.version, note: command.note } }
+        : await (async () => {
+          // The resolution is signed with this machine's key: the Butler tells its owner "fixed" only for a holder's signature.
+          const { signResolution } = await import("../../a2a/resolution-proof")
+          const { ready } = await import("@ouro.bot/friends/a2a-client")
+          const claim = { reportId: command.reportId!, version: command.version!, note: command.note!, resolvedAt: new Date().toISOString() }
+          return { method: "report/resolve" as const, params: { id: claim.reportId, version: claim.version, note: claim.note, resolvedAt: claim.resolvedAt, proof: signResolution({ sodium: await ready(), identity, claim }) } }
+        })()
     const result = await callOutboxMethod({
       cardUrl: command.to, ...call, identity,
       /* v8 ignore next -- production CLI uses global fetch; tests inject fetch for a hermetic peer @preserve */
