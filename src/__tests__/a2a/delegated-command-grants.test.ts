@@ -121,10 +121,18 @@ describe("checkDelegatedCommandGrant", () => {
     afterEach(() => { vi.restoreAllMocks() })
 
     it("honours a replay identity's grant only while the root-owned window is open", () => {
-      writeFile({ peer: entry() })
+      writeFile({ peer: entry({ expiresAt: new Date(NOW + 600_000).toISOString() }) })
       replayState({ window: { friends: { peer: { expiresAt: new Date(NOW + 600_000).toISOString() } } } })
       expect(check()).toEqual({ ok: true })
       expect(check(friend(), DID, NOW + 700_000)).toEqual({ ok: false, reason: "grant_expired" })
+    })
+
+    it("refuses a replay grant with no trusted expiry, whether the source or the registry marks it", () => {
+      writeFile({ peer: entry({ source: "Replay gate provisioning" }) })
+      expect(check()).toEqual({ ok: false, reason: "grant_expired" })
+      writeFile({ peer: entry() })
+      replayState({ window: { friends: { peer: { expiresAt: new Date(NOW + 600_000).toISOString() } } } })
+      expect(check()).toEqual({ ok: false, reason: "grant_expired" })
     })
 
     it("does not honour it with no window at all, and leaves ordinary friends alone", () => {

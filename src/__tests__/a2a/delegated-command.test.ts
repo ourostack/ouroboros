@@ -290,7 +290,8 @@ describe("admitDelegatedCommand", () => {
   describe("replay window", () => {
     async function replaySetup(window: unknown) {
       tmp = createTmpBundle({ agentName: `delegated-replay-${Date.now()}` })
-      trust(tmp.agentRoot, "replay-principal", "did:key:z6MkReplay")
+      // The gate bounds a replay grant by the run window; the Butler refuses a replay grant with no expiry.
+      setDelegatedCommandGrant(tmp.agentRoot, "replay-principal", { grant: true, did: "did:key:z6MkReplay", source: "replay gate provisioning (host root)", expiresAt: new Date(Date.now() + 3_600_000).toISOString() })
       fs.writeFileSync(path.join(tmp.agentRoot, "tool-profiles.json"), JSON.stringify(PROFILES))
       const store = new FileFriendStore(`${tmp.agentRoot}/friends`)
       await store.put("owner-ari", owner())

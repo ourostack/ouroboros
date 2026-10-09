@@ -1,5 +1,7 @@
 import type { FriendRecord, FriendStore } from "@ouro.bot/friends"
 import { emitNervesEvent } from "../nerves/runtime"
+import { isReplayGrantSource } from "./delegated-command-grants"
+import { isReplayIdentity } from "./replay-harness"
 import { operatorTrustFile, readGrantFile, writeTrustedFile, type GrantFileView } from "./operator-trust"
 
 /**
@@ -16,6 +18,8 @@ export interface EscalationGrant {
   source: string
   /** The holder's DID, pinned here by the operator at grant time. The friend record is writable by the Butler's own uid, so nothing else may name the key a resolution is checked against. */
   did: string
+  /** Set on grants that must end by themselves (the replay gate's peer); an expiry that is not a finite time counts as expired. */
+  expiresAt?: string
 }
 
 export const ESCALATION_GRANTS_FILE = "escalation-grants.json"
@@ -27,7 +31,9 @@ export function escalationGrantsPath(agentRoot: string): string {
 function validGrant(value: unknown): value is EscalationGrant {
   if (!value || typeof value !== "object" || Array.isArray(value)) return false
   const grant = value as Record<string, unknown>
-  return Object.keys(grant).sort().join(",") === "did,grantedAt,scope,source"
+  const keys = Object.keys(grant).sort().join(",")
+  return (keys === "did,grantedAt,scope,source" || keys === "did,expiresAt,grantedAt,scope,source")
+    && (grant.expiresAt === undefined || typeof grant.expiresAt === "string")
     && typeof grant.did === "string" && grant.did.startsWith("did:") && grant.did.length <= 512
     && grant.scope === "escalation"
     && typeof grant.grantedAt === "string" && !Number.isNaN(Date.parse(grant.grantedAt))
@@ -45,12 +51,12 @@ export function readEscalationGrants(agentRoot: string): Record<string, Escalati
 }
 
 /** Writes or removes one grant. The previous file is kept beside it as a timestamped backup before the change. */
-export function setEscalationGrant(agentRoot: string, friendId: string, change: { grant: true; source: string; did: string } | { grant: false }, now: Date = new Date()): { changed: boolean; backup: string | null } {
+export function setEscalationGrant(agentRoot: string, friendId: string, change: { grant: true; source: string; did: string; expiresAt?: string } | { grant: false }, now: Date = new Date()): { changed: boolean; backup: string | null } {
   const current = readEscalationGrants(agentRoot)
   const had = current[friendId]
-  if (change.grant ? had?.did === change.did : had === undefined) return { changed: false, backup: null }
+  if (change.grant ? had?.did === change.did && had.expiresAt === change.expiresAt : had === undefined) return { changed: false, backup: null }
   const next = { ...current }
-  if (change.grant) next[friendId] = { scope: "escalation", grantedAt: now.toISOString(), source: change.source, did: change.did }
+  if (change.grant) next[friendId] = { scope: "escalation", grantedAt: now.toISOString(), source: change.source, did: change.did, ...(change.expiresAt ? { expiresAt: change.expiresAt } : {}) }
   else delete next[friendId]
   const { backup } = writeTrustedFile(agentRoot, ESCALATION_GRANTS_FILE, `${JSON.stringify({ schemaVersion: 1, grants: next }, null, 2)}\n`, now)
   emitNervesEvent({
@@ -62,19 +68,28 @@ export function setEscalationGrant(agentRoot: string, friendId: string, change: 
   return { changed: true, backup }
 }
 
-/** The DID the operator pinned for this holder, or null when it holds no (complete) grant. */
-export function pinnedHolderDid(agentRoot: string, friendId: string): string | null {
-  return readEscalationGrants(agentRoot)[friendId]?.did ?? null
+/** A grant is in force when its trusted expiry has not passed; a replay-gate grant or listed replay identity with no expiry is never in force. */
+function inForce(agentRoot: string, friendId: string, grant: EscalationGrant | undefined, now: number): grant is EscalationGrant {
+  if (!grant) return false
+  if (grant.expiresAt === undefined) return !(isReplayGrantSource(grant.source) || isReplayIdentity(agentRoot, friendId))
+  const expiresAt = Date.parse(grant.expiresAt)
+  return Number.isFinite(expiresAt) && expiresAt > now
+}
+
+/** The DID the operator pinned for this holder, or null when it holds no (complete, unexpired) grant. */
+export function pinnedHolderDid(agentRoot: string, friendId: string, now: number = Date.now()): string | null {
+  const grant = readEscalationGrants(agentRoot)[friendId]
+  return inForce(agentRoot, friendId, grant, now) ? grant.did : null
 }
 
 /** True only for an active family friend that the operator listed in the grants file, with a pinned DID. */
-export function holdsEscalation(agentRoot: string, friend: FriendRecord): boolean {
-  return readEscalationGrants(agentRoot)[friend.id] !== undefined
+export function holdsEscalation(agentRoot: string, friend: FriendRecord, now: number = Date.now()): boolean {
+  return inForce(agentRoot, friend.id, readEscalationGrants(agentRoot)[friend.id], now)
     && friend.trustLevel === "family"
     && friend.admissionState === "active"
 }
 
-export async function escalationHolders(agentRoot: string, store: FriendStore): Promise<FriendRecord[]> {
+export async function escalationHolders(agentRoot: string, store: FriendStore, now: number = Date.now()): Promise<FriendRecord[]> {
   const friends = await store.listAll?.() ?? []
-  return friends.filter((friend) => holdsEscalation(agentRoot, friend))
+  return friends.filter((friend) => holdsEscalation(agentRoot, friend, now))
 }

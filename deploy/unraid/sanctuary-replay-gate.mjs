@@ -921,9 +921,8 @@ export function makeHost({ bundle = DEFAULT_BUNDLE, trustDir = DEFAULT_TRUST_DIR
   if (!provisioned.escalation) throw new Error("the replay escalation peer is not provisioned; run `provision` again")
   const replayPeers = [provisioned.principal.friendId, provisioned.stranger.friendId, provisioned.escalation.friendId]
   if (!provisioned.principal.did || !provisioned.escalation.did) throw new Error("the replay peers have no recorded DID; run `provision` again")
-  // Idempotent: the trusted grants are what makes the replay principal and escalation peer count, and the upgrade never copies them.
-  grantDelegatedCommands(trustDir, provisioned.principal.friendId, provisioned.principal.did, new Date(), { rootUid, rootGid })
-  grantEscalation(trustDir, provisioned.escalation.friendId, provisioned.escalation.did, new Date(), { rootUid, rootGid })
+  // The replay grants exist only while a run is open: openWindow writes them with the window's expiry, closeWindow removes them.
+  const root = { rootUid, rootGid }
   const card = cardUrl ?? provisioned.cardUrl
   const readJson = (file) => JSON.parse(readFileSync(file, "utf8"))
   const readLines = (file) => (existsSync(file) ? readFileSync(file, "utf8").split("\n").filter(Boolean) : [])
@@ -946,11 +945,16 @@ export function makeHost({ bundle = DEFAULT_BUNDLE, trustDir = DEFAULT_TRUST_DIR
     },
     openWindow(minutes) {
       const expiresAt = new Date(Date.now() + minutes * 60_000).toISOString()
+      // The trusted grants expire with the window and are removed when it closes, so a replay peer holds no authority outside a run even if the Butler moves state/replay aside.
+      grantDelegatedCommands(trustDir, provisioned.principal.friendId, provisioned.principal.did, new Date(), { ...root, expiresAt })
+      grantEscalation(trustDir, provisioned.escalation.friendId, provisioned.escalation.did, new Date(), { ...root, expiresAt })
       writeAtomic(path.join(replayDir, "window.json"), JSON.stringify({ friends: Object.fromEntries(replayPeers.map((id) => [id, { expiresAt }])) }), 0o644)
       log(`replay window open until ${expiresAt}`)
     },
     closeWindow() {
       rmSync(path.join(replayDir, "window.json"), { force: true })
+      revokeDelegatedCommands(trustDir, provisioned.principal.friendId, root)
+      revokeEscalation(trustDir, provisioned.escalation.friendId, root)
       log("replay window closed")
     },
     /** Asks the Butler's own replay code, inside the container, whether it opens the window for both peers. */
@@ -968,7 +972,7 @@ export function makeHost({ bundle = DEFAULT_BUNDLE, trustDir = DEFAULT_TRUST_DIR
     },
     async send({ who, text, delegated, context }) {
       const peer = provisioned[who]
-      const args = ["exec", CONTAINER, "node", CLI_ENTRY, "a2a", "message", "--to", card, "--text", text, "--context", context, "--identity-file", peer.containerIdentityFile, "--json", ...(delegated ? ["--delegated"] : [])]
+      const args = ["exec", "-u", "0", CONTAINER, "node", CLI_ENTRY, "a2a", "message", "--to", card, "--text", text, "--context", context, "--identity-file", peer.containerIdentityFile, "--json", ...(delegated ? ["--delegated"] : [])]
       try {
         const out = exec("docker", args, { timeout: MESSAGE_TIMEOUT_MS })
         const parsed = JSON.parse(out.trim().split("\n").at(-1))
@@ -992,7 +996,7 @@ export function makeHost({ bundle = DEFAULT_BUNDLE, trustDir = DEFAULT_TRUST_DIR
     async outbox(who, args) {
       const peer = provisioned[who]
       try {
-        const out = exec("docker", ["exec", CONTAINER, "node", CLI_ENTRY, "a2a", "outbox", args[0], "--to", card, ...args.slice(1), "--identity-file", peer.containerIdentityFile, "--json"], { timeout: 60_000 })
+        const out = exec("docker", ["exec", "-u", "0", CONTAINER, "node", CLI_ENTRY, "a2a", "outbox", args[0], "--to", card, ...args.slice(1), "--identity-file", peer.containerIdentityFile, "--json"], { timeout: 60_000 })
         return { ok: true, value: JSON.parse(out.trim().split("\n").at(-1)) }
       } catch (error) {
         return { ok: false, error: `${error.stderr ?? ""} ${error.message ?? ""}`.replace(/\s+/g, " ").trim() }
@@ -1084,8 +1088,10 @@ function writeAtomic(file, text, mode) {
 
 // ---- provision ---------------------------------------------------------------------------------------------------
 
+/** Runs the Butler's CLI in its container. Only the replay identity commands run as root, because the replay client keys are root-owned 0600; friend records are never written as root. */
 function ctr(args) {
-  return sh("docker", ["exec", CONTAINER, "node", CLI_ENTRY, ...args]).trim()
+  const asRoot = args[0] === "a2a" && args[1] === "identity" ? ["-u", "0"] : []
+  return sh("docker", ["exec", ...asRoot, CONTAINER, "node", CLI_ENTRY, ...args]).trim()
 }
 
 function friendFile(bundle, friendId) {
@@ -1097,20 +1103,32 @@ function friendFile(bundle, friendId) {
  * to everyone else, because the Butler only honours a grant it could not have written itself. A grant already pinned to
  * the same DID is left alone (idempotent); a different DID replaces it.
  */
-function writeTrustGrant(trustDir, fileName, friendId, scope, did, now, source, { rootUid = 0, rootGid = 0 } = {}) {
+function writeTrustGrant(trustDir, fileName, friendId, scope, did, now, source, { rootUid = 0, rootGid = 0, expiresAt } = {}) {
   const file = path.join(trustDir, fileName)
   mkdirSync(trustDir, { recursive: true, mode: 0o755 }); chownSync(trustDir, rootUid, rootGid); chmodSync(trustDir, 0o755)
   const current = existsSync(file) ? JSON.parse(readFileSync(file, "utf8")) : { schemaVersion: 1, grants: {} }
-  if (current.grants?.[friendId]?.scope !== scope || current.grants[friendId].did !== did) {
-    current.grants = { ...current.grants, [friendId]: { scope, did, grantedAt: now.toISOString(), source } }
+  const had = current.grants?.[friendId]
+  if (had?.scope !== scope || had.did !== did || had.expiresAt !== expiresAt) {
+    current.grants = { ...current.grants, [friendId]: { scope, did, grantedAt: now.toISOString(), source, ...(expiresAt ? { expiresAt } : {}) } }
     writeAtomic(file, `${JSON.stringify(current, null, 2)}\n`, 0o644)
   }
   chownSync(file, rootUid, rootGid); chmodSync(file, 0o644)
 }
 
+/** Removes a friend's entry from one trust file (a no-op when it is absent), leaving the file root-owned. */
+function revokeTrustGrant(trustDir, fileName, friendId, { rootUid = 0, rootGid = 0 } = {}) {
+  const file = path.join(trustDir, fileName)
+  if (!existsSync(file)) return
+  const current = JSON.parse(readFileSync(file, "utf8"))
+  if (current.grants?.[friendId] === undefined) return
+  const { [friendId]: _removed, ...rest } = current.grants
+  writeAtomic(file, `${JSON.stringify({ ...current, grants: rest }, null, 2)}\n`, 0o644)
+  chownSync(file, rootUid, rootGid); chmodSync(file, 0o644)
+}
+
 const REPLAY_GRANT_SOURCE = "replay gate provisioning (host root)"
 
-/** Gives the replay principal the principal_commands grant in the trust directory, pinned to the DID it signs with. */
+/** Gives the replay principal the principal_commands grant in the trust directory, pinned to the DID it signs with. Replay grants always carry `root.expiresAt`: the Butler refuses a replay grant that has none. */
 export function grantDelegatedCommands(trustDir, friendId, did, now = new Date(), root = {}) {
   writeTrustGrant(trustDir, "delegated-command-grants.json", friendId, "principal_commands", did, now, REPLAY_GRANT_SOURCE, root)
 }
@@ -1118,6 +1136,16 @@ export function grantDelegatedCommands(trustDir, friendId, did, now = new Date()
 /** Gives the replay escalation peer the escalation grant in the trust directory, pinned to its DID. */
 export function grantEscalation(trustDir, friendId, did, now = new Date(), root = {}) {
   writeTrustGrant(trustDir, "escalation-grants.json", friendId, "escalation", did, now, REPLAY_GRANT_SOURCE, root)
+}
+
+/** Removes the replay principal's principal_commands grant. */
+export function revokeDelegatedCommands(trustDir, friendId, root = {}) {
+  revokeTrustGrant(trustDir, "delegated-command-grants.json", friendId, root)
+}
+
+/** Removes the replay escalation peer's grant. */
+export function revokeEscalation(trustDir, friendId, root = {}) {
+  revokeTrustGrant(trustDir, "escalation-grants.json", friendId, root)
 }
 
 export function provision({ bundle = DEFAULT_BUNDLE, trustDir = DEFAULT_TRUST_DIR, cardUrl, log = console.log, run = ctr, discover = discoverCardUrl, rootUid = 0, rootGid = 0 } = {}) {
@@ -1129,7 +1157,8 @@ export function provision({ bundle = DEFAULT_BUNDLE, trustDir = DEFAULT_TRUST_DI
   mkdirSync(replayDir, { recursive: true, mode: 0o755 }); chownSync(replayDir, rootUid, rootGid); chmodSync(replayDir, 0o755)
   const sink = path.join(replayDir, "notices.ndjson")
   writeFileSync(sink, "", { flag: "a", mode: 0o600 }); chownSync(sink, owner.uid, owner.gid)
-  mkdirSync(clientDir, { recursive: true, mode: 0o700 }); chownSync(clientDir, owner.uid, owner.gid)
+  // The replay client keys are root-owned: the Butler's uid must not read the seed of a peer that can hold a grant.
+  mkdirSync(clientDir, { recursive: true, mode: 0o700 }); chownSync(clientDir, rootUid, rootGid); chmodSync(clientDir, 0o700)
   const replayIdentities = {}
   let knownRegistry = {}
   try { knownRegistry = JSON.parse(readFileSync(path.join(replayDir, "identities.json"), "utf8")).friends ?? {} } catch { /* first provision */ }
@@ -1153,8 +1182,8 @@ export function provision({ bundle = DEFAULT_BUNDLE, trustDir = DEFAULT_TRUST_DI
     // The replay state is root-owned: once a replay peer's DID is recorded, a different DID under the same friend is a swap.
     const recorded = knownRegistry[friendId]?.did
     if (recorded !== undefined && recorded !== did) throw new Error(`the ${name} DID changed (recorded ${recorded}, now ${did}); refusing to re-grant it`)
-    if (grant) grantDelegatedCommands(trustDir, friendId, did, new Date(), { rootUid, rootGid })
-    if (escalate) grantEscalation(trustDir, friendId, did, new Date(), { rootUid, rootGid })
+    // Provisioning grants nothing: the replay peers receive their trusted grants, bounded by the window, only while a run is open.
+    if (existsSync(hostIdentity)) { chownSync(hostIdentity, rootUid, rootGid); chmodSync(hostIdentity, 0o600) }
     out[who] = { friendId, did, containerIdentityFile, hostIdentity }
     replayIdentities[friendId] = { name, who, did }
     log(`${name}: friend ${friendId} (${trust}${grant ? ", principal_commands" : escalate ? ", escalation" : ", no grant"})`)

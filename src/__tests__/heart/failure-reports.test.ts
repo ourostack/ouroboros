@@ -38,7 +38,7 @@ async function setup(holders: string[] = ["claude"]) {
   await store.put("ari", friend("ari", { capabilityProfileId: "sanctuary-owner" }))
   for (const id of ["replay-principal", "peer-a", ...Array.from({ length: 8 }, (_, i) => `o${i}`), ...holders]) await store.put(id, friend(id, { name: `Name ${id}`, capabilityProfileId: "sanctuary-agent-peer", ...(holders.includes(id) ? { kind: "agent" as const, agentMeta: agentMetaFor(holderKey) } : {}) }))
   currentStore = store
-  for (const id of holders) setEscalationGrant(tmp.agentRoot, id, { grant: true, source: "test", did: holderKey.did })
+  for (const id of holders) setEscalationGrant(tmp.agentRoot, id, { grant: true, source: "test", did: holderKey.did, ...(id.startsWith("replay") ? { expiresAt: new Date(Date.now() + 3_600_000).toISOString() } : {}) })
   return { agentRoot: tmp.agentRoot, store, outbox: new FileOutboxStore(tmp.agentRoot) }
 }
 /** Resolves as the holder does: with its key's signature over the claim. */

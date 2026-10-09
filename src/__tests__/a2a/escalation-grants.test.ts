@@ -168,3 +168,23 @@ describe("escalation grants written as root", () => {
     expect(fs.readdirSync(dir)).toEqual([])
   })
 })
+
+describe("escalation grant expiry (review of #1064, finding 1)", () => {
+  it("writes an expiring grant, treats a bad or past expiry as no grant, and refuses a replay-named grant with none", async () => {
+    const { setEscalationGrant, holdsEscalation, pinnedHolderDid, readEscalationGrants } = await import("../../a2a/escalation-grants")
+    const agentRoot = root()
+    const holder = { id: "h", name: "h", role: "family", trustLevel: "family", admissionState: "active" } as never
+    const at = Date.parse("2026-10-09T00:00:00.000Z")
+    setEscalationGrant(agentRoot, "h", { grant: true, source: "operator", did: "did:key:h", expiresAt: "2026-10-10T00:00:00.000Z" }, new Date(at))
+    expect(readEscalationGrants(agentRoot).h?.expiresAt).toBe("2026-10-10T00:00:00.000Z")
+    expect(setEscalationGrant(agentRoot, "h", { grant: true, source: "operator", did: "did:key:h", expiresAt: "2026-10-10T00:00:00.000Z" }).changed).toBe(false)
+    expect(holdsEscalation(agentRoot, holder, at)).toBe(true)
+    expect(pinnedHolderDid(agentRoot, "h", at)).toBe("did:key:h")
+    expect(holdsEscalation(agentRoot, holder, at + 2 * 86_400_000)).toBe(false)
+    setEscalationGrant(agentRoot, "h", { grant: true, source: "operator", did: "did:key:h", expiresAt: "never" }, new Date(at))
+    expect(holdsEscalation(agentRoot, holder, at)).toBe(false)
+    setEscalationGrant(agentRoot, "h", { grant: true, source: "replay gate provisioning (host root)", did: "did:key:h" }, new Date(at))
+    expect(holdsEscalation(agentRoot, holder, at)).toBe(false)
+    expect(pinnedHolderDid(agentRoot, "missing", at)).toBeNull()
+  })
+})

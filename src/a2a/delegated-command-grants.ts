@@ -18,6 +18,11 @@ export interface DelegatedCommandGrant {
   expiresAt?: string
 }
 
+/** True for a grant whose recorded source names the replay gate; such a grant must carry an expiry. */
+export function isReplayGrantSource(source: string): boolean {
+  return /replay/i.test(source)
+}
+
 export const DELEGATED_COMMAND_GRANTS_FILE = "delegated-command-grants.json"
 
 export function delegatedCommandGrantsPath(agentRoot: string): string {
@@ -65,6 +70,8 @@ export function checkDelegatedCommandGrant(agentRoot: string, friend: FriendReco
     const expiresAt = Date.parse(grant.expiresAt)
     if (!Number.isFinite(expiresAt) || expiresAt <= now) return { ok: false, reason: "grant_expired" }
   }
+  // A grant the replay gate wrote, or one for a listed replay identity, must be time-bounded by the trusted file itself: the bundle registry can be moved aside by the agent, so it can only add refusals.
+  if (grant.expiresAt === undefined && (isReplayGrantSource(grant.source) || isReplayIdentity(agentRoot, friend.id))) return { ok: false, reason: "grant_expired" }
   // A replay identity is a test peer of the host's replay gate: its grant means something only while the root-owned window is open.
   if (isReplayIdentity(agentRoot, friend.id) && !isReplayWindowOpen(agentRoot, friend.id, now)) return { ok: false, reason: "grant_expired" }
   if (friend.trustLevel !== "family" || friend.admissionState !== "active") return { ok: false, reason: "not_family" }

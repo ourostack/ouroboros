@@ -208,7 +208,7 @@ export async function fileFailureReport(agentRoot: string, store: FriendStore, i
       if (folded) return folded
     }
 
-    const holders = (await escalationHolders(agentRoot, store)).filter((holder) => replay ? isReplayWindowOpen(agentRoot, holder.id, now) : !isReplayIdentity(agentRoot, holder.id))
+    const holders = (await escalationHolders(agentRoot, store, now)).filter((holder) => replay ? isReplayWindowOpen(agentRoot, holder.id, now) : !isReplayIdentity(agentRoot, holder.id))
     if (holders.length === 0) return { ok: false, reason: "no_escalation_peer", detail: replay ? "no replay escalation peer" : "no friend holds the escalation grant" } as const
     const sameKind = existing.filter((record) => record.replay === replay)
     if (overBudget(sameKind.map((record) => Date.parse(record.createdAt)), now, REPORTS_PER_HOUR, REPORTS_PER_DAY)) {
@@ -305,7 +305,7 @@ export interface ConfirmDeps {
 const warnedSkips = new Set<string>()
 
 /** The owner hears "fixed" only if the escalation holder signed it and still holds escalation; a file the Butler's own uid can write proves nothing. */
-async function resolutionIsSigned(agentRoot: string, deps: ConfirmDeps, record: FailureReportRecord): Promise<boolean> {
+async function resolutionIsSigned(agentRoot: string, deps: ConfirmDeps, record: FailureReportRecord, now: number): Promise<boolean> {
   const resolution = record.resolution!
   const skip = (reason: string): false => {
     // The confirm tick runs every few minutes, so each report warns once per process, not once per tick.
@@ -321,13 +321,13 @@ async function resolutionIsSigned(agentRoot: string, deps: ConfirmDeps, record: 
   if (typeof resolution.signedNote !== "string" || resolution.note !== cap(resolution.signedNote)) return skip("note is not the signed note")
   if (semver.valid(resolution.version) !== resolution.version) return skip("version is not canonical")
   const friend = deps.friends ? await deps.friends.get(resolution.by) : null
-  if (!friend || !holdsEscalation(agentRoot, friend)) return skip("holder no longer holds escalation")
+  if (!friend || !holdsEscalation(agentRoot, friend, now)) return skip("holder no longer holds escalation")
   // The key comes from the root-owned grant. The friend record is writable by the Butler's own uid and is never consulted for it.
   const checked = verifyResolution({
     sodium: await ready(),
     claim: { reportId: record.id, version: resolution.version, note: resolution.signedNote, resolvedAt: resolution.resolvedAt ?? "" },
     proof: resolution.proof,
-    holderDid: pinnedHolderDid(agentRoot, resolution.by),
+    holderDid: pinnedHolderDid(agentRoot, resolution.by, now),
   })
   return checked.ok
 }
@@ -344,7 +344,7 @@ export async function confirmResolvedReports(agentRoot: string, deps: ConfirmDep
         const record = readFailureReport(agentRoot, listed.id)
         if (!record || record.status !== "resolved" || !record.resolution) return "skipped" as const
         if (!semver.gte(deps.runningVersion, record.resolution.version)) return "waiting" as const
-        if (!(await resolutionIsSigned(agentRoot, deps, record))) return "skipped" as const
+        if (!(await resolutionIsSigned(agentRoot, deps, record, now))) return "skipped" as const
         if (!record.replay) await deps.notifyOwner({ noticeId: `failure-fixed:${record.id}`, text: fixLiveNoticeText(record) })
         writeReport(agentRoot, { ...record, status: "closed", closedAt: new Date(now).toISOString() })
         emitNervesEvent({ component: "senses", event: "senses.failure_report_closed", message: "closed a failure report after its fix went live", meta: { reportId: record.id, version: record.resolution.version } })
