@@ -174,7 +174,8 @@ function expandHome(word: string): string {
 }
 
 function commandMentionsFriendsStore(command: string, words: readonly string[], agentRoot: string): boolean {
-  if (words.some((word) => isFriendsStorePath(expandHome(word), agentRoot))) return true
+  // Only path-shaped words resolve against the store: an ordinary word such as "friends" in prose is not a path.
+  if (words.some((word) => word.includes("/") && isFriendsStorePath(expandHome(word), agentRoot))) return true
   // A bare `friends` names the store only as the target of a cd; elsewhere it is an ordinary word ("my friends are kind").
   if (words.some((word, index) => word.startsWith("friends/") || (word === "friends" && words[index - 1] === "cd"))) return true
   // A variable or substitution in front of the path ($BUNDLE/friends/x.json): the folder name is still in the command.

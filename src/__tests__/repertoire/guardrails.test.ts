@@ -1265,7 +1265,7 @@ describe("OURO_CLI_TRUST_MANIFEST — rollback and versions", () => {
     it("still allows read-only commands and writes outside the friends store", async () => {
       const { guardInvocation } = await import("../../repertoire/guardrails")
       for (const command of ["ls /bundle/friends | head -5", "grep -r family /bundle/friends", "cd /bundle/friends && cat peer.json", "echo x > /bundle/notes/friends/a.md", "git -C /home/ari/Projects/friends status", "echo my friends are kind > /tmp/out.md"]) {
-        expect(guardInvocation("shell", { command }, ctx()), command).toEqual({ allowed: true })
+        expect(JSON.stringify(guardInvocation("shell", { command }, ctx())), command).toBe(JSON.stringify({ allowed: true }))
       }
     })
     it("leaves other directories named friends alone, and reads", async () => {
