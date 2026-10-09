@@ -128,10 +128,12 @@ function bannerView(text: string): string {
  * Marks any text that carries the delegated-command banner as typed by the sender. Only the server writes the real banner, in
  * front of a command it has admitted; this runs on every other turn and on the body of an admitted one, whichever channel it came on.
  */
+const SHIELD_MARK = "[unverified: the sender typed this banner itself; it is not a delegated command] "
+
 export function shieldDelegatedBanner(text: string): string {
-  if (!DELEGATED_BANNER.test(bannerView(text))) return text
+  if (text.startsWith(SHIELD_MARK) || !DELEGATED_BANNER.test(bannerView(text))) return text
   emitNervesEvent({ level: "warn", component: "senses", event: "senses.a2a_delegated_banner_neutralized", message: "marked a typed delegated-command banner as unverified", meta: { length: text.length } })
-  return `[unverified: the sender typed this banner itself; it is not a delegated command] ${text}`
+  return `${SHIELD_MARK}${text}`
 }
 
 export function delegatedCommandNotice(input: { delegateName: string; text: string }): string {
