@@ -1251,6 +1251,7 @@ describe("OURO_CLI_TRUST_MANIFEST — rollback and versions", () => {
         "sha256sum /bundle/psyche/LORE.md", "stat /bundle/psyche", "cd /bundle/psyche && ls && cat LORE.md | head -3", "cat \"/bundle/psyche/SOUL.md\"", "FOO=1 cat psyche/SOUL.md; pwd",
       ])("allows the read-only %s", async (command) => {
         const { guardInvocation } = await import("../../repertoire/guardrails")
+        vi.mocked(fs.existsSync).mockReturnValue(true)
         expect(guardInvocation("shell", { command }, ctx({ readPaths: new Set() }))).toEqual({ allowed: true })
       })
       it("leaves commands that never mention the folder, and agents with no root, alone", async () => {
