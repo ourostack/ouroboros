@@ -80,6 +80,8 @@ const LOWERCASE_LIST_ITEM = /^[a-z][a-z'’-]{3,}$/
 const SLUG = /^[a-z0-9]+(?:-[a-z0-9]+)+$/
 /** The latest message must ask for names, not merely mention media: "who", "cast", "characters", "name the ...". */
 const NAME_QUESTION_CUE = /\b(characters?|cast|protagonists?|lore|who|name)\b/i
+/** A command that only repeats text it was given proves nothing. */
+const ECHO_COMMAND = /^\s*(?:echo|printf)\b/
 const MIN_PROSE_LENGTH = 40
 /** Tools whose output may hold an earlier fabrication, so it never clears a name. */
 const MEMORY_TOOL = /^(?:search_facts|consult_\w+|get_friend_note|save_\w+|recall\w*|diary\w*|note\w*)$/
@@ -220,7 +222,9 @@ function claimsSomethingAbout(answer: string, name: string): boolean {
 export function sourceGroundingFinding(input: { answer: string; userText: string; tools: readonly TurnToolRecord[]; latestUserText?: string; knownText?: string }): GroundingFinding | null {
   const answerCue = WORK_CUE.test(input.answer)
   // Only the latest message arms the name rule, and only when it asks for names; an old "what movies could I watch?" must not arm every later reply.
-  const askedAboutWork = NAME_QUESTION_CUE.test(input.latestUserText ?? input.userText)
+  // "who" and "name" alone are house questions too ("who's home?"), so a name question counts only beside a work cue in that message or the reply.
+  const latest = input.latestUserText ?? input.userText
+  const askedAboutWork = NAME_QUESTION_CUE.test(latest) && (WORK_CUE.test(latest) || answerCue)
   if (!answerCue && !askedAboutWork) return null
   const lookups = input.tools.filter(isLookupToolCall)
   const lookedUp = lookups.map((record) => record.result).join("\n")
@@ -229,10 +233,12 @@ export function sourceGroundingFinding(input: { answer: string; userText: string
   const sawNothing = lookups.length === 0
   const proseNames = askedAboutWork && sawNothing && input.answer.length >= MIN_PROSE_LENGTH ? lowercaseProseNames(input.answer) : []
   const names = [...new Set([...candidateNames(input.answer), ...lowercaseListNames(input.answer), ...proseNames])]
-  const invented = names.filter((name) => !mentions(lookedUp, name) && !mentions(houseRead, name) && !mentions(input.userText, name) && !mentions(input.knownText ?? "", name))
-  // The person asked for names and the turn read nothing: one name they, the conversation and this turn's non-memory tools did not give is enough.
-  const otherRead = input.tools.filter((record) => !isLookupToolCall(record) && !MEMORY_TOOL.test(record.name)).map((record) => record.result).join("\n")
-  const fromMemory = askedAboutWork && sawNothing ? invented.filter((name) => !mentions(otherRead, name)) : []
+  // Output of this turn's non-lookup tools (a calibredb listing, a sweep) is the house's record; memory tools are excluded because they may hold an earlier fabrication.
+  const otherRead = input.tools.filter((record) => !isLookupToolCall(record) && !MEMORY_TOOL.test(record.name) && !ECHO_COMMAND.test(record.args.command ?? "")).map((record) => record.result).join("\n")
+  // A name already said or read in an earlier turn is known by design: the rule judges what this turn introduces, not what the conversation already holds.
+  const invented = names.filter((name) => !mentions(lookedUp, name) && !mentions(houseRead, name) && !mentions(otherRead, name) && !mentions(input.userText, name) && !mentions(input.knownText ?? "", name))
+  // The person asked for names and the turn read nothing: one name they, the conversation and this turn's tools did not give is enough.
+  const fromMemory = askedAboutWork && sawNothing ? invented : []
   if ((answerCue && invented.length > 0 && (invented.length >= 2 || STRONG_CUE.test(input.answer))) || fromMemory.length > 0) {
     const named = (fromMemory.length > 0 && !(answerCue && invented.length >= 2) ? fromMemory : invented).join(", ")
     emitNervesEvent({ level: "warn", component: "engine", event: "engine.unsourced_work_claim", message: "a reply named things from a work that the turn did not look up", meta: { names: invented.length, lookups: lookups.length } })

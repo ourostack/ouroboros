@@ -1558,6 +1558,8 @@ export async function runAgent(
   let sawBridgeManage = false;
   let sawExternalStateQuery = false;
   const turnToolRecords: TurnToolRecord[] = [];
+  // The engine pushes its own user messages mid-turn (steering, retry nudges); the person's turn ends where this one began.
+  const turnStartLength = messages.length;
   let groundingRejections = 0; let brevityRejections = 0;
   const privateReturnHeldTokens = new Set<string>();
   // Once-per-turn flag for the fresh-work rest gate. Without this, an agent
@@ -2403,7 +2405,7 @@ export async function runAgent(
           const retriesLeft = providerIterations < stepBudget - 1
           let groundingError: string | null = null
           let unverifiedNames: readonly string[] | null = null
-          const grounding = gates?.sourceGrounding ? sourceGroundingFinding({ answer: deliveredAnswer, userText: userTexts(messages).join("\n"), latestUserText: latestUserMessageText(messages), knownText: priorTurnsText(messages), tools: turnToolRecords }) : null
+          const grounding = gates?.sourceGrounding ? sourceGroundingFinding({ answer: deliveredAnswer, userText: userTexts(messages).join("\n"), latestUserText: latestUserMessageText(messages.slice(0, turnStartLength)), knownText: priorTurnsText(messages.slice(0, turnStartLength)), tools: turnToolRecords }) : null
           if (grounding) {
             if (groundingRejections < ANSWER_GATE_MAX_REJECTIONS && retriesLeft) {
               groundingRejections += 1

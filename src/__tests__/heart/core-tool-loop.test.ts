@@ -3507,6 +3507,14 @@ describe("settle answer gates (opt-in per agent)", () => {
       expect(JSON.stringify(mockCreate.mock.calls[1][0].messages)).toContain("looked up nothing this turn")
     })
 
+    it("ends the person's turn where it began, so the engine's own nudges and earlier attempts do not launder a name", async () => {
+      for (const id of ["a", "b", "c"]) mockCreate.mockReturnValueOnce(settleCall(id, "**ozriel** — the reaper."))
+      const { result, visible } = await run({ gates: GATES, user: ["who is in the cast?"] })
+      expect(result.outcome).toBe("settled")
+      expect(mockCreate).toHaveBeenCalledTimes(3)
+      expect(visible.join("")).toContain("I couldn't verify ozriel")
+    })
+
     it("passes replies that are not about a work", async () => {
       mockCreate.mockReturnValueOnce(settleCall("ok", "ten minutes. nothing to read."))
       const { result, visible } = await run({ gates: GATES })

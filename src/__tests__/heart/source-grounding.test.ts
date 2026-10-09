@@ -112,8 +112,9 @@ describe("sourceGroundingError", () => {
       const memory: TurnToolRecord = { name, args: {}, result: "Yorick Magma Dross Philomena" }
       expect(sourceGroundingError({ ...base, answer: "the books feature Yorick and Magma.", tools: [memory] }), name).toContain("Yorick")
     }
-    const shell: TurnToolRecord = { name: "shell", args: { command: "cat notes.md" }, result: "Yorick Magma" }
-    expect(sourceGroundingError({ ...base, answer: "the books feature Yorick and Magma.", tools: [shell] })).toContain("Yorick")
+    // Ordinary tool output (a calibredb listing) is the house's record and does clear a name.
+    const shell: TurnToolRecord = { name: "shell", args: { command: "calibredb list" }, result: "Yorick Magma" }
+    expect(sourceGroundingError({ ...base, answer: "the books feature Yorick and Magma.", tools: [shell] })).toBeNull()
   })
 
   it("flags names at the start of a sentence or a bullet that are not common words", () => {
@@ -305,5 +306,25 @@ describe("review fixes (alpha.881)", () => {
     expect(sourceGroundingFinding({ userText: ASK, answer: "fits are eithan, ozriel.", tools: [] })).toBeNull()
     expect(sourceGroundingFinding({ userText: ASK, answer: "the closest fits are eithan, ozriel and fisher gesha.", tools: [lookup("Eithan Ozriel Fisher Gesha")] })).toBeNull()
     expect(sourceGroundingFinding({ userText: "any good shows?", latestUserText: "any good shows?", answer: "the closest fits are eithan, ozriel and fisher gesha.", tools: [] })).toBeNull()
+  })
+})
+
+describe("round-2 review fixes (alpha.882)", () => {
+  const f = (latest: string, answer: string, tools: TurnToolRecord[] = [], extra: object = {}) => sourceGroundingFinding({ userText: latest, latestUserText: latest, answer, tools, ...extra })
+  it("does not treat who or name alone as a name question about a work", () => {
+    expect(f("who's home?", "Ari and Dana are home.")).toBeNull()
+    expect(f("who is connected?", "Ari is connected over Tailscale from the Mac mini and Dana is on the iPad.")).toBeNull()
+    expect(f("who is using the most disk?", "**jellyfin** is using the most disk, then **immich** and **sabnzbd**.")).toBeNull()
+    expect(f("who are the characters?", "**ozriel** — the reaper.")).toMatchObject({ kind: "invented" })
+    expect(f("who is that?", "**ozriel** is the lead character in the book.")).toMatchObject({ kind: "invented" })
+  })
+  it("lets any non-memory tool output clear a name in every branch", () => {
+    const calibredb: TurnToolRecord = { name: "shell", args: { command: "calibredb list" }, result: "Sanderson 3\nRothfuss 2" }
+    expect(f("who are my most-read authors?", "Calibre has 3 books by Sanderson and 2 by Rothfuss", [calibredb])).toBeNull()
+    expect(f("who are my most-read authors?", "Calibre has 3 books by Sanderson and 2 by Rothfuss")).toMatchObject({ kind: "invented" })
+    expect(f("who are my most-read authors?", "Calibre has 3 books by Sanderson and 2 by Rothfuss", [{ name: "consult_diary", args: {}, result: "Sanderson Rothfuss" }])).toMatchObject({ kind: "invented" })
+  })
+  it("counts a name delivered in an earlier turn as known, by design", () => {
+    expect(f("who are the characters?", "**ozriel** — the reaper.", [], { knownText: "assistant: Ozriel is the reaper." })).toBeNull()
   })
 })
