@@ -744,6 +744,20 @@ export async function startConfiguredTwilioPhoneTransport(
     return { status: "disabled", reason }
   }
 
+  if (!settings.twilioAuthToken?.trim()) {
+    // Call tokens and webhook signatures are keyed by the Twilio auth token; without it the bridge
+    // could not tell a real Twilio call from a forged one, so it does not listen at all.
+    const reason = "voice.twilioAuthToken is required for inbound calls"
+    emitNervesEvent({
+      level: "warn",
+      component: "senses",
+      event: "senses.voice_twilio_transport_disabled",
+      message: "Twilio phone voice transport is not attached because the Twilio auth token is missing",
+      meta: { agentName: options.agentName, reason },
+    })
+    return { status: "disabled", reason }
+  }
+
   await deps.cacheSelectedProviderCredentials(options.agentName)
   if (settings.openaiRealtime?.apiKeySource === "integrations.openaiEmbeddingsApiKey") {
     emitNervesEvent({

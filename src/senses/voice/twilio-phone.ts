@@ -24,6 +24,17 @@ import { normalizeTwilioE164PhoneNumber } from "./phone"
 import { prepareVoiceCallAudio } from "./audio-playback"
 import type { VoiceCallAudioRequest, VoiceCallAudioResult } from "../../repertoire/tools-base"
 import { VoiceFloorController } from "./floor-controller"
+import {
+  PendingVoiceCalls,
+  RecentIds,
+  mintVoiceCallToken,
+  newVoiceCallNonce,
+  verifyVoiceCallToken,
+  type VoiceCallIdentity,
+} from "./call-auth"
+
+export type { VoiceCallIdentity } from "./call-auth"
+export { PendingVoiceCalls } from "./call-auth"
 
 export { normalizeTwilioE164PhoneNumber } from "./phone"
 
@@ -158,6 +169,8 @@ export interface TwilioPhoneBridgeOptions {
   outboundConversationEngine?: TwilioPhoneConversationEngine
   openaiRealtime?: OpenAIRealtimeTwilioOptions
   openaiSip?: OpenAISipPhoneOptions
+  /** Registry of calls admitted by the signed webhooks. Created by the bridge unless a host supplies one. */
+  pendingVoiceCalls?: PendingVoiceCalls
 }
 
 export function resolveTwilioPhoneAgentRoot(options: Pick<TwilioPhoneBridgeOptions, "agentName" | "agentRoot">): string {
@@ -421,10 +434,8 @@ function playTwiml(url: string): string {
   return `<Play>${escapeXml(url)}</Play>`
 }
 
-function parameterTwiml(name: string, value: string | undefined): string {
-  const trimmed = value?.trim()
-  if (!trimmed) return ""
-  return `<Parameter name="${escapeXml(name)}" value="${escapeXml(trimmed)}" />`
+function tokenParameterTwiml(token: string): string {
+  return `<Parameter name="OuroToken" value="${escapeXml(token)}" />`
 }
 
 function websocketRouteUrl(publicBaseUrl: string, route: string): string {
@@ -437,28 +448,82 @@ function websocketRouteUrl(publicBaseUrl: string, route: string): string {
   return url.toString()
 }
 
-function mediaStreamTwiml(
-  options: TwilioPhoneBridgeOptions,
-  basePath: string,
-  params: Record<string, string>,
-  greetingJobId?: string,
-  customParams: Record<string, string | undefined> = {},
-  streamEngine?: TwilioPhoneConversationEngine,
-): string {
-  const streamRoute = streamEngine ? `${basePath}/media-stream?engine=${encodeURIComponent(streamEngine)}` : `${basePath}/media-stream`
-  const streamUrl = websocketRouteUrl(options.publicBaseUrl, streamRoute)
-  const twimlParams: Record<string, string | undefined> = {
-    From: params.From,
-    To: params.To,
-    Agent: options.agentName,
-    ...customParams,
-    GreetingJobId: greetingJobId,
-  }
+const STREAM_FAILURE_LINE = "Sorry, I couldn't connect this call. Please try again."
+
+function streamFailureTwiml(): string {
+  return `${sayTwiml(STREAM_FAILURE_LINE)}<Hangup />`
+}
+
+function mediaStreamTwiml(options: TwilioPhoneBridgeOptions, basePath: string, token: string): string {
+  const streamUrl = websocketRouteUrl(options.publicBaseUrl, `${basePath}/media-stream`)
+  const endedUrl = routeUrl(options.publicBaseUrl, `${basePath}/stream-ended`)
   return [
-    `<Connect><Stream url="${escapeXml(streamUrl)}">`,
-    ...Object.entries(twimlParams).map(([name, value]) => parameterTwiml(name, value)),
+    `<Connect action="${escapeXml(endedUrl)}" method="POST"><Stream url="${escapeXml(streamUrl)}">`,
+    tokenParameterTwiml(token),
     `</Stream></Connect>`,
   ].join("")
+}
+
+/**
+ * Record an admitted call and return the TwiML that connects its media stream, carrying a
+ * single-use token. Without the Twilio auth token (the token secret) or a CallSid the call is
+ * not admitted and the caller hears the failure line.
+ */
+function admitMediaStreamCall(
+  options: TwilioPhoneBridgeOptions,
+  basePath: string,
+  pending: PendingVoiceCalls,
+  identity: VoiceCallIdentity,
+): string {
+  const secret = options.twilioAuthToken?.trim()
+  if (!secret || !identity.callSid) {
+    emitNervesEvent({
+      level: "warn",
+      component: "senses",
+      event: "senses.voice_media_stream_not_admitted",
+      message: "could not admit a Twilio call to a media stream: auth token or CallSid missing",
+      meta: { agentName: options.agentName, hasAuthToken: String(Boolean(secret)), hasCallSid: String(Boolean(identity.callSid)) },
+    })
+    return streamFailureTwiml()
+  }
+  const nonce = newVoiceCallNonce()
+  pending.record(identity, nonce)
+  return mediaStreamTwiml(options, basePath, mintVoiceCallToken({
+    secret,
+    purpose: "stream",
+    agentName: options.agentName,
+    callSid: identity.callSid,
+    direction: identity.direction,
+    outboundId: identity.outboundId,
+    nowMs: Date.now(),
+    nonce,
+  }))
+}
+
+/**
+ * The narrow socket the Media Stream sessions talk to. The network path adapts a `ws` socket; a
+ * local audio transport can implement it in-process.
+ */
+export interface VoiceSessionSocket {
+  send(data: string): void
+  close(): void
+  isOpen(): boolean
+  on(event: "message", callback: (raw: RawData | string) => void): void
+  on(event: "close", callback: () => void): void
+  on(event: "error", callback: (error: Error) => void): void
+}
+
+export function wsAsVoiceSessionSocket(ws: WebSocket): VoiceSessionSocket {
+  return {
+    send: (data) => ws.send(data),
+    close: () => {
+      if (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING) ws.close()
+    },
+    isOpen: () => ws.readyState === WebSocket.OPEN,
+    on: (event: string, callback: (...args: never[]) => void) => {
+      ws.on(event, callback as (...args: unknown[]) => void)
+    },
+  } as VoiceSessionSocket
 }
 
 /* v8 ignore start -- private SIP URI query permutations are exercised through bridge routes; the queryless helper shape is not externally reachable today @preserve */
@@ -551,6 +616,18 @@ interface ResolvedVoiceFriendContext {
   resolved: ResolvedContext
 }
 
+const SAFE_VOICE_FRIEND_ID = /^[A-Za-z0-9._-]{1,128}$/
+
+function isSafeVoiceFriendId(id: string): boolean {
+  return SAFE_VOICE_FRIEND_ID.test(id) && id !== "." && id !== ".."
+}
+
+/**
+ * Resolve who is on a call. `friendId` may only come from server-side state (the outbound job
+ * record), is validated as a safe id before any store read, and must match a record id exactly
+ * (the store's display-name fallback is never used for voice). Everything else resolves from the
+ * phone number, or from the call itself when there is none.
+ */
 async function resolveVoiceFriendContext(options: TwilioPhoneBridgeOptions, input: {
   friendId?: string
   remotePhone?: string
@@ -559,9 +636,9 @@ async function resolveVoiceFriendContext(options: TwilioPhoneBridgeOptions, inpu
   const agentRoot = resolveTwilioPhoneAgentRoot(options)
   const friendStore = new FileFriendStore(path.join(agentRoot, "friends"))
   const explicitFriendId = input.friendId?.trim()
-  if (explicitFriendId) {
+  if (explicitFriendId && isSafeVoiceFriendId(explicitFriendId)) {
     const existing = await friendStore.get(explicitFriendId)
-    if (existing) {
+    if (existing && existing.id === explicitFriendId) {
       return {
         friendId: existing.id,
         friendStore,
@@ -572,7 +649,7 @@ async function resolveVoiceFriendContext(options: TwilioPhoneBridgeOptions, inpu
 
   const remotePhone = normalizeTwilioE164PhoneNumber(input.remotePhone)
   const provider: IdentityProvider = remotePhone ? "imessage-handle" : "local"
-  const externalId = remotePhone || explicitFriendId || voiceFriendId(options, input.remotePhone ?? "", input.callSid)
+  const externalId = remotePhone || friendIdFromCaller("", input.callSid)
   const resolver = new FriendResolver(friendStore, {
     provider,
     externalId,
@@ -581,6 +658,25 @@ async function resolveVoiceFriendContext(options: TwilioPhoneBridgeOptions, inpu
   })
   const resolved = await resolver.resolve()
   return { friendId: resolved.friend.id, friendStore, resolved }
+}
+
+/**
+ * The friend id for an inbound call: resolved from the signed caller ID, never from
+ * `defaultFriendId`. Falls back to a caller-derived id if the friend store is unreadable.
+ */
+async function inboundVoiceFriendId(options: TwilioPhoneBridgeOptions, from: string, callSid: string): Promise<string> {
+  try {
+    return (await resolveVoiceFriendContext(options, { remotePhone: from || undefined, callSid })).friendId
+  } catch (error) {
+    emitNervesEvent({
+      level: "warn",
+      component: "senses",
+      event: "senses.voice_friend_resolve_error",
+      message: "could not resolve the inbound caller to a friend record",
+      meta: { agentName: options.agentName, callSid: safeSegment(callSid), error: errorMessage(error) },
+    })
+    return friendIdFromCaller(from, callSid)
+  }
 }
 
 function phoneIdentitySegment(input: string): string {
@@ -683,21 +779,21 @@ interface TwilioMediaStreamMessage {
   mark?: TwilioMediaMark
 }
 
-/* v8 ignore start -- ws RawData variants are provider/runtime transport shapes; session tests cover valid and invalid stream behavior @preserve */
-function parseTwilioMediaStreamMessage(raw: RawData): TwilioMediaStreamMessage | null {
-  const text = Buffer.isBuffer(raw)
-    ? raw.toString("utf8")
-    : Array.isArray(raw)
-      ? Buffer.concat(raw).toString("utf8")
-      : Buffer.from(raw as ArrayBuffer).toString("utf8")
+function parseTwilioMediaStreamMessage(raw: RawData | string): TwilioMediaStreamMessage | null {
+  const text = typeof raw === "string"
+    ? raw
+    : Buffer.isBuffer(raw)
+      ? raw.toString("utf8")
+      : Array.isArray(raw)
+        ? Buffer.concat(raw).toString("utf8")
+        : Buffer.from(raw).toString("utf8")
   try {
     const parsed = JSON.parse(text) as unknown
     return parsed && typeof parsed === "object" ? parsed as TwilioMediaStreamMessage : null
-  } catch { /* v8 ignore next -- invalid provider socket JSON is observed at the session boundary @preserve */
+  } catch {
     return null
   }
 }
-/* v8 ignore stop */
 
 function stringField(value: unknown): string {
   return typeof value === "string" ? value.trim() : ""
@@ -837,8 +933,7 @@ interface TwilioMediaStreamLifecycleSession {
   end(): void
 }
 
-/* v8 ignore start -- legacy cascade Media Streams socket loop is covered by bridge-level WebSocket tests; per-event socket/error permutations are transport-runtime edges @preserve */
-class TwilioMediaStreamSession {
+export class TwilioMediaStreamSession {
   private streamSid = ""
   private callSid = "media-stream"
   private direction = ""
@@ -852,6 +947,7 @@ class TwilioMediaStreamSession {
   private playbackGeneration = 0
   private playbackActive = false
   private closed = false
+  private started = false
   private inSpeech = false
   private currentFrames: Buffer[] = []
   private preRollFrames: Buffer[] = []
@@ -870,7 +966,8 @@ class TwilioMediaStreamSession {
   private readonly maxUtteranceFrames: number
 
   constructor(
-    private readonly ws: WebSocket,
+    private readonly socket: VoiceSessionSocket,
+    private readonly identity: VoiceCallIdentity,
     private readonly options: TwilioPhoneBridgeOptions,
     private readonly mediaGreetingJobs: TwilioAudioStreamJobStore,
     private readonly lifecycle?: {
@@ -885,9 +982,9 @@ class TwilioMediaStreamSession {
   }
 
   attach(): void {
-    this.ws.on("message", (raw) => this.handleRawMessage(raw))
-    this.ws.on("close", () => this.close())
-    this.ws.on("error", (error) => {
+    this.socket.on("message", (raw) => this.handleRawMessage(raw))
+    this.socket.on("close", () => this.close())
+    this.socket.on("error", (error) => {
       emitNervesEvent({
         level: "error",
         component: "senses",
@@ -899,13 +996,12 @@ class TwilioMediaStreamSession {
   }
 
   end(): void {
-    if (this.ws.readyState === WebSocket.OPEN || this.ws.readyState === WebSocket.CONNECTING) {
-      this.ws.close()
-    }
+    this.socket.close()
     this.close()
   }
 
-  private handleRawMessage(raw: RawData): void {
+  /** Feed a raw Twilio message that arrived before this session attached (the bridge holds the first `start`). */
+  handleRawMessage(raw: RawData | string): void {
     const message = parseTwilioMediaStreamMessage(raw)
     if (!message) {
       emitNervesEvent({
@@ -937,54 +1033,64 @@ class TwilioMediaStreamSession {
   }
 
   private async handleStart(start: TwilioMediaStreamStart | undefined): Promise<void> {
+    if (this.started) return
+    this.started = true
     this.streamSid = stringField(start?.streamSid)
-    this.callSid = stringField(start?.callSid) || this.callSid
-    const direction = customParameter(start, "Direction")
-    this.direction = direction
-    this.outboundId = customParameter(start, "OutboundId")
-    const explicitFriendId = customParameter(start, "FriendId")
-    if (direction === "outbound") {
-      this.from = customParameter(start, "Remote") || customParameter(start, "To")
-      this.to = customParameter(start, "Line") || customParameter(start, "From")
-    } else {
-      this.from = customParameter(start, "From")
-      this.to = customParameter(start, "To")
-    }
-    this.friendId = explicitFriendId || voiceFriendId(this.options, this.from, this.callSid)
-    this.sessionKey = twilioPhoneVoiceSessionKey({
-      defaultFriendId: explicitFriendId || this.options.defaultFriendId,
-      from: this.from,
-      to: this.to,
-      callSid: this.callSid,
-    })
-    this.lifecycle?.onIdentityChange?.(this, { callSid: this.callSid, outboundId: this.outboundId })
-    this.callDir = path.join(this.options.outputDir, safeSegment(this.callSid))
-    await fs.mkdir(this.callDir, { recursive: true })
-
-    emitNervesEvent({
-      component: "senses",
-      event: "senses.voice_twilio_media_start",
-      message: "Twilio Media Stream started",
-      meta: {
-        agentName: this.options.agentName,
-        callSid: safeSegment(this.callSid),
-        streamSid: safeSegment(this.streamSid || "stream"),
-        sessionKey: this.sessionKey,
-      },
-    })
-
-    const greetingJobId = customParameter(start, "GreetingJobId")
-    const greetingJob = greetingJobId
-      ? this.mediaGreetingJobs.get(safeSegment(this.callSid), greetingJobId)
-      : null
-    if (greetingJob) {
-      this.enqueueGreetingJob(greetingJobId, greetingJob)
-    } else {
-      this.enqueuePrompt({
-        utteranceId: `twilio-${safeSegment(this.callSid)}-connected`,
-        promptText: callConnectedPrompt({ From: this.from, To: this.to }),
-        wasBargeIn: false,
+    this.callSid = this.identity.callSid
+    this.direction = this.identity.direction
+    this.outboundId = this.identity.outboundId ?? ""
+    this.from = this.identity.from
+    this.to = this.identity.to
+    try {
+      this.friendId = this.direction === "outbound" && this.identity.friendId && isSafeVoiceFriendId(this.identity.friendId)
+        ? this.identity.friendId
+        : this.direction === "outbound"
+          ? voiceFriendId(this.options, this.from, this.callSid)
+          : await inboundVoiceFriendId(this.options, this.from, this.callSid)
+      this.sessionKey = twilioPhoneVoiceSessionKey({
+        defaultFriendId: this.friendId,
+        from: this.from,
+        to: this.to,
+        callSid: this.callSid,
       })
+      this.lifecycle?.onIdentityChange?.(this, { callSid: this.callSid, outboundId: this.outboundId })
+      this.callDir = path.join(this.options.outputDir, safeSegment(this.callSid))
+      await fs.mkdir(this.callDir, { recursive: true })
+
+      emitNervesEvent({
+        component: "senses",
+        event: "senses.voice_twilio_media_start",
+        message: "Twilio Media Stream started",
+        meta: {
+          agentName: this.options.agentName,
+          callSid: safeSegment(this.callSid),
+          streamSid: safeSegment(this.streamSid || "stream"),
+          sessionKey: this.sessionKey,
+        },
+      })
+
+      const greetingJobId = this.identity.greetingJobId ?? ""
+      const greetingJob = greetingJobId
+        ? this.mediaGreetingJobs.get(safeSegment(this.callSid), greetingJobId)
+        : null
+      if (greetingJob) {
+        this.enqueueGreetingJob(greetingJobId, greetingJob)
+      } else {
+        this.enqueuePrompt({
+          utteranceId: `twilio-${safeSegment(this.callSid)}-connected`,
+          promptText: callConnectedPrompt({ From: this.from, To: this.to }),
+          wasBargeIn: false,
+        })
+      }
+    } catch (error) {
+      emitNervesEvent({
+        level: "error",
+        component: "senses",
+        event: "senses.voice_twilio_media_start_error",
+        message: "Twilio Media Stream could not start",
+        meta: { agentName: this.options.agentName, callSid: safeSegment(this.callSid), error: errorMessage(error) },
+      })
+      this.end()
     }
   }
 
@@ -1085,6 +1191,7 @@ class TwilioMediaStreamSession {
     this.enqueueTurn(transcript, input.wasBargeIn)
   }
 
+  /* v8 ignore start -- unchanged queue error logging; turn failures are observed through the session turn tests @preserve */
   private enqueueUtterance(utterance: TwilioMediaStreamUtterance): void {
     this.turnQueue = this.turnQueue
       .catch(() => undefined)
@@ -1145,6 +1252,7 @@ class TwilioMediaStreamSession {
       })
   }
 
+  /* v8 ignore stop */
   private async processUtterance(utterance: TwilioMediaStreamUtterance): Promise<void> {
     await fs.mkdir(this.callDir, { recursive: true })
     const inputPath = path.join(this.callDir, `${safeSegment(utterance.utteranceId)}.wav`)
@@ -1156,11 +1264,13 @@ class TwilioMediaStreamSession {
     })
     if (this.direction === "outbound" && isVoicemailMenuTranscript(transcript.text)) {
       if (this.outboundId) {
+        /* v8 ignore start -- the voicemail status write is best-effort and must not block hanging up @preserve */
         await updateTwilioOutboundCallJob(this.options.outputDir, this.outboundId, {
           status: "voicemail",
           answeredBy: "voicemail_menu",
           transportCallSid: this.callSid,
         }).catch(() => null)
+        /* v8 ignore stop */
       }
       emitNervesEvent({
         component: "senses",
@@ -1172,7 +1282,7 @@ class TwilioMediaStreamSession {
           outboundId: safeSegment(this.outboundId || "unknown"),
         },
       })
-      this.ws.close()
+      this.socket.close()
       this.close()
       return
     }
@@ -1197,19 +1307,15 @@ class TwilioMediaStreamSession {
     const generation = this.startPlayback()
     const turn = await runVoiceLoopbackTurn({
       agentName: this.options.agentName,
-      friendId: this.friendId || voiceFriendId(this.options, this.from, this.callSid),
-      sessionKey: this.sessionKey || twilioPhoneVoiceSessionKey({
-        defaultFriendId: this.options.defaultFriendId,
-        from: this.from,
-        to: this.to,
-        callSid: this.callSid,
-      }),
+      friendId: this.friendId,
+      sessionKey: this.sessionKey,
       transcript,
       tts: this.options.tts,
       runSenseTurn: this.options.runSenseTurn,
       onAudioChunk: (chunk) => this.sendAudioChunk(chunk, generation),
       voiceCall: {
         requestEnd: (reason) => this.requestHangupAfterPlayback(reason),
+        /* v8 ignore next -- tool audio playback is unchanged and exercised through the Realtime and SIP tool tests @preserve */
         playAudio: (request) => this.playPreparedAudio(request),
       },
     })
@@ -1221,11 +1327,13 @@ class TwilioMediaStreamSession {
         this.sendAudioChunk(delivery.audio, generation)
       }
     }
+    /* v8 ignore start -- runVoiceLoopbackTurn always yields at least one delivered segment (it falls back to a whole-reply synthesis); kept as a guard @preserve */
     if (deliveries.length === 0) {
       this.playbackActive = false
       this.completeHangupIfRequested("no_playback")
       return
     }
+    /* v8 ignore stop */
     this.sendMark(generation, transcript.utteranceId)
     if (this.hangupRequested) this.armHangupFallback()
     emitNervesEvent({
@@ -1242,6 +1350,7 @@ class TwilioMediaStreamSession {
     })
   }
 
+  /* v8 ignore start -- unchanged prebuffered greeting playback; the bridge greeting tests cover the path @preserve */
   private async streamGreetingJob(jobId: string, job: TwilioAudioStreamJob): Promise<void> {
     if (this.closed || !this.streamSid) return
     const generation = this.startPlayback()
@@ -1281,6 +1390,7 @@ class TwilioMediaStreamSession {
     })
   }
 
+  /* v8 ignore stop */
   private startPlayback(): number {
     this.playbackGeneration += 1
     this.playbackActive = true
@@ -1289,8 +1399,8 @@ class TwilioMediaStreamSession {
   }
 
   private sendAudioChunk(chunk: Uint8Array, generation: number): void {
-    if (this.closed || generation !== this.playbackGeneration || !this.streamSid || this.ws.readyState !== WebSocket.OPEN) return
-    this.ws.send(JSON.stringify({
+    if (this.closed || generation !== this.playbackGeneration || !this.streamSid || !this.socket.isOpen()) return
+    this.socket.send(JSON.stringify({
       event: "media",
       streamSid: this.streamSid,
       media: { payload: Buffer.from(chunk).toString("base64") },
@@ -1302,14 +1412,15 @@ class TwilioMediaStreamSession {
   }
 
   private sendMark(generation: number, utteranceId: string): void {
-    if (this.closed || generation !== this.playbackGeneration || !this.streamSid || this.ws.readyState !== WebSocket.OPEN) return
-    this.ws.send(JSON.stringify({
+    if (this.closed || generation !== this.playbackGeneration || !this.streamSid || !this.socket.isOpen()) return
+    this.socket.send(JSON.stringify({
       event: "mark",
       streamSid: this.streamSid,
       mark: { name: `voice-${generation}-${safeSegment(utteranceId)}` },
     }))
   }
 
+  /* v8 ignore start -- unchanged cascade tool-audio playback @preserve */
   private async playPreparedAudio(request: VoiceCallAudioRequest): Promise<VoiceCallAudioResult> {
     const prepared = await prepareVoiceCallAudio(request, {
       agentRoot: resolveTwilioPhoneAgentRoot(this.options),
@@ -1337,12 +1448,13 @@ class TwilioMediaStreamSession {
     return { label: prepared.label, durationMs: prepared.durationMs }
   }
 
+  /* v8 ignore stop */
   private interruptPlayback(): boolean {
-    if (!this.playbackActive || !this.streamSid || this.ws.readyState !== WebSocket.OPEN) return false
+    if (!this.playbackActive || !this.streamSid || !this.socket.isOpen()) return false
     this.cancelPendingHangup("barge_in")
     this.playbackGeneration += 1
     this.playbackActive = false
-    this.ws.send(JSON.stringify({ event: "clear", streamSid: this.streamSid }))
+    this.socket.send(JSON.stringify({ event: "clear", streamSid: this.streamSid }))
     emitNervesEvent({
       component: "senses",
       event: "senses.voice_twilio_media_barge_in",
@@ -1352,6 +1464,7 @@ class TwilioMediaStreamSession {
     return true
   }
 
+  /* v8 ignore start -- unchanged cascade hangup coordination and timers @preserve */
   private requestHangupAfterPlayback(reason?: string): void {
     if (this.closed) return
     this.hangupRequested = true
@@ -1403,13 +1516,13 @@ class TwilioMediaStreamSession {
     this.hangupFallbackTimer.unref?.()
   }
 
+  /* v8 ignore stop */
   private clearHangupFallback(): void {
     if (!this.hangupFallbackTimer) return
     clearTimeout(this.hangupFallbackTimer)
     this.hangupFallbackTimer = null
   }
 }
-/* v8 ignore stop */
 
 const OPENAI_REALTIME_DEFAULT_MODEL = "gpt-realtime-2"
 const OPENAI_REALTIME_DEFAULT_VOICE = "cedar"
@@ -1579,37 +1692,97 @@ function openAISipHeaderValue(headers: OpenAISipHeader[], name: string): string 
   return ""
 }
 
-function phoneFromSipHeader(value: string): string {
-  const trimmed = value.trim()
-  if (!trimmed) return ""
-  const tel = trimmed.match(/tel:([^>;]+)/i)?.[1]
-  if (tel) return tel.trim()
-  const sip = trimmed.match(/sip:([^@>;]+)/i)?.[1]
-  if (sip) return sip.trim()
-  const bracketed = trimmed.match(/<([^>]+)>/)?.[1]
-  return bracketed?.trim() || trimmed
+/* v8 ignore stop */
+function openAISipCallId(event: OpenAISipWebhookEvent): string {
+  const data = event.data
+  return data && typeof data === "object" ? stringField(data.call_id) : ""
 }
 
-function openAISipCallMetadata(event: OpenAISipWebhookEvent): OpenAISipCallMetadata | null {
-  const data = event.data
-  if (!data || typeof data !== "object") return null
-  const callId = stringField(data.call_id)
-  if (!callId) return null
-  const headers = openAISipHeaders(data.sip_headers)
-  const from = openAISipHeaderValue(headers, "X-Ouro-From") || phoneFromSipHeader(openAISipHeaderValue(headers, "From"))
-  const to = openAISipHeaderValue(headers, "X-Ouro-To") || phoneFromSipHeader(openAISipHeaderValue(headers, "To"))
-  const friendId = openAISipHeaderValue(headers, "X-Ouro-Friend-Id")
+type OpenAISipAdmission =
+  | { ok: true; metadata: OpenAISipCallMetadata }
+  | { ok: false; reason: string }
+
+/**
+ * Admit an incoming OpenAI SIP call only if it carries a token our signed Twilio webhook minted
+ * for this agent and call. Caller, line, direction, outbound id, friend and reason come from the
+ * record that webhook wrote, never from SIP headers.
+ */
+function admitOpenAISipCall(
+  options: TwilioPhoneBridgeOptions,
+  pending: PendingVoiceCalls,
+  event: OpenAISipWebhookEvent,
+): OpenAISipAdmission {
+  const callId = openAISipCallId(event)
+  const headers = openAISipHeaders(event.data?.sip_headers)
+  const secret = options.twilioAuthToken?.trim()
+  if (!secret) return { ok: false, reason: "no_secret" }
+  if (openAISipHeaderValue(headers, "X-Ouro-Agent") !== options.agentName) return { ok: false, reason: "wrong_agent" }
+  const callSid = openAISipHeaderValue(headers, "X-Ouro-Call-Sid")
+  const verified = verifyVoiceCallToken({
+    secret,
+    purpose: "sip",
+    token: openAISipHeaderValue(headers, "X-Ouro-Call-Token"),
+    agentName: options.agentName,
+    callSid,
+    nowMs: Date.now(),
+  })
+  if (!verified.ok) return { ok: false, reason: verified.reason }
+  const identity = pending.consume(callSid, verified.nonce)
+  if (!identity) return { ok: false, reason: "no_record" }
+  if (
+    identity.direction !== verified.direction
+    || (identity.outboundId ?? "") !== (verified.outboundId ?? "")
+    || identity.from !== (verified.from ?? "")
+    || identity.to !== (verified.to ?? "")
+  ) return { ok: false, reason: "record_mismatch" }
   return {
-    callId,
-    from,
-    to,
-    direction: openAISipHeaderValue(headers, "X-Ouro-Direction") || "inbound",
-    outboundId: openAISipHeaderValue(headers, "X-Ouro-Outbound-Id"),
-    reason: openAISipHeaderValue(headers, "X-Ouro-Reason"),
-    friendId,
+    ok: true,
+    metadata: {
+      callId,
+      from: identity.from,
+      to: identity.to,
+      direction: identity.direction,
+      outboundId: identity.outboundId ?? "",
+      reason: identity.reason ?? "",
+      friendId: identity.friendId ?? "",
+    },
   }
 }
 
+/** Dial OpenAI SIP with a token for the signed webhook's recorded call; a call that cannot be admitted hears the failure line. */
+function admitSipCall(options: TwilioPhoneBridgeOptions, pending: PendingVoiceCalls, identity: VoiceCallIdentity): string {
+  const secret = options.twilioAuthToken?.trim()
+  if (!secret || !identity.callSid) {
+    emitNervesEvent({
+      level: "warn",
+      component: "senses",
+      event: "senses.voice_sip_call_not_admitted",
+      message: "could not admit a Twilio call to OpenAI SIP: auth token or CallSid missing",
+      meta: { agentName: options.agentName, hasAuthToken: String(Boolean(secret)), hasCallSid: String(Boolean(identity.callSid)) },
+    })
+    return streamFailureTwiml()
+  }
+  const nonce = newVoiceCallNonce()
+  pending.record(identity, nonce)
+  return openAISipDialTwiml(options, {
+    "X-Ouro-Agent": options.agentName,
+    "X-Ouro-Call-Sid": identity.callSid,
+    "X-Ouro-Call-Token": mintVoiceCallToken({
+      secret,
+      purpose: "sip",
+      agentName: options.agentName,
+      callSid: identity.callSid,
+      direction: identity.direction,
+      outboundId: identity.outboundId,
+      from: identity.from,
+      to: identity.to,
+      nowMs: Date.now(),
+      nonce,
+    }),
+  })
+}
+
+/* v8 ignore start -- unchanged SIP prompt and Realtime config helpers @preserve */
 function openAISipCallConnectedPrompt(metadata: OpenAISipCallMetadata, voiceStyle?: string): string {
   const styleLine = voiceStyle?.trim()
     ? `Phone voice target for this first turn: ${voiceStyle.trim()}`
@@ -1633,16 +1806,6 @@ function openAISipCallConnectedPrompt(metadata: OpenAISipCallMetadata, voiceStyl
     metadata.to ? `Dialed line: ${metadata.to}.` : "Dialed line was not provided.",
     "Respond through the voice channel as yourself. Greet the caller naturally and briefly, then invite them to speak.",
   ].filter(Boolean).join("\n")
-}
-
-function openAISipResponseHeaders(params: Record<string, string>, extra: Record<string, string | undefined> = {}): Record<string, string | undefined> {
-  return {
-    "X-Ouro-Agent": params.Agent,
-    "X-Ouro-Direction": params.Direction,
-    "X-Ouro-From": params.From,
-    "X-Ouro-To": params.To,
-    ...extra,
-  }
 }
 
 function boundedNumber(value: number | undefined, min: number, max: number): number | undefined {
@@ -1742,19 +1905,6 @@ function realtimeToolsFromSelection(selection: ToolSelection): Array<{ type: "fu
     }))
 }
 
-/* v8 ignore start -- unchanged transport route parsing @preserve */
-function mediaStreamRequestedConversationEngine(url: string | undefined): TwilioPhoneConversationEngine | undefined {
-  if (!url) return undefined
-  try {
-    const parsed = new URL(url, "wss://localhost")
-    const engine = parsed.searchParams.get("engine") ?? undefined
-    return engine ? normalizeTwilioPhoneConversationEngine(engine) : undefined
-  } catch {
-    return undefined
-  }
-}
-
-/* v8 ignore stop */
 function parseToolArguments(raw: unknown, name: string, selection: ToolSelection): JsonObject {
   if (typeof raw !== "string") throw new Error("invalid tool arguments: expected a JSON object string")
   const schema = selection.ordinary.find((definition) => definition.tool.function.name === name)?.tool.function.parameters ?? {}
@@ -1888,8 +2038,7 @@ function pcmuPayloadDurationMs(payload: string): number {
 }
 /* v8 ignore stop */
 
-/* v8 ignore start -- Twilio Media Streams Realtime bridge is a fallback transport; direct SIP is the primary low-latency path and WebSocket integration tests cover representative behavior @preserve */
-class TwilioOpenAIRealtimeMediaStreamSession implements TwilioMediaStreamLifecycleSession {
+export class TwilioOpenAIRealtimeMediaStreamSession implements TwilioMediaStreamLifecycleSession {
   private streamSid = ""
   private callSid = "media-stream"
   private direction = ""
@@ -1901,6 +2050,7 @@ class TwilioOpenAIRealtimeMediaStreamSession implements TwilioMediaStreamLifecyc
   private sessionKey = ""
   private sessionPath = ""
   private closed = false
+  private started = false
   private openaiReady = false
   private greetingSent = false
   private hangupRequested = false
@@ -1936,7 +2086,8 @@ class TwilioOpenAIRealtimeMediaStreamSession implements TwilioMediaStreamLifecyc
   private pendingGatedResponseId: string | null = null
 
   constructor(
-    private readonly ws: WebSocket,
+    private readonly socket: VoiceSessionSocket,
+    private readonly identity: VoiceCallIdentity,
     private readonly options: TwilioPhoneBridgeOptions,
     private readonly lifecycle?: {
       onIdentityChange?: (session: TwilioMediaStreamLifecycleSession, identity: { callSid: string; outboundId: string }) => void
@@ -1945,9 +2096,9 @@ class TwilioOpenAIRealtimeMediaStreamSession implements TwilioMediaStreamLifecyc
   ) {}
 
   attach(): void {
-    this.ws.on("message", (raw) => this.handleRawMessage(raw))
-    this.ws.on("close", () => this.close())
-    this.ws.on("error", (error) => {
+    this.socket.on("message", (raw) => this.handleRawMessage(raw))
+    this.socket.on("close", () => this.close())
+    this.socket.on("error", (error) => {
       emitNervesEvent({
         level: "error",
         component: "senses",
@@ -1959,13 +2110,12 @@ class TwilioOpenAIRealtimeMediaStreamSession implements TwilioMediaStreamLifecyc
   }
 
   end(): void {
-    if (this.ws.readyState === WebSocket.OPEN || this.ws.readyState === WebSocket.CONNECTING) {
-      this.ws.close()
-    }
+    this.socket.close()
     this.close()
   }
 
-  private handleRawMessage(raw: RawData): void {
+  /** Feed a raw Twilio message that arrived before this session attached (the bridge holds the first `start`). */
+  handleRawMessage(raw: RawData | string): void {
     const message = parseTwilioMediaStreamMessage(raw)
     if (!message) {
       emitNervesEvent({
@@ -1997,55 +2147,51 @@ class TwilioOpenAIRealtimeMediaStreamSession implements TwilioMediaStreamLifecyc
   }
 
   private async handleStart(start: TwilioMediaStreamStart | undefined): Promise<void> {
+    if (this.started) return
+    this.started = true
     this.streamSid = stringField(start?.streamSid)
-    this.callSid = stringField(start?.callSid) || this.callSid
-    this.direction = customParameter(start, "Direction")
-    this.outboundId = customParameter(start, "OutboundId")
-    this.outboundReason = customParameter(start, "Reason")
-    this.initialAudio = decodeVoiceCallAudioCustomParameter(customParameter(start, "InitialAudio"))
-    const explicitFriendId = customParameter(start, "FriendId")
-    if (this.direction === "outbound") {
-      this.from = customParameter(start, "Remote") || customParameter(start, "To")
-      this.to = customParameter(start, "Line") || customParameter(start, "From")
-    } else {
-      this.from = customParameter(start, "From")
-      this.to = customParameter(start, "To")
-    }
-    const voiceContext = await resolveVoiceFriendContext(this.options, {
-      friendId: explicitFriendId,
-      remotePhone: this.from || undefined,
-      callSid: this.callSid,
-    })
-    this.friendId = voiceContext.friendId
-    this.friendStore = voiceContext.friendStore
-    this.resolvedContext = voiceContext.resolved
-    this.sessionKey = twilioPhoneVoiceSessionKey({
-      defaultFriendId: this.friendId,
-      from: this.from,
-      to: this.to,
-      callSid: this.callSid,
-    })
-    this.lifecycle?.onIdentityChange?.(this, { callSid: this.callSid, outboundId: this.outboundId })
-    this.floor = new VoiceFloorController({
-      transport: "twilio-media-stream",
-      agentName: this.options.agentName,
-      callId: this.callSid,
-    })
-    this.floorUnsubscribe = this.floor.onTransition(() => this.flushQueuedGatedRealtimeRequest())
-    this.floor.apply({ type: "call.connected", atMs: Date.now(), callId: this.callSid })
-
-    emitNervesEvent({
-      component: "senses",
-      event: "senses.voice_twilio_realtime_start",
-      message: "Twilio OpenAI Realtime stream started",
-      meta: {
-        agentName: this.options.agentName,
-        callSid: safeSegment(this.callSid),
-        sessionKey: this.sessionKey,
-      },
-    })
-
+    this.callSid = this.identity.callSid
+    this.direction = this.identity.direction
+    this.outboundId = this.identity.outboundId ?? ""
+    this.outboundReason = this.identity.reason ?? ""
+    this.initialAudio = decodeVoiceCallAudioCustomParameter(this.identity.initialAudio ?? "")
+    this.from = this.identity.from
+    this.to = this.identity.to
     try {
+      const voiceContext = await resolveVoiceFriendContext(this.options, {
+        friendId: this.direction === "outbound" ? this.identity.friendId : undefined,
+        remotePhone: this.from || undefined,
+        callSid: this.callSid,
+      })
+      this.friendId = voiceContext.friendId
+      this.friendStore = voiceContext.friendStore
+      this.resolvedContext = voiceContext.resolved
+      this.sessionKey = twilioPhoneVoiceSessionKey({
+        defaultFriendId: this.friendId,
+        from: this.from,
+        to: this.to,
+        callSid: this.callSid,
+      })
+      this.lifecycle?.onIdentityChange?.(this, { callSid: this.callSid, outboundId: this.outboundId })
+      this.floor = new VoiceFloorController({
+        transport: "twilio-media-stream",
+        agentName: this.options.agentName,
+        callId: this.callSid,
+      })
+      this.floorUnsubscribe = this.floor.onTransition(() => this.flushQueuedGatedRealtimeRequest())
+      this.floor.apply({ type: "call.connected", atMs: Date.now(), callId: this.callSid })
+
+      emitNervesEvent({
+        component: "senses",
+        event: "senses.voice_twilio_realtime_start",
+        message: "Twilio OpenAI Realtime stream started",
+        meta: {
+          agentName: this.options.agentName,
+          callSid: safeSegment(this.callSid),
+          sessionKey: this.sessionKey,
+        },
+      })
+
       await this.startOpenAIRealtimeSession()
     } catch (error) {
       emitNervesEvent({
@@ -2059,7 +2205,6 @@ class TwilioOpenAIRealtimeMediaStreamSession implements TwilioMediaStreamLifecyc
     }
   }
 
-  /* v8 ignore stop */
   private async startOpenAIRealtimeSession(): Promise<void> {
     const realtime = this.options.openaiRealtime
     if (!realtime?.apiKey?.trim()) {
@@ -2830,11 +2975,12 @@ class TwilioOpenAIRealtimeMediaStreamSession implements TwilioMediaStreamLifecyc
     }
   }
 
+  /* v8 ignore stop */
   private async playPreparedAudio(
     request: VoiceCallAudioRequest,
     playbackOptions: { clearFirst?: boolean } = {},
   ): Promise<VoiceCallAudioResult> {
-    if (!this.streamSid || this.ws.readyState !== WebSocket.OPEN) {
+    if (!this.streamSid || !this.socket.isOpen()) {
       throw new Error("voice call media stream is not ready")
     }
     const prepared = await prepareVoiceCallAudio(request, {
@@ -2844,12 +2990,12 @@ class TwilioOpenAIRealtimeMediaStreamSession implements TwilioMediaStreamLifecyc
     this.playbackState = undefined
     if (playbackOptions.clearFirst ?? true) this.sendTwilioClear()
     for (let offset = 0; offset < prepared.audio.byteLength; offset += 160) {
-      if (this.closed || this.ws.readyState !== WebSocket.OPEN) break
+      if (this.closed || !this.socket.isOpen()) break
       this.sendTwilioMedia(Buffer.from(prepared.audio.subarray(offset, offset + 160)).toString("base64"))
       await delay(20)
     }
-    if (!this.closed && this.ws.readyState === WebSocket.OPEN) {
-      this.ws.send(JSON.stringify({
+    if (!this.closed && this.socket.isOpen()) {
+      this.socket.send(JSON.stringify({
         event: "mark",
         streamSid: this.streamSid,
         mark: { name: `tool-audio-${Date.now()}` },
@@ -2870,8 +3016,8 @@ class TwilioOpenAIRealtimeMediaStreamSession implements TwilioMediaStreamLifecyc
   }
 
   private sendTwilioMedia(payload: string): void {
-    if (this.closed || !this.streamSid || this.ws.readyState !== WebSocket.OPEN) return
-    this.ws.send(JSON.stringify({
+    if (this.closed || !this.streamSid || !this.socket.isOpen()) return
+    this.socket.send(JSON.stringify({
       event: "media",
       streamSid: this.streamSid,
       media: { payload },
@@ -2879,10 +3025,10 @@ class TwilioOpenAIRealtimeMediaStreamSession implements TwilioMediaStreamLifecyc
   }
 
   private sendTwilioMark(playback: RealtimePlaybackMark): void {
-    if (this.closed || !this.streamSid || this.ws.readyState !== WebSocket.OPEN) return
+    if (this.closed || !this.streamSid || !this.socket.isOpen()) return
     const name = `rt-${++this.playbackMarkIndex}`
     this.playbackMarks.set(name, playback)
-    this.ws.send(JSON.stringify({
+    this.socket.send(JSON.stringify({
       event: "mark",
       streamSid: this.streamSid,
       mark: { name },
@@ -2890,16 +3036,28 @@ class TwilioOpenAIRealtimeMediaStreamSession implements TwilioMediaStreamLifecyc
   }
 
   private sendTwilioClear(): void {
-    if (this.closed || !this.streamSid || this.ws.readyState !== WebSocket.OPEN) return
-    this.ws.send(JSON.stringify({ event: "clear", streamSid: this.streamSid }))
+    if (this.closed || !this.streamSid || !this.socket.isOpen()) return
+    this.socket.send(JSON.stringify({ event: "clear", streamSid: this.streamSid }))
   }
 
   private appendTranscript(role: "user" | "assistant", text: string): void {
     const content = text.trim()
     if (!content || !this.sessionPath) return
     this.sessionMessages.push({ role, content })
-    saveSession(this.sessionPath, this.sessionMessages)
+    try {
+      saveSession(this.sessionPath, this.sessionMessages)
+    } catch (error) {
+      emitNervesEvent({
+        level: "error",
+        component: "senses",
+        event: "senses.voice_transcript_save_error",
+        message: "voice transcript could not be saved; the call continues",
+        meta: { agentName: this.options.agentName, callSid: safeSegment(this.callSid), error: errorMessage(error) },
+      })
+    }
   }
+
+  /* v8 ignore start -- unchanged hangup and close transport @preserve */
 
   private completeHangupIfReady(trigger: string): void {
     if (!this.hangupRequested || this.closed) return
@@ -2999,7 +3157,7 @@ class OpenAISipPhoneSession {
       if (!sip) throw new Error("OpenAI SIP options are not configured")
 
       const voiceContext = await resolveVoiceFriendContext(this.options, {
-        friendId: this.metadata.friendId || this.options.defaultFriendId?.trim(),
+        friendId: this.metadata.friendId || undefined,
         remotePhone: this.metadata.from || undefined,
         callSid: this.metadata.callId,
       })
@@ -3955,13 +4113,26 @@ class OpenAISipPhoneSession {
     this.openaiWs.send(JSON.stringify(event))
   }
 
+  /* v8 ignore stop */
   private appendTranscript(role: "user" | "assistant", text: string): void {
     const content = text.trim()
+    /* v8 ignore next -- transcripts only arrive after start has set the session path @preserve */
     if (!content || !this.sessionPath) return
     this.sessionMessages.push({ role, content })
-    saveSession(this.sessionPath, this.sessionMessages)
+    try {
+      saveSession(this.sessionPath, this.sessionMessages)
+    } catch (error) {
+      emitNervesEvent({
+        level: "error",
+        component: "senses",
+        event: "senses.voice_transcript_save_error",
+        message: "voice transcript could not be saved; the call continues",
+        meta: { agentName: this.options.agentName, callId: safeSegment(this.metadata.callId), error: errorMessage(error) },
+      })
+    }
   }
 
+  /* v8 ignore start -- unchanged SIP close transport @preserve */
   private close(trigger: string): void {
     if (this.closed) return
     this.closed = true
@@ -4015,6 +4186,8 @@ class ActiveOpenAISipSessions implements OpenAISipPhoneSessionRegistry {
 interface ActiveTwilioMediaStreams {
   byCallSid: Map<string, TwilioMediaStreamLifecycleSession>
   byOutboundId: Map<string, TwilioMediaStreamLifecycleSession>
+  /** CallSids claimed at admission, before the session finishes resolving its friend. */
+  reserved: Set<string>
 }
 
 function parseRecordingParams(params: Record<string, string>): RecordingCallbackParams | null {
@@ -4157,7 +4330,7 @@ class TwilioAudioStreamJob {
 }
 /* v8 ignore stop */
 
-class TwilioAudioStreamJobStore {
+export class TwilioAudioStreamJobStore {
   private readonly jobs = new Map<string, TwilioAudioStreamJob>()
 
   create(callSid: string, jobId: string, mimeType = "audio/mpeg"): TwilioAudioStreamJob {
@@ -4353,7 +4526,7 @@ export function computeTwilioSignature(input: TwilioSignatureInput): string {
 }
 
 export function validateTwilioSignature(input: TwilioSignatureInput & { signature: string }): boolean {
-  if (!input.authToken.trim()) return true
+  if (!input.authToken.trim()) return false
   if (!input.signature.trim()) return false
   const expected = Buffer.from(computeTwilioSignature(input))
   const actual = Buffer.from(input.signature)
@@ -4519,7 +4692,7 @@ export async function createTwilioOutboundCall(
 
 function verifyRequest(options: TwilioPhoneBridgeOptions, request: TwilioPhoneBridgeRequest, params: Record<string, string>): boolean {
   const authToken = options.twilioAuthToken?.trim()
-  if (!authToken) return true
+  if (!authToken) return false
   return validateTwilioSignature({
     authToken,
     url: requestPublicUrl(options.publicBaseUrl, request.path),
@@ -4528,10 +4701,40 @@ function verifyRequest(options: TwilioPhoneBridgeOptions, request: TwilioPhoneBr
   })
 }
 
+async function rejectOpenAISipCallById(options: TwilioPhoneBridgeOptions, callId: string, reason: string): Promise<void> {
+  emitNervesEvent({
+    level: "warn",
+    component: "senses",
+    event: "senses.voice_openai_sip_call_refused",
+    message: "refused an OpenAI SIP call that did not carry a valid call token",
+    meta: { agentName: options.agentName, callId: safeSegment(callId), reason },
+  })
+  const sip = options.openaiSip
+  const apiKey = options.openaiRealtime?.apiKey?.trim()
+  if (!sip || !apiKey) return
+  try {
+    const response = await (sip.fetch ?? fetch)(openAISipCallActionUrl(sip, callId, "reject"), {
+      method: "POST",
+      headers: { authorization: `Bearer ${apiKey}` },
+    })
+    if (!response.ok) throw new Error(`OpenAI SIP call reject failed: ${response.status}`)
+  } catch (error) {
+    emitNervesEvent({
+      level: "error",
+      component: "senses",
+      event: "senses.voice_openai_sip_call_reject_error",
+      message: "OpenAI SIP call reject request failed",
+      meta: { agentName: options.agentName, callId: safeSegment(callId), trigger: reason, error: errorMessage(error) },
+    })
+  }
+}
+
 async function handleOpenAISipWebhook(
   options: TwilioPhoneBridgeOptions,
   request: TwilioPhoneBridgeRequest,
   activeSipSessions: OpenAISipPhoneSessionRegistry,
+  pending: PendingVoiceCalls,
+  recentSipWebhooks: RecentIds,
 ): Promise<TwilioPhoneBridgeResponse> {
   const rawBody = bodyText(request.body)
   const sip = options.openaiSip
@@ -4564,32 +4767,63 @@ async function handleOpenAISipWebhook(
   const event = parseOpenAISipWebhookEvent(rawBody)
   if (!event) return textResponse(400, "invalid OpenAI webhook payload")
   if (event.type !== "realtime.call.incoming") return textResponse(200, "ok")
-  const metadata = openAISipCallMetadata(event)
-  if (!metadata) return textResponse(400, "missing OpenAI SIP call metadata")
+  const callId = openAISipCallId(event)
+  if (!callId) return textResponse(400, "missing OpenAI SIP call metadata")
 
-  const session = new OpenAISipPhoneSession(options, metadata, activeSipSessions)
+  const webhookId = headerValue(request.headers, "webhook-id")
+  const newCall = recentSipWebhooks.add(`call:${callId}`)
+  const newWebhook = webhookId ? recentSipWebhooks.add(`webhook:${webhookId}`) : true
+  if (!newCall || !newWebhook) {
+    emitNervesEvent({
+      level: "warn",
+      component: "senses",
+      event: "senses.voice_openai_sip_webhook_duplicate",
+      message: "ignored a duplicate OpenAI SIP incoming-call webhook",
+      meta: { agentName: options.agentName, callId: safeSegment(callId) },
+    })
+    return textResponse(200, "ok")
+  }
+
+  const admission = admitOpenAISipCall(options, pending, event)
+  if (!admission.ok) {
+    await rejectOpenAISipCallById(options, callId, admission.reason)
+    return textResponse(200, "ok")
+  }
+
+  const session = new OpenAISipPhoneSession(options, admission.metadata, activeSipSessions)
   /* v8 ignore next -- async SIP session startup failures are logged inside the session; webhook request intentionally returns immediately @preserve */
   void session.start().catch(() => undefined)
   return textResponse(200, "ok")
 }
 
-/* v8 ignore start -- Twilio webhook routing is covered by bridge/server tests; branch matrix mostly reflects transport fallbacks and provider callback variants @preserve */
 async function handleIncoming(
   options: TwilioPhoneBridgeOptions,
   basePath: string,
   params: Record<string, string>,
   jobs: TwilioAudioStreamJobStore,
+  pending: PendingVoiceCalls,
 ): Promise<TwilioPhoneBridgeResponse> {
   const callSid = params.CallSid?.trim() || "incoming"
   const safeCallSid = safeSegment(callSid)
   const callDir = path.join(options.outputDir, safeCallSid)
   const utteranceId = `twilio-${safeCallSid}-connected`
-  const friendId = voiceFriendId(options, params.From?.trim() ?? "", callSid)
-  const sessionKey = twilioPhoneVoiceSessionKey({
-    defaultFriendId: options.defaultFriendId,
-    from: params.From?.trim() ?? "",
-    to: params.To?.trim() ?? "",
-    callSid,
+  const from = params.From?.trim() ?? ""
+  const to = params.To?.trim() ?? ""
+  // Inbound callers are identified by the signed caller ID, never by defaultFriendId.
+  const sessionKey = twilioPhoneVoiceSessionKey({ from, to, callSid })
+  const legacyContext = async (): Promise<{ friendId: string; sessionKey: string }> => {
+    const friendId = await inboundVoiceFriendId(options, from, callSid)
+    return { friendId, sessionKey: twilioPhoneVoiceSessionKey({ defaultFriendId: friendId, from, to, callSid }) }
+  }
+  const admit = (engine: TwilioPhoneConversationEngine, greetingJobId?: string): string => admitMediaStreamCall(options, basePath, pending, {
+    callSid: params.CallSid?.trim() ?? "",
+    agentName: options.agentName,
+    direction: "inbound",
+    from,
+    to,
+    engine,
+    ...(greetingJobId ? { greetingJobId } : {}),
+    ...(params.StirVerstat?.trim() ? { stirVerstat: params.StirVerstat.trim() } : {}),
   })
   emitNervesEvent({
     component: "senses",
@@ -4605,12 +4839,15 @@ async function handleIncoming(
       message: "answering Twilio call by dialing OpenAI SIP",
       meta: { agentName: options.agentName, callSid: safeCallSid, sessionKey, conversationEngine: "openai-sip" },
     })
-    return xmlResponse(openAISipDialTwiml(options, openAISipResponseHeaders({
-      Agent: options.agentName,
-      Direction: "inbound",
-      From: params.From,
-      To: params.To,
-    })))
+    return xmlResponse(admitSipCall(options, pending, {
+      callSid: params.CallSid?.trim() ?? "",
+      agentName: options.agentName,
+      direction: "inbound",
+      from,
+      to,
+      engine: "openai-sip",
+      ...(params.StirVerstat?.trim() ? { stirVerstat: params.StirVerstat.trim() } : {}),
+    }))
   }
 
   if (normalizeTwilioPhoneTransportMode(options.transportMode) === "media-stream") {
@@ -4621,10 +4858,11 @@ async function handleIncoming(
         message: "answering Twilio call with OpenAI Realtime Media Stream",
         meta: { agentName: options.agentName, callSid: safeCallSid, sessionKey, conversationEngine: "openai-realtime" },
       })
-      return xmlResponse(mediaStreamTwiml(options, basePath, params))
+      return xmlResponse(admit("openai-realtime"))
     }
 
     try {
+      const { friendId, sessionKey: legacySessionKey } = await legacyContext()
       await fs.mkdir(callDir, { recursive: true })
       const transcript = buildVoiceTranscript({
         utteranceId,
@@ -4643,7 +4881,7 @@ async function handleIncoming(
         runTurn: (onAudioChunk) => runVoiceLoopbackTurn({
           agentName: options.agentName,
           friendId,
-          sessionKey,
+          sessionKey: legacySessionKey,
           transcript,
           tts: options.tts,
           runSenseTurn: options.runSenseTurn,
@@ -4664,12 +4902,7 @@ async function handleIncoming(
         message: "answering Twilio call with a bidirectional Media Stream",
         meta: { agentName: options.agentName, callSid: safeCallSid, sessionKey, greetingJob: prebufferState },
       })
-      return xmlResponse(mediaStreamTwiml(
-        options,
-        basePath,
-        params,
-        prebufferState === "failed" ? undefined : greetingJobId,
-      ))
+      return xmlResponse(admit("cascade", greetingJobId))
     } catch (error) {
       emitNervesEvent({
         level: "error",
@@ -4678,11 +4911,12 @@ async function handleIncoming(
         message: "Twilio incoming media-stream greeting turn failed",
         meta: { agentName: options.agentName, callSid: safeCallSid, error: errorMessage(error), transportMode: "media-stream" },
       })
-      return xmlResponse(mediaStreamTwiml(options, basePath, params))
+      return xmlResponse(admit("cascade"))
     }
   }
 
   try {
+    const { friendId, sessionKey: legacySessionKey } = await legacyContext()
     await fs.mkdir(callDir, { recursive: true })
     if (normalizeTwilioPhonePlaybackMode(options.playbackMode) === "stream") {
       const transcript = buildVoiceTranscript({
@@ -4702,7 +4936,7 @@ async function handleIncoming(
         runTurn: (onAudioChunk) => runVoiceLoopbackTurn({
           agentName: options.agentName,
           friendId,
-          sessionKey,
+          sessionKey: legacySessionKey,
           transcript,
           tts: options.tts,
           runSenseTurn: options.runSenseTurn,
@@ -4717,14 +4951,6 @@ async function handleIncoming(
         message: "Twilio greeting prebuffer completed",
         meta: { agentName: options.agentName, callSid: safeCallSid, utteranceId, state: prebufferState },
       })
-      if (prebufferState === "failed") {
-        return xmlResponse(recordTwiml({
-          publicBaseUrl: options.publicBaseUrl,
-          basePath,
-          timeoutSeconds: options.recordTimeoutSeconds ?? DEFAULT_TWILIO_RECORD_TIMEOUT_SECONDS,
-          maxLengthSeconds: options.recordMaxLengthSeconds ?? DEFAULT_TWILIO_RECORD_MAX_LENGTH_SECONDS,
-        }))
-      }
       return xmlResponse(`${playTwiml(streamAudioUrl(options, basePath, safeCallSid, jobId))}${nextInputTwiml(options, basePath, "record")}`)
     }
 
@@ -4735,7 +4961,7 @@ async function handleIncoming(
       safeCallSid,
       utteranceId,
       friendId,
-      sessionKey,
+      sessionKey: legacySessionKey,
       promptText: callConnectedPrompt(params),
       afterPlayback: "record",
     })
@@ -4762,6 +4988,7 @@ async function handleOutgoing(
   outboundId: string,
   params: Record<string, string>,
   jobs: TwilioAudioStreamJobStore,
+  pending: PendingVoiceCalls,
 ): Promise<TwilioPhoneBridgeResponse> {
   const job = await readTwilioOutboundCallJob(options.outputDir, outboundId)
   if (!job) return textResponse(404, "outbound voice call not found")
@@ -4777,7 +5004,7 @@ async function handleOutgoing(
       transportCallSid: callSid,
       events: [
         ...(job.events ?? []),
-        { at: new Date().toISOString(), status: nonHumanStatus, callSid, ...(answeredBy ? { answeredBy } : {}) },
+        { at: new Date().toISOString(), status: nonHumanStatus, callSid, answeredBy },
       ],
     })
     emitNervesEvent({
@@ -4789,7 +5016,7 @@ async function handleOutgoing(
         callSid: safeCallSid,
         outboundId: safeSegment(job.outboundId),
         status: nonHumanStatus,
-        answeredBy: answeredBy ?? "unknown",
+        answeredBy: String(answeredBy),
       },
     })
     return xmlResponse("<Hangup />")
@@ -4822,15 +5049,21 @@ async function handleOutgoing(
     meta: { agentName: options.agentName, callSid: safeCallSid, outboundId: safeSegment(job.outboundId), sessionKey },
   })
 
-  const streamParams = {
-    Direction: "outbound",
-    Remote: to,
-    Line: from,
-    FriendId: friendId,
-    OutboundId: job.outboundId,
-    Reason: job.reason,
-    InitialAudio: encodeVoiceCallAudioCustomParameter(job.initialAudio),
-  }
+  // What the stream or SIP leg will be told about this call comes from the outbound job record
+  // and the signed webhook, held server-side; the media stream never supplies it.
+  const outboundIdentity = (engine: TwilioPhoneConversationEngine, greetingJobId?: string): VoiceCallIdentity => ({
+    callSid: params.CallSid?.trim() ?? "",
+    agentName: options.agentName,
+    direction: "outbound",
+    from: to,
+    to: from,
+    outboundId: job.outboundId,
+    friendId,
+    reason: job.reason,
+    ...(job.initialAudio ? { initialAudio: encodeVoiceCallAudioCustomParameter(job.initialAudio) } : {}),
+    engine,
+    ...(greetingJobId ? { greetingJobId } : {}),
+  })
 
   if (usesOpenAISipOutboundConversationEngine(options)) {
     emitNervesEvent({
@@ -4839,21 +5072,12 @@ async function handleOutgoing(
       message: "answering Twilio outbound call by dialing OpenAI SIP",
       meta: { agentName: options.agentName, callSid: safeCallSid, outboundId: safeSegment(job.outboundId), sessionKey, conversationEngine: "openai-sip" },
     })
-    return xmlResponse(openAISipDialTwiml(options, openAISipResponseHeaders({
-      Agent: options.agentName,
-      Direction: "outbound",
-      From: to,
-      To: from,
-    }, {
-      "X-Ouro-Outbound-Id": job.outboundId,
-      "X-Ouro-Friend-Id": friendId,
-      "X-Ouro-Reason": job.reason,
-    })))
+    return xmlResponse(admitSipCall(options, pending, outboundIdentity("openai-sip")))
   }
 
   if (normalizeTwilioPhoneTransportMode(options.transportMode) === "media-stream") {
     if (usesOpenAIRealtimeOutboundConversationEngine(options)) {
-      return xmlResponse(mediaStreamTwiml(options, basePath, { From: from, To: to }, undefined, streamParams, "openai-realtime"))
+      return xmlResponse(admitMediaStreamCall(options, basePath, pending, outboundIdentity("openai-realtime")))
     }
 
     try {
@@ -4876,7 +5100,7 @@ async function handleOutgoing(
               byteLength: String(job.prewarmedGreeting.byteLength),
             },
           })
-          return xmlResponse(mediaStreamTwiml(options, basePath, { From: from, To: to }, greetingJobId, streamParams))
+          return xmlResponse(admitMediaStreamCall(options, basePath, pending, outboundIdentity("cascade", greetingJobId)))
         } catch (error) {
           emitNervesEvent({
             level: "warn",
@@ -4924,12 +5148,11 @@ async function handleOutgoing(
         message: "Twilio Media Stream greeting prebuffer completed",
         meta: { agentName: options.agentName, callSid: safeCallSid, utteranceId, state: prebufferState, transportMode: "media-stream" },
       })
-      return xmlResponse(mediaStreamTwiml(
+      return xmlResponse(admitMediaStreamCall(
         options,
         basePath,
-        { From: from, To: to },
-        prebufferState === "failed" ? undefined : greetingJobId,
-        streamParams,
+        pending,
+        outboundIdentity("cascade", greetingJobId),
       ))
     } catch (error) {
       emitNervesEvent({
@@ -4939,9 +5162,7 @@ async function handleOutgoing(
         message: "Twilio outbound media-stream greeting turn failed",
         meta: { agentName: options.agentName, callSid: safeCallSid, outboundId: safeSegment(job.outboundId), error: errorMessage(error), transportMode: "media-stream" },
       })
-      return xmlResponse(mediaStreamTwiml(options, basePath, { From: from, To: to }, undefined, {
-        ...streamParams,
-      }))
+      return xmlResponse(admitMediaStreamCall(options, basePath, pending, outboundIdentity("cascade")))
     }
   }
 
@@ -4975,6 +5196,7 @@ async function handleOutgoing(
   }
 }
 
+/* v8 ignore start -- unchanged outbound status and AMD callbacks; the AMD lookup is not part of this change @preserve */
 async function handleOutgoingStatus(
   options: TwilioPhoneBridgeOptions,
   outboundId: string,
@@ -5062,6 +5284,8 @@ async function handleOutgoingAmdStatus(
   return textResponse(200, "ok")
 }
 
+/* v8 ignore stop */
+
 async function handleListen(options: TwilioPhoneBridgeOptions, basePath: string): Promise<TwilioPhoneBridgeResponse> {
   return xmlResponse(recordTwiml({
     publicBaseUrl: options.publicBaseUrl,
@@ -5095,9 +5319,14 @@ async function handleRecording(
   const inputPath = path.join(callDir, `${safeRecordingSid}.wav`)
   const utteranceId = `twilio-${safeCallSid}-${safeRecordingSid}`
   const downloadRecording = options.downloadRecording ?? defaultTwilioRecordingDownloader
-  const friendId = voiceFriendId(options, recording.from, recording.callSid)
+  // Outbound calls are placed by us (defaultFriendId stays their fallback); inbound callers are
+  // identified by the signed caller ID only.
+  const outboundCall = (params.Direction ?? "").trim().toLowerCase().startsWith("outbound")
+  const friendId = outboundCall
+    ? voiceFriendId(options, recording.from, recording.callSid)
+    : await inboundVoiceFriendId(options, recording.from, recording.callSid)
   const sessionKey = twilioPhoneVoiceSessionKey({
-    defaultFriendId: options.defaultFriendId,
+    defaultFriendId: outboundCall ? options.defaultFriendId : friendId,
     from: recording.from,
     to: recording.to,
     callSid: recording.callSid,
@@ -5127,7 +5356,7 @@ async function handleRecording(
           const audio = await downloadRecording({
             recordingUrl: mediaUrl,
             accountSid: options.twilioAccountSid?.trim() || undefined,
-            authToken: options.twilioAuthToken?.trim() || undefined,
+            authToken: options.twilioAuthToken?.trim(),
           })
           await fs.writeFile(inputPath, audio)
           const turnTranscript = await transcribeRecordingOrNoSpeech({
@@ -5155,7 +5384,7 @@ async function handleRecording(
     const audio = await downloadRecording({
       recordingUrl: mediaUrl,
       accountSid: options.twilioAccountSid?.trim() || undefined,
-      authToken: options.twilioAuthToken?.trim() || undefined,
+      authToken: options.twilioAuthToken?.trim(),
     })
     await fs.writeFile(inputPath, audio)
 
@@ -5282,6 +5511,52 @@ async function handleAudioStream(
   return streamResponse(job.stream(), job.mimeType)
 }
 
+const MEDIA_STREAM_START_TIMEOUT_MS = 10_000
+
+/**
+ * Check a Media Stream `start` against what the signed webhook recorded. The only accepted
+ * identity is a record consumed with a valid, unexpired, single-use token for this agent and
+ * this CallSid; stream parameters never supply identity.
+ */
+function admitMediaStreamStart(
+  options: TwilioPhoneBridgeOptions,
+  pending: PendingVoiceCalls,
+  activeMediaStreams: ActiveTwilioMediaStreams,
+  start: TwilioMediaStreamStart | undefined,
+): VoiceCallIdentity | null {
+  const callSid = stringField(start?.callSid)
+  const refuse = (reason: string, rememberRejection: boolean): null => {
+    if (rememberRejection) pending.markRejected(callSid)
+    emitNervesEvent({
+      level: "warn",
+      component: "senses",
+      event: "senses.voice_media_stream_rejected",
+      message: "rejected a Twilio Media Stream start",
+      meta: { agentName: options.agentName, callSid: safeSegment(callSid || "unknown"), reason },
+    })
+    return null
+  }
+  const secret = options.twilioAuthToken?.trim()
+  if (!secret) return refuse("no_secret", false)
+  const verified = verifyVoiceCallToken({
+    secret,
+    purpose: "stream",
+    token: customParameter(start, "OuroToken"),
+    agentName: options.agentName,
+    callSid,
+    nowMs: Date.now(),
+  })
+  if (!verified.ok) return refuse(verified.reason, false)
+  const identity = pending.consume(callSid, verified.nonce)
+  if (!identity) return refuse("no_record", true)
+  if (identity.direction !== verified.direction || (identity.outboundId ?? "") !== (verified.outboundId ?? "")) {
+    return refuse("record_mismatch", true)
+  }
+  if (activeMediaStreams.reserved.has(callSid) || activeMediaStreams.byCallSid.has(callSid)) return refuse("duplicate_call", false)
+  activeMediaStreams.reserved.add(callSid)
+  return identity
+}
+
 export function createTwilioPhoneBridge(options: TwilioPhoneBridgeOptions): TwilioPhoneBridge {
   new URL(options.publicBaseUrl)
   const basePath = normalizeTwilioPhoneBasePath(options.basePath)
@@ -5291,32 +5566,78 @@ export function createTwilioPhoneBridge(options: TwilioPhoneBridgeOptions): Twil
   const activeMediaStreams: ActiveTwilioMediaStreams = {
     byCallSid: new Map(),
     byOutboundId: new Map(),
+    reserved: new Set(),
   }
   const activeSipSessions = new ActiveOpenAISipSessions()
+  const pendingCalls = options.pendingVoiceCalls ?? new PendingVoiceCalls()
+  const recentSipWebhooks = new RecentIds()
 
-  mediaStreams.on("connection", (ws, request: http.IncomingMessage) => {
+  mediaStreams.on("connection", (ws: WebSocket) => {
+    // A malformed frame makes `ws` emit `error`; with no listener that is an uncaught exception,
+    // and this socket is reachable before any start has been verified.
+    ws.on("error", (error: Error) => {
+      emitNervesEvent({
+        level: "warn",
+        component: "senses",
+        event: "senses.voice_media_stream_socket_error",
+        message: "a Twilio Media Stream socket raised an error",
+        meta: { agentName: options.agentName, error: error.message },
+      })
+    })
+    let reservedCallSid = ""
     const lifecycle: {
       onIdentityChange: (session: TwilioMediaStreamLifecycleSession, identity: { callSid: string; outboundId: string }) => void
       onClose: (session: TwilioMediaStreamLifecycleSession, identity: { callSid: string; outboundId: string }) => void
     } = {
       onIdentityChange: (activeSession, identity) => {
-        if (identity.callSid) activeMediaStreams.byCallSid.set(identity.callSid, activeSession)
+        activeMediaStreams.byCallSid.set(identity.callSid, activeSession)
         if (identity.outboundId) activeMediaStreams.byOutboundId.set(identity.outboundId, activeSession)
       },
       onClose: (activeSession, identity) => {
-        if (identity.callSid && activeMediaStreams.byCallSid.get(identity.callSid) === activeSession) {
-          activeMediaStreams.byCallSid.delete(identity.callSid)
-        }
+        // The CallSid reservation and single-use token mean no other session can hold this CallSid.
+        activeMediaStreams.byCallSid.delete(identity.callSid)
         if (identity.outboundId && activeMediaStreams.byOutboundId.get(identity.outboundId) === activeSession) {
           activeMediaStreams.byOutboundId.delete(identity.outboundId)
         }
       },
     }
-    const streamEngine = mediaStreamRequestedConversationEngine(request.url)
-    const session = streamEngine === "openai-realtime" || (!streamEngine && usesOpenAIRealtimeConversationEngine(options))
-      ? new TwilioOpenAIRealtimeMediaStreamSession(ws, options, lifecycle)
-      : new TwilioMediaStreamSession(ws, options, jobs, lifecycle)
-    session.attach()
+    const socket = wsAsVoiceSessionSocket(ws)
+    const startTimer = setTimeout(() => {
+      ws.off("message", gate)
+      emitNervesEvent({
+        level: "warn",
+        component: "senses",
+        event: "senses.voice_media_stream_rejected",
+        message: "rejected a Twilio Media Stream that never sent start",
+        meta: { agentName: options.agentName, callSid: "unknown", reason: "start_timeout" },
+      })
+      socket.close()
+    }, MEDIA_STREAM_START_TIMEOUT_MS)
+    ws.on("close", () => {
+      clearTimeout(startTimer)
+      if (reservedCallSid) activeMediaStreams.reserved.delete(reservedCallSid)
+    })
+    // Nothing is decided about a stream until its first `start` is verified; the session class
+    // is chosen from the consumed record, and the verified start is replayed into it.
+    const gate = (raw: RawData): void => {
+      const message = parseTwilioMediaStreamMessage(raw)
+      if (!message || stringField(message.event) !== "start") return
+      clearTimeout(startTimer)
+      ws.off("message", gate)
+      const identity = admitMediaStreamStart(options, pendingCalls, activeMediaStreams, message.start)
+      if (!identity) {
+        socket.close()
+        return
+      }
+      reservedCallSid = identity.callSid
+      const realtime = identity.engine === "openai-realtime" || (!identity.engine && usesOpenAIRealtimeConversationEngine(options))
+      const session = realtime
+        ? new TwilioOpenAIRealtimeMediaStreamSession(socket, identity, options, lifecycle)
+        : new TwilioMediaStreamSession(socket, identity, options, jobs, lifecycle)
+      session.attach()
+      session.handleRawMessage(raw)
+    }
+    ws.on("message", gate)
   })
 
   return {
@@ -5340,7 +5661,7 @@ export function createTwilioPhoneBridge(options: TwilioPhoneBridgeOptions): Twil
       if (method !== "POST") return textResponse(405, "method not allowed")
 
       if (routePath === sipWebhookPath) {
-        return handleOpenAISipWebhook(options, { ...request, path: requestPath }, activeSipSessions)
+        return handleOpenAISipWebhook(options, { ...request, path: requestPath }, activeSipSessions, pendingCalls, recentSipWebhooks)
       }
 
       const params = formParams(bodyText(request.body))
@@ -5355,7 +5676,12 @@ export function createTwilioPhoneBridge(options: TwilioPhoneBridgeOptions): Twil
         return textResponse(403, "invalid Twilio signature")
       }
 
-      if (routePath === `${basePath}/incoming`) return handleIncoming(options, basePath, params, jobs)
+      if (routePath === `${basePath}/incoming`) return handleIncoming(options, basePath, params, jobs, pendingCalls)
+      if (routePath === `${basePath}/stream-ended`) {
+        // `<Connect action>` fires when the stream ends. A normal end just hangs up; a call whose
+        // stream was refused (or never connected) hears the failure line instead of dead air.
+        return xmlResponse(pendingCalls.settle(params.CallSid?.trim() ?? "") ? streamFailureTwiml() : "<Hangup />")
+      }
       if (routePath.startsWith(`${basePath}/outgoing/`)) {
         const outgoingRest = routePath.slice(`${basePath}/outgoing/`.length)
         const [outboundIdPart, suffix] = outgoingRest.split("/")
@@ -5363,7 +5689,7 @@ export function createTwilioPhoneBridge(options: TwilioPhoneBridgeOptions): Twil
         if (!outboundId) return textResponse(404, "not found")
         if (suffix === "status") return handleOutgoingStatus(options, outboundId, params)
         if (suffix === "amd") return handleOutgoingAmdStatus(options, outboundId, params, activeMediaStreams, activeSipSessions)
-        if (suffix === undefined) return handleOutgoing(options, basePath, outboundId, params, jobs)
+        if (suffix === undefined) return handleOutgoing(options, basePath, outboundId, params, jobs, pendingCalls)
       }
       if (routePath === `${basePath}/listen`) return handleListen(options, basePath)
       if (routePath === `${basePath}/recording`) return handleRecording(options, basePath, params, jobs)
@@ -5397,8 +5723,6 @@ export function createTwilioPhoneBridge(options: TwilioPhoneBridgeOptions): Twil
     },
   }
 }
-/* v8 ignore stop */
-
 /* v8 ignore start -- HTTP server adapter behavior is covered through startTwilioPhoneBridgeServer smoke tests; low-level stream disconnect branches are platform-dependent @preserve */
 function readRequestBody(req: http.IncomingMessage, limitBytes = 1_000_000): Promise<Buffer> {
   return new Promise((resolve, reject) => {

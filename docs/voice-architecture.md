@@ -241,6 +241,20 @@ audition. It is meant to answer "would this call shape have felt synchronous,
 tool-aware, identity-aware, and interruption-safe?" without needing someone to
 pick up the phone.
 
+## Security
+
+Phone calls reach the agent through two public doors: the signed Twilio webhooks and the Media Stream or OpenAI SIP connection that follows them. A call is only as trusted as the weakest of these, so the rules below are fail-closed.
+
+- **The Twilio auth token is required.** It signs and checks every webhook, and it is the key for call tokens. Without `voice.twilioAuthToken` the Twilio phone transport does not start, and signature validation returns false instead of falling back to unsigned mode.
+- **Identity comes from server state.** The signed `/incoming` or `/outgoing/{id}` webhook records who the call is with (the signed `From`, the dialed line, the direction, the outbound job's friend and reason, the chosen engine and any greeting or initial audio) in a bounded, short-lived registry keyed by CallSid. Media Stream and SIP parameters never supply identity, friend, direction, greeting, remote, line or audio.
+- **A short-lived token proves the connection belongs to that webhook.** The webhook mints an HMAC-SHA256 token (purpose `stream` or `sip`, agent, CallSid, direction, expiry and a nonce; SIP tokens also cover the caller and line) and hands it over as the `OuroToken` stream parameter or the `X-Ouro-Call-Token` SIP header. The first `start` message must carry it; the bridge verifies the signature in constant time, checks agent, CallSid, purpose and expiry, and consumes the registry record so the token works once. The session class (cascade or Realtime) is chosen from the consumed record, never from the URL.
+- **Refusals close the connection.** A stream with no valid token, a replayed token, a restart that lost its record, or a second live stream for the same CallSid is closed and logged (`senses.voice_media_stream_rejected`). A stream that never sends `start` is closed after 10 seconds. OpenAI SIP webhooks without a valid token are rejected with a `reject` call to OpenAI and never accepted; duplicate `call_id` and webhook ids are ignored.
+- **A refused call does not go quiet.** The Media Stream `<Connect>` carries an `action` callback (`/stream-ended`). If the stream was refused or never connected, the callback returns a short spoken failure line and hangs up; after a normal call it simply hangs up.
+- **Friend lookup is not path-reachable.** Friend ids are validated (`[A-Za-z0-9._-]`, up to 128 characters, not `.` or `..`) and matched exactly before they touch the friend store. `defaultFriendId` never identifies an inbound caller on any transport; unknown callers become their own friend records.
+- **One bad call cannot kill the process.** A failed transcript save is logged and the call continues, and the voice process logs stray unhandled rejections and exceptions (`senses.voice_process_error`) instead of exiting.
+
+The OpenAI SIP leg depends on OpenAI forwarding the custom `X-Ouro-*` headers from the SIP URI. If they are absent the call fails closed (it is rejected), so confirm header forwarding with a live call before relying on SIP.
+
 ## Identity And Providers
 
 The agent should have one coherent spoken identity for a transport family. Do
