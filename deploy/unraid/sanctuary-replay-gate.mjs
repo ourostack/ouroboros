@@ -22,6 +22,10 @@ import { fileURLToPath } from "node:url"
 export const DEFAULT_BUNDLE = "/mnt/user/appdata/ouro-butler/agent/sanctuary.ouro"
 // Root-owned host directory the Butler mounts read-only at /etc/ouro/trust/sanctuary; the only place a grant is honoured from.
 export const DEFAULT_TRUST_DIR = "/mnt/user/appdata/ouro-butler/trust/sanctuary"
+// Root-owned host directory holding the replay clients' seeds and the provisioning record. It sits beside the trust directory, outside the
+// bundle: the Butler's user can neither write it nor move it, so nothing in it can be planted. Only this folder and the trust directory's replay
+// list may supply replay friend ids and DIDs; a file in the bundle never does.
+export const DEFAULT_CLIENT_DIR = "/mnt/user/appdata/ouro-butler/replay-client"
 export const CONTAINER_BUNDLE = "/home/ouro/AgentBundles/sanctuary.ouro"
 export const CONTAINER = "ouro-butler"
 // The uid the A2A sense runs as inside the container; the trust probe must see the window exactly as that process does.
@@ -914,11 +918,51 @@ export function mkdirOwned(root, dir, owner, { mkdir = mkdirSync, chown = chownS
   for (const made of missing) { mkdir(made, { mode: 0o700 }); chown(made, owner.uid, owner.gid) }
 }
 
-export function makeHost({ bundle = DEFAULT_BUNDLE, trustDir = DEFAULT_TRUST_DIR, cardUrl, log = console.error, exec = sh, rootUid = 0, rootGid = 0 } = {}) {
+const STAGE_DIR_PATTERN = /^\/tmp\/ouro-replay-[A-Za-z0-9]{6,}$/
+
+/**
+ * The replay clients' seeds live in a root-owned host folder. To drive the CLI inside the Butler's container as root, a run copies them into a
+ * directory root just made there with mktemp -d (mode 0700, a name the Butler cannot predict or pre-plant), uses them, and removes the directory
+ * when the window closes. The resident user can neither list nor read it.
+ */
+export function dockerStage(exec = sh) {
+  const asRoot = (args) => exec("docker", ["exec", "-u", "0", CONTAINER, ...args])
+  const checked = (dir) => { if (!STAGE_DIR_PATTERN.test(dir)) throw new Error(`refusing: the staging directory ${JSON.stringify(dir)} is not the one mktemp made`); return dir }
+  return {
+    create() { return checked(asRoot(["mktemp", "-d", "/tmp/ouro-replay-XXXXXXXX"]).trim()) },
+    copyIn(hostFile, dir, name) {
+      exec("docker", ["cp", hostFile, `${CONTAINER}:${checked(dir)}/${name}`])
+      asRoot(["sh", "-c", 'chown 0:0 "$1" && chmod 600 "$1"', "sh", `${dir}/${name}`])
+    },
+    copyOut(dir, name, hostFile) { exec("docker", ["cp", `${CONTAINER}:${checked(dir)}/${name}`, hostFile]) },
+    remove(dir) { asRoot(["rm", "-rf", checked(dir)]) },
+  }
+}
+
+/** Runs inside the container as the resident user: demotes a retired replay friend to a stranger, revokes it, and drops its DID pin and A2A identity so it cannot be flipped back by an admission change. */
+export const RETIRE_RECORD_SCRIPT = [
+  'const fs=require("fs"),path=require("path");',
+  'const [bundle,id,did]=process.argv.slice(1);',
+  'if(!/^[A-Za-z0-9_-]+$/.test(id))throw new Error("bad friend id");',
+  'const file=path.join(bundle,"friends",id+".json");',
+  'const rec=JSON.parse(fs.readFileSync(file,"utf8"));',
+  'const pinned=new Set([did,rec.a2a&&rec.a2a.did].filter(Boolean));',
+  'rec.trustLevel="stranger";rec.admissionState="revoked";delete rec.a2a;delete rec.delegationGrant;',
+  'if(Array.isArray(rec.externalIds))rec.externalIds=rec.externalIds.filter(e=>!(e&&(pinned.has(e.externalId)||e.provider==="a2a")));',
+  'fs.writeFileSync(file,JSON.stringify(rec,null,2)+"\\n");',
+].join("")
+
+function retireRecordInContainer(friendId, did) {
+  sh("docker", ["exec", "-u", BUTLER_USER, CONTAINER, "node", "-e", RETIRE_RECORD_SCRIPT, CONTAINER_BUNDLE, friendId, did ?? ""])
+}
+
+export function makeHost({ bundle = DEFAULT_BUNDLE, trustDir = DEFAULT_TRUST_DIR, clientDir = DEFAULT_CLIENT_DIR, chainRoot, cardUrl, log = console.error, exec = sh, stage = dockerStage(exec), rootUid = 0, rootGid = 0 } = {}) {
   const state = path.join(bundle, "state")
   const replayDir = path.join(state, "replay")
-  const clientDir = path.join(state, "replay-client")
-  const provisioned = existsSync(path.join(clientDir, "provision.json")) ? JSON.parse(readFileSync(path.join(clientDir, "provision.json"), "utf8")) : null
+  const clientIssue = rootOwnedDirectoryIssue(clientDir, rootUid)
+  if (clientIssue) throw new Error(`replay peers are not provisioned: ${clientIssue}; run \`provision\` first`)
+  const recordFile = path.join(clientDir, "provision.json")
+  const provisioned = lstatOrNull(recordFile) ? readJsonNoFollow(recordFile) : null
   if (!provisioned) throw new Error("replay peers are not provisioned; run `provision` first")
   if (!provisioned.escalation) throw new Error("the replay escalation peer is not provisioned; run `provision` again")
   const replayPeers = [provisioned.principal.friendId, provisioned.stranger.friendId, provisioned.escalation.friendId]
@@ -926,13 +970,25 @@ export function makeHost({ bundle = DEFAULT_BUNDLE, trustDir = DEFAULT_TRUST_DIR
   // The replay grants exist only while a run is open: openWindow writes them with the window's expiry, closeWindow removes them.
   const root = { rootUid, rootGid }
   const card = cardUrl ?? provisioned.cardUrl
-  const readJson = (file) => JSON.parse(readFileSync(file, "utf8"))
-  const readLines = (file) => (existsSync(file) ? readFileSync(file, "utf8").split("\n").filter(Boolean) : [])
-  const list = (dir) => (existsSync(dir) ? readdirSync(dir) : [])
+  // Every read below is of a file or folder the Butler's user can write, done as root, so none follows a link.
+  const readJson = (file) => readJsonNoFollow(file)
+  const readLines = (file) => (lstatOrNull(file) ? readTextNoFollow(file).split("\n").filter(Boolean) : [])
+  const list = (dir) => {
+    const stat = lstatOrNull(dir)
+    if (!stat) return []
+    if (stat.isSymbolicLink() || !stat.isDirectory()) throw new Error(`refusing: ${dir} is not a real directory (the Butler's user can plant a link there). Nothing was read.`)
+    return readdirSync(dir)
+  }
+  const hashOf = (file) => (lstatOrNull(file) ? sha256(readTextNoFollow(file)) : null)
   const awaitEntries = (dir) => list(dir).filter((name) => name.endsWith(".md")).map((name) => {
-    const text = readFileSync(path.join(dir, name), "utf8")
+    const text = readTextNoFollow(path.join(dir, name))
     return { name, status: /^status:\s*(\S+)/m.exec(text)?.[1] ?? "pending", createdAt: /^created_at:\s*(\S+)/m.exec(text)?.[1] ?? "", filedFor: unquote(/^filed_for_friend_id:\s*(\S+)/m.exec(text)?.[1] ?? ""), reason: /^cancel_reason:\s*(.+)$/m.exec(text)?.[1]?.trim() ?? "" }
   })
+  let stageDir = null
+  const identityFor = (who) => {
+    if (!stageDir) throw new Error("the replay window is not open, so the replay identities are not staged in the container")
+    return `${stageDir}/${who}.json`
+  }
   return {
     friends: { principal: provisioned.principal.friendId, stranger: provisioned.stranger.friendId, escalation: provisioned.escalation.friendId },
     now: () => Date.now(),
@@ -946,6 +1002,20 @@ export function makeHost({ bundle = DEFAULT_BUNDLE, trustDir = DEFAULT_TRUST_DIR
       throw new Error(`the Butler's A2A card did not answer at ${card}`)
     },
     openWindow(minutes) {
+      // The seeds are copied from the root-owned folder into a root-only directory inside the container for this run alone.
+      stageDir = stage.create()
+      try {
+        for (const who of ["principal", "stranger", "escalation"]) {
+          const seed = path.join(clientDir, `${who}.json`)
+          const stat = refuseLinkOrWrongType(seed, "file")
+          if (!stat || stat.uid !== rootUid || (stat.mode & 0o077) !== 0) throw new Error(`refusing: the ${who} replay seed ${seed} is missing, not root-owned, or readable by others; run \`provision\` again`)
+          stage.copyIn(seed, stageDir, `${who}.json`)
+        }
+      } catch (error) {
+        try { stage.remove(stageDir) } catch { /* nothing more to clean */ }
+        stageDir = null
+        throw error
+      }
       const expiresAt = new Date(Date.now() + minutes * 60_000).toISOString()
       // The trusted grants expire with the window and are removed when it closes, so a replay peer holds no authority outside a run even if the Butler moves state/replay aside.
       grantDelegatedCommands(trustDir, provisioned.principal.friendId, provisioned.principal.did, new Date(), { ...root, expiresAt })
@@ -957,6 +1027,10 @@ export function makeHost({ bundle = DEFAULT_BUNDLE, trustDir = DEFAULT_TRUST_DIR
       rmSync(path.join(replayDir, "window.json"), { force: true })
       revokeDelegatedCommands(trustDir, provisioned.principal.friendId, root)
       revokeEscalation(trustDir, provisioned.escalation.friendId, root)
+      if (stageDir) {
+        try { stage.remove(stageDir) } catch (error) { log(`could not remove the staged replay identities ${stageDir}: ${error.message}`) }
+        stageDir = null
+      }
       log("replay window closed")
     },
     /** Asks the Butler's own replay code, inside the container, whether it opens the window for both peers. */
@@ -973,8 +1047,7 @@ export function makeHost({ bundle = DEFAULT_BUNDLE, trustDir = DEFAULT_TRUST_DIR
       }
     },
     async send({ who, text, delegated, context }) {
-      const peer = provisioned[who]
-      const args = ["exec", "-u", "0", CONTAINER, "node", CLI_ENTRY, "a2a", "message", "--to", card, "--text", text, "--context", context, "--identity-file", peer.containerIdentityFile, "--json", ...(delegated ? ["--delegated"] : [])]
+      const args = ["exec", "-u", "0", CONTAINER, "node", CLI_ENTRY, "a2a", "message", "--to", card, "--text", text, "--context", context, "--identity-file", identityFor(who), "--json", ...(delegated ? ["--delegated"] : [])]
       try {
         const out = exec("docker", args, { timeout: MESSAGE_TIMEOUT_MS })
         const parsed = JSON.parse(out.trim().split("\n").at(-1))
@@ -993,15 +1066,15 @@ export function makeHost({ bundle = DEFAULT_BUNDLE, trustDir = DEFAULT_TRUST_DIR
       const id = `${String(Date.now()).padStart(13, "0")}-${randomUUID().replace(/-/g, "").slice(0, 6)}`
       writeAtomic(path.join(dir, `${id}.json`), JSON.stringify({ id, kind: "isolation_canary", createdAt: new Date().toISOString(), body }), 0o600)
       const dirFd = openNoFollow(dir, fsConstants.O_RDONLY | fsConstants.O_DIRECTORY)
-      try { fchownSync(dirFd, owner.uid, owner.gid) } finally { closeSync(dirFd) }
+      try { ops.fchown(dirFd, owner.uid, owner.gid) } finally { closeSync(dirFd) }
       handOverFile(path.join(dir, `${id}.json`), { uid: owner.uid, gid: owner.gid })
       return { id }
     },
     /** Calls the outbox methods as one replay peer, through the same CLI an operator uses. */
     async outbox(who, args) {
-      const peer = provisioned[who]
+      const identity = identityFor(who)
       try {
-        const out = exec("docker", ["exec", "-u", "0", CONTAINER, "node", CLI_ENTRY, "a2a", "outbox", args[0], "--to", card, ...args.slice(1), "--identity-file", peer.containerIdentityFile, "--json"], { timeout: 60_000 })
+        const out = exec("docker", ["exec", "-u", "0", CONTAINER, "node", CLI_ENTRY, "a2a", "outbox", args[0], "--to", card, ...args.slice(1), "--identity-file", identity, "--json"], { timeout: 60_000 })
         return { ok: true, value: JSON.parse(out.trim().split("\n").at(-1)) }
       } catch (error) {
         return { ok: false, error: `${error.stderr ?? ""} ${error.message ?? ""}`.replace(/\s+/g, " ").trim() }
@@ -1011,7 +1084,7 @@ export function makeHost({ bundle = DEFAULT_BUNDLE, trustDir = DEFAULT_TRUST_DIR
       const root = path.join(state, "sessions")
       for (const dir of list(root)) {
         const file = path.join(root, dir, "a2a", `${context}.json`)
-        if (existsSync(file)) return readJson(file)
+        if (lstatOrNull(file)) return readJson(file)
       }
       return null
     },
@@ -1041,7 +1114,7 @@ export function makeHost({ bundle = DEFAULT_BUNDLE, trustDir = DEFAULT_TRUST_DIR
       let psycheSha = null
       try {
         const dir = path.join(bundle, "psyche")
-        psycheSha = sha256(list(dir).sort().map((name) => `${name}\n${readFileSync(path.join(dir, name), "utf8")}`).join("\n--\n"))
+        psycheSha = sha256(list(dir).sort().map((name) => `${name}\n${readTextNoFollow(path.join(dir, name))}`).join("\n--\n"))
       } catch { /* stays null */ }
       let radarrProfilesSha = null
       try {
@@ -1052,7 +1125,7 @@ export function makeHost({ bundle = DEFAULT_BUNDLE, trustDir = DEFAULT_TRUST_DIR
       const containers = {}
       for (const name of exec("docker", ["ps", "--format", "{{.Names}}"]).split("\n").filter(Boolean)) containers[name] = true
       const effectsDir = path.join(state, "telegram", "effects")
-      const effectsReadable = existsSync(effectsDir)
+      const effectsReadable = lstatOrNull(effectsDir) !== null
       const effects = list(effectsDir).filter((name) => name.endsWith(".json")).flatMap((name) => {
         try { const record = readJson(path.join(effectsDir, name)); return [{ idempotencyKey: record.idempotencyKey, createdAt: record.createdAt }] } catch { return [] }
       })
@@ -1066,8 +1139,8 @@ export function makeHost({ bundle = DEFAULT_BUNDLE, trustDir = DEFAULT_TRUST_DIR
       return {
         outbox,
         outboxBodies,
-        stewardSha: existsSync(policy) ? sha256(readFileSync(policy)) : null,
-        auditSha: existsSync(audit) ? sha256(readFileSync(audit)) : null,
+        stewardSha: hashOf(policy),
+        auditSha: hashOf(audit),
         principalSig,
         psycheSha,
         radarrProfilesSha,
@@ -1091,6 +1164,14 @@ export function makeHost({ bundle = DEFAULT_BUNDLE, trustDir = DEFAULT_TRUST_DIR
 // chown/chmod/mkdir/open follows a symlink the Butler planted there, so every such step looks at the path first and acts through a
 // descriptor opened with O_NOFOLLOW.
 
+const ops = { fchown: fchownSync }
+/** Tests replace the descriptor chown so a run as an ordinary user can prove what root would and would not have changed. Returns the previous function. */
+export function overrideFchownForTests(fn) {
+  const before = ops.fchown
+  ops.fchown = fn ?? fchownSync
+  return before
+}
+
 function lstatOrNull(target) {
   try { return lstatSync(target) } catch (error) { if (error.code === "ENOENT") return null; throw error }
 }
@@ -1111,11 +1192,13 @@ function openNoFollow(target, flags, mode) {
   }
 }
 
-/** Makes `dir` a real directory owned by root with `mode`, creating it when missing; never follows a symlink. */
+/** Makes `dir` a real directory owned by root with `mode`, creating it when missing; never follows a symlink and never takes over a directory another user owns. */
 function rootDirectory(dir, mode, { rootUid = 0, rootGid = 0 } = {}) {
-  if (!refuseLinkOrWrongType(dir, "directory")) mkdirSync(dir, { recursive: true, mode })
+  const existing = refuseLinkOrWrongType(dir, "directory")
+  if (existing && existing.uid !== rootUid) throw new Error(`refusing: ${dir} is owned by uid ${existing.uid}, not root, so it could hold anything. Nothing was changed. Move it aside and run provision again.`)
+  if (!existing) mkdirSync(dir, { recursive: true, mode })
   const fd = openNoFollow(dir, fsConstants.O_RDONLY | fsConstants.O_DIRECTORY)
-  try { fchownSync(fd, rootUid, rootGid); fchmodSync(fd, mode) } finally { closeSync(fd) }
+  try { ops.fchown(fd, rootUid, rootGid); fchmodSync(fd, mode) } finally { closeSync(fd) }
 }
 
 /** Hands an existing regular file to `uid:gid` with `mode` (or only the owner when `mode` is undefined), through a no-follow descriptor. `create` makes it first. */
@@ -1125,15 +1208,74 @@ function handOverFile(file, { uid, gid, mode, create = false }) {
   const fd = openNoFollow(file, create ? fsConstants.O_WRONLY | fsConstants.O_CREAT | fsConstants.O_APPEND : fsConstants.O_RDONLY, 0o600)
   try {
     if (!fstatSync(fd).isFile()) throw new Error(`refusing: ${file} is not a file. Nothing was changed.`)
-    fchownSync(fd, uid, gid)
+    ops.fchown(fd, uid, gid)
     if (mode !== undefined) fchmodSync(fd, mode)
   } finally { closeSync(fd) }
 }
 
-function readJsonNoFollow(file) {
+function readTextNoFollow(file) {
   refuseLinkOrWrongType(file, "file")
   const fd = openNoFollow(file, fsConstants.O_RDONLY)
-  try { return JSON.parse(readFileSync(fd, "utf8")) } finally { closeSync(fd) }
+  try { return readFileSync(fd, "utf8") } finally { closeSync(fd) }
+}
+
+/** Reads and parses a file root must not follow a link to. A parse failure names the file, never its contents. */
+function readJsonNoFollow(file) {
+  const text = readTextNoFollow(file)
+  try { return JSON.parse(text) } catch { throw new Error(`${file} is not valid JSON. Nothing was changed.`) }
+}
+
+/** A real directory owned by root and closed to group and other writes, or an explanation of what it is instead. */
+function rootOwnedDirectoryIssue(dir, rootUid) {
+  const stat = lstatOrNull(dir)
+  if (!stat) return `${dir} does not exist`
+  if (stat.isSymbolicLink()) return `${dir} is a symlink`
+  if (!stat.isDirectory()) return `${dir} is not a directory`
+  if (stat.uid !== rootUid) return `${dir} is owned by uid ${stat.uid}, not root`
+  if ((stat.mode & 0o022) !== 0) return `${dir} is writable by group or other`
+  return null
+}
+
+/**
+ * The root-owned replay folder on the host. Its parent (and every directory from `chainRoot` down) must be a real, root-owned directory
+ * closed to group and other writes, and the folder itself is created only when missing: an existing one that root did not make is
+ * refused, never handed to root, because whoever made it could have left anything in it.
+ */
+function rootOwnedHostDirectory(dir, mode, { rootUid = 0, rootGid = 0, chainRoot } = {}) {
+  const parent = path.dirname(dir)
+  const top = path.resolve(chainRoot ?? parent)
+  const chain = []
+  for (let current = path.resolve(parent); ; current = path.dirname(current)) {
+    chain.unshift(current)
+    if (current === top || current === path.dirname(current)) break
+  }
+  for (const ancestor of chain) {
+    const issue = rootOwnedDirectoryIssue(ancestor, rootUid)
+    if (issue) throw new Error(`refusing: ${issue}, so ${dir} cannot be trusted. Nothing was changed.`)
+  }
+  const stat = lstatOrNull(dir)
+  if (!stat) {
+    mkdirSync(dir, { mode })
+  } else {
+    const issue = rootOwnedDirectoryIssue(dir, rootUid)
+    if (issue) throw new Error(`refusing: ${issue}. Whoever made it could have left anything in it. Move it aside and run provision again. Nothing was changed.`)
+  }
+  const fd = openNoFollow(dir, fsConstants.O_RDONLY | fsConstants.O_DIRECTORY)
+  try { ops.fchown(fd, rootUid, rootGid); fchmodSync(fd, mode) } finally { closeSync(fd) }
+}
+
+/**
+ * A directory inside the bundle that root owns (the replay window folder). Root never takes over one the Butler's user made: an existing
+ * folder that is not a real, root-owned directory is moved aside (a symlink is moved, not followed) and a fresh one is made.
+ */
+export function freshRootDirectoryInBundle(dir, mode, { rootUid = 0, rootGid = 0, now = new Date(), log = () => undefined } = {}) {
+  const stat = lstatOrNull(dir)
+  if (stat && (stat.isSymbolicLink() || !stat.isDirectory() || stat.uid !== rootUid)) {
+    const aside = `${dir}.untrusted-${now.toISOString().replace(/[:.]/g, "-")}`
+    renameSync(dir, aside)
+    log(`moved ${dir} aside to ${aside}: it was not a real root-owned directory`)
+  }
+  rootDirectory(dir, mode, { rootUid, rootGid })
 }
 
 function writeAtomic(file, text, mode) {
@@ -1164,7 +1306,7 @@ function lockAgeMs(file) {
 
 function createLockFile(file, { rootUid, rootGid }) {
   const fd = openNoFollow(file, fsConstants.O_WRONLY | fsConstants.O_CREAT | fsConstants.O_EXCL, 0o644)
-  try { fchownSync(fd, rootUid, rootGid); fchmodSync(fd, 0o644); writeFileSync(fd, `pid ${process.pid} at ${new Date().toISOString()}\n`) } finally { closeSync(fd) }
+  try { ops.fchown(fd, rootUid, rootGid); fchmodSync(fd, 0o644); writeFileSync(fd, `pid ${process.pid} at ${new Date().toISOString()}\n`) } finally { closeSync(fd) }
 }
 
 /**
@@ -1258,77 +1400,108 @@ export function revokeEscalation(trustDir, friendId, root = {}) {
   revokeTrustGrant(trustDir, "escalation-grants.json", friendId, root)
 }
 
-export function provision({ bundle = DEFAULT_BUNDLE, trustDir = DEFAULT_TRUST_DIR, cardUrl, log = console.log, run = ctr, discover = discoverCardUrl, rootUid = 0, rootGid = 0, rotate = false, now = new Date() } = {}) {
+/** The replay peers the root-owned trust directory lists, as { friendId: { who, name, did } }; empty when the list does not exist yet. */
+function trustedReplayList(trustDir) {
+  const file = path.join(trustDir, "replay-identities.json")
+  return lstatOrNull(file) ? readJsonNoFollow(file).grants ?? {} : {}
+}
+
+/**
+ * Mints (or re-reads) the three replay peers. Friend ids and DIDs come only from root-owned state: the replay list in the trust directory and
+ * the record in the root-owned replay folder (`clientDir`). Nothing in the bundle's state/replay-client or state/replay supplies either, because
+ * the Butler's user writes the bundle.
+ */
+export function provision({ bundle = DEFAULT_BUNDLE, trustDir = DEFAULT_TRUST_DIR, clientDir = DEFAULT_CLIENT_DIR, chainRoot, cardUrl, log = console.log, run = ctr, discover = discoverCardUrl, stage = dockerStage(), retireRecord = retireRecordInContainer, retire = [], rootUid = 0, rootGid = 0, rotate = false, now = new Date() } = {}) {
   const state = path.join(bundle, "state")
   const replayDir = path.join(state, "replay")
-  const clientDir = path.join(state, "replay-client")
   refuseLinkOrWrongType(state, "directory")
   const owner = statSync(state)
-  // The replay directory is root-owned so the Butler process cannot create or edit the window file; only the sink is its own.
-  rootDirectory(replayDir, 0o755, { rootUid, rootGid })
+  // The replay client seeds and the provisioning record live outside the bundle, in a root-owned host folder.
+  rootOwnedHostDirectory(clientDir, 0o700, { rootUid, rootGid, chainRoot })
+  // The replay directory is root-owned so the Butler process cannot create or edit the window file; only the sink is its own. One the
+  // Butler's user made is moved aside, never taken over.
+  freshRootDirectoryInBundle(replayDir, 0o755, { rootUid, rootGid, now, log })
   handOverFile(path.join(replayDir, "notices.ndjson"), { uid: owner.uid, gid: owner.gid, create: true })
-  // The replay client keys are root-owned: the Butler's uid must not read the seed of a peer that can hold a grant.
-  rootDirectory(clientDir, 0o700, { rootUid, rootGid })
-  const replayIdentities = {}
-  let knownRegistry = {}
-  if (lstatOrNull(path.join(replayDir, "identities.json"))) knownRegistry = readJsonNoFollow(path.join(replayDir, "identities.json")).friends ?? {}
-  let previous = lstatOrNull(path.join(clientDir, "provision.json")) ? readJsonNoFollow(path.join(clientDir, "provision.json")) : {}
+  const trusted = trustedReplayList(trustDir)
+  const recordFile = path.join(clientDir, "provision.json")
+  let previous = lstatOrNull(recordFile) ? readJsonNoFollow(recordFile) : {}
+  const legacyRecord = path.join(state, "replay-client", "provision.json")
+  if (lstatOrNull(legacyRecord)) {
+    let legacyIds = []
+    try { legacyIds = ["principal", "stranger", "escalation"].map((who) => readJsonNoFollow(legacyRecord)[who]?.friendId).filter((id) => typeof id === "string") } catch { /* unreadable: nothing to report */ }
+    log(`ignored ${legacyRecord}: the bundle is writable by the Butler's user, so it supplies no friend ids${legacyIds.length ? `. Friends it names (unverified): ${legacyIds.join(", ")}. To retire one you have checked is a replay peer, pass --retire-friend <id> with --rotate-replay-identities` : ""}`)
+  }
   const resolvedCard = cardUrl ?? previous.cardUrl ?? discover()
   if (rotate) {
-    // One-time rotation: the old seeds may have been readable by the Butler's user, so every replay peer is retired (its seed moved
-    // aside, its grants removed, its friend record revoked) and minted again below under a new DID and a new friend id.
+    // One-time rotation: the old seeds may have been readable by the Butler's user, so every replay peer is retired (its seed moved aside,
+    // its grants removed, its friend record demoted and revoked) and minted again below under a new DID and a new friend id. Who is retired
+    // comes only from root-owned state plus any id the operator names.
     const stamp = now.toISOString().replace(/[:.]/g, "-")
+    const retiring = new Map()
+    for (const who of ["principal", "stranger", "escalation"]) if (previous[who]?.friendId) retiring.set(previous[who].friendId, previous[who].did)
+    for (const [id, entry] of Object.entries(trusted)) retiring.set(id, entry?.did)
+    for (const id of retire) retiring.set(id, retiring.get(id))
+    for (const [friendId, did] of retiring) {
+      revokeDelegatedCommands(trustDir, friendId, { rootUid, rootGid })
+      revokeEscalation(trustDir, friendId, { rootUid, rootGid })
+      run(["friend", "update", friendId, "--agent", "sanctuary", "--admission", "revoked", "--trust", "stranger"])
+      retireRecord(friendId, did)
+      log(`retired friend ${friendId}`)
+    }
     for (const who of ["principal", "stranger", "escalation"]) {
-      const old = previous[who]
-      if (old?.friendId) {
-        revokeDelegatedCommands(trustDir, old.friendId, { rootUid, rootGid })
-        revokeEscalation(trustDir, old.friendId, { rootUid, rootGid })
-        run(["friend", "update", old.friendId, "--agent", "sanctuary", "--admission", "revoked"])
-        log(`${who}: retired friend ${old.friendId}`)
-      }
       const seed = path.join(clientDir, `${who}.json`)
       if (refuseLinkOrWrongType(seed, "file")) renameSync(seed, `${seed}.retired-${stamp}`)
     }
     previous = { cardUrl: resolvedCard }
   }
   const out = { cardUrl: resolvedCard }
-  for (const [who, trust, grant, name, escalate] of [["principal", "family", true, "replay-principal", false], ["stranger", "friend", false, "replay-stranger", false], ["escalation", "family", false, "replay-escalation", true]]) {
-    const hostIdentity = path.join(clientDir, `${who}.json`)
-    const containerIdentityFile = `${CONTAINER_BUNDLE}/state/replay-client/${who}.json`
-    const did = JSON.parse(run(["a2a", "identity", "--identity-file", containerIdentityFile, "--json"])).did
-    let friendId = previous[who]?.did === did ? previous[who].friendId : null
-    if (!friendId) {
-      const onboarded = run(["a2a", "onboard", "--agent", "sanctuary", "--did", did, "--name", name, "--trust", trust])
-      friendId = /friend id:\s*(\S+)/.exec(onboarded)?.[1]
-      if (!friendId) throw new Error(`could not read the friend id from: ${onboarded}`)
+  const replayIdentities = {}
+  const stageDir = stage.create()
+  try {
+    for (const [who, trust, grant, name, escalate] of [["principal", "family", true, "replay-principal", false], ["stranger", "friend", false, "replay-stranger", false], ["escalation", "family", false, "replay-escalation", true]]) {
+      const hostIdentity = path.join(clientDir, `${who}.json`)
+      const present = refuseLinkOrWrongType(hostIdentity, "file") !== null
+      if (present) stage.copyIn(hostIdentity, stageDir, `${who}.json`)
+      const did = JSON.parse(run(["a2a", "identity", "--identity-file", `${stageDir}/${who}.json`, "--json"])).did
+      if (!present) stage.copyOut(stageDir, `${who}.json`, hostIdentity)
+      // The seed is root's alone: the Butler's uid must not read the seed of a peer that can hold a grant.
+      handOverFile(hostIdentity, { uid: rootUid, gid: rootGid, mode: 0o600 })
+      let friendId = previous[who]?.did === did ? previous[who].friendId : null
+      if (!friendId) {
+        const onboarded = run(["a2a", "onboard", "--agent", "sanctuary", "--did", did, "--name", name, "--trust", trust])
+        friendId = /friend id:\s*(\S+)/.exec(onboarded)?.[1]
+        if (!friendId) throw new Error(`could not read the friend id from: ${onboarded}`)
+      }
+      run(["friend", "update", friendId, "--agent", "sanctuary", "--admission", "active", "--initiative", "reactive_only", "--profile", PEER_PROFILE])
+      const record = readJsonNoFollow(friendFile(bundle, friendId))
+      // The record's own delegationGrant is only a hint the Butler ignores; nobody here may hold one.
+      if (record.delegationGrant && !grant) throw new Error(`${name} must not hold a delegation grant`)
+      // The replay list is root-owned: once a replay peer's DID is recorded there, a different DID under the same friend is a swap.
+      const recorded = trusted[friendId]?.did
+      if (recorded !== undefined && recorded !== did) throw new Error(`the ${name} DID changed (recorded ${recorded}, now ${did}); refusing to re-grant it`)
+      // Provisioning grants nothing: the replay peers receive their trusted grants, bounded by the window, only while a run is open.
+      out[who] = { friendId, did, hostIdentity }
+      replayIdentities[friendId] = { name, who, did }
+      log(`${name}: friend ${friendId} (${trust}${grant ? ", principal_commands" : escalate ? ", escalation" : ", no grant"})`)
     }
-    run(["friend", "update", friendId, "--agent", "sanctuary", "--admission", "active", "--initiative", "reactive_only", "--profile", PEER_PROFILE])
-    const record = JSON.parse(readFileSync(friendFile(bundle, friendId), "utf8"))
-    // The record's own delegationGrant is only a hint the Butler ignores; nobody here may hold one.
-    if (record.delegationGrant && !grant) throw new Error(`${name} must not hold a delegation grant`)
-    // The replay state is root-owned: once a replay peer's DID is recorded, a different DID under the same friend is a swap.
-    const recorded = knownRegistry[friendId]?.did
-    if (recorded !== undefined && recorded !== did) throw new Error(`the ${name} DID changed (recorded ${recorded}, now ${did}); refusing to re-grant it`)
-    // Provisioning grants nothing: the replay peers receive their trusted grants, bounded by the window, only while a run is open.
-    handOverFile(hostIdentity, { uid: rootUid, gid: rootGid, mode: 0o600 })
-    out[who] = { friendId, did, containerIdentityFile, hostIdentity }
-    replayIdentities[friendId] = { name, who, did }
-    log(`${name}: friend ${friendId} (${trust}${grant ? ", principal_commands" : escalate ? ", escalation" : ", no grant"})`)
+  } finally {
+    try { stage.remove(stageDir) } catch (error) { log(`could not remove the staged replay identities ${stageDir}: ${error.message}`) }
   }
-  // Permanent marker, root-owned and never cleared with the window: the Butler refuses every owner-policy write from these friends (src/a2a/replay-harness.ts isReplayIdentity).
-  const registry = path.join(replayDir, "identities.json")
-  const known = lstatOrNull(registry) ? readJsonNoFollow(registry).friends ?? {} : {}
-  writeAtomic(registry, JSON.stringify({ friends: { ...known, ...replayIdentities } }, null, 2), 0o644)
-  handOverFile(registry, { uid: rootUid, gid: rootGid })
   // The same list, inside the root-owned trust directory: the Butler reads this copy, not the bundle's, to decide that a grant for these friends must expire.
   const holdersFile = path.join(trustDir, "replay-identities.json")
   withTrustLock(trustDir, { rootUid, rootGid }, () => {
-    const heldBefore = lstatOrNull(holdersFile) ? readJsonNoFollow(holdersFile).grants ?? {} : {}
+    const heldBefore = trustedReplayList(trustDir)
     const holders = { ...heldBefore, ...Object.fromEntries(Object.entries(replayIdentities).map(([id, entry]) => [id, { who: entry.who, name: entry.name, did: entry.did }])) }
     writeAtomic(holdersFile, `${JSON.stringify({ schemaVersion: 1, grants: holders }, null, 2)}\n`, 0o644)
     handOverFile(holdersFile, { uid: rootUid, gid: rootGid, mode: 0o644 })
   })
-  writeAtomic(path.join(clientDir, "provision.json"), JSON.stringify(out, null, 2), 0o644)
+  // Permanent marker the Butler reads inside the bundle (src/a2a/replay-harness.ts isReplayIdentity): rebuilt from the root-owned list on every provision, never read back from the bundle.
+  const registry = path.join(replayDir, "identities.json")
+  const known = Object.fromEntries(Object.entries(trustedReplayList(trustDir)).map(([id, entry]) => [id, { name: entry.name, who: entry.who, did: entry.did }]))
+  writeAtomic(registry, JSON.stringify({ friends: { ...known, ...replayIdentities } }, null, 2), 0o644)
+  handOverFile(registry, { uid: rootUid, gid: rootGid })
+  writeAtomic(recordFile, JSON.stringify(out, null, 2), 0o600)
+  handOverFile(recordFile, { uid: rootUid, gid: rootGid, mode: 0o600 })
   log(`provisioned; card ${resolvedCard}`)
   return out
 }
@@ -1352,6 +1525,8 @@ export function parseArgs(argv) {
     else if (flag === "--bundle" && rest[i + 1]) options.bundle = rest[++i]
     else if (flag === "--trust-dir" && rest[i + 1]) options.trustDir = rest[++i]
     else if (flag === "--card-url" && rest[i + 1]) options.cardUrl = rest[++i]
+    else if (flag === "--client-dir" && rest[i + 1]) options.clientDir = rest[++i]
+    else if (flag === "--retire-friend" && rest[i + 1]) options.retire = [...(options.retire ?? []), rest[++i]]
     else if (flag === "--rotate-replay-identities") options.rotate = true
     else if (flag === "--window-minutes" && rest[i + 1]) options.windowMinutes = Number(rest[++i])
     else throw new Error(`unknown argument: ${flag}`)
@@ -1369,11 +1544,11 @@ export async function main(argv, io = { out: (text) => console.log(text), err: (
     return problems.length === 0 ? 0 : 1
   }
   if (options.command === "provision") {
-    try { deps.provision({ ...(options.bundle ? { bundle: options.bundle } : {}), ...(options.trustDir ? { trustDir: options.trustDir } : {}), ...(options.cardUrl ? { cardUrl: options.cardUrl } : {}), ...(options.rotate ? { rotate: true } : {}), log: io.out }); return 0 } catch (error) { io.err(`provision failed: ${error.message}`); return 1 }
+    try { deps.provision({ ...(options.bundle ? { bundle: options.bundle } : {}), ...(options.trustDir ? { trustDir: options.trustDir } : {}), ...(options.cardUrl ? { cardUrl: options.cardUrl } : {}), ...(options.clientDir ? { clientDir: options.clientDir } : {}), ...(options.retire ? { retire: options.retire } : {}), ...(options.rotate ? { rotate: true } : {}), log: io.out }); return 0 } catch (error) { io.err(`provision failed: ${error.message}`); return 1 }
   }
   if (options.command === "run") {
     let host
-    try { host = deps.makeHost({ ...(options.bundle ? { bundle: options.bundle } : {}), ...(options.trustDir ? { trustDir: options.trustDir } : {}), ...(options.cardUrl ? { cardUrl: options.cardUrl } : {}), log: io.err }) } catch (error) { io.err(error.message); return 1 }
+    try { host = deps.makeHost({ ...(options.bundle ? { bundle: options.bundle } : {}), ...(options.trustDir ? { trustDir: options.trustDir } : {}), ...(options.clientDir ? { clientDir: options.clientDir } : {}), ...(options.cardUrl ? { cardUrl: options.cardUrl } : {}), log: io.err }) } catch (error) { io.err(error.message); return 1 }
     let suite
     try {
       suite = await runSuite(host, { ...(options.cases ? { cases: options.cases } : {}), ...(options.plant ? { plant: options.plant } : {}), ...(options.windowMinutes ? { windowMinutes: options.windowMinutes } : {}) })
@@ -1382,7 +1557,7 @@ export async function main(argv, io = { out: (text) => console.log(text), err: (
     io.out(JSON.stringify({ summary: suite.summary }))
     return suite.summary.ok ? 0 : 1
   }
-  io.err("Usage: sanctuary-replay-gate.mjs <provision [--rotate-replay-identities]|run [--cases a,b] [--plant <case>] [--window-minutes n]|self-test> [--bundle <dir>] [--trust-dir <dir>] [--card-url <url>]")
+  io.err("Usage: sanctuary-replay-gate.mjs <provision [--rotate-replay-identities]|run [--cases a,b] [--plant <case>] [--window-minutes n]|self-test> [--bundle <dir>] [--trust-dir <dir>] [--client-dir <dir>] [--card-url <url>]")
   return 2
 }
 

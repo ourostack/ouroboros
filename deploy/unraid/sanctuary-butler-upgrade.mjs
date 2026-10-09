@@ -72,7 +72,8 @@ const MAINTENANCE = "/run/ouro-authority-maintenance"
 // The stop hook's flag: every keeper watchdog version stands down while it exists.
 const SHUTDOWN_FLAG = "/run/ouro-authority-shutdown"
 const GATE_SCRIPT = `${ROOT}/package/deploy/unraid/sanctuary-replay-gate.mjs`
-const GATE_PROVISION = `${BUNDLE}/state/replay-client/provision.json`
+// The replay clients' seeds and provisioning record: a root-owned host folder outside the bundle, which the Butler's user cannot write.
+const GATE_PROVISION = "/mnt/user/appdata/ouro-butler/replay-client/provision.json"
 // The whole gate (every case, including the eight-minute await wait) must finish well inside this; a hung gate is a failed gate.
 export const GATE_TIMEOUT_MS = 95 * 60 * 1000
 const UPGRADE_STEPS = ["stop", "switch", "resident", "migrate", "start"]
@@ -1090,7 +1091,7 @@ async function upgrade(version, rehearse, { noGate = false, plant } = {}) {
   if (rehearse && !UPGRADE_STEPS.includes(rehearse)) fail(`--rehearse takes one of: ${UPGRADE_STEPS.join(", ")}`)
   const gated = !rehearse && !noGate
   if (noGate && !rehearse) console.log("\n!! --no-gate: this upgrade will NOT be replay-gated or auto-rolled-back on a behavioural regression")
-  if (gated && !existsSync(GATE_PROVISION)) fail(`replay peers are not provisioned (${GATE_PROVISION}); run \`sanctuary-replay-gate.mjs provision\` first (once, on the upgrade that introduces the root-owned replay seeds, run \`provision --rotate-replay-identities\` instead so no earlier seed survives), or pass --no-gate`)
+  if (gated && !existsSync(GATE_PROVISION)) fail(`replay peers are not provisioned (${GATE_PROVISION}); run \`sanctuary-replay-gate.mjs provision\` first (once, on the upgrade that moves the replay seeds out of the bundle into that root-owned folder, run \`provision --rotate-replay-identities\` instead so no earlier seed survives; any seed or provision.json under state/replay-client in the bundle was writable by the Butler and is ignored), or pass --no-gate`)
   if (!existsSync(`${ROOT}/active.json`) || !existsSync(`${ROOT}/activation.json`)) fail("no installed authority; use prepare + install")
   if (existsSync(JOURNAL)) fail("a template transaction is pending; resolve it first")
   let id = imageId(version)

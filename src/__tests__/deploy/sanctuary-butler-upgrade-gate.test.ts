@@ -139,6 +139,14 @@ describe("upgrade script contract", () => {
     expect(body.indexOf("replay peers are not provisioned")).toBeLessThan(body.indexOf("pauseSupervision()"))
   })
 
+  it("looks for the provisioning record in the root-owned replay folder outside the bundle and says how to rotate (review of #1064, round 3, finding 1)", () => {
+    expect(source).toContain('const GATE_PROVISION = "/mnt/user/appdata/ouro-butler/replay-client/provision.json"')
+    expect(source).not.toContain("${BUNDLE}/state/replay-client")
+    const hint = source.slice(at("replay peers are not provisioned"), at("replay peers are not provisioned") + 700)
+    expect(hint).toContain("provision --rotate-replay-identities")
+    expect(hint).toContain("ignored")
+  })
+
   it("runs the live package's gate and passes --plant through", () => {
     expect(source).toContain("const GATE_SCRIPT = `${ROOT}/package/deploy/unraid/sanctuary-replay-gate.mjs`")
     expect(source).toContain('[GATE_SCRIPT, "run", ...(plant ? ["--plant", plant] : [])]')
