@@ -5,6 +5,7 @@ import {
   type DelegatedCommandGrant,
 } from "./delegated-command-grants"
 import { escalationGrantsPath, readEscalationGrants, setEscalationGrant, viewEscalationGrants } from "./escalation-grants"
+import { isReplayGrantHolder } from "./replay-grant-holders"
 import { operatorTrustDir } from "./operator-trust"
 import { friendDid } from "./resolution-proof"
 
@@ -100,6 +101,7 @@ export async function executeDelegatedCommandsCommand(command: DelegatedCommands
   if (command.action === "revoke") return revokeDelegatedCommands(command.friendId!, ctx)
   const expiresAt = parseExpiry(command.expires, ctx.now)
   const friend = await requireFriend(ctx, command.friendId)
+  if (expiresAt === undefined && isReplayGrantHolder(ctx.agentRoot, friend.id)) throw new Error(`refusing: ${friend.name} is a replay peer (it is on the replay gate's list in ${operatorTrustDir(ctx.agentRoot)}), and a replay peer's grant must expire. Pass --expires <ISO date>. Nothing was written.`)
   const did = checkedDid(friend, command.did)
   const selfNotes = await vetPinnedDid(ctx, friend, did, readDelegatedCommandGrants(ctx.agentRoot))
   const change = setDelegatedCommandGrant(ctx.agentRoot, friend.id, { grant: true, did, source: command.source ?? `ouro a2a delegated-commands grant, ${ctx.now.toISOString()}`, ...(expiresAt ? { expiresAt } : {}) }, ctx.now)
@@ -199,6 +201,7 @@ export async function executeEscalationCommand(command: EscalationCommandInput, 
   requireRoot(ctx)
   if (command.action === "revoke") return revokeEscalation(command.friendId!, ctx)
   const friend = await requireFriend(ctx, command.friendId)
+  if (isReplayGrantHolder(ctx.agentRoot, friend.id)) throw new Error(`refusing: ${friend.name} is a replay peer (it is on the replay gate's list in ${operatorTrustDir(ctx.agentRoot)}). Only the replay gate grants it escalation, and only while a run is open. Nothing was written.`)
   const did = checkedDid(friend, command.did)
   const selfNotes = await vetPinnedDid(ctx, friend, did, readEscalationGrants(ctx.agentRoot))
   const change = setEscalationGrant(ctx.agentRoot, friend.id, { grant: true, source: command.source ?? `ouro a2a escalation grant, ${ctx.now.toISOString()}`, did }, ctx.now)

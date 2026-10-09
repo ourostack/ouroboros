@@ -1267,6 +1267,13 @@ export function provision({ bundle = DEFAULT_BUNDLE, trustDir = DEFAULT_TRUST_DI
   const known = lstatOrNull(registry) ? readJsonNoFollow(registry).friends ?? {} : {}
   writeAtomic(registry, JSON.stringify({ friends: { ...known, ...replayIdentities } }, null, 2), 0o644)
   handOverFile(registry, { uid: rootUid, gid: rootGid })
+  // The same list, inside the root-owned trust directory: the Butler reads this copy, not the bundle's, to decide that a grant for these friends must expire.
+  rootDirectory(trustDir, 0o755, { rootUid, rootGid })
+  const holdersFile = path.join(trustDir, "replay-identities.json")
+  const heldBefore = lstatOrNull(holdersFile) ? readJsonNoFollow(holdersFile).grants ?? {} : {}
+  const holders = { ...heldBefore, ...Object.fromEntries(Object.entries(replayIdentities).map(([id, entry]) => [id, { who: entry.who, name: entry.name, did: entry.did }])) }
+  writeAtomic(holdersFile, `${JSON.stringify({ schemaVersion: 1, grants: holders }, null, 2)}\n`, 0o644)
+  handOverFile(holdersFile, { uid: rootUid, gid: rootGid, mode: 0o644 })
   writeAtomic(path.join(clientDir, "provision.json"), JSON.stringify(out, null, 2), 0o644)
   log(`provisioned; card ${resolvedCard}`)
   return out

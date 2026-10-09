@@ -1,7 +1,6 @@
 import type { FriendRecord, FriendStore } from "@ouro.bot/friends"
 import { emitNervesEvent } from "../nerves/runtime"
-import { isReplayGrantSource } from "./delegated-command-grants"
-import { isReplayIdentity } from "./replay-harness"
+import { isReplayGrantHolder } from "./replay-grant-holders"
 import { operatorTrustFile, readGrantFile, withTrustedWriteLock, writeTrustedFile, type GrantFileView } from "./operator-trust"
 
 /**
@@ -72,10 +71,10 @@ function setEscalationGrantLocked(agentRoot: string, friendId: string, change: {
   return { changed: true, backup }
 }
 
-/** A grant is in force when its trusted expiry has not passed; a replay-gate grant or listed replay identity with no expiry is never in force. */
+/** A grant is in force when its trusted expiry has not passed; a grant with no expiry for a friend on the root-owned replay list is never in force. */
 function inForce(agentRoot: string, friendId: string, grant: EscalationGrant | undefined, now: number): grant is EscalationGrant {
   if (!grant) return false
-  if (grant.expiresAt === undefined) return !(isReplayGrantSource(grant.source) || isReplayIdentity(agentRoot, friendId))
+  if (grant.expiresAt === undefined) return !isReplayGrantHolder(agentRoot, friendId)
   const expiresAt = Date.parse(grant.expiresAt)
   return Number.isFinite(expiresAt) && expiresAt > now
 }

@@ -5,7 +5,7 @@ import { afterEach, describe, expect, it, vi } from "vitest"
 import { FileFriendStore, type FriendRecord } from "@ouro.bot/friends"
 import { createTmpBundle, type TmpBundleHandle } from "../test-helpers/tmpdir-bundle"
 import { overrideTrustedUidForTests } from "../../a2a/trusted-files"
-import { overrideFchownForTests } from "../../a2a/operator-trust"
+import { operatorTrustDir, overrideFchownForTests } from "../../a2a/operator-trust"
 import { escalationGrantsPath, escalationHolders, holdsEscalation, pinnedHolderDid, readEscalationGrants, setEscalationGrant } from "../../a2a/escalation-grants"
 
 let tmp: TmpBundleHandle | null = null
@@ -184,6 +184,8 @@ describe("escalation grant expiry (review of #1064, finding 1)", () => {
     setEscalationGrant(agentRoot, "h", { grant: true, source: "operator", did: "did:key:h", expiresAt: "never" }, new Date(at + 1000))
     expect(holdsEscalation(agentRoot, holder, at)).toBe(false)
     setEscalationGrant(agentRoot, "h", { grant: true, source: "replay gate provisioning (host root)", did: "did:key:h" }, new Date(at + 2000))
+    expect(holdsEscalation(agentRoot, holder, at)).toBe(true)
+    fs.writeFileSync(path.join(operatorTrustDir(agentRoot), "replay-identities.json"), JSON.stringify({ schemaVersion: 1, grants: { h: { who: "escalation", name: "h", did: "did:key:h" } } }), { mode: 0o644 })
     expect(holdsEscalation(agentRoot, holder, at)).toBe(false)
     expect(pinnedHolderDid(agentRoot, "missing", at)).toBeNull()
   })

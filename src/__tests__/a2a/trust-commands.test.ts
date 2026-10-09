@@ -30,6 +30,28 @@ const ctx = (overrides: Partial<TrustCommandContext> = {}): TrustCommandContext 
 const grant = (friend: string, extra: Partial<Parameters<typeof executeDelegatedCommandsCommand>[0]> = {}, c: Partial<TrustCommandContext> = {}) =>
   executeDelegatedCommandsCommand({ kind: "a2a.delegatedCommands", action: "grant", friendId: friend, did: DID, ...extra } as never, ctx(c))
 
+describe("replay peers (review of #1064, round 2, finding 5)", () => {
+  const listAsReplay = (id: string) => {
+    fs.mkdirSync(operatorTrustDir(tmp.agentRoot), { recursive: true, mode: 0o755 })
+    fs.writeFileSync(path.join(operatorTrustDir(tmp.agentRoot), "replay-identities.json"), JSON.stringify({ schemaVersion: 1, grants: { [id]: { who: "principal", name: "p", did: DID } } }), { mode: 0o644 })
+  }
+
+  it("refuses a delegated-commands grant with no expiry for a friend on the replay list, and accepts one with an expiry", async () => {
+    const friend = await peer()
+    listAsReplay(friend.id)
+    await expect(grant(friend.id)).rejects.toThrow(/replay peer.*--expires/s)
+    expect(readDelegatedCommandGrants(tmp.agentRoot)).toEqual({})
+    expect(await grant(friend.id, { expires: "2030-01-01T00:00:00Z" })).toContain("granted delegated commands")
+  })
+
+  it("refuses an escalation grant for a friend on the replay list, which the replay gate alone may give", async () => {
+    const friend = await peer()
+    listAsReplay(friend.id)
+    await expect(executeEscalationCommand({ kind: "a2a.escalation", action: "grant", friendId: friend.id, did: DID } as never, ctx())).rejects.toThrow(/replay peer/)
+    expect(readEscalationGrants(tmp.agentRoot)).toEqual({})
+  })
+})
+
 describe("delegated-commands grant, edge cases", () => {
   it("refuses a missing --did by name", async () => {
     const friend = await peer()

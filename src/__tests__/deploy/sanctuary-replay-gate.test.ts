@@ -689,6 +689,20 @@ describe("provision and the real host", () => {
     expect(calls.map((c) => c.slice(0, 4))).toEqual([["docker", "exec", "-u", "0"], ["docker", "exec", "-u", "0"]])
   })
 
+  it("writes the root-owned replay list into the trust directory, keeps earlier entries, and never lets a symlink stand in for it", () => {
+    fs.mkdirSync(trust, { recursive: true })
+    fs.writeFileSync(path.join(trust, "replay-identities.json"), JSON.stringify({ schemaVersion: 1, grants: { "old-replay": { who: "principal", name: "retired", did: "did:key:old" } } }), { mode: 0o644 })
+    gate.provision({ bundle, cardUrl: "c", log: () => undefined, run: fakeCli().run, ...uid() })
+    const list = JSON.parse(fs.readFileSync(path.join(trust, "replay-identities.json"), "utf8"))
+    expect(list.schemaVersion).toBe(1)
+    expect(Object.keys(list.grants).sort()).toEqual(["friend-1", "friend-2", "friend-3", "old-replay"])
+    expect(list.grants["friend-1"]).toEqual({ who: "principal", name: "replay-principal", did: "did:key:P" })
+    expect(fs.statSync(path.join(trust, "replay-identities.json")).mode & 0o777).toBe(0o644)
+    fs.rmSync(path.join(trust, "replay-identities.json"))
+    fs.symlinkSync(path.join(bundle, "friends"), path.join(trust, "replay-identities.json"))
+    expect(() => gate.provision({ bundle, cardUrl: "c", log: () => undefined, run: fakeCli().run, ...uid() })).toThrow(/symlink/)
+  })
+
   describe("rotating the replay identities (review of #1064, round 2, finding 3)", () => {
     const generation = (gen: number) => {
       const calls: string[][] = []
