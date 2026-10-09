@@ -283,7 +283,6 @@ describe("the psyche folder is resident-owned 0600 and read-only through the mou
     fs.rmSync(dir, { recursive: true, force: true })
   })
 })
-})
 
 describe("the resident mounts psyche read-only over the writable bundle", () => {
   const dest = "/home/ouro/AgentBundles/sanctuary.ouro/psyche"

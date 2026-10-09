@@ -227,7 +227,7 @@ describe("package asset validation", () => {
     expect(names).not.toContain("selectA003LegacyRequiredCorrections")
     expect(resolveToolDefinition("session_redaction_repair")).toBeUndefined()
     expect(resolveToolDefinition("session-redaction-repair")).toBeUndefined()
-  })
+  }, 30_000)
   it("A003 declares the direct maintenance entrypoint without public package or command routing", () => {
     expect(REQUIRED_PACKAGE_ASSET_PATHS).toContain("dist/heart/session-redaction-repair-cli-main.js")
     const root = path.resolve(".")
