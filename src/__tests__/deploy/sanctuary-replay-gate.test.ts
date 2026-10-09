@@ -731,7 +731,7 @@ describe("the gate's name finder stays in step with the runtime's", () => {
 describe("the butler's LORE describes the psyche protection accurately", () => {
   it("says the files are read-only to it and the runtime refuses edits, without claiming more", () => {
     const lore = fs.readFileSync(path.resolve(__dirname, "../../../deploy/unraid/sanctuary.ouro/psyche/LORE.md"), "utf8")
-    expect(lore).toContain("The files are read-only to me and the runtime refuses edits.")
+    expect(lore).toContain("The folder is mounted read-only into my container and the runtime refuses edits.")
     expect(lore).not.toContain("I must not edit them")
   })
 })

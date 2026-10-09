@@ -1126,4 +1126,17 @@ describe("Sanctuary package-managed bundle migration", () => {
     expect(commit).toHaveBeenCalledWith("/live")
   })
 
+  it("treats the bundle as ready in exactly the state the upgrade leaves psyche in (resident-owned, 0600 files, 0755 directories)", async () => {
+    const packageRoot = makePackageRoot()
+    const agentRoot = makeExactAgentRoot(packageRoot)
+    const psyche = path.join(agentRoot, "psyche")
+    // The state before the upgrade script puts modes back: loose modes, as after a recursive chown on the host.
+    for (const name of fs.readdirSync(psyche)) fs.chmodSync(path.join(psyche, name), 0o644)
+    fs.chmodSync(psyche, 0o700)
+    expect(inspect(packageRoot, agentRoot)).toMatchObject({ data: { ready: false } })
+    const upgrade = await import(/* @vite-ignore */ path.resolve(__dirname, "../../../../deploy/unraid/sanctuary-butler-upgrade.mjs"))
+    upgrade.restorePsycheModes(psyche)
+    expect(upgrade.psycheProblems(psyche).filter((line: string) => !line.includes("owned by uid"))).toEqual([])
+    expect(inspect(packageRoot, agentRoot)).toMatchObject({ ok: true, data: { parity: "exact", ready: true } })
+  })
 })

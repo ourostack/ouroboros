@@ -102,7 +102,7 @@ function shellWritesToProtectedPath(command: string): boolean {
 }
 
 // --- the psyche folder in shell commands ---
-// The files are root-owned and read-only to the resident at the OS level (the upgrade installs them that way). This is the
+// The psyche folder is mounted read-only into the resident at the OS level (the upgrade recreates the container that way). This is the
 // defence in depth in front of that: a shell command that mentions the psyche folder at all runs only if every part of it is
 // a read-only command, because enumerating the ways to write a file (>, >>, tee, cp, mv, sed -i, node -e, python, cd then
 // redirect) is a list the model can always step around.
