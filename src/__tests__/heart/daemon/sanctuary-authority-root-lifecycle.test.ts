@@ -1353,6 +1353,52 @@ describe("in-place authority upgrade", () => {
     })
   })
 
+  describe("the escalation grant across the recursive ownership restore", () => {
+    const chowns = () => host.exec.mock.calls.filter(([file]: [string]) => file === "/bin/chown").map(([, args]: [string, string[]]) => args.join(" "))
+    it("puts state/a2a and the grant file back under root after the recursive chown, and leaves the resident its own subdirectories", async () => {
+      const f = await upgradeFixture()
+      f.write(`${bundle}/state/a2a/escalation-grants.json`, "{}")
+      f.write(`${bundle}/state/a2a/pins/pin.json`, "{}")
+      fs.chmodSync(f.p(`${bundle}/state/a2a`), 0o775)
+      fs.chmodSync(f.p(`${bundle}/state/a2a/escalation-grants.json`), 0o666)
+      await f.lifecycle.upgrade({ targetImageId: digest("next-image"), imageReference: nextReference })
+      const calls = chowns()
+      const recursive = calls.findIndex((args) => args.startsWith("-R "))
+      const dir = f.p(`${bundle}/state/a2a`)
+      expect(recursive).toBeGreaterThanOrEqual(0)
+      expect(calls.indexOf(`-h 0:0 ${dir}`)).toBeGreaterThan(recursive)
+      expect(calls.indexOf(`-h 0:0 ${dir}/escalation-grants.json`)).toBeGreaterThan(recursive)
+      for (const sub of ["tasks", "pins", "seen"]) {
+        expect(fs.statSync(`${dir}/${sub}`).isDirectory()).toBe(true)
+        expect(calls).toContain(`-R 10001:10001 ${dir}/${sub}`)
+      }
+      // The resident gets its subdirectories back before the directory goes to root, so it can keep writing into them.
+      expect(calls.indexOf(`-R 10001:10001 ${dir}/pins`)).toBeLessThan(calls.indexOf(`-h 0:0 ${dir}`))
+      expect(fs.statSync(dir).mode & 0o777).toBe(0o755)
+      expect(fs.statSync(`${dir}/escalation-grants.json`).mode & 0o777).toBe(0o644)
+    })
+
+    it("restores the directory when no grant has been written yet", async () => {
+      const f = await upgradeFixture()
+      f.write(`${bundle}/state/a2a/pins/pin.json`, "{}")
+      await f.lifecycle.upgrade({ targetImageId: digest("next-image"), imageReference: nextReference })
+      expect(chowns()).toContain(`-h 0:0 ${f.p(`${bundle}/state/a2a`)}`)
+      expect(chowns().some((args) => args.endsWith("escalation-grants.json"))).toBe(false)
+    })
+
+    it("does nothing for a bundle without state/a2a, or where it is a symlink", async () => {
+      const f = await upgradeFixture()
+      await f.lifecycle.upgrade({ targetImageId: digest("next-image"), imageReference: nextReference })
+      expect(chowns().filter((args) => args.startsWith("-h "))).toEqual([])
+      host.exec.mockClear()
+      const g = await upgradeFixture()
+      fs.mkdirSync(g.p(`${bundle}/state`), { recursive: true })
+      fs.symlinkSync("/elsewhere", g.p(`${bundle}/state/a2a`))
+      await g.lifecycle.upgrade({ targetImageId: digest("next-image"), imageReference: nextReference })
+      expect(chowns().filter((args) => args.startsWith("-h "))).toEqual([])
+    })
+  })
+
   it("cannot roll back a completed upgrade: the journal and the predecessor's records are already gone", async () => {
     const f = await upgradeFixture()
     await f.lifecycle.upgrade({ targetImageId: digest("next-image"), imageReference: nextReference })
