@@ -83,7 +83,10 @@ export const EXEMPT_WORDS = new Set(("added adding found finding sent sending se
   "marked set setting assigned assigning movie movies show shows book books series film films less tell ready missing available unavailable specials special").split(" "))
 export const LABEL_WORDS = new Set(("note notes tip warning update summary answer plan status result results source sources todo next why how what done reply title healthy snoozed down up broken failed pending " +
   "running stopped paused queued cast characters authors books series shows movies episodes tldr caveat caveats options option").split(" "))
-export const STRICT_OPENERS = new Set("too mock very just same such quite rather really kind sort bit less fairly mostly almost simply much little big small high low hard pure plain cheap".split(" "))
+export const STRICT_OPENERS = new Set("too mock very just same such quite rather really kind sort bit less fairly mostly almost simply much little big small high low hard pure plain cheap hmm hm well okay ok yes yeah sure right also great nice cool done sorry thanks thank perfect fine good alright first second third then now so short quick".split(" "))
+const STRICT_SIGN = /^(?:\s*[,:\u2014\u2013]|\s+(?:if|for)\s)/
+// Strict mode (the person asked for names): a sentence opener is a name when a comma, colon, dash, "if" or "for" follows it, it is not an ordinary opener or an -ing/-ly word, and the reply never uses it lowercase.
+export const strictOpenerName = (body, after, lower) => !(STRICT_OPENERS.has(lower) || /(?:ing|ly)$/.test(lower) || !STRICT_SIGN.test(after)) && !new RegExp(`(?<![\\p{L}\\p{N}])${escapeRegExp(lower)}(?![\\p{L}\\p{N}])`, "u").test(body)
 const CONTRACTION = /^\p{L}+['\u2019](?:ll|m|re|ve|d|t)$/iu
 const COPULA_AFTER = /^(?:['\u2019]s\b|\s+(?:is|was|are|were|isn['\u2019]t|wasn['\u2019]t|has|had|does|did)\b)/i
 
@@ -139,7 +142,7 @@ export function properNouns(text, known = "", strict = false) {
     const after = body.slice(match.index + match[0].length)
     if (starts && STARTERS.has(lower)) continue
     if (starts && LABEL_WORDS.has(lower) && after.startsWith(":")) continue
-    if (starts && !(strict && !STRICT_OPENERS.has(lower)) && !startsLikeName(body, match.index, after, lower)) continue
+    if (starts && !(strict && strictOpenerName(body, after, lower)) && !startsLikeName(body, match.index, after, lower)) continue
     seen.add(lower)
     out.push(word)
   }
@@ -794,6 +797,18 @@ export function selfTestFixtures() {
         trace: [],
         timeline: [{ kind: "reply", text: "the show has Philomena, Magma and Bunty." }],
         reply: "the show has Philomena, Magma and Bunty.", before: emptyObservation(), after: emptyObservation(),
+      },
+      // Ordinary sentence openers are not names, even with the strict rule on.
+      passOrdinaryOpeners: {
+        trace: [call("1", "web_search", { query: "Cradle characters" }, "Cradle: Lindon, Yerin, Mercy")],
+        timeline: [{ kind: "call", name: "web_search", args: "{}", result: "" }, { kind: "reply", text: "Based on the wiki, Lindon and Yerin fit.\n\nPulling up the page now.\n\nShort answer: Yerin." }],
+        reply: "Based on the wiki, Lindon and Yerin fit.\n\nPulling up the page now.\n\nShort answer: Yerin.", before: emptyObservation(), after: emptyObservation(),
+      },
+      // The alpha.883 live reply: every paragraph opens with a name, and the search never named most of them.
+      failParagraphOpeners: {
+        trace: [call("1", "web_search", { query: "Cradle characters" }, "Cradle: Lindon, Yerin")],
+        timeline: [{ kind: "call", name: "web_search", args: "{}", result: "" }, { kind: "reply", text: "Eithan, no contest.\n\nSuriel, for the entrances.\n\nOzriel, the lazy flavor.\n\nMercy if you want it warmer.\n\nShen if you want the menace." }],
+        reply: "Eithan, no contest.\n\nSuriel, for the entrances.\n\nOzriel, the lazy flavor.\n\nMercy if you want it warmer.\n\nShen if you want the menace.", before: emptyObservation(), after: emptyObservation(),
       },
       // The alpha.879 reply shape: lowercase names in bold, no capitals, no lookup.
       failLowercase: {

@@ -33,7 +33,7 @@ describe("candidateNames", () => {
   it("outside strict mode a word that only ever opens sentences, even at the very start of the text, is not a name", () => {
     expect(candidateNames("Rain stays. Rain goes.")).toEqual([])
     expect(candidateNames("Rain stays. Then we saw Rain.")).toEqual(["Rain"])
-    expect(candidateNames("Rain stays. Rain goes.", true)).toEqual(["Rain"])
+    expect(candidateNames("Rain, stays. Rain, goes.", true)).toEqual(["Rain"])
   })
   it("finds capitalised names mid-sentence and drops possessives", () => {
     expect(candidateNames("i like Lindon and Yerin's sword")).toEqual(["Lindon", "Yerin"])
@@ -348,6 +348,16 @@ describe("a reply that opens each paragraph with a name (alpha.883 live replay)"
     expect(candidateNames("Suriel, for the entrances.")).toEqual([])
     expect(candidateNames("Suriel, for the entrances. Too much. She waves.", true)).toEqual(["Suriel"])
     expect(STRICT_OPENERS.has("too")).toBe(true)
+  })
+  it("strict mode ignores ordinary openers that merely start a sentence", () => {
+    const ordinary = "Based on the wiki, the list is short. According to the page it is fine. Short answer: yes. Quick take: nope. Currently it works. Pulling up the page now. Fetching the list. Digging in. Hmm, odd."
+    expect(candidateNames(ordinary, true)).toEqual([])
+    expect(sourceGroundingFinding({ userText: ASK, latestUserText: ASK, answer: "Based on the wiki, nothing fits yet.\n\nPulling up the page now.\n\nShort answer: wait.", tools: [] })).toBeNull()
+  })
+  it("strict mode needs a comma, colon, dash, if or for after the opener, and no lowercase use of the word", () => {
+    expect(candidateNames("Lindon, steady. Yerin: sharp. Mercy \u2014 warm. Shen if you want. Dross for the jokes.", true)).toEqual(["Lindon", "Yerin", "Mercy", "Shen", "Dross"])
+    expect(candidateNames("Lindon walks in. Yerin sulks.", true)).toEqual([])
+    expect(candidateNames("Cradle, for sure. The cradle rocks.", true)).toEqual([])
   })
   it("passes the same shape once the names were looked up, and ordinary replies to non-name questions", () => {
     expect(sourceGroundingFinding({ userText: ASK, latestUserText: ASK, answer: LIVE, tools: [lookup("Eithan Suriel Ozriel Mercy Shen Dross")] })).toBeNull()

@@ -3,7 +3,7 @@ import { appendReplayNotice, isAnyReplayWindowOpen, isReplayIdentity, isReplayWi
 import { defaultNotifyOwner, type NotifyOwner } from "../heart/awaiting/a2a-await-delivery"
 import { emitNervesEvent } from "../nerves/runtime"
 import { clip, readLastDigestAt, readLedger, recallSweep, REMIND_DAYS, runHouseSweep, safe, sameUtcDay, writeLedger, type HouseSweepDeps } from "./house-sweep"
-import type { ToolContext, ToolDefinition } from "./tools-base"
+import { SELF_FRIEND_ID, type ToolContext, type ToolDefinition } from "./tools-base"
 
 /**
  * The Butler's two house-care tools. `house_sweep` is one read-only call that gathers everything the daily sweep
@@ -144,9 +144,10 @@ export const houseDigestToolDefinition: ToolDefinition = {
     if (told.length > 0) return JSON.stringify({ sent: false, error: `the owner was already told about ${told.map((finding) => finding.id).join(", ")} unchanged in the last ${REMIND_DAYS} days; leave ${told.length === 1 ? "it" : "them"} out` })
     // Only the daily house-care await's own tick is "scheduled" and takes the one-per-day slot; on-demand digests are limited by the per-finding dedupe above.
     // The package-managed await may run under the owner's own relationship authorization (the live runtime binds it that way), which does not downgrade it;
-    // any other relationship (a peer, a friend) or a friend with no authorization behind the tick does.
+    // The system await has no relationship coordinates, so the pipeline binds the self friend: no authorization with no friend or the self friend is the managed tick itself.
+// Any other relationship (a peer, a friend) or a real friend with no authorization behind the tick downgrades.
     const ownerBound = ctx.relationshipAuthorization?.profileId === "sanctuary-owner"
-    const kind = isManagedSweepTick(ctx) && (ownerBound || (!ctx.relationshipAuthorization && !friendId)) ? "scheduled" : "ondemand"
+    const kind = isManagedSweepTick(ctx) && (ownerBound || (!ctx.relationshipAuthorization && (!friendId || friendId === SELF_FRIEND_ID))) ? "scheduled" : "ondemand"
     if (kind === "scheduled" && sameUtcDay(priorStamp, stamp)) return JSON.stringify({ sent: false, error: "the daily house digest already went out today; at most one scheduled digest is sent per day" })
     const day = stamp.slice(0, 10)
     // Reserve before sending so a crash or a concurrent turn cannot send twice; a failed send rolls the reservation back.

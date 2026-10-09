@@ -8,6 +8,7 @@ import { loadSession, postTurnTrim, deferPostTurnPersist, type UsageData } from 
 import { buildSystem, flattenSystemPrompt } from "../mind/prompt"
 import { getSharedMcpManager } from "../repertoire/mcp-manager"
 import { getToolsForChannel } from "../repertoire/tools"
+import { SELF_FRIEND_ID } from "../repertoire/tools-base"
 import { cancelStaleAwait, failBrokenAwait, readOwnerAskForAwait, hasActiveExternalEventAwait, inspectPeerAwait, inspectRelationshipFollowUp, isBrokenBindingReason } from "../repertoire/tools-awaiting"
 import { A2A_PRINCIPAL_PROFILE_ID, delegatedCommandWasNoticed } from "../a2a/delegated-command"
 import { renderRelationshipPreferences } from "../repertoire/relationship-authorization"
@@ -927,7 +928,7 @@ export async function routeDelegatedCompletion(
 // No real friend to resolve -- this satisfies the pipeline's friend resolver contract.
 function createSelfFriend(agentName: string): FriendRecord {
   return {
-    id: "self",
+    id: SELF_FRIEND_ID,
     name: agentName,
     trustLevel: "family",
     externalIds: [],

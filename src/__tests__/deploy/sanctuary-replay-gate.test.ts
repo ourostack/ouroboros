@@ -903,6 +903,10 @@ describe("the gate's name finder stays in step with the runtime's", () => {
     expect(gate.properNouns(text, known, true)).toEqual(grounding.candidateNames(text, true))
     expect(gate.properNouns(text, known, true)).toEqual(["Eithan", "Suriel", "Mercy"])
     expect(gate.properNouns(text, known)).toEqual([])
+    const ordinary = "Based on the wiki, the list is short. Short answer: yes. Currently it works. Pulling up the page now. Hmm, odd."
+    expect(gate.properNouns(ordinary, known, true)).toEqual(grounding.candidateNames(ordinary, true))
+    expect(gate.properNouns(ordinary, known, true)).toEqual([])
+    expect(gate.properNouns("Cradle, for sure. The cradle rocks.", known, true)).toEqual(grounding.candidateNames("Cradle, for sure. The cradle rocks.", true))
     expect([...gate.STRICT_OPENERS].sort()).toEqual([...grounding.STRICT_OPENERS].sort())
   })
   it("shares the same sentence-opener, status-word and label lists", async () => {

@@ -14,7 +14,7 @@ vi.mock("../../heart/awaiting/a2a-await-delivery", () => ({ defaultNotifyOwner: 
 
 import { DIGEST_MAX_LINES, LEAD_IN_MAX_CHARS, digestLines, houseCareToolDefinitions, houseDigestToolDefinition, houseSweepToolDefinition, setHouseCareToolDeps } from "../../repertoire/tools-house-care"
 import { readLedger, rememberSweep } from "../../repertoire/house-sweep"
-import type { ToolContext } from "../../repertoire/tools-base"
+import { SELF_FRIEND_ID, type ToolContext } from "../../repertoire/tools-base"
 
 let root: string
 const DAY = 86_400_000
@@ -106,15 +106,19 @@ describe("house_digest_send tool", () => {
     fs.writeFileSync(path.join(root, "state", "house-sweep", "reported.json"), JSON.stringify({ entries: { [finding.id]: entry("fp1"), b: entry("fpb") } }))
     expect((await digest({ finding_ids: [finding.id, "b"] })).error).toContain("leave them out")
   })
-  it("stays scheduled when the managed await ticks under the owner's own relationship authorization (the live path)", async () => {
+  it("is scheduled for the managed await in its real production shape: the self friend, no relationship authorization", async () => {
     writeReport("live", [finding])
-    // What private-runtime builds for the await tick: the owner as the friend, the owner profile as the authorization.
-    await digest({ finding_ids: [finding.id] }, ctx({ ...SCHEDULED, context: { friend: { id: "owner" } }, relationshipAuthorization: { profileId: "sanctuary-owner" } }))
+    await digest({ finding_ids: [finding.id] }, ctx({ ...SCHEDULED, context: { friend: { id: SELF_FRIEND_ID } } }))
     expect(sent[0].noticeId).toContain("house-sweep:scheduled:")
     fs.rmSync(path.join(root, "state", "house-sweep", "reported.json"))
     fs.rmSync(path.join(root, "state", "house-sweep", "last-digest.json"), { force: true })
+    // The owner's own authorization does not downgrade it either.
+    await digest({ finding_ids: [finding.id] }, ctx({ ...SCHEDULED, context: { friend: { id: "owner" } }, relationshipAuthorization: { profileId: "sanctuary-owner" } }))
+    expect(sent[1].noticeId).toContain("house-sweep:scheduled:")
+    fs.rmSync(path.join(root, "state", "house-sweep", "reported.json"))
+    fs.rmSync(path.join(root, "state", "house-sweep", "last-digest.json"), { force: true })
     await digest({ finding_ids: [finding.id] }, ctx({ ...SCHEDULED, relationshipAuthorization: { profileId: "sanctuary-agent-peer" }, context: { friend: { id: "peer" } } }))
-    expect(sent[1].noticeId).toContain("house-sweep:ondemand:")
+    expect(sent[2].noticeId).toContain("house-sweep:ondemand:")
   })
   it("is scheduled only for an await tick with no friend or non-owner relationship behind it", async () => {
     writeReport("live", [finding])
