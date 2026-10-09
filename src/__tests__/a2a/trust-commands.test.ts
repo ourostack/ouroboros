@@ -164,47 +164,31 @@ describe("delegated-commands grant", () => {
 })
 
 describe("delegated-commands revoke", () => {
-  it("removes the trusted grant and clears the legacy record grant, even when the record is the only trace", async () => {
+  it("removes the trusted grant but never writes the friend record as root, and always prints the follow-up that clears the legacy field as the resident user", async () => {
     const friend = await peer({ legacy: true })
     await grant(friend.id)
-    const out = await executeDelegatedCommandsCommand({ kind: "a2a.delegatedCommands", action: "revoke", friendId: friend.id }, ctx())
-    expect(out).toContain(`revoked delegated commands: Claude Code (${friend.id})`)
-    expect(out).toContain("cleared the legacy delegationGrant on the friend record")
-    expect(out).toContain("backup: ")
-    expect(readDelegatedCommandGrants(tmp.agentRoot)).toEqual({})
-    expect((await store.get(friend.id))!.delegationGrant).toBeUndefined()
-  })
-
-  it("clears only the legacy record grant when there is no trusted grant, and reports no change otherwise", async () => {
-    const legacy = await peer({ legacy: true })
-    const out = await executeDelegatedCommandsCommand({ kind: "a2a.delegatedCommands", action: "revoke", friendId: legacy.id }, ctx())
-    expect(out).toContain("cleared the legacy delegationGrant")
-    expect(out).not.toContain("(no change)")
-    const again = await executeDelegatedCommandsCommand({ kind: "a2a.delegatedCommands", action: "revoke", friendId: legacy.id }, ctx())
-    expect(again).toContain("(no change)")
-  })
-
-  it("on a read-only bundle removes the trusted grant, succeeds, and prints the follow-up that clears the legacy field as the resident user", async () => {
-    const friend = await peer({ legacy: true })
-    await grant(friend.id)
-    const readOnly = Object.create(store) as FileFriendStore
-    readOnly.put = async () => { throw Object.assign(new Error("EROFS: read-only file system, open"), { code: "EROFS" }) }
-    const out = await executeDelegatedCommandsCommand({ kind: "a2a.delegatedCommands", action: "revoke", friendId: friend.id }, ctx({ store: readOnly }))
+    const puts: string[] = []
+    const spy = Object.create(store) as FileFriendStore
+    spy.put = async (id: string, record: FriendRecord) => { puts.push(id); await store.put(id, record) }
+    const out = await executeDelegatedCommandsCommand({ kind: "a2a.delegatedCommands", action: "revoke", friendId: friend.id }, ctx({ store: spy }))
+    expect(puts).toEqual([])
     expect(readDelegatedCommandGrants(tmp.agentRoot)).toEqual({})
     expect(out).toContain(`revoked delegated commands: Claude Code (${friend.id})`)
     expect(out).toContain("REQUIRED FOLLOW-UP")
-    expect(out).toContain("EROFS")
     expect(out).toContain("docker exec -u 10001 ouro-butler node -e")
     expect(out).toContain(`${tmp.agentRoot}/friends/${friend.id}.json`)
+    expect(out).toContain("backup: ")
     expect(out).not.toContain("cleared the legacy delegationGrant")
     expect((await store.get(friend.id))!.delegationGrant).toBeDefined()
   })
 
-  it("reports a non-Error write failure as text in the same follow-up", async () => {
-    const friend = await peer({ legacy: true })
-    const failing = Object.create(store) as FileFriendStore
-    failing.put = async () => { throw "disk gone" }
-    expect(await executeDelegatedCommandsCommand({ kind: "a2a.delegatedCommands", action: "revoke", friendId: friend.id }, ctx({ store: failing }))).toContain("(disk gone)")
+  it("prints the follow-up for a legacy record grant even when there is no trusted grant, and reports no change otherwise", async () => {
+    const legacy = await peer({ legacy: true })
+    const out = await executeDelegatedCommandsCommand({ kind: "a2a.delegatedCommands", action: "revoke", friendId: legacy.id }, ctx())
+    expect(out).toContain("REQUIRED FOLLOW-UP")
+    expect(out).not.toContain("(no change)")
+    const plain = await peer({ name: "Plain", did: "did:key:z6MkPlain" })
+    expect(await executeDelegatedCommandsCommand({ kind: "a2a.delegatedCommands", action: "revoke", friendId: plain.id }, ctx())).toContain("(no change)")
   })
 
   it("revokes a grant whose friend record is gone, by id", async () => {

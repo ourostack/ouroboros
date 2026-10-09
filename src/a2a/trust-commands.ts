@@ -116,12 +116,12 @@ export async function executeDelegatedCommandsCommand(command: DelegatedCommands
   ].join("\n")
 }
 
-/** The follow-up that clears the legacy record field as the resident user: the record is the Butler's own file, so root never writes it. */
-function clearLegacyGrantCommand(agentRoot: string, friendId: string, why: string): string {
+/** The follow-up that clears the legacy record field as the resident user: the record is the Butler's own file, and this command runs as root, so it never writes it. */
+function clearLegacyGrantCommand(agentRoot: string, friendId: string): string {
   const file = `${agentRoot}/friends/${friendId}.json`
   const script = `const fs=require("fs");const f=${JSON.stringify(file)};const r=JSON.parse(fs.readFileSync(f,"utf8"));delete r.delegationGrant;fs.writeFileSync(f,JSON.stringify(r,null,2)+"\\n")`
   return [
-    `REQUIRED FOLLOW-UP: the trusted grant is removed, but the legacy delegationGrant on the friend record could not be cleared here (${why}). An older harness would honour it after a rollback. Clear it as the resident user, never as root:`,
+    "REQUIRED FOLLOW-UP: the trusted grant is removed, but the legacy delegationGrant on the friend record is still there (friend records are never written as root). An older harness would honour it after a rollback. Clear it as the resident user:",
     `  docker exec -u 10001 ouro-butler node -e '${script}'`,
   ].join("\n")
 }
@@ -129,23 +129,11 @@ function clearLegacyGrantCommand(agentRoot: string, friendId: string, why: strin
 async function revokeDelegatedCommands(friendId: string, ctx: TrustCommandContext): Promise<string> {
   const friend = await ctx.store.get(friendId)
   const change = setDelegatedCommandGrant(ctx.agentRoot, friendId, { grant: false }, ctx.now)
-  // A rollback to an older harness reads the legacy record grant, so a revoke must clear it too.
-  // The trusted grant is already gone, so a bundle that cannot be written (the one-off container mounts it read-only, and friend records must never be written as root) is a required follow-up, not a failure.
-  let clearedLegacy = false
-  let legacyFollowUp: string | null = null
-  if (friend?.delegationGrant !== undefined) {
-    try {
-      const { delegationGrant: _legacy, ...rest } = friend
-      await ctx.store.put(friend.id, rest)
-      clearedLegacy = true
-    } catch (error) {
-      legacyFollowUp = clearLegacyGrantCommand(ctx.agentRoot, friend.id, error instanceof Error ? error.message : String(error))
-    }
-  }
+  // A rollback to an older harness reads the legacy record grant. This command runs as root and must not write the Butler's friend record, so it prints the resident-user follow-up instead.
+  const legacyFollowUp = friend?.delegationGrant !== undefined ? clearLegacyGrantCommand(ctx.agentRoot, friend.id) : null
   emitNervesEvent({ component: "senses", event: "senses.a2a_trust_grant_changed", message: "operator changed a trust grant", meta: { action: "revoke", scope: "delegated_commands" } })
   return [
-    `revoked delegated commands: ${friend ? `${friend.name} (${friend.id})` : `${friendId} (no friend record)`}${change.changed || clearedLegacy ? "" : " (no change)"}`,
-    ...(clearedLegacy ? ["cleared the legacy delegationGrant on the friend record (an older harness would otherwise honour it after a rollback)"] : []),
+    `revoked delegated commands: ${friend ? `${friend.name} (${friend.id})` : `${friendId} (no friend record)`}${change.changed || legacyFollowUp ? "" : " (no change)"}`,
     ...(legacyFollowUp ? [legacyFollowUp] : []),
     ...(change.backup ? [`backup: ${change.backup}`] : []),
   ].join("\n")
