@@ -860,7 +860,6 @@ export class SanctuaryAuthorityRootLifecycle {
     })
     execFileSync("/bin/chown", ["-R", "10001:10001", this.#p(BUNDLE)], { stdio: "ignore" })
     this.#restoreReplayRoot()
-    this.#restoreEscalationGrantRoot()
   }
 
   /**
@@ -897,38 +896,6 @@ export class SanctuaryAuthorityRootLifecycle {
     execFileSync("/bin/chown", ["-h", "0:0", directory], { stdio: "ignore" })
     fs.chmodSync(directory, 0o755)
     fs.rmSync(path.join(directory, "window.json"), { force: true, recursive: true })
-  }
-
-  /**
-   * The same recursive restore hands state/a2a and the escalation grant file to the resident. The Butler honours a grant
-   * only while the file and its directory are root-owned and closed to everyone else (src/a2a/trusted-files.ts), so
-   * after every restore they go back under root, and a prompt-injected model running as the resident cannot mint one.
-   * The subdirectories the resident writes (tasks, pins, seen) are created first and stay with it, so it never needs to
-   * create anything inside the root-owned directory. Missing this is what made every report_failure and outbox case of
-   * the alpha.878 replay gate fail: no peer held the grant, so no peer was an escalation holder.
-   */
-  #restoreEscalationGrantRoot(): void {
-    const directory = this.#stateChild("a2a")
-    if (!directory) return
-    const refuse = (target: string, reason: string): void => this.#refuseRestore(target, reason)
-    for (const sub of ["tasks", "pins", "seen"]) {
-      const target = path.join(directory, sub)
-      let existing: fs.Stats | null = null
-      try { existing = fs.lstatSync(target) } catch { /* absent: created below */ }
-      if (existing && !existing.isDirectory()) { refuse(target, existing.isSymbolicLink() ? "symlink" : "not a directory"); continue }
-      fs.mkdirSync(target, { recursive: true })
-      execFileSync("/bin/chown", ["-R", "10001:10001", target], { stdio: "ignore" })
-    }
-    // Ownership first, before anything else can fail: nothing the Butler left in the directory may stop it going back under root.
-    execFileSync("/bin/chown", ["-h", "0:0", directory], { stdio: "ignore" })
-    fs.chmodSync(directory, 0o755)
-    const grants = path.join(directory, "escalation-grants.json")
-    let grantStat: fs.Stats | null = null
-    try { grantStat = fs.lstatSync(grants) } catch { /* no grant written yet */ }
-    if (!grantStat) return
-    if (!grantStat.isFile()) { refuse(grants, grantStat.isSymbolicLink() ? "symlink" : "not a regular file"); return }
-    execFileSync("/bin/chown", ["-h", "0:0", grants], { stdio: "ignore" })
-    fs.chmodSync(grants, 0o644)
   }
 
   /** Start the gateway, then the resident, and prove both. */
