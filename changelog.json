@@ -2,6 +2,12 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.888",
+      "changes": [
+        "Answer gates (source grounding and brevity) now hold a plain-text reply as well as a settle answer, so a reply with no settle call can no longer name an unsourced cast or ignore a brevity request."
+      ]
+    },
+    {
       "version": "0.1.0-alpha.887",
       "changes": [
         "Delegated commands and escalation now come only from root-owned grant files in /etc/ouro/trust/<agent> (or OURO_OPERATOR_TRUST_DIR/<agent>, resolved through symlinks), checked up the whole directory chain and pinned to the sender's DID; grant writes are locked, fsynced and backed up, and the Butler's grants moved there with an upgrade check that refuses to silently drop an escalation grant",
