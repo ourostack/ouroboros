@@ -36,7 +36,7 @@ const PROFILES = JSON.parse(fs.readFileSync("deploy/unraid/sanctuary.ouro/tool-p
 
 /** A Sanctuary-shaped agent with the packaged capability registry and a trusted client. */
 async function setup(options: { registry?: boolean; reply?: (input: A2ATurnRunnerInput) => string } = {}) {
-  tmp = createTmpBundle({ agentName: `chat-${Date.now()}` })
+  tmp = createTmpBundle({ agentName: `chat-${Date.now()}-${Math.random().toString(36).slice(2, 10)}` })
   if (options.registry !== false) fs.writeFileSync(path.join(tmp.agentRoot, "tool-profiles.json"), JSON.stringify(PROFILES))
   const agent = asSelf(mintIdentity())
   const client = await loadOrMintA2AIdentityFile({ filePath: path.join(tmp.bundlesRoot, "client", "identity.json"), sodium })
@@ -140,7 +140,7 @@ describe("sealed A2A chat between a client and an agent", () => {
 
 describe("a2aChatRelationship", () => {
   it("returns nothing for an invalid registry rather than guessing", () => {
-    tmp = createTmpBundle({ agentName: `rel-${Date.now()}` })
+    tmp = createTmpBundle({ agentName: `rel-${Date.now()}-${Math.random().toString(36).slice(2, 10)}` })
     fs.writeFileSync(path.join(tmp.agentRoot, "tool-profiles.json"), JSON.stringify({ version: 1, profiles: {} }))
     expect(a2aChatRelationship(tmp.agentRoot, { id: "x" } as never, "req")).toBeUndefined()
   })
@@ -217,7 +217,7 @@ describe("sealChatMessage", () => {
 
 describe("loadOrMintA2AIdentityFile", () => {
   it("mints a private key file once and reloads the same identity", async () => {
-    tmp = createTmpBundle({ agentName: `id-${Date.now()}` })
+    tmp = createTmpBundle({ agentName: `id-${Date.now()}-${Math.random().toString(36).slice(2, 10)}` })
     const filePath = path.join(tmp.bundlesRoot, "keys", "client.json")
     const minted = await loadOrMintA2AIdentityFile({ filePath, sodium })
     expect(fs.statSync(filePath).mode & 0o777).toBe(0o600)
@@ -227,7 +227,7 @@ describe("loadOrMintA2AIdentityFile", () => {
   })
 
   it("refuses a key file readable by group or other", async () => {
-    tmp = createTmpBundle({ agentName: `id-${Date.now()}` })
+    tmp = createTmpBundle({ agentName: `id-${Date.now()}-${Math.random().toString(36).slice(2, 10)}` })
     const filePath = path.join(tmp.bundlesRoot, "client.json")
     await loadOrMintA2AIdentityFile({ filePath, sodium })
     fs.chmodSync(filePath, 0o644)
@@ -235,7 +235,7 @@ describe("loadOrMintA2AIdentityFile", () => {
   })
 
   it("refuses a key file without a seed", async () => {
-    tmp = createTmpBundle({ agentName: `id-${Date.now()}` })
+    tmp = createTmpBundle({ agentName: `id-${Date.now()}-${Math.random().toString(36).slice(2, 10)}` })
     const filePath = path.join(tmp.bundlesRoot, "client.json")
     fs.writeFileSync(filePath, JSON.stringify({ version: 1 }), { mode: 0o600 })
     await expect(loadOrMintA2AIdentityFile({ filePath, sodium })).rejects.toThrow(/has no seed/)

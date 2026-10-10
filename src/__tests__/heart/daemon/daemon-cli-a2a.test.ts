@@ -256,7 +256,8 @@ describe("ouro A2A client commands (identity + sealed message)", () => {
     const agent = { ...didKeyIdentityFromEd25519({ sodium, ed25519Pub: kp.publicKey, ed25519Priv: kp.privateKey }), seed: "unused" }
     const client = await loadOrMintA2AIdentityFile({ filePath: identityFile, sodium })
     const store = new FileFriendStore(join(agentRoot, "friends"))
-    await upsertAgentPeer(store, { name: "Client", agentId: client.did, trustLevel: "friend", a2a: { did: client.did, agentId: client.did, endpointUrl: "https://client.example/a2a" } })
+    const clientPeer = await upsertAgentPeer(store, { name: "Client", agentId: client.did, trustLevel: "family", a2a: { did: client.did, agentId: client.did, endpointUrl: "https://client.example/a2a" } })
+    await store.put(clientPeer.id, { ...clientPeer, admissionState: "active" })
     const server = await startA2AServer({ agentName: "chatty", agentRoot, port: 0, identity: agent, turnRunner: async ({ message }) => ({ response: `pong:${message}` }) })
     try {
       const cardUrl = new URL("/.well-known/agent-card.json", server.url).toString()
@@ -268,6 +269,17 @@ describe("ouro A2A client commands (identity + sealed message)", () => {
       // --delegated signs the principal marker; this agent has no delegation, so it refuses.
       await expect(runOuroCli(["a2a", "message", "--to", cardUrl, "--text", "books on", "--delegated", "--identity-file", identityFile], createMockDeps({ fetchImpl: fetch })))
         .rejects.toThrow("delegated command refused: not_enabled")
+      // With --json a refusal is a result on stdout, not a stack trace, and the exit code is 1.
+      const setExitCode = vi.fn()
+      const writeStdout = vi.fn()
+      const refused = JSON.parse(await runOuroCli(["a2a", "message", "--to", cardUrl, "--text", "books on", "--delegated", "--identity-file", identityFile, "--json"], createMockDeps({ fetchImpl: fetch, setExitCode, writeStdout })))
+      expect(refused).toMatchObject({ ok: false, reason: "not_enabled", nothingRan: true })
+      expect(typeof refused.message).toBe("string")
+      expect(typeof refused.next).toBe("string")
+      expect(setExitCode).toHaveBeenCalledWith(1)
+      expect(writeStdout).toHaveBeenCalledTimes(1)
+      // Anything that is not a refusal still throws, even with --json.
+      await expect(runOuroCli(["a2a", "message", "--to", "http://127.0.0.1:9/.well-known/agent-card.json", "--text", "x", "--identity-file", identityFile, "--json"], createMockDeps({ fetchImpl: fetch }))).rejects.toThrow()
     } finally {
       await server.close()
       rmSync(dir, { recursive: true, force: true })

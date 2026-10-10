@@ -67,6 +67,7 @@ import { createObligation, createReturnObligation, generateObligationId, readRet
 import { createToolLoopState, detectToolLoop, hasRecordedToolCall, recordToolOutcome } from "./tool-loop";
 import { advancePonderPacket, createPonderPacket, findHarnessFrictionPacket, revisePonderPacket, type PonderPacket, type PonderPacketKind } from "../arc/packets";
 import { createToolFrictionLedger, rewriteToolResultForModel } from "./tool-friction";
+import { shieldDelegatedBanner } from "../a2a/delegated-command";
 import { getDefaultModelForProvider, getProviderModelMismatchMessage } from "./provider-models";
 import {
   readProviderCredentialRecord,
@@ -1484,6 +1485,7 @@ export async function runAgent(
         relationshipProfileId: options?.toolContext?.relationshipAuthorization?.profileId,
         relationshipToolNames: options?.toolContext?.relationshipAuthorization?.advertisedToolNames,
         orientationFrame: turnOrientationFrame,
+        ...(options?.toolContext?.delegatedCommand ? { delegatedCommand: options.toolContext.delegatedCommand } : {}),
         resumePriorWork: options?.resumePriorWork === true,
         providerCapabilities: providerRuntime.capabilities,
         supportedReasoningEfforts: providerRuntime.supportedReasoningEfforts,
@@ -2326,8 +2328,9 @@ export async function runAgent(
             terminalSucceeded,
           )
           pushGenerated(msg)
-          pushGenerated({ role: "tool", tool_call_id: soleTerminalCall.id, content: terminalResult })
-          providerRuntime.appendToolOutput(soleTerminalCall.id, terminalResult)
+          const shieldedTerminalResult = shieldDelegatedBanner(terminalResult)
+          pushGenerated({ role: "tool", tool_call_id: soleTerminalCall.id, content: shieldedTerminalResult })
+          providerRuntime.appendToolOutput(soleTerminalCall.id, shieldedTerminalResult)
           callbacks.onTextChunk(terminalResult)
           completion = { answer: terminalResult, intent: terminalSucceeded ? "complete" : "blocked" }
           outcome = terminalSucceeded ? "settled" : "blocked"
@@ -2921,8 +2924,9 @@ export async function runAgent(
             }
 
             callbacks.onToolEnd(tc.name, argSummary, success);
-            pushGenerated({ role: "tool", tool_call_id: tc.id, content: toolResult });
-            providerRuntime.appendToolOutput(tc.id, toolResult);
+            const shieldedToolResult = shieldDelegatedBanner(toolResult);
+            pushGenerated({ role: "tool", tool_call_id: tc.id, content: shieldedToolResult });
+            providerRuntime.appendToolOutput(tc.id, shieldedToolResult);
             continue;
           }
           /* v8 ignore next -- flag tested via truth-check integration tests @preserve */
@@ -2954,7 +2958,7 @@ export async function runAgent(
           }
           if (invoked && requiredToolCallNames.includes(tc.name) && !options?.requiredToolCalls?.requireSuccessfulResults) dispatchedRequiredToolCalls.add(tc.name);
           turnToolRecords.push({ name: tc.name, args, result: toolResult });
-          const modelResult = rewriteToolResultForModel(tc.name, toolResult, toolFrictionLedger);
+          const modelResult = shieldDelegatedBanner(rewriteToolResultForModel(tc.name, toolResult, toolFrictionLedger));
           pushGenerated({ role: "tool", tool_call_id: tc.id, content: modelResult });
           providerRuntime.appendToolOutput(tc.id, modelResult);
           if (!success) augmentedToolContext?.habitSession?.recordError?.(toolResult);

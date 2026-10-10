@@ -1222,6 +1222,117 @@ describe("OURO_CLI_TRUST_MANIFEST — rollback and versions", () => {
     expect(result.allowed).toBe(false)
   })
 
+  describe("the friends store is written by the harness, never by a model's file tools", () => {
+    const ctx = (over: Record<string, unknown> = {}) => ({ readPaths: new Set(["/bundle/friends/peer.json"]), agentRoot: "/bundle", trustLevel: "family" as const, ...over })
+    it.each(["/bundle/friends/peer.json", "friends/peer.json", "/bundle/friends/../friends/peer.json", "/bundle/friends"])("refuses write_file and edit_file to %s for everyone, family included", async (target) => {
+      const { guardInvocation } = await import("../../repertoire/guardrails")
+      for (const tool of ["write_file", "edit_file"]) {
+        expect(guardInvocation(tool, { path: target }, ctx({ readPaths: new Set([target]) }))).toMatchObject({ allowed: false, reason: expect.stringContaining("protected") })
+      }
+    })
+    it("refuses shell redirects and tee into the friends store", async () => {
+      const { guardInvocation } = await import("../../repertoire/guardrails")
+      expect(guardInvocation("shell", { command: "echo x > /bundle/friends/peer.json" }, ctx())).toMatchObject({ allowed: false })
+      expect(guardInvocation("shell", { command: "echo x | tee friends/peer.json" }, ctx())).toMatchObject({ allowed: false })
+    })
+    it.each([
+      ["append redirect", "echo x >> /bundle/friends/peer.json"],
+      ["append redirect without a space", "echo x >>/bundle/friends/peer.json"],
+      ["a second redirect after a stderr redirect", "echo a 2>/dev/null > /bundle/friends/peer.json"],
+      ["cp", "cp /tmp/forged.json /bundle/friends/peer.json"],
+      ["mv", "mv /tmp/forged.json /bundle/friends/peer.json"],
+      ["sed -i", "sed -i s/acquaintance/family/ /bundle/friends/peer.json"],
+      ["node -e", "node -e \"require('fs').writeFileSync('/bundle/friends/peer.json','{}')\""],
+      ["cd then redirect", "cd /bundle/friends && echo x > peer.json"],
+      ["cd into the store by a relative name", "cd friends && echo x > peer.json"],
+      ["a dot segment", "echo x > /bundle/./friends/peer.json"],
+      ["a dotdot segment", "echo x > /bundle/notes/../friends/peer.json"],
+      ["a relative path in code", "node -e \"require('fs').writeFileSync('friends/peer.json','{}')\""],
+      ["a variable", "echo x > $BUNDLE/friends/peer.json"],
+      ["a command substitution", "echo x > $(echo /bundle/friends)/peer.json"],
+      ["a heredoc", "cat <<EOF > /bundle/friends/peer.json\nx\nEOF"],
+      ["python", "python3 -c \"open('/bundle/friends/peer.json','w').write('{}')\""],
+    ])("refuses a shell write to the friends store by %s", async (_name, command) => {
+      const { guardInvocation } = await import("../../repertoire/guardrails")
+      expect(guardInvocation("shell", { command }, ctx())).toMatchObject({ allowed: false })
+    })
+    describe("a glob or an expansion that could resolve into a protected store (review of #1064, round 2, finding 7)", () => {
+      beforeEach(() => { vi.mocked(fs.existsSync).mockReturnValue(false) })
+      const probes = [
+        "F=/bundle/fri; cp /tmp/f.json ${F}ends/peer.json",
+        "cp /tmp/f.json /bundle/fr*nds/peer.json",
+        "cp /tmp/f.json /bundle/friend?/peer.json",
+        "cp /tmp/f.json /bundle/[f]riends/peer.json",
+        "cp /tmp/f.json /bundle/*/peer.json",
+        "cp /tmp/f.json fr*nds/peer.json",
+        "cd /bundle && mv /tmp/f.json f*/peer.json",
+        "echo x > /bundle/f{r,}iends/peer.json",
+        "B=/bundle; echo x > $B/fr*nds/peer.json",
+        "echo x > ${HOME}/AgentBundles/sanctuary.ouro/friends/peer.json",
+        "cp /tmp/f.json /bundle/$(echo friends)/peer.json",
+        "cp /tmp/f.json /bundle/`echo friends`/peer.json",
+      ]
+      it.each(probes)("refuses the friends-store probe %s", async (command) => {
+        const { guardInvocation } = await import("../../repertoire/guardrails")
+        expect(guardInvocation("shell", { command }, ctx())).toMatchObject({ allowed: false })
+      })
+      it.each([
+        "cp /tmp/f.json /bundle/ps*che/SOUL.md",
+        "P=/bundle/psy; echo x > ${P}che/SOUL.md",
+        "echo x > /bundle/p?yche/SOUL.md",
+      ])("refuses the same probe against the psyche folder: %s", async (command) => {
+        const { guardInvocation } = await import("../../repertoire/guardrails")
+        expect(guardInvocation("shell", { command }, ctx())).toMatchObject({ allowed: false })
+      })
+      it("treats HOME, TMPDIR and USER as their real values unless the command sets them, and any other expansion as unknown", async () => {
+        const { guardInvocation } = await import("../../repertoire/guardrails")
+        const prior = { HOME: process.env.HOME, TMPDIR: process.env.TMPDIR }
+        process.env.HOME = "/home/ari"
+        delete process.env.TMPDIR
+        try {
+          expect(guardInvocation("shell", { command: "echo x > $HOME/out.txt" }, ctx())).toEqual({ allowed: true })
+          expect(guardInvocation("shell", { command: "echo x > ${HOME}/out.txt" }, ctx())).toEqual({ allowed: true })
+          expect(guardInvocation("shell", { command: "echo x > $TMPDIR/out.txt" }, ctx())).toMatchObject({ allowed: false })
+          expect(guardInvocation("shell", { command: "HOME=/bundle/friends; echo x > $HOME/p.json" }, ctx())).toMatchObject({ allowed: false })
+          expect(guardInvocation("shell", { command: "echo x > ${X:-/tmp}/a" }, ctx())).toMatchObject({ allowed: false })
+          expect(guardInvocation("shell", { command: "echo x > ~/n*/a" }, ctx({ agentRoot: `${os.homedir()}/AgentBundles/sanctuary.ouro` }))).toEqual({ allowed: true })
+          expect(guardInvocation("shell", { command: "echo x > ~/AgentBundles/sanctuary.ouro/fr*/a" }, ctx({ agentRoot: `${os.homedir()}/AgentBundles/sanctuary.ouro` }))).toMatchObject({ allowed: false })
+        } finally {
+          if (prior.HOME === undefined) delete process.env.HOME; else process.env.HOME = prior.HOME
+          if (prior.TMPDIR !== undefined) process.env.TMPDIR = prior.TMPDIR
+        }
+      })
+      it("lets read-only commands and writes that cannot reach a store through", async () => {
+        const { guardInvocation } = await import("../../repertoire/guardrails")
+        for (const command of ["cat /bundle/fr*nds/peer.json", "ls /bundle/f*", "cp /tmp/a.json /bundle/notes/*.json", "echo x > /bundle/notes/[ab].md", "echo x > /tmp/$USER.log", "rm /bundle/state/*.tmp", "cp a.txt /bundle/n*/b.txt"]) {
+          expect(JSON.stringify(guardInvocation("shell", { command }, ctx())), command).toBe(JSON.stringify({ allowed: true }))
+        }
+      })
+    })
+    it("refuses a home-relative path that lands in the friends store", async () => {
+      const { guardInvocation } = await import("../../repertoire/guardrails")
+      const root = `${os.homedir()}/AgentBundles/sanctuary.ouro`
+      expect(guardInvocation("shell", { command: "echo x > ~/AgentBundles/sanctuary.ouro/friends/peer.json" }, ctx({ agentRoot: root }))).toMatchObject({ allowed: false })
+      expect(guardInvocation("shell", { command: "cat ~/AgentBundles/sanctuary.ouro/friends/peer.json && ls ~/AgentBundles" }, ctx({ agentRoot: root }))).toEqual({ allowed: true })
+    })
+    it("still allows read-only commands and writes outside the friends store", async () => {
+      const { guardInvocation } = await import("../../repertoire/guardrails")
+      for (const command of ["ls /bundle/friends | head -5", "grep -r family /bundle/friends", "cd /bundle/friends && cat peer.json", "echo x > /bundle/notes/friends/a.md", "git -C /home/ari/Projects/friends status", "echo my friends are kind > /tmp/out.md"]) {
+        expect(JSON.stringify(guardInvocation("shell", { command }, ctx())), command).toBe(JSON.stringify({ allowed: true }))
+      }
+    })
+    it("leaves other directories named friends alone, and reads", async () => {
+      const { guardInvocation } = await import("../../repertoire/guardrails")
+      const read = (target: string) => ctx({ readPaths: new Set([target]) })
+      for (const target of ["/home/ari/Projects/friends/src/a.ts", "/bundle/notes/friends/a.md", "/bundle/friends-notes.md"]) {
+        expect(guardInvocation("write_file", { path: target }, read(target))).toEqual({ allowed: true })
+      }
+      expect(guardInvocation("read_file", { path: "/bundle/friends/peer.json" }, ctx())).toEqual({ allowed: true })
+      expect(guardInvocation("shell", { command: "cat /bundle/friends/peer.json" }, ctx())).toEqual({ allowed: true })
+      expect(guardInvocation("write_file", { path: "/x/friends/a.json" }, ctx({ agentRoot: undefined, readPaths: new Set(["/x/friends/a.json"]) }))).toEqual({ allowed: true })
+    })
+  })
+
   describe("the psyche folder ships only from the repository", () => {
     const ctx = (over: Record<string, unknown> = {}) => ({ readPaths: new Set(["/bundle/psyche/SOUL.md"]), agentRoot: "/bundle", trustLevel: "family" as const, ...over })
     it.each(["/bundle/psyche/SOUL.md", "psyche/LORE.md", "/bundle/psyche/../psyche/TACIT.md", "/bundle/psyche"])("refuses write_file and edit_file to %s for everyone, family included", async (target) => {

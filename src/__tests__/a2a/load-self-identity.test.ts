@@ -210,3 +210,51 @@ describe("loadSelfA2AIdentity (wrapper glue over loadOrMintA2AIdentity)", () => 
     expect(raw).toContain("must-not-be-replaced")
   })
 })
+
+describe("readOwnA2ADid is read-only", () => {
+  it("returns the DID from the cached machine config, null when nothing is cached, and null for a malformed seed, without touching the vault or the machine identity", async () => {
+    const credentials = await import("../../heart/runtime-credentials")
+    const { readOwnA2ADid } = await import("../../a2a/identity")
+    credentials.resetRuntimeCredentialConfigCache()
+    expect(await readOwnA2ADid("readonly-agent")).toBeNull()
+    credentials.cacheMachineRuntimeCredentialConfig("readonly-agent", { a2a: { identity: { ed25519Seed: Buffer.alloc(32, 7).toString("base64url") } } })
+    const did = await readOwnA2ADid("readonly-agent")
+    expect(did).toMatch(/^did:key:/)
+    expect(await readOwnA2ADid("readonly-agent")).toBe(did)
+    credentials.cacheMachineRuntimeCredentialConfig("readonly-agent", { a2a: { identity: { ed25519Seed: "short" } } })
+    expect(await readOwnA2ADid("readonly-agent")).toBeNull()
+    credentials.resetRuntimeCredentialConfigCache()
+  })
+})
+
+describe("the DID published in the bundle is advisory and separate from readOwnA2ADid", () => {
+  it("readOwnA2ADid never reads the bundle; readPublishedA2ADid reads the public identity file, and publishing is best effort and idempotent", async () => {
+    const fs = await import("node:fs")
+    const os = await import("node:os")
+    const path = await import("node:path")
+    const credentials = await import("../../heart/runtime-credentials")
+    const { readOwnA2ADid, publishOwnA2ADid, readPublishedA2ADid, PUBLIC_A2A_IDENTITY_FILE } = await import("../../a2a/identity")
+    credentials.resetRuntimeCredentialConfigCache()
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "own-did-"))
+    try {
+      expect(readPublishedA2ADid(root)).toBeNull()
+      publishOwnA2ADid(root, "did:key:z6MkPublished")
+      expect(JSON.parse(fs.readFileSync(path.join(root, PUBLIC_A2A_IDENTITY_FILE), "utf8"))).toEqual({ did: "did:key:z6MkPublished" })
+      expect(readPublishedA2ADid(root)).toBe("did:key:z6MkPublished")
+      // a published DID never stands in for the config DID
+      expect(await readOwnA2ADid("published-agent")).toBeNull()
+      const before = fs.statSync(path.join(root, PUBLIC_A2A_IDENTITY_FILE)).mtimeMs
+      publishOwnA2ADid(root, "did:key:z6MkPublished")
+      expect(fs.statSync(path.join(root, PUBLIC_A2A_IDENTITY_FILE)).mtimeMs).toBe(before)
+      fs.writeFileSync(path.join(root, PUBLIC_A2A_IDENTITY_FILE), JSON.stringify({ did: "not-a-did" }))
+      expect(readPublishedA2ADid(root)).toBeNull()
+      fs.writeFileSync(path.join(root, PUBLIC_A2A_IDENTITY_FILE), "{broken")
+      expect(readPublishedA2ADid(root)).toBeNull()
+      const blocked = path.join(root, "blocked")
+      fs.writeFileSync(blocked, "file, not a directory")
+      expect(() => publishOwnA2ADid(blocked, "did:key:z6MkX")).not.toThrow()
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true })
+    }
+  })
+})

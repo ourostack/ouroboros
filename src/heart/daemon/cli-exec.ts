@@ -644,6 +644,7 @@ type MissingAgentResolvableKind =
   | "a2a.onboard"
   | "a2a.serve"
   | "a2a.escalation"
+  | "a2a.delegatedCommands"
 
 type ResolvedAgentCommand<T extends { agent?: string }> = Omit<T, "agent"> & { agent: string }
 type MissingAgentResolvableCommand = Extract<OuroCliCommand, { kind: MissingAgentResolvableKind }>
@@ -730,6 +731,7 @@ function agentResolutionFailureMode(command: OuroCliCommand): AgentResolutionFai
     case "a2a.onboard":
     case "a2a.serve":
     case "a2a.escalation":
+    case "a2a.delegatedCommands":
       return "throw"
     case "provider.use":
     case "provider.check":
@@ -7163,16 +7165,26 @@ async function executeA2AClientCommand(command: A2AClientCliCommand, deps: OuroC
     deps.writeStdout(message)
     return message
   }
-  const { sendSealedA2AChat } = await import("../../a2a/client")
-  const reply = await sendSealedA2AChat({
-    cardUrl: command.to,
-    text: command.text,
-    ...(command.conversationId ? { conversationId: command.conversationId } : {}),
-    ...(command.delegated ? { onBehalfOf: "principal" as const } : {}),
-    identity,
-    /* v8 ignore next -- production CLI uses global fetch; tests inject fetch for a hermetic peer @preserve */
-    ...(deps.fetchImpl ? { fetchImpl: deps.fetchImpl } : {}),
-  })
+  const { sendSealedA2AChat, A2ARpcError } = await import("../../a2a/client")
+  let reply: Awaited<ReturnType<typeof sendSealedA2AChat>>
+  try {
+    reply = await sendSealedA2AChat({
+      cardUrl: command.to,
+      text: command.text,
+      ...(command.conversationId ? { conversationId: command.conversationId } : {}),
+      ...(command.delegated ? { onBehalfOf: "principal" as const } : {}),
+      identity,
+      /* v8 ignore next -- production CLI uses global fetch; tests inject fetch for a hermetic peer @preserve */
+      ...(deps.fetchImpl ? { fetchImpl: deps.fetchImpl } : {}),
+    })
+  } catch (error) {
+    // A refused delegated command is an answer, not a crash: with --json the caller gets the reason and the next step.
+    const data = error instanceof A2ARpcError ? (error.data as { reason?: unknown; nothingRan?: unknown; retry?: unknown; next?: unknown } | undefined) : undefined
+    if (!command.json || typeof data?.reason !== "string") throw error
+    return returnCliFailure(deps, JSON.stringify({
+      ok: false, reason: data.reason, nothingRan: data.nothingRan, message: (error as Error).message, retry: data.retry, next: data.next,
+    }))
+  }
   const message = command.json ? JSON.stringify(reply) : `${reply.peerName}: ${reply.text}\n[conversation: ${reply.conversationId}]`
   deps.writeStdout(message)
   return message
@@ -7199,32 +7211,22 @@ async function executeA2ACommand(command: A2ACliCommand & { agent: string }, dep
     return message
   }
 
-  if (command.kind === "a2a.escalation") {
-    const { readEscalationGrants, setEscalationGrant } = await import("../../a2a/escalation-grants")
+  if (command.kind === "a2a.escalation" || command.kind === "a2a.delegatedCommands") {
+    const { executeDelegatedCommandsCommand, executeEscalationCommand } = await import("../../a2a/trust-commands")
     /* v8 ignore next -- production default bundles root; tests inject bundlesRoot @preserve */
     const agentRoot = path.join(deps.bundlesRoot ?? getAgentBundlesRoot(), `${command.agent}.ouro`)
-    if (command.action === "list") {
-      const grants = Object.entries(readEscalationGrants(agentRoot))
-      const message = grants.length === 0 ? "no escalation grants" : grants.map(([id, grant]) => `${id}  granted ${grant.grantedAt}  ${grant.did}  ${grant.source}`).join("\n")
-      deps.writeStdout(message)
-      return message
+    const context = {
+      agentName: command.agent,
+      agentRoot,
+      store: new FileFriendStore(path.join(agentRoot, "friends")),
+      now: new Date(deps.now?.() ?? Date.now()),
+      /* v8 ignore next -- production reads the real euid; tests inject isRoot @preserve */
+      isRoot: deps.isRoot ? deps.isRoot() : process.geteuid?.() === 0,
+      /* v8 ignore next -- production reads the stored identity; tests inject ownA2ADid @preserve */
+      ownDid: async () => deps.ownA2ADid ? deps.ownA2ADid(command.agent) : (await import("../../a2a/identity")).readOwnA2ADid(command.agent),
+      publishedDid: async () => (await import("../../a2a/identity")).readPublishedA2ADid(agentRoot),
     }
-    const friend = await new FileFriendStore(path.join(agentRoot, "friends")).get(command.friendId!)
-    if (!friend) throw new Error(`friend not found: ${command.friendId}`)
-    const at = new Date(deps.now?.() ?? Date.now())
-    const { friendDid } = await import("../../a2a/resolution-proof")
-    const holderDid = command.action === "grant" ? friendDid(friend) : null
-    if (command.action === "grant" && !holderDid) throw new Error(`${friend.name} has no pinned DID yet; onboard it with a DID before granting escalation`)
-    const change = command.action === "grant"
-      ? setEscalationGrant(agentRoot, friend.id, { grant: true, source: command.source ?? `ouro a2a escalation grant, ${at.toISOString()}`, did: holderDid! }, at)
-      : setEscalationGrant(agentRoot, friend.id, { grant: false }, at)
-    const message = [
-      `${command.action === "grant" ? "granted" : "revoked"} escalation: ${friend.name} (${friend.id})${change.changed ? "" : " (no change)"}`,
-      ...(holderDid ? [`pinned DID: ${holderDid} (compare it with the holder's real DID)`] : []),
-      ...(change.backup ? [`backup: ${change.backup}`] : []),
-      ...(command.action === "grant" && readEscalationGrants(agentRoot)[friend.id] === undefined ? [`WARNING: the grant is written but will not be honoured: ${path.join(agentRoot, "state", "a2a")} and escalation-grants.json must be owned by root and writable by no one else. Run this command as root (docker exec as root) or chown root:root and chmod 755/644 them.`] : []),
-      ...(command.action === "grant" && (friend.trustLevel !== "family" || friend.admissionState !== "active") ? [`note: ${friend.name} only holds the grant while it is active family (now ${friend.trustLevel}, ${friend.admissionState})`] : []),
-    ].join("\n")
+    const message = command.kind === "a2a.escalation" ? await executeEscalationCommand(command, context) : await executeDelegatedCommandsCommand(command, context)
     deps.writeStdout(message)
     return message
   }
@@ -9092,7 +9094,7 @@ export async function runOuroCli(args: string[], deps: OuroCliDeps = createDefau
     return message
   }
 
-  if (command.kind === "a2a.card" || command.kind === "a2a.onboard" || command.kind === "a2a.serve" || command.kind === "a2a.escalation") {
+  if (command.kind === "a2a.card" || command.kind === "a2a.onboard" || command.kind === "a2a.serve" || command.kind === "a2a.escalation" || command.kind === "a2a.delegatedCommands") {
     return executeA2ACommand(command, deps)
   }
 

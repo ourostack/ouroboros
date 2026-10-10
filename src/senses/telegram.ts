@@ -21,6 +21,7 @@ import {
 import * as path from "node:path"
 import { FileFriendStore, getChannelCapabilities } from "@ouro.bot/friends"
 
+import { shieldDelegatedBanner } from "../a2a/delegated-command"
 import { getAgentRoot } from "../heart/identity"
 import type { RunAgentOptions } from "../heart/core"
 import { readSanctuaryAcceptanceMarker, sanctuaryAcceptanceEventMeta } from "../heart/daemon/sanctuary-acceptance-marker"
@@ -1495,7 +1496,7 @@ export function createTelegramSenseApp(options: CreateTelegramSenseAppOptions): 
       const sessionKey = `telegram:${input.botId}:${input.userId}`
       const reference = `telegram-admission:${input.admissionId}`
       const sessionPath = getSenseSessionPath(options.agentName, input.friendId, "telegram", sessionKey, agentRoot)
-      const receipt = await recordTelegramEffectsInSession({ store: getEffectJournal(), sessionPath, artifacts: [], inbound: { text: input.text, reference } })
+      const receipt = await recordTelegramEffectsInSession({ store: getEffectJournal(), sessionPath, artifacts: [], inbound: { text: shieldDelegatedBanner(input.text), reference } })
       return { admissionId: input.admissionId, friendId: input.friendId, sessionKey, eventId: receipt.eventId, reference }
     },
     enqueueApprovedWork: async (input) => {
@@ -1543,7 +1544,8 @@ export function createTelegramSenseApp(options: CreateTelegramSenseAppOptions): 
   }
 
   const hydrateAuthorizedMessage = async (message: TelegramInboundMessage): Promise<{ text: string; attachmentIds: string[] }> => {
-    if (!message.attachments?.length) return { text: [message.text, ...(message.attachmentNotices ?? [])].filter(Boolean).join("\n"), attachmentIds: [] }
+    // The one place inbound Telegram text is assembled for every turn and every stored ingress event: a typed delegated-command banner is marked here, so the stored event and the turn carry identical, shielded text.
+    if (!message.attachments?.length) return { text: shieldDelegatedBanner([message.text, ...(message.attachmentNotices ?? [])].filter(Boolean).join("\n")), attachmentIds: [] }
     const ingested = await ingestTelegramAttachments({
       agentName: options.agentName,
       agentRoot,
@@ -1555,7 +1557,7 @@ export function createTelegramSenseApp(options: CreateTelegramSenseAppOptions): 
     })
     const attachmentIds = ingested.attachments.map((attachment) => attachment.id)
     return {
-      text: [message.text, renderAttachmentBlock(ingested.attachments), ...(message.attachmentNotices ?? []), ...ingested.notices].filter(Boolean).join("\n"),
+      text: shieldDelegatedBanner([message.text, renderAttachmentBlock(ingested.attachments), ...(message.attachmentNotices ?? []), ...ingested.notices].filter(Boolean).join("\n")),
       attachmentIds,
     }
   }

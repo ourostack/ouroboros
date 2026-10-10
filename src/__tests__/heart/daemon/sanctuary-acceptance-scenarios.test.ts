@@ -184,7 +184,7 @@ const validDenialReceiptForFacts = () => {
   const boundary = { ownerSnapshotDigest: "1".repeat(64), targetSnapshotDigest: "2".repeat(64), targetRestartCount: 7, targetContainerIdDigest: "7".repeat(64), auditCursorDigest: "3".repeat(64), providerUsageCursorDigest: "4".repeat(64), sessionCursorDigest: "5".repeat(64), toolActionCursorDigest: "6".repeat(64) }
   return { schemaVersion: "sanctuary-read-only-denial-receipt-v1" as const, phase: "complete" as const, label: "unit-16e-1-stop-denial" as const, scenarioHandleDigest: "a".repeat(64), operation: "stop" as const, targetDigest: "7".repeat(64), attemptCount: 1, httpStatus: 403, errorCode: "FORBIDDEN", before: boundary, after: { ...boundary } }
 }
-const base = (physical = { readOnlyRoot: false, mountCount: 5 }): SanctuaryScenarioFacts => ({
+const base = (physical = { readOnlyRoot: false, mountCount: 6 }): SanctuaryScenarioFacts => ({
   capturedAt: 0,
   sourceValues: Object.fromEntries(["identity-key", "telegram-audit", "telegram-offset", "telegram-turn-receipts", "live-grounding-read", "approval-journal", "approval-checkpoints", "container-inspect", "provider-live-check", "cron-runtime", "health-runtime", "digest-runtime", "health-probe-receipt", "scheduler-liveness-receipt", "reboot-checkpoint", "read-only-denial-receipt"].map((key) => [key, { key }])),
   events: [], approvals: [],
@@ -816,7 +816,7 @@ describe("Sanctuary live scenario capture", () => {
       const noReboot = base(); noReboot.reboot = undefined
       expect(deriveSanctuaryScenarioAssertions(label, base(), noReboot, 400_000, scenarioHandleDigest)).toBeNull()
     }
-    const legacyRuntimeControl = base({ readOnlyRoot: true, mountCount: 5 })
+    const legacyRuntimeControl = base({ readOnlyRoot: true, mountCount: 6 })
     expect(deriveSanctuaryScenarioAssertions("unit-16b-runtime-vault-readiness", legacyRuntimeControl, legacyRuntimeControl, 400_000)).toMatchObject({ vaultUnlocked: true })
     const noContainer = structuredClone(legacyRuntimeControl); noContainer.container = undefined
     expect(deriveSanctuaryScenarioAssertions("unit-16b-runtime-vault-readiness", legacyRuntimeControl, noContainer, 400_000)).toBeNull()
@@ -1581,7 +1581,7 @@ describe("Sanctuary live scenario capture", () => {
 
   it("waits instead of self-attesting absent negative and containment facts", () => {
     const before = base()
-    const legacyRuntimeControl = base({ readOnlyRoot: true, mountCount: 5 })
+    const legacyRuntimeControl = base({ readOnlyRoot: true, mountCount: 6 })
     expect(deriveSanctuaryScenarioAssertions("unit-16b-runtime-vault-readiness", legacyRuntimeControl, legacyRuntimeControl, 400_000)).toMatchObject({ vaultUnlocked: true })
     const containment = structuredClone(legacyRuntimeControl); containment.container!.updaterDisabled = false
     expect(deriveSanctuaryScenarioAssertions("unit-16b-runtime-vault-readiness", legacyRuntimeControl, containment, 400_000)).toBeNull()

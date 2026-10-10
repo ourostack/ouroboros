@@ -1,4 +1,5 @@
 import * as fs from "node:fs"
+import * as os from "node:os"
 import * as path from "node:path"
 import { isTrustedLevel, type TrustLevel } from "@ouro.bot/friends"
 import { parse as parseShell, quote as quoteShell, type ControlOperator } from "shell-quote"
@@ -45,7 +46,7 @@ const PROTECTED_PATH_SEGMENTS = [
   ".ouro-cli/vault-unlock/",
   ".ouro-cli/vault-unlock-dpapi/",
   "state/policy/",
-  // What the Butler tells its escalation peers, and who may hear it: only the harness writes these, never the model.
+  // The pre-trust-directory home of the escalation grants; the file is no longer read, and a model must not recreate it.
   "state/a2a/escalation-grants.json",
   "state/outbox/",
   "state/reports/",
@@ -58,6 +59,19 @@ function isPsychePath(filePath: string, agentRoot: string | undefined): boolean 
   const psyche = path.resolve(agentRoot, "psyche")
   const target = path.resolve(agentRoot, filePath)
   return target === psyche || target.startsWith(`${psyche}${path.sep}`)
+}
+
+/**
+ * The friends store (`friends/` under the agent root) is written by the harness's own code, which the model's file tools and
+ * shell redirects must not reach: a model talked into editing a record could rewrite trust, admission or a legacy grant.
+ * Scoped to this agent's root, so a project directory that happens to be named `friends` stays editable. Defence in depth
+ * only: a shell can still write anywhere its uid can, which is why delegated-command authority lives outside the bundle.
+ */
+function isFriendsStorePath(filePath: string, agentRoot: string | undefined): boolean {
+  if (!agentRoot || !filePath) return false
+  const store = path.resolve(agentRoot, "friends")
+  const target = path.resolve(agentRoot, filePath)
+  return target === store || target.startsWith(`${store}${path.sep}`)
 }
 
 function isProtectedPath(filePath: string): boolean {
@@ -113,20 +127,56 @@ function shellWritesToProtectedPath(command: string): boolean {
 const PSYCHE_READ_ONLY_COMMANDS = new Set(["cat", "ls", "head", "tail", "grep", "wc", "sha256sum", "stat", "cd", "pwd"])
 const SEGMENT_OPERATORS = new Set(["&&", "||", ";", "|"])
 
+// --- globs and expansions that could land inside a protected folder ---
+// A word such as /bundle/fr*nds/x.json, /bundle/friend?/x.json or ${F}ends/x.json names no protected folder literally, but the
+// shell could resolve it into one. A word like that counts as mentioning the folder when its directory part can match the folder's
+// path, so the read-only rule below applies to the command.
+const EXPANSION = "\u0001"
+const STABLE_VARIABLES = ["HOME", "TMPDIR", "USER"]
+
+function neutraliseExpansions(command: string): string {
+  return command.replace(/\$\([^)]*\)|`[^`]*`|\$\{([A-Za-z_]\w*)\}|\$([A-Za-z_]\w*)|\$\{[^}]*\}/g, (_match, braced: string | undefined, plain: string | undefined) => {
+    const name = braced ?? plain
+    if (name !== undefined && STABLE_VARIABLES.includes(name) && !new RegExp(`\\b${name}=`).test(command) && process.env[name]) return process.env[name]!
+    return EXPANSION
+  })
+}
+
+function wordPattern(word: string): RegExp {
+  const generalised = word.replace(/\{[^}]*\}/g, EXPANSION).replace(/\[[^\]]*\]/g, "?")
+  let source = ""
+  for (const char of generalised) source += char === EXPANSION ? ".*" : char === "*" ? "[^/]*" : char === "?" ? "[^/]" : char.replace(/[.+^$()|\\\]{}[]/g, "\\$&")
+  return new RegExp(`^${source}$`)
+}
+
+function globOrExpansionCouldReach(command: string, folder: string, agentRoot: string): boolean {
+  const tokens = neutraliseExpansions(command).split(/[\s<>|;&()'"]+/).filter((token) => /[*?[{\u0001]/.test(token))
+  return tokens.some((token) => {
+    const word = token.startsWith("~") ? expandHome(token) : token
+    const absolute = word.startsWith("/") || word.startsWith(EXPANSION) ? word : `${agentRoot}/${word}`
+    const dir = absolute.slice(0, Math.max(absolute.lastIndexOf("/"), 0))
+    return wordPattern(absolute).test(folder) || wordPattern(dir).test(folder)
+  })
+}
+
 function commandMentionsPsyche(command: string, words: readonly string[], agentRoot: string): boolean {
   const psyche = path.resolve(agentRoot, "psyche")
+  if (globOrExpansionCouldReach(command, psyche, agentRoot)) return true
   if (command.includes(psyche) || words.some((word) => word.includes(psyche))) return true
   if (words.some((word) => word === "psyche" || isPsychePath(word, agentRoot))) return true
   // A relative "psyche/..." inside code or a quoted argument, when this agent has such a folder.
   return /(?:^|[\s'"=(])psyche\//.test(command) && fs.existsSync(psyche)
 }
 
-function psycheShellWriteRefused(command: string, agentRoot: string | undefined): boolean {
-  if (!agentRoot) return false
+/**
+ * The shared rule: when a shell command mentions a protected folder at all, it runs only if every part of it is a read-only
+ * command. The mention test is the only thing that differs between folders.
+ */
+function protectedFolderShellWriteRefused(command: string, mentions: (words: readonly string[]) => boolean): boolean {
   const entries = parseShell(command)
   const words = entries.filter((entry): entry is string => typeof entry === "string")
-  if (!commandMentionsPsyche(command, words, agentRoot)) return false
-  // Substitution, heredocs and any $VAR or ${VAR} expansion: the shell could build a psyche path or a command word we cannot see.
+  if (!mentions(words)) return false
+  // Substitution, heredocs and any $VAR or ${VAR} expansion: the shell could build a protected path or a command word we cannot see.
   if (/\$[({A-Za-z_]|`|<\(|<</.test(command)) return true
   let expectCommandWord = true
   for (const entry of entries) {
@@ -142,6 +192,36 @@ function psycheShellWriteRefused(command: string, agentRoot: string | undefined)
     else if (op !== "glob") return true
   }
   return false
+}
+
+function psycheShellWriteRefused(command: string, agentRoot: string | undefined): boolean {
+  if (!agentRoot) return false
+  return protectedFolderShellWriteRefused(command, (words) => commandMentionsPsyche(command, words, agentRoot))
+}
+
+// --- the friends store in shell commands ---
+// Same stance as the psyche folder: a command that names this agent's friends store runs only if it is read-only, because a list of
+// the ways to write a file (>, >>, tee, cp, mv, sed -i, node -e, python, cd then redirect, ~ paths) is one the model can step around.
+function expandHome(word: string): string {
+  return word === "~" || word.startsWith("~/") ? path.join(os.homedir(), word.slice(1)) : word
+}
+
+function commandMentionsFriendsStore(command: string, words: readonly string[], agentRoot: string): boolean {
+  if (globOrExpansionCouldReach(command, path.resolve(agentRoot, "friends"), agentRoot)) return true
+  // Only path-shaped words resolve against the store: an ordinary word such as "friends" in prose is not a path.
+  if (words.some((word) => word.includes("/") && isFriendsStorePath(expandHome(word), agentRoot))) return true
+  // A bare `friends` names the store only as the target of a cd; elsewhere it is an ordinary word ("my friends are kind").
+  if (words.some((word, index) => word.startsWith("friends/") || (word === "friends" && words[index - 1] === "cd"))) return true
+  // A variable or substitution in front of the path ($BUNDLE/friends/x.json): the folder name is still in the command.
+  if (/\$[({A-Za-z_]|`/.test(command) && /(?:^|[\/\s'"=])friends(?:$|[\/\s'"])/.test(command)) return true
+  // An absolute or relative path inside code or a quoted argument, such as node -e "...'/bundle/friends/x.json'...".
+  const store = path.resolve(agentRoot, "friends")
+  return command.includes(store) || /(?:^|[\s'"=(])friends\//.test(command)
+}
+
+function friendsShellWriteRefused(command: string, agentRoot: string | undefined): boolean {
+  if (!agentRoot) return false
+  return protectedFolderShellWriteRefused(command, (words) => commandMentionsFriendsStore(command, words, agentRoot))
 }
 
 // --- structural guardrail checks (always on, all trust levels) ---
@@ -176,12 +256,13 @@ function checkProtectedPaths(toolName: string, args: Record<string, string>, con
   if (toolName === "write_file" || toolName === "edit_file") {
     const filePath = args.path || ""
     if (isPsychePath(filePath, context.agentRoot)) return deny(REASONS.psychePath)
-    if (isProtectedPath(filePath)) return deny(REASONS.protectedPath)
+    if (isProtectedPath(filePath) || isFriendsStorePath(filePath, context.agentRoot)) return deny(REASONS.protectedPath)
   }
 
   if (toolName === "shell") {
     const command = args.command || ""
     if (psycheShellWriteRefused(command, context.agentRoot)) return deny(REASONS.psychePath)
+    if (friendsShellWriteRefused(command, context.agentRoot)) return deny(REASONS.protectedPath)
     if (shellWritesToProtectedPath(command)) return deny(REASONS.protectedPath)
   }
 

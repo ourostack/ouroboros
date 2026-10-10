@@ -4,8 +4,7 @@ import { spawnSync } from "node:child_process"
 import * as fs from "node:fs"
 import * as os from "node:os"
 import * as path from "node:path"
-import { afterEach, beforeEach, describe, expect, it } from "vitest"
-import { readEscalationGrants } from "../../a2a/escalation-grants"
+import { afterAll, afterEach, beforeEach, describe, expect, it } from "vitest"
 
 const SCRIPT = path.resolve(__dirname, "../../../deploy/unraid/sanctuary-replay-gate.mjs")
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -14,6 +13,38 @@ let gate: Gate
 beforeEach(async () => { gate = await import(/* @vite-ignore */ SCRIPT) })
 
 const empty = (overrides: Record<string, unknown> = {}) => ({ effectsReadable: true, stewardSha: "aaa", ledgerLines: 3, queue: [], containers: { "calibre-web": true }, awaiting: [], done: [], effects: [], sink: [], ...overrides })
+
+const hostTrustDirs: string[] = []
+afterAll(() => { for (const dir of hostTrustDirs.splice(0)) fs.rmSync(dir, { recursive: true, force: true }) })
+/** A private trust directory and the current user as "root", so a host built in a test never touches /mnt. */
+function hostRoot(bundle: string) {
+  const trustDir = fs.mkdtempSync(path.join(os.tmpdir(), "replay-gate-host-trust-"))
+  hostTrustDirs.push(trustDir)
+  return { trustDir, clientDir: clientOf(bundle), rootUid: process.getuid!(), rootGid: process.getgid!() }
+}
+
+/** The root-owned replay folder for a test bundle: a leaf inside a private holder, so the check of its parent passes for the current user acting as root. */
+const clientDirs = new Map<string, string>()
+function clientOf(bundle: string) {
+  if (!clientDirs.has(bundle)) {
+    const holder = fs.mkdtempSync(path.join(os.tmpdir(), "replay-gate-client-"))
+    hostTrustDirs.push(holder)
+    clientDirs.set(bundle, path.join(holder, "client"))
+  }
+  return clientDirs.get(bundle)!
+}
+
+/** A staging area on the local disk standing in for the directory root makes inside the container. */
+function fakeStage() {
+  const dirs: string[] = []
+  return {
+    dirs,
+    create: () => { const dir = fs.mkdtempSync(path.join(os.tmpdir(), "replay-stage-")); hostTrustDirs.push(dir); dirs.push(dir); return dir },
+    copyIn: (host: string, dir: string, name: string) => fs.copyFileSync(host, path.join(dir, name)),
+    copyOut: (dir: string, name: string, host: string) => fs.copyFileSync(path.join(dir, name), host),
+    remove: (dir: string) => fs.rmSync(dir, { recursive: true, force: true }),
+  }
+}
 
 describe("readback helpers", () => {
   it("pairs each tool call with its result and ignores sessions without events", () => {
@@ -563,18 +594,23 @@ describe("runSuite orchestration", () => {
 
 describe("provision and the real host", () => {
   let bundle = ""
+  let trust = ""
   beforeEach(() => {
+    trust = fs.mkdtempSync(path.join(os.tmpdir(), "replay-gate-trust-"))
     bundle = fs.mkdtempSync(path.join(os.tmpdir(), "replay-gate-"))
     for (const dir of ["state/policy", "state/sessions/dir1/a2a", "state/telegram/effects", "friends", "books", "mcp", "awaiting/.done"]) fs.mkdirSync(path.join(bundle, dir), { recursive: true })
   })
-  afterEach(() => fs.rmSync(bundle, { recursive: true, force: true }))
+  afterEach(() => { fs.rmSync(bundle, { recursive: true, force: true }); fs.rmSync(trust, { recursive: true, force: true }) })
 
   function fakeCli() {
     const calls: string[][] = []
     let next = 0
     const run = (args: string[]) => {
       calls.push(args)
-      if (args[1] === "identity") return JSON.stringify({ did: `did:key:${args[3].includes("principal") ? "P" : args[3].includes("escalation") ? "E" : "S"}` })
+      if (args[1] === "identity") {
+        if (!fs.existsSync(args[3])) fs.writeFileSync(args[3], "{\"seed\":\"minted\"}", { mode: 0o600 })
+        return JSON.stringify({ did: `did:key:${args[3].endsWith("principal.json") ? "P" : args[3].endsWith("escalation.json") ? "E" : "S"}` })
+      }
       if (args[1] === "onboard") {
         const id = `friend-${++next}`
         fs.writeFileSync(path.join(bundle, "friends", `${id}.json`), JSON.stringify({ id, name: args[args.indexOf("--name") + 1], trustLevel: args[args.indexOf("--trust") + 1] }))
@@ -584,7 +620,7 @@ describe("provision and the real host", () => {
     }
     return { run, calls }
   }
-  const uid = () => ({ rootUid: process.getuid!(), rootGid: process.getgid!() })
+  const uid = () => ({ rootUid: process.getuid!(), rootGid: process.getgid!(), trustDir: trust, clientDir: clientOf(bundle), stage: fakeStage(), retireRecord: () => undefined })
 
   it("creates a granted principal, an ungranted stranger and an escalation peer, and is idempotent", () => {
     const { run, calls } = fakeCli()
@@ -593,33 +629,35 @@ describe("provision and the real host", () => {
     expect(out.stranger.friendId).toBe("friend-2")
     const principal = JSON.parse(fs.readFileSync(path.join(bundle, "friends", "friend-1.json"), "utf8"))
     const stranger = JSON.parse(fs.readFileSync(path.join(bundle, "friends", "friend-2.json"), "utf8"))
-    expect(principal.delegationGrant).toMatchObject({ scope: "principal_commands" })
+    // The friend record carries no grant: authority comes only from the root-owned trust directory.
+    expect(principal.delegationGrant).toBeUndefined()
     expect(stranger.delegationGrant).toBeUndefined()
+    // Provisioning grants nothing: the trusted grants appear only while a run's window is open (see "bounds the replay grants").
+    expect(fs.existsSync(path.join(trust, "delegated-command-grants.json"))).toBe(false)
+    expect(fs.existsSync(path.join(trust, "escalation-grants.json"))).toBe(false)
     expect(calls.filter((a) => a[1] === "onboard").map((a) => a[a.indexOf("--trust") + 1])).toEqual(["family", "friend", "family"])
     expect(out.escalation.friendId).toBe("friend-3")
-    const grants = JSON.parse(fs.readFileSync(path.join(bundle, "state/a2a/escalation-grants.json"), "utf8"))
-    expect(Object.keys(grants.grants)).toEqual(["friend-3"])
-    expect(grants.grants["friend-3"]).toMatchObject({ scope: "escalation", source: "replay gate provisioning (host root)", did: expect.stringMatching(/^did:/) })
-    expect(fs.statSync(path.join(bundle, "state/a2a/escalation-grants.json")).mode & 0o777).toBe(0o644)
+    expect(fs.existsSync(path.join(bundle, "state/a2a/escalation-grants.json"))).toBe(false)
     expect(JSON.parse(fs.readFileSync(path.join(bundle, "friends", "friend-3.json"), "utf8")).delegationGrant).toBeUndefined()
     expect(calls.filter((a) => a[0] === "friend").every((a) => a.includes("sanctuary-agent-peer") && a.includes("active"))).toBe(true)
     expect(fs.existsSync(path.join(bundle, "state/replay/notices.ndjson"))).toBe(true)
     const registry = JSON.parse(fs.readFileSync(path.join(bundle, "state/replay/identities.json"), "utf8"))
     // the escalation peer is registered too, so real failure reports are never routed to it
     expect(Object.keys(registry.friends)).toEqual(["friend-1", "friend-2", "friend-3"])
-    expect(registry.friends["friend-3"]).toMatchObject({ who: "escalation" })
+    expect(registry.friends["friend-3"]).toMatchObject({ who: "escalation", did: "did:key:E" })
     expect(fs.statSync(path.join(bundle, "state/replay/identities.json")).mode & 0o777).toBe(0o644)
     expect(fs.statSync(path.join(bundle, "state/replay/notices.ndjson")).mode & 0o777).toBe(0o600)
-    expect(fs.statSync(path.join(bundle, "state/replay-client")).mode & 0o777).toBe(0o700)
+    expect(fs.statSync(clientOf(bundle)).mode & 0o777).toBe(0o700)
     const again = fakeCli()
     gate.provision({ bundle, log: () => undefined, run: again.run, ...uid() })
     expect(again.calls.filter((a) => a[1] === "onboard")).toEqual([])
-    expect(JSON.parse(fs.readFileSync(path.join(bundle, "state/replay-client/provision.json"), "utf8")).cardUrl).toBe("http://card/x")
+    expect(JSON.parse(fs.readFileSync(path.join(clientOf(bundle), "provision.json"), "utf8")).cardUrl).toBe("http://card/x")
   })
 
-  it("keeps earlier replay identities in the registry when provisioning again", () => {
+  it("keeps earlier replay identities in the registry, taken from the root-owned replay list and never from the bundle", () => {
     fs.mkdirSync(path.join(bundle, "state/replay"), { recursive: true })
-    fs.writeFileSync(path.join(bundle, "state/replay/identities.json"), JSON.stringify({ friends: { "old-replay": { name: "retired" } } }))
+    fs.writeFileSync(path.join(bundle, "state/replay/identities.json"), JSON.stringify({ friends: { "forged-in-bundle": { name: "forged" } } }))
+    fs.writeFileSync(path.join(trust, "replay-identities.json"), JSON.stringify({ schemaVersion: 1, grants: { "old-replay": { who: "principal", name: "retired", did: "did:key:old" } } }), { mode: 0o644 })
     gate.provision({ bundle, cardUrl: "c", log: () => undefined, run: fakeCli().run, ...uid() })
     expect(Object.keys(JSON.parse(fs.readFileSync(path.join(bundle, "state/replay/identities.json"), "utf8")).friends).sort()).toEqual(["friend-1", "friend-2", "friend-3", "old-replay"])
   })
@@ -640,18 +678,530 @@ describe("provision and the real host", () => {
     expect(() => gate.provision({ bundle, log: () => undefined, run, ...uid() })).toThrow(/must not hold a delegation grant/)
   })
 
+  it("fails if a replay peer's DID changes after it was recorded in the root-owned replay state", () => {
+    gate.provision({ bundle, cardUrl: "c", log: () => undefined, run: fakeCli().run, ...uid() })
+    const swapped = (args: string[]) => (args[1] === "identity" && args[3].includes("principal") ? '{"did":"did:key:SWAPPED"}' : fakeCli().run(args))
+    expect(() => gate.provision({ bundle, log: () => undefined, run: swapped, ...uid() })).toThrow(/replay-principal DID changed/)
+    expect(fs.existsSync(path.join(trust, "delegated-command-grants.json"))).toBe(false)
+  })
+
+  it("bounds the replay grants: the window opens them with its expiry, closing it removes them, and construction grants nothing", () => {
+    gate.provision({ bundle, cardUrl: "c", log: () => undefined, run: fakeCli().run, ...uid() })
+    const host = gate.makeHost({ bundle, log: () => undefined, ...uid() })
+    expect(fs.existsSync(path.join(trust, "delegated-command-grants.json"))).toBe(false)
+    host.openWindow(5)
+    const window = JSON.parse(fs.readFileSync(path.join(bundle, "state/replay/window.json"), "utf8"))
+    const delegated = JSON.parse(fs.readFileSync(path.join(trust, "delegated-command-grants.json"), "utf8"))
+    const escalation = JSON.parse(fs.readFileSync(path.join(trust, "escalation-grants.json"), "utf8"))
+    expect(Object.keys(delegated.grants)).toEqual(["friend-1"])
+    expect(delegated.grants["friend-1"]).toMatchObject({ scope: "principal_commands", did: "did:key:P", source: "replay gate provisioning (host root)", expiresAt: window.friends["friend-1"].expiresAt })
+    expect(Object.keys(escalation.grants)).toEqual(["friend-3"])
+    expect(escalation.grants["friend-3"]).toMatchObject({ scope: "escalation", did: "did:key:E", expiresAt: window.friends["friend-3"].expiresAt })
+    host.closeWindow()
+    expect(JSON.parse(fs.readFileSync(path.join(trust, "delegated-command-grants.json"), "utf8")).grants).toEqual({})
+    expect(JSON.parse(fs.readFileSync(path.join(trust, "escalation-grants.json"), "utf8")).grants).toEqual({})
+    host.closeWindow()
+  })
+
+  it("hands the replay client identity files to root with mode 0600 and drives the client as root from a staged copy", async () => {
+    const identity = path.join(clientOf(bundle), "principal.json")
+    fs.mkdirSync(path.dirname(identity), { mode: 0o700 })
+    fs.writeFileSync(identity, "{\"seed\":\"kept\"}", { mode: 0o644 })
+    gate.provision({ bundle, cardUrl: "c", log: () => undefined, run: fakeCli().run, ...uid() })
+    expect(fs.statSync(identity).mode & 0o777).toBe(0o600)
+    expect(fs.readFileSync(identity, "utf8")).toBe("{\"seed\":\"kept\"}")
+    const calls: string[][] = []
+    const stage = fakeStage()
+    const host = gate.makeHost({ ...hostRoot(bundle), stage, bundle, log: () => undefined, exec: (file: string, args: string[]) => { calls.push([file, ...args]); return JSON.stringify({ text: "x" }) } })
+    await expect(host.send({ who: "principal", text: "x", delegated: false, context: "c" })).rejects.toThrow(/window is not open/)
+    host.openWindow(5)
+    await host.send({ who: "principal", text: "x", delegated: false, context: "c" })
+    await host.outbox("principal", ["list"])
+    expect(calls.map((c) => c.slice(0, 4))).toEqual([["docker", "exec", "-u", "0"], ["docker", "exec", "-u", "0"]])
+    expect(calls[0]).toContain(`${stage.dirs[0]}/principal.json`)
+    host.closeWindow()
+    expect(fs.existsSync(stage.dirs[0])).toBe(false)
+  })
+
+  it("writes the root-owned replay list into the trust directory, keeps earlier entries, and never lets a symlink stand in for it", () => {
+    fs.mkdirSync(trust, { recursive: true })
+    fs.writeFileSync(path.join(trust, "replay-identities.json"), JSON.stringify({ schemaVersion: 1, grants: { "old-replay": { who: "principal", name: "retired", did: "did:key:old" } } }), { mode: 0o644 })
+    gate.provision({ bundle, cardUrl: "c", log: () => undefined, run: fakeCli().run, ...uid() })
+    const list = JSON.parse(fs.readFileSync(path.join(trust, "replay-identities.json"), "utf8"))
+    expect(list.schemaVersion).toBe(1)
+    expect(Object.keys(list.grants).sort()).toEqual(["friend-1", "friend-2", "friend-3", "old-replay"])
+    expect(list.grants["friend-1"]).toEqual({ who: "principal", name: "replay-principal", did: "did:key:P" })
+    expect(fs.statSync(path.join(trust, "replay-identities.json")).mode & 0o777).toBe(0o644)
+    fs.rmSync(path.join(trust, "replay-identities.json"))
+    fs.symlinkSync(path.join(bundle, "friends"), path.join(trust, "replay-identities.json"))
+    expect(() => gate.provision({ bundle, cardUrl: "c", log: () => undefined, run: fakeCli().run, ...uid() })).toThrow(/symlink/)
+  })
+
+  describe("the trust-directory lock (review of #1064, round 2, finding 6)", () => {
+    const lockPath = () => path.join(trust, ".lock")
+    const deadPid = () => spawnSync(process.execPath, ["-e", ""]).pid as number
+    const body = (pid: number, host: string = os.hostname()) => `pid ${pid} host ${host} at 2026-10-09T00:00:00.000Z\n`
+    const hold = (ageMs = 0, text: string = body(deadPid())) => {
+      fs.mkdirSync(trust, { recursive: true, mode: 0o755 })
+      fs.writeFileSync(lockPath(), text)
+      const at = new Date(Date.now() - ageMs)
+      fs.utimesSync(lockPath(), at, at)
+    }
+    const grant = (extra: Record<string, unknown> = {}) => gate.grantDelegatedCommands(trust, "friend-1", "did:key:P", new Date("2026-10-09T00:00:00Z"), { ...uid(), expiresAt: "2030-01-01T00:00:00.000Z", ...extra })
+
+    it("takes the same lock file the operator commands take, and releases it", () => {
+      grant()
+      expect(fs.existsSync(lockPath())).toBe(false)
+      expect(Object.keys(JSON.parse(fs.readFileSync(path.join(trust, "delegated-command-grants.json"), "utf8")).grants)).toEqual(["friend-1"])
+      gate.revokeDelegatedCommands(trust, "friend-1", uid())
+      expect(fs.existsSync(lockPath())).toBe(false)
+    })
+
+    it("refuses to write while another writer holds a fresh lock, for grants and for revokes", () => {
+      grant()
+      hold()
+      expect(() => grant({ lockTimeoutMs: 60 })).toThrow(/another grant command is writing/)
+      expect(() => gate.revokeDelegatedCommands(trust, "friend-1", { ...uid(), lockTimeoutMs: 60 })).toThrow(/another grant command is writing/)
+      expect(Object.keys(JSON.parse(fs.readFileSync(path.join(trust, "delegated-command-grants.json"), "utf8")).grants)).toEqual(["friend-1"])
+    })
+
+    it("takes over a stale lock, but a second writer that judged it stale leaves the first one's fresh lock alone", () => {
+      hold(10 * 60_000)
+      grant()
+      expect(fs.existsSync(lockPath())).toBe(false)
+      hold(10 * 60_000)
+      expect(() => grant({ lockTimeoutMs: 60, onBeforeReclaim: () => { fs.rmSync(lockPath()); fs.writeFileSync(lockPath(), "pid A\n") } })).toThrow(/another grant command is writing/)
+      expect(fs.readFileSync(lockPath(), "utf8")).toBe("pid A\n")
+      expect(fs.existsSync(`${lockPath()}.reclaim`)).toBe(false)
+    })
+
+    it("keeps the lock of a slow writer that is still running, and of a writer on another host until it is an hour old (review of #1064, round 3, finding 5)", () => {
+      grant()
+      hold(30 * 60_000, body(process.pid))
+      expect(() => grant({ lockTimeoutMs: 60 })).toThrow(/another grant command is writing/)
+      expect(fs.readFileSync(lockPath(), "utf8")).toBe(body(process.pid))
+      hold(30 * 60_000, body(deadPid(), "some-other-host"))
+      expect(() => grant({ lockTimeoutMs: 60 })).toThrow(/another grant command is writing/)
+      hold(2 * 60 * 60_000, body(deadPid(), "some-other-host"))
+      grant()
+      expect(fs.existsSync(lockPath())).toBe(false)
+      for (const text of ["", "garbage", "pid 1\n"]) {
+        hold(10 * 60_000, text)
+        grant()
+        expect(fs.existsSync(lockPath())).toBe(false)
+      }
+    })
+
+    it("treats a process it may not signal as running and a lock it cannot read as not its to take", () => {
+      const realKill = process.kill
+      process.kill = (() => { throw Object.assign(new Error("not yours"), { code: "EPERM" }) }) as never
+      try {
+        hold(30 * 60_000, body(4242))
+        expect(() => grant({ lockTimeoutMs: 60 })).toThrow(/another grant command is writing/)
+      } finally { process.kill = realKill }
+      hold(10 * 60_000)
+      fs.chmodSync(lockPath(), 0o000)
+      try { expect(() => grant({ lockTimeoutMs: 60 })).toThrow(/another grant command is writing/) } finally { fs.chmodSync(lockPath(), 0o644) }
+    })
+
+    it("waits on a reclaim file another writer holds, and clears one a dead writer left", () => {
+      hold(10 * 60_000)
+      fs.writeFileSync(`${lockPath()}.reclaim`, "pid 2\n")
+      expect(() => grant({ lockTimeoutMs: 60 })).toThrow(/another grant command is writing/)
+      const old = new Date(Date.now() - 10 * 60_000)
+      fs.utimesSync(`${lockPath()}.reclaim`, old, old)
+      grant()
+      expect(fs.existsSync(`${lockPath()}.reclaim`)).toBe(false)
+      expect(fs.existsSync(lockPath())).toBe(false)
+    })
+
+    it("surfaces a lock error that is not 'already exists', and does nothing for a revoke when there is no trust directory", () => {
+      fs.mkdirSync(trust, { recursive: true, mode: 0o755 })
+      expect(() => grant({ createLock: () => { throw Object.assign(new Error("EACCES: permission denied"), { code: "EACCES" }) } })).toThrow(/EACCES/)
+      fs.rmSync(trust, { recursive: true })
+      expect(() => gate.revokeDelegatedCommands(trust, "friend-1", uid())).not.toThrow()
+      expect(fs.existsSync(trust)).toBe(false)
+    })
+  })
+
+  describe("rotating the replay identities (review of #1064, round 2, finding 3)", () => {
+    const generation = (gen: number) => {
+      const calls: string[][] = []
+      let next = gen * 10
+      const run = (args: string[]) => {
+        calls.push(args)
+        if (args[1] === "identity") {
+          if (!fs.existsSync(args[3])) fs.writeFileSync(args[3], "{}", { mode: 0o600 })
+          return JSON.stringify({ did: `did:key:${args[3].split("/").at(-1)}-gen${gen}` })
+        }
+        if (args[1] === "onboard") {
+          const id = `friend-g${gen}-${++next}`
+          fs.writeFileSync(path.join(bundle, "friends", `${id}.json`), JSON.stringify({ id, name: args[args.indexOf("--name") + 1] }))
+          return `friend id: ${id}`
+        }
+        return ""
+      }
+      return { run, calls }
+    }
+
+    it("with --rotate-replay-identities, mints new seeds, re-onboards, regrants and retires the old peers", () => {
+      const first = generation(1)
+      gate.provision({ bundle, cardUrl: "c", log: () => undefined, run: first.run, ...uid() })
+      const host = gate.makeHost({ bundle, log: () => undefined, ...uid() })
+      host.openWindow(5)
+      host.closeWindow()
+      host.openWindow(5)
+      const oldIds = JSON.parse(fs.readFileSync(path.join(clientOf(bundle), "provision.json"), "utf8"))
+      expect(Object.keys(JSON.parse(fs.readFileSync(path.join(trust, "delegated-command-grants.json"), "utf8")).grants)).toEqual([oldIds.principal.friendId])
+      for (const who of ["principal", "stranger", "escalation"]) fs.writeFileSync(path.join(clientOf(bundle), `${who}.json`), "{\"seed\":\"leaked\"}", { mode: 0o600 })
+
+      const second = generation(2)
+      gate.provision({ bundle, log: () => undefined, run: second.run, rotate: true, ...uid() })
+      const now = JSON.parse(fs.readFileSync(path.join(clientOf(bundle), "provision.json"), "utf8"))
+      for (const who of ["principal", "stranger", "escalation"]) {
+        expect(now[who].friendId).not.toBe(oldIds[who].friendId)
+        expect(now[who].did).toContain("gen2")
+      }
+      // the old seeds are moved aside, not left in place, and the old friends can no longer be admitted or granted
+      expect(fs.readdirSync(clientOf(bundle)).filter((name) => name.includes("retired")).length).toBe(3)
+      expect(second.calls.filter((a) => a[0] === "friend" && a.includes("revoked") && a.includes("stranger")).map((a) => a[2]).sort()).toEqual(["escalation", "principal", "stranger"].map((who) => oldIds[who].friendId).sort())
+      expect(JSON.parse(fs.readFileSync(path.join(trust, "delegated-command-grants.json"), "utf8")).grants).toEqual({})
+      expect(JSON.parse(fs.readFileSync(path.join(trust, "escalation-grants.json"), "utf8")).grants).toEqual({})
+      const registry = JSON.parse(fs.readFileSync(path.join(bundle, "state/replay/identities.json"), "utf8")).friends
+      expect(Object.keys(registry)).toHaveLength(6)
+      expect(fs.readFileSync(path.join(clientOf(bundle), "principal.json"), "utf8")).not.toContain("leaked")
+    })
+
+    it("parses the flag and passes it to provision", async () => {
+      expect(gate.parseArgs(["provision", "--rotate-replay-identities"])).toMatchObject({ command: "provision", rotate: true })
+      const seen: unknown[] = []
+      const code = await gate.main(["provision", "--rotate-replay-identities"], { out: () => undefined, err: () => undefined }, { makeHost: gate.makeHost, provision: (options: unknown) => { seen.push(options) } })
+      expect(code).toBe(0)
+      expect(seen[0]).toMatchObject({ rotate: true })
+    })
+  })
+
+  describe("planted symlinks (review of #1064, round 2, finding 2)", () => {
+    const decoy = () => { const dir = fs.mkdtempSync(path.join(os.tmpdir(), "replay-gate-decoy-")); fs.chmodSync(dir, 0o755); return dir }
+    const modeOf = (target: string) => fs.statSync(target).mode & 0o777
+    afterEach(() => { for (const name of fs.readdirSync(os.tmpdir())) if (name.startsWith("replay-gate-decoy-")) fs.rmSync(path.join(os.tmpdir(), name), { recursive: true, force: true }) })
+
+    it("moves a symlinked state/replay aside instead of following it, and refuses a symlinked notices sink", () => {
+      const target = decoy()
+      fs.symlinkSync(target, path.join(bundle, "state/replay"))
+      gate.provision({ bundle, cardUrl: "c", log: () => undefined, run: fakeCli().run, ...uid() })
+      expect(fs.lstatSync(path.join(bundle, "state/replay")).isSymbolicLink()).toBe(false)
+      expect(modeOf(target)).toBe(0o755)
+      expect(fs.readdirSync(target)).toEqual([])
+      fs.rmSync(path.join(bundle, "state/replay"), { recursive: true })
+      fs.mkdirSync(path.join(bundle, "state/replay"))
+      const victim = path.join(target, "victim")
+      fs.writeFileSync(victim, "keep", { mode: 0o644 })
+      fs.symlinkSync(victim, path.join(bundle, "state/replay/notices.ndjson"))
+      expect(() => gate.provision({ bundle, cardUrl: "c", log: () => undefined, run: fakeCli().run, ...uid() })).toThrow(/symlink|ELOOP/)
+      expect(modeOf(victim)).toBe(0o644)
+      expect(fs.readFileSync(victim, "utf8")).toBe("keep")
+    })
+
+    it("refuses a symlinked replay identity file and a client directory of the wrong type", () => {
+      const target = decoy()
+      const victim = path.join(target, "victim")
+      fs.writeFileSync(victim, "{}", { mode: 0o644 })
+      fs.mkdirSync(clientOf(bundle), { mode: 0o700 })
+      fs.symlinkSync(victim, path.join(clientOf(bundle), "principal.json"))
+      expect(() => gate.provision({ bundle, cardUrl: "c", log: () => undefined, run: fakeCli().run, ...uid() })).toThrow(/symlink|ELOOP/)
+      expect(modeOf(victim)).toBe(0o644)
+      fs.rmSync(clientOf(bundle), { recursive: true })
+      fs.writeFileSync(clientOf(bundle), "not a directory")
+      expect(() => gate.provision({ bundle, cardUrl: "c", log: () => undefined, run: fakeCli().run, ...uid() })).toThrow(/not a directory/)
+    })
+
+    it("refuses to seed an outbox through a planted symlink", async () => {
+      const target = decoy()
+      fs.rmSync(path.join(bundle, "state/outbox"), { recursive: true, force: true })
+      fs.symlinkSync(target, path.join(bundle, "state/outbox"))
+      gate.provision({ bundle, cardUrl: "c", log: () => undefined, run: fakeCli().run, ...uid() })
+      const host = gate.makeHost({ bundle, log: () => undefined, ...uid() })
+      await expect(host.seedOutbox("friend-1", "x")).rejects.toThrow(/symlink/)
+      expect(fs.readdirSync(target)).toEqual([])
+    })
+
+    it("refuses a symlinked bundle state directory", () => {
+      const target = decoy()
+      fs.rmSync(path.join(bundle, "state"), { recursive: true })
+      fs.symlinkSync(target, path.join(bundle, "state"))
+      expect(() => gate.provision({ bundle, cardUrl: "c", log: () => undefined, run: fakeCli().run, ...uid() })).toThrow(/symlink/)
+      expect(fs.readdirSync(target)).toEqual([])
+    })
+  })
+
+  describe("the replay seeds and provisioning record are root's alone (review of #1064, round 3, finding 1)", () => {
+    const EVIL = "did:key:z6MkEVIL"
+    const plantInBundle = () => {
+      const dir = path.join(bundle, "state/replay-client")
+      fs.mkdirSync(dir, { recursive: true })
+      fs.writeFileSync(path.join(dir, "principal.json"), "{\"seed\":\"planted\"}", { mode: 0o644 })
+      fs.writeFileSync(path.join(dir, "provision.json"), JSON.stringify({ cardUrl: "http://evil/card", principal: { friendId: "victim-1", did: EVIL }, stranger: { friendId: "victim-2", did: EVIL }, escalation: { friendId: "victim-3", did: EVIL } }))
+      for (const id of ["victim-1", "victim-2", "victim-3"]) fs.writeFileSync(path.join(bundle, "friends", `${id}.json`), JSON.stringify({ id, name: id, trustLevel: "family" }))
+      return dir
+    }
+    const chowns: Array<[number, number]> = []
+    let restore: (fn?: unknown) => void = () => undefined
+    beforeEach(() => { chowns.length = 0; restore = gate.overrideFchownForTests((_fd: number, uid: number, gid: number) => { chowns.push([uid, gid]) }) })
+    afterEach(() => { gate.overrideFchownForTests(restore) })
+
+    it("never blesses or records a replay-client folder, seed or provision.json the Butler planted in the bundle", () => {
+      const planted = plantInBundle()
+      const before = { mode: fs.statSync(planted).mode, seed: fs.readFileSync(path.join(planted, "principal.json"), "utf8"), seedMode: fs.statSync(path.join(planted, "principal.json")).mode }
+      const logs: string[] = []
+      const out = gate.provision({ bundle, log: (line: string) => logs.push(line), run: fakeCli().run, discover: () => "http://real/card", ...uid() })
+      expect(fs.statSync(planted).mode).toBe(before.mode)
+      expect(fs.readFileSync(path.join(planted, "principal.json"), "utf8")).toBe(before.seed)
+      expect(fs.statSync(path.join(planted, "principal.json")).mode).toBe(before.seedMode)
+      const recorded = JSON.stringify([out, JSON.parse(fs.readFileSync(path.join(trust, "replay-identities.json"), "utf8")), JSON.parse(fs.readFileSync(path.join(bundle, "state/replay/identities.json"), "utf8")), JSON.parse(fs.readFileSync(path.join(clientOf(bundle), "provision.json"), "utf8"))])
+      expect(recorded).not.toContain(EVIL)
+      expect(recorded).not.toContain("victim-")
+      expect(recorded).not.toContain("http://evil/card")
+      expect(out.cardUrl).toBe("http://real/card")
+      expect(fs.readFileSync(path.join(clientOf(bundle), "principal.json"), "utf8")).not.toContain("planted")
+      expect(logs.join("\n")).toContain("ignored")
+      expect(logs.join("\n")).toContain("victim-1")
+    })
+
+    it("does not let a planted provision.json drive the rotation's revokes, but retires an id the operator names", () => {
+      plantInBundle()
+      const retired: string[] = []
+      const first = fakeCli()
+      gate.provision({ bundle, cardUrl: "c", log: () => undefined, run: first.run, ...uid(), retireRecord: (id: string) => retired.push(id) })
+      retired.length = 0
+      const second = fakeCli()
+      const options = { bundle, log: () => undefined, run: second.run, rotate: true, ...uid(), retireRecord: (id: string) => retired.push(id) }
+      gate.provision(options)
+      const touched = second.calls.filter((a) => a[0] === "friend").map((a) => a[2])
+      expect(touched).not.toContain("victim-1")
+      expect(retired).not.toContain("victim-1")
+      expect(retired.sort()).toEqual(["friend-1", "friend-2", "friend-3"])
+      gate.provision({ ...options, retire: ["victim-2"] })
+      expect(retired).toContain("victim-2")
+      expect(retired).not.toContain("victim-1")
+    })
+
+    it("refuses an existing replay folder that root did not make, without changing it", () => {
+      fs.mkdirSync(clientOf(bundle), { mode: 0o700 })
+      fs.writeFileSync(path.join(clientOf(bundle), "principal.json"), "{\"seed\":\"theirs\"}")
+      const notRoot = { ...uid(), rootUid: process.getuid!() + 7 }
+      expect(() => gate.provision({ bundle, cardUrl: "c", log: () => undefined, run: fakeCli().run, ...notRoot, chainRoot: path.dirname(clientOf(bundle)) })).toThrow(/owned by uid \d+, not root/)
+      expect(chowns).toEqual([])
+      expect(fs.readFileSync(path.join(clientOf(bundle), "principal.json"), "utf8")).toBe("{\"seed\":\"theirs\"}")
+    })
+
+    it("refuses to create the replay folder under a parent root does not own or that others can write", () => {
+      const notRoot = { ...uid(), rootUid: process.getuid!() + 7 }
+      expect(() => gate.provision({ bundle, cardUrl: "c", log: () => undefined, run: fakeCli().run, ...notRoot })).toThrow(/cannot be trusted/)
+      expect(fs.existsSync(clientOf(bundle))).toBe(false)
+      fs.chmodSync(path.dirname(clientOf(bundle)), 0o777)
+      expect(() => gate.provision({ bundle, cardUrl: "c", log: () => undefined, run: fakeCli().run, ...uid() })).toThrow(/writable by group or other/)
+      expect(fs.existsSync(clientOf(bundle))).toBe(false)
+      fs.chmodSync(path.dirname(clientOf(bundle)), 0o700)
+      fs.rmSync(path.dirname(clientOf(bundle)), { recursive: true })
+      fs.symlinkSync(os.tmpdir(), path.dirname(clientOf(bundle)))
+      expect(() => gate.provision({ bundle, cardUrl: "c", log: () => undefined, run: fakeCli().run, ...uid() })).toThrow(/is a symlink/)
+      fs.rmSync(path.dirname(clientOf(bundle)))
+      fs.writeFileSync(path.dirname(clientOf(bundle)), "x")
+      expect(() => gate.provision({ bundle, cardUrl: "c", log: () => undefined, run: fakeCli().run, ...uid() })).toThrow(/is not a directory/)
+    })
+
+    it("checks every directory from the chain root down when one is given", () => {
+      const holder = path.dirname(clientOf(bundle))
+      const grand = fs.mkdtempSync(path.join(os.tmpdir(), "replay-gate-grand-"))
+      hostTrustDirs.push(grand)
+      fs.chmodSync(grand, 0o777)
+      const nested = path.join(grand, "mid", "client")
+      fs.mkdirSync(path.join(grand, "mid"), { mode: 0o700 })
+      expect(() => gate.provision({ bundle, cardUrl: "c", log: () => undefined, run: fakeCli().run, ...uid(), clientDir: nested, chainRoot: grand })).toThrow(/writable by group or other/)
+      expect(fs.existsSync(nested)).toBe(false)
+      expect(holder).toBeTruthy()
+    })
+
+    it("moves a replay directory in the bundle that is not root-owned aside and makes a fresh one", () => {
+      const dir = path.join(bundle, "state/replay")
+      fs.mkdirSync(dir, { recursive: true })
+      fs.writeFileSync(path.join(dir, "window.json"), JSON.stringify({ friends: { forged: { expiresAt: "2999-01-01T00:00:00Z" } } }))
+      const logs: string[] = []
+      gate.freshRootDirectoryInBundle(dir, 0o755, { rootUid: process.getuid!() + 7, rootGid: 0, now: new Date("2026-10-09T00:00:00Z"), log: (line: string) => logs.push(line) })
+      const aside = fs.readdirSync(path.join(bundle, "state")).find((name) => name.startsWith("replay.untrusted-"))!
+      expect(aside).toBeTruthy()
+      expect(fs.existsSync(path.join(bundle, "state", aside, "window.json"))).toBe(true)
+      expect(fs.readdirSync(dir)).toEqual([])
+      expect(logs.join("\n")).toContain("moved")
+    })
+
+    it("refuses, and never chowns, a replay directory swapped in between the check and the open (review of #1064, round 4, L2)", () => {
+      const dir = path.join(bundle, "state/replay")
+      const restoreOpen = gate.overrideOpenDirectoryForTests((target: string) => {
+        fs.renameSync(target, `${target}.root-made`)
+        fs.mkdirSync(target)
+        fs.writeFileSync(path.join(target, "window.json"), "{}")
+        return fs.openSync(target, "r")
+      })
+      try {
+        expect(() => gate.freshRootDirectoryInBundle(dir, 0o755, { rootUid: process.getuid!(), rootGid: process.getgid!() })).toThrow(/replaced while it was being made root-owned/)
+      } finally { gate.overrideOpenDirectoryForTests(restoreOpen) }
+      expect(chowns).toEqual([])
+    })
+
+    it("refuses a host whose replay folder is not root-owned, and a seed that is loose or planted as a link, before any seed is staged", () => {
+      gate.provision({ bundle, cardUrl: "c", log: () => undefined, run: fakeCli().run, ...uid() })
+      const root = { ...hostRoot(bundle), clientDir: clientOf(bundle) }
+      expect(() => gate.makeHost({ ...root, rootUid: process.getuid!() + 7, bundle })).toThrow(/owned by uid \d+, not root/)
+      const stage = fakeStage()
+      const host = gate.makeHost({ ...root, stage, bundle, log: () => undefined })
+      fs.chmodSync(path.join(clientOf(bundle), "stranger.json"), 0o644)
+      expect(() => host.openWindow(5)).toThrow(/not root-owned, or readable by others/)
+      expect(stage.dirs.map((dir) => fs.existsSync(dir))).toEqual([false])
+      fs.chmodSync(path.join(clientOf(bundle), "stranger.json"), 0o600)
+      fs.rmSync(path.join(clientOf(bundle), "stranger.json"))
+      fs.symlinkSync(path.join(bundle, "friends"), path.join(clientOf(bundle), "stranger.json"))
+      expect(() => host.openWindow(5)).toThrow(/symlink/)
+    })
+  })
+
+  describe("every root read of an agent-writable file refuses a link (review of #1064, round 3, finding 7)", () => {
+    const provisioned = () => {
+      gate.provision({ bundle, cardUrl: "http://card", log: () => undefined, run: fakeCli().run, ...uid() })
+      return gate.makeHost({ ...hostRoot(bundle), clientDir: clientOf(bundle), stage: fakeStage(), bundle, log: () => undefined, exec: () => "" })
+    }
+    const planted = (name: string) => { const target = path.join(fs.mkdtempSync(path.join(os.tmpdir(), "replay-gate-decoy-")), name); fs.writeFileSync(target, "{}"); return target }
+
+    it("refuses a linked provision.json and a linked friend record, naming neither's contents", () => {
+      gate.provision({ bundle, cardUrl: "c", log: () => undefined, run: fakeCli().run, ...uid() })
+      const record = path.join(clientOf(bundle), "provision.json")
+      fs.rmSync(record)
+      fs.symlinkSync(planted("provision.json"), record)
+      expect(() => gate.makeHost({ ...hostRoot(bundle), clientDir: clientOf(bundle), bundle })).toThrow(/symlink/)
+      const friend = path.join(bundle, "friends", "friend-1.json")
+      fs.rmSync(friend)
+      fs.symlinkSync(planted("friend-1.json"), friend)
+      expect(() => gate.provision({ bundle, log: () => undefined, run: fakeCli().run, ...uid() })).toThrow(/symlink/)
+    })
+
+    it("does not echo the contents of a file it cannot parse", () => {
+      gate.provision({ bundle, cardUrl: "c", log: () => undefined, run: fakeCli().run, ...uid() })
+      fs.writeFileSync(path.join(bundle, "friends", "friend-1.json"), "{\"apiKey\":\"SECRET-TOKEN-123\"")
+      let message = ""
+      try { gate.provision({ bundle, log: () => undefined, run: fakeCli().run, ...uid() }) } catch (error) { message = (error as Error).message }
+      expect(message).toContain("is not valid JSON")
+      expect(message).not.toContain("SECRET-TOKEN-123")
+    })
+
+    it("refuses linked policy, ledger, awaiting, effects and session files during observation and lookup", async () => {
+      const host = provisioned()
+      fs.mkdirSync(path.join(bundle, "state/policy"), { recursive: true })
+      const policy = path.join(bundle, "state/policy/steward.json")
+      fs.symlinkSync(planted("steward.json"), policy)
+      await expect(host.observe()).rejects.toThrow(/symlink/)
+      fs.rmSync(policy)
+      const ledger = path.join(bundle, "books/ledger.ndjson")
+      fs.symlinkSync(planted("ledger.ndjson"), ledger)
+      await expect(host.observe()).rejects.toThrow(/symlink/)
+      fs.rmSync(ledger)
+      const awaiting = path.join(bundle, "awaiting")
+      fs.rmSync(awaiting, { recursive: true })
+      fs.symlinkSync(os.tmpdir(), awaiting)
+      await expect(host.observe()).rejects.toThrow(/not a real directory/)
+      fs.rmSync(awaiting)
+      fs.mkdirSync(path.join(bundle, "awaiting/.done"), { recursive: true })
+      fs.symlinkSync(planted("w.md"), path.join(bundle, "awaiting/w.md"))
+      await expect(host.observe()).rejects.toThrow(/symlink/)
+      fs.rmSync(path.join(bundle, "awaiting/w.md"))
+      const session = path.join(bundle, "state/sessions/dir1/a2a/ctx.json")
+      fs.symlinkSync(planted("ctx.json"), session)
+      await expect(host.readSession("ctx")).rejects.toThrow(/symlink/)
+      const psyche = path.join(bundle, "psyche")
+      fs.mkdirSync(psyche, { recursive: true })
+      fs.symlinkSync(planted("soul.md"), path.join(psyche, "soul.md"))
+      fs.rmSync(path.join(bundle, "state/policy"), { recursive: true, force: true })
+      fs.rmSync(session)
+      expect((await host.observe()).psycheSha).toBeNull()
+    })
+  })
+
+  describe("rotation demotes the retired replay friends (review of #1064, round 3, finding 6)", () => {
+    it("revokes and demotes every retired friend to stranger and drops its DID pin as the resident user, never as root", () => {
+      const first = fakeCli()
+      gate.provision({ bundle, cardUrl: "c", log: () => undefined, run: first.run, ...uid() })
+      const retired: Array<[string, string | undefined]> = []
+      const second = fakeCli()
+      gate.provision({ bundle, log: () => undefined, run: second.run, rotate: true, ...uid(), retireRecord: (id: string, did?: string) => retired.push([id, did]) })
+      expect(retired.sort()).toEqual([["friend-1", "did:key:P"], ["friend-2", "did:key:S"], ["friend-3", "did:key:E"]])
+      const updates = second.calls.filter((a) => a[0] === "friend" && a.includes("revoked"))
+      expect(updates).toHaveLength(3)
+      for (const update of updates) expect(update).toEqual(["friend", "update", update[2], "--agent", "sanctuary", "--admission", "revoked", "--trust", "stranger"])
+    })
+
+    it("keeps rotating when the Butler deleted or mangled a retired friend's record: the trust-dir revokes and the new seeds still happen (review of #1064, round 4, L1)", () => {
+      const first = fakeCli()
+      gate.provision({ bundle, cardUrl: "c", log: () => undefined, run: first.run, ...uid() })
+      const logs: string[] = []
+      const second = fakeCli()
+      gate.provision({ bundle, log: (line: string) => logs.push(line), run: second.run, rotate: true, ...uid(), retireRecord: () => { throw new Error("friend record missing\nstack") } })
+      expect(logs.join("\n")).toMatch(/could not demote its record: friend record missing$/m)
+      expect(fs.readdirSync(clientOf(bundle)).filter((name) => name.includes(".retired-"))).toHaveLength(3)
+      expect(fs.existsSync(path.join(clientOf(bundle), "principal.json"))).toBe(true)
+    })
+
+    it("the in-container script treats a missing record as already retired", () => {
+      const { execFileSync } = require("node:child_process") as typeof import("node:child_process")
+      const out = execFileSync(process.execPath, ["-e", gate.RETIRE_RECORD_SCRIPT, bundle, "gone", "did:key:P"], { encoding: "utf8" })
+      expect(out).toContain("treating it as already retired")
+    })
+
+    it("the in-container script strips trust, admission, the DID pin and the A2A identity, and refuses an unsafe id", () => {
+      const { execFileSync } = require("node:child_process") as typeof import("node:child_process")
+      fs.writeFileSync(path.join(bundle, "friends", "r1.json"), JSON.stringify({ id: "r1", name: "replay-principal", trustLevel: "family", admissionState: "active", a2a: { did: "did:key:P", agentId: "did:key:P" }, delegationGrant: { scope: "principal_commands" }, externalIds: [{ provider: "a2a", externalId: "did:key:P" }, { provider: "imessage", externalId: "keep-me" }] }))
+      const run = (id: string) => execFileSync(process.execPath, ["-e", gate.RETIRE_RECORD_SCRIPT, bundle, id, "did:key:P"], { encoding: "utf8" })
+      run("r1")
+      const record = JSON.parse(fs.readFileSync(path.join(bundle, "friends", "r1.json"), "utf8"))
+      expect(record).toMatchObject({ trustLevel: "stranger", admissionState: "revoked", externalIds: [{ provider: "imessage", externalId: "keep-me" }] })
+      expect(record.a2a).toBeUndefined()
+      expect(record.delegationGrant).toBeUndefined()
+      expect(() => run("../../etc/passwd")).toThrow()
+    })
+  })
+
+  describe("the container staging directory", () => {
+    it("is made by mktemp as root, filled by copy, checked, and removed", () => {
+      const calls: string[][] = []
+      const stage = gate.dockerStage((file: string, args: string[]) => { calls.push([file, ...args]); return args.includes("mktemp") ? "/tmp/ouro-replay-AbCd1234\n" : "" })
+      const dir = stage.create()
+      expect(dir).toBe("/tmp/ouro-replay-AbCd1234")
+      expect(calls[0]).toEqual(["docker", "exec", "-u", "0", "ouro-butler", "mktemp", "-d", "/tmp/ouro-replay-XXXXXXXX"])
+      stage.copyIn("/host/client/principal.json", dir, "principal.json")
+      expect(calls[1]).toEqual(["docker", "cp", "/host/client/principal.json", "ouro-butler:/tmp/ouro-replay-AbCd1234/principal.json"])
+      expect(calls[2].slice(0, 6)).toEqual(["docker", "exec", "-u", "0", "ouro-butler", "sh"])
+      expect(calls[2].at(-1)).toBe("/tmp/ouro-replay-AbCd1234/principal.json")
+      stage.copyOut(dir, "principal.json", "/host/client/principal.json")
+      expect(calls[3]).toEqual(["docker", "cp", "ouro-butler:/tmp/ouro-replay-AbCd1234/principal.json", "/host/client/principal.json"])
+      stage.remove(dir)
+      expect(calls[4]).toEqual(["docker", "exec", "-u", "0", "ouro-butler", "rm", "-rf", "/tmp/ouro-replay-AbCd1234"])
+      expect(() => gate.dockerStage(() => "/tmp/somewhere-else").create()).toThrow(/not the one mktemp made/)
+      expect(() => stage.remove("/etc")).toThrow(/not the one mktemp made/)
+    })
+  })
+
   it("fails clearly when the friend id cannot be read from onboarding", () => {
-    expect(() => gate.provision({ bundle, cardUrl: "c", log: () => undefined, run: (a: string[]) => (a[1] === "identity" ? '{"did":"d"}' : "nothing useful"), ...uid() })).toThrow(/could not read the friend id/)
+    const run = (a: string[]) => { if (a[1] === "identity") { fs.writeFileSync(a[3], "{}"); return '{"did":"d"}' } return "nothing useful" }
+    expect(() => gate.provision({ bundle, cardUrl: "c", log: () => undefined, run, ...uid() })).toThrow(/could not read the friend id/)
   })
 
   it("refuses to run before provisioning", () => {
-    expect(() => gate.makeHost({ bundle })).toThrow(/not provisioned/)
+    expect(() => gate.makeHost({ ...hostRoot(bundle), bundle })).toThrow(/not provisioned/)
   })
 
   it("opens and closes the window file, observes machine state and finds sessions", async () => {
     gate.provision({ bundle, cardUrl: "http://card", log: () => undefined, run: fakeCli().run, ...uid() })
     const execCalls: string[][] = []
-    const host = gate.makeHost({ bundle, log: () => undefined, exec: (file: string, args: string[]) => { execCalls.push([file, ...args]); return args[0] === "ps" ? "ouro-butler\ncalibre-web\n" : args.includes("-e") ? JSON.stringify({ "friend-1": true, "friend-2": true, "friend-3": true }) : JSON.stringify({ text: "hello" }) } })
+    const host = gate.makeHost({ ...hostRoot(bundle), stage: fakeStage(), bundle, log: () => undefined, exec: (file: string, args: string[]) => { execCalls.push([file, ...args]); return args[0] === "ps" ? "ouro-butler\ncalibre-web\n" : args.includes("-e") ? JSON.stringify({ "friend-1": true, "friend-2": true, "friend-3": true }) : JSON.stringify({ text: "hello" }) } })
     expect(host.friends).toEqual({ principal: "friend-1", stranger: "friend-2", escalation: "friend-3" })
     const realFetch = globalThis.fetch
     let hits = 0
@@ -693,17 +1243,20 @@ describe("provision and the real host", () => {
     fs.writeFileSync(path.join(bundle, "state/policy/policy-audit.ndjson"), "row\n")
     expect((await host.observe()).auditSha).toMatch(/^[0-9a-f]{64}$/)
     expect(observed.sink).toEqual([{ noticeId: "n", friendId: "friend-1", at: "x" }])
+    host.openWindow(5)
     expect(await host.send({ who: "stranger", text: "hi", delegated: true, context: "c9" })).toEqual({ text: "hello" })
     const sent = execCalls.find((c) => c.includes("message"))!
-    expect(sent).toEqual(expect.arrayContaining(["--to", "http://card", "--context", "c9", "--delegated", "--json", "--identity-file", "/home/ouro/AgentBundles/sanctuary.ouro/state/replay-client/stranger.json"]))
+    expect(sent).toEqual(expect.arrayContaining(["--to", "http://card", "--context", "c9", "--delegated", "--json"]))
+    expect(sent[sent.indexOf("--identity-file") + 1]).toMatch(/\/stranger\.json$/)
+    host.closeWindow()
     for (const [out, expected] of [
       [JSON.stringify({ "friend-1": true, "friend-2": false, "friend-3": true }), { ok: false, detail: "the Butler's own view of state/replay does not open the window for: friend-2 (the directory or window.json is not root-owned and read-only to the Butler)" }],
       ["not json", { ok: false, detail: "the trust probe inside the container failed: Unexpected token 'o', \"not json\" is not valid JSON" }],
     ] as const) {
-      const probing = gate.makeHost({ bundle, log: () => undefined, exec: () => out })
+      const probing = gate.makeHost({ ...hostRoot(bundle), bundle, log: () => undefined, exec: () => out })
       expect(await probing.windowTrusted()).toEqual(expected)
     }
-    const broken = gate.makeHost({ bundle, log: () => undefined, exec: () => { throw new Error("no container") } })
+    const broken = gate.makeHost({ ...hostRoot(bundle), bundle, log: () => undefined, exec: () => { throw new Error("no container") } })
     expect(await broken.windowTrusted()).toEqual({ ok: false, detail: "the trust probe inside the container failed: no container" })
     expect(await host.readSession("ctx-1")).toEqual({ events: [] })
     expect(await host.readSession("missing")).toBeNull()
@@ -712,50 +1265,73 @@ describe("provision and the real host", () => {
     fs.rmSync(path.join(bundle, "state/policy/steward.json"))
     fs.rmSync(path.join(bundle, "books/ledger.ndjson"))
     expect(await host.observe()).toMatchObject({ stewardSha: null, ledgerLines: 0 })
-    const failing = gate.makeHost({ bundle, log: () => undefined, exec: () => { throw Object.assign(new Error("exit 1"), { stderr: "delegated command refused: no_grant", stdout: "" }) } })
+    const failing = gate.makeHost({ ...hostRoot(bundle), stage: fakeStage(), bundle, log: () => undefined, exec: () => { throw Object.assign(new Error("exit 1"), { stderr: "delegated command refused: no_grant", stdout: "" }) } })
+    failing.openWindow(5)
     expect((await failing.send({ who: "principal", text: "x", delegated: false, context: "c" })).error).toContain("delegated command refused: no_grant")
   })
 })
 
 describe("escalation, outbox and the act path", () => {
-  const readEscalationGrantsForTest = (bundle: string) => readEscalationGrants(bundle)
-  const tmpBundle = () => { const dir = fs.mkdtempSync(path.join(os.tmpdir(), "replay-gate-esc-")); fs.mkdirSync(path.join(dir, "state"), { recursive: true }); return dir }
+    const tmpBundle = () => { const dir = fs.mkdtempSync(path.join(os.tmpdir(), "replay-gate-esc-")); fs.mkdirSync(path.join(dir, "state"), { recursive: true }); return dir }
+  const tmpTrust = () => fs.mkdtempSync(path.join(os.tmpdir(), "replay-gate-esc-trust-"))
 
-  it("grants escalation once, keeps other grants, leaves the file and directory root-owned and read-only to others, and is idempotent", () => {
-    const bundle = tmpBundle()
+  it("grants escalation once in the trust directory, keeps other grants, leaves the file and directory root-owned and read-only to others, and is idempotent", () => {
+    const trustDir = tmpTrust()
     const root = { rootUid: process.getuid!(), rootGid: process.getgid!() }
     try {
-      gate.grantEscalation(bundle, "e1", "did:key:e1", new Date("2026-10-08T00:00:00.000Z"), root)
-      gate.grantEscalation(bundle, "e2", "did:key:e2", new Date("2026-10-08T01:00:00.000Z"), root)
-      fs.chmodSync(path.join(bundle, "state/a2a/escalation-grants.json"), 0o666)
-      fs.chmodSync(path.join(bundle, "state/a2a"), 0o777)
-      gate.grantEscalation(bundle, "e1", "did:key:e1", new Date("2026-10-09T00:00:00.000Z"), root)
-      expect(fs.statSync(path.join(bundle, "state/a2a")).mode & 0o777).toBe(0o755)
-      const file = path.join(bundle, "state/a2a/escalation-grants.json")
+      gate.grantEscalation(trustDir, "e1", "did:key:e1", new Date("2026-10-08T00:00:00.000Z"), root)
+      gate.grantEscalation(trustDir, "e2", "did:key:e2", new Date("2026-10-08T01:00:00.000Z"), root)
+      const file = path.join(trustDir, "escalation-grants.json")
+      fs.chmodSync(file, 0o666)
+      fs.chmodSync(trustDir, 0o777)
+      gate.grantEscalation(trustDir, "e1", "did:key:e1", new Date("2026-10-09T00:00:00.000Z"), root)
+      expect(fs.statSync(trustDir).mode & 0o777).toBe(0o755)
       const grants = JSON.parse(fs.readFileSync(file, "utf8"))
       expect(grants.schemaVersion).toBe(1)
       expect(grants.grants.e1.grantedAt).toBe("2026-10-08T00:00:00.000Z")
       expect(Object.keys(grants.grants)).toEqual(["e1", "e2"])
       expect(fs.statSync(file).mode & 0o777).toBe(0o644)
       expect(fs.statSync(file).uid).toBe(root.rootUid)
-      expect(readEscalationGrantsForTest(bundle)).toEqual(grants.grants)
-    } finally { fs.rmSync(bundle, { recursive: true, force: true }) }
+    } finally { fs.rmSync(trustDir, { recursive: true, force: true }) }
+  })
+
+  it("replaces a grant whose pinned DID differs and grants delegated commands the same way", () => {
+    const trustDir = tmpTrust()
+    const root = { rootUid: process.getuid!(), rootGid: process.getgid!() }
+    try {
+      gate.grantDelegatedCommands(trustDir, "p1", "did:key:old", new Date("2026-10-08T00:00:00.000Z"), root)
+      gate.grantDelegatedCommands(trustDir, "p1", "did:key:new", new Date("2026-10-09T00:00:00.000Z"), root)
+      const grants = JSON.parse(fs.readFileSync(path.join(trustDir, "delegated-command-grants.json"), "utf8"))
+      expect(grants.grants.p1).toMatchObject({ scope: "principal_commands", did: "did:key:new", grantedAt: "2026-10-09T00:00:00.000Z" })
+      expect(grants.grants.p1.expiresAt).toBeUndefined()
+      gate.grantDelegatedCommands(trustDir, "p1", "did:key:new", new Date("2026-10-10T00:00:00.000Z"), { ...root, expiresAt: "2026-10-10T01:00:00.000Z" })
+      expect(JSON.parse(fs.readFileSync(path.join(trustDir, "delegated-command-grants.json"), "utf8")).grants.p1).toMatchObject({ expiresAt: "2026-10-10T01:00:00.000Z" })
+      gate.revokeDelegatedCommands(trustDir, "p1", root)
+      gate.revokeDelegatedCommands(trustDir, "p1", root)
+      gate.revokeEscalation(trustDir, "never-there", root)
+      expect(JSON.parse(fs.readFileSync(path.join(trustDir, "delegated-command-grants.json"), "utf8")).grants).toEqual({})
+    } finally { fs.rmSync(trustDir, { recursive: true, force: true }) }
   })
 
   it("seeds only replay peers, lists outboxes through the CLI as the chosen peer, and observes outbox ids and bodies", async () => {
     const bundle = tmpBundle()
     try {
-      const provision = { cardUrl: "http://card", principal: { friendId: "p", containerIdentityFile: "/id/p.json" }, stranger: { friendId: "s", containerIdentityFile: "/id/s.json" }, escalation: { friendId: "e", containerIdentityFile: "/id/e.json" } }
-      fs.mkdirSync(path.join(bundle, "state/replay-client"), { recursive: true })
-      fs.writeFileSync(path.join(bundle, "state/replay-client/provision.json"), JSON.stringify(provision))
+      const provision = { cardUrl: "http://card", principal: { friendId: "p", did: "did:key:P" }, stranger: { friendId: "s", did: "did:key:S" }, escalation: { friendId: "e", did: "did:key:E" } }
+      const root = hostRoot(bundle)
+      fs.mkdirSync(root.clientDir, { mode: 0o700 })
+      fs.writeFileSync(path.join(root.clientDir, "provision.json"), JSON.stringify(provision))
+      for (const who of ["principal", "stranger", "escalation"]) fs.writeFileSync(path.join(root.clientDir, `${who}.json`), "{}", { mode: 0o600 })
+      fs.mkdirSync(path.join(bundle, "state/replay"), { recursive: true })
       const calls: string[][] = []
-      const host = gate.makeHost({ bundle, log: () => undefined, exec: (_file: string, args: string[]) => { calls.push(args); if (args[0] === "ps") return ""; if (args.includes("boom")) throw Object.assign(new Error("exit 1"), { stderr: "A2A error -32003: refused" }); return JSON.stringify({ acked: ["x"], unknown: [] }) } })
+      const stage = fakeStage()
+      const host = gate.makeHost({ ...root, stage, bundle, log: () => undefined, exec: (_file: string, args: string[]) => { calls.push(args); if (args[0] === "ps") return ""; if (args.includes("boom")) throw Object.assign(new Error("exit 1"), { stderr: "A2A error -32003: refused" }); return JSON.stringify({ acked: ["x"], unknown: [] }) } })
+      host.openWindow(5)
       await expect(host.seedOutbox("real-claude-code", "x")).rejects.toThrow(/non-replay/)
       const seeded = await host.seedOutbox("e", "ISOLATION-CANARY")
       expect(seeded.id).toMatch(/^\d{13}-[0-9a-f]{6}$/)
       expect(fs.statSync(path.join(bundle, "state/outbox/e")).mode & 0o777).toBe(0o700)
       expect(await host.outbox("stranger", ["ack", "--ids", seeded.id])).toEqual({ ok: true, value: { acked: ["x"], unknown: [] } })
-      expect(calls.at(-1)).toEqual(["exec", "ouro-butler", "node", gate.CLI_ENTRY, "a2a", "outbox", "ack", "--to", "http://card", "--ids", seeded.id, "--identity-file", "/id/s.json", "--json"])
+      expect(calls.at(-1)).toEqual(["exec", "-u", "0", "ouro-butler", "node", gate.CLI_ENTRY, "a2a", "outbox", "ack", "--to", "http://card", "--ids", seeded.id, "--identity-file", `${stage.dirs[0]}/stranger.json`, "--json"])
       expect(await host.outbox("stranger", ["ack", "--ids", "boom"])).toEqual({ ok: false, error: expect.stringContaining("-32003") })
       const observed = await host.observe()
       expect(observed.outbox).toEqual({ e: [seeded.id] })
@@ -777,9 +1353,10 @@ describe("escalation, outbox and the act path", () => {
   it("refuses a host provisioned before the escalation peer existed", () => {
     const bundle = tmpBundle()
     try {
-      fs.mkdirSync(path.join(bundle, "state/replay-client"), { recursive: true })
-      fs.writeFileSync(path.join(bundle, "state/replay-client/provision.json"), JSON.stringify({ cardUrl: "c", principal: { friendId: "p" }, stranger: { friendId: "s" } }))
-      expect(() => gate.makeHost({ bundle })).toThrow(/escalation peer is not provisioned/)
+      const root = hostRoot(bundle)
+      fs.mkdirSync(root.clientDir, { mode: 0o700 })
+      fs.writeFileSync(path.join(root.clientDir, "provision.json"), JSON.stringify({ cardUrl: "c", principal: { friendId: "p" }, stranger: { friendId: "s" } }))
+      expect(() => gate.makeHost({ ...root, bundle })).toThrow(/escalation peer is not provisioned/)
     } finally { fs.rmSync(bundle, { recursive: true, force: true }) }
   })
 

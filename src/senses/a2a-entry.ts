@@ -37,7 +37,7 @@ Promise.all([
 ])
   .then(async ([
     { startA2AServer },
-    { loadOrMintA2AIdentity, readStoredA2ASeed },
+    { loadOrMintA2AIdentity, readStoredA2ASeed, publishOwnA2ADid },
     { waitForRuntimeCredentialBootstrap, readMachineRuntimeCredentialConfig, refreshMachineRuntimeCredentialConfig, mergeMachineRuntimeCredentialConfig },
     { loadOrCreateMachineIdentity },
     { ready },
@@ -73,6 +73,8 @@ Promise.all([
         await mergeMachineRuntimeCredentialConfig(agentName, machineId, { a2a: { identity: { ed25519Seed: seed } } })
       },
     })
+
+    publishOwnA2ADid(getAgentRoot(agentName), identity.did)
 
     const rawPort = argValue("--port")
     const port = rawPort ? Number.parseInt(rawPort, 10) : undefined

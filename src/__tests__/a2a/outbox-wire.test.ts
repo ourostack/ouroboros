@@ -3,7 +3,7 @@ import * as path from "node:path"
 import { afterEach, describe, expect, it } from "vitest"
 import { FileFriendStore, type FriendRecord } from "@ouro.bot/friends"
 import { createTmpBundle, type TmpBundleHandle } from "../test-helpers/tmpdir-bundle"
-import { setEscalationGrant } from "../../a2a/escalation-grants"
+import { escalationGrantsPath, setEscalationGrant } from "../../a2a/escalation-grants"
 import { FileOutboxStore } from "../../a2a/outbox-store"
 import { encodeOutboxCommand, handleOutboxCommand, isOutboxMethod, parseOutboxCommand } from "../../a2a/outbox-wire"
 import { fileFailureReport, readFailureReport } from "../../heart/failure-reports"
@@ -33,7 +33,7 @@ describe("outbox command encoding", () => {
 
 describe("outbox command handling", () => {
   function setup() {
-    tmp = createTmpBundle({ agentName: `wire-${Date.now()}` })
+    tmp = createTmpBundle({ agentName: `wire-${Date.now()}-${Math.random().toString(36).slice(2, 10)}` })
     return { agentRoot: tmp.agentRoot, outbox: new FileOutboxStore(tmp.agentRoot) }
   }
 
@@ -108,12 +108,12 @@ describe("outbox command handling", () => {
 
 describe("a grant without a pinned DID", () => {
   it("is not held, so the holder cannot resolve", async () => {
-    tmp = createTmpBundle({ agentName: `wire-nodid-${Date.now()}` })
+    tmp = createTmpBundle({ agentName: `wire-nodid-${Date.now()}-${Math.random().toString(36).slice(2, 10)}` })
     const agentRoot = tmp.agentRoot
     const key = await makeTestIdentity()
     const holder = friend("claude", { kind: "agent", agentMeta: agentMetaFor(key) })
     setEscalationGrant(agentRoot, "claude", { grant: true, source: "test", did: key.did })
-    const file = path.join(agentRoot, "state", "a2a", "escalation-grants.json")
+    const file = escalationGrantsPath(agentRoot)
     const written = JSON.parse(fs.readFileSync(file, "utf8"))
     delete written.grants.claude.did
     fs.writeFileSync(file, JSON.stringify(written))

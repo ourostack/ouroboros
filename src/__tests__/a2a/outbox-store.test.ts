@@ -7,7 +7,7 @@ import { FileOutboxStore, OUTBOX_LIST_MAX_CHARS, OUTBOX_MAX_BODY_CHARS, OUTBOX_M
 
 let tmp: TmpBundleHandle | null = null
 afterEach(() => { tmp?.cleanup(); tmp = null })
-function store() { tmp = createTmpBundle({ agentName: `outbox-${Date.now()}` }); return { store: new FileOutboxStore(tmp.agentRoot), agentRoot: tmp.agentRoot } }
+function store() { tmp = createTmpBundle({ agentName: `outbox-${Date.now()}-${Math.random().toString(36).slice(2, 10)}` }); return { store: new FileOutboxStore(tmp.agentRoot), agentRoot: tmp.agentRoot } }
 
 describe("peer outbox store", () => {
   it("appends sortable entries per friend and lists them oldest first after a cursor", () => {

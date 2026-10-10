@@ -33,7 +33,7 @@ function asSelf(): A2AIdentity {
 }
 
 async function setup(options: { escalation?: Parameters<typeof startA2AServer>[0]["escalation"]; identity?: boolean } = {}) {
-  tmp = createTmpBundle({ agentName: `outbox-server-${Date.now()}` })
+  tmp = createTmpBundle({ agentName: `outbox-server-${Date.now()}-${Math.random().toString(36).slice(2, 10)}` })
   const store = new FileFriendStore(`${tmp.agentRoot}/friends`)
   const peers: Record<string, { client: DidKeyIdentity; id: string }> = {}
   for (const name of ["claude", "stranger", "ari", "revoked"]) {

@@ -1353,72 +1353,19 @@ describe("in-place authority upgrade", () => {
     })
   })
 
-  describe("the escalation grant across the recursive ownership restore", () => {
+  describe("grants live in the trust directory, not the bundle", () => {
     const chowns = () => host.exec.mock.calls.filter(([file]: [string]) => file === "/bin/chown").map(([, args]: [string, string[]]) => args.join(" "))
-    it("puts state/a2a and the grant file back under root after the recursive chown, and leaves the resident its own subdirectories", async () => {
-      const f = await upgradeFixture()
-      f.write(`${bundle}/state/a2a/escalation-grants.json`, "{}")
-      f.write(`${bundle}/state/a2a/pins/pin.json`, "{}")
-      fs.chmodSync(f.p(`${bundle}/state/a2a`), 0o775)
-      fs.chmodSync(f.p(`${bundle}/state/a2a/escalation-grants.json`), 0o666)
-      await f.lifecycle.upgrade({ targetImageId: digest("next-image"), imageReference: nextReference })
-      const calls = chowns()
-      const recursive = calls.findIndex((args) => args.startsWith("-R "))
-      const dir = f.p(`${bundle}/state/a2a`)
-      expect(recursive).toBeGreaterThanOrEqual(0)
-      expect(calls.indexOf(`-h 0:0 ${dir}`)).toBeGreaterThan(recursive)
-      expect(calls.indexOf(`-h 0:0 ${dir}/escalation-grants.json`)).toBeGreaterThan(recursive)
-      for (const sub of ["tasks", "pins", "seen"]) {
-        expect(fs.statSync(`${dir}/${sub}`).isDirectory()).toBe(true)
-        expect(calls).toContain(`-R 10001:10001 ${dir}/${sub}`)
-      }
-      // The resident gets its subdirectories back before the directory goes to root, so it can keep writing into them.
-      expect(calls.indexOf(`-R 10001:10001 ${dir}/pins`)).toBeLessThan(calls.indexOf(`-h 0:0 ${dir}`))
-      expect(fs.statSync(dir).mode & 0o777).toBe(0o755)
-      expect(fs.statSync(`${dir}/escalation-grants.json`).mode & 0o777).toBe(0o644)
-    })
-
-    it("restores the directory when no grant has been written yet", async () => {
+    it("leaves state/a2a to the resident after the recursive chown: no grant file in the bundle is put under root", async () => {
       const f = await upgradeFixture()
       f.write(`${bundle}/state/a2a/pins/pin.json`, "{}")
       await f.lifecycle.upgrade({ targetImageId: digest("next-image"), imageReference: nextReference })
-      expect(chowns()).toContain(`-h 0:0 ${f.p(`${bundle}/state/a2a`)}`)
-      expect(chowns().some((args) => args.endsWith("escalation-grants.json"))).toBe(false)
+      expect(chowns().some((args) => args.includes("state/a2a"))).toBe(false)
+      expect(chowns().filter((args) => args.startsWith("-h "))).toEqual([`-h 0:0 ${f.p(`${bundle}/state/replay`)}`].filter(() => fs.existsSync(f.p(`${bundle}/state/replay`))))
     })
 
-    it("never follows a symlinked or non-regular grant file, nor a symlinked or odd subdirectory", async () => {
-      const f = await upgradeFixture()
-      const dir = f.p(`${bundle}/state/a2a`)
-      fs.mkdirSync(dir, { recursive: true })
-      const victim = path.join(path.dirname(dir), "victim.txt")
-      fs.writeFileSync(victim, "keep")
-      fs.chmodSync(victim, 0o600)
-      fs.symlinkSync(victim, `${dir}/escalation-grants.json`)
-      fs.symlinkSync(path.dirname(dir), `${dir}/tasks`)
-      fs.writeFileSync(`${dir}/pins`, "not a directory")
-      await f.lifecycle.upgrade({ targetImageId: digest("next-image"), imageReference: nextReference })
-      const calls = chowns()
-      expect(calls).toContain(`-h 0:0 ${dir}`)
-      expect(calls.some((args) => args.endsWith("escalation-grants.json"))).toBe(false)
-      expect(calls).not.toContain(`-R 10001:10001 ${dir}/tasks`)
-      expect(calls).not.toContain(`-R 10001:10001 ${dir}/pins`)
-      expect(calls).toContain(`-R 10001:10001 ${dir}/seen`)
-      expect(fs.statSync(victim).mode & 0o777).toBe(0o600)
-    })
-
-    it("refuses a grant path that is a directory", async () => {
-      const f = await upgradeFixture()
-      const dir = f.p(`${bundle}/state/a2a`)
-      fs.mkdirSync(`${dir}/escalation-grants.json`, { recursive: true })
-      await f.lifecycle.upgrade({ targetImageId: digest("next-image"), imageReference: nextReference })
-      expect(chowns().some((args) => args.endsWith("escalation-grants.json"))).toBe(false)
-      expect(fs.statSync(`${dir}/escalation-grants.json`).mode & 0o777).not.toBe(0o644)
-    })
-
-    it("refuses state/replay and state/a2a when state itself is a link to somewhere else", async () => {
+    it("refuses state/replay when state itself is a link to somewhere else", async () => {
       const f = await upgradeFixture()
       const elsewhere = fs.mkdtempSync(path.join(os.tmpdir(), "elsewhere-"))
-      fs.mkdirSync(`${elsewhere}/a2a`)
       fs.mkdirSync(`${elsewhere}/replay`)
       fs.writeFileSync(`${elsewhere}/replay/window.json`, "{}")
       fs.mkdirSync(path.dirname(f.p(`${bundle}/state`)), { recursive: true })
@@ -1428,27 +1375,14 @@ describe("in-place authority upgrade", () => {
         await f.lifecycle.upgrade({ targetImageId: digest("next-image"), imageReference: nextReference })
         expect(chowns().filter((args) => args.startsWith("-h "))).toEqual([])
         expect(fs.existsSync(`${elsewhere}/replay/window.json`)).toBe(true)
-        expect(fs.existsSync(`${elsewhere}/a2a/tasks`)).toBe(false)
       } finally { fs.rmSync(elsewhere, { recursive: true, force: true }) }
     })
 
-    it("refuses a state/a2a that is a regular file", async () => {
+    it("refuses a state/replay that is a regular file", async () => {
       const f = await upgradeFixture()
       fs.mkdirSync(f.p(`${bundle}/state`), { recursive: true })
-      fs.writeFileSync(f.p(`${bundle}/state/a2a`), "x")
+      fs.writeFileSync(f.p(`${bundle}/state/replay`), "x")
       await f.lifecycle.upgrade({ targetImageId: digest("next-image"), imageReference: nextReference })
-      expect(chowns().filter((args) => args.startsWith("-h "))).toEqual([])
-    })
-
-    it("does nothing for a bundle without state/a2a, or where it is a symlink", async () => {
-      const f = await upgradeFixture()
-      await f.lifecycle.upgrade({ targetImageId: digest("next-image"), imageReference: nextReference })
-      expect(chowns().filter((args) => args.startsWith("-h "))).toEqual([])
-      host.exec.mockClear()
-      const g = await upgradeFixture()
-      fs.mkdirSync(g.p(`${bundle}/state`), { recursive: true })
-      fs.symlinkSync("/elsewhere", g.p(`${bundle}/state/a2a`))
-      await g.lifecycle.upgrade({ targetImageId: digest("next-image"), imageReference: nextReference })
       expect(chowns().filter((args) => args.startsWith("-h "))).toEqual([])
     })
   })
@@ -1565,6 +1499,7 @@ describe("in-place authority upgrade", () => {
     const args = creates[creates.length - 1]!
     const mounts = args.flatMap((arg, index) => (arg === "-v" ? [args[index + 1]!] : []))
     expect(mounts).toContain("/mnt/user/appdata/ouro-butler/agent/sanctuary.ouro/psyche:/home/ouro/AgentBundles/sanctuary.ouro/psyche:ro")
+    expect(mounts).toContain("/mnt/user/appdata/ouro-butler/trust/sanctuary:/etc/ouro/trust/sanctuary:ro")
     expect(mounts.indexOf("/mnt/user/appdata/ouro-butler/agent/sanctuary.ouro:/home/ouro/AgentBundles/sanctuary.ouro:rw")).toBeLessThan(mounts.findIndex((m) => m.endsWith("/psyche:ro")))
   })
 

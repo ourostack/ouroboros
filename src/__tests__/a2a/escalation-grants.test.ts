@@ -2,15 +2,10 @@ import * as fs from "node:fs"
 import * as path from "node:path"
 import { afterEach, describe, expect, it, vi } from "vitest"
 
-const fsHooks = vi.hoisted(() => ({ chown: null as null | ((...args: unknown[]) => void) }))
-vi.mock("node:fs", async (importOriginal) => {
-  const actual = await importOriginal<typeof import("node:fs")>()
-  const patched = { ...actual, chownSync: (...args: Parameters<typeof actual.chownSync>) => (fsHooks.chown ? fsHooks.chown(...args) : actual.chownSync(...args)) }
-  return { ...patched, default: patched }
-})
 import { FileFriendStore, type FriendRecord } from "@ouro.bot/friends"
 import { createTmpBundle, type TmpBundleHandle } from "../test-helpers/tmpdir-bundle"
 import { overrideTrustedUidForTests } from "../../a2a/trusted-files"
+import { operatorTrustDir, overrideFchownForTests } from "../../a2a/operator-trust"
 import { escalationGrantsPath, escalationHolders, holdsEscalation, pinnedHolderDid, readEscalationGrants, setEscalationGrant } from "../../a2a/escalation-grants"
 
 let tmp: TmpBundleHandle | null = null
@@ -24,7 +19,7 @@ function friend(id: string, overrides: Partial<FriendRecord> = {}): FriendRecord
     tenantMemberships: [], toolPreferences: {}, notes: {}, totalTokens: 0, createdAt: NOW, updatedAt: NOW, schemaVersion: 1, ...overrides,
   }
 }
-const root = () => { tmp = createTmpBundle({ agentName: `escalation-${Date.now()}` }); return tmp.agentRoot }
+const root = () => { tmp = createTmpBundle({ agentName: `escalation-${Date.now()}-${Math.random().toString(36).slice(2, 10)}` }); return tmp.agentRoot }
 
 describe("escalation grants", () => {
   it("fails closed on a missing, unreadable or malformed file and keeps only well-formed grants", () => {
@@ -34,12 +29,12 @@ describe("escalation grants", () => {
     fs.mkdirSync(path.dirname(file), { recursive: true })
     fs.writeFileSync(file, "not json")
     expect(readEscalationGrants(agentRoot)).toEqual({})
-    fs.writeFileSync(file, JSON.stringify({ grants: [] }))
+    fs.writeFileSync(file, JSON.stringify({ schemaVersion: 1, grants: [] }))
     expect(readEscalationGrants(agentRoot)).toEqual({})
     fs.writeFileSync(file, "null")
     expect(readEscalationGrants(agentRoot)).toEqual({})
     const good = { scope: "escalation", grantedAt: NOW, source: "owner", did: DID }
-    fs.writeFileSync(file, JSON.stringify({ grants: {
+    fs.writeFileSync(file, JSON.stringify({ schemaVersion: 1, grants: {
       ok: good, widened: { ...good, extra: true }, wrongScope: { ...good, scope: "principal_commands" }, badDate: { ...good, grantedAt: "nope" },
       noSource: { ...good, source: " " }, noDid: { scope: "escalation", grantedAt: NOW, source: "owner" }, badDid: { ...good, did: "z6Mk" }, longDid: { ...good, did: `did:${"x".repeat(600)}` }, numberDid: { ...good, did: 5 }, notAnObject: "yes", nullGrant: null, listGrant: [],
     } }))
@@ -87,7 +82,7 @@ describe("escalation grants trust", () => {
   const write = (agentRoot: string, mode: number) => {
     const file = escalationGrantsPath(agentRoot)
     fs.mkdirSync(path.dirname(file), { recursive: true })
-    fs.writeFileSync(file, JSON.stringify({ grants: { peer: grant } }))
+    fs.writeFileSync(file, JSON.stringify({ schemaVersion: 1, grants: { peer: grant } }))
     fs.chmodSync(file, mode)
     return file
   }
@@ -134,32 +129,64 @@ describe("escalation grants trust", () => {
 })
 
 describe("escalation grants written as root", () => {
-  it("leaves the directory and the file root-owned and closed to everyone else", () => {
+  it("creates a missing trust directory and the file root-owned and closed to everyone else, through descriptors", () => {
     const agentRoot = root()
     const dir = path.dirname(escalationGrantsPath(agentRoot))
     const calls: unknown[][] = []
-    fsHooks.chown = (...args) => { calls.push(args) }
+    overrideFchownForTests((_fd, uid, gid) => { calls.push([uid, gid]) })
     const geteuid = vi.spyOn(process, "geteuid").mockReturnValue(0)
     try {
-      fs.mkdirSync(dir, { recursive: true, mode: 0o777 })
-      fs.chmodSync(dir, 0o777)
       setEscalationGrant(agentRoot, "claude", { grant: true, source: "test", did: DID })
-      expect(calls).toEqual([[dir, 0, 0], [escalationGrantsPath(agentRoot), 0, 0]])
+      // the directory, the lock file that serialises writers, then the temporary file that becomes the grants file
+      expect(calls).toEqual([[0, 0], [0, 0], [0, 0]])
       expect(fs.statSync(dir).mode & 0o777).toBe(0o755)
       expect(fs.statSync(escalationGrantsPath(agentRoot)).mode & 0o777).toBe(0o644)
+      expect(fs.readdirSync(dir)).toEqual(["escalation-grants.json"])
     } finally {
       geteuid.mockRestore()
-      fsHooks.chown = null
+      overrideFchownForTests(undefined)
     }
   })
 
   it("does not touch ownership when not root", () => {
     const agentRoot = root()
     const calls: unknown[][] = []
-    fsHooks.chown = (...args) => { calls.push(args) }
+    overrideFchownForTests((...args) => { calls.push(args) })
     try {
       setEscalationGrant(agentRoot, "claude", { grant: true, source: "test", did: DID })
       expect(calls).toEqual([])
-    } finally { fsHooks.chown = null }
+    } finally { overrideFchownForTests(undefined) }
+  })
+
+  it("refuses an existing trust directory the agent could have made, and never takes it over", () => {
+    const agentRoot = root()
+    const dir = path.dirname(escalationGrantsPath(agentRoot))
+    fs.mkdirSync(dir, { recursive: true, mode: 0o777 })
+    fs.chmodSync(dir, 0o777)
+    expect(() => setEscalationGrant(agentRoot, "claude", { grant: true, source: "test", did: DID })).toThrow("not trusted")
+    expect(fs.statSync(dir).mode & 0o777).toBe(0o777)
+    expect(fs.readdirSync(dir)).toEqual([])
+  })
+})
+
+describe("escalation grant expiry (review of #1064, finding 1)", () => {
+  it("writes an expiring grant, treats a bad or past expiry as no grant, and refuses a replay-named grant with none", async () => {
+    const { setEscalationGrant, holdsEscalation, pinnedHolderDid, readEscalationGrants } = await import("../../a2a/escalation-grants")
+    const agentRoot = root()
+    const holder = { id: "h", name: "h", role: "family", trustLevel: "family", admissionState: "active" } as never
+    const at = Date.parse("2026-10-09T00:00:00.000Z")
+    setEscalationGrant(agentRoot, "h", { grant: true, source: "operator", did: "did:key:h", expiresAt: "2026-10-10T00:00:00.000Z" }, new Date(at))
+    expect(readEscalationGrants(agentRoot).h?.expiresAt).toBe("2026-10-10T00:00:00.000Z")
+    expect(setEscalationGrant(agentRoot, "h", { grant: true, source: "operator", did: "did:key:h", expiresAt: "2026-10-10T00:00:00.000Z" }).changed).toBe(false)
+    expect(holdsEscalation(agentRoot, holder, at)).toBe(true)
+    expect(pinnedHolderDid(agentRoot, "h", at)).toBe("did:key:h")
+    expect(holdsEscalation(agentRoot, holder, at + 2 * 86_400_000)).toBe(false)
+    setEscalationGrant(agentRoot, "h", { grant: true, source: "operator", did: "did:key:h", expiresAt: "never" }, new Date(at + 1000))
+    expect(holdsEscalation(agentRoot, holder, at)).toBe(false)
+    setEscalationGrant(agentRoot, "h", { grant: true, source: "replay gate provisioning (host root)", did: "did:key:h" }, new Date(at + 2000))
+    expect(holdsEscalation(agentRoot, holder, at)).toBe(true)
+    fs.writeFileSync(path.join(operatorTrustDir(agentRoot), "replay-identities.json"), JSON.stringify({ schemaVersion: 1, grants: { h: { who: "escalation", name: "h", did: "did:key:h" } } }), { mode: 0o644 })
+    expect(holdsEscalation(agentRoot, holder, at)).toBe(false)
+    expect(pinnedHolderDid(agentRoot, "missing", at)).toBeNull()
   })
 })

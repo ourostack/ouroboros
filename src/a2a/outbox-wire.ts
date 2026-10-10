@@ -81,14 +81,14 @@ export async function handleOutboxCommand(input: {
     if (!Array.isArray(ids) || ids.length === 0 || ids.length > MAX_ACK_IDS || ids.some((id) => typeof id !== "string")) return invalid(`ids must be 1 to ${MAX_ACK_IDS} strings`)
     return { ok: true, result: { ...outbox.ack(friend.id, ids as string[]) } }
   }
-  if (!holdsEscalation(agentRoot, friend)) {
+  if (!holdsEscalation(agentRoot, friend, input.now)) {
     emitNervesEvent({ level: "warn", component: "senses", event: "senses.a2a_report_resolve_refused", message: "refused report/resolve from a peer without the escalation grant", meta: { friendId: friend.id } })
     return refuse("report/resolve needs the escalation grant")
   }
   const { id, version, note, resolvedAt, proof } = params
   if (typeof id !== "string" || typeof version !== "string" || typeof note !== "string" || typeof resolvedAt !== "string") return invalid("id, version, note and resolvedAt must be strings")
   // The key is the DID the operator pinned in the root-owned grant, never the friend record; and the A2A-verified caller must be that same DID.
-  const holderDid = pinnedHolderDid(agentRoot, friend.id)
+  const holderDid = pinnedHolderDid(agentRoot, friend.id, input.now)
   if (!holderDid || input.verifiedDid !== holderDid) {
     emitNervesEvent({ level: "warn", component: "senses", event: "senses.a2a_report_resolve_refused", message: "refused report/resolve from a caller whose verified DID is not the pinned holder DID", meta: { friendId: friend.id } })
     return refuse("report not resolved: the caller is not the pinned escalation holder")

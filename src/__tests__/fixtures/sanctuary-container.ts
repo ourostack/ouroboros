@@ -49,6 +49,8 @@ export function sanctuaryContainerInspectFixture(gateway = false) {
     spec.Mounts.push({ Type: "bind", Source: "/run/ouro-authority", Destination: "/run/ouro-authority", RW: false, Propagation: "rprivate" })
     spec.HostConfig.Mounts.push({ Type: "bind", Source: "/mnt/user/appdata/ouro-butler/agent/sanctuary.ouro/psyche", Target: "/home/ouro/AgentBundles/sanctuary.ouro/psyche", ReadOnly: true })
     spec.Mounts.push({ Type: "bind", Source: "/mnt/user/appdata/ouro-butler/agent/sanctuary.ouro/psyche", Destination: "/home/ouro/AgentBundles/sanctuary.ouro/psyche", RW: false, Propagation: "rprivate" })
+    spec.HostConfig.Mounts.push({ Type: "bind", Source: "/mnt/user/appdata/ouro-butler/trust/sanctuary", Target: "/etc/ouro/trust/sanctuary", ReadOnly: true })
+    spec.Mounts.push({ Type: "bind", Source: "/mnt/user/appdata/ouro-butler/trust/sanctuary", Destination: "/etc/ouro/trust/sanctuary", RW: false, Propagation: "rprivate" })
   }
   return spec
 }

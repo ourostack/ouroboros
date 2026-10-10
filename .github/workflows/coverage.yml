@@ -153,9 +153,10 @@ jobs:
           sudo mkdir -p \
             /mnt/user/appdata/ouro-butler/runtime/.ouro-cli \
             /mnt/user/appdata/ouro-butler/agent/sanctuary.ouro/psyche \
+            /mnt/user/appdata/ouro-butler/trust/sanctuary \
             /boot/config/custom/ouro-events/spool \
             /run/ouro-authority
-          trap 'docker rm -f ouro-butler >/dev/null 2>&1 || true; sudo rm -rf -- /mnt/user/appdata/ouro-butler/runtime/.ouro-cli /mnt/user/appdata/ouro-butler/agent/sanctuary.ouro /boot/config/custom/ouro-events/spool /run/ouro-authority; sudo rm -rf -- "$PACKAGE_ROOT"' EXIT
+          trap 'docker rm -f ouro-butler >/dev/null 2>&1 || true; sudo rm -rf -- /mnt/user/appdata/ouro-butler/runtime/.ouro-cli /mnt/user/appdata/ouro-butler/agent/sanctuary.ouro /mnt/user/appdata/ouro-butler/trust /boot/config/custom/ouro-events/spool /run/ouro-authority; sudo rm -rf -- "$PACKAGE_ROOT"' EXIT
           AUDIT_ICON="https://raw.githubusercontent.com/ourostack/ouroboros/main/assets/ouroboros.png"
           docker create --pull=never --name ouro-butler --network host --restart unless-stopped --user 10001:10001 \
             --label net.unraid.docker.managed=dockerman \
@@ -165,6 +166,7 @@ jobs:
             --mount type=bind,src=/boot/config/custom/ouro-events/spool,dst=/run/ouro-events,readonly \
             --mount type=bind,src=/run/ouro-authority,dst=/run/ouro-authority,readonly \
             --mount type=bind,src=/mnt/user/appdata/ouro-butler/agent/sanctuary.ouro/psyche,dst=/home/ouro/AgentBundles/sanctuary.ouro/psyche,readonly \
+            --mount type=bind,src=/mnt/user/appdata/ouro-butler/trust/sanctuary,dst=/etc/ouro/trust/sanctuary,readonly \
             "$AUDIT_VERSION_IMAGE"
           test "$(docker inspect --format '{{.Config.Image}}' ouro-butler)" = "$AUDIT_VERSION_IMAGE"
           test "$(docker inspect --format '{{.Image}}' ouro-butler)" = "$AUDIT_IMAGE_ID"

@@ -10,6 +10,7 @@ import * as path from "path"
 import * as fs from "fs"
 import type { ChatCompletionMessageParam } from "openai/resources/chat/completions"
 import type { ApprovalSuspensionResult, ChannelCallbacks, RunAgentOutcome } from "../heart/core"
+import { shieldDelegatedBanner } from "../a2a/delegated-command"
 import { runAgent } from "../heart/core"
 import { getAgentRoot, setAgentName } from "../heart/identity"
 import { sanitizeKey } from "../heart/config"
@@ -487,8 +488,11 @@ export async function runSenseTurn(options: RunSenseTurnOptions): Promise<RunSen
 }
 
 async function runSenseTurnExclusive(options: RunSenseTurnOptions, owner: McpOwner): Promise<RunSenseTurnResult> {
-  const { channel, sessionKey, friendId, userMessage } = options
+  const { channel, sessionKey, friendId } = options
   const { agentName, agentRoot } = owner
+  // Only the A2A server writes the delegated-command banner, in front of a command it admitted (its body is shielded there). On every
+  // other turn, on any channel, a typed banner is marked as the sender's own words. A precommitted ingress is already stored verbatim.
+  const userMessage = options.precommittedIngress || options.toolContext?.delegatedCommand ? options.userMessage : shieldDelegatedBanner(options.userMessage)
 
   emitNervesEvent({
     component: "senses",

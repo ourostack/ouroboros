@@ -89,7 +89,8 @@ export type OuroCliCommand =
   | { kind: "a2a.message"; to: string; text: string; conversationId?: string; /** Relay the text as the principal's own command (signed marker). */ delegated?: boolean; identityFile?: string; json?: boolean }
   | { kind: "a2a.identity"; identityFile?: string; json?: boolean }
   | { kind: "a2a.outbox"; action: "list" | "ack" | "resolve"; to: string; since?: string; ids?: string[]; reportId?: string; version?: string; note?: string; identityFile?: string; json?: boolean }
-  | { kind: "a2a.escalation"; action: "grant" | "revoke" | "list"; agent?: string; friendId?: string; source?: string }
+  | { kind: "a2a.escalation"; action: "grant" | "revoke" | "list"; agent?: string; friendId?: string; did?: string; source?: string }
+  | { kind: "a2a.delegatedCommands"; action: "grant" | "revoke" | "list"; agent?: string; friendId?: string; did?: string; expires?: string; source?: string; json?: boolean }
   | { kind: "a2a.serve"; agent?: string; host?: string; port?: number; baseUrl?: string; path?: string }
   | { kind: "changelog"; from?: string; agent?: string }
   | { kind: "mcp.list"; agent?: string }
@@ -234,6 +235,10 @@ export interface OuroCliDeps {
   sleep?: (ms: number) => Promise<void>
   spawnBackgroundCli?: (argv: string[]) => Promise<{ pid: number | null }>
   now?: () => number
+  /** Test seam: whether this process runs as root (the trust-directory grant commands refuse otherwise). Defaults to the real euid. */
+  isRoot?: () => boolean
+  /** Test seam: this agent's own A2A DID, or null when unreadable. Defaults to reading the agent's stored identity without minting one. */
+  ownA2ADid?: (agentName: string) => Promise<string | null>
   startupPollIntervalMs?: number
   startupStabilityWindowMs?: number
   startupTimeoutMs?: number
@@ -314,7 +319,7 @@ export interface DiscoveredCredential {
 
 // ── Command group type aliases (used in toDaemonCommand exclusion) ──
 export type FriendCliCommand = Extract<OuroCliCommand, { kind: "friend.list" } | { kind: "friend.show" } | { kind: "friend.create" } | { kind: "friend.update" } | { kind: "friend.link" } | { kind: "friend.unlink" }>
-export type A2ACliCommand = Extract<OuroCliCommand, { kind: "a2a.card" } | { kind: "a2a.onboard" } | { kind: "a2a.serve" } | { kind: "a2a.escalation" }>
+export type A2ACliCommand = Extract<OuroCliCommand, { kind: "a2a.card" } | { kind: "a2a.onboard" } | { kind: "a2a.serve" } | { kind: "a2a.escalation" } | { kind: "a2a.delegatedCommands" }>
 /** Client-side A2A commands: this machine talks to an agent as a verified friend (no agent, no daemon). */
 export type A2AClientCliCommand = Extract<OuroCliCommand, { kind: "a2a.message" } | { kind: "a2a.identity" } | { kind: "a2a.outbox" }>
 export type WhoamiCliCommand = Extract<OuroCliCommand, { kind: "whoami" }>

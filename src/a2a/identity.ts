@@ -165,6 +165,55 @@ export async function loadSelfA2AIdentity(input: { agentName: string; sodium?: S
   })
 }
 
+/** Where the agent publishes its own DID inside its bundle: a public value (a DID is a public key), never the seed. */
+export const PUBLIC_A2A_IDENTITY_FILE = path.join("a2a", "public-identity.json")
+
+/**
+ * Publish this agent's own DID into its bundle so a one-off operator command (which has no vault access) can compare against it
+ * through the read-only bundle mount. Best effort: a read-only bundle just means the fallback stays unavailable.
+ */
+export function publishOwnA2ADid(agentRoot: string, did: string): void {
+  try {
+    const file = path.join(agentRoot, PUBLIC_A2A_IDENTITY_FILE)
+    if (readPublishedA2ADid(agentRoot) === did) return
+    fs.mkdirSync(path.dirname(file), { recursive: true })
+    fs.writeFileSync(file, `${JSON.stringify({ did }, null, 2)}\n`)
+  } catch {
+    // The bundle may be mounted read-only; the DID then simply is not published.
+  }
+}
+
+/**
+ * The DID published in the bundle's public identity file, or null when it is absent or malformed. Read-only and ADVISORY: the agent can
+ * write its own bundle, so this value is never proof of which key is the agent's. Operator checks may report it, never rely on it alone.
+ */
+export function readPublishedA2ADid(agentRoot: string): string | null {
+  try {
+    const parsed = JSON.parse(fs.readFileSync(path.join(agentRoot, PUBLIC_A2A_IDENTITY_FILE), "utf8")) as { did?: unknown }
+    return typeof parsed.did === "string" && parsed.did.startsWith("did:key:") ? parsed.did : null
+  } catch {
+    return null
+  }
+}
+
+/**
+ * This agent's own A2A DID if its seed is already in this process's cached machine config, else null. Strictly read-only: it
+ * never mints a seed, never creates the machine identity file and never refreshes the vault, because an operator command only
+ * wants to compare, not to create or fetch anything. A one-off root command has no cached config, so it gets null and the caller
+ * falls back to the published DID (advisory only, see `readPublishedA2ADid`) and to comparing the DID against the friend records.
+ */
+export async function readOwnA2ADid(agentName: string): Promise<string | null> {
+  try {
+    const cached = readMachineRuntimeCredentialConfig(agentName)
+    if (!cached.ok || !readStoredA2ASeed(cached.config)) return null
+    /* v8 ignore next -- the seed is already stored here, so the load never reaches upsert; it exists only to make minting impossible @preserve */
+    const identity = await loadOrMintA2AIdentity({ agentName, sodium: await ready(), config: cached.config, upsert: async () => { throw new Error("readOwnA2ADid never mints") } })
+    return identity.did
+  } catch {
+    return null
+  }
+}
+
 /**
  * A file-backed A2A identity for a client that is not an ouro agent (for example a
  * coding harness talking to an agent over A2A). The file holds the Ed25519 seed, so

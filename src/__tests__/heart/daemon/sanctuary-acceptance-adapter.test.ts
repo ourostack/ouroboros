@@ -132,7 +132,7 @@ function validOwnerSnapshot(patch: Record<string, unknown> = {}) {
     liveProcessUser: "10001:10001",
     processBindingDigest: "4".repeat(64),
     readOnlyRoot: false,
-    mountCount: 5,
+    mountCount: 6,
     mountsDigest: "3".repeat(64),
     mountsExact: true,
     publishedPortCount: 0,
@@ -349,7 +349,7 @@ describe("Sanctuary acceptance adapter semantic proofs", () => {
         keyCount: 2, keyRoleAssignmentCount: 0,
         profileBoundaries: expectedBoundaries,
         auditRecordCount: 2, auditLifecyclePairCount: 1,
-        containerUser: "10001:10001", liveProcessUser: "10001:10001", mountCount: 5, publishedPortCount: 0, networkMode: "host",
+        containerUser: "10001:10001", liveProcessUser: "10001:10001", mountCount: 6, publishedPortCount: 0, networkMode: "host",
         readOnlyRoot: false, mountsExact: true, securityExact: true, updaterDisabled: true, writableKeyExposure: false,
         rawWriteMaterialFieldCount: 0, typedWriteExecutorCount: 1, writeApprovalPolicyExact: true, sensitiveMaterialObserved: false,
       })
