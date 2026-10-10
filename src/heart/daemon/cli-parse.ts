@@ -5,6 +5,8 @@
  * Each command group has its own parser; parseOuroCommand dispatches.
  */
 
+import * as fs from "fs"
+import * as path from "path"
 import type { AgentProvider } from "../identity"
 import type { ProviderLane } from "../provider-lanes"
 import type { VaultUnlockStoreKind } from "../../repertoire/vault-unlock"
@@ -14,6 +16,8 @@ import type { HatchCredentialsInput } from "../hatch/hatch-flow"
 import type { DnsWorkflowAction, OuroCliCommand, RsvpCliMode, RsvpCutoverAction, RsvpSmokeMode, RsvpSmokeSurface } from "./cli-types"
 import type { VaultItemTemplate } from "./vault-items"
 import { suggestCommand } from "./cli-help"
+import { parseNotifySession } from "../../senses/voice/local-audio-control"
+import type { LocalAudioJoinRequest } from "../../senses/voice/local-audio-transport"
 import { parseDeskCommand, parseTaskAliasCommand } from "./cli-desk"
 import { isHabitRunTrigger } from "../../arc/flight-recorder"
 import type { HabitRunTrigger } from "../../arc/flight-recorder"
@@ -38,6 +42,96 @@ export function extractAgentFlag(args: string[]): { agent?: string; rest: string
   const agent = args[idx + 1]
   const rest = [...args.slice(0, idx), ...args.slice(idx + 2)]
   return { agent, rest }
+}
+
+const VOICE_USAGE = "Usage: ouro voice join --agent <name> [--friend <id>] [--participants <text>] [--occasion <text>] [--mode conversation] | ouro voice leave --agent <name> | ouro voice status --agent <name>"
+
+const VOICE_TEXT_FLAGS: Record<string, "friendId" | "participants" | "occasion" | "ownerName" | "silentConsent"> = {
+  "--friend": "friendId",
+  "--participants": "participants",
+  "--occasion": "occasion",
+  "--owner-name": "ownerName",
+  "--silent-consent": "silentConsent",
+}
+
+function parseVoicePositiveInt(value: string | undefined): number {
+  if (!value || !/^[1-9]\d*$/.test(value)) throw new Error(VOICE_USAGE)
+  return Number(value)
+}
+
+/**
+ * File mode hands these paths to sox, which treats a bare `-` as standard input and `-d` or `-t`
+ * style words as devices and options. Only a real file path is allowed: absolute after resolving, a
+ * regular file for input, and a regular file (or new file) in an existing directory for output.
+ */
+function validateVoiceFile(flag: string, value: string, kind: "input" | "output"): string {
+  const fail = (why: string): never => { throw new Error(`${flag} ${why}. ${VOICE_USAGE}`) }
+  if (value.startsWith("-")) return fail("must be a regular file path, not a dash or option")
+  const resolved = path.resolve(value)
+  const describe = (file: string): fs.Stats | undefined => {
+    try { return fs.statSync(file) } catch { return undefined }
+  }
+  const stat = describe(resolved)
+  if (kind === "input") {
+    if (!stat) return fail(`file ${resolved} does not exist`)
+    if (!stat.isFile()) return fail(`must be a regular file, and ${resolved} is not`)
+    return resolved
+  }
+  if (stat) {
+    if (!stat.isFile()) return fail(`must be a regular file, and ${resolved} is not (no devices or directories)`)
+    return resolved
+  }
+  const parent = describe(path.dirname(resolved))
+  if (!parent?.isDirectory()) return fail(`needs an existing directory, and ${path.dirname(resolved)} is not one`)
+  return resolved
+}
+
+/** `ouro voice join|leave|status`: the local audio lane. Device names are never arguments. */
+function parseVoiceCommand(args: string[]): OuroCliCommand {
+  const [sub, ...flags] = args
+  if (sub !== "join" && sub !== "leave" && sub !== "status") throw new Error(VOICE_USAGE)
+  const request: LocalAudioJoinRequest = { agentName: "" }
+  let inputPath: string | undefined
+  let outputPath: string | undefined
+  for (let i = 0; i < flags.length; i += 1) {
+    const flag = flags[i]
+    if (flag === "--owner-alone" && sub === "join") {
+      request.ownerAlone = true
+      continue
+    }
+    const value = flags[i + 1]
+    if (value === undefined || value.startsWith("--")) throw new Error(VOICE_USAGE)
+    i += 1
+    if (flag === "--agent") {
+      request.agentName = value
+    } else if (sub !== "join") {
+      throw new Error(VOICE_USAGE)
+    } else if (flag in VOICE_TEXT_FLAGS) {
+      request[VOICE_TEXT_FLAGS[flag]!] = value
+    } else if (flag === "--mode") {
+      if (value !== "conversation") throw new Error(VOICE_USAGE)
+      request.mode = "conversation"
+    } else if (flag === "--notify-session") {
+      const notify = parseNotifySession(value)
+      if (!notify) throw new Error(VOICE_USAGE)
+      request.notify = notify
+    } else if (flag === "--input-file") {
+      inputPath = validateVoiceFile(flag, value, "input")
+    } else if (flag === "--output-file") {
+      outputPath = validateVoiceFile(flag, value, "output")
+    } else if (flag === "--idle-silence-ms") {
+      request.idleSilenceMs = parseVoicePositiveInt(value)
+    } else if (flag === "--max-duration-ms") {
+      request.maxDurationMs = parseVoicePositiveInt(value)
+    } else {
+      throw new Error(VOICE_USAGE)
+    }
+  }
+  if (!request.agentName) throw new Error(VOICE_USAGE)
+  if (sub !== "join") return { kind: sub === "leave" ? "voice.leave" : "voice.status", agent: request.agentName }
+  if ((inputPath === undefined) !== (outputPath === undefined)) throw new Error(VOICE_USAGE)
+  if (inputPath !== undefined && outputPath !== undefined) request.files = { inputPath, outputPath }
+  return { kind: "voice.join", request }
 }
 
 function parseLogsCommand(args: string[]): OuroCliCommand {
@@ -177,6 +271,9 @@ export function usage(): string {
     "  ouro a2a delegated-commands revoke --friend <id> [--agent <name>]   (run as root)",
     "  ouro a2a delegated-commands list [--json] [--agent <name>]",
     "  ouro whoami [--agent <name>]",
+    "  ouro voice join --agent <name> [--friend <id>] [--participants <text>] [--occasion <text>] [--mode conversation] [--owner-alone] [--owner-name <name>] [--silent-consent <statement>]",
+    "  ouro voice leave --agent <name>",
+    "  ouro voice status --agent <name>",
     "  ouro session list [--agent <name>]",
     "  ouro mcp list",
     "  ouro mcp call <server> <tool> [--args '{...}']",
@@ -2651,6 +2748,7 @@ export function parseOuroCommand(args: string[]): OuroCliCommand {
   if (head === "a2a") return parseA2ACommand(args.slice(1))
   if (head === "config") return parseConfigCommand(args.slice(1))
   if (head === "mcp") return parseMcpCommand(args.slice(1))
+  if (head === "voice") return parseVoiceCommand(args.slice(1))
   if (head === "whoami") {
     const { agent } = extractAgentFlag(args.slice(1))
     return { kind: "whoami", ...(agent ? { agent } : {}) }

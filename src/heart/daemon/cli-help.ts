@@ -116,6 +116,13 @@ export const COMMAND_REGISTRY: Record<string, CommandHelp & { category: CommandC
     usage: "ouro whoami [--agent <name>]",
     example: "ouro whoami",
   },
+  voice: {
+    category: "Agents",
+    description: "Join a call on this Mac through the BlackHole audio devices, or leave it",
+    usage: "ouro voice join --agent <name> [--friend <id>] [--participants <text>] [--occasion <text>] [--mode conversation] | ouro voice leave --agent <name> | ouro voice status --agent <name>",
+    example: "ouro voice join --agent slugger --participants \"Ari and Sam\" --occasion \"podcast prep\"",
+    subcommands: ["join", "leave", "status"],
+  },
   config: {
     category: "Agents",
     description: "Legacy model compatibility helpers; prefer `ouro use` and `ouro check`",

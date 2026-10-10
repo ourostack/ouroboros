@@ -127,6 +127,7 @@ import type {
   DeskCliCommand,
   MigrateToDeskCliCommand,
   WhoamiCliCommand,
+  VoiceCliCommand,
   SessionCliCommand,
   ThoughtsCliCommand,
   CloneCliCommand,
@@ -1948,7 +1949,7 @@ export async function checkManualCloneBundles(deps: ManualCloneCheckDeps): Promi
 
 // ── toDaemonCommand ──
 
-function toDaemonCommand(command: Exclude<OuroCliCommand, { kind: "daemon.up" } | { kind: "daemon.dev" } | { kind: "daemon.logs.prune" } | { kind: "mailbox" } | { kind: "hatch.start" } | AuthCliCommand | AuthVerifyCliCommand | AuthSwitchCliCommand | ProviderCliCommand | RepairCliCommand | VaultCliCommand | DnsCliCommand | FriendCliCommand | A2ACliCommand | A2AClientCliCommand | WhoamiCliCommand | SessionCliCommand | ThoughtsCliCommand | ChangelogCliCommand | ConfigModelCliCommand | ConfigModelsCliCommand | RollbackCliCommand | VersionsCliCommand | AttentionCliCommand | PrivateDecisionsCliCommand | PrivateStatusCliCommand | WorkCardCliCommand | WorkGauntletCliCommand | WorkSentinelCliCommand | NervesReviewCliCommand | McpServeCliCommand | AcpServeCliCommand | McpCanaryCliCommand | McpDoctorCliCommand | SetupCliCommand | HookCliCommand | HabitLocalCliCommand | DeskCliCommand | MigrateToDeskCliCommand | DoctorCliCommand | RsvpCliCommand | CloneCliCommand | HelpCliCommand | { kind: "bluebubbles.replay" } | { kind: "bluebubbles.context-smoke" } | { kind: "bluebubbles.host" } | { kind: "bluebubbles.host.collect" } | { kind: "connect" } | { kind: "account.ensure" } | { kind: "mail.import-mbox" } | { kind: "mail.backfill-indexes" } | { kind: "mail.sync-cache" } | { kind: "plugin.install" } | { kind: "plugin.list" } | { kind: "plugin.remove" }>): DaemonCommand {
+function toDaemonCommand(command: Exclude<OuroCliCommand, { kind: "daemon.up" } | { kind: "daemon.dev" } | { kind: "daemon.logs.prune" } | { kind: "mailbox" } | { kind: "hatch.start" } | AuthCliCommand | AuthVerifyCliCommand | AuthSwitchCliCommand | ProviderCliCommand | RepairCliCommand | VaultCliCommand | DnsCliCommand | FriendCliCommand | A2ACliCommand | A2AClientCliCommand | WhoamiCliCommand | VoiceCliCommand | SessionCliCommand | ThoughtsCliCommand | ChangelogCliCommand | ConfigModelCliCommand | ConfigModelsCliCommand | RollbackCliCommand | VersionsCliCommand | AttentionCliCommand | PrivateDecisionsCliCommand | PrivateStatusCliCommand | WorkCardCliCommand | WorkGauntletCliCommand | WorkSentinelCliCommand | NervesReviewCliCommand | McpServeCliCommand | AcpServeCliCommand | McpCanaryCliCommand | McpDoctorCliCommand | SetupCliCommand | HookCliCommand | HabitLocalCliCommand | DeskCliCommand | MigrateToDeskCliCommand | DoctorCliCommand | RsvpCliCommand | CloneCliCommand | HelpCliCommand | { kind: "bluebubbles.replay" } | { kind: "bluebubbles.context-smoke" } | { kind: "bluebubbles.host" } | { kind: "bluebubbles.host.collect" } | { kind: "connect" } | { kind: "account.ensure" } | { kind: "mail.import-mbox" } | { kind: "mail.backfill-indexes" } | { kind: "mail.sync-cache" } | { kind: "plugin.install" } | { kind: "plugin.list" } | { kind: "plugin.remove" }>): DaemonCommand {
   if (command.kind === "habit.probe") {
     return {
       kind: "habit.probe",
@@ -9377,6 +9378,23 @@ export async function runOuroCli(args: string[], deps: OuroCliDeps = createDefau
     return executeLegacyConfigModel(command, deps)
   }
   /* v8 ignore stop */
+
+  // ── voice join / leave / status (local audio lane; no daemon socket, control is a local unix socket) ──
+  if (command.kind === "voice.join" || command.kind === "voice.leave" || command.kind === "voice.status") {
+    const voice = await import("../../senses/voice/local-audio-join")
+    const voiceDeps = voice.defaultLocalAudioJoinDeps()
+    let message: string
+    if (command.kind === "voice.join") {
+      const summary = await voice.runLocalAudioJoin(command.request, voiceDeps)
+      message = `Local audio session ${summary.callSid} ended (${summary.reason}) after ${Math.round(summary.durationMs / 1000)}s.`
+    } else if (command.kind === "voice.leave") {
+      message = await voice.runLocalAudioLeave(command.agent, voiceDeps)
+    } else {
+      message = await voice.runLocalAudioStatus(command.agent, voiceDeps)
+    }
+    deps.writeStdout(message)
+    return message
+  }
 
   // ── whoami (local, no daemon socket needed) ──
   if (command.kind === "whoami") {

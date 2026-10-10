@@ -7,6 +7,7 @@ import {
   agentScopedTwilioPhoneBasePath,
   closeTwilioPhoneBridgeServer,
   placeConfiguredTwilioPhoneCall,
+  resolveLocalAudioRealtimeOptions,
   resolveTwilioPhoneTransportRuntime,
   startConfiguredTwilioPhoneTransport,
   type TwilioPhoneOutboundCallRuntimeDeps,
@@ -1615,5 +1616,29 @@ describe("Twilio phone transport runtime", () => {
 
     expect(result.status).toBe("started")
     expect(startTwilioPhoneBridgeServer).toHaveBeenCalledOnce()
+  })
+
+  describe("local audio realtime options", () => {
+    it("resolves the OpenAI Realtime key and settings without a Twilio public URL", async () => {
+      const deps = fakeOutboundDeps({ voice: { openaiRealtimeApiKey: "rt-key", openaiRealtimeVoice: "marin" } }, {})
+      const options = await resolveLocalAudioRealtimeOptions("slugger", deps)
+      expect(options).toMatchObject({ apiKey: "rt-key", apiKeySource: "voice.openaiRealtimeApiKey", voice: "marin" })
+    })
+
+    it("falls back through the integration keys and refreshes uncached config", async () => {
+      const deps = fakeOutboundDeps({ integrations: { openaiApiKey: "int-key" } }, {})
+      deps.readRuntimeConfig = vi.fn()
+        .mockReturnValueOnce({ ok: false, error: "cold cache" } as never)
+        .mockReturnValue(runtimeReadResult({ integrations: { openaiApiKey: "int-key" } }) as never)
+      const options = await resolveLocalAudioRealtimeOptions("slugger", deps)
+      expect(options.apiKey).toBe("int-key")
+      expect(options.apiKeySource).toBe("integrations.openaiApiKey")
+      expect(deps.refreshRuntimeConfig).toHaveBeenCalled()
+    })
+
+    it("says what to configure when no key exists", async () => {
+      const deps = fakeOutboundDeps({}, {})
+      await expect(resolveLocalAudioRealtimeOptions("slugger", deps)).rejects.toThrow(/voice\.openaiRealtimeApiKey/)
+    })
   })
 })

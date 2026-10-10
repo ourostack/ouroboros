@@ -115,6 +115,15 @@ describe("voice call tokens", () => {
 })
 
 describe("PendingVoiceCalls", () => {
+  it("never stores local-audio identity, so a network stream cannot claim the local lane", () => {
+    const pending = new PendingVoiceCalls()
+    const local = { mode: "conversation" as const, ownerAlone: true, disclosure: "silent" as const }
+    pending.record({ ...identity("CA9"), local }, "n1")
+    const consumed = pending.consume("CA9", "n1")
+    expect(consumed).toEqual(identity("CA9"))
+    expect(consumed).not.toHaveProperty("local")
+  })
+
   it("consumes a recorded identity once and only with the matching nonce", () => {
     const pending = new PendingVoiceCalls()
     pending.record(identity("CA1"), "n1")

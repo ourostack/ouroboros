@@ -1073,3 +1073,29 @@ export function closeTwilioPhoneBridgeServer(server: TwilioPhoneBridgeServer): P
     }),
   ]).then(() => undefined)
 }
+
+/**
+ * The OpenAI Realtime settings for a local audio join. Local audio needs no public URL or Twilio
+ * credentials, only the Realtime key and voice settings, so the phone resolver is asked for a
+ * placeholder-enabled media-stream setup and only its Realtime half is returned.
+ */
+export async function resolveLocalAudioRealtimeOptions(
+  agentName: string,
+  deps: TwilioPhoneOutboundCallRuntimeDeps = defaultTwilioPhoneOutboundCallRuntimeDeps,
+): Promise<OpenAIRealtimeTwilioOptions> {
+  const settings = await readFreshRuntimeSettings(
+    agentName,
+    {
+      enabled: true,
+      publicBaseUrl: "https://local-audio.invalid",
+      transportMode: "media-stream",
+      conversationEngine: "openai-realtime",
+      outboundConversationEngine: "openai-realtime",
+    },
+    undefined,
+    false,
+    deps,
+    { preferCached: true },
+  )
+  return settings.openaiRealtime as OpenAIRealtimeTwilioOptions
+}

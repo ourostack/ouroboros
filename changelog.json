@@ -2,6 +2,12 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.889",
+      "changes": [
+        "Agents can join a call on this Mac (FaceTime, Zoom, Meet, a podcast recorder) through BlackHole virtual audio: ouro voice join/leave/status and a family-only voice_join_local_audio tool, with a spoken AI disclosure, room-level trust, a two-tool allowlist, a single-join lock and fail-loud device checks."
+      ]
+    },
+    {
       "version": "0.1.0-alpha.888",
       "changes": [
         "Answer gates (source grounding and brevity) now hold a plain-text reply as well as a settle answer, so a reply with no settle call can no longer name an unsourced cast or ignore a brevity request."
