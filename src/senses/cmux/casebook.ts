@@ -223,7 +223,10 @@ function sweepTombstones(stateDir: string, now: number): void {
     if (!name.startsWith("decisions.lock.stale-")) continue
     const tombstone = path.join(stateDir, name)
     try {
-      if (now - fs.statSync(tombstone).mtimeMs > TOMBSTONE_KEEP_MS) fs.rmSync(tombstone, { recursive: true, force: true })
+      if (now - fs.statSync(tombstone).mtimeMs <= TOMBSTONE_KEEP_MS) continue
+      // A tombstone holds only its marker file, so it is emptied file by file, never removed recursively.
+      for (const entry of fs.readdirSync(tombstone)) fs.unlinkSync(path.join(tombstone, entry))
+      fs.rmdirSync(tombstone)
     } catch {
       // Another process swept it first.
     }

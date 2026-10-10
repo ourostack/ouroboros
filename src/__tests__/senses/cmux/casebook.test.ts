@@ -280,13 +280,15 @@ describe("cmux decision lock", () => {
       vi.mocked(fs.statSync).mockImplementation(actualStat)
     }
     // A holder whose lock was taken over leaves the new holder's lock alone, and a missing lock is fine.
+    // Moving the old lock aside (as a takeover does) keeps its inode alive, so the new lock's inode differs.
     expect(withDecisionLock(dir, () => {
-      fs.rmdirSync(lock)
+      fs.renameSync(lock, `${lock}.moved`)
       fs.mkdirSync(lock)
       return 4
     })).toBe(4)
     expect(fs.existsSync(lock)).toBe(true)
     fs.rmdirSync(lock)
+    fs.rmdirSync(`${lock}.moved`)
     expect(withDecisionLock(dir, () => {
       fs.rmdirSync(lock)
       return 5
@@ -296,6 +298,7 @@ describe("cmux decision lock", () => {
   it("sweeps old tombstones and surfaces unexpected errors while checking or taking over", () => {
     const lock = path.join(dir, "decisions.lock")
     fs.mkdirSync(path.join(dir, "decisions.lock.stale-1"), { recursive: true })
+    fs.writeFileSync(path.join(dir, "decisions.lock.stale-1", "taken-over"), "1")
     fs.mkdirSync(path.join(dir, "decisions.lock.stale-2"), { recursive: true })
     fs.writeFileSync(path.join(dir, "decisions.jsonl"), "")
     const old = new Date(Date.now() - 10 * 60_000)
