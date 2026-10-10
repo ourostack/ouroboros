@@ -3553,6 +3553,42 @@ describe("settle answer gates (opt-in per agent)", () => {
       expect(visible.join("")).toContain("I couldn't verify ozriel")
     })
 
+    // alpha.886 replay (session 9918e561): the model answered in plain text, no settle call, and the invented cast went out unchecked.
+    it("holds a plain-text reply (no settle call) to the same rule, then delivers the sourced answer", async () => {
+      mockCreate.mockReturnValueOnce(makeStream([makeChunk(INVENTED)]))
+      mockCreate.mockReturnValueOnce(searchCall("ws"))
+      mockCreate.mockReturnValueOnce(settleCall("s2", GROUNDED))
+      const execTool = vi.fn(async () => "Lindon and Yerin are the leads of Cradle")
+      const { result, visible } = await run({ execTool, gates: GATES })
+      expect(result.outcome).toBe("settled")
+      expect(execTool).toHaveBeenCalledTimes(1)
+      expect(JSON.stringify(mockCreate.mock.calls[1][0].messages)).toContain("looked up nothing this turn")
+      expect(visible.join("")).toBe(GROUNDED)
+    })
+
+    it("discloses a plain-text reply that keeps naming unsourced things after the retries", async () => {
+      for (let i = 0; i < 3; i++) mockCreate.mockReturnValueOnce(makeStream([makeChunk(INVENTED)]))
+      const { visible } = await run({ gates: GATES })
+      expect(mockCreate).toHaveBeenCalledTimes(3)
+      expect(visible.join("")).toBe(DISCLOSED)
+    })
+
+    it("holds a plain-text reply to an earlier brevity request", async () => {
+      const long = `## Plan\n${"this is a long section. ".repeat(40)}Want me to go on?`
+      mockCreate.mockReturnValueOnce(makeStream([makeChunk(long)]))
+      mockCreate.mockReturnValueOnce(makeStream([makeChunk("The library closes at nine.")]))
+      const { visible } = await run({ gates: GATES, user: ["be brief from now on, no sections", "when does the library close?"] })
+      expect(JSON.stringify(mockCreate.mock.calls[1][0].messages)).toContain("the person asked you to be brief")
+      expect(visible.join("")).toBe("The library closes at nine.")
+    })
+
+    it("leaves a plain-text reply alone for an agent that has not opted in", async () => {
+      mockCreate.mockReturnValueOnce(makeStream([makeChunk(INVENTED)]))
+      const { visible } = await run({})
+      expect(mockCreate).toHaveBeenCalledTimes(1)
+      expect(visible.join("")).toBe(INVENTED)
+    })
+
     it("passes replies that are not about a work", async () => {
       mockCreate.mockReturnValueOnce(settleCall("ok", "ten minutes. nothing to read."))
       const { result, visible } = await run({ gates: GATES })
