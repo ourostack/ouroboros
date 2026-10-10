@@ -117,7 +117,7 @@ export function delegationRefusalGuidance(reason: DelegationRefusal, hints: { le
 const INVISIBLE = /[\u00AD\u034F\u061C\u115F\u1160\u17B4\u17B5\u180B-\u180F\u200B-\u200F\u202A-\u202E\u2060-\u206F\u3164\uFE00-\uFE0F\uFEFF\uFFA0]/gu
 
 /** Matches the banner only the server may put in front of an admitted command, anywhere in the text, after normalisation. */
-export const DELEGATED_BANNER = /\[[\s\p{P}_-]*delegated[\s\p{P}_-]*command|verified[\s\p{P}_-]*delegated[\s\p{P}_-]*command/iu
+export const DELEGATED_BANNER = /\[[^\p{L}\p{N}]*delegated[^\p{L}\p{N}]*command|verified[^\p{L}\p{N}]*delegated[^\p{L}\p{N}]*command/iu
 
 /** The text as the banner check sees it: compatibility-normalised (NFKC) with invisible characters removed. */
 function bannerView(text: string): string {
