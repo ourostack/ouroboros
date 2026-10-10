@@ -16,13 +16,16 @@ import {
   fileCaptureArgs,
   filePlaybackArgs,
   soxCaptureArgs,
-  soxPlaybackArgs,
   type ChildProcessLike,
   type LocalAudioProcessSpawner,
   type ProcessInfo,
   probeCaptureLoopback,
   soxProbeToneArgs,
   type ProcessSignalHost,
+  ffmpegPlaybackArgs,
+  audioToolboxListArgs,
+  findAudioToolboxDeviceIndex,
+  defaultListAudioToolboxDevices,
 } from "../../../senses/voice/local-audio-devices"
 
 class FakeChild extends EventEmitter implements ChildProcessLike {
@@ -59,9 +62,8 @@ afterEach(() => {
 })
 
 describe("sox argument builders", () => {
-  it("builds capture and playback args for CoreAudio devices", () => {
+  it("builds capture args for a CoreAudio device", () => {
     expect(soxCaptureArgs("BlackHole 16ch")).toEqual(["-q", "--buffer", "1024", "--input-buffer", "8192", "-t", "coreaudio", "BlackHole 16ch", "-t", "raw", "-r", "8000", "-e", "mu-law", "-b", "8", "-c", "1", "-", "remix", "1,2"])
-    expect(soxPlaybackArgs("BlackHole 2ch")).toEqual(["-q", "--buffer", "160", "-t", "raw", "-r", "8000", "-e", "mu-law", "-b", "8", "-c", "1", "-", "-t", "coreaudio", "BlackHole 2ch"])
   })
 
   it("builds file capture and playback args", () => {
@@ -70,8 +72,53 @@ describe("sox argument builders", () => {
   })
 })
 
+describe("ffmpeg playback", () => {
+  const listing = [
+    "Input #0, lavfi, from 'anullsrc':",
+    "[AudioToolbox @ 0x7b514003c0] CoreAudio devices:",
+    "[AudioToolbox @ 0x7b514003c0] [0]                 BlackHole 16ch, BlackHole16ch_UID",
+    "[AudioToolbox @ 0x7b514003c0] [1]                  BlackHole 2ch, BlackHole2ch_UID",
+    "[AudioToolbox @ 0x7b514003c0] [4]            Multi-Output Device, ~:AMS2_StackedOutput:0",
+  ].join("\n")
+
+  it("plays raw mono 8 kHz mu-law from stdin to an AudioToolbox device by index, without input probing delay", () => {
+    expect(ffmpegPlaybackArgs(1)).toEqual([
+      "-hide_banner", "-loglevel", "error", "-nostdin",
+      "-probesize", "32", "-analyzeduration", "0", "-fflags", "nobuffer",
+      "-f", "mulaw", "-ar", "8000", "-ac", "1", "-i", "pipe:0",
+      "-f", "audiotoolbox", "-audio_device_index", "1", "-",
+    ])
+  })
+
+  it("lists AudioToolbox devices without playing anything", () => {
+    expect(audioToolboxListArgs()).toEqual(["-hide_banner", "-f", "lavfi", "-i", "anullsrc", "-t", "0", "-f", "audiotoolbox", "-list_devices", "true", "-"])
+  })
+
+  it("finds a device index by its exact name and ignores near matches", () => {
+    expect(findAudioToolboxDeviceIndex(listing, "BlackHole 2ch")).toBe(1)
+    expect(findAudioToolboxDeviceIndex(listing, "BlackHole 16ch")).toBe(0)
+    expect(findAudioToolboxDeviceIndex(listing, "Multi-Output Device")).toBe(4)
+    expect(findAudioToolboxDeviceIndex(listing, "BlackHole")).toBeUndefined()
+    expect(findAudioToolboxDeviceIndex("", "BlackHole 2ch")).toBeUndefined()
+  })
+
+  it("defaultListAudioToolboxDevices returns ffmpeg's log output and rejects when ffmpeg cannot run", async () => {
+    const calls: Array<{ file: string; args: string[] }> = []
+    const ok = await defaultListAudioToolboxDevices("/opt/ffmpeg", (file, args, cb) => { calls.push({ file, args }); cb(null, "", "devices here") })
+    expect(ok).toBe("devices here")
+    expect(calls).toEqual([{ file: "/opt/ffmpeg", args: audioToolboxListArgs() }])
+    // A non-zero exit still carries the listing on stderr.
+    await expect(defaultListAudioToolboxDevices(undefined, (_f, _a, cb) => cb(Object.assign(new Error("exit 1"), { code: 1 }), "", "partial"))).resolves.toBe("partial")
+    await expect(defaultListAudioToolboxDevices(undefined, (_f, _a, cb) => cb(Object.assign(new Error("spawn ffmpeg ENOENT"), { code: "ENOENT" }), "", ""))).rejects.toThrow(/ENOENT/)
+  })
+
+  it("defaultListAudioToolboxDevices runs the real ffmpeg binary through execFile", async () => {
+    await expect(defaultListAudioToolboxDevices("/nonexistent/ffmpeg-for-test")).rejects.toThrow(/ENOENT/)
+  })
+})
+
 describe("LocalAudioDevices", () => {
-  function make(extra: { killGroup?: (pid: number, signal: NodeJS.Signals) => boolean; inspectProcess?: (pid: number) => ProcessInfo | null; pids?: Array<number | undefined>; soxPath?: string } = {}) {
+  function make(extra: { killGroup?: (pid: number, signal: NodeJS.Signals) => boolean; inspectProcess?: (pid: number) => ProcessInfo | null; pids?: Array<number | undefined>; soxPath?: string; playbackCommand?: string } = {}) {
     const { spawner, children, calls } = makeSpawner(extra.pids)
     const killed: Array<{ pid: number; signal: string }> = []
     const pidFile = path.join(dir, "sub", "voice-sox.pids")
@@ -83,6 +130,7 @@ describe("LocalAudioDevices", () => {
       playbackArgs: ["play"],
       pidFile,
       soxPath: extra.soxPath,
+      playbackCommand: extra.playbackCommand,
       killGroup: extra.killGroup ?? ((pid, signal) => { killed.push({ pid, signal }); return true }),
       inspectProcess,
       inspectProcessAsync: async (pid) => inspectProcess(pid),
@@ -146,6 +194,12 @@ describe("LocalAudioDevices", () => {
     expect(children).toHaveLength(2)
   })
 
+  it("runs playback with its own command when one is given", () => {
+    const { devices, calls } = make({ playbackCommand: "ffmpeg" })
+    devices.start()
+    expect(calls.map((c) => c.command)).toEqual(["sox", "ffmpeg"])
+  })
+
   it("throws and cleans up when a child has no stdio", () => {
     const { spawner, children } = makeSpawner()
     const original = spawner.spawn.bind(spawner)
@@ -206,18 +260,20 @@ describe("LocalAudioDevices", () => {
       444: { command: "sox", startTime: "REUSED" },
       555: null,
       666: { command: "sox", startTime: "T6" },
+      777: { command: "/opt/homebrew/bin/ffmpeg", startTime: "T7" },
     }
     const { devices, killed, pidFile, timers } = make({ inspectProcess: (pid) => infos[pid] ?? null })
     fs.mkdirSync(path.dirname(pidFile), { recursive: true })
-    fs.writeFileSync(pidFile, "111\tT1\n222\tT2\n333\tT3\n444\tT4\n555\tT5\n666\n999\tT9\nnot-a-pid\n\n-5\n")
-    expect(devices.sweepStale()).toBe(2)
-    expect(killed).toEqual([{ pid: 111, signal: "SIGTERM" }, { pid: 222, signal: "SIGTERM" }])
+    fs.writeFileSync(pidFile, "111\tT1\n222\tT2\n333\tT3\n444\tT4\n555\tT5\n666\n777\tT7\n999\tT9\nnot-a-pid\n\n-5\n")
+    expect(devices.sweepStale()).toBe(3)
+    expect(killed).toEqual([{ pid: 111, signal: "SIGTERM" }, { pid: 222, signal: "SIGTERM" }, { pid: 777, signal: "SIGTERM" }])
     expect(fs.existsSync(pidFile)).toBe(false)
     // sox that ignored SIGTERM gets SIGKILL after the grace; one that died (or was replaced) is left alone.
     expect(timers.map((t) => t.ms)).toEqual([500])
     delete infos[222]
+    delete infos[777]
     timers[0]!.cb()
-    expect(killed.slice(2)).toEqual([{ pid: 111, signal: "SIGKILL" }])
+    expect(killed.slice(3)).toEqual([{ pid: 111, signal: "SIGKILL" }])
   })
 
   it("sweepStale returns 0 when there is no pid file and does not count failed kills", () => {

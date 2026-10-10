@@ -2,6 +2,12 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.892",
+      "changes": [
+        "Local audio joins play the agent's voice through ffmpeg instead of sox, because sox's CoreAudio output can deadlock and stay silent when the process runs at lowered priority. An outbound call is treated as the job's friend only when the dialed number is on that friend's record. Phone greetings now name the agent: they had introduced themselves as ChatGPT in half of the live test calls."
+      ]
+    },
+    {
       "version": "0.1.0-alpha.891",
       "changes": [
         "Replay gate: finding a replay session skips plain files in the Butler's sessions folder, which stopped the alpha.888 gate before any case ran."
