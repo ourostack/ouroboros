@@ -254,6 +254,17 @@ describe("guardInvocation — structural guardrails", () => {
     expect(guardInvocation("shell", { command }, { readPaths: new Set() })).toEqual({ allowed: true })
   })
 
+  it("keeps the owner's cmux terminals to family trust", async () => {
+    const { guardInvocation } = await import("../../repertoire/guardrails")
+    for (const tool of ["cmux_overview", "cmux_read", "cmux_signal"]) {
+      for (const trustLevel of ["stranger", "acquaintance", "friend"] as const) {
+        expect(guardInvocation(tool, {}, { readPaths: new Set(), trustLevel })).toEqual(expect.objectContaining({ allowed: false }))
+      }
+      expect(guardInvocation(tool, {}, { readPaths: new Set(), trustLevel: "family" })).toEqual({ allowed: true })
+      expect(guardInvocation(tool, {}, { readPaths: new Set() })).toEqual({ allowed: true })
+    }
+  })
+
   it("preserves friend access to unrelated Ouro commands", async () => {
     const { guardInvocation } = await import("../../repertoire/guardrails")
     expect(guardInvocation("shell", { command: "ouro status" }, { readPaths: new Set(), trustLevel: "friend" })).toEqual({ allowed: true })

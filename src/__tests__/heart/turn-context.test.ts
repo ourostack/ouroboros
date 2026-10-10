@@ -584,6 +584,7 @@ describe("buildTurnContext", () => {
       "- Voice: ready",
       "- A2A: ready",
       "- Telegram: disabled",
+      "- cmux: disabled",
       "- Workbench: stale_bundle_entry (runtime-injected when launched by Workbench app; run ouro connect workbench to clean agent.json)",
     ])
   })
@@ -665,6 +666,7 @@ describe("buildTurnContext", () => {
       "- Voice: ready",
       "- A2A: disabled",
       "- Telegram: disabled",
+      "- cmux: disabled",
       "- Workbench: disabled (runtime-injected when launched by Workbench app)",
     ])
   })
@@ -707,6 +709,7 @@ describe("buildTurnContext", () => {
       "- Voice: ready",
       "- A2A: disabled",
       "- Telegram: disabled",
+      "- cmux: disabled",
       "- Workbench: disabled (runtime-injected when launched by Workbench app)",
     ])
   })
@@ -738,6 +741,7 @@ describe("buildTurnContext", () => {
       "- Voice: disabled",
       "- A2A: disabled",
       "- Telegram: disabled",
+      "- cmux: disabled",
       "- Workbench: disabled (runtime-injected when launched by Workbench app)",
     ])
   })
@@ -769,8 +773,25 @@ describe("buildTurnContext", () => {
       "- Voice: disabled",
       "- A2A: disabled",
       "- Telegram: disabled",
+      "- cmux: disabled",
       "- Workbench: disabled (runtime-injected when launched by Workbench app)",
     ])
+  })
+
+  it("reports the cmux sense ready only when this machine holds cmux socket auth", async () => {
+    mockLoadAgentConfig.mockReturnValue({ senses: { cli: { enabled: true }, cmux: { enabled: true } } })
+    mockLoadConfig.mockReturnValue({})
+    mockReadMachineRuntimeCredentialConfig.mockReturnValue({
+      ok: true,
+      itemPath: "vault:test-agent:runtime/machines/test-machine/config",
+      revision: "runtime_cmux",
+      updatedAt: "2026-10-10T00:00:00.000Z",
+      config: { cmux: { socketCapability: "v1.a.b" } },
+    })
+    expect((await buildTurnContext(makeInput())).senseStatusLines).toContain("- cmux: ready")
+
+    mockReadMachineRuntimeCredentialConfig.mockReturnValue({ ok: false, reason: "missing", itemPath: "x", error: "missing" })
+    expect((await buildTurnContext(makeInput())).senseStatusLines).toContain("- cmux: not_attached")
   })
 
   it("detects needs_config when senses enabled but runtime config is incomplete", async () => {
@@ -788,6 +809,7 @@ describe("buildTurnContext", () => {
       "- Voice: needs_config",
       "- A2A: disabled",
       "- Telegram: disabled",
+      "- cmux: disabled",
       "- Workbench: disabled (runtime-injected when launched by Workbench app)",
     ])
   })
@@ -856,6 +878,7 @@ describe("buildTurnContext", () => {
       "- Voice: disabled",
       "- A2A: disabled",
       "- Telegram: disabled",
+      "- cmux: disabled",
       "- Workbench: disabled (runtime-injected when launched by Workbench app)",
     ])
   })

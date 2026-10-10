@@ -42,6 +42,7 @@ import { buildAgentProviderVisibility, type AgentProviderVisibility } from "./pr
 import { listVisibleBackgroundOperations } from "./mail-import-discovery"
 import { readFlightRecorderResume } from "../arc/flight-recorder"
 import { readContextLossSentinelView } from "./context-loss-sentinel"
+import { cmuxConfigFacts } from "./cmux-config"
 
 // ── TurnContext: the raw state snapshot ─────────────────────────────
 
@@ -231,6 +232,7 @@ export function readSenseStatusLines(): string[] {
     a2a: configuredSenses.a2a ?? { enabled: false },
     telegram: configuredSenses.telegram ?? { enabled: false },
     workbench: configuredSenses.workbench ?? { enabled: false },
+    cmux: configuredSenses.cmux ?? { enabled: false },
   }
   const payload = loadConfig() as unknown as Record<string, unknown>
   const agentName = getAgentName()
@@ -289,6 +291,7 @@ export function readSenseStatusLines(): string[] {
         && hasTextField(runtimePayload, "telegramAuthorizedUserId")
         && hasTextField(runtimePayload, "telegramAuthorizedChatId"),
     workbench: false,
+    cmux: cmuxConfigFacts(machinePayload).configured,
   }
 
   const rows: Array<{ label: string; status: string }> = [
@@ -316,6 +319,10 @@ export function readSenseStatusLines(): string[] {
     {
       label: "Telegram",
       status: !senses.telegram.enabled ? "disabled" : configured.telegram ? "ready" : "needs_config",
+    },
+    {
+      label: "cmux",
+      status: !senses.cmux.enabled ? "disabled" : configured.cmux ? "ready" : "not_attached",
     },
     {
       label: "Workbench",

@@ -157,6 +157,7 @@ describe("daemon sense manager", () => {
       expect.objectContaining({ sense: "a2a", status: "disabled", detail: "not enabled in agent.json" }),
       expect.objectContaining({ sense: "telegram", status: "disabled" }),
       expect.objectContaining({ sense: "workbench", status: "disabled", detail: "runtime-injected by Workbench app; no agent.json entry required" }),
+      expect.objectContaining({ sense: "cmux", status: "disabled", detail: "not enabled in agent.json" }),
     ])
 
     await manager.startAutoStartSenses()
@@ -1347,6 +1348,7 @@ describe("daemon sense manager", () => {
       expect.objectContaining({ sense: "a2a", status: "disabled", detail: "not enabled in agent.json" }),
       expect.objectContaining({ sense: "telegram", status: "disabled" }),
       expect.objectContaining({ sense: "workbench", status: "disabled", detail: "runtime-injected by Workbench app; no agent.json entry required" }),
+      expect.objectContaining({ sense: "cmux", status: "disabled", detail: "not enabled in agent.json" }),
     ])
   })
 
@@ -1490,7 +1492,63 @@ describe("daemon sense manager", () => {
       expect.objectContaining({ sense: "a2a", status: "disabled", detail: "not enabled in agent.json" }),
       expect.objectContaining({ sense: "telegram", status: "disabled" }),
       expect.objectContaining({ sense: "workbench", status: "disabled", detail: "runtime-injected by Workbench app; no agent.json entry required" }),
+      expect.objectContaining({ sense: "cmux", status: "disabled", detail: "not enabled in agent.json" }),
     ])
+  })
+
+  it("runs the cmux sense from this machine's socket auth and names the human repair when it is missing", async () => {
+    const bundlesRoot = fs.mkdtempSync(path.join(os.tmpdir(), "sense-manager-bundles-"))
+    const agentJson = { version: 1, enabled: true, provider: "anthropic", senses: { cli: { enabled: true }, cmux: { enabled: true } }, phrases: { thinking: ["t"], tool: ["t"], followup: ["f"] } }
+    for (const agent of ["ready", "halfset", "absent"]) writeAgentJson(bundlesRoot, agent, agentJson)
+    await cacheMachineRuntimeConfig("ready", { cmux: { socketCapability: "v1.a.b" } })
+    await cacheMachineRuntimeConfig("halfset", { cmux: { socketPath: "/s.sock" } })
+
+    const { DaemonSenseManager } = await import("../../../heart/daemon/sense-manager")
+    const manager = new DaemonSenseManager({
+      agents: ["ready", "halfset", "absent"],
+      bundlesRoot,
+      processManager: {
+        startAutoStartAgents: async () => undefined,
+        stopAll: async () => undefined,
+        listAgentSnapshots: () => [{ name: "ready:cmux", status: "running" }],
+      },
+    })
+
+    const rows = manager.listSenseRows().filter((row) => row.sense === "cmux")
+    expect(rows).toEqual([
+      expect.objectContaining({ agent: "ready", status: "running", detail: "socket auth: capability" }),
+      expect.objectContaining({ agent: "halfset", status: "needs_config", detail: "missing cmux.socketCapability" }),
+      expect.objectContaining({ agent: "absent", status: "not_attached" }),
+    ])
+    fs.rmSync(bundlesRoot, { recursive: true, force: true })
+  })
+
+  it("reports the cmux sense as blocked when the machine vault item cannot be read", async () => {
+    const bundlesRoot = fs.mkdtempSync(path.join(os.tmpdir(), "sense-manager-bundles-"))
+    writeAgentJson(bundlesRoot, "slugger", { version: 1, enabled: true, provider: "anthropic", senses: { cli: { enabled: true }, cmux: { enabled: true } }, phrases: { thinking: ["t"], tool: ["t"], followup: ["f"] } })
+    vi.doMock("../../../heart/runtime-credentials", async (importOriginal) => ({
+      ...await importOriginal<typeof import("../../../heart/runtime-credentials")>(),
+      readMachineRuntimeCredentialConfig: vi.fn(() => ({ ok: false, reason: "unavailable", itemPath: "vault:slugger:runtime/machines/m/config", error: "vault locked" })),
+    }))
+    let processManagerOptions: any
+    vi.doMock("../../../heart/daemon/process-manager", () => ({
+      DaemonProcessManager: class MockProcessManager {
+        constructor(options: unknown) { processManagerOptions = options }
+        startAutoStartAgents = vi.fn(async () => undefined)
+        stopAll = vi.fn(async () => undefined)
+        listAgentSnapshots = vi.fn(() => [])
+      },
+    }))
+    const { DaemonSenseManager } = await import("../../../heart/daemon/sense-manager")
+    const manager = new DaemonSenseManager({ agents: ["slugger"], bundlesRoot })
+    const row = manager.listSenseRows().find((entry) => entry.sense === "cmux")
+    expect(row).toEqual(expect.objectContaining({ status: "needs_config" }))
+    expect(row!.detail).toContain("vault locked")
+    expect(processManagerOptions.agents.map((entry: { name: string; entry: string }) => [entry.name, entry.entry])).toEqual([["slugger:cmux", "senses/cmux-entry.js"]])
+    const check = await processManagerOptions.configCheck("slugger:cmux")
+    expect(check).toMatchObject({ ok: false, skip: true })
+    expect(check.fix).toContain("human-required: in a cmux terminal run 'ouro vault config set --agent slugger --scope machine --key cmux.socketCapability")
+    fs.rmSync(bundlesRoot, { recursive: true, force: true })
   })
 
   it("reports voice as running when ElevenLabs and local Whisper.cpp settings are configured", async () => {
@@ -1540,6 +1598,7 @@ describe("daemon sense manager", () => {
       expect.objectContaining({ sense: "a2a", status: "disabled", detail: "not enabled in agent.json" }),
       expect.objectContaining({ sense: "telegram", status: "disabled" }),
       expect.objectContaining({ sense: "workbench", status: "disabled", detail: "runtime-injected by Workbench app; no agent.json entry required" }),
+      expect.objectContaining({ sense: "cmux", status: "disabled", detail: "not enabled in agent.json" }),
     ])
   })
 
@@ -1899,6 +1958,7 @@ describe("daemon sense manager", () => {
       expect.objectContaining({ sense: "a2a", status: "disabled", detail: "not enabled in agent.json" }),
       expect.objectContaining({ sense: "telegram", status: "disabled" }),
       expect.objectContaining({ sense: "workbench", status: "disabled", detail: "runtime-injected by Workbench app; no agent.json entry required" }),
+      expect.objectContaining({ sense: "cmux", status: "disabled", detail: "not enabled in agent.json" }),
     ])
   })
 
@@ -1977,6 +2037,7 @@ describe("daemon sense manager", () => {
       expect.objectContaining({ sense: "a2a", status: "disabled", detail: "not enabled in agent.json" }),
       expect.objectContaining({ sense: "telegram", status: "disabled" }),
       expect.objectContaining({ sense: "workbench", status: "disabled", detail: "runtime-injected by Workbench app; no agent.json entry required" }),
+      expect.objectContaining({ sense: "cmux", status: "disabled", detail: "not enabled in agent.json" }),
     ])
   })
 
@@ -2054,6 +2115,7 @@ describe("daemon sense manager", () => {
       expect.objectContaining({ sense: "a2a", status: "disabled", detail: "not enabled in agent.json" }),
       expect.objectContaining({ sense: "telegram", status: "disabled" }),
       expect.objectContaining({ sense: "workbench", status: "disabled", detail: "runtime-injected by Workbench app; no agent.json entry required" }),
+      expect.objectContaining({ sense: "cmux", status: "disabled", detail: "not enabled in agent.json" }),
     ])
   })
 
@@ -2132,6 +2194,7 @@ describe("daemon sense manager", () => {
       expect.objectContaining({ sense: "a2a", status: "disabled", detail: "not enabled in agent.json" }),
       expect.objectContaining({ sense: "telegram", status: "disabled" }),
       expect.objectContaining({ sense: "workbench", status: "disabled", detail: "runtime-injected by Workbench app; no agent.json entry required" }),
+      expect.objectContaining({ sense: "cmux", status: "disabled", detail: "not enabled in agent.json" }),
     ])
   })
 
@@ -2348,6 +2411,7 @@ describe("daemon sense manager", () => {
       expect.objectContaining({ sense: "a2a", status: "disabled", detail: "not enabled in agent.json" }),
       expect.objectContaining({ sense: "telegram", status: "disabled" }),
       expect.objectContaining({ sense: "workbench", status: "disabled", detail: "runtime-injected by Workbench app; no agent.json entry required" }),
+      expect.objectContaining({ sense: "cmux", status: "disabled", detail: "not enabled in agent.json" }),
     ])
   })
 
@@ -2426,6 +2490,7 @@ describe("daemon sense manager", () => {
       expect.objectContaining({ sense: "a2a", status: "disabled", detail: "not enabled in agent.json" }),
       expect.objectContaining({ sense: "telegram", status: "disabled" }),
       expect.objectContaining({ sense: "workbench", status: "disabled", detail: "runtime-injected by Workbench app; no agent.json entry required" }),
+      expect.objectContaining({ sense: "cmux", status: "disabled", detail: "not enabled in agent.json" }),
     ])
   })
 
@@ -2502,6 +2567,7 @@ describe("daemon sense manager", () => {
       expect.objectContaining({ sense: "a2a", status: "disabled", detail: "not enabled in agent.json" }),
       expect.objectContaining({ sense: "telegram", status: "disabled" }),
       expect.objectContaining({ sense: "workbench", status: "disabled", detail: "runtime-injected by Workbench app; no agent.json entry required" }),
+      expect.objectContaining({ sense: "cmux", status: "disabled", detail: "not enabled in agent.json" }),
     ])
   })
 
@@ -2579,6 +2645,7 @@ describe("daemon sense manager", () => {
       expect.objectContaining({ sense: "a2a", status: "disabled", detail: "not enabled in agent.json" }),
       expect.objectContaining({ sense: "telegram", status: "disabled" }),
       expect.objectContaining({ sense: "workbench", status: "disabled", detail: "runtime-injected by Workbench app; no agent.json entry required" }),
+      expect.objectContaining({ sense: "cmux", status: "disabled", detail: "not enabled in agent.json" }),
     ])
   })
 
@@ -2657,6 +2724,7 @@ describe("daemon sense manager", () => {
       expect.objectContaining({ sense: "a2a", status: "disabled", detail: "not enabled in agent.json" }),
       expect.objectContaining({ sense: "telegram", status: "disabled" }),
       expect.objectContaining({ sense: "workbench", status: "disabled", detail: "runtime-injected by Workbench app; no agent.json entry required" }),
+      expect.objectContaining({ sense: "cmux", status: "disabled", detail: "not enabled in agent.json" }),
     ])
   })
 
@@ -3681,6 +3749,7 @@ describe("daemon sense manager", () => {
       expect.objectContaining({ sense: "a2a", status: "disabled", detail: "not enabled in agent.json" }),
       expect.objectContaining({ sense: "telegram", status: "disabled" }),
       expect.objectContaining({ sense: "workbench", status: "disabled", detail: "runtime-injected by Workbench app; no agent.json entry required" }),
+      expect.objectContaining({ sense: "cmux", status: "disabled", detail: "not enabled in agent.json" }),
     ])
     expect(manager.listSenseRows().filter((row) => row.agent === "ouroboros")).toEqual([
       expect.objectContaining({ sense: "cli", status: "interactive" }),
@@ -3691,6 +3760,7 @@ describe("daemon sense manager", () => {
       expect.objectContaining({ sense: "a2a", status: "disabled", detail: "not enabled in agent.json" }),
       expect.objectContaining({ sense: "telegram", status: "disabled" }),
       expect.objectContaining({ sense: "workbench", status: "disabled", detail: "runtime-injected by Workbench app; no agent.json entry required" }),
+      expect.objectContaining({ sense: "cmux", status: "disabled", detail: "not enabled in agent.json" }),
     ])
   })
 
@@ -3918,6 +3988,7 @@ describe("daemon sense manager", () => {
       expect.objectContaining({ sense: "a2a", status: "disabled", detail: "not enabled in agent.json" }),
       expect.objectContaining({ sense: "telegram", status: "disabled" }),
       expect.objectContaining({ sense: "workbench", status: "disabled", detail: "runtime-injected by Workbench app; no agent.json entry required" }),
+      expect.objectContaining({ sense: "cmux", status: "disabled", detail: "not enabled in agent.json" }),
     ])
   })
 })
