@@ -334,10 +334,17 @@ describe("cmux sense app", () => {
       pending("hard-1", { cwd: repo, tool_input: JSON.stringify({ command: "rm -rf src" }) }),
       pending("fail-1", { cwd: repo, tool_input: JSON.stringify({ command: "git log" }) }),
       pending("odd-1", { cwd: path.join(repo, "odd"), tool_input: JSON.stringify({ command: "ls" }) }),
+      pending("chg-1", { cwd: repo, tool_input: JSON.stringify({ command: "git status" }) }),
     ]
+    let pendingLists = 0
     server.respond("events.stream", () => ackFrame())
     server.respond("system.identify", () => ({ app: "cmux", version: "0.65.0" }))
-    server.respond("feed.list", (params) => ({ items: params.pending_only ? items.filter((entry) => entry.status === "pending") : items }))
+    server.respond("feed.list", (params) => {
+      const listed = structuredClone(params.pending_only ? items.filter((entry) => entry.status === "pending") : items)
+      // chg-1 changes after the sense first reads it, so its re-check right before the reply finds a different request.
+      if (params.pending_only && (pendingLists += 1) === 1) Object.assign(items.find((entry) => entry.request_id === "chg-1")!, { tool_input: JSON.stringify({ command: "git status --porcelain" }) })
+      return { items: listed }
+    })
     server.respond("feed.permission.reply", (params) => {
       if (params.request_id === "fail-1") throw new Error("reply refused")
       const entry = items.find((candidate) => candidate.request_id === params.request_id)!
@@ -355,25 +362,27 @@ describe("cmux sense app", () => {
     const timers = manualScheduler()
     try {
       app = await startCmuxSenseApp({ agentName: AGENT, now: () => NOW, schedule: timers.schedule, escalate: async (input) => { submitted.push(input) } })
-      await vi.waitFor(() => expect(submitted).toHaveLength(3))
+      await vi.waitFor(() => expect(submitted).toHaveLength(4))
     } finally {
       vi.mocked(fs.realpathSync).mockImplementation(realpath)
     }
     const replies = server.methods.filter((entry) => entry.method === "feed.permission.reply")
     expect(replies.map((entry) => entry.params)).toEqual([{ request_id: "auto-1", mode: "once" }, { request_id: "fail-1", mode: "once" }])
-    expect(submitted.map((input) => input.requestId)).toEqual(["hard-1", "fail-1", "odd-1"])
+    expect(submitted.map((input) => input.requestId)).toEqual(["hard-1", "fail-1", "odd-1", "chg-1"])
     expect(submitted[0]!.content).toContain("why it was not answered automatically: floor: rm is never answered for the human")
-    expect(submitted[1]!.content).toContain("why it was not answered automatically: the sense's own reply did not go out")
+    expect(submitted[1]!.content).toContain("why it was not answered automatically: the sense's reply may or may not have reached cmux, and cmux does not show the request resolved by it")
     expect(submitted[2]!.content).toContain("why it was not answered automatically: the sense could not judge or answer it: judge blew up")
+    expect(submitted[3]!.content).toContain("why it was not answered automatically: the sense's own reply did not go out")
     const log = readDecisions(cmuxDecisionLogPath(path.join(agentRoot, "state", "senses", "cmux")))
     expect(log.map((entry) => [entry.requestId, entry.outcome])).toEqual([
       ["auto-1", "reply_sent"], ["auto-1", "replied_once"], ["hard-1", "escalated"], ["fail-1", "reply_sent"], ["fail-1", "reply_failed"], ["fail-1", "escalated"],
+      ["chg-1", "reply_failed"], ["chg-1", "escalated"],
     ])
 
     timers.run(30_000)
     await vi.waitFor(() => expect(server.methods.filter((entry) => entry.method === "feed.list" && entry.params.pending_only).length).toBeGreaterThanOrEqual(2))
     expect(server.methods.filter((entry) => entry.method === "feed.permission.reply")).toHaveLength(2)
-    expect(submitted).toHaveLength(3)
+    expect(submitted).toHaveLength(4)
   })
 
   it("escalates an unconfirmed reply, and observes without answering on cmux older than 0.65.0", async () => {
@@ -396,7 +405,7 @@ describe("cmux sense app", () => {
     const timers = manualScheduler()
     app = await startCmuxSenseApp({ agentName: AGENT, now: () => NOW, schedule: timers.schedule, escalate: async (input) => { submitted.push(input) } })
     await vi.waitFor(() => expect(submitted).toHaveLength(1))
-    expect(submitted[0]!.content).toContain("why it was not answered automatically: the sense replied once but cmux did not show the request resolved by it")
+    expect(submitted[0]!.content).toContain("why it was not answered automatically: the sense's reply may or may not have reached cmux, and cmux does not show the request resolved by it")
 
     await app.stop()
     app = null

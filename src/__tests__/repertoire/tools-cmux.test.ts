@@ -289,7 +289,10 @@ describe("cmux_reply_once and cmux_correct", () => {
     expect(String((await call(cmuxCorrectToolDefinition, { request_id: "mine", verdict: "once", note: "x" })).error)).toContain("the sense itself replied to mine")
     expect(await call(cmuxCorrectToolDefinition, { request_id: "mine", verdict: "ask", note: "x" })).toMatchObject({ verdict: "ask" })
     const event = { source: "cmux", eventId: "feed:mine" } as unknown as ToolContext["currentExternalEvent"]
-    expect(await call(cmuxCorrectToolDefinition, { request_id: "mine", verdict: "ask", note: "x" }, ctx({ currentExternalEvent: event }))).toEqual({ error: "cmux_correct records what the human said in conversation; it cannot run while handling an external event" })
+    const refusal = { error: "cmux_correct records what the human said in conversation; it cannot run in an autonomous turn or while handling an external event" }
+    expect(await call(cmuxCorrectToolDefinition, { request_id: "mine", verdict: "ask", note: "x" }, ctx({ currentExternalEvent: event }))).toEqual(refusal)
+    // The private turn a cmux escalation wakes is autonomous, so the agent cannot record a precedent there either.
+    expect(await call(cmuxCorrectToolDefinition, { request_id: "mine", verdict: "ask", note: "x" }, ctx({ autonomousTurnKind: "instinct" }))).toEqual(refusal)
   })
 
   it("refuses corrections it cannot ground in a judged request, and reports cmux failures", async () => {
@@ -302,6 +305,17 @@ describe("cmux_reply_once and cmux_correct", () => {
     })
     expect(String((await call(cmuxCorrectToolDefinition, { request_id: "hard", verdict: "once", note: "x" })).error)).toContain("no judged request hard")
     expect(String((await call(cmuxCorrectToolDefinition, { request_id: "never", verdict: "ask" })).error)).toContain("no judged request never")
+    // A shape logged in the older format (raw tokens) cannot become a precedent.
+    appendDecision(cmuxDecisionLogPath(stateDir()), {
+      at: "2026-10-10T19:00:00.000Z", requestId: "legacy", source: "claude", tool: "Bash", cwd: repo, outcome: "escalated",
+      floor: { verdict: "soft", reason: "make" }, shape: { repoRoot: repo, tool: "Bash", tokens: ["make"] } as never, precedent: null, authority: "none", detail: "x",
+    })
+    expect(String((await call(cmuxCorrectToolDefinition, { request_id: "legacy", verdict: "ask", note: "x" })).error)).toContain("is from an older format")
+    // A casebook that cannot be read is never written over.
+    judged("r9", ["make", "build"])
+    fs.writeFileSync(cmuxCasebookPath(stateDir()), "not json")
+    expect(await call(cmuxCorrectToolDefinition, { request_id: "r9", verdict: "ask", note: "x" })).toEqual({ error: "the cmux casebook is not valid JSON" })
+    fs.writeFileSync(cmuxCasebookPath(stateDir()), JSON.stringify({ schemaVersion: 2, cases: [] }))
     judged("r8", ["make", "build"])
     server.respond("feed.list", () => { throw new Error("feed broke") })
     expect(await call(cmuxCorrectToolDefinition, { request_id: "r8", verdict: "once", note: "x" })).toEqual({ error: "feed broke" })

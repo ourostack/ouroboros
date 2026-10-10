@@ -5,7 +5,7 @@ import { readMachineRuntimeCredentialConfig } from "../heart/runtime-credentials
 import { emitNervesEvent } from "../nerves/runtime"
 import { pendingFeedItems, readCmuxState, surfaceForSession } from "../senses/cmux/attention"
 import { answerOnce, cmuxStateDir, feedItemStatus, judgeFeedItem, recordDecision, type AnswerContext } from "../senses/cmux/answer"
-import { addCase, cmuxCasebookPath, cmuxDecisionLogPath, readDecisions } from "../senses/cmux/casebook"
+import { addCase, cmuxCasebookPath, cmuxDecisionLogPath, isShape, readDecisions } from "../senses/cmux/casebook"
 import { createCmuxClient, type CmuxClient } from "../senses/cmux/client"
 import { readCmuxPrinciples } from "../senses/cmux/principles"
 import { redactSecrets } from "../senses/cmux/redact"
@@ -298,7 +298,7 @@ export const cmuxCorrectToolDefinition: ToolDefinition = {
     type: "function",
     function: {
       name: "cmux_correct",
-      description: "Record the human's answer or correction for a coding-agent request the cmux sense judged, as an exact precedent on this machine. 'once' means the human is fine with exactly this request being allowed once next time, and is accepted only when cmux shows the human allowed that request themselves; 'ask' means always ask them about exactly this request. Use it only for what the human actually said, in conversation with them, never while handling an external event. A precedent never overrides the code floor, and live replies still need a standing owner grant.",
+      description: "Record the human's answer or correction for a coding-agent request the cmux sense judged, as an exact precedent on this machine. 'once' means the human is fine with exactly this request being allowed once next time, and is accepted only when cmux shows the human allowed that request themselves; 'ask' means always ask them about exactly this request. Use it only for what the human actually said, in conversation with them; it is refused in autonomous turns and while handling an external event. A precedent never overrides the code floor, and live replies still need a standing owner grant.",
       parameters: {
         type: "object",
         properties: {
@@ -316,11 +316,13 @@ export const cmuxCorrectToolDefinition: ToolDefinition = {
     const verdict = args.verdict
     if (!requestId || (verdict !== "once" && verdict !== "ask")) return JSON.stringify({ error: "give the request_id and a verdict of once or ask" })
     if (!ctx?.agentRoot) return JSON.stringify({ error: "the cmux tools need an agent runtime" })
-    if (ctx.currentExternalEvent) return JSON.stringify({ error: "cmux_correct records what the human said in conversation; it cannot run while handling an external event" })
+    if (ctx.currentExternalEvent || ctx.autonomousTurnKind) return JSON.stringify({ error: "cmux_correct records what the human said in conversation; it cannot run in an autonomous turn or while handling an external event" })
     const stateDir = cmuxStateDir(ctx.agentRoot)
     const decisions = readDecisions(cmuxDecisionLogPath(stateDir)).filter((entry) => entry.requestId === requestId)
     const decision = [...decisions].reverse().find((entry) => entry.shape)
     if (!decision) return JSON.stringify({ error: `no judged request ${requestId} with a precedent shape; the floor escalates it unconditionally or it was never seen` })
+    const shape = decision.shape
+    if (!isShape(shape)) return JSON.stringify({ error: `the logged shape for ${requestId} is from an older format and cannot become a precedent; record it again after the sense judges the request anew` })
     if (verdict === "once") {
       // A "once" precedent turns into live authority later, so it must rest on the human's own answer in cmux, not on ours.
       if (decisions.some((entry) => entry.outcome === "reply_sent" || entry.outcome === "replied_once")) return JSON.stringify({ error: `the sense itself replied to ${requestId}; only a request the human answered can become a once precedent` })
@@ -335,7 +337,12 @@ export const cmuxCorrectToolDefinition: ToolDefinition = {
         return failure("cmux_correct", error)
       }
     }
-    const entry = addCase(cmuxCasebookPath(stateDir), { verdict, shape: decision.shape!, requestId, note: text(args.note), at: new Date().toISOString() })
+    let entry: ReturnType<typeof addCase>
+    try {
+      entry = addCase(cmuxCasebookPath(stateDir), { verdict, shape, requestId, note: text(args.note), at: new Date().toISOString() })
+    } catch (error) {
+      return failure("cmux_correct", error)
+    }
     emitNervesEvent({ component: "repertoire", event: "repertoire.cmux_correct", message: "recorded the human's cmux precedent", meta: { verdict } })
     return JSON.stringify({ case: entry.id, verdict, tool: entry.shape.tool, repoRoot: entry.shape.repoRoot })
   },

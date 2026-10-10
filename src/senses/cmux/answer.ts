@@ -9,6 +9,7 @@ import {
   findPrecedent,
   readCasebook,
   readDecisions,
+  REPLY_HISTORY_MS,
   repliesInWindow,
   storeShape,
   withDecisionLock,
@@ -44,22 +45,25 @@ export type Judgment =
   | { reply: true; floor: FloorVerdict; shape: CaseShape; precedent: CmuxCase | null; authority: string }
   | { reply: false; floor: FloorVerdict; shape: CaseShape | null; precedent: CmuxCase | null; reason: string }
 
-/** `not_sent` and `unconfirmed` leave the request with the human; the caller escalates it. */
+/** `not_sent` (nothing went out) and `unconfirmed` (a reply may have gone out) leave the request with the human; the caller escalates it. */
 export type AnswerOutcome = "replied_once" | "race" | "not_sent" | "unconfirmed"
 
 export function cmuxStateDir(agentRoot: string): string {
   return path.join(agentRoot, "state", "senses", "cmux")
 }
 
-function inspectGrant(ctx: AnswerContext, repoRoot: string) {
+function inspectGrant(ctx: AnswerContext, repoRoot: string): ReturnType<typeof inspectStandingActionGrant> {
   const nowMs = ctx.now()
-  return inspectStandingActionGrant(ctx.agentRoot, {
+  const grant = inspectStandingActionGrant(ctx.agentRoot, {
     key: CMUX_GRANT_KEY,
     action: CMUX_GRANT_ACTION,
     target: repoRoot,
     now: new Date(nowMs).toISOString(),
     usesInWindow: (windowMs) => repliesInWindow(readDecisions(cmuxDecisionLogPath(ctx.stateDir)), windowMs, nowMs),
   })
+  // The decision log keeps reply records for REPLY_HISTORY_MS, so it cannot count a longer window.
+  if (grant.allowed && grant.windowMs > REPLY_HISTORY_MS) return { allowed: false, reason: "the standing grant's window is longer than the 31 days of replies the sense keeps" }
+  return grant
 }
 
 export function judgeFeedItem(ctx: AnswerContext, item: CmuxPendingFeedItem): Judgment {
@@ -113,7 +117,9 @@ export async function feedItemStatus(client: CmuxClient, requestId: string): Pro
  * Re-checks that the exact request is still pending, re-checks the grant and records `reply_sent`
  * under the decision log's lock, sends `once`, then reads the item back. cmux reports a reply as
  * delivered even when the waiter is gone, so only a `resolved` item with a `once` permission
- * decision counts as `replied_once`; a resolved or expired item otherwise is a race.
+ * decision counts as `replied_once`; an item resolved some other way is a race (the human answered).
+ * A failed reply call, an item still pending or expired, or one cmux no longer lists is `unconfirmed`,
+ * and the caller escalates it.
  */
 export async function answerOnce(ctx: AnswerContext, item: CmuxPendingFeedItem, judgment: Extract<Judgment, { reply: true }>): Promise<AnswerOutcome> {
   let current: CmuxPendingFeedItem | undefined
@@ -132,6 +138,7 @@ export async function answerOnce(ctx: AnswerContext, item: CmuxPendingFeedItem, 
     return "not_sent"
   }
   const reserved = withDecisionLock(ctx.stateDir, () => {
+    if (readDecisions(cmuxDecisionLogPath(ctx.stateDir)).some((entry) => entry.requestId === item.requestId && entry.outcome === "reply_sent")) return "the sense already sent a reply for this request"
     const grant = inspectGrant(ctx, judgment.shape.repoRoot)
     if (!grant.allowed) return grant.reason
     recordDecision(ctx, item, judgment, "reply_sent", judgment.authority)
@@ -144,8 +151,9 @@ export async function answerOnce(ctx: AnswerContext, item: CmuxPendingFeedItem, 
   try {
     await ctx.client.call("feed.permission.reply", { request_id: item.requestId, mode: REPLY_MODE })
   } catch (error) {
-    recordDecision(ctx, item, judgment, "reply_failed", (error as Error).message)
-    return "not_sent"
+    // The call can fail after cmux applied the reply, so its fate is unknown and the human decides.
+    recordDecision(ctx, item, judgment, "reply_failed", `the reply call failed, so the reply may or may not have gone out: ${(error as Error).message}`)
+    return "unconfirmed"
   }
   let after: Awaited<ReturnType<typeof feedItemStatus>>
   try {
@@ -159,11 +167,11 @@ export async function answerOnce(ctx: AnswerContext, item: CmuxPendingFeedItem, 
     emitNervesEvent({ component: "senses", event: "senses.cmux_replied_once", message: "answered a coding agent's permission request once", meta: { requestId: item.requestId, tool: item.toolName } })
     return "replied_once"
   }
-  if (after === null || after.status === "pending") {
-    recordDecision(ctx, item, judgment, "reply_failed", after ? "the request is still pending after the reply" : "cmux no longer lists the request")
+  if (after === null || after.status !== "resolved") {
+    recordDecision(ctx, item, judgment, "reply_failed", after ? `the request is ${after.status} after the reply` : "cmux no longer lists the request")
     return "unconfirmed"
   }
   recordDecision(ctx, item, judgment, "race", `after the reply the request was ${after.status}${after.mode ? ` (${after.mode})` : ""}`)
-  emitNervesEvent({ component: "senses", event: "senses.cmux_reply_race", message: "a cmux Feed request was resolved by someone else or expired", meta: { requestId: item.requestId, status: after.status } })
+  emitNervesEvent({ component: "senses", event: "senses.cmux_reply_race", message: "a cmux Feed request was resolved by someone else", meta: { requestId: item.requestId, status: after.status } })
   return "race"
 }

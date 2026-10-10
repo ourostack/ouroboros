@@ -148,7 +148,7 @@ export async function startCmuxSenseApp(options: CmuxSenseAppOptions): Promise<C
           rememberEscalation(state, item.requestId)
           return
         }
-        reason = outcome === "unconfirmed" ? "the sense replied once but cmux did not show the request resolved by it" : "the sense's own reply did not go out"
+        reason = outcome === "unconfirmed" ? "the sense's reply may or may not have reached cmux, and cmux does not show the request resolved by it" : "the sense's own reply did not go out"
       } else {
         reason = judgment.reason
       }

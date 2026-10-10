@@ -54,12 +54,12 @@ function wire(entry: CmuxPendingFeedItem): Record<string, unknown> {
   return { kind: entry.kind, status: "pending", request_id: entry.requestId, source: entry.source, tool_name: entry.toolName, cwd: entry.cwd, workstream_id: entry.workstreamId, created_at: entry.createdAt, tool_input: entry.toolInput, tool_input_truncated: entry.toolInputTruncated }
 }
 
-function grant(targets: string[], maxCount = 2): void {
+function grant(targets: string[], maxCount = 2, windowMs = 3_600_000): void {
   updateStewardPolicy(agentRoot, {
     expectedVersion: readStewardPolicy(agentRoot).version,
     actor: { friendId: "ari", trustLevel: "family", sessionEventId: `evt-${maxCount}-${targets.join(",")}`, authorization: { profileId: "sanctuary-owner", profileVersion: 1, requestId: "req-grant", sessionKey: "cli", receiptId: "auth-1" } },
     now: "2026-10-10T10:00:00.000Z",
-    mutation: { kind: "grant_routine_action", key: CMUX_GRANT_KEY, action: CMUX_GRANT_ACTION, targets, maxCount, windowMs: 3_600_000, verificationRequired: true, exclusions: [], provenance: "stated" },
+    mutation: { kind: "grant_routine_action", key: CMUX_GRANT_KEY, action: CMUX_GRANT_ACTION, targets, maxCount, windowMs, verificationRequired: true, exclusions: [], provenance: "stated" },
   })
 }
 
@@ -152,7 +152,7 @@ describe("answering once", () => {
     expect(log()[0]).toMatchObject({ outcome: "race" })
   })
 
-  it("logs a race when the item ends up resolved some other way, and stays unconfirmed when it is not resolved", async () => {
+  it("logs a race when the human resolved the item some other way, and escalates when it is not resolved by us", async () => {
     const { entry, judgment } = judged("git status", 10)
     feed = [wire(entry)]
     resolveAs = (row) => Object.assign(row, { status: "resolved", decision: { kind: "permission", mode: "deny" } })
@@ -161,13 +161,13 @@ describe("answering once", () => {
 
     feed = [wire({ ...entry, requestId: "req-2" })]
     resolveAs = (row) => Object.assign(row, { status: "expired" })
-    expect(await answerOnce(ctx(), { ...entry, requestId: "req-2" }, judgment)).toBe("race")
-    expect(log().at(-1)).toMatchObject({ detail: "after the reply the request was expired" })
+    expect(await answerOnce(ctx(), { ...entry, requestId: "req-2" }, judgment)).toBe("unconfirmed")
+    expect(log().at(-1)).toMatchObject({ outcome: "reply_failed", detail: "the request is expired after the reply" })
 
     feed = [wire({ ...entry, requestId: "req-3" })]
     resolveAs = () => undefined
     expect(await answerOnce(ctx(), { ...entry, requestId: "req-3" }, judgment)).toBe("unconfirmed")
-    expect(log().at(-1)).toMatchObject({ outcome: "reply_failed", detail: "the request is still pending after the reply" })
+    expect(log().at(-1)).toMatchObject({ outcome: "reply_failed", detail: "the request is pending after the reply" })
 
     feed = [wire({ ...entry, requestId: "req-4" })]
     resolveAs = () => { feed = [] }
@@ -203,16 +203,27 @@ describe("answering once", () => {
     failOn = { method: "feed.list", pendingOnly: true }
     expect(await answerOnce(ctx(), entry, judgment)).toBe("not_sent")
     failOn = { method: "feed.permission.reply" }
+    expect(await answerOnce(ctx(), entry, judgment)).toBe("unconfirmed")
+    // That reply may have gone out, so the same request is never replied to again.
+    failOn = null
     expect(await answerOnce(ctx(), entry, judgment)).toBe("not_sent")
+    expect(log().at(-1)).toMatchObject({ outcome: "reply_failed", detail: "the sense already sent a reply for this request" })
     calls = []
     feed = [wire({ ...entry, requestId: "req-2" })]
     failOn = { method: "feed.list", pendingOnly: false }
     expect(await answerOnce(ctx(), { ...entry, requestId: "req-2" }, judgment)).toBe("unconfirmed")
     expect(log().map((record) => record.detail).filter((detail) => detail.includes("failed"))).toEqual([
       "could not re-check the request: feed.list failed",
-      "feed.permission.reply failed",
+      "the reply call failed, so the reply may or may not have gone out: feed.permission.reply failed",
       "could not confirm the reply: feed.list failed",
     ])
+  })
+})
+
+describe("grant window", () => {
+  it("refuses a standing grant whose window is longer than the replies the sense keeps", () => {
+    grant([repo], 2, 32 * 24 * 60 * 60_000)
+    expect(judgeFeedItem(ctx(), item("git status"))).toMatchObject({ reply: false, reason: expect.stringContaining("longer than the 31 days of replies the sense keeps") })
   })
 })
 
