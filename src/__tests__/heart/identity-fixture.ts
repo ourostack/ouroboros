@@ -50,6 +50,7 @@ export const FULL_AGENT_JSON = {
     a2a: { enabled: false },
     telegram: { enabled: false },
     workbench: { enabled: true },
+    cmux: { enabled: false },
   },
   mcpServers: {
     "test-server": {

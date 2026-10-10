@@ -102,6 +102,7 @@ describe("readAgentConfigForAgent structural contract", () => {
         a2a: { enabled: false },
         telegram: { enabled: false },
         workbench: { enabled: false },
+        cmux: { enabled: false },
       })
     } finally {
       tmp.cleanup()
