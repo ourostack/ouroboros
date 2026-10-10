@@ -47,7 +47,7 @@ export { renderInnerProgressStatus } from "./tools-session";
 export { routineActionRequester } from "./relationship-authorization";
 export type { RoutineActionRequester } from "../heart/steward-policy";
 
-/** The friend id of the agent talking to itself: every private-runtime turn (awaits, inner dialog) runs with this friend. */
+/** The friend id of the agent talking to itself: every private-runtime turn (awaits and its own reflection) runs with this friend. */
 export const SELF_FRIEND_ID = "self"
 
 export interface CodingFeedbackTarget {
