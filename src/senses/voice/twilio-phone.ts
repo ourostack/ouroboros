@@ -33,6 +33,9 @@ import {
   verifyVoiceCallToken,
   type VoiceCallIdentity,
 } from "./call-auth"
+import { resolveLocalAudioFriend } from "./local-audio-identity"
+import { DisclosureTracker } from "./local-audio-disclosure"
+import { localAudioGreetingPrompt, localizeRealtimeInstructions } from "./local-audio-prompts"
 
 export type { VoiceCallIdentity } from "./call-auth"
 export { PendingVoiceCalls } from "./call-auth"
@@ -1870,15 +1873,36 @@ function realtimeOutputAudioConfig(
 }
 
 /* v8 ignore stop */
-type RealtimeToolContext = ToolContext & McpOwner & { readonly toolSelection: ToolSelection }
+type RealtimeToolInput = ToolContext & McpOwner & { readonly toolAllowlist?: ReadonlySet<string> }
+type RealtimeToolContext = RealtimeToolInput & { readonly toolSelection: ToolSelection }
 
-function selectRealtimeToolContext(context: ToolContext & McpOwner, mcpManager?: McpTurnView): RealtimeToolContext {
+/**
+ * A local audio room is several unidentified people on the owner's Mac, so no trust level (not even
+ * family through an owner-alone join) unlocks files, shell, credentials or MCP: the whole session is
+ * limited to these two tools, in what it advertises and in what it will run.
+ */
+export const LOCAL_AUDIO_TOOL_ALLOWLIST: ReadonlySet<string> = new Set(["voice_end_call", "voice_play_audio"])
+
+/**
+ * In a local audio room anyone in the room can ask for a clip, so only generated tones play: a URL
+ * clip would make the Mac fetch any address (including the LAN), and a file clip reads local files.
+ */
+export function tonesOnly(play: (request: VoiceCallAudioRequest) => Promise<VoiceCallAudioResult>): (request: VoiceCallAudioRequest) => Promise<VoiceCallAudioResult> {
+  return async (request) => {
+    if ((request.source ?? "tone") !== "tone") throw new Error("only tones can play in a local audio room; clips from a URL or file are not allowed here")
+    return play(request)
+  }
+}
+
+function selectRealtimeToolContext(context: RealtimeToolInput, mcpManager?: McpTurnView): RealtimeToolContext {
+  const allowlist = context.toolAllowlist
   const selectCurrentTools = (): ToolSelection => {
     const selected = selectToolsForChannel(
       getChannelCapabilities("voice"), context.context?.friend.toolPreferences, context.context,
       undefined, mcpManager, undefined, context,
     )
-    return Object.freeze({ ordinary: selected.ordinary, engine: Object.freeze([]) })
+    const ordinary = allowlist ? selected.ordinary.filter(({ tool }) => allowlist.has(tool.function.name)) : selected.ordinary
+    return Object.freeze({ ordinary, engine: Object.freeze([]) })
   }
   return { ...context, toolSelection: selectCurrentTools(), selectCurrentTools }
 }
@@ -2052,6 +2076,7 @@ export class TwilioOpenAIRealtimeMediaStreamSession implements TwilioMediaStream
   private started = false
   private openaiReady = false
   private greetingSent = false
+  private disclosure: DisclosureTracker | undefined
   private hangupRequested = false
   private pendingAudioPayloads: string[] = []
   private openaiWs: WebSocket | null = null
@@ -2096,6 +2121,10 @@ export class TwilioOpenAIRealtimeMediaStreamSession implements TwilioMediaStream
     private readonly lifecycle?: {
       onIdentityChange?: (session: TwilioMediaStreamLifecycleSession, identity: { callSid: string; outboundId: string }) => void
       onClose?: (session: TwilioMediaStreamLifecycleSession, identity: { callSid: string; outboundId: string }) => void
+      /** Local audio only: the disclosure notice was spoken and played out. */
+      onDisclosureSpoken?: (atMs: number) => void
+      /** Local audio only: the disclosure notice could not be spoken before its deadline. */
+      onDisclosureFailed?: () => void
     },
   ) {}
 
@@ -2162,20 +2191,29 @@ export class TwilioOpenAIRealtimeMediaStreamSession implements TwilioMediaStream
     this.from = this.identity.from
     this.to = this.identity.to
     try {
-      const voiceContext = await resolveVoiceFriendContext(this.options, {
-        friendId: this.direction === "outbound" ? this.identity.friendId : undefined,
-        remotePhone: this.from || undefined,
-        callSid: this.callSid,
-      })
+      const local = this.identity.local
+      const voiceContext = local
+        ? await resolveLocalAudioFriend({
+            agentRoot: resolveTwilioPhoneAgentRoot(this.options),
+            friendId: this.identity.friendId,
+            ownerAlone: local.ownerAlone,
+          })
+        : await resolveVoiceFriendContext(this.options, {
+            friendId: this.direction === "outbound" ? this.identity.friendId : undefined,
+            remotePhone: this.from || undefined,
+            callSid: this.callSid,
+          })
       this.friendId = voiceContext.friendId
       this.friendStore = voiceContext.friendStore
       this.resolvedContext = voiceContext.resolved
-      this.sessionKey = twilioPhoneVoiceSessionKey({
-        defaultFriendId: this.friendId,
-        from: this.from,
-        to: this.to,
-        callSid: this.callSid,
-      })
+      this.sessionKey = local
+        ? `local-audio-${safeSegment(this.callSid)}`
+        : twilioPhoneVoiceSessionKey({
+            defaultFriendId: this.friendId,
+            from: this.from,
+            to: this.to,
+            callSid: this.callSid,
+          })
       this.lifecycle?.onIdentityChange?.(this, { callSid: this.callSid, outboundId: this.outboundId })
       this.floor = new VoiceFloorController({
         transport: "twilio-media-stream",
@@ -2283,9 +2321,9 @@ export class TwilioOpenAIRealtimeMediaStreamSession implements TwilioMediaStream
       this.ensureVoiceToolContext(),
     ]
     if (!toolContext || this.closed) return
-    this.sendOpenAIRealtimeSessionUpdate(realtime, instructions, toolContext)
+    this.sendOpenAIRealtimeSessionUpdate(realtime, this.localizeInstructions(instructions), toolContext)
     this.flushPendingAudio()
-    this.sendInitialGreeting()
+    this.sendGreeting()
 
     if (!usedBootstrap) return
     Promise.all([instructionsPromise, toolsPromise] as const)
@@ -2296,7 +2334,7 @@ export class TwilioOpenAIRealtimeMediaStreamSession implements TwilioMediaStream
           type: "session.update",
           session: {
             type: "realtime",
-            instructions: fullInstructions,
+            instructions: this.localizeInstructions(fullInstructions),
             tools: realtimeToolsFromSelection(fullContext.toolSelection, this.toolAdvertiser),
             tool_choice: "auto",
           },
@@ -2310,6 +2348,67 @@ export class TwilioOpenAIRealtimeMediaStreamSession implements TwilioMediaStream
         })
         this.end()
       })
+  }
+
+  /** Local audio rooms get transport-aware wording and the room facts; phone calls are unchanged. */
+  private localizeInstructions(instructions: string): string {
+    const local = this.identity.local
+    return local
+      ? localizeRealtimeInstructions(instructions, this.options.agentName, local, { disclosureSpoken: this.disclosure?.isSpoken() === true })
+      : instructions
+  }
+
+  /**
+   * A spoken local join opens with the disclosure notice and tracks it until it has really been
+   * spoken (retrying a lost, cancelled or cut attempt); a consented silent join has no first turn.
+   */
+  private sendGreeting(): void {
+    const local = this.identity.local
+    if (!local) {
+      this.sendInitialGreeting()
+      return
+    }
+    // Configured once per Realtime connection, so the opening turn is requested exactly once here.
+    this.greetingSent = true
+    const prompt = localAudioGreetingPrompt(this.options.agentName, local)
+    if (!prompt) return
+    const body = { instructions: prompt }
+    this.disclosure = new DisclosureTracker({
+      body,
+      host: {
+        request: (response) => this.requestRealtimeResponse(response),
+        isQueued: (response) => this.holdsRealtimeResponse(response),
+        sendMark: (name) => this.sendDisclosureMark(name),
+        onSpoken: (atMs) => this.noteDisclosureSpoken(atMs),
+        onFailed: () => this.lifecycle?.onDisclosureFailed?.(),
+      },
+    })
+    this.disclosure.start()
+  }
+
+  /** True while a response.create for this body is held by the floor gate, the hold timer or the wire. */
+  private holdsRealtimeResponse(response: Record<string, unknown>): boolean {
+    return this.queuedGatedRealtimeRequest?.response === response
+      || this.pendingRealtimeResponse?.response === response
+      || this.realtimeResponseCreateInFlight?.response === response
+  }
+
+  private sendDisclosureMark(name: string): void {
+    if (this.closed || !this.streamSid || !this.socket.isOpen()) return
+    this.socket.send(JSON.stringify({ event: "mark", streamSid: this.streamSid, mark: { name } }))
+  }
+
+  private noteDisclosureSpoken(atMs: number): void {
+    // The instructions said "do not claim you announced yourself until a system note confirms it".
+    this.sendOpenAI({
+      type: "conversation.item.create",
+      item: {
+        type: "message",
+        role: "system",
+        content: [{ type: "input_text", text: "System note: your disclosure notice has now been spoken aloud and heard. You have announced yourself." }],
+      },
+    })
+    this.lifecycle?.onDisclosureSpoken?.(atMs)
   }
 
   private sendOpenAIRealtimeSessionUpdate(
@@ -2380,6 +2479,7 @@ export class TwilioOpenAIRealtimeMediaStreamSession implements TwilioMediaStream
   /* v8 ignore stop */
   private ensureVoiceToolContext(): RealtimeToolContext {
     if (this.toolContext) return selectRealtimeToolContext(this.toolContext)
+    const play = (request: VoiceCallAudioRequest): Promise<VoiceCallAudioResult> => this.playPreparedAudio(request)
     const context = selectRealtimeToolContext({
       signin: async () => undefined,
       agentName: this.options.agentName,
@@ -2388,8 +2488,9 @@ export class TwilioOpenAIRealtimeMediaStreamSession implements TwilioMediaStream
       friendStore: this.friendStore,
       voiceCall: {
         requestEnd: () => this.requestHangupFromTool(),
-        playAudio: (request) => this.playPreparedAudio(request),
+        playAudio: this.identity.local ? tonesOnly(play) : play,
       },
+      ...(this.identity.local ? { toolAllowlist: LOCAL_AUDIO_TOOL_ALLOWLIST } : {}),
     })
     this.toolContext = { ...context, toolSelection: Object.freeze({ ordinary: Object.freeze([]), engine: Object.freeze([]) }) }
     return context
@@ -2446,6 +2547,7 @@ export class TwilioOpenAIRealtimeMediaStreamSession implements TwilioMediaStream
   private handleMark(mark: TwilioMediaMark | undefined): void {
     const name = stringField(mark?.name)
     if (!name) return
+    if (this.disclosure?.noteMark(name)) return
     const playback = this.playbackMarks.get(name)
     if (!playback) return
     this.playbackMarks.delete(name)
@@ -2466,6 +2568,7 @@ export class TwilioOpenAIRealtimeMediaStreamSession implements TwilioMediaStream
       return
     }
     const type = typeof event.type === "string" ? event.type : ""
+    this.disclosure?.handleRealtimeEvent(event)
     if (type === "response.created") {
       this.noteRealtimeResponseCreated(event)
       return
@@ -2916,6 +3019,7 @@ export class TwilioOpenAIRealtimeMediaStreamSession implements TwilioMediaStream
 
   private sendRealtimeResponseCreate(request: PendingRealtimeResponseRequest): void {
     this.realtimeResponseCreateInFlight = request
+    this.disclosure?.noteSent(request.response)
     this.sendOpenAI({
       type: "response.create",
       ...(request.response ? { response: request.response } : {}),
@@ -3041,6 +3145,7 @@ export class TwilioOpenAIRealtimeMediaStreamSession implements TwilioMediaStream
 
   private sendTwilioClear(): void {
     if (this.closed || !this.streamSid || !this.socket.isOpen()) return
+    this.disclosure?.noteCleared()
     this.socket.send(JSON.stringify({ event: "clear", streamSid: this.streamSid }))
   }
 
@@ -3077,6 +3182,7 @@ export class TwilioOpenAIRealtimeMediaStreamSession implements TwilioMediaStream
   private close(): void {
     if (this.closed) return
     this.closed = true
+    this.disclosure?.stop()
     if (this.openaiWs && (this.openaiWs.readyState === WebSocket.OPEN || this.openaiWs.readyState === WebSocket.CONNECTING)) {
       this.openaiWs.close()
     }

@@ -188,6 +188,8 @@ Local microphone/speaker and future direct agent-to-agent voice should also sit
 under Voice. These lanes may connect to OpenAI Realtime by WebRTC or WebSocket
 without any phone provider at all.
 
+The first local lane is the Mac call-app lane: an agent joins FaceTime, Zoom, Meet or a recorder through the BlackHole virtual audio devices, with no phone provider involved. It is documented in [Local audio lane](voice-local-audio.md).
+
 ## No-Human Voice Evals
 
 Voice should not rely on a human answering a phone as the main regression suite.

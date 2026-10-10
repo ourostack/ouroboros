@@ -7,6 +7,25 @@ import type { TwilioPhoneConversationEngine } from "./twilio-phone"
  * record the signed webhook wrote (`PendingVoiceCalls`), never from client-supplied stream or SIP
  * parameters. `from` is the remote party; `to` is the Ouro line (for outbound calls too).
  */
+export type LocalAudioMode = "conversation"
+
+/**
+ * Who and what a local audio session is, as the join request stated it. Set only by the in-process
+ * local transport's constructor; `PendingVoiceCalls` never stores it, so a network stream cannot
+ * claim it.
+ */
+export interface LocalAudioCallInfo {
+  mode: LocalAudioMode
+  participants?: string
+  occasion?: string
+  /** The join said the room is the owner alone; only then may the session run above acquaintance. */
+  ownerAlone: boolean
+  ownerName?: string
+  disclosure: "spoken" | "silent"
+  /** The owner's statement that participants consented, required (and recorded) for a silent join. */
+  consentStatement?: string
+}
+
 export interface VoiceCallIdentity {
   callSid: string
   agentName: string
@@ -20,6 +39,7 @@ export interface VoiceCallIdentity {
   greetingJobId?: string
   engine?: TwilioPhoneConversationEngine
   stirVerstat?: string
+  local?: LocalAudioCallInfo
 }
 
 export type VoiceCallTokenPurpose = "stream" | "sip"
@@ -170,7 +190,9 @@ export class PendingVoiceCalls {
     this.now = options.now ?? Date.now
   }
 
-  record(identity: VoiceCallIdentity, nonce: string): void {
+  record(candidate: VoiceCallIdentity, nonce: string): void {
+    // The network registry never carries local-audio identity; only the local transport sets it.
+    const { local: _local, ...identity } = candidate
     const existing = this.live(identity.callSid)
     const nonces = existing?.nonces ?? new Set<string>()
     nonces.add(nonce)

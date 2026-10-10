@@ -27,6 +27,7 @@ import type { ToolHighRiskMutationKind, ToolRiskProfile } from "./tools-base";
 import { inspectRoutineActionGrant } from "../heart/steward-policy";
 import { authorizeRoutineActionRequester } from "./relationship-authorization";
 import { ApprovalExecutionFailedError } from "../heart/tool-approval";
+import { localAudioToolGate, voiceLocalAudioToolDefinition } from "./tools-voice-local";
 import { authorizeRootHostToolInvocation, rootHostToolDefinition, selectRootHostTool, type RootHostSelectionContext } from "./tools-sanctuary-host";
 
 function safeGetAgentRoot(): string | undefined {
@@ -117,7 +118,7 @@ function applyPreference(tool: OpenAI.ChatCompletionFunctionTool, pref: string):
   };
 }
 
-type SelectionContext = Pick<ToolContext, "noSend" | "habitSession"> & RootHostSelectionContext
+type SelectionContext = Pick<ToolContext, "noSend" | "habitSession" | "autonomousTurnKind" | "delegatedCommand" | "voiceCall"> & RootHostSelectionContext
 
 export function selectToolsForChannel(
   capabilities?: ChannelCapabilities,
@@ -172,6 +173,7 @@ export function selectToolsForChannel(
       ...baseToolDefinitions,
       ...(capabilities?.channel === "bluebubbles" ? bluebubblesToolDefinitions : []),
       ...(capabilities?.channel === "voice" ? voiceToolDefinitions : []),
+      ...(localAudioToolGate({ ...context, context: _context }).ok ? [voiceLocalAudioToolDefinition] : []),
       ...integrations, ...mcp,
     ]
   }

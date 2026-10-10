@@ -5,6 +5,7 @@
  * interface are the contract between parsing, execution, and default wiring.
  */
 
+import type { LocalAudioJoinRequest } from "../../senses/voice/local-audio-transport"
 import type { AgentProvider } from "../identity"
 import type { ProviderLane } from "../provider-lanes"
 import type { Facing, TrustLevel, FriendStore } from "@ouro.bot/friends"
@@ -76,6 +77,9 @@ export type OuroCliCommand =
   | { kind: "external.event.repair"; manifestPath: string }
   | { kind: "task.poke"; agent: string; taskId: string }
   | { kind: "whoami"; agent?: string }
+  | { kind: "voice.join"; request: LocalAudioJoinRequest }
+  | { kind: "voice.leave"; agent: string }
+  | { kind: "voice.status"; agent: string }
   | { kind: "session.list"; agent?: string }
   | { kind: "thoughts"; agent?: string; last?: number; json?: boolean; follow?: boolean }
   | { kind: "friend.list"; agent?: string }
@@ -323,6 +327,7 @@ export type A2ACliCommand = Extract<OuroCliCommand, { kind: "a2a.card" } | { kin
 /** Client-side A2A commands: this machine talks to an agent as a verified friend (no agent, no daemon). */
 export type A2AClientCliCommand = Extract<OuroCliCommand, { kind: "a2a.message" } | { kind: "a2a.identity" } | { kind: "a2a.outbox" }>
 export type WhoamiCliCommand = Extract<OuroCliCommand, { kind: "whoami" }>
+export type VoiceCliCommand = Extract<OuroCliCommand, { kind: "voice.join" | "voice.leave" | "voice.status" }>
 export type SessionCliCommand = Extract<OuroCliCommand, { kind: "session.list" }>
 export type ThoughtsCliCommand = Extract<OuroCliCommand, { kind: "thoughts" }>
 export type AuthCliCommand = Extract<OuroCliCommand, { kind: "auth.run" }>
