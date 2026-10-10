@@ -1600,6 +1600,37 @@ export async function runAgent(
     rejectedAttempt = [structuredClone(assistant)]
     nextAttemptControls = controls
   }
+  // Answer gates run only for agents that opt in (ToolContext.answerGates), on every reply the person would receive: a settle answer
+  // and a plain-text reply with no tool call alike (alpha.886 replay: a plain-text reply skipped them and an invented cast went out).
+  // A request-specific contract (options.requiredToolCalls) already validates its own terminal answer. Each gate has its own bounded
+  // retry, and none spends the last provider iteration.
+  const answerGateVerdict = (answer: string, intent?: string): { error: string | null; unverifiedNames: readonly string[] | null } => {
+    const gates = options?.requiredToolCalls ? undefined : options?.toolContext?.answerGates
+    const retriesLeft = providerIterations < stepBudget - 1
+    let groundingError: string | null = null
+    let unverifiedNames: readonly string[] | null = null
+    const grounding = gates?.sourceGrounding ? sourceGroundingFinding({ answer, userText: userTexts(messages).join("\n"), latestUserText: latestUserMessageText(messages.slice(0, turnStartLength)), knownText: priorTurnsText(messages.slice(0, turnStartLength)), tools: turnToolRecords }) : null
+    if (grounding) {
+      if (groundingRejections < ANSWER_GATE_MAX_REJECTIONS && retriesLeft) {
+        groundingRejections += 1
+        groundingError = grounding.message
+        emitNervesEvent({ level: "warn", component: "engine", event: "engine.answer_gate_rejected", message: "answer named things from a work that the turn did not look up; sending the model back", meta: { gate: "source_grounding", rejection: groundingRejections, cap: ANSWER_GATE_MAX_REJECTIONS, lookupsRun: grounding.lookups } })
+      } else {
+        unverifiedNames = grounding.names
+        emitNervesEvent({ level: "warn", component: "engine", event: "engine.answer_gate_disclosed", message: "unsourced names survived the retries; delivering with a disclosure", meta: { gate: "source_grounding", names: grounding.names.length } })
+      }
+    }
+    let brevityError: string | null = null
+    if (!groundingError && gates?.brevity && !options?.toolContext?.context?.isGroupChat && brevityRejections < ANSWER_GATE_MAX_REJECTIONS && retriesLeft
+      && briefStyleRequested(userTexts(messages), savedCommunicationPreference(options?.toolContext?.context?.friend))) {
+      brevityError = briefStyleViolation(answer, intent)
+      if (brevityError) {
+        brevityRejections += 1
+        emitNervesEvent({ level: "warn", component: "engine", event: "engine.answer_gate_rejected", message: "answer broke the person's brevity request; sending the model back", meta: { gate: "brevity", rejection: brevityRejections, cap: ANSWER_GATE_MAX_REJECTIONS } })
+      }
+    }
+    return { error: groundingError ?? brevityError, unverifiedNames }
+  }
   const rejectToolBatch = (assistant: OpenAI.ChatCompletionAssistantMessageParam, reasons: string[]): void => {
     rejectAttempt(assistant, assistant.tool_calls!.map((call, index) => ({
       role: "tool", tool_call_id: call.id, content: reasons[index]!,
@@ -2190,6 +2221,24 @@ export async function runAgent(
           }]);
           continue;
         }
+        // A plain-text reply reaches the person just as a settle answer does, so the answer gates hold it too.
+        const textAnswer = isPrivateRuntimeChannel ? "" : stripThinkBlocksForViolationCheck(result.content).trim()
+        const textVerdict = textAnswer ? answerGateVerdict(textAnswer) : null
+        if (textVerdict?.error) {
+          streamCallbackBuffer?.discard();
+          callbacks.onClearText?.();
+          rejectAttempt(msg, [{ role: "user", content: textVerdict.error }]);
+          continue;
+        }
+        if (textVerdict?.unverifiedNames) {
+          const disclosed = withUnverifiedDisclosure(textAnswer, textVerdict.unverifiedNames)
+          streamCallbackBuffer?.discard();
+          callbacks.onClearText?.();
+          callbacks.onTextChunk(disclosed);
+          pushGenerated({ ...msg, content: disclosed });
+          done = true;
+          continue;
+        }
         // Legitimate text-only response, or cap reached — accept as-is.
         await streamCallbackBuffer?.flush();
         pushGenerated(msg);
@@ -2402,33 +2451,7 @@ export async function runAgent(
             sawSettleContentMismatch = true
             emitNervesEvent({ level: "warn", component: "engine", event: "engine.settle_content_mismatch", message: "settle answer differs from the reply text written beside it; asking once for the reply as the answer", meta: { answerLength: deliveredAnswer.length, contentLength: (msg.content as string).length } })
           }
-          // Answer gates run only for agents that opt in (ToolContext.answerGates). A request-specific contract (options.requiredToolCalls)
-          // already validates its own terminal answer. Each gate has its own bounded retry, and none spends the last provider iteration.
-          const gates = options?.requiredToolCalls ? undefined : options?.toolContext?.answerGates
-          const retriesLeft = providerIterations < stepBudget - 1
-          let groundingError: string | null = null
-          let unverifiedNames: readonly string[] | null = null
-          const grounding = gates?.sourceGrounding ? sourceGroundingFinding({ answer: deliveredAnswer, userText: userTexts(messages).join("\n"), latestUserText: latestUserMessageText(messages.slice(0, turnStartLength)), knownText: priorTurnsText(messages.slice(0, turnStartLength)), tools: turnToolRecords }) : null
-          if (grounding) {
-            if (groundingRejections < ANSWER_GATE_MAX_REJECTIONS && retriesLeft) {
-              groundingRejections += 1
-              groundingError = grounding.message
-              emitNervesEvent({ level: "warn", component: "engine", event: "engine.answer_gate_rejected", message: "settle answer named things from a work that the turn did not look up; sending the model back", meta: { gate: "source_grounding", rejection: groundingRejections, cap: ANSWER_GATE_MAX_REJECTIONS, lookupsRun: grounding.lookups } })
-            } else {
-              unverifiedNames = grounding.names
-              emitNervesEvent({ level: "warn", component: "engine", event: "engine.answer_gate_disclosed", message: "unsourced names survived the retries; delivering with a disclosure", meta: { gate: "source_grounding", names: grounding.names.length } })
-            }
-          }
-          let brevityError: string | null = null
-          if (!groundingError && gates?.brevity && !options?.toolContext?.context?.isGroupChat && brevityRejections < ANSWER_GATE_MAX_REJECTIONS && retriesLeft
-            && briefStyleRequested(userTexts(messages), savedCommunicationPreference(options?.toolContext?.context?.friend))) {
-            brevityError = briefStyleViolation(deliveredAnswer, intent)
-            if (brevityError) {
-              brevityRejections += 1
-              emitNervesEvent({ level: "warn", component: "engine", event: "engine.answer_gate_rejected", message: "settle answer broke the person's brevity request; sending the model back", meta: { gate: "brevity", rejection: brevityRejections, cap: ANSWER_GATE_MAX_REJECTIONS } })
-            }
-          }
-          const answerGateError = groundingError ?? brevityError
+          const { error: answerGateError, unverifiedNames } = answerGateVerdict(deliveredAnswer, intent)
           const retryError = contentMismatch
             ?? answerGateError
             ?? privateReturnAckLeakError(deliveredAnswer, privateReturnHeldTokens)
