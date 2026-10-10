@@ -37,15 +37,23 @@ afterEach(() => { vi.restoreAllMocks(); fs.rmSync(dir, { recursive: true, force:
 
 const LOUD = Buffer.alloc(160, 0x10)
 
-function harness(options: { request?: Partial<LocalAudioJoinRequest>; inspectRouting?: LocalAudioTransportDeps["inspectRouting"]; routingOk?: boolean; probeHears?: boolean; apiKey?: string | null; killed?: number[]; swept?: () => void; muteSteps?: boolean } = {}) {
+const FFMPEG_LISTING = [
+  "[AudioToolbox @ 0x1] CoreAudio devices:",
+  "[AudioToolbox @ 0x1] [0]                 BlackHole 16ch, BlackHole16ch_UID",
+  "[AudioToolbox @ 0x1] [3]                  BlackHole 2ch, BlackHole2ch_UID",
+].join("\n")
+
+function harness(options: { request?: Partial<LocalAudioJoinRequest>; inspectRouting?: LocalAudioTransportDeps["inspectRouting"]; routingOk?: boolean; probeHears?: boolean; apiKey?: string | null; killed?: number[]; swept?: () => void; muteSteps?: boolean; listAudioToolboxDevices?: LocalAudioTransportDeps["listAudioToolboxDevices"] } = {}) {
   let clock = 1_000_000
   const timers: Array<{ at: number; cb: () => void; cleared: boolean }> = []
   const children: FakeChild[] = []
+  const commands: string[] = []
   let nextPid = 5000
   const spawner: LocalAudioProcessSpawner = {
-    spawn(_command, args) {
+    spawn(command, args) {
       const child = new FakeChild(nextPid++, args)
       children.push(child)
+      commands.push(command)
       // The probe's capture process hears the tone straight away unless told otherwise.
       if (args.includes("coreaudio") && args.includes("raw") && children.length === 1 && options.probeHears !== false) {
         queueMicrotask(() => child.stdout.write(Buffer.alloc(160, 0x20)))
@@ -65,6 +73,8 @@ function harness(options: { request?: Partial<LocalAudioJoinRequest>; inspectRou
     pidFile: path.join(dir, "sox.pids"),
     metadataDir: path.join(dir, "calls"),
     soxPath: "/opt/sox",
+    ffmpegPath: "/opt/ffmpeg",
+    listAudioToolboxDevices: options.listAudioToolboxDevices ?? (async () => FFMPEG_LISTING),
     inspectRouting: options.inspectRouting ?? (async () => ({ status: options.routingOk === false ? "needs_setup" : "ready", hasCaptureDevice: true, hasOutputDevice: true, currentOutput: null, missing: options.routingOk === false ? [] : [], guidance: [] })),
     queryMute: options.muteSteps ? async () => [{ device: "BlackHole 2ch", inputMuted: true, outputMuted: true }] : undefined,
     now: () => clock,
@@ -97,7 +107,7 @@ function harness(options: { request?: Partial<LocalAudioJoinRequest>; inspectRou
     clock = target
   }
   const tick = () => new Promise((resolve) => setImmediate(resolve))
-  return { transport, deps, children, sessions, advance, tick, killed, timers, now: () => clock }
+  return { transport, deps, children, commands, sessions, advance, tick, killed, timers, now: () => clock }
 }
 
 const events = () => (nerves.emitNervesEvent as unknown as { mock?: unknown }).mock
@@ -109,7 +119,9 @@ describe("LocalAudioDeviceTransport device mode", () => {
     // probe listener, probe tone, live capture, live playback
     expect(h.children.map((c) => c.args.includes("synth") ? "tone" : c.args.includes("-") && c.args[0] === "-q" && c.args.includes("remix") ? "capture" : "other")).toEqual(["capture", "tone", "capture", "other"])
     expect(h.children[2]!.args).toContain("BlackHole 16ch")
-    expect(h.children[3]!.args).toContain("BlackHole 2ch")
+    // Live playback runs through ffmpeg on the device index ffmpeg reported for BlackHole 2ch.
+    expect(h.commands).toEqual(["/opt/sox", "/opt/sox", "/opt/sox", "/opt/ffmpeg"])
+    expect(h.children[3]!.args).toEqual(expect.arrayContaining(["-f", "audiotoolbox", "-audio_device_index", "3"]))
     expect(h.sessions).toHaveLength(1)
     const { identity } = h.sessions[0]!
     expect(identity).toMatchObject({
@@ -144,6 +156,46 @@ describe("LocalAudioDeviceTransport device mode", () => {
     await expect(h.transport.start()).rejects.toThrow(/BlackHole 16ch/)
     expect(h.children).toHaveLength(0)
     expect(h.transport.status().state).toBe("failed")
+  })
+
+  it("fails loudly with the install step when ffmpeg cannot run, and starts nothing", async () => {
+    const h = harness({ listAudioToolboxDevices: async () => { throw new Error("spawn ffmpeg ENOENT") } })
+    await expect(h.transport.start()).rejects.toThrow(/Live playback needs ffmpeg \(spawn ffmpeg ENOENT\): brew install ffmpeg/)
+    expect(h.children).toHaveLength(0)
+    expect(h.transport.status().state).toBe("failed")
+  })
+
+  it("plays through ffmpeg on PATH when no ffmpeg path is configured", async () => {
+    const h = harness()
+    delete h.deps.ffmpegPath
+    await h.transport.start()
+    expect(h.commands[3]).toBe("ffmpeg")
+  })
+
+  it("lists devices with the configured ffmpeg by default, and reports it when that ffmpeg cannot run", async () => {
+    const h = harness()
+    delete h.deps.listAudioToolboxDevices
+    h.deps.ffmpegPath = path.join(dir, "no-such-ffmpeg")
+    await expect(h.transport.start()).rejects.toThrow(/Live playback needs ffmpeg \(.*ENOENT.*\): brew install ffmpeg/)
+    expect(h.children).toHaveLength(0)
+  })
+
+  it("fails loudly when ffmpeg does not list the playback device", async () => {
+    const h = harness({ listAudioToolboxDevices: async () => "[AudioToolbox @ 0x1] [0]  BlackHole 16ch, BlackHole16ch_UID" })
+    await expect(h.transport.start()).rejects.toThrow(/ffmpeg does not list the playback device "BlackHole 2ch"/)
+    expect(h.children).toHaveLength(0)
+  })
+
+  it("leave while the playback device lookup is pending stops the start before anything is spawned", async () => {
+    let release!: (listing: string) => void
+    const h = harness({ listAudioToolboxDevices: () => new Promise((resolve) => { release = resolve }) })
+    const starting = h.transport.start()
+    await h.tick()
+    await h.transport.leave()
+    release(FFMPEG_LISTING)
+    await expect(starting).resolves.toBeUndefined()
+    expect(h.children).toHaveLength(0)
+    expect(h.transport.status().state).toBe("ended")
   })
 
   it("fails loudly when a BlackHole device is muted", async () => {
@@ -328,6 +380,13 @@ describe("LocalAudioDeviceTransport file-driven mode", () => {
       ["-q", "/in/question.wav", "-t", "raw", "-r", "8000", "-e", "mu-law", "-b", "8", "-c", "1", "-"],
       ["-q", "-t", "raw", "-r", "8000", "-e", "mu-law", "-b", "8", "-c", "1", "-", "-t", "wav", "/out/reply.wav"],
     ])
+    // The reply file is written by sox; ffmpeg is not needed or consulted.
+    expect(h.commands).toEqual(["/opt/sox", "/opt/sox"])
+  })
+
+  it("does not look up the playback device in file mode", async () => {
+    const h = harness({ request: { files: { inputPath: "/in/q.wav", outputPath: "/out/r.wav" } }, listAudioToolboxDevices: async () => { throw new Error("must not be called") } })
+    await expect(h.transport.start()).resolves.toBeUndefined()
   })
 
   it("paces the file at real time, then keeps the room quiet until the idle cap ends the session", async () => {

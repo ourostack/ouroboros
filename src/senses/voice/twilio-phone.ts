@@ -632,6 +632,10 @@ function isSafeVoiceFriendId(id: string): boolean {
  * (the store's display-name fallback is never used for voice). Everything else resolves from the
  * phone number, or from the call itself when there is none.
  */
+function friendHasPhone(friend: FriendRecord, phone: string): boolean {
+  return friend.externalIds.some((externalId) => normalizeTwilioE164PhoneNumber(externalId.externalId) === phone)
+}
+
 async function resolveVoiceFriendContext(options: TwilioPhoneBridgeOptions, input: {
   friendId?: string
   remotePhone?: string
@@ -640,9 +644,12 @@ async function resolveVoiceFriendContext(options: TwilioPhoneBridgeOptions, inpu
   const agentRoot = resolveTwilioPhoneAgentRoot(options)
   const friendStore = new FileFriendStore(path.join(agentRoot, "friends"))
   const explicitFriendId = input.friendId?.trim()
+  const remotePhone = normalizeTwilioE164PhoneNumber(input.remotePhone)
   if (explicitFriendId && isSafeVoiceFriendId(explicitFriendId)) {
     const existing = await friendStore.get(explicitFriendId)
-    if (existing && existing.id === explicitFriendId) {
+    // An outbound job names a friend, but the person who answers is whoever has the dialed number:
+    // a number that is not on the friend's record gets resolved like any other caller.
+    if (existing && existing.id === explicitFriendId && (!remotePhone || friendHasPhone(existing, remotePhone))) {
       return {
         friendId: existing.id,
         friendStore,
@@ -651,7 +658,6 @@ async function resolveVoiceFriendContext(options: TwilioPhoneBridgeOptions, inpu
     }
   }
 
-  const remotePhone = normalizeTwilioE164PhoneNumber(input.remotePhone)
   const provider: IdentityProvider = remotePhone ? "imessage-handle" : "local"
   const externalId = remotePhone || friendIdFromCaller("", input.callSid)
   const resolver = new FriendResolver(friendStore, {
@@ -704,6 +710,15 @@ export function twilioPhoneVoiceSessionKey(options: {
   if (friendSegment) return `twilio-phone-${friendSegment}`
   if (lineSegment) return `twilio-phone-line-${lineSegment}`
   return `twilio-phone-${safeSegment(options.callSid ?? "incoming")}`
+}
+
+/**
+ * A Realtime `response.create` that carries `instructions` replaces the session instructions for
+ * that response, so a greeting sent that way knows nothing about who the agent is. Without this
+ * line the model introduced itself as "ChatGPT" in 3 of 6 live calls.
+ */
+function realtimeGreetingInstructions(agentName: string, prompt: string): string {
+  return `You are ${agentName}. If you introduce yourself, use that name; never call yourself ChatGPT or an OpenAI assistant.\n${prompt}`
 }
 
 function callConnectedPrompt(params: Record<string, string>): string {
@@ -2512,7 +2527,7 @@ export class TwilioOpenAIRealtimeMediaStreamSession implements TwilioMediaStream
           createdAt: new Date().toISOString(),
         }, { From: this.to, To: this.from })
       : callConnectedPrompt({ From: this.from, To: this.to })
-    this.requestRealtimeResponse({ instructions: promptText })
+    this.requestRealtimeResponse({ instructions: realtimeGreetingInstructions(this.options.agentName, promptText) })
   }
 
   private handleMedia(media: TwilioMediaPayload | undefined): void {
@@ -3777,7 +3792,7 @@ class OpenAISipPhoneSession {
     if (!this.openaiWs || this.openaiWs.readyState !== WebSocket.OPEN) return
     this.initialGreetingSent = true
     this.requestRealtimeResponse({
-      instructions: openAISipCallConnectedPrompt(this.metadata, this.options.openaiRealtime?.voiceStyle),
+      instructions: realtimeGreetingInstructions(this.options.agentName, openAISipCallConnectedPrompt(this.metadata, this.options.openaiRealtime?.voiceStyle)),
     })
   }
 

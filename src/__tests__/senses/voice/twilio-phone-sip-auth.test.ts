@@ -153,6 +153,45 @@ describe("authenticated OpenAI SIP calls", () => {
     await settle()
   })
 
+  it("does not treat an outbound call as the job's friend when that friend's stored record has no external ids", async () => {
+    const f = await fixture()
+    await fs.writeFile(path.join(f.outputDir, "slugger.ouro", "friends", "legacy.json"), JSON.stringify({
+      id: "legacy", name: "Legacy", role: "friend", trustLevel: "friend", connections: [],
+      tenantMemberships: [], toolPreferences: {}, notes: {}, totalTokens: 0,
+      createdAt: "2026-09-09T00:00:00Z", updatedAt: "2026-09-09T00:00:00Z", schemaVersion: 1, kind: "human",
+    }))
+    await writeTwilioOutboundCallJob(f.outputDir, {
+      schemaVersion: 1, outboundId: "out-legacy", agentName: "slugger", friendId: "legacy",
+      from: LINE, to: CALLER, reason: "checking in", createdAt: "2026-10-09T00:00:00.000Z", status: "requested",
+    })
+    const headers = headersFromDial((await f.twilio("/voice/twilio/outgoing/out-legacy", { CallSid: "CAsiplegacy", To: CALLER, From: LINE })).body)
+    await f.webhook("call_legacy", headers)
+
+    await vi.waitFor(() => expect(f.actions()).toContain("accept"))
+    const accept = JSON.parse(f.requests.find(({ url }) => url.endsWith("/accept"))!.body) as { instructions: string }
+    expect(accept.instructions).not.toContain("friendId=legacy")
+    // The dialed number belongs to Ari's record, so whoever answers resolves as Ari.
+    expect(accept.instructions).toContain("friendId=ari")
+    await settle()
+  })
+
+  it("does not treat an outbound call as the job's friend when the dialed number is not on that friend's record", async () => {
+    const f = await fixture()
+    const other = "+15559990000"
+    await writeTwilioOutboundCallJob(f.outputDir, {
+      schemaVersion: 1, outboundId: "out-other", agentName: "slugger", friendId: "ari",
+      from: LINE, to: other, reason: "checking in", createdAt: "2026-10-09T00:00:00.000Z", status: "requested",
+    })
+    const headers = headersFromDial((await f.twilio("/voice/twilio/outgoing/out-other", { CallSid: "CAsipother", To: other, From: LINE })).body)
+    await f.webhook("call_other", headers)
+
+    await vi.waitFor(() => expect(f.actions()).toContain("accept"))
+    const accept = JSON.parse(f.requests.find(({ url }) => url.endsWith("/accept"))!.body) as { instructions: string }
+    expect(accept.instructions).not.toContain("friendId=ari")
+    expect(accept.instructions).toContain(other)
+    await settle()
+  })
+
   it.each([
     ["no token", () => []],
     ["a bad token", () => [{ name: "X-Ouro-Agent", value: "slugger" }, { name: "X-Ouro-Call-Sid", value: "CAbad" }, { name: "X-Ouro-Call-Token", value: "x.y" }]],

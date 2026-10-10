@@ -21,6 +21,8 @@ export interface LocalAudioProcessSpawner {
 
 const RAW_MULAW = ["-t", "raw", "-r", "8000", "-e", "mu-law", "-b", "8", "-c", "1"]
 
+const AUDIO_PROCESS_NAMES = new Set(["sox", "ffmpeg"])
+
 export const CAPTURE_DEVICE_NAME = "BlackHole 16ch"
 export const PLAYBACK_DEVICE_NAME = "BlackHole 2ch"
 
@@ -33,9 +35,56 @@ export function soxCaptureArgs(device: string): string[] {
   return ["-q", "--buffer", "1024", "--input-buffer", "8192", "-t", "coreaudio", device, ...RAW_MULAW, "-", "remix", "1,2"]
 }
 
-/** Play raw mono 8 kHz mu-law from stdin to a CoreAudio device. */
-export function soxPlaybackArgs(device: string): string[] {
-  return ["-q", "--buffer", "160", ...RAW_MULAW, "-", "-t", "coreaudio", device]
+/**
+ * Play raw mono 8 kHz mu-law from stdin to an AudioToolbox output device, chosen by index.
+ *
+ * sox's CoreAudio output can deadlock when the process runs at lowered priority (a zsh background
+ * job is niced by default, and so is a launchd Background job): its main thread holds a lock inside
+ * `AudioDeviceStart` while the device IO thread waits for that lock, so nothing is ever played.
+ * Observed live: 5 of 5 niced joins were silent with sox and 2 of 2 spoke with ffmpeg. The probe
+ * flags keep ffmpeg from buffering input before it starts playing.
+ */
+export function ffmpegPlaybackArgs(deviceIndex: number): string[] {
+  return [
+    "-hide_banner", "-loglevel", "error", "-nostdin",
+    "-probesize", "32", "-analyzeduration", "0", "-fflags", "nobuffer",
+    "-f", "mulaw", "-ar", "8000", "-ac", "1", "-i", "pipe:0",
+    "-f", "audiotoolbox", "-audio_device_index", String(deviceIndex), "-",
+  ]
+}
+
+/** ffmpeg prints the AudioToolbox devices to its log; `-t 0` means nothing is played. */
+export function audioToolboxListArgs(): string[] {
+  return ["-hide_banner", "-f", "lavfi", "-i", "anullsrc", "-t", "0", "-f", "audiotoolbox", "-list_devices", "true", "-"]
+}
+
+// "[AudioToolbox @ 0x7b514003c0] [1]                  BlackHole 2ch, BlackHole2ch_UID"
+const AUDIOTOOLBOX_DEVICE_LINE = /\[(\d+)\]\s+(.+),\s*[^,]*$/
+
+/** The index ffmpeg uses for a device with exactly this name, or undefined when it is not listed. */
+export function findAudioToolboxDeviceIndex(listing: string, deviceName: string): number | undefined {
+  for (const line of listing.split("\n")) {
+    const match = AUDIOTOOLBOX_DEVICE_LINE.exec(line.trim())
+    if (match && match[2]!.trim() === deviceName) return Number(match[1])
+  }
+  return undefined
+}
+
+type ExecFileCallback = (file: string, args: string[], callback: (error: (Error & { code?: unknown }) | null, stdout: string, stderr: string) => void) => void
+
+/** Runs ffmpeg's device listing and returns its log. Rejects only when ffmpeg itself cannot run. */
+export function defaultListAudioToolboxDevices(
+  ffmpegPath = "ffmpeg",
+  run: ExecFileCallback = (file, args, callback) => {
+    execFile(file, args, { encoding: "utf8", timeout: 5000 }, (error, stdout, stderr) => callback(error, stdout, stderr))
+  },
+): Promise<string> {
+  return new Promise((resolve, reject) => {
+    run(ffmpegPath, audioToolboxListArgs(), (error, _stdout, stderr) => {
+      if (error && typeof error.code !== "number") reject(error)
+      else resolve(stderr)
+    })
+  })
 }
 
 /** Decode any audio file to the capture stream format (stdout). The caller paces it. */
@@ -121,6 +170,8 @@ export interface LocalAudioDevicesOptions {
   playbackArgs: string[]
   pidFile: string
   soxPath?: string
+  /** The playback process's command when it is not sox (live playback uses ffmpeg). */
+  playbackCommand?: string
   killGroup?: (pid: number, signal: NodeJS.Signals) => boolean
   inspectProcess?: (pid: number) => ProcessInfo | null
   inspectProcessAsync?: (pid: number) => Promise<ProcessInfo | null>
@@ -167,7 +218,7 @@ export class LocalAudioDevices {
     this.stop()
     const command = this.options.soxPath ?? "sox"
     const capture = this.spawnTracked(command, this.options.captureArgs)
-    const playback = this.spawnTracked(command, this.options.playbackArgs)
+    const playback = this.spawnTracked(this.options.playbackCommand ?? command, this.options.playbackArgs)
     this.writePidFile()
     this.recordStartTimes([...this.running])
     this.watchParentSignals()
@@ -273,10 +324,10 @@ export class LocalAudioDevices {
     return killed
   }
 
-  /** Only a process that is still sox AND started when we recorded it is ours to kill (pids get reused). */
+  /** Only a process that is still one of our audio tools AND started when we recorded it is ours to kill (pids get reused). */
   private isRecordedSox(pid: number, recordedStart: string): boolean {
     const info = this.inspectProcess(pid)
-    if (!info || path.basename(info.command) !== "sox") return false
+    if (!info || !AUDIO_PROCESS_NAMES.has(path.basename(info.command))) return false
     return recordedStart !== "" && info.startTime === recordedStart
   }
 

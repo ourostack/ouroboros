@@ -589,6 +589,7 @@ describe("OpenAI Realtime media stream session over a VoiceSessionSocket", () =>
   async function realtime(identityOverrides: Partial<VoiceCallIdentity> = {}) {
     const f = await fixture()
     const openaiSockets: WebSocket[] = []
+    const received: Array<Record<string, unknown>> = []
     const server = new WebSocketServer({ port: 0 })
     closers.push(() => new Promise<void>((resolve) => server.close(() => resolve())))
     const address = server.address()
@@ -597,6 +598,7 @@ describe("OpenAI Realtime media stream session over a VoiceSessionSocket", () =>
       openaiSockets.push(ws as WebSocket)
       ws.on("message", (raw) => {
         const event = JSON.parse(Buffer.from(raw as Buffer).toString("utf8")) as Record<string, unknown>
+        received.push(event)
         if (event.type === "session.update") ws.send(JSON.stringify({ type: "session.updated", session: event.session ?? {} }))
         if (event.type === "response.create") ws.send(JSON.stringify({ type: "response.done", response: { id: "r", status: "completed" } }))
       })
@@ -609,8 +611,18 @@ describe("OpenAI Realtime media stream session over a VoiceSessionSocket", () =>
     const identity: VoiceCallIdentity = { callSid: "CArt", agentName: "slugger", direction: "inbound", from: CALLER, to: LINE, engine: "openai-realtime", ...identityOverrides }
     const session = new TwilioOpenAIRealtimeMediaStreamSession(fake.socket, identity, f.options, lifecycle)
     session.attach()
-    return { f, fake, session, openaiSockets, lifecycle }
+    return { f, fake, session, openaiSockets, lifecycle, received }
   }
+
+  it("greets as the agent: the greeting response names the agent because it replaces the session instructions", async () => {
+    const { fake, received } = await realtime()
+    fake.handlers.message!(start("CArt", {}) as never)
+    await vi.waitFor(() => expect(received.some((event) => event.type === "response.create")).toBe(true), { timeout: 10_000 })
+    const greeting = received.find((event) => event.type === "response.create") as { response?: { instructions?: string } }
+    expect(greeting.response?.instructions).toContain("You are slugger.")
+    expect(greeting.response?.instructions).toContain("never call yourself ChatGPT")
+    expect(greeting.response?.instructions).toContain("A Twilio phone voice call just connected.")
+  }, 15_000)
 
   it("rejects junk, ignores a repeated start, and closes on stop", async () => {
     const { f, fake, session, openaiSockets, lifecycle } = await realtime()

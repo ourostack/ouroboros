@@ -15,7 +15,9 @@ import {
   filePlaybackArgs,
   probeCaptureLoopback,
   soxCaptureArgs,
-  soxPlaybackArgs,
+  defaultListAudioToolboxDevices,
+  ffmpegPlaybackArgs,
+  findAudioToolboxDeviceIndex,
   type LocalAudioProcessSpawner,
   type ProcessInfo,
   type ProcessSignalHost,
@@ -99,6 +101,10 @@ export interface LocalAudioTransportDeps {
   pidFile: string
   metadataDir?: string
   soxPath?: string
+  /** ffmpeg plays live audio (sox's CoreAudio output can deadlock at low priority). Default "ffmpeg" on PATH. */
+  ffmpegPath?: string
+  /** ffmpeg's AudioToolbox device listing. The default runs ffmpeg. */
+  listAudioToolboxDevices?: () => Promise<string>
   inspectRouting: typeof inspectVoiceAudioRouting
   queryMute?: MuteQuery
   now?: () => number
@@ -197,6 +203,23 @@ export class LocalAudioDeviceTransport {
     await this.finish(reason)
   }
 
+  /** Live playback goes through ffmpeg, which names devices by index: find BlackHole 2ch's index now. */
+  private async resolveLivePlayback(): Promise<{ command: string; args: string[] }> {
+    const command = this.deps.ffmpegPath ?? "ffmpeg"
+    const list = this.deps.listAudioToolboxDevices ?? (() => defaultListAudioToolboxDevices(command))
+    let listing: string
+    try {
+      listing = await list()
+    } catch (error) {
+      throw new Error(`Local audio routing is not ready:\n- Live playback needs ffmpeg (${errorText(error)}): brew install ffmpeg`)
+    }
+    const index = findAudioToolboxDeviceIndex(listing, PLAYBACK_DEVICE_NAME)
+    if (index === undefined) {
+      throw new Error(`Local audio routing is not ready:\n- ffmpeg does not list the playback device "${PLAYBACK_DEVICE_NAME}". Install it with brew install --cask blackhole-2ch, then restart macOS audio or reboot.`)
+    }
+    return { command, args: ffmpegPlaybackArgs(index) }
+  }
+
   private async startUnchecked(): Promise<void> {
     const { request, deps } = this
     if (!deps.bridgeOptions.openaiRealtime?.apiKey?.trim()) {
@@ -204,10 +227,13 @@ export class LocalAudioDeviceTransport {
     }
     const files = request.files
     const soxPath = deps.soxPath
+    const livePlayback = files ? undefined : await this.resolveLivePlayback()
+    if (this.finished) return
     this.devices = new LocalAudioDevices({
       spawner: deps.spawner,
       captureArgs: files ? fileCaptureArgs(files.inputPath) : soxCaptureArgs(CAPTURE_DEVICE_NAME),
-      playbackArgs: files ? filePlaybackArgs(files.outputPath) : soxPlaybackArgs(PLAYBACK_DEVICE_NAME),
+      playbackArgs: livePlayback ? livePlayback.args : filePlaybackArgs(files!.outputPath),
+      ...(livePlayback ? { playbackCommand: livePlayback.command } : {}),
       pidFile: deps.pidFile,
       soxPath,
       killGroup: deps.killGroup,

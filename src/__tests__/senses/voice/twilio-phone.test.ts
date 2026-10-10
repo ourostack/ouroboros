@@ -1510,6 +1510,9 @@ describe("Twilio phone voice bridge", () => {
       await vi.waitFor(() => expect(openaiMessages.some((event) => event.type === "response.create")).toBe(true), { timeout: 10_000 })
       const greeting = openaiMessages.find((event) => event.type === "response.create") as { response?: { instructions?: string } }
       expect(greeting.response?.instructions).toContain("A phone voice call just connected over OpenAI SIP.")
+      // A response's own instructions replace the session's, so the greeting must carry the agent's identity itself.
+      expect(greeting.response?.instructions).toContain("You are slugger.")
+      expect(greeting.response?.instructions).toContain("never call yourself ChatGPT")
       expect(greeting.response?.instructions).toContain("Phone voice target for this first turn: scrappy, upbeat, warm, lightly British")
 
       openaiSockets[0]?.send(JSON.stringify({
