@@ -1258,6 +1258,9 @@ describe("provision and the real host", () => {
     }
     const broken = gate.makeHost({ ...hostRoot(bundle), bundle, log: () => undefined, exec: () => { throw new Error("no container") } })
     expect(await broken.windowTrusted()).toEqual({ ok: false, detail: "the trust probe inside the container failed: no container" })
+    // alpha.888 ship: a plain file in state/sessions (an old telegram-wi0-proof-*.json transcript) made the scan throw ENOTDIR once the
+    // rotated replay peer's session folder sorted after it. Files beside the session folders are skipped, wherever they sort.
+    for (const stray of ["0-stray.json", "zz-stray.json"]) fs.writeFileSync(path.join(bundle, "state/sessions", stray), "{}")
     expect(await host.readSession("ctx-1")).toEqual({ events: [] })
     expect(await host.readSession("missing")).toBeNull()
     fs.rmSync(path.join(bundle, "state/telegram/effects"), { recursive: true })
