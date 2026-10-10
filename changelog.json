@@ -2,6 +2,27 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.887",
+      "changes": [
+        "Delegated commands and escalation now come only from root-owned grant files in /etc/ouro/trust/<agent> (or OURO_OPERATOR_TRUST_DIR/<agent>, resolved through symlinks), checked up the whole directory chain and pinned to the sender's DID; grant writes are locked, fsynced and backed up, and the Butler's grants moved there with an upgrade check that refuses to silently drop an escalation grant",
+        "New 'ouro a2a delegated-commands grant|revoke|list' operator command and a DID-pinned 'escalation grant', both refusing this agent's own DID and a DID another holder already has, and both revoking by id when the friend record is gone; refusals say nothing ran and what to do next, and peers that are not active family only ever see no_grant",
+        "The replay gate now grants delegated commands only for the length of a window and revokes them on close, a replay grant without an expiry is refused, a forged delegation banner is neutralised on every turn (including Unicode look-alikes), and the friends store is protected from the model's file tools and any shell command that is not read-only",
+        "Telegram messages are now shielded from forged delegated-command banners at ingress",
+        "The replay gate refuses planted symlinks and wrong file types, using no-follow descriptors",
+        "provision --rotate-replay-identities mints new replay seeds and rewrites the replay grants as root",
+        "Revoke never writes the friend record as root and prints the docker exec follow-up",
+        "Permanent replay grants are refused from a root-owned replay list inside the trust directory",
+        "Stale trust-dir lock takeover is serialized, and the replay gate takes the same lock",
+        "The friends and psyche guards refuse writes whose globs or variables could reach protected stores",
+        "Admitted delegated turns carry a runtime marker, and banner text in a message grants nothing",
+        "A DID the agent publishes in its bundle is advisory: grant and escalation commands always run the twin check and name where the DID came from",
+        "Replay identity seeds and the provisioning record now live in a root-owned host folder outside the bundle; root never takes over a folder the agent made, refuses one swapped in mid-check, and takes replay friend ids and DIDs only from root-owned state",
+        "The verified-delegated-command phrase is shielded in every tool result, including punctuated and look-alike spellings, and delegate and principal names are kept to one plain line in the prompt",
+        "An untrusted or malformed replay list denies no-expiry grants, a stale trust-dir lock is reclaimed only when its writer's pid is gone, and rotation demotes old replay friends to stranger, clears their DID pin and keeps going when a record is missing",
+        "The replay gate reads agent-writable files without following symlinks and never echoes file contents in parse errors"
+      ]
+    },
+    {
       "version": "0.1.0-alpha.886",
       "changes": [
         "Replay gate: the self-resolving await case now waits for a UTC minute three minutes ahead, so the Butler is never asked to file an await whose condition is already true."
