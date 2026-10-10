@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto"
 import * as path from "node:path"
 import { resolveCmuxConnection, type CmuxConnection } from "../../heart/cmux-config"
 import { requestPrivateWake } from "../../heart/daemon/socket-client"
@@ -22,15 +23,17 @@ import { createCmuxClient, type CmuxClient, type CmuxSocketError } from "./clien
  * The cmux sense: follows cmux's `events.stream` with a persisted cursor, keeps a small per-terminal
  * picture of what each coding agent is doing, and brings every Feed decision cmux is holding open
  * to the agent once per Feed request id, the way the mail sense does: a pending message in the
- * agent's private runtime plus a wake. Answering happens elsewhere; this process only perceives and
+ * agent's private runtime, plus one wake per check pass. Answering happens elsewhere; this process only perceives and
  * escalates.
  */
 export interface CmuxSenseAppOptions {
   agentName: string
   now?: () => number
   createClient?: (connection: CmuxConnection) => CmuxClient
-  /** Delivers one escalation to the agent. Defaults to the private runtime's pending queue plus a wake. */
-  escalate?: (escalation: CmuxEscalation) => Promise<void>
+  /** Queues one escalation for the agent. Defaults to the private runtime's pending queue. */
+  escalate?: (escalation: CmuxEscalation) => void | Promise<void>
+  /** Asks for one private turn after a check pass queued escalations. Defaults to a daemon wake. */
+  wake?: (requestIds: string[]) => Promise<void>
   /** Runs `fn` once after `ms`; returns a cancel function. Tests inject a manual clock. */
   schedule?: (fn: () => void, ms: number) => () => void
 }
@@ -53,11 +56,8 @@ export const CMUX_WAKE_TRIGGER = "cmux-feed"
 /** cmux waits about 120 seconds; a notice the agent has not read within 30 minutes is dropped unread. */
 const ESCALATION_TTL_MS = 30 * 60_000
 
-/**
- * Queues the escalation in the agent's private runtime, as the mail sense does, then asks the daemon
- * to run a private turn now. A refused or failed wake leaves the message for the next private turn.
- */
-export async function escalateToPrivateRuntime(agent: string, escalation: CmuxEscalation, nowMs: number): Promise<void> {
+/** Queues the escalation in the agent's private runtime, as the mail sense queues its notices. */
+export function queueEscalation(agent: string, escalation: CmuxEscalation, nowMs: number): void {
   queuePendingMessage(getPrivateRuntimePendingDir(agent), {
     from: "cmux",
     friendId: "self",
@@ -68,17 +68,29 @@ export async function escalateToPrivateRuntime(agent: string, escalation: CmuxEs
     expiresAt: nowMs + ESCALATION_TTL_MS,
     mode: "reflect",
   })
+}
+
+/** How many request ids one wake names in its origin references. */
+const WAKE_REF_LIMIT = 20
+
+/**
+ * Asks the daemon for one private turn for everything a check pass queued: the turn reads every
+ * pending message at once, so a burst of Feed requests costs one turn, not one each. A refused or
+ * failed wake leaves the messages for the next private turn.
+ */
+export async function wakeForEscalations(agent: string, requestIds: string[]): Promise<void> {
+  const key = requestIds.length === 1 ? requestIds[0]! : `${requestIds.length}:${createHash("sha256").update(requestIds.join("\n")).digest("hex").slice(0, 32)}`
   try {
     const response = await requestPrivateWake(agent, undefined, {
-      reason: "cmux Feed request",
+      reason: requestIds.length === 1 ? "cmux Feed request" : `${requestIds.length} cmux Feed requests`,
       triggerSource: CMUX_WAKE_TRIGGER,
       budgetClass: "interactive",
-      idempotencyKey: `cmux-feed:${agent}:${escalation.requestId}`,
-      originRefs: [{ kind: "cmux-feed", id: escalation.requestId }, { kind: "sense", id: "cmux" }],
+      idempotencyKey: `cmux-feed:${agent}:${key}`,
+      originRefs: [...requestIds.slice(0, WAKE_REF_LIMIT).map((id) => ({ kind: "cmux-feed", id })), { kind: "sense", id: "cmux" }],
     })
     if (response && !response.ok) throw new Error(response.error ?? "the daemon refused the wake")
   } catch (error) {
-    emitNervesEvent({ level: "warn", component: "senses", event: "senses.cmux_wake_error", message: "could not wake the private runtime for a cmux escalation; it waits for the next private turn", meta: { agent, error: (error as Error).message } })
+    emitNervesEvent({ level: "warn", component: "senses", event: "senses.cmux_wake_error", message: "could not wake the private runtime for cmux escalations; they wait for the next private turn", meta: { agent, error: (error as Error).message } })
   }
 }
 
@@ -90,7 +102,8 @@ export async function startCmuxSenseApp(options: CmuxSenseAppOptions): Promise<C
   const resolved = resolveCmuxConnection(agent, machine.ok ? machine.config : {})
   if (!resolved.ok) throw new Error(resolved.error)
   const client = (options.createClient ?? ((connection) => createCmuxClient(connection, { agentName: agent })))(resolved.connection)
-  const escalate = options.escalate ?? ((escalation: CmuxEscalation) => escalateToPrivateRuntime(agent, escalation, nowMs()))
+  const escalate = options.escalate ?? ((escalation: CmuxEscalation) => queueEscalation(agent, escalation, nowMs()))
+  const wake = options.wake ?? ((requestIds: string[]) => wakeForEscalations(agent, requestIds))
   const schedule = options.schedule ?? ((fn, ms) => {
     const timer = setTimeout(fn, ms)
     return () => clearTimeout(timer)
@@ -131,16 +144,21 @@ export async function startCmuxSenseApp(options: CmuxSenseAppOptions): Promise<C
   async function checkFeed(): Promise<void> {
     try {
       const items = pendingFeedItems(await client.call("feed.list", { pending_only: true }))
+      const queued: string[] = []
       for (const item of items.filter((entry) => !state.escalated.includes(entry.requestId))) {
         // One failing item never blocks the others; it stays unremembered, so the next check retries it.
         try {
-          await escalate(escalationMessage(agent, item, surfaceForSession(state, item.workstreamId)))
+          const escalation = escalationMessage(agent, item, surfaceForSession(state, item.workstreamId))
+          await escalate(escalation)
+          queued.push(escalation.requestId)
           rememberEscalation(state, item.requestId)
           emitNervesEvent({ component: "senses", event: "senses.cmux_escalated", message: "brought a cmux Feed request to the agent", meta: { agent, kind: item.kind, source: item.source } })
         } catch (error) {
           emitNervesEvent({ level: "warn", component: "senses", event: "senses.cmux_escalation_error", message: "could not record a cmux Feed request; the next check retries", meta: { agent, error: (error as Error).message } })
         }
       }
+      // One wake per check pass: the private turn reads every queued escalation at once.
+      if (queued.length > 0) await wake(queued)
     } catch (error) {
       emitNervesEvent({ level: "warn", component: "senses", event: "senses.cmux_feed_check_error", message: "cmux Feed check failed; the next check retries", meta: { agent, error: (error as Error).message } })
     }
