@@ -15,7 +15,7 @@ afterEach(async () => { if (server) await server.close(); server = null; tmp?.cl
 
 describe("the fix-confirmation pass", () => {
   it("logs a failing pass and keeps the server serving", async () => {
-    tmp = createTmpBundle({ agentName: `confirm-error-${Date.now()}` })
+    tmp = createTmpBundle({ agentName: `confirm-error-${Date.now()}-${Math.random().toString(36).slice(2, 10)}` })
     server = await startA2AServer({
       agentName: tmp.agentName, agentRoot: path.join(tmp.agentRoot), port: 0,
       escalation: { runningVersion: "0.1.0-alpha.1", confirmIntervalMs: 10, notifyOwner: async () => undefined },

@@ -53,7 +53,7 @@ function owner(overrides: Partial<FriendRecord> = {}): FriendRecord {
 }
 
 async function setup(options: { registry?: boolean; grant?: boolean; legacyGrant?: boolean; trustLevel?: "family" | "friend"; owners?: FriendRecord[]; delegation?: Partial<A2ADelegationOptions> | null } = {}) {
-  tmp = createTmpBundle({ agentName: `delegated-${Date.now()}` })
+  tmp = createTmpBundle({ agentName: `delegated-${Date.now()}-${Math.random().toString(36).slice(2, 10)}` })
   if (options.registry !== false) fs.writeFileSync(path.join(tmp.agentRoot, "tool-profiles.json"), JSON.stringify(PROFILES))
   const client = await loadOrMintA2AIdentityFile({ filePath: path.join(tmp.bundlesRoot, "client", "identity.json"), sodium })
   const store = new FileFriendStore(`${tmp.agentRoot}/friends`)
@@ -238,7 +238,7 @@ function rootOwns(replayDir: string, uid = 0): void {
 
 describe("admitDelegatedCommand", () => {
   it("refuses when the delegate is itself the principal, and when the registry is missing at the server", async () => {
-    tmp = createTmpBundle({ agentName: `delegated-self-${Date.now()}` })
+    tmp = createTmpBundle({ agentName: `delegated-self-${Date.now()}-${Math.random().toString(36).slice(2, 10)}` })
     fs.writeFileSync(path.join(tmp.agentRoot, "tool-profiles.json"), JSON.stringify(PROFILES))
     const store = new FileFriendStore(`${tmp.agentRoot}/friends`)
     const self = owner()
@@ -255,7 +255,7 @@ describe("admitDelegatedCommand", () => {
   it("lets the admitted relationship itself pass the steward policy owner gate", async () => {
     // Regression: the live Butler admitted a delegated command, then the steward tool
     // refused it because the admitted relationship carried no requestId.
-    tmp = createTmpBundle({ agentName: `delegated-steward-${Date.now()}` })
+    tmp = createTmpBundle({ agentName: `delegated-steward-${Date.now()}-${Math.random().toString(36).slice(2, 10)}` })
     trust(tmp.agentRoot, "peer", "did:key:z6MkPeer")
     fs.writeFileSync(path.join(tmp.agentRoot, "tool-profiles.json"), JSON.stringify(PROFILES))
     const store = new FileFriendStore(`${tmp.agentRoot}/friends`)
@@ -274,7 +274,7 @@ describe("admitDelegatedCommand", () => {
   })
 
   it("refuses a revoked delegate", async () => {
-    tmp = createTmpBundle({ agentName: `delegated-revoked-${Date.now()}` })
+    tmp = createTmpBundle({ agentName: `delegated-revoked-${Date.now()}-${Math.random().toString(36).slice(2, 10)}` })
     trust(tmp.agentRoot, "peer", "did:key:z6MkPeer")
     fs.writeFileSync(path.join(tmp.agentRoot, "tool-profiles.json"), JSON.stringify(PROFILES))
     const store = new FileFriendStore(`${tmp.agentRoot}/friends`)
@@ -288,7 +288,7 @@ describe("admitDelegatedCommand", () => {
   })
 
   it("refuses when the friend store cannot list friends or lists none", async () => {
-    tmp = createTmpBundle({ agentName: `delegated-nolist-${Date.now()}` })
+    tmp = createTmpBundle({ agentName: `delegated-nolist-${Date.now()}-${Math.random().toString(36).slice(2, 10)}` })
     trust(tmp.agentRoot, "peer", "did:key:z6MkPeer")
     fs.writeFileSync(path.join(tmp.agentRoot, "tool-profiles.json"), JSON.stringify(PROFILES))
     const registry = loadRelationshipCapabilityRegistry(tmp.agentRoot)
@@ -305,7 +305,7 @@ describe("admitDelegatedCommand", () => {
 
   describe("replay window", () => {
     async function replaySetup(window: unknown) {
-      tmp = createTmpBundle({ agentName: `delegated-replay-${Date.now()}` })
+      tmp = createTmpBundle({ agentName: `delegated-replay-${Date.now()}-${Math.random().toString(36).slice(2, 10)}` })
       // The gate bounds a replay grant by the run window; the Butler refuses a replay grant with no expiry.
       setDelegatedCommandGrant(tmp.agentRoot, "replay-principal", { grant: true, did: "did:key:z6MkReplay", source: "replay gate provisioning (host root)", expiresAt: new Date(Date.now() + 3_600_000).toISOString() })
       fs.writeFileSync(path.join(tmp.agentRoot, "tool-profiles.json"), JSON.stringify(PROFILES))

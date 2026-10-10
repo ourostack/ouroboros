@@ -10,7 +10,7 @@ import {
 } from "../../a2a/operator-trust"
 
 let tmp: TmpBundleHandle
-beforeEach(() => { tmp = createTmpBundle({ agentName: `trust-${Date.now()}` }) })
+beforeEach(() => { tmp = createTmpBundle({ agentName: `trust-${Date.now()}-${Math.random().toString(36).slice(2, 10)}` }) })
 afterEach(() => { vi.unstubAllEnvs(); overrideOwnerForTests(undefined); tmp.cleanup() })
 
 const NOW = new Date("2026-10-09T00:00:00.000Z")

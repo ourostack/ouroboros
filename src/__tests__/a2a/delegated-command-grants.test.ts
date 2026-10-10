@@ -16,7 +16,7 @@ const NOW = Date.parse("2026-10-09T00:00:00.000Z")
 const ISO = new Date(NOW).toISOString()
 const DID = "did:key:z6MkPeerOne"
 let tmp: TmpBundleHandle
-beforeEach(() => { tmp = createTmpBundle({ agentName: `grants-${Date.now()}` }) })
+beforeEach(() => { tmp = createTmpBundle({ agentName: `grants-${Date.now()}-${Math.random().toString(36).slice(2, 10)}` }) })
 afterEach(() => { overrideOwnerForTests(undefined); tmp.cleanup() })
 
 function friend(overrides: Partial<FriendRecord> = {}): FriendRecord {

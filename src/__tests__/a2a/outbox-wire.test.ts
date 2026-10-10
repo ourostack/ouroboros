@@ -33,7 +33,7 @@ describe("outbox command encoding", () => {
 
 describe("outbox command handling", () => {
   function setup() {
-    tmp = createTmpBundle({ agentName: `wire-${Date.now()}` })
+    tmp = createTmpBundle({ agentName: `wire-${Date.now()}-${Math.random().toString(36).slice(2, 10)}` })
     return { agentRoot: tmp.agentRoot, outbox: new FileOutboxStore(tmp.agentRoot) }
   }
 
@@ -108,7 +108,7 @@ describe("outbox command handling", () => {
 
 describe("a grant without a pinned DID", () => {
   it("is not held, so the holder cannot resolve", async () => {
-    tmp = createTmpBundle({ agentName: `wire-nodid-${Date.now()}` })
+    tmp = createTmpBundle({ agentName: `wire-nodid-${Date.now()}-${Math.random().toString(36).slice(2, 10)}` })
     const agentRoot = tmp.agentRoot
     const key = await makeTestIdentity()
     const holder = friend("claude", { kind: "agent", agentMeta: agentMetaFor(key) })

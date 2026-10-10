@@ -19,7 +19,7 @@ function friend(id: string, overrides: Partial<FriendRecord> = {}): FriendRecord
     tenantMemberships: [], toolPreferences: {}, notes: {}, totalTokens: 0, createdAt: NOW, updatedAt: NOW, schemaVersion: 1, ...overrides,
   }
 }
-const root = () => { tmp = createTmpBundle({ agentName: `escalation-${Date.now()}` }); return tmp.agentRoot }
+const root = () => { tmp = createTmpBundle({ agentName: `escalation-${Date.now()}-${Math.random().toString(36).slice(2, 10)}` }); return tmp.agentRoot }
 
 describe("escalation grants", () => {
   it("fails closed on a missing, unreadable or malformed file and keeps only well-formed grants", () => {

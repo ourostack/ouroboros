@@ -13,7 +13,7 @@ const DID = "did:key:z6MkPeerOne"
 const NOW = new Date("2026-10-09T12:00:00.000Z")
 let tmp: TmpBundleHandle
 let store: FileFriendStore
-beforeEach(() => { tmp = createTmpBundle({ agentName: `trustcmd-${Date.now()}` }); store = new FileFriendStore(path.join(tmp.agentRoot, "friends")) })
+beforeEach(() => { tmp = createTmpBundle({ agentName: `trustcmd-${Date.now()}-${Math.random().toString(36).slice(2, 10)}` }); store = new FileFriendStore(path.join(tmp.agentRoot, "friends")) })
 afterEach(() => { overrideOwnerForTests(undefined); tmp.cleanup() })
 
 async function peer(options: { name?: string; did?: string | null; trust?: "family" | "friend"; admission?: "active" | "unverified"; legacy?: boolean } = {}): Promise<FriendRecord> {
