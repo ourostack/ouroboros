@@ -946,6 +946,7 @@ export const RETIRE_RECORD_SCRIPT = [
   'const [bundle,id,did]=process.argv.slice(1);',
   'if(!/^[A-Za-z0-9_-]+$/.test(id))throw new Error("bad friend id");',
   'const file=path.join(bundle,"friends",id+".json");',
+  'if(!fs.existsSync(file)){console.log("friend "+id+" has no record; treating it as already retired");process.exit(0)}',
   'const rec=JSON.parse(fs.readFileSync(file,"utf8"));',
   'const pinned=new Set([did,rec.a2a&&rec.a2a.did].filter(Boolean));',
   'rec.trustLevel="stranger";rec.admissionState="revoked";delete rec.a2a;delete rec.delegationGrant;',
@@ -1165,11 +1166,18 @@ export function makeHost({ bundle = DEFAULT_BUNDLE, trustDir = DEFAULT_TRUST_DIR
 // chown/chmod/mkdir/open follows a symlink the Butler planted there, so every such step looks at the path first and acts through a
 // descriptor opened with O_NOFOLLOW.
 
-const ops = { fchown: fchownSync }
+const ops = { fchown: fchownSync, openDirectory: (dir) => openNoFollow(dir, fsConstants.O_RDONLY | fsConstants.O_DIRECTORY) }
 /** Tests replace the descriptor chown so a run as an ordinary user can prove what root would and would not have changed. Returns the previous function. */
 export function overrideFchownForTests(fn) {
   const before = ops.fchown
   ops.fchown = fn ?? fchownSync
+  return before
+}
+
+/** Tests replace the directory open so they can swap a directory in between the check and the open. Returns the previous function. */
+export function overrideOpenDirectoryForTests(fn) {
+  const before = ops.openDirectory
+  ops.openDirectory = fn ?? ((dir) => openNoFollow(dir, fsConstants.O_RDONLY | fsConstants.O_DIRECTORY))
   return before
 }
 
@@ -1198,8 +1206,16 @@ function rootDirectory(dir, mode, { rootUid = 0, rootGid = 0 } = {}) {
   const existing = refuseLinkOrWrongType(dir, "directory")
   if (existing && existing.uid !== rootUid) throw new Error(`refusing: ${dir} is owned by uid ${existing.uid}, not root, so it could hold anything. Nothing was changed. Move it aside and run provision again.`)
   if (!existing) mkdirSync(dir, { recursive: true, mode })
-  const fd = openNoFollow(dir, fsConstants.O_RDONLY | fsConstants.O_DIRECTORY)
-  try { ops.fchown(fd, rootUid, rootGid); fchmodSync(fd, mode) } finally { closeSync(fd) }
+  // Look again before opening, then check that the descriptor is the directory that was checked: whoever owns the parent could
+  // swap in a directory of their own between the check and the open, and root must never fchown that one.
+  const checkedStat = refuseLinkOrWrongType(dir, "directory")
+  if (!checkedStat || (checkedStat.uid !== rootUid && checkedStat.uid !== process.geteuid?.())) throw new Error(`refusing: ${dir} changed hands while it was being made root-owned. Nothing was changed. Move it aside and run provision again.`)
+  const fd = ops.openDirectory(dir)
+  try {
+    const opened = fstatSync(fd)
+    if (opened.dev !== checkedStat.dev || opened.ino !== checkedStat.ino) throw new Error(`refusing: ${dir} was replaced while it was being made root-owned. Nothing was changed. Move it aside and run provision again.`)
+    ops.fchown(fd, rootUid, rootGid); fchmodSync(fd, mode)
+  } finally { closeSync(fd) }
 }
 
 /** Hands an existing regular file to `uid:gid` with `mode` (or only the owner when `mode` is undefined), through a no-follow descriptor. `create` makes it first. */
@@ -1252,7 +1268,7 @@ function rootOwnedHostDirectory(dir, mode, { rootUid = 0, rootGid = 0, chainRoot
   }
   for (const ancestor of chain) {
     const issue = rootOwnedDirectoryIssue(ancestor, rootUid)
-    if (issue) throw new Error(`refusing: ${issue}, so ${dir} cannot be trusted. Nothing was changed.`)
+    if (issue) throw new Error(`refusing: ${issue}, so ${dir} cannot be trusted. Nothing was changed. Fix it as root with: install -d -o root -g root -m 0755 ${ancestor}`)
   }
   const stat = lstatOrNull(dir)
   if (!stat) {
@@ -1468,9 +1484,15 @@ export function provision({ bundle = DEFAULT_BUNDLE, trustDir = DEFAULT_TRUST_DI
     for (const [friendId, did] of retiring) {
       revokeDelegatedCommands(trustDir, friendId, { rootUid, rootGid })
       revokeEscalation(trustDir, friendId, { rootUid, rootGid })
-      run(["friend", "update", friendId, "--agent", "sanctuary", "--admission", "revoked", "--trust", "stranger"])
-      retireRecord(friendId, did)
-      log(`retired friend ${friendId}`)
+      // The record lives in the Butler-writable bundle, so a missing or mangled one must not stop the rotation: the trust-dir revokes
+      // above are what take authority away, and they have already happened.
+      try {
+        run(["friend", "update", friendId, "--agent", "sanctuary", "--admission", "revoked", "--trust", "stranger"])
+        retireRecord(friendId, did)
+        log(`retired friend ${friendId}`)
+      } catch (error) {
+        log(`revoked friend ${friendId}'s grants, but could not demote its record: ${error instanceof Error ? error.message.split("\n")[0] : String(error)}`)
+      }
     }
     for (const who of ["principal", "stranger", "escalation"]) {
       const seed = path.join(clientDir, `${who}.json`)

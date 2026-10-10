@@ -1036,6 +1036,20 @@ describe("provision and the real host", () => {
       expect(logs.join("\n")).toContain("moved")
     })
 
+    it("refuses, and never chowns, a replay directory swapped in between the check and the open (review of #1064, round 4, L2)", () => {
+      const dir = path.join(bundle, "state/replay")
+      const restoreOpen = gate.overrideOpenDirectoryForTests((target: string) => {
+        fs.renameSync(target, `${target}.root-made`)
+        fs.mkdirSync(target)
+        fs.writeFileSync(path.join(target, "window.json"), "{}")
+        return fs.openSync(target, "r")
+      })
+      try {
+        expect(() => gate.freshRootDirectoryInBundle(dir, 0o755, { rootUid: process.getuid!(), rootGid: process.getgid!() })).toThrow(/replaced while it was being made root-owned/)
+      } finally { gate.overrideOpenDirectoryForTests(restoreOpen) }
+      expect(chowns).toEqual([])
+    })
+
     it("refuses a host whose replay folder is not root-owned, and a seed that is loose or planted as a link, before any seed is staged", () => {
       gate.provision({ bundle, cardUrl: "c", log: () => undefined, run: fakeCli().run, ...uid() })
       const root = { ...hostRoot(bundle), clientDir: clientOf(bundle) }
@@ -1123,6 +1137,23 @@ describe("provision and the real host", () => {
       const updates = second.calls.filter((a) => a[0] === "friend" && a.includes("revoked"))
       expect(updates).toHaveLength(3)
       for (const update of updates) expect(update).toEqual(["friend", "update", update[2], "--agent", "sanctuary", "--admission", "revoked", "--trust", "stranger"])
+    })
+
+    it("keeps rotating when the Butler deleted or mangled a retired friend's record: the trust-dir revokes and the new seeds still happen (review of #1064, round 4, L1)", () => {
+      const first = fakeCli()
+      gate.provision({ bundle, cardUrl: "c", log: () => undefined, run: first.run, ...uid() })
+      const logs: string[] = []
+      const second = fakeCli()
+      gate.provision({ bundle, log: (line: string) => logs.push(line), run: second.run, rotate: true, ...uid(), retireRecord: () => { throw new Error("friend record missing\nstack") } })
+      expect(logs.join("\n")).toMatch(/could not demote its record: friend record missing$/m)
+      expect(fs.readdirSync(clientOf(bundle)).filter((name) => name.includes(".retired-"))).toHaveLength(3)
+      expect(fs.existsSync(path.join(clientOf(bundle), "principal.json"))).toBe(true)
+    })
+
+    it("the in-container script treats a missing record as already retired", () => {
+      const { execFileSync } = require("node:child_process") as typeof import("node:child_process")
+      const out = execFileSync(process.execPath, ["-e", gate.RETIRE_RECORD_SCRIPT, bundle, "gone", "did:key:P"], { encoding: "utf8" })
+      expect(out).toContain("treating it as already retired")
     })
 
     it("the in-container script strips trust, admission, the DID pin and the A2A identity, and refuses an unsafe id", () => {
