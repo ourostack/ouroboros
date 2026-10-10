@@ -2328,8 +2328,9 @@ export async function runAgent(
             terminalSucceeded,
           )
           pushGenerated(msg)
-          pushGenerated({ role: "tool", tool_call_id: soleTerminalCall.id, content: shieldDelegatedBanner(terminalResult) })
-          providerRuntime.appendToolOutput(soleTerminalCall.id, terminalResult)
+          const shieldedTerminalResult = shieldDelegatedBanner(terminalResult)
+          pushGenerated({ role: "tool", tool_call_id: soleTerminalCall.id, content: shieldedTerminalResult })
+          providerRuntime.appendToolOutput(soleTerminalCall.id, shieldedTerminalResult)
           callbacks.onTextChunk(terminalResult)
           completion = { answer: terminalResult, intent: terminalSucceeded ? "complete" : "blocked" }
           outcome = terminalSucceeded ? "settled" : "blocked"
@@ -2923,8 +2924,9 @@ export async function runAgent(
             }
 
             callbacks.onToolEnd(tc.name, argSummary, success);
-            pushGenerated({ role: "tool", tool_call_id: tc.id, content: shieldDelegatedBanner(toolResult) });
-            providerRuntime.appendToolOutput(tc.id, toolResult);
+            const shieldedToolResult = shieldDelegatedBanner(toolResult);
+            pushGenerated({ role: "tool", tool_call_id: tc.id, content: shieldedToolResult });
+            providerRuntime.appendToolOutput(tc.id, shieldedToolResult);
             continue;
           }
           /* v8 ignore next -- flag tested via truth-check integration tests @preserve */
