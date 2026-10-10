@@ -1,11 +1,11 @@
 # cmux Sense
 
-The cmux sense lets an agent watch the coding agents (Claude Code, Codex, Copilot) that run in [cmux](https://github.com/manaflow-ai/cmux), the terminal app on this Mac. The agent can tell its human who needs them and what each session did, and it can put a one-line status or a desktop notification in front of them. This first version only watches and signals: it never types into a terminal and never answers a coding agent's permission prompt.
+The cmux sense lets an agent watch the coding agents (Claude Code, Codex, Copilot) that run in [cmux](https://github.com/manaflow-ai/cmux), the terminal app on this Mac. The agent can tell its human who needs them and what each session did, and it can put a one-line status or a desktop notification in front of them. It can also answer a Claude Code permission prompt `once` when the code floor, the human's own precedent and a standing owner grant all allow it. It never types into a terminal.
 
 ## What it does
 
 - **Follows cmux's event stream.** The sense process holds one `events.stream` connection to the cmux control socket, filtered to the `feed` and `surface` categories. From the hook events it keeps, per terminal (cmux calls it a surface), which agent runs there, which folder it is in, its last hook and tool, and a lifecycle: `working`, `idle` (finished its turn and waiting for a prompt), `waiting` (blocked on the human) or `ended`.
-- **Escalates decisions cmux is holding open.** When a hook says a decision may be pending, and every 30 seconds, the sense reads `feed.list {"pending_only": true}`. Each new pending permission request, question or plan approval becomes one external event (source `cmux`, event id `feed:<request id>`), so the agent's attention sees it once. If one item cannot be recorded, the others still are, and the failed one is retried on the next check. The receipt names the agent, tool, folder and terminal, never the tool input: provider payloads can hold secrets.
+- **Answers or escalates decisions cmux is holding open.** When a hook says a decision may be pending, and every 30 seconds, the sense reads `feed.list {"pending_only": true}`. Each new pending request is judged once (see [Answering prompts](#answering-prompts)). The few it may answer get `once` right there, with no agent turn. Every other permission request, question or plan approval becomes one external event (source `cmux`, event id `feed:<request id>`), so the agent's attention sees it once. If one item cannot be judged, answered or recorded, the others still are. The receipt names the agent, tool, folder and terminal, and why it was not answered automatically. It never includes the tool input, because provider payloads can hold secrets.
 - **Event fields it relies on.** cmux publishes each hook as both `agent.hook.<HookEventName>` and `feed.item.received` with the same payload: `session_id`, `hook_event_name`, `_source`, `workspace_id`, `surface_id`, `cwd` and `tool_name`. The tool input is replaced by its length. This is checked against cmux's `CmuxEventPublishing.workstreamPayload`, so the `feed` category is enough and the sense does not subscribe to `agent`.
 - **Resets after a gap.** When the stream `ack` reports `resume.gap`, or cmux comes back with a new `boot_id`, the sense drops its per-terminal picture and moves its cursor to `resume.latest_seq`. The next hook events rebuild the picture.
 - **Records the cmux version.** On each connection it asks `system.identify` for the app version and keeps it in the state file. `cmux_overview` shows it. Observing and escalating work on any version.
@@ -20,6 +20,35 @@ The tools appear only for an agent whose `agent.json` has `senses.cmux.enabled: 
 | `cmux_overview` | Lists the decisions cmux is holding open (with a redacted, bounded preview of each request) and every workspace and terminal with what its agent last did. | No |
 | `cmux_read` | Reads one terminal's text, optionally with scrollback, 1 to 400 lines (default 60). Secret-shaped strings are redacted and output is capped at 16,000 characters. | No |
 | `cmux_signal` | Sets or clears this agent's one-line status (key `ouro`, at most 120 characters) on a workspace's sidebar entry, and/or posts a desktop notification tied to that workspace. | Only what cmux shows |
+| `cmux_reply_once` | Records the agent's judgment that a pending permission request is routine. It sends `once` only when the floor, a precedent and the standing grant allow it; otherwise the judgment is logged in shadow and the request stays with the human. | Only under code authority |
+| `cmux_correct` | Records the human's answer or correction for a judged request as an exact precedent: `once` (fine next time) or `ask` (always ask). | The machine-local casebook |
+
+## Answering prompts
+
+A reply needs every one of these, checked in code inside the sense process:
+
+1. **The floor** (`src/senses/cmux/floor.ts`) is an allowlist over cmux Feed's structured fields (`tool_name`, `tool_input`, `cwd`), never screen text. Its default is to escalate.
+   - **Allow:** an Edit, Write, MultiEdit or NotebookEdit inside the session's repository, after `..` and every symlink are resolved. A Read, Glob or Grep inside the repository. A short list of read-only commands (`ls`, `cat`, `grep`, `rg`, `find` without actions, `git status`, `git diff`, `git log`, `git show`, listing-only `git branch`, and similar). The repository's own checks (`npm test`, `npm run lint`, `npm run typecheck`, `swift test`, `cargo test`, `go test`, and similar).
+   - **Never answered** (hard). Not by precedent, and not by the agent:
+     - questions and plan approvals;
+     - Codex and Copilot requests (observe-only);
+     - truncated input, MCP tools, web tools and anything unrecognised;
+     - commands that chain, pipe, redirect, substitute or expand;
+     - inline interpreters (`python -c`, `node -e`, `sed -i`), shells, `env`, `xargs` and wrappers;
+     - deletion, moves, permission changes and network commands (`curl`, `ssh`, `gh`, `git push`, `fetch` and similar);
+     - history-changing git commands, package installs and publishing;
+     - any word that resolves outside the repository;
+     - edits to `.git`, `.claude`, `.github`, `.husky`, shell rc files, `package.json`, `.env*`, `.mcp.json`, `CLAUDE.md` and `AGENTS.md`.
+   - **Soft:** anything else. Only the human's exact precedent can answer it.
+2. **Precedent** (`casebook.json`): the human's answers, recorded with `cmux_correct`. A precedent matches only the same repository, tool and every command token, or the same repo-relative path. An `ask` precedent always escalates, even an allowlisted request. The floor runs again on every request, so a precedent never overrides a hard verdict.
+3. **A standing owner grant** in steward policy: key `cmux-feed-once`, action `cmux.feed.once`, with the repository roots as targets and a count cap per window. It must be owner-stated and backed by its audit row. Without it, the sense answers nothing and logs what it would have done. Today only the Sanctuary owner path (`steward_policy`) can write a grant, so an agent outside Sanctuary runs with no live replies until a human-run way to issue this grant exists.
+4. **A re-check.** Right before replying, the sense reads the request again. If the human already answered it, the sense logs a race and sends nothing. If the request changed, the sense escalates. The only mode the code can send is `once`, never `always`, `all` or `bypass`.
+
+The agent's own judgment runs in shadow. `cmux_reply_once` logs what the agent would have done and sends only what the code would send anyway. Turning model judgment into live authority is a later, separate decision.
+
+**Principles.** These are judgment guidance for the agent, never authority. They come from `cmux-principles.md` in the bundle (human-authored, synced) or, without that file, from eight seed principles in `src/senses/cmux/principles.ts`. `cmux_overview` returns them.
+
+**Decision log** (`decisions.jsonl`). It records every judgment: replied once, escalated, race, reply failed or shadow. Each entry holds the floor verdict, the precedent used and the authority. Secret-shaped strings are redacted. The log rotates once at 2 MB. The casebook and the decision log live with the state file under `state/senses/cmux/` (directory 0700, files 0600) and never sync.
 
 ## Turning it on
 
@@ -50,4 +79,6 @@ The sense needs the cmux socket credential on this machine. It lives in the agen
 - `src/senses/cmux/attention.ts`: state, event handling, pending Feed items and escalation receipts.
 - `src/senses/cmux/sense.ts`: the long-running sense process; `src/senses/cmux-entry.ts` is its daemon entry point.
 - `src/senses/cmux/redact.ts`: best-effort secret redaction for anything handed to a model.
-- `src/repertoire/tools-cmux.ts`: the three tools.
+- `src/senses/cmux/floor.ts`, `casebook.ts`, `answer.ts` and `principles.ts`: the floor, precedents and decision log, the judgment and `once` reply path, and the principles.
+- `inspectStandingActionGrant` in `src/heart/steward-policy.ts`: the standing grant check.
+- `src/repertoire/tools-cmux.ts`: the five tools.

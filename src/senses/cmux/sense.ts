@@ -15,13 +15,15 @@ import {
   surfaceForSession,
   writeCmuxState,
 } from "./attention"
+import { answerOnce, judgeFeedItem, recordDecision, type AnswerContext } from "./answer"
 import { createCmuxClient, type CmuxClient, type CmuxSocketError } from "./client"
 
 /**
  * The cmux sense: follows cmux's `events.stream` with a persisted cursor, keeps a small per-terminal
  * picture of what each coding agent is doing, and records every Feed decision cmux is holding open
- * for the human as one external event (keyed by the Feed request id). Answering happens elsewhere;
- * this process only perceives and escalates.
+ * for the human. A permission request the floor, the human's precedents and a standing owner grant
+ * all clear is answered `once` here, with no agent turn; everything else becomes one external event
+ * (keyed by the Feed request id) for the agent to bring to the human.
  */
 export interface CmuxSenseAppOptions {
   agentName: string
@@ -63,6 +65,7 @@ export async function startCmuxSenseApp(options: CmuxSenseAppOptions): Promise<C
     return () => clearTimeout(timer)
   })
   const statePath = cmuxStatePath(agent)
+  const answers: AnswerContext = { agentRoot: getAgentRoot(agent), stateDir: path.dirname(statePath), client, now: options.now ?? Date.now }
   const state = readCmuxState(statePath, now())
   state.connected = false
 
@@ -94,14 +97,19 @@ export async function startCmuxSenseApp(options: CmuxSenseAppOptions): Promise<C
     try {
       const items = pendingFeedItems(await client.call("feed.list", { pending_only: true }))
       for (const item of items.filter((entry) => !state.escalated.includes(entry.requestId))) {
-        // One failing item never blocks the others; it stays unremembered, so the next check retries it.
-        try {
-          await submit(escalationInput(agent, item, surfaceForSession(state, item.workstreamId)))
-          rememberEscalation(state, item.requestId)
-          emitNervesEvent({ component: "senses", event: "senses.cmux_escalated", message: "recorded a cmux Feed request as an external event", meta: { agent, kind: item.kind, source: item.source } })
-        } catch (error) {
-          emitNervesEvent({ level: "warn", component: "senses", event: "senses.cmux_escalation_error", message: "could not record a cmux Feed request; the next check retries", meta: { agent, error: (error as Error).message } })
+        const judgment = judgeFeedItem(answers, item)
+        if (judgment.reply) {
+          const outcome = await answerOnce(answers, item, judgment)
+          if (outcome !== "reply_failed") {
+            rememberEscalation(state, item.requestId)
+            continue
+          }
         }
+        const reason = judgment.reply ? "the sense's own reply failed" : judgment.reason
+        await submit(escalationInput(agent, item, surfaceForSession(state, item.workstreamId), reason))
+        rememberEscalation(state, item.requestId)
+        recordDecision(answers, item, judgment, "escalated", reason)
+        emitNervesEvent({ component: "senses", event: "senses.cmux_escalated", message: "recorded a cmux Feed request as an external event", meta: { agent, kind: item.kind, source: item.source } })
       }
     } catch (error) {
       emitNervesEvent({ level: "warn", component: "senses", event: "senses.cmux_feed_check_error", message: "cmux Feed check failed; the next check retries", meta: { agent, error: (error as Error).message } })

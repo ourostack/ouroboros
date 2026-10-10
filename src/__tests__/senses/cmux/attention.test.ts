@@ -181,7 +181,7 @@ describe("escalation receipts", () => {
         "surface_id: SF-1",
         "cwd: /Users/a/code/repo",
         "created_at: 2026-10-10T19:59:58Z",
-        "cmux waits about 120 seconds for a Feed answer, then the agent falls back to its own terminal prompt. Use cmux_overview and cmux_read to see it, and cmux_signal to tell the human.",
+        "cmux waits about 120 seconds for a Feed answer, then the agent falls back to its own terminal prompt. Use cmux_overview and cmux_read to see it, and cmux_signal to tell the human. If you judge it routine under the cmux principles, cmux_reply_once records your judgment (it sends only when the floor, a precedent and a standing grant allow); when the human answers, cmux_correct records their precedent.",
       ],
       priority: "high",
     })
@@ -193,6 +193,9 @@ describe("escalation receipts", () => {
     expect(question.summary).toBe("Codex is waiting for an answer to a question")
     expect(question.eventId).toBe("feed:q_1_2")
     expect(question.evidence).toEqual(expect.arrayContaining(["workspace_id: unknown", "surface_id: unknown", "cwd: unknown", "created_at: unknown"]))
+    expect(question.evidence.some((line) => line.startsWith("why it was not answered"))).toBe(false)
+    const judged = escalationInput("a", item, null, "floor: rm is never answered for the human")
+    expect(judged.evidence).toContain("why it was not answered automatically: floor: rm is never answered for the human")
     const plan = escalationInput("a", { ...item, kind: "exitPlan", source: "opencode" }, null)
     expect(plan.summary).toBe("opencode is waiting for a plan approval (Bash) in repo")
     const longA = escalationInput("a", { ...item, requestId: `${"x".repeat(200)}a` }, null)

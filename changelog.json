@@ -2,6 +2,12 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.894",
+      "changes": [
+        "The cmux sense can answer a Claude Code permission prompt 'once' for the human, and only when three code checks agree: an allowlist floor over the request's structured fields (in-repo edits, read-only commands and the repository's own checks; everything hazardous, unparseable or outside the repository always escalates), no 'ask me' precedent, and a standing owner grant (cmux.feed.once) for that repository under its count cap. It re-checks the request right before replying and logs a race when the human answered first. Two new family-only tools: cmux_reply_once records the agent's judgment (shadow only unless the code allows the reply) and cmux_correct records the human's exact precedent. Decisions and precedents stay machine-local and redacted. Questions, plan approvals, Codex and Copilot always go to the human."
+      ]
+    },
+    {
       "version": "0.1.0-alpha.893",
       "changes": [
         "New cmux sense: an agent with senses.cmux.enabled watches the coding agents running in cmux on this Mac. It follows cmux's event stream, keeps what each terminal's agent last did, and raises one external event per permission request, question or plan approval that cmux is holding for the human (never including the request's tool input). Three family-only tools: cmux_overview (who needs the human and what each session did), cmux_read (a terminal's text, redacted and bounded) and cmux_signal (a one-line workspace status or a desktop notification). The socket credential is a cmux capability token stored per machine with 'ouro vault config set --scope machine --key cmux.socketCapability'. After a gap in cmux's event stream or a cmux restart it starts its picture of the terminals afresh; a request that fails to escalate is reported with its error while the others carry on; it records the cmux version it is attached to; and the cmux tools are denied whenever the caller's trust level is unknown. See docs/cmux-sense.md."

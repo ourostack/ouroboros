@@ -6,6 +6,9 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { cacheMachineRuntimeCredentialConfig, resetRuntimeCredentialConfigCache } from "../../../heart/runtime-credentials"
 import { resetIdentity } from "../../../heart/identity"
 import type { ExternalEventInput } from "../../../heart/external-events/router"
+import { readStewardPolicy, updateStewardPolicy } from "../../../heart/steward-policy"
+import { CMUX_GRANT_ACTION, CMUX_GRANT_KEY } from "../../../senses/cmux/answer"
+import { cmuxDecisionLogPath, readDecisions } from "../../../senses/cmux/casebook"
 import { startCmuxSenseApp, type CmuxSenseApp } from "../../../senses/cmux/sense"
 import { ackFrame, feedEvent, startFakeCmux, type FakeCmux } from "./fake-cmux"
 
@@ -267,6 +270,47 @@ describe("cmux sense app", () => {
     expect(timers.due(30_000)).toBe(0)
     expect(timers.due(1_000)).toBe(0)
     expect(readState()).toMatchObject({ connected: false })
+  })
+
+  it("answers an allowlisted request once under a standing grant, and escalates with the reason otherwise", async () => {
+    const agentRoot = path.join(home, "AgentBundles", `${AGENT}.ouro`)
+    const repo = fs.realpathSync(fs.mkdtempSync(path.join(home, "repo-")))
+    fs.mkdirSync(path.join(repo, ".git"))
+    updateStewardPolicy(agentRoot, {
+      expectedVersion: readStewardPolicy(agentRoot).version,
+      actor: { friendId: "ari", trustLevel: "family", sessionEventId: "evt-grant", authorization: { profileId: "sanctuary-owner", profileVersion: 1, requestId: "req-grant", sessionKey: "cli", receiptId: "auth-1" } },
+      mutation: { kind: "grant_routine_action", key: CMUX_GRANT_KEY, action: CMUX_GRANT_ACTION, targets: [repo], maxCount: 5, windowMs: 3_600_000, verificationRequired: true, exclusions: [], provenance: "stated" },
+    })
+    const replies: Array<Record<string, unknown>> = []
+    let items: unknown[] = [
+      pending("auto-1", { cwd: repo, tool_input: JSON.stringify({ command: "git status" }) }),
+      pending("hard-1", { cwd: repo, tool_input: JSON.stringify({ command: "rm -rf src" }) }),
+      pending("fail-1", { cwd: repo, tool_input: JSON.stringify({ command: "git log" }) }),
+    ]
+    server.respond("events.stream", () => ackFrame())
+    server.respond("feed.list", () => ({ items }))
+    server.respond("feed.permission.reply", (params) => {
+      if (params.request_id === "fail-1") throw new Error("reply refused")
+      replies.push(params)
+      items = items.filter((entry) => (entry as { request_id: string }).request_id !== params.request_id)
+      return { delivered: true }
+    })
+    const submitted: ExternalEventInput[] = []
+    const timers = manualScheduler()
+    app = await startCmuxSenseApp({ agentName: AGENT, now: () => NOW, schedule: timers.schedule, submit: async (input) => { submitted.push(input) } })
+
+    await vi.waitFor(() => expect(submitted).toHaveLength(2))
+    expect(replies).toEqual([{ request_id: "auto-1", mode: "once" }])
+    expect(submitted.map((input) => input.eventId)).toEqual(["feed:hard-1", "feed:fail-1"])
+    expect(submitted[0]!.evidence).toContain("why it was not answered automatically: floor: rm is never answered for the human")
+    expect(submitted[1]!.evidence).toContain("why it was not answered automatically: the sense's own reply failed")
+    const log = readDecisions(cmuxDecisionLogPath(path.join(agentRoot, "state", "senses", "cmux")))
+    expect(log.map((entry) => [entry.requestId, entry.outcome])).toEqual([["auto-1", "replied_once"], ["hard-1", "escalated"], ["fail-1", "reply_failed"], ["fail-1", "escalated"]])
+
+    timers.run(30_000)
+    await vi.waitFor(() => expect(server.methods.filter((entry) => entry.method === "feed.list").length).toBeGreaterThanOrEqual(4))
+    expect(replies).toHaveLength(1)
+    expect(submitted).toHaveLength(2)
   })
 
   it("uses real timers by default", async () => {
