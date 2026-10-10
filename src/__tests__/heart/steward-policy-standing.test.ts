@@ -1,7 +1,7 @@
 import * as fs from "node:fs"
 import os from "node:os"
 import path from "node:path"
-import { afterEach, describe, expect, it } from "vitest"
+import { afterEach, describe, expect, it, vi } from "vitest"
 
 import { inspectStandingActionGrant, readStewardPolicy, updateStewardPolicy, type StewardPolicyMutation } from "../../heart/steward-policy"
 
@@ -57,6 +57,16 @@ describe("standing action grants", () => {
     const installed = root()
     grant(installed, { provenance: "installed_explicit_policy" })
     expect(inspect(installed)).toEqual({ allowed: false, reason: "standing grant must be owner-stated" })
+  })
+
+  it("refuses a legacy grant with no applied owner authorization, and reports an unreadable policy", () => {
+    const agentRoot = root()
+    grant(agentRoot)
+    fs.writeFileSync(path.join(agentRoot, "state", "policy", "policy-audit.ndjson"), `${JSON.stringify({ schemaVersion: 1, policyVersion: 1, mutationKind: "grant_routine_action" })}\n`)
+    expect(inspect(agentRoot)).toEqual({ allowed: false, reason: "standing grant has no applied owner authorization" })
+    vi.spyOn(JSON, "parse").mockImplementationOnce(() => { throw "unavailable" })
+    expect(inspect(agentRoot)).toEqual({ allowed: false, reason: "steward policy is unavailable" })
+    vi.restoreAllMocks()
   })
 
   it("refuses a grant whose policy record no longer matches its audited authorization", () => {
