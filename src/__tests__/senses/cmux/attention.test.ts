@@ -8,7 +8,7 @@ import {
   applyEventFrame,
   cmuxVersionAtLeast,
   emptyCmuxState,
-  escalationInput,
+  escalationMessage,
   pendingFeedItems,
   readCmuxState,
   rememberEscalation,
@@ -165,43 +165,38 @@ describe("pending Feed items", () => {
 describe("escalation receipts", () => {
   const item = { requestId: "claude-s1-PermissionRequest-Bash-1791489198880", kind: "permissionRequest", source: "claude", toolName: "Bash", cwd: "/Users/a/code/repo", workstreamId: "claude-s1", createdAt: "2026-10-10T19:59:58Z", toolInput: "{\"command\":\"echo sk-ant-secret\"}", toolInputTruncated: false }
 
-  it("records one external event per Feed request without tool input", () => {
+  it("builds one pending-message receipt per Feed request without tool input", () => {
     const state = emptyCmuxState(NOW)
     applyEventFrame(state, feedEvent(1, { hook_event_name: "PermissionRequest", tool_name: "Bash" }), NOW)
-    const input = escalationInput("ouroboros", item, surfaceForSession(state, "claude-s1"))
-    expect(input).toEqual({
-      agent: "ouroboros",
-      source: "cmux",
-      eventType: "feed.permissionRequest",
-      eventId: "feed:claude-s1-PermissionRequest-Bash-1791489198880",
-      summary: "Claude Code is waiting for a permission decision (Bash) in repo",
-      evidence: [
+    const escalation = escalationMessage("ouroboros", item, surfaceForSession(state, "claude-s1"))
+    expect(escalation).toEqual({
+      requestId: "claude-s1-PermissionRequest-Bash-1791489198880",
+      content: [
+        "[cmux Feed request]",
+        "Claude Code is waiting for a permission decision (Bash) in repo.",
+        "",
         "request_id: claude-s1-PermissionRequest-Bash-1791489198880",
         "workspace_id: WS-1",
         "surface_id: SF-1",
         "cwd: /Users/a/code/repo",
         "created_at: 2026-10-10T19:59:58Z",
-        "cmux waits about 120 seconds for a Feed answer, then the agent falls back to its own terminal prompt. Use cmux_overview and cmux_read to see it, and cmux_signal to tell the human. If you judge it routine under the cmux principles, cmux_reply_once records your judgment (it sends only when the floor, a precedent and a standing grant allow); when the human answers, cmux_correct records their precedent.",
-      ],
-      priority: "high",
+        "",
+        "cmux waits about 120 seconds for a Feed answer, then the agent falls back to its own terminal prompt. Use cmux_overview and cmux_read to see it, and cmux_signal to tell the human. If you judge it routine under the cmux principles, cmux_reply_once records your judgment (it sends only when the floor, a precedent and a standing grant allow). When the human tells you their answer in a conversation, cmux_correct records it as a precedent.",
+      ].join("\n"),
     })
-    expect(JSON.stringify(input)).not.toContain("sk-ant")
+    expect(JSON.stringify(escalation)).not.toContain("sk-ant")
   })
 
-  it("labels questions, plans and unknown agents, and keeps long request ids bounded and unique", () => {
-    const question = escalationInput("a", { ...item, kind: "question", source: "codex", toolName: null, cwd: null, createdAt: null, requestId: "q 1/2" }, null)
-    expect(question.summary).toBe("Codex is waiting for an answer to a question")
-    expect(question.eventId).toBe("feed:q_1_2")
-    expect(question.evidence).toEqual(expect.arrayContaining(["workspace_id: unknown", "surface_id: unknown", "cwd: unknown", "created_at: unknown"]))
-    expect(question.evidence.some((line) => line.startsWith("why it was not answered"))).toBe(false)
-    const judged = escalationInput("a", item, null, "floor: rm is never answered for the human")
-    expect(judged.evidence).toContain("why it was not answered automatically: floor: rm is never answered for the human")
-    const plan = escalationInput("a", { ...item, kind: "exitPlan", source: "opencode" }, null)
-    expect(plan.summary).toBe("opencode is waiting for a plan approval (Bash) in repo")
-    const longA = escalationInput("a", { ...item, requestId: `${"x".repeat(200)}a` }, null)
-    const longB = escalationInput("a", { ...item, requestId: `${"x".repeat(200)}b` }, null)
-    expect(longA.eventId.length).toBeLessThanOrEqual(160)
-    expect(longA.eventId).not.toBe(longB.eventId)
+  it("labels questions, plans and unknown agents, and says why a judged request was not answered", () => {
+    const question = escalationMessage("a", { ...item, kind: "question", source: "codex", toolName: null, cwd: null, createdAt: null, requestId: "q 1/2" }, null)
+    expect(question.content).toContain("Codex is waiting for an answer to a question.")
+    expect(question.content).toContain("request_id: q 1/2")
+    for (const line of ["workspace_id: unknown", "surface_id: unknown", "cwd: unknown", "created_at: unknown"]) expect(question.content).toContain(line)
+    expect(question.content).not.toContain("why it was not answered")
+    const judged = escalationMessage("a", item, null, "floor: rm is never answered for the human")
+    expect(judged.content).toContain("why it was not answered automatically: floor: rm is never answered for the human")
+    const plan = escalationMessage("a", { ...item, kind: "exitPlan", source: "opencode" }, null)
+    expect(plan.content).toContain("opencode is waiting for a plan approval (Bash) in repo.")
   })
 })
 
