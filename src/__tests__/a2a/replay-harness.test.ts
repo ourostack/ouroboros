@@ -3,7 +3,7 @@ import * as os from "os"
 import * as path from "path"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { mockOwners } from "../test-helpers/replay-owners"
-import { appendReplayNotice, isReplayIdentity, replayIdentitiesPath, isReplayWindowOpen, REPLAY_WINDOW_MAX_MS, replayNoticeRecorded, replaySinkPath, replayWindowPath } from "../../a2a/replay-harness"
+import { appendReplayNotice, isAnyReplayWindowOpen, isReplayIdentity, replayIdentitiesPath, isReplayWindowOpen, REPLAY_WINDOW_MAX_MS, replayNoticeRecorded, replaySinkPath, replayWindowPath } from "../../a2a/replay-harness"
 
 vi.mock("node:fs", async (original) => ({ ...await original<typeof fs>() }))
 
@@ -32,6 +32,20 @@ describe("replay harness window and sink", () => {
     writeWindow(JSON.stringify({ friends: { p: { expiresAt: iso(60_000) } } }))
     expect(isReplayWindowOpen(root, "p", NOW)).toBe(true)
     expect(isReplayWindowOpen(root, "other", NOW)).toBe(false)
+  })
+
+  it("reports any open window across friends, with the same expiry and trust rules", () => {
+    expect(isAnyReplayWindowOpen(root, NOW)).toBe(false)
+    writeWindow(JSON.stringify({ friends: { a: { expiresAt: iso(-1) }, b: { expiresAt: iso(60_000) } } }))
+    expect(isAnyReplayWindowOpen(root, NOW)).toBe(true)
+    writeWindow(JSON.stringify({ friends: { a: { expiresAt: iso(-1) }, b: null, c: { expiresAt: iso(REPLAY_WINDOW_MAX_MS + 1) } } }))
+    expect(isAnyReplayWindowOpen(root, NOW)).toBe(false)
+    writeWindow(JSON.stringify({}))
+    expect(isAnyReplayWindowOpen(root, NOW)).toBe(false)
+    writeWindow(JSON.stringify({ friends: { b: { expiresAt: new Date(Date.now() + 60_000).toISOString() } } }))
+    expect(isAnyReplayWindowOpen(root)).toBe(true)
+    asOwnedBy(501)
+    expect(isAnyReplayWindowOpen(root, NOW)).toBe(false)
   })
 
   it("uses the real clock by default", () => {

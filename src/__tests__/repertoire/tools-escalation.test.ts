@@ -28,6 +28,12 @@ describe("report_failure tool", () => {
     expect((fn.parameters as { properties: { severity: { enum: string[] } } }).properties.severity.enum).toEqual(["low", "medium", "high"])
   })
 
+  it("tells the model to file at once when asked for something it cannot do, never to ask permission first", () => {
+    const description = reportFailureToolDefinition.tool.function.description
+    expect(description).toMatch(/file it right away/i)
+    expect(description).toMatch(/do not ask his permission before filing/i)
+  })
+
   it("needs an agent runtime", async () => {
     expect(await run({})).toContain("unavailable")
   })

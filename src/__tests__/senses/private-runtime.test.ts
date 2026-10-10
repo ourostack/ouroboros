@@ -1,5 +1,6 @@
 import { createHash } from "crypto"
 import { beforeEach, describe, expect, it, vi } from "vitest"
+import { SELF_FRIEND_ID } from "../../repertoire/tools-base"
 import * as fs from "fs"
 import * as os from "os"
 import * as path from "path"
@@ -2463,6 +2464,9 @@ describe("private runtime", () => {
     const awaitCtx = mockHandleInboundTurn.mock.calls[0][0].runAgentOptions.toolContext
     expect(awaitCtx.autonomousTurnKind).toBe("await")
     expect(awaitCtx.autonomousAwaitName).toBe("chef-show")
+    // A system await carries no relationship; its tick runs as the self friend, which the house-care digest relies on to stay "scheduled".
+    expect(awaitCtx.relationshipAuthorization).toBeUndefined()
+    expect((await mockHandleInboundTurn.mock.calls[0][0].friendResolver.resolve()).friend.id).toBe(SELF_FRIEND_ID)
     expect(typeof awaitCtx.sanctuary.getDownloadQueue).toBe("function")
     const queueTool = (await import("../../repertoire/tools-unraid")).unraidToolDefinitions.find((d) => d.tool.function.name === "sanctuary_get_download_queue")!
     const queueResult = JSON.parse(await queueTool.handler({}, awaitCtx))

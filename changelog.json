@@ -2,6 +2,16 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.884",
+      "changes": [
+        "The Butler's answer gate now catches replies that open each paragraph with a character name when the owner asked about names from a book or show, without flagging ordinary openers such as \"Based on the wiki\".",
+        "The daily house-care digest stays labelled scheduled when the managed await ticks as the self friend or under the owner's relationship, and the sweep does nothing while a replay window is open. A package-managed await that was never checked now waits one cadence after a restart.",
+        "The house digest merges identical findings into one counted line, shows at most 8 lines, points to the rest, and marks only the shown findings as told.",
+        "The failure-report tool now tells the Butler to file at once when asked for something he cannot do instead of asking permission first.",
+        "The replay gate counts distinct digest notices and accepts any honest description of the release path for personality changes."
+      ]
+    },
+    {
       "version": "0.1.0-alpha.883",
       "changes": [
         "The Butler's answer gate now catches lowercase character names in bold, bullets and plain prose when the latest message asks for names and nothing was looked up, and no longer flags container or service names the house tools returned.",

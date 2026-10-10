@@ -50,6 +50,11 @@ export const AWAIT_CRON_LABEL_PREFIX_MARKER = "await"
 
 type AwaitWithRuntime = AwaitFile & Partial<AwaitRuntimeState>
 
+/** An await that ships with the package: it has no filer, friend, conversation or request behind it (the same test the private runtime uses for "no relationship"). */
+function isSystemAwait(a: AwaitFile): boolean {
+  return !a.request_id && !a.filed_for_friend_id && !a.filed_from_key && (!a.filed_from || a.filed_from === "unknown")
+}
+
 export class AwaitScheduler {
   private readonly agent: string
   private readonly awaitsDir: string
@@ -217,6 +222,10 @@ export class AwaitScheduler {
       const lastChecked = a.last_checked ?? null
 
       if (lastChecked === null) {
+        // A package-managed (system) await that was never checked is not overdue until one cadence has passed since it was created: a daemon restart
+        // (every upgrade) must not fire it at once. Awaits filed at runtime keep firing straight away. Without a readable created_at it fires as before.
+        const createdMs = a.created_at ? new Date(a.created_at).getTime() : Number.NaN
+        if (isSystemAwait(a) && Number.isFinite(createdMs) && nowMs - createdMs < cadenceMs) continue
         emitNervesEvent({
           component: "daemon",
           event: "daemon.await_fire",
