@@ -4,7 +4,7 @@ import { resolveCmuxConnection } from "../heart/cmux-config"
 import { readMachineRuntimeCredentialConfig } from "../heart/runtime-credentials"
 import { emitNervesEvent } from "../nerves/runtime"
 import { pendingFeedItems, readCmuxState, surfaceForSession } from "../senses/cmux/attention"
-import { answerOnce, cmuxStateDir, judgeFeedItem, recordDecision, type AnswerContext } from "../senses/cmux/answer"
+import { answerOnce, cmuxStateDir, feedItemStatus, judgeFeedItem, recordDecision, type AnswerContext } from "../senses/cmux/answer"
 import { addCase, cmuxCasebookPath, cmuxDecisionLogPath, readDecisions } from "../senses/cmux/casebook"
 import { createCmuxClient, type CmuxClient } from "../senses/cmux/client"
 import { readCmuxPrinciples } from "../senses/cmux/principles"
@@ -246,7 +246,8 @@ export const cmuxSignalToolDefinition: ToolDefinition = {
 }
 
 function answerContext(ctx: ToolContext, client: CmuxClient): AnswerContext {
-  return { agentRoot: ctx.agentRoot!, stateDir: cmuxStateDir(ctx.agentRoot!), client, now: Date.now }
+  const stateDir = cmuxStateDir(ctx.agentRoot!)
+  return { agentRoot: ctx.agentRoot!, stateDir, client, now: Date.now, cmuxVersion: () => readCmuxState(path.join(stateDir, "state.json"), new Date().toISOString()).cmuxVersion }
 }
 
 export const cmuxReplyOnceToolDefinition: ToolDefinition = {
@@ -279,7 +280,7 @@ export const cmuxReplyOnceToolDefinition: ToolDefinition = {
       const judgment = judgeFeedItem(answers, item)
       if (judgment.reply) {
         const outcome = await answerOnce(answers, item, judgment)
-        return JSON.stringify({ sent: outcome === "replied_once", outcome, authority: judgment.authority })
+        return JSON.stringify({ sent: outcome === "replied_once", outcome, authority: judgment.authority, ...(outcome === "replied_once" || outcome === "race" ? {} : { next: "The request stays with the human; tell them with cmux_signal if it is urgent." }) })
       }
       recordDecision(answers, item, judgment, "shadow", `agent would allow once: ${reasoning}`)
       emitNervesEvent({ component: "repertoire", event: "repertoire.cmux_shadow_judgment", message: "logged the agent's would-be cmux answer in shadow", meta: { tool: item.toolName } })
@@ -297,7 +298,7 @@ export const cmuxCorrectToolDefinition: ToolDefinition = {
     type: "function",
     function: {
       name: "cmux_correct",
-      description: "Record the human's answer or correction for a coding-agent request the cmux sense judged, as an exact precedent on this machine. 'once' means the human is fine with exactly this request being allowed once next time; 'ask' means always ask them about exactly this request. Use it only for what the human actually said. A precedent never overrides the code floor, and live replies still need a standing owner grant.",
+      description: "Record the human's answer or correction for a coding-agent request the cmux sense judged, as an exact precedent on this machine. 'once' means the human is fine with exactly this request being allowed once next time, and is accepted only when cmux shows the human allowed that request themselves; 'ask' means always ask them about exactly this request. Use it only for what the human actually said, in conversation with them, never while handling an external event. A precedent never overrides the code floor, and live replies still need a standing owner grant.",
       parameters: {
         type: "object",
         properties: {
@@ -315,9 +316,25 @@ export const cmuxCorrectToolDefinition: ToolDefinition = {
     const verdict = args.verdict
     if (!requestId || (verdict !== "once" && verdict !== "ask")) return JSON.stringify({ error: "give the request_id and a verdict of once or ask" })
     if (!ctx?.agentRoot) return JSON.stringify({ error: "the cmux tools need an agent runtime" })
+    if (ctx.currentExternalEvent) return JSON.stringify({ error: "cmux_correct records what the human said in conversation; it cannot run while handling an external event" })
     const stateDir = cmuxStateDir(ctx.agentRoot)
-    const decision = readDecisions(cmuxDecisionLogPath(stateDir)).reverse().find((entry) => entry.requestId === requestId && entry.shape)
+    const decisions = readDecisions(cmuxDecisionLogPath(stateDir)).filter((entry) => entry.requestId === requestId)
+    const decision = [...decisions].reverse().find((entry) => entry.shape)
     if (!decision) return JSON.stringify({ error: `no judged request ${requestId} with a precedent shape; the floor escalates it unconditionally or it was never seen` })
+    if (verdict === "once") {
+      // A "once" precedent turns into live authority later, so it must rest on the human's own answer in cmux, not on ours.
+      if (decisions.some((entry) => entry.outcome === "reply_sent" || entry.outcome === "replied_once")) return JSON.stringify({ error: `the sense itself replied to ${requestId}; only a request the human answered can become a once precedent` })
+      const client = clientFor(ctx)
+      if (typeof client === "string") return JSON.stringify({ error: client })
+      try {
+        const status = await feedItemStatus(client, requestId)
+        if (status?.status !== "resolved" || status.kind !== "permission" || !status.mode || status.mode === "deny") {
+          return JSON.stringify({ error: `cmux does not show the human allowing ${requestId} (${status ? `${status.status}${status.mode ? `, ${status.mode}` : ""}` : "not listed"}); record 'ask' instead, or wait until they answer it in cmux` })
+        }
+      } catch (error) {
+        return failure("cmux_correct", error)
+      }
+    }
     const entry = addCase(cmuxCasebookPath(stateDir), { verdict, shape: decision.shape!, requestId, note: text(args.note), at: new Date().toISOString() })
     emitNervesEvent({ component: "repertoire", event: "repertoire.cmux_correct", message: "recorded the human's cmux precedent", meta: { verdict } })
     return JSON.stringify({ case: entry.id, verdict, tool: entry.shape.tool, repoRoot: entry.shape.repoRoot })

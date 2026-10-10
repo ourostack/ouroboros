@@ -4,13 +4,13 @@ import { emitNervesEvent } from "../../nerves/runtime"
 
 /**
  * The code floor under every answer the cmux sense might give a coding agent's permission prompt.
- * It is an allowlist over cmux Feed's structured fields (`tool_name`, `tool_input`, `cwd`), never
- * screen prose, and its default is to escalate to the human.
+ * It judges cmux Feed's structured fields (`tool_name`, `tool_input`, `cwd`), never screen prose,
+ * and its default is to escalate to the human.
  *
- * - `allow`: on the allowlist (an in-repo edit, or a read-only or test command after parsing).
- * - `soft`: not on the allowlist but not hazardous either. Only an exact precedent the human set can
- *   answer it; otherwise it escalates.
- * - `hard`: hazardous or unparseable. Nothing answers it: not precedent, not a model.
+ * - `allow`: an in-repo edit or read, an allowlisted command whose every option is on that
+ *   command's own option list, or one of the repository's own check commands.
+ * - `soft`: not allowlisted but not hazardous. Only an exact precedent the human set can answer it.
+ * - `hard`: hazardous, unknown or unparseable. Nothing answers it: not precedent, not a model.
  */
 export type FloorVerdict =
   | { verdict: "allow" | "soft"; reason: string; shape: CaseShape }
@@ -35,50 +35,116 @@ export interface FloorInput {
 export interface FloorFs {
   exists: (target: string) => boolean
   realpath: (target: string) => string
+  /** A file's text, or null when it is missing, a directory or unreadable. */
+  read: (target: string) => string | null
 }
 
-const realFs: FloorFs = { exists: (target) => fs.existsSync(target), realpath: (target) => fs.realpathSync(target) }
+const realFs: FloorFs = {
+  exists: (target) => fs.existsSync(target),
+  realpath: (target) => fs.realpathSync(target),
+  read: (target) => {
+    try {
+      return fs.readFileSync(target, "utf-8")
+    } catch {
+      return null
+    }
+  },
+}
 
 const MAX_COMMAND_CHARS = 2_000
 const EDIT_TOOLS = new Set(["Edit", "Write", "MultiEdit", "NotebookEdit"])
 const READ_TOOLS = new Set(["Read", "Glob", "Grep", "LS"])
-/** Characters that make a command more than one simple command, or let it expand, redirect or substitute. */
+/** Characters that chain, pipe, redirect, substitute, expand or escape anywhere in the command, quoted or not. */
 const SHELL_CONTROL = /[\n\r;&|`$<>(){}\\!#]/
+/** Characters the shell expands as a glob when they appear outside quotes. */
+const GLOB = /[*?[\]]/
 const PROTECTED_SEGMENTS = new Set([".git", ".claude", ".github", ".husky", ".vscode", ".idea"])
 const PROTECTED_NAMES = new Set([
   "package.json", ".npmrc", ".yarnrc", ".yarnrc.yml", ".mcp.json", ".gitmodules", ".gitattributes", ".gitconfig",
   ".bashrc", ".bash_profile", ".bash_login", ".profile", ".zshrc", ".zshenv", ".zprofile", ".zlogin", ".envrc",
   "claude.md", "agents.md", "copilot-instructions.md",
 ])
-
-/** Protected paths that can hold credentials (a token in a remote URL, an auth line): even reading them escalates. */
+/** Protected paths that can hold credentials: even reading them escalates. */
 const CREDENTIAL_TOUCHES = new Set(["touches an environment file", "touches .git", "touches .npmrc", "touches .yarnrc", "touches .yarnrc.yml", "touches .gitconfig", "touches .envrc", "touches .claude"])
 
+/** Programs never answered for the human, even with a precedent: they delete, escalate, reach the network, wrap or run other programs. */
 const HARD_COMMANDS = new Set([
-  "rm", "rmdir", "unlink", "shred", "srm", "dd", "mkfs", "diskutil", "chmod", "chown", "chgrp", "chflags", "xattr",
-  "sudo", "su", "doas", "kill", "killall", "pkill", "launchctl", "shutdown", "reboot", "halt", "crontab", "defaults", "security",
-  "curl", "wget", "ssh", "scp", "sftp", "rsync", "nc", "ncat", "netcat", "telnet", "ftp", "socat", "open", "gh", "az", "aws", "gcloud", "kubectl", "terraform", "docker", "fly", "vercel", "heroku",
-  "sh", "bash", "zsh", "fish", "dash", "ksh", "csh", "tcsh", "eval", "exec", "source", ".", "env", "xargs", "nohup", "time", "timeout", "nice", "caffeinate", "watch", "command", "builtin", "script", "expect", "osascript", "at", "batch",
-  "npx", "pnpx", "bunx", "ouro", "cmux", "claude", "codex", "copilot", "tee", "truncate", "mv", "cp", "ln", "install", "base64", "openssl", "gpg",
+  "rm", "rmdir", "unlink", "shred", "dd", "mkfs", "diskutil", "chmod", "chown", "chgrp", "chflags", "xattr", "mv", "cp", "ln", "install", "tee", "truncate",
+  "sudo", "su", "doas", "kill", "killall", "pkill", "launchctl", "shutdown", "reboot", "halt", "crontab", "defaults", "security", "osascript", "open",
+  "curl", "wget", "ssh", "scp", "sftp", "rsync", "nc", "ncat", "netcat", "telnet", "ftp", "socat", "gh", "az", "aws", "gcloud", "kubectl", "terraform", "docker", "fly", "vercel", "heroku",
+  "sh", "bash", "zsh", "fish", "dash", "ksh", "csh", "tcsh", "eval", "exec", "source", ".", "env", "xargs", "nohup", "time", "timeout", "nice", "caffeinate", "watch", "command", "builtin", "script", "expect", "at", "batch",
+  "npx", "pnpx", "bunx", "ouro", "cmux", "claude", "codex", "copilot", "base64", "openssl", "gpg", "date", "less", "more", "vi", "vim", "nano", "emacs",
 ])
-const INTERPRETERS = new Set(["python", "python3", "node", "ruby", "perl", "php", "deno", "bun", "lua", "tclsh", "rscript", "swift", "awk", "gawk", "sed", "jq"])
-const INTERPRETER_CODE_FLAGS = new Set(["-c", "-e", "--eval", "-p", "--print", "-i", "--in-place", "-f", "-r", "-x"])
-const PACKAGE_MANAGERS = new Set(["npm", "pnpm", "yarn", "bun", "pip", "pip3", "pipx", "brew", "gem", "cargo", "go", "uv", "poetry", "composer", "swift"])
-const PACKAGE_HARD_VERBS = new Set(["install", "i", "ci", "add", "uninstall", "remove", "rm", "un", "publish", "unpublish", "update", "upgrade", "up", "link", "unlink", "exec", "dlx", "x", "create", "init", "login", "logout", "adduser", "token", "owner", "dist-tag", "deprecate", "config", "set", "get", "cache", "prune", "dedupe", "rebuild", "tap", "untap", "services", "run-script", "explore", "edit", "fund", "audit", "version", "pack", "global", "tool", "self"])
-const GIT_HARD_SUBCOMMANDS = new Set([
-  "push", "reset", "clean", "checkout", "switch", "restore", "rebase", "merge", "rm", "mv", "filter-branch", "filter-repo", "gc", "prune", "reflog", "update-ref", "update-index", "symbolic-ref",
-  "tag", "stash", "worktree", "remote", "config", "fetch", "pull", "clone", "submodule", "am", "apply", "cherry-pick", "revert", "commit", "notes", "replace", "bisect", "hook", "credential", "send-email", "daemon", "archive", "bundle", "lfs", "init",
-])
-const HARD_OPTION_PREFIXES = ["--output", "--pre", "--ext-diff", "--exec", "--upload-pack", "--receive-pack", "--config", "--git-dir", "--work-tree", "--namespace", "--global", "--system", "--force", "--delete", "--hard", "--mirror", "--fix"]
-const FIND_HARD = new Set(["-exec", "-execdir", "-ok", "-okdir", "-delete", "-fprint", "-fprint0", "-fprintf", "-fls"])
-
-const READ_ONLY_COMMANDS = new Set(["ls", "pwd", "cat", "head", "tail", "wc", "grep", "egrep", "fgrep", "rg", "find", "file", "stat", "diff", "which", "echo", "tree", "du", "less", "true", "date"])
-const GIT_READ_ONLY = new Set(["status", "diff", "log", "show", "rev-parse", "ls-files", "blame", "describe", "shortlog", "grep", "branch", "cat-file", "ls-tree", "merge-base", "rev-list", "name-rev"])
-const GIT_BRANCH_LIST_FLAGS = new Set(["-a", "--all", "-r", "--remotes", "-v", "-vv", "--verbose", "--list", "--show-current", "--merged", "--no-merged", "--contains", "--no-color", "--color"])
+/** Programs that run code they are handed: a precedent may answer them only with no options at all. */
+const INTERPRETERS = new Set(["python", "python3", "node", "ruby", "perl", "php", "deno", "lua", "swift", "awk", "gawk", "sed", "jq", "make"])
+const PACKAGE_MANAGERS = new Set(["npm", "pnpm", "yarn", "bun", "pip", "pip3", "pipx", "brew", "gem", "cargo", "go", "uv", "poetry", "composer"])
+/** The repository's own checks, allowed only as these exact words. */
 const TEST_COMMANDS: string[][] = [
   ["npm", "test"], ["npm", "run", "test"], ["npm", "run", "lint"], ["npm", "run", "typecheck"],
   ["swift", "test"], ["swift", "build"], ["cargo", "test"], ["cargo", "check"], ["go", "test"], ["go", "vet"],
 ]
+
+/**
+ * An allowlisted command and the only options it may carry. `flag` takes no value, `num` takes
+ * digits, `text` takes a word with no `/` and no leading `~`. Every other word is a path that must
+ * resolve inside the repository. An option not listed here escalates.
+ */
+type OptionKind = "flag" | "num" | "text"
+interface CommandSpec {
+  short?: Record<string, OptionKind>
+  long?: Record<string, OptionKind>
+  /** Accepts `-<digits>` (for example `head -20`). */
+  digits?: boolean
+  /** Takes no positional words at all. */
+  noPositional?: boolean
+}
+
+const flags = (letters: string, values: Record<string, OptionKind> = {}): Record<string, OptionKind> =>
+  ({ ...Object.fromEntries([...letters].map((letter) => [letter, "flag" as const])), ...values })
+const longFlags = (names: string[], values: Record<string, OptionKind> = {}): Record<string, OptionKind> =>
+  ({ ...Object.fromEntries(names.map((name) => [name, "flag" as const])), ...values })
+
+const GREP: CommandSpec = {
+  short: flags("rRnilvwcEFHhosx", { e: "text", m: "num", A: "num", B: "num", C: "num" }),
+  long: longFlags(["--line-number", "--ignore-case", "--recursive", "--count", "--files-with-matches", "--fixed-strings", "--word-regexp"], { "--include": "text", "--exclude": "text", "--exclude-dir": "text" }),
+}
+const COMMANDS: Record<string, CommandSpec> = {
+  ls: { short: flags("1aAlhRtrSdF"), long: longFlags(["--all", "--human-readable", "--recursive"]) },
+  pwd: { noPositional: true },
+  cat: { short: flags("n") },
+  head: { short: { n: "num", c: "num" }, digits: true },
+  tail: { short: { n: "num", c: "num" }, digits: true },
+  wc: { short: flags("lwcm") },
+  grep: GREP, egrep: GREP, fgrep: GREP,
+  rg: {
+    short: flags("inlwcFSuvHo", { g: "text", t: "text", e: "text", m: "num", A: "num", B: "num", C: "num" }),
+    long: longFlags(["--hidden", "--files", "--fixed-strings", "--ignore-case", "--line-number", "--count", "--files-with-matches", "--no-ignore"], { "--glob": "text", "--type": "text" }),
+  },
+  find: { long: longFlags(["-print", "-empty"], { "-name": "text", "-iname": "text", "-type": "text", "-maxdepth": "num", "-mindepth": "num" }) },
+  tree: { short: flags("adf", { L: "num" }) },
+  file: { short: flags("b") },
+  stat: {},
+  diff: { short: flags("uqrN") },
+  which: { short: flags("a") },
+  echo: { short: flags("n") },
+  du: { short: flags("sh", { d: "num" }) },
+  true: { noPositional: true },
+}
+/** Read-only git subcommands and their options. Any other git subcommand escalates. */
+const GIT: Record<string, CommandSpec> = {
+  status: { short: flags("sb"), long: longFlags(["--short", "--branch", "--porcelain"]) },
+  log: { short: { n: "num" }, digits: true, long: longFlags(["--oneline", "--decorate", "--graph"], { "--max-count": "num" }) },
+  diff: { long: longFlags(["--name-only", "--name-status", "--cached", "--staged", "--no-ext-diff", "--no-textconv"]) },
+  show: { long: longFlags(["--name-only", "--name-status", "--oneline", "--no-ext-diff", "--no-textconv"]) },
+  "rev-parse": { long: longFlags(["--show-toplevel", "--abbrev-ref", "--short", "--is-inside-work-tree"]) },
+  "ls-files": { long: longFlags(["--others", "--exclude-standard", "--cached", "--modified"]) },
+  branch: { short: flags("arv"), long: longFlags(["--all", "--remotes", "--verbose", "--show-current"]), noPositional: true },
+  "merge-base": {},
+  "rev-list": { long: longFlags(["--count"]) },
+  describe: { long: longFlags(["--tags", "--always"]) },
+}
+/** Repository git config keys and sections that make read-only git commands run a program. */
+const GIT_CONFIG_HAZARD = /^\s*(?:fsmonitor|external|textconv|pager|sshcommand|hookspath|askpass|editor|clean|smudge|process|command|cmd|helper|program|tool)\s*=|^\s*\[\s*(?:include|includeif|filter|alias)\b/im
 
 function hard(reason: string): FloorVerdict {
   return { verdict: "hard", reason }
@@ -112,8 +178,7 @@ export function findRepoRoot(cwd: string, fsx: FloorFs = realFs): string | null 
  */
 export function resolveInsideRepo(repoRoot: string, cwd: string, target: string, fsx: FloorFs = realFs): string | null {
   if (target.startsWith("~")) return null
-  const absolute = path.resolve(cwd, target)
-  let existing = absolute
+  let existing = path.resolve(cwd, target)
   const rest: string[] = []
   while (!fsx.exists(existing)) {
     rest.unshift(path.basename(existing))
@@ -135,12 +200,16 @@ function protectedPath(relative: string): string | null {
   return null
 }
 
-/** Shell words for a single simple command, or null when quoting is unbalanced. Escapes and expansions are refused earlier. */
-export function tokenizeCommand(command: string): string[] | null {
+/**
+ * Shell words for a single simple command, or null when quoting is unbalanced. `globbed` is true when
+ * a glob character appears outside quotes. Escapes and expansions are refused before this runs.
+ */
+export function tokenizeCommand(command: string): { tokens: string[]; globbed: boolean } | null {
   const tokens: string[] = []
   let current = ""
   let started = false
   let quote: string | null = null
+  let globbed = false
   for (const char of command) {
     if (quote) {
       if (char === quote) quote = null
@@ -158,54 +227,127 @@ export function tokenizeCommand(command: string): string[] | null {
       started = false
       continue
     }
+    if (GLOB.test(char)) globbed = true
     current += char
     started = true
   }
   if (quote) return null
   if (started) tokens.push(current)
-  return tokens
+  return { tokens, globbed }
+}
+
+/** Whether repository git config could make a read-only git command run a program. Unreadable config counts. */
+export function gitConfigHazard(repoRoot: string, fsx: FloorFs = realFs): boolean {
+  const pointer = fsx.read(path.join(repoRoot, ".git"))
+  const gitDir = pointer === null ? path.join(repoRoot, ".git") : path.resolve(repoRoot, pointer.replace(/^gitdir:\s*/, "").trim())
+  const common = fsx.read(path.join(gitDir, "commondir"))
+  const configs = [path.join(gitDir, "config"), path.join(gitDir, "config.worktree"), ...(common ? [path.join(path.resolve(gitDir, common.trim()), "config")] : [])]
+  const texts = configs.map((file) => fsx.read(file))
+  if (texts[0] === null && (common === null || texts[2] === null)) return true
+  return texts.some((text) => text !== null && GIT_CONFIG_HAZARD.test(text))
+}
+
+interface WordCheck { outside: boolean; touches: string | null }
+
+function checkWord(repoRoot: string, cwd: string, word: string, fsx: FloorFs): WordCheck {
+  const relative = resolveInsideRepo(repoRoot, cwd, word, fsx)
+  return relative === null ? { outside: true, touches: null } : { outside: false, touches: protectedPath(relative) }
+}
+
+/** Null when every option is on the command's list and every value fits its kind; otherwise the reason. */
+function checkOptions(spec: CommandSpec, args: string[], positional: (word: string) => string | null): string | null {
+  const value = (kind: OptionKind, text: string | undefined, name: string): string | null => {
+    if (text === undefined) return `${name} is missing its value`
+    if (kind === "num" ? !/^\d+$/.test(text) : text.includes("/") || text.startsWith("~")) return `${name} has a value the floor does not accept`
+    return null
+  }
+  let endOfOptions = false
+  for (let index = 0; index < args.length; index += 1) {
+    const arg = args[index]!
+    if (endOfOptions || !arg.startsWith("-") || arg === "-") {
+      const reason = spec.noPositional ? "takes no arguments here" : positional(arg)
+      if (reason) return reason
+      continue
+    }
+    if (arg === "--") {
+      endOfOptions = true
+      continue
+    }
+    const equals = arg.indexOf("=")
+    const name = equals > 0 ? arg.slice(0, equals) : arg
+    const longKind = spec.long?.[name]
+    if (longKind) {
+      if (longKind === "flag") {
+        if (equals > 0) return `${name} takes no value`
+        continue
+      }
+      const reason = value(longKind, equals > 0 ? arg.slice(equals + 1) : args[++index], name)
+      if (reason) return reason
+      continue
+    }
+    if (arg.startsWith("--")) return `${name} is not on the allowlist`
+    if (spec.digits && /^-\d+$/.test(arg)) continue
+    for (let at = 1; at < arg.length; at += 1) {
+      const letter = arg[at]!
+      const kind = spec.short?.[letter]
+      if (!kind) return `-${letter} is not on the allowlist`
+      if (kind === "flag") continue
+      const attached = arg.slice(at + 1)
+      const reason = value(kind, attached || args[++index], `-${letter}`)
+      if (reason) return reason
+      break
+    }
+  }
+  return null
 }
 
 function bashVerdict(command: unknown, repoRoot: string, cwd: string, fsx: FloorFs): FloorVerdict {
   if (typeof command !== "string" || !command.trim()) return hard("no command to judge")
   if (command.length > MAX_COMMAND_CHARS) return hard("command is too long to judge")
   if (SHELL_CONTROL.test(command)) return hard("command chains, pipes, redirects, substitutes or expands")
-  const tokens = tokenizeCommand(command)
-  if (!tokens || tokens.length === 0) return hard("command quoting does not parse")
+  const parsed = tokenizeCommand(command)
+  if (!parsed || parsed.tokens.length === 0) return hard("command quoting does not parse")
+  if (parsed.globbed) return hard("command has an unquoted glob")
+  const tokens = parsed.tokens
   const [program, ...args] = tokens as [string, ...string[]]
   const name = program.toLowerCase()
   if (/^[A-Za-z_][A-Za-z0-9_]*=/.test(program)) return hard("command sets environment variables")
   if (HARD_COMMANDS.has(name)) return hard(`${name} is never answered for the human`)
-  if (INTERPRETERS.has(name) || /^python\d/.test(name)) {
-    if (args.some((arg) => INTERPRETER_CODE_FLAGS.has(arg) || /^-[A-Za-z]*[ce]$/.test(arg))) return hard(`${name} runs inline code`)
-  }
-  if (PACKAGE_MANAGERS.has(name) && args.some((arg) => PACKAGE_HARD_VERBS.has(arg.toLowerCase()))) return hard(`${name} would change installed packages or publish`)
+
+  // Every word, and every value glued to an option, must stay inside the repository; credential paths escalate.
   let touches: string | null = null
   for (const arg of args) {
-    const lower = arg.toLowerCase()
-    if (HARD_OPTION_PREFIXES.some((prefix) => lower.startsWith(prefix))) return hard(`${arg.split("=")[0]} is never answered for the human`)
-    if (name === "git" && /^-[a-zA-Z]*f[a-zA-Z]*$/.test(arg)) return hard("git force option")
-    const value = arg.startsWith("-") && arg.includes("=") ? arg.slice(arg.indexOf("=") + 1) : arg
-    const relative = resolveInsideRepo(repoRoot, cwd, value, fsx)
-    // Every word is treated as a possible path: a plain word can name a symlink that leaves the repository.
-    if (relative === null) return hard("command reaches outside the repository")
-    if (!arg.startsWith("-")) touches ??= protectedPath(relative)
+    const values = arg.startsWith("-") ? [arg.includes("=") ? arg.slice(arg.indexOf("=") + 1) : arg.slice(2)] : [arg]
+    for (const word of values.filter((entry) => entry.includes("/") || entry.startsWith("~") || !arg.startsWith("-"))) {
+      const check = checkWord(repoRoot, cwd, word, fsx)
+      if (check.outside) return hard("command reaches outside the repository")
+      if (!arg.startsWith("-")) touches ??= check.touches
+    }
   }
   if (touches && CREDENTIAL_TOUCHES.has(touches)) return hard(`command ${touches}`)
-  if (name === "find" && args.some((arg) => FIND_HARD.has(arg))) return hard("find would run, delete or write")
-  if (name === "git") {
-    const subcommand = args[0]
-    if (!subcommand || subcommand.startsWith("-")) return hard("git global options are never answered for the human")
-    if (GIT_HARD_SUBCOMMANDS.has(subcommand)) return hard(`git ${subcommand} changes or shares repository state`)
-    if (subcommand === "branch" && !args.slice(1).every((arg) => GIT_BRANCH_LIST_FLAGS.has(arg))) return hard("git branch would create, move or delete a branch")
-  }
+
   const shape: CaseShape = { repoRoot, tool: "Bash", tokens }
-  const soft = (reason: string): FloorVerdict => touches ? hard(`command ${touches}`) : { verdict: "soft", reason, shape }
-  if (program.includes("/")) return soft("runs a program by path")
-  if (READ_ONLY_COMMANDS.has(name)) return { verdict: "allow", reason: `${name} only reads`, shape }
-  if (name === "git" && GIT_READ_ONLY.has(args[0]!)) return { verdict: "allow", reason: `git ${args[0]} only reads`, shape }
   if (TEST_COMMANDS.some((entry) => entry.length === tokens.length && entry.every((token, index) => token === tokens[index]))) return { verdict: "allow", reason: "runs the repository's own checks", shape }
-  return soft(`${name} is not on the allowlist`)
+  if (name === "git") {
+    const subcommand = args[0] ?? ""
+    const spec = GIT[subcommand]
+    if (!spec) return hard(`git ${subcommand || "with global options"} is never answered for the human`)
+    if (gitConfigHazard(repoRoot, fsx)) return hard("the repository's git config can run programs")
+    const reason = checkOptions(spec, args.slice(1), () => null)
+    return reason ? hard(`git ${subcommand}: ${reason}`) : { verdict: "allow", reason: `git ${subcommand} only reads`, shape }
+  }
+  const spec = COMMANDS[name]
+  if (spec && !program.includes("/")) {
+    const reason = checkOptions(spec, args, () => null)
+    return reason ? hard(`${name}: ${reason}`) : { verdict: "allow", reason: `${name} only reads`, shape }
+  }
+  if (PACKAGE_MANAGERS.has(name)) {
+    const script = (args[0] === "run" && args.length === 2) || (args[0] === "test" && args.length === 1)
+    if (!script) return hard(`${name} ${args[0] ?? ""} is never answered for the human`.trim())
+  }
+  if ((INTERPRETERS.has(name) || /^python\d/.test(name)) && args.some((arg) => arg.startsWith("-"))) return hard(`${name} with options can run inline code`)
+  if (touches) return hard(`command ${touches}`)
+  return { verdict: "soft", reason: program.includes("/") ? "runs a program by path" : `${name} is not on the allowlist`, shape }
 }
 
 function pathVerdict(tool: string, input: Record<string, unknown>, repoRoot: string, cwd: string, fsx: FloorFs): FloorVerdict {

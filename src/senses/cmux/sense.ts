@@ -9,13 +9,14 @@ import {
   applyAck,
   applyEventFrame,
   escalationInput,
+  type CmuxPendingFeedItem,
   pendingFeedItems,
   readCmuxState,
   rememberEscalation,
   surfaceForSession,
   writeCmuxState,
 } from "./attention"
-import { answerOnce, judgeFeedItem, recordDecision, type AnswerContext } from "./answer"
+import { answerOnce, judgeFeedItem, recordDecision, type AnswerContext, type Judgment } from "./answer"
 import { createCmuxClient, type CmuxClient, type CmuxSocketError } from "./client"
 
 /**
@@ -65,7 +66,7 @@ export async function startCmuxSenseApp(options: CmuxSenseAppOptions): Promise<C
     return () => clearTimeout(timer)
   })
   const statePath = cmuxStatePath(agent)
-  const answers: AnswerContext = { agentRoot: getAgentRoot(agent), stateDir: path.dirname(statePath), client, now: options.now ?? Date.now }
+  const answers: AnswerContext = { agentRoot: getAgentRoot(agent), stateDir: path.dirname(statePath), client, now: options.now ?? Date.now, cmuxVersion: () => state.cmuxVersion }
   const state = readCmuxState(statePath, now())
   state.connected = false
 
@@ -93,24 +94,43 @@ export async function startCmuxSenseApp(options: CmuxSenseAppOptions): Promise<C
     cancelSave ??= schedule(save, SAVE_DELAY_MS)
   }
 
+  /**
+   * One pending item: answered once when the code allows it, otherwise escalated with the reason.
+   * A failure while judging or answering escalates the item with the error; a failure to record the
+   * escalation leaves it unremembered, so the next check retries it. One item never blocks another.
+   */
+  async function handleItem(item: CmuxPendingFeedItem): Promise<void> {
+    let reason: string
+    let judgment: Judgment | null = null
+    try {
+      judgment = judgeFeedItem(answers, item)
+      if (judgment.reply) {
+        const outcome = await answerOnce(answers, item, judgment)
+        if (outcome === "replied_once" || outcome === "race") {
+          rememberEscalation(state, item.requestId)
+          return
+        }
+        reason = outcome === "unconfirmed" ? "the sense replied once but cmux did not show the request resolved by it" : "the sense's own reply did not go out"
+      } else {
+        reason = judgment.reason
+      }
+    } catch (error) {
+      reason = `the sense could not judge or answer it: ${(error as Error).message}`
+    }
+    try {
+      await submit(escalationInput(agent, item, surfaceForSession(state, item.workstreamId), reason))
+      rememberEscalation(state, item.requestId)
+      if (judgment) recordDecision(answers, item, judgment, "escalated", reason)
+      emitNervesEvent({ component: "senses", event: "senses.cmux_escalated", message: "recorded a cmux Feed request as an external event", meta: { agent, kind: item.kind, source: item.source } })
+    } catch (error) {
+      emitNervesEvent({ level: "warn", component: "senses", event: "senses.cmux_escalation_error", message: "could not record a cmux Feed request; the next check retries", meta: { agent, error: (error as Error).message } })
+    }
+  }
+
   async function checkFeed(): Promise<void> {
     try {
       const items = pendingFeedItems(await client.call("feed.list", { pending_only: true }))
-      for (const item of items.filter((entry) => !state.escalated.includes(entry.requestId))) {
-        const judgment = judgeFeedItem(answers, item)
-        if (judgment.reply) {
-          const outcome = await answerOnce(answers, item, judgment)
-          if (outcome !== "reply_failed") {
-            rememberEscalation(state, item.requestId)
-            continue
-          }
-        }
-        const reason = judgment.reply ? "the sense's own reply failed" : judgment.reason
-        await submit(escalationInput(agent, item, surfaceForSession(state, item.workstreamId), reason))
-        rememberEscalation(state, item.requestId)
-        recordDecision(answers, item, judgment, "escalated", reason)
-        emitNervesEvent({ component: "senses", event: "senses.cmux_escalated", message: "recorded a cmux Feed request as an external event", meta: { agent, kind: item.kind, source: item.source } })
-      }
+      for (const item of items.filter((entry) => !state.escalated.includes(entry.requestId))) await handleItem(item)
     } catch (error) {
       emitNervesEvent({ level: "warn", component: "senses", event: "senses.cmux_feed_check_error", message: "cmux Feed check failed; the next check retries", meta: { agent, error: (error as Error).message } })
     }
@@ -155,8 +175,8 @@ export async function startCmuxSenseApp(options: CmuxSenseAppOptions): Promise<C
           state.connected = true
           state.lastError = null
           emitNervesEvent({ component: "senses", event: "senses.cmux_stream_connected", message: "cmux event stream connected", meta: { agent, reset } })
-          void identify()
-          requestFeedCheck()
+          // The version gates answering, so the first Feed check on a connection waits for it.
+          void identify().then(requestFeedCheck)
           return
         }
         if (frame.type !== "event") return

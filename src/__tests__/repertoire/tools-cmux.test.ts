@@ -9,7 +9,7 @@ import type { ToolContext } from "../../repertoire/tools-base"
 import { readStewardPolicy, updateStewardPolicy } from "../../heart/steward-policy"
 import { cmuxCorrectToolDefinition, cmuxOverviewToolDefinition, cmuxReadToolDefinition, cmuxReplyOnceToolDefinition, cmuxSignalToolDefinition, cmuxToolsEnabled } from "../../repertoire/tools-cmux"
 import { CMUX_GRANT_ACTION, CMUX_GRANT_KEY } from "../../senses/cmux/answer"
-import { appendDecision, cmuxCasebookPath, cmuxDecisionLogPath, readCasebook, readDecisions } from "../../senses/cmux/casebook"
+import { appendDecision, cmuxCasebookPath, cmuxDecisionLogPath, readCasebook, readDecisions, storeShape } from "../../senses/cmux/casebook"
 import { startFakeCmux, type FakeCmux } from "../senses/cmux/fake-cmux"
 
 const AGENT = "cmuxtools"
@@ -197,14 +197,29 @@ describe("cmux_signal", () => {
 
 describe("cmux_reply_once and cmux_correct", () => {
   let repo = ""
+  let items: Array<Record<string, unknown>> = []
   const stateDir = () => path.join(root, "state", "senses", "cmux")
   const wire = (requestId: string, command: string, extra: Record<string, unknown> = {}) => ({
     kind: "permissionRequest", status: "pending", request_id: requestId, source: "claude", tool_name: "Bash", cwd: repo, workstream_id: "claude-s1", tool_input: JSON.stringify({ command }), ...extra,
+  })
+  const judged = (requestId: string, tokens: string[], outcome: "escalated" | "reply_sent" = "escalated") => appendDecision(cmuxDecisionLogPath(stateDir()), {
+    at: "2026-10-10T19:00:00.000Z", requestId, source: "claude", tool: "Bash", cwd: repo, outcome,
+    floor: { verdict: "soft", reason: "not on the allowlist" }, shape: storeShape({ repoRoot: repo, tool: "Bash", tokens }), precedent: null, authority: "none", detail: "x",
   })
 
   beforeEach(() => {
     repo = fs.realpathSync(fs.mkdtempSync(path.join(root, "repo-")))
     fs.mkdirSync(path.join(repo, ".git"))
+    fs.writeFileSync(path.join(repo, ".git", "config"), "[core]\n\tbare = false\n")
+    fs.mkdirSync(stateDir(), { recursive: true })
+    fs.writeFileSync(path.join(stateDir(), "state.json"), JSON.stringify({ cmuxVersion: "0.65.0" }))
+    items = []
+    server.respond("feed.list", (params) => ({ items: params.pending_only ? items.filter((entry) => entry.status === "pending") : items }))
+    server.respond("feed.permission.reply", (params) => {
+      const entry = items.find((candidate) => candidate.request_id === params.request_id)
+      if (entry) Object.assign(entry, { status: "resolved", decision: { kind: "permission", mode: params.mode } })
+      return { delivered: true }
+    })
   })
 
   function grant(): void {
@@ -216,50 +231,68 @@ describe("cmux_reply_once and cmux_correct", () => {
   }
 
   it("logs the agent's judgment in shadow and sends nothing without code authority", async () => {
-    server.respond("feed.list", () => ({ items: [wire("r1", "make build")] }))
+    items = [wire("r1", "make build")]
     expect(await call(cmuxReplyOnceToolDefinition, { request_id: "r1", reasoning: "a routine build" })).toMatchObject({ sent: false, outcome: "shadow", reason: expect.stringContaining("make is not on the allowlist") })
     expect(server.methods.some((entry) => entry.method === "feed.permission.reply")).toBe(false)
     expect(readDecisions(cmuxDecisionLogPath(stateDir()))).toEqual([expect.objectContaining({ requestId: "r1", outcome: "shadow", detail: "agent would allow once: a routine build" })])
   })
 
-  it("sends once when the floor and a standing grant allow it", async () => {
+  it("sends once when the floor, cmux's version and a standing grant allow it", async () => {
     grant()
-    let items = [wire("r2", "git status")]
-    server.respond("feed.list", () => ({ items }))
-    server.respond("feed.permission.reply", (params) => { items = []; return { delivered: true, echo: params } })
+    items = [wire("r2", "git status")]
     expect(await call(cmuxReplyOnceToolDefinition, { request_id: "r2", reasoning: "status only reads" })).toMatchObject({ sent: true, outcome: "replied_once" })
-    expect(server.methods.find((entry) => entry.method === "feed.permission.reply")!.params).toEqual({ request_id: "r2", mode: "once" })
+    expect(server.methods.filter((entry) => entry.method === "feed.permission.reply").map((entry) => entry.params)).toEqual([{ request_id: "r2", mode: "once" }])
+
+    items = [wire("r3", "git status")]
+    server.respond("feed.permission.reply", () => ({ delivered: true }))
+    expect(await call(cmuxReplyOnceToolDefinition, { request_id: "r3", reasoning: "status only reads" })).toMatchObject({ sent: false, outcome: "unconfirmed", next: expect.stringContaining("stays with the human") })
+
+    fs.writeFileSync(path.join(stateDir(), "state.json"), JSON.stringify({ cmuxVersion: "0.64.22" }))
+    items = [wire("r4", "git status")]
+    expect(await call(cmuxReplyOnceToolDefinition, { request_id: "r4", reasoning: "status only reads" })).toMatchObject({ sent: false, outcome: "shadow", reason: expect.stringContaining("older than 0.65.0") })
   })
 
   it("validates input and reports requests that are gone or failures", async () => {
     expect(await call(cmuxReplyOnceToolDefinition, { request_id: "r1" })).toEqual({ error: "give the request_id and your reasoning" })
     expect(await call(cmuxReplyOnceToolDefinition, { request_id: "r1", reasoning: "x" }, "none")).toEqual({ error: "the cmux tools need an agent runtime" })
-    server.respond("feed.list", () => ({ items: [] }))
     expect(await call(cmuxReplyOnceToolDefinition, { request_id: "r9", reasoning: "x" })).toEqual({ error: "request r9 is no longer pending" })
     server.respond("feed.list", () => { throw new Error("feed broke") })
     expect(await call(cmuxReplyOnceToolDefinition, { request_id: "r9", reasoning: "x" })).toEqual({ error: "feed broke" })
   })
 
-  it("records the human's precedent from a judged request, which then decides the next identical request", async () => {
+  it("records a once precedent only when cmux shows the human allowed the request, and it then decides the next identical request", async () => {
     grant()
-    appendDecision(cmuxDecisionLogPath(stateDir()), {
-      at: "2026-10-10T19:00:00.000Z", requestId: "r3", source: "claude", tool: "Bash", cwd: repo, outcome: "escalated",
-      floor: { verdict: "soft", reason: "make is not on the allowlist" }, shape: { repoRoot: repo, tool: "Bash", tokens: ["make", "build"] }, precedent: null, authority: "none", detail: "x",
-    })
-    expect(await call(cmuxCorrectToolDefinition, { request_id: "r3", verdict: "once", note: "builds are fine" })).toMatchObject({ verdict: "once", tool: "Bash", repoRoot: repo })
-    expect(readCasebook(cmuxCasebookPath(stateDir()))).toEqual([expect.objectContaining({ verdict: "once", note: "builds are fine", requestId: "r3" })])
-
-    let items = [wire("r4", "make build")]
-    server.respond("feed.list", () => ({ items }))
-    server.respond("feed.permission.reply", () => { items = []; return { delivered: true } })
-    expect(await call(cmuxReplyOnceToolDefinition, { request_id: "r4", reasoning: "same build" })).toMatchObject({ sent: true })
-
-    expect(await call(cmuxCorrectToolDefinition, { request_id: "r3", verdict: "ask", note: "actually ask me" })).toMatchObject({ verdict: "ask" })
+    judged("r5", ["make", "build"])
     items = [wire("r5", "make build")]
-    expect(await call(cmuxReplyOnceToolDefinition, { request_id: "r5", reasoning: "same build" })).toMatchObject({ sent: false, reason: "the human asked to be asked about this exact request" })
+    expect(String((await call(cmuxCorrectToolDefinition, { request_id: "r5", verdict: "once", note: "fine" })).error)).toContain("cmux does not show the human allowing r5 (pending)")
+    Object.assign(items[0]!, { status: "resolved", decision: { kind: "permission", mode: "deny" } })
+    expect(String((await call(cmuxCorrectToolDefinition, { request_id: "r5", verdict: "once", note: "fine" })).error)).toContain("(resolved, deny)")
+    Object.assign(items[0]!, { status: "expired", decision: undefined })
+    expect(String((await call(cmuxCorrectToolDefinition, { request_id: "r5", verdict: "once", note: "fine" })).error)).toContain("(expired)")
+    items = []
+    expect(String((await call(cmuxCorrectToolDefinition, { request_id: "r5", verdict: "once", note: "fine" })).error)).toContain("(not listed)")
+    items = [{ ...wire("r5", "make build"), status: "resolved", decision: { kind: "permission", mode: "once" } }]
+    expect(await call(cmuxCorrectToolDefinition, { request_id: "r5", verdict: "once", note: "builds are fine" })).toMatchObject({ verdict: "once", tool: "Bash", repoRoot: repo })
+    expect(readCasebook(cmuxCasebookPath(stateDir()))).toEqual([expect.objectContaining({ verdict: "once", note: "builds are fine", requestId: "r5" })])
+
+    items = [wire("r6", "make build")]
+    expect(await call(cmuxReplyOnceToolDefinition, { request_id: "r6", reasoning: "same build" })).toMatchObject({ sent: true })
+
+    expect(await call(cmuxCorrectToolDefinition, { request_id: "r5", verdict: "ask", note: "actually ask me" })).toMatchObject({ verdict: "ask" })
+    items = [wire("r7", "make build")]
+    expect(await call(cmuxReplyOnceToolDefinition, { request_id: "r7", reasoning: "same build" })).toMatchObject({ sent: false, reason: "the human asked to be asked about this exact request" })
   })
 
-  it("refuses corrections it cannot ground in a judged request", async () => {
+  it("never lets the agent mint a once precedent from its own reply or from an external event", async () => {
+    judged("mine", ["make", "build"], "reply_sent")
+    items = [{ ...wire("mine", "make build"), status: "resolved", decision: { kind: "permission", mode: "once" } }]
+    expect(String((await call(cmuxCorrectToolDefinition, { request_id: "mine", verdict: "once", note: "x" })).error)).toContain("the sense itself replied to mine")
+    expect(await call(cmuxCorrectToolDefinition, { request_id: "mine", verdict: "ask", note: "x" })).toMatchObject({ verdict: "ask" })
+    const event = { source: "cmux", eventId: "feed:mine" } as unknown as ToolContext["currentExternalEvent"]
+    expect(await call(cmuxCorrectToolDefinition, { request_id: "mine", verdict: "ask", note: "x" }, ctx({ currentExternalEvent: event }))).toEqual({ error: "cmux_correct records what the human said in conversation; it cannot run while handling an external event" })
+  })
+
+  it("refuses corrections it cannot ground in a judged request, and reports cmux failures", async () => {
     expect(await call(cmuxCorrectToolDefinition, { request_id: "r1", verdict: "always", note: "x" })).toEqual({ error: "give the request_id and a verdict of once or ask" })
     expect(await call(cmuxCorrectToolDefinition, { verdict: "once", note: "x" })).toEqual({ error: "give the request_id and a verdict of once or ask" })
     expect(await call(cmuxCorrectToolDefinition, { request_id: "r1", verdict: "once", note: "x" }, ctx({ agentRoot: undefined }))).toEqual({ error: "the cmux tools need an agent runtime" })
@@ -269,5 +302,10 @@ describe("cmux_reply_once and cmux_correct", () => {
     })
     expect(String((await call(cmuxCorrectToolDefinition, { request_id: "hard", verdict: "once", note: "x" })).error)).toContain("no judged request hard")
     expect(String((await call(cmuxCorrectToolDefinition, { request_id: "never", verdict: "ask" })).error)).toContain("no judged request never")
+    judged("r8", ["make", "build"])
+    server.respond("feed.list", () => { throw new Error("feed broke") })
+    expect(await call(cmuxCorrectToolDefinition, { request_id: "r8", verdict: "once", note: "x" })).toEqual({ error: "feed broke" })
+    resetRuntimeCredentialConfigCache()
+    expect(String((await call(cmuxCorrectToolDefinition, { request_id: "r8", verdict: "once", note: "x" })).error)).toContain("ouro vault config set")
   })
 })

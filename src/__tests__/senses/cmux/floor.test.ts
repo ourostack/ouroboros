@@ -3,7 +3,7 @@ import * as os from "node:os"
 import * as path from "node:path"
 import { afterAll, beforeAll, describe, expect, it } from "vitest"
 
-import { evaluateFloor, findRepoRoot, resolveInsideRepo, tokenizeCommand, type FloorInput } from "../../../senses/cmux/floor"
+import { evaluateFloor, findRepoRoot, gitConfigHazard, resolveInsideRepo, tokenizeCommand, type FloorFs, type FloorInput } from "../../../senses/cmux/floor"
 
 let base = ""
 let repo = ""
@@ -14,6 +14,7 @@ beforeAll(() => {
   repo = path.join(base, "repo")
   outside = path.join(base, "outside")
   fs.mkdirSync(path.join(repo, ".git"), { recursive: true })
+  fs.writeFileSync(path.join(repo, ".git", "config"), "[core]\n\trepositoryformatversion = 0\n\tbare = false\n[remote \"origin\"]\n\turl = https://example.test/r.git\n")
   fs.mkdirSync(path.join(repo, "src"), { recursive: true })
   fs.mkdirSync(outside)
   fs.writeFileSync(path.join(repo, "src", "a.ts"), "")
@@ -138,6 +139,66 @@ describe("cmux floor: what it never answers", () => {
     "osascript -e x",
     "security find-generic-password",
     "dd if=/dev/zero of=x",
+    // Options that run programs, write files or read outside the repository (review, 2026-10-10).
+    "git grep \"-Ocurl -o .git/hooks/pre-commit\" needle",
+    "git grep -Opython3 needle",
+    "git grep --open-files-in-pager=vi needle",
+    "git grep needle",
+    "tree -o package.json",
+    "tree -o CLAUDE.md",
+    "tree --fromfile x",
+    "rg --hostname-bin=./x needle",
+    "rg --pre=./x needle",
+    "rg --pre-glob x needle",
+    "rg -z needle",
+    "rg --search-zip needle",
+    "date -s 2020",
+    "date",
+    "grep -f/etc/passwd -r x .",
+    "grep -f /etc/passwd x .",
+    "grep --file=/etc/passwd x",
+    "grep -e /etc x",
+    "grep --include=../x x .",
+    "grep -r token --include=../x .",
+    "cat *",
+    "cat src/*.ts",
+    "ls src/?",
+    "ls [ab]",
+    "cat -v src/a.ts",
+    "ls --color=always",
+    "head -n x src/a.ts",
+    "head -n",
+    "tail -f src/a.ts",
+    "find . -newer /etc/passwd",
+    "find . -fls out",
+    "find . -maxdepth x",
+    "find . -name a/b",
+    "diff --to-file=/etc/passwd src/a.ts",
+    "du -d x",
+    "pwd src",
+    "true x",
+    "less src/a.ts",
+    "git diff --output=x",
+    "git diff --ext-diff",
+    "git diff --textconv",
+    "git log -p",
+    "git log --format=x",
+    "git log --max-count=x",
+    "git log --oneline=x",
+    "git show --stat",
+    "git status --ignored",
+    "git branch -c x",
+    "git branch --list x",
+    "git blame src/a.ts",
+    "git -c core.pager=x log",
+    "git --no-pager log",
+    "npm test -- --watch=false",
+    "npm exec x",
+    "npm run",
+    "yarn",
+    "make -j4",
+    "node --require ./x.js src/a.ts",
+    "./x.sh .env",
     "git",
   ])("escalates %j", (command) => {
     expect(bash(command).verdict).toBe("hard")
@@ -218,16 +279,35 @@ describe("cmux floor: what it may answer", () => {
     ["swift test", "runs the repository's own checks"],
     ["wc -l package.json", "wc only reads"],
     [`cat ${"src/a.ts"}`, "cat only reads"],
+    ["head -20 src/a.ts", "head only reads"],
+    ["head -n5 src/a.ts", "head only reads"],
+    ["tail -n 5 src/a.ts", "tail only reads"],
+    ["grep -e needle -r src", "grep only reads"],
+    ["grep -rn --include='*.ts' needle src", "grep only reads"],
+    ["grep -C 2 -- -needle src", "grep only reads"],
+    ["rg -g '*.ts' --hidden needle", "rg only reads"],
+    ["tree -L 2 src", "tree only reads"],
+    ["find . -maxdepth 2 -type f -name '*.ts'", "find only reads"],
+    ["du -sh src", "du only reads"],
+    ["du -d 1 src", "du only reads"],
+    ["echo -n hello", "echo only reads"],
+    ["pwd", "pwd only reads"],
+    ["git log -n 3", "git log only reads"],
+    ["git log --max-count=3 --oneline", "git log only reads"],
+    ["git rev-parse --show-toplevel", "git rev-parse only reads"],
+    ["git diff --no-ext-diff --no-textconv --name-only", "git diff only reads"],
   ])("allows %j", (command, reason) => {
-    expect(bash(command)).toEqual({ verdict: "allow", reason, shape: { repoRoot: repo, tool: "Bash", tokens: tokenizeCommand(command) } })
+    expect(bash(command)).toEqual({ verdict: "allow", reason, shape: { repoRoot: repo, tool: "Bash", tokens: tokenizeCommand(command)!.tokens } })
   })
 
   it("leaves harmless but unlisted commands to an exact precedent", () => {
     expect(bash("make build")).toMatchObject({ verdict: "soft", reason: "make is not on the allowlist", shape: { tokens: ["make", "build"] } })
     expect(bash("npm run build")).toMatchObject({ verdict: "soft" })
-    expect(bash("npm test -- --watch=false")).toMatchObject({ verdict: "soft" })
+    expect(bash("npm test")).toMatchObject({ verdict: "allow" })
+    expect(bash("yarn test")).toMatchObject({ verdict: "soft" })
     expect(bash("python3 scripts/check.py")).toMatchObject({ verdict: "soft" })
     expect(bash("./scripts/check.sh src")).toMatchObject({ verdict: "soft", reason: "runs a program by path" })
+    expect(bash("./ls src")).toMatchObject({ verdict: "soft", reason: "runs a program by path" })
     expect(bash("touch src/new.ts")).toMatchObject({ verdict: "soft" })
     expect(bash("touch package.json")).toMatchObject({ verdict: "hard", reason: "command touches package.json" })
     expect(bash("./x.sh package.json")).toMatchObject({ verdict: "hard" })
@@ -247,10 +327,12 @@ describe("cmux floor: what it may answer", () => {
 
 describe("cmux floor helpers", () => {
   it("tokenizes quoted words and refuses unbalanced quotes", () => {
-    expect(tokenizeCommand(`grep -n "two words" 'and more' x""`)).toEqual(["grep", "-n", "two words", "and more", "x"])
-    expect(tokenizeCommand(`echo ""`)).toEqual(["echo", ""])
+    expect(tokenizeCommand(`grep -n "two words" 'and more' x""`)).toEqual({ tokens: ["grep", "-n", "two words", "and more", "x"], globbed: false })
+    expect(tokenizeCommand(`echo ""`)).toEqual({ tokens: ["echo", ""], globbed: false })
+    expect(tokenizeCommand(`find . -name "*.ts"`)).toEqual({ tokens: ["find", ".", "-name", "*.ts"], globbed: false })
+    expect(tokenizeCommand(`ls *.ts`)).toEqual({ tokens: ["ls", "*.ts"], globbed: true })
     expect(tokenizeCommand(`echo "open`)).toBeNull()
-    expect(tokenizeCommand("  ")).toEqual([])
+    expect(tokenizeCommand("  ")).toEqual({ tokens: [], globbed: false })
   })
 
   it("finds the repository and resolves paths only inside it", () => {
@@ -259,5 +341,58 @@ describe("cmux floor helpers", () => {
     expect(resolveInsideRepo(repo, repo, ".")).toBe(".")
     expect(resolveInsideRepo(repo, repo, "~/x")).toBeNull()
     expect(resolveInsideRepo(repo, repo, `${repo}-sibling/x`)).toBeNull()
+  })
+})
+
+describe("cmux floor: repository git config", () => {
+  function fakeFs(files: Record<string, string>, dirs: string[] = []): FloorFs {
+    return {
+      exists: (target) => target in files || dirs.includes(target),
+      realpath: (target) => target,
+      read: (target) => files[target] ?? null,
+    }
+  }
+
+  it("escalates git when repository config can run a program, and when config is unreadable", () => {
+    for (const config of [
+      "[core]\n\tfsmonitor = ./watch",
+      "[diff]\n\texternal = ./x",
+      "[diff \"bin\"]\n\ttextconv = ./x",
+      "[core]\n\tpager = ./x",
+      "[core]\n\tsshCommand = ./x",
+      "[core]\n\thooksPath = ./hooks",
+      "[include]\n\tpath = ../evil",
+      "[includeIf \"gitdir:/x\"]\n\tpath = ../evil",
+      "[filter \"lfs\"]\n\tclean = ./x",
+      "[alias]\n\tst = !./x",
+    ]) {
+      expect(gitConfigHazard("/r", fakeFs({ "/r/.git/config": config }, ["/r/.git"])), config).toBe(true)
+    }
+    expect(gitConfigHazard("/r", fakeFs({}, ["/r/.git"]))).toBe(true)
+    expect(gitConfigHazard("/r", fakeFs({ "/r/.git/config": "[core]\n\tbare = false\n" }, ["/r/.git"]))).toBe(false)
+  })
+
+  it("reads a linked worktree's own and common config", () => {
+    const files = {
+      "/w/.git": "gitdir: /main/.git/worktrees/w\n",
+      "/main/.git/worktrees/w/commondir": "../..\n",
+      "/main/.git/config": "[core]\n\tbare = false\n",
+    }
+    expect(gitConfigHazard("/w", fakeFs(files))).toBe(false)
+    expect(gitConfigHazard("/w", fakeFs({ ...files, "/main/.git/config": "[core]\n\tfsmonitor = x" }))).toBe(true)
+    expect(gitConfigHazard("/w", fakeFs({ ...files, "/main/.git/worktrees/w/config.worktree": "[diff]\n\texternal = x" }))).toBe(true)
+    expect(gitConfigHazard("/w", fakeFs({ "/w/.git": "gitdir: /main/.git/worktrees/w\n", "/main/.git/worktrees/w/commondir": "../.." }))).toBe(true)
+  })
+
+  it("applies the config check to every allowlisted git command", () => {
+    const config = path.join(repo, ".git", "config")
+    const before = fs.readFileSync(config, "utf-8")
+    fs.appendFileSync(config, "[core]\n\tfsmonitor = ./watch\n")
+    try {
+      expect(bash("git status")).toMatchObject({ verdict: "hard", reason: "the repository's git config can run programs" })
+      expect(bash("ls")).toMatchObject({ verdict: "allow" })
+    } finally {
+      fs.writeFileSync(config, before)
+    }
   })
 })

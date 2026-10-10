@@ -12,6 +12,11 @@ import { cmuxDecisionLogPath, readDecisions } from "../../../senses/cmux/caseboo
 import { startCmuxSenseApp, type CmuxSenseApp } from "../../../senses/cmux/sense"
 import { ackFrame, feedEvent, startFakeCmux, type FakeCmux } from "./fake-cmux"
 
+vi.mock("node:fs", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("node:fs")>()
+  return { ...actual, realpathSync: vi.fn(actual.realpathSync) }
+})
+
 const mockSendDaemonCommand = vi.fn()
 vi.mock("../../../heart/daemon/socket-client", async (importOriginal) => ({
   ...await importOriginal<typeof import("../../../heart/daemon/socket-client")>(),
@@ -276,41 +281,90 @@ describe("cmux sense app", () => {
     const agentRoot = path.join(home, "AgentBundles", `${AGENT}.ouro`)
     const repo = fs.realpathSync(fs.mkdtempSync(path.join(home, "repo-")))
     fs.mkdirSync(path.join(repo, ".git"))
+    fs.writeFileSync(path.join(repo, ".git", "config"), "[core]\n\tbare = false\n")
     updateStewardPolicy(agentRoot, {
       expectedVersion: readStewardPolicy(agentRoot).version,
       actor: { friendId: "ari", trustLevel: "family", sessionEventId: "evt-grant", authorization: { profileId: "sanctuary-owner", profileVersion: 1, requestId: "req-grant", sessionKey: "cli", receiptId: "auth-1" } },
       mutation: { kind: "grant_routine_action", key: CMUX_GRANT_KEY, action: CMUX_GRANT_ACTION, targets: [repo], maxCount: 5, windowMs: 3_600_000, verificationRequired: true, exclusions: [], provenance: "stated" },
     })
-    const replies: Array<Record<string, unknown>> = []
-    let items: unknown[] = [
+    let items: Array<Record<string, unknown>> = [
       pending("auto-1", { cwd: repo, tool_input: JSON.stringify({ command: "git status" }) }),
       pending("hard-1", { cwd: repo, tool_input: JSON.stringify({ command: "rm -rf src" }) }),
       pending("fail-1", { cwd: repo, tool_input: JSON.stringify({ command: "git log" }) }),
+      pending("odd-1", { cwd: path.join(repo, "odd"), tool_input: JSON.stringify({ command: "ls" }) }),
     ]
     server.respond("events.stream", () => ackFrame())
-    server.respond("feed.list", () => ({ items }))
+    server.respond("system.identify", () => ({ app: "cmux", version: "0.65.0" }))
+    server.respond("feed.list", (params) => ({ items: params.pending_only ? items.filter((entry) => entry.status === "pending") : items }))
     server.respond("feed.permission.reply", (params) => {
       if (params.request_id === "fail-1") throw new Error("reply refused")
-      replies.push(params)
-      items = items.filter((entry) => (entry as { request_id: string }).request_id !== params.request_id)
+      const entry = items.find((candidate) => candidate.request_id === params.request_id)!
+      Object.assign(entry, { status: "resolved", decision: { kind: "permission", mode: params.mode } })
       return { delivered: true }
     })
+    // A judging failure for one item must not stop the others.
+    fs.mkdirSync(path.join(repo, "odd"))
+    const realpath = vi.mocked(fs.realpathSync).getMockImplementation()!
+    vi.mocked(fs.realpathSync).mockImplementation(((target: fs.PathLike) => {
+      if (String(target).endsWith(`${path.sep}odd`)) throw new Error("judge blew up")
+      return realpath(target)
+    }) as typeof fs.realpathSync)
+    const submitted: ExternalEventInput[] = []
+    const timers = manualScheduler()
+    try {
+      app = await startCmuxSenseApp({ agentName: AGENT, now: () => NOW, schedule: timers.schedule, submit: async (input) => { submitted.push(input) } })
+      await vi.waitFor(() => expect(submitted).toHaveLength(3))
+    } finally {
+      vi.mocked(fs.realpathSync).mockImplementation(realpath)
+    }
+    const replies = server.methods.filter((entry) => entry.method === "feed.permission.reply")
+    expect(replies.map((entry) => entry.params)).toEqual([{ request_id: "auto-1", mode: "once" }, { request_id: "fail-1", mode: "once" }])
+    expect(submitted.map((input) => input.eventId)).toEqual(["feed:hard-1", "feed:fail-1", "feed:odd-1"])
+    expect(submitted[0]!.evidence).toContain("why it was not answered automatically: floor: rm is never answered for the human")
+    expect(submitted[1]!.evidence).toContain("why it was not answered automatically: the sense's own reply did not go out")
+    expect(submitted[2]!.evidence).toContain("why it was not answered automatically: the sense could not judge or answer it: judge blew up")
+    const log = readDecisions(cmuxDecisionLogPath(path.join(agentRoot, "state", "senses", "cmux")))
+    expect(log.map((entry) => [entry.requestId, entry.outcome])).toEqual([
+      ["auto-1", "reply_sent"], ["auto-1", "replied_once"], ["hard-1", "escalated"], ["fail-1", "reply_sent"], ["fail-1", "reply_failed"], ["fail-1", "escalated"],
+    ])
+
+    timers.run(30_000)
+    await vi.waitFor(() => expect(server.methods.filter((entry) => entry.method === "feed.list" && entry.params.pending_only).length).toBeGreaterThanOrEqual(2))
+    expect(server.methods.filter((entry) => entry.method === "feed.permission.reply")).toHaveLength(2)
+    expect(submitted).toHaveLength(3)
+  })
+
+  it("escalates an unconfirmed reply, and observes without answering on cmux older than 0.65.0", async () => {
+    const agentRoot = path.join(home, "AgentBundles", `${AGENT}.ouro`)
+    const repo = fs.realpathSync(fs.mkdtempSync(path.join(home, "repo-")))
+    fs.mkdirSync(path.join(repo, ".git"))
+    fs.writeFileSync(path.join(repo, ".git", "config"), "[core]\n\tbare = false\n")
+    updateStewardPolicy(agentRoot, {
+      expectedVersion: readStewardPolicy(agentRoot).version,
+      actor: { friendId: "ari", trustLevel: "family", sessionEventId: "evt-grant", authorization: { profileId: "sanctuary-owner", profileVersion: 1, requestId: "req-grant", sessionKey: "cli", receiptId: "auth-1" } },
+      mutation: { kind: "grant_routine_action", key: CMUX_GRANT_KEY, action: CMUX_GRANT_ACTION, targets: [repo], maxCount: 5, windowMs: 3_600_000, verificationRequired: true, exclusions: [], provenance: "stated" },
+    })
+    let version = "0.65.0"
+    const items = [pending("stuck-1", { cwd: repo, tool_input: JSON.stringify({ command: "git status" }) })]
+    server.respond("events.stream", () => ackFrame())
+    server.respond("system.identify", () => ({ app: "cmux", version }))
+    server.respond("feed.list", () => ({ items }))
+    server.respond("feed.permission.reply", () => ({ delivered: true }))
     const submitted: ExternalEventInput[] = []
     const timers = manualScheduler()
     app = await startCmuxSenseApp({ agentName: AGENT, now: () => NOW, schedule: timers.schedule, submit: async (input) => { submitted.push(input) } })
+    await vi.waitFor(() => expect(submitted).toHaveLength(1))
+    expect(submitted[0]!.evidence).toContain("why it was not answered automatically: the sense replied once but cmux did not show the request resolved by it")
 
+    await app.stop()
+    app = null
+    fs.writeFileSync(path.join(agentRoot, "state", "senses", "cmux", "state.json"), "{}")
+    version = "0.64.22"
+    items[0] = pending("old-1", { cwd: repo, tool_input: JSON.stringify({ command: "git status" }) })
+    app = await startCmuxSenseApp({ agentName: AGENT, now: () => NOW, schedule: timers.schedule, submit: async (input) => { submitted.push(input) } })
     await vi.waitFor(() => expect(submitted).toHaveLength(2))
-    expect(replies).toEqual([{ request_id: "auto-1", mode: "once" }])
-    expect(submitted.map((input) => input.eventId)).toEqual(["feed:hard-1", "feed:fail-1"])
-    expect(submitted[0]!.evidence).toContain("why it was not answered automatically: floor: rm is never answered for the human")
-    expect(submitted[1]!.evidence).toContain("why it was not answered automatically: the sense's own reply failed")
-    const log = readDecisions(cmuxDecisionLogPath(path.join(agentRoot, "state", "senses", "cmux")))
-    expect(log.map((entry) => [entry.requestId, entry.outcome])).toEqual([["auto-1", "replied_once"], ["hard-1", "escalated"], ["fail-1", "reply_failed"], ["fail-1", "escalated"]])
-
-    timers.run(30_000)
-    await vi.waitFor(() => expect(server.methods.filter((entry) => entry.method === "feed.list").length).toBeGreaterThanOrEqual(4))
-    expect(replies).toHaveLength(1)
-    expect(submitted).toHaveLength(2)
+    expect(submitted[1]!.evidence).toContain("why it was not answered automatically: would answer once (floor: git status only reads), but cmux 0.64.22 is older than 0.65.0")
+    expect(server.methods.filter((entry) => entry.method === "feed.permission.reply")).toHaveLength(1)
   })
 
   it("uses real timers by default", async () => {
