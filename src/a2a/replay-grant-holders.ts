@@ -1,3 +1,4 @@
+import { emitNervesEvent } from "../nerves/runtime"
 import { readGrantFile } from "./operator-trust"
 
 /**
@@ -28,6 +29,9 @@ function validHolder(value: unknown): value is ReplayGrantHolder {
  */
 export function isReplayGrantHolder(agentRoot: string, friendId: string): boolean {
   const view = readGrantFile(agentRoot, REPLAY_GRANT_HOLDERS_FILE, validHolder)
-  if (view.state === "untrusted") return true
+  if (view.state === "untrusted") {
+    emitNervesEvent({ level: "warn", component: "senses", event: "senses.a2a_replay_list_untrusted", message: "the replay list is present but cannot be trusted, so no grant without an expiry is honoured", meta: { file: REPLAY_GRANT_HOLDERS_FILE } })
+    return true
+  }
   return Object.prototype.hasOwnProperty.call(view.grants, friendId) || view.ignored.includes(friendId)
 }
