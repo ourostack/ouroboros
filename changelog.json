@@ -2,6 +2,12 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.891",
+      "changes": [
+        "Replay gate: finding a replay session skips plain files in the Butler's sessions folder, which stopped the alpha.888 gate before any case ran."
+      ]
+    },
+    {
       "version": "0.1.0-alpha.889",
       "changes": [
         "Agents can join a call on this Mac (FaceTime, Zoom, Meet, a podcast recorder) through BlackHole virtual audio: ouro voice join/leave/status and a family-only voice_join_local_audio tool, with a spoken AI disclosure, room-level trust, a two-tool allowlist, a single-join lock and fail-loud device checks."

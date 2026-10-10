@@ -1085,6 +1085,8 @@ export function makeHost({ bundle = DEFAULT_BUNDLE, trustDir = DEFAULT_TRUST_DIR
     async readSession(context) {
       const root = path.join(state, "sessions")
       for (const dir of list(root)) {
+        // state/sessions also holds plain files (old transcripts, turn locks); only real folders hold a2a sessions.
+        if (!lstatOrNull(path.join(root, dir))?.isDirectory()) continue
         const file = path.join(root, dir, "a2a", `${context}.json`)
         if (lstatOrNull(file)) return readJson(file)
       }
