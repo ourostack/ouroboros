@@ -88,6 +88,21 @@ describe("delegated-commands CLI", () => {
   })
 })
 
+describe("delegated-commands CLI reads the bundle-published DID as advisory", () => {
+  it("warns, naming the source, when --did equals the DID the agent published in its bundle and the own DID is unavailable", async () => {
+    const bundlesRoot = root()
+    const agentRoot = bundle(bundlesRoot)
+    mkdirSync(join(agentRoot, "a2a"), { recursive: true })
+    writeFileSync(join(agentRoot, "a2a", "public-identity.json"), JSON.stringify({ did: "did:key:zX" }))
+    const store = new FileFriendStore(join(agentRoot, "friends"))
+    const peer = await upsertAgentPeer(store, { name: "Claude Code", agentId: "did:key:zX", trustLevel: "family", a2a: { did: "did:key:zX", agentId: "did:key:zX", endpointUrl: "https://x.example/a2a" } })
+    await store.put(peer.id, { ...peer, admissionState: "active" })
+    const d = deps({ bundlesRoot, isRoot: () => true, ownA2ADid: () => null, now: () => Date.parse("2026-10-08T12:00:00.000Z") })
+    const granted = await runOuroCli(["a2a", "delegated-commands", "grant", "--agent", "sanctuary", "--friend", peer.id, "--did", "did:key:zX"], d)
+    expect(granted).toContain("source: bundle-published")
+  })
+})
+
 describe("escalation CLI execution", () => {
   async function withFriend(trust: "family" | "friend" = "family", admission: "active" | "unverified" = "active") {
     const bundlesRoot = root()
