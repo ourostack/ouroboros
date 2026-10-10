@@ -5,14 +5,14 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 
 import { cacheMachineRuntimeCredentialConfig, resetRuntimeCredentialConfigCache } from "../../../heart/runtime-credentials"
 import { resetIdentity } from "../../../heart/identity"
-import type { ExternalEventInput } from "../../../heart/external-events/router"
+import type { CmuxEscalation } from "../../../senses/cmux/attention"
 import { startCmuxSenseApp, type CmuxSenseApp } from "../../../senses/cmux/sense"
 import { ackFrame, feedEvent, startFakeCmux, type FakeCmux } from "./fake-cmux"
 
-const mockSendDaemonCommand = vi.fn()
+const mockRequestPrivateWake = vi.fn()
 vi.mock("../../../heart/daemon/socket-client", async (importOriginal) => ({
   ...await importOriginal<typeof import("../../../heart/daemon/socket-client")>(),
-  sendDaemonCommand: (...args: unknown[]) => mockSendDaemonCommand(...args),
+  requestPrivateWake: (...args: unknown[]) => mockRequestPrivateWake(...args),
 }))
 
 const AGENT = "ouroboros"
@@ -60,7 +60,7 @@ beforeEach(async () => {
   resetIdentity()
   server = await startFakeCmux({ capability: "v1.t.s" })
   cacheMachineRuntimeCredentialConfig(AGENT, { cmux: { socketCapability: "v1.t.s", socketPath: server.socketPath } })
-  mockSendDaemonCommand.mockResolvedValue({ ok: true })
+  mockRequestPrivateWake.mockResolvedValue({ ok: true })
 })
 
 afterEach(async () => {
@@ -72,7 +72,7 @@ afterEach(async () => {
   else process.env.HOME = originalHome
   resetIdentity()
   fs.rmSync(home, { recursive: true, force: true })
-  mockSendDaemonCommand.mockReset()
+  mockRequestPrivateWake.mockReset()
 })
 
 describe("cmux sense app", () => {
@@ -82,12 +82,12 @@ describe("cmux sense app", () => {
   })
 
   it("follows the event stream, tracks surfaces, and escalates each pending Feed request once", async () => {
-    const submitted: ExternalEventInput[] = []
+    const submitted: CmuxEscalation[] = []
     let items: unknown[] = []
     server.respond("events.stream", () => ackFrame())
     server.respond("feed.list", () => ({ items }))
     const timers = manualScheduler()
-    app = await startCmuxSenseApp({ agentName: AGENT, now: () => NOW, schedule: timers.schedule, submit: async (input) => { submitted.push(input) } })
+    app = await startCmuxSenseApp({ agentName: AGENT, now: () => NOW, schedule: timers.schedule, escalate: async (input) => { submitted.push(input) } })
 
     await vi.waitFor(() => expect(server.methods.filter((entry) => entry.method === "feed.list")).toHaveLength(1))
     expect(server.methods.find((entry) => entry.method === "events.stream")!.params).toEqual({ categories: ["feed", "surface"] })
@@ -95,8 +95,8 @@ describe("cmux sense app", () => {
     items = [pending("req-1"), pending("req-2", { kind: "question", tool_name: null })]
     server.push(feedEvent(11, { hook_event_name: "PermissionRequest", tool_name: "Bash" }))
     await vi.waitFor(() => expect(submitted).toHaveLength(2))
-    expect(submitted[0]).toMatchObject({ agent: AGENT, source: "cmux", eventType: "feed.permissionRequest", eventId: "feed:req-1" })
-    expect(submitted[0]!.evidence).toContain("surface_id: SF-1")
+    expect(submitted[0]).toMatchObject({ requestId: "req-1" })
+    expect(submitted[0]!.content).toContain("surface_id: SF-1")
 
     server.push(feedEvent(12, { hook_event_name: "Notification" }))
     await vi.waitFor(() => expect(server.methods.filter((entry) => entry.method === "feed.list")).toHaveLength(3))
@@ -117,11 +117,12 @@ describe("cmux sense app", () => {
 
   it("resumes after the persisted cursor and reconnects with backoff after the stream drops", async () => {
     fs.mkdirSync(path.dirname(statePath()), { recursive: true })
-    fs.writeFileSync(statePath(), JSON.stringify({ schemaVersion: 1, bootId: "BOOT-1", seq: 40, surfaces: {}, escalated: [] }))
+    const surface = { workspaceId: "WS-1", agent: "claude", sessionId: "s1", cwd: "/repo", lifecycle: "working", lastHook: "PreToolUse", lastTool: "Bash", at: "2026-10-10T19:00:00.000Z" }
+    fs.writeFileSync(statePath(), JSON.stringify({ schemaVersion: 1, bootId: "BOOT-1", seq: 40, surfaces: { "SF-1": surface }, escalated: [] }))
     server.respond("events.stream", () => ackFrame())
     server.respond("feed.list", () => ({ items: [] }))
     const timers = manualScheduler()
-    app = await startCmuxSenseApp({ agentName: AGENT, now: () => NOW, schedule: timers.schedule, submit: async () => undefined })
+    app = await startCmuxSenseApp({ agentName: AGENT, now: () => NOW, schedule: timers.schedule, escalate: async () => undefined })
 
     await vi.waitFor(() => expect(server.streamCount()).toBe(1))
     expect(server.methods.find((entry) => entry.method === "events.stream")!.params).toEqual({ after_seq: 40, categories: ["feed", "surface"] })
@@ -137,13 +138,18 @@ describe("cmux sense app", () => {
     timers.run(2_000)
     await vi.waitFor(() => expect(server.streamCount()).toBe(1))
 
-    server.respond("events.stream", () => ackFrame({ boot_id: "BOOT-2", resume: { gap: true } }))
+    expect(readState()).toMatchObject({ seq: 40, surfaces: { "SF-1": surface } })
+
+    // cmux restarted and the cursor fell out of its window: the picture is dropped and the cursor jumps to latest_seq.
+    server.respond("events.stream", () => ackFrame({ boot_id: "BOOT-2", resume: { gap: true, latest_seq: 77 } }))
     server.endStreams()
     await vi.waitFor(() => expect(timers.due(5_000)).toBe(1))
     timers.run(5_000)
-    await vi.waitFor(() => expect(readState()).toMatchObject({ bootId: "BOOT-2", connected: true }))
+    await vi.waitFor(() => expect(readState()).toMatchObject({ bootId: "BOOT-2", seq: 77, surfaces: {}, connected: true }))
     server.endStreams()
     await vi.waitFor(() => expect(timers.due(1_000)).toBe(1))
+    timers.run(1_000)
+    await vi.waitFor(() => expect(server.methods.filter((entry) => entry.method === "events.stream").at(-1)!.params).toEqual({ after_seq: 77, categories: ["feed", "surface"] }))
   })
 
   it("caps the reconnect backoff and records refusals with the repair hint", async () => {
@@ -151,7 +157,7 @@ describe("cmux sense app", () => {
     server = await startFakeCmux({ denyAll: true })
     cacheMachineRuntimeCredentialConfig(AGENT, { cmux: { socketCapability: "v1.t.s", socketPath: server.socketPath } })
     const timers = manualScheduler()
-    app = await startCmuxSenseApp({ agentName: AGENT, now: () => NOW, schedule: timers.schedule, submit: async () => undefined })
+    app = await startCmuxSenseApp({ agentName: AGENT, now: () => NOW, schedule: timers.schedule, escalate: async () => undefined })
 
     for (const delay of [1_000, 2_000, 5_000, 10_000, 30_000, 30_000]) {
       await vi.waitFor(() => expect(timers.due(delay)).toBe(1))
@@ -161,25 +167,61 @@ describe("cmux sense app", () => {
     expect(String(readState().lastError)).toContain("ouro vault config set --agent ouroboros")
   })
 
-  it("keeps an item for the next check when the daemon refuses it, and logs Feed read failures", async () => {
+  it("delivers like mail by default: a pending message in the private runtime plus a wake, kept even when the wake is refused, and logs Feed read failures", async () => {
     let fail = true
     server.respond("events.stream", () => ackFrame())
     server.respond("feed.list", () => {
       if (fail) throw new Error("feed unavailable")
-      return { items: [pending("req-9")] }
+      return { items: [pending("req-9"), pending("req-10")] }
     })
-    mockSendDaemonCommand.mockResolvedValueOnce({ ok: false, error: "daemon busy" }).mockResolvedValueOnce({ ok: false }).mockResolvedValue({ ok: true })
+    mockRequestPrivateWake.mockResolvedValueOnce({ ok: false, error: "daemon busy" }).mockRejectedValueOnce(new Error("socket gone")).mockResolvedValueOnce({ ok: false }).mockResolvedValue(null)
     const timers = manualScheduler()
     app = await startCmuxSenseApp({ agentName: AGENT, now: () => NOW, schedule: timers.schedule })
 
     await vi.waitFor(() => expect(server.methods.filter((entry) => entry.method === "feed.list")).toHaveLength(1))
+    expect(mockRequestPrivateWake).not.toHaveBeenCalled()
     fail = false
-    for (let attempt = 0; attempt < 3; attempt += 1) {
-      timers.run(30_000)
-      await vi.waitFor(() => expect(mockSendDaemonCommand).toHaveBeenCalledTimes(attempt + 1))
-    }
-    expect(mockSendDaemonCommand).toHaveBeenLastCalledWith("/tmp/ouroboros-daemon.sock", expect.objectContaining({ kind: "external.event.submit", eventId: "feed:req-9", source: "cmux" }))
-    await vi.waitFor(() => expect(readState().escalated).toEqual(["req-9"]))
+    timers.run(30_000)
+    await vi.waitFor(() => expect(readState().escalated).toEqual(["req-9", "req-10"]))
+    expect(mockRequestPrivateWake).toHaveBeenCalledWith(AGENT, undefined, {
+      reason: "cmux Feed request",
+      triggerSource: "cmux-feed",
+      budgetClass: "interactive",
+      idempotencyKey: "cmux-feed:ouroboros:req-9",
+      originRefs: [{ kind: "cmux-feed", id: "req-9" }, { kind: "sense", id: "cmux" }],
+    })
+    const pendingDir = path.join(home, "AgentBundles", `${AGENT}.ouro`, "state", "pending", "self", "inner", "dialog")
+    const queued = fs.readdirSync(pendingDir).map((name) => JSON.parse(fs.readFileSync(path.join(pendingDir, name), "utf-8")) as Record<string, unknown>)
+    expect(queued).toHaveLength(2)
+    expect(queued[0]).toMatchObject({ from: "cmux", friendId: "self", channel: "cmux", key: "feed", timestamp: NOW, expiresAt: NOW + 30 * 60_000, mode: "reflect" })
+    expect(queued.map((entry) => String(entry.content))).toEqual(expect.arrayContaining([expect.stringContaining("request_id: req-9"), expect.stringContaining("request_id: req-10")]))
+    // A refusal without a message, and no daemon socket at all (null), leave the message queued the same way.
+    server.respond("feed.list", () => ({ items: [pending("req-11"), pending("req-12")] }))
+    timers.run(30_000)
+    await vi.waitFor(() => expect(readState().escalated).toEqual(["req-9", "req-10", "req-11", "req-12"]))
+  })
+
+  it("keeps checking the Feed after a state write fails, and writes again once it can", async () => {
+    server.respond("events.stream", () => ackFrame())
+    let items = [pending("first")]
+    server.respond("feed.list", () => ({ items }))
+    const submitted: string[] = []
+    const timers = manualScheduler()
+    app = await startCmuxSenseApp({ agentName: AGENT, now: () => NOW, schedule: timers.schedule, escalate: async (input) => { submitted.push(input.requestId) } })
+    await vi.waitFor(() => expect(readState().escalated).toEqual(["first"]))
+    // A non-empty directory where the state file goes makes every write fail.
+    fs.unlinkSync(statePath())
+    fs.mkdirSync(path.join(statePath(), "blocker"), { recursive: true })
+    items = [pending("second")]
+    timers.run(30_000)
+    await vi.waitFor(() => expect(submitted).toEqual(["first", "second"]))
+    items = [pending("third")]
+    timers.run(30_000)
+    await vi.waitFor(() => expect(submitted).toEqual(["first", "second", "third"]))
+    fs.rmSync(statePath(), { recursive: true })
+    items = []
+    timers.run(30_000)
+    await vi.waitFor(() => expect(readState().escalated).toEqual(["first", "second", "third"]))
   })
 
   it("escalates the other pending items when one cannot be recorded", async () => {
@@ -188,15 +230,15 @@ describe("cmux sense app", () => {
     const submitted: string[] = []
     let refuse = true
     const timers = manualScheduler()
-    app = await startCmuxSenseApp({ agentName: AGENT, now: () => NOW, schedule: timers.schedule, submit: async (input) => {
-      if (input.eventId === "feed:bad" && refuse) throw new Error("daemon refused")
-      submitted.push(input.eventId)
+    app = await startCmuxSenseApp({ agentName: AGENT, now: () => NOW, schedule: timers.schedule, escalate: async (input) => {
+      if (input.requestId === "bad" && refuse) throw new Error("queue unavailable")
+      submitted.push(input.requestId)
     } })
-    await vi.waitFor(() => expect(submitted).toEqual(["feed:good"]))
+    await vi.waitFor(() => expect(submitted).toEqual(["good"]))
     await vi.waitFor(() => expect(readState().escalated).toEqual(["good"]))
     refuse = false
     timers.run(30_000)
-    await vi.waitFor(() => expect(submitted).toEqual(["feed:good", "feed:bad"]))
+    await vi.waitFor(() => expect(submitted).toEqual(["good", "bad"]))
   })
 
   it("records the cmux version from system.identify, and null when cmux does not say", async () => {
@@ -205,7 +247,7 @@ describe("cmux sense app", () => {
     let version: unknown = "0.65.1"
     server.respond("system.identify", () => (version === "throw" ? (() => { throw new Error("nope") })() : { app: "cmux", version }))
     const timers = manualScheduler()
-    app = await startCmuxSenseApp({ agentName: AGENT, now: () => NOW, schedule: timers.schedule, submit: async () => undefined })
+    app = await startCmuxSenseApp({ agentName: AGENT, now: () => NOW, schedule: timers.schedule, escalate: async () => undefined })
     await vi.waitFor(() => { timers.run(1_000); expect(readState().cmuxVersion).toBe("0.65.1") })
     version = 7
     server.endStreams()
@@ -222,7 +264,7 @@ describe("cmux sense app", () => {
     server.respond("feed.list", () => ({ items: [] }))
     const timers = manualScheduler()
     let clock = NOW
-    app = await startCmuxSenseApp({ agentName: AGENT, now: () => clock, schedule: timers.schedule, submit: async () => undefined })
+    app = await startCmuxSenseApp({ agentName: AGENT, now: () => clock, schedule: timers.schedule, escalate: async () => undefined })
     await vi.waitFor(() => { timers.run(1_000); expect(readState()).toMatchObject({ connected: true }) })
     await vi.waitFor(() => expect(server.methods.filter((entry) => entry.method === "feed.list").length).toBeGreaterThanOrEqual(1))
     const before = readState().updatedAt
@@ -238,7 +280,7 @@ describe("cmux sense app", () => {
     server.respond("events.stream", () => ackFrame({ boot_id: undefined }))
     server.respond("feed.list", () => { calls += 1; return { items: [] } })
     const timers = manualScheduler()
-    app = await startCmuxSenseApp({ agentName: AGENT, now: () => NOW, schedule: timers.schedule, submit: async () => undefined })
+    app = await startCmuxSenseApp({ agentName: AGENT, now: () => NOW, schedule: timers.schedule, escalate: async () => undefined })
     await vi.waitFor(() => expect(calls).toBe(1))
 
     server.push(feedEvent(11, { hook_event_name: "PermissionRequest" }))
@@ -258,7 +300,7 @@ describe("cmux sense app", () => {
     server.respond("events.stream", () => ackFrame())
     server.respond("feed.list", () => ({ items: [] }))
     const timers = manualScheduler()
-    app = await startCmuxSenseApp({ agentName: AGENT, now: () => NOW, schedule: timers.schedule, submit: async () => undefined })
+    app = await startCmuxSenseApp({ agentName: AGENT, now: () => NOW, schedule: timers.schedule, escalate: async () => undefined })
     await vi.waitFor(() => expect(server.streamCount()).toBe(1))
 
     await app.stop()
@@ -272,7 +314,7 @@ describe("cmux sense app", () => {
   it("uses real timers by default", async () => {
     server.respond("events.stream", () => ackFrame())
     server.respond("feed.list", () => ({ items: [] }))
-    app = await startCmuxSenseApp({ agentName: AGENT, submit: async () => undefined })
+    app = await startCmuxSenseApp({ agentName: AGENT, escalate: async () => undefined })
     await vi.waitFor(() => expect(server.streamCount()).toBe(1))
   })
 })

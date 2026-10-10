@@ -1,7 +1,5 @@
-import { createHash } from "node:crypto"
 import * as fs from "node:fs"
 import * as path from "node:path"
-import type { ExternalEventInput } from "../../heart/external-events/router"
 import { emitNervesEvent } from "../../nerves/runtime"
 
 /**
@@ -209,21 +207,22 @@ const KIND_LABELS: Record<string, string> = {
   exitPlan: "a plan approval",
 }
 
-function boundedEventId(requestId: string): string {
-  const safe = requestId.replace(/[^A-Za-z0-9._:-]/g, "_")
-  if (safe.length <= 150) return `feed:${safe}`
-  return `feed:${safe.slice(0, 100)}:${createHash("sha256").update(requestId).digest("hex").slice(0, 32)}`
+export interface CmuxEscalation {
+  requestId: string
+  /** The pending message the agent's private runtime reads: where the request is and what kind it is. */
+  content: string
 }
 
 /**
- * One external event per Feed request id. The receipt names where the request is and what kind it
- * is, never the tool input: provider payloads are untrusted telemetry and may hold secrets.
+ * One escalation per Feed request id, delivered like the mail sense's notices: a pending message in
+ * the agent's private runtime. The receipt names where the request is and what kind it is, never the
+ * tool input: provider payloads are untrusted telemetry and may hold secrets.
  */
-export function escalationInput(
+export function escalationMessage(
   agent: string,
   item: CmuxPendingFeedItem,
   surface: { surfaceId: string; activity: CmuxSurfaceActivity } | null,
-): ExternalEventInput {
+): CmuxEscalation {
   const who = AGENT_LABELS[item.source] ?? item.source
   const tool = item.toolName ? ` (${item.toolName})` : ""
   const where = item.cwd ? ` in ${path.basename(item.cwd)}` : ""
@@ -234,19 +233,18 @@ export function escalationInput(
     meta: { agent, kind: item.kind, source: item.source },
   })
   return {
-    agent,
-    source: "cmux",
-    eventType: `feed.${item.kind}`,
-    eventId: boundedEventId(item.requestId),
-    summary: `${who} is waiting for ${KIND_LABELS[item.kind]}${tool}${where}`,
-    evidence: [
+    requestId: item.requestId,
+    content: [
+      "[cmux Feed request]",
+      `${who} is waiting for ${KIND_LABELS[item.kind]}${tool}${where}.`,
+      "",
       `request_id: ${item.requestId}`,
       `workspace_id: ${surface?.activity.workspaceId ?? "unknown"}`,
       `surface_id: ${surface?.surfaceId ?? "unknown"}`,
       `cwd: ${item.cwd ?? "unknown"}`,
       `created_at: ${item.createdAt ?? "unknown"}`,
+      "",
       "cmux waits about 120 seconds for a Feed answer, then the agent falls back to its own terminal prompt. Use cmux_overview and cmux_read to see it, and cmux_signal to tell the human.",
-    ],
-    priority: "high",
+    ].join("\n"),
   }
 }

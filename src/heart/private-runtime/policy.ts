@@ -156,6 +156,16 @@ async function evaluatePolicy(
     }
   }
   if (
+    request.triggerSource === "cmux-feed"
+    && hasNonEmptyOriginRef(originRefs, "cmux-feed")
+    && hasOriginRef(originRefs, "sense", "cmux")
+  ) {
+    return {
+      result: "allow",
+      reason: "cmux sense escalation",
+    }
+  }
+  if (
     request.triggerSource === "operator-cli"
     && hasOriginRef(originRefs, "cli-command", "ouro msg")
     && hasNonEmptyOriginRef(originRefs, "daemon-receipt")
