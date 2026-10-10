@@ -2,6 +2,12 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.886",
+      "changes": [
+        "Replay gate: the self-resolving await case now waits for a UTC minute three minutes ahead, so the Butler is never asked to file an await whose condition is already true."
+      ]
+    },
+    {
       "version": "0.1.0-alpha.884",
       "changes": [
         "The Butler's answer gate now catches replies that open each paragraph with a character name when the owner asked about names from a book or show, without flagging ordinary openers such as \"Based on the wiki\".",
