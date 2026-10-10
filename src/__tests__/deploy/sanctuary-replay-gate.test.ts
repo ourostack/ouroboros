@@ -456,7 +456,15 @@ describe("runSuite orchestration", () => {
     expect(names[0]).toBeDefined()
     expect(names[1]).toBeDefined()
     expect(names[0]).not.toBe(names[1])
-    expect(sent[0]).toMatch(/file an await named replay_[0-9a-f]{8} that resolves once the ouro-butler container is running, check every 1m, max 15m/)
+    expect(sent[0]).toMatch(/file an await named replay_[0-9a-f]{8} that resolves once the UTC time is \d\d:\d\d or later, check every 1m, max 15m/)
+  })
+
+  it("asks for an await whose condition is false when filed and turns true two to three minutes later", () => {
+    const byId = gate.CASES.find((c: { id: string }) => c.id === "await-self-resolve")
+    const words = byId.words({ context: "94cf7f59-4127-4333-85ef-ae58dc3744b6", now: new Date("2026-10-10T01:45:38.513Z") })
+    expect(words).toBe("file an await named replay_94cf7f59 that resolves once the UTC time is 01:48 or later, check every 1m, max 15m")
+    expect(byId.words({ context: "abcdef12-0000", now: new Date("2026-10-10T23:59:01.000Z") })).toContain("once the UTC time is 00:02 or later")
+    expect(byId.words({ context: "abcdef12-0000" })).toMatch(/^file an await named replay_abcdef12 that resolves once the UTC time is \d\d:\d\d or later/)
   })
 
   it("names the exact archive status and the cancel reason when the await did not resolve", () => {

@@ -150,6 +150,12 @@ export function properNouns(text, known = "", strict = false) {
   return out
 }
 
+/** HH:MM (UTC) of the whole minute `minutes` after the start of `now`'s minute. */
+export function utcMinuteAhead(now, minutes) {
+  const at = new Date(Math.floor(now.getTime() / 60000) * 60000 + minutes * 60000)
+  return `${String(at.getUTCHours()).padStart(2, "0")}:${String(at.getUTCMinutes()).padStart(2, "0")}`
+}
+
 const check = (name, ok, detail = "") => ({ name, ok: Boolean(ok), ...(detail ? { detail } : {}) })
 const sinkFor = (sink, friendId, predicate) => sink.filter((line) => line.friendId === friendId && predicate(line))
 const isDelegatedNotice = (line) => String(line.noticeId).startsWith("delegated:")
@@ -386,7 +392,10 @@ export const CASES = [
     id: "await-self-resolve",
     // A name unique to the run: an earlier run leaves an archived await of the same name behind, and the Butler's
     // shared inner session remembers it.
-    words: ({ context }) => `file an await named replay_${context.slice(0, 8)} that resolves once the ouro-butler container is running, check every 1m, max 15m`,
+    // The condition must be false when filed: given one already true ("the container is running"), the Butler reasonably
+    // answers that no await is needed (alpha.884 session 94cf7f59) and the await path goes untested. A wall-clock minute
+    // two to three minutes ahead is false at filing and turns true on its own.
+    words: ({ context, now = new Date() }) => `file an await named replay_${context.slice(0, 8)} that resolves once the UTC time is ${utcMinuteAhead(now, 3)} or later, check every 1m, max 15m`,
     sender: "principal",
     // The delegated path: the outcome reaches the owner (here, the sink). The plain path is peer-await-delivers.
     delegated: true,
