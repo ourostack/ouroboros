@@ -6,6 +6,7 @@ import { getAgentRoot } from "../../heart/identity"
 import { readMachineRuntimeCredentialConfig } from "../../heart/runtime-credentials"
 import { emitNervesEvent } from "../../nerves/runtime"
 import {
+  applyAck,
   applyEventFrame,
   escalationInput,
   pendingFeedItems,
@@ -73,10 +74,15 @@ export async function startCmuxSenseApp(options: CmuxSenseAppOptions): Promise<C
   let cancelSave: (() => void) | null = null
   let feedChain: Promise<void> = Promise.resolve()
   let feedQueued = false
+  let lastWritten: string | null = null
 
+  /** Writes the state file only when something other than the timestamp changed. */
   const save = (): void => {
     cancelSave?.()
     cancelSave = null
+    const body = JSON.stringify({ ...state, updatedAt: null })
+    if (body === lastWritten) return
+    lastWritten = body
     state.updatedAt = now()
     writeCmuxState(statePath, state)
   }
@@ -88,9 +94,14 @@ export async function startCmuxSenseApp(options: CmuxSenseAppOptions): Promise<C
     try {
       const items = pendingFeedItems(await client.call("feed.list", { pending_only: true }))
       for (const item of items.filter((entry) => !state.escalated.includes(entry.requestId))) {
-        await submit(escalationInput(agent, item, surfaceForSession(state, item.workstreamId)))
-        rememberEscalation(state, item.requestId)
-        emitNervesEvent({ component: "senses", event: "senses.cmux_escalated", message: "recorded a cmux Feed request as an external event", meta: { agent, kind: item.kind, source: item.source } })
+        // One failing item never blocks the others; it stays unremembered, so the next check retries it.
+        try {
+          await submit(escalationInput(agent, item, surfaceForSession(state, item.workstreamId)))
+          rememberEscalation(state, item.requestId)
+          emitNervesEvent({ component: "senses", event: "senses.cmux_escalated", message: "recorded a cmux Feed request as an external event", meta: { agent, kind: item.kind, source: item.source } })
+        } catch (error) {
+          emitNervesEvent({ level: "warn", component: "senses", event: "senses.cmux_escalation_error", message: "could not record a cmux Feed request; the next check retries", meta: { agent, error: (error as Error).message } })
+        }
       }
     } catch (error) {
       emitNervesEvent({ level: "warn", component: "senses", event: "senses.cmux_feed_check_error", message: "cmux Feed check failed; the next check retries", meta: { agent, error: (error as Error).message } })
@@ -108,6 +119,17 @@ export async function startCmuxSenseApp(options: CmuxSenseAppOptions): Promise<C
     })
   }
 
+  /** Records the cmux version once per connection; observing works on any version. */
+  async function identify(): Promise<void> {
+    try {
+      const result = await client.call("system.identify", {})
+      state.cmuxVersion = typeof result.version === "string" ? result.version : null
+    } catch {
+      state.cmuxVersion = null
+    }
+    saveSoon()
+  }
+
   const poll = (): void => {
     cancelPoll = schedule(() => {
       requestFeedCheck()
@@ -121,10 +143,11 @@ export async function startCmuxSenseApp(options: CmuxSenseAppOptions): Promise<C
       onFrame: (frame) => {
         if (frame.type === "ack") {
           attempt = 0
-          state.bootId = typeof frame.boot_id === "string" ? frame.boot_id : state.bootId
+          const { reset } = applyAck(state, frame)
           state.connected = true
           state.lastError = null
-          emitNervesEvent({ component: "senses", event: "senses.cmux_stream_connected", message: "cmux event stream connected", meta: { agent, resumeGap: (frame.resume as { gap?: unknown } | undefined)?.gap === true } })
+          emitNervesEvent({ component: "senses", event: "senses.cmux_stream_connected", message: "cmux event stream connected", meta: { agent, reset } })
+          void identify()
           requestFeedCheck()
           return
         }

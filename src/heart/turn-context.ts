@@ -42,7 +42,7 @@ import { buildAgentProviderVisibility, type AgentProviderVisibility } from "./pr
 import { listVisibleBackgroundOperations } from "./mail-import-discovery"
 import { readFlightRecorderResume } from "../arc/flight-recorder"
 import { readContextLossSentinelView } from "./context-loss-sentinel"
-import { cmuxConfigFacts } from "./cmux-config"
+import { cmuxSenseStatus } from "./cmux-config"
 
 // ── TurnContext: the raw state snapshot ─────────────────────────────
 
@@ -291,7 +291,7 @@ export function readSenseStatusLines(): string[] {
         && hasTextField(runtimePayload, "telegramAuthorizedUserId")
         && hasTextField(runtimePayload, "telegramAuthorizedChatId"),
     workbench: false,
-    cmux: cmuxConfigFacts(machinePayload).configured,
+    cmux: cmuxSenseStatus(true, machinePayload) === "ready",
   }
 
   const rows: Array<{ label: string; status: string }> = [
@@ -322,7 +322,7 @@ export function readSenseStatusLines(): string[] {
     },
     {
       label: "cmux",
-      status: !senses.cmux.enabled ? "disabled" : configured.cmux ? "ready" : "not_attached",
+      status: cmuxSenseStatus(senses.cmux.enabled, machinePayload),
     },
     {
       label: "Workbench",

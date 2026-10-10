@@ -60,6 +60,14 @@ export function cmuxConfigFacts(machinePayload: Record<string, unknown>): CmuxCo
   return { configured: true, detail: `socket auth: ${auth.kind === "none" ? "automation mode" : auth.kind}` }
 }
 
+/** The one-word status the prompt and turn context show for the cmux sense, matching the daemon's sense rows. */
+export function cmuxSenseStatus(enabled: boolean, machinePayload: Record<string, unknown>): "disabled" | "ready" | "not_attached" | "needs_config" {
+  if (!enabled) return "disabled"
+  const facts = cmuxConfigFacts(machinePayload)
+  if (facts.configured) return "ready"
+  return facts.optional ? "not_attached" : "needs_config"
+}
+
 /** cmux's own default: `~/.local/state/cmux/cmux-<uid>.sock`, then the older unscoped `cmux.sock`. */
 export function defaultCmuxSocketPath(
   homeDir: string = os.homedir(),

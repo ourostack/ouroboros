@@ -85,7 +85,7 @@ describe("cmux_overview", () => {
 
     const result = await call(cmuxOverviewToolDefinition, {})
 
-    expect(result.sense).toEqual({ connected: true, lastError: null })
+    expect(result.sense).toEqual({ connected: true, lastError: null, cmuxVersion: null })
     const waiting = result.waitingOnHuman as Array<Record<string, unknown>>
     expect(waiting[0]).toMatchObject({ requestId: "r1", kind: "permissionRequest", agent: "claude", tool: "Bash", workspace: "workspace:1", surface: "surface:1", requestTruncated: false })
     expect(waiting[0]!.request).toContain("Bearer [redacted]")

@@ -261,7 +261,7 @@ describe("guardInvocation — structural guardrails", () => {
         expect(guardInvocation(tool, {}, { readPaths: new Set(), trustLevel })).toEqual(expect.objectContaining({ allowed: false }))
       }
       expect(guardInvocation(tool, {}, { readPaths: new Set(), trustLevel: "family" })).toEqual({ allowed: true })
-      expect(guardInvocation(tool, {}, { readPaths: new Set() })).toEqual({ allowed: true })
+      expect(guardInvocation(tool, {}, { readPaths: new Set() })).toEqual(expect.objectContaining({ allowed: false }))
     }
   })
 

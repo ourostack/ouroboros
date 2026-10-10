@@ -5,12 +5,15 @@ The cmux sense lets an agent watch the coding agents (Claude Code, Codex, Copilo
 ## What it does
 
 - **Follows cmux's event stream.** The sense process holds one `events.stream` connection to the cmux control socket, filtered to the `feed` and `surface` categories. From the hook events it keeps, per terminal (cmux calls it a surface), which agent runs there, which folder it is in, its last hook and tool, and a lifecycle: `working`, `idle` (finished its turn and waiting for a prompt), `waiting` (blocked on the human) or `ended`.
-- **Escalates decisions cmux is holding open.** When a hook says a decision may be pending, and every 30 seconds, the sense reads `feed.list {"pending_only": true}`. Each new pending permission request, question or plan approval becomes one external event (source `cmux`, event id `feed:<request id>`), so the agent's attention sees it once. The receipt names the agent, tool, folder and terminal, never the tool input: provider payloads can hold secrets.
-- **Resumes where it left off.** The event cursor (cmux boot id and sequence), the per-terminal activity and the request ids already escalated live in `state/senses/cmux/state.json` in the agent bundle (directory `0700`, file `0600`). After a disconnect it reconnects with backoff (1, 2, 5, 10, then 30 seconds) and resumes after the saved sequence.
+- **Escalates decisions cmux is holding open.** When a hook says a decision may be pending, and every 30 seconds, the sense reads `feed.list {"pending_only": true}`. Each new pending permission request, question or plan approval becomes one external event (source `cmux`, event id `feed:<request id>`), so the agent's attention sees it once. If one item cannot be recorded, the others still are, and the failed one is retried on the next check. The receipt names the agent, tool, folder and terminal, never the tool input: provider payloads can hold secrets.
+- **Event fields it relies on.** cmux publishes each hook as both `agent.hook.<HookEventName>` and `feed.item.received` with the same payload: `session_id`, `hook_event_name`, `_source`, `workspace_id`, `surface_id`, `cwd` and `tool_name`. The tool input is replaced by its length. This is checked against cmux's `CmuxEventPublishing.workstreamPayload`, so the `feed` category is enough and the sense does not subscribe to `agent`.
+- **Resets after a gap.** When the stream `ack` reports `resume.gap`, or cmux comes back with a new `boot_id`, the sense drops its per-terminal picture and moves its cursor to `resume.latest_seq`. The next hook events rebuild the picture.
+- **Records the cmux version.** On each connection it asks `system.identify` for the app version and keeps it in the state file. `cmux_overview` shows it. Observing and escalating work on any version.
+- **Resumes where it left off.** The event cursor (cmux boot id and sequence), the per-terminal activity and the request ids already escalated live in `state/senses/cmux/state.json` in the agent bundle (directory `0700`, file `0600`). The file is rewritten only when something other than its timestamp changed. After a disconnect it reconnects with backoff (1, 2, 5, 10, then 30 seconds) and resumes after the saved sequence.
 
 ## Tools
 
-The tools appear only for an agent whose `agent.json` has `senses.cmux.enabled: true`, and only at family trust.
+The tools appear only for an agent whose `agent.json` has `senses.cmux.enabled: true`. Only family trust may call them; a call with no known trust level is refused.
 
 | Tool | What it does | Changes anything? |
 | --- | --- | --- |
@@ -32,7 +35,7 @@ The sense needs the cmux socket credential on this machine. It lives in the agen
 2. Set `senses.cmux.enabled: true` in `agent.json`.
 3. Run `ouro up`.
 
-`ouro status` reports the sense as `not_attached` on a machine with no `cmux` record, `needs_config` when the record has no credential (with the command above as the repair), and `running` once the process is up. When the socket refuses the credential, the sense records the refusal and the same repair hint in its state file and keeps retrying.
+`ouro status` reports the sense as `not_attached` on a machine with no `cmux` record, `needs_config` when the record has no credential (with the command above as the repair), and `running` once the process is up. The agent's own sense list in its prompt uses the same words (`ready` in place of `running`). When the socket refuses the credential, the sense records the refusal and the same repair hint in its state file and keeps retrying.
 
 ## Wire protocol notes
 

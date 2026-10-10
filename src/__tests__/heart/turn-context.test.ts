@@ -792,6 +792,9 @@ describe("buildTurnContext", () => {
 
     mockReadMachineRuntimeCredentialConfig.mockReturnValue({ ok: false, reason: "missing", itemPath: "x", error: "missing" })
     expect((await buildTurnContext(makeInput())).senseStatusLines).toContain("- cmux: not_attached")
+
+    mockReadMachineRuntimeCredentialConfig.mockReturnValue({ ok: true, itemPath: "x", revision: "r", updatedAt: "2026-10-10T00:00:00.000Z", config: { cmux: { socketPath: "/s.sock" } } })
+    expect((await buildTurnContext(makeInput())).senseStatusLines).toContain("- cmux: needs_config")
   })
 
   it("detects needs_config when senses enabled but runtime config is incomplete", async () => {

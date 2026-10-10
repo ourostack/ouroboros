@@ -738,6 +738,10 @@ describe("buildSystem", () => {
     resetPsycheCache()
     expect(flattenSystemPrompt(await buildSystem("cli"))).toContain("cmux: not_attached")
 
+    cacheMachineRuntimeCredentialConfig("testagent", { cmux: { socketPath: "/s.sock" } })
+    resetPsycheCache()
+    expect(flattenSystemPrompt(await buildSystem("cli"))).toContain("cmux: needs_config")
+
     cacheMachineRuntimeCredentialConfig("testagent", { cmux: { socketCapability: "v1.a.b" } })
     resetPsycheCache()
     expect(flattenSystemPrompt(await buildSystem("cli"))).toContain("cmux: ready")

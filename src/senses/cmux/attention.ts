@@ -32,6 +32,8 @@ export interface CmuxSenseState {
   /** Whether the sense currently holds a live `events.stream`, and the last connection error (with its repair hint). */
   connected: boolean
   lastError: string | null
+  /** The cmux app version from `system.identify`, or null when cmux did not say. */
+  cmuxVersion: string | null
   updatedAt: string
 }
 
@@ -61,7 +63,7 @@ function str(value: unknown): string | null {
 }
 
 export function emptyCmuxState(now: string): CmuxSenseState {
-  return { schemaVersion: 1, bootId: null, seq: null, surfaces: {}, escalated: [], connected: false, lastError: null, updatedAt: now }
+  return { schemaVersion: 1, bootId: null, seq: null, surfaces: {}, escalated: [], connected: false, lastError: null, cmuxVersion: null, updatedAt: now }
 }
 
 export function readCmuxState(file: string, now: string): CmuxSenseState {
@@ -76,6 +78,7 @@ export function readCmuxState(file: string, now: string): CmuxSenseState {
       escalated: Array.isArray(value.escalated) ? value.escalated.filter((id): id is string => typeof id === "string") : [],
       connected: value.connected === true,
       lastError: str(value.lastError),
+      cmuxVersion: str(value.cmuxVersion),
     }
   } catch {
     return emptyCmuxState(now)
@@ -97,6 +100,35 @@ function lifecycleFor(hook: string, tool: string | null): CmuxLifecycle {
   if (hook === "PermissionRequest" || hook === "Notification") return "waiting"
   if (hook === "PreToolUse" && tool && BLOCKING_TOOLS.has(tool)) return "waiting"
   return "working"
+}
+
+/**
+ * Applies a stream `ack`. When cmux restarted (a new boot id) or the cursor fell out of cmux's
+ * retained window (`resume.gap`), the per-terminal picture can be wrong, so it is dropped and the
+ * cursor moves to cmux's latest sequence. Returns whether that reset happened.
+ */
+export function applyAck(state: CmuxSenseState, frame: Record<string, unknown>): { reset: boolean } {
+  const bootId = str(frame.boot_id)
+  const resume = isRecord(frame.resume) ? frame.resume : {}
+  const reset = resume.gap === true || (bootId !== null && state.bootId !== null && bootId !== state.bootId)
+  if (reset) {
+    state.surfaces = {}
+    state.seq = typeof resume.latest_seq === "number" ? resume.latest_seq : null
+  }
+  state.bootId = bootId ?? state.bootId
+  return { reset }
+}
+
+/** Whether a cmux version string (for example `0.64.22`) is at least `minimum`. Unknown versions are not. */
+export function cmuxVersionAtLeast(version: string | null, minimum: string): boolean {
+  const parse = (value: string) => /^(\d+)\.(\d+)\.(\d+)/.exec(value)?.slice(1).map(Number) ?? null
+  const have = version ? parse(version) : null
+  const want = parse(minimum)!
+  if (!have) return false
+  for (let index = 0; index < 3; index += 1) {
+    if (have[index]! !== want[index]!) return have[index]! > want[index]!
+  }
+  return true
 }
 
 /**

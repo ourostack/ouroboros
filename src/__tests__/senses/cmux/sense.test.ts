@@ -182,6 +182,57 @@ describe("cmux sense app", () => {
     await vi.waitFor(() => expect(readState().escalated).toEqual(["req-9"]))
   })
 
+  it("escalates the other pending items when one cannot be recorded", async () => {
+    server.respond("events.stream", () => ackFrame())
+    server.respond("feed.list", () => ({ items: [pending("bad"), pending("good")] }))
+    const submitted: string[] = []
+    let refuse = true
+    const timers = manualScheduler()
+    app = await startCmuxSenseApp({ agentName: AGENT, now: () => NOW, schedule: timers.schedule, submit: async (input) => {
+      if (input.eventId === "feed:bad" && refuse) throw new Error("daemon refused")
+      submitted.push(input.eventId)
+    } })
+    await vi.waitFor(() => expect(submitted).toEqual(["feed:good"]))
+    await vi.waitFor(() => expect(readState().escalated).toEqual(["good"]))
+    refuse = false
+    timers.run(30_000)
+    await vi.waitFor(() => expect(submitted).toEqual(["feed:good", "feed:bad"]))
+  })
+
+  it("records the cmux version from system.identify, and null when cmux does not say", async () => {
+    server.respond("events.stream", () => ackFrame())
+    server.respond("feed.list", () => ({ items: [] }))
+    let version: unknown = "0.65.1"
+    server.respond("system.identify", () => (version === "throw" ? (() => { throw new Error("nope") })() : { app: "cmux", version }))
+    const timers = manualScheduler()
+    app = await startCmuxSenseApp({ agentName: AGENT, now: () => NOW, schedule: timers.schedule, submit: async () => undefined })
+    await vi.waitFor(() => { timers.run(1_000); expect(readState().cmuxVersion).toBe("0.65.1") })
+    version = 7
+    server.endStreams()
+    await vi.waitFor(() => expect(timers.due(1_000)).toBeGreaterThanOrEqual(1))
+    await vi.waitFor(() => { timers.run(1_000); expect(readState().cmuxVersion).toBeNull() })
+    version = "throw"
+    server.endStreams()
+    await vi.waitFor(() => { timers.run(1_000); expect(server.methods.filter((entry) => entry.method === "system.identify").length).toBeGreaterThanOrEqual(3) })
+    await vi.waitFor(() => { timers.run(1_000); expect(readState().cmuxVersion).toBeNull() })
+  })
+
+  it("does not rewrite the state file when nothing changed", async () => {
+    server.respond("events.stream", () => ackFrame())
+    server.respond("feed.list", () => ({ items: [] }))
+    const timers = manualScheduler()
+    let clock = NOW
+    app = await startCmuxSenseApp({ agentName: AGENT, now: () => clock, schedule: timers.schedule, submit: async () => undefined })
+    await vi.waitFor(() => { timers.run(1_000); expect(readState()).toMatchObject({ connected: true }) })
+    await vi.waitFor(() => expect(server.methods.filter((entry) => entry.method === "feed.list").length).toBeGreaterThanOrEqual(1))
+    const before = readState().updatedAt
+    clock = NOW + 60_000
+    timers.run(30_000)
+    await vi.waitFor(() => expect(server.methods.filter((entry) => entry.method === "feed.list").length).toBeGreaterThanOrEqual(2))
+    timers.run(1_000)
+    expect(readState().updatedAt).toBe(before)
+  })
+
   it("coalesces Feed checks requested while one is already queued", async () => {
     let calls = 0
     server.respond("events.stream", () => ackFrame({ boot_id: undefined }))

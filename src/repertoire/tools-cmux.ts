@@ -87,7 +87,7 @@ async function overview(ctx: ToolContext | undefined): Promise<string> {
     }
     emitNervesEvent({ component: "repertoire", event: "repertoire.cmux_overview", message: "read cmux overview", meta: { workspaces: workspaces.length, waiting: pending.length } })
     return JSON.stringify({
-      sense: { connected: state.connected, lastError: state.lastError },
+      sense: { connected: state.connected, lastError: state.lastError, cmuxVersion: state.cmuxVersion },
       waitingOnHuman: pending.map((item) => {
         const where = refFor(surfaceForSession(state, item.workstreamId)?.surfaceId)
         return {

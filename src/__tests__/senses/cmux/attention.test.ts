@@ -4,7 +4,9 @@ import * as path from "node:path"
 import { afterEach, describe, expect, it } from "vitest"
 
 import {
+  applyAck,
   applyEventFrame,
+  cmuxVersionAtLeast,
   emptyCmuxState,
   escalationInput,
   pendingFeedItems,
@@ -197,5 +199,33 @@ describe("escalation receipts", () => {
     const longB = escalationInput("a", { ...item, requestId: `${"x".repeat(200)}b` }, null)
     expect(longA.eventId.length).toBeLessThanOrEqual(160)
     expect(longA.eventId).not.toBe(longB.eventId)
+  })
+})
+
+describe("stream acks and cmux versions", () => {
+  it("drops the per-terminal picture and jumps to cmux's latest sequence on a resume gap or a new boot", () => {
+    const state = emptyCmuxState("2026-10-10T20:00:00.000Z")
+    state.seq = 40
+    state.surfaces = { SF: { workspaceId: null, agent: "claude", sessionId: "s", cwd: null, lifecycle: "working", lastHook: "PreToolUse", lastTool: null, at: "x" } }
+    expect(applyAck(state, { type: "ack", boot_id: "B1", resume: { gap: false, latest_seq: 50 } })).toEqual({ reset: false })
+    expect(state).toMatchObject({ bootId: "B1", seq: 40 })
+    expect(Object.keys(state.surfaces)).toEqual(["SF"])
+    expect(applyAck(state, { type: "ack", boot_id: "B1", resume: { gap: true, latest_seq: 90 } })).toEqual({ reset: true })
+    expect(state).toMatchObject({ bootId: "B1", seq: 90, surfaces: {} })
+    state.surfaces = { SF: state.surfaces.SF ?? { workspaceId: null, agent: "claude", sessionId: "s", cwd: null, lifecycle: "working", lastHook: "PreToolUse", lastTool: null, at: "x" } }
+    expect(applyAck(state, { type: "ack", boot_id: "B2" })).toEqual({ reset: true })
+    expect(state).toMatchObject({ bootId: "B2", seq: null, surfaces: {} })
+    expect(applyAck(state, { type: "ack" })).toEqual({ reset: false })
+    expect(state.bootId).toBe("B2")
+  })
+
+  it("compares cmux versions and treats unknown versions as too old", () => {
+    expect(cmuxVersionAtLeast("0.65.0", "0.65.0")).toBe(true)
+    expect(cmuxVersionAtLeast("0.65.3", "0.65.0")).toBe(true)
+    expect(cmuxVersionAtLeast("1.0.0", "0.65.0")).toBe(true)
+    expect(cmuxVersionAtLeast("0.64.22", "0.65.0")).toBe(false)
+    expect(cmuxVersionAtLeast("0.65.0-beta", "0.65.1")).toBe(false)
+    expect(cmuxVersionAtLeast("nightly", "0.65.0")).toBe(false)
+    expect(cmuxVersionAtLeast(null, "0.65.0")).toBe(false)
   })
 })

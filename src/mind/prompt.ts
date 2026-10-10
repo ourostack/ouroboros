@@ -27,7 +27,7 @@ import { readHealth, getDefaultHealthPath } from "../heart/daemon/daemon-health"
 import { preImplementationScrutinySection } from "./scrutiny";
 import { readPulse } from "../heart/daemon/pulse";
 import { formatAgentProviderVisibilityForPrompt, formatAgentProviderVisibilityForPulse, type AgentProviderVisibility } from "../heart/provider-visibility";
-import { cmuxConfigFacts } from "../heart/cmux-config";
+import { cmuxSenseStatus } from "../heart/cmux-config";
 import { listTripIds, readTripRecord } from "../trips/store";
 import type { TripRecord } from "../trips/core";
 import {
@@ -533,7 +533,7 @@ function localSenseStatusLines(): string[] {
       && hasTextField(runtimePayload, "telegramAuthorizedUserId")
       && hasTextField(runtimePayload, "telegramAuthorizedChatId"),
     workbench: false,
-    cmux: cmuxConfigFacts(machinePayload).configured,
+    cmux: cmuxSenseStatus(true, machinePayload) === "ready",
   }
 
   const rows: Array<{ label: string; status: string }> = [
@@ -564,7 +564,7 @@ function localSenseStatusLines(): string[] {
     },
     {
       label: "cmux",
-      status: !senses.cmux.enabled ? "disabled" : configured.cmux ? "ready" : "not_attached",
+      status: cmuxSenseStatus(senses.cmux.enabled, machinePayload),
     },
     {
       label: "Workbench",
