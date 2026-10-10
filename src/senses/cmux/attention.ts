@@ -119,14 +119,15 @@ export function applyAck(state: CmuxSenseState, frame: Record<string, unknown>):
 
 /** Whether a cmux version string (for example `0.64.22`) is at least `minimum`. Unknown versions are not. */
 export function cmuxVersionAtLeast(version: string | null, minimum: string): boolean {
-  const parse = (value: string) => /^(\d+)\.(\d+)\.(\d+)/.exec(value)?.slice(1).map(Number) ?? null
+  const parse = (value: string) => /^(\d+)\.(\d+)\.(\d+)(-)?/.exec(value)
   const have = version ? parse(version) : null
   const want = parse(minimum)!
   if (!have) return false
-  for (let index = 0; index < 3; index += 1) {
-    if (have[index]! !== want[index]!) return have[index]! > want[index]!
+  for (let index = 1; index <= 3; index += 1) {
+    if (Number(have[index]) !== Number(want[index])) return Number(have[index]) > Number(want[index])
   }
-  return true
+  // A prerelease of the minimum (0.65.0-beta) comes before it.
+  return have[4] === undefined
 }
 
 /**
