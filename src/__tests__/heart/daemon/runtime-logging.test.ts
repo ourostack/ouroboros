@@ -309,7 +309,7 @@ describe("daemon runtime logging", () => {
     expect(stderrChunks.join("")).toContain("WARN [daemon] bluebubbles logger default")
   })
 
-  it("gives the cmux sense the quiet warn-level defaults of the other local senses", async () => {
+  it("gives Shepherd the quiet warn-level defaults of the other local senses", async () => {
     tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), "daemon-logging-"))
     vi.spyOn(process.stderr, "write").mockImplementation(() => true)
     configureDaemonRuntimeLogger("shepherd", { homeDir: tmpRoot, agentName: "ouroboros" })

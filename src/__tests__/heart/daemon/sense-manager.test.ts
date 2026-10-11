@@ -1523,7 +1523,7 @@ describe("daemon sense manager", () => {
     fs.rmSync(bundlesRoot, { recursive: true, force: true })
   })
 
-  it("reports the cmux sense as blocked when the machine vault item cannot be read", async () => {
+  it("reports Shepherd as blocked when the machine vault item cannot be read", async () => {
     const bundlesRoot = fs.mkdtempSync(path.join(os.tmpdir(), "sense-manager-bundles-"))
     writeAgentJson(bundlesRoot, "slugger", { version: 1, enabled: true, provider: "anthropic", senses: { cli: { enabled: true }, shepherd: { enabled: true } }, phrases: { thinking: ["t"], tool: ["t"], followup: ["f"] } })
     vi.doMock("../../../heart/runtime-credentials", async (importOriginal) => ({

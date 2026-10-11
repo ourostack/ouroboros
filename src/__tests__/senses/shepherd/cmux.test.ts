@@ -4,7 +4,7 @@ import * as path from "node:path"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 
 import { createCmuxClient } from "../../../senses/shepherd/client"
-import { BACKGROUND_GRACE_MS, createCmuxHost, GRACE_MS, POLL_MS, QUIET_MS, readCmuxHookSession, realSchedule } from "../../../senses/shepherd/cmux"
+import { BACKGROUND_GRACE_MS, createCmuxHost, GRACE_MS, POLL_MS, QUIET_MAX_MS, QUIET_MS, readCmuxHookSession, realSchedule } from "../../../senses/shepherd/cmux"
 import type { ReturnedControl } from "../../../senses/shepherd/host"
 import { ackFrame, startFakeCmux, type FakeCmux } from "./fake-cmux"
 import { hookEvent, SCREENS, surfaceEvent, tree } from "./fixtures"
@@ -68,9 +68,15 @@ describe("cmux host: terminals", () => {
     const cmux = host()
     expect(cmux.name).toBe("cmux")
     expect(await cmux.list()).toEqual([
-      { id: "SF-1", ref: "surface:1", workspace: "workspace:1", title: "app", agent: null },
-      { id: "SF-2", ref: "surface:2", workspace: "workspace:1", title: "agency", agent: null },
+      { id: "SF-1", ref: "surface:1", workspace: "workspace:1", title: "app", agent: null, focused: false },
+      { id: "SF-2", ref: "surface:2", workspace: "workspace:1", title: "agency", agent: null, focused: false },
     ])
+    // The human's terminal is the focused surface of the selected workspace.
+    server.respond("system.tree", () => tree([{ id: "SF-1", ref: "surface:1", focused: true }]))
+    expect((await cmux.list())[0]!.focused).toBe(true)
+    server.respond("system.tree", () => tree([{ id: "SF-1", ref: "surface:1", focused: true }], false))
+    expect((await cmux.list())[0]!.focused).toBe(false)
+    server.respond("system.tree", () => tree([{ id: "SF-1", ref: "surface:1", title: "app" }, { id: "SF-2", ref: "surface:2", title: "agency" }]))
     expect(await cmux.read("SF-2", 80)).toBe(SCREENS.agencyDone)
     expect(server.methods.at(-1)).toEqual({ method: "surface.read_text", params: { surface_id: "SF-2", lines: 80, scrollback: true } })
 
@@ -90,8 +96,8 @@ describe("cmux host: terminals", () => {
     await cmux.signal("SF-1", "answered for Ari: \"plan\" \\ ok")
     await cmux.signal("SF-1", null, { title: "Shepherd", body: "needs Ari" })
     expect(server.lines.filter((line) => line.includes("_status")).map((line) => line.replace("_cmux_capability_v1 v1.t.s ", ""))).toEqual([
-      "set_status ouro \"answered for Ari: \\\"plan\\\" \\\\ ok\" --tab=WS-1",
-      "clear_status ouro --tab=WS-1",
+      "set_status ouro_surface_1 \"answered for Ari: \\\"plan\\\" \\\\ ok\" --tab=WS-1 --panel=SF-1",
+      "clear_status ouro_surface_1 --tab=WS-1",
     ])
     expect(server.methods.find((call) => call.method === "notification.create")?.params).toEqual({ title: "Shepherd", subtitle: "", body: "needs Ari", workspace_id: "WS-1" })
     await expect(cmux.prompt("SF-9", "x")).rejects.toThrow("no cmux terminal SF-9")
@@ -240,6 +246,70 @@ describe("cmux host: returned control", () => {
     early.close()
     await new Promise((resolve) => setTimeout(resolve, 50))
     expect(scheduler.due(POLL_MS)).toBe(0)
+  })
+
+  it("clears Shepherd's status when the agent resumes or the screen moves again, and tolerates a failed clear", async () => {
+    const { cmux, watcher } = await watching()
+    const statusLines = () => server.lines.filter((line) => line.includes("_status")).map((line) => line.replace("_cmux_capability_v1 v1.t.s ", "").split(" ").slice(0, 2).join(" "))
+    await cmux.signal("SF-1", "answered for Ari")
+    server.push(hookEvent(101, "PreToolUse"))
+    server.push(hookEvent(102, "PreToolUse"))
+    await vi.waitFor(() => expect(statusLines()).toEqual(["set_status ouro_surface_1", "clear_status ouro_surface_1"]))
+
+    // A polled terminal's status clears when its screen changes.
+    await cmux.signal("SF-2", "waiting")
+    screens["SF-2"] = `${SCREENS.agencyDone}\n more`
+    await scheduler.run(POLL_MS)
+    await vi.waitFor(() => expect(statusLines().at(-1)).toBe("clear_status ouro_surface_2"))
+
+    await cmux.signal("SF-1", "again")
+    server.v1(() => "ERROR: nope")
+    server.push(hookEvent(103, "PreToolUse"))
+    await new Promise((resolve) => setTimeout(resolve, 30))
+    server.push(surfaceEvent(104, "surface.closed", "SF-1"))
+    watcher.close()
+  })
+
+  it("stretches a quiet terminal's window when asked, up to a cap, until the human focuses it", async () => {
+    const { cmux, watcher, returned } = await watching()
+    for (let index = 0; index < 8; index += 1) cmux.pace!("SF-2", true)
+    const quiet = async (wait: number) => {
+      screens["SF-2"] = `${SCREENS.agencyDone}\n${clock}`
+      await scheduler.run(POLL_MS)
+      clock += wait
+      await scheduler.run(POLL_MS)
+    }
+    await quiet(QUIET_MAX_MS - 1)
+    expect(returned).toEqual([])
+    clock += 1
+    await scheduler.run(POLL_MS)
+    expect(returned).toHaveLength(1)
+    cmux.pace!("SF-2", true)
+    server.push(surfaceEvent(101, "surface.focused", "SF-2"))
+    await new Promise((resolve) => setTimeout(resolve, 20))
+    await quiet(QUIET_MS)
+    expect(returned).toHaveLength(2)
+    cmux.pace!("SF-2", true)
+    cmux.pace!("SF-2", false)
+    await quiet(QUIET_MS)
+    expect(returned).toHaveLength(3)
+    watcher.close()
+  })
+
+  it("watches a terminal's screen again once its hooked agent's session ends", async () => {
+    const { watcher } = await watching()
+    server.push(hookEvent(100.5, "PreToolUse", { surface: "SF-3", session: "claude-s3" }))
+    server.push(hookEvent(101, "PreToolUse"))
+    await new Promise((resolve) => setTimeout(resolve, 20))
+    const reads = () => server.methods.filter((call) => call.method === "surface.read_text").map((call) => call.params.surface_id)
+    await scheduler.run(POLL_MS)
+    expect(reads().at(-1)).toBe("SF-2")
+    server.push(hookEvent(102, "SessionEnd"))
+    server.push(hookEvent(103, "SessionEnd", { surface: "SF-3", session: "claude-s3" }))
+    await new Promise((resolve) => setTimeout(resolve, 20))
+    await scheduler.run(POLL_MS)
+    expect(reads().slice(-2)).toEqual(["SF-1", "SF-2"])
+    watcher.close()
   })
 
   it("starts from cmux's latest event after a gap", async () => {

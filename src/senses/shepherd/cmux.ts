@@ -21,6 +21,8 @@ export const GRACE_MS = 3_000
 export const BACKGROUND_GRACE_MS = 30_000
 export const POLL_MS = 4_000
 export const QUIET_MS = 8_000
+/** A quiet terminal judged as still working or not an agent is checked less often, doubling up to this. */
+export const QUIET_MAX_MS = 300_000
 const POLL_LINES = 40
 const RECONNECT_DELAYS_MS = [1_000, 2_000, 5_000, 10_000, 30_000]
 const STOP_HOOKS = new Set(["Stop", "StopFailure"])
@@ -80,10 +82,26 @@ export function createCmuxHost(client: CmuxClient, options: CmuxHostOptions = {}
   /** What hook events taught: which surface a session runs in, and which agent and folder it has. */
   const hooked = new Map<string, { agent: string; cwd: string | null; sessionId: string | null }>()
   const sessionSurface = new Map<string, string>()
+  /** Terminals showing a Shepherd status, so it can be cleared when the agent resumes. */
+  const statused = new Map<string, { key: string; workspaceId: string }>()
+  /** Quiet windows stretched by `pace`. */
+  const quietMs = new Map<string, number>()
+
+  /** One status entry per terminal: cmux keys status pills per workspace, and a workspace can hold several agents. */
+  const statusKey = (surface: Surface): string => `${CMUX_STATUS_KEY}_${surface.ref.replace(/\W/g, "_")}`
+
+  const clearStatus = (surfaceId: string): void => {
+    const entry = statused.get(surfaceId)
+    if (!entry) return
+    statused.delete(surfaceId)
+    client.command(`clear_status ${entry.key} --tab=${entry.workspaceId}`).catch((error: Error) => {
+      emitNervesEvent({ level: "warn", component: "senses", event: "senses.shepherd_cmux_status_error", message: "could not clear a Shepherd status", meta: { error: error.message } })
+    })
+  }
 
   async function surfaces(): Promise<Surface[]> {
     const tree = await client.call("system.tree", { all_windows: true })
-    return list(tree.windows).flatMap((window) => list(window.workspaces)).flatMap((workspace) =>
+    return list(tree.windows).flatMap((window) => list(window.workspaces).map((workspace) => ({ window, workspace }))).flatMap(({ window, workspace }) =>
       list(workspace.panes).flatMap((pane) => list(pane.surfaces)).map((surface) => ({
         id: str(surface.id) ?? "",
         ref: str(surface.ref) ?? "",
@@ -92,6 +110,8 @@ export function createCmuxHost(client: CmuxClient, options: CmuxHostOptions = {}
         title: str(surface.title) ?? "",
         type: str(surface.type) ?? "",
         agent: hooked.get(str(surface.id) ?? "")?.agent ?? null,
+        // The human's terminal: the focused surface of the selected workspace in a visible window.
+        focused: surface.focused === true && workspace.selected === true && window.visible !== false,
       })))
   }
 
@@ -109,7 +129,7 @@ export function createCmuxHost(client: CmuxClient, options: CmuxHostOptions = {}
   return {
     name: "cmux",
     async list() {
-      return (await surfaces()).filter((surface) => surface.type === "terminal").map(({ id, ref, workspace, title, agent }) => ({ id, ref, workspace, title, agent }))
+      return (await surfaces()).filter((surface) => surface.type === "terminal").map(({ id, ref, workspace, title, agent, focused }) => ({ id, ref, workspace, title, agent, focused }))
     },
     read,
     async prompt(sessionId, line) {
@@ -129,10 +149,17 @@ export function createCmuxHost(client: CmuxClient, options: CmuxHostOptions = {}
     },
     async signal(sessionId, status, notification) {
       const surface = await locate(sessionId)
+      const key = statusKey(surface)
       await client.command(status
-        ? `set_status ${CMUX_STATUS_KEY} ${socketQuote(status)} --tab=${surface.workspaceId}`
-        : `clear_status ${CMUX_STATUS_KEY} --tab=${surface.workspaceId}`)
+        ? `set_status ${key} ${socketQuote(status)} --tab=${surface.workspaceId} --panel=${surface.id}`
+        : `clear_status ${key} --tab=${surface.workspaceId}`)
+      if (status) statused.set(surface.id, { key, workspaceId: surface.workspaceId })
+      else statused.delete(surface.id)
       if (notification) await client.call("notification.create", { title: notification.title, subtitle: "", body: notification.body, workspace_id: surface.workspaceId })
+    },
+    pace(sessionId, slower) {
+      if (slower) quietMs.set(sessionId, Math.min((quietMs.get(sessionId) ?? QUIET_MS) * 2, QUIET_MAX_MS))
+      else quietMs.delete(sessionId)
     },
     watch(handlers: HostWatchHandlers) {
       let closed = false
@@ -143,6 +170,11 @@ export function createCmuxHost(client: CmuxClient, options: CmuxHostOptions = {}
       let cancelPoll: (() => void) | null = null
       const pending = new Map<string, () => void>()
       const screens = new Map<string, { hash: string; changedAt: number; active: boolean }>()
+
+      const forget = (surfaceId: string): void => {
+        hooked.delete(surfaceId)
+        for (const [session, surface] of sessionSurface) if (surface === surfaceId) sessionSurface.delete(session)
+      }
 
       const cancelPending = (surfaceId: string): void => {
         pending.get(surfaceId)?.()
@@ -168,11 +200,15 @@ export function createCmuxHost(client: CmuxClient, options: CmuxHostOptions = {}
         const name = str(frame.name) ?? ""
         const payload = isRecord(frame.payload) ? frame.payload : {}
         const surfaceId = str(payload.surface_id) ?? str(frame.surface_id)
-        if (name === "surface.focused" && surfaceId) return handlers.focused(surfaceId)
+        if (name === "surface.focused" && surfaceId) {
+          quietMs.delete(surfaceId)
+          return handlers.focused(surfaceId)
+        }
         if (name === "surface.closed" && surfaceId) {
           cancelPending(surfaceId)
-          hooked.delete(surfaceId)
+          forget(surfaceId)
           screens.delete(surfaceId)
+          statused.delete(surfaceId)
           return
         }
         if (!name.startsWith("agent.hook.") || (payload.phase !== undefined && payload.phase !== "received")) return
@@ -184,8 +220,13 @@ export function createCmuxHost(client: CmuxClient, options: CmuxHostOptions = {}
         const agent = str(payload._source) ?? str(frame.source) ?? "unknown"
         const cwd = str(payload.cwd)
         hooked.set(surface, { agent, cwd, sessionId })
-        if (STOP_HOOKS.has(hook)) stopped(surface, `cmux:${String(frame.boot_id)}:${String(frame.seq)}`, agent, sessionId, cwd)
-        else if (!NEUTRAL_HOOKS.has(hook)) cancelPending(surface)
+        if (STOP_HOOKS.has(hook)) return stopped(surface, `cmux:${String(frame.boot_id)}:${String(frame.seq)}`, agent, sessionId, cwd)
+        if (NEUTRAL_HOOKS.has(hook)) return
+        // The agent is working again: no pending stop, and no stale status.
+        cancelPending(surface)
+        clearStatus(surface)
+        // An agent that exited leaves a plain terminal, which the quiet-screen fallback watches again.
+        if (hook === "SessionEnd") forget(surface)
       }
 
       const connect = (): void => {
@@ -226,8 +267,10 @@ export function createCmuxHost(client: CmuxClient, options: CmuxHostOptions = {}
             const last = screens.get(surface.id)
             const at = now()
             if (!last) screens.set(surface.id, { hash, changedAt: at, active: false })
-            else if (last.hash !== hash) screens.set(surface.id, { hash, changedAt: at, active: true })
-            else if (last.active && at - last.changedAt >= QUIET_MS) {
+            else if (last.hash !== hash) {
+              screens.set(surface.id, { hash, changedAt: at, active: true })
+              clearStatus(surface.id)
+            } else if (last.active && at - last.changedAt >= (quietMs.get(surface.id) ?? QUIET_MS)) {
               last.active = false
               handlers.returned({ sessionId: surface.id, transitionId: `cmux:quiet:${surface.id}:${last.changedAt}`, agent: null, cwd: null, lastBody: null, backgroundWork: null })
             }

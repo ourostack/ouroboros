@@ -778,7 +778,7 @@ describe("buildTurnContext", () => {
     ])
   })
 
-  it("reports the cmux sense ready only when this machine holds cmux socket auth", async () => {
+  it("reports Shepherd ready only when this machine holds a terminal host connection", async () => {
     mockLoadAgentConfig.mockReturnValue({ senses: { cli: { enabled: true }, shepherd: { enabled: true } } })
     mockLoadConfig.mockReturnValue({})
     mockReadMachineRuntimeCredentialConfig.mockReturnValue({

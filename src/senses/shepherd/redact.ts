@@ -1,8 +1,8 @@
 import { emitNervesEvent } from "../../nerves/runtime"
 
 /**
- * Terminal screens and Feed tool input can show credentials. Everything the cmux sense hands to a
- * model (screen text, request previews) goes through this first. It is a best-effort net for
+ * Terminal screens and agents' last messages can show credentials. Everything Shepherd hands to a
+ * model or a tool result (screen text, last messages) goes through this first. It is a best-effort net for
  * secret-shaped strings, not a guarantee, so callers also keep their output bounded.
  */
 const REDACTED = "[redacted]"

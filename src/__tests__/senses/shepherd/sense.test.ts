@@ -34,6 +34,7 @@ interface FakeHost extends ShepherdHost {
   handlers: HostWatchHandlers | null
   screens: Record<string, string[]>
   actions: string[]
+  focusedSession: string | null
 }
 
 function fakeHost(): FakeHost {
@@ -42,7 +43,9 @@ function fakeHost(): FakeHost {
     handlers: null,
     screens: {},
     actions: [],
-    list: async () => [],
+    focusedSession: null,
+    list: async () => Object.keys(host.screens).map((id) => ({ id, ref: id, workspace: null, title: "", agent: null, focused: id === host.focusedSession })),
+    pace: (id, slower) => { host.actions.push(`pace ${id} ${slower ? "slower" : "normal"}`) },
     read: async (id) => {
       const queue = host.screens[id] ?? [""]
       return queue.length > 1 ? queue.shift()! : queue[0]!
@@ -124,7 +127,7 @@ describe("Shepherd sense: answering premature returns", () => {
     expect(packets[0]).toMatchObject({ human: "Ari", agent: "claude", cwd: "/Users/a/code/app", task: "ouro-md/toolbar-polish", lastBody: "token=[redacted] Want me to go ahead?", backgroundWork: false })
     expect(packets[0]!.screen).not.toContain("sk-aaaa")
     expect(packets[0]!.screen.split("\n")).toHaveLength(SCREENS.claudePremature.split("\n").length + 4)
-    expect(host.actions).toEqual(["prompt S1 [Ouro for Ari] Go ahead and implement it.", "status S1 answered for Ari: It stopped after a plan."])
+    expect(host.actions.filter((action) => !action.startsWith("pace"))).toEqual(["prompt S1 [Ouro for Ari] Go ahead and implement it.", "status S1 answered for Ari: It stopped after a plan."])
     expect(last()).toEqual({
       at: "2026-10-10T20:00:00.000Z", host: "fake", session: "S1", transition: "cmux:B:101", agent: "claude", cwd: "/Users/a/code/app", task: "ouro-md/toolbar-polish",
       kind: "premature", action: "respond", reason: "It stopped after a plan.", reply: "Go ahead and implement it.", latencyMs: 900, inputTokens: 1200,
@@ -137,7 +140,7 @@ describe("Shepherd sense: answering premature returns", () => {
     const { host, returned, last } = await start(async () => verdict({ reply: { key: "2" }, reason: "Mocking the clock is the recommended fix." }))
     host.screens.S2 = [SCREENS.codexMenu]
     await returned({ sessionId: "S2", agent: "codex" })
-    expect(host.actions).toEqual(["key S2 2", "status S2 answered for Ari: Mocking the clock is the recommended fix."])
+    expect(host.actions.filter((action) => !action.startsWith("pace"))).toEqual(["key S2 2", "status S2 answered for Ari: Mocking the clock is the recommended fix."])
     expect(last()).toMatchObject({ action: "respond", reply: "key:2" })
   })
 
@@ -149,12 +152,18 @@ describe("Shepherd sense: answering premature returns", () => {
     host.handlers!.focused("S1")
     clock += 30_000
     await returned({ sessionId: "S1", transitionId: "b" })
-    expect(last()).toMatchObject({ action: "let_through", reason: "Ari focused this session in the last minute, so it is theirs: It stopped after a plan." })
-    expect(host.actions).toEqual([])
+    expect(last()).toMatchObject({ action: "let_through", reason: "Ari is in this session or just left it, so it is theirs: It stopped after a plan." })
+    // Long after the focus event, the human is still in the session: cmux only reports focus when it changes.
+    host.focusedSession = "S1"
+    clock += 600_000
+    await returned({ sessionId: "S1", transitionId: "c" })
+    expect(last()).toMatchObject({ action: "let_through", reason: "Ari is in this session or just left it, so it is theirs: It stopped after a plan." })
+    expect(host.actions.filter((action) => !action.startsWith("pace"))).toEqual([])
   })
 
   it("stops answering after three in a row, escalates once, and starts again when the human focuses the session", async () => {
-    const { host, escalations, wakes, returned, last } = await start(async () => verdict())
+    let judged = 0
+    const { host, escalations, wakes, returned, last } = await start(async () => { judged += 1; return verdict() })
     host.screens.S1 = [SCREENS.claudePremature]
     for (const id of ["1", "2", "3", "4"]) {
       clock += 1_000
@@ -168,6 +177,15 @@ describe("Shepherd sense: answering premature returns", () => {
     expect(tasks.map((task) => task.ms)).toEqual([2_000])
     tasks.shift()!.fn()
     await vi.waitFor(() => expect(wakes).toEqual([["4"]]))
+
+    // While tripped, later returns are logged without a judge call or another escalation.
+    for (const id of ["4a", "4b"]) {
+      clock += 1_000
+      await returned({ sessionId: "S1", transitionId: id })
+    }
+    expect(judged).toBe(4)
+    expect(escalations).toHaveLength(1)
+    expect(last()).toMatchObject({ kind: "loop_guard", reason: "Shepherd stopped answering this session until Ari focuses it" })
 
     host.handlers!.focused("S1")
     clock += 120_000
@@ -202,7 +220,7 @@ describe("Shepherd sense: letting returns through", () => {
     await returned({ sessionId: "G", transitionId: "g", agent: "copilot", cwd: "/Users/a/code/service" })
     await returned({ sessionId: "D", transitionId: "d", agent: null, cwd: null })
     await returned({ sessionId: "X", transitionId: "x" })
-    expect(host.actions).toEqual(["status G needs Ari: It needs Ari's Azure sign-in.", "status D done: Merged and released with proof."])
+    expect(host.actions.filter((action) => !action.startsWith("pace"))).toEqual(["status G needs Ari: It needs Ari's Azure sign-in.", "status D done: Merged and released with proof."])
     expect(escalations).toHaveLength(2)
     expect(escalations[0]).toContain("copilot in service handed control back and Shepherd let it through: it needs Ari.")
     expect(escalations[1]).toContain("A coding agent handed control back and Shepherd let it through: it says the work is done.")
@@ -218,32 +236,44 @@ describe("Shepherd sense: letting returns through", () => {
     const verdicts = [
       // The judge read the screen: background subagents are running.
       verdict({ kind: "working", reply: null, reason: "Waiting on two background agents; both PRs are open." }),
-      // The host said background work is running; a premature verdict is still never answered.
+      // The host said background work is running: whatever the judge says, it is working and never answered.
       verdict({ kind: "premature", reply: { text: "Keep going." }, reason: "It reported partial progress." }),
-      // News the human would want: queued for the Ouro agent's next turn, with no wake.
+      // A gate while background work runs is news for the Ouro agent, queued with no wake.
+      verdict({ kind: "gate", reply: null, reason: "It asks Ari to approve the spec while its subagent runs." }),
+      // News the judge flagged on its own.
       verdict({ kind: "working", reply: null, reason: "The background test run failed on main.", news: true }),
-      verdict({ kind: "done", reply: null, reason: "Says it is done while its jobs still run." }),
     ]
     const { host, escalations, wakes, returned } = await start(async (packet) => { packets.push(packet); return verdicts.shift()! })
     host.screens.C = [SCREENS.claudeBackground]
     host.screens.X = [SCREENS.codexBackground]
     await returned({ sessionId: "C", transitionId: "c1", agent: "claude" })
-    await returned({ sessionId: "C", transitionId: "c2", agent: "claude", backgroundWork: true })
+    await returned({ sessionId: "C", transitionId: "c2", agent: "claude", backgroundWork: true, lastBody: "Waiting for 2 background agents." })
+    // The same background stop with the same last message is not judged again.
+    await returned({ sessionId: "C", transitionId: "c3", agent: "claude", backgroundWork: true, lastBody: "Waiting for 2 background agents." })
     await returned({ sessionId: "X", transitionId: "x1", agent: null, backgroundWork: true })
-    await returned({ sessionId: "X", transitionId: "x2", agent: "codex", backgroundWork: true })
+    await returned({ sessionId: "X", transitionId: "x2", agent: "codex", backgroundWork: true, lastBody: "The suite failed." })
     expect(packets.map((packet) => packet.backgroundWork)).toEqual([null, true, true, true])
-    expect(host.actions).toEqual([
+    expect(host.actions.filter((action) => action.startsWith("status"))).toEqual([
       "status C claude waiting on its background work: Waiting on two background agents; both PRs are open.",
       "status C claude waiting on its background work: It reported partial progress.",
-      "status X agent waiting on its background work: The background test run failed on main.",
-      "status X codex waiting on its background work: Says it is done while its jobs still run.",
+      "status X agent waiting on its background work: It asks Ari to approve the spec while its subagent runs.",
+      "status X codex waiting on its background work: The background test run failed on main.",
     ])
-    expect(readReturns(agentRoot).map((record) => [record.kind, record.action, record.reply])).toEqual([["working", "let_through", null], ["working", "let_through", null], ["working", "let_through", null], ["working", "let_through", null]])
-    expect(escalations).toHaveLength(1)
+    expect(readReturns(agentRoot).map((record) => [record.kind, record.action, record.reply])).toEqual(Array(5).fill(["working", "let_through", null]))
+    expect(readReturns(agentRoot)[2]!.reason).toBe("still waiting on its background work; nothing new since the last judgment")
+    expect(escalations).toHaveLength(2)
     expect(escalations[0]).toContain("[Shepherd update]")
     expect(escalations[0]).toContain("A coding agent in app ended its turn while its own background work runs, so it is still working")
     expect(tasks).toHaveLength(0)
     expect(wakes).toEqual([])
+  })
+
+  it("checks a quiet terminal less often after it is judged working or not an agent, and at the normal pace otherwise", async () => {
+    const verdicts = [verdict({ kind: "unclear", reply: null }), verdict({ kind: "working", reply: null }), verdict({ kind: "gate", reply: null })]
+    const { host, returned } = await start(async () => verdicts.shift()!)
+    host.screens.Q = [SCREENS.shell]
+    for (const id of ["q1", "q2", "q3"]) await returned({ sessionId: "Q", transitionId: id, agent: null })
+    expect(host.actions.filter((action) => action.startsWith("pace"))).toEqual(["pace Q slower", "pace Q slower", "pace Q normal"])
   })
 
   it("logs a judge failure and a failed send, and keeps going", async () => {

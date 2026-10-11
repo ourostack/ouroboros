@@ -59,8 +59,8 @@ describe("Shepherd tools", () => {
     expect(await call(shepherdOverviewToolDefinition, {})).toEqual({
       host: "cmux",
       sessions: [
-        { id: "SF-1", ref: "surface:1", workspace: "workspace:1", title: "app", agent: null, lastReturn: { at: "2026-10-10T20:00:00.000Z", kind: "gate", action: "let_through", reason: "needs Ari", reply: null, task: "desk/x" } },
-        { id: "SF-2", ref: "surface:2", workspace: "workspace:1", title: "zsh", agent: null },
+        { id: "SF-1", ref: "surface:1", workspace: "workspace:1", title: "app", agent: null, focused: false, lastReturn: { at: "2026-10-10T20:00:00.000Z", kind: "gate", action: "let_through", reason: "needs Ari", reply: null, task: "desk/x" } },
+        { id: "SF-2", ref: "surface:2", workspace: "workspace:1", title: "zsh", agent: null, focused: false },
       ],
     })
   })
@@ -80,7 +80,7 @@ describe("Shepherd tools", () => {
   it("signal sets or clears the status and can notify", async () => {
     expect(await call(shepherdSignalToolDefinition, { session: "surface:1", status: "waiting on Ari", notify_title: "Shepherd", notify_body: "gate" })).toEqual({ session: "surface:1", status: "set", notified: true })
     expect(await call(shepherdSignalToolDefinition, { session: "surface:1", status: "" })).toEqual({ session: "surface:1", status: "cleared", notified: false })
-    expect(server.lines.filter((line) => line.includes("_status")).map((line) => line.split(" ").slice(2, 4).join(" "))).toEqual(["set_status ouro", "clear_status ouro"])
+    expect(server.lines.filter((line) => line.includes("_status")).map((line) => line.split(" ").slice(2, 4).join(" "))).toEqual(["set_status ouro_surface_1", "clear_status ouro_surface_1"])
     expect(await call(shepherdSignalToolDefinition, { session: "", status: "x" })).toEqual({ error: "name a session id or ref from shepherd_overview" })
     expect(await call(shepherdSignalToolDefinition, { session: "surface:1", status: "a\nb" })).toEqual({ error: "status must be one line of at most 120 characters" })
     expect(await call(shepherdSignalToolDefinition, { session: "surface:9", status: "x" })).toEqual({ error: "no cmux terminal surface:9" })

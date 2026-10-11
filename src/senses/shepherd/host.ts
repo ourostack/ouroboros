@@ -13,6 +13,8 @@ export interface HostSession {
   title: string
   /** The coding agent running there, when the host knows it. */
   agent: string | null
+  /** The human's current terminal: Shepherd never types into it. */
+  focused: boolean
 }
 
 /** A coding agent stopped and is waiting for the human. `transitionId` is the host's own id for that stop. */
@@ -46,5 +48,10 @@ export interface ShepherdHost {
   key(sessionId: string, key: ShepherdKey): Promise<void>
   /** Sets or clears (null) Shepherd's one-line status for the session, and optionally posts a notification. */
   signal(sessionId: string, status: string | null, notification?: { title: string; body: string }): Promise<void>
+  /**
+   * After a judgment, a host that found the return by watching for a quiet screen may check that terminal less often (slower)
+   * or return to its normal pace. Hosts with their own stop signal ignore it.
+   */
+  pace?(sessionId: string, slower: boolean): void
   watch(handlers: HostWatchHandlers): { close(): void }
 }

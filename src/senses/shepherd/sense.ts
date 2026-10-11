@@ -137,14 +137,18 @@ export async function startShepherdSenseApp(options: ShepherdSenseOptions): Prom
   const escalate = options.escalate ?? ((content: string) => queueEscalation(agent, content, now()))
   const wake = options.wake ?? ((ids: string[]) => wakeForEscalations(agent, ids))
   const human = humanName(agentRoot)
-  const guard = new Map<string, { streak: number; answers: number[]; focusedAt: number }>()
+  /**
+   * Per session: automatic answers in a row and in the last hour, whether the loop guard has tripped (it stays tripped until
+   * the human focuses the session), when the human last focused it, and the last message of a background stop already judged.
+   */
+  const guard = new Map<string, { streak: number; answers: number[]; tripped: boolean; focusedAt: number; backgroundBody?: string | null }>()
   const wakeIds: string[] = []
   let cancelWake: (() => void) | null = null
   let chain: Promise<void> = Promise.resolve()
 
   const guardFor = (session: string) => {
     let entry = guard.get(session)
-    if (!entry) guard.set(session, entry = { streak: 0, answers: [], focusedAt: -Infinity })
+    if (!entry) guard.set(session, entry = { streak: 0, answers: [], tripped: false, focusedAt: -Infinity })
     return entry
   }
 
@@ -162,26 +166,42 @@ export async function startShepherdSenseApp(options: ShepherdSenseOptions): Prom
       at: new Date(now()).toISOString(), host: host.name, session: event.sessionId, transition: event.transitionId,
       agent: event.agent, cwd: event.cwd, task: null, kind: "unclear", action: "let_through", reason: "", reply: null, latencyMs: null, inputTokens: null,
     }
+    const state = guardFor(event.sessionId)
     try {
+      if (state.tripped) {
+        // Tripped: no judge call and no new escalation until the human looks at the session.
+        Object.assign(record, { kind: "loop_guard", reason: `Shepherd stopped answering this session until ${human} focuses it` })
+        return
+      }
+      if (event.backgroundWork && state.backgroundBody !== undefined && state.backgroundBody === event.lastBody) {
+        // Still waiting on the same background work with nothing new to say: no judge call.
+        Object.assign(record, { kind: "working", reason: "still waiting on its background work; nothing new since the last judgment" })
+        return
+      }
+      state.backgroundBody = event.backgroundWork ? event.lastBody : undefined
       const text = redactSecrets(await host.read(event.sessionId, READ_LINES))
       record.task = [...text.matchAll(/Desk-Task:\s*(\S+)/g)].pop()?.[1] ?? null
       const screen = tail(text, SCREEN_LINES)
       const verdict: JudgeResult = await judge({ human, agent: event.agent, cwd: event.cwd, task: record.task, lastBody: event.lastBody ? redactSecrets(event.lastBody) : null, backgroundWork: event.backgroundWork, screen })
-      // The host's own word that background work is running outranks a reading of the screen: never answer such a stop.
-      const kind = event.backgroundWork && (verdict.kind === "premature" || verdict.kind === "done") ? "working" : verdict.kind
+      // The host's own word that background work is running outranks a reading of the screen: such a stop is never a return.
+      const kind = event.backgroundWork ? "working" : verdict.kind
+      const news = verdict.news === true || (kind === "working" && verdict.kind === "gate")
       Object.assign(record, { kind, reason: verdict.reason, latencyMs: verdict.latencyMs, inputTokens: verdict.inputTokens })
-      const state = guardFor(event.sessionId)
+      // A terminal that keeps going quiet without needing anything is checked less often.
+      host.pace?.(event.sessionId, kind === "working" || kind === "unclear")
       state.answers = state.answers.filter((at) => now() - at < 3_600_000)
       if (kind === "working") {
         // Still working: a progress update, never an answer. It reaches the Ouro agent only when it carries news, and wakes nothing.
-        if (verdict.news) escalate(escalationContent(record, human))
+        if (news) escalate(escalationContent(record, human))
         await host.signal(event.sessionId, field(`${event.agent ?? "agent"} waiting on its background work: ${verdict.reason}`, 120))
       }
       if (kind === "premature" && verdict.reply) {
         if (state.streak >= STREAK_MAX || state.answers.length >= HOURLY_MAX) {
           Object.assign(record, { kind: "loop_guard", reason: `loop guard: ${verdict.reason}` })
-        } else if (now() - state.focusedAt < FOCUS_HOLD_MS) {
-          record.reason = `${human} focused this session in the last minute, so it is theirs: ${verdict.reason}`
+          state.tripped = true
+        } else if (now() - state.focusedAt < FOCUS_HOLD_MS || (await host.list()).some((session) => session.id === event.sessionId && session.focused)) {
+          // Never type into the session the human is in, or one they just left.
+          record.reason = `${human} is in this session or just left it, so it is theirs: ${verdict.reason}`
         } else if (tail(redactSecrets(await host.read(event.sessionId, READ_LINES)), SCREEN_LINES) !== screen) {
           record.reason = `the screen changed while judging, so nothing was sent: ${verdict.reason}`
         } else {
@@ -200,7 +220,12 @@ export async function startShepherdSenseApp(options: ShepherdSenseOptions): Prom
       }
     } catch (error) {
       Object.assign(record, { kind: record.reason ? record.kind : "error", reason: `${record.reason ? `${record.reason}; then ` : ""}${(error as Error).message}` })
+    } finally {
+      log(record)
     }
+  }
+
+  function log(record: ReturnRecord): void {
     try {
       appendReturn(agentRoot, record)
     } catch (error) {
@@ -215,8 +240,7 @@ export async function startShepherdSenseApp(options: ShepherdSenseOptions): Prom
     },
     focused: (session) => {
       const state = guardFor(session)
-      state.streak = 0
-      state.focusedAt = now()
+      Object.assign(state, { streak: 0, tripped: false, focusedAt: now() })
     },
   })
   emitNervesEvent({ component: "senses", event: "senses.shepherd_started", message: "Shepherd started", meta: { agent, host: host.name } })

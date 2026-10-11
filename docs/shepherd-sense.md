@@ -9,12 +9,12 @@ It is agent-agnostic and terminal-agnostic. Nothing in it assumes a particular c
 A return is the host's own "agent stopped" signal.
 
 - **cmux, hooked agents.** cmux publishes `agent.hook.Stop` (and `StopFailure`) for every agent its hooks cover. Shepherd follows cmux's `events.stream` (categories `agent` and `surface`) and waits a 3-second grace period: any later hook for the same terminal other than `SubagentStop` or `Notification` means the agent resumed, and the stop is dropped. When cmux's session store (`~/.cmuxterm/<agent>-hook-sessions.json`, keyed by the agent's own session id; hook events name it `<agent>-<id>`) says background work was still running at the stop, Shepherd waits 30 seconds more and then passes the stop on marked as background work. The return is keyed by cmux's event id (`cmux:<boot id>:<seq>`) and carries the agent's last message (`lastBody`) and folder from that store.
-- **cmux, terminals no hook speaks for.** Some agents (Agency today) have no cmux hook. Every 4 seconds Shepherd reads the last 40 lines of each such terminal. Output that changed and then held still for 8 seconds is one return.
+- **cmux, terminals no hook speaks for.** Some agents (Agency today) have no cmux hook. Every 4 seconds Shepherd reads the last 40 lines of each such terminal. Output that changed and then held still for 8 seconds is one return. Plain shells are watched too, so a terminal judged as still working or as not an agent waits twice as long before its next quiet return, doubling up to 5 minutes; focusing it or any other verdict restores the 8 seconds. A terminal whose hooked agent's session ends is watched this way again.
 - **Restarts and gaps.** The first connection, and any connection whose `ack` reports a gap, starts at cmux's latest event, so old stops are never replayed as new returns. Reconnects back off 1, 2, 5, 10, then 30 seconds.
 
 ## Background work is not a return
 
-An agent that ends its turn while its own background work runs (subagents, background shells or jobs, watchers) has not handed control back: it is waiting for that work and will stop again when it reports. Shepherd treats such a stop as `working`. It never answers it and never escalates it as a gate. Its last message is a progress update: it is logged, and the status line says `<agent> waiting on its background work: <one line>`. Only when the judge says the update carries news the human would want now does it reach the Ouro agent, as a `[Shepherd update]` pending message with no wake, read on the agent's next private turn.
+An agent that ends its turn while its own background work runs (subagents, background shells or jobs, watchers) has not handed control back: it is waiting for that work and will stop again when it reports. Shepherd treats such a stop as `working`. It never answers it and never escalates it as a gate. Its last message is a progress update: it is logged, and the status line says `<agent> waiting on its background work: <one line>`. Only when the judge says the update carries news the human would want now does it reach the Ouro agent, as a `[Shepherd update]` pending message with no wake, read on the agent's next private turn. With background work reported by the host, every verdict becomes `working`; a `gate` verdict is passed on as news. A later background stop with the same last message is logged without asking the judge again.
 
 Shepherd knows about background work two ways. The terminal host may say so (cmux's `hadPendingBackgroundWorkAtStop`, or a session lifecycle of `running` or `backgroundWorkPending`); then the judge is told, and a `premature` or `done` verdict becomes `working`. Otherwise the judge reads the screen: running-task indicators or wording such as "waiting for background agents" mean `working`. The session is judged afresh at its next real stop, after the background work reports back and the agent's next turn ends.
 
@@ -22,7 +22,7 @@ Shepherd knows about background work two ways. The terminal host may say so (cmu
 
 The judge reads a packet (the human's name, the agent, folder, the `Desk-Task:` line if the screen has one, the agent's last message and the last 80 screen lines, all redacted) and answers with JSON: `premature` with a reply, `gate`, `done`, `working` (with a `news` flag) or `unclear`. The screen is untrusted data. It runs on the agent's own `agent` provider lane with no tools, low reasoning effort and a 20-second timeout, and its latency and input tokens are logged.
 
-A reply is either one key from a fixed set (enter, escape, up, down, tab, 1-9, y, n) or one line of at most 240 characters with no line breaks, backslashes, `@`, control characters or leading `/`, `!` or `#`, so an input box never reads it as a command, a file mention or more than one line. Anything else turns the verdict into `unclear`.
+A reply is either one key from a fixed set (enter, escape, up, down, tab, 1-9, y, n) or one line of at most 240 characters. The line has no line breaks, backslashes, `@`, control characters, invisible formatting or bidirectional-override characters, or leading `/`, `!` or `#`, so an input box never reads it as a command, a file mention or more than one line. Because the terminal might turn out to be a plain shell, it also has none of these shell characters: semicolon, dollar sign, backtick, pipe, `<`, `>` and `&`. Anything else turns the verdict into `unclear`.
 
 ## What Shepherd does with a verdict
 
@@ -36,15 +36,17 @@ A reply is either one key from a fixed set (enter, escape, up, down, tab, 1-9, y
 
 Before it answers, Shepherd checks, in order:
 
-1. **The loop guard.** Three automatic answers in a row in one terminal, with no human focus in between, or ten in an hour, stop answering: the return is logged as `loop_guard`, escalated, and the status line says `stopped answering`. Focusing the terminal resets the streak.
-2. **The human.** A terminal the human focused in the last 60 seconds is theirs; Shepherd lets the return through.
+1. **The loop guard.** Three automatic answers in a row in one terminal, with no human focus in between, or ten in an hour, stop answering. The return that trips it is logged as `loop_guard` and escalated once, and the status line says `stopped answering`. Until the human focuses that terminal, its later returns are logged as `loop_guard` with no judge call and no new escalation.
+2. **The human.** Shepherd never types into the terminal the human is in: on cmux, the focused surface of the selected workspace in a visible window, read from `system.tree` just before sending (cmux reports focus only when it changes, so a human who stays in one terminal sends no further events). A terminal the human left in the last 60 seconds is also theirs.
 3. **The screen.** It reads the terminal again; if the last lines changed since the judge saw them, it lets the return through.
 
-On cmux, a line is sent with `terminal.paste` (so no character of it is read as a keystroke) followed by a separate Enter. `<human>` is the name on the family friend record whose local id is this OS user, else the first family friend.
+Shepherd's status is one entry per terminal (cmux key `ouro_<surface>`, attached to that surface's panel), because a cmux workspace can hold several agents. It is cleared as soon as the agent resumes or the terminal's screen moves again. On cmux, a line is sent with `terminal.paste` (so no character of it is read as a keystroke) followed by a separate Enter. `<human>` is the name on the family friend record whose local id is this OS user, else the first family friend.
 
 Escalation queues one pending message in the agent's private runtime (from `shepherd`, dropped unread after 30 minutes) and asks the daemon for a private turn (trigger `shepherd`, which the daemon's policy allows only with a `shepherd-return` reference and the `sense: shepherd` reference). Escalations in a burst share one wake. The message names the agent, folder, task and why, and ends with the usual untrusted-input line. If the daemon refuses the wake, the message waits for the next private turn.
 
 Every judgment is one JSON line in `state/senses/shepherd/returns.jsonl` in the agent bundle (directory `0700`, file `0600`, rotated once at 2 MB, never synced): time, host, terminal, transition id, agent, folder, task, kind, action, reason, reply, latency and input tokens.
+
+**Menu keys can approve permission prompts.** An agent that asks for permission before doing work inside its task has stopped too early under TTFA (time to first action), so the judge may answer it with a key, which can approve the prompt. That is deliberate: the human's standing authority covers routine work, and gates (credentials, money, irreversible acts, decisions that are the human's) are never answered. Every such answer is logged and shown on the status line.
 
 ## Tools
 

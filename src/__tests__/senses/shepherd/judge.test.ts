@@ -38,8 +38,8 @@ describe("Shepherd judge", () => {
   })
 
   it("reads each kind of verdict, and turns an unsafe or missing reply into unclear", () => {
-    expect(parseVerdict(`{"kind":"premature","reply":{"text":"Go ahead and implement it; the plan is inside your task."},"reason":"It stopped after a plan."}`))
-      .toEqual({ kind: "premature", reply: { text: "Go ahead and implement it; the plan is inside your task." }, reason: "It stopped after a plan." })
+    expect(parseVerdict(`{"kind":"premature","reply":{"text":"Go ahead and implement it, the plan is inside your task."},"reason":"It stopped after a plan."}`))
+      .toEqual({ kind: "premature", reply: { text: "Go ahead and implement it, the plan is inside your task." }, reason: "It stopped after a plan." })
     expect(parseVerdict("```json\n{\"kind\":\"premature\",\"reply\":{\"key\":\"2\"},\"reason\":\"Mocking the clock is the recommended fix.\"}\n```"))
       .toEqual({ kind: "premature", reply: { key: "2" }, reason: "Mocking the clock is the recommended fix." })
     expect(parseVerdict(`{"kind":"gate","reply":{"text":"x"},"reason":"  Needs   Ari's Azure sign-in. "}`)).toEqual({ kind: "gate", reply: null, reason: "Needs Ari's Azure sign-in." })
@@ -56,7 +56,8 @@ describe("Shepherd judge", () => {
 
   it("only types one short line with nothing an input box treats as a command", () => {
     expect(safeReplyText("  Keep going. ")).toBe("Keep going.")
-    for (const unsafe of ["", "/compact", "!rm -rf x", "# heading", "look at @file", "a\\nb", "two\nlines", "bell\u0007", "x".repeat(REPLY_MAX_CHARS + 1)]) {
+    for (const unsafe of ["", "/compact", "!rm -rf x", "# heading", "look at @file", "a\\nb", "two\nlines", "bell\u0007", "x".repeat(REPLY_MAX_CHARS + 1),
+      "go on; rm -rf x", "echo $HOME", "run `id`", "cat x | sh", "write > file", "read < file", "a && b", "right\u202eleft", "zero\u200bwidth"]) {
       expect(safeReplyText(unsafe)).toBeNull()
     }
   })

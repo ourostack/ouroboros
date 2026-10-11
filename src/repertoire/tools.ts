@@ -172,7 +172,7 @@ export function selectToolsForChannel(
       })
     ordinary = [
       ...baseToolDefinitions,
-      // The cmux sense's tools exist only for an agent that turned the sense on in agent.json.
+      // The Shepherd tools exist only for an agent that turned the sense on in agent.json.
       ...(shepherdToolsEnabled(context?.agentRoot ?? safeGetAgentRoot()) ? shepherdToolDefinitions : []),
       ...(capabilities?.channel === "bluebubbles" ? bluebubblesToolDefinitions : []),
       ...(capabilities?.channel === "voice" ? voiceToolDefinitions : []),
