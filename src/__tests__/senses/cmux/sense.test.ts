@@ -175,12 +175,13 @@ describe("cmux sense app", () => {
     expect(String(readState().lastError)).toContain("ouro vault config set --agent ouroboros")
   })
 
-  it("delivers like mail by default: a pending message in the private runtime plus a wake, kept even when the wake is refused, and logs Feed read failures", async () => {
+  it("delivers like mail by default: pending messages in the private runtime plus one wake per check pass, kept even when the wake is refused", async () => {
     let fail = true
+    let items = [pending("req-9"), pending("req-10"), pending("req-11")]
     server.respond("events.stream", () => ackFrame())
     server.respond("feed.list", () => {
       if (fail) throw new Error("feed unavailable")
-      return { items: [pending("req-9"), pending("req-10")] }
+      return { items }
     })
     mockRequestPrivateWake.mockResolvedValueOnce({ ok: false, error: "daemon busy" }).mockRejectedValueOnce(new Error("socket gone")).mockResolvedValueOnce({ ok: false }).mockResolvedValue(null)
     const timers = manualScheduler()
@@ -190,23 +191,34 @@ describe("cmux sense app", () => {
     expect(mockRequestPrivateWake).not.toHaveBeenCalled()
     fail = false
     timers.run(30_000)
-    await vi.waitFor(() => expect(readState().escalated).toEqual(["req-9", "req-10"]))
+    await vi.waitFor(() => expect(readState().escalated).toEqual(["req-9", "req-10", "req-11"]))
+    // A burst of three requests costs one wake, and so one private turn that reads all three.
+    await vi.waitFor(() => expect(mockRequestPrivateWake).toHaveBeenCalledTimes(1))
     expect(mockRequestPrivateWake).toHaveBeenCalledWith(AGENT, undefined, {
-      reason: "cmux Feed request",
+      reason: "3 cmux Feed requests",
       triggerSource: "cmux-feed",
       budgetClass: "interactive",
-      idempotencyKey: "cmux-feed:ouroboros:req-9",
-      originRefs: [{ kind: "cmux-feed", id: "req-9" }, { kind: "sense", id: "cmux" }],
+      idempotencyKey: expect.stringMatching(/^cmux-feed:ouroboros:3:[0-9a-f]{32}$/),
+      originRefs: [{ kind: "cmux-feed", id: "req-9" }, { kind: "cmux-feed", id: "req-10" }, { kind: "cmux-feed", id: "req-11" }, { kind: "sense", id: "cmux" }],
     })
     const pendingDir = path.join(home, "AgentBundles", `${AGENT}.ouro`, "state", "pending", "self", "inner", "dialog")
     const queued = fs.readdirSync(pendingDir).map((name) => JSON.parse(fs.readFileSync(path.join(pendingDir, name), "utf-8")) as Record<string, unknown>)
-    expect(queued).toHaveLength(2)
+    expect(queued).toHaveLength(3)
     expect(queued[0]).toMatchObject({ from: "cmux", friendId: "self", channel: "cmux", key: "feed", timestamp: NOW, expiresAt: NOW + 30 * 60_000, mode: "reflect" })
-    expect(queued.map((entry) => String(entry.content))).toEqual(expect.arrayContaining([expect.stringContaining("request_id: req-9"), expect.stringContaining("request_id: req-10")]))
-    // A refusal without a message, and no daemon socket at all (null), leave the message queued the same way.
-    server.respond("feed.list", () => ({ items: [pending("req-11"), pending("req-12")] }))
+    expect(queued.map((entry) => String(entry.content))).toEqual(expect.arrayContaining([expect.stringContaining("request_id: req-9"), expect.stringContaining("request_id: req-11")]))
+
+    // A pass with nothing new sends no wake.
     timers.run(30_000)
-    await vi.waitFor(() => expect(readState().escalated).toEqual(["req-9", "req-10", "req-11", "req-12"]))
+    await vi.waitFor(() => expect(server.methods.filter((entry) => entry.method === "feed.list").length).toBeGreaterThanOrEqual(3))
+    expect(mockRequestPrivateWake).toHaveBeenCalledTimes(1)
+    // A single request wakes under its own id; a rejected wake, a refusal without a message and no daemon socket (null) all leave the message queued.
+    for (const [index, id] of ["req-12", "req-13", "req-14"].entries()) {
+      items = [...items, pending(id)]
+      timers.run(30_000)
+      await vi.waitFor(() => expect(mockRequestPrivateWake).toHaveBeenCalledTimes(index + 2))
+      expect(mockRequestPrivateWake).toHaveBeenLastCalledWith(AGENT, undefined, expect.objectContaining({ reason: "cmux Feed request", idempotencyKey: `cmux-feed:ouroboros:${id}` }))
+    }
+    await vi.waitFor(() => expect(readState().escalated).toEqual(["req-9", "req-10", "req-11", "req-12", "req-13", "req-14"]))
   })
 
   it("keeps checking the Feed after a state write fails, and writes again once it can", async () => {

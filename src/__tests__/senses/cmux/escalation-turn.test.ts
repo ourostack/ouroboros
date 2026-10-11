@@ -43,7 +43,7 @@ import { getChannelCapabilities } from "@ouro.bot/friends"
 import { guardInvocation } from "../../../repertoire/guardrails"
 import { getToolsForChannel } from "../../../repertoire/tools"
 import { escalationMessage } from "../../../senses/cmux/attention"
-import { escalateToPrivateRuntime } from "../../../senses/cmux/sense"
+import { queueEscalation, wakeForEscalations } from "../../../senses/cmux/sense"
 import { runPrivateRuntimeTurn } from "../../../senses/private-runtime"
 
 const NOW = Date.parse("2026-10-10T12:00:00.000Z")
@@ -84,7 +84,9 @@ describe("cmux escalation private turn", () => {
   it("queues the receipt, passes the daemon's default policy, and runs a turn that offers the cmux tools under family trust", async () => {
     expect(fs.existsSync(path.join(hoisted.agentRoot, "tool-profiles.json"))).toBe(false)
     const item = { requestId: "req-1", kind: "permissionRequest", source: "claude", toolName: "Bash", cwd: "/repo/app", workstreamId: "claude-s1", createdAt: null, toolInput: "{}", toolInputTruncated: false } as const
-    await escalateToPrivateRuntime("ouroboros", escalationMessage("ouroboros", item, null), NOW)
+    const escalation = escalationMessage("ouroboros", item, null)
+    queueEscalation("ouroboros", escalation, NOW)
+    await wakeForEscalations("ouroboros", [escalation.requestId])
 
     // The wake the sense sends, mapped the way the daemon maps a private.wake command.
     expect(hoisted.wakes).toHaveLength(1)
