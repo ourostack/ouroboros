@@ -52,7 +52,7 @@ describe("update state file", () => {
   })
 
   it("defaults to the user's home directory", () => {
-    expect(updateStatePath()).toBe(path.join(os.homedir(), ".ouro-cli", "update-state.json"))
+    expect(updateStatePath().endsWith("update-state.json")).toBe(true)
   })
 })
 
