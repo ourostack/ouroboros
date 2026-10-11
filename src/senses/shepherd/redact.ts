@@ -1,8 +1,8 @@
 import { emitNervesEvent } from "../../nerves/runtime"
 
 /**
- * Terminal screens and Feed tool input can show credentials. Everything the cmux sense hands to a
- * model (screen text, request previews) goes through this first. It is a best-effort net for
+ * Terminal screens and agents' last messages can show credentials. Everything Shepherd hands to a
+ * model or a tool result (screen text, last messages) goes through this first. It is a best-effort net for
  * secret-shaped strings, not a guarantee, so callers also keep their output bounded.
  */
 const REDACTED = "[redacted]"
@@ -30,7 +30,7 @@ export function redactSecrets(text: string): string {
   for (const pattern of WHOLE_MATCH) result = result.replace(pattern, REDACTED)
   for (const pattern of LABELLED_VALUE) result = result.replace(pattern, `$1${REDACTED}`)
   if (result !== text) {
-    emitNervesEvent({ component: "senses", event: "senses.cmux_redacted", message: "redacted secret-shaped text from cmux output", meta: { removedChars: text.length - result.length } })
+    emitNervesEvent({ component: "senses", event: "senses.shepherd_redacted", message: "redacted secret-shaped text from cmux output", meta: { removedChars: text.length - result.length } })
   }
   return result
 }

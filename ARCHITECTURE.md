@@ -115,7 +115,7 @@ Current senses (`SenseName` in `src/heart/identity.ts`):
 - `bluebubbles`
 - `mail`
 - `voice`
-- `cmux` (watches coding agents running in the cmux terminal app on this Mac; see [docs/cmux-sense.md](docs/cmux-sense.md))
+- `shepherd` (keeps the coding agents in this Mac's terminals working: judges each return of control and answers premature ones visibly; see [docs/shepherd-sense.md](docs/shepherd-sense.md))
 
 Sense status model:
 

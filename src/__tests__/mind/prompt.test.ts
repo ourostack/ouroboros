@@ -726,7 +726,7 @@ describe("buildSystem", () => {
       humanFacing: { provider: "minimax", model: "minimax-text-01" },
       agentFacing: { provider: "minimax", model: "minimax-text-01" },
       context: { maxTokens: 80000, contextMargin: 20 },
-      senses: { cmux: { enabled: true } },
+      senses: { shepherd: { enabled: true } },
       phrases: { thinking: ["working"], tool: ["running tool"], followup: ["processing"] },
     })
     const { patchRuntimeConfig, resetConfigCache } = await import("../../heart/config")
@@ -736,15 +736,15 @@ describe("buildSystem", () => {
     patchRuntimeConfig({ providers: { minimax: { apiKey: "test-key" } } })
     resetRuntimeCredentialConfigCache()
     resetPsycheCache()
-    expect(flattenSystemPrompt(await buildSystem("cli"))).toContain("cmux: not_attached")
+    expect(flattenSystemPrompt(await buildSystem("cli"))).toContain("shepherd: not_attached")
 
     cacheMachineRuntimeCredentialConfig("testagent", { cmux: { socketPath: "/s.sock" } })
     resetPsycheCache()
-    expect(flattenSystemPrompt(await buildSystem("cli"))).toContain("cmux: needs_config")
+    expect(flattenSystemPrompt(await buildSystem("cli"))).toContain("shepherd: needs_config")
 
     cacheMachineRuntimeCredentialConfig("testagent", { cmux: { socketCapability: "v1.a.b" } })
     resetPsycheCache()
-    expect(flattenSystemPrompt(await buildSystem("cli"))).toContain("cmux: ready")
+    expect(flattenSystemPrompt(await buildSystem("cli"))).toContain("shepherd: ready")
   })
 
   it("marks Voice ready when the ElevenLabs voice id is stored in voice config", async () => {

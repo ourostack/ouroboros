@@ -1,0 +1,87 @@
+# Shepherd Sense
+
+Shepherd keeps the coding agents in this Mac's terminals working. Every time one of them hands control back, a cheap judge decides whether it should have. When the agent stopped too early (it asked "want me to go ahead?", offered a menu with a clear recommendation, or stopped after a plan), Shepherd answers in the terminal, visibly, and the agent carries on. When the agent needs the human (a sign-in, a decision that is theirs, money, an irreversible step) or says the work is done, Shepherd lets the return through and brings it to the Ouro agent.
+
+It is agent-agnostic and terminal-agnostic. Nothing in it assumes a particular coding agent: Claude Code, Codex, Copilot CLI, Agency and any other agent are judged by the same rubric from their screen. A terminal host is an adapter (`src/senses/shepherd/host.ts`); cmux is the first.
+
+## What a return is
+
+A return is the host's own "agent stopped" signal.
+
+- **cmux, hooked agents.** cmux publishes `agent.hook.Stop` (and `StopFailure`) for every agent its hooks cover. Shepherd follows cmux's `events.stream` (categories `agent` and `surface`) and waits a 3-second grace period: any later hook for the same terminal other than `SubagentStop` or `Notification` means the agent resumed, and the stop is dropped. When cmux's session store (`~/.cmuxterm/<agent>-hook-sessions.json`, keyed by the agent's own session id; hook events name it `<agent>-<id>`) says background work was still running at the stop, Shepherd waits 30 seconds more and then passes the stop on marked as background work. The return is keyed by cmux's event id (`cmux:<boot id>:<seq>`) and carries the agent's last message (`lastBody`) and folder from that store.
+- **cmux, terminals no hook speaks for.** Some agents (Agency today) have no cmux hook. Every 4 seconds Shepherd reads the last 40 lines of each such terminal. Output that changed and then held still for 8 seconds is one return. Plain shells are watched too, so a terminal judged as still working or as not an agent waits twice as long before its next quiet return, doubling up to 5 minutes; focusing it or any other verdict restores the 8 seconds. A terminal whose hooked agent's session ends is watched this way again.
+- **Restarts and gaps.** The first connection, and any connection whose `ack` reports a gap, starts at cmux's latest event, so old stops are never replayed as new returns. Reconnects back off 1, 2, 5, 10, then 30 seconds.
+
+## Background work is not a return
+
+An agent that ends its turn while its own background work runs (subagents, background shells or jobs, watchers) has not handed control back: it is waiting for that work and will stop again when it reports. Shepherd treats such a stop as `working`. It never answers it and never escalates it as a gate. Its last message is a progress update: it is logged, and the status line says `<agent> waiting on its background work: <one line>`. Only when the judge says the update carries news the human would want now does it reach the Ouro agent, as a `[Shepherd update]` pending message with no wake, read on the agent's next private turn. With background work reported by the host, every verdict becomes `working`; a `gate` verdict is passed on as news. A later background stop with the same last message is logged without asking the judge again.
+
+Shepherd knows about background work two ways. The terminal host may say so (cmux's `hadPendingBackgroundWorkAtStop`, or a session lifecycle of `running` or `backgroundWorkPending`); then the judge is told, and a `premature` or `done` verdict becomes `working`. Otherwise the judge reads the screen: running-task indicators or wording such as "waiting for background agents" mean `working`. The session is judged afresh at its next real stop, after the background work reports back and the agent's next turn ends.
+
+## The judge
+
+The judge reads a packet (the human's name, the agent, folder, the `Desk-Task:` line if the screen has one, the agent's last message and the last 80 screen lines, all redacted) and answers with JSON: `premature` with a reply, `gate`, `done`, `working` (with a `news` flag) or `unclear`. The screen is untrusted data. It runs on the agent's own `agent` provider lane with no tools, low reasoning effort and a 20-second timeout, and its latency and input tokens are logged.
+
+A reply is either one key from a fixed set (enter, escape, up, down, tab, 1-9, y, n) or one line of at most 240 characters. The line has no line breaks, backslashes, `@`, control characters, invisible formatting or bidirectional-override characters, or leading `/`, `!` or `#`, so an input box never reads it as a command, a file mention or more than one line. Because the terminal might turn out to be a plain shell, it also has none of these shell characters: semicolon, dollar sign, backtick, pipe, `<`, `>` and `&`. Anything else turns the verdict into `unclear`.
+
+## What Shepherd does with a verdict
+
+| Verdict | Action |
+| --- | --- |
+| `premature` | Answers in the terminal, unless a check below stops it. A line is typed as `[Ouro for <human>] <reply>`; a menu gets its key. The status line says `answered for <human>: <reason>`. |
+| `gate` | Lets it through, sets the status line to `needs <human>`, and escalates to the Ouro agent. |
+| `done` | Lets it through, sets the status line to `done`, and escalates. |
+| `working` | Never answers. Sets the status line to `<agent> waiting on its background work: <reason>` and logs it. Queues a `[Shepherd update]` for the Ouro agent, with no wake, only when the judge flags news. |
+| `unclear`, or an error | Lets it through and logs it. No escalation. |
+
+Before it answers, Shepherd checks, in order:
+
+1. **The loop guard.** Three automatic answers in a row in one terminal, with no human focus in between, or ten in an hour, stop answering. The return that trips it is logged as `loop_guard` and escalated once, and the status line says `stopped answering`. Until the human focuses that terminal, its later returns are logged as `loop_guard` with no judge call and no new escalation.
+2. **The human.** Shepherd never types into the terminal the human is in: on cmux, the focused surface of the selected workspace in a visible window, read from `system.tree` just before sending (cmux reports focus only when it changes, so a human who stays in one terminal sends no further events). A terminal the human left in the last 60 seconds is also theirs.
+3. **The screen.** It reads the terminal again; if the last lines changed since the judge saw them, it lets the return through.
+
+Shepherd's status is one entry per terminal (cmux key `ouro_<surface>`, attached to that surface's panel), because a cmux workspace can hold several agents. It is cleared as soon as the agent resumes or the terminal's screen moves again. On cmux, a line is sent with `terminal.paste` (so no character of it is read as a keystroke) followed by a separate Enter. `<human>` is the name on the family friend record whose local id is this OS user, else the first family friend.
+
+Escalation queues one pending message in the agent's private runtime (from `shepherd`, dropped unread after 30 minutes) and asks the daemon for a private turn (trigger `shepherd`, which the daemon's policy allows only with a `shepherd-return` reference and the `sense: shepherd` reference). Escalations in a burst share one wake. The message names the agent, folder, task and why, and ends with the usual untrusted-input line. If the daemon refuses the wake, the message waits for the next private turn.
+
+Every judgment is one JSON line in `state/senses/shepherd/returns.jsonl` in the agent bundle (directory `0700`, file `0600`, rotated once at 2 MB, never synced): time, host, terminal, transition id, agent, folder, task, kind, action, reason, reply, latency and input tokens.
+
+**Menu keys can approve permission prompts.** An agent that asks for permission before doing work inside its task has stopped too early under TTFA (time to first action), so the judge may answer it with a key, which can approve the prompt. That is deliberate: the human's standing authority covers routine work, and gates (credentials, money, irreversible acts, decisions that are the human's) are never answered. Every such answer is logged and shown on the status line.
+
+## Tools
+
+The tools appear only for an agent whose `agent.json` has `senses.shepherd.enabled: true`. Only family trust may call them.
+
+| Tool | What it does |
+| --- | --- |
+| `shepherd_overview` | Lists every terminal with its agent and the last return Shepherd judged there. |
+| `shepherd_read` | Reads one terminal's text, 1 to 400 lines (default 60), redacted and capped at 16,000 characters. |
+| `shepherd_signal` | Sets or clears the one-line status (at most 120 characters) on a terminal's workspace, and can post a desktop notification. |
+
+## Turning it on
+
+Shepherd needs the cmux socket credential on this machine. It lives in the agent's machine runtime vault item (`runtime/machines/<machine-id>/config`, key `cmux`), never in the synced bundle.
+
+1. In a terminal inside cmux, store the capability token cmux gives every terminal it starts:
+
+   ```sh
+   ouro vault config set --agent <agent> --scope machine --key cmux.socketCapability --value "$CMUX_SOCKET_CAPABILITY"
+   ```
+
+   cmux's default `cmuxOnly` socket mode refuses processes it did not start, and the daemon is not a cmux child. The token lets Shepherd in without loosening that mode. If cmux runs in `password` mode, set `cmux.socketPassword` instead. `cmux.socketMode: "automation"` is a last resort. `cmux.socketPath` overrides the default socket, `~/.local/state/cmux/cmux-<uid>.sock`.
+2. Set `senses.shepherd.enabled: true` in `agent.json`.
+3. Run `ouro up`.
+
+`ouro status` reports the sense as `not_attached` on a machine with no terminal host, `needs_config` when the `cmux` record has no credential (with the command above as the repair), and `running` once the process is up.
+
+## Code
+
+- `src/heart/shepherd-config.ts`: the terminal host connection from machine config, status facts and the repair hint.
+- `src/senses/shepherd/host.ts`: the host adapter seam.
+- `src/senses/shepherd/cmux.ts` and `client.ts`: the cmux adapter and its socket client.
+- `src/senses/shepherd/judge.ts`: the judge and the reply safety rules.
+- `src/senses/shepherd/sense.ts`: the sense process (checks, answers, escalation); `src/senses/shepherd-entry.ts` is its daemon entry point.
+- `src/senses/shepherd/returns.ts`: the returns log.
+- `src/senses/shepherd/redact.ts`: best-effort secret redaction.
+- `src/heart/private-runtime/policy.ts`: the `shepherd` private-turn trigger.
+- `src/repertoire/tools-shepherd.ts`: the three tools.
