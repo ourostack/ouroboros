@@ -988,7 +988,8 @@ async function handleInboundTurnExclusive(input: InboundTurnInput): Promise<Inbo
   // Each agent runs on one machine. If the (just pulled) lease names another
   // machine, this machine must not act for the agent, even before its daemon
   // has noticed and stopped it. Nothing is written, so nothing is pushed.
-  const homeElsewhere = readAgentHomeElsewhere(getAgentRoot())
+  // Leases travel only through bundle sync, so only synced bundles can move.
+  const homeElsewhere = syncConfig.enabled ? readAgentHomeElsewhere(getAgentRoot()) : null
   if (homeElsewhere) {
     declinedForHome = true
     emitNervesEvent({
