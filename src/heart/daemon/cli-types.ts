@@ -26,6 +26,8 @@ import type { MailroomRuntimeConfig } from "../../mailroom/reader"
 import type { HabitCancelDeps } from "../habits/habit-cancel"
 import type { RsvpSendBoundaryDeps } from "../../rsvp/outbound-state"
 import type { VersionIntent } from "../versioning/version-intent"
+import type { SelfUpdateResult } from "../versioning/self-update"
+import type { UpdaterAgentResult } from "../versioning/updater-launchd"
 import type { Readable, Writable } from "stream"
 import type { McpServer, McpServerOptions } from "../mcp/mcp-server"
 import type { AcpServer, AcpServerOptions } from "../../senses/acp-server"
@@ -106,6 +108,7 @@ export type OuroCliCommand =
   | { kind: "hatch.start"; agentName?: string; humanName?: string; provider?: AgentProvider; credentials?: HatchCredentialsInput; migrationPath?: string }
   | { kind: "rollback"; version?: string }
   | { kind: "versions" }
+  | { kind: "self-update"; unattended?: boolean }
   | { kind: "daemon.dev"; repoPath?: string; clone?: boolean; clonePath?: string }
   | { kind: "attention.list"; agent?: string }
   | { kind: "attention.show"; id: string; agent?: string }
@@ -207,6 +210,12 @@ export interface OuroCliDeps {
   reExecFromNewVersion?: (args: string[]) => never
   getPreviousCliVersion?: () => string | null
   listCliVersions?: () => string[]
+  /** One unattended update pass (`ouro self-update`). */
+  runSelfUpdate?: () => Promise<SelfUpdateResult>
+  /** Install or refresh the launchd updater agent; null where unsupported. */
+  ensureUpdaterAgent?: () => UpdaterAgentResult | null
+  /** The "Updates:" line for `ouro status`; null when not available. */
+  readUpdateStatusLine?: () => string | null
   existsSync?: (p: string) => boolean
   getRepoCwd?: () => string
   detectMode?: () => "dev" | "production"
@@ -342,6 +351,7 @@ export type ConfigModelCliCommand = Extract<OuroCliCommand, { kind: "config.mode
 export type ConfigModelsCliCommand = Extract<OuroCliCommand, { kind: "config.models" }>
 export type RollbackCliCommand = Extract<OuroCliCommand, { kind: "rollback" }>
 export type VersionsCliCommand = Extract<OuroCliCommand, { kind: "versions" }>
+export type SelfUpdateCliCommand = Extract<OuroCliCommand, { kind: "self-update" }>
 export type AttentionCliCommand = Extract<OuroCliCommand, { kind: "attention.list" } | { kind: "attention.show" } | { kind: "attention.history" }>
 export type PrivateDecisionsCliCommand = Extract<OuroCliCommand, { kind: "private.decisions" }>
 export type PrivateStatusCliCommand = Extract<OuroCliCommand, { kind: "private.status" }>

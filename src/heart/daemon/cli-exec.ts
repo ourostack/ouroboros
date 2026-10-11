@@ -110,6 +110,7 @@ import type {
   ConfigModelsCliCommand,
   RollbackCliCommand,
   VersionsCliCommand,
+  SelfUpdateCliCommand,
   AttentionCliCommand,
   PrivateDecisionsCliCommand,
   PrivateStatusCliCommand,
@@ -1949,7 +1950,7 @@ export async function checkManualCloneBundles(deps: ManualCloneCheckDeps): Promi
 
 // ── toDaemonCommand ──
 
-function toDaemonCommand(command: Exclude<OuroCliCommand, { kind: "daemon.up" } | { kind: "daemon.dev" } | { kind: "daemon.logs.prune" } | { kind: "mailbox" } | { kind: "hatch.start" } | AuthCliCommand | AuthVerifyCliCommand | AuthSwitchCliCommand | ProviderCliCommand | RepairCliCommand | VaultCliCommand | DnsCliCommand | FriendCliCommand | A2ACliCommand | A2AClientCliCommand | WhoamiCliCommand | VoiceCliCommand | SessionCliCommand | ThoughtsCliCommand | ChangelogCliCommand | ConfigModelCliCommand | ConfigModelsCliCommand | RollbackCliCommand | VersionsCliCommand | AttentionCliCommand | PrivateDecisionsCliCommand | PrivateStatusCliCommand | WorkCardCliCommand | WorkGauntletCliCommand | WorkSentinelCliCommand | NervesReviewCliCommand | McpServeCliCommand | AcpServeCliCommand | McpCanaryCliCommand | McpDoctorCliCommand | SetupCliCommand | HookCliCommand | HabitLocalCliCommand | DeskCliCommand | MigrateToDeskCliCommand | DoctorCliCommand | RsvpCliCommand | CloneCliCommand | HelpCliCommand | { kind: "bluebubbles.replay" } | { kind: "bluebubbles.context-smoke" } | { kind: "bluebubbles.host" } | { kind: "bluebubbles.host.collect" } | { kind: "connect" } | { kind: "account.ensure" } | { kind: "mail.import-mbox" } | { kind: "mail.backfill-indexes" } | { kind: "mail.sync-cache" } | { kind: "plugin.install" } | { kind: "plugin.list" } | { kind: "plugin.remove" }>): DaemonCommand {
+function toDaemonCommand(command: Exclude<OuroCliCommand, { kind: "daemon.up" } | { kind: "daemon.dev" } | { kind: "daemon.logs.prune" } | { kind: "mailbox" } | { kind: "hatch.start" } | AuthCliCommand | AuthVerifyCliCommand | AuthSwitchCliCommand | ProviderCliCommand | RepairCliCommand | VaultCliCommand | DnsCliCommand | FriendCliCommand | A2ACliCommand | A2AClientCliCommand | WhoamiCliCommand | VoiceCliCommand | SessionCliCommand | ThoughtsCliCommand | ChangelogCliCommand | ConfigModelCliCommand | ConfigModelsCliCommand | RollbackCliCommand | VersionsCliCommand | SelfUpdateCliCommand | AttentionCliCommand | PrivateDecisionsCliCommand | PrivateStatusCliCommand | WorkCardCliCommand | WorkGauntletCliCommand | WorkSentinelCliCommand | NervesReviewCliCommand | McpServeCliCommand | AcpServeCliCommand | McpCanaryCliCommand | McpDoctorCliCommand | SetupCliCommand | HookCliCommand | HabitLocalCliCommand | DeskCliCommand | MigrateToDeskCliCommand | DoctorCliCommand | RsvpCliCommand | CloneCliCommand | HelpCliCommand | { kind: "bluebubbles.replay" } | { kind: "bluebubbles.context-smoke" } | { kind: "bluebubbles.host" } | { kind: "bluebubbles.host.collect" } | { kind: "connect" } | { kind: "account.ensure" } | { kind: "mail.import-mbox" } | { kind: "mail.backfill-indexes" } | { kind: "mail.sync-cache" } | { kind: "plugin.install" } | { kind: "plugin.list" } | { kind: "plugin.remove" }>): DaemonCommand {
   if (command.kind === "habit.probe") {
     return {
       kind: "habit.probe",
@@ -6971,6 +6972,44 @@ function writeVersionIntentWithRecoveryLauncher(deps: OuroCliDeps, intent: Versi
   deps.writeVersionIntent(intent)
 }
 
+const SELF_UPDATE_FAILURE_OUTCOMES = new Set(["unreachable", "install-failed", "rejected", "rolled-back"])
+
+async function executeSelfUpdate(command: SelfUpdateCliCommand, deps: OuroCliDeps): Promise<string> {
+  if (!deps.runSelfUpdate) {
+    return returnCliFailure(deps, "self-update is not available in this runtime")
+  }
+  const result = await deps.runSelfUpdate()
+  const lines = [`self-update: ${result.outcome}: ${result.summary}`]
+  // Install or refresh the hourly updater after the pass so its first run
+  // (RunAtLoad) does not race this one for the update lock.
+  if (deps.ensureUpdaterAgent) {
+    try {
+      const agent = deps.ensureUpdaterAgent()
+      if (agent === "installed") lines.push("unattended updater: installed (runs hourly and at login)")
+      else if (agent === "written-reload-pending") lines.push("unattended updater: refreshed; reloads on the next interactive run")
+      else if (agent === null && !command.unattended) lines.push("unattended updater: not available on this platform")
+    } catch (error) {
+      lines.push(`unattended updater: could not install: ${error instanceof Error ? error.message : /* v8 ignore next -- defensive: non-Error catch branch @preserve */ String(error)}`)
+    }
+  }
+  const message = lines.join("\n")
+  if (SELF_UPDATE_FAILURE_OUTCOMES.has(result.outcome)) {
+    return returnCliFailure(deps, message)
+  }
+  deps.writeStdout(message)
+  return message
+}
+
+function withUpdateStatusLine(message: string, deps: Pick<OuroCliDeps, "readUpdateStatusLine">): string {
+  let line: string | null = null
+  try {
+    line = deps.readUpdateStatusLine?.() ?? null
+  } catch {
+    line = null
+  }
+  return line ? `${message}\n\n${line}` : message
+}
+
 async function performSystemSetup(deps: OuroCliDeps): Promise<void> {
   // Install ouro command to PATH (non-blocking)
   if (deps.installOuroCommand) {
@@ -7046,6 +7085,21 @@ async function performSystemSetup(deps: OuroCliDeps): Promise<void> {
       })
     }
     /* v8 ignore stop */
+  }
+
+  // Keep the unattended updater installed so updates do not depend on the daemon.
+  if (deps.ensureUpdaterAgent) {
+    try {
+      deps.ensureUpdaterAgent()
+    } catch (error) {
+      emitNervesEvent({
+        level: "warn",
+        component: "daemon",
+        event: "daemon.system_setup_updater_agent_error",
+        message: "failed to install the unattended updater launch agent",
+        meta: { error: error instanceof Error ? error.message : /* v8 ignore next -- defensive: non-Error catch branch @preserve */ String(error) },
+      })
+    }
   }
 
   // Register .ouro bundle type (UTI on macOS)
@@ -8331,7 +8385,13 @@ export async function runOuroCli(args: string[], deps: OuroCliDeps = createDefau
       targetVersion = previousVersion
     }
 
-    writeVersionIntentWithRecoveryLauncher(deps, { schemaVersion: 1, mode: "pinned", targetVersion })
+    writeVersionIntentWithRecoveryLauncher(deps, {
+      schemaVersion: 1,
+      mode: "pinned",
+      targetVersion,
+      pinnedAt: new Date((deps.now ?? Date.now)()).toISOString(),
+      reason: "rollback",
+    })
     deps.activateCliVersion!(targetVersion)
 
     // Stop daemon (non-fatal if not running)
@@ -8349,6 +8409,11 @@ export async function runOuroCli(args: string[], deps: OuroCliDeps = createDefau
   // ── a2a client commands (this machine talks to an agent as a verified friend; no agent, no daemon) ──
   if (command.kind === "a2a.identity" || command.kind === "a2a.message" || command.kind === "a2a.outbox") {
     return executeA2AClientCommand(command, deps)
+  }
+
+  // ── self-update (unattended-safe update pass; never starts a stopped daemon) ──
+  if (command.kind === "self-update") {
+    return executeSelfUpdate(command, deps)
   }
 
   // ── versions command (local install list + published update truth, no daemon socket needed) ──
@@ -10122,7 +10187,7 @@ export async function runOuroCli(args: string[], deps: OuroCliDeps = createDefau
     if (command.kind === "daemon.status" && isDaemonUnavailableError(error)) {
       const message = command.json
         ? daemonUnavailableStatusJsonOutput(deps.socketPath, deps.healthFilePath)
-        : daemonUnavailableStatusOutput(deps.socketPath, deps.healthFilePath)
+        : withUpdateStatusLine(daemonUnavailableStatusOutput(deps.socketPath, deps.healthFilePath), deps)
       deps.writeStdout(message)
       return message
     }
@@ -10137,7 +10202,7 @@ export async function runOuroCli(args: string[], deps: OuroCliDeps = createDefau
   const message = command.kind === "daemon.status"
     ? command.json
       ? formatDaemonStatusJsonOutput(response)
-      : formatDaemonStatusOutput(response, fallbackMessage)
+      : withUpdateStatusLine(formatDaemonStatusOutput(response, fallbackMessage), deps)
     : command.kind === "habit.probe" && command.json
       ? habitProbeJsonResponse(response)
     : fallbackMessage

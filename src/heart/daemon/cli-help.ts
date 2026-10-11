@@ -79,6 +79,12 @@ export const COMMAND_REGISTRY: Record<string, CommandHelp & { category: CommandC
     usage: "ouro rollback [<version>]",
     example: "ouro rollback 0.1.0-alpha.250",
   },
+  "self-update": {
+    category: "Lifecycle",
+    description: "Update the installed CLI to the newest release from npm or GitHub, restart a running daemon on it, roll back if it fails its checks, and install the hourly launchd updater on macOS",
+    usage: "ouro self-update [--unattended]",
+    example: "ouro self-update",
+  },
   versions: {
     category: "Lifecycle",
     description: "List installed CLI versions and show the active version intent mode and target",

@@ -6262,6 +6262,35 @@ describe("specialist integration (zero agents -> serpent guide)", () => {
     expect(startChat).toHaveBeenCalledWith("WrapperBot")
   })
 
+  it("installs the unattended updater during system setup and survives its failure", async () => {
+    for (const ensureUpdaterAgent of [
+      vi.fn(() => "installed" as const),
+      vi.fn(() => { throw new Error("launchctl failed") }),
+      vi.fn(() => { throw "launchctl exploded" }),
+    ]) {
+      const runSerpentGuide = vi.fn(async () => "UpdaterBot")
+      const startChat = vi.fn(async () => {})
+      const deps: OuroCliDeps = {
+        socketPath: "/tmp/ouro-test.sock",
+        sendCommand: vi.fn(async () => ({ ok: true })),
+        startDaemonProcess: vi.fn(async () => ({ pid: 1 })),
+        writeStdout: vi.fn(),
+        checkSocketAlive: vi.fn().mockResolvedValueOnce(false).mockResolvedValue(true),
+        cleanupStaleSocket: vi.fn(),
+        fallbackPendingMessage: vi.fn(() => "/tmp/pending.jsonl"),
+        listDiscoveredAgents: vi.fn(async () => []),
+        runSerpentGuide,
+        ensureUpdaterAgent,
+        startChat,
+      }
+
+      await runOuroCli([], deps)
+
+      expect(ensureUpdaterAgent).toHaveBeenCalledTimes(1)
+      expect(startChat).toHaveBeenCalledWith("UpdaterBot")
+    }
+  })
+
   it("falls back to old hatch flow for explicit ouro hatch command even when specialist dep exists", async () => {
     const mockHealthCheck = checkAgentConfigWithProviderHealth as ReturnType<typeof vi.fn>
     mockHealthCheck.mockClear()

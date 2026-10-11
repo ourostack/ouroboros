@@ -2711,6 +2711,12 @@ export function parseOuroCommand(args: string[]): OuroCliCommand {
   }
   if (head === "rollback") return { kind: "rollback", ...(second ? { version: second } : {}) }
   if (head === "versions") return { kind: "versions" }
+  if (head === "self-update") {
+    const rest = args.slice(1)
+    const unknown = rest.filter((token) => token !== "--unattended")
+    if (unknown.length > 0) throw new Error("Usage: ouro self-update [--unattended]")
+    return { kind: "self-update", ...(rest.includes("--unattended") ? { unattended: true } : {}) }
+  }
   if (head === "stop" || head === "down") return { kind: "daemon.stop" }
   if (head === "status") {
     const { agent, rest } = extractAgentFlag(args.slice(1))
