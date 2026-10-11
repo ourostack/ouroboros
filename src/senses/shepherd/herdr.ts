@@ -194,15 +194,19 @@ export function createHerdrHost(connection: HerdrConnection, options: HerdrHostO
           stream?.close()
           return
         }
+        // Agent-status subscriptions name each pane, so a new or closed pane needs a new subscription. Herdr sends a new
+        // pane as `data.pane` with no top-level `pane_id`; the fresh pane list after resubscribing picks it up.
+        if (name === "pane_created") {
+          refresh = true
+          stream?.close()
+          return
+        }
         const paneId = str(data.pane_id)
         if (!paneId) return
         if (name === "pane_focused") return handlers.focused(paneId)
-        if (name === "pane_created" || name === "pane_closed") {
-          if (name === "pane_closed") {
-            cancelPending(paneId)
-            status.delete(paneId)
-          }
-          // Agent-status subscriptions name each pane, so a new or closed pane needs a new subscription.
+        if (name === "pane_closed") {
+          cancelPending(paneId)
+          status.delete(paneId)
           refresh = true
           stream?.close()
           return
