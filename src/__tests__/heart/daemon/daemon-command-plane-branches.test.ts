@@ -1014,7 +1014,7 @@ describe("daemon command plane branches", () => {
         triggerSource: "cmux-feed",
         budgetClass: "interactive",
         idempotencyKey: "cmux-feed:slugger:2:abc",
-        originRefs: [{ kind: "cmux-feed", id: "req-1" }, { kind: "cmux-feed", id: "req-2" }, { kind: "sense", id: "cmux" }],
+        originRefs: [{ kind: "cmux-feed", id: "req-1" }, { kind: "cmux-feed", id: "req-2" }, { kind: "sense", id: "shepherd" }],
       })
       expect(wake).toMatchObject({ ok: true, message: "woke private runtime for slugger", data: { decision: { result: "allow", reason: "cmux sense escalation", triggerSource: "cmux-feed", origin: "daemon.private.wake", requestReason: "2 cmux Feed requests" } } })
       expect(processManager.startAgent).toHaveBeenCalledWith("slugger")

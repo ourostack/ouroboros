@@ -30,7 +30,7 @@ export function redactSecrets(text: string): string {
   for (const pattern of WHOLE_MATCH) result = result.replace(pattern, REDACTED)
   for (const pattern of LABELLED_VALUE) result = result.replace(pattern, `$1${REDACTED}`)
   if (result !== text) {
-    emitNervesEvent({ component: "senses", event: "senses.cmux_redacted", message: "redacted secret-shaped text from cmux output", meta: { removedChars: text.length - result.length } })
+    emitNervesEvent({ component: "senses", event: "senses.shepherd_redacted", message: "redacted secret-shaped text from cmux output", meta: { removedChars: text.length - result.length } })
   }
   return result
 }

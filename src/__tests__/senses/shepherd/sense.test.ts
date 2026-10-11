@@ -5,11 +5,11 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 
 import { cacheMachineRuntimeCredentialConfig, resetRuntimeCredentialConfigCache } from "../../../heart/runtime-credentials"
 import { resetIdentity } from "../../../heart/identity"
-import type { CmuxEscalation } from "../../../senses/cmux/attention"
+import type { CmuxEscalation } from "../../../senses/shepherd/attention"
 import { readStewardPolicy, updateStewardPolicy } from "../../../heart/steward-policy"
-import { CMUX_GRANT_ACTION, CMUX_GRANT_KEY } from "../../../senses/cmux/answer"
-import { cmuxDecisionLogPath, readDecisions } from "../../../senses/cmux/casebook"
-import { startCmuxSenseApp, type CmuxSenseApp } from "../../../senses/cmux/sense"
+import { CMUX_GRANT_ACTION, CMUX_GRANT_KEY } from "../../../senses/shepherd/answer"
+import { cmuxDecisionLogPath, readDecisions } from "../../../senses/shepherd/casebook"
+import { startCmuxSenseApp, type CmuxSenseApp } from "../../../senses/shepherd/sense"
 import { ackFrame, feedEvent, startFakeCmux, type FakeCmux } from "./fake-cmux"
 
 vi.mock("node:fs", async (importOriginal) => {
@@ -55,7 +55,7 @@ const pending = (requestId: string, extra: Record<string, unknown> = {}) => ({
 })
 
 function statePath(): string {
-  return path.join(home, "AgentBundles", `${AGENT}.ouro`, "state", "senses", "cmux", "state.json")
+  return path.join(home, "AgentBundles", `${AGENT}.ouro`, "state", "senses", "shepherd", "state.json")
 }
 
 function readState(): Record<string, unknown> {
@@ -199,7 +199,7 @@ describe("cmux sense app", () => {
       triggerSource: "cmux-feed",
       budgetClass: "interactive",
       idempotencyKey: expect.stringMatching(/^cmux-feed:ouroboros:3:[0-9a-f]{32}$/),
-      originRefs: [{ kind: "cmux-feed", id: "req-9" }, { kind: "cmux-feed", id: "req-10" }, { kind: "cmux-feed", id: "req-11" }, { kind: "sense", id: "cmux" }],
+      originRefs: [{ kind: "cmux-feed", id: "req-9" }, { kind: "cmux-feed", id: "req-10" }, { kind: "cmux-feed", id: "req-11" }, { kind: "sense", id: "shepherd" }],
     })
     const pendingDir = path.join(home, "AgentBundles", `${AGENT}.ouro`, "state", "pending", "self", "inner", "dialog")
     const queued = fs.readdirSync(pendingDir).map((name) => JSON.parse(fs.readFileSync(path.join(pendingDir, name), "utf-8")) as Record<string, unknown>)
@@ -263,7 +263,7 @@ describe("cmux sense app", () => {
 
   it("still escalates and remembers a request when the decision log cannot take the line", async () => {
     // A directory where the log file belongs makes every append fail.
-    fs.mkdirSync(path.join(home, "AgentBundles", `${AGENT}.ouro`, "state", "senses", "cmux", "decisions.jsonl"), { recursive: true })
+    fs.mkdirSync(path.join(home, "AgentBundles", `${AGENT}.ouro`, "state", "senses", "shepherd", "decisions.jsonl"), { recursive: true })
     server.respond("events.stream", () => ackFrame())
     server.respond("feed.list", () => ({ items: [pending("logless")] }))
     const submitted: string[] = []
@@ -396,7 +396,7 @@ describe("cmux sense app", () => {
     expect(submitted[1]!.content).toContain("why it was not answered automatically: the sense's reply may or may not have reached cmux, and cmux does not show the request resolved by it")
     expect(submitted[2]!.content).toContain("why it was not answered automatically: the sense could not judge or answer it: judge blew up")
     expect(submitted[3]!.content).toContain("why it was not answered automatically: the sense's own reply did not go out")
-    const log = readDecisions(cmuxDecisionLogPath(path.join(agentRoot, "state", "senses", "cmux")))
+    const log = readDecisions(cmuxDecisionLogPath(path.join(agentRoot, "state", "senses", "shepherd")))
     expect(log.map((entry) => [entry.requestId, entry.outcome])).toEqual([
       ["auto-1", "reply_sent"], ["auto-1", "replied_once"], ["hard-1", "escalated"], ["fail-1", "reply_sent"], ["fail-1", "reply_failed"], ["fail-1", "escalated"],
       ["chg-1", "reply_failed"], ["chg-1", "escalated"],
@@ -432,7 +432,7 @@ describe("cmux sense app", () => {
 
     await app.stop()
     app = null
-    fs.writeFileSync(path.join(agentRoot, "state", "senses", "cmux", "state.json"), "{}")
+    fs.writeFileSync(path.join(agentRoot, "state", "senses", "shepherd", "state.json"), "{}")
     version = "0.64.22"
     items[0] = pending("old-1", { cwd: repo, tool_input: JSON.stringify({ command: "git status" }) })
     app = await startCmuxSenseApp({ agentName: AGENT, now: () => NOW, schedule: timers.schedule, escalate: async (input) => { submitted.push(input) } })

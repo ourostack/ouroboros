@@ -142,7 +142,7 @@ export function createCmuxClient(
     async call(method, params = {}) {
       const text = await request(v2Line(method, params))
       const result = parseV2(text)
-      emitNervesEvent({ component: "senses", event: "senses.cmux_call", message: "cmux socket call answered", meta: { method } })
+      emitNervesEvent({ component: "senses", event: "senses.shepherd_call", message: "cmux socket call answered", meta: { method } })
       return result
     },
 

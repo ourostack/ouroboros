@@ -50,7 +50,7 @@ export type Judgment =
 export type AnswerOutcome = "replied_once" | "race" | "not_sent" | "unconfirmed"
 
 export function cmuxStateDir(agentRoot: string): string {
-  return path.join(agentRoot, "state", "senses", "cmux")
+  return path.join(agentRoot, "state", "senses", "shepherd")
 }
 
 function inspectGrant(ctx: AnswerContext, repoRoot: string): ReturnType<typeof inspectStandingActionGrant> {
@@ -165,7 +165,7 @@ export async function answerOnce(ctx: AnswerContext, item: CmuxPendingFeedItem, 
   }
   if (after?.status === "resolved" && after.kind === "permission" && after.mode === REPLY_MODE) {
     recordDecision(ctx, item, judgment, "replied_once", judgment.authority)
-    emitNervesEvent({ component: "senses", event: "senses.cmux_replied_once", message: "answered a coding agent's permission request once", meta: { requestId: item.requestId, tool: item.toolName } })
+    emitNervesEvent({ component: "senses", event: "senses.shepherd_replied_once", message: "answered a coding agent's permission request once", meta: { requestId: item.requestId, tool: item.toolName } })
     return "replied_once"
   }
   if (after === null || after.status !== "resolved") {
@@ -173,6 +173,6 @@ export async function answerOnce(ctx: AnswerContext, item: CmuxPendingFeedItem, 
     return "unconfirmed"
   }
   recordDecision(ctx, item, judgment, "race", `after the reply the request was ${after.status}${after.mode ? ` (${after.mode})` : ""}`)
-  emitNervesEvent({ component: "senses", event: "senses.cmux_reply_race", message: "a cmux Feed request was resolved by someone else", meta: { requestId: item.requestId, status: after.status } })
+  emitNervesEvent({ component: "senses", event: "senses.shepherd_reply_race", message: "a cmux Feed request was resolved by someone else", meta: { requestId: item.requestId, status: after.status } })
   return "race"
 }

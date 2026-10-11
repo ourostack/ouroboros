@@ -118,7 +118,7 @@ function defaultSenses(): AgentSensesConfig {
     a2a: { ...DEFAULT_AGENT_SENSES.a2a },
     telegram: { ...DEFAULT_AGENT_SENSES.telegram },
     workbench: { ...DEFAULT_AGENT_SENSES.workbench },
-    cmux: { ...DEFAULT_AGENT_SENSES.cmux },
+    shepherd: { ...DEFAULT_AGENT_SENSES.shepherd },
   }
 }
 
@@ -161,7 +161,7 @@ function readAgentSenses(agentJsonPath: string): { senses: AgentSensesConfig; wo
     && Object.prototype.hasOwnProperty.call(rawMcpServers, "ouro_workbench")
   const workbenchHasStaleBundleEntry = workbenchSensePresent || workbenchMcpPresent
 
-  for (const sense of ["cli", "teams", "bluebubbles", "mail", "voice", "a2a", "telegram", "workbench", "cmux"] as SenseName[]) {
+  for (const sense of ["cli", "teams", "bluebubbles", "mail", "voice", "a2a", "telegram", "workbench", "shepherd"] as SenseName[]) {
     const rawSense = (rawSenses as Record<string, unknown>)[sense]
     if (!rawSense || typeof rawSense !== "object" || Array.isArray(rawSense)) {
       continue
@@ -231,7 +231,7 @@ function runtimeConfigUnavailableDetail(
 }
 
 function needsMachineRuntimeConfig(agent: string, sense: SenseName): boolean {
-  return sense === "bluebubbles" || sense === "voice" || sense === "a2a" || sense === "cmux" || (agent === "sanctuary" && sense === "telegram")
+  return sense === "bluebubbles" || sense === "voice" || sense === "a2a" || sense === "shepherd" || (agent === "sanctuary" && sense === "telegram")
 }
 
 function senseFactsFromRuntimeConfig(
@@ -250,7 +250,7 @@ function senseFactsFromRuntimeConfig(
     a2a: { configured: false, detail: "not enabled in agent.json" },
     telegram: { configured: false, detail: "not enabled in agent.json" },
     workbench: { configured: false, detail: "not enabled in agent.json" },
-    cmux: { configured: false, detail: "not enabled in agent.json" },
+    shepherd: { configured: false, detail: "not enabled in agent.json" },
   }
 
   const payload = runtimeConfig.ok ? runtimeConfig.config : {}
@@ -423,8 +423,8 @@ function senseFactsFromRuntimeConfig(
     }
   }
 
-  if (senses.cmux.enabled) {
-    base.cmux = !machineRuntimeConfig.ok && machineRuntimeConfig.reason !== "missing"
+  if (senses.shepherd.enabled) {
+    base.shepherd = !machineRuntimeConfig.ok && machineRuntimeConfig.reason !== "missing"
       ? { configured: false, detail: runtimeConfigUnavailableDetail(agent, machineRuntimeConfig) }
       : cmuxConfigFacts(machinePayload)
   }
@@ -458,7 +458,7 @@ function senseRepairHint(agent: string, sense: SenseName): string {
       ? "Agent-runnable: complete or recover the root authority migration; do not restore a resident Telegram token."
       : `Agent-runnable: store Telegram bot/user/chat coordinates with 'ouro connect telegram --agent ${agent}', then restart with 'ouro up'.`
   }
-  if (sense === "cmux") return cmuxRepairHint(agent)
+  if (sense === "shepherd") return cmuxRepairHint(agent)
   /* v8 ignore next -- Workbench is deliberately not daemon-managed, so getSenseInventory never asks the daemon manager for a repair hint @preserve */
   if (sense === "workbench") {
     return `Agent-runnable: install Ouro Workbench.app, then launch the boss through Workbench or run 'ouro acp-serve --agent ${agent} --workbench-mcp'; 'ouro connect workbench --agent ${agent}' only cleans stale bundle entries.`
@@ -474,7 +474,7 @@ function parseSenseSnapshotName(name: string): { agent: string; sense: SenseName
   const parts = name.split(":")
   if (parts.length !== 2) return null
   const [agent, sense] = parts
-  if (sense !== "teams" && sense !== "bluebubbles" && sense !== "mail" && sense !== "voice" && sense !== "a2a" && sense !== "telegram" && sense !== "cmux") return null
+  if (sense !== "teams" && sense !== "bluebubbles" && sense !== "mail" && sense !== "voice" && sense !== "a2a" && sense !== "telegram" && sense !== "shepherd") return null
   return { agent, sense }
 }
 
@@ -489,7 +489,7 @@ function managedSenseEntry(sense: Exclude<SenseName, "cli" | "workbench">): stri
   if (sense === "voice") return "senses/voice-entry.js"
   if (sense === "a2a") return "senses/a2a-entry.js"
   if (sense === "telegram") return "senses/telegram-entry.js"
-  if (sense === "cmux") return "senses/cmux-entry.js"
+  if (sense === "shepherd") return "senses/shepherd-entry.js"
   return "senses/mail-entry.js"
 }
 
@@ -501,7 +501,7 @@ function runtimeCredentialBootstrapFor(agent: string, sense: Exclude<SenseName, 
   providerCredentialRecords?: ProviderCredentialRecord[]
 } | null {
   const runtime = readRuntimeCredentialConfig(agent)
-  const usesMachineConfig = sense === "bluebubbles" || sense === "voice" || sense === "a2a" || sense === "telegram" || sense === "cmux"
+  const usesMachineConfig = sense === "bluebubbles" || sense === "voice" || sense === "a2a" || sense === "telegram" || sense === "shepherd"
   const machineId = usesMachineConfig ? currentMachineId() : undefined
   const machine = usesMachineConfig ? readMachineRuntimeCredentialConfig(agent) : null
   const providerPool = readProviderCredentialPool(agent)
@@ -714,7 +714,7 @@ export class DaemonSenseManager implements DaemonSenseManagerLike {
     )
 
     const managedSenseAgents = [...this.contexts.entries()].flatMap(([agent, context]) => {
-      return (["teams", "bluebubbles", "mail", "voice", "a2a", "telegram", "cmux"] as Exclude<SenseName, "cli" | "workbench">[])
+      return (["teams", "bluebubbles", "mail", "voice", "a2a", "telegram", "shepherd"] as Exclude<SenseName, "cli" | "workbench">[])
         .filter((sense) => context.senses[sense].enabled)
         .map((sense) => ({
           name: `${agent}:${sense}`,
@@ -877,7 +877,7 @@ export class DaemonSenseManager implements DaemonSenseManagerLike {
 
   private async refreshEnabledSenseConfigs(): Promise<void> {
     const refreshes = [...this.contexts.entries()].map(async ([agent, context]) => {
-      const enabledManagedSenses = (["teams", "bluebubbles", "mail", "voice", "a2a", "telegram", "cmux"] as Exclude<SenseName, "cli" | "workbench">[])
+      const enabledManagedSenses = (["teams", "bluebubbles", "mail", "voice", "a2a", "telegram", "shepherd"] as Exclude<SenseName, "cli" | "workbench">[])
         .filter((sense) => context.senses[sense].enabled)
       /* v8 ignore next -- periodic refresh work only exists when a managed background sense is enabled @preserve */
       if (enabledManagedSenses.length === 0) return
@@ -1067,10 +1067,10 @@ export class DaemonSenseManager implements DaemonSenseManagerLike {
         workbench: {
           configured: context.facts.workbench.configured,
         },
-        cmux: {
-          configured: context.facts.cmux.configured,
-          optional: context.facts.cmux.optional,
-          ...(runtime.get(agent)?.cmux ?? {}),
+        shepherd: {
+          configured: context.facts.shepherd.configured,
+          optional: context.facts.shepherd.optional,
+          ...(runtime.get(agent)?.shepherd ?? {}),
         },
       }
       const inventory = getSenseInventory({ senses: context.senses }, runtimeInfo)

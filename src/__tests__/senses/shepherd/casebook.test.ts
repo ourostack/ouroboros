@@ -18,8 +18,8 @@ import {
   storeShape,
   withDecisionLock,
   type DecisionRecord,
-} from "../../../senses/cmux/casebook"
-import { readCmuxPrinciples, SEED_CMUX_PRINCIPLES } from "../../../senses/cmux/principles"
+} from "../../../senses/shepherd/casebook"
+import { readCmuxPrinciples, SEED_CMUX_PRINCIPLES } from "../../../senses/shepherd/principles"
 
 vi.mock("node:fs", async (importOriginal) => {
   const actual = await importOriginal<typeof import("node:fs")>()
@@ -38,7 +38,7 @@ function record(overrides: Partial<DecisionRecord> = {}): DecisionRecord {
 }
 
 beforeEach(() => {
-  dir = path.join(fs.mkdtempSync(path.join(os.tmpdir(), "cmux-casebook-")), "state", "senses", "cmux")
+  dir = path.join(fs.mkdtempSync(path.join(os.tmpdir(), "cmux-casebook-")), "state", "senses", "shepherd")
 })
 
 afterEach(() => {

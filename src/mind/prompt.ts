@@ -504,7 +504,7 @@ function localSenseStatusLines(): string[] {
     a2a: configuredSenses.a2a ?? { enabled: false },
     telegram: configuredSenses.telegram ?? { enabled: false },
     workbench: configuredSenses.workbench ?? { enabled: false },
-    cmux: configuredSenses.cmux ?? { enabled: false },
+    shepherd: configuredSenses.shepherd ?? { enabled: false },
   }
   const payload = loadConfig() as unknown as Record<string, unknown>
   const runtimeConfig = readRuntimeCredentialConfig(getAgentName())
@@ -533,7 +533,7 @@ function localSenseStatusLines(): string[] {
       && hasTextField(runtimePayload, "telegramAuthorizedUserId")
       && hasTextField(runtimePayload, "telegramAuthorizedChatId"),
     workbench: false,
-    cmux: cmuxSenseStatus(true, machinePayload) === "ready",
+    shepherd: cmuxSenseStatus(true, machinePayload) === "ready",
   }
 
   const rows: Array<{ label: string; status: string }> = [
@@ -563,8 +563,8 @@ function localSenseStatusLines(): string[] {
       status: !senses.telegram.enabled ? "disabled" : configured.telegram ? "ready" : "needs_config",
     },
     {
-      label: "cmux",
-      status: cmuxSenseStatus(senses.cmux.enabled, machinePayload),
+      label: "shepherd",
+      status: cmuxSenseStatus(senses.shepherd.enabled, machinePayload),
     },
     {
       label: "Workbench",

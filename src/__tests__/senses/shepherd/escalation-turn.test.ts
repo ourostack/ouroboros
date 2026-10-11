@@ -42,8 +42,8 @@ import { cacheProviderCredentialRecords, createProviderCredentialRecord, resetPr
 import { getChannelCapabilities } from "@ouro.bot/friends"
 import { guardInvocation } from "../../../repertoire/guardrails"
 import { getToolsForChannel } from "../../../repertoire/tools"
-import { escalationMessage } from "../../../senses/cmux/attention"
-import { queueEscalation, wakeForEscalations } from "../../../senses/cmux/sense"
+import { escalationMessage } from "../../../senses/shepherd/attention"
+import { queueEscalation, wakeForEscalations } from "../../../senses/shepherd/sense"
 import { runPrivateRuntimeTurn } from "../../../senses/private-runtime"
 
 const NOW = Date.parse("2026-10-10T12:00:00.000Z")
@@ -66,7 +66,7 @@ describe("cmux escalation private turn", () => {
       enabled: true,
       humanFacing: { provider: "minimax", model: "minimax-test" },
       agentFacing: { provider: "minimax", model: "minimax-test" },
-      senses: { cmux: { enabled: true } },
+      senses: { shepherd: { enabled: true } },
     }))
     resetProviderCredentialCache()
     cacheProviderCredentialRecords("ouroboros", [createProviderCredentialRecord({
@@ -119,8 +119,8 @@ describe("cmux escalation private turn", () => {
     // The turn passes no tool override, so runAgent offers what tool selection gives this channel and context.
     expect(options.tools).toBeUndefined()
     const offered = getToolsForChannel(getChannelCapabilities(channel as never), undefined, undefined, undefined, undefined, undefined, options.toolContext as never).map((tool) => tool.function.name)
-    expect(offered).toEqual(expect.arrayContaining(["cmux_overview", "cmux_read", "cmux_signal"]))
-    for (const name of ["cmux_overview", "cmux_read", "cmux_signal"]) {
+    expect(offered).toEqual(expect.arrayContaining(["shepherd_overview", "shepherd_read", "shepherd_signal"]))
+    for (const name of ["shepherd_overview", "shepherd_read", "shepherd_signal"]) {
       expect(guardInvocation(name, {}, { readPaths: new Set(), trustLevel: toolContext.context.friend.trustLevel, agentRoot: hoisted.agentRoot })).toEqual({ allowed: true })
     }
   })

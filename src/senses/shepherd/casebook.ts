@@ -7,7 +7,7 @@ import { redactSecrets } from "./redact"
 
 /**
  * Machine-local memory for answering coding agents' prompts. Both files live under the agent's
- * `state/senses/cmux/` (directory 0700, files 0600) and never sync: request text can hold secrets.
+ * `state/senses/shepherd/` (directory 0700, files 0600) and never sync: request text can hold secrets.
  *
  * - The casebook holds the human's precedents: "this exact request is fine to answer once" or
  *   "ask me about this". A precedent matches only the same repository, tool and every token.
@@ -167,7 +167,7 @@ export function readCasebook(file: string): CmuxCase[] {
     if (current.problem) throw new Error(current.problem)
     if (current.migrated > 0) {
       writeCasebook(file, current.cases)
-      emitNervesEvent({ component: "senses", event: "senses.cmux_casebook_migrated", message: "migrated schema-1 cmux precedents to digests", meta: { migrated: current.migrated } })
+      emitNervesEvent({ component: "senses", event: "senses.shepherd_casebook_migrated", message: "migrated schema-1 cmux precedents to digests", meta: { migrated: current.migrated } })
     }
     return current.cases
   })
@@ -190,7 +190,7 @@ export function addCase(file: string, input: { verdict: CaseVerdict; shape: Stor
     if (current.problem) throw new Error(current.problem)
     writeCasebook(file, [...current.cases, entry].slice(-MAX_CASES))
   })
-  emitNervesEvent({ component: "senses", event: "senses.cmux_case_added", message: "recorded a cmux precedent", meta: { verdict: entry.verdict, tool: entry.shape.tool } })
+  emitNervesEvent({ component: "senses", event: "senses.shepherd_case_added", message: "recorded a cmux precedent", meta: { verdict: entry.verdict, tool: entry.shape.tool } })
   return entry
 }
 
@@ -219,12 +219,12 @@ function takeOverStaleLock(lock: string, staleIno: number): void {
     } catch (error) {
       if (!LOST_TAKEOVER.has(errorCode(error))) throw error
       // A third contender locked in the meantime and its lock is not empty; leave the moved lock as a tombstone.
-      emitNervesEvent({ level: "warn", component: "senses", event: "senses.cmux_lock_restore_failed", message: "could not put back a cmux decision log lock moved during a takeover", meta: { tombstone } })
+      emitNervesEvent({ level: "warn", component: "senses", event: "senses.shepherd_lock_restore_failed", message: "could not put back a cmux decision log lock moved during a takeover", meta: { tombstone } })
     }
     return
   }
   fs.writeFileSync(path.join(tombstone, "taken-over"), `${process.pid}\n`)
-  emitNervesEvent({ level: "warn", component: "senses", event: "senses.cmux_stale_lock_taken_over", message: "took over a stale cmux decision log lock", meta: { tombstone } })
+  emitNervesEvent({ level: "warn", component: "senses", event: "senses.shepherd_stale_lock_taken_over", message: "took over a stale cmux decision log lock", meta: { tombstone } })
 }
 
 /** Tombstones older than a few minutes can no longer be raced; removing them keeps the folder tidy. */
@@ -330,7 +330,7 @@ export function appendDecision(file: string, record: DecisionRecord): void {
     fs.appendFileSync(file, `${JSON.stringify(safe)}\n`, { mode: 0o600 })
     fs.chmodSync(file, 0o600)
   })
-  emitNervesEvent({ component: "senses", event: "senses.cmux_decision_logged", message: "logged a cmux prompt decision", meta: { outcome: record.outcome, tool: record.tool, floor: record.floor.verdict } })
+  emitNervesEvent({ component: "senses", event: "senses.shepherd_decision_logged", message: "logged a cmux prompt decision", meta: { outcome: record.outcome, tool: record.tool, floor: record.floor.verdict } })
 }
 
 /** True when the file is missing, empty or ends with a newline. */

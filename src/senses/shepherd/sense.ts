@@ -51,7 +51,7 @@ const FEED_POLL_MS = 30_000
 const SAVE_DELAY_MS = 1_000
 
 export function cmuxStatePath(agentName: string): string {
-  return path.join(getAgentRoot(agentName), "state", "senses", "cmux", "state.json")
+  return path.join(getAgentRoot(agentName), "state", "senses", "shepherd", "state.json")
 }
 
 /** The private-turn trigger the daemon's policy accepts for a cmux escalation wake. */
@@ -89,11 +89,11 @@ export async function wakeForEscalations(agent: string, requestIds: string[]): P
       triggerSource: CMUX_WAKE_TRIGGER,
       budgetClass: "interactive",
       idempotencyKey: `cmux-feed:${agent}:${key}`,
-      originRefs: [...requestIds.slice(0, WAKE_REF_LIMIT).map((id) => ({ kind: "cmux-feed", id })), { kind: "sense", id: "cmux" }],
+      originRefs: [...requestIds.slice(0, WAKE_REF_LIMIT).map((id) => ({ kind: "cmux-feed", id })), { kind: "sense", id: "shepherd" }],
     })
     if (response && !response.ok) throw new Error(response.error ?? "the daemon refused the wake")
   } catch (error) {
-    emitNervesEvent({ level: "warn", component: "senses", event: "senses.cmux_wake_error", message: "could not wake the private runtime for cmux escalations; they wait for the next private turn", meta: { agent, error: (error as Error).message } })
+    emitNervesEvent({ level: "warn", component: "senses", event: "senses.shepherd_wake_error", message: "could not wake the private runtime for cmux escalations; they wait for the next private turn", meta: { agent, error: (error as Error).message } })
   }
 }
 
@@ -138,7 +138,7 @@ export async function startCmuxSenseApp(options: CmuxSenseAppOptions): Promise<C
       writeCmuxState(statePath, state)
       lastWritten = body
     } catch (error) {
-      emitNervesEvent({ level: "warn", component: "senses", event: "senses.cmux_state_write_error", message: "could not write the cmux sense state; the next save retries", meta: { agent, error: (error as Error).message } })
+      emitNervesEvent({ level: "warn", component: "senses", event: "senses.shepherd_state_write_error", message: "could not write the cmux sense state; the next save retries", meta: { agent, error: (error as Error).message } })
     }
   }
   const saveSoon = (): void => {
@@ -172,16 +172,16 @@ export async function startCmuxSenseApp(options: CmuxSenseAppOptions): Promise<C
     try {
       await escalate(escalation)
     } catch (error) {
-      emitNervesEvent({ level: "warn", component: "senses", event: "senses.cmux_escalation_error", message: "could not record a cmux Feed request; the next check retries", meta: { agent, error: (error as Error).message } })
+      emitNervesEvent({ level: "warn", component: "senses", event: "senses.shepherd_escalation_error", message: "could not record a cmux Feed request; the next check retries", meta: { agent, error: (error as Error).message } })
       return null
     }
     rememberEscalation(state, item.requestId)
-    emitNervesEvent({ component: "senses", event: "senses.cmux_escalated", message: "brought a cmux Feed request to the agent", meta: { agent, kind: item.kind, source: item.source } })
+    emitNervesEvent({ component: "senses", event: "senses.shepherd_escalated", message: "brought a cmux Feed request to the agent", meta: { agent, kind: item.kind, source: item.source } })
     // The escalation is queued either way; a decision log that cannot take the line is noted, not retried.
     try {
       if (judgment) recordDecision(answers, item, judgment, "escalated", reason)
     } catch (error) {
-      emitNervesEvent({ level: "warn", component: "senses", event: "senses.cmux_decision_log_error", message: "could not log a cmux escalation", meta: { agent, error: (error as Error).message } })
+      emitNervesEvent({ level: "warn", component: "senses", event: "senses.shepherd_decision_log_error", message: "could not log a cmux escalation", meta: { agent, error: (error as Error).message } })
     }
     return escalation.requestId
   }
@@ -197,7 +197,7 @@ export async function startCmuxSenseApp(options: CmuxSenseAppOptions): Promise<C
       // One wake per check pass: the private turn reads every queued escalation at once.
       if (queued.length > 0) await wake(queued)
     } catch (error) {
-      emitNervesEvent({ level: "warn", component: "senses", event: "senses.cmux_feed_check_error", message: "cmux Feed check failed; the next check retries", meta: { agent, error: (error as Error).message } })
+      emitNervesEvent({ level: "warn", component: "senses", event: "senses.shepherd_feed_check_error", message: "cmux Feed check failed; the next check retries", meta: { agent, error: (error as Error).message } })
     }
     save()
   }
@@ -239,7 +239,7 @@ export async function startCmuxSenseApp(options: CmuxSenseAppOptions): Promise<C
           const { reset } = applyAck(state, frame)
           state.connected = true
           state.lastError = null
-          emitNervesEvent({ component: "senses", event: "senses.cmux_stream_connected", message: "cmux event stream connected", meta: { agent, reset } })
+          emitNervesEvent({ component: "senses", event: "senses.shepherd_stream_connected", message: "cmux event stream connected", meta: { agent, reset } })
           // The version gates answering, so the first Feed check on a connection waits for it.
           void identify().then(requestFeedCheck)
           return
@@ -255,7 +255,7 @@ export async function startCmuxSenseApp(options: CmuxSenseAppOptions): Promise<C
         if (stopped) return
         const delay = RECONNECT_DELAYS_MS[Math.min(attempt, RECONNECT_DELAYS_MS.length - 1)]!
         attempt += 1
-        emitNervesEvent({ level: "warn", component: "senses", event: "senses.cmux_stream_closed", message: "cmux event stream closed; reconnecting", meta: { agent, delay, error: error?.message ?? null } })
+        emitNervesEvent({ level: "warn", component: "senses", event: "senses.shepherd_stream_closed", message: "cmux event stream closed; reconnecting", meta: { agent, delay, error: error?.message ?? null } })
         save()
         cancelReconnect = schedule(connect, delay)
       },
@@ -264,7 +264,7 @@ export async function startCmuxSenseApp(options: CmuxSenseAppOptions): Promise<C
 
   connect()
   poll()
-  emitNervesEvent({ component: "senses", event: "senses.cmux_sense_started", message: "cmux sense started", meta: { agent, auth: resolved.connection.auth.kind } })
+  emitNervesEvent({ component: "senses", event: "senses.shepherd_sense_started", message: "cmux sense started", meta: { agent, auth: resolved.connection.auth.kind } })
 
   return {
     statePath,
@@ -276,7 +276,7 @@ export async function startCmuxSenseApp(options: CmuxSenseAppOptions): Promise<C
       await feedChain
       state.connected = false
       save()
-      emitNervesEvent({ component: "senses", event: "senses.cmux_sense_stopped", message: "cmux sense stopped", meta: { agent } })
+      emitNervesEvent({ component: "senses", event: "senses.shepherd_sense_stopped", message: "cmux sense stopped", meta: { agent } })
     },
   }
 }

@@ -89,7 +89,7 @@ export function resolveCmuxConnection(
   const auth = authFrom(cmux)
   emitNervesEvent({
     component: "senses",
-    event: "senses.cmux_connection_resolved",
+    event: "senses.shepherd_connection_resolved",
     message: "resolved cmux socket connection settings",
     meta: { agent, auth: auth?.kind ?? "missing" },
   })

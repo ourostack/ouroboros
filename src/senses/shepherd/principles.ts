@@ -31,6 +31,6 @@ export function readCmuxPrinciples(agentRoot: string): { source: "bundle" | "see
   } catch {
     // No bundle file: use the seed.
   }
-  emitNervesEvent({ component: "senses", event: "senses.cmux_principles_seeded", message: "using the seed cmux principles", meta: { agentRoot } })
+  emitNervesEvent({ component: "senses", event: "senses.shepherd_principles_seeded", message: "using the seed cmux principles", meta: { agentRoot } })
   return { source: "seed", principles: [...SEED_CMUX_PRINCIPLES] }
 }

@@ -256,7 +256,7 @@ describe("guardInvocation — structural guardrails", () => {
 
   it("keeps the owner's cmux terminals to family trust", async () => {
     const { guardInvocation } = await import("../../repertoire/guardrails")
-    for (const tool of ["cmux_overview", "cmux_read", "cmux_signal", "cmux_reply_once", "cmux_correct"]) {
+    for (const tool of ["shepherd_overview", "shepherd_read", "shepherd_signal", "shepherd_reply_once", "shepherd_correct"]) {
       for (const trustLevel of ["stranger", "acquaintance", "friend"] as const) {
         expect(guardInvocation(tool, {}, { readPaths: new Set(), trustLevel })).toEqual(expect.objectContaining({ allowed: false }))
       }

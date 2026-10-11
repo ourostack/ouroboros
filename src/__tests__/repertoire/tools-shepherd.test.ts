@@ -4,13 +4,13 @@ import * as path from "node:path"
 import { afterEach, beforeEach, describe, expect, it } from "vitest"
 
 import { cacheMachineRuntimeCredentialConfig, resetRuntimeCredentialConfigCache } from "../../heart/runtime-credentials"
-import { emptyCmuxState, writeCmuxState } from "../../senses/cmux/attention"
+import { emptyCmuxState, writeCmuxState } from "../../senses/shepherd/attention"
 import type { ToolContext } from "../../repertoire/tools-base"
 import { readStewardPolicy, updateStewardPolicy } from "../../heart/steward-policy"
-import { cmuxCorrectToolDefinition, cmuxOverviewToolDefinition, cmuxReadToolDefinition, cmuxReplyOnceToolDefinition, cmuxSignalToolDefinition, cmuxToolsEnabled } from "../../repertoire/tools-cmux"
-import { CMUX_GRANT_ACTION, CMUX_GRANT_KEY } from "../../senses/cmux/answer"
-import { appendDecision, cmuxCasebookPath, cmuxDecisionLogPath, readCasebook, readDecisions, storeShape } from "../../senses/cmux/casebook"
-import { startFakeCmux, type FakeCmux } from "../senses/cmux/fake-cmux"
+import { cmuxCorrectToolDefinition, cmuxOverviewToolDefinition, cmuxReadToolDefinition, cmuxReplyOnceToolDefinition, cmuxSignalToolDefinition, shepherdToolsEnabled } from "../../repertoire/tools-shepherd"
+import { CMUX_GRANT_ACTION, CMUX_GRANT_KEY } from "../../senses/shepherd/answer"
+import { appendDecision, cmuxCasebookPath, cmuxDecisionLogPath, readCasebook, readDecisions, storeShape } from "../../senses/shepherd/casebook"
+import { startFakeCmux, type FakeCmux } from "../senses/shepherd/fake-cmux"
 
 const AGENT = "cmuxtools"
 let root = ""
@@ -49,14 +49,14 @@ afterEach(async () => {
 
 describe("cmux tool gate", () => {
   it("offers the tools only when agent.json turns the cmux sense on", () => {
-    expect(cmuxToolsEnabled(undefined)).toBe(false)
-    expect(cmuxToolsEnabled(root)).toBe(false)
-    fs.writeFileSync(path.join(root, "agent.json"), JSON.stringify({ senses: { cmux: { enabled: false } } }))
-    expect(cmuxToolsEnabled(root)).toBe(false)
-    fs.writeFileSync(path.join(root, "agent.json"), JSON.stringify({ senses: { cmux: { enabled: true } } }))
-    expect(cmuxToolsEnabled(root)).toBe(true)
+    expect(shepherdToolsEnabled(undefined)).toBe(false)
+    expect(shepherdToolsEnabled(root)).toBe(false)
+    fs.writeFileSync(path.join(root, "agent.json"), JSON.stringify({ senses: { shepherd: { enabled: false } } }))
+    expect(shepherdToolsEnabled(root)).toBe(false)
+    fs.writeFileSync(path.join(root, "agent.json"), JSON.stringify({ senses: { shepherd: { enabled: true } } }))
+    expect(shepherdToolsEnabled(root)).toBe(true)
     fs.writeFileSync(path.join(root, "agent.json"), JSON.stringify({}))
-    expect(cmuxToolsEnabled(root)).toBe(false)
+    expect(shepherdToolsEnabled(root)).toBe(false)
   })
 })
 
@@ -64,19 +64,19 @@ describe("cmux tool selection", () => {
   it("adds the cmux tools to an agent's menu only when its cmux sense is on", async () => {
     const { selectToolsForChannel } = await import("../../repertoire/tools")
     const names = () => selectToolsForChannel(undefined, undefined, undefined, undefined, undefined, undefined, { agentName: AGENT, agentRoot: root })
-      .ordinary.map((definition) => definition.tool.function.name).filter((name) => name.startsWith("cmux_"))
+      .ordinary.map((definition) => definition.tool.function.name).filter((name) => name.startsWith("shepherd_"))
     expect(names()).toEqual([])
-    fs.writeFileSync(path.join(root, "agent.json"), JSON.stringify({ senses: { cmux: { enabled: true } } }))
-    expect(names()).toEqual(["cmux_overview", "cmux_read", "cmux_signal", "cmux_reply_once", "cmux_correct"])
+    fs.writeFileSync(path.join(root, "agent.json"), JSON.stringify({ senses: { shepherd: { enabled: true } } }))
+    expect(names()).toEqual(["shepherd_overview", "shepherd_read", "shepherd_signal", "shepherd_reply_once", "shepherd_correct"])
   })
 })
 
-describe("cmux_overview", () => {
+describe("shepherd_overview", () => {
   it("lists who is waiting on the human and what each terminal's agent last did", async () => {
     const state = emptyCmuxState("2026-10-10T20:00:00.000Z")
     state.connected = true
     state.surfaces["SF-1"] = { workspaceId: "WS-1", agent: "claude", sessionId: "claude-s1", cwd: "/repo", lifecycle: "waiting", lastHook: "PermissionRequest", lastTool: "Bash", at: "2026-10-10T19:59:00.000Z" }
-    writeCmuxState(path.join(root, "state", "senses", "cmux", "state.json"), state)
+    writeCmuxState(path.join(root, "state", "senses", "shepherd", "state.json"), state)
     server.respond("feed.list", () => ({
       items: [
         { kind: "permissionRequest", status: "pending", request_id: "r1", source: "claude", tool_name: "Bash", cwd: "/repo", workstream_id: "claude-s1", created_at: "t", tool_input: `{"command":"curl -H 'Authorization: Bearer abcdefgh123' x"}` },
@@ -121,7 +121,7 @@ describe("cmux_overview", () => {
   })
 })
 
-describe("cmux_read", () => {
+describe("shepherd_read", () => {
   it("reads a terminal with bounded lines and redacted secrets", async () => {
     server.respond("surface.read_text", (params) => ({ text: `line one\nexport TOKEN=abc123 and ${String(params.surface_id)}`, surface_ref: "surface:1", workspace_ref: "workspace:1" }))
     const result = await call(cmuxReadToolDefinition, { surface: " surface:1 ", lines: 9999, scrollback: true })
@@ -145,14 +145,14 @@ describe("cmux_read", () => {
   })
 
   it("rejects a missing surface and reports failures", async () => {
-    expect(await call(cmuxReadToolDefinition, {})).toEqual({ error: "name a surface ref or id from cmux_overview" })
+    expect(await call(cmuxReadToolDefinition, {})).toEqual({ error: "name a surface ref or id from shepherd_overview" })
     expect(await call(cmuxReadToolDefinition, { surface: "surface:1" }, "none")).toEqual({ error: "the cmux tools need an agent runtime" })
     server.respond("surface.read_text", () => { throw new Error("Surface not found") })
     expect(await call(cmuxReadToolDefinition, { surface: "surface:404" })).toEqual({ error: "Surface not found" })
   })
 })
 
-describe("cmux_signal", () => {
+describe("shepherd_signal", () => {
   it("sets and clears this agent's workspace status with safe quoting", async () => {
     const commands: string[] = []
     server.v1((line) => { commands.push(line); return "OK" })
@@ -174,7 +174,7 @@ describe("cmux_signal", () => {
   })
 
   it("validates its input before touching cmux", async () => {
-    expect(await call(cmuxSignalToolDefinition, { status: "x" })).toEqual({ error: "name a workspace ref or id from cmux_overview" })
+    expect(await call(cmuxSignalToolDefinition, { status: "x" })).toEqual({ error: "name a workspace ref or id from shepherd_overview" })
     expect(await call(cmuxSignalToolDefinition, { workspace: "workspace:1" })).toEqual({ error: "give a status, a notify_title, or both" })
     expect(await call(cmuxSignalToolDefinition, { workspace: "workspace:1", status: "x".repeat(121) })).toEqual({ error: "status must be one line of at most 120 characters" })
     expect(await call(cmuxSignalToolDefinition, { workspace: "workspace:1", status: "a\nb" })).toEqual({ error: "status must be one line of at most 120 characters" })
@@ -183,7 +183,7 @@ describe("cmux_signal", () => {
   })
 
   it("reports an unknown workspace and command failures", async () => {
-    expect(await call(cmuxSignalToolDefinition, { workspace: "workspace:9", status: "x" })).toEqual({ error: "no cmux workspace workspace:9; see cmux_overview" })
+    expect(await call(cmuxSignalToolDefinition, { workspace: "workspace:9", status: "x" })).toEqual({ error: "no cmux workspace workspace:9; see shepherd_overview" })
     server.v1(() => "ERROR: Tab not found")
     expect(await call(cmuxSignalToolDefinition, { workspace: "workspace:1", status: "x" })).toEqual({ error: "ERROR: Tab not found" })
   })
@@ -195,10 +195,10 @@ describe("cmux_signal", () => {
   })
 })
 
-describe("cmux_reply_once and cmux_correct", () => {
+describe("shepherd_reply_once and shepherd_correct", () => {
   let repo = ""
   let items: Array<Record<string, unknown>> = []
-  const stateDir = () => path.join(root, "state", "senses", "cmux")
+  const stateDir = () => path.join(root, "state", "senses", "shepherd")
   const wire = (requestId: string, command: string, extra: Record<string, unknown> = {}) => ({
     kind: "permissionRequest", status: "pending", request_id: requestId, source: "claude", tool_name: "Bash", cwd: repo, workstream_id: "claude-s1", tool_input: JSON.stringify({ command }), ...extra,
   })
@@ -289,7 +289,7 @@ describe("cmux_reply_once and cmux_correct", () => {
     expect(String((await call(cmuxCorrectToolDefinition, { request_id: "mine", verdict: "once", note: "x" })).error)).toContain("the sense itself replied to mine")
     expect(await call(cmuxCorrectToolDefinition, { request_id: "mine", verdict: "ask", note: "x" })).toMatchObject({ verdict: "ask" })
     const event = { source: "cmux", eventId: "feed:mine" } as unknown as ToolContext["currentExternalEvent"]
-    const refusal = { error: "cmux_correct records what the human said in conversation; it cannot run in an autonomous turn or while handling an external event" }
+    const refusal = { error: "shepherd_correct records what the human said in conversation; it cannot run in an autonomous turn or while handling an external event" }
     expect(await call(cmuxCorrectToolDefinition, { request_id: "mine", verdict: "ask", note: "x" }, ctx({ currentExternalEvent: event }))).toEqual(refusal)
     // The private turn a cmux escalation wakes is autonomous, so the agent cannot record a precedent there either.
     expect(await call(cmuxCorrectToolDefinition, { request_id: "mine", verdict: "ask", note: "x" }, ctx({ autonomousTurnKind: "instinct" }))).toEqual(refusal)

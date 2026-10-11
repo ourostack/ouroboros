@@ -284,11 +284,11 @@ describe("private-runtime policy and ledger", () => {
       originRefs,
     })
 
-    await expect(privateRuntime.requestPrivateTurnDecision(request([{ kind: "cmux-feed", id: "req-1" }, { kind: "sense", id: "cmux" }], "cmux-feed:slugger:req-1"), { ...deps, evaluatePolicy: undefined }))
+    await expect(privateRuntime.requestPrivateTurnDecision(request([{ kind: "cmux-feed", id: "req-1" }, { kind: "sense", id: "shepherd" }], "cmux-feed:slugger:req-1"), { ...deps, evaluatePolicy: undefined }))
       .resolves.toMatchObject({ result: "allow", executable: true, reason: "cmux sense escalation" })
     await expect(privateRuntime.requestPrivateTurnDecision(request([{ kind: "cmux-feed", id: "req-2" }], "cmux-feed:slugger:req-2"), { ...deps, evaluatePolicy: undefined }))
       .resolves.toMatchObject({ result: "deny", deniedReason: "default policy deny" })
-    await expect(privateRuntime.requestPrivateTurnDecision(request([{ kind: "cmux-feed", id: " " }, { kind: "sense", id: "cmux" }], "cmux-feed:slugger:blank"), { ...deps, evaluatePolicy: undefined }))
+    await expect(privateRuntime.requestPrivateTurnDecision(request([{ kind: "cmux-feed", id: " " }, { kind: "sense", id: "shepherd" }], "cmux-feed:slugger:blank"), { ...deps, evaluatePolicy: undefined }))
       .resolves.toMatchObject({ result: "deny", deniedReason: "default policy deny" })
   })
 
