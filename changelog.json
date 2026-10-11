@@ -4,7 +4,7 @@
     {
       "version": "0.1.0-alpha.898",
       "changes": [
-        "Shepherd now also runs on Herdr. A return is a pane leaving 'working' for 'idle', 'done' or 'blocked' in Herdr's own pane.agent_status_changed events and still there after a 3-second grace period, keyed by Herdr's state_change_seq. Replies go through agent.prompt (pasted, then Enter) and pane.send_keys, and Shepherd's status shows as the pane's state label. Attach it with a 'herdr' record in the machine runtime config (optional herdr.socketPath, default ~/.config/herdr/herdr.sock); cmux wins when both are set."
+        "Shepherd now also runs on Herdr. A return is a pane leaving 'working' for 'idle', 'done' or 'blocked' in Herdr's own pane.agent_status_changed events and still there after a 3-second grace period, keyed by Herdr's state_change_seq. Replies go through agent.prompt (pasted, then Enter) and pane.send_keys, and Shepherd's status shows as the pane's state label. Attach it with a 'herdr' record in the machine runtime config (optional herdr.socketPath, default ~/.config/herdr/herdr.sock); cmux wins when both are set. Herdr's states do not say whether background work is running, so on Herdr the judge decides 'working' from the screen."
       ]
     },
     {

@@ -153,6 +153,8 @@ export function createHerdrHost(connection: HerdrConnection, options: HerdrHostO
               agent: str(agent.agent),
               cwd: str(agent.foreground_cwd) ?? str(agent.cwd),
               lastBody: null,
+              // Herdr's states do not say whether background work is running; the judge reads the screen.
+              backgroundWork: null,
             })
           }, (error: Error) => {
             emitNervesEvent({ level: "warn", component: "senses", event: "senses.shepherd_herdr_read_error", message: "could not read a Herdr agent after it stopped", meta: { error: error.message } })

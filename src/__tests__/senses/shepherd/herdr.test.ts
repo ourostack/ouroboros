@@ -140,7 +140,7 @@ describe("Herdr host: returned control", () => {
     await vi.waitFor(() => expect(scheduler.due(GRACE_MS)).toBe(1))
     expect(returned).toEqual([])
     await scheduler.run(GRACE_MS)
-    expect(returned).toEqual([{ sessionId: "w1:p1", transitionId: "herdr:w1:p1:41", agent: "codex", cwd: "/Users/a/code/app/pkg", lastBody: null }])
+    expect(returned).toEqual([{ sessionId: "w1:p1", transitionId: "herdr:w1:p1:41", agent: "codex", cwd: "/Users/a/code/app/pkg", lastBody: null, backgroundWork: null }])
 
     // A pane already idle when Shepherd subscribed is not a return; one that starts and stops again is.
     server.push(statusEvent("w1:p2", "done", "copilot"))
@@ -149,7 +149,7 @@ describe("Herdr host: returned control", () => {
     agents["w1:p2"] = agentInfo("w1:p2", { agent_status: "blocked", agent: "copilot", state_change_seq: 9, foreground_cwd: null })
     await vi.waitFor(() => expect(scheduler.due(GRACE_MS)).toBe(1))
     await scheduler.run(GRACE_MS)
-    expect(returned.at(-1)).toEqual({ sessionId: "w1:p2", transitionId: "herdr:w1:p2:9", agent: "copilot", cwd: "/Users/a/code/app", lastBody: null })
+    expect(returned.at(-1)).toEqual({ sessionId: "w1:p2", transitionId: "herdr:w1:p2:9", agent: "copilot", cwd: "/Users/a/code/app", lastBody: null, backgroundWork: null })
     server.push(statusEvent("w1:p2", "working", "copilot"))
     server.push(statusEvent("w1:p2", "idle", "copilot"))
     await vi.waitFor(() => expect(scheduler.due(GRACE_MS)).toBe(1))
