@@ -59,7 +59,7 @@ describe("moveAgentHomeHere", () => {
     git(seed, "config", "user.email", "test@ouro.bot")
     git(seed, "config", "user.name", "test")
     git(seed, "checkout", "-q", "-b", "main")
-    fs.writeFileSync(path.join(seed, "agent.json"), `${JSON.stringify({ ...config, sync: { enabled: true } }, null, 2)}\n`)
+    fs.writeFileSync(path.join(seed, "agent.json"), `${JSON.stringify({ ...config, sync: { enabled: true, remote: "origin" } }, null, 2)}\n`)
     git(seed, "add", "agent.json")
     git(seed, "commit", "-q", "-m", "seed")
     git(seed, "push", "-q", "origin", "main")
@@ -116,7 +116,7 @@ describe("moveAgentHomeHere", () => {
   })
 
   it("commits locally when the bundle has no remote", () => {
-    const root = writeBundle(bundlesRoot, "local", agentConfig({ sync: { enabled: true } }))
+    const root = writeBundle(bundlesRoot, "local", agentConfig({ sync: { enabled: true, remote: " " } }))
     git(root, "init", "-q")
     git(root, "config", "user.email", "test@ouro.bot")
     git(root, "config", "user.name", "test")

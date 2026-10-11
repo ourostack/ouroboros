@@ -771,6 +771,14 @@ describe("agent homes", () => {
     expect(listHomeBundleAgents({ machineId: "machine_there" })).toEqual(["theirs"])
   })
 
+  it("does not read the machine identity when there are no bundles", async () => {
+    readdirSyncMock.mockReturnValue([{ name: "notes", isDirectory: () => true }])
+    const { listHomeBundleAgents } = await import("../../../heart/daemon/agent-discovery")
+
+    expect(listHomeBundleAgents()).toEqual([])
+    expect(readMachineIdentityMock).not.toHaveBeenCalled()
+  })
+
   it("parses only usable home blocks", async () => {
     const { parseAgentHome } = await import("../../../heart/daemon/agent-discovery")
 

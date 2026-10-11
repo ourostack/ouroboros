@@ -17,7 +17,6 @@ import * as fs from "fs"
 import * as path from "path"
 import { execFileSync as nodeExecFileSync } from "child_process"
 import { emitNervesEvent } from "../../nerves/runtime"
-import { getAgentBundlesRoot } from "../identity"
 import { preTurnPull, type SyncResult } from "../sync"
 import { listAllBundleAgents, parseAgentHome, type AgentHome } from "./agent-discovery"
 import type { DaemonHealthResult } from "./daemon"
@@ -28,7 +27,7 @@ export interface MoveAgentHomeOptions {
   agent: string
   machineId: string
   machineName: string
-  bundlesRoot?: string
+  bundlesRoot: string
   now?: () => Date
   execFileSync?: GitExec
   pull?: (agentRoot: string, config: { enabled: boolean; remote: string }) => SyncResult
@@ -63,7 +62,7 @@ export function machineDisplayName(hostname: string, machineId: string): string 
 /** Record this machine as the agent's home in its synced agent.json. */
 export function moveAgentHomeHere(options: MoveAgentHomeOptions): MoveAgentHomeResult {
   const { agent, machineId, machineName } = options
-  const agentRoot = path.join(options.bundlesRoot ?? getAgentBundlesRoot(), `${agent}.ouro`)
+  const agentRoot = path.join(options.bundlesRoot, `${agent}.ouro`)
   const configPath = path.join(agentRoot, "agent.json")
   const git = options.execFileSync ?? nodeExecFileSync
   const pull = options.pull ?? preTurnPull
