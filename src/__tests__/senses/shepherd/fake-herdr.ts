@@ -91,8 +91,11 @@ export function statusEvent(paneId: string, agentStatus: string, agent: string |
   return { event: "pane.agent_status_changed", data: { pane_id: paneId, workspace_id: paneId.split(":")[0], agent_status: agentStatus, agent, display_agent: null, title: null, state_labels: {} } }
 }
 
-/** A lifecycle event (`pane_focused`, `pane_created`, `pane_closed`). */
+/**
+ * A lifecycle event (`pane_focused`, `pane_created`, `pane_closed`). Herdr's schema gives `pane_focused` and `pane_closed`
+ * a top-level `pane_id`, but `pane_created` carries only the new pane as `pane` (a `PaneInfo`).
+ */
 export function paneEvent(kind: "pane_focused" | "pane_created" | "pane_closed", paneId: string): Record<string, unknown> {
-  const data = { type: kind, pane_id: paneId, workspace_id: paneId.split(":")[0] }
-  return { event: kind, data: kind === "pane_created" ? { ...data, pane: paneInfo(paneId) } : data }
+  if (kind === "pane_created") return { event: kind, data: { type: kind, pane: paneInfo(paneId) } }
+  return { event: kind, data: { type: kind, pane_id: paneId, workspace_id: paneId.split(":")[0] } }
 }

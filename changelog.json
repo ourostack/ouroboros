@@ -2,6 +2,12 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.903",
+      "changes": [
+        "Shepherd on Herdr now watches a pane opened after it started. Herdr sends a new pane's `pane_created` event with the pane under `data.pane` and no top-level `pane_id`, so the Herdr host ignored it and never subscribed to the new pane's agent status; it now resubscribes on every `pane_created`, and the test fake sends that event in Herdr's real shape."
+      ]
+    },
+    {
       "version": "0.1.0-alpha.901",
       "changes": [
         "Bundle sync never commits a file over 50 MiB, so one oversized file can no longer block every later push (GitHub rejects files over 100 MiB). Sync leaves such a file uncommitted in the working tree, keeps the last committed version of a tracked file, holds back the deletion of the old path when a big file is renamed, and records skipped files in state/sync-skipped-files.json. The rebase retry uses --autostash, so an uncommitted oversized file no longer blocks it. A failed sync now stays visible until it is fixed: state/pending-sync.json is written for every failure (including a failed git status), carries the date the failures began and how many attempts have failed in a row, and is no longer deleted after one turn. When nothing changed, sync clears the record if the bundle matches its upstream (or has no remote) and otherwise pushes the commits an earlier failure left behind. `ouro status` shows a failing bundle as 'failing' with that date and count and lists skipped files, and the daemon health checks report both as a bundle-sync warning for sync-enabled bundles. Sync commits with -q and gives git a 256 MiB output buffer and a 120-second timeout for add, commit, push and pull, and the context-loss sentinel's git status gets the same buffer, because a bundle with about 30,000 changed files overflowed the 1 MiB default (ENOBUFS) and took 17 seconds to stage."
