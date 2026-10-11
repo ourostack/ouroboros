@@ -4,7 +4,7 @@
     {
       "version": "0.1.0-alpha.903",
       "changes": [
-        "Shepherd on Herdr now watches a pane opened after it started. Herdr sends a new pane's `pane_created` event with the pane under `data.pane` and no top-level `pane_id`, so the Herdr host ignored it and never subscribed to the new pane's agent status; it now resubscribes on every `pane_created`, and the test fake sends that event in Herdr's real shape."
+        "Shepherd on Herdr now watches a pane opened after it started. Herdr sends a new pane's `pane_created` event with the pane under `data.pane` and no top-level `pane_id`, so the Herdr host ignored it and never subscribed to the new pane's agent status; it now resubscribes on every `pane_created`, and the test fake sends that event in Herdr's real shape. The Unraid template points at the 0.1.0-alpha.903 Butler image."
       ]
     },
     {
