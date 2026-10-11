@@ -57,12 +57,14 @@ function socketQuote(value: string): string {
 
 interface Surface extends HostSession { workspaceId: string; type: string }
 
-/** cmux keeps each hooked agent's session in `~/.cmuxterm/<agent>-hook-sessions.json`. */
+/** cmux keeps each hooked agent's session in `~/.cmuxterm/<agent>-hook-sessions.json`, keyed by the agent's own session id. */
 export function readCmuxHookSession(homeDir: string, agent: string, sessionId: string): Record<string, unknown> | null {
   try {
     const store: unknown = JSON.parse(fs.readFileSync(path.join(homeDir, ".cmuxterm", `${path.basename(agent)}-hook-sessions.json`), "utf-8"))
     const sessions = isRecord(store) && isRecord(store.sessions) ? store.sessions : {}
-    return isRecord(sessions[sessionId]) ? sessions[sessionId] as Record<string, unknown> : null
+    // Hook events name the session `<agent>-<id>`; the store keys it by the bare id.
+    const key = [sessionId, sessionId.replace(`${agent}-`, "")].find((candidate) => isRecord(sessions[candidate]))
+    return key ? sessions[key] as Record<string, unknown> : null
   } catch {
     return null
   }

@@ -55,7 +55,7 @@ export const SCREENS = {
 
 export const BOOT = "8D4C65E6-1A99-4831-85E4-6B950EE7AB82"
 
-/** One `agent.hook.<name>` frame as cmux 0.64.22 publishes it. */
+/** One `agent.hook.<name>` frame as cmux 0.64.22 publishes it (live cmux names sessions `<agent>-<id>`). */
 export function hookEvent(seq: number, hook: string, overrides: { source?: string; surface?: string | null; session?: string; phase?: string; cwd?: string } = {}): Record<string, unknown> {
   const source = overrides.source ?? "claude"
   const surface = overrides.surface === undefined ? "SF-1" : overrides.surface
