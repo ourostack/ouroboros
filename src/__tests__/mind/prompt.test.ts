@@ -718,6 +718,35 @@ describe("buildSystem", () => {
     expect(flattenSystemPrompt(await buildSystem("cli"))).toContain("Telegram: ready")
   })
 
+  it("reports cmux ready only when this machine holds cmux socket auth", async () => {
+    setupReadFileSync()
+    vi.mocked(identity.loadAgentConfig).mockReturnValue({
+      name: "testagent",
+      provider: "minimax",
+      humanFacing: { provider: "minimax", model: "minimax-text-01" },
+      agentFacing: { provider: "minimax", model: "minimax-text-01" },
+      context: { maxTokens: 80000, contextMargin: 20 },
+      senses: { cmux: { enabled: true } },
+      phrases: { thinking: ["working"], tool: ["running tool"], followup: ["processing"] },
+    })
+    const { patchRuntimeConfig, resetConfigCache } = await import("../../heart/config")
+    const { cacheMachineRuntimeCredentialConfig, resetRuntimeCredentialConfigCache } = await import("../../heart/runtime-credentials")
+    const { buildSystem, flattenSystemPrompt, resetPsycheCache } = await import("../../mind/prompt")
+    resetConfigCache()
+    patchRuntimeConfig({ providers: { minimax: { apiKey: "test-key" } } })
+    resetRuntimeCredentialConfigCache()
+    resetPsycheCache()
+    expect(flattenSystemPrompt(await buildSystem("cli"))).toContain("cmux: not_attached")
+
+    cacheMachineRuntimeCredentialConfig("testagent", { cmux: { socketPath: "/s.sock" } })
+    resetPsycheCache()
+    expect(flattenSystemPrompt(await buildSystem("cli"))).toContain("cmux: needs_config")
+
+    cacheMachineRuntimeCredentialConfig("testagent", { cmux: { socketCapability: "v1.a.b" } })
+    resetPsycheCache()
+    expect(flattenSystemPrompt(await buildSystem("cli"))).toContain("cmux: ready")
+  })
+
   it("marks Voice ready when the ElevenLabs voice id is stored in voice config", async () => {
     setupReadFileSync()
     vi.mocked(identity.loadAgentConfig).mockReturnValue({

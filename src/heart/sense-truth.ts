@@ -27,6 +27,7 @@ const SENSES: Array<{ sense: SenseName; label: string; daemonManaged: boolean }>
   { sense: "a2a", label: "A2A", daemonManaged: true },
   { sense: "telegram", label: "Telegram", daemonManaged: true },
   { sense: "workbench", label: "Workbench", daemonManaged: false },
+  { sense: "cmux", label: "cmux", daemonManaged: true },
 ]
 
 function configuredSenses(senses?: AgentSensesConfig): AgentSensesConfig {
@@ -41,6 +42,7 @@ function configuredSenses(senses?: AgentSensesConfig): AgentSensesConfig {
     a2a: configured.a2a ?? { ...DEFAULT_AGENT_SENSES.a2a },
     telegram: configured.telegram ?? { ...DEFAULT_AGENT_SENSES.telegram },
     workbench: configured.workbench ?? { ...DEFAULT_AGENT_SENSES.workbench },
+    cmux: configured.cmux ?? { ...DEFAULT_AGENT_SENSES.cmux },
   }
 }
 

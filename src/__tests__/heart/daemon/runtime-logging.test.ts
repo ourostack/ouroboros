@@ -309,6 +309,18 @@ describe("daemon runtime logging", () => {
     expect(stderrChunks.join("")).toContain("WARN [daemon] bluebubbles logger default")
   })
 
+  it("gives the cmux sense the quiet warn-level defaults of the other local senses", async () => {
+    tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), "daemon-logging-"))
+    vi.spyOn(process.stderr, "write").mockImplementation(() => true)
+    configureDaemonRuntimeLogger("cmux", { homeDir: tmpRoot, agentName: "ouroboros" })
+    emitNervesEvent({ component: "senses", event: "senses.cmux_stream_connected", message: "info is below the cmux default", meta: {} })
+    emitNervesEvent({ level: "warn", component: "senses", event: "senses.cmux_stream_closed", message: "cmux stream closed", meta: {} })
+
+    const logFile = path.join(tmpRoot, "AgentBundles", "ouroboros.ouro", "state", "daemon", "logs", "cmux.ndjson")
+    const content = await waitForLogContent(logFile, '"event":"senses.cmux_stream_closed"')
+    expect(content).not.toContain("senses.cmux_stream_connected")
+  })
+
   it("persists info-level Telegram audit events by default", async () => {
     tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), "daemon-logging-"))
     configureDaemonRuntimeLogger("telegram", { homeDir: tmpRoot, agentName: "sanctuary" })

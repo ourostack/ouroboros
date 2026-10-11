@@ -998,6 +998,45 @@ describe("daemon command plane branches", () => {
     }
   })
 
+  it("builds a cmux sense wake into a private-turn request the default policy allows, and denies one without the sense reference", async () => {
+    const socketPath = tmpSocketPath("daemon-cmux-private-wake")
+    const bundlesRoot = fs.mkdtempSync(path.join(os.tmpdir(), "daemon-cmux-wake-bundles-"))
+    const ledgerPath = path.join(os.tmpdir(), `cmux-wake-${Date.now()}-${Math.random().toString(16).slice(2)}.jsonl`)
+    const { evaluatePolicy: _testPolicy, ...policyDeps } = privateRuntimePolicyDeps(ledgerPath, "allow")
+    const { daemon, processManager } = make(socketPath, bundlesRoot, { privateRuntimePolicyDeps: policyDeps })
+    processManager.listAgentSnapshots.mockReturnValue([registeredSnapshot()])
+
+    try {
+      const wake = await daemon.handleCommand({
+        kind: "private.wake",
+        agent: "slugger",
+        reason: "2 cmux Feed requests",
+        triggerSource: "cmux-feed",
+        budgetClass: "interactive",
+        idempotencyKey: "cmux-feed:slugger:2:abc",
+        originRefs: [{ kind: "cmux-feed", id: "req-1" }, { kind: "cmux-feed", id: "req-2" }, { kind: "sense", id: "cmux" }],
+      })
+      expect(wake).toMatchObject({ ok: true, message: "woke private runtime for slugger", data: { decision: { result: "allow", reason: "cmux sense escalation", triggerSource: "cmux-feed", origin: "daemon.private.wake", requestReason: "2 cmux Feed requests" } } })
+      expect(processManager.startAgent).toHaveBeenCalledWith("slugger")
+      expect(processManager.sendToAgent).toHaveBeenCalledWith("slugger", expect.objectContaining({ type: "message", privateTurnDecision: expect.objectContaining({ triggerSource: "cmux-feed", executable: true }) }))
+
+      const spoofed = await daemon.handleCommand({
+        kind: "private.wake",
+        agent: "slugger",
+        reason: "cmux Feed request",
+        triggerSource: "cmux-feed",
+        budgetClass: "interactive",
+        idempotencyKey: "cmux-feed:slugger:req-3",
+        originRefs: [{ kind: "cmux-feed", id: "req-3" }],
+      })
+      expect(spoofed).toMatchObject({ ok: true, message: "private-runtime wake denied for slugger: default policy deny" })
+      expect(processManager.sendToAgent).toHaveBeenCalledTimes(1)
+      expect(readPrivateTurnLedger(ledgerPath)).toHaveLength(2)
+    } finally {
+      fs.rmSync(bundlesRoot, { recursive: true, force: true })
+    }
+  })
+
   it("leaves operator CLI private wakes alone when no daemon receipt is attached", async () => {
     const socketPath = tmpSocketPath("daemon-operator-cli-private-wake-no-receipt")
     const bundlesRoot = fs.mkdtempSync(path.join(os.tmpdir(), "daemon-operator-cli-no-receipt-bundles-"))

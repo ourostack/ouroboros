@@ -15,6 +15,7 @@ describe("sense truth model", () => {
       expect.objectContaining({ sense: "a2a", enabled: false, status: "disabled" satisfies SenseStatus }),
       expect.objectContaining({ sense: "telegram", status: "disabled" }),
       expect.objectContaining({ sense: "workbench", enabled: false, status: "disabled" satisfies SenseStatus }),
+      expect.objectContaining({ sense: "cmux", enabled: false, status: "disabled" satisfies SenseStatus }),
     ])
   })
 
@@ -36,6 +37,7 @@ describe("sense truth model", () => {
       expect.objectContaining({ sense: "a2a", enabled: false, status: "disabled" satisfies SenseStatus }),
       expect.objectContaining({ sense: "telegram", status: "disabled" }),
       expect.objectContaining({ sense: "workbench", enabled: false, status: "disabled" satisfies SenseStatus }),
+      expect.objectContaining({ sense: "cmux", enabled: false, status: "disabled" satisfies SenseStatus }),
     ])
   })
 

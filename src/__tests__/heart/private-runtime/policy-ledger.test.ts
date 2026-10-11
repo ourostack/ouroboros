@@ -273,6 +273,25 @@ describe("private-runtime policy and ledger", () => {
     expect(readLedger(deps.ledgerPath as string)).toHaveLength(1)
   })
 
+  it("allows a cmux sense escalation wake with the default policy, and only with its request id and sense refs", async () => {
+    const privateRuntime = await loadPrivateRuntime()
+    const deps = policyDeps()
+    const request = (originRefs: Array<{ kind: string; id: string }>, key: string) => privateTurnRequest({
+      origin: "daemon.private.wake",
+      reason: "cmux Feed request",
+      triggerSource: "cmux-feed",
+      idempotencyKey: key,
+      originRefs,
+    })
+
+    await expect(privateRuntime.requestPrivateTurnDecision(request([{ kind: "cmux-feed", id: "req-1" }, { kind: "sense", id: "cmux" }], "cmux-feed:slugger:req-1"), { ...deps, evaluatePolicy: undefined }))
+      .resolves.toMatchObject({ result: "allow", executable: true, reason: "cmux sense escalation" })
+    await expect(privateRuntime.requestPrivateTurnDecision(request([{ kind: "cmux-feed", id: "req-2" }], "cmux-feed:slugger:req-2"), { ...deps, evaluatePolicy: undefined }))
+      .resolves.toMatchObject({ result: "deny", deniedReason: "default policy deny" })
+    await expect(privateRuntime.requestPrivateTurnDecision(request([{ kind: "cmux-feed", id: " " }, { kind: "sense", id: "cmux" }], "cmux-feed:slugger:blank"), { ...deps, evaluatePolicy: undefined }))
+      .resolves.toMatchObject({ result: "deny", deniedReason: "default policy deny" })
+  })
+
   it("keeps spoofed operator CLI private wakes denied by default", async () => {
     const privateRuntime = await loadPrivateRuntime()
     const deps = policyDeps()
