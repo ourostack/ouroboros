@@ -127,8 +127,8 @@ describe("moveAgentHomeHere", () => {
   it("leaves an agent already homed here unchanged", () => {
     writeBundle(bundlesRoot, "slugger", agentConfig({ home: { machineId: HERE, machineName: "here-mac" } }))
     expect(move()).toEqual({ ok: true, changed: false, message: "slugger already lives on this machine (here-mac (here))" })
-    const root = fixture.seed(path.join(tmp, "git-bundle"), agentConfig({ home: { machineId: HERE, machineName: "here-mac" } }))
-    expect(move({ bundlesRoot: tmp, agent: "git-bundle" }).changed).toBe(false)
+    const root = fixture.seed(path.join(tmp, "git-bundle.ouro"), agentConfig({ home: { machineId: HERE, machineName: "here-mac" } }))
+    expect(move({ bundlesRoot: tmp, agent: "git-bundle" })).toEqual({ ok: true, changed: false, message: "git-bundle already lives on this machine (here-mac (here))" })
     expect(git(root, "rev-list", "--count", "HEAD")).toBe("1")
   })
 
@@ -188,8 +188,10 @@ describe("moveAgentHomeHere", () => {
     expect(git(root, "rev-parse", "HEAD")).toBe(head)
     expect(fixture.remoteHome()).toBeUndefined()
 
-    fixture.commitFile(root, "diary2.md", "also never pushed\n")
     fs.mkdirSync(path.join(root, "state"))
+    fs.writeFileSync(path.join(root, "state", "pending-sync.json"), JSON.stringify({ error: " " }))
+    expect(move().message).toContain("to see why they did not publish")
+    fixture.commitFile(root, "diary2.md", "also never pushed\n")
     fs.writeFileSync(path.join(root, "state", "pending-sync.json"), JSON.stringify({ error: "File is 113 MB; exceeds GitHub's 100 MB limit" }))
     expect(move().message).toContain("has 2 unpushed commits, so nothing changed; fix bundle sync first, because a move must not publish them as a side effect (the last bundle push failed with: File is 113 MB; exceeds GitHub's 100 MB limit)")
   })
@@ -266,6 +268,26 @@ describe("moveAgentHomeHere", () => {
     expect(fixture.remoteHome()).toEqual(expect.objectContaining({ machineId: THERE }))
     expect(readJson(path.join(root, "agent.json")).home).toEqual(expect.objectContaining({ machineId: THERE }))
     expect(git(root, "status", "--porcelain")).toBe("")
+  })
+
+  it("names no machine when the home was cleared meanwhile", () => {
+    fixture.seed(bundle(), agentConfig({ home: { machineId: THERE, machineName: "there-mac" } }))
+    const rival = fixture.clone(path.join(tmp, "rival"))
+    let raced = false
+    const result = move({
+      execFileSync: (command, args, options) => {
+        if (args[0] === "commit" && !raced) {
+          raced = true
+          const config = readJson(path.join(rival, "agent.json"))
+          delete config.home
+          fs.writeFileSync(path.join(rival, "agent.json"), `${JSON.stringify(config, null, 2)}\n`)
+          git(rival, "commit", "-qam", "clear home")
+          git(rival, "push", "-q")
+        }
+        return execFileSync(command, args, options)
+      },
+    })
+    expect(result.message).toContain("(it now names no machine)")
   })
 
   it("retries once when the remote moved on for an unrelated reason", () => {
@@ -360,6 +382,9 @@ describe("readUpstreamAgentHome", () => {
     fs.mkdirSync(path.join(noGit, ".git"))
     await expect(readUpstreamAgentHome(noGit, async () => { throw new Error("offline") })).resolves.toBeUndefined()
     await expect(readUpstreamAgentHome(path.join(tmp, "missing"))).resolves.toBeUndefined()
+    const noRemote = writeBundle(tmp, "noremote", agentConfig({ sync: { enabled: true } }))
+    git(noRemote, "init", "-q")
+    await expect(readUpstreamAgentHome(noRemote)).resolves.toBeUndefined()
   })
 })
 
