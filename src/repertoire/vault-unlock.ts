@@ -206,7 +206,7 @@ function lockedMessage(config: VaultUnlockConfig, store: VaultUnlockStoreSelecti
     "",
     "Provider credentials are still stored in the agent vault.",
     "This computer does not currently have usable local unlock material for that vault.",
-    "This can happen on a new computer, after a local profile or hostname migration, or if the local unlock entry was removed.",
+    "This can happen on a new computer, after a local profile or hostname migration, after a macOS password reset that replaced the login keychain, or if the local unlock entry was removed.",
     "",
     `Run \`${command}\` and enter the saved agent vault unlock secret from the human/operator who controls that vault.`,
     lostUnlockSecretGuidance(config),
