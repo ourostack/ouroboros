@@ -236,7 +236,7 @@ describe("buildDefaultAgentTemplate", () => {
         a2a: { enabled: false },
         telegram: { enabled: false },
         workbench: { enabled: false },
-        cmux: { enabled: false },
+        shepherd: { enabled: false },
       },
     })
     expect((template as any).name).toBeUndefined()
@@ -391,7 +391,7 @@ describe("loadAgentConfig", () => {
       a2a: { enabled: false },
       telegram: { enabled: false },
       workbench: { enabled: false },
-      cmux: { enabled: false },
+      shepherd: { enabled: false },
     })
   })
 
@@ -419,7 +419,7 @@ describe("loadAgentConfig", () => {
       a2a: { enabled: false },
       telegram: { enabled: false },
       workbench: { enabled: false },
-      cmux: { enabled: false },
+      shepherd: { enabled: false },
     })
   })
 
@@ -450,7 +450,7 @@ describe("loadAgentConfig", () => {
       a2a: { enabled: false },
       telegram: { enabled: false },
       workbench: { enabled: false },
-      cmux: { enabled: false },
+      shepherd: { enabled: false },
     })
   })
 

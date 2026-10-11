@@ -362,7 +362,7 @@ function pathVerdict(tool: string, input: Record<string, unknown>, repoRoot: str
 
 export function evaluateFloor(item: FloorInput, fsx: FloorFs = realFs): FloorVerdict {
   const verdict = judge(item, fsx)
-  emitNervesEvent({ component: "senses", event: "senses.cmux_floor_judged", message: "judged a cmux Feed item against the floor", meta: { tool: item.toolName, verdict: verdict.verdict, reason: verdict.reason } })
+  emitNervesEvent({ component: "senses", event: "senses.shepherd_floor_judged", message: "judged a cmux Feed item against the floor", meta: { tool: item.toolName, verdict: verdict.verdict, reason: verdict.reason } })
   return verdict
 }
 

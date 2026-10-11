@@ -441,7 +441,7 @@ const COMMERCE_FAMILY_TOOLS = new Set(["commerce_checkout_preview", "commerce_ch
 const COMMERCE_AUTHORITY_TOOLS = new Set(["stripe_create_card", "flight_hold", "flight_book"])
 // The cmux tools read the owner's terminals and speak to them through their desktop, so only family may use them.
 // A call with no known trust level fails closed.
-const CMUX_FAMILY_TOOLS = new Set(["cmux_overview", "cmux_read", "cmux_signal", "cmux_reply_once", "cmux_correct"])
+const SHEPHERD_FAMILY_TOOLS = new Set(["shepherd_overview", "shepherd_read", "shepherd_signal", "shepherd_reply_once", "shepherd_correct"])
 const MAIL_FAMILY_TOOLS = new Set(["mail_screener", "mail_decide", "mail_access_log", "mail_send", "mail_index_refresh"])
 const MAIL_DELEGATED_READ_TOOLS = new Set(["mail_recent", "mail_search"])
 
@@ -1183,7 +1183,7 @@ function checkTrustLevelGuardrails(toolName: string, args: Record<string, string
   const mailResult = mailTrustGuardrail(toolName, args, context)
   if (!mailResult.allowed) return mailResult
 
-  if (CMUX_FAMILY_TOOLS.has(toolName) && context.trustLevel !== "family") {
+  if (SHEPHERD_FAMILY_TOOLS.has(toolName) && context.trustLevel !== "family") {
     return deny("the owner's cmux terminals require family trust.")
   }
 

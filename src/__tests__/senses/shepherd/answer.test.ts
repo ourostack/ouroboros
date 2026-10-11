@@ -4,10 +4,10 @@ import * as path from "node:path"
 import { afterEach, beforeEach, describe, expect, it } from "vitest"
 
 import { readStewardPolicy, updateStewardPolicy } from "../../../heart/steward-policy"
-import { answerOnce, CMUX_GRANT_ACTION, CMUX_GRANT_KEY, cmuxStateDir, feedItemStatus, judgeFeedItem, recordDecision, type AnswerContext } from "../../../senses/cmux/answer"
-import type { CmuxPendingFeedItem } from "../../../senses/cmux/attention"
-import { addCase, appendDecision, cmuxCasebookPath, cmuxDecisionLogPath, readDecisions, storeShape } from "../../../senses/cmux/casebook"
-import type { CmuxClient } from "../../../senses/cmux/client"
+import { answerOnce, CMUX_GRANT_ACTION, CMUX_GRANT_KEY, cmuxStateDir, feedItemStatus, judgeFeedItem, recordDecision, type AnswerContext } from "../../../senses/shepherd/answer"
+import type { CmuxPendingFeedItem } from "../../../senses/shepherd/attention"
+import { addCase, appendDecision, cmuxCasebookPath, cmuxDecisionLogPath, readDecisions, storeShape } from "../../../senses/shepherd/casebook"
+import type { CmuxClient } from "../../../senses/shepherd/client"
 
 const NOW = Date.parse("2026-10-10T20:00:00.000Z")
 let base = ""

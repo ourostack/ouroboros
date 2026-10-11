@@ -158,7 +158,7 @@ async function evaluatePolicy(
   if (
     request.triggerSource === "cmux-feed"
     && hasNonEmptyOriginRef(originRefs, "cmux-feed")
-    && hasOriginRef(originRefs, "sense", "cmux")
+    && hasOriginRef(originRefs, "sense", "shepherd")
   ) {
     return {
       result: "allow",
