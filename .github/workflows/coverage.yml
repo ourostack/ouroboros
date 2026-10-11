@@ -505,3 +505,50 @@ jobs:
           else
             echo "::warning::This run is failing before @ouro.bot/cli@${LOCAL} was published, so no container image is expected."
           fi
+
+  # Attach the same npm tarball to a GitHub release so `ouro self-update` can
+  # install it on networks that block registry.npmjs.org or serve npm through a
+  # mirror that lags behind. Separate from publish so the npm job keeps its
+  # read-only contents permission, and non-blocking so a release hiccup never
+  # stops container-publish.
+  github-release:
+    needs:
+      - publish
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    continue-on-error: true
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Setup Node
+        uses: actions/setup-node@v6
+        with:
+          node-version: 24
+          package-manager-cache: false
+
+      - name: Install Dependencies
+        run: npm ci
+
+      - name: Build
+        run: npm run build
+
+      - name: Create the GitHub release with the npm tarball
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          LOCAL=$(node -p "require('./package.json').version")
+          TAG="v${LOCAL}"
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            echo "GitHub release ${TAG} already exists — skipping"
+            exit 0
+          fi
+          PACK_DIR="$(mktemp -d)"
+          npm pack --pack-destination "$PACK_DIR" >/dev/null
+          TARBALL="${PACK_DIR}/ouro.bot-cli-${LOCAL}.tgz"
+          test -f "$TARBALL"
+          node -e 'const c=require("./changelog.json");const v=c.versions.find((x)=>x.version===process.argv[1]);process.stdout.write((v?v.changes:[]).join("\n\n")||"See changelog.json.")' "$LOCAL" > "${PACK_DIR}/notes.md"
+          gh release create "$TAG" "$TARBALL" --target "$GITHUB_SHA" --title "@ouro.bot/cli ${LOCAL}" --notes-file "${PACK_DIR}/notes.md"

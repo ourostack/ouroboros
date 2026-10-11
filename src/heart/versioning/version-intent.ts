@@ -7,6 +7,10 @@ export interface VersionIntent {
   schemaVersion: 1
   mode: "pinned" | "latest"
   targetVersion: string
+  /** When a pin was written. The unattended updater expires human pins after PIN_MAX_AGE_MS. */
+  pinnedAt?: string
+  /** "auto-rollback" pins come from a failed unattended update and only block the failed version. */
+  reason?: "rollback" | "auto-rollback"
 }
 
 export interface VersionIntentDeps {

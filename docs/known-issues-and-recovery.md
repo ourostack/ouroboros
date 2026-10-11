@@ -33,6 +33,20 @@ Run only the exact command doctor prints, such as `ouro logs prune --agent <name
 
 Exact rollback intent is persistent. The standard Ouro bootstrap installs/verifies the stable recovery launcher before version intent is first committed. `ouro rollback <version>` installs and validates the selected runtime, then atomically pins and activates it. Ordinary `ouro up` preserves that pin. Use `ouro versions` to inspect `pinned` versus `latest` intent and its target. To leave the pin, run `ouro up --latest`; Ouro changes the intent only after the latest version passes preflight. If an update is interrupted, rerun `ouro up` and the installed recovery launcher reconciles the installed link to the last committed intent.
 
+A rollback pin records when it was written. The unattended updater (below) honors it for seven days and then resumes updates; a pin written before pins carried a timestamp starts its seven days when the updater first sees it. `ouro up --latest` still leaves the pin immediately.
+
+## A machine stays on an old Ouro version
+
+Ouro updates itself without the daemon. On macOS, `ouro up` and `ouro self-update` install a launchd agent, `bot.ouro.updater` (`~/Library/LaunchAgents/bot.ouro.updater.plist`), that runs `ouro self-update --unattended` at login and every hour. Each pass:
+
+1. Honors a fresh rollback pin and expires one older than seven days.
+2. Asks registry.npmjs.org, the npm registry configured on this machine, and GitHub releases for the newest `@ouro.bot/cli`, and installs from whichever source serves it. CI attaches the npm tarball to a GitHub release for every published version, so a network that blocks registry.npmjs.org or a lagging npm mirror does not strand the machine.
+3. Validates the installed payload and runs its `--version` before activating it.
+4. Restarts the daemon on the new version only if it was already running, and confirms that it answers with that version. A stopped daemon stays stopped.
+5. If the restarted daemon does not answer, reactivates the previous version, pins it with reason `auto-rollback`, and never retries the failed version. A newer release replaces the auto-rollback pin.
+
+`ouro status` ends with an `Updates:` line from `~/.ouro-cli/update-state.json`. It starts with `needs attention` when the last pass failed, when the updater has not run for three hours, or when the launchd agent is missing. Run `ouro self-update` to run a pass now and reinstall the agent.
+
 ## `ouro status --json` times out
 
 Status has a command-specific 5,000 ms end-to-end socket-operation deadline; long agent turns keep their longer command timeout. A timeout still returns parseable diagnostic JSON classified as `timeout`, rather than hanging for the general ten-minute command window. This distinguishes a deadline from immediate socket unavailability, but does not by itself prove whether the timeout occurred before or after connection. Run `ouro doctor` or `ouro up` as indicated by the accompanying details.
