@@ -28,7 +28,7 @@ import {
 import { buildSpecialistSystemPrompt } from "../hatch/specialist-prompt"
 import { getSpecialistTools, createSpecialistExecTool } from "../hatch/specialist-tools"
 import { detectRuntimeMode } from "./runtime-mode"
-import { listEnabledBundleAgents } from "./agent-discovery"
+import { listEnabledBundleAgents, listHomeBundleAgents } from "./agent-discovery"
 import { getPackageVersion } from "../../mind/bundle-manifest"
 import { syncGlobalOuroBotWrapper as defaultSyncGlobalOuroBotWrapper } from "../versioning/ouro-bot-global-installer"
 import { readVersionIntent as defaultReadVersionIntent, writeVersionIntent as defaultWriteVersionIntent } from "../versioning/version-intent"
@@ -518,6 +518,10 @@ async function defaultPromptSecret(question: string): Promise<string> {
   }
 }
 
+export function defaultListHomeAgents(): string[] {
+  return listHomeBundleAgents({ bundlesRoot: getAgentBundlesRoot() })
+}
+
 export function defaultListDiscoveredAgents(): string[] {
   return listEnabledBundleAgents({
     bundlesRoot: getAgentBundlesRoot(),
@@ -810,6 +814,7 @@ export function createDefaultOuroCliDeps(socketPath = DEFAULT_DAEMON_SOCKET_PATH
     startupRetryLimit: 1,
     isProcessAlive: defaultIsProcessAlive,
     listDiscoveredAgents: defaultListDiscoveredAgents,
+    listHomeAgents: defaultListHomeAgents,
     runHatchFlow: defaultRunHatchFlow,
     promptInput: defaultPromptInput,
     promptSecret: defaultPromptSecret,

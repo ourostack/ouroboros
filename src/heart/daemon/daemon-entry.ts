@@ -20,7 +20,8 @@ import { computeDaemonRollup } from "./daemon-rollup"
 import { TaskDrivenScheduler } from "./task-scheduler"
 import { configureDaemonRuntimeLogger } from "./runtime-logging"
 import { DaemonSenseManager } from "./sense-manager"
-import { listEnabledBundleAgents, readPrivateRuntimeConfig } from "./agent-discovery"
+import { listHomeBundleAgents, readPrivateRuntimeConfig } from "./agent-discovery"
+import { checkAgentHomes } from "./agent-home"
 import { getRepoRoot, getAgentBundlesRoot } from "../identity"
 import { detectRuntimeMode } from "./runtime-mode"
 import { HabitScheduler } from "../habits/habit-scheduler"
@@ -78,7 +79,10 @@ configureDaemonRuntimeLogger("daemon")
 
 const entryPath = path.resolve(__dirname, "daemon-entry.js")
 const mode = detectRuntimeMode(getRepoRoot())
-const managedAgents = listEnabledBundleAgents()
+// Each agent runs on exactly one machine: manage only agents homed here
+// (see agent-home.ts), resolved against this machine's stable id.
+const daemonMachineId = loadOrCreateMachineIdentity().machineId
+const managedAgents = listHomeBundleAgents({ machineId: daemonMachineId })
 const readinessAgents = providerReadinessAgents(
   managedAgents,
   process.env.OURO_DAEMON_REQUIRED_AGENT,
@@ -347,7 +351,10 @@ const senseManager = new DaemonSenseManager({
 const healthMonitor = new HealthMonitor({
   processManager,
   scheduler,
-  sentinelChecker: (resultsSoFar) => Promise.all(managedAgents.map((agent) => refreshDaemonSentinel(agent, "daemon_health", resultsSoFar))),
+  sentinelChecker: async (resultsSoFar) => [
+    ...await Promise.all(managedAgents.map((agent) => refreshDaemonSentinel(agent, "daemon_health", resultsSoFar))),
+    checkAgentHomes({ managedAgents, machineId: daemonMachineId }),
+  ],
   senseProbeProvider: () => [
     ...senseManager.listHealthProbes(),
     ...managedAgents.map((agent) => createMcpStatusCanaryProbe({
@@ -505,7 +512,7 @@ function buildDaemonHealthState(): DaemonHealthState {
   // Layer 1 rollup: project per-agent snapshots into the minimal
   // AgentRollupInput shape and let computeDaemonRollup decide. The
   // input is "every enabled agent" — managedAgents was filtered via
-  // listEnabledBundleAgents at module init, and snapshots only covers
+  // listHomeBundleAgents at module init, and snapshots only covers
   // agents the process manager was told to manage, so by construction
   // these entries are all enabled. The rollup function is a pure
   // declarative function on the data we hand it.

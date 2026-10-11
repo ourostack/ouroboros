@@ -2328,6 +2328,7 @@ describe("daemon CLI default dependency branches", () => {
     const deps = createDefaultOuroCliDeps("/tmp/daemon.sock")
 
     expect(deps.listDiscoveredAgents!()).toEqual([])
+    expect(deps.listHomeAgents!()).toEqual([])
   })
 
   it("default deps include startChat function", async () => {

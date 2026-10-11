@@ -84,7 +84,8 @@ vi.mock("../../../heart/daemon/supercronic-supervisor", () => ({
 }))
 
 vi.mock("../../../heart/daemon/agent-discovery", () => ({
-  listEnabledBundleAgents: listEnabledBundleAgentsMock,
+  listHomeBundleAgents: listEnabledBundleAgentsMock,
+  listAllBundleAgents: () => [],
   readPrivateRuntimeConfig: readPrivateRuntimeConfigMock,
 }))
 
@@ -776,6 +777,7 @@ describe("daemon entrypoint", () => {
       { name: "sense-probe:mcp-canary:ouroboros", status: "ok", message: "mcp-canary:ouroboros healthy" },
       { name: "context-loss-sentinel:slugger", status: "ok", message: "Sentinel ready: deterministic recovery is ready" },
       { name: "context-loss-sentinel:ouroboros", status: "ok", message: "Sentinel ready: deterministic recovery is ready" },
+      { name: "agent-home", status: "ok", message: "every running agent is homed here" },
     ])
     expect(createMcpStatusCanaryProbeMock).toHaveBeenCalledWith(
       expect.objectContaining({ agent: "slugger", ignoreOverviewHealth: true }),
@@ -1914,6 +1916,7 @@ describe("daemon entrypoint", () => {
         status: "critical",
         message: "Sentinel blocked: recovery checkpoint is blocked",
       },
+      { name: "agent-home", status: "ok", message: "every running agent is homed here" },
     ])
     expect(refreshContextLossSentinel).toHaveBeenCalledWith(
       "slugger",
@@ -1936,6 +1939,7 @@ describe("daemon entrypoint", () => {
         status: "critical",
         message: "Sentinel refresh failed: offline",
       },
+      { name: "agent-home", status: "ok", message: "every running agent is homed here" },
     ])
 
     argvSpy.mockRestore()
