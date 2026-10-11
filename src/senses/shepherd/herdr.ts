@@ -103,10 +103,12 @@ export function createHerdrHost(connection: HerdrConnection, options: HerdrHostO
         workspace: str(pane.workspace_id),
         title: str(pane.title) ?? str(pane.terminal_title_stripped) ?? str(pane.label) ?? "",
         agent: str(pane.agent),
+        focused: pane.focused === true,
       }))
     },
-    async read(sessionId, lines) {
-      const result = await call("pane.read", { pane_id: sessionId, source: "recent", lines, strip_ansi: true })
+    async read(sessionId) {
+      // The visible screen only: reading recent scrollback makes Herdr scroll the agent's UI.
+      const result = await call("pane.read", { pane_id: sessionId, source: "visible", strip_ansi: true })
       const read = isRecord(result.read) ? result.read : {}
       return typeof read.text === "string" ? read.text : ""
     },
@@ -116,7 +118,7 @@ export function createHerdrHost(connection: HerdrConnection, options: HerdrHostO
       emitNervesEvent({ component: "senses", event: "senses.shepherd_herdr_prompted", message: "typed a line into a Herdr pane", meta: { chars: line.length } })
     },
     async key(sessionId, key) {
-      await call("pane.send_keys", { pane_id: sessionId, keys: [HERDR_KEYS[key]] })
+      await call("agent.send_keys", { target: sessionId, keys: [HERDR_KEYS[key]] })
     },
     async signal(sessionId, status, notification) {
       await call("pane.report_metadata", status
@@ -162,10 +164,36 @@ export function createHerdrHost(connection: HerdrConnection, options: HerdrHostO
         }, GRACE_MS))
       }
 
+      /**
+       * The cache keeps each pane's last known state; `unknown` (a passing detection gap) changes nothing, so working, unknown,
+       * idle still counts as working to idle.
+       */
+      const observed = (paneId: string, next: string): void => {
+        if (next === "unknown") return
+        const previous = status.get(paneId)
+        status.set(paneId, next)
+        if (next === "working") cancelPending(paneId)
+        else if (previous === "working" && RETURN_STATES.has(next)) settled(paneId)
+      }
+
       const onEvent = (line: Record<string, unknown>): void => {
         // Herdr names events `pane.focused` in subscriptions and `pane_focused` on the wire; both are accepted.
         const name = (str(line.event) ?? "").replace(".", "_")
         const data = isRecord(line.data) ? line.data : {}
+        if (name === "pane_moved") {
+          // A moved pane can get a new id: carry its state over and subscribe again under the new id.
+          const from = str(data.previous_pane_id)
+          const to = isRecord(data.pane) ? str(data.pane.pane_id) : null
+          if (from && to && from !== to) {
+            cancelPending(from)
+            const known = status.get(from)
+            status.delete(from)
+            if (known) status.set(to, known)
+          }
+          refresh = true
+          stream?.close()
+          return
+        }
         const paneId = str(data.pane_id)
         if (!paneId) return
         if (name === "pane_focused") return handlers.focused(paneId)
@@ -180,11 +208,7 @@ export function createHerdrHost(connection: HerdrConnection, options: HerdrHostO
           return
         }
         if (name !== "pane_agent_status_changed") return
-        const next = str(data.agent_status) ?? "unknown"
-        const previous = status.get(paneId)
-        status.set(paneId, next)
-        if (next === "working") cancelPending(paneId)
-        else if (previous === "working" && RETURN_STATES.has(next)) settled(paneId)
+        observed(paneId, str(data.agent_status) ?? "unknown")
       }
 
       const reconnect = (error?: Error): void => {
@@ -209,18 +233,29 @@ export function createHerdrHost(connection: HerdrConnection, options: HerdrHostO
           return reconnect(error as Error)
         }
         if (closed) return
+        // Status changes while unsubscribed are not replayed: the fresh list replaces the cache, and a pane that stopped
+        // working in the gap is handled as if its event had arrived.
+        const ids = new Set(current.flatMap((pane) => str(pane.pane_id) ?? []))
+        for (const id of [...status.keys()]) {
+          if (ids.has(id)) continue
+          status.delete(id)
+          cancelPending(id)
+        }
         for (const pane of current) {
           const id = str(pane.pane_id)
-          if (id && !status.has(id)) status.set(id, str(pane.agent_status) ?? "unknown")
+          if (!id) continue
+          const next = str(pane.agent_status) ?? "unknown"
+          if (status.has(id)) observed(id, next)
+          else if (next !== "unknown") status.set(id, next)
         }
         const subscriptions = [
-          { type: "pane.created" }, { type: "pane.closed" }, { type: "pane.focused" },
+          { type: "pane.created" }, { type: "pane.closed" }, { type: "pane.focused" }, { type: "pane.moved" },
           ...current.flatMap((pane) => str(pane.pane_id) ? [{ type: "pane.agent_status_changed", pane_id: pane.pane_id }] : []),
         ]
         stream = connectLines(connection.socketPath, (line) => {
           if (isRecord(line.result) && line.result.type === "subscription_started") {
             attempt = 0
-            emitNervesEvent({ component: "senses", event: "senses.shepherd_herdr_connected", message: "Herdr event subscription started", meta: { panes: subscriptions.length - 3 } })
+            emitNervesEvent({ component: "senses", event: "senses.shepherd_herdr_connected", message: "Herdr event subscription started", meta: { panes: subscriptions.length - 4 } })
             return
           }
           // `events_lost` or a rejected subscription closes the connection; the reconnect reads panes again.

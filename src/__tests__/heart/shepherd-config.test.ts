@@ -4,7 +4,7 @@ import { defaultCmuxSocketPath, defaultHerdrSocketPath, resolveShepherdConnectio
 
 describe("Shepherd machine config", () => {
   it("names the human repair with the agent", () => {
-    expect(shepherdRepairHint("slugger")).toBe(`human-required: in a cmux terminal run 'ouro vault config set --agent slugger --scope machine --key cmux.socketCapability --value "$CMUX_SOCKET_CAPABILITY"' (or set cmux.socketPassword when cmux is in password mode), then 'ouro up'.`)
+    expect(shepherdRepairHint("slugger")).toBe(`human-required: in a cmux terminal run 'ouro vault config set --agent slugger --scope machine --key cmux.socketCapability --value "$CMUX_SOCKET_CAPABILITY"' (or set cmux.socketPassword when cmux is in password mode), then 'ouro up'. On Herdr instead: 'ouro vault config set --agent slugger --scope machine --key herdr.socketPath --value "$HOME/.config/herdr/herdr.sock"', then 'ouro up'.`)
   })
 
   it("reports a machine without a terminal host as optional, and a half-configured cmux as missing auth", () => {

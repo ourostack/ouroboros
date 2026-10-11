@@ -37,7 +37,7 @@ const subscriptions = () => server.requests.filter((request) => request.method =
 beforeEach(async () => {
   scheduler = manualScheduler()
   server = await startFakeHerdr()
-  panes = [paneInfo("w1:p1", { agent_status: "working" }), paneInfo("w1:p2", { agent: "copilot", title: "deploy" }), paneInfo("w2:p1", { agent: null, terminal_title_stripped: null })]
+  panes = [paneInfo("w1:p1", { agent_status: "working" }), paneInfo("w1:p2", { agent: "copilot", title: "deploy", focused: true }), paneInfo("w2:p1", { agent: null, terminal_title_stripped: null })]
   agents = { "w1:p1": agentInfo("w1:p1", { agent_status: "done" }) }
   server.respond("pane.list", () => ({ type: "pane_list", panes }))
   server.respond("agent.get", (params) => {
@@ -47,7 +47,7 @@ beforeEach(async () => {
   })
   server.respond("events.subscribe", () => ({ type: "subscription_started" }))
   server.respond("pane.read", (params) => ({ type: "pane_read", read: { pane_id: params.pane_id, workspace_id: "w1", tab_id: "w1:t1", source: params.source, format: "text", text: SCREENS.codexMenu, revision: 7, truncated: false } }))
-  for (const method of ["agent.prompt", "pane.send_keys", "pane.report_metadata"]) server.respond(method, () => ({ type: "ok" }))
+  for (const method of ["agent.prompt", "agent.send_keys", "pane.report_metadata"]) server.respond(method, () => ({ type: "ok" }))
   server.respond("notification.show", () => ({ type: "notification_show", shown: true, reason: "shown" }))
 })
 
@@ -60,18 +60,18 @@ describe("Herdr host: panes", () => {
     const herdr = host()
     expect(herdr.name).toBe("herdr")
     expect(await herdr.list()).toEqual([
-      { id: "w1:p1", ref: "w1:p1", workspace: "w1", title: "codex", agent: "codex" },
-      { id: "w1:p2", ref: "w1:p2", workspace: "w1", title: "deploy", agent: "copilot" },
-      { id: "w2:p1", ref: "w2:p1", workspace: "w2", title: "", agent: null },
+      { id: "w1:p1", ref: "w1:p1", workspace: "w1", title: "codex", agent: "codex", focused: false },
+      { id: "w1:p2", ref: "w1:p2", workspace: "w1", title: "deploy", agent: "copilot", focused: true },
+      { id: "w2:p1", ref: "w2:p1", workspace: "w2", title: "", agent: null, focused: false },
     ])
     expect(await herdr.read("w1:p1", 80)).toBe(SCREENS.codexMenu)
-    expect(server.requests.at(-1)).toEqual({ method: "pane.read", params: { pane_id: "w1:p1", source: "recent", lines: 80, strip_ansi: true } })
+    expect(server.requests.at(-1)).toEqual({ method: "pane.read", params: { pane_id: "w1:p1", source: "visible", strip_ansi: true } })
 
     await herdr.prompt("w1:p1", "[Ouro for Ari] Go ahead with option 2.")
     expect(server.requests.at(-1)).toEqual({ method: "agent.prompt", params: { target: "w1:p1", text: "[Ouro for Ari] Go ahead with option 2." } })
     await herdr.key("w1:p1", "escape")
     await herdr.key("w1:p1", "2")
-    expect(server.requests.slice(-2).map((request) => request.params.keys)).toEqual([["esc"], ["2"]])
+    expect(server.requests.slice(-2)).toEqual([{ method: "agent.send_keys", params: { target: "w1:p1", keys: ["esc"] } }, { method: "agent.send_keys", params: { target: "w1:p1", keys: ["2"] } }])
 
     await herdr.signal("w1:p1", "answered for Ari", { title: "Shepherd", body: "answered" })
     await herdr.signal("w1:p1", null)
@@ -86,13 +86,13 @@ describe("Herdr host: panes", () => {
     server.respond("pane.list", () => ({ type: "pane_list", panes: [{}] }))
     server.respond("pane.read", () => ({ type: "pane_read" }))
     server.respond("agent.prompt", () => { throw new HerdrError("agent_blocked", "agent is blocked") })
-    server.respond("pane.send_keys", () => { throw new HerdrError("bad_keys", "") })
+    server.respond("agent.send_keys", () => { throw new HerdrError("bad_keys", "") })
     server.respond("ping", () => null)
     const herdr = host()
-    expect(await herdr.list()).toEqual([{ id: "", ref: "", workspace: null, title: "", agent: null }])
+    expect(await herdr.list()).toEqual([{ id: "", ref: "", workspace: null, title: "", agent: null, focused: false }])
     expect(await herdr.read("w1:p1", 10)).toBe("")
     await expect(herdr.prompt("w1:p1", "x")).rejects.toThrow("herdr agent.prompt: agent is blocked")
-    await expect(herdr.key("w1:p1", "enter")).rejects.toThrow("herdr pane.send_keys: bad_keys")
+    await expect(herdr.key("w1:p1", "enter")).rejects.toThrow("herdr agent.send_keys: bad_keys")
     await expect(herdrRequest(server.socketPath, "ping", {}, 20)).rejects.toThrow("herdr ping timed out")
     server.respond("pane.list", () => "not an object")
     expect(await herdr.list()).toEqual([])
@@ -128,7 +128,7 @@ describe("Herdr host: returned control", () => {
     panes.push({ terminal_id: "term_orphan" }, { ...paneInfo("w4:p1"), agent_status: undefined })
     const { watcher } = await watching()
     expect(subscriptions()[0]!.params).toEqual({ subscriptions: [
-      { type: "pane.created" }, { type: "pane.closed" }, { type: "pane.focused" },
+      { type: "pane.created" }, { type: "pane.closed" }, { type: "pane.focused" }, { type: "pane.moved" },
       { type: "pane.agent_status_changed", pane_id: "w1:p1" }, { type: "pane.agent_status_changed", pane_id: "w1:p2" }, { type: "pane.agent_status_changed", pane_id: "w2:p1" }, { type: "pane.agent_status_changed", pane_id: "w4:p1" },
     ] })
     watcher.close()
@@ -216,6 +216,49 @@ describe("Herdr host: returned control", () => {
     server.push(paneEvent("pane_closed", "w1:p1"))
     await vi.waitFor(() => expect(subscriptions()).toHaveLength(3))
     expect(scheduler.due(GRACE_MS)).toBe(0)
+    watcher.close()
+  })
+
+  it("counts working, unknown, idle as a return, and catches a pane that stopped while unsubscribed", async () => {
+    const { watcher, returned } = await watching()
+    server.push(statusEvent("w1:p1", "unknown"))
+    server.push(statusEvent("w1:p1", "idle"))
+    await vi.waitFor(() => expect(scheduler.due(GRACE_MS)).toBe(1))
+    await scheduler.run(GRACE_MS)
+    expect(returned).toHaveLength(1)
+
+    // w1:p2 starts working; the subscription drops; it finishes before Shepherd is back.
+    server.push(statusEvent("w1:p2", "working", "copilot"))
+    await new Promise((resolve) => setTimeout(resolve, 20))
+    panes = [paneInfo("w1:p1", { agent_status: "idle" }), paneInfo("w1:p2", { agent_status: "done", agent: "copilot" }), paneInfo("w5:p1", { agent_status: "unknown" })]
+    agents["w1:p2"] = agentInfo("w1:p2", { agent_status: "done", agent: "copilot", state_change_seq: 77 })
+    server.endStreams()
+    await vi.waitFor(() => expect(scheduler.due(1_000)).toBe(1))
+    await scheduler.run(1_000)
+    await vi.waitFor(() => expect(scheduler.due(GRACE_MS)).toBe(1))
+    await scheduler.run(GRACE_MS)
+    expect(returned.at(-1)).toMatchObject({ sessionId: "w1:p2", transitionId: "herdr:w1:p2:77" })
+    watcher.close()
+  })
+
+  it("follows a pane that moved to a new id", async () => {
+    const { watcher, returned } = await watching()
+    panes = [paneInfo("w9:p1", { agent_status: "working" }), ...panes.slice(1)]
+    server.push({ event: "pane_moved", data: { type: "pane_moved", pane: paneInfo("w9:p1", { agent_status: "working" }), previous_pane_id: "w1:p1", previous_tab_id: "w1:t1", previous_workspace_id: "w1" } })
+    await vi.waitFor(() => expect(subscriptions()).toHaveLength(2))
+    expect(subscriptions()[1]!.params.subscriptions).toContainEqual({ type: "pane.agent_status_changed", pane_id: "w9:p1" })
+    agents["w9:p1"] = agentInfo("w9:p1", { agent_status: "done" })
+    server.push(statusEvent("w9:p1", "done"))
+    await vi.waitFor(() => expect(scheduler.due(GRACE_MS)).toBe(1))
+    await scheduler.run(GRACE_MS)
+    expect(returned).toEqual([expect.objectContaining({ sessionId: "w9:p1" })])
+    // A move that keeps the id, or names nothing, just resubscribes.
+    server.push({ event: "pane_moved", data: { type: "pane_moved", pane: paneInfo("w9:p1"), previous_pane_id: "w9:p1" } })
+    await vi.waitFor(() => expect(subscriptions()).toHaveLength(3))
+    server.push({ event: "pane_moved", data: { type: "pane_moved", previous_pane_id: "w3:p3" } })
+    await vi.waitFor(() => expect(subscriptions()).toHaveLength(4))
+    server.push({ event: "pane_moved", data: { type: "pane_moved", pane: paneInfo("w9:p2"), previous_pane_id: "w8:p8" } })
+    await vi.waitFor(() => expect(subscriptions()).toHaveLength(5))
     watcher.close()
   })
 

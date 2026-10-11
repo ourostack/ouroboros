@@ -36,7 +36,7 @@ export interface ShepherdConfigFacts {
 }
 
 export function shepherdRepairHint(agent: string): string {
-  return `human-required: in a cmux terminal run 'ouro vault config set --agent ${agent} --scope machine --key cmux.socketCapability --value "$CMUX_SOCKET_CAPABILITY"' (or set cmux.socketPassword when cmux is in password mode), then 'ouro up'.`
+  return `human-required: in a cmux terminal run 'ouro vault config set --agent ${agent} --scope machine --key cmux.socketCapability --value "$CMUX_SOCKET_CAPABILITY"' (or set cmux.socketPassword when cmux is in password mode), then 'ouro up'. On Herdr instead: 'ouro vault config set --agent ${agent} --scope machine --key herdr.socketPath --value "$HOME/.config/herdr/herdr.sock"', then 'ouro up'.`
 }
 
 function text(record: Record<string, unknown> | undefined, key: string): string {
