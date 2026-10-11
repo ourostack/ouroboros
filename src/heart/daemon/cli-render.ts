@@ -13,6 +13,14 @@ import { getRepoRoot } from "../identity"
 import { readDaemonTombstone } from "./daemon-tombstone"
 import { readHealth, getDefaultHealthPath, type DaemonHealthState, type DaemonStatus } from "./daemon-health"
 import { listAllBundleAgents, listBundleSyncRows } from "./agent-discovery"
+import {
+  describeSkippedFiles,
+  describeSyncFailure,
+  parseBundleSyncFailure,
+  parseBundleSyncSkippedFiles,
+  type BundleSyncFailure,
+  type BundleSyncSkippedFile,
+} from "../sync-health"
 import type { McpListCliCommand, McpCallCliCommand } from "./cli-types"
 
 // ── Status payload types ──
@@ -76,6 +84,8 @@ interface StatusSyncRow {
   remote: string
   remoteUrl?: string
   gitInitialized?: boolean
+  failure?: BundleSyncFailure
+  skippedFiles?: BundleSyncSkippedFile[]
 }
 
 interface StatusAgentRow {
@@ -287,6 +297,10 @@ export function parseStatusPayload(data: unknown): StatusPayload | null {
     if (remoteUrl !== null) parsed.remoteUrl = remoteUrl
     const gitInitialized = booleanField(row.gitInitialized)
     if (gitInitialized !== null) parsed.gitInitialized = gitInitialized
+    const failure = parseBundleSyncFailure(row.failure)
+    if (failure) parsed.failure = failure
+    const skippedFiles = parseBundleSyncSkippedFiles(row.skippedFiles)
+    if (skippedFiles.length > 0) parsed.skippedFiles = skippedFiles
     return parsed
   })
 
@@ -612,6 +626,10 @@ export function formatDaemonStatusOutput(response: DaemonResponse, fallback: str
         dot = red("●")
         stateText = "error   ".padEnd(10)
         detail = "not a git repo — run `git init` to enable sync"
+      } else if (row.failure) {
+        dot = red("●")
+        stateText = "failing ".padEnd(10)
+        detail = describeSyncFailure(row.failure)
       } else if (row.remoteUrl !== undefined) {
         dot = green("●")
         stateText = "enabled ".padEnd(10)
@@ -622,6 +640,9 @@ export function formatDaemonStatusOutput(response: DaemonResponse, fallback: str
         detail = "local only"
       }
       lines.push(`    ${name} ${dot} ${stateText}  ${dim(detail)}`)
+      if (row.enabled && row.skippedFiles && row.skippedFiles.length > 0) {
+        lines.push(`    ${" ".repeat(agentNameWidth)} ${yellow("●")} ${"warn".padEnd(10)}  ${dim(describeSkippedFiles(row.skippedFiles))}`)
+      }
     }
     lines.push("")
   }

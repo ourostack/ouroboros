@@ -20,7 +20,7 @@ import { computeDaemonRollup } from "./daemon-rollup"
 import { TaskDrivenScheduler } from "./task-scheduler"
 import { configureDaemonRuntimeLogger } from "./runtime-logging"
 import { DaemonSenseManager } from "./sense-manager"
-import { listHomeBundleAgents, readPrivateRuntimeConfig } from "./agent-discovery"
+import { listBundleSyncRows, listHomeBundleAgents, readPrivateRuntimeConfig } from "./agent-discovery"
 import { checkAgentHomes } from "./agent-home"
 import { getRepoRoot, getAgentBundlesRoot } from "../identity"
 import { detectRuntimeMode } from "./runtime-mode"
@@ -64,6 +64,7 @@ import { readSanctuaryAcceptanceMarker } from "./sanctuary-acceptance-marker"
 import { consumeSanctuarySchedulerFire, readSanctuaryHealthCursor, recordSanctuarySchedulerLivenessReceipt } from "./sanctuary-scheduler-liveness"
 import { verifySanctuarySchedulerFireCommand } from "./sanctuary-scheduler-origin"
 import { readOrCreateTelegramIdentityKey } from "../../senses/telegram"
+import { checkBundleSyncHealth } from "../sync-health"
 
 function parseSocketPath(argv: string[]): string {
   const socketIndex = argv.indexOf("--socket")
@@ -367,6 +368,9 @@ const healthMonitor = new HealthMonitor({
     }
     return [...sentinels, homes.health]
   },
+  bundleSyncChecker: () => [checkBundleSyncHealth(
+    listBundleSyncRows({ bundlesRoot: getAgentBundlesRoot() }).filter((row) => managedAgents.includes(row.agent)),
+  )],
   senseProbeProvider: () => [
     ...senseManager.listHealthProbes(),
     ...managedAgents.map((agent) => createMcpStatusCanaryProbe({

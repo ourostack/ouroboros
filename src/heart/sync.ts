@@ -4,6 +4,7 @@ import * as path from "path"
 import { emitNervesEvent } from "../nerves/runtime"
 import type { SyncConfig } from "./config"
 import type { SyncClassification } from "./sync-classification"
+import { parseBundleSyncFailure, type BundleSyncFailure } from "./sync-health"
 
 export interface SyncResult {
   ok: boolean
@@ -11,9 +12,10 @@ export interface SyncResult {
 }
 
 /**
- * On-disk schema for `state/pending-sync.json`. Written when a post-turn
- * push fails irrecoverably so the agent can see a structured signal on
- * the next turn via bundle state detection.
+ * On-disk schema for `state/pending-sync.json`. Written whenever a
+ * post-turn sync fails (status, commit or push) and removed only when a
+ * later sync succeeds, so the agent, `ouro status` and the daemon health
+ * check keep seeing the failure until it is fixed.
  *
  * Backward compat: readers should tolerate entries without `classification`
  * or `conflictFiles` (pre-alpha.289 schema) — they fall back to "unknown".
@@ -30,6 +32,64 @@ export interface PendingSyncRecord {
   failedAt: string
   classification: SyncClassification
   conflictFiles: string[]
+  /**
+   * When the current run of failures began. The record stays on disk until a
+   * sync succeeds, so a failure that repeats for weeks keeps its first date.
+   * Records written before alpha.901 omit it; readers fall back to `failedAt`.
+   */
+  firstFailedAt?: string
+  /** Failed sync attempts in a row, counting this one. Missing means 1. */
+  consecutiveFailures?: number
+}
+
+/** A changed file that sync left out of its commit because of its size. */
+export interface SkippedSyncFile {
+  path: string
+  bytes: number
+}
+
+/** On-disk schema for `state/sync-skipped-files.json`. */
+export interface SkippedSyncFilesRecord {
+  updatedAt: string
+  limitBytes: number
+  files: SkippedSyncFile[]
+}
+
+/**
+ * Sync never commits a file larger than this. GitHub rejects any push that
+ * contains a file over 100 MiB and warns above 50 MiB; one such file in an
+ * unpushed commit blocks every later push from the bundle. The guard leaves
+ * the file in the working tree, uncommitted, and records it.
+ */
+export const SYNC_FILE_SIZE_LIMIT_BYTES = 50 * 1024 * 1024
+
+/**
+ * Output buffer for git commands whose output grows with the number of
+ * changed files. Node's 1 MiB default made `git status` fail with ENOBUFS
+ * once a bundle held about 30,000 changed files, which stopped sync.
+ */
+export const SYNC_GIT_MAX_BUFFER_BYTES = 256 * 1024 * 1024
+
+/**
+ * Timeout for sync's add, commit, push and pull. `git add -A` took 17 s on a
+ * bundle with 30,000 changed files, past the old 10 s limit.
+ */
+export const SYNC_GIT_TIMEOUT_MS = 120_000
+
+export function pendingSyncPath(agentRoot: string): string {
+  return path.join(agentRoot, "state", "pending-sync.json")
+}
+
+export function skippedSyncFilesPath(agentRoot: string): string {
+  return path.join(agentRoot, "state", "sync-skipped-files.json")
+}
+
+function readPreviousFailure(agentRoot: string): BundleSyncFailure | null {
+  try {
+    return parseBundleSyncFailure(JSON.parse(fs.readFileSync(pendingSyncPath(agentRoot), "utf-8")) as unknown)
+  } catch {
+    return null
+  }
 }
 
 function writePendingSync(
@@ -38,15 +98,148 @@ function writePendingSync(
   classification: PendingSyncRecord["classification"],
   conflictFiles: string[],
 ): void {
-  const pendingSyncPath = path.join(agentRoot, "state", "pending-sync.json")
+  const previous = readPreviousFailure(agentRoot)
+  const failedAt = new Date().toISOString()
+  const previousFirst = previous && previous.firstFailedAt !== "unknown" ? previous.firstFailedAt : null
   fs.mkdirSync(path.join(agentRoot, "state"), { recursive: true })
   const record: PendingSyncRecord = {
     error,
-    failedAt: new Date().toISOString(),
+    failedAt,
     classification,
     conflictFiles,
+    firstFailedAt: previousFirst ?? failedAt,
+    consecutiveFailures: (previous?.consecutiveFailures ?? 0) + 1,
   }
-  fs.writeFileSync(pendingSyncPath, JSON.stringify(record, null, 2), "utf-8")
+  fs.writeFileSync(pendingSyncPath(agentRoot), JSON.stringify(record, null, 2), "utf-8")
+}
+
+function recordPendingSync(
+  agentRoot: string,
+  error: string,
+  classification: PendingSyncRecord["classification"],
+  conflictFiles: string[],
+): void {
+  try {
+    writePendingSync(agentRoot, error, classification, conflictFiles)
+  } catch {
+    // Best effort: the caller's nerves event still records the failure.
+  }
+}
+
+/**
+ * Remove `state/pending-sync.json` after a sync that reached the remote (or
+ * committed, for a local-only bundle). The record otherwise stays, so the
+ * start-of-turn packet, `ouro status` and the daemon health check keep
+ * reporting the failure until it is fixed.
+ */
+export function clearPendingSync(agentRoot: string): void {
+  try {
+    fs.rmSync(pendingSyncPath(agentRoot), { force: true })
+  } catch {
+    // Best effort: a stale record is reported again and cleared next time.
+  }
+}
+
+function writeSkippedSyncFiles(agentRoot: string, files: SkippedSyncFile[]): void {
+  try {
+    if (files.length === 0) {
+      fs.rmSync(skippedSyncFilesPath(agentRoot), { force: true })
+      return
+    }
+    fs.mkdirSync(path.join(agentRoot, "state"), { recursive: true })
+    const record: SkippedSyncFilesRecord = {
+      updatedAt: new Date().toISOString(),
+      limitBytes: SYNC_FILE_SIZE_LIMIT_BYTES,
+      files,
+    }
+    fs.writeFileSync(skippedSyncFilesPath(agentRoot), JSON.stringify(record, null, 2), "utf-8")
+  } catch {
+    // Best effort: the nerves event emitted by the caller names the files.
+  }
+}
+
+interface StagedChange {
+  status: string
+  path: string
+  /** For a rename or copy: the path it came from. */
+  fromPath?: string
+}
+
+/** Parse `git diff --cached --name-status -z` output. */
+function parseStagedChanges(output: string): StagedChange[] {
+  const tokens = output.split("\0").filter((entry) => entry.length > 0)
+  const changes: StagedChange[] = []
+  for (let index = 0; index < tokens.length;) {
+    const status = tokens[index]
+    if (status.startsWith("R") || status.startsWith("C")) {
+      changes.push({ status, fromPath: tokens[index + 1], path: tokens[index + 2] })
+      index += 3
+    } else {
+      changes.push({ status, path: tokens[index + 1] })
+      index += 2
+    }
+  }
+  return changes
+}
+
+/**
+ * Unstage every staged file larger than `SYNC_FILE_SIZE_LIMIT_BYTES`. The
+ * file stays in the working tree and the previous committed version, if any,
+ * stays in the index, so nothing is deleted on other machines. For a rename,
+ * the deletion of the old path is unstaged too; otherwise the remote would
+ * lose the old path while never receiving the new one.
+ */
+function unstageOversizedFiles(agentRoot: string): SkippedSyncFile[] {
+  const changes = parseStagedChanges(execFileSync("git", ["diff", "--cached", "--name-status", "-M", "-z"], {
+    cwd: agentRoot,
+    stdio: "pipe",
+    timeout: SYNC_GIT_TIMEOUT_MS,
+    maxBuffer: SYNC_GIT_MAX_BUFFER_BYTES,
+  }).toString())
+
+  const oversized: SkippedSyncFile[] = []
+  const unstage: string[] = []
+  for (const change of changes) {
+    if (change.status.startsWith("D")) continue
+    let bytes: number
+    try {
+      bytes = fs.lstatSync(path.join(agentRoot, change.path)).size
+    } catch {
+      continue
+    }
+    if (bytes <= SYNC_FILE_SIZE_LIMIT_BYTES) continue
+    oversized.push({ path: change.path, bytes })
+    unstage.push(change.path)
+    if (change.status.startsWith("R") && change.fromPath) unstage.push(change.fromPath)
+  }
+  if (oversized.length === 0) return oversized
+
+  execFileSync("git", ["--literal-pathspecs", "reset", "-q", "--", ...unstage], {
+    cwd: agentRoot,
+    stdio: "pipe",
+    timeout: SYNC_GIT_TIMEOUT_MS,
+  })
+  emitNervesEvent({
+    level: "warn",
+    component: "heart",
+    event: "heart.sync_oversized_files_skipped",
+    message: "post-turn push: left files over the sync size limit uncommitted",
+    meta: { agentRoot, limitBytes: SYNC_FILE_SIZE_LIMIT_BYTES, files: oversized },
+  })
+  return oversized
+}
+
+function hasStagedChanges(agentRoot: string): boolean {
+  try {
+    execFileSync("git", ["diff", "--cached", "--quiet"], {
+      cwd: agentRoot,
+      stdio: "pipe",
+      timeout: SYNC_GIT_TIMEOUT_MS,
+    })
+    return false
+  } catch {
+    return true
+  }
 }
 
 function collectRebaseConflictFiles(agentRoot: string): string[] {
@@ -55,6 +248,7 @@ function collectRebaseConflictFiles(agentRoot: string): string[] {
       cwd: agentRoot,
       stdio: "pipe",
       timeout: 5000,
+      maxBuffer: SYNC_GIT_MAX_BUFFER_BYTES,
     }).toString()
     const files: string[] = []
     for (const line of output.split("\n")) {
@@ -255,10 +449,12 @@ export function postTurnPush(agentRoot: string, config: SyncConfig): SyncResult 
     statusOutput = execFileSync("git", ["status", "--porcelain"], {
       cwd: agentRoot,
       stdio: "pipe",
-      timeout: 10000,
+      timeout: SYNC_GIT_TIMEOUT_MS,
+      maxBuffer: SYNC_GIT_MAX_BUFFER_BYTES,
     }).toString().trim()
   } catch (err) {
     const error = err instanceof Error ? err.message : String(err)
+    recordPendingSync(agentRoot, error, "unknown", [])
     emitNervesEvent({
       component: "heart",
       event: "heart.sync_push_error",
@@ -269,13 +465,9 @@ export function postTurnPush(agentRoot: string, config: SyncConfig): SyncResult 
   }
 
   if (statusOutput.length === 0) {
-    emitNervesEvent({
-      component: "heart",
-      event: "heart.sync_push_end",
-      message: "post-turn push: no changes to sync",
-      meta: { agentRoot },
-    })
-    return { ok: true }
+    // Nothing to commit, so nothing is skipped for size any more.
+    writeSkippedSyncFiles(agentRoot, [])
+    return syncCleanTree(agentRoot, config)
   }
 
   const changedCount = statusOutput.split("\n").length
@@ -286,114 +478,48 @@ export function postTurnPush(agentRoot: string, config: SyncConfig): SyncResult 
     execFileSync("git", ["add", "-A"], {
       cwd: agentRoot,
       stdio: "pipe",
-      timeout: 10000,
+      timeout: SYNC_GIT_TIMEOUT_MS,
+      maxBuffer: SYNC_GIT_MAX_BUFFER_BYTES,
     })
 
-    execFileSync("git", ["commit", "-m", "sync: post-turn update"], {
+    const skippedFiles = unstageOversizedFiles(agentRoot)
+    writeSkippedSyncFiles(agentRoot, skippedFiles)
+    if (skippedFiles.length > 0 && !hasStagedChanges(agentRoot)) {
+      emitNervesEvent({
+        component: "heart",
+        event: "heart.sync_push_end",
+        message: "post-turn push: only oversized files changed, nothing committed",
+        meta: { agentRoot, changedCount, skippedCount: skippedFiles.length },
+      })
+      return syncCleanTree(agentRoot, config)
+    }
+
+    // -q: without it git prints a create/delete line per file, which overran
+    // the output buffer on a 30,000-file commit after the commit had landed.
+    execFileSync("git", ["commit", "-q", "-m", "sync: post-turn update"], {
       cwd: agentRoot,
       stdio: "pipe",
-      timeout: 10000,
+      timeout: SYNC_GIT_TIMEOUT_MS,
+      maxBuffer: SYNC_GIT_MAX_BUFFER_BYTES,
     })
 
-    // Check if a remote exists
-    const remoteOutput = execFileSync("git", ["remote"], {
-      cwd: agentRoot,
-      stdio: "pipe",
-      timeout: 5000,
-    }).toString().trim()
-
-    if (remoteOutput.length === 0) {
+    if (!hasRemote(agentRoot)) {
       emitNervesEvent({
         component: "heart",
         event: "heart.sync_push_end",
         message: "post-turn push: committed locally, no remote configured",
         meta: { agentRoot, changedCount },
       })
+      clearPendingSync(agentRoot)
       return { ok: true }
     }
 
-    try {
-      execFileSync("git", ["push", config.remote], {
-        cwd: agentRoot,
-        stdio: "pipe",
-        timeout: 30000,
-      })
-    } catch {
-      // Push rejected -- try pull-rebase-push
-      let rebaseError: string | null = null
-      try {
-        execFileSync("git", ["pull", "--rebase", config.remote], {
-          cwd: agentRoot,
-          stdio: "pipe",
-          timeout: 30000,
-        })
-      } catch (err) {
-        rebaseError = err instanceof Error ? err.message : String(err)
-      }
-
-      if (rebaseError === null) {
-        try {
-          execFileSync("git", ["push", config.remote], {
-            cwd: agentRoot,
-            stdio: "pipe",
-            timeout: 30000,
-          })
-          // rebase + retry push both succeeded — fall through to success
-          emitNervesEvent({
-            component: "heart",
-            event: "heart.sync_push_end",
-            message: "post-turn push complete after rebase retry",
-            meta: { agentRoot, changedCount },
-          })
-          return { ok: true }
-        } catch (retryErr) {
-          // Second push rejected — remote advanced again during rebase
-          const retryError = retryErr instanceof Error ? retryErr.message : /* v8 ignore next -- defensive non-Error catch @preserve */ String(retryErr)
-          writePendingSync(agentRoot, retryError, "push_rejected", [])
-          emitNervesEvent({
-            component: "heart",
-            event: "heart.sync_push_error",
-            message: "post-turn push failed after retry: push_rejected",
-            meta: { agentRoot, error: retryError, classification: "push_rejected" },
-          })
-          return { ok: false, error: retryError }
-        }
-      }
-
-      // Rebase failed — detect conflict files via git status. Preserve
-      // the original rebase error message so callers see the real cause.
-      const conflictFiles = collectRebaseConflictFiles(agentRoot)
-      const classification: PendingSyncRecord["classification"] =
-        conflictFiles.length > 0 ? "pull_rebase_conflict" : "unknown"
-      writePendingSync(agentRoot, rebaseError, classification, conflictFiles)
-
-      emitNervesEvent({
-        component: "heart",
-        event: "heart.sync_push_error",
-        message: `post-turn push failed: ${classification}`,
-        meta: { agentRoot, error: rebaseError, classification, conflictFiles },
-      })
-
-      return { ok: false, error: rebaseError }
-    }
-
-    emitNervesEvent({
-      component: "heart",
-      event: "heart.sync_push_end",
-      message: "post-turn push complete",
-      meta: { agentRoot, changedCount },
-    })
-
-    return { ok: true }
+    return pushWithRebaseRetry(agentRoot, config, changedCount)
   } catch (err) {
     const error = err instanceof Error ? err.message : String(err)
     // Record it so the start-of-turn packet surfaces the failure; otherwise a
     // failing local commit is visible only in nerves logs.
-    try {
-      writePendingSync(agentRoot, error, "unknown", [])
-    } catch {
-      // Best effort: the nerves event below still records the failure.
-    }
+    recordPendingSync(agentRoot, error, "unknown", [])
 
     emitNervesEvent({
       component: "heart",
@@ -404,6 +530,135 @@ export function postTurnPush(agentRoot: string, config: SyncConfig): SyncResult 
 
     return { ok: false, error }
   }
+}
+
+function hasRemote(agentRoot: string): boolean {
+  return execFileSync("git", ["remote"], {
+    cwd: agentRoot,
+    stdio: "pipe",
+    timeout: 5000,
+  }).toString().trim().length > 0
+}
+
+/**
+ * Nothing new to commit. A failure record must not outlive the problem, and
+ * commits left behind by an earlier failed push still need to reach the
+ * remote: with no remote, or nothing ahead of the upstream, the record is
+ * cleared; with unpushed commits, the push is retried.
+ */
+function syncCleanTree(agentRoot: string, config: SyncConfig): SyncResult {
+  try {
+    if (!hasRemote(agentRoot)) {
+      clearPendingSync(agentRoot)
+    } else {
+      const ahead = Number.parseInt(execFileSync("git", ["rev-list", "--count", "@{upstream}..HEAD"], {
+        cwd: agentRoot,
+        stdio: "pipe",
+        timeout: 5000,
+      }).toString().trim(), 10)
+      if (ahead > 0) return pushWithRebaseRetry(agentRoot, config, 0)
+      if (ahead === 0) clearPendingSync(agentRoot)
+    }
+  } catch (err) {
+    // No upstream tracked (or git failed): nothing to compare against, so
+    // leave any failure record as it is rather than guess.
+    emitNervesEvent({
+      component: "heart",
+      event: "heart.sync_upstream_unknown",
+      message: "post-turn push: could not compare with upstream",
+      meta: { agentRoot, error: err instanceof Error ? err.message : /* v8 ignore next -- defensive non-Error catch @preserve */ String(err) },
+    })
+  }
+  emitNervesEvent({
+    component: "heart",
+    event: "heart.sync_push_end",
+    message: "post-turn push: no changes to sync",
+    meta: { agentRoot },
+  })
+  return { ok: true }
+}
+
+function pushWithRebaseRetry(agentRoot: string, config: SyncConfig, changedCount: number): SyncResult {
+  try {
+    execFileSync("git", ["push", config.remote], {
+      cwd: agentRoot,
+      stdio: "pipe",
+      timeout: SYNC_GIT_TIMEOUT_MS,
+      maxBuffer: SYNC_GIT_MAX_BUFFER_BYTES,
+    })
+  } catch {
+    // Push rejected -- try pull-rebase-push. --autostash: an oversized file
+    // the size guard left uncommitted is an unstaged change, and a plain
+    // rebase refuses to start while one exists.
+    let rebaseError: string | null = null
+    try {
+      execFileSync("git", ["pull", "--rebase", "--autostash", config.remote], {
+        cwd: agentRoot,
+        stdio: "pipe",
+        timeout: SYNC_GIT_TIMEOUT_MS,
+        maxBuffer: SYNC_GIT_MAX_BUFFER_BYTES,
+      })
+    } catch (err) {
+      rebaseError = err instanceof Error ? err.message : String(err)
+    }
+
+    if (rebaseError === null) {
+      try {
+        execFileSync("git", ["push", config.remote], {
+          cwd: agentRoot,
+          stdio: "pipe",
+          timeout: SYNC_GIT_TIMEOUT_MS,
+          maxBuffer: SYNC_GIT_MAX_BUFFER_BYTES,
+        })
+        // rebase + retry push both succeeded — fall through to success
+        emitNervesEvent({
+          component: "heart",
+          event: "heart.sync_push_end",
+          message: "post-turn push complete after rebase retry",
+          meta: { agentRoot, changedCount },
+        })
+        clearPendingSync(agentRoot)
+        return { ok: true }
+      } catch (retryErr) {
+        // Second push rejected — remote advanced again during rebase
+        const retryError = retryErr instanceof Error ? retryErr.message : /* v8 ignore next -- defensive non-Error catch @preserve */ String(retryErr)
+        recordPendingSync(agentRoot, retryError, "push_rejected", [])
+        emitNervesEvent({
+          component: "heart",
+          event: "heart.sync_push_error",
+          message: "post-turn push failed after retry: push_rejected",
+          meta: { agentRoot, error: retryError, classification: "push_rejected" },
+        })
+        return { ok: false, error: retryError }
+      }
+    }
+
+    // Rebase failed — detect conflict files via git status. Preserve
+    // the original rebase error message so callers see the real cause.
+    const conflictFiles = collectRebaseConflictFiles(agentRoot)
+    const classification: PendingSyncRecord["classification"] =
+      conflictFiles.length > 0 ? "pull_rebase_conflict" : "unknown"
+    recordPendingSync(agentRoot, rebaseError, classification, conflictFiles)
+
+    emitNervesEvent({
+      component: "heart",
+      event: "heart.sync_push_error",
+      message: `post-turn push failed: ${classification}`,
+      meta: { agentRoot, error: rebaseError, classification, conflictFiles },
+    })
+
+    return { ok: false, error: rebaseError }
+  }
+
+  emitNervesEvent({
+    component: "heart",
+    event: "heart.sync_push_end",
+    message: "post-turn push complete",
+    meta: { agentRoot, changedCount },
+  })
+  clearPendingSync(agentRoot)
+
+  return { ok: true }
 }
 
 /**

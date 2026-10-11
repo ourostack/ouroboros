@@ -1,6 +1,7 @@
 import * as fs from "fs"
 import * as path from "path"
 import { execFileSync } from "child_process"
+import { SYNC_GIT_MAX_BUFFER_BYTES } from "./sync"
 import { randomUUID } from "crypto"
 import {
   isFlightRecorderResume,
@@ -758,6 +759,7 @@ function defaultGitStatus(agentRoot: string): ContextLossSentinelGitStatus {
       encoding: "utf-8",
       stdio: ["ignore", "pipe", "pipe"],
       timeout: CONTEXT_LOSS_SENTINEL_GIT_STATUS_TIMEOUT_MS,
+      maxBuffer: SYNC_GIT_MAX_BUFFER_BYTES,
     })
     return { ok: true, porcelain }
   } catch (error) {

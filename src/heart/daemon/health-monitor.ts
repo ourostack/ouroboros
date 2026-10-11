@@ -24,6 +24,8 @@ export interface HealthMonitorOptions {
   alertSink?: (message: string) => Promise<void> | void
   diskUsagePercent?: () => number
   sentinelChecker?: (resultsSoFar: DaemonHealthResult[]) => Promise<DaemonHealthResult[]> | DaemonHealthResult[]
+  /** Reports bundles whose git sync keeps failing or skips oversized files. */
+  bundleSyncChecker?: () => DaemonHealthResult[]
   onCriticalAgent?: (agentName: string) => void
   onCriticalSense?: (managedName: string, probeName: string) => void
   senseProbes?: SenseProbe[]
@@ -36,6 +38,7 @@ export class HealthMonitor {
   private readonly alertSink: (message: string) => Promise<void> | void
   private readonly diskUsagePercent: () => number
   private readonly sentinelChecker: (resultsSoFar: DaemonHealthResult[]) => Promise<DaemonHealthResult[]> | DaemonHealthResult[]
+  private readonly bundleSyncChecker: () => DaemonHealthResult[]
   private readonly onCriticalAgent: (agentName: string) => void
   private readonly onCriticalSense: (managedName: string, probeName: string) => void
   private readonly senseProbes: SenseProbe[]
@@ -49,6 +52,7 @@ export class HealthMonitor {
     this.alertSink = options.alertSink ?? (() => undefined)
     this.diskUsagePercent = options.diskUsagePercent ?? (() => 0)
     this.sentinelChecker = options.sentinelChecker ?? (() => [])
+    this.bundleSyncChecker = options.bundleSyncChecker ?? (() => [])
     this.onCriticalAgent = options.onCriticalAgent ?? (() => undefined)
     this.onCriticalSense = options.onCriticalSense ?? (() => undefined)
     this.senseProbes = options.senseProbes ?? []
@@ -173,6 +177,16 @@ export class HealthMonitor {
         name: "disk-space",
         status: "ok",
         message: `disk usage healthy (${diskPercent}%)`,
+      })
+    }
+
+    try {
+      results.push(...this.bundleSyncChecker())
+    } catch (error) {
+      results.push({
+        name: "bundle-sync",
+        status: "warn",
+        message: `bundle sync check failed: ${error instanceof Error ? error.message : String(error)}`,
       })
     }
 

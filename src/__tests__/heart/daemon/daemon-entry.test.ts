@@ -86,6 +86,7 @@ vi.mock("../../../heart/daemon/supercronic-supervisor", () => ({
 vi.mock("../../../heart/daemon/agent-discovery", () => ({
   listHomeBundleAgents: listEnabledBundleAgentsMock,
   listAllBundleAgents: () => [],
+  listBundleSyncRows: () => [{ agent: "slugger", enabled: true, remote: "origin" }],
   readPrivateRuntimeConfig: readPrivateRuntimeConfigMock,
 }))
 
@@ -772,6 +773,7 @@ describe("daemon entrypoint", () => {
       { name: "agent-processes", status: "critical", message: "non-running agents: slugger" },
       { name: "cron-health", status: "ok", message: "cron jobs are healthy" },
       { name: "disk-space", status: "ok", message: "disk usage healthy (0%)" },
+      { name: "bundle-sync", status: "ok", message: "bundle sync healthy" },
       { name: "sense-probe:bluebubbles:slugger", status: "ok", message: "bluebubbles:slugger healthy" },
       { name: "sense-probe:mcp-canary:slugger", status: "ok", message: "mcp-canary:slugger healthy" },
       { name: "sense-probe:mcp-canary:ouroboros", status: "ok", message: "mcp-canary:ouroboros healthy" },

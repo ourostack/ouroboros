@@ -4,6 +4,7 @@ import { execFileSync as nodeExecFileSync } from "child_process"
 import { getAgentBundlesRoot } from "../identity"
 import { readMachineIdentity } from "../machine-identity"
 import { emitNervesEvent } from "../../nerves/runtime"
+import { readBundleSyncHealth, type BundleSyncFailure, type BundleSyncSkippedFile } from "../sync-health"
 
 type Readdir = (target: string, options: { withFileTypes: true }) => fs.Dirent[]
 type ReadText = (target: string, encoding: "utf-8") => string
@@ -352,6 +353,10 @@ export interface BundleSyncRow {
    * renderer shows an actionable "not a git repo" error and the agent sees
    * the same error surfaced as a syncFailure in its start-of-turn packet. */
   gitInitialized?: boolean
+  /** Present while the bundle's last sync failed and none has succeeded since. */
+  failure?: BundleSyncFailure
+  /** Files sync left uncommitted because they are over the size limit. */
+  skippedFiles?: BundleSyncSkippedFile[]
 }
 
 /**
@@ -410,6 +415,9 @@ export function listBundleSyncRows(options: AgentDiscoveryOptions = {}): BundleS
         } catch {
           // No remote configured or git missing — leave remoteUrl undefined.
         }
+        const health = readBundleSyncHealth(bundleRoot, { readFileSync })
+        if (health.failure) row.failure = health.failure
+        if (health.skippedFiles.length > 0) row.skippedFiles = health.skippedFiles
       }
     }
 
