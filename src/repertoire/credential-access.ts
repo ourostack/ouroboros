@@ -9,17 +9,19 @@
  * agents.
  */
 
-import * as crypto from "node:crypto"
 import * as fs from "node:fs"
-import * as os from "node:os"
 import * as path from "node:path"
 import { emitNervesEvent } from "../nerves/runtime"
 import * as identity from "../heart/identity"
 import { BitwardenCredentialStore } from "./bitwarden-store"
 import {
+  bitwardenAppDataDir,
+  clearVaultUnlockRejection,
   credentialVaultNotConfiguredError,
   noteVaultUnlockSelfHeal,
+  readVaultUnlockRejection,
   readVaultUnlockSecret,
+  recordVaultUnlockRejection,
   storeVaultUnlockSecret,
 } from "./vault-unlock"
 
@@ -41,11 +43,6 @@ export interface CredentialStore {
 }
 
 let stores = new Map<string, CredentialStore>()
-let rejectedUnlocks = new Map<string, { fingerprint: string; reason: string }>()
-
-function fingerprintUnlockSecret(secret: string): string {
-  return crypto.createHash("sha256").update(secret).digest("hex")
-}
 
 function rejectedUnlockMessage(agentName: string, reason: string): string {
   return [
@@ -68,15 +65,6 @@ function loadVaultSectionForAgent(agentName: string): {
   }
 }
 
-function bitwardenAppDataDir(agentName: string, vaultConfig: { serverUrl: string; email: string }, homeDir = os.homedir()): string {
-  const digest = crypto
-    .createHash("sha256")
-    .update(`${agentName}:${vaultConfig.serverUrl}:${vaultConfig.email}`)
-    .digest("hex")
-    .slice(0, 24)
-  return path.join(homeDir, ".ouro-cli", "bitwarden", digest)
-}
-
 export function getCredentialStore(agentNameInput?: string): CredentialStore {
   const agentName = agentNameInput ?? identity.getAgentName()
   if (agentName === "SerpentGuide") {
@@ -91,6 +79,12 @@ export function getCredentialStore(agentNameInput?: string): CredentialStore {
   const cached = stores.get(cacheKey)
   if (cached) return cached
 
+  const agentDataDir = bitwardenAppDataDir(agentName, vaultConfig)
+  const rejection = readVaultUnlockRejection(agentDataDir)
+  if (rejection) {
+    throw new Error(rejectedUnlockMessage(agentName, rejection.reason))
+  }
+
   const unlock = readVaultUnlockSecret({
     agentName,
     email: vaultConfig.email,
@@ -98,32 +92,26 @@ export function getCredentialStore(agentNameInput?: string): CredentialStore {
   })
   const unlockConfig = { agentName, email: vaultConfig.email, serverUrl: vaultConfig.serverUrl }
   const unlockSource = unlock.source ?? unlockConfig
-  const unlockFingerprint = fingerprintUnlockSecret(unlock.secret)
-  const rejection = rejectedUnlocks.get(cacheKey)
-  if (rejection && rejection.fingerprint === unlockFingerprint) {
-    throw new Error(rejectedUnlockMessage(agentName, rejection.reason))
-  }
-  rejectedUnlocks.delete(cacheKey)
   let canonicalUnlockStored = false
   const store = new BitwardenCredentialStore(
     vaultConfig.serverUrl,
     vaultConfig.email,
     unlock.secret,
     {
-      appDataDir: bitwardenAppDataDir(agentName, vaultConfig),
+      appDataDir: agentDataDir,
       onInvalidUnlockSecret: (error) => {
-        // The vault server rejected the saved secret on a fresh bw profile.
-        // Keep the saved secret: deleting the only durable copy turns any
-        // misclassified bw or server error into a human prompt. Remember the
-        // rejection in memory so this process does not retry the same secret
-        // against the server; a new secret from `ouro vault unlock` clears it.
-        rejectedUnlocks.set(cacheKey, { fingerprint: unlockFingerprint, reason: error.message })
+        // The vault rejected the saved secret. Keep the saved secret: deleting
+        // the only durable copy turns any misclassified bw or server error
+        // into a human prompt. Record the rejection on disk so no process
+        // retries it against the server; `ouro vault unlock` or any
+        // successful login clears the record.
         stores.delete(cacheKey)
+        recordVaultUnlockRejection(agentDataDir, error.message)
         emitNervesEvent({
           level: "warn",
           event: "repertoire.credential_store_unlock_rejected",
           component: "repertoire",
-          message: "vault rejected the saved local unlock secret; kept it and paused retries in this process",
+          message: "vault rejected the saved local unlock secret; kept it and paused retries until a new secret is saved",
           meta: {
             agentName,
             serverUrl: vaultConfig.serverUrl,
@@ -134,6 +122,7 @@ export function getCredentialStore(agentNameInput?: string): CredentialStore {
         })
       },
       onLoginSuccess: () => {
+        clearVaultUnlockRejection(agentDataDir)
         if (canonicalUnlockStored) return
         if (unlockSource.serverUrl === vaultConfig.serverUrl && unlockSource.email === vaultConfig.email) return
         canonicalUnlockStored = true
@@ -186,16 +175,19 @@ export async function probeCredentialVaultAccess(
     throw new Error(credentialVaultNotConfiguredError(agentName, configPath))
   }
   const vaultConfig = identity.resolveVaultConfig(agentName, vault)
+  const agentDataDir = bitwardenAppDataDir(agentName, vaultConfig, options.homeDir)
   const store = new BitwardenCredentialStore(
     vaultConfig.serverUrl,
     vaultConfig.email,
     unlockSecret,
-    { appDataDir: bitwardenAppDataDir(agentName, vaultConfig, options.homeDir) },
+    {
+      appDataDir: agentDataDir,
+      onLoginSuccess: () => clearVaultUnlockRejection(agentDataDir),
+    },
   )
   await store.get("__ouro_vault_probe__")
 }
 
 export function resetCredentialStore(): void {
   stores = new Map()
-  rejectedUnlocks = new Map()
 }

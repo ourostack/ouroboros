@@ -164,7 +164,7 @@ const BW_LOCK_STALE_MS = BW_LOCK_TIMEOUT_MS * 2
 const BW_DATA_FILENAME = "data.json"
 const BW_SYNC_MARKER_FILENAME = ".ouro-last-sync"
 const BW_SYNC_FRESH_MS = 60_000
-const BW_VERSION_MARKER_FILENAME = ".ouro-bw-version"
+const BW_TERMINAL_LOGIN_ERROR_RETRY_MS = 15 * 60_000
 
 /** In-process async mutex keyed by appDataDir. */
 const inProcessLocks = new Map<string, Promise<void>>()
@@ -430,6 +430,32 @@ function isBwLockTimeout(err: Error): boolean {
   return err.message.includes("bw CLI lock timeout")
 }
 
+/**
+ * A local bw step (unlock of an already-authenticated profile) failed for a
+ * reason that says nothing about the vault server: the profile on disk is
+ * unusable. Network, lock and missing-binary failures are not this, and
+ * neither is a rejected unlock secret.
+ */
+class LocalProfileUnusableError extends Error {
+  readonly localError: Error
+  constructor(localError: Error) {
+    super(localError.message)
+    this.localError = localError
+  }
+}
+
+function asLocalProfileFailure(err: Error): Error {
+  if (isTransientError(err) || isBwNotInstalled(err) || isBwLockTimeout(err) || isBwInvalidUnlockSecretMessage(err.message)) {
+    return err
+  }
+  return new LocalProfileUnusableError(err)
+}
+
+/** A bw version as a safe directory name component. */
+function bwProfileDirName(version: string): string {
+  return `bw-${version.replace(/[^A-Za-z0-9._-]/g, "_")}`
+}
+
 /** Check if the error is transient (network/timeout) and worth retrying. */
 function isTransientError(err: Error): boolean {
   const msg = err.message.toLowerCase()
@@ -438,7 +464,18 @@ function isTransientError(err: Error): boolean {
     msg.includes("etimedout") ||
     msg.includes("enotfound") ||
     msg.includes("socket hang up") ||
+    msg.includes("econnreset") ||
+    msg.includes("eai_again") ||
+    msg.includes("enetunreach") ||
+    msg.includes("ehostunreach") ||
+    msg.includes("fetch failed") ||
+    msg.includes("429") ||
+    msg.includes("too many requests") ||
+    msg.includes("502") ||
     msg.includes("503") ||
+    msg.includes("504") ||
+    msg.includes("bad gateway") ||
+    msg.includes("gateway timeout") ||
     msg.includes("server unavailable") ||
     msg.includes("timed out")
   )
@@ -582,11 +619,15 @@ export class BitwardenCredentialStore implements CredentialStore {
   private readonly serverUrl: string
   private readonly email: string
   private readonly masterPassword: string
-  private readonly appDataDir?: string
+  /** The agent's bw folder; each bw version keeps its own profile under it. */
+  private readonly agentDataDir?: string
+  /** The profile directory for the running bw version (BITWARDENCLI_APPDATA_DIR). */
+  private appDataDir?: string
   private readonly onInvalidUnlockSecret?: (error: Error) => void | Promise<void>
   private readonly onLoginSuccess?: () => void | Promise<void>
   private sessionToken: string | null = null
   private terminalLoginError: Error | null = null
+  private terminalLoginErrorAt = 0
   private bwBinaryPath = "bw"
   private structuredItemCache: StructuredItemCache | null = null
 
@@ -603,6 +644,7 @@ export class BitwardenCredentialStore implements CredentialStore {
     this.serverUrl = serverUrl
     this.email = email
     this.masterPassword = masterPassword
+    this.agentDataDir = options.appDataDir
     this.appDataDir = options.appDataDir
     this.onInvalidUnlockSecret = options.onInvalidUnlockSecret
     this.onLoginSuccess = options.onLoginSuccess
@@ -654,12 +696,22 @@ export class BitwardenCredentialStore implements CredentialStore {
    */
   async login(): Promise<void> {
     if (this.terminalLoginError) {
-      throw this.terminalLoginError
+      // A long-lived process retries a terminal failure after a while instead
+      // of holding it until restart; rejected secrets are paused separately.
+      if (Date.now() - this.terminalLoginErrorAt < BW_TERMINAL_LOGIN_ERROR_RETRY_MS) {
+        throw this.terminalLoginError
+      }
+      this.terminalLoginError = null
     }
 
     // Ensure bw CLI is installed before any bw commands
     this.bwBinaryPath = await ensureBwCli()
-    if (this.appDataDir) {
+    if (this.agentDataDir) {
+      // Each bw version gets its own profile directory, so machines with
+      // several bw installs (one per Node version) never migrate or fight
+      // over one another's state.
+      const bwVersion = readBwCliVersion(this.bwBinaryPath)
+      this.appDataDir = bwVersion ? path.join(this.agentDataDir, bwProfileDirName(bwVersion)) : this.agentDataDir
       fs.mkdirSync(this.appDataDir, { recursive: true, mode: 0o700 })
     }
 
@@ -676,7 +728,7 @@ export class BitwardenCredentialStore implements CredentialStore {
 
         // Don't retry non-transient errors (auth failures, bw not installed)
         if (!isTransientError(lastError)) {
-          this.terminalLoginError = lastError
+          this.setTerminalLoginError(lastError)
           if (isBwInvalidUnlockSecretMessage(lastError.message)) {
             await this.notifyInvalidUnlockSecret(lastError)
           }
@@ -697,7 +749,7 @@ export class BitwardenCredentialStore implements CredentialStore {
         await delay(backoffMs)
       }
     }
-    this.terminalLoginError = lastError!
+    this.setTerminalLoginError(lastError!)
     /* v8 ignore next -- invalid unlock errors are non-transient and exit through the non-retry path above @preserve */
     if (isBwInvalidUnlockSecretMessage(lastError!.message)) {
       await this.notifyInvalidUnlockSecret(lastError!)
@@ -705,55 +757,33 @@ export class BitwardenCredentialStore implements CredentialStore {
     throw lastError!
   }
 
+  private setTerminalLoginError(error: Error): void {
+    this.terminalLoginError = error
+    this.terminalLoginErrorAt = Date.now()
+  }
+
   /**
    * Single login attempt — called by login() retry loop.
    *
-   * The bw app data directory is a disposable cache. The durable secret is
-   * the machine's vault unlock material, so any non-transient failure while
-   * using an existing local profile (corrupt or half-migrated state, a profile
-   * written by a different bw version, an expired session) discards the
-   * profile and logs in fresh. Only a failure from a fresh profile is
-   * reported, because only that one reflects the vault server's answer.
+   * The bw profile directory is a disposable cache; the durable secret is the
+   * machine's vault unlock material. When a local step fails on an
+   * authenticated profile (a corrupt or half-migrated profile, a missing
+   * session), the profile is moved aside and rebuilt with one fresh login.
+   * Server steps (login, sync), network failures, lock contention and
+   * rejected secrets never discard the profile, so a bad secret or a flaky
+   * server costs at most one server login per attempt.
    */
   private async loginAttempt(): Promise<void> {
-    const bwVersion = readBwCliVersion(this.bwBinaryPath)
-    const profileVersion = this.readProfileBwVersion()
-    if (bwVersion && profileVersion && profileVersion !== bwVersion && this.hasLocalProfile()) {
-      await this.discardLocalProfile(`local bw profile was written by bw ${profileVersion}; running bw ${bwVersion}`)
-    }
-    const startedWithLocalProfile = this.hasLocalProfile()
     try {
       await this.loginWithLocalProfile()
     } catch (error) {
-      const err = error as Error
-      if (!startedWithLocalProfile || isTransientError(err) || isBwNotInstalled(err) || isBwLockTimeout(err)) throw err
-      await this.discardLocalProfile("existing local bw profile could not be used", err)
-      await this.loginWithLocalProfile()
-    }
-    this.writeProfileBwVersion(bwVersion)
-  }
-
-  private hasLocalProfile(): boolean {
-    return !!this.appDataDir && fs.existsSync(path.join(this.appDataDir, BW_DATA_FILENAME))
-  }
-
-  private readProfileBwVersion(): string | null {
-    /* v8 ignore next -- defensive: version markers are only read for an explicit app data dir @preserve */
-    if (!this.appDataDir) return null
-    try {
-      const value = fs.readFileSync(path.join(this.appDataDir, BW_VERSION_MARKER_FILENAME), "utf8").trim()
-      return value || null
-    } catch {
-      return null
-    }
-  }
-
-  private writeProfileBwVersion(version: string | null): void {
-    if (!this.appDataDir || !version) return
-    try {
-      fs.writeFileSync(path.join(this.appDataDir, BW_VERSION_MARKER_FILENAME), `${version}\n`, { mode: 0o600 })
-    } catch {
-      // The marker is only a hint for proactive rebuilds; the failure fallback still applies.
+      if (!(error instanceof LocalProfileUnusableError)) throw error
+      await this.discardLocalProfile(error.localError)
+      try {
+        await this.loginWithLocalProfile()
+      } catch (retryError) {
+        throw retryError instanceof LocalProfileUnusableError ? retryError.localError : retryError
+      }
     }
   }
 
@@ -762,7 +792,7 @@ export class BitwardenCredentialStore implements CredentialStore {
    * empty profile. The previous data file is kept as one `.discarded` copy
    * for diagnosis and is overwritten by the next discard.
    */
-  private async discardLocalProfile(reason: string, cause?: Error): Promise<void> {
+  private async discardLocalProfile(cause: Error): Promise<void> {
     const appDataDir = this.appDataDir as string
     this.sessionToken = null
     this.structuredItemCache = null
@@ -773,20 +803,17 @@ export class BitwardenCredentialStore implements CredentialStore {
       } catch {
         // Already gone: another process discarded it first, which is the same outcome.
       }
-      for (const name of [BW_SYNC_MARKER_FILENAME, BW_VERSION_MARKER_FILENAME]) {
-        fs.rmSync(path.join(appDataDir, name), { force: true })
-      }
+      fs.rmSync(path.join(appDataDir, BW_SYNC_MARKER_FILENAME), { force: true })
     })
     emitNervesEvent({
       level: "warn",
       event: "repertoire.bw_local_profile_discarded",
       component: "repertoire",
-      message: "discarded local bw profile; logging in fresh with the saved unlock secret",
+      message: "discarded unusable local bw profile; logging in fresh with the saved unlock secret",
       meta: {
         email: this.email,
         serverUrl: this.serverUrl,
-        reason,
-        error: cause ? sanitizeCredentialErrorDetail(cause.message) : null,
+        error: sanitizeCredentialErrorDetail(cause.message),
       },
     })
   }
@@ -898,7 +925,11 @@ export class BitwardenCredentialStore implements CredentialStore {
     } catch (error) {
       const err = error as Error
       if (!isBwAlreadyLoggedInError(err)) throw err
-      return this.execBwWithPasswordEnv(["unlock", "--raw"])
+    }
+    try {
+      return await this.execBwWithPasswordEnv(["unlock", "--raw"])
+    } catch (error) {
+      throw asLocalProfileFailure(error as Error)
     }
   }
 
@@ -962,7 +993,7 @@ export class BitwardenCredentialStore implements CredentialStore {
       return await operation()
     } catch (error) {
       const err = error as Error
-      if (!isBwInvalidUnlockSecretMessage(err.message)) throw err
+      if (!isBwInvalidUnlockSecretMessage(err.message)) throw asLocalProfileFailure(err)
       await this.rebuildLocalProfile(reason, status, err)
       /* v8 ignore next -- defensive: rebuildLocalProfile always stores a string session token on success @preserve */
       return this.sessionToken ?? ""

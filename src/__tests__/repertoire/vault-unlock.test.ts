@@ -10,13 +10,17 @@ vi.mock("../../nerves/runtime", () => ({
 }))
 
 import {
+  bitwardenAppDataDir,
+  clearVaultUnlockRejection,
   clearVaultUnlockSecret,
   credentialVaultNotConfiguredError,
   getVaultUnlockStatus,
   isCredentialVaultNotConfiguredError,
   noteVaultUnlockSelfHeal,
   promptConfirmedVaultUnlockSecret,
+  readVaultUnlockRejection,
   readVaultUnlockSecret,
+  recordVaultUnlockRejection,
   resolveVaultUnlockStore,
   storeVaultUnlockSecret,
   vaultCreateRecoverFix,
@@ -1017,5 +1021,58 @@ describe("vault unlock local stores", () => {
       error: "local platform unavailable",
       fix: "local platform unavailable",
     })
+  })
+})
+
+describe("vault unlock rejection record", () => {
+  it("records a rejection in a private file every process can read, and clears it", () => {
+    emitTestEvent("vault unlock rejection record round trip")
+    const homeDir = tempHome()
+    const dir = bitwardenAppDataDir("slugger", config, homeDir)
+    expect(dir.startsWith(path.join(homeDir, ".ouro-cli", "bitwarden"))).toBe(true)
+    expect(readVaultUnlockRejection(dir)).toBeNull()
+
+    recordVaultUnlockRejection(dir, "bw CLI rejected the saved vault unlock secret", new Date("2026-10-10T00:00:00.000Z"))
+
+    expect(readVaultUnlockRejection(dir)).toEqual({
+      reason: "bw CLI rejected the saved vault unlock secret",
+      rejectedAt: "2026-10-10T00:00:00.000Z",
+    })
+    expect(fs.statSync(path.join(dir, ".ouro-unlock-rejected")).mode & 0o777).toBe(0o600)
+
+    clearVaultUnlockRejection(dir)
+    expect(readVaultUnlockRejection(dir)).toBeNull()
+    clearVaultUnlockRejection(dir)
+    expect(mockEmitNervesEvent.mock.calls.filter(([event]) => event.event === "repertoire.vault_unlock_rejection_cleared")).toHaveLength(1)
+  })
+
+  it("reads a malformed record as a rejection with defaults", () => {
+    emitTestEvent("vault unlock rejection malformed record")
+    const dir = bitwardenAppDataDir("slugger", config, tempHome())
+    fs.mkdirSync(dir, { recursive: true })
+    fs.writeFileSync(path.join(dir, ".ouro-unlock-rejected"), "{}")
+    expect(readVaultUnlockRejection(dir)).toEqual({ reason: "rejected", rejectedAt: "" })
+  })
+
+  it("clears the agent's rejection when a secret is saved, even the same secret", () => {
+    emitTestEvent("vault unlock store clears rejection")
+    const homeDir = tempHome()
+    const dir = bitwardenAppDataDir("slugger", config, homeDir)
+    recordVaultUnlockRejection(dir, "rejected")
+
+    storeVaultUnlockSecret(config, "local-unlock-material", { store: "plaintext-file", homeDir, platform: "linux" })
+
+    expect(readVaultUnlockRejection(dir)).toBeNull()
+  })
+
+  it("leaves rejections alone when the saved secret names no agent", () => {
+    emitTestEvent("vault unlock store without agent keeps rejection")
+    const homeDir = tempHome()
+    const dir = bitwardenAppDataDir("slugger", config, homeDir)
+    recordVaultUnlockRejection(dir, "rejected")
+
+    storeVaultUnlockSecret({ email: config.email, serverUrl: config.serverUrl }, "local-unlock-material", { store: "plaintext-file", homeDir, platform: "linux" })
+
+    expect(readVaultUnlockRejection(dir)).not.toBeNull()
   })
 })
