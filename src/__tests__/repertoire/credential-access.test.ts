@@ -137,8 +137,8 @@ describe("credential access", () => {
     expect(mockBitwardenGet).toHaveBeenCalledWith("__ouro_vault_probe__")
   })
 
-  it("clears a rejected source unlock entry and evicts the cached store", async () => {
-    mockReadVaultUnlockSecret.mockReturnValueOnce({
+  it("keeps a rejected unlock secret, pauses retries of that secret, and resumes on a new secret", async () => {
+    mockReadVaultUnlockSecret.mockReturnValue({
       secret: "unlock-secret",
       source: { email: "custom@ouro.bot", serverUrl: "https://vault.ouro.bot" },
     })
@@ -148,21 +148,24 @@ describe("credential access", () => {
       onInvalidUnlockSecret: (error: Error) => void | Promise<void>
     }
     await options.onInvalidUnlockSecret(new Error("bw CLI rejected the saved vault unlock secret for this machine"))
-    await options.onInvalidUnlockSecret(new Error("bw CLI rejected the saved vault unlock secret for this machine"))
 
-    expect(mockClearVaultUnlockSecret).toHaveBeenCalledWith({
-      agentName: "slugger",
-      email: "custom@ouro.bot",
-      serverUrl: "https://vault.ouro.bot",
-    })
-    expect(mockClearVaultUnlockSecret).toHaveBeenCalledTimes(1)
+    expect(mockClearVaultUnlockSecret).not.toHaveBeenCalled()
     expect(mockEmitNervesEvent).toHaveBeenCalledWith(expect.objectContaining({
-      event: "repertoire.credential_store_invalid_unlock_cleared",
+      event: "repertoire.credential_store_unlock_rejected",
       meta: expect.objectContaining({ sourceServerUrl: "https://vault.ouro.bot" }),
     }))
 
+    // Same saved secret: fail fast without constructing a store that would log in again.
+    expect(() => getCredentialStore("slugger")).toThrow(
+      "The vault rejected the unlock secret saved on this machine for slugger (bw CLI rejected the saved vault unlock secret for this machine). The saved secret was kept.",
+    )
+    expect(mockBitwardenCtor).toHaveBeenCalledTimes(1)
+
+    // A human ran `ouro vault unlock` with a new secret: the pause lifts.
+    mockReadVaultUnlockSecret.mockReturnValue({ secret: "new-unlock-secret" })
     getCredentialStore("slugger")
     expect(mockBitwardenCtor).toHaveBeenCalledTimes(2)
+    mockReadVaultUnlockSecret.mockReturnValue({ secret: "unlock-secret" })
   })
 
   it("canonicalizes legacy unlock material only after a successful vault login", async () => {

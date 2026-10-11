@@ -164,6 +164,7 @@ const BW_LOCK_STALE_MS = BW_LOCK_TIMEOUT_MS * 2
 const BW_DATA_FILENAME = "data.json"
 const BW_SYNC_MARKER_FILENAME = ".ouro-last-sync"
 const BW_SYNC_FRESH_MS = 60_000
+const BW_VERSION_MARKER_FILENAME = ".ouro-bw-version"
 
 /** In-process async mutex keyed by appDataDir. */
 const inProcessLocks = new Map<string, Promise<void>>()
@@ -399,6 +400,34 @@ function isBwNotInstalled(err: Error): boolean {
   const msg = err.message.toLowerCase()
   const code = (err as NodeJS.ErrnoException).code
   return code === "ENOENT" || /\bspawn\b.*\benoent\b/.test(msg) || msg.includes("command not found")
+}
+
+/**
+ * Read the installed @bitwarden/cli version from the package that owns the
+ * resolved `bw` binary. Returns null when the binary is not an npm install.
+ */
+export function readBwCliVersion(bwBinaryPath: string): string | null {
+  let dir: string
+  try {
+    dir = path.dirname(fs.realpathSync(bwBinaryPath))
+  } catch {
+    return null
+  }
+  for (let depth = 0; depth < 4; depth++) {
+    try {
+      const pkg = JSON.parse(fs.readFileSync(path.join(dir, "package.json"), "utf8")) as { name?: unknown; version?: unknown }
+      if (pkg.name === "@bitwarden/cli" && typeof pkg.version === "string") return pkg.version
+    } catch {
+      // Keep walking up toward the package root.
+    }
+    dir = path.dirname(dir)
+  }
+  return null
+}
+
+/** Another process holds the profile; the profile itself is not at fault. */
+function isBwLockTimeout(err: Error): boolean {
+  return err.message.includes("bw CLI lock timeout")
 }
 
 /** Check if the error is transient (network/timeout) and worth retrying. */
@@ -676,8 +705,93 @@ export class BitwardenCredentialStore implements CredentialStore {
     throw lastError!
   }
 
-  /** Single login attempt — called by login() retry loop. */
+  /**
+   * Single login attempt — called by login() retry loop.
+   *
+   * The bw app data directory is a disposable cache. The durable secret is
+   * the machine's vault unlock material, so any non-transient failure while
+   * using an existing local profile (corrupt or half-migrated state, a profile
+   * written by a different bw version, an expired session) discards the
+   * profile and logs in fresh. Only a failure from a fresh profile is
+   * reported, because only that one reflects the vault server's answer.
+   */
   private async loginAttempt(): Promise<void> {
+    const bwVersion = readBwCliVersion(this.bwBinaryPath)
+    const profileVersion = this.readProfileBwVersion()
+    if (bwVersion && profileVersion && profileVersion !== bwVersion && this.hasLocalProfile()) {
+      await this.discardLocalProfile(`local bw profile was written by bw ${profileVersion}; running bw ${bwVersion}`)
+    }
+    const startedWithLocalProfile = this.hasLocalProfile()
+    try {
+      await this.loginWithLocalProfile()
+    } catch (error) {
+      const err = error as Error
+      if (!startedWithLocalProfile || isTransientError(err) || isBwNotInstalled(err) || isBwLockTimeout(err)) throw err
+      await this.discardLocalProfile("existing local bw profile could not be used", err)
+      await this.loginWithLocalProfile()
+    }
+    this.writeProfileBwVersion(bwVersion)
+  }
+
+  private hasLocalProfile(): boolean {
+    return !!this.appDataDir && fs.existsSync(path.join(this.appDataDir, BW_DATA_FILENAME))
+  }
+
+  private readProfileBwVersion(): string | null {
+    /* v8 ignore next -- defensive: version markers are only read for an explicit app data dir @preserve */
+    if (!this.appDataDir) return null
+    try {
+      const value = fs.readFileSync(path.join(this.appDataDir, BW_VERSION_MARKER_FILENAME), "utf8").trim()
+      return value || null
+    } catch {
+      return null
+    }
+  }
+
+  private writeProfileBwVersion(version: string | null): void {
+    if (!this.appDataDir || !version) return
+    try {
+      fs.writeFileSync(path.join(this.appDataDir, BW_VERSION_MARKER_FILENAME), `${version}\n`, { mode: 0o600 })
+    } catch {
+      // The marker is only a hint for proactive rebuilds; the failure fallback still applies.
+    }
+  }
+
+  /**
+   * Move the local bw profile aside so the next bw command starts from an
+   * empty profile. The previous data file is kept as one `.discarded` copy
+   * for diagnosis and is overwritten by the next discard.
+   */
+  private async discardLocalProfile(reason: string, cause?: Error): Promise<void> {
+    const appDataDir = this.appDataDir as string
+    this.sessionToken = null
+    this.structuredItemCache = null
+    await withBwLock(appDataDir, async () => {
+      const dataPath = path.join(appDataDir, BW_DATA_FILENAME)
+      try {
+        fs.renameSync(dataPath, `${dataPath}.discarded`)
+      } catch {
+        // Already gone: another process discarded it first, which is the same outcome.
+      }
+      for (const name of [BW_SYNC_MARKER_FILENAME, BW_VERSION_MARKER_FILENAME]) {
+        fs.rmSync(path.join(appDataDir, name), { force: true })
+      }
+    })
+    emitNervesEvent({
+      level: "warn",
+      event: "repertoire.bw_local_profile_discarded",
+      component: "repertoire",
+      message: "discarded local bw profile; logging in fresh with the saved unlock secret",
+      meta: {
+        email: this.email,
+        serverUrl: this.serverUrl,
+        reason,
+        error: cause ? sanitizeCredentialErrorDetail(cause.message) : null,
+      },
+    })
+  }
+
+  private async loginWithLocalProfile(): Promise<void> {
     let status = await this.readStatus()
 
     if (this.shouldRebuildLocalProfile(status)) {

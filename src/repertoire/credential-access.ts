@@ -17,7 +17,6 @@ import { emitNervesEvent } from "../nerves/runtime"
 import * as identity from "../heart/identity"
 import { BitwardenCredentialStore } from "./bitwarden-store"
 import {
-  clearVaultUnlockSecret,
   credentialVaultNotConfiguredError,
   noteVaultUnlockSelfHeal,
   readVaultUnlockSecret,
@@ -42,6 +41,19 @@ export interface CredentialStore {
 }
 
 let stores = new Map<string, CredentialStore>()
+let rejectedUnlocks = new Map<string, { fingerprint: string; reason: string }>()
+
+function fingerprintUnlockSecret(secret: string): string {
+  return crypto.createHash("sha256").update(secret).digest("hex")
+}
+
+function rejectedUnlockMessage(agentName: string, reason: string): string {
+  return [
+    `The vault rejected the unlock secret saved on this machine for ${agentName} (${reason}).`,
+    "The saved secret was kept. If the vault's unlock secret changed, run",
+    `\`ouro vault unlock --agent ${agentName}\` once with the current secret.`,
+  ].join(" ")
+}
 
 function loadVaultSectionForAgent(agentName: string): {
   configPath: string
@@ -86,7 +98,12 @@ export function getCredentialStore(agentNameInput?: string): CredentialStore {
   })
   const unlockConfig = { agentName, email: vaultConfig.email, serverUrl: vaultConfig.serverUrl }
   const unlockSource = unlock.source ?? unlockConfig
-  let invalidUnlockCleared = false
+  const unlockFingerprint = fingerprintUnlockSecret(unlock.secret)
+  const rejection = rejectedUnlocks.get(cacheKey)
+  if (rejection && rejection.fingerprint === unlockFingerprint) {
+    throw new Error(rejectedUnlockMessage(agentName, rejection.reason))
+  }
+  rejectedUnlocks.delete(cacheKey)
   let canonicalUnlockStored = false
   const store = new BitwardenCredentialStore(
     vaultConfig.serverUrl,
@@ -95,19 +112,18 @@ export function getCredentialStore(agentNameInput?: string): CredentialStore {
     {
       appDataDir: bitwardenAppDataDir(agentName, vaultConfig),
       onInvalidUnlockSecret: (error) => {
-        if (invalidUnlockCleared) return
-        invalidUnlockCleared = true
-        clearVaultUnlockSecret({
-          agentName,
-          email: unlockSource.email,
-          serverUrl: unlockSource.serverUrl,
-        })
+        // The vault server rejected the saved secret on a fresh bw profile.
+        // Keep the saved secret: deleting the only durable copy turns any
+        // misclassified bw or server error into a human prompt. Remember the
+        // rejection in memory so this process does not retry the same secret
+        // against the server; a new secret from `ouro vault unlock` clears it.
+        rejectedUnlocks.set(cacheKey, { fingerprint: unlockFingerprint, reason: error.message })
         stores.delete(cacheKey)
         emitNervesEvent({
           level: "warn",
-          event: "repertoire.credential_store_invalid_unlock_cleared",
+          event: "repertoire.credential_store_unlock_rejected",
           component: "repertoire",
-          message: "cleared rejected local vault unlock material",
+          message: "vault rejected the saved local unlock secret; kept it and paused retries in this process",
           meta: {
             agentName,
             serverUrl: vaultConfig.serverUrl,
@@ -181,4 +197,5 @@ export async function probeCredentialVaultAccess(
 
 export function resetCredentialStore(): void {
   stores = new Map()
+  rejectedUnlocks = new Map()
 }

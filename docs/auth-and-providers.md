@@ -409,7 +409,9 @@ For an existing agent with a vault locator and a saved unlock secret, run `ouro 
 
 `ouro vault unlock` verifies the typed unlock secret against the agent vault before replacing this machine's saved local unlock material. A failed validation must not overwrite a previously working Keychain/DPAPI/Secret Service/plaintext entry.
 
-When previously saved local unlock material is later rejected by the vault, Ouro clears that local entry and reports a human-required unlock/replace path instead of repeatedly retrying a known-bad machine cache. Legacy local unlock entries may be read for compatibility, but they are copied to canonical vault coordinates only after a successful vault login.
+The saved unlock secret is the only durable local credential. Each agent's `bw` app data directory under `~/.ouro-cli/bitwarden/` is a disposable cache: when an existing `bw` profile cannot be used (corrupt or half-migrated state, a profile written by a different `bw` version, or an expired session), Ouro moves the profile aside and logs in fresh with the saved unlock secret, without asking the human. Only a rejection from a fresh login counts as a rejected secret.
+
+When the vault rejects the saved unlock secret on a fresh login, Ouro keeps the saved entry and stops retrying that same secret in the current process, and reports `ouro vault unlock --agent <agent>` as the repair. Ouro never deletes saved unlock material automatically, because a misclassified error would otherwise turn into a human prompt. Legacy local unlock entries may be read for compatibility, but they are copied to canonical vault coordinates only after a successful vault login.
 
 For an existing agent whose `agent.json` already has vault coordinates but whose unlock secret was not saved or is lost, Ouro cannot recover it from the remote vault or expose it from Keychain, DPAPI, Secret Service, or plaintext fallback. The repair is to create a replacement agent vault and re-auth/re-enter credentials into it.
 
