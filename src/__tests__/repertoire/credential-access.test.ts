@@ -9,7 +9,23 @@ const mockClearVaultUnlockSecret = vi.fn()
 const mockNoteVaultUnlockSelfHeal = vi.fn()
 const mockReadVaultUnlockSecret = vi.fn(() => ({ secret: "unlock-secret" }))
 const mockStoreVaultUnlockSecret = vi.fn()
+// Stands in for the on-disk rejection record shared by every process.
+const rejectionRecords = new Map<string, string>()
+const mockRecordVaultUnlockRejection = vi.fn((dir: string, reason: string) => {
+  rejectionRecords.set(dir, reason)
+})
+const mockClearVaultUnlockRejection = vi.fn((dir: string) => {
+  rejectionRecords.delete(dir)
+})
 vi.mock("../../repertoire/vault-unlock", () => ({
+  bitwardenAppDataDir: (agentName: string, vaultConfig: { serverUrl: string; email: string }, homeDir?: string) =>
+    `${homeDir ?? mockHomedir()}/.ouro-cli/bitwarden/${agentName}-${vaultConfig.email}`,
+  readVaultUnlockRejection: (dir: string) => {
+    const reason = rejectionRecords.get(dir)
+    return reason === undefined ? null : { reason, rejectedAt: "2026-10-10T00:00:00.000Z" }
+  },
+  recordVaultUnlockRejection: (dir: string, reason: string) => mockRecordVaultUnlockRejection(dir, reason),
+  clearVaultUnlockRejection: (dir: string) => mockClearVaultUnlockRejection(dir),
   clearVaultUnlockSecret: (...args: unknown[]) => mockClearVaultUnlockSecret(...args),
   credentialVaultNotConfiguredError: (agentName: string, configPath: string) =>
     `credential vault is not configured in ${configPath}. Run 'ouro vault create --agent ${agentName}' to create this agent's vault before loading or storing credentials.`,
@@ -61,6 +77,7 @@ describe("credential access", () => {
   beforeEach(() => {
     vi.clearAllMocks()
     resetCredentialStore()
+    rejectionRecords.clear()
     mockGetAgentName.mockReturnValue("slugger")
     mockGetAgentRoot.mockImplementation((agentName?: string) => `/bundles/${agentName ?? "slugger"}.ouro`)
     mockReadFileSync.mockImplementation((filePath: unknown) => {
@@ -137,32 +154,52 @@ describe("credential access", () => {
     expect(mockBitwardenGet).toHaveBeenCalledWith("__ouro_vault_probe__")
   })
 
-  it("clears a rejected source unlock entry and evicts the cached store", async () => {
-    mockReadVaultUnlockSecret.mockReturnValueOnce({
+  it("keeps a rejected unlock secret and pauses every process until a secret is saved or a login succeeds", async () => {
+    mockReadVaultUnlockSecret.mockReturnValue({
       secret: "unlock-secret",
       source: { email: "custom@ouro.bot", serverUrl: "https://vault.ouro.bot" },
     })
     getCredentialStore("slugger")
 
     const options = mockBitwardenCtor.mock.calls[0][3] as {
+      appDataDir: string
       onInvalidUnlockSecret: (error: Error) => void | Promise<void>
     }
     await options.onInvalidUnlockSecret(new Error("bw CLI rejected the saved vault unlock secret for this machine"))
-    await options.onInvalidUnlockSecret(new Error("bw CLI rejected the saved vault unlock secret for this machine"))
 
-    expect(mockClearVaultUnlockSecret).toHaveBeenCalledWith({
-      agentName: "slugger",
-      email: "custom@ouro.bot",
-      serverUrl: "https://vault.ouro.bot",
-    })
-    expect(mockClearVaultUnlockSecret).toHaveBeenCalledTimes(1)
+    expect(mockClearVaultUnlockSecret).not.toHaveBeenCalled()
+    expect(mockRecordVaultUnlockRejection).toHaveBeenCalledWith(options.appDataDir, "bw CLI rejected the saved vault unlock secret for this machine")
     expect(mockEmitNervesEvent).toHaveBeenCalledWith(expect.objectContaining({
-      event: "repertoire.credential_store_invalid_unlock_cleared",
+      event: "repertoire.credential_store_unlock_rejected",
       meta: expect.objectContaining({ sourceServerUrl: "https://vault.ouro.bot" }),
     }))
 
+    // A new process (fresh in-memory state) honors the record without logging in again.
+    resetCredentialStore()
+    expect(() => getCredentialStore("slugger")).toThrow(
+      "The vault rejected the unlock secret saved on this machine for slugger (bw CLI rejected the saved vault unlock secret for this machine). The saved secret was kept.",
+    )
+    expect(mockBitwardenCtor).toHaveBeenCalledTimes(1)
+
+    // `ouro vault unlock` saves a secret (even the same one) and clears the record.
+    rejectionRecords.delete(options.appDataDir)
+    mockReadVaultUnlockSecret.mockReturnValue({ secret: "unlock-secret" })
     getCredentialStore("slugger")
     expect(mockBitwardenCtor).toHaveBeenCalledTimes(2)
+
+    // A successful login clears the record as well.
+    const second = mockBitwardenCtor.mock.calls[1][3] as { onLoginSuccess: () => void }
+    rejectionRecords.set(options.appDataDir, "stale")
+    second.onLoginSuccess()
+    expect(rejectionRecords.has(options.appDataDir)).toBe(false)
+  })
+
+  it("clears a recorded rejection when a probe logs in with a candidate secret", async () => {
+    await probeCredentialVaultAccess("slugger", "candidate-secret", { homeDir: "/tmp/ouro-home" })
+    const options = mockBitwardenCtor.mock.calls[0][3] as { appDataDir: string; onLoginSuccess: () => void }
+    rejectionRecords.set(options.appDataDir, "rejected")
+    options.onLoginSuccess()
+    expect(rejectionRecords.has(options.appDataDir)).toBe(false)
   })
 
   it("canonicalizes legacy unlock material only after a successful vault login", async () => {

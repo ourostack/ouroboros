@@ -206,7 +206,7 @@ function lockedMessage(config: VaultUnlockConfig, store: VaultUnlockStoreSelecti
     "",
     "Provider credentials are still stored in the agent vault.",
     "This computer does not currently have usable local unlock material for that vault.",
-    "This can happen on a new computer, after a local profile or hostname migration, or if the local unlock entry was removed.",
+    "This can happen on a new computer, after a local profile or hostname migration, after a macOS password reset that replaced the login keychain, or if the local unlock entry was removed.",
     "",
     `Run \`${command}\` and enter the saved agent vault unlock secret from the human/operator who controls that vault.`,
     lostUnlockSecretGuidance(config),
@@ -667,6 +667,69 @@ export function readVaultUnlockSecret(
   return { secret: loaded.secret, store, source: loaded.source }
 }
 
+const UNLOCK_REJECTED_FILENAME = ".ouro-unlock-rejected"
+
+export interface VaultUnlockRejection {
+  reason: string
+  rejectedAt: string
+}
+
+/** The agent's bw folder under ~/.ouro-cli/bitwarden; bw profiles live beneath it. */
+export function bitwardenAppDataDir(
+  agentName: string,
+  vaultConfig: { serverUrl: string; email: string },
+  homeDirValue: string = os.homedir(),
+): string {
+  const digest = crypto
+    .createHash("sha256")
+    .update(`${agentName}:${vaultConfig.serverUrl}:${vaultConfig.email}`)
+    .digest("hex")
+    .slice(0, 24)
+  return path.join(homeDirValue, ".ouro-cli", "bitwarden", digest)
+}
+
+/**
+ * The vault server rejected the saved unlock secret. Every process honors the
+ * record so none retries the same secret against the server; saving a secret
+ * or any successful login clears it.
+ */
+export function readVaultUnlockRejection(agentDataDir: string): VaultUnlockRejection | null {
+  try {
+    const parsed = JSON.parse(fs.readFileSync(path.join(agentDataDir, UNLOCK_REJECTED_FILENAME), "utf8")) as Partial<VaultUnlockRejection>
+    return {
+      reason: typeof parsed.reason === "string" ? parsed.reason : "rejected",
+      rejectedAt: typeof parsed.rejectedAt === "string" ? parsed.rejectedAt : "",
+    }
+  } catch {
+    return null
+  }
+}
+
+export function recordVaultUnlockRejection(agentDataDir: string, reason: string, now: Date = new Date()): void {
+  fs.mkdirSync(agentDataDir, { recursive: true, mode: 0o700 })
+  const record: VaultUnlockRejection = { reason, rejectedAt: now.toISOString() }
+  fs.writeFileSync(path.join(agentDataDir, UNLOCK_REJECTED_FILENAME), `${JSON.stringify(record)}\n`, { mode: 0o600 })
+  emitNervesEvent({
+    level: "warn",
+    component: "repertoire",
+    event: "repertoire.vault_unlock_rejection_recorded",
+    message: "recorded that the vault rejected the saved unlock secret",
+    meta: { agentDataDir },
+  })
+}
+
+export function clearVaultUnlockRejection(agentDataDir: string): void {
+  const rejectionPath = path.join(agentDataDir, UNLOCK_REJECTED_FILENAME)
+  if (!fs.existsSync(rejectionPath)) return
+  fs.rmSync(rejectionPath, { force: true })
+  emitNervesEvent({
+    component: "repertoire",
+    event: "repertoire.vault_unlock_rejection_cleared",
+    message: "cleared the recorded vault unlock rejection",
+    meta: { agentDataDir },
+  })
+}
+
 export function storeVaultUnlockSecret(
   config: VaultUnlockConfig,
   secret: string,
@@ -680,6 +743,9 @@ export function storeVaultUnlockSecret(
 
   const store = resolveVaultUnlockStore(canonicalConfig, deps)
   writeToStore(canonicalConfig, store, trimmed, deps)
+  if (canonicalConfig.agentName) {
+    clearVaultUnlockRejection(bitwardenAppDataDir(canonicalConfig.agentName, canonicalConfig, homeDir(deps)))
+  }
 
   emitNervesEvent({
     component: "repertoire",
