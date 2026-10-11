@@ -33,6 +33,25 @@ Run only the exact command doctor prints, such as `ouro logs prune --agent <name
 
 Exact rollback intent is persistent. The standard Ouro bootstrap installs/verifies the stable recovery launcher before version intent is first committed. `ouro rollback <version>` installs and validates the selected runtime, then atomically pins and activates it. Ordinary `ouro up` preserves that pin. Use `ouro versions` to inspect `pinned` versus `latest` intent and its target. To leave the pin, run `ouro up --latest`; Ouro changes the intent only after the latest version passes preflight. If an update is interrupted, rerun `ouro up` and the installed recovery launcher reconciles the installed link to the last committed intent.
 
+A rollback pin records when it was written. The unattended updater (below) honors it for seven days, then rewrites the intent to `latest` and resumes updates; a pin written before pins carried a timestamp gets one written into `version-intent.json` the first time the updater sees it. `ouro up --latest` still leaves the pin immediately.
+
+Rolling back below `0.1.0-alpha.898` stops unattended updates. The updater agent runs whatever `ouro` the launcher activates, and versions before `0.1.0-alpha.898` have no `self-update` command, so each hourly run fails until a human runs `ouro up --latest` (or `ouro rollback` to `0.1.0-alpha.898` or later).
+
+## A machine stays on an old Ouro version
+
+Ouro updates itself without the daemon. On macOS, `ouro up` and `ouro self-update` install a launchd agent, `bot.ouro.updater` (`~/Library/LaunchAgents/bot.ouro.updater.plist`), that runs `ouro self-update --unattended` at login and every hour. Each pass:
+
+1. Honors a fresh rollback pin and expires one older than seven days.
+2. Asks registry.npmjs.org, the npm registry configured on this machine, and GitHub releases for the newest `@ouro.bot/cli`, and installs from whichever source serves it. After publishing to npm, CI downloads the exact tarball npm serves (checked against the registry's integrity hash), attests its build provenance, and attaches it to a GitHub release, so a network that blocks registry.npmjs.org or a lagging npm mirror does not strand the machine. The updater trusts a GitHub release only when `github-actions[bot]` created both the release and the asset, the tag is `v<version>`, and the asset URL is `https://github.com/ourostack/ouroboros/releases/download/v<version>/ouro.bot-cli-<version>.tgz`. When nothing is newer, the status detail names any source that did not answer.
+3. Validates the installed payload and runs its `--version` before activating it.
+4. Restarts the daemon on the new version only if it was already running, and confirms that it answers with that version. A stopped daemon stays stopped.
+5. If the restarted daemon does not answer, reactivates the previous version, pins it with reason `auto-rollback`, and never retries the failed version. A newer release replaces the auto-rollback pin.
+6. If nothing is newer but a running daemon still reports an older version than `CurrentVersion` (a pass was killed between activation and restart), restarts it on `CurrentVersion` with the same health check and rollback.
+
+`CurrentVersion` is swapped atomically (a new link renamed over the old one). A pass holds `~/.ouro-cli/self-update.lock` for as long as its process lives; the lock is reclaimed only when that process is gone, and `ouro up` does not reload the updater agent while a live pass holds it. The plist runs `/opt/homebrew/bin/node` or `/usr/local/bin/node` when one has the same major Node version as the CLI, so switching nvm versions does not rewrite it. The updater runs `ouro up` with stdin closed and `OURO_UNATTENDED=1`, so its prompts take their default answers instead of waiting.
+
+`ouro status` ends with an `Updates:` line from `~/.ouro-cli/update-state.json`. It starts with `needs attention` when the last pass failed, when the updater has not run for three hours, or when the launchd agent is missing. Run `ouro self-update` to run a pass now and reinstall the agent.
+
 ## `ouro status --json` times out
 
 Status has a command-specific 5,000 ms end-to-end socket-operation deadline; long agent turns keep their longer command timeout. A timeout still returns parseable diagnostic JSON classified as `timeout`, rather than hanging for the general ten-minute command window. This distinguishes a deadline from immediate socket unavailability, but does not by itself prove whether the timeout occurred before or after connection. Run `ouro doctor` or `ouro up` as indicated by the accompanying details.

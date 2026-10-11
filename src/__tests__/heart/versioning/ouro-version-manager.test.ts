@@ -243,69 +243,57 @@ describe("ouro-version-manager", () => {
   })
 
   describe("activateVersion", () => {
-    it("updates previous symlink to old CurrentVersion target, then updates CurrentVersion", async () => {
+    const CURRENT = "/Users/test/.ouro-cli/CurrentVersion"
+    const TEMP = `${CURRENT}.next-${process.pid}`
+
+    it("updates previous to the old target, then swaps CurrentVersion atomically", async () => {
       const { activateVersion } = await import("../../../heart/versioning/ouro-version-manager")
-      const readlinkResults: Record<string, string> = {
-        "/Users/test/.ouro-cli/CurrentVersion": "/Users/test/.ouro-cli/versions/0.1.0-alpha.79",
-      }
       const unlinkCalls: string[] = []
       const symlinkCalls: Array<{ target: string; path: string }> = []
       const deps = {
         homeDir: "/Users/test",
         readlinkSync: vi.fn().mockImplementation((p: string) => {
-          if (readlinkResults[p]) return readlinkResults[p]
+          if (p === CURRENT) return "/Users/test/.ouro-cli/versions/0.1.0-alpha.79"
           throw new Error("ENOENT")
         }),
         unlinkSync: vi.fn().mockImplementation((p: string) => { unlinkCalls.push(p) }),
         symlinkSync: vi.fn().mockImplementation((target: string, p: string) => { symlinkCalls.push({ target, path: p }) }),
+        renameSync: vi.fn(),
         existsSync: vi.fn().mockReturnValue(true),
       }
       activateVersion("0.1.0-alpha.80", deps)
 
-      // Should unlink previous, symlink previous to old current, unlink current, symlink current to new
       expect(unlinkCalls).toContain("/Users/test/.ouro-cli/previous")
-      expect(unlinkCalls).toContain("/Users/test/.ouro-cli/CurrentVersion")
-      expect(symlinkCalls).toContainEqual({
-        target: "/Users/test/.ouro-cli/versions/0.1.0-alpha.79",
-        path: "/Users/test/.ouro-cli/previous",
-      })
-      expect(symlinkCalls).toContainEqual({
-        target: "/Users/test/.ouro-cli/versions/0.1.0-alpha.80",
-        path: "/Users/test/.ouro-cli/CurrentVersion",
-      })
+      expect(unlinkCalls).not.toContain(CURRENT)
+      expect(symlinkCalls).toEqual([
+        { target: "/Users/test/.ouro-cli/versions/0.1.0-alpha.79", path: "/Users/test/.ouro-cli/previous" },
+        { target: "/Users/test/.ouro-cli/versions/0.1.0-alpha.80", path: TEMP },
+      ])
+      expect(deps.renameSync).toHaveBeenCalledWith(TEMP, CURRENT)
     })
 
-    it("handles missing CurrentVersion symlink (no previous to save)", async () => {
+    it("falls back to unlink and link when rename cannot replace CurrentVersion", async () => {
       const { activateVersion } = await import("../../../heart/versioning/ouro-version-manager")
       const symlinkCalls: Array<{ target: string; path: string }> = []
       const deps = {
         homeDir: "/Users/test",
         readlinkSync: vi.fn().mockImplementation(() => { throw new Error("ENOENT") }),
-        unlinkSync: vi.fn(),
+        unlinkSync: vi.fn().mockImplementation(() => { throw new Error("ENOENT") }),
         symlinkSync: vi.fn().mockImplementation((target: string, p: string) => { symlinkCalls.push({ target, path: p }) }),
+        renameSync: vi.fn().mockImplementation(() => { throw new Error("EISDIR") }),
         existsSync: vi.fn().mockReturnValue(false),
       }
       activateVersion("0.1.0-alpha.80", deps)
+      expect(symlinkCalls).toContainEqual({ target: "/Users/test/.ouro-cli/versions/0.1.0-alpha.80", path: CURRENT })
 
-      // Should still create CurrentVersion symlink
-      expect(symlinkCalls).toContainEqual({
-        target: "/Users/test/.ouro-cli/versions/0.1.0-alpha.80",
-        path: "/Users/test/.ouro-cli/CurrentVersion",
-      })
-    })
-
-    it("handles version directory not found", async () => {
-      const { activateVersion } = await import("../../../heart/versioning/ouro-version-manager")
-      const deps = {
-        homeDir: "/Users/test",
-        readlinkSync: vi.fn().mockImplementation(() => { throw new Error("ENOENT") }),
-        unlinkSync: vi.fn(),
-        symlinkSync: vi.fn(),
-        existsSync: vi.fn().mockReturnValue(false),
+      const unlinked: string[] = []
+      const existing = {
+        ...deps,
+        unlinkSync: vi.fn().mockImplementation((p: string) => { unlinked.push(p) }),
+        existsSync: vi.fn().mockReturnValue(true),
       }
-      // Should not throw -- version directory existence is not checked by activateVersion
-      // (it's the caller's responsibility to install first)
-      expect(() => activateVersion("0.1.0-alpha.80", deps)).not.toThrow()
+      activateVersion("0.1.0-alpha.80", existing)
+      expect(unlinked).toEqual([TEMP, TEMP, CURRENT])
     })
   })
 
@@ -337,6 +325,7 @@ describe("ouro-version-manager", () => {
         readlinkSync: vi.fn().mockImplementation(() => { throw new Error("ENOENT") }),
         unlinkSync: vi.fn(),
         symlinkSync: vi.fn().mockImplementation((target: string, p: string) => { symlinkCalls.push({ target, path: p }) }),
+        renameSync: vi.fn(),
         existsSync: vi.fn().mockReturnValue(false),
       }
 
@@ -357,8 +346,9 @@ describe("ouro-version-manager", () => {
       activateVersion("0.1.0-alpha.80", sharedDeps)
       expect(symlinkCalls).toContainEqual({
         target: "/Users/test/.ouro-cli/versions/0.1.0-alpha.80",
-        path: "/Users/test/.ouro-cli/CurrentVersion",
+        path: `/Users/test/.ouro-cli/CurrentVersion.next-${process.pid}`,
       })
+      expect(sharedDeps.renameSync).toHaveBeenCalledWith(`/Users/test/.ouro-cli/CurrentVersion.next-${process.pid}`, "/Users/test/.ouro-cli/CurrentVersion")
     })
   })
 

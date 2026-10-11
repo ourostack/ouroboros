@@ -8,6 +8,7 @@ export interface OuroVersionManagerDeps {
   readlinkSync?: (p: string) => string
   unlinkSync?: (p: string) => void
   symlinkSync?: (target: string, p: string) => void
+  renameSync?: (from: string, to: string) => void
   existsSync?: (p: string) => boolean
   mkdirSync?: (p: string, options?: fs.MakeDirectoryOptions) => void
   readdirSync?: (p: string, options: { withFileTypes: true }) => fs.Dirent[]
@@ -245,12 +246,13 @@ export function installVersion(version: string, deps: Pick<OuroVersionManagerDep
   })
 }
 
-export function activateVersion(version: string, deps: Pick<OuroVersionManagerDeps, "homeDir" | "readlinkSync" | "unlinkSync" | "symlinkSync" | "existsSync">): void {
+export function activateVersion(version: string, deps: Pick<OuroVersionManagerDeps, "homeDir" | "readlinkSync" | "unlinkSync" | "symlinkSync" | "renameSync" | "existsSync">): void {
   const cliHome = getOuroCliHome(deps.homeDir)
   /* v8 ignore start -- dep defaults: tests always inject @preserve */
   const readlinkSync = deps.readlinkSync ?? fs.readlinkSync
   const unlinkSync = deps.unlinkSync ?? fs.unlinkSync
   const symlinkSync = deps.symlinkSync ?? fs.symlinkSync
+  const renameSync = deps.renameSync ?? fs.renameSync
   const existsSync = deps.existsSync ?? fs.existsSync
   /* v8 ignore stop */
   const currentVersionPath = path.join(cliHome, "CurrentVersion")
@@ -282,11 +284,30 @@ export function activateVersion(version: string, deps: Pick<OuroVersionManagerDe
     symlinkSync(oldTarget, previousPath)
   }
 
-  // Update CurrentVersion symlink
-  if (existsSync(currentVersionPath)) {
-    unlinkSync(currentVersionPath)
+  // Swap CurrentVersion atomically: build the new link beside it and rename
+  // it over the old one, so a process killed mid-swap never leaves the
+  // machine without a CurrentVersion.
+  const tempPath = `${currentVersionPath}.next-${process.pid}`
+  try {
+    unlinkSync(tempPath)
+  } catch {
+    // No leftover from an earlier interrupted swap.
   }
-  symlinkSync(newTarget, currentVersionPath)
+  symlinkSync(newTarget, tempPath)
+  try {
+    renameSync(tempPath, currentVersionPath)
+  } catch {
+    // rename cannot replace a real directory; fall back to unlink + link.
+    try {
+      unlinkSync(tempPath)
+    } catch {
+      // Already gone.
+    }
+    if (existsSync(currentVersionPath)) {
+      unlinkSync(currentVersionPath)
+    }
+    symlinkSync(newTarget, currentVersionPath)
+  }
 }
 
 /**

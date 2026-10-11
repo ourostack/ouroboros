@@ -50,12 +50,26 @@ describe("package metadata", () => {
     ].sort())
   })
 
+  it("attaches the exact published npm tarball to the GitHub release", () => {
+    const workflow = fs.readFileSync(path.resolve(__dirname, "../../../.github/workflows/coverage.yml"), "utf8")
+    const publishJob = workflow.slice(workflow.indexOf("  publish:"), workflow.indexOf("  github-release:"))
+    const releaseJob = workflow.slice(workflow.indexOf("  github-release:"))
+    expect(publishJob).toContain('npm pack "@ouro.bot/cli@${LOCAL}" --pack-destination release-tarball')
+    expect(publishJob).toContain("name: ouro-cli-published-tarball")
+    expect(releaseJob).toContain("name: ouro-cli-published-tarball")
+    expect(releaseJob).toContain("actions/attest-build-provenance@")
+    expect(releaseJob).not.toContain("npm run build")
+    expect(releaseJob).not.toContain("npm pack")
+  })
+
   it("gates publish on both packed artifact E2E suites", () => {
     expect(packageJson.scripts["test:e2e:ouro-bot-package"]).toBe("node scripts/ouro-bot-package-e2e.cjs")
     const workflow = fs.readFileSync(path.resolve(__dirname, "../../../.github/workflows/coverage.yml"), "utf8")
     const packageJob = workflow.slice(workflow.indexOf("  package-e2e:"), workflow.indexOf("  publish:"))
     expect(packageJob).toContain("npm run test:e2e:package")
     expect(packageJob).toContain("npm run test:e2e:ouro-bot-package")
+    expect(packageJson.scripts["test:e2e:self-update"]).toBe("node scripts/self-update-package-e2e.cjs")
+    expect(packageJob).toContain("npm run test:e2e:self-update")
     expect(packageJob).toContain("docker build --pull --no-cache --file \"$PACKAGE_ROOT/package/deploy/unraid/Dockerfile\"")
     expect(packageJob).toContain("--tag ouro-butler-package-smoke")
     expect(packageJob).toContain("shrinkwrap.packages[\"\"].version !== expected")

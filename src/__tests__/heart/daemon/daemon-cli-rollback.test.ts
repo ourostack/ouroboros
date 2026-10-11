@@ -64,12 +64,19 @@ describe("ouro rollback: execution", () => {
       installOuroCommand: vi.fn(successfulLauncherInstall),
       activateCliVersion: vi.fn(),
       sendCommand: vi.fn(async () => ({ ok: true, message: "stopped" })),
+      now: () => Date.parse("2026-10-11T00:00:00.000Z"),
     })
 
     const result = await runOuroCli(["rollback"], deps)
 
     expect(deps.activateCliVersion).toHaveBeenCalledWith("0.1.0-alpha.79")
-    expect(deps.writeVersionIntent).toHaveBeenCalledWith({ schemaVersion: 1, mode: "pinned", targetVersion: "0.1.0-alpha.79" })
+    expect(deps.writeVersionIntent).toHaveBeenCalledWith({
+      schemaVersion: 1,
+      mode: "pinned",
+      targetVersion: "0.1.0-alpha.79",
+      pinnedAt: "2026-10-11T00:00:00.000Z",
+      reason: "rollback",
+    })
     expect(vi.mocked(deps.writeVersionIntent!).mock.invocationCallOrder[0]).toBeLessThan(
       vi.mocked(deps.activateCliVersion!).mock.invocationCallOrder[0],
     )
