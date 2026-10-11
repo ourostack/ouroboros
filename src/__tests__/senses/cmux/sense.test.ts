@@ -261,6 +261,17 @@ describe("cmux sense app", () => {
     await vi.waitFor(() => expect(submitted).toEqual(["good", "bad"]))
   })
 
+  it("still escalates and remembers a request when the decision log cannot take the line", async () => {
+    // A directory where the log file belongs makes every append fail.
+    fs.mkdirSync(path.join(home, "AgentBundles", `${AGENT}.ouro`, "state", "senses", "cmux", "decisions.jsonl"), { recursive: true })
+    server.respond("events.stream", () => ackFrame())
+    server.respond("feed.list", () => ({ items: [pending("logless")] }))
+    const submitted: string[] = []
+    app = await startCmuxSenseApp({ agentName: AGENT, now: () => NOW, schedule: manualScheduler().schedule, escalate: async (input) => { submitted.push(input.requestId) }, wake: async () => undefined })
+    await vi.waitFor(() => expect(readState().escalated).toEqual(["logless"]))
+    expect(submitted).toEqual(["logless"])
+  })
+
   it("records the cmux version from system.identify, and null when cmux does not say", async () => {
     server.respond("events.stream", () => ackFrame())
     server.respond("feed.list", () => ({ items: [] }))

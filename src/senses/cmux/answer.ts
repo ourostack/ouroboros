@@ -8,6 +8,7 @@ import {
   cmuxDecisionLogPath,
   findPrecedent,
   readCasebook,
+  readDecisionLog,
   readDecisions,
   REPLY_HISTORY_MS,
   repliesInWindow,
@@ -59,7 +60,7 @@ function inspectGrant(ctx: AnswerContext, repoRoot: string): ReturnType<typeof i
     action: CMUX_GRANT_ACTION,
     target: repoRoot,
     now: new Date(nowMs).toISOString(),
-    usesInWindow: (windowMs) => repliesInWindow(readDecisions(cmuxDecisionLogPath(ctx.stateDir)), windowMs, nowMs),
+    usesInWindow: (windowMs) => repliesInWindow(readDecisionLog(cmuxDecisionLogPath(ctx.stateDir)), windowMs, nowMs),
   })
   // The decision log keeps reply records for REPLY_HISTORY_MS, so it cannot count a longer window.
   if (grant.allowed && grant.windowMs > REPLY_HISTORY_MS) return { allowed: false, reason: "the standing grant's window is longer than the 31 days of replies the sense keeps" }

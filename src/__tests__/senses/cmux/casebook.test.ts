@@ -12,6 +12,7 @@ import {
   isShape,
   loadCasebook,
   readCasebook,
+  readDecisionLog,
   readDecisions,
   repliesInWindow,
   storeShape,
@@ -22,7 +23,7 @@ import { readCmuxPrinciples, SEED_CMUX_PRINCIPLES } from "../../../senses/cmux/p
 
 vi.mock("node:fs", async (importOriginal) => {
   const actual = await importOriginal<typeof import("node:fs")>()
-  return { ...actual, mkdirSync: vi.fn(actual.mkdirSync), statSync: vi.fn(actual.statSync), renameSync: vi.fn(actual.renameSync), readFileSync: vi.fn(actual.readFileSync), readdirSync: vi.fn(actual.readdirSync) }
+  return { ...actual, mkdirSync: vi.fn(actual.mkdirSync), statSync: vi.fn(actual.statSync), renameSync: vi.fn(actual.renameSync), readFileSync: vi.fn(actual.readFileSync), openSync: vi.fn(actual.openSync), readdirSync: vi.fn(actual.readdirSync) }
 })
 
 let dir = ""
@@ -175,7 +176,7 @@ describe("cmux decision log", () => {
     fs.writeFileSync(file, line(record({ requestId: "big", detail: "x".repeat(2 * 1024 * 1024) })))
     appendDecision(file, record({ requestId: "new", at: "2026-10-10T20:00:00.000Z" }))
     expect(readDecisions(`${file}`).map((entry) => entry.requestId)).toEqual(["big", "recent-reply", "new"])
-    expect(repliesInWindow(readDecisions(file), 30 * 24 * 60 * 60_000, Date.parse("2026-10-10T20:00:00.000Z"))).toBe(1)
+    expect(repliesInWindow(readDecisionLog(file), 30 * 24 * 60 * 60_000, Date.parse("2026-10-10T20:00:00.000Z"))).toBe(1)
 
     // With nothing recent to keep, the new file starts empty.
     fs.writeFileSync(`${file}.1`, line(record({ requestId: "old-reply", outcome: "reply_sent", at: "2026-08-01T00:00:00.000Z" })))
@@ -194,7 +195,7 @@ describe("cmux decision log", () => {
     const records = readDecisions(file)
     expect(records.map((entry) => entry.requestId)).toEqual(["s0", "s1", "s2", "nocwd"])
     expect(records[0]).toMatchObject({ cwd: "/repo?token=[redacted]", floor: { reason: "token=[redacted]" }, authority: "secret=[redacted]" })
-    expect(repliesInWindow(records, 3_600_000, Date.parse("2026-10-10T20:30:00.000Z"))).toBe(3)
+    expect(repliesInWindow({ records, unreadable: 0 }, 3_600_000, Date.parse("2026-10-10T20:30:00.000Z"))).toBe(3)
   })
 
   it("counts every reply sent inside the window, confirmed or not", () => {
@@ -205,7 +206,69 @@ describe("cmux decision log", () => {
       record({ outcome: "reply_sent", at: "2026-10-10T18:00:00.000Z" }),
       record({ outcome: "shadow", at: "2026-10-10T19:59:00.000Z" }),
     ]
-    expect(repliesInWindow(records, 3_600_000, now)).toBe(1)
+    expect(repliesInWindow({ records, unreadable: 0 }, 3_600_000, now)).toBe(1)
+    // A line that cannot be parsed has an unknown time and outcome, so it counts as a reply.
+    expect(repliesInWindow({ records, unreadable: 2 }, 3_600_000, now)).toBe(3)
+  })
+
+  it("ends a torn last line before appending, so the next record is never swallowed", () => {
+    const file = cmuxDecisionLogPath(dir)
+    fs.mkdirSync(dir, { recursive: true })
+    fs.writeFileSync(file, `${JSON.stringify(record({ requestId: "whole" }))}\n{"at":"2026-10-10T20:00:00.000Z","requestId":"torn`)
+    appendDecision(file, record({ requestId: "next", outcome: "reply_sent" }))
+    const log = readDecisionLog(file)
+    expect(log.records.map((entry) => entry.requestId)).toEqual(["whole", "next"])
+    expect(log.unreadable).toBe(1)
+    expect(repliesInWindow(log, 3_600_000, Date.parse("2026-10-10T20:30:00.000Z"))).toBe(2)
+    // An empty file needs no repair.
+    const empty = path.join(dir, "empty.jsonl")
+    fs.writeFileSync(empty, "")
+    appendDecision(empty, record({ requestId: "first" }))
+    expect(fs.readFileSync(empty, "utf-8").startsWith("{")).toBe(true)
+  })
+
+  it("throws instead of reading an unreadable log as empty, so the cap and the reservation refuse", () => {
+    const file = cmuxDecisionLogPath(dir)
+    appendDecision(file, record({ requestId: "r1", outcome: "reply_sent" }))
+    const denied = () => Object.assign(new Error("permission denied"), { code: "EACCES" })
+    const actualRead = vi.mocked(fs.readFileSync).getMockImplementation()!
+    const actualOpen = vi.mocked(fs.openSync).getMockImplementation()!
+    const actualStat = vi.mocked(fs.statSync).getMockImplementation()!
+    try {
+      vi.mocked(fs.readFileSync).mockImplementation(((target: fs.PathOrFileDescriptor, options?: unknown) => {
+        if (String(target) === file) throw denied()
+        return actualRead(target, options as never)
+      }) as typeof fs.readFileSync)
+      expect(() => readDecisions(file)).toThrow("permission denied")
+
+      // Rotation reads the old rotated file; an unreadable one stops the append rather than dropping its replies.
+      vi.mocked(fs.readFileSync).mockImplementation(((target: fs.PathOrFileDescriptor, options?: unknown) => {
+        if (String(target) === `${file}.1`) throw denied()
+        return actualRead(target, options as never)
+      }) as typeof fs.readFileSync)
+      fs.writeFileSync(file, `${JSON.stringify(record({ requestId: "big", detail: "x".repeat(2 * 1024 * 1024) }))}\n`)
+      expect(() => appendDecision(file, record({ requestId: "r2" }))).toThrow("permission denied")
+      vi.mocked(fs.readFileSync).mockImplementation(actualRead)
+
+      vi.mocked(fs.statSync).mockImplementation(((target: fs.PathLike, options?: unknown) => {
+        if (String(target) === file) throw denied()
+        return actualStat(target, options as never)
+      }) as typeof fs.statSync)
+      expect(() => appendDecision(file, record({ requestId: "r3" }))).toThrow("permission denied")
+      vi.mocked(fs.statSync).mockImplementation(actualStat)
+
+      fs.writeFileSync(file, "")
+      vi.mocked(fs.openSync).mockImplementation(((target: fs.PathLike, ...rest: unknown[]) => {
+        if (String(target) === file) throw denied()
+        return actualOpen(target, ...(rest as [never]))
+      }) as typeof fs.openSync)
+      expect(() => appendDecision(file, record({ requestId: "r4" }))).toThrow("permission denied")
+    } finally {
+      vi.mocked(fs.readFileSync).mockImplementation(actualRead)
+      vi.mocked(fs.openSync).mockImplementation(actualOpen)
+      vi.mocked(fs.statSync).mockImplementation(actualStat)
+    }
+    expect(readDecisions(file)).toEqual([])
   })
 })
 
@@ -238,7 +301,7 @@ describe("cmux decision lock", () => {
         // B has just judged the lock stale. Before B renames it, A (another process) takes the same
         // stale lock over the same way and makes a fresh lock of its own.
         raced = true
-        const tombstone = `${lock}.stale-${(result as fs.Stats).ino}`
+        const tombstone = `${lock}.stale-${(result as fs.Stats).ino}-1-a`
         fs.renameSync(lock, tombstone)
         fs.writeFileSync(path.join(tombstone, "taken-over"), "A")
         fs.mkdirSync(lock)
@@ -254,6 +317,58 @@ describe("cmux decision lock", () => {
     expect(raced).toBe(true)
     expect(fs.statSync(lock).ino).toBe(freshIno)
     expect(fs.readdirSync(dir).filter((name) => name.startsWith("decisions.lock.stale-"))).toHaveLength(1)
+  })
+
+  it("puts back a fresh lock moved by mistake, and leaves it as a tombstone when a third contender already locked", () => {
+    const lock = path.join(dir, "decisions.lock")
+    const actualStat = vi.mocked(fs.statSync).getMockImplementation()!
+    const actualRename = vi.mocked(fs.renameSync).getMockImplementation()!
+    const staleLock = () => {
+      fs.mkdirSync(lock, { recursive: true })
+      const old = new Date(Date.now() - 60_000)
+      fs.utimesSync(lock, old, old)
+    }
+    // B judges the lock stale; A takes it over and locks afresh before B renames, so B moves A's fresh lock.
+    const raceOnce = () => {
+      let raced = false
+      vi.mocked(fs.statSync).mockImplementation(((target: fs.PathLike, options?: unknown) => {
+        const result = actualStat(target, options as never)
+        if (String(target) === lock && !raced) {
+          raced = true
+          actualRename(lock, `${lock}.stale-${(result as fs.Stats).ino}-1-a`)
+          fs.mkdirSync(lock)
+        }
+        return result
+      }) as typeof fs.statSync)
+    }
+    try {
+      // While B holds A's lock under its tombstone, C locks and starts writing, so B cannot put A's lock back.
+      staleLock()
+      raceOnce()
+      vi.mocked(fs.renameSync).mockImplementation(((from: fs.PathLike, to: fs.PathLike) => {
+        if (String(to) === lock) {
+          fs.mkdirSync(lock)
+          fs.writeFileSync(path.join(lock, "c"), "C")
+        }
+        return actualRename(from, to)
+      }) as typeof fs.renameSync)
+      expect(() => withDecisionLock(dir, () => "B ran", 60)).toThrow("the cmux decision log is locked")
+      expect(fs.readdirSync(dir).filter((name) => name.startsWith("decisions.lock.stale-"))).toHaveLength(2)
+      expect(fs.readdirSync(lock)).toEqual(["c"])
+
+      // Any other failure to put the lock back is surfaced.
+      fs.unlinkSync(path.join(lock, "c"))
+      fs.utimesSync(lock, new Date(Date.now() - 60_000), new Date(Date.now() - 60_000))
+      raceOnce()
+      vi.mocked(fs.renameSync).mockImplementation(((from: fs.PathLike, to: fs.PathLike) => {
+        if (String(to) === lock) throw Object.assign(new Error("denied"), { code: "EACCES" })
+        return actualRename(from, to)
+      }) as typeof fs.renameSync)
+      expect(() => withDecisionLock(dir, () => "B ran", 60)).toThrow("denied")
+    } finally {
+      vi.mocked(fs.statSync).mockImplementation(actualStat)
+      vi.mocked(fs.renameSync).mockImplementation(actualRename)
+    }
   })
 
   it("lets a nested call in the same process run under the lock it already holds", () => {
@@ -346,6 +461,15 @@ describe("cmux decision lock", () => {
     }) as typeof fs.renameSync)
     try {
       expect(() => withDecisionLock(dir, () => 1)).toThrow("readonly")
+      // Another contender moved the stale lock first: this one simply tries again and locks.
+      vi.mocked(fs.renameSync).mockImplementation(((from: fs.PathLike, to: fs.PathLike) => {
+        if (String(from) === lock) {
+          actualRename(lock, `${lock}.stale-0-2-other`)
+          throw Object.assign(new Error("gone"), { code: "ENOENT" })
+        }
+        return actualRename(from, to)
+      }) as typeof fs.renameSync)
+      expect(withDecisionLock(dir, () => "after the other contender")).toBe("after the other contender")
     } finally {
       vi.mocked(fs.renameSync).mockImplementation(actualRename)
     }

@@ -114,6 +114,17 @@ describe("judging a Feed permission request", () => {
     expect(judgeFeedItem(ctx(), item("git status"))).toMatchObject({ reply: false, reason: expect.stringContaining("count cap reached") })
   })
 
+  it("refuses when the decision log cannot be read or holds a line it cannot parse, because the count is unknown", () => {
+    grant([repo], 1)
+    const file = cmuxDecisionLogPath(cmuxStateDir(agentRoot))
+    fs.mkdirSync(path.dirname(file), { recursive: true })
+    fs.writeFileSync(file, "{\"at\":\"2026-10-10T19:59:00.000Z\",\"requestId\":\"to")
+    expect(judgeFeedItem(ctx(), item("git status"))).toMatchObject({ reply: false, reason: expect.stringContaining("count cap reached") })
+    fs.writeFileSync(file, "")
+    fs.mkdirSync(`${file}.1`)
+    expect(judgeFeedItem(ctx(), item("git status"))).toMatchObject({ reply: false, reason: expect.stringContaining("EISDIR") })
+  })
+
   it("answers a soft request only with the human's exact once precedent, and an ask precedent always wins", () => {
     grant([repo])
     const casebook = cmuxCasebookPath(cmuxStateDir(agentRoot))
@@ -195,6 +206,14 @@ describe("answering once", () => {
     expect(await answerOnce(ctx(), { ...entry, requestId: "req-2" }, judgment)).toBe("not_sent")
     expect(log().at(-1)).toMatchObject({ outcome: "reply_failed", detail: "standing grant count cap reached" })
     expect(replies()).toHaveLength(1)
+  })
+
+  it("sends nothing when the decision log becomes unreadable before the reservation", async () => {
+    const { entry, judgment } = judged()
+    feed = [wire(entry)]
+    fs.mkdirSync(`${cmuxDecisionLogPath(cmuxStateDir(agentRoot))}.1`, { recursive: true })
+    await expect(answerOnce(ctx(), entry, judgment)).rejects.toThrow("EISDIR")
+    expect(replies()).toEqual([])
   })
 
   it("records failures to re-check, to reply or to confirm", async () => {

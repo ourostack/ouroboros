@@ -199,19 +199,29 @@ function errorCode(error: unknown): string | undefined {
 }
 
 /**
- * Takes over a stale lock. The stale directory is renamed to a tombstone named after its inode, and
- * a marker is written into the tombstone before this process tries the lock again. A contender that
- * judged the same stale lock and renames later finds the tombstone non-empty and fails, so it can
- * never move away the fresh lock that the winner made in the meantime.
+ * Takes over a stale lock. Each contender renames the stale directory to its own tombstone, so two
+ * contenders never collide on one name, and then checks that the directory it moved is the stale one
+ * it judged. If a fresh lock replaced the stale one in between, the contender moved someone else's
+ * live lock: it puts that lock back and tries again from the start.
  */
 function takeOverStaleLock(lock: string, staleIno: number): void {
-  const tombstone = `${lock}.stale-${staleIno}`
+  const tombstone = `${lock}.stale-${staleIno}-${process.pid}-${randomUUID()}`
   try {
     fs.renameSync(lock, tombstone)
   } catch (error) {
-    // Gone, or another contender's tombstone is already there: the lock is not ours to take.
-    if (LOST_TAKEOVER.has(errorCode(error))) return
+    // Another contender moved it first; the lock is not ours to take.
+    if (errorCode(error) === "ENOENT") return
     throw error
+  }
+  if (fs.statSync(tombstone).ino !== staleIno) {
+    try {
+      fs.renameSync(tombstone, lock)
+    } catch (error) {
+      if (!LOST_TAKEOVER.has(errorCode(error))) throw error
+      // A third contender locked in the meantime and its lock is not empty; leave the moved lock as a tombstone.
+      emitNervesEvent({ level: "warn", component: "senses", event: "senses.cmux_lock_restore_failed", message: "could not put back a cmux decision log lock moved during a takeover", meta: { tombstone } })
+    }
+    return
   }
   fs.writeFileSync(path.join(tombstone, "taken-over"), `${process.pid}\n`)
   emitNervesEvent({ level: "warn", component: "senses", event: "senses.cmux_stale_lock_taken_over", message: "took over a stale cmux decision log lock", meta: { tombstone } })
@@ -291,8 +301,9 @@ function rotateIfFull(file: string, now: number): void {
   let size: number
   try {
     size = fs.statSync(file).size
-  } catch {
-    return
+  } catch (error) {
+    if (errorCode(error) === "ENOENT") return
+    throw error
   }
   if (size <= MAX_LOG_BYTES) return
   const keep = parseDecisions(readText(`${file}.1`)).filter((record) => record.outcome === "reply_sent" && Date.parse(record.at) > now - REPLY_HISTORY_MS)
@@ -314,37 +325,86 @@ export function appendDecision(file: string, record: DecisionRecord): void {
   }
   withDecisionLock(path.dirname(file), () => {
     rotateIfFull(file, Date.parse(record.at))
+    // A crash mid-append can leave a torn last line; end it first so it cannot swallow this record.
+    if (!endsWithNewline(file)) fs.appendFileSync(file, "\n", { mode: 0o600 })
     fs.appendFileSync(file, `${JSON.stringify(safe)}\n`, { mode: 0o600 })
     fs.chmodSync(file, 0o600)
   })
   emitNervesEvent({ component: "senses", event: "senses.cmux_decision_logged", message: "logged a cmux prompt decision", meta: { outcome: record.outcome, tool: record.tool, floor: record.floor.verdict } })
 }
 
-function readText(file: string): string {
+/** True when the file is missing, empty or ends with a newline. */
+function endsWithNewline(file: string): boolean {
+  let fd: number
   try {
-    return fs.readFileSync(file, "utf-8")
-  } catch {
-    return ""
+    fd = fs.openSync(file, "r")
+  } catch (error) {
+    if (errorCode(error) === "ENOENT") return true
+    throw error
+  }
+  try {
+    const size = fs.fstatSync(fd).size
+    if (size === 0) return true
+    const last = Buffer.alloc(1)
+    fs.readSync(fd, last, 0, 1, size - 1)
+    return last[0] === 0x0a
+  } finally {
+    fs.closeSync(fd)
   }
 }
 
-function parseDecisions(text: string): DecisionRecord[] {
-  return text.split("\n").flatMap((line) => {
+/** A missing file reads as empty. Any other error throws, so a log that cannot be read never counts as having no replies. */
+function readText(file: string): string {
+  try {
+    return fs.readFileSync(file, "utf-8")
+  } catch (error) {
+    if (errorCode(error) === "ENOENT") return ""
+    throw error
+  }
+}
+
+/** The parsed records, oldest first, and how many non-empty lines could not be parsed. */
+export interface DecisionLog {
+  records: DecisionRecord[]
+  unreadable: number
+}
+
+function parseDecisionLog(text: string): DecisionLog {
+  const log: DecisionLog = { records: [], unreadable: 0 }
+  for (const line of text.split("\n")) {
+    if (line.trim() === "") continue
     try {
       const value = JSON.parse(line) as DecisionRecord
-      return value && typeof value === "object" && typeof value.requestId === "string" ? [value] : []
+      if (value && typeof value === "object" && typeof value.requestId === "string") {
+        log.records.push(value)
+        continue
+      }
     } catch {
-      return []
+      // Counted below.
     }
-  })
+    log.unreadable += 1
+  }
+  return log
+}
+
+function parseDecisions(text: string): DecisionRecord[] {
+  return parseDecisionLog(text).records
+}
+
+/** Every logged decision, including the one rotated-out file, with a count of lines that could not be parsed. */
+export function readDecisionLog(file: string): DecisionLog {
+  return parseDecisionLog(`${readText(`${file}.1`)}\n${readText(file)}`)
 }
 
 /** Every logged decision, oldest first, including the one rotated-out file. */
 export function readDecisions(file: string): DecisionRecord[] {
-  return parseDecisions(`${readText(`${file}.1`)}\n${readText(file)}`)
+  return readDecisionLog(file).records
 }
 
-/** How many replies the sense sent inside the window. Every attempt counts, confirmed or not, so the cap fails closed. */
-export function repliesInWindow(records: readonly DecisionRecord[], windowMs: number, now: number): number {
-  return records.filter((record) => record.outcome === "reply_sent" && Date.parse(record.at) > now - windowMs).length
+/**
+ * How many replies the sense sent inside the window. Every attempt counts, confirmed or not, and so
+ * does every line that cannot be parsed, because its time and outcome are unknown: the cap fails closed.
+ */
+export function repliesInWindow(log: DecisionLog, windowMs: number, now: number): number {
+  return log.records.filter((record) => record.outcome === "reply_sent" && Date.parse(record.at) > now - windowMs).length + log.unreadable
 }
