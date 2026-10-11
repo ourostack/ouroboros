@@ -35,7 +35,7 @@ Exact rollback intent is persistent. The standard Ouro bootstrap installs/verifi
 
 A rollback pin records when it was written. The unattended updater (below) honors it for seven days, then rewrites the intent to `latest` and resumes updates; a pin written before pins carried a timestamp gets one written into `version-intent.json` the first time the updater sees it. `ouro up --latest` still leaves the pin immediately.
 
-Rolling back below `0.1.0-alpha.898` stops unattended updates. The updater agent runs whatever `ouro` the launcher activates, and versions before `0.1.0-alpha.898` have no `self-update` command, so each hourly run fails until a human runs `ouro up --latest` (or `ouro rollback` to `0.1.0-alpha.898` or later).
+Rolling back below `0.1.0-alpha.902` stops unattended updates. The updater agent runs whatever `ouro` the launcher activates, and versions before `0.1.0-alpha.902` have no `self-update` command, so each hourly run fails until a human runs `ouro up --latest` (or `ouro rollback` to `0.1.0-alpha.902` or later).
 
 ## A machine stays on an old Ouro version
 
