@@ -11,20 +11,23 @@ import {
   applyEventFrame,
   escalationMessage,
   type CmuxEscalation,
+  type CmuxPendingFeedItem,
   pendingFeedItems,
   readCmuxState,
   rememberEscalation,
   surfaceForSession,
   writeCmuxState,
 } from "./attention"
+import { answerOnce, judgeFeedItem, recordDecision, type AnswerContext, type Judgment } from "./answer"
 import { createCmuxClient, type CmuxClient, type CmuxSocketError } from "./client"
 
 /**
  * The cmux sense: follows cmux's `events.stream` with a persisted cursor, keeps a small per-terminal
- * picture of what each coding agent is doing, and brings every Feed decision cmux is holding open
- * to the agent once per Feed request id, the way the mail sense does: a pending message in the
- * agent's private runtime, plus one wake per check pass. Answering happens elsewhere; this process only perceives and
- * escalates.
+ * picture of what each coding agent is doing, and records every Feed decision cmux is holding open
+ * for the human. A permission request the floor, the human's precedents and a standing owner grant
+ * all clear is answered `once` here, with no agent turn; everything else is brought to the agent once
+ * per Feed request id, the way the mail sense does: a pending message in the agent's private runtime,
+ * plus one wake per check pass.
  */
 export interface CmuxSenseAppOptions {
   agentName: string
@@ -109,6 +112,7 @@ export async function startCmuxSenseApp(options: CmuxSenseAppOptions): Promise<C
     return () => clearTimeout(timer)
   })
   const statePath = cmuxStatePath(agent)
+  const answers: AnswerContext = { agentRoot: getAgentRoot(agent), stateDir: path.dirname(statePath), client, now: nowMs, cmuxVersion: () => state.cmuxVersion }
   const state = readCmuxState(statePath, now())
   state.connected = false
 
@@ -141,21 +145,54 @@ export async function startCmuxSenseApp(options: CmuxSenseAppOptions): Promise<C
     cancelSave ??= schedule(save, SAVE_DELAY_MS)
   }
 
+  /**
+   * One pending item: answered once when the code allows it, otherwise escalated with the reason.
+   * A failure while judging or answering escalates the item with the error; a failure to record the
+   * escalation leaves it unremembered, so the next check retries it. One item never blocks another.
+   */
+  async function handleItem(item: CmuxPendingFeedItem): Promise<string | null> {
+    let reason: string
+    let judgment: Judgment | null = null
+    try {
+      judgment = judgeFeedItem(answers, item)
+      if (judgment.reply) {
+        const outcome = await answerOnce(answers, item, judgment)
+        if (outcome === "replied_once" || outcome === "race") {
+          rememberEscalation(state, item.requestId)
+          return null
+        }
+        reason = outcome === "unconfirmed" ? "the sense's reply may or may not have reached cmux, and cmux does not show the request resolved by it" : "the sense's own reply did not go out"
+      } else {
+        reason = judgment.reason
+      }
+    } catch (error) {
+      reason = `the sense could not judge or answer it: ${(error as Error).message}`
+    }
+    const escalation = escalationMessage(agent, item, surfaceForSession(state, item.workstreamId), reason)
+    try {
+      await escalate(escalation)
+    } catch (error) {
+      emitNervesEvent({ level: "warn", component: "senses", event: "senses.cmux_escalation_error", message: "could not record a cmux Feed request; the next check retries", meta: { agent, error: (error as Error).message } })
+      return null
+    }
+    rememberEscalation(state, item.requestId)
+    emitNervesEvent({ component: "senses", event: "senses.cmux_escalated", message: "brought a cmux Feed request to the agent", meta: { agent, kind: item.kind, source: item.source } })
+    // The escalation is queued either way; a decision log that cannot take the line is noted, not retried.
+    try {
+      if (judgment) recordDecision(answers, item, judgment, "escalated", reason)
+    } catch (error) {
+      emitNervesEvent({ level: "warn", component: "senses", event: "senses.cmux_decision_log_error", message: "could not log a cmux escalation", meta: { agent, error: (error as Error).message } })
+    }
+    return escalation.requestId
+  }
+
   async function checkFeed(): Promise<void> {
     try {
       const items = pendingFeedItems(await client.call("feed.list", { pending_only: true }))
       const queued: string[] = []
       for (const item of items.filter((entry) => !state.escalated.includes(entry.requestId))) {
-        // One failing item never blocks the others; it stays unremembered, so the next check retries it.
-        try {
-          const escalation = escalationMessage(agent, item, surfaceForSession(state, item.workstreamId))
-          await escalate(escalation)
-          queued.push(escalation.requestId)
-          rememberEscalation(state, item.requestId)
-          emitNervesEvent({ component: "senses", event: "senses.cmux_escalated", message: "brought a cmux Feed request to the agent", meta: { agent, kind: item.kind, source: item.source } })
-        } catch (error) {
-          emitNervesEvent({ level: "warn", component: "senses", event: "senses.cmux_escalation_error", message: "could not record a cmux Feed request; the next check retries", meta: { agent, error: (error as Error).message } })
-        }
+        const id = await handleItem(item)
+        if (id !== null) queued.push(id)
       }
       // One wake per check pass: the private turn reads every queued escalation at once.
       if (queued.length > 0) await wake(queued)
@@ -203,8 +240,8 @@ export async function startCmuxSenseApp(options: CmuxSenseAppOptions): Promise<C
           state.connected = true
           state.lastError = null
           emitNervesEvent({ component: "senses", event: "senses.cmux_stream_connected", message: "cmux event stream connected", meta: { agent, reset } })
-          void identify()
-          requestFeedCheck()
+          // The version gates answering, so the first Feed check on a connection waits for it.
+          void identify().then(requestFeedCheck)
           return
         }
         if (frame.type !== "event") return
