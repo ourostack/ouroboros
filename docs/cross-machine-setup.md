@@ -66,7 +66,9 @@ ouro clone <bundle-git-remote>
 
 ## Which machine runs the agent
 
-Each agent runs on exactly one machine, its home. The home is recorded as `home` in the bundle's synced `agent.json` and names a machine by its stable id from `~/.ouro-cli/machine.json`. The daemon starts only agents whose home is this machine, so cloning a bundle onto a second machine does not make the agent run twice.
+Each agent runs on exactly one machine, its home. The home is recorded as `home` in the bundle's synced `agent.json` and names a machine by its stable id from `~/.ouro-cli/machine.json`. The daemon starts only agents whose home is this machine, so once an agent has a home, cloning its bundle onto another machine does not make it run there.
+
+An agent with no `home` yet (every agent from before homes existed) is the exception: it keeps running on any machine that holds no home at all, so upgrading never takes an agent dark. Two such machines can run the same agent twice, and `ouro status` warns about every agent running here without a home. Once a machine is home to any agent, it runs only its own agents and leaves agents without a home alone.
 
 To make this machine an agent's home, run:
 
@@ -74,9 +76,19 @@ To make this machine an agent's home, run:
 ouro move <agent> here
 ```
 
-The move pulls the bundle, records this machine as the home (and the old home as `home.previous`), commits only `agent.json` and pushes. If the push is rejected because another machine changed the bundle meanwhile, the move is undone locally and retried once from a fresh pull; if it still cannot be published, nothing changes. Then run `ouro up` here to start the agent. The old home stops running it at its next `ouro up` after it syncs the bundle. Until then, that machine's `ouro status` reports a lease conflict under the `agent-home` health check.
+The move refuses to start unless the bundle is exactly in step with its remote: no unpushed commits (a move never publishes a sync backlog as a side effect; fix bundle sync first) and no uncommitted change to `agent.json`. It then catches up with the remote, records this machine as the home (and the old home as `home.previous`), commits only `agent.json` and pushes. If another machine changed the home while the move was being pushed, the move is undone and says which machine won; nothing is ever silently overwritten.
 
-An agent with no `home` yet (every agent from before homes existed) keeps running on any machine that holds no home at all, so upgrading never takes an agent dark. Once a machine is home to any agent, it runs only its own agents and leaves agents without a home alone. `ouro status` shows each agent's home: `home: this machine`, `home: <machine>, not run here`, or `no home` with the `ouro move` command that claims it.
+Then run `ouro up` here to start the agent. The old home stops it within about a minute: each daemon checks its agents' leases on disk and on the bundle remote every minute, stops any agent homed elsewhere, reports the lease conflict in `ouro status`, and declines turns for it. Its next `ouro up` stops managing the agent at all.
+
+### Moving existing agents onto homes
+
+When two machines already share bundles, give each agent a home in this order so nothing goes dark or runs twice:
+
+1. Upgrade the machine that should keep running an agent (for example, the Mac that runs `slugger`). With no homes yet, it keeps running everything it ran before.
+2. On each machine, claim the agents that belong there: `ouro move <agent> here`. From then on, that machine runs only the agents it claimed.
+3. Run `ouro up` on that machine and check `ouro status`: every agent shows `home: this machine`, `home: <machine>, not run here`, or `no home` with the claim command.
+
+If a machine's identity is ever replaced (a new `machine.json`), the agents homed on the old id stop running there. `ouro status` points this out when an agent's home has this machine's name but a different id; run `ouro move <agent> here` to take it back.
 
 ## Step 3: Unlock the agent vault
 

@@ -48,6 +48,7 @@ import { buildTemporalView } from "../heart/temporal-view"
 import { buildStartOfTurnPacket, renderStartOfTurnPacket, buildCapabilitiesSection } from "../heart/start-of-turn-packet"
 import { detectBundleState } from "../heart/bundle-state"
 import { preTurnPull, postTurnPush } from "../heart/sync"
+import { readAgentHomeElsewhere } from "../heart/daemon/agent-discovery"
 import { getSyncConfig } from "../heart/config"
 import { describeCurrentSessionTiming, stampIngressTime, type SessionEvent } from "../heart/session-events"
 import { describeSessionActivityTiming, selectFreshestFriendFacingActivity } from "../heart/session-activity"
@@ -956,6 +957,7 @@ async function handleInboundTurnExclusive(input: InboundTurnInput): Promise<Inbo
   let syncFailure: string | undefined
   let syncConfig: import("../heart/config").SyncConfig = { enabled: false, remote: "origin" }
   const liveLatencyMode = input.latencyMode === "live"
+  let declinedForHome = false
   try { syncConfig = getSyncConfig() } catch { /* config not available */ }
 
   // Wrap the turn body in try/finally so postTurnPush always runs — even on
@@ -982,6 +984,22 @@ async function handleInboundTurnExclusive(input: InboundTurnInput): Promise<Inbo
     }
   }
   /* v8 ignore stop */
+
+  // Each agent runs on one machine. If the (just pulled) lease names another
+  // machine, this machine must not act for the agent, even before its daemon
+  // has noticed and stopped it. Nothing is written, so nothing is pushed.
+  const homeElsewhere = readAgentHomeElsewhere(getAgentRoot())
+  if (homeElsewhere) {
+    declinedForHome = true
+    emitNervesEvent({
+      level: "warn",
+      component: "senses",
+      event: "senses.turn_declined_homed_elsewhere",
+      message: "declined a turn for an agent homed on another machine",
+      meta: { channel: input.channel, homeMachineId: homeElsewhere.machineId, homeMachineName: homeElsewhere.machineName },
+    })
+    return { resolvedContext, gateResult }
+  }
 
   // Build the turn context snapshot — centralizes all state reads
   const ctx = await buildTurnContext({
@@ -1452,7 +1470,7 @@ async function handleInboundTurnExclusive(input: InboundTurnInput): Promise<Inbo
   }
   } finally {
     // Step 6b: Post-turn sync push (opt-in, git-status-based discovery).
-    if (syncConfig.enabled && !liveLatencyMode) {
+    if (syncConfig.enabled && !liveLatencyMode && !declinedForHome) {
       postTurnPush(getAgentRoot(), syncConfig)
     }
   }

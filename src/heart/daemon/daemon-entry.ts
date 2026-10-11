@@ -81,7 +81,8 @@ const entryPath = path.resolve(__dirname, "daemon-entry.js")
 const mode = detectRuntimeMode(getRepoRoot())
 // Each agent runs on exactly one machine: manage only agents homed here
 // (see agent-home.ts), resolved against this machine's stable id.
-const daemonMachineId = loadOrCreateMachineIdentity().machineId
+const daemonMachine = loadOrCreateMachineIdentity()
+const daemonMachineId = daemonMachine.machineId
 const managedAgents = listHomeBundleAgents({ machineId: daemonMachineId })
 const readinessAgents = providerReadinessAgents(
   managedAgents,
@@ -351,10 +352,21 @@ const senseManager = new DaemonSenseManager({
 const healthMonitor = new HealthMonitor({
   processManager,
   scheduler,
-  sentinelChecker: async (resultsSoFar) => [
-    ...await Promise.all(managedAgents.map((agent) => refreshDaemonSentinel(agent, "daemon_health", resultsSoFar))),
-    checkAgentHomes({ managedAgents, machineId: daemonMachineId }),
-  ],
+  sentinelChecker: async (resultsSoFar) => {
+    const sentinels = await Promise.all(managedAgents.map((agent) => refreshDaemonSentinel(agent, "daemon_health", resultsSoFar)))
+    // Each agent runs on one machine: stop any agent whose lease (on disk or
+    // upstream) now names another machine. See agent-home.ts.
+    const homes = await checkAgentHomes({
+      managedAgents,
+      machineId: daemonMachineId,
+      hostnameAliases: daemonMachine.hostnameAliases,
+      bundlesRoot: getAgentBundlesRoot(),
+    })
+    for (const agent of homes.displaced) {
+      void processManager.displaceAgent(agent, `${agent} is homed on another machine`).catch(() => undefined)
+    }
+    return [...sentinels, homes.health]
+  },
   senseProbeProvider: () => [
     ...senseManager.listHealthProbes(),
     ...managedAgents.map((agent) => createMcpStatusCanaryProbe({

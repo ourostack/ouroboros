@@ -124,6 +124,8 @@ interface AgentRuntimeState {
   cooldownRetryCount: number
   fastCrashCount: number
   stopFailureActive: boolean
+  /** Set once the agent's home moved to another machine; it never starts here again. */
+  displacedReason: string | null
 }
 
 function startOfHour(ms: number): number {
@@ -277,6 +279,7 @@ export class DaemonProcessManager {
         cooldownRetryCount: 0,
         fastCrashCount: 0,
         stopFailureActive: false,
+        displacedReason: null,
         snapshot: {
           name: agent.name,
           channel: agent.channel,
@@ -321,6 +324,7 @@ export class DaemonProcessManager {
   async startAgent(agent: string, options: DaemonAgentStartOptions = {}): Promise<void> {
     const state = this.requireAgent(agent)
     if (this.shutdownRequested) return
+    if (state.displacedReason !== null) return
     if (state.process || state.startInFlight) return
 
     const attemptId = state.startAttemptId + 1
@@ -652,6 +656,30 @@ export class DaemonProcessManager {
         finish(new Error(errorReason))
       }, this.stopTimeoutMs)
     })
+  }
+
+  /**
+   * Stop an agent whose home moved to another machine and keep it stopped:
+   * it is parked (health checks no longer restart it) and no later start,
+   * wake or restart runs it again in this daemon. `ouro up` replaces the
+   * daemon with one that does not manage it at all.
+   */
+  async displaceAgent(agent: string, reason: string): Promise<void> {
+    const state = this.requireAgent(agent)
+    if (state.displacedReason !== null) return
+    state.displacedReason = reason
+    state.snapshot.autoStart = false
+    state.snapshot.errorReason = reason
+    state.snapshot.fixHint = "Run 'ouro up' on this machine to stop managing it, or 'ouro move <agent> here' to take it back."
+    emitNervesEvent({
+      level: "warn",
+      component: "daemon",
+      event: "daemon.agent_displaced",
+      message: "stopping agent homed on another machine",
+      meta: { agent, reason },
+    })
+    this.notifySnapshotChange(state.snapshot)
+    await this.stopAgent(agent)
   }
 
   async restartAgent(agent: string, options: DaemonAgentStartOptions = {}): Promise<void> {

@@ -62,6 +62,32 @@ describe("daemon process manager", () => {
     timers.length = 0
   })
 
+  it("stops a displaced agent and never starts it again", async () => {
+    const child = new MockChild()
+    spawn.mockReturnValue(child)
+    now.mockReturnValue(1_000)
+    const onSnapshotChange = vi.fn()
+    const manager = new DaemonProcessManager({ agents, spawn, now, setTimeoutFn, clearTimeoutFn, onSnapshotChange })
+
+    await manager.startAgent("slugger")
+    expect(manager.getAgentSnapshot("slugger")?.status).toBe("running")
+
+    await manager.displaceAgent("slugger", "slugger is homed on another machine")
+    await manager.displaceAgent("slugger", "ignored second reason")
+
+    const snapshot = manager.getAgentSnapshot("slugger")
+    expect(child.kill).toHaveBeenCalledTimes(1)
+    expect(snapshot).toEqual(expect.objectContaining({
+      status: "stopped",
+      autoStart: false,
+      errorReason: "slugger is homed on another machine",
+    }))
+    await manager.startAgent("slugger")
+    await manager.restartAgent("slugger")
+    expect(spawn).toHaveBeenCalledTimes(1)
+    expect(manager.getAgentSnapshot("slugger")?.status).toBe("stopped")
+  })
+
   it("starts only autoStart agents on boot", async () => {
     const child = new MockChild()
     spawn.mockReturnValue(child)

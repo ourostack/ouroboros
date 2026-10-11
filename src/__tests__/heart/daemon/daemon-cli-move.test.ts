@@ -70,7 +70,7 @@ describe("ouro move: execution", () => {
     expect(config.home).toEqual(expect.objectContaining({ machineId: identity.machineId, since: "2026-10-10T12:00:00.000Z" }))
     expect(result).toContain(`ouroboros now lives on ${config.home.machineName}`)
     expect(result).toContain("Run `ouro up` to start it here.")
-    expect(result).toContain("these unclaimed agents stop here at the next `ouro up`: slugger.")
+    expect(result).toContain("these agents without a home stop running here: slugger.")
     expect(result).not.toContain("away")
   })
 
@@ -94,6 +94,35 @@ describe("ouro move: execution", () => {
 })
 
 describe("ouro status: agent homes", () => {
+  it("warns once about several agents running here without a home", async () => {
+    const cliDeps: OuroCliDeps = {
+      socketPath: "/tmp/ouro-test.sock",
+      sendCommand: vi.fn(async () => ({
+        ok: true,
+        summary: "daemon=running",
+        data: {
+          overview: {},
+          senses: [],
+          workers: [],
+          sync: [],
+          agents: [
+            { name: "a", enabled: true, homeState: "fallback" },
+            { name: "b", enabled: true, homeState: "fallback" },
+          ],
+        },
+      })),
+      startDaemonProcess: vi.fn(async () => ({ pid: 1 })),
+      writeStdout: vi.fn(),
+      checkSocketAlive: vi.fn(async () => true),
+      cleanupStaleSocket: vi.fn(),
+      fallbackPendingMessage: vi.fn(() => "/tmp/pending.jsonl"),
+    }
+
+    const result = await runOuroCli(["status"], cliDeps)
+
+    expect(result).toContain("a, b run here without a home; if another machine runs them too, they run twice.")
+  })
+
   it("shows where each agent runs", async () => {
     const cliDeps: OuroCliDeps = {
       socketPath: "/tmp/ouro-test.sock",
@@ -108,6 +137,7 @@ describe("ouro status: agent homes", () => {
           agents: [
             { name: "ouroboros", enabled: true, homeState: "here", homeMachine: "this-mac" },
             { name: "slugger", enabled: true, homeState: "elsewhere", homeMachine: "other-mac" },
+            { name: "twin", enabled: true, homeState: "elsewhere", homeMachine: "Mac (a7d3bc77)", homeNameMatchesThisMachine: true },
             { name: "stray", enabled: true, homeState: "unclaimed" },
             { name: "legacy", enabled: true, homeState: "fallback" },
           ],
@@ -126,5 +156,7 @@ describe("ouro status: agent homes", () => {
     expect(result).toContain("home: other-mac, not run here")
     expect(result).toContain("no home; not run here (claim: ouro move stray here)")
     expect(result).toContain("no home; runs here until a machine claims it (claim: ouro move legacy here)")
+    expect(result).toContain("home: Mac (a7d3bc77), not run here; that name is this machine's, so if this machine's identity was replaced, run ouro move twin here")
+    expect(result).toContain("legacy runs here without a home; if another machine runs it too, it runs twice.")
   })
 })

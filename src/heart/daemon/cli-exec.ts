@@ -2832,10 +2832,10 @@ function executeAgentMove(command: Extract<OuroCliCommand, { kind: "agent.move" 
 
   const lines = [result.message]
   if (result.changed) {
-    lines.push("Run `ouro up` to start it here. Any other machine still running it stops at its next `ouro up` after it syncs this bundle; until then that machine's `ouro status` reports a lease conflict.")
+    lines.push("Run `ouro up` to start it here. A machine still running it stops it within about a minute of seeing the move (its daemon checks the bundle's remote every minute) and reports a lease conflict in `ouro status`.")
     const stopping = discover().filter((row) => row.homeState === "unclaimed" && fallbackBefore.has(row.name)).map((row) => row.name)
     if (stopping.length > 0) {
-      lines.push(`This machine now runs only agents homed here, so these unclaimed agents stop here at the next \`ouro up\`: ${stopping.join(", ")}. Keep one here with \`ouro move <agent> here\`.`)
+      lines.push(`This machine now runs only agents homed here, so these agents without a home stop running here: ${stopping.join(", ")}. Keep one here with \`ouro move <agent> here\`.`)
     }
   }
   const message = lines.join("\n")

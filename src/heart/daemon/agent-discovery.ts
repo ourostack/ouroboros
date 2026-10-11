@@ -22,6 +22,12 @@ export interface AgentDiscoveryOptions {
    * yet, so no agent is homed here.
    */
   machineId?: string | null
+  /**
+   * This machine's hostname aliases, used to spot a home that names this
+   * machine's hostname under a different id (a replaced machine.json).
+   * Read from disk together with `machineId` when that is undefined.
+   */
+  hostnameAliases?: readonly string[]
 }
 
 /**
@@ -65,8 +71,14 @@ export interface BundleAgentRow {
   managementBlockedReason?: string
   /** Present for enabled, manageable, non-library bundles: where this agent runs. */
   homeState?: AgentHomeState
-  /** The home machine's name, when the agent has a home. */
+  /** The home machine's label (name plus a short id), when the agent has a home. */
   homeMachine?: string
+  /**
+   * True when the agent is homed elsewhere under a machine name that matches
+   * this machine's hostname: likely this machine's own home under an id that
+   * was since replaced, which would otherwise leave the agent dark silently.
+   */
+  homeNameMatchesThisMachine?: true
 }
 
 interface DiscoveredBundleAgentRow extends BundleAgentRow {
@@ -131,11 +143,46 @@ export function parseAgentHome(value: unknown): AgentHome | null {
   if (!isRecord(value)) return null
   const machineId = nonEmptyString(value.machineId)
   if (!machineId) return null
-  return {
+  const home: AgentHome = {
     machineId,
     machineName: nonEmptyString(value.machineName) ?? machineId,
     since: nonEmptyString(value.since) ?? "",
   }
+  const previous = isRecord(value.previous) ? parseAgentHome(value.previous) : null
+  if (previous) home.previous = { machineId: previous.machineId, machineName: previous.machineName }
+  return home
+}
+
+/** Hostnames compare without case or a trailing `.local`. */
+export function normalizeMachineName(name: string): string {
+  return name.trim().replace(/\.local$/i, "").toLowerCase()
+}
+
+/**
+ * How a home is shown: its name plus a short id, so two Macs that are both
+ * called "Mac" stay distinguishable.
+ */
+export function agentHomeLabel(home: { machineId: string; machineName: string }): string {
+  if (home.machineName === home.machineId) return home.machineId
+  return `${home.machineName} (${home.machineId.replace(/^machine_/, "").slice(0, 8)})`
+}
+
+/**
+ * The home this bundle names when it is another machine, else null. Used by
+ * the turn pipeline to decline turns for an agent that has moved away.
+ */
+export function readAgentHomeElsewhere(
+  agentRoot: string,
+  machineId: string | null = readMachineIdentity()?.machineId ?? null,
+): AgentHome | null {
+  if (machineId === null) return null
+  let home: AgentHome | null
+  try {
+    home = parseAgentHome((JSON.parse(fs.readFileSync(path.join(agentRoot, "agent.json"), "utf-8")) as { home?: unknown }).home)
+  } catch {
+    return null
+  }
+  return home && home.machineId !== machineId ? home : null
 }
 
 function stripDiscoveryMetadata(row: DiscoveredBundleAgentRow): BundleAgentRow {
@@ -145,7 +192,8 @@ function stripDiscoveryMetadata(row: DiscoveredBundleAgentRow): BundleAgentRow {
     publicRow.managementBlockedReason = row.managementBlockedReason
   }
   if (row.homeState !== undefined) publicRow.homeState = row.homeState
-  if (row.home) publicRow.homeMachine = row.home.machineName
+  if (row.home) publicRow.homeMachine = agentHomeLabel(row.home)
+  if (row.homeNameMatchesThisMachine) publicRow.homeNameMatchesThisMachine = true
   return publicRow
 }
 
@@ -212,14 +260,17 @@ function discoverBundleAgents(options: AgentDiscoveryOptions = {}): DiscoveredBu
   }
 
   if (discovered.length === 0) return discovered
-  const machineId = options.machineId === undefined
-    ? readMachineIdentity()?.machineId ?? null
-    : options.machineId
+  const identity = options.machineId === undefined ? readMachineIdentity() : null
+  const machineId = options.machineId === undefined ? identity?.machineId ?? null : options.machineId
+  const thisMachineNames = new Set((options.hostnameAliases ?? identity?.hostnameAliases ?? []).map(normalizeMachineName))
   const holdsAHome = machineId !== null && discovered.some((row) => row.home?.machineId === machineId)
   for (const row of discovered) {
     if (!row.enabled || isLibraryKind(row.kind) || !row.manageable) continue
     if (row.home) {
       row.homeState = row.home.machineId === machineId ? "here" : "elsewhere"
+      if (row.homeState === "elsewhere" && thisMachineNames.has(normalizeMachineName(row.home.machineName))) {
+        row.homeNameMatchesThisMachine = true
+      }
     } else {
       row.homeState = holdsAHome ? "unclaimed" : "fallback"
     }
