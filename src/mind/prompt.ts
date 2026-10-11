@@ -27,7 +27,7 @@ import { readHealth, getDefaultHealthPath } from "../heart/daemon/daemon-health"
 import { preImplementationScrutinySection } from "./scrutiny";
 import { readPulse } from "../heart/daemon/pulse";
 import { formatAgentProviderVisibilityForPrompt, formatAgentProviderVisibilityForPulse, type AgentProviderVisibility } from "../heart/provider-visibility";
-import { cmuxSenseStatus } from "../heart/cmux-config";
+import { shepherdSenseStatus } from "../heart/shepherd-config";
 import { listTripIds, readTripRecord } from "../trips/store";
 import type { TripRecord } from "../trips/core";
 import {
@@ -533,7 +533,7 @@ function localSenseStatusLines(): string[] {
       && hasTextField(runtimePayload, "telegramAuthorizedUserId")
       && hasTextField(runtimePayload, "telegramAuthorizedChatId"),
     workbench: false,
-    shepherd: cmuxSenseStatus(true, machinePayload) === "ready",
+    shepherd: shepherdSenseStatus(true, machinePayload) === "ready",
   }
 
   const rows: Array<{ label: string; status: string }> = [
@@ -564,7 +564,7 @@ function localSenseStatusLines(): string[] {
     },
     {
       label: "shepherd",
-      status: cmuxSenseStatus(senses.shepherd.enabled, machinePayload),
+      status: shepherdSenseStatus(senses.shepherd.enabled, machinePayload),
     },
     {
       label: "Workbench",

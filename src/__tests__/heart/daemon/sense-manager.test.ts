@@ -1496,7 +1496,7 @@ describe("daemon sense manager", () => {
     ])
   })
 
-  it("runs the cmux sense from this machine's socket auth and names the human repair when it is missing", async () => {
+  it("runs the Shepherd sense from this machine's socket auth and names the human repair when it is missing", async () => {
     const bundlesRoot = fs.mkdtempSync(path.join(os.tmpdir(), "sense-manager-bundles-"))
     const agentJson = { version: 1, enabled: true, provider: "anthropic", senses: { cli: { enabled: true }, shepherd: { enabled: true } }, phrases: { thinking: ["t"], tool: ["t"], followup: ["f"] } }
     for (const agent of ["ready", "halfset", "absent"]) writeAgentJson(bundlesRoot, agent, agentJson)
@@ -1516,7 +1516,7 @@ describe("daemon sense manager", () => {
 
     const rows = manager.listSenseRows().filter((row) => row.sense === "shepherd")
     expect(rows).toEqual([
-      expect.objectContaining({ agent: "ready", status: "running", detail: "socket auth: capability" }),
+      expect.objectContaining({ agent: "ready", status: "running", detail: "cmux socket auth: capability" }),
       expect.objectContaining({ agent: "halfset", status: "needs_config", detail: "missing cmux.socketCapability" }),
       expect.objectContaining({ agent: "absent", status: "not_attached" }),
     ])

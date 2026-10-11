@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto"
 import * as net from "node:net"
-import { cmuxRepairHint, type CmuxConnection } from "../../heart/cmux-config"
+import { shepherdRepairHint, type CmuxConnection } from "../../heart/shepherd-config"
 import { emitNervesEvent } from "../../nerves/runtime"
 
 /**
@@ -50,7 +50,7 @@ export function createCmuxClient(
   options: { timeoutMs?: number; agentName?: string } = {},
 ): CmuxClient {
   const timeoutMs = options.timeoutMs ?? 5_000
-  const repair = cmuxRepairHint(options.agentName ?? "<agent>")
+  const repair = shepherdRepairHint(options.agentName ?? "<agent>")
 
   const wrap = (line: string): string => connection.auth.kind === "capability"
     ? `_cmux_capability_v1 ${connection.auth.token} ${line}`

@@ -3,448 +3,320 @@ import * as os from "node:os"
 import * as path from "node:path"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 
-import { cacheMachineRuntimeCredentialConfig, resetRuntimeCredentialConfigCache } from "../../../heart/runtime-credentials"
 import { resetIdentity } from "../../../heart/identity"
-import type { CmuxEscalation } from "../../../senses/shepherd/attention"
-import { readStewardPolicy, updateStewardPolicy } from "../../../heart/steward-policy"
-import { CMUX_GRANT_ACTION, CMUX_GRANT_KEY } from "../../../senses/shepherd/answer"
-import { cmuxDecisionLogPath, readDecisions } from "../../../senses/shepherd/casebook"
-import { startCmuxSenseApp, type CmuxSenseApp } from "../../../senses/shepherd/sense"
-import { ackFrame, feedEvent, startFakeCmux, type FakeCmux } from "./fake-cmux"
-
-vi.mock("node:fs", async (importOriginal) => {
-  const actual = await importOriginal<typeof import("node:fs")>()
-  return { ...actual, realpathSync: vi.fn(actual.realpathSync) }
-})
+import { cacheMachineRuntimeCredentialConfig, resetRuntimeCredentialConfigCache } from "../../../heart/runtime-credentials"
+import type { HostWatchHandlers, ReturnedControl, ShepherdHost } from "../../../senses/shepherd/host"
+import type { JudgeResult, ReturnPacket } from "../../../senses/shepherd/judge"
+import { appendReturn, readReturns, returnsLogPath, type ReturnRecord } from "../../../senses/shepherd/returns"
+import { escalationContent, field, humanName, queueEscalation, startShepherdSenseApp, wakeForEscalations } from "../../../senses/shepherd/sense"
+import { ackFrame, startFakeCmux } from "./fake-cmux"
+import { hookEvent, SCREENS, tree } from "./fixtures"
 
 const mockRequestPrivateWake = vi.fn()
 vi.mock("../../../heart/daemon/socket-client", async (importOriginal) => ({
   ...await importOriginal<typeof import("../../../heart/daemon/socket-client")>(),
   requestPrivateWake: (...args: unknown[]) => mockRequestPrivateWake(...args),
 }))
+const mockGetProviderRuntime = vi.fn()
+vi.mock("../../../heart/core", async (importOriginal) => ({
+  ...await importOriginal<typeof import("../../../heart/core")>(),
+  getProviderRuntime: (...args: unknown[]) => mockGetProviderRuntime(...args),
+}))
 
 const AGENT = "ouroboros"
-const NOW = Date.parse("2026-10-10T20:00:00.000Z")
 const originalHome = process.env.HOME
 let home = ""
-let server: FakeCmux
-let app: CmuxSenseApp | null = null
+let agentRoot = ""
+let clock = 0
+let stop: (() => void) | null = null
 
-interface Task { fn: () => void; ms: number; cancelled: boolean }
-function manualScheduler() {
-  const tasks: Task[] = []
-  return {
-    schedule: (fn: () => void, ms: number) => {
-      const task = { fn, ms, cancelled: false }
-      tasks.push(task)
-      return () => { task.cancelled = true }
+interface FakeHost extends ShepherdHost {
+  handlers: HostWatchHandlers | null
+  screens: Record<string, string[]>
+  actions: string[]
+}
+
+function fakeHost(): FakeHost {
+  const host: FakeHost = {
+    name: "fake",
+    handlers: null,
+    screens: {},
+    actions: [],
+    list: async () => [],
+    read: async (id) => {
+      const queue = host.screens[id] ?? [""]
+      return queue.length > 1 ? queue.shift()! : queue[0]!
     },
-    due: (ms: number) => tasks.filter((task) => !task.cancelled && task.ms === ms).length,
-    run: (ms: number) => {
-      for (const task of tasks.filter((entry) => !entry.cancelled && entry.ms === ms)) {
-        task.cancelled = true
-        task.fn()
-      }
+    prompt: async (id, line) => { host.actions.push(`prompt ${id} ${line}`) },
+    key: async (id, key) => { host.actions.push(`key ${id} ${key}`) },
+    signal: async (id, status) => { host.actions.push(`status ${id} ${status}`) },
+    watch: (handlers) => {
+      host.handlers = handlers
+      return { close: () => { host.actions.push("closed") } }
     },
   }
+  return host
 }
 
-const pending = (requestId: string, extra: Record<string, unknown> = {}) => ({
-  kind: "permissionRequest", status: "pending", request_id: requestId, source: "claude", tool_name: "Bash",
-  cwd: "/Users/a/code/repo", workstream_id: "claude-s1", created_at: "2026-10-10T19:59:58Z", tool_input: "{\"command\":\"ls\"}", ...extra,
-})
+const verdict = (overrides: Partial<JudgeResult> = {}): JudgeResult => ({ kind: "premature", reply: { text: "Go ahead and implement it." }, reason: "It stopped after a plan.", latencyMs: 900, inputTokens: 1200, ...overrides })
 
-function statePath(): string {
-  return path.join(home, "AgentBundles", `${AGENT}.ouro`, "state", "senses", "shepherd", "state.json")
+interface Task { fn: () => void; ms: number }
+const tasks: Task[] = []
+const schedule = (fn: () => void, ms: number) => {
+  const task = { fn, ms }
+  tasks.push(task)
+  return () => { tasks.splice(tasks.indexOf(task), 1) }
 }
 
-function readState(): Record<string, unknown> {
-  return JSON.parse(fs.readFileSync(statePath(), "utf-8")) as Record<string, unknown>
+async function start(judge: (packet: ReturnPacket) => Promise<JudgeResult>, host: FakeHost = fakeHost()) {
+  const escalations: string[] = []
+  const wakes: string[][] = []
+  const app = await startShepherdSenseApp({
+    agentName: AGENT,
+    now: () => clock,
+    createHost: () => host,
+    judge,
+    escalate: (content) => escalations.push(content),
+    wake: async (ids) => { wakes.push(ids) },
+    schedule,
+  })
+  stop = app.stop
+  const returned = async (event: Partial<ReturnedControl> & { sessionId: string }) => {
+    host.handlers!.returned({ transitionId: `t-${clock}`, agent: "claude", cwd: "/Users/a/code/app", lastBody: null, ...event })
+    await vi.waitFor(() => expect(readReturns(agentRoot).some((record) => record.transition === `t-${clock}` || record.transition === event.transitionId)).toBe(true))
+  }
+  return { host, escalations, wakes, returned, last: () => readReturns(agentRoot).at(-1)! }
 }
 
-beforeEach(async () => {
-  home = fs.mkdtempSync(path.join(os.tmpdir(), "cmux-sense-home-"))
+function writeFriend(name: string, record: Record<string, unknown>): void {
+  fs.mkdirSync(path.join(agentRoot, "friends"), { recursive: true })
+  fs.writeFileSync(path.join(agentRoot, "friends", name), typeof record.raw === "string" ? record.raw : JSON.stringify(record))
+}
+
+beforeEach(() => {
+  home = fs.mkdtempSync(path.join(os.tmpdir(), "shepherd-sense-"))
   process.env.HOME = home
   resetIdentity()
-  server = await startFakeCmux({ capability: "v1.t.s" })
-  cacheMachineRuntimeCredentialConfig(AGENT, { cmux: { socketCapability: "v1.t.s", socketPath: server.socketPath } })
-  mockRequestPrivateWake.mockResolvedValue({ ok: true })
+  agentRoot = path.join(home, "AgentBundles", `${AGENT}.ouro`)
+  writeFriend("ari.json", { name: "Ari", trustLevel: "family", externalIds: [{ provider: "local", externalId: os.userInfo().username }] })
+  cacheMachineRuntimeCredentialConfig(AGENT, { cmux: { socketCapability: "v1.t.s", socketPath: "/nowhere.sock" } })
+  mockRequestPrivateWake.mockReset().mockResolvedValue({ ok: true })
+  clock = Date.parse("2026-10-10T20:00:00.000Z")
+  tasks.length = 0
 })
 
-afterEach(async () => {
-  await app?.stop()
-  app = null
-  await server.close()
+afterEach(() => {
+  stop?.()
+  stop = null
   resetRuntimeCredentialConfigCache()
   if (originalHome === undefined) delete process.env.HOME
   else process.env.HOME = originalHome
-  resetIdentity()
-  fs.rmSync(home, { recursive: true, force: true })
-  mockRequestPrivateWake.mockReset()
 })
 
-describe("cmux sense app", () => {
-  it("refuses to start without socket auth and names the repair", async () => {
-    resetRuntimeCredentialConfigCache()
-    await expect(startCmuxSenseApp({ agentName: AGENT })).rejects.toThrow("ouro vault config set --agent ouroboros --scope machine --key cmux.socketCapability")
-  })
-
-  it("follows the event stream, tracks surfaces, and escalates each pending Feed request once", async () => {
-    const submitted: CmuxEscalation[] = []
-    let items: unknown[] = []
-    server.respond("events.stream", () => ackFrame())
-    server.respond("feed.list", () => ({ items }))
-    const timers = manualScheduler()
-    app = await startCmuxSenseApp({ agentName: AGENT, now: () => NOW, schedule: timers.schedule, escalate: async (input) => { submitted.push(input) } })
-
-    await vi.waitFor(() => expect(server.methods.filter((entry) => entry.method === "feed.list")).toHaveLength(1))
-    expect(server.methods.find((entry) => entry.method === "events.stream")!.params).toEqual({ categories: ["feed", "surface"] })
-
-    items = [pending("req-1"), pending("req-2", { kind: "question", tool_name: null })]
-    server.push(feedEvent(11, { hook_event_name: "PermissionRequest", tool_name: "Bash" }))
-    await vi.waitFor(() => expect(submitted).toHaveLength(2))
-    expect(submitted[0]).toMatchObject({ requestId: "req-1" })
-    expect(submitted[0]!.content).toContain("surface_id: SF-1")
-
-    server.push(feedEvent(12, { hook_event_name: "Notification" }))
-    await vi.waitFor(() => expect(server.methods.filter((entry) => entry.method === "feed.list")).toHaveLength(3))
-    expect(submitted).toHaveLength(2)
-
-    server.push(feedEvent(13, { hook_event_name: "PreToolUse", tool_name: "Read" }))
-    await vi.waitFor(() => {
-      timers.run(1_000)
-      expect(readState()).toMatchObject({ seq: 13, bootId: "BOOT-1", connected: true, escalated: ["req-1", "req-2"] })
+describe("Shepherd sense: answering premature returns", () => {
+  it("types the judge's line visibly as the human's Ouro, sets the status, and logs it", async () => {
+    const packets: ReturnPacket[] = []
+    const { host, escalations, last } = await start(async (packet) => { packets.push(packet); return verdict() })
+    host.screens.S1 = [`Desk-Task: old/one\nwork\nDesk-Task: ouro-md/toolbar-polish\nsk-${"a".repeat(30)}\n${SCREENS.claudePremature}`]
+    await vi.waitFor(() => expect(host.handlers).not.toBeNull())
+    host.handlers!.returned({ sessionId: "S1", transitionId: "cmux:B:101", agent: "claude", cwd: "/Users/a/code/app", lastBody: "token=abc123secret Want me to go ahead?" })
+    await vi.waitFor(() => expect(readReturns(agentRoot)).toHaveLength(1))
+    expect(packets[0]).toMatchObject({ human: "Ari", agent: "claude", cwd: "/Users/a/code/app", task: "ouro-md/toolbar-polish", lastBody: "token=[redacted] Want me to go ahead?" })
+    expect(packets[0]!.screen).not.toContain("sk-aaaa")
+    expect(packets[0]!.screen.split("\n")).toHaveLength(SCREENS.claudePremature.split("\n").length + 4)
+    expect(host.actions).toEqual(["prompt S1 [Ouro for Ari] Go ahead and implement it.", "status S1 answered for Ari: It stopped after a plan."])
+    expect(last()).toEqual({
+      at: "2026-10-10T20:00:00.000Z", host: "fake", session: "S1", transition: "cmux:B:101", agent: "claude", cwd: "/Users/a/code/app", task: "ouro-md/toolbar-polish",
+      kind: "premature", action: "respond", reason: "It stopped after a plan.", reply: "Go ahead and implement it.", latencyMs: 900, inputTokens: 1200,
     })
-    expect((readState().surfaces as Record<string, { lifecycle: string }>)["SF-1"]!.lifecycle).toBe("working")
-    expect(fs.statSync(statePath()).mode & 0o777).toBe(0o600)
-
-    timers.run(30_000)
-    await vi.waitFor(() => expect(server.methods.filter((entry) => entry.method === "feed.list")).toHaveLength(4))
-    expect(timers.due(30_000)).toBe(1)
+    expect(escalations).toEqual([])
+    expect(fs.statSync(returnsLogPath(agentRoot)).mode & 0o777).toBe(0o600)
   })
 
-  it("resumes after the persisted cursor and reconnects with backoff after the stream drops", async () => {
-    fs.mkdirSync(path.dirname(statePath()), { recursive: true })
-    const surface = { workspaceId: "WS-1", agent: "claude", sessionId: "s1", cwd: "/repo", lifecycle: "working", lastHook: "PreToolUse", lastTool: "Bash", at: "2026-10-10T19:00:00.000Z" }
-    fs.writeFileSync(statePath(), JSON.stringify({ schemaVersion: 1, bootId: "BOOT-1", seq: 40, surfaces: { "SF-1": surface }, escalated: [] }))
-    server.respond("events.stream", () => ackFrame())
-    server.respond("feed.list", () => ({ items: [] }))
-    const timers = manualScheduler()
-    app = await startCmuxSenseApp({ agentName: AGENT, now: () => NOW, schedule: timers.schedule, escalate: async () => undefined })
-
-    await vi.waitFor(() => expect(server.streamCount()).toBe(1))
-    expect(server.methods.find((entry) => entry.method === "events.stream")!.params).toEqual({ after_seq: 40, categories: ["feed", "surface"] })
-
-    server.respond("events.stream", () => ({ __silent: true }))
-    server.endStreams()
-    await vi.waitFor(() => expect(timers.due(1_000)).toBe(1))
-    expect(readState()).toMatchObject({ connected: false, lastError: null })
-    timers.run(1_000)
-    await vi.waitFor(() => expect(server.streamCount()).toBe(1))
-    server.endStreams()
-    await vi.waitFor(() => expect(timers.due(2_000)).toBe(1))
-    timers.run(2_000)
-    await vi.waitFor(() => expect(server.streamCount()).toBe(1))
-
-    expect(readState()).toMatchObject({ seq: 40, surfaces: { "SF-1": surface } })
-
-    // cmux restarted and the cursor fell out of its window: the picture is dropped and the cursor jumps to latest_seq.
-    server.respond("events.stream", () => ackFrame({ boot_id: "BOOT-2", resume: { gap: true, latest_seq: 77 } }))
-    server.endStreams()
-    await vi.waitFor(() => expect(timers.due(5_000)).toBe(1))
-    timers.run(5_000)
-    await vi.waitFor(() => expect(readState()).toMatchObject({ bootId: "BOOT-2", seq: 77, surfaces: {}, connected: true }))
-    server.endStreams()
-    await vi.waitFor(() => expect(timers.due(1_000)).toBe(1))
-    timers.run(1_000)
-    await vi.waitFor(() => expect(server.methods.filter((entry) => entry.method === "events.stream").at(-1)!.params).toEqual({ after_seq: 77, categories: ["feed", "surface"] }))
+  it("presses a menu key instead of typing text", async () => {
+    const { host, returned, last } = await start(async () => verdict({ reply: { key: "2" }, reason: "Mocking the clock is the recommended fix." }))
+    host.screens.S2 = [SCREENS.codexMenu]
+    await returned({ sessionId: "S2", agent: "codex" })
+    expect(host.actions).toEqual(["key S2 2", "status S2 answered for Ari: Mocking the clock is the recommended fix."])
+    expect(last()).toMatchObject({ action: "respond", reply: "key:2" })
   })
 
-  it("caps the reconnect backoff and records refusals with the repair hint", async () => {
-    await server.close()
-    server = await startFakeCmux({ denyAll: true })
-    cacheMachineRuntimeCredentialConfig(AGENT, { cmux: { socketCapability: "v1.t.s", socketPath: server.socketPath } })
-    const timers = manualScheduler()
-    app = await startCmuxSenseApp({ agentName: AGENT, now: () => NOW, schedule: timers.schedule, escalate: async () => undefined })
+  it("sends nothing when the screen changed while judging or the human focused the session", async () => {
+    const { host, returned, last } = await start(async () => verdict())
+    host.screens.S1 = [SCREENS.claudePremature, `${SCREENS.claudePremature}\nAri typed something`]
+    await returned({ sessionId: "S1", transitionId: "a" })
+    expect(last()).toMatchObject({ action: "let_through", reason: "the screen changed while judging, so nothing was sent: It stopped after a plan." })
+    host.handlers!.focused("S1")
+    clock += 30_000
+    await returned({ sessionId: "S1", transitionId: "b" })
+    expect(last()).toMatchObject({ action: "let_through", reason: "Ari focused this session in the last minute, so it is theirs: It stopped after a plan." })
+    expect(host.actions).toEqual([])
+  })
 
-    for (const delay of [1_000, 2_000, 5_000, 10_000, 30_000, 30_000]) {
-      await vi.waitFor(() => expect(timers.due(delay)).toBe(1))
-      timers.run(delay)
+  it("stops answering after three in a row, escalates once, and starts again when the human focuses the session", async () => {
+    const { host, escalations, wakes, returned, last } = await start(async () => verdict())
+    host.screens.S1 = [SCREENS.claudePremature]
+    for (const id of ["1", "2", "3", "4"]) {
+      clock += 1_000
+      await returned({ sessionId: "S1", transitionId: id })
     }
-    await vi.waitFor(() => expect(readState()).toMatchObject({ connected: false }))
-    expect(String(readState().lastError)).toContain("ouro vault config set --agent ouroboros")
+    expect(host.actions.filter((action) => action.startsWith("prompt"))).toHaveLength(3)
+    expect(last()).toMatchObject({ kind: "loop_guard", action: "let_through", reason: "loop guard: It stopped after a plan." })
+    expect(escalations).toHaveLength(1)
+    expect(escalations[0]).toContain("Shepherd answered it 3 times in a row")
+    expect(host.actions.at(-1)).toBe("status S1 stopped answering: It stopped after a plan.")
+    expect(tasks.map((task) => task.ms)).toEqual([2_000])
+    tasks.shift()!.fn()
+    await vi.waitFor(() => expect(wakes).toEqual([["4"]]))
+
+    host.handlers!.focused("S1")
+    clock += 120_000
+    await returned({ sessionId: "S1", transitionId: "5" })
+    expect(last()).toMatchObject({ action: "respond" })
   })
 
-  it("delivers like mail by default: pending messages in the private runtime plus one wake per check pass, kept even when the wake is refused", async () => {
-    let fail = true
-    let items = [pending("req-9"), pending("req-10"), pending("req-11")]
-    server.respond("events.stream", () => ackFrame())
-    server.respond("feed.list", () => {
-      if (fail) throw new Error("feed unavailable")
-      return { items }
-    })
-    mockRequestPrivateWake.mockResolvedValueOnce({ ok: false, error: "daemon busy" }).mockRejectedValueOnce(new Error("socket gone")).mockResolvedValueOnce({ ok: false }).mockResolvedValue(null)
-    const timers = manualScheduler()
-    app = await startCmuxSenseApp({ agentName: AGENT, now: () => NOW, schedule: timers.schedule })
-
-    await vi.waitFor(() => expect(server.methods.filter((entry) => entry.method === "feed.list")).toHaveLength(1))
-    expect(mockRequestPrivateWake).not.toHaveBeenCalled()
-    fail = false
-    timers.run(30_000)
-    await vi.waitFor(() => expect(readState().escalated).toEqual(["req-9", "req-10", "req-11"]))
-    // A burst of three requests costs one wake, and so one private turn that reads all three.
-    await vi.waitFor(() => expect(mockRequestPrivateWake).toHaveBeenCalledTimes(1))
-    expect(mockRequestPrivateWake).toHaveBeenCalledWith(AGENT, undefined, {
-      reason: "3 cmux Feed requests",
-      triggerSource: "cmux-feed",
-      budgetClass: "interactive",
-      idempotencyKey: expect.stringMatching(/^cmux-feed:ouroboros:3:[0-9a-f]{32}$/),
-      originRefs: [{ kind: "cmux-feed", id: "req-9" }, { kind: "cmux-feed", id: "req-10" }, { kind: "cmux-feed", id: "req-11" }, { kind: "sense", id: "shepherd" }],
-    })
-    const pendingDir = path.join(home, "AgentBundles", `${AGENT}.ouro`, "state", "pending", "self", "inner", "dialog")
-    const queued = fs.readdirSync(pendingDir).map((name) => JSON.parse(fs.readFileSync(path.join(pendingDir, name), "utf-8")) as Record<string, unknown>)
-    expect(queued).toHaveLength(3)
-    expect(queued[0]).toMatchObject({ from: "cmux", friendId: "self", channel: "cmux", key: "feed", timestamp: NOW, expiresAt: NOW + 30 * 60_000, mode: "reflect" })
-    expect(queued.map((entry) => String(entry.content))).toEqual(expect.arrayContaining([expect.stringContaining("request_id: req-9"), expect.stringContaining("request_id: req-11")]))
-
-    // A pass with nothing new sends no wake.
-    timers.run(30_000)
-    await vi.waitFor(() => expect(server.methods.filter((entry) => entry.method === "feed.list").length).toBeGreaterThanOrEqual(3))
-    expect(mockRequestPrivateWake).toHaveBeenCalledTimes(1)
-    // A single request wakes under its own id; a rejected wake, a refusal without a message and no daemon socket (null) all leave the message queued.
-    for (const [index, id] of ["req-12", "req-13", "req-14"].entries()) {
-      items = [...items, pending(id)]
-      timers.run(30_000)
-      await vi.waitFor(() => expect(mockRequestPrivateWake).toHaveBeenCalledTimes(index + 2))
-      expect(mockRequestPrivateWake).toHaveBeenLastCalledWith(AGENT, undefined, expect.objectContaining({ reason: "cmux Feed request", idempotencyKey: `cmux-feed:ouroboros:${id}` }))
+  it("also caps automatic answers per session per hour", async () => {
+    const { host, returned, last } = await start(async () => verdict())
+    host.screens.S1 = [SCREENS.claudePremature]
+    for (let index = 0; index < 11; index += 1) {
+      clock += 120_000
+      if (index % 3 === 0) host.handlers!.focused("S1")
+      clock += 61_000
+      await returned({ sessionId: "S1", transitionId: `h${index}` })
     }
-    await vi.waitFor(() => expect(readState().escalated).toEqual(["req-9", "req-10", "req-11", "req-12", "req-13", "req-14"]))
+    expect(host.actions.filter((action) => action.startsWith("prompt"))).toHaveLength(10)
+    expect(last()).toMatchObject({ kind: "loop_guard" })
   })
+})
 
-  it("keeps checking the Feed after a state write fails, and writes again once it can", async () => {
-    server.respond("events.stream", () => ackFrame())
-    let items = [pending("first")]
-    server.respond("feed.list", () => ({ items }))
-    const submitted: string[] = []
-    const timers = manualScheduler()
-    app = await startCmuxSenseApp({ agentName: AGENT, now: () => NOW, schedule: timers.schedule, escalate: async (input) => { submitted.push(input.requestId) } })
-    await vi.waitFor(() => expect(readState().escalated).toEqual(["first"]))
-    // A non-empty directory where the state file goes makes every write fail.
-    fs.unlinkSync(statePath())
-    fs.mkdirSync(path.join(statePath(), "blocker"), { recursive: true })
-    items = [pending("second")]
-    timers.run(30_000)
-    await vi.waitFor(() => expect(submitted).toEqual(["first", "second"]))
-    items = [pending("third")]
-    timers.run(30_000)
-    await vi.waitFor(() => expect(submitted).toEqual(["first", "second", "third"]))
-    fs.rmSync(statePath(), { recursive: true })
-    items = []
-    timers.run(30_000)
-    await vi.waitFor(() => expect(readState().escalated).toEqual(["first", "second", "third"]))
-  })
-
-  it("escalates the other pending items when one cannot be recorded", async () => {
-    server.respond("events.stream", () => ackFrame())
-    server.respond("feed.list", () => ({ items: [pending("bad"), pending("good")] }))
-    const submitted: string[] = []
-    let refuse = true
-    const timers = manualScheduler()
-    app = await startCmuxSenseApp({ agentName: AGENT, now: () => NOW, schedule: timers.schedule, escalate: async (input) => {
-      if (input.requestId === "bad" && refuse) throw new Error("queue unavailable")
-      submitted.push(input.requestId)
-    } })
-    await vi.waitFor(() => expect(submitted).toEqual(["good"]))
-    await vi.waitFor(() => expect(readState().escalated).toEqual(["good"]))
-    refuse = false
-    timers.run(30_000)
-    await vi.waitFor(() => expect(submitted).toEqual(["good", "bad"]))
-  })
-
-  it("still escalates and remembers a request when the decision log cannot take the line", async () => {
-    // A directory where the log file belongs makes every append fail.
-    fs.mkdirSync(path.join(home, "AgentBundles", `${AGENT}.ouro`, "state", "senses", "shepherd", "decisions.jsonl"), { recursive: true })
-    server.respond("events.stream", () => ackFrame())
-    server.respond("feed.list", () => ({ items: [pending("logless")] }))
-    const submitted: string[] = []
-    app = await startCmuxSenseApp({ agentName: AGENT, now: () => NOW, schedule: manualScheduler().schedule, escalate: async (input) => { submitted.push(input.requestId) }, wake: async () => undefined })
-    await vi.waitFor(() => expect(readState().escalated).toEqual(["logless"]))
-    expect(submitted).toEqual(["logless"])
-  })
-
-  it("records the cmux version from system.identify, and null when cmux does not say", async () => {
-    server.respond("events.stream", () => ackFrame())
-    server.respond("feed.list", () => ({ items: [] }))
-    let version: unknown = "0.65.1"
-    server.respond("system.identify", () => (version === "throw" ? (() => { throw new Error("nope") })() : { app: "cmux", version }))
-    const timers = manualScheduler()
-    app = await startCmuxSenseApp({ agentName: AGENT, now: () => NOW, schedule: timers.schedule, escalate: async () => undefined })
-    await vi.waitFor(() => { timers.run(1_000); expect(readState().cmuxVersion).toBe("0.65.1") })
-    version = 7
-    server.endStreams()
-    await vi.waitFor(() => expect(timers.due(1_000)).toBeGreaterThanOrEqual(1))
-    await vi.waitFor(() => { timers.run(1_000); expect(readState().cmuxVersion).toBeNull() })
-    version = "throw"
-    server.endStreams()
-    await vi.waitFor(() => { timers.run(1_000); expect(server.methods.filter((entry) => entry.method === "system.identify").length).toBeGreaterThanOrEqual(3) })
-    await vi.waitFor(() => { timers.run(1_000); expect(readState().cmuxVersion).toBeNull() })
-  })
-
-  it("does not rewrite the state file when nothing changed", async () => {
-    server.respond("events.stream", () => ackFrame())
-    server.respond("feed.list", () => ({ items: [] }))
-    const timers = manualScheduler()
-    let clock = NOW
-    app = await startCmuxSenseApp({ agentName: AGENT, now: () => clock, schedule: timers.schedule, escalate: async () => undefined })
-    await vi.waitFor(() => { timers.run(1_000); expect(readState()).toMatchObject({ connected: true }) })
-    await vi.waitFor(() => expect(server.methods.filter((entry) => entry.method === "feed.list").length).toBeGreaterThanOrEqual(1))
-    const before = readState().updatedAt
-    clock = NOW + 60_000
-    timers.run(30_000)
-    await vi.waitFor(() => expect(server.methods.filter((entry) => entry.method === "feed.list").length).toBeGreaterThanOrEqual(2))
-    timers.run(1_000)
-    expect(readState().updatedAt).toBe(before)
-  })
-
-  it("coalesces Feed checks requested while one is already queued", async () => {
-    let calls = 0
-    server.respond("events.stream", () => ackFrame({ boot_id: undefined }))
-    server.respond("feed.list", () => { calls += 1; return { items: [] } })
-    const timers = manualScheduler()
-    app = await startCmuxSenseApp({ agentName: AGENT, now: () => NOW, schedule: timers.schedule, escalate: async () => undefined })
-    await vi.waitFor(() => expect(calls).toBe(1))
-
-    server.push(feedEvent(11, { hook_event_name: "PermissionRequest" }))
-    server.push(feedEvent(12, { hook_event_name: "PermissionRequest" }))
-    server.push(feedEvent(13, { hook_event_name: "PermissionRequest" }))
-    server.push({ type: "heartbeat", latest_seq: 13 })
-    await vi.waitFor(() => {
-      timers.run(1_000)
-      expect(readState().seq).toBe(13)
-    })
-    await new Promise((resolve) => setTimeout(resolve, 50))
-    expect(calls).toBeGreaterThanOrEqual(2)
-    expect(calls).toBeLessThanOrEqual(3)
-  })
-
-  it("stops cleanly: closes the stream, cancels timers and saves the state", async () => {
-    server.respond("events.stream", () => ackFrame())
-    server.respond("feed.list", () => ({ items: [] }))
-    const timers = manualScheduler()
-    app = await startCmuxSenseApp({ agentName: AGENT, now: () => NOW, schedule: timers.schedule, escalate: async () => undefined })
-    await vi.waitFor(() => expect(server.streamCount()).toBe(1))
-
-    await app.stop()
-    app = null
-    await vi.waitFor(() => expect(server.streamCount()).toBe(0))
-    expect(timers.due(30_000)).toBe(0)
-    expect(timers.due(1_000)).toBe(0)
-    expect(readState()).toMatchObject({ connected: false })
-  })
-
-  it("answers an allowlisted request once under a standing grant, and escalates with the reason otherwise", async () => {
-    const agentRoot = path.join(home, "AgentBundles", `${AGENT}.ouro`)
-    const repo = fs.realpathSync(fs.mkdtempSync(path.join(home, "repo-")))
-    fs.mkdirSync(path.join(repo, ".git"))
-    fs.writeFileSync(path.join(repo, ".git", "config"), "[core]\n\tbare = false\n")
-    updateStewardPolicy(agentRoot, {
-      expectedVersion: readStewardPolicy(agentRoot).version,
-      actor: { friendId: "ari", trustLevel: "family", sessionEventId: "evt-grant", authorization: { profileId: "sanctuary-owner", profileVersion: 1, requestId: "req-grant", sessionKey: "cli", receiptId: "auth-1" } },
-      mutation: { kind: "grant_routine_action", key: CMUX_GRANT_KEY, action: CMUX_GRANT_ACTION, targets: [repo], maxCount: 5, windowMs: 3_600_000, verificationRequired: true, exclusions: [], provenance: "stated" },
-    })
-    let items: Array<Record<string, unknown>> = [
-      pending("auto-1", { cwd: repo, tool_input: JSON.stringify({ command: "git status" }) }),
-      pending("hard-1", { cwd: repo, tool_input: JSON.stringify({ command: "rm -rf src" }) }),
-      pending("fail-1", { cwd: repo, tool_input: JSON.stringify({ command: "git log" }) }),
-      pending("odd-1", { cwd: path.join(repo, "odd"), tool_input: JSON.stringify({ command: "ls" }) }),
-      pending("chg-1", { cwd: repo, tool_input: JSON.stringify({ command: "git status" }) }),
+describe("Shepherd sense: letting returns through", () => {
+  it("brings gates and deliveries to the Ouro agent with one wake per burst, and logs unclear returns only", async () => {
+    const verdicts = [
+      verdict({ kind: "gate", reply: null, reason: "It needs Ari's Azure sign-in." }),
+      verdict({ kind: "done", reply: null, reason: "Merged and released with proof." }),
+      verdict({ kind: "unclear", reply: null, reason: "A plain shell." }),
     ]
-    let pendingLists = 0
-    server.respond("events.stream", () => ackFrame())
-    server.respond("system.identify", () => ({ app: "cmux", version: "0.65.0" }))
-    server.respond("feed.list", (params) => {
-      const listed = structuredClone(params.pending_only ? items.filter((entry) => entry.status === "pending") : items)
-      // chg-1 changes after the sense first reads it, so its re-check right before the reply finds a different request.
-      if (params.pending_only && (pendingLists += 1) === 1) Object.assign(items.find((entry) => entry.request_id === "chg-1")!, { tool_input: JSON.stringify({ command: "git status --porcelain" }) })
-      return { items: listed }
-    })
-    server.respond("feed.permission.reply", (params) => {
-      if (params.request_id === "fail-1") throw new Error("reply refused")
-      const entry = items.find((candidate) => candidate.request_id === params.request_id)!
-      Object.assign(entry, { status: "resolved", decision: { kind: "permission", mode: params.mode } })
-      return { delivered: true }
-    })
-    // A judging failure for one item must not stop the others.
-    fs.mkdirSync(path.join(repo, "odd"))
-    const realpath = vi.mocked(fs.realpathSync).getMockImplementation()!
-    vi.mocked(fs.realpathSync).mockImplementation(((target: fs.PathLike) => {
-      if (String(target).endsWith(`${path.sep}odd`)) throw new Error("judge blew up")
-      return realpath(target)
-    }) as typeof fs.realpathSync)
-    const submitted: CmuxEscalation[] = []
-    const timers = manualScheduler()
+    const { host, escalations, wakes, returned } = await start(async () => verdicts.shift()!)
+    host.screens.G = [SCREENS.copilotGate]
+    host.screens.D = [SCREENS.agencyDone]
+    await returned({ sessionId: "G", transitionId: "g", agent: "copilot", cwd: "/Users/a/code/service" })
+    await returned({ sessionId: "D", transitionId: "d", agent: null, cwd: null })
+    await returned({ sessionId: "X", transitionId: "x" })
+    expect(host.actions).toEqual(["status G needs Ari: It needs Ari's Azure sign-in.", "status D done: Merged and released with proof."])
+    expect(escalations).toHaveLength(2)
+    expect(escalations[0]).toContain("copilot in service handed control back and Shepherd let it through: it needs Ari.")
+    expect(escalations[1]).toContain("A coding agent handed control back and Shepherd let it through: it says the work is done.")
+    expect(escalations[1]).toContain("task: ouro-md/toolbar-polish")
+    expect(tasks).toHaveLength(1)
+    tasks.shift()!.fn()
+    await vi.waitFor(() => expect(wakes).toEqual([["g", "d"]]))
+    expect(readReturns(agentRoot).map((record) => [record.kind, record.action])).toEqual([["gate", "let_through"], ["done", "let_through"], ["unclear", "let_through"]])
+  })
+
+  it("logs a judge failure and a failed send, and keeps going", async () => {
+    const results: Array<() => Promise<JudgeResult>> = [async () => { throw new Error("provider down") }, async () => verdict()]
+    const host = fakeHost()
+    host.prompt = async () => { throw new Error("terminal gone") }
+    const { returned, last } = await start(() => results.shift()!(), host)
+    await returned({ sessionId: "S1", transitionId: "e1" })
+    expect(last()).toMatchObject({ kind: "error", action: "let_through", reason: "provider down" })
+    await returned({ sessionId: "S1", transitionId: "e2" })
+    expect(last()).toMatchObject({ kind: "premature", action: "let_through", reason: "It stopped after a plan.; then terminal gone" })
+  })
+
+  it("survives a log it cannot write", async () => {
+    fs.mkdirSync(path.join(agentRoot, "state", "senses", "shepherd", "returns.jsonl"), { recursive: true })
+    const judged = vi.fn(async () => verdict({ kind: "unclear", reply: null }))
+    const { host } = await start(judged)
+    host.handlers!.returned({ sessionId: "S1", transitionId: "w", agent: null, cwd: null, lastBody: null })
+    await vi.waitFor(() => expect(judged).toHaveBeenCalled())
+    await new Promise((resolve) => setTimeout(resolve, 20))
+  })
+})
+
+describe("Shepherd sense: wiring", () => {
+  it("refuses to start without a terminal host on this machine", async () => {
+    resetRuntimeCredentialConfigCache()
+    await expect(startShepherdSenseApp({ agentName: AGENT })).rejects.toThrow("no terminal host is attached on this machine")
+  })
+
+  it("defaults to the cmux host and the agent-lane judge", async () => {
+    const server = await startFakeCmux({ capability: "v1.t.s" })
     try {
-      app = await startCmuxSenseApp({ agentName: AGENT, now: () => NOW, schedule: timers.schedule, escalate: async (input) => { submitted.push(input) } })
-      await vi.waitFor(() => expect(submitted).toHaveLength(4))
+      cacheMachineRuntimeCredentialConfig(AGENT, { cmux: { socketCapability: "v1.t.s", socketPath: server.socketPath } })
+      server.respond("system.tree", () => tree([{ id: "SF-1", ref: "surface:1" }]))
+      server.respond("surface.read_text", () => ({ text: SCREENS.copilotGate }))
+      server.respond("events.stream", () => ackFrame({ resume: { gap: false, latest_seq: 1 } }))
+      server.respond("notification.create", () => ({}))
+      server.v1(() => "OK")
+      mockGetProviderRuntime.mockResolvedValue({ streamTurn: async () => ({ content: `{"kind":"gate","reply":null,"reason":"Needs Ari's sign-in."}` }) })
+      const app = await startShepherdSenseApp({ agentName: AGENT, schedule: (fn, ms) => { const timer = setTimeout(fn, ms === 3_000 || ms === 2_000 ? 0 : ms); return () => clearTimeout(timer) } })
+      stop = app.stop
+      await vi.waitFor(() => expect(server.streamCount()).toBe(1))
+      server.push(hookEvent(2, "Stop", { source: "copilot" }))
+      await vi.waitFor(() => expect(readReturns(agentRoot).at(-1)).toMatchObject({ host: "cmux", kind: "gate", agent: "copilot" }), { timeout: 2_000 })
+      expect(mockGetProviderRuntime).toHaveBeenCalledWith("agent", { agentName: AGENT, agentRoot })
+      expect(fs.readdirSync(path.join(agentRoot, "state", "pending", "self", "inner", "dialog")).length).toBe(1)
+      await vi.waitFor(() => expect(mockRequestPrivateWake).toHaveBeenCalledWith(AGENT, undefined, expect.objectContaining({ triggerSource: "shepherd" })))
     } finally {
-      vi.mocked(fs.realpathSync).mockImplementation(realpath)
+      stop?.()
+      stop = null
+      await server.close()
     }
-    const replies = server.methods.filter((entry) => entry.method === "feed.permission.reply")
-    expect(replies.map((entry) => entry.params)).toEqual([{ request_id: "auto-1", mode: "once" }, { request_id: "fail-1", mode: "once" }])
-    expect(submitted.map((input) => input.requestId)).toEqual(["hard-1", "fail-1", "odd-1", "chg-1"])
-    expect(submitted[0]!.content).toContain("why it was not answered automatically: floor: rm is never answered for the human")
-    expect(submitted[1]!.content).toContain("why it was not answered automatically: the sense's reply may or may not have reached cmux, and cmux does not show the request resolved by it")
-    expect(submitted[2]!.content).toContain("why it was not answered automatically: the sense could not judge or answer it: judge blew up")
-    expect(submitted[3]!.content).toContain("why it was not answered automatically: the sense's own reply did not go out")
-    const log = readDecisions(cmuxDecisionLogPath(path.join(agentRoot, "state", "senses", "shepherd")))
-    expect(log.map((entry) => [entry.requestId, entry.outcome])).toEqual([
-      ["auto-1", "reply_sent"], ["auto-1", "replied_once"], ["hard-1", "escalated"], ["fail-1", "reply_sent"], ["fail-1", "reply_failed"], ["fail-1", "escalated"],
-      ["chg-1", "reply_failed"], ["chg-1", "escalated"],
-    ])
-
-    timers.run(30_000)
-    await vi.waitFor(() => expect(server.methods.filter((entry) => entry.method === "feed.list" && entry.params.pending_only).length).toBeGreaterThanOrEqual(2))
-    expect(server.methods.filter((entry) => entry.method === "feed.permission.reply")).toHaveLength(2)
-    expect(submitted).toHaveLength(4)
   })
 
-  it("escalates an unconfirmed reply, and observes without answering on cmux older than 0.65.0", async () => {
-    const agentRoot = path.join(home, "AgentBundles", `${AGENT}.ouro`)
-    const repo = fs.realpathSync(fs.mkdtempSync(path.join(home, "repo-")))
-    fs.mkdirSync(path.join(repo, ".git"))
-    fs.writeFileSync(path.join(repo, ".git", "config"), "[core]\n\tbare = false\n")
-    updateStewardPolicy(agentRoot, {
-      expectedVersion: readStewardPolicy(agentRoot).version,
-      actor: { friendId: "ari", trustLevel: "family", sessionEventId: "evt-grant", authorization: { profileId: "sanctuary-owner", profileVersion: 1, requestId: "req-grant", sessionKey: "cli", receiptId: "auth-1" } },
-      mutation: { kind: "grant_routine_action", key: CMUX_GRANT_KEY, action: CMUX_GRANT_ACTION, targets: [repo], maxCount: 5, windowMs: 3_600_000, verificationRequired: true, exclusions: [], provenance: "stated" },
-    })
-    let version = "0.65.0"
-    const items = [pending("stuck-1", { cwd: repo, tool_input: JSON.stringify({ command: "git status" }) })]
-    server.respond("events.stream", () => ackFrame())
-    server.respond("system.identify", () => ({ app: "cmux", version }))
-    server.respond("feed.list", () => ({ items }))
-    server.respond("feed.permission.reply", () => ({ delivered: true }))
-    const submitted: CmuxEscalation[] = []
-    const timers = manualScheduler()
-    app = await startCmuxSenseApp({ agentName: AGENT, now: () => NOW, schedule: timers.schedule, escalate: async (input) => { submitted.push(input) } })
-    await vi.waitFor(() => expect(submitted).toHaveLength(1))
-    expect(submitted[0]!.content).toContain("why it was not answered automatically: the sense's reply may or may not have reached cmux, and cmux does not show the request resolved by it")
-
-    await app.stop()
-    app = null
-    fs.writeFileSync(path.join(agentRoot, "state", "senses", "shepherd", "state.json"), "{}")
-    version = "0.64.22"
-    items[0] = pending("old-1", { cwd: repo, tool_input: JSON.stringify({ command: "git status" }) })
-    app = await startCmuxSenseApp({ agentName: AGENT, now: () => NOW, schedule: timers.schedule, escalate: async (input) => { submitted.push(input) } })
-    await vi.waitFor(() => expect(submitted).toHaveLength(2))
-    expect(submitted[1]!.content).toContain("why it was not answered automatically: would answer once (floor: git status only reads), but cmux 0.64.22 is older than 0.65.0")
-    expect(server.methods.filter((entry) => entry.method === "feed.permission.reply")).toHaveLength(1)
+  it("names the human from the family friend for this OS user, else any family friend", () => {
+    writeFriend("bob.json", { name: "Bob", trustLevel: "family" })
+    writeFriend("eve.json", { name: "Eve", trustLevel: "stranger" })
+    writeFriend("blank.json", { name: " ", trustLevel: "family" })
+    writeFriend("broken.json", { raw: "{" })
+    expect(humanName(agentRoot)).toBe("Ari")
+    expect(humanName(agentRoot, "someone-else")).toBe("Ari")
+    expect(humanName(path.join(home, "none"))).toBe("the human")
   })
 
-  it("uses real timers by default", async () => {
-    server.respond("events.stream", () => ackFrame())
-    server.respond("feed.list", () => ({ items: [] }))
-    app = await startCmuxSenseApp({ agentName: AGENT, escalate: async () => undefined })
-    await vi.waitFor(() => expect(server.streamCount()).toBe(1))
+  it("keeps a bounded log and reads past a torn line", () => {
+    const record: ReturnRecord = { at: "t", host: "cmux", session: "S", transition: "x", agent: null, cwd: null, task: null, kind: "done", action: "let_through", reason: "r", reply: null, latencyMs: null, inputTokens: null }
+    expect(readReturns(agentRoot)).toEqual([])
+    appendReturn(agentRoot, record)
+    fs.appendFileSync(returnsLogPath(agentRoot), "{torn\n")
+    appendReturn(agentRoot, { ...record, transition: "y" })
+    expect(readReturns(agentRoot).map((entry) => entry.transition)).toEqual(["x", "y"])
+    fs.writeFileSync(returnsLogPath(agentRoot), "x".repeat(2 * 1024 * 1024 + 1))
+    appendReturn(agentRoot, { ...record, transition: "z" })
+    expect(readReturns(agentRoot).map((entry) => entry.transition)).toEqual(["z"])
+    expect(fs.existsSync(`${returnsLogPath(agentRoot)}.1`)).toBe(true)
+    expect(field(`a\n\tb ${"c".repeat(300)}`, 10)).toBe("a b ccccc…")
+    expect(escalationContent({ ...record, kind: "gate", agent: "codex\u0007", cwd: "/x/repo" }, "Ari")).toContain("codex in repo handed control back")
+  })
+
+  it("queues escalations in the private runtime and wakes it, logging a refused or failed wake", async () => {
+    queueEscalation(AGENT, "[Shepherd return]", 1_000)
+    const dir = path.join(agentRoot, "state", "pending", "self", "inner", "dialog")
+    expect(JSON.parse(fs.readFileSync(path.join(dir, fs.readdirSync(dir)[0]!), "utf-8"))).toMatchObject({ from: "shepherd", channel: "shepherd", content: "[Shepherd return]", expiresAt: 1_000 + 30 * 60_000 })
+
+    await wakeForEscalations(AGENT, ["cmux:B:1"])
+    expect(mockRequestPrivateWake).toHaveBeenCalledWith(AGENT, undefined, expect.objectContaining({
+      reason: "Shepherd return", triggerSource: "shepherd", budgetClass: "interactive",
+      originRefs: [{ kind: "shepherd-return", id: "cmux:B:1" }, { kind: "sense", id: "shepherd" }],
+    }))
+    await wakeForEscalations(AGENT, ["a", "b"])
+    expect(mockRequestPrivateWake.mock.calls.at(-1)![2]).toMatchObject({ reason: "2 Shepherd returns" })
+    mockRequestPrivateWake.mockResolvedValueOnce({ ok: false, error: "refused" }).mockResolvedValueOnce({ ok: false }).mockRejectedValueOnce(new Error("no daemon"))
+    await wakeForEscalations(AGENT, ["c"])
+    await wakeForEscalations(AGENT, ["d"])
+    await wakeForEscalations(AGENT, ["e"])
+    mockRequestPrivateWake.mockResolvedValueOnce(undefined)
+    await wakeForEscalations(AGENT, ["f"])
+  })
+
+  it("closes the host watch and a pending wake on stop", async () => {
+    const { host, returned } = await start(async () => verdict({ kind: "done", reply: null }))
+    await returned({ sessionId: "S1", transitionId: "s" })
+    expect(tasks).toHaveLength(1)
+    stop!()
+    stop = null
+    expect(tasks).toHaveLength(0)
+    expect(host.actions).toContain("closed")
   })
 })

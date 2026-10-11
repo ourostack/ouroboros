@@ -156,13 +156,13 @@ async function evaluatePolicy(
     }
   }
   if (
-    request.triggerSource === "cmux-feed"
-    && hasNonEmptyOriginRef(originRefs, "cmux-feed")
+    request.triggerSource === "shepherd"
+    && hasNonEmptyOriginRef(originRefs, "shepherd-return")
     && hasOriginRef(originRefs, "sense", "shepherd")
   ) {
     return {
       result: "allow",
-      reason: "cmux sense escalation",
+      reason: "Shepherd escalation",
     }
   }
   if (

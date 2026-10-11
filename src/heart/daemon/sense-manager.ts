@@ -14,7 +14,7 @@ import {
 import { readProviderCredentialPool, type ProviderCredentialRecord } from "../provider-credentials"
 import { getSenseInventory, type SenseRuntimeInfo, type SenseStatus } from "../sense-truth"
 import { loadOrCreateMachineIdentity } from "../machine-identity"
-import { cmuxConfigFacts, cmuxRepairHint } from "../cmux-config"
+import { shepherdConfigFacts, shepherdRepairHint } from "../shepherd-config"
 import { DaemonProcessManager } from "./process-manager"
 import { A2A_DEFAULT_PATH, defaultA2APort, normalizeA2APath } from "../../a2a/config"
 // HTTP health probe import intentionally removed — see the comment in
@@ -426,7 +426,7 @@ function senseFactsFromRuntimeConfig(
   if (senses.shepherd.enabled) {
     base.shepherd = !machineRuntimeConfig.ok && machineRuntimeConfig.reason !== "missing"
       ? { configured: false, detail: runtimeConfigUnavailableDetail(agent, machineRuntimeConfig) }
-      : cmuxConfigFacts(machinePayload)
+      : shepherdConfigFacts(machinePayload)
   }
 
   if (workbenchHasStaleBundleEntry || senses.workbench.enabled) {
@@ -458,7 +458,7 @@ function senseRepairHint(agent: string, sense: SenseName): string {
       ? "Agent-runnable: complete or recover the root authority migration; do not restore a resident Telegram token."
       : `Agent-runnable: store Telegram bot/user/chat coordinates with 'ouro connect telegram --agent ${agent}', then restart with 'ouro up'.`
   }
-  if (sense === "shepherd") return cmuxRepairHint(agent)
+  if (sense === "shepherd") return shepherdRepairHint(agent)
   /* v8 ignore next -- Workbench is deliberately not daemon-managed, so getSenseInventory never asks the daemon manager for a repair hint @preserve */
   if (sense === "workbench") {
     return `Agent-runnable: install Ouro Workbench.app, then launch the boss through Workbench or run 'ouro acp-serve --agent ${agent} --workbench-mcp'; 'ouro connect workbench --agent ${agent}' only cleans stale bundle entries.`
