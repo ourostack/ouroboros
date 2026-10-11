@@ -2146,6 +2146,52 @@ describe("ouro CLI execution", () => {
     expect(result).toContain("disabled")
   })
 
+  it("renders a failing bundle sync and its skipped oversized files in Git Sync", async () => {
+    const deps: OuroCliDeps = {
+      socketPath: "/tmp/ouro-test.sock",
+      sendCommand: vi.fn(async () => ({
+        ok: true,
+        summary: "daemon=running\tworkers=0\tsenses=0\thealth=warn",
+        data: {
+          overview: {},
+          senses: [],
+          workers: [],
+          sync: [
+            {
+              agent: "ouroboros",
+              enabled: true,
+              remote: "origin",
+              gitInitialized: true,
+              remoteUrl: "https://github.com/me/ouroboros.ouro",
+              failure: {
+                error: "Command failed: git push origin\nremote: error: GH001: Large files detected.",
+                classification: "unknown",
+                firstFailedAt: "2026-06-21T22:00:00.000Z",
+                lastFailedAt: "2026-10-10T00:00:00.000Z",
+                consecutiveFailures: 5189,
+              },
+              skippedFiles: [{ path: "arc/history/2026-06-22.jsonl", bytes: 110 * 1024 * 1024 }],
+            },
+            // Malformed health fields are ignored rather than rendered
+            { agent: "slugger", enabled: true, remote: "origin", gitInitialized: true, failure: { nope: 1 }, skippedFiles: "bad" },
+          ],
+        },
+      })),
+      startDaemonProcess: vi.fn(async () => ({ pid: 1 })),
+      writeStdout: vi.fn(),
+      checkSocketAlive: vi.fn(async () => true),
+      cleanupStaleSocket: vi.fn(),
+      fallbackPendingMessage: vi.fn(() => "/tmp/pending.jsonl"),
+    }
+
+    const result = await runOuroCli(["status"], deps)
+
+    expect(result).toContain("failing")
+    expect(result).toContain("sync failing since 2026-06-21T22:00:00.000Z (5189 attempt(s)): Command failed: git push origin")
+    expect(result).toContain("1 file(s) too large to sync left uncommitted: arc/history/2026-06-22.jsonl (110.0 MiB)")
+    expect(result).toContain("local only")
+  })
+
   it("renders Agents section with both enabled and disabled bundles", async () => {
     const deps: OuroCliDeps = {
       socketPath: "/tmp/ouro-test.sock",

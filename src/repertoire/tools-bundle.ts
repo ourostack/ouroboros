@@ -42,6 +42,7 @@ import type { ToolDefinition, ToolHandler } from "./tools-base"
 import { emitNervesEvent } from "../nerves/runtime"
 import { getAgentRoot } from "../heart/identity"
 import { detectBundleState } from "../heart/bundle-state"
+import { clearPendingSync } from "../heart/sync"
 import { BUNDLE_GITIGNORE_TEMPLATE, PII_BUNDLE_DIRECTORIES } from "./bundle-templates"
 
 // ─── shared helpers ────────────────────────────────────────────────────
@@ -843,6 +844,7 @@ function makePushHandler(deps: { now?: () => number } = {}): ToolHandler {
     const push = gitExec(bundleRoot, ["push", remote, "HEAD"], 30000)
     /* v8 ignore start -- push success branch requires a reachable remote, not practical to cover in unit tests; failure branch covered by network-failure test @preserve */
     if (push.code === 0) {
+      clearPendingSync(bundleRoot)
       return finish(true, { remote, firstPush: isFirstPush })
     }
     /* v8 ignore stop */

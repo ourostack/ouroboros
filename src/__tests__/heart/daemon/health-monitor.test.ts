@@ -173,6 +173,43 @@ describe("HealthMonitor", () => {
     expect(alertSink).toHaveBeenNthCalledWith(2, "[critical] disk-space: disk usage critical (95%)")
   })
 
+  it("includes the bundle sync check and reports a throwing checker as a warning", async () => {
+    const base = {
+      processManager: { listAgentSnapshots: () => [{ name: "slugger", status: "running" }] },
+      scheduler: { listJobs: () => [{ id: "nightly", lastRun: "2026-03-07T00:00:00.000Z" }] },
+      diskUsagePercent: () => 10,
+    }
+    const failing = new HealthMonitor({
+      ...base,
+      bundleSyncChecker: () => [{ name: "bundle-sync", status: "warn", message: "ouroboros: sync failing" }],
+    })
+    await expect(failing.runChecks()).resolves.toContainEqual({ name: "bundle-sync", status: "warn", message: "ouroboros: sync failing" })
+
+    const throwing = new HealthMonitor({
+      ...base,
+      bundleSyncChecker: () => {
+        throw new Error("unreadable bundles root")
+      },
+    })
+    await expect(throwing.runChecks()).resolves.toContainEqual({
+      name: "bundle-sync",
+      status: "warn",
+      message: "bundle sync check failed: unreadable bundles root",
+    })
+
+    const throwingString = new HealthMonitor({
+      ...base,
+      bundleSyncChecker: () => {
+        throw "nope" // eslint-disable-line no-throw-literal
+      },
+    })
+    await expect(throwingString.runChecks()).resolves.toContainEqual({
+      name: "bundle-sync",
+      status: "warn",
+      message: "bundle sync check failed: nope",
+    })
+  })
+
   it("includes injectable Sentinel health results and alerts on blocked Sentinel state", async () => {
     const alertSink = vi.fn(async () => undefined)
     const sentinelChecker = vi.fn(async () => [

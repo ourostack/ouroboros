@@ -610,6 +610,45 @@ describe("listBundleSyncRows", () => {
     ])
   })
 
+  it("adds the bundle's sync failure and skipped files to its row", async () => {
+    readdirSyncMock.mockReturnValue([
+      { name: "stuck.ouro", isDirectory: () => true },
+    ])
+    readFileSyncMock.mockImplementation((target: string) => {
+      if (target.endsWith("/stuck.ouro/agent.json")) {
+        return JSON.stringify({ enabled: true, sync: { enabled: true, remote: "origin" } })
+      }
+      if (target.endsWith("/stuck.ouro/state/pending-sync.json")) {
+        return JSON.stringify({ error: "push rejected", failedAt: "2026-10-10T00:00:00.000Z", consecutiveFailures: 4 })
+      }
+      if (target.endsWith("/stuck.ouro/state/sync-skipped-files.json")) {
+        return JSON.stringify({ files: [{ path: "arc/big.jsonl", bytes: 123 }] })
+      }
+      throw new Error(`unexpected read: ${target}`)
+    })
+    execFileSyncMock.mockReturnValue(Buffer.from("https://github.com/me/stuck.git\n"))
+
+    const { listBundleSyncRows } = await import("../../../heart/daemon/agent-discovery")
+
+    expect(listBundleSyncRows()).toEqual([
+      {
+        agent: "stuck",
+        enabled: true,
+        remote: "origin",
+        gitInitialized: true,
+        remoteUrl: "https://github.com/me/stuck.git",
+        failure: {
+          error: "push rejected",
+          classification: "unknown",
+          firstFailedAt: "2026-10-10T00:00:00.000Z",
+          lastFailedAt: "2026-10-10T00:00:00.000Z",
+          consecutiveFailures: 4,
+        },
+        skippedFiles: [{ path: "arc/big.jsonl", bytes: 123 }],
+      },
+    ])
+  })
+
   it("uses the configured remote name when resolving the URL", async () => {
     readdirSyncMock.mockReturnValue([
       { name: "upstream.ouro", isDirectory: () => true },

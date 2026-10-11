@@ -49,6 +49,7 @@ import { buildStartOfTurnPacket, renderStartOfTurnPacket, buildCapabilitiesSecti
 import { detectBundleState } from "../heart/bundle-state"
 import { preTurnPull, postTurnPush } from "../heart/sync"
 import { readAgentHomeElsewhere } from "../heart/daemon/agent-discovery"
+import { describeSyncFailure, parseBundleSyncFailure } from "../heart/sync-health"
 import { getSyncConfig } from "../heart/config"
 import { describeCurrentSessionTiming, stampIngressTime, type SessionEvent } from "../heart/session-events"
 import { describeSessionActivityTiming, selectFreshestFriendFacingActivity } from "../heart/session-activity"
@@ -969,14 +970,16 @@ async function handleInboundTurnExclusive(input: InboundTurnInput): Promise<Inbo
     if (!pullResult.ok) {
       syncFailure = pullResult.error
     }
-    // Check for pending-sync from a prior failed push
+    // Check for pending-sync from a prior failed push. The record stays
+    // until a sync succeeds, so every turn sees a failure that persists.
     if (!syncFailure) {
       const pendingSyncPath = path.join(getAgentRoot(), "state", "pending-sync.json")
       try {
         if (fs.existsSync(pendingSyncPath)) {
-          const pendingSync = JSON.parse(fs.readFileSync(pendingSyncPath, "utf-8"))
-          syncFailure = `prior sync push failed: ${pendingSync.error ?? "unknown"}`
-          fs.unlinkSync(pendingSyncPath)
+          const failure = parseBundleSyncFailure(JSON.parse(fs.readFileSync(pendingSyncPath, "utf-8")))
+          syncFailure = failure
+            ? `bundle ${describeSyncFailure(failure)}`
+            : "bundle sync failed earlier; state/pending-sync.json is unreadable"
         }
       } catch {
         // Ignore read errors for pending-sync

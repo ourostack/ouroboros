@@ -285,8 +285,8 @@ describe("postTurnPush", () => {
     const result = postTurnPush("/fake/agent/root", defaultConfig)
 
     expect(result.ok).toBe(true)
-    // Only git status should be called
-    expect(childProcess.execFileSync).toHaveBeenCalledTimes(1)
+    // git status, then the remote check of the clean-tree path; nothing is committed
+    expect(vi.mocked(childProcess.execFileSync).mock.calls.map((call) => (call[1] as string[])[0])).toEqual(["status", "remote"])
     expect(emitNervesEvent).toHaveBeenCalledWith(
       expect.objectContaining({
         event: "heart.sync_push_end",
@@ -658,5 +658,338 @@ describe("postTurnPush stale index.lock recovery", () => {
     expect(pending.classification).toBe("unknown")
     expect(pending.error).toContain("index.lock")
     fs.rmSync(tmpDir, { recursive: true, force: true })
+  })
+})
+
+describe("postTurnPush size guard and persistent failure record", () => {
+  beforeEach(() => {
+    vi.mocked(childProcess.execFileSync).mockReset()
+    vi.mocked(emitNervesEvent).mockReset()
+  })
+
+  function makeBundle(): string {
+    return fs.mkdtempSync(path.join(os.tmpdir(), "sync-size-guard-"))
+  }
+
+  function sparseFile(root: string, relativePath: string, bytes: number): void {
+    const filePath = path.join(root, relativePath)
+    fs.mkdirSync(path.dirname(filePath), { recursive: true })
+    fs.writeFileSync(filePath, "")
+    fs.truncateSync(filePath, bytes)
+  }
+
+  it("unstages files over the size limit, records them and commits the rest", async () => {
+    const { postTurnPush, SYNC_FILE_SIZE_LIMIT_BYTES } = await import("../../heart/sync")
+    const tmpDir = makeBundle()
+    sparseFile(tmpDir, "arc/huge.jsonl", SYNC_FILE_SIZE_LIMIT_BYTES + 1)
+    sparseFile(tmpDir, "arc/small.json", 10)
+    const calls: string[][] = []
+    vi.mocked(childProcess.execFileSync).mockImplementation((_cmd, args) => {
+      const argv = args as string[]
+      calls.push(argv)
+      if (argv[0] === "status") return Buffer.from("?? arc/\n")
+      if (argv[0] === "diff" && argv.includes("--name-status")) return Buffer.from("A\0arc/huge.jsonl\0A\0arc/small.json\0A\0arc/gone.json\0D\0arc/old.json\0")
+      if (argv[0] === "diff" && argv.includes("--quiet")) throw new Error("exit 1: staged changes")
+      if (argv[0] === "remote") return Buffer.from("origin\n")
+      return Buffer.from("")
+    })
+
+    const result = postTurnPush(tmpDir, defaultConfig)
+
+    expect(result.ok).toBe(true)
+    expect(calls).toContainEqual(["--literal-pathspecs", "reset", "-q", "--", "arc/huge.jsonl"])
+    expect(calls.map((argv) => argv[0])).toContain("commit")
+    expect(calls.map((argv) => argv[0])).toContain("push")
+    const skipped = JSON.parse(fs.readFileSync(path.join(tmpDir, "state", "sync-skipped-files.json"), "utf-8"))
+    expect(skipped.limitBytes).toBe(SYNC_FILE_SIZE_LIMIT_BYTES)
+    expect(skipped.files).toEqual([{ path: "arc/huge.jsonl", bytes: SYNC_FILE_SIZE_LIMIT_BYTES + 1 }])
+    expect(emitNervesEvent).toHaveBeenCalledWith(expect.objectContaining({
+      level: "warn",
+      event: "heart.sync_oversized_files_skipped",
+    }))
+    fs.rmSync(tmpDir, { recursive: true, force: true })
+  })
+
+  it("commits nothing when every changed file is over the limit", async () => {
+    const { postTurnPush, SYNC_FILE_SIZE_LIMIT_BYTES } = await import("../../heart/sync")
+    const tmpDir = makeBundle()
+    sparseFile(tmpDir, "huge.jsonl", SYNC_FILE_SIZE_LIMIT_BYTES + 1)
+    const commands: string[] = []
+    vi.mocked(childProcess.execFileSync).mockImplementation((_cmd, args) => {
+      const argv = args as string[]
+      commands.push(argv[0] === "--literal-pathspecs" ? argv[1] : argv[0])
+      if (argv[0] === "status") return Buffer.from("?? huge.jsonl\n")
+      if (argv[0] === "diff" && argv.includes("--name-status")) return Buffer.from("A\0huge.jsonl\0")
+      return Buffer.from("")
+    })
+
+    const result = postTurnPush(tmpDir, defaultConfig)
+
+    expect(result.ok).toBe(true)
+    expect(commands).toContain("reset")
+    expect(commands).not.toContain("commit")
+    expect(commands).not.toContain("push")
+    expect(emitNervesEvent).toHaveBeenCalledWith(expect.objectContaining({
+      event: "heart.sync_push_end",
+      message: "post-turn push: only oversized files changed, nothing committed",
+    }))
+    fs.rmSync(tmpDir, { recursive: true, force: true })
+  })
+
+  it("clears the skipped-files record once no file is over the limit", async () => {
+    const { postTurnPush } = await import("../../heart/sync")
+    const tmpDir = makeBundle()
+    fs.mkdirSync(path.join(tmpDir, "state"), { recursive: true })
+    fs.writeFileSync(path.join(tmpDir, "state", "sync-skipped-files.json"), "{}", "utf-8")
+    vi.mocked(childProcess.execFileSync).mockImplementation((_cmd, args) => {
+      const argv = args as string[]
+      if (argv[0] === "status") return Buffer.from(" M file.json\n")
+      if (argv[0] === "remote") return Buffer.from("origin\n")
+      return Buffer.from("")
+    })
+
+    expect(postTurnPush(tmpDir, defaultConfig).ok).toBe(true)
+    expect(fs.existsSync(path.join(tmpDir, "state", "sync-skipped-files.json"))).toBe(false)
+    fs.rmSync(tmpDir, { recursive: true, force: true })
+  })
+
+  it("still syncs when the skipped-files record cannot be written", async () => {
+    const { postTurnPush, SYNC_FILE_SIZE_LIMIT_BYTES } = await import("../../heart/sync")
+    const tmpDir = makeBundle()
+    sparseFile(tmpDir, "huge.jsonl", SYNC_FILE_SIZE_LIMIT_BYTES + 1)
+    fs.writeFileSync(path.join(tmpDir, "state"), "not a directory", "utf-8")
+    vi.mocked(childProcess.execFileSync).mockImplementation((_cmd, args) => {
+      const argv = args as string[]
+      if (argv[0] === "status") return Buffer.from("?? huge.jsonl\n")
+      if (argv[0] === "diff" && argv.includes("--name-status")) return Buffer.from("A\0huge.jsonl\0")
+      return Buffer.from("")
+    })
+
+    expect(postTurnPush(tmpDir, defaultConfig).ok).toBe(true)
+    fs.rmSync(tmpDir, { recursive: true, force: true })
+  })
+
+  it("passes a large output buffer to git status so a huge change list cannot overflow it", async () => {
+    const { postTurnPush, SYNC_GIT_MAX_BUFFER_BYTES } = await import("../../heart/sync")
+    vi.mocked(childProcess.execFileSync).mockReturnValue(Buffer.from(""))
+
+    postTurnPush("/fake/agent/root", defaultConfig)
+
+    expect(childProcess.execFileSync).toHaveBeenCalledWith(
+      "git",
+      ["status", "--porcelain"],
+      expect.objectContaining({ maxBuffer: SYNC_GIT_MAX_BUFFER_BYTES }),
+    )
+  })
+
+  it("records a git status failure and counts repeated failures from the first one", async () => {
+    const { postTurnPush } = await import("../../heart/sync")
+    const tmpDir = makeBundle()
+    vi.mocked(childProcess.execFileSync).mockImplementation(() => {
+      throw new Error("spawnSync git ENOBUFS")
+    })
+
+    expect(postTurnPush(tmpDir, defaultConfig).ok).toBe(false)
+    const first = JSON.parse(fs.readFileSync(path.join(tmpDir, "state", "pending-sync.json"), "utf-8"))
+    expect(first.error).toContain("ENOBUFS")
+    expect(first.consecutiveFailures).toBe(1)
+    expect(first.firstFailedAt).toBe(first.failedAt)
+
+    expect(postTurnPush(tmpDir, defaultConfig).ok).toBe(false)
+    const second = JSON.parse(fs.readFileSync(path.join(tmpDir, "state", "pending-sync.json"), "utf-8"))
+    expect(second.consecutiveFailures).toBe(2)
+    expect(second.firstFailedAt).toBe(first.firstFailedAt)
+    fs.rmSync(tmpDir, { recursive: true, force: true })
+  })
+
+  it("continues the failure count from a record written before the count existed", async () => {
+    const { postTurnPush } = await import("../../heart/sync")
+    const tmpDir = makeBundle()
+    fs.mkdirSync(path.join(tmpDir, "state"), { recursive: true })
+    fs.writeFileSync(path.join(tmpDir, "state", "pending-sync.json"), JSON.stringify({
+      error: "old", failedAt: "2026-06-21T22:00:00.000Z", classification: "unknown", conflictFiles: [],
+    }), "utf-8")
+    vi.mocked(childProcess.execFileSync).mockImplementation(() => {
+      throw new Error("still failing")
+    })
+
+    postTurnPush(tmpDir, defaultConfig)
+
+    const record = JSON.parse(fs.readFileSync(path.join(tmpDir, "state", "pending-sync.json"), "utf-8"))
+    expect(record.firstFailedAt).toBe("2026-06-21T22:00:00.000Z")
+    expect(record.consecutiveFailures).toBe(2)
+    fs.rmSync(tmpDir, { recursive: true, force: true })
+  })
+
+  it("starts a fresh count when the previous record is not an object", async () => {
+    const { postTurnPush } = await import("../../heart/sync")
+    const tmpDir = makeBundle()
+    fs.mkdirSync(path.join(tmpDir, "state"), { recursive: true })
+    fs.writeFileSync(path.join(tmpDir, "state", "pending-sync.json"), "[]", "utf-8")
+    vi.mocked(childProcess.execFileSync).mockImplementation(() => {
+      throw new Error("failing")
+    })
+
+    postTurnPush(tmpDir, defaultConfig)
+
+    const record = JSON.parse(fs.readFileSync(path.join(tmpDir, "state", "pending-sync.json"), "utf-8"))
+    expect(record.consecutiveFailures).toBe(1)
+    fs.rmSync(tmpDir, { recursive: true, force: true })
+  })
+
+  it.each([
+    ["a push", (pushCount: number) => pushCount === 0, "origin\n"],
+    ["a push after rebase", (pushCount: number) => pushCount === 1, "origin\n"],
+    ["a local-only commit", () => true, ""],
+  ])("removes the failure record after %s succeeds", async (_label, pushSucceeds, remote) => {
+    const { postTurnPush } = await import("../../heart/sync")
+    const tmpDir = makeBundle()
+    fs.mkdirSync(path.join(tmpDir, "state"), { recursive: true })
+    fs.writeFileSync(path.join(tmpDir, "state", "pending-sync.json"), JSON.stringify({ error: "old" }), "utf-8")
+    let pushCount = 0
+    vi.mocked(childProcess.execFileSync).mockImplementation((_cmd, args) => {
+      const argv = args as string[]
+      if (argv[0] === "status") return Buffer.from(" M file.json\n")
+      if (argv[0] === "remote") return Buffer.from(remote)
+      if (argv[0] === "push") {
+        const ok = pushSucceeds(pushCount)
+        pushCount++
+        if (!ok) throw new Error("rejected")
+      }
+      return Buffer.from("")
+    })
+
+    expect(postTurnPush(tmpDir, defaultConfig).ok).toBe(true)
+    expect(fs.existsSync(path.join(tmpDir, "state", "pending-sync.json"))).toBe(false)
+    fs.rmSync(tmpDir, { recursive: true, force: true })
+  })
+
+  function cleanTreeBundleWithRecord(): string {
+    const tmpDir = makeBundle()
+    fs.mkdirSync(path.join(tmpDir, "state"), { recursive: true })
+    fs.writeFileSync(path.join(tmpDir, "state", "pending-sync.json"), JSON.stringify({ error: "old" }), "utf-8")
+    fs.writeFileSync(path.join(tmpDir, "state", "sync-skipped-files.json"), JSON.stringify({ files: [] }), "utf-8")
+    return tmpDir
+  }
+
+  it.each([
+    ["no remote is configured", "", "0"],
+    ["nothing is ahead of the upstream", "origin\n", "0\n"],
+  ])("clears the failure and skipped-files records on a clean tree when %s", async (_label, remote, ahead) => {
+    const { postTurnPush } = await import("../../heart/sync")
+    const tmpDir = cleanTreeBundleWithRecord()
+    const commands: string[] = []
+    vi.mocked(childProcess.execFileSync).mockImplementation((_cmd, args) => {
+      const argv = args as string[]
+      commands.push(argv[0])
+      if (argv[0] === "remote") return Buffer.from(remote)
+      if (argv[0] === "rev-list") return Buffer.from(ahead)
+      return Buffer.from("")
+    })
+
+    expect(postTurnPush(tmpDir, defaultConfig).ok).toBe(true)
+    expect(fs.existsSync(path.join(tmpDir, "state", "pending-sync.json"))).toBe(false)
+    expect(fs.existsSync(path.join(tmpDir, "state", "sync-skipped-files.json"))).toBe(false)
+    expect(commands).not.toContain("push")
+    fs.rmSync(tmpDir, { recursive: true, force: true })
+  })
+
+  it("pushes commits an earlier failed push left behind when the tree is clean", async () => {
+    const { postTurnPush } = await import("../../heart/sync")
+    const tmpDir = cleanTreeBundleWithRecord()
+    const commands: string[] = []
+    vi.mocked(childProcess.execFileSync).mockImplementation((_cmd, args) => {
+      const argv = args as string[]
+      commands.push(argv[0])
+      if (argv[0] === "remote") return Buffer.from("origin\n")
+      if (argv[0] === "rev-list") return Buffer.from("2560\n")
+      return Buffer.from("")
+    })
+
+    expect(postTurnPush(tmpDir, defaultConfig).ok).toBe(true)
+    expect(commands).toContain("push")
+    expect(commands).not.toContain("commit")
+    expect(fs.existsSync(path.join(tmpDir, "state", "pending-sync.json"))).toBe(false)
+    fs.rmSync(tmpDir, { recursive: true, force: true })
+  })
+
+  it("keeps the failure record on a clean tree when the upstream cannot be compared", async () => {
+    const { postTurnPush } = await import("../../heart/sync")
+    const tmpDir = cleanTreeBundleWithRecord()
+    vi.mocked(childProcess.execFileSync).mockImplementation((_cmd, args) => {
+      const argv = args as string[]
+      if (argv[0] === "remote") return Buffer.from("origin\n")
+      if (argv[0] === "rev-list") throw new Error("fatal: no upstream configured for branch 'main'")
+      return Buffer.from("")
+    })
+
+    expect(postTurnPush(tmpDir, defaultConfig).ok).toBe(true)
+    expect(fs.existsSync(path.join(tmpDir, "state", "pending-sync.json"))).toBe(true)
+    expect(emitNervesEvent).toHaveBeenCalledWith(expect.objectContaining({ event: "heart.sync_upstream_unknown" }))
+    fs.rmSync(tmpDir, { recursive: true, force: true })
+  })
+
+  it("keeps the failure record when the ahead count is not a number", async () => {
+    const { postTurnPush } = await import("../../heart/sync")
+    const tmpDir = cleanTreeBundleWithRecord()
+    vi.mocked(childProcess.execFileSync).mockImplementation((_cmd, args) => {
+      const argv = args as string[]
+      if (argv[0] === "remote") return Buffer.from("origin\n")
+      if (argv[0] === "rev-list") return Buffer.from("garbage")
+      return Buffer.from("")
+    })
+
+    expect(postTurnPush(tmpDir, defaultConfig).ok).toBe(true)
+    expect(fs.existsSync(path.join(tmpDir, "state", "pending-sync.json"))).toBe(true)
+    fs.rmSync(tmpDir, { recursive: true, force: true })
+  })
+
+  it("unstages both sides of a rename whose new path is over the limit", async () => {
+    const { postTurnPush, SYNC_FILE_SIZE_LIMIT_BYTES } = await import("../../heart/sync")
+    const tmpDir = makeBundle()
+    sparseFile(tmpDir, "new/big.jsonl", SYNC_FILE_SIZE_LIMIT_BYTES + 1)
+    const calls: string[][] = []
+    vi.mocked(childProcess.execFileSync).mockImplementation((_cmd, args) => {
+      const argv = args as string[]
+      calls.push(argv)
+      if (argv[0] === "status") return Buffer.from("R  old/big.jsonl -> new/big.jsonl\n")
+      if (argv[0] === "diff" && argv.includes("--name-status")) return Buffer.from("R100\0old/big.jsonl\0new/big.jsonl\0C090\0a.json\0b.json\0")
+      return Buffer.from("")
+    })
+
+    postTurnPush(tmpDir, defaultConfig)
+
+    expect(calls).toContainEqual(["--literal-pathspecs", "reset", "-q", "--", "new/big.jsonl", "old/big.jsonl"])
+    fs.rmSync(tmpDir, { recursive: true, force: true })
+  })
+
+  it("commits quietly, with a large output buffer and a long timeout", async () => {
+    const { postTurnPush, SYNC_GIT_MAX_BUFFER_BYTES, SYNC_GIT_TIMEOUT_MS } = await import("../../heart/sync")
+    vi.mocked(childProcess.execFileSync).mockImplementation((_cmd, args) => {
+      const argv = args as string[]
+      if (argv[0] === "status") return Buffer.from(" M file.json\n")
+      if (argv[0] === "remote") return Buffer.from("origin\n")
+      return Buffer.from("")
+    })
+
+    postTurnPush("/fake/agent/root", defaultConfig)
+
+    for (const command of [["add", "-A"], ["commit", "-q", "-m", "sync: post-turn update"], ["push", "origin"]]) {
+      expect(childProcess.execFileSync).toHaveBeenCalledWith(
+        "git",
+        command,
+        expect.objectContaining({ timeout: SYNC_GIT_TIMEOUT_MS, maxBuffer: SYNC_GIT_MAX_BUFFER_BYTES }),
+      )
+    }
+  })
+
+  it("clearPendingSync tolerates a record it cannot remove", async () => {
+    const { clearPendingSync } = await import("../../heart/sync")
+    const rmSpy = vi.spyOn(fs, "rmSync").mockImplementationOnce(() => {
+      throw new Error("EPERM")
+    })
+
+    expect(() => clearPendingSync("/fake/agent/root")).not.toThrow()
+    rmSpy.mockRestore()
   })
 })
