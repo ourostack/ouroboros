@@ -11,6 +11,7 @@ vi.mock("../../nerves/runtime", () => ({
 import {
   getMachineIdentityPath,
   loadOrCreateMachineIdentity,
+  readMachineIdentity,
   type MachineIdentity,
 } from "../../heart/machine-identity"
 
@@ -66,6 +67,16 @@ describe("machine identity", () => {
     }))
   })
 
+  it("reads an identity without creating or repairing one", () => {
+    emitTestEvent("machine identity read only")
+    expect(readMachineIdentity(homeDir)).toBeNull()
+    expect(fs.existsSync(getMachineIdentityPath(homeDir))).toBe(false)
+    fs.mkdirSync(path.dirname(getMachineIdentityPath(homeDir)), { recursive: true })
+    fs.writeFileSync(getMachineIdentityPath(homeDir), "{\"schemaVersion\":2}")
+    expect(readMachineIdentity(homeDir)).toBeNull()
+    expect(fs.readFileSync(getMachineIdentityPath(homeDir), "utf-8")).toBe("{\"schemaVersion\":2}")
+  })
+
   it("creates a default random id when no id factory is provided", () => {
     emitTestEvent("machine identity default random id")
     const identity = loadOrCreateMachineIdentity({
@@ -90,7 +101,8 @@ describe("machine identity", () => {
       }
     })
     try {
-      const { loadOrCreateMachineIdentity: loadWithDefaultOs } = await import("../../heart/machine-identity")
+      const { loadOrCreateMachineIdentity: loadWithDefaultOs, readMachineIdentity: readWithDefaultOs } = await import("../../heart/machine-identity")
+      expect(readWithDefaultOs()).toBeNull()
       const identity = loadWithDefaultOs({
         now: () => new Date("2026-04-12T17:46:00.000Z"),
         randomId: () => "machine_default_helpers",
@@ -98,6 +110,7 @@ describe("machine identity", () => {
 
       expect(identity.machineId).toBe("machine_default_helpers")
       expect(identity.hostnameAliases).toEqual(["default-host"])
+      expect(readWithDefaultOs()).toEqual(identity)
     } finally {
       vi.doUnmock("os")
       vi.resetModules()

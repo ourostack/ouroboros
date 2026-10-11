@@ -9365,6 +9365,64 @@ describe("ouro up per-agent progress threading", () => {
     expect(output).not.toContain("agent config validated offline")
   }, 10_000)
 
+  it("checks only agents homed on this machine during ouro up provider checks", async () => {
+    mockHealthCheck.mockClear()
+    let nowMs = Date.parse("2026-04-10T05:02:36.000Z")
+    const writeStdout = vi.fn()
+    const deps = {
+      socketPath: "/tmp/ouro-test.sock",
+      sendCommand: sendCommandWithRunningStatus(runningDaemonStatusWithProviders([
+        {
+          agent: "slugger",
+          lane: "outward",
+          provider: "openai-codex",
+          model: "gpt-5.5",
+          source: "agent.json",
+          readiness: "ready",
+          credential: "checked previously",
+        },
+        {
+          agent: "slugger",
+          lane: "inner",
+          provider: "openai-codex",
+          model: "gpt-5.5",
+          source: "agent.json",
+          readiness: "ready",
+          credential: "checked previously",
+        },
+      ])),
+      startDaemonProcess: vi.fn(async () => ({ pid: 5683 })),
+      writeStdout,
+      checkSocketAlive: vi.fn().mockResolvedValue(true),
+      cleanupStaleSocket: vi.fn(),
+      fallbackPendingMessage: vi.fn(() => "/tmp/pending.jsonl"),
+      listDiscoveredAgents: () => ["slugger", "homed-elsewhere"],
+      listHomeAgents: () => ["slugger"],
+      healthFilePath: "/tmp/ouro-health.json",
+      readHealthState: vi.fn(() => ({
+        status: "ok",
+        mode: "normal",
+        pid: 5683,
+        startedAt: new Date(nowMs).toISOString(),
+        uptimeSeconds: 0,
+        safeMode: null,
+        degraded: [],
+        agents: {},
+        habits: {},
+      })),
+      readHealthUpdatedAt: vi.fn(() => nowMs),
+      readRecentDaemonLogLines: vi.fn(() => []),
+      sleep: vi.fn(async (ms: number) => { nowMs += ms }),
+      now: () => nowMs,
+    } satisfies OuroCliDeps
+
+    await runOuroCli(["up"], deps)
+
+    const output = writeStdout.mock.calls.map(([text]) => text).join("\n")
+    expect(output).toContain("provider readiness confirmed by daemon status")
+    expect(output).not.toContain("homed-elsewhere")
+  }, 10_000)
+
   it("runs a bounded live provider check when daemon status has configured providers with unknown readiness", async () => {
     mockHealthCheck.mockClear()
     let nowMs = Date.parse("2026-04-10T05:02:36.000Z")

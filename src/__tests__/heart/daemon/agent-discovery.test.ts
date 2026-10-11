@@ -22,6 +22,11 @@ vi.mock("../../../heart/identity", () => ({
   getAgentBundlesRoot: getAgentBundlesRootMock,
 }))
 
+const readMachineIdentityMock = vi.hoisted(() => vi.fn((): { machineId: string; hostnameAliases?: string[] } | null => null))
+vi.mock("../../../heart/machine-identity", () => ({
+  readMachineIdentity: readMachineIdentityMock,
+}))
+
 vi.mock("../../../nerves/runtime", () => ({
   emitNervesEvent: emitNervesEventMock,
 }))
@@ -129,9 +134,9 @@ describe("listAllBundleAgents", () => {
     const { listAllBundleAgents } = await import("../../../heart/daemon/agent-discovery")
 
     expect(listAllBundleAgents()).toEqual([
-      { name: "alpha", enabled: true },
+      { name: "alpha", enabled: true, homeState: "fallback" },
       { name: "off", enabled: false },
-      { name: "zeta", enabled: true },
+      { name: "zeta", enabled: true, homeState: "fallback" },
     ])
   })
 
@@ -157,7 +162,7 @@ describe("listAllBundleAgents", () => {
     const { listAllBundleAgents } = await import("../../../heart/daemon/agent-discovery")
 
     expect(listAllBundleAgents()).toEqual([
-      { name: "valid", enabled: true },
+      { name: "valid", enabled: true, homeState: "fallback" },
     ])
   })
 
@@ -196,9 +201,9 @@ describe("listAllBundleAgents", () => {
 
     expect(listEnabledBundleAgents()).toEqual(["a", "c"])
     expect(listAllBundleAgents()).toEqual([
-      { name: "a", enabled: true },
+      { name: "a", enabled: true, homeState: "fallback" },
       { name: "b", enabled: false },
-      { name: "c", enabled: true },
+      { name: "c", enabled: true, homeState: "fallback" },
     ])
   })
 
@@ -240,7 +245,7 @@ describe("listAllBundleAgents", () => {
         enabled: true,
         managementBlockedReason: "inactive scaffold: no vault locator, sync, or enabled external sense",
       },
-      { name: "real", enabled: true },
+      { name: "real", enabled: true, homeState: "fallback" },
     ])
   })
 
@@ -265,7 +270,7 @@ describe("listAllBundleAgents", () => {
 
     expect(listEnabledBundleAgents()).toEqual(["voice-bot"])
     expect(listAllBundleAgents()).toEqual([
-      { name: "voice-bot", enabled: true },
+      { name: "voice-bot", enabled: true, homeState: "fallback" },
     ])
   })
 
@@ -285,7 +290,7 @@ describe("listAllBundleAgents", () => {
     const { listAllBundleAgents } = await import("../../../heart/daemon/agent-discovery")
 
     expect(listAllBundleAgents()).toEqual([
-      { name: "valid", enabled: true },
+      { name: "valid", enabled: true, homeState: "fallback" },
     ])
   })
 })
@@ -715,5 +720,124 @@ describe("listBundleSyncRows", () => {
     expect(execFileSyncMock).not.toHaveBeenCalled()
     // existsSync should have been called with the .git path
     expect(existsSyncMock).toHaveBeenCalledWith("/mock/AgentBundles/needs-init.ouro/.git")
+  })
+})
+
+describe("agent homes", () => {
+  afterEach(() => {
+    readdirSyncMock.mockReset()
+    readFileSyncMock.mockReset()
+    readMachineIdentityMock.mockReset()
+    readMachineIdentityMock.mockReturnValue(null)
+  })
+
+  function bundles(configs: Record<string, Record<string, unknown>>): void {
+    readdirSyncMock.mockReturnValue(Object.keys(configs).map((name) => ({ name: `${name}.ouro`, isDirectory: () => true })))
+    readFileSyncMock.mockImplementation((target: string) => {
+      const name = target.split("/").at(-2)!.replace(/\.ouro$/, "")
+      return JSON.stringify(configs[name])
+    })
+  }
+
+  const fleet = {
+    mine: managedConfig({ home: { machineId: "machine_here", machineName: "here-mac", since: "2026-10-10T00:00:00.000Z" } }),
+    theirs: managedConfig({ home: { machineId: "machine_there" } }),
+    stray: managedConfig(),
+    off: managedConfig({ enabled: false, home: { machineId: "machine_here" } }),
+    guide: { enabled: true, kind: "library" },
+  }
+
+  it("runs only agents homed on this machine once it holds a home", async () => {
+    bundles(fleet)
+    readMachineIdentityMock.mockReturnValue({ machineId: "machine_here", hostnameAliases: [] })
+    const { listAllBundleAgents, listHomeBundleAgents } = await import("../../../heart/daemon/agent-discovery")
+
+    expect(listAllBundleAgents()).toEqual([
+      { name: "guide", enabled: true, kind: "library" },
+      { name: "mine", enabled: true, homeState: "here", homeMachine: "here-mac (here)" },
+      { name: "off", enabled: false, homeMachine: "machine_here" },
+      { name: "stray", enabled: true, homeState: "unclaimed" },
+      { name: "theirs", enabled: true, homeState: "elsewhere", homeMachine: "machine_there" },
+    ])
+    expect(listHomeBundleAgents()).toEqual(["mine"])
+  })
+
+  it("flags a home that has this machine's name under a different id", async () => {
+    bundles({ twin: managedConfig({ home: { machineId: "machine_old", machineName: "Aris-MBP" } }) })
+    readMachineIdentityMock.mockReturnValue({ machineId: "machine_new", hostnameAliases: ["aris-mbp.local"] })
+    const { listAllBundleAgents } = await import("../../../heart/daemon/agent-discovery")
+
+    expect(listAllBundleAgents()).toEqual([
+      { name: "twin", enabled: true, homeState: "elsewhere", homeMachine: "Aris-MBP (old)", homeNameMatchesThisMachine: true },
+    ])
+    expect(listAllBundleAgents({ machineId: "machine_new", hostnameAliases: ["other"] })[0]).not.toHaveProperty("homeNameMatchesThisMachine")
+    readMachineIdentityMock.mockReturnValue(null)
+    expect(listAllBundleAgents()[0]).not.toHaveProperty("homeNameMatchesThisMachine")
+  })
+
+  it("keeps running unclaimed agents on a machine that holds no home", async () => {
+    bundles(fleet)
+    const { listHomeBundleAgents } = await import("../../../heart/daemon/agent-discovery")
+
+    expect(listHomeBundleAgents()).toEqual(["stray"])
+    expect(listHomeBundleAgents({ machineId: "machine_new" })).toEqual(["stray"])
+    expect(listHomeBundleAgents({ machineId: "machine_there" })).toEqual(["theirs"])
+  })
+
+  it("does not read the machine identity when there are no bundles", async () => {
+    readdirSyncMock.mockReturnValue([{ name: "notes", isDirectory: () => true }])
+    const { listHomeBundleAgents } = await import("../../../heart/daemon/agent-discovery")
+
+    expect(listHomeBundleAgents()).toEqual([])
+    expect(readMachineIdentityMock).not.toHaveBeenCalled()
+  })
+
+  it("parses only usable home blocks", async () => {
+    const { parseAgentHome } = await import("../../../heart/daemon/agent-discovery")
+
+    expect(parseAgentHome(undefined)).toBeNull()
+    expect(parseAgentHome(["machine_here"])).toBeNull()
+    expect(parseAgentHome({ machineId: "  " })).toBeNull()
+    expect(parseAgentHome({ machineId: " machine_here ", machineName: " here-mac ", since: "2026-10-10" })).toEqual({
+      machineId: "machine_here",
+      machineName: "here-mac",
+      since: "2026-10-10",
+    })
+    expect(parseAgentHome({ machineId: "machine_here", machineName: 7 })).toEqual({
+      machineId: "machine_here",
+      machineName: "machine_here",
+      since: "",
+    })
+    expect(parseAgentHome({ machineId: "machine_here", previous: { machineId: "machine_old", machineName: "old-mac", since: "x" } })).toEqual({
+      machineId: "machine_here",
+      machineName: "machine_here",
+      since: "",
+      previous: { machineId: "machine_old", machineName: "old-mac" },
+    })
+    expect(parseAgentHome({ machineId: "machine_here", previous: { machineName: "no id" } })).not.toHaveProperty("previous")
+  })
+
+  it("labels homes with a short id and reads a bundle's home for the turn gate", async () => {
+    const { agentHomeLabel, normalizeMachineName, readAgentHomeElsewhere } = await import("../../../heart/daemon/agent-discovery")
+
+    expect(agentHomeLabel({ machineId: "machine_a7d3bc77-e466", machineName: "Mac" })).toBe("Mac (a7d3bc77)")
+    expect(agentHomeLabel({ machineId: "machine_x", machineName: "machine_x" })).toBe("machine_x")
+    expect(normalizeMachineName(" Aris-MBP.LOCAL ")).toBe("aris-mbp")
+
+    readFileSyncMock.mockImplementation((target: string) => {
+      if (target === "/b/away.ouro/agent.json") return JSON.stringify({ home: { machineId: "machine_there" } })
+      if (target === "/b/mine.ouro/agent.json") return JSON.stringify({ home: { machineId: "machine_here" } })
+      throw new Error("missing")
+    })
+    expect(readAgentHomeElsewhere("/b/away.ouro", null)).toBeNull()
+    expect(readAgentHomeElsewhere("/b/away.ouro", "machine_here")).toEqual({ machineId: "machine_there", machineName: "machine_there", since: "" })
+    expect(readAgentHomeElsewhere("/b/mine.ouro", "machine_here")).toBeNull()
+    expect(readAgentHomeElsewhere("/b/missing.ouro", "machine_here")).toBeNull()
+    readMachineIdentityMock.mockReturnValue({ machineId: "machine_here" })
+    expect(readAgentHomeElsewhere("/b/away.ouro")).toEqual(expect.objectContaining({ machineId: "machine_there" }))
+    readMachineIdentityMock.mockReturnValue(null)
+    expect(readAgentHomeElsewhere("/b/away.ouro")).toBeNull()
+    readFileSyncMock.mockImplementation(() => JSON.stringify({}))
+    expect(readAgentHomeElsewhere("/b/none.ouro", "machine_here")).toBeNull()
   })
 })

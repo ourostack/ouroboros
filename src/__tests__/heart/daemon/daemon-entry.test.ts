@@ -84,7 +84,8 @@ vi.mock("../../../heart/daemon/supercronic-supervisor", () => ({
 }))
 
 vi.mock("../../../heart/daemon/agent-discovery", () => ({
-  listEnabledBundleAgents: listEnabledBundleAgentsMock,
+  listHomeBundleAgents: listEnabledBundleAgentsMock,
+  listAllBundleAgents: () => [],
   readPrivateRuntimeConfig: readPrivateRuntimeConfigMock,
 }))
 
@@ -776,6 +777,7 @@ describe("daemon entrypoint", () => {
       { name: "sense-probe:mcp-canary:ouroboros", status: "ok", message: "mcp-canary:ouroboros healthy" },
       { name: "context-loss-sentinel:slugger", status: "ok", message: "Sentinel ready: deterministic recovery is ready" },
       { name: "context-loss-sentinel:ouroboros", status: "ok", message: "Sentinel ready: deterministic recovery is ready" },
+      { name: "agent-home", status: "ok", message: "every running agent is homed here" },
     ])
     expect(createMcpStatusCanaryProbeMock).toHaveBeenCalledWith(
       expect.objectContaining({ agent: "slugger", ignoreOverviewHealth: true }),
@@ -1828,10 +1830,17 @@ describe("daemon entrypoint", () => {
     vi.doMock("../../../heart/daemon/daemon", () => ({
       OuroDaemon: MockOuroDaemon,
     }))
+    const displaceAgent = vi.fn(async () => { throw new Error("already stopping") })
+    const checkAgentHomes = vi.fn(async () => ({
+      health: { name: "agent-home", status: "ok", message: "every running agent is homed here" },
+      displaced: [] as string[],
+    }))
+    vi.doMock("../../../heart/daemon/agent-home", () => ({ checkAgentHomes }))
     vi.doMock("../../../heart/daemon/process-manager", () => ({
       DaemonProcessManager: class MockProcessManager {
         listAgentSnapshots = vi.fn(() => [])
         sendToAgent = vi.fn()
+        displaceAgent = displaceAgent
       },
     }))
     vi.doMock("../../../heart/daemon/sense-manager", () => ({
@@ -1914,6 +1923,7 @@ describe("daemon entrypoint", () => {
         status: "critical",
         message: "Sentinel blocked: recovery checkpoint is blocked",
       },
+      { name: "agent-home", status: "ok", message: "every running agent is homed here" },
     ])
     expect(refreshContextLossSentinel).toHaveBeenCalledWith(
       "slugger",
@@ -1936,9 +1946,19 @@ describe("daemon entrypoint", () => {
         status: "critical",
         message: "Sentinel refresh failed: offline",
       },
+      { name: "agent-home", status: "ok", message: "every running agent is homed here" },
     ])
 
     argvSpy.mockRestore()
+
+    checkAgentHomes.mockResolvedValueOnce({
+      health: { name: "agent-home", status: "critical", message: "lease conflict: stopped slugger" },
+      displaced: ["slugger"],
+    })
+    const conflictResults = await healthOptions.sentinelChecker?.()
+    expect(conflictResults?.at(-1)).toEqual({ name: "agent-home", status: "critical", message: "lease conflict: stopped slugger" })
+    expect(displaceAgent).toHaveBeenCalledWith("slugger", "slugger is homed on another machine")
+    expect(checkAgentHomes).toHaveBeenCalledWith(expect.objectContaining({ managedAgents: ["slugger", "ouroboros"], bundlesRoot }))
   })
 
   it("emits error and exits when daemon start fails", async () => {

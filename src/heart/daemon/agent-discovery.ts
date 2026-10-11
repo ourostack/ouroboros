@@ -2,6 +2,7 @@ import * as fs from "fs"
 import * as path from "path"
 import { execFileSync as nodeExecFileSync } from "child_process"
 import { getAgentBundlesRoot } from "../identity"
+import { readMachineIdentity } from "../machine-identity"
 import { emitNervesEvent } from "../../nerves/runtime"
 
 type Readdir = (target: string, options: { withFileTypes: true }) => fs.Dirent[]
@@ -15,7 +16,42 @@ export interface AgentDiscoveryOptions {
   readFileSync?: ReadText
   execFileSync?: GitExec
   existsSync?: ExistsSync
+  /**
+   * This machine's stable id (`~/.ouro-cli/machine.json`). Undefined reads it
+   * from disk without creating it; null means this machine has no identity
+   * yet, so no agent is homed here.
+   */
+  machineId?: string | null
+  /**
+   * This machine's hostname aliases, used to spot a home that names this
+   * machine's hostname under a different id (a replaced machine.json).
+   * Read from disk together with `machineId` when that is undefined.
+   */
+  hostnameAliases?: readonly string[]
 }
+
+/**
+ * The home-machine lease in a bundle's synced agent.json: the one machine that
+ * runs the agent. `ouro move <agent> here` writes it.
+ */
+export interface AgentHome {
+  machineId: string
+  machineName: string
+  since: string
+  previous?: { machineId: string; machineName: string }
+}
+
+/**
+ * Where an agent runs, seen from this machine:
+ * - `here`: homed on this machine; the daemon runs it.
+ * - `elsewhere`: homed on another machine; the daemon never runs it here.
+ * - `unclaimed`: no home, and this machine already holds a home for some
+ *   agent, so it runs only its own agents and leaves this one alone.
+ * - `fallback`: no home, and this machine holds no home at all. The daemon
+ *   keeps running it as before leases existed, so an upgrade never takes an
+ *   agent dark. `ouro move <agent> here` turns it into a real home.
+ */
+export type AgentHomeState = "here" | "elsewhere" | "unclaimed" | "fallback"
 
 export interface BundleAgentRow {
   name: string
@@ -33,10 +69,21 @@ export interface BundleAgentRow {
    * to manage it because it still looks like an unadopted scaffold.
    */
   managementBlockedReason?: string
+  /** Present for enabled, manageable, non-library bundles: where this agent runs. */
+  homeState?: AgentHomeState
+  /** The home machine's label (name plus a short id), when the agent has a home. */
+  homeMachine?: string
+  /**
+   * True when the agent is homed elsewhere under a machine name that matches
+   * this machine's hostname: likely this machine's own home under an id that
+   * was since replaced, which would otherwise leave the agent dark silently.
+   */
+  homeNameMatchesThisMachine?: true
 }
 
 interface DiscoveredBundleAgentRow extends BundleAgentRow {
   manageable: boolean
+  home: AgentHome | null
 }
 
 export type PrivateRuntimeConfigSource = "default" | "privateRuntime" | "unreadable"
@@ -87,12 +134,66 @@ function isManageableAgentConfig(parsed: Record<string, unknown>): boolean {
     || hasEnabledExternalSense(parsed)
 }
 
+function nonEmptyString(value: unknown): string | null {
+  return typeof value === "string" && value.trim().length > 0 ? value.trim() : null
+}
+
+/** Parse the `home` block of agent.json; null when absent or unusable. */
+export function parseAgentHome(value: unknown): AgentHome | null {
+  if (!isRecord(value)) return null
+  const machineId = nonEmptyString(value.machineId)
+  if (!machineId) return null
+  const home: AgentHome = {
+    machineId,
+    machineName: nonEmptyString(value.machineName) ?? machineId,
+    since: nonEmptyString(value.since) ?? "",
+  }
+  const previous = isRecord(value.previous) ? parseAgentHome(value.previous) : null
+  if (previous) home.previous = { machineId: previous.machineId, machineName: previous.machineName }
+  return home
+}
+
+/** Hostnames compare without case or a trailing `.local`. */
+export function normalizeMachineName(name: string): string {
+  return name.trim().replace(/\.local$/i, "").toLowerCase()
+}
+
+/**
+ * How a home is shown: its name plus a short id, so two Macs that are both
+ * called "Mac" stay distinguishable.
+ */
+export function agentHomeLabel(home: { machineId: string; machineName: string }): string {
+  if (home.machineName === home.machineId) return home.machineId
+  return `${home.machineName} (${home.machineId.replace(/^machine_/, "").slice(0, 8)})`
+}
+
+/**
+ * The home this bundle names when it is another machine, else null. Used by
+ * the turn pipeline to decline turns for an agent that has moved away.
+ */
+export function readAgentHomeElsewhere(
+  agentRoot: string,
+  machineId: string | null = readMachineIdentity()?.machineId ?? null,
+): AgentHome | null {
+  if (machineId === null) return null
+  let home: AgentHome | null
+  try {
+    home = parseAgentHome((JSON.parse(fs.readFileSync(path.join(agentRoot, "agent.json"), "utf-8")) as { home?: unknown }).home)
+  } catch {
+    return null
+  }
+  return home && home.machineId !== machineId ? home : null
+}
+
 function stripDiscoveryMetadata(row: DiscoveredBundleAgentRow): BundleAgentRow {
   const publicRow: BundleAgentRow = { name: row.name, enabled: row.enabled }
   if (row.kind !== undefined) publicRow.kind = row.kind
   if (row.managementBlockedReason !== undefined) {
     publicRow.managementBlockedReason = row.managementBlockedReason
   }
+  if (row.homeState !== undefined) publicRow.homeState = row.homeState
+  if (row.home) publicRow.homeMachine = agentHomeLabel(row.home)
+  if (row.homeNameMatchesThisMachine) publicRow.homeNameMatchesThisMachine = true
   return publicRow
 }
 
@@ -134,6 +235,7 @@ function discoverBundleAgents(options: AgentDiscoveryOptions = {}): DiscoveredBu
     let enabled = true
     let kind: string | undefined
     let manageable = false
+    let home: AgentHome | null = null
     try {
       const raw = readFileSync(configPath, "utf-8")
       const parsed = JSON.parse(raw) as unknown
@@ -145,15 +247,33 @@ function discoverBundleAgents(options: AgentDiscoveryOptions = {}): DiscoveredBu
         kind = parsed.kind
       }
       manageable = isManageableAgentConfig(parsed)
+      home = parseAgentHome(parsed.home)
     } catch {
       continue
     }
-    const row: DiscoveredBundleAgentRow = { name: agentName, enabled, manageable }
+    const row: DiscoveredBundleAgentRow = { name: agentName, enabled, manageable, home }
     if (kind !== undefined) row.kind = kind
     if (enabled && !isLibraryKind(kind) && !manageable) {
       row.managementBlockedReason = "inactive scaffold: no vault locator, sync, or enabled external sense"
     }
     discovered.push(row)
+  }
+
+  if (discovered.length === 0) return discovered
+  const identity = options.machineId === undefined ? readMachineIdentity() : null
+  const machineId = options.machineId === undefined ? identity?.machineId ?? null : options.machineId
+  const thisMachineNames = new Set((options.hostnameAliases ?? identity?.hostnameAliases ?? []).map(normalizeMachineName))
+  const holdsAHome = machineId !== null && discovered.some((row) => row.home?.machineId === machineId)
+  for (const row of discovered) {
+    if (!row.enabled || isLibraryKind(row.kind) || !row.manageable) continue
+    if (row.home) {
+      row.homeState = row.home.machineId === machineId ? "here" : "elsewhere"
+      if (row.homeState === "elsewhere" && thisMachineNames.has(normalizeMachineName(row.home.machineName))) {
+        row.homeNameMatchesThisMachine = true
+      }
+    } else {
+      row.homeState = holdsAHome ? "unclaimed" : "fallback"
+    }
   }
 
   return discovered.sort((left, right) => left.name.localeCompare(right.name))
@@ -171,6 +291,17 @@ export function listAllBundleAgents(options: AgentDiscoveryOptions = {}): Bundle
 export function listEnabledBundleAgents(options: AgentDiscoveryOptions = {}): string[] {
   return discoverBundleAgents(options)
     .filter((row) => row.enabled && !isLibraryKind(row.kind) && row.manageable)
+    .map((row) => row.name)
+}
+
+/**
+ * The agents this machine's daemon runs: enabled, manageable agents homed here,
+ * plus unclaimed agents while this machine holds no home (`fallback`).
+ */
+export function listHomeBundleAgents(options: AgentDiscoveryOptions = {}): string[] {
+  return discoverBundleAgents(options)
+    .filter((row) => row.enabled && !isLibraryKind(row.kind) && row.manageable)
+    .filter((row) => row.homeState === "here" || row.homeState === "fallback")
     .map((row) => row.name)
 }
 

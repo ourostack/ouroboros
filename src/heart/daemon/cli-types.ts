@@ -106,6 +106,7 @@ export type OuroCliCommand =
   | { kind: "hatch.start"; agentName?: string; humanName?: string; provider?: AgentProvider; credentials?: HatchCredentialsInput; migrationPath?: string }
   | { kind: "rollback"; version?: string }
   | { kind: "versions" }
+  | { kind: "agent.move"; agent: string }
   | { kind: "daemon.dev"; repoPath?: string; clone?: boolean; clonePath?: string }
   | { kind: "attention.list"; agent?: string }
   | { kind: "attention.show"; id: string; agent?: string }
@@ -171,6 +172,8 @@ export interface OuroCliDeps {
   cleanupStaleSocket: (socketPath: string) => void
   fallbackPendingMessage: (command: Extract<DaemonCommand, { kind: "message.send" }>) => string
   listDiscoveredAgents?: () => Promise<string[]> | string[]
+  /** Agents this machine's daemon runs (homed here); see agent-home.ts. */
+  listHomeAgents?: () => Promise<string[]> | string[]
   runHatchFlow?: (input: HatchFlowInput) => Promise<HatchFlowResult>
   runSerpentGuide?: () => Promise<string | null>
   runAuthFlow?: (input: RuntimeAuthInput) => Promise<RuntimeAuthResult>

@@ -64,6 +64,32 @@ If you are not in an interactive terminal, run the direct command instead:
 ouro clone <bundle-git-remote>
 ```
 
+## Which machine runs the agent
+
+Each agent runs on exactly one machine, its home. The home is recorded as `home` in the bundle's synced `agent.json` and names a machine by its stable id from `~/.ouro-cli/machine.json`. The daemon starts only agents whose home is this machine, so once an agent has a home, cloning its bundle onto another machine does not make it run there.
+
+An agent with no `home` yet (every agent from before homes existed) is the exception: it keeps running on any machine that holds no home at all, so upgrading never takes an agent dark. Two such machines can run the same agent twice, and `ouro status` warns about every agent running here without a home. Once a machine is home to any agent, it runs only its own agents and leaves agents without a home alone.
+
+To make this machine an agent's home, run:
+
+```bash
+ouro move <agent> here
+```
+
+The move refuses to start unless the bundle is exactly in step with its remote: no unpushed commits (a move never publishes a sync backlog as a side effect; fix bundle sync first) and no uncommitted change to `agent.json`. It then catches up with the remote, records this machine as the home (and the old home as `home.previous`), commits only `agent.json` and pushes. If another machine changed the home while the move was being pushed, the move is undone and says which machine won; nothing is ever silently overwritten.
+
+Then run `ouro up` here to start the agent. The old home stops it within about a minute: each daemon checks its agents' leases on disk and on the bundle remote every minute, stops any agent homed elsewhere, reports the lease conflict in `ouro status`, and declines turns for it. Its next `ouro up` stops managing the agent at all.
+
+### Moving existing agents onto homes
+
+When two machines already share bundles, give each agent a home in this order so nothing goes dark or runs twice:
+
+1. Upgrade the machine that should keep running an agent (for example, the Mac that runs `slugger`). With no homes yet, it keeps running everything it ran before.
+2. On each machine, claim the agents that belong there: `ouro move <agent> here`. From then on, that machine runs only the agents it claimed.
+3. Run `ouro up` on that machine and check `ouro status`: every agent shows `home: this machine`, `home: <machine>, not run here`, or `no home` with the claim command.
+
+If a machine's identity is ever replaced (a new `machine.json`), the agents homed on the old id stop running there. `ouro status` points this out when an agent's home has this machine's name but a different id; run `ouro move <agent> here` to take it back.
+
 ## Step 3: Unlock the agent vault
 
 Each agent owns its own Bitwarden/Vaultwarden vault for provider credentials. Provider/model selection is stored in `agent.json` inside the bundle. See [docs/auth-and-providers.md](auth-and-providers.md) for the full story.
@@ -191,7 +217,7 @@ After setup, open Claude Code in PowerShell — the agent is there.
 | Friends | Dev tool registrations (MCP, hooks) |
 | Tasks | Vault unlock material (Keychain/DPAPI/Secret Service) |
 | Skills | |
-| Agent config (`agent.json`) | |
+| Agent config (`agent.json`), including its home machine | |
 
 Provider credentials and portable runtime credentials live in the agent's Bitwarden/Vaultwarden vault (one vault per agent). Local attachments such as BlueBubbles also live in the agent vault, under a machine-scoped item keyed by this machine's stable id. The vault itself is remote and shared; vault unlock material is local to each machine. The only Ouro-owned durable credential locations are the bundle and the agent vault. See [docs/auth-and-providers.md](auth-and-providers.md).
 

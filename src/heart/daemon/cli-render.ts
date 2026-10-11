@@ -82,6 +82,9 @@ interface StatusAgentRow {
   name: string
   enabled: boolean
   managementBlockedReason?: string
+  homeState?: string
+  homeMachine?: string
+  homeNameMatchesThisMachine?: boolean
 }
 
 interface StatusProviderRow {
@@ -296,6 +299,11 @@ export function parseStatusPayload(data: unknown): StatusPayload | null {
     const parsed: StatusAgentRow = { name, enabled }
     const managementBlockedReason = stringField(row.managementBlockedReason)
     if (managementBlockedReason !== null) parsed.managementBlockedReason = managementBlockedReason
+    const homeState = stringField(row.homeState)
+    if (homeState !== null) parsed.homeState = homeState
+    const homeMachine = stringField(row.homeMachine)
+    if (homeMachine !== null) parsed.homeMachine = homeMachine
+    if (booleanField(row.homeNameMatchesThisMachine) === true) parsed.homeNameMatchesThisMachine = true
     return parsed
   })
 
@@ -352,6 +360,19 @@ export function parseStatusPayload(data: unknown): StatusPayload | null {
     agents: parsedAgents as StatusAgentRow[],
     providers: parsedProviders as StatusProviderRow[],
   }
+}
+
+/** Where an agent runs, in words, for the status Agents section. */
+function formatAgentHome(row: StatusAgentRow): string {
+  if (row.homeState === "here") return "home: this machine"
+  if (row.homeState === "elsewhere") {
+    const lookalike = row.homeNameMatchesThisMachine
+      ? `; that name is this machine's, so if this machine's identity was replaced, run ouro move ${row.name} here`
+      : ""
+    return `home: ${row.homeMachine}, not run here${lookalike}`
+  }
+  if (row.homeState === "unclaimed") return `no home; not run here (claim: ouro move ${row.name} here)`
+  return `no home; runs here until a machine claims it (claim: ouro move ${row.name} here)`
 }
 
 // ── ANSI color helpers (private) ──
@@ -472,7 +493,12 @@ export function formatDaemonStatusOutput(response: DaemonResponse, fallback: str
       const dot = inactive ? yellow("●") : row.enabled ? green("●") : dim("○")
       const stateText = inactive ? "inactive" : row.enabled ? "enabled " : "disabled"
       const detail = inactive ? `  ${dim(row.managementBlockedReason!)}` : ""
-      lines.push(`    ${name} ${dot} ${stateText}${detail}`)
+      const home = row.homeState ? `  ${dim(formatAgentHome(row))}` : ""
+      lines.push(`    ${name} ${dot} ${stateText}${detail}${home}`)
+    }
+    const homeless = payload.agents.filter((row) => row.homeState === "fallback").map((row) => row.name)
+    if (homeless.length > 0) {
+      lines.push(`    ${yellow("!")} ${homeless.join(", ")} ${homeless.length === 1 ? "runs" : "run"} here without a home; if another machine runs ${homeless.length === 1 ? "it" : "them"} too, ${homeless.length === 1 ? "it runs" : "they run"} twice. Claim the ones that belong here: ouro move <agent> here`)
     }
     lines.push("")
   }

@@ -110,6 +110,12 @@ export const COMMAND_REGISTRY: Record<string, CommandHelp & { category: CommandC
     example: "ouro outlook --json",
     hidden: true,
   },
+  move: {
+    category: "Agents",
+    description: "Make this machine the agent's home, the one machine that runs it. The move is recorded in the agent's synced bundle, and the old home stops running it.",
+    usage: "ouro move <agent> here",
+    example: "ouro move slugger here",
+  },
   whoami: {
     category: "Agents",
     description: "Show current agent identity info",
