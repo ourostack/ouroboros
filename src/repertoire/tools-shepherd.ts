@@ -3,9 +3,7 @@ import * as path from "node:path"
 import { readMachineRuntimeCredentialConfig } from "../heart/runtime-credentials"
 import { resolveShepherdConnection } from "../heart/shepherd-config"
 import { emitNervesEvent } from "../nerves/runtime"
-import { createCmuxClient } from "../senses/shepherd/client"
-import { createCmuxHost } from "../senses/shepherd/cmux"
-import type { ShepherdHost } from "../senses/shepherd/host"
+import { createShepherdHost, type ShepherdHost } from "../senses/shepherd/host"
 import { redactSecrets } from "../senses/shepherd/redact"
 import { readReturns, type ReturnRecord } from "../senses/shepherd/returns"
 import type { ToolContext, ToolDefinition } from "./tools-base"
@@ -35,7 +33,7 @@ export function shepherdToolsEnabled(agentRoot: string | undefined): boolean {
 function hostFor(agentName: string): ShepherdHost | string {
   const machine = readMachineRuntimeCredentialConfig(agentName)
   const resolved = resolveShepherdConnection(agentName, machine.ok ? machine.config : {})
-  return resolved.ok ? createCmuxHost(createCmuxClient(resolved.connection, { agentName })) : resolved.error
+  return resolved.ok ? createShepherdHost(resolved.connection, { agentName }) : resolved.error
 }
 
 async function withHost(tool: string, ctx: ToolContext | undefined, run: (host: ShepherdHost) => Promise<Record<string, unknown>>): Promise<string> {

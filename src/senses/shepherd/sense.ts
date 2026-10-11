@@ -9,9 +9,8 @@ import { readMachineRuntimeCredentialConfig } from "../../heart/runtime-credenti
 import { resolveShepherdConnection, type ShepherdConnection } from "../../heart/shepherd-config"
 import { getPrivateRuntimePendingDir, queuePendingMessage } from "../../mind/pending"
 import { emitNervesEvent } from "../../nerves/runtime"
-import { createCmuxClient } from "./client"
-import { createCmuxHost, realSchedule } from "./cmux"
-import type { ReturnedControl, ShepherdHost } from "./host"
+import { realSchedule } from "./cmux"
+import { createShepherdHost, type ReturnedControl, type ShepherdHost } from "./host"
 import { createShepherdJudge, type JudgeResult, type ShepherdJudge } from "./judge"
 import { redactSecrets } from "./redact"
 import { appendReturn, type ReturnRecord } from "./returns"
@@ -129,7 +128,7 @@ export async function startShepherdSenseApp(options: ShepherdSenseOptions): Prom
   const machine = readMachineRuntimeCredentialConfig(agent)
   const resolved = resolveShepherdConnection(agent, machine.ok ? machine.config : {})
   if (!resolved.ok) throw new Error(resolved.error)
-  const host = (options.createHost ?? ((connection) => createCmuxHost(createCmuxClient(connection, { agentName: agent }), { now, schedule })))(resolved.connection)
+  const host = (options.createHost ?? ((connection) => createShepherdHost(connection, { agentName: agent, now, schedule })))(resolved.connection)
   const judge = options.judge ?? createShepherdJudge(() => getProviderRuntime("agent", { agentName: agent, agentRoot }), JUDGE_TIMEOUT_MS)
   const escalate = options.escalate ?? ((content: string) => queueEscalation(agent, content, now()))
   const wake = options.wake ?? ((ids: string[]) => wakeForEscalations(agent, ids))

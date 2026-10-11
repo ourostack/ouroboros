@@ -1,3 +1,9 @@
+import type { ShepherdConnection } from "../../heart/shepherd-config"
+import { emitNervesEvent } from "../../nerves/runtime"
+import { createCmuxClient } from "./client"
+import { createCmuxHost } from "./cmux"
+import { createHerdrHost } from "./herdr"
+
 /**
  * The seam between Shepherd and a terminal host (cmux, Herdr). A host lists and reads terminal
  * sessions, types into them, shows a status line, and tells Shepherd when a coding agent handed
@@ -45,4 +51,12 @@ export interface ShepherdHost {
   /** Sets or clears (null) Shepherd's one-line status for the session, and optionally posts a notification. */
   signal(sessionId: string, status: string | null, notification?: { title: string; body: string }): Promise<void>
   watch(handlers: HostWatchHandlers): { close(): void }
+}
+
+/** The host for this machine's connection. */
+export function createShepherdHost(connection: ShepherdConnection, options: { agentName: string; now?: () => number; schedule?: (fn: () => void, ms: number) => () => void }): ShepherdHost {
+  emitNervesEvent({ component: "senses", event: "senses.shepherd_host_created", message: "opened the Shepherd terminal host", meta: { host: connection.host } })
+  return connection.host === "herdr"
+    ? createHerdrHost(connection, { schedule: options.schedule })
+    : createCmuxHost(createCmuxClient(connection, { agentName: options.agentName }), { now: options.now, schedule: options.schedule })
 }
