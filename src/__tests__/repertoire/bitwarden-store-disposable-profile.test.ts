@@ -250,6 +250,25 @@ describe("BitwardenCredentialStore disposable local profile", () => {
     }
   })
 
+  it("does not discard a profile another process is holding", async () => {
+    writeProfile(appDataDir, "healthy-locked")
+    installFakeBw(appDataDir)
+    const { store } = newStore()
+    const lockedOut = new Error("bw CLI lock timeout: could not acquire /x/.ouro-bw.lock within 75000ms")
+    const original = mockExecFile.getMockImplementation()!
+    mockExecFile.mockImplementation((cmd: string, args: string[], opts: unknown, cb: Function) => {
+      if (args[0] === "unlock") {
+        cb(lockedOut, "", "")
+        return
+      }
+      original(cmd, args, opts, cb)
+    })
+
+    await expect(store.login()).rejects.toThrow("bw CLI lock timeout")
+    expect(readProfile(appDataDir)).toBe("healthy-locked")
+    expect(nervesEvents.some((event) => event.event === "repertoire.bw_local_profile_discarded")).toBe(false)
+  })
+
   it("treats a profile that vanished mid-recovery as already discarded", async () => {
     writeProfile(appDataDir, "null-kdf")
     installFakeBw(appDataDir, {

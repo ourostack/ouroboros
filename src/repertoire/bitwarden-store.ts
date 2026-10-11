@@ -425,6 +425,11 @@ export function readBwCliVersion(bwBinaryPath: string): string | null {
   return null
 }
 
+/** Another process holds the profile; the profile itself is not at fault. */
+function isBwLockTimeout(err: Error): boolean {
+  return err.message.includes("bw CLI lock timeout")
+}
+
 /** Check if the error is transient (network/timeout) and worth retrying. */
 function isTransientError(err: Error): boolean {
   const msg = err.message.toLowerCase()
@@ -721,7 +726,7 @@ export class BitwardenCredentialStore implements CredentialStore {
       await this.loginWithLocalProfile()
     } catch (error) {
       const err = error as Error
-      if (!startedWithLocalProfile || isTransientError(err) || isBwNotInstalled(err)) throw err
+      if (!startedWithLocalProfile || isTransientError(err) || isBwNotInstalled(err) || isBwLockTimeout(err)) throw err
       await this.discardLocalProfile("existing local bw profile could not be used", err)
       await this.loginWithLocalProfile()
     }
