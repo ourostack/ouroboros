@@ -2,9 +2,15 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
-      "version": "0.1.0-alpha.895",
+      "version": "0.1.0-alpha.896",
       "changes": [
         "Each agent now runs on exactly one home machine. The home is recorded as 'home' in the bundle's synced agent.json, naming the machine by its stable id from ~/.ouro-cli/machine.json, and the daemon starts only agents homed on its machine. 'ouro move <agent> here' makes this machine the home: it pulls the bundle, records the old home, commits only agent.json and pushes, and undoes the move if it cannot be published, so two machines cannot both win the same agent. An agent with no home keeps running on a machine that holds no home at all, so upgrading never takes an agent dark; once a machine is home to any agent it runs only its own. 'ouro status' shows each agent's home, 'ouro up' checks providers only for agents homed here, and a new 'agent-home' health check reports a lease conflict when a synced move leaves this daemon running an agent homed elsewhere; the next 'ouro up' hands it off. Reading homes (status, discovery) never creates a machine identity; only the daemon and 'ouro move' create one. See docs/cross-machine-setup.md."
+      ]
+    },
+    {
+      "version": "0.1.0-alpha.895",
+      "changes": [
+        "The vault unlocks once per machine. Each agent's folder under ~/.ouro-cli/bitwarden/ now keeps one disposable bw profile per installed bw version (bw-<version>/), so machines with several bw installs never migrate or share one profile. When a local step fails on an authenticated profile (a null KdfConfig or missing master-password unlock data after a newer bw half-migrated it, or a missing session), Ouro moves the profile aside as data.json.discarded and logs in fresh once with the saved unlock secret, without asking the human. Server steps (login, sync), network errors, rate limits (429), gateway errors (502/504), connection resets, DNS and unreachable-network failures, lock contention and rejected secrets never discard a profile, and those network failures now count as transient. Ouro no longer deletes the saved Keychain/DPAPI/Secret Service/plaintext unlock entry when the vault rejects it: it keeps the entry and writes a private rejection record (mode 0600) in the agent's bw folder that every process honors, so no process retries a rejected secret against the server; `ouro vault unlock` (even with the same secret) or any successful login clears it. A store's terminal login failure is retried after 15 minutes instead of being held until restart. The locked-vault message also names a macOS password reset, which replaces the login keychain, as a cause. The Unraid template and the Sanctuary bundle runtime move to this version."
       ]
     },
     {
