@@ -28,10 +28,11 @@ import("../heart/runtime-credentials")
       const { loadOrCreateMachineIdentity } = await import("../heart/machine-identity")
       await refreshMachineRuntimeCredentialConfig(agentName!, loadOrCreateMachineIdentity().machineId, { preserveCachedOnFailure: true }).catch(() => undefined)
     }
-    const { startCmuxSenseApp } = await import("./shepherd/sense")
-    const app = await startCmuxSenseApp({ agentName: agentName! })
+    const { startShepherdSenseApp } = await import("./shepherd/sense")
+    const app = await startShepherdSenseApp({ agentName: agentName! })
     const shutdown = (): void => {
-      void app.stop().finally(() => process.exit(0))
+      app.stop()
+      process.exit(0)
     }
     process.once("SIGTERM", shutdown)
     process.once("SIGINT", shutdown)

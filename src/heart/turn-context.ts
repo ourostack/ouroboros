@@ -42,7 +42,7 @@ import { buildAgentProviderVisibility, type AgentProviderVisibility } from "./pr
 import { listVisibleBackgroundOperations } from "./mail-import-discovery"
 import { readFlightRecorderResume } from "../arc/flight-recorder"
 import { readContextLossSentinelView } from "./context-loss-sentinel"
-import { cmuxSenseStatus } from "./cmux-config"
+import { shepherdSenseStatus } from "./shepherd-config"
 
 // ── TurnContext: the raw state snapshot ─────────────────────────────
 
@@ -291,7 +291,7 @@ export function readSenseStatusLines(): string[] {
         && hasTextField(runtimePayload, "telegramAuthorizedUserId")
         && hasTextField(runtimePayload, "telegramAuthorizedChatId"),
     workbench: false,
-    shepherd: cmuxSenseStatus(true, machinePayload) === "ready",
+    shepherd: shepherdSenseStatus(true, machinePayload) === "ready",
   }
 
   const rows: Array<{ label: string; status: string }> = [
@@ -322,7 +322,7 @@ export function readSenseStatusLines(): string[] {
     },
     {
       label: "shepherd",
-      status: cmuxSenseStatus(senses.shepherd.enabled, machinePayload),
+      status: shepherdSenseStatus(senses.shepherd.enabled, machinePayload),
     },
     {
       label: "Workbench",
