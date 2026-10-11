@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest"
 
-import { defaultCmuxSocketPath, resolveShepherdConnection, shepherdConfigFacts, shepherdRepairHint, shepherdSenseStatus } from "../../heart/shepherd-config"
+import { defaultCmuxSocketPath, defaultHerdrSocketPath, resolveShepherdConnection, shepherdConfigFacts, shepherdRepairHint, shepherdSenseStatus } from "../../heart/shepherd-config"
 
 describe("Shepherd machine config", () => {
   it("names the human repair with the agent", () => {
@@ -50,5 +50,14 @@ describe("Shepherd machine config", () => {
     const missing = resolveShepherdConnection("slugger", {})
     expect(missing.ok).toBe(false)
     expect(!missing.ok && missing.error).toContain("no terminal host is attached on this machine; human-required:")
+  })
+
+  it("attaches Herdr from its own record, with cmux winning when both are set", () => {
+    expect(shepherdConfigFacts({ herdr: {} })).toEqual({ configured: true, detail: "herdr socket" })
+    expect(shepherdSenseStatus(true, { herdr: {}, cmux: {} })).toBe("ready")
+    expect(resolveShepherdConnection("slugger", { herdr: { socketPath: "/h.sock" } })).toEqual({ ok: true, connection: { host: "herdr", socketPath: "/h.sock" } })
+    expect(resolveShepherdConnection("slugger", { herdr: {} })).toEqual({ ok: true, connection: { host: "herdr", socketPath: defaultHerdrSocketPath() } })
+    expect(resolveShepherdConnection("slugger", { herdr: {}, cmux: { socketCapability: "v1.a.b" } })).toMatchObject({ ok: true, connection: { host: "cmux" } })
+    expect(defaultHerdrSocketPath("/h")).toBe("/h/.config/herdr/herdr.sock")
   })
 })

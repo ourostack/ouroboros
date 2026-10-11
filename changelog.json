@@ -2,6 +2,12 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.898",
+      "changes": [
+        "Shepherd now also runs on Herdr. A return is a pane leaving 'working' for 'idle', 'done' or 'blocked' in Herdr's own pane.agent_status_changed events and still there after a 3-second grace period, keyed by Herdr's state_change_seq. Replies go through agent.prompt (pasted, then Enter) and pane.send_keys, and Shepherd's status shows as the pane's state label. Attach it with a 'herdr' record in the machine runtime config (optional herdr.socketPath, default ~/.config/herdr/herdr.sock); cmux wins when both are set."
+      ]
+    },
+    {
       "version": "0.1.0-alpha.897",
       "changes": [
         "The cmux sense is now Ouro Shepherd (sense 'shepherd', tools shepherd_overview, shepherd_read and shepherd_signal; agent.json key senses.shepherd). Shepherd is agent-agnostic: every time a coding agent in a terminal hands control back, a cheap judge on the agent's own agent lane decides whether it should have, using the same rubric for Claude Code, Codex, Copilot CLI, Agency or any other agent.",
