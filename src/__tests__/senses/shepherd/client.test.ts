@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest"
 
-import { CmuxSocketError, createCmuxClient } from "../../../senses/cmux/client"
+import { CmuxSocketError, createCmuxClient } from "../../../senses/shepherd/client"
 import { startFakeCmux, type FakeCmux } from "./fake-cmux"
 
 const fakes: FakeCmux[] = []

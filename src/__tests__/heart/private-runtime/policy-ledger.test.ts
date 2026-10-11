@@ -273,22 +273,22 @@ describe("private-runtime policy and ledger", () => {
     expect(readLedger(deps.ledgerPath as string)).toHaveLength(1)
   })
 
-  it("allows a cmux sense escalation wake with the default policy, and only with its request id and sense refs", async () => {
+  it("allows a Shepherd escalation wake with the default policy, and only with its return id and sense refs", async () => {
     const privateRuntime = await loadPrivateRuntime()
     const deps = policyDeps()
     const request = (originRefs: Array<{ kind: string; id: string }>, key: string) => privateTurnRequest({
       origin: "daemon.private.wake",
-      reason: "cmux Feed request",
-      triggerSource: "cmux-feed",
+      reason: "Shepherd return",
+      triggerSource: "shepherd",
       idempotencyKey: key,
       originRefs,
     })
 
-    await expect(privateRuntime.requestPrivateTurnDecision(request([{ kind: "cmux-feed", id: "req-1" }, { kind: "sense", id: "cmux" }], "cmux-feed:slugger:req-1"), { ...deps, evaluatePolicy: undefined }))
-      .resolves.toMatchObject({ result: "allow", executable: true, reason: "cmux sense escalation" })
-    await expect(privateRuntime.requestPrivateTurnDecision(request([{ kind: "cmux-feed", id: "req-2" }], "cmux-feed:slugger:req-2"), { ...deps, evaluatePolicy: undefined }))
+    await expect(privateRuntime.requestPrivateTurnDecision(request([{ kind: "shepherd-return", id: "req-1" }, { kind: "sense", id: "shepherd" }], "shepherd:slugger:req-1"), { ...deps, evaluatePolicy: undefined }))
+      .resolves.toMatchObject({ result: "allow", executable: true, reason: "Shepherd escalation" })
+    await expect(privateRuntime.requestPrivateTurnDecision(request([{ kind: "shepherd-return", id: "req-2" }], "shepherd:slugger:req-2"), { ...deps, evaluatePolicy: undefined }))
       .resolves.toMatchObject({ result: "deny", deniedReason: "default policy deny" })
-    await expect(privateRuntime.requestPrivateTurnDecision(request([{ kind: "cmux-feed", id: " " }, { kind: "sense", id: "cmux" }], "cmux-feed:slugger:blank"), { ...deps, evaluatePolicy: undefined }))
+    await expect(privateRuntime.requestPrivateTurnDecision(request([{ kind: "shepherd-return", id: " " }, { kind: "sense", id: "shepherd" }], "shepherd:slugger:blank"), { ...deps, evaluatePolicy: undefined }))
       .resolves.toMatchObject({ result: "deny", deniedReason: "default policy deny" })
   })
 

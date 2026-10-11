@@ -124,20 +124,3 @@ export function ackFrame(overrides: Record<string, unknown> = {}): Record<string
     ...overrides,
   }
 }
-
-export function feedEvent(seq: number, payload: Record<string, unknown>, overrides: Record<string, unknown> = {}): Record<string, unknown> {
-  return {
-    type: "event",
-    protocol: "cmux-events",
-    version: 1,
-    boot_id: "BOOT-1",
-    seq,
-    name: "feed.item.received",
-    category: "feed",
-    source: payload._source ?? "claude",
-    workspace_id: payload.workspace_id ?? "WS-1",
-    surface_id: payload.surface_id ?? "SF-1",
-    payload: { session_id: "claude-s1", surface_id: "SF-1", workspace_id: "WS-1", cwd: "/Users/a/code/repo", _source: "claude", ...payload },
-    ...overrides,
-  }
-}

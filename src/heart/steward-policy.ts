@@ -564,39 +564,6 @@ export function inspectRoutineActionGrant(agentRoot: string, input: RoutineActio
   }
 }
 
-/**
- * A standing owner grant for an action the harness takes on its own, with no container desired
- * state and no per-request requester (the cmux sense answering a coding agent's routine prompt
- * `once`). The caller counts its own uses in the grant's window from its own log.
- */
-export type StandingActionGrantDecision =
-  | { allowed: true; grantVersion: number; maxCount: number; windowMs: number }
-  | { allowed: false; reason: string }
-
-export function inspectStandingActionGrant(agentRoot: string, input: {
-  key: string
-  action: string
-  target: string
-  usesInWindow: (windowMs: number) => number
-  now?: string
-}): StandingActionGrantDecision {
-  try {
-    const { policy, rows } = readPolicyState(agentRoot)
-    const now = input.now ?? new Date().toISOString()
-    const grant = policy.routineActionGrants[input.key]
-    if (!grant) return { allowed: false, reason: "standing grant is missing" }
-    if (grant.provenance !== "stated") return { allowed: false, reason: "standing grant must be owner-stated" }
-    if (!appliedEntry(rows, ["grant_routine_action"], input.key, grant)) return { allowed: false, reason: "standing grant has no applied owner authorization" }
-    if (grant.action !== input.action) return { allowed: false, reason: "action does not match the standing grant" }
-    if (!grant.targets.includes(input.target) || grant.exclusions.includes(input.target)) return { allowed: false, reason: "target is not covered by the standing grant" }
-    if (grant.expiresAt && Date.parse(grant.expiresAt) <= Date.parse(now)) return { allowed: false, reason: "standing grant expired" }
-    if (input.usesInWindow(grant.windowMs) >= grant.maxCount) return { allowed: false, reason: "standing grant count cap reached" }
-    return { allowed: true, grantVersion: grant.version, maxCount: grant.maxCount, windowMs: grant.windowMs }
-  } catch (error) {
-    return { allowed: false, reason: error instanceof Error ? error.message : "steward policy is unavailable" }
-  }
-}
-
 export function consumeRoutineActionGrant(agentRoot: string, input: {
   key: string
   target: string
