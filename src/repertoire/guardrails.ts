@@ -439,9 +439,9 @@ const TRAVEL_TRUSTED_TOOLS = new Set(["weather_lookup", "travel_advisory", "geoc
 const A2A_TRUSTED_TOOLS = new Set(["a2a_list_peers", "a2a_send_message", "a2a_get_task"])
 const COMMERCE_FAMILY_TOOLS = new Set(["commerce_checkout_preview", "commerce_checkout_commit", "commerce_receipt_get", "commerce_access_log"])
 const COMMERCE_AUTHORITY_TOOLS = new Set(["stripe_create_card", "flight_hold", "flight_book"])
-// The cmux tools read the owner's terminals and speak to them through their desktop, so only family may use them.
+// The Shepherd tools read the owner's terminals and speak to them through their desktop, so only family may use them.
 // A call with no known trust level fails closed.
-const CMUX_FAMILY_TOOLS = new Set(["cmux_overview", "cmux_read", "cmux_signal", "cmux_reply_once", "cmux_correct"])
+const SHEPHERD_FAMILY_TOOLS = new Set(["shepherd_overview", "shepherd_read", "shepherd_signal"])
 const MAIL_FAMILY_TOOLS = new Set(["mail_screener", "mail_decide", "mail_access_log", "mail_send", "mail_index_refresh"])
 const MAIL_DELEGATED_READ_TOOLS = new Set(["mail_recent", "mail_search"])
 
@@ -1183,8 +1183,8 @@ function checkTrustLevelGuardrails(toolName: string, args: Record<string, string
   const mailResult = mailTrustGuardrail(toolName, args, context)
   if (!mailResult.allowed) return mailResult
 
-  if (CMUX_FAMILY_TOOLS.has(toolName) && context.trustLevel !== "family") {
-    return deny("the owner's cmux terminals require family trust.")
+  if (SHEPHERD_FAMILY_TOOLS.has(toolName) && context.trustLevel !== "family") {
+    return deny("the owner's terminals require family trust.")
   }
 
   // Credential tools have their own trust rules that apply at all levels

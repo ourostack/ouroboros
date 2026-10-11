@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest"
 
-import { redactSecrets } from "../../../senses/cmux/redact"
+import { redactSecrets } from "../../../senses/shepherd/redact"
 
 describe("cmux secret redaction", () => {
   it("removes secret-shaped strings and keeps the surrounding text", () => {
