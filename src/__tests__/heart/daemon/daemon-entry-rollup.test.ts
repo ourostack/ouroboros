@@ -58,7 +58,8 @@ const { registerGlobalLogSinkMock, registeredHealthSinks, capturedHealthStates }
 }))
 
 vi.mock("../../../heart/daemon/agent-discovery", () => ({
-  listEnabledBundleAgents: listEnabledBundleAgentsMock,
+  listHomeBundleAgents: listEnabledBundleAgentsMock,
+  listAllBundleAgents: () => [],
   readPrivateRuntimeConfig: vi.fn(() => ({ autoStart: true, source: "privateRuntime" })),
 }))
 

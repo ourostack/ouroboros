@@ -2711,6 +2711,10 @@ export function parseOuroCommand(args: string[]): OuroCliCommand {
   }
   if (head === "rollback") return { kind: "rollback", ...(second ? { version: second } : {}) }
   if (head === "versions") return { kind: "versions" }
+  if (head === "move") {
+    if (args.length !== 3 || !second || args[2] !== "here") throw new Error("Usage: ouro move <agent> here")
+    return { kind: "agent.move", agent: second }
+  }
   if (head === "stop" || head === "down") return { kind: "daemon.stop" }
   if (head === "status") {
     const { agent, rest } = extractAgentFlag(args.slice(1))

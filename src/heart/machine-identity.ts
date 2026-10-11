@@ -76,6 +76,19 @@ export function getMachineIdentityPath(homeDir: string = os.homedir()): string {
   return path.join(homeDir, ".ouro-cli", "machine.json")
 }
 
+/**
+ * Read this machine's identity without creating or repairing it. Returns null
+ * when the file is missing or invalid. Use this on read-only paths (status,
+ * agent discovery) so looking never writes; the daemon creates the identity.
+ */
+export function readMachineIdentity(homeDir: string = os.homedir()): MachineIdentity | null {
+  try {
+    return parseMachineIdentity(JSON.parse(fs.readFileSync(getMachineIdentityPath(homeDir), "utf-8")) as unknown)
+  } catch {
+    return null
+  }
+}
+
 export function loadOrCreateMachineIdentity(deps: MachineIdentityDeps = {}): MachineIdentity {
   const homeDir = deps.homeDir ?? os.homedir()
   const machinePath = getMachineIdentityPath(homeDir)

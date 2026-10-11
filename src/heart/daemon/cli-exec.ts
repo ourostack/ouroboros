@@ -201,7 +201,8 @@ import { CommandProgress, UpProgress } from "./up-progress"
 import { createProviderPingProgressReporter } from "./provider-ping-progress"
 import { pingGithubCopilotModel, pingProvider, type PingResult, type ProviderPingOptions } from "../provider-ping"
 import { recordProviderLaneReadiness } from "../provider-readiness-cache"
-import { listBundleSyncRows, listEnabledBundleAgents } from "./agent-discovery"
+import { listAllBundleAgents, listBundleSyncRows, listEnabledBundleAgents, listHomeBundleAgents } from "./agent-discovery"
+import { machineDisplayName, moveAgentHomeHere } from "./agent-home"
 import { listPrunableAgentBundles } from "./prunable-bundle"
 import { runBootSyncProbe, type BootSyncProbeFinding } from "./boot-sync-probe"
 import { connectEntryNeedsAttention, renderConnectBay, summarizeProvidersForConnect, type ConnectMenuEntry } from "./connect-bay"
@@ -836,7 +837,8 @@ type StartupProviderCheckResult = {
 }
 
 async function checkAlreadyRunningAgentProviders(deps: OuroCliDeps, onProgress?: (message: string) => void): Promise<StartupProviderCheckResult> {
-  const agents = await listCliAgents(deps)
+  // Check only the agents this machine runs; an agent homed elsewhere is not ours to repair here.
+  const agents = deps.listHomeAgents ? await Promise.resolve(deps.listHomeAgents()) : await listCliAgents(deps)
   const statusResult = await checkAgentProvidersFromDaemonStatus(deps, agents, onProgress)
   if (statusResult) {
     const configResult = await checkAgentConfigsOffline(deps, agents)
@@ -1482,7 +1484,7 @@ export async function ensureDaemonRunning(
   }
   if (alive) {
     const localRuntime = getRuntimeMetadata()
-    const localManagedAgents = managedAgentsSignature(listEnabledBundleAgents({
+    const localManagedAgents = managedAgentsSignature(listHomeBundleAgents({
       bundlesRoot: deps.bundlesRoot ?? getAgentBundlesRoot(),
     }))
     let runningRuntimePromise: Promise<{
@@ -1949,7 +1951,7 @@ export async function checkManualCloneBundles(deps: ManualCloneCheckDeps): Promi
 
 // ── toDaemonCommand ──
 
-function toDaemonCommand(command: Exclude<OuroCliCommand, { kind: "daemon.up" } | { kind: "daemon.dev" } | { kind: "daemon.logs.prune" } | { kind: "mailbox" } | { kind: "hatch.start" } | AuthCliCommand | AuthVerifyCliCommand | AuthSwitchCliCommand | ProviderCliCommand | RepairCliCommand | VaultCliCommand | DnsCliCommand | FriendCliCommand | A2ACliCommand | A2AClientCliCommand | WhoamiCliCommand | VoiceCliCommand | SessionCliCommand | ThoughtsCliCommand | ChangelogCliCommand | ConfigModelCliCommand | ConfigModelsCliCommand | RollbackCliCommand | VersionsCliCommand | AttentionCliCommand | PrivateDecisionsCliCommand | PrivateStatusCliCommand | WorkCardCliCommand | WorkGauntletCliCommand | WorkSentinelCliCommand | NervesReviewCliCommand | McpServeCliCommand | AcpServeCliCommand | McpCanaryCliCommand | McpDoctorCliCommand | SetupCliCommand | HookCliCommand | HabitLocalCliCommand | DeskCliCommand | MigrateToDeskCliCommand | DoctorCliCommand | RsvpCliCommand | CloneCliCommand | HelpCliCommand | { kind: "bluebubbles.replay" } | { kind: "bluebubbles.context-smoke" } | { kind: "bluebubbles.host" } | { kind: "bluebubbles.host.collect" } | { kind: "connect" } | { kind: "account.ensure" } | { kind: "mail.import-mbox" } | { kind: "mail.backfill-indexes" } | { kind: "mail.sync-cache" } | { kind: "plugin.install" } | { kind: "plugin.list" } | { kind: "plugin.remove" }>): DaemonCommand {
+function toDaemonCommand(command: Exclude<OuroCliCommand, { kind: "daemon.up" } | { kind: "daemon.dev" } | { kind: "daemon.logs.prune" } | { kind: "mailbox" } | { kind: "hatch.start" } | AuthCliCommand | AuthVerifyCliCommand | AuthSwitchCliCommand | ProviderCliCommand | RepairCliCommand | VaultCliCommand | DnsCliCommand | FriendCliCommand | A2ACliCommand | A2AClientCliCommand | WhoamiCliCommand | VoiceCliCommand | SessionCliCommand | ThoughtsCliCommand | ChangelogCliCommand | ConfigModelCliCommand | ConfigModelsCliCommand | RollbackCliCommand | VersionsCliCommand | AttentionCliCommand | PrivateDecisionsCliCommand | PrivateStatusCliCommand | WorkCardCliCommand | WorkGauntletCliCommand | WorkSentinelCliCommand | NervesReviewCliCommand | McpServeCliCommand | AcpServeCliCommand | McpCanaryCliCommand | McpDoctorCliCommand | SetupCliCommand | HookCliCommand | HabitLocalCliCommand | DeskCliCommand | MigrateToDeskCliCommand | DoctorCliCommand | RsvpCliCommand | CloneCliCommand | HelpCliCommand | { kind: "bluebubbles.replay" } | { kind: "bluebubbles.context-smoke" } | { kind: "bluebubbles.host" } | { kind: "bluebubbles.host.collect" } | { kind: "connect" } | { kind: "account.ensure" } | { kind: "mail.import-mbox" } | { kind: "mail.backfill-indexes" } | { kind: "mail.sync-cache" } | { kind: "plugin.install" } | { kind: "plugin.list" } | { kind: "plugin.remove" } | { kind: "agent.move" }>): DaemonCommand {
   if (command.kind === "habit.probe") {
     return {
       kind: "habit.probe",
@@ -2811,6 +2813,33 @@ function currentMachineId(deps: OuroCliDeps): string {
     homeDir: providerCliHomeDir(deps),
     now: () => providerCliNow(deps),
   }).machineId
+}
+
+function executeAgentMove(command: Extract<OuroCliCommand, { kind: "agent.move" }>, deps: OuroCliDeps): string {
+  const identity = loadOrCreateMachineIdentity({ homeDir: providerCliHomeDir(deps), now: () => providerCliNow(deps) })
+  const bundlesRoot = deps.bundlesRoot ?? getAgentBundlesRoot()
+  const discover = () => listAllBundleAgents({ bundlesRoot, machineId: identity.machineId })
+  const fallbackBefore = new Set(discover().filter((row) => row.homeState === "fallback").map((row) => row.name))
+  const result = moveAgentHomeHere({
+    agent: command.agent,
+    machineId: identity.machineId,
+    machineName: machineDisplayName(os.hostname(), identity.machineId),
+    bundlesRoot,
+    now: () => providerCliNow(deps),
+  })
+  if (!result.ok) return returnCliFailure(deps, result.message)
+
+  const lines = [result.message]
+  if (result.changed) {
+    lines.push("Run `ouro up` to start it here. Any other machine still running it stops at its next `ouro up` after it syncs this bundle; until then that machine's `ouro status` reports a lease conflict.")
+    const stopping = discover().filter((row) => row.homeState === "unclaimed" && fallbackBefore.has(row.name)).map((row) => row.name)
+    if (stopping.length > 0) {
+      lines.push(`This machine now runs only agents homed here, so these unclaimed agents stop here at the next \`ouro up\`: ${stopping.join(", ")}. Keep one here with \`ouro move <agent> here\`.`)
+    }
+  }
+  const message = lines.join("\n")
+  deps.writeStdout(message)
+  return message
 }
 
 const DEFAULT_RUNTIME_APPLY_TIMEOUT_MS = 15_000
@@ -8886,6 +8915,11 @@ export async function runOuroCli(args: string[], deps: OuroCliDeps = createDefau
   // ── desk umbrella (routed through daemon socket as mcp.call to "desk" server) ──
   if (command.kind === "desk") {
     return executeDeskCommand(command, deps)
+  }
+
+  // ── move: make this machine the agent's home (local, no daemon needed) ──
+  if (command.kind === "agent.move") {
+    return executeAgentMove(command, deps)
   }
 
   // ── migrate-to-desk (local, no daemon needed) ──

@@ -64,6 +64,20 @@ If you are not in an interactive terminal, run the direct command instead:
 ouro clone <bundle-git-remote>
 ```
 
+## Which machine runs the agent
+
+Each agent runs on exactly one machine, its home. The home is recorded as `home` in the bundle's synced `agent.json` and names a machine by its stable id from `~/.ouro-cli/machine.json`. The daemon starts only agents whose home is this machine, so cloning a bundle onto a second machine does not make the agent run twice.
+
+To make this machine an agent's home, run:
+
+```bash
+ouro move <agent> here
+```
+
+The move pulls the bundle, records this machine as the home (and the old home as `home.previous`), commits only `agent.json` and pushes. If the push is rejected because another machine changed the bundle meanwhile, the move is undone locally and retried once from a fresh pull; if it still cannot be published, nothing changes. Then run `ouro up` here to start the agent. The old home stops running it at its next `ouro up` after it syncs the bundle. Until then, that machine's `ouro status` reports a lease conflict under the `agent-home` health check.
+
+An agent with no `home` yet (every agent from before homes existed) keeps running on any machine that holds no home at all, so upgrading never takes an agent dark. Once a machine is home to any agent, it runs only its own agents and leaves agents without a home alone. `ouro status` shows each agent's home: `home: this machine`, `home: <machine>, not run here`, or `no home` with the `ouro move` command that claims it.
+
 ## Step 3: Unlock the agent vault
 
 Each agent owns its own Bitwarden/Vaultwarden vault for provider credentials. Provider/model selection is stored in `agent.json` inside the bundle. See [docs/auth-and-providers.md](auth-and-providers.md) for the full story.
@@ -191,7 +205,7 @@ After setup, open Claude Code in PowerShell — the agent is there.
 | Friends | Dev tool registrations (MCP, hooks) |
 | Tasks | Vault unlock material (Keychain/DPAPI/Secret Service) |
 | Skills | |
-| Agent config (`agent.json`) | |
+| Agent config (`agent.json`), including its home machine | |
 
 Provider credentials and portable runtime credentials live in the agent's Bitwarden/Vaultwarden vault (one vault per agent). Local attachments such as BlueBubbles also live in the agent vault, under a machine-scoped item keyed by this machine's stable id. The vault itself is remote and shared; vault unlock material is local to each machine. The only Ouro-owned durable credential locations are the bundle and the agent vault. See [docs/auth-and-providers.md](auth-and-providers.md).
 

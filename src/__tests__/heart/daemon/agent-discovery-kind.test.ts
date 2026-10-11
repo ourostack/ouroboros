@@ -21,6 +21,10 @@ vi.mock("../../../heart/identity", () => ({
   getAgentBundlesRoot: getAgentBundlesRootMock,
 }))
 
+vi.mock("../../../heart/machine-identity", () => ({
+  readMachineIdentity: () => null,
+}))
+
 vi.mock("../../../nerves/runtime", () => ({
   emitNervesEvent: emitNervesEventMock,
 }))
@@ -193,7 +197,7 @@ describe("kind:library exclusion", () => {
       const { listAllBundleAgents } = await import("../../../heart/daemon/agent-discovery")
 
       expect(listAllBundleAgents()).toEqual([
-        { name: "real", enabled: true },
+        { name: "real", enabled: true, homeState: "fallback" },
         { name: "RepairGuide", enabled: false, kind: "library" },
       ])
     })
@@ -212,7 +216,7 @@ describe("kind:library exclusion", () => {
       const { listAllBundleAgents } = await import("../../../heart/daemon/agent-discovery")
 
       const rows = listAllBundleAgents()
-      expect(rows).toEqual([{ name: "agent-a", enabled: true }])
+      expect(rows).toEqual([{ name: "agent-a", enabled: true, homeState: "fallback" }])
       expect(rows[0]).not.toHaveProperty("kind")
     })
   })
