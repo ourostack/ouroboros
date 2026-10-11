@@ -2,7 +2,7 @@
 
 Shepherd keeps the coding agents in this Mac's terminals working. Every time one of them hands control back, a cheap judge decides whether it should have. When the agent stopped too early (it asked "want me to go ahead?", offered a menu with a clear recommendation, or stopped after a plan), Shepherd answers in the terminal, visibly, and the agent carries on. When the agent needs the human (a sign-in, a decision that is theirs, money, an irreversible step) or says the work is done, Shepherd lets the return through and brings it to the Ouro agent.
 
-It is agent-agnostic and terminal-agnostic. Nothing in it assumes a particular coding agent: Claude Code, Codex, Copilot CLI, Agency and any other agent are judged by the same rubric from their screen. A terminal host is an adapter (`src/senses/shepherd/host.ts`); cmux is the first.
+It is agent-agnostic and terminal-agnostic. Nothing in it assumes a particular coding agent: Claude Code, Codex, Copilot CLI, Agency and any other agent are judged by the same rubric from their screen. A terminal host is an adapter (`src/senses/shepherd/host.ts`): cmux and Herdr.
 
 ## What a return is
 
@@ -10,13 +10,14 @@ A return is the host's own "agent stopped" signal.
 
 - **cmux, hooked agents.** cmux publishes `agent.hook.Stop` (and `StopFailure`) for every agent its hooks cover. Shepherd follows cmux's `events.stream` (categories `agent` and `surface`) and waits a 3-second grace period: any later hook for the same terminal other than `SubagentStop` or `Notification` means the agent resumed, and the stop is dropped. When cmux's session store (`~/.cmuxterm/<agent>-hook-sessions.json`, keyed by the agent's own session id; hook events name it `<agent>-<id>`) says background work was still running at the stop, Shepherd waits 30 seconds more and then passes the stop on marked as background work. The return is keyed by cmux's event id (`cmux:<boot id>:<seq>`) and carries the agent's last message (`lastBody`) and folder from that store.
 - **cmux, terminals no hook speaks for.** Some agents (Agency today) have no cmux hook. Every 4 seconds Shepherd reads the last 40 lines of each such terminal. Output that changed and then held still for 8 seconds is one return. Plain shells are watched too, so a terminal judged as still working or as not an agent waits twice as long before its next quiet return, doubling up to 5 minutes; focusing it or any other verdict restores the 8 seconds. A terminal whose hooked agent's session ends is watched this way again.
+- **Herdr.** Herdr detects the agent in every pane itself and publishes each change of its state as `pane.agent_status_changed` (`idle`, `working`, `blocked`, `done`, `unknown`). A pane that leaves `working` for `idle`, `done` or `blocked` and is still there after the 3-second grace period (checked with `agent.get`) is a return, keyed by Herdr's `state_change_seq` (`herdr:<pane>:<seq>`). A passing `unknown` state is ignored, so working, unknown, idle still counts. Herdr's agent-status subscriptions name each pane, so Shepherd subscribes again when a pane opens, closes or moves (following a moved pane to its new id), and with backoff after `events_lost` or a lost connection. Herdr does not replay events, so each new subscription starts from a fresh `pane.list`, and a pane that stopped working while Shepherd was not subscribed is handled as a return. Shepherd reads only the visible screen, because reading scrollback makes Herdr scroll the agent's UI.
 - **Restarts and gaps.** The first connection, and any connection whose `ack` reports a gap, starts at cmux's latest event, so old stops are never replayed as new returns. Reconnects back off 1, 2, 5, 10, then 30 seconds.
 
 ## Background work is not a return
 
 An agent that ends its turn while its own background work runs (subagents, background shells or jobs, watchers) has not handed control back: it is waiting for that work and will stop again when it reports. Shepherd treats such a stop as `working`. It never answers it and never escalates it as a gate. Its last message is a progress update: it is logged, and the status line says `<agent> waiting on its background work: <one line>`. Only when the judge says the update carries news the human would want now does it reach the Ouro agent, as a `[Shepherd update]` pending message with no wake, read on the agent's next private turn. With background work reported by the host, every verdict becomes `working`; a `gate` verdict is passed on as news. A later background stop with the same last message is logged without asking the judge again.
 
-Shepherd knows about background work two ways. The terminal host may say so (cmux's `hadPendingBackgroundWorkAtStop`, or a session lifecycle of `running` or `backgroundWorkPending`); then the judge is told, and a `premature` or `done` verdict becomes `working`. Otherwise the judge reads the screen: running-task indicators or wording such as "waiting for background agents" mean `working`. The session is judged afresh at its next real stop, after the background work reports back and the agent's next turn ends.
+Shepherd knows about background work two ways. The terminal host may say so (cmux's `hadPendingBackgroundWorkAtStop`, or a session lifecycle of `running` or `backgroundWorkPending`); then the judge is told, and a `premature` or `done` verdict becomes `working`. Otherwise, as on Herdr, whose agent states do not say, the judge reads the screen: running-task indicators or wording such as "waiting for background agents" mean `working`. The session is judged afresh at its next real stop, after the background work reports back and the agent's next turn ends.
 
 ## The judge
 
@@ -40,7 +41,7 @@ Before it answers, Shepherd checks, in order:
 2. **The human.** Shepherd never types into the terminal the human is in: on cmux, the focused surface of the selected workspace in a visible window, read from `system.tree` just before sending (cmux reports focus only when it changes, so a human who stays in one terminal sends no further events). A terminal the human left in the last 60 seconds is also theirs.
 3. **The screen.** It reads the terminal again; if the last lines changed since the judge saw them, it lets the return through.
 
-Shepherd's status is one entry per terminal (cmux key `ouro_<surface>`, attached to that surface's panel), because a cmux workspace can hold several agents. It is cleared as soon as the agent resumes or the terminal's screen moves again. On cmux, a line is sent with `terminal.paste` (so no character of it is read as a keystroke) followed by a separate Enter. `<human>` is the name on the family friend record whose local id is this OS user, else the first family friend.
+Shepherd's status is one entry per terminal (cmux key `ouro_<surface>`, attached to that surface's panel), because a cmux workspace can hold several agents. It is cleared as soon as the agent resumes or the terminal's screen moves again. On cmux, a line is sent with `terminal.paste` (so no character of it is read as a keystroke) followed by a separate Enter. On Herdr it is sent with `agent.prompt`, which pastes it and presses Enter, and refuses a blocked agent; keys go through `agent.send_keys`, and the status line is the pane's state label (source `ouro.shepherd`, also token `$ouro`). `<human>` is the name on the family friend record whose local id is this OS user, else the first family friend.
 
 Escalation queues one pending message in the agent's private runtime (from `shepherd`, dropped unread after 30 minutes) and asks the daemon for a private turn (trigger `shepherd`, which the daemon's policy allows only with a `shepherd-return` reference and the `sense: shepherd` reference). Escalations in a burst share one wake. The message names the agent, folder, task and why, and ends with the usual untrusted-input line. If the daemon refuses the wake, the message waits for the next private turn.
 
@@ -60,7 +61,15 @@ The tools appear only for an agent whose `agent.json` has `senses.shepherd.enabl
 
 ## Turning it on
 
-Shepherd needs the cmux socket credential on this machine. It lives in the agent's machine runtime vault item (`runtime/machines/<machine-id>/config`, key `cmux`), never in the synced bundle.
+Shepherd uses the terminal host named in the agent's machine runtime vault item. cmux wins when both are set.
+
+**Herdr.** Add a `herdr` record; Herdr's socket is same-user and needs no credential. `herdr.socketPath` overrides the default, `~/.config/herdr/herdr.sock`:
+
+```sh
+ouro vault config set --agent <agent> --scope machine --key herdr.socketPath --value "$HOME/.config/herdr/herdr.sock"
+```
+
+**cmux.** Shepherd needs the cmux socket credential on this machine. It lives in the agent's machine runtime vault item (`runtime/machines/<machine-id>/config`, key `cmux`), never in the synced bundle.
 
 1. In a terminal inside cmux, store the capability token cmux gives every terminal it starts:
 
@@ -79,6 +88,7 @@ Shepherd needs the cmux socket credential on this machine. It lives in the agent
 - `src/heart/shepherd-config.ts`: the terminal host connection from machine config, status facts and the repair hint.
 - `src/senses/shepherd/host.ts`: the host adapter seam.
 - `src/senses/shepherd/cmux.ts` and `client.ts`: the cmux adapter and its socket client.
+- `src/senses/shepherd/herdr.ts`: the Herdr adapter and its socket client.
 - `src/senses/shepherd/judge.ts`: the judge and the reply safety rules.
 - `src/senses/shepherd/sense.ts`: the sense process (checks, answers, escalation); `src/senses/shepherd-entry.ts` is its daemon entry point.
 - `src/senses/shepherd/returns.ts`: the returns log.

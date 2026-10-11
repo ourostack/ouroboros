@@ -1,10 +1,10 @@
 import { describe, expect, it } from "vitest"
 
-import { defaultCmuxSocketPath, resolveShepherdConnection, shepherdConfigFacts, shepherdRepairHint, shepherdSenseStatus } from "../../heart/shepherd-config"
+import { defaultCmuxSocketPath, defaultHerdrSocketPath, resolveShepherdConnection, shepherdConfigFacts, shepherdRepairHint, shepherdSenseStatus } from "../../heart/shepherd-config"
 
 describe("Shepherd machine config", () => {
   it("names the human repair with the agent", () => {
-    expect(shepherdRepairHint("slugger")).toBe(`human-required: in a cmux terminal run 'ouro vault config set --agent slugger --scope machine --key cmux.socketCapability --value "$CMUX_SOCKET_CAPABILITY"' (or set cmux.socketPassword when cmux is in password mode), then 'ouro up'.`)
+    expect(shepherdRepairHint("slugger")).toBe(`human-required: in a cmux terminal run 'ouro vault config set --agent slugger --scope machine --key cmux.socketCapability --value "$CMUX_SOCKET_CAPABILITY"' (or set cmux.socketPassword when cmux is in password mode), then 'ouro up'. On Herdr instead: 'ouro vault config set --agent slugger --scope machine --key herdr.socketPath --value "$HOME/.config/herdr/herdr.sock"', then 'ouro up'.`)
   })
 
   it("reports a machine without a terminal host as optional, and a half-configured cmux as missing auth", () => {
@@ -50,5 +50,14 @@ describe("Shepherd machine config", () => {
     const missing = resolveShepherdConnection("slugger", {})
     expect(missing.ok).toBe(false)
     expect(!missing.ok && missing.error).toContain("no terminal host is attached on this machine; human-required:")
+  })
+
+  it("attaches Herdr from its own record, with cmux winning when both are set", () => {
+    expect(shepherdConfigFacts({ herdr: {} })).toEqual({ configured: true, detail: "herdr socket" })
+    expect(shepherdSenseStatus(true, { herdr: {}, cmux: {} })).toBe("ready")
+    expect(resolveShepherdConnection("slugger", { herdr: { socketPath: "/h.sock" } })).toEqual({ ok: true, connection: { host: "herdr", socketPath: "/h.sock" } })
+    expect(resolveShepherdConnection("slugger", { herdr: {} })).toEqual({ ok: true, connection: { host: "herdr", socketPath: defaultHerdrSocketPath() } })
+    expect(resolveShepherdConnection("slugger", { herdr: {}, cmux: { socketCapability: "v1.a.b" } })).toMatchObject({ ok: true, connection: { host: "cmux" } })
+    expect(defaultHerdrSocketPath("/h")).toBe("/h/.config/herdr/herdr.sock")
   })
 })
