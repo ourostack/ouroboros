@@ -82,7 +82,7 @@ async function start(judge: (packet: ReturnPacket) => Promise<JudgeResult>, host
   })
   stop = app.stop
   const returned = async (event: Partial<ReturnedControl> & { sessionId: string }) => {
-    host.handlers!.returned({ transitionId: `t-${clock}`, agent: "claude", cwd: "/Users/a/code/app", lastBody: null, ...event })
+    host.handlers!.returned({ transitionId: `t-${clock}`, agent: "claude", cwd: "/Users/a/code/app", lastBody: null, backgroundWork: null, ...event })
     await vi.waitFor(() => expect(readReturns(agentRoot).some((record) => record.transition === `t-${clock}` || record.transition === event.transitionId)).toBe(true))
   }
   return { host, escalations, wakes, returned, last: () => readReturns(agentRoot).at(-1)! }
@@ -119,9 +119,9 @@ describe("Shepherd sense: answering premature returns", () => {
     const { host, escalations, last } = await start(async (packet) => { packets.push(packet); return verdict() })
     host.screens.S1 = [`Desk-Task: old/one\nwork\nDesk-Task: ouro-md/toolbar-polish\nsk-${"a".repeat(30)}\n${SCREENS.claudePremature}`]
     await vi.waitFor(() => expect(host.handlers).not.toBeNull())
-    host.handlers!.returned({ sessionId: "S1", transitionId: "cmux:B:101", agent: "claude", cwd: "/Users/a/code/app", lastBody: "token=abc123secret Want me to go ahead?" })
+    host.handlers!.returned({ sessionId: "S1", transitionId: "cmux:B:101", agent: "claude", cwd: "/Users/a/code/app", lastBody: "token=abc123secret Want me to go ahead?", backgroundWork: false })
     await vi.waitFor(() => expect(readReturns(agentRoot)).toHaveLength(1))
-    expect(packets[0]).toMatchObject({ human: "Ari", agent: "claude", cwd: "/Users/a/code/app", task: "ouro-md/toolbar-polish", lastBody: "token=[redacted] Want me to go ahead?" })
+    expect(packets[0]).toMatchObject({ human: "Ari", agent: "claude", cwd: "/Users/a/code/app", task: "ouro-md/toolbar-polish", lastBody: "token=[redacted] Want me to go ahead?", backgroundWork: false })
     expect(packets[0]!.screen).not.toContain("sk-aaaa")
     expect(packets[0]!.screen.split("\n")).toHaveLength(SCREENS.claudePremature.split("\n").length + 4)
     expect(host.actions).toEqual(["prompt S1 [Ouro for Ari] Go ahead and implement it.", "status S1 answered for Ari: It stopped after a plan."])
@@ -213,6 +213,39 @@ describe("Shepherd sense: letting returns through", () => {
     expect(readReturns(agentRoot).map((record) => [record.kind, record.action])).toEqual([["gate", "let_through"], ["done", "let_through"], ["unclear", "let_through"]])
   })
 
+  it("treats a stop with the agent's own background work running as working: no reply, no wake, a status update", async () => {
+    const packets: ReturnPacket[] = []
+    const verdicts = [
+      // The judge read the screen: background subagents are running.
+      verdict({ kind: "working", reply: null, reason: "Waiting on two background agents; both PRs are open." }),
+      // The host said background work is running; a premature verdict is still never answered.
+      verdict({ kind: "premature", reply: { text: "Keep going." }, reason: "It reported partial progress." }),
+      // News the human would want: queued for the Ouro agent's next turn, with no wake.
+      verdict({ kind: "working", reply: null, reason: "The background test run failed on main.", news: true }),
+      verdict({ kind: "done", reply: null, reason: "Says it is done while its jobs still run." }),
+    ]
+    const { host, escalations, wakes, returned } = await start(async (packet) => { packets.push(packet); return verdicts.shift()! })
+    host.screens.C = [SCREENS.claudeBackground]
+    host.screens.X = [SCREENS.codexBackground]
+    await returned({ sessionId: "C", transitionId: "c1", agent: "claude" })
+    await returned({ sessionId: "C", transitionId: "c2", agent: "claude", backgroundWork: true })
+    await returned({ sessionId: "X", transitionId: "x1", agent: null, backgroundWork: true })
+    await returned({ sessionId: "X", transitionId: "x2", agent: "codex", backgroundWork: true })
+    expect(packets.map((packet) => packet.backgroundWork)).toEqual([null, true, true, true])
+    expect(host.actions).toEqual([
+      "status C claude waiting on its background work: Waiting on two background agents; both PRs are open.",
+      "status C claude waiting on its background work: It reported partial progress.",
+      "status X agent waiting on its background work: The background test run failed on main.",
+      "status X codex waiting on its background work: Says it is done while its jobs still run.",
+    ])
+    expect(readReturns(agentRoot).map((record) => [record.kind, record.action, record.reply])).toEqual([["working", "let_through", null], ["working", "let_through", null], ["working", "let_through", null], ["working", "let_through", null]])
+    expect(escalations).toHaveLength(1)
+    expect(escalations[0]).toContain("[Shepherd update]")
+    expect(escalations[0]).toContain("A coding agent in app ended its turn while its own background work runs, so it is still working")
+    expect(tasks).toHaveLength(0)
+    expect(wakes).toEqual([])
+  })
+
   it("logs a judge failure and a failed send, and keeps going", async () => {
     const results: Array<() => Promise<JudgeResult>> = [async () => { throw new Error("provider down") }, async () => verdict()]
     const host = fakeHost()
@@ -228,7 +261,7 @@ describe("Shepherd sense: letting returns through", () => {
     fs.mkdirSync(path.join(agentRoot, "state", "senses", "shepherd", "returns.jsonl"), { recursive: true })
     const judged = vi.fn(async () => verdict({ kind: "unclear", reply: null }))
     const { host } = await start(judged)
-    host.handlers!.returned({ sessionId: "S1", transitionId: "w", agent: null, cwd: null, lastBody: null })
+    host.handlers!.returned({ sessionId: "S1", transitionId: "w", agent: null, cwd: null, lastBody: null, backgroundWork: null })
     await vi.waitFor(() => expect(judged).toHaveBeenCalled())
     await new Promise((resolve) => setTimeout(resolve, 20))
   })

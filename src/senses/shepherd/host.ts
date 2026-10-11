@@ -23,6 +23,8 @@ export interface ReturnedControl {
   cwd: string | null
   /** The host's own summary of the agent's last message, when it keeps one. */
   lastBody: string | null
+  /** True when the host itself says the agent still has background work running (subagents, shells, watchers); null when it cannot tell. */
+  backgroundWork: boolean | null
 }
 
 export interface HostWatchHandlers {

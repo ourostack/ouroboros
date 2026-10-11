@@ -49,6 +49,27 @@ export const SCREENS = {
     " ← open sidebar · Interactive · Allow All · / commands · ? help                  worker · Claude Opus 5.5",
     "Desk-Task: ouro-md/toolbar-polish",
   ].join("\n"),
+  /** Claude Code ended its turn while its background subagents run: working, not a return. */
+  claudeBackground: [
+    "⏺ Both PRs are open. CI is running and two background agents are working: one on the review, one on the Herdr adapter.",
+    "  I'll merge once they report back.",
+    "",
+    "⏺ Waiting for 2 background agents to finish…",
+    "",
+    "╭──────────────────────────────────────────────────────────────╮",
+    "│ >                                                            │",
+    "╰──────────────────────────────────────────────────────────────╯",
+    "  ⏵⏵ bypass permissions on · 2 background tasks · ↓ to manage",
+  ].join("\n"),
+  /** Codex ended its turn with a background terminal still running a long job: working. */
+  codexBackground: [
+    "• Started the full test suite in a background terminal; it takes about 20 minutes.",
+    "  I'll pick the results up when it finishes.",
+    "",
+    "  ◦ Background terminal running · npm test (12m 04s)",
+    "",
+    "  ⏎ send   ⇧⏎ newline   ⌃T transcript   ⌃C quit",
+  ].join("\n"),
   /** A plain shell: not a coding agent. */
   shell: ["$ npm test", "", " Test Files  12 passed (12)", "$ "].join("\n"),
 }

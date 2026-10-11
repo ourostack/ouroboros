@@ -3,7 +3,7 @@ import { describe, expect, it, vi } from "vitest"
 import { createShepherdJudge, judgeMessages, parseVerdict, REPLY_MAX_CHARS, safeReplyText, type JudgeRuntime, type ReturnPacket } from "../../../senses/shepherd/judge"
 import { SCREENS } from "./fixtures"
 
-const packet = (screen: string, extra: Partial<ReturnPacket> = {}): ReturnPacket => ({ human: "Ari", agent: null, cwd: null, task: null, lastBody: null, screen, ...extra })
+const packet = (screen: string, extra: Partial<ReturnPacket> = {}): ReturnPacket => ({ human: "Ari", agent: null, cwd: null, task: null, lastBody: null, backgroundWork: null, screen, ...extra })
 
 function runtime(content: string | (() => Promise<{ content?: string; usage?: { input_tokens: number } }>)): JudgeRuntime & { calls: unknown[] } {
   const calls: unknown[] = []
@@ -30,6 +30,10 @@ describe("Shepherd judge", () => {
       expect(messages[1]!.content).toContain("Want me to go ahead?")
       expect(messages[1]!.content).toContain(screen)
     }
+    expect(judgeMessages(packet(SCREENS.shell))[0]!.content).toContain("- working: the agent ended its turn but is still waiting on its own background work")
+    for (const screen of [SCREENS.claudeBackground, SCREENS.codexBackground]) {
+      expect(judgeMessages(packet(screen, { backgroundWork: true }))[1]!.content).toContain("The terminal host reports the agent still has background work running.\nScreen (last lines):\n" + screen)
+    }
     expect(judgeMessages(packet(SCREENS.shell))[1]!.content).toBe(`Agent: unknown\nFolder: unknown\nScreen (last lines):\n${SCREENS.shell}`)
   })
 
@@ -44,6 +48,8 @@ describe("Shepherd judge", () => {
     expect(parseVerdict(`{"kind":"premature","reply":{"key":"ctrl+c"},"reason":"r"}`)).toEqual({ kind: "unclear", reply: null, reason: "premature, but the judge gave no safe reply: r" })
     expect(parseVerdict(`{"kind":"premature","reply":{"text":"/clear"},"reason":"r"}`).kind).toBe("unclear")
     expect(parseVerdict(`{"kind":"premature","reply":null,"reason":"r"}`).kind).toBe("unclear")
+    expect(parseVerdict(`{"kind":"working","reply":{"text":"Keep going."},"news":false,"reason":"Waiting on two background agents."}`)).toEqual({ kind: "working", reply: null, reason: "Waiting on two background agents." })
+    expect(parseVerdict(`{"kind":"working","reply":null,"news":true,"reason":"The background test run failed."}`)).toEqual({ kind: "working", reply: null, reason: "The background test run failed.", news: true })
     expect(parseVerdict("null")).toEqual({ kind: "unclear", reply: null, reason: "no reason given" })
     expect(parseVerdict("not json")).toEqual({ kind: "unclear", reply: null, reason: "the judge's answer was not JSON" })
   })

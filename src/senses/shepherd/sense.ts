@@ -72,12 +72,15 @@ export function humanName(agentRoot: string, username: string = os.userInfo().us
 }
 
 export function escalationContent(record: ReturnRecord, human: string): string {
+  const who = `${record.agent ? field(record.agent) : "A coding agent"}${record.cwd ? ` in ${field(path.basename(record.cwd))}` : ""}`
   const what = record.kind === "loop_guard"
     ? `Shepherd answered it ${STREAK_MAX} times in a row (or ${HOURLY_MAX} in an hour) and stopped`
     : record.kind === "gate" ? `it needs ${human}` : "it says the work is done"
   return [
-    "[Shepherd return]",
-    `${record.agent ? field(record.agent) : "A coding agent"}${record.cwd ? ` in ${field(path.basename(record.cwd))}` : ""} handed control back and Shepherd let it through: ${what}.`,
+    record.kind === "working" ? "[Shepherd update]" : "[Shepherd return]",
+    record.kind === "working"
+      ? `${who} ended its turn while its own background work runs, so it is still working; its last message has news ${human} may want.`
+      : `${who} handed control back and Shepherd let it through: ${what}.`,
     `why: ${field(record.reason, 500)}`,
     `session: ${field(record.session)}`,
     ...(record.task ? [`task: ${field(record.task)}`] : []),
@@ -163,11 +166,18 @@ export async function startShepherdSenseApp(options: ShepherdSenseOptions): Prom
       const text = redactSecrets(await host.read(event.sessionId, READ_LINES))
       record.task = [...text.matchAll(/Desk-Task:\s*(\S+)/g)].pop()?.[1] ?? null
       const screen = tail(text, SCREEN_LINES)
-      const verdict: JudgeResult = await judge({ human, agent: event.agent, cwd: event.cwd, task: record.task, lastBody: event.lastBody ? redactSecrets(event.lastBody) : null, screen })
-      Object.assign(record, { kind: verdict.kind, reason: verdict.reason, latencyMs: verdict.latencyMs, inputTokens: verdict.inputTokens })
+      const verdict: JudgeResult = await judge({ human, agent: event.agent, cwd: event.cwd, task: record.task, lastBody: event.lastBody ? redactSecrets(event.lastBody) : null, backgroundWork: event.backgroundWork, screen })
+      // The host's own word that background work is running outranks a reading of the screen: never answer such a stop.
+      const kind = event.backgroundWork && (verdict.kind === "premature" || verdict.kind === "done") ? "working" : verdict.kind
+      Object.assign(record, { kind, reason: verdict.reason, latencyMs: verdict.latencyMs, inputTokens: verdict.inputTokens })
       const state = guardFor(event.sessionId)
       state.answers = state.answers.filter((at) => now() - at < 3_600_000)
-      if (verdict.kind === "premature" && verdict.reply) {
+      if (kind === "working") {
+        // Still working: a progress update, never an answer. It reaches the Ouro agent only when it carries news, and wakes nothing.
+        if (verdict.news) escalate(escalationContent(record, human))
+        await host.signal(event.sessionId, field(`${event.agent ?? "agent"} waiting on its background work: ${verdict.reason}`, 120))
+      }
+      if (kind === "premature" && verdict.reply) {
         if (state.streak >= STREAK_MAX || state.answers.length >= HOURLY_MAX) {
           Object.assign(record, { kind: "loop_guard", reason: `loop guard: ${verdict.reason}` })
         } else if (now() - state.focusedAt < FOCUS_HOLD_MS) {

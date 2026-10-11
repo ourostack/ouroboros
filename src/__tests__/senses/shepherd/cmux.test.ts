@@ -4,7 +4,7 @@ import * as path from "node:path"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 
 import { createCmuxClient } from "../../../senses/shepherd/client"
-import { createCmuxHost, GRACE_MS, POLL_MS, QUIET_MS, readCmuxHookSession, realSchedule } from "../../../senses/shepherd/cmux"
+import { BACKGROUND_GRACE_MS, createCmuxHost, GRACE_MS, POLL_MS, QUIET_MS, readCmuxHookSession, realSchedule } from "../../../senses/shepherd/cmux"
 import type { ReturnedControl } from "../../../senses/shepherd/host"
 import { ackFrame, startFakeCmux, type FakeCmux } from "./fake-cmux"
 import { hookEvent, SCREENS, surfaceEvent, tree } from "./fixtures"
@@ -148,24 +148,48 @@ describe("cmux host: returned control", () => {
     await vi.waitFor(() => expect(scheduler.due(GRACE_MS)).toBe(1))
     expect(returned).toEqual([])
     await scheduler.run(GRACE_MS)
-    expect(returned).toEqual([{ sessionId: "SF-1", transitionId: "cmux:8D4C65E6-1A99-4831-85E4-6B950EE7AB82:101", agent: "codex", cwd: "/Users/a/code/flaky", lastBody: "Which should I do?" }])
+    expect(returned).toEqual([{ sessionId: "SF-1", transitionId: "cmux:8D4C65E6-1A99-4831-85E4-6B950EE7AB82:101", agent: "codex", cwd: "/Users/a/code/flaky", lastBody: "Which should I do?", backgroundWork: false }])
     watcher.close()
   })
 
-  it("drops a stop the agent resumed from, or one with background work pending, and finds a stop's terminal from its session", async () => {
-    writeSessions("claude", { "claude-s2": { hadPendingBackgroundWorkAtStop: true }, "claude-s3": { agentLifecycle: "running" } })
+  it("drops a stop the agent resumed from, and finds a stop's terminal from its session", async () => {
     const { watcher, returned } = await watching()
     server.push(hookEvent(101, "Stop"))
     server.push(hookEvent(102, "SubagentStop"))
     server.push(hookEvent(103, "PreToolUse"))
     server.push(hookEvent(104, "PreToolUse", { surface: "SF-2", session: "claude-s2" }))
     server.push(hookEvent(105, "Stop", { surface: null, session: "claude-s2" }))
-    server.push(hookEvent(106, "Stop", { surface: "SF-3", session: "claude-s3" }))
     server.push(hookEvent(107, "Stop", { surface: null, session: "claude-unknown" }))
     server.push(hookEvent(108, "Stop", { source: "copilot", surface: "SF-4", session: "copilot-s1", cwd: "/w" }))
+    await vi.waitFor(() => expect(scheduler.due(GRACE_MS)).toBe(2))
+    await scheduler.run(GRACE_MS)
+    expect(returned).toEqual([
+      { sessionId: "SF-2", transitionId: "cmux:8D4C65E6-1A99-4831-85E4-6B950EE7AB82:105", agent: "claude", cwd: "/Users/a/code/app", lastBody: null, backgroundWork: false },
+      { sessionId: "SF-4", transitionId: "cmux:8D4C65E6-1A99-4831-85E4-6B950EE7AB82:108", agent: "copilot", cwd: "/w", lastBody: null, backgroundWork: false },
+    ])
+    watcher.close()
+  })
+
+  it("waits longer on a stop that left background work running, then passes it on marked as still working", async () => {
+    // Live cmux names hook sessions `<agent>-<id>` and keys its store by `<id>`.
+    writeSessions("claude", { s2: { hadPendingBackgroundWorkAtStop: true, lastBody: "Waiting for 2 background agents." }, s3: { agentLifecycle: "running" } })
+    writeSessions("codex", { "codex-s4": { agentLifecycle: "backgroundWorkPending" } })
+    const { watcher, returned } = await watching()
+    server.push(hookEvent(101, "Stop", { surface: "SF-2", session: "claude-s2" }))
+    server.push(hookEvent(102, "Stop", { surface: "SF-3", session: "claude-s3" }))
+    server.push(hookEvent(103, "Stop", { source: "codex", surface: "SF-4", session: "codex-s4" }))
     await vi.waitFor(() => expect(scheduler.due(GRACE_MS)).toBe(3))
     await scheduler.run(GRACE_MS)
-    expect(returned).toEqual([{ sessionId: "SF-4", transitionId: "cmux:8D4C65E6-1A99-4831-85E4-6B950EE7AB82:108", agent: "copilot", cwd: "/w", lastBody: null }])
+    expect(returned).toEqual([])
+    expect(scheduler.due(BACKGROUND_GRACE_MS)).toBe(3)
+    // The background work reported back and the agent carried on: that stop is dropped; the next real stop is judged afresh.
+    server.push(hookEvent(104, "UserPromptSubmit", { surface: "SF-3", session: "claude-s3" }))
+    await vi.waitFor(() => expect(scheduler.due(BACKGROUND_GRACE_MS)).toBe(2))
+    await scheduler.run(BACKGROUND_GRACE_MS)
+    expect(returned).toEqual([
+      { sessionId: "SF-2", transitionId: "cmux:8D4C65E6-1A99-4831-85E4-6B950EE7AB82:101", agent: "claude", cwd: "/Users/a/code/app", lastBody: "Waiting for 2 background agents.", backgroundWork: true },
+      { sessionId: "SF-4", transitionId: "cmux:8D4C65E6-1A99-4831-85E4-6B950EE7AB82:103", agent: "codex", cwd: "/Users/a/code/app", lastBody: null, backgroundWork: true },
+    ])
     watcher.close()
   })
 
@@ -206,7 +230,7 @@ describe("cmux host: returned control", () => {
     server.push({ ...hookEvent(3, "Stop"), payload: { phase: "received", surface_id: "SF-1" } })
     await vi.waitFor(() => expect(scheduler.due(GRACE_MS)).toBe(1))
     await scheduler.run(GRACE_MS)
-    expect(returned).toEqual([{ sessionId: "SF-1", transitionId: "cmux:8D4C65E6-1A99-4831-85E4-6B950EE7AB82:3", agent: "claude", cwd: null, lastBody: null }])
+    expect(returned).toEqual([{ sessionId: "SF-1", transitionId: "cmux:8D4C65E6-1A99-4831-85E4-6B950EE7AB82:3", agent: "claude", cwd: null, lastBody: null, backgroundWork: false }])
     server.push(hookEvent(4, "Stop"))
     await vi.waitFor(() => expect(scheduler.due(GRACE_MS)).toBe(1))
     watcher.close()
@@ -249,7 +273,7 @@ describe("cmux host: returned control", () => {
     expect(returned).toEqual([])
     clock += QUIET_MS
     await scheduler.run(POLL_MS)
-    expect(returned).toEqual([{ sessionId: "SF-2", transitionId: `cmux:quiet:SF-2:${1_000_000 + POLL_MS}`, agent: null, cwd: null, lastBody: null }])
+    expect(returned).toEqual([{ sessionId: "SF-2", transitionId: `cmux:quiet:SF-2:${1_000_000 + POLL_MS}`, agent: null, cwd: null, lastBody: null, backgroundWork: null }])
     clock += QUIET_MS
     await scheduler.run(POLL_MS)
     expect(returned).toHaveLength(1)

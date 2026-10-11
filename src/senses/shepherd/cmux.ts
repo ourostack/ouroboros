@@ -9,13 +9,16 @@ import type { HostSession, HostWatchHandlers, ShepherdHost, ShepherdKey } from "
 /**
  * The cmux host (0.64.22 or later). A return is cmux's own "agent stopped" signal: an
  * `agent.hook.Stop` event, which cmux publishes for every agent its hooks cover (Claude Code,
- * Codex, Copilot and more). After a short grace period, a stop is dropped if the agent resumed or
- * cmux's session store says background work was still pending. Terminals no hook has spoken for
+ * Codex, Copilot and more). After a short grace period, a stop is dropped if the agent resumed. A
+ * stop that cmux's session store says left background work running waits longer, and is then
+ * passed on marked as such: the agent is still working, not handing back control. Terminals no hook has spoken for
  * (an agent cmux does not hook, such as Agency today) are polled: output that stops changing for a
  * quiet window counts as a return. cmux has no bell or output event, so polling is the fallback.
  */
 export const CMUX_STATUS_KEY = "ouro"
 export const GRACE_MS = 3_000
+/** A stop with background work still running waits this much longer before it is judged (as working, unless the work finished). */
+export const BACKGROUND_GRACE_MS = 30_000
 export const POLL_MS = 4_000
 export const QUIET_MS = 8_000
 const POLL_LINES = 40
@@ -146,18 +149,19 @@ export function createCmuxHost(client: CmuxClient, options: CmuxHostOptions = {}
         pending.delete(surfaceId)
       }
 
-      /** A stop becomes a return only if nothing resumed it within the grace period and cmux says no background work is pending. */
-      const stopped = (surfaceId: string, transitionId: string, agent: string, sessionId: string | null, cwd: string | null): void => {
+      /** A stop becomes a return only if nothing resumed it within the grace period; background work earns it a longer wait. */
+      const stopped = (surfaceId: string, transitionId: string, agent: string, sessionId: string | null, cwd: string | null, waited = false): void => {
         cancelPending(surfaceId)
         pending.set(surfaceId, schedule(() => {
           pending.delete(surfaceId)
           const session = sessionId ? readCmuxHookSession(homeDir, agent, sessionId) : null
-          if (session?.hadPendingBackgroundWorkAtStop === true || session?.agentLifecycle === "backgroundWorkPending" || session?.agentLifecycle === "running") {
-            emitNervesEvent({ component: "senses", event: "senses.shepherd_stop_skipped", message: "a cmux stop left background work running; not a return", meta: { agent } })
-            return
+          const backgroundWork = session?.hadPendingBackgroundWorkAtStop === true || session?.agentLifecycle === "backgroundWorkPending" || session?.agentLifecycle === "running"
+          if (backgroundWork && !waited) {
+            emitNervesEvent({ component: "senses", event: "senses.shepherd_stop_deferred", message: "a cmux stop left background work running; waiting longer", meta: { agent } })
+            return stopped(surfaceId, transitionId, agent, sessionId, cwd, true)
           }
-          handlers.returned({ sessionId: surfaceId, transitionId, agent, cwd: str(session?.cwd) ?? cwd, lastBody: str(session?.lastBody) })
-        }, GRACE_MS))
+          handlers.returned({ sessionId: surfaceId, transitionId, agent, cwd: str(session?.cwd) ?? cwd, lastBody: str(session?.lastBody), backgroundWork })
+        }, waited ? BACKGROUND_GRACE_MS : GRACE_MS))
       }
 
       const onEvent = (frame: Record<string, unknown>): void => {
@@ -225,7 +229,7 @@ export function createCmuxHost(client: CmuxClient, options: CmuxHostOptions = {}
             else if (last.hash !== hash) screens.set(surface.id, { hash, changedAt: at, active: true })
             else if (last.active && at - last.changedAt >= QUIET_MS) {
               last.active = false
-              handlers.returned({ sessionId: surface.id, transitionId: `cmux:quiet:${surface.id}:${last.changedAt}`, agent: null, cwd: null, lastBody: null })
+              handlers.returned({ sessionId: surface.id, transitionId: `cmux:quiet:${surface.id}:${last.changedAt}`, agent: null, cwd: null, lastBody: null, backgroundWork: null })
             }
           }
         } catch (error) {
