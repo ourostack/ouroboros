@@ -12,6 +12,9 @@ import { emitNervesEvent } from "../nerves/runtime"
  * capability token (cmux exports one into every terminal as CMUX_SOCKET_CAPABILITY) lets the
  * daemon-launched sense in without loosening that mode, so it is preferred. `password` mode is the
  * fallback, and an explicit `socketMode: "automation"` (any same-user process) is the last resort.
+ *
+ * Herdr (`herdr` record): a same-user Unix socket with no credential; `socketPath` overrides
+ * Herdr's default session socket. cmux wins when both are configured.
  */
 export type CmuxSocketAuth =
   | { kind: "capability"; token: string }
@@ -23,7 +26,7 @@ export interface CmuxConnection {
   auth: CmuxSocketAuth
 }
 
-export type ShepherdConnection = { host: "cmux" } & CmuxConnection
+export type ShepherdConnection = ({ host: "cmux" } & CmuxConnection) | { host: "herdr"; socketPath: string }
 
 export interface ShepherdConfigFacts {
   configured: boolean
@@ -58,6 +61,7 @@ function cmuxAuth(cmux: Record<string, unknown> | undefined): CmuxSocketAuth | n
 export function shepherdConfigFacts(machinePayload: Record<string, unknown>): ShepherdConfigFacts {
   const cmux = hostRecord(machinePayload, "cmux")
   const auth = cmuxAuth(cmux)
+  if (!auth && hostRecord(machinePayload, "herdr")) return { configured: true, detail: "herdr socket" }
   if (!auth) return cmux ? { configured: false, detail: "missing cmux.socketCapability" } : { configured: false, optional: true, detail: "no terminal host attached on this machine" }
   return { configured: true, detail: `cmux socket auth: ${auth.kind === "none" ? "automation mode" : auth.kind}` }
 }
@@ -68,6 +72,11 @@ export function shepherdSenseStatus(enabled: boolean, machinePayload: Record<str
   const facts = shepherdConfigFacts(machinePayload)
   if (facts.configured) return "ready"
   return facts.optional ? "not_attached" : "needs_config"
+}
+
+/** Herdr's default session socket. */
+export function defaultHerdrSocketPath(homeDir: string = os.homedir()): string {
+  return path.join(homeDir, ".config", "herdr", "herdr.sock")
 }
 
 /** cmux's own default: `~/.local/state/cmux/cmux-<uid>.sock`, then the older unscoped `cmux.sock`. */
@@ -88,13 +97,16 @@ export function resolveShepherdConnection(
   defaultSocketPath: () => string = defaultCmuxSocketPath,
 ): { ok: true; connection: ShepherdConnection } | { ok: false; error: string } {
   const cmux = hostRecord(machinePayload, "cmux")
+  const herdr = hostRecord(machinePayload, "herdr")
   const auth = cmuxAuth(cmux)
+  const host = auth ? "cmux" : herdr ? "herdr" : "none"
   emitNervesEvent({
     component: "senses",
     event: "senses.shepherd_connection_resolved",
     message: "resolved Shepherd terminal host connection settings",
-    meta: { agent, host: auth ? "cmux" : "none", auth: auth?.kind ?? "missing" },
+    meta: { agent, host, auth: auth?.kind ?? "missing" },
   })
-  if (!auth) return { ok: false, error: `no terminal host is attached on this machine; ${shepherdRepairHint(agent)}` }
-  return { ok: true, connection: { host: "cmux", socketPath: text(cmux, "socketPath") || defaultSocketPath(), auth } }
+  if (auth) return { ok: true, connection: { host: "cmux", socketPath: text(cmux, "socketPath") || defaultSocketPath(), auth } }
+  if (herdr) return { ok: true, connection: { host: "herdr", socketPath: text(herdr, "socketPath") || defaultHerdrSocketPath() } }
+  return { ok: false, error: `no terminal host is attached on this machine; ${shepherdRepairHint(agent)}` }
 }
