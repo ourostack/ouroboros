@@ -119,6 +119,8 @@ describe("cmux host: terminals", () => {
   it("reads cmux's hook session store and tolerates a missing or odd one", () => {
     writeSessions("codex", { "codex-s1": { lastBody: "Done." }, odd: 5 })
     expect(readCmuxHookSession(home, "codex", "codex-s1")).toEqual({ lastBody: "Done." })
+    writeSessions("claude", { "9ef94c36": { lastBody: "Waiting on the review." } })
+    expect(readCmuxHookSession(home, "claude", "claude-9ef94c36")).toEqual({ lastBody: "Waiting on the review." })
     expect(readCmuxHookSession(home, "codex", "odd")).toBeNull()
     expect(readCmuxHookSession(home, "copilot", "x")).toBeNull()
     fs.writeFileSync(path.join(home, ".cmuxterm", "grok-hook-sessions.json"), "[]")
