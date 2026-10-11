@@ -2817,6 +2817,7 @@ function currentMachineId(deps: OuroCliDeps): string {
 
 function executeAgentMove(command: Extract<OuroCliCommand, { kind: "agent.move" }>, deps: OuroCliDeps): string {
   const identity = loadOrCreateMachineIdentity({ homeDir: providerCliHomeDir(deps), now: () => providerCliNow(deps) })
+  /* v8 ignore next -- production default: uses real bundles root @preserve */
   const bundlesRoot = deps.bundlesRoot ?? getAgentBundlesRoot()
   const discover = () => listAllBundleAgents({ bundlesRoot, machineId: identity.machineId })
   const fallbackBefore = new Set(discover().filter((row) => row.homeState === "fallback").map((row) => row.name))
