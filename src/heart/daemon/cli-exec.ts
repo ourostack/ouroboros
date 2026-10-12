@@ -3518,12 +3518,7 @@ function normalizeWebhookPath(value: string, fallback: string): string {
   return trimmed.startsWith("/") ? trimmed : `/${trimmed}`
 }
 
-function enableAgentSense(
-  agent: string,
-  sense: "bluebubbles" | "teams" | "mail" | "voice" | "a2a" | "telegram",
-  deps: OuroCliDeps,
-  extra: Record<string, unknown> = {},
-): void {
+function enableAgentSense(agent: string, sense: "bluebubbles" | "teams" | "mail" | "voice" | "a2a" | "telegram", deps: OuroCliDeps): void {
   const { configPath } = readAgentConfigForAgent(agent, deps.bundlesRoot)
   const raw = JSON.parse(fs.readFileSync(configPath, "utf-8")) as Record<string, unknown>
   const senses = raw.senses && typeof raw.senses === "object" && !Array.isArray(raw.senses)
@@ -3541,8 +3536,18 @@ function enableAgentSense(
     voice: senses.voice ?? { enabled: false },
     a2a: senses.a2a ?? { enabled: false },
     telegram: senses.telegram ?? { enabled: false },
-    [sense]: { ...existing, ...extra, enabled: true },
+    [sense]: { ...existing, enabled: true },
   }
+  fs.writeFileSync(configPath, `${JSON.stringify(raw, null, 2)}\n`, "utf-8")
+}
+
+/** Record `senses.bluebubbles.hostUsername` in agent.json, leaving the enabled flag as it is. */
+function declareBlueBubblesHost(agent: string, hostUsername: string, deps: OuroCliDeps): void {
+  // readAgentConfigForAgent has already validated senses (an object when present).
+  const { configPath } = readAgentConfigForAgent(agent, deps.bundlesRoot)
+  const raw = JSON.parse(fs.readFileSync(configPath, "utf-8")) as { senses?: Record<string, Record<string, unknown> | undefined> }
+  const senses = raw.senses ?? {}
+  raw.senses = { ...senses, bluebubbles: { ...(senses.bluebubbles ?? { enabled: false }), hostUsername } }
   fs.writeFileSync(configPath, `${JSON.stringify(raw, null, 2)}\n`, "utf-8")
 }
 
@@ -4569,6 +4574,8 @@ async function executeConnectBlueBubbles(agent: string, deps: OuroCliDeps): Prom
       progress.end()
       throw new Error(`cannot read existing machine runtime credentials from ${current.itemPath}: ${current.error}`)
     }
+    // Declare the host account before installing anything under it.
+    declareBlueBubblesHost(agent, bridgeUsername, deps)
     progress.updateDetail("configuring native BlueBubbles host continuity")
     hostSetup = await setupBlueBubblesHostForConnect(bridgeUsername, serverUrl, requestTimeoutMs, deps)
     const blueBubblesPatch: RuntimeCredentialConfig = {
@@ -4590,7 +4597,7 @@ async function executeConnectBlueBubbles(agent: string, deps: OuroCliDeps): Prom
     progress.updateDetail("storing local machine config")
     stored = await mergeMachineRuntimeCredentialConfig(agent, machineId, blueBubblesPatch, providerCliNow(deps))
     progress.updateDetail("enabling BlueBubbles in agent.json")
-    enableAgentSense(agent, "bluebubbles", deps, { hostUsername: bridgeUsername })
+    enableAgentSense(agent, "bluebubbles", deps)
     progress.completePhase("saving BlueBubbles attachment", "secret stored")
     daemonApply = await runCommandProgressPhase(
       progress,

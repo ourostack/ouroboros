@@ -10,6 +10,7 @@ import { MINIMAX_PROVIDER_BASE_URL } from "../../heart/providers/minimax"
 import { minimaxVlmDescribe } from "../../heart/providers/minimax-vlm"
 import { normalizeBlueBubblesEvent, type BlueBubblesChatRef, type BlueBubblesNormalizedEvent } from "./model"
 import { hydrateBlueBubblesAttachments, type VlmDescribeFn } from "./media"
+import { verifyBlueBubblesServerAccount } from "./host-account-verifier"
 
 export interface BlueBubblesSendTextParams {
   chat: BlueBubblesChatRef
@@ -375,16 +376,36 @@ async function resolveChatGuid(
     ?? await resolveChatGuidForIdentifier(config, channelConfig, chat.chatIdentifier ?? "")
 }
 
+export interface BlueBubblesClientHostOptions {
+  /** The agent whose Apple ID this client acts as; defaults to the running agent. */
+  agent?: string
+  /** The agent's declared iMessage host account; defaults to the running agent's senses.bluebubbles.hostUsername. */
+  hostUsername?: string
+}
+
 export function createBlueBubblesClient(
   config: ClientConfig = getBlueBubblesConfig(),
   channelConfig: ChannelConfig = getBlueBubblesChannelConfig(),
+  hostOptions: BlueBubblesClientHostOptions = {},
 ): BlueBubblesClient {
+  // Everything that acts as the signed-in Apple ID first confirms the server
+  // runs under the agent's declared macOS host account.
+  const assertHostAccount = (): Promise<void> => verifyBlueBubblesServerAccount({
+    agent: hostOptions.agent ?? getAgentName(),
+    hostUsername: "hostUsername" in hostOptions
+      ? hostOptions.hostUsername
+      : loadAgentConfig().senses?.bluebubbles.hostUsername,
+    serverUrl: config.serverUrl,
+    password: config.password,
+    requestTimeoutMs: channelConfig.requestTimeoutMs,
+  })
   return {
     async sendText(params: BlueBubblesSendTextParams): Promise<BlueBubblesSendTextResult> {
       const trimmedText = params.text.trim()
       if (!trimmedText) {
         throw new Error("BlueBubbles send requires non-empty text.")
       }
+      await assertHostAccount()
       const resolvedChatGuid = await resolveChatGuid(params.chat, config, channelConfig)
       if (!resolvedChatGuid) {
         throw new Error("BlueBubbles send currently requires chat.chatGuid from the inbound event.")
@@ -492,6 +513,7 @@ export function createBlueBubblesClient(
     },
 
     async editMessage(params: BlueBubblesEditMessageParams): Promise<void> {
+      await assertHostAccount()
       const messageGuid = params.messageGuid.trim()
       const text = params.text.trim()
       if (!messageGuid) {
@@ -524,6 +546,7 @@ export function createBlueBubblesClient(
     },
 
     async setTyping(chat: BlueBubblesChatRef, typing: boolean, signal?: AbortSignal): Promise<void> {
+      await assertHostAccount()
       const resolvedChatGuid = await resolveChatGuid(chat, config, channelConfig)
       if (!resolvedChatGuid) {
         return
@@ -545,6 +568,7 @@ export function createBlueBubblesClient(
     },
 
     async markChatRead(chat: BlueBubblesChatRef, signal?: AbortSignal): Promise<void> {
+      await assertHostAccount()
       const resolvedChatGuid = await resolveChatGuid(chat, config, channelConfig)
       if (!resolvedChatGuid) {
         return
@@ -594,6 +618,7 @@ export function createBlueBubblesClient(
         })
         throw new Error(result.detail)
       }
+      await assertHostAccount()
       emitNervesEvent({
         component: "senses",
         event: "senses.bluebubbles_healthcheck_end",

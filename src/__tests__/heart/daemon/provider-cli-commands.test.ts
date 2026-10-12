@@ -8252,6 +8252,38 @@ describe("provider CLI command execution", () => {
     })
   }
 
+  for (const [label, senses, expectedBlueBubbles] of [
+    ["an existing BlueBubbles entry", { bluebubbles: { enabled: false, preserved: "yes" } }, { enabled: false, preserved: "yes", hostUsername: "clawdbot" }],
+    ["no BlueBubbles entry", { cli: { enabled: true } }, { enabled: false, hostUsername: "clawdbot" }],
+  ] as const) {
+    it(`records the host account before host setup runs, even when setup fails (${label})`, async () => {
+      emitTestEvent("provider cli connect bluebubbles declares host first")
+      const bundlesRoot = makeTempDir("provider-cli-connect-bluebubbles-declare-bundles")
+      const homeDir = makeTempDir("provider-cli-connect-bluebubbles-declare-home")
+      writeAgentConfig(bundlesRoot, "Slugger")
+      updateAgentConfig(bundlesRoot, "Slugger", (config) => {
+        config.senses = senses as never
+      })
+      writeMachineIdentity(homeDir, "machine_bb_declare")
+      const answers = ["http://127.0.0.1:1234", "", "", "", "", "clawdbot"]
+      const configPath = path.join(agentRoot(bundlesRoot, "Slugger"), "agent.json")
+      let declaredAtSetup: unknown
+      const setupBlueBubblesHost = vi.fn(async () => {
+        declaredAtSetup = (JSON.parse(fs.readFileSync(configPath, "utf-8")) as { senses: { bluebubbles: unknown } }).senses.bluebubbles
+        throw new Error("helper unavailable")
+      })
+      const deps = makeCliDeps(homeDir, bundlesRoot, {
+        now: () => Date.parse(NOW),
+        promptInput: async () => answers.shift() ?? "",
+        promptSecret: async () => "bb-password",
+        ...({ setupBlueBubblesHost } as unknown as Partial<OuroCliDeps>),
+      })
+
+      await expect(runOuroCli(["connect", "bluebubbles", "--agent", "Slugger"], deps)).rejects.toThrow("helper unavailable")
+      expect(declaredAtSetup).toEqual(expectedBlueBubbles)
+    })
+  }
+
   it("accepts the declared BlueBubbles host account when the prompt is left blank", async () => {
     emitTestEvent("provider cli connect bluebubbles declared host default")
     const bundlesRoot = makeTempDir("provider-cli-connect-bluebubbles-declared-bundles")

@@ -556,10 +556,20 @@ export async function checkSenses(deps: DoctorDeps): Promise<DoctorCategory> {
           continue
         }
 
+        const hostUsername = typeof senseObj.hostUsername === "string" && senseObj.hostUsername.trim() ? senseObj.hostUsername : ""
+        if (!hostUsername) {
+          checks.push({
+            label: `${agentDir} bluebubbles host account`,
+            status: "fail",
+            detail: "no host account declared (senses.bluebubbles.hostUsername); BlueBubbles will not start or send. A human sets it to the macOS account signed in to the agent's own Apple ID.",
+          })
+          continue
+        }
+
         checks.push({
           label: `${agentDir} bluebubbles config`,
           status: "pass",
-          detail: serverUrl,
+          detail: `${serverUrl} (host account ${hostUsername})`,
         })
 
         let upstreamContext = "upstream probe not run in this pass"

@@ -19,11 +19,11 @@ Provider-readiness pings are explicit readiness checks, not private turns.
 
 ### BlueBubbles refused: wrong or undeclared macOS host account
 
-**Symptom**: `ouro status` shows the BlueBubbles sense as not configured with `BlueBubbles refused for agent "<name>": ...`, or `ouro bluebubbles host install|repair` exits with `BlueBubbles host setup refused for macOS account "<account>"`.
+**Symptom**: `ouro status` or `ouro doctor` shows BlueBubbles refused with `no host account is declared`, sends fail with `the BlueBubbles server at <url> runs under macOS account "<account>", but the agent's iMessage host is "<host>"`, or `ouro bluebubbles host install|repair` exits with `BlueBubbles host setup refused for macOS account "<account>"`.
 
-**Cause**: the agent's `senses.bluebubbles.hostUsername` names a different macOS account than the one running Ouro, or it is unset. Ouro fails closed here so an agent never sends iMessages from a human's personal Apple ID.
+**Cause**: the agent's `senses.bluebubbles.hostUsername` is unset, or the BlueBubbles server that `bluebubbles.serverUrl` reaches runs under a different macOS account. Ouro fails closed here so an agent never sends iMessages from a human's personal Apple ID.
 
-**Recovery**: run Ouro for that agent from the declared account (for example `ouro move <agent>` there), or set `senses.bluebubbles.hostUsername` in the agent's `agent.json` to the macOS account signed in to the agent's own Apple ID. To remove a BlueBubbles server installed under the wrong account, run `ouro bluebubbles host remove` in that account.
+**Recovery**: run the BlueBubbles server under the declared account and point `bluebubbles.serverUrl` at it (`ouro connect bluebubbles --agent <name>` sets this up). If `hostUsername` is unset, a human sets it to the macOS account signed in to the agent's own Apple ID; agents should not choose it themselves. To remove a BlueBubbles server installed under the wrong account, run `ouro bluebubbles host remove` in that account.
 
 Do not send a synthetic iMessage just to make the diagnostic green. A real new inbound message may add evidence later, but diagnosis itself remains read-only.
 

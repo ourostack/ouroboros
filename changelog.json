@@ -4,7 +4,7 @@
     {
       "version": "0.1.0-alpha.912",
       "changes": [
-        "BlueBubbles (iMessage) only runs under the macOS account the agent declares as senses.bluebubbles.hostUsername. The sense, ouro connect bluebubbles and ouro bluebubbles host install|repair refuse any other account, and fail closed when the account is unset, so an agent never sends from a human's personal Apple ID."
+        "BlueBubbles (iMessage) only acts as the Apple ID of the macOS account an agent declares as senses.bluebubbles.hostUsername. Before every send, edit, typing indicator, read receipt and health check, Ouro confirms the BlueBubbles server runs under that account (wherever Ouro itself runs), and refuses otherwise; the sense, send_message and RSVP sends are all covered. With no declared host, BlueBubbles does not start or send, ouro doctor fails, and the agent does not see it as ready. ouro connect bluebubbles asks for the host account by name and records it before installing, and ouro bluebubbles host install|repair refuses undeclared accounts."
       ]
     },
     {

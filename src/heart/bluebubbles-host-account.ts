@@ -1,13 +1,14 @@
 import * as os from "os"
 import { emitNervesEvent } from "../nerves/runtime"
-import { loadAgentConfig, type AgentConfig } from "./identity"
 
 /**
- * BlueBubbles sends iMessages as whichever Apple ID is signed in to the macOS
- * account it runs under. Running it under the wrong account makes the agent
- * speak as that account's human. Every path that starts the BlueBubbles sense
- * or installs/repairs the BlueBubbles server checks the account here first,
- * and fails closed when the host account is not declared.
+ * BlueBubbles acts as whichever Apple ID is signed in to the macOS account its
+ * server runs under. Each agent declares that account as
+ * `senses.bluebubbles.hostUsername`. These checks gate the daemon (the sense
+ * runs only once a host is declared) and BlueBubbles server setup (it is only
+ * installed or repaired under a declared host account). At runtime, the
+ * BlueBubbles client confirms the server's actual account before every action
+ * that acts as the Apple ID (see senses/bluebubbles/host-account-verifier).
  */
 
 export interface OsAccount {
@@ -19,7 +20,7 @@ export type BlueBubblesHostAccountCheck =
   | { ok: true }
   | { ok: false; reason: "unset" | "mismatch"; message: string }
 
-const FIX_SET_FIELD = "set senses.bluebubbles.hostUsername in agent.json"
+const HUMAN_DECISION = "Choosing senses.bluebubbles.hostUsername is a human decision, because it chooses whose Apple ID the agent speaks as."
 
 export function currentOsAccount(): OsAccount {
   const info = os.userInfo()
@@ -31,40 +32,26 @@ function refuse(reason: "unset" | "mismatch", message: string, meta: Record<stri
     level: "error",
     component: "senses",
     event: "senses.bluebubbles_host_account_refused",
-    message: "refused BlueBubbles outside its configured macOS host account",
+    message: "refused BlueBubbles outside its declared macOS host account",
     meta: { reason, ...meta },
   })
   return { ok: false, reason, message }
 }
 
-/** Is the current OS account the one `agent` declares as its iMessage host? */
-export function checkBlueBubblesHostAccount(
-  agent: string,
-  hostUsername: string | undefined,
-  current: OsAccount,
-): BlueBubblesHostAccountCheck {
-  if (hostUsername === current.username) return { ok: true }
-  const running = `this process is running as "${current.username}" (uid ${current.uid})`
-  if (hostUsername === undefined) {
-    return refuse(
-      "unset",
-      `BlueBubbles refused for agent "${agent}": no host account is configured (senses.bluebubbles.hostUsername), and ${running}. `
-      + `Not starting, so the agent cannot send from the wrong Apple ID. Fix: ${FIX_SET_FIELD} to the macOS account signed in to the agent's own Apple ID.`,
-      { agent, currentUsername: current.username },
-    )
-  }
+/** Does `agent` declare its iMessage host account at all? */
+export function checkBlueBubblesHostDeclared(agent: string, hostUsername: string | undefined): BlueBubblesHostAccountCheck {
+  if (hostUsername !== undefined) return { ok: true }
   return refuse(
-    "mismatch",
-    `BlueBubbles refused for agent "${agent}": iMessage is configured to run under macOS account "${hostUsername}", but ${running}. `
-    + `Not starting, so the agent cannot send from the wrong Apple ID. Fix: run ouro as "${hostUsername}", or ${FIX_SET_FIELD}.`,
-    { agent, hostUsername, currentUsername: current.username },
+    "unset",
+    `BlueBubbles refused for agent "${agent}": no host account is declared (senses.bluebubbles.hostUsername), so Ouro cannot tell whose Apple ID would send. `
+    + `Not starting. Fix: a human sets senses.bluebubbles.hostUsername in agent.json to the macOS account signed in to the agent's own Apple ID. ${HUMAN_DECISION}`,
+    { agent },
   )
 }
 
 /**
- * Agent-independent check for installing or repairing the BlueBubbles server
- * under `targetUsername`: some agent with BlueBubbles enabled must declare
- * that account as its host.
+ * May the BlueBubbles server be installed or repaired under `targetUsername`?
+ * Only if some agent with BlueBubbles enabled declares that account as its host.
  */
 export function checkBlueBubblesHostTarget(
   targetUsername: string,
@@ -76,7 +63,7 @@ export function checkBlueBubblesHostTarget(
     return refuse(
       "unset",
       `BlueBubbles host setup refused for macOS account "${targetUsername}": no agent with BlueBubbles enabled declares senses.bluebubbles.hostUsername. `
-      + `Fix: ${FIX_SET_FIELD} for the agent, naming the macOS account signed in to its own Apple ID.`,
+      + `Fix: a human declares the macOS account signed in to the agent's own Apple ID as senses.bluebubbles.hostUsername. ${HUMAN_DECISION}`,
       { targetUsername },
     )
   }
@@ -84,16 +71,7 @@ export function checkBlueBubblesHostTarget(
   return refuse(
     "mismatch",
     `BlueBubbles host setup refused for macOS account "${targetUsername}": no agent declares it as its iMessage host (declared: ${hosts}). `
-    + `Run this as the declared account, or ${FIX_SET_FIELD}.`,
+    + `Set up BlueBubbles under a declared account instead. ${HUMAN_DECISION}`,
     { targetUsername, hosts },
   )
-}
-
-/** The sense-process check: the running agent's own declared host account against this process. */
-export function checkBlueBubblesSenseHostAccount(
-  agent: string,
-  loadConfig: () => Pick<AgentConfig, "senses"> = () => loadAgentConfig(),
-  current: OsAccount = currentOsAccount(),
-): BlueBubblesHostAccountCheck {
-  return checkBlueBubblesHostAccount(agent, loadConfig().senses?.bluebubbles.hostUsername, current)
 }

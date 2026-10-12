@@ -18,6 +18,12 @@ vi.mock("../../../heart/identity", () => ({
   getAgentToolsRoot: () => "/tmp/AgentBundles/slugger.ouro/state/tools",
 }))
 
+// The server-account check has its own tests (client-host-account.test.ts);
+// here every server is taken to run under the agent's declared host account.
+vi.mock("../../../senses/bluebubbles/host-account-verifier", () => ({
+  verifyBlueBubblesServerAccount: vi.fn(async () => undefined),
+}))
+
 const dmChat = {
   chatGuid: "any;-;ari@mendelow.me",
   chatIdentifier: "ari@mendelow.me",

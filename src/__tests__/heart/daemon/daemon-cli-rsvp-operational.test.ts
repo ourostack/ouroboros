@@ -308,6 +308,7 @@ function expectExplicitBlueBubblesClientConfig(): void {
       webhookPath: "/bb-hook",
       requestTimeoutMs: 12_345,
     },
+    expect.objectContaining({ agent: "slugger" }),
   )
 }
 
@@ -965,6 +966,7 @@ describe("ouro rsvp operational CLI wiring", () => {
           webhookPath: "/bluebubbles-webhook",
           requestTimeoutMs: 30_000,
         },
+        expect.objectContaining({ agent: "slugger" }),
       )
       expect(rsvpMocks.refreshMachineRuntimeCredentialConfig).not.toHaveBeenCalled()
     } finally {

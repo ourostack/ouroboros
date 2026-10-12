@@ -671,43 +671,49 @@ describe("daemon sense manager", () => {
     }))
   })
 
-  for (const [label, bluebubbles] of [
-    ["another macOS account", { enabled: true, hostUsername: "not-this-account-xyz" }],
-    ["no declared host account", { enabled: true }],
-  ] as const) {
-    it(`never starts the BlueBubbles sense for ${label}`, async () => {
-      const bundlesRoot = fs.mkdtempSync(path.join(os.tmpdir(), "sense-manager-bundles-"))
-      writeAgentJson(bundlesRoot, "slugger", {
-        version: 1,
-        enabled: true,
-        provider: "anthropic",
-        senses: { bluebubbles },
-        phrases: { thinking: ["t"], tool: ["t"], followup: ["f"] },
-      })
-      await cacheMachineRuntimeConfig("slugger", {
-        bluebubbles: { serverUrl: "http://127.0.0.1:1234", password: "pw" },
-        bluebubblesChannel: { port: 18789, webhookPath: "/bluebubbles-webhook" },
-      })
-      const processManager = {
-        startAutoStartAgents: vi.fn(async () => undefined),
-        resetAgentFailureState: vi.fn(),
-        startAgent: vi.fn(async () => undefined),
-        stopAll: vi.fn(async () => undefined),
-        listAgentSnapshots: vi.fn(() => []),
-      }
-
-      const { DaemonSenseManager } = await import("../../../heart/daemon/sense-manager")
-      const manager = new DaemonSenseManager({ agents: ["slugger"], bundlesRoot, processManager })
-
-      const row = await manager.reviveSense("slugger", "bluebubbles")
-
-      expect(processManager.startAgent).not.toHaveBeenCalled()
-      expect(row).toEqual(expect.objectContaining({ agent: "slugger", sense: "bluebubbles" }))
-      expect(row.detail).toContain('BlueBubbles refused for agent "slugger"')
-      expect(manager.listSenseRows().find((r) => r.agent === "slugger" && r.sense === "bluebubbles")?.detail)
-        .toContain("BlueBubbles refused")
+  async function blueBubblesManager(bluebubbles: Record<string, unknown>, machine: Record<string, unknown> | null) {
+    const bundlesRoot = fs.mkdtempSync(path.join(os.tmpdir(), "sense-manager-bundles-"))
+    writeAgentJson(bundlesRoot, "slugger", {
+      version: 1,
+      enabled: true,
+      provider: "anthropic",
+      senses: { bluebubbles },
+      phrases: { thinking: ["t"], tool: ["t"], followup: ["f"] },
     })
+    if (machine) await cacheMachineRuntimeConfig("slugger", machine)
+    const processManager = {
+      startAutoStartAgents: vi.fn(async () => undefined),
+      resetAgentFailureState: vi.fn(),
+      startAgent: vi.fn(async () => undefined),
+      stopAll: vi.fn(async () => undefined),
+      listAgentSnapshots: vi.fn(() => []),
+    }
+    const { DaemonSenseManager } = await import("../../../heart/daemon/sense-manager")
+    return { manager: new DaemonSenseManager({ agents: ["slugger"], bundlesRoot, processManager }), processManager }
   }
+
+  const attached = {
+    bluebubbles: { serverUrl: "http://127.0.0.1:1234", password: "pw" },
+    bluebubblesChannel: { port: 18789, webhookPath: "/bluebubbles-webhook" },
+  }
+
+  it("never starts an attached BlueBubbles sense when the agent declares no host account", async () => {
+    const { manager, processManager } = await blueBubblesManager({ enabled: true }, attached)
+
+    const row = await manager.reviveSense("slugger", "bluebubbles")
+
+    expect(processManager.startAgent).not.toHaveBeenCalled()
+    expect(processManager.resetAgentFailureState).not.toHaveBeenCalled()
+    expect(row?.detail).toContain('BlueBubbles refused for agent "slugger": no host account is declared')
+  })
+
+  it("starts BlueBubbles for a declared host in another macOS account, leaving the account check to each send", async () => {
+    const { manager, processManager } = await blueBubblesManager({ enabled: true, hostUsername: "not-this-account-xyz" }, attached)
+
+    await manager.reviveSense("slugger", "bluebubbles")
+
+    expect(processManager.startAgent).toHaveBeenCalledWith("slugger:bluebubbles")
+  })
 
   it("refreshes stale machine runtime facts before reviving a local managed sense", async () => {
     const bundlesRoot = fs.mkdtempSync(path.join(os.tmpdir(), "sense-manager-bundles-"))

@@ -1,5 +1,5 @@
 import * as fs from "fs"
-import { checkBlueBubblesHostAccount, currentOsAccount } from "../bluebubbles-host-account"
+import { checkBlueBubblesHostDeclared } from "../bluebubbles-host-account"
 import * as os from "os"
 import * as path from "path"
 import { emitNervesEvent } from "../../nerves/runtime"
@@ -74,6 +74,8 @@ interface SenseConfigFacts {
   configured: boolean
   detail: string
   optional?: boolean
+  /** BlueBubbles only: refused because the agent declares no iMessage host account. */
+  hostRefused?: boolean
 }
 
 interface SenseRuntimeFacts {
@@ -304,13 +306,7 @@ function senseFactsFromRuntimeConfig(
         }
   }
 
-  const blueBubblesHost = senses.bluebubbles.enabled
-    ? checkBlueBubblesHostAccount(agent, senses.bluebubbles.hostUsername, currentOsAccount())
-    : null
-  if (blueBubblesHost && !blueBubblesHost.ok) {
-    // Never spawn iMessage under an account whose Apple ID is not the agent's own.
-    base.bluebubbles = { configured: false, detail: blueBubblesHost.message }
-  } else if (senses.bluebubbles.enabled) {
+  if (senses.bluebubbles.enabled) {
     const missing: string[] = []
     if (!textField(bluebubbles, "serverUrl")) missing.push("bluebubbles.serverUrl")
     if (!textField(bluebubbles, "password")) missing.push("bluebubbles.password")
@@ -329,6 +325,11 @@ function senseFactsFromRuntimeConfig(
               ? `missing ${missing.join("/")}`
               : runtimeConfigUnavailableDetail(agent, machineRuntimeConfig),
         }
+  }
+  if (senses.bluebubbles.enabled && base.bluebubbles.configured) {
+    // Attached here, but whose Apple ID? Without a declared host, never start.
+    const declared = checkBlueBubblesHostDeclared(agent, senses.bluebubbles.hostUsername)
+    if (!declared.ok) base.bluebubbles = { configured: false, hostRefused: true, detail: declared.message }
   }
 
   if (senses.mail.enabled) {
@@ -1020,8 +1021,8 @@ export class DaemonSenseManager implements DaemonSenseManagerLike {
       ? await refreshMachineRuntimeCredentialConfig(parsed.agent, currentMachineId(), { preserveCachedOnFailure: true })
       : readMachineRuntimeCredentialConfig(parsed.agent)
     context.facts = senseFactsFromRuntimeConfig(parsed.agent, context.senses, runtimeConfig, machineRuntimeConfig, context.workbenchHasStaleBundleEntry)
-    if (parsed.sense === "bluebubbles" && !context.facts.bluebubbles.configured) {
-      // Never start iMessage that is not ready, including under the wrong macOS account.
+    if (context.facts[parsed.sense].hostRefused) {
+      // Never start iMessage without a declared host account.
       return currentRow()
     }
     this.processManager.resetAgentFailureState?.(managedName)

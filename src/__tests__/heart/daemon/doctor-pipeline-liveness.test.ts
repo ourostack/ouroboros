@@ -1324,7 +1324,7 @@ describe("checkSenses bluebubbles inbound-delivery liveness", () => {
 
   it("passes when inbound messages are still arriving", async () => {
     const bundlesRoot = makeBundlesRoot()
-    const agentRoot = writeAgent(bundlesRoot, "slugger", { bluebubbles: { enabled: true } })
+    const agentRoot = writeAgent(bundlesRoot, "slugger", { bluebubbles: { enabled: true, hostUsername: "clawdbot" } })
     writeInbound(agentRoot, { "chat_a.ndjson": 10 * DAY_MS, "chat_b.ndjson": 30 * 60 * 1000 })
     seedBlueBubblesRuntime()
 
@@ -1338,7 +1338,7 @@ describe("checkSenses bluebubbles inbound-delivery liveness", () => {
 
   it("warns when BlueBubbles inbound evidence is future-dated", async () => {
     const bundlesRoot = makeBundlesRoot()
-    const agentRoot = writeAgent(bundlesRoot, "slugger", { bluebubbles: { enabled: true } })
+    const agentRoot = writeAgent(bundlesRoot, "slugger", { bluebubbles: { enabled: true, hostUsername: "clawdbot" } })
     writeInbound(agentRoot, { "chat_a.ndjson": -2 * DAY_MS })
     seedBlueBubblesRuntime()
 
@@ -1351,7 +1351,7 @@ describe("checkSenses bluebubbles inbound-delivery liveness", () => {
 
   it("fails closed when every BlueBubbles inbound log is unreadable", async () => {
     const bundlesRoot = makeBundlesRoot()
-    const agentRoot = writeAgent(bundlesRoot, "slugger", { bluebubbles: { enabled: true } })
+    const agentRoot = writeAgent(bundlesRoot, "slugger", { bluebubbles: { enabled: true, hostUsername: "clawdbot" } })
     const inboundDir = writeInbound(agentRoot, { "chat_a.ndjson": DAY_MS })
     seedBlueBubblesRuntime()
     const unreadableLog = path.join(inboundDir, "chat_a.ndjson")
@@ -1372,7 +1372,7 @@ describe("checkSenses bluebubbles inbound-delivery liveness", () => {
 
   it("REGRESSION: fails on dead inbound delivery even while the upstream probe is green", async () => {
     const bundlesRoot = makeBundlesRoot()
-    const agentRoot = writeAgent(bundlesRoot, "slugger", { bluebubbles: { enabled: true } })
+    const agentRoot = writeAgent(bundlesRoot, "slugger", { bluebubbles: { enabled: true, hostUsername: "clawdbot" } })
     writeInbound(agentRoot, { "chat_a.ndjson": 9 * DAY_MS })
     seedBlueBubblesRuntime()
     const fetchImpl = vi.fn().mockResolvedValue(new Response("{}", { status: 200 }))
@@ -1390,7 +1390,7 @@ describe("checkSenses bluebubbles inbound-delivery liveness", () => {
 
   it("warns as quiet and unverified when stale inbound has healthy upstream and the exact owned webhook", async () => {
     const bundlesRoot = makeBundlesRoot()
-    const agentRoot = writeAgent(bundlesRoot, "slugger", { bluebubbles: { enabled: true } })
+    const agentRoot = writeAgent(bundlesRoot, "slugger", { bluebubbles: { enabled: true, hostUsername: "clawdbot" } })
     writeInbound(agentRoot, { "chat_a.ndjson": 9 * DAY_MS })
     seedBlueBubblesRuntime()
     const fetchImpl = blueBubblesFetch("exact")
@@ -1409,7 +1409,7 @@ describe("checkSenses bluebubbles inbound-delivery liveness", () => {
 
   it("warns rather than inventing a failure when stale inbound cannot run infrastructure probes", async () => {
     const bundlesRoot = makeBundlesRoot()
-    const agentRoot = writeAgent(bundlesRoot, "slugger", { bluebubbles: { enabled: true } })
+    const agentRoot = writeAgent(bundlesRoot, "slugger", { bluebubbles: { enabled: true, hostUsername: "clawdbot" } })
     writeInbound(agentRoot, { "chat_a.ndjson": 9 * DAY_MS })
     seedBlueBubblesRuntime()
 
@@ -1422,7 +1422,7 @@ describe("checkSenses bluebubbles inbound-delivery liveness", () => {
 
   it("warns when network-unreachable infrastructure cannot corroborate stale inbound", async () => {
     const bundlesRoot = makeBundlesRoot()
-    const agentRoot = writeAgent(bundlesRoot, "slugger", { bluebubbles: { enabled: true } })
+    const agentRoot = writeAgent(bundlesRoot, "slugger", { bluebubbles: { enabled: true, hostUsername: "clawdbot" } })
     writeInbound(agentRoot, { "chat_a.ndjson": 9 * DAY_MS })
     seedBlueBubblesRuntime()
     const fetchImpl = vi.fn().mockRejectedValue(new TypeError("fetch failed"))
@@ -1438,7 +1438,7 @@ describe("checkSenses bluebubbles inbound-delivery liveness", () => {
 
   it("fails when a missing owned webhook corroborates stale inbound", async () => {
     const bundlesRoot = makeBundlesRoot()
-    const agentRoot = writeAgent(bundlesRoot, "slugger", { bluebubbles: { enabled: true } })
+    const agentRoot = writeAgent(bundlesRoot, "slugger", { bluebubbles: { enabled: true, hostUsername: "clawdbot" } })
     writeInbound(agentRoot, { "chat_a.ndjson": 9 * DAY_MS })
     seedBlueBubblesRuntime()
     const fetchImpl = blueBubblesFetch("missing")
@@ -1454,7 +1454,7 @@ describe("checkSenses bluebubbles inbound-delivery liveness", () => {
 
   it("fails when a drifted owned webhook corroborates stale inbound", async () => {
     const bundlesRoot = makeBundlesRoot()
-    const agentRoot = writeAgent(bundlesRoot, "slugger", { bluebubbles: { enabled: true } })
+    const agentRoot = writeAgent(bundlesRoot, "slugger", { bluebubbles: { enabled: true, hostUsername: "clawdbot" } })
     writeInbound(agentRoot, { "chat_a.ndjson": 9 * DAY_MS })
     seedBlueBubblesRuntime()
     const fetchImpl = blueBubblesFetch("drifted")
@@ -1470,7 +1470,7 @@ describe("checkSenses bluebubbles inbound-delivery liveness", () => {
 
   it("fails when a definitive upstream auth fault corroborates stale inbound", async () => {
     const bundlesRoot = makeBundlesRoot()
-    const agentRoot = writeAgent(bundlesRoot, "slugger", { bluebubbles: { enabled: true } })
+    const agentRoot = writeAgent(bundlesRoot, "slugger", { bluebubbles: { enabled: true, hostUsername: "clawdbot" } })
     writeInbound(agentRoot, { "chat_a.ndjson": 9 * DAY_MS })
     seedBlueBubblesRuntime()
     const fetchImpl = blueBubblesFetch("exact", 401)
@@ -1486,7 +1486,7 @@ describe("checkSenses bluebubbles inbound-delivery liveness", () => {
 
   it("warns for a never-used but exactly wired quiet conversation", async () => {
     const bundlesRoot = makeBundlesRoot()
-    const agentRoot = writeAgent(bundlesRoot, "slugger", { bluebubbles: { enabled: true } })
+    const agentRoot = writeAgent(bundlesRoot, "slugger", { bluebubbles: { enabled: true, hostUsername: "clawdbot" } })
     const inboundDir = writeInbound(agentRoot, {})
     setMtime(path.dirname(inboundDir), Date.now() - 30 * DAY_MS)
     seedBlueBubblesRuntime()
@@ -1503,7 +1503,7 @@ describe("checkSenses bluebubbles inbound-delivery liveness", () => {
 
   it("notes when the upstream probe did not run in this pass", async () => {
     const bundlesRoot = makeBundlesRoot()
-    const agentRoot = writeAgent(bundlesRoot, "slugger", { bluebubbles: { enabled: true } })
+    const agentRoot = writeAgent(bundlesRoot, "slugger", { bluebubbles: { enabled: true, hostUsername: "clawdbot" } })
     writeInbound(agentRoot, { "chat_a.ndjson": 5 * DAY_MS })
     seedBlueBubblesRuntime()
 
@@ -1516,7 +1516,7 @@ describe("checkSenses bluebubbles inbound-delivery liveness", () => {
 
   it("keeps network-unreachable upstream evidence unverified instead of inventing corroboration", async () => {
     const bundlesRoot = makeBundlesRoot()
-    const agentRoot = writeAgent(bundlesRoot, "slugger", { bluebubbles: { enabled: true } })
+    const agentRoot = writeAgent(bundlesRoot, "slugger", { bluebubbles: { enabled: true, hostUsername: "clawdbot" } })
     writeInbound(agentRoot, { "chat_a.ndjson": 9 * DAY_MS })
     seedBlueBubblesRuntime()
     const fetchImpl = vi.fn().mockRejectedValue(new Error("fetch failed"))
@@ -1530,7 +1530,7 @@ describe("checkSenses bluebubbles inbound-delivery liveness", () => {
 
   it("flags a sense that has been attached for a while but never delivered anything", async () => {
     const bundlesRoot = makeBundlesRoot()
-    const agentRoot = writeAgent(bundlesRoot, "slugger", { bluebubbles: { enabled: true } })
+    const agentRoot = writeAgent(bundlesRoot, "slugger", { bluebubbles: { enabled: true, hostUsername: "clawdbot" } })
     const inboundDir = writeInbound(agentRoot, {})
     setMtime(path.dirname(inboundDir), Date.now() - 30 * DAY_MS)
     seedBlueBubblesRuntime()
@@ -1546,7 +1546,7 @@ describe("checkSenses bluebubbles inbound-delivery liveness", () => {
   it("honours a per-sense threshold override from agent.json", async () => {
     const bundlesRoot = makeBundlesRoot()
     const agentRoot = writeAgent(bundlesRoot, "slugger", {
-      bluebubbles: { enabled: true, freshness: { warnAfterHours: 1, failAfterHours: 2 } },
+      bluebubbles: { enabled: true, hostUsername: "clawdbot", freshness: { warnAfterHours: 1, failAfterHours: 2 } },
     })
     writeInbound(agentRoot, { "chat_a.ndjson": 3 * HOUR_MS })
     seedBlueBubblesRuntime()

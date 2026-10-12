@@ -273,7 +273,9 @@ export function readSenseStatusLines(): string[] {
   const configured: Record<SenseName, boolean> = {
     cli: true,
     teams: hasTextField(teams, "clientId") && hasTextField(teams, "clientSecret") && hasTextField(teams, "tenantId"),
-    bluebubbles: hasTextField(bluebubbles, "serverUrl") && hasTextField(bluebubbles, "password"),
+    // Without a declared host account, every BlueBubbles send is refused, so it is not ready.
+    bluebubbles: hasTextField(bluebubbles, "serverUrl") && hasTextField(bluebubbles, "password")
+      && config.senses?.bluebubbles?.hostUsername !== undefined,
     mail: hasTextField(mailroom, "mailboxAddress") && !!privateKeys && typeof privateKeys === "object" && !Array.isArray(privateKeys),
     /* v8 ignore next 5 -- full voice mode matrix lives in the voice runtime resolver; this row only mirrors that result into prompt context @preserve */
     voice: voiceConversationEngine === "openai-sip"

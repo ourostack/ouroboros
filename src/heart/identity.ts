@@ -30,9 +30,10 @@ export type LogSinkType = "terminal" | "ndjson"
 export interface AgentSenseConfig {
   enabled: boolean
   /**
-   * BlueBubbles only: the macOS account signed in to the agent's own Apple ID.
-   * The iMessage sense and BlueBubbles host setup refuse to run under any
-   * other account, and refuse when this is unset.
+   * BlueBubbles only: the macOS account signed in to the agent's own Apple ID,
+   * which must run the BlueBubbles server. The sense does not start without it,
+   * every send first confirms the server runs under it, and BlueBubbles server
+   * setup only targets it.
    */
   hostUsername?: string
 }
