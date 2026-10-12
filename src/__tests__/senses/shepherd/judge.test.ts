@@ -53,6 +53,8 @@ describe("Shepherd judge", () => {
     // A bare string reply, code-style backticks and line breaks are how models write; none of it is a reason to stay silent.
     expect(parseVerdict(JSON.stringify({ kind: "premature", reply: "Yes, continue with step 2 in `greet.sh`.\nIt is inside your task.", reason: "r" })))
       .toEqual({ kind: "premature", reply: { text: "Yes, continue with step 2 in greet.sh. It is inside your task." }, reason: "r" })
+    expect(parseVerdict(`{"kind":"premature","reply":"1","reason":"r"}`)).toEqual({ kind: "premature", reply: { key: "1" }, reason: "r" })
+    expect(parseVerdict(`Verdict: {"kind":"premature","reply":"y","reason":"r"}`).reason).toBe("premature, but the key came from JSON inside prose: r")
     expect(parseVerdict(`{"kind":"working","reply":{"text":"Keep going."},"news":false,"reason":"Waiting on two background agents."}`)).toEqual({ kind: "working", reply: null, reason: "Waiting on two background agents." })
     expect(parseVerdict(`{"kind":"working","reply":null,"news":true,"reason":"The background test run failed."}`)).toEqual({ kind: "working", reply: null, reason: "The background test run failed.", news: true })
     expect(parseVerdict("null")).toEqual({ kind: "unclear", reply: null, reason: "no reason given" })

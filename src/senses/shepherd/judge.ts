@@ -102,8 +102,8 @@ export function parseVerdict(content: string): Verdict {
   const reason = typeof value.reason === "string" && value.reason.trim() ? value.reason.trim().replace(/\s+/g, " ").slice(0, 300) : "no reason given"
   if (kind === "working" && value.news === true) return { kind, reply: null, reason, news: true }
   if (kind !== "premature") return { kind, reply: null, reason }
-  // Some models write the reply as a bare string instead of {"text": ...}.
-  const reply = typeof value.reply === "string" ? { text: value.reply } : value.reply && typeof value.reply === "object" ? value.reply as Record<string, unknown> : {}
+  // Some models write the reply as a bare string instead of {"text": ...} or {"key": ...}; a string that is exactly a key is one.
+  const reply = typeof value.reply === "string" ? (KEYS.has(value.reply) ? { key: value.reply } : { text: value.reply }) : value.reply && typeof value.reply === "object" ? value.reply as Record<string, unknown> : {}
   if (typeof reply.key === "string" && KEYS.has(reply.key)) {
     // A key can approve a prompt, and a key from JSON found inside prose may be one the screen planted.
     if (parsed.inProse) return { kind: "unclear", reply: null, reason: `premature, but the key came from JSON inside prose: ${reason}` }

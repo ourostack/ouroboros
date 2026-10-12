@@ -12,9 +12,10 @@ import type { HostSession, HostWatchHandlers, ShepherdHost, ShepherdKey } from "
  * Codex, Copilot and more). After a short grace period, a stop is dropped if the agent resumed. A
  * stop that cmux's session store says left background work running waits longer, and is then
  * passed on marked as such: the agent is still working, not handing back control. Every terminal
- * whose agent has not stopped is also polled: output that stops changing for a quiet window counts
- * as a return. That covers an agent cmux does not hook, and a hooked agent sitting at a prompt that
- * fires no stop (a permission or trust question). cmux has no bell or output event, so polling is the fallback.
+ * whose agent is not idle is also polled: output that stops changing for a quiet window counts
+ * as a return. That covers an agent cmux does not hook, and a hooked agent sitting mid-turn at a
+ * prompt that fires no stop (a permission or trust question); a hooked agent gets a longer window,
+ * because its stop normally speaks first. cmux has no bell or output event, so polling is the fallback.
  */
 export const CMUX_STATUS_KEY = "ouro"
 export const GRACE_MS = 3_000
@@ -22,11 +23,15 @@ export const GRACE_MS = 3_000
 export const BACKGROUND_GRACE_MS = 30_000
 export const POLL_MS = 4_000
 export const QUIET_MS = 8_000
+/** A hooked agent mid-turn: long enough that a stop hook or a spinner normally speaks before the quiet screen does. */
+export const HOOKED_QUIET_MS = 20_000
 /** A quiet terminal judged as still working or not an agent is checked less often, doubling up to this. */
 export const QUIET_MAX_MS = 300_000
 const POLL_LINES = 40
 const RECONNECT_DELAYS_MS = [1_000, 2_000, 5_000, 10_000, 30_000]
 const STOP_HOOKS = new Set(["Stop", "StopFailure"])
+/** Hooks after which the agent waits for the human: a stop, or a session that has not been given work yet. */
+const IDLE_HOOKS = new Set([...STOP_HOOKS, "SessionStart"])
 /** Hooks that say nothing about whether the main agent is working. */
 const NEUTRAL_HOOKS = new Set(["SubagentStop", "Notification"])
 const NAMED_KEYS = new Set<ShepherdKey>(["enter", "escape", "up", "down", "tab"])
@@ -81,7 +86,7 @@ export function createCmuxHost(client: CmuxClient, options: CmuxHostOptions = {}
   const now = options.now ?? Date.now
   const schedule = options.schedule ?? realSchedule
   /** What hook events taught: which surface a session runs in, and which agent and folder it has. */
-  const hooked = new Map<string, { agent: string; cwd: string | null; sessionId: string | null; stopped: boolean }>()
+  const hooked = new Map<string, { agent: string; cwd: string | null; sessionId: string | null; idle: boolean }>()
   const sessionSurface = new Map<string, string>()
   /** Terminals showing a Shepherd status, so it can be cleared when the agent resumes. */
   const statused = new Map<string, { key: string; workspaceId: string }>()
@@ -221,13 +226,14 @@ export function createCmuxHost(client: CmuxClient, options: CmuxHostOptions = {}
         const agent = str(payload._source) ?? str(frame.source) ?? "unknown"
         const cwd = str(payload.cwd)
         const neutral = NEUTRAL_HOOKS.has(hook)
-        // A stopped agent's return comes from its stop; the quiet-screen poll leaves it alone until it works again.
-        hooked.set(surface, { agent, cwd, sessionId, stopped: STOP_HOOKS.has(hook) || (neutral && hooked.get(surface)?.stopped === true) })
+        // An idle agent's return came from its stop; the quiet-screen poll leaves it alone until it works again.
+        hooked.set(surface, { agent, cwd, sessionId, idle: IDLE_HOOKS.has(hook) || (neutral && hooked.get(surface)?.idle === true) })
         if (STOP_HOOKS.has(hook)) return stopped(surface, `cmux:${String(frame.boot_id)}:${String(frame.seq)}`, agent, sessionId, cwd)
-        if (neutral) return
-        // The agent is working again: no pending stop, and no stale status.
+        if (neutral || hook === "SessionStart") return
+        // The agent is working again: no pending stop, no stale status, and its quiet screen is checked at the normal pace.
         cancelPending(surface)
         clearStatus(surface)
+        quietMs.delete(surface)
         // An agent that exited leaves a plain terminal, which the quiet-screen fallback watches again.
         if (hook === "SessionEnd") forget(surface)
       }
@@ -259,10 +265,10 @@ export function createCmuxHost(client: CmuxClient, options: CmuxHostOptions = {}
         })
       }
 
-      /** Terminals whose agent has not stopped: output that changed and then held still for the quiet window is a return. */
+      /** Terminals whose agent is not idle: output that changed and then held still for the quiet window is a return. */
       const poll = async (): Promise<void> => {
         try {
-          const terminals = (await surfaces()).filter((surface) => surface.type === "terminal" && hooked.get(surface.id)?.stopped !== true)
+          const terminals = (await surfaces()).filter((surface) => surface.type === "terminal" && hooked.get(surface.id)?.idle !== true)
           const seen = new Set(terminals.map((surface) => surface.id))
           for (const id of screens.keys()) if (!seen.has(id)) screens.delete(id)
           for (const surface of terminals) {
@@ -273,7 +279,7 @@ export function createCmuxHost(client: CmuxClient, options: CmuxHostOptions = {}
             else if (last.hash !== hash) {
               screens.set(surface.id, { hash, changedAt: at, active: true })
               clearStatus(surface.id)
-            } else if (last.active && at - last.changedAt >= (quietMs.get(surface.id) ?? QUIET_MS)) {
+            } else if (last.active && at - last.changedAt >= Math.max(quietMs.get(surface.id) ?? QUIET_MS, hooked.has(surface.id) ? HOOKED_QUIET_MS : 0)) {
               last.active = false
               const hook = hooked.get(surface.id)
               handlers.returned({ sessionId: surface.id, transitionId: `cmux:quiet:${surface.id}:${last.changedAt}`, agent: hook?.agent ?? null, cwd: hook?.cwd ?? null, lastBody: null, backgroundWork: null })

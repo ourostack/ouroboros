@@ -4,7 +4,7 @@ import * as path from "node:path"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 
 import { createCmuxClient } from "../../../senses/shepherd/client"
-import { BACKGROUND_GRACE_MS, createCmuxHost, GRACE_MS, POLL_MS, QUIET_MAX_MS, QUIET_MS, readCmuxHookSession, realSchedule } from "../../../senses/shepherd/cmux"
+import { BACKGROUND_GRACE_MS, createCmuxHost, GRACE_MS, HOOKED_QUIET_MS, POLL_MS, QUIET_MAX_MS, QUIET_MS, readCmuxHookSession, realSchedule } from "../../../senses/shepherd/cmux"
 import type { ReturnedControl } from "../../../senses/shepherd/host"
 import { ackFrame, startFakeCmux, type FakeCmux } from "./fake-cmux"
 import { hookEvent, SCREENS, surfaceEvent, tree } from "./fixtures"
@@ -296,7 +296,7 @@ describe("cmux host: returned control", () => {
     watcher.close()
   })
 
-  it("judges a hooked agent that sits quiet without stopping (a permission or trust prompt), once", async () => {
+  it("judges a hooked agent that sits quiet mid-turn (a permission or trust prompt), once, after a longer window", async () => {
     const { watcher, returned } = await watching()
     server.push(hookEvent(101, "PreToolUse"))
     server.push(hookEvent(102, "Notification"))
@@ -306,14 +306,48 @@ describe("cmux host: returned control", () => {
     await scheduler.run(POLL_MS)
     clock += QUIET_MS
     await scheduler.run(POLL_MS)
+    expect(returned).toEqual([])
+    clock += HOOKED_QUIET_MS - QUIET_MS
+    await scheduler.run(POLL_MS)
     expect(returned).toEqual([{ sessionId: "SF-1", transitionId: `cmux:quiet:SF-1:${1_000_000 + POLL_MS}`, agent: "claude", cwd: "/Users/a/code/app", lastBody: null, backgroundWork: null }])
-    clock += QUIET_MS
+    clock += HOOKED_QUIET_MS
     await scheduler.run(POLL_MS)
     expect(returned).toHaveLength(1)
     watcher.close()
   })
 
-  it("leaves a stopped agent's screen to its stop, and watches it again when it works or its session ends", async () => {
+  it("does not judge the quiet screen of an idle agent: one that stopped, or a session not given work yet", async () => {
+    const { cmux, watcher, returned } = await watching()
+    const quietScreen = async (text: string) => {
+      screens["SF-1"] = text
+      clock += POLL_MS
+      await scheduler.run(POLL_MS)
+      clock += HOOKED_QUIET_MS
+      await scheduler.run(POLL_MS)
+    }
+    server.push(hookEvent(101, "SessionStart"))
+    await new Promise((resolve) => setTimeout(resolve, 20))
+    await quietScreen("welcome banner")
+    expect(returned).toEqual([])
+    // Work makes it watched again, and resets a stretched quiet window.
+    cmux.pace!("SF-1", true)
+    server.push(hookEvent(102, "UserPromptSubmit"))
+    await new Promise((resolve) => setTimeout(resolve, 20))
+    await scheduler.run(POLL_MS)
+    await quietScreen("Allow this tool?")
+    expect(returned.map((entry) => entry.transitionId)).toEqual([expect.stringContaining("cmux:quiet:SF-1:")])
+    // Its stop is the return; the quiet screen after it is not a second one, even with a subagent's stop in between.
+    server.push(hookEvent(103, "Stop"))
+    server.push(hookEvent(104, "SubagentStop"))
+    await new Promise((resolve) => setTimeout(resolve, 20))
+    await quietScreen("All done.")
+    expect(returned).toHaveLength(1)
+    await scheduler.run(GRACE_MS)
+    expect(returned.map((entry) => entry.transitionId)).toEqual([expect.stringContaining("cmux:quiet:SF-1:"), expect.stringContaining(":103")])
+    watcher.close()
+  })
+
+  it("leaves a stopped agent's screen to its stop, and watches it again once its session ends", async () => {
     const { watcher } = await watching()
     server.push(hookEvent(100.5, "Stop", { surface: "SF-3", session: "claude-s3" }))
     server.push(hookEvent(101, "Stop"))
