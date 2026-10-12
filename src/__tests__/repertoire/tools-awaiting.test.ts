@@ -201,6 +201,11 @@ describe("tools-awaiting", () => {
     it("persists a canonical future wake time", async () => {
       await fileAwaitDef.handler({ name: "scheduled", condition: "x", cadence: "5m", wake_at: "2099-08-30T01:00:00.000Z" }, undefined)
       expect(fs.readFileSync(path.join(agentRoot, "awaiting", "scheduled.md"), "utf8")).toContain("wake_at: 2099-08-30T01:00:00.000Z")
+      // The alpha.910 replay's forms: a zone without milliseconds, or an offset, is stored canonically.
+      await fileAwaitDef.handler({ name: "scheduled_z", condition: "x", cadence: "5m", wake_at: "2099-08-30T01:00:00Z" }, undefined)
+      expect(fs.readFileSync(path.join(agentRoot, "awaiting", "scheduled_z.md"), "utf8")).toContain("wake_at: 2099-08-30T01:00:00.000Z")
+      await fileAwaitDef.handler({ name: "scheduled_offset", condition: "x", cadence: "5m", wake_at: "2099-08-30T03:00:00+02:00" }, undefined)
+      expect(fs.readFileSync(path.join(agentRoot, "awaiting", "scheduled_offset.md"), "utf8")).toContain("wake_at: 2099-08-30T01:00:00.000Z")
     })
 
     it("caps oversized agent-authored condition and body text while preserving markdown", async () => {
@@ -257,9 +262,9 @@ describe("tools-awaiting", () => {
       expect(result.error).toMatch(/already exists/)
     })
 
-    it.each(["not-a-date", "2026-08-30T01:00:00Z"])("rejects non-canonical wake_at %s", async (wakeAt) => {
+    it.each(["not-a-date", "2026-10-12T12:09:00", "2026-99-99T00:00:00Z"])("rejects wake_at %s that is not an ISO timestamp with a zone", async (wakeAt) => {
       const result = parse(await fileAwaitDef.handler({ name: `wake_${wakeAt.length}`, condition: "c", cadence: "5m", wake_at: wakeAt }, undefined) as string)
-      expect(result.error).toMatch(/canonical ISO timestamp/)
+      expect(result.error).toMatch(/ISO timestamp with a time zone/)
     })
 
     it("cleans up a newly-created obligation when the await file cannot be written", async () => {

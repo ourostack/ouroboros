@@ -354,9 +354,11 @@ function fileAwait(args: FileAwaitArgs, agentRoot: string, agentName: string, se
   if (!args.cadence || !args.cadence.trim()) {
     return JSON.stringify({ error: "cadence is required" })
   }
-  if (args.wake_at && (!Number.isFinite(Date.parse(args.wake_at)) || new Date(args.wake_at).toISOString() !== args.wake_at)) {
-    return JSON.stringify({ error: "wake_at must be a canonical ISO timestamp" })
+  // Any ISO timestamp with a zone is accepted and stored in canonical form ("2026-10-12T12:09:00Z" becomes "...:00.000Z"); the alpha.910 replay refused four valid forms in a row.
+  if (args.wake_at && (!/(?:Z|[+-]\d\d:?\d\d)$/i.test(args.wake_at) || !Number.isFinite(Date.parse(args.wake_at)))) {
+    return JSON.stringify({ error: "wake_at must be an ISO timestamp with a time zone, like 2026-10-12T12:09:00Z" })
   }
+  const wakeAt = args.wake_at ? new Date(args.wake_at).toISOString() : null
 
   const filePath = awaitFilePath(agentRoot, args.name)
   if (fs.existsSync(filePath)) {
@@ -372,7 +374,7 @@ function fileAwait(args: FileAwaitArgs, agentRoot: string, agentName: string, se
     alert,
     mode,
     max_age: typeof args.max_age === "string" ? capStructuredRecordString(args.max_age) : null,
-    wake_at: typeof args.wake_at === "string" ? capStructuredRecordString(args.wake_at) : null,
+    wake_at: wakeAt,
     status: "pending",
     created_at: new Date().toISOString(),
     filed_from: sessionChannel ?? "unknown",
