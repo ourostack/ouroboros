@@ -149,6 +149,10 @@ describe("Shepherd sense: answering premature returns", () => {
     host.screens.S2 = ["Shell Run startup    59s |\nDo you want to run this command?\n> 1. Yes\n  2. No", "Shell Run startup  1m 0s |\nDo you want to run this command?\n> 1. Yes\n  2. No"]
     await returned({ sessionId: "S2", agent: null })
     expect(last()).toMatchObject({ action: "respond", reply: "key:1" })
+    // The timer can also be missing from one redraw.
+    host.screens.S2 = ["Shell Run startup  40s\nDo you want to run this command?\n> 1. Yes", "Shell Run startup       \nDo you want to run this command?\n> 1. Yes"]
+    await returned({ sessionId: "S2", agent: null, transitionId: "timer-gone" })
+    expect(last()).toMatchObject({ action: "respond", reply: "key:1" })
   })
 
   it("sends nothing when the screen changed while judging or the human focused the session", async () => {
