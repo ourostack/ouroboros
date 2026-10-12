@@ -25,7 +25,7 @@ const RESET = "\x1b[0m"
 const BOLD = "\x1b[1m"
 const DIM = "\x1b[2m"
 const GREEN = "\x1b[38;2;46;204;64m"
-const RED = "\x1b[38;2;255;106;106m"
+const RED = "\x1b[38;2;220;70;70m"
 
 // ── Types ──
 

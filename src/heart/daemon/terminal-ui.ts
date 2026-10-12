@@ -3,12 +3,15 @@ import { emitNervesEvent } from "../../nerves/runtime"
 
 const RESET = "\x1b[0m"
 const BOLD = "\x1b[1m"
-const CANOPY = "\x1b[38;2;30;61;40m"
+// The terminal's background is unknown, so every tone has to read on light and on dark: each
+// holds about 4:1 contrast against both white and near-black. Main text takes no colour at all
+// and stays in the terminal's own text colour.
+const CANOPY = "\x1b[38;2;84;130;100m"
 const SCALE = "\x1b[38;2;45;148;71m"
-const GLOW = "\x1b[38;2;74;227;108m"
-const BONE = "\x1b[38;2;237;242;238m"
-const MIST = "\x1b[38;2;154;174;159m"
-const ALERT = "\x1b[38;2;255;106;106m"
+const GLOW = "\x1b[38;2;34;160;80m"
+const BONE = ""
+const MIST = "\x1b[38;2;110;130;116m"
+const ALERT = "\x1b[38;2;220;70;70m"
 
 const ANSI_RE = /\x1b\[[0-9;]*m/g
 const MASTHEAD_WORD = "OUROBOROS"
@@ -136,7 +139,8 @@ export interface RenderTerminalOperationOptions {
 
 function color(text: string, tone: string, bold = false): string {
   if (!text) return text
-  return `${tone}${bold ? BOLD : ""}${text}${RESET}`
+  const style = `${tone}${bold ? BOLD : ""}`
+  return style ? `${style}${text}${RESET}` : text
 }
 
 export function stripAnsi(text: string): string {
