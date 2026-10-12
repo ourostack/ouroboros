@@ -227,7 +227,7 @@ describe("pingProvider", () => {
       oauthAccessToken: "valid-token",
     })
     expect(result.ok).toBe(true)
-    expect(createOpenAICodexProviderRuntime).toHaveBeenCalledWith("gpt-5.4", {
+    expect(createOpenAICodexProviderRuntime).toHaveBeenCalledWith("gpt-5.5", {
       model: "gpt-5.4",
       oauthAccessToken: "valid-token",
     })

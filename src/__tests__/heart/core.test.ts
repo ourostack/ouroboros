@@ -5719,7 +5719,7 @@ describe("anthropic setup-token provider contract", () => {
     }) as any)
     vi.mocked(fs.readFileSync).mockImplementation(defaultReadFileSync)
     await setupConfig({
-      humanFacingModel: "claude-opus-4-6",
+      humanFacingModel: "claude-opus-5-5",
       providers: {
         anthropic: {
           setupToken: makeAnthropicSetupToken(),
@@ -5871,7 +5871,7 @@ describe("anthropic setup-token provider contract", () => {
     const [params, requestOptions] = mockAnthropicMessagesCreate.mock.calls[0]
     expect(requestOptions).toEqual({ signal: controller.signal })
     expect(params).toEqual(expect.objectContaining({
-      model: "claude-opus-4-6",
+      model: "claude-opus-5-5",
       stream: true,
       max_tokens: 128000,
       system: [
@@ -6629,16 +6629,16 @@ describe("openai-codex oauth provider contract", () => {
   it("surfaces terminal openai-codex auth guidance with model mismatch repair details", async () => {
     const cases = [
       {
-        model: "claude-sonnet-4.6",
+        model: "claude-sonnet-5.5",
         detail: `authentication failed ${"x".repeat(320)}`,
-        expectedLabel: "openai-codex [configured model: claude-sonnet-4.6] authentication failed.",
+        expectedLabel: "openai-codex [configured model: claude-sonnet-5.5] authentication failed.",
         expectedDetail: "provider detail: authentication failed",
         expectedRepair: "does not look like a model for OpenAI Codex",
       },
       {
-        model: "gpt-5.4",
+        model: "gpt-5.5",
         detail: "authentication failed",
-        expectedLabel: "openai-codex (gpt-5.4) authentication failed.",
+        expectedLabel: "openai-codex (gpt-5.5) authentication failed.",
         expectedDetail: "provider detail: authentication failed",
         expectedRepair: null,
       },
@@ -6695,8 +6695,8 @@ describe("openai-codex oauth provider contract", () => {
         }
         if (testCase.expectedRepair) {
           expect(terminal?.error.message).toContain(testCase.expectedRepair)
-          expect(terminal?.error.message).toContain("ouro use --agent testagent --lane outward --provider openai-codex --model gpt-5.4")
-          expect(terminal?.error.message).toContain("ouro use --agent testagent --lane inner --provider openai-codex --model gpt-5.4")
+          expect(terminal?.error.message).toContain("ouro use --agent testagent --lane outward --provider openai-codex --model gpt-5.5")
+          expect(terminal?.error.message).toContain("ouro use --agent testagent --lane inner --provider openai-codex --model gpt-5.5")
         } else {
           expect(terminal?.error.message).not.toContain("Config warning:")
         }

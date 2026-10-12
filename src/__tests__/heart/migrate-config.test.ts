@@ -59,8 +59,8 @@ describe("migrateAgentConfigV1ToV2", () => {
 
     const config = readAgentJson(bundleRoot)
     expect(config.version).toBe(2)
-    expect(config.humanFacing).toEqual({ provider: "anthropic", model: "claude-opus-4-6" })
-    expect(config.agentFacing).toEqual({ provider: "anthropic", model: "claude-opus-4-6" })
+    expect(config.humanFacing).toEqual({ provider: "anthropic", model: "claude-opus-5-5" })
+    expect(config.agentFacing).toEqual({ provider: "anthropic", model: "claude-opus-5-5" })
     expect(config).not.toHaveProperty("provider")
     expect(config.context).toEqual({ maxTokens: 80000, contextMargin: 20 })
   })
@@ -79,8 +79,8 @@ describe("migrateAgentConfigV1ToV2", () => {
 
     const config = readAgentJson(bundleRoot)
     expect(config.version).toBe(2)
-    expect(config.humanFacing).toEqual({ provider: "anthropic", model: "claude-opus-4-6" })
-    expect(config.agentFacing).toEqual({ provider: "anthropic", model: "claude-opus-4-6" })
+    expect(config.humanFacing).toEqual({ provider: "anthropic", model: "claude-opus-5-5" })
+    expect(config.agentFacing).toEqual({ provider: "anthropic", model: "claude-opus-5-5" })
   })
 
   it("is idempotent when agent.json is already v2", async () => {

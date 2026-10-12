@@ -288,13 +288,13 @@ describe("reasoning effort flow in runAgent", () => {
     vi.mocked(id.loadAgentConfig).mockReturnValue({
       name: "testagent",
       provider: "anthropic",
-      humanFacing: { provider: "anthropic", model: "claude-opus-4-6" },
-      agentFacing: { provider: "anthropic", model: "claude-opus-4-6" },
+      humanFacing: { provider: "anthropic", model: "claude-opus-5-5" },
+      agentFacing: { provider: "anthropic", model: "claude-opus-5-5" },
     })
     const config = await import("../../heart/config")
     config.resetConfigCache()
     config.patchRuntimeConfig({
-      providers: { anthropic: { model: "claude-opus-4-6", setupToken: `sk-ant-oat01-${"a".repeat(80)}` } },
+      providers: { anthropic: { model: "claude-opus-5-5", setupToken: `sk-ant-oat01-${"a".repeat(80)}` } },
     })
 
     // Mock the Anthropic SDK to return thinking blocks in the stream
@@ -338,8 +338,8 @@ describe("reasoning effort flow in runAgent", () => {
     vi.mocked(id.loadAgentConfig).mockReturnValue({
       name: "testagent",
       provider: "openai-codex",
-      humanFacing: { provider: "openai-codex", model: "gpt-5.4" },
-      agentFacing: { provider: "openai-codex", model: "gpt-5.4" },
+      humanFacing: { provider: "openai-codex", model: "gpt-5.5" },
+      agentFacing: { provider: "openai-codex", model: "gpt-5.5" },
     })
 
     const config = await import("../../heart/config")
@@ -361,7 +361,7 @@ describe("reasoning effort flow in runAgent", () => {
 
     config.patchRuntimeConfig({
       providers: {
-        "openai-codex": { model: "gpt-5.4", oauthAccessToken: token },
+        "openai-codex": { model: "gpt-5.5", oauthAccessToken: token },
       },
     })
 
@@ -397,8 +397,8 @@ describe("reasoning effort flow in runAgent", () => {
     vi.mocked(id.loadAgentConfig).mockReturnValue({
       name: "testagent",
       provider: "openai-codex",
-      humanFacing: { provider: "openai-codex", model: "gpt-5.4" },
-      agentFacing: { provider: "openai-codex", model: "gpt-5.4" },
+      humanFacing: { provider: "openai-codex", model: "gpt-5.5" },
+      agentFacing: { provider: "openai-codex", model: "gpt-5.5" },
     })
 
     const config = await import("../../heart/config")
@@ -419,7 +419,7 @@ describe("reasoning effort flow in runAgent", () => {
 
     config.patchRuntimeConfig({
       providers: {
-        "openai-codex": { model: "gpt-5.4", oauthAccessToken: token },
+        "openai-codex": { model: "gpt-5.5", oauthAccessToken: token },
       },
     })
 

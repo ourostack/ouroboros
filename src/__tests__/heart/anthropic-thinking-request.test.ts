@@ -96,8 +96,8 @@ describe("Anthropic thinking request params", () => {
     vi.mocked(identity.loadAgentConfig).mockReturnValue({
       name: "testagent",
       provider: "anthropic",
-      humanFacing: { provider: "anthropic", model: "claude-opus-4-6" },
-      agentFacing: { provider: "anthropic", model: "claude-opus-4-6" },
+      humanFacing: { provider: "anthropic", model: "claude-opus-5-5" },
+      agentFacing: { provider: "anthropic", model: "claude-opus-5-5" },
     })
     const config = await import("../../heart/config")
     config.resetConfigCache()
@@ -106,7 +106,7 @@ describe("Anthropic thinking request params", () => {
     })
 
     const { createAnthropicProviderRuntime } = await import("../../heart/providers/anthropic")
-    const runtime = createAnthropicProviderRuntime("claude-opus-4-6")
+    const runtime = createAnthropicProviderRuntime("claude-opus-5-5")
     await runtime.streamTurn({
       messages: [{ role: "user", content: "hi" }],
       activeTools: [],
@@ -132,8 +132,8 @@ describe("Anthropic thinking request params", () => {
     vi.mocked(identity.loadAgentConfig).mockReturnValue({
       name: "testagent",
       provider: "anthropic",
-      humanFacing: { provider: "anthropic", model: "claude-opus-4-6" },
-      agentFacing: { provider: "anthropic", model: "claude-opus-4-6" },
+      humanFacing: { provider: "anthropic", model: "claude-opus-5-5" },
+      agentFacing: { provider: "anthropic", model: "claude-opus-5-5" },
     })
     const config = await import("../../heart/config")
     config.resetConfigCache()
@@ -142,7 +142,7 @@ describe("Anthropic thinking request params", () => {
     })
 
     const { createAnthropicProviderRuntime } = await import("../../heart/providers/anthropic")
-    const runtime = createAnthropicProviderRuntime("claude-opus-4-6")
+    const runtime = createAnthropicProviderRuntime("claude-opus-5-5")
     await runtime.streamTurn({
       messages: [{ role: "user", content: "hi" }],
       activeTools: [],
@@ -161,13 +161,13 @@ describe("Anthropic thinking request params", () => {
     expect(capturedAnthropicParams.output_config).toEqual({ effort: "medium" })
   })
 
-  it("sets max_tokens from registry maxOutputTokens for opus-4-6", async () => {
+  it("sets max_tokens from registry maxOutputTokens for opus-5-5", async () => {
     emitTestEvent("anthropic max_tokens from registry opus")
     vi.mocked(identity.loadAgentConfig).mockReturnValue({
       name: "testagent",
       provider: "anthropic",
-      humanFacing: { provider: "anthropic", model: "claude-opus-4-6" },
-      agentFacing: { provider: "anthropic", model: "claude-opus-4-6" },
+      humanFacing: { provider: "anthropic", model: "claude-opus-5-5" },
+      agentFacing: { provider: "anthropic", model: "claude-opus-5-5" },
     })
     const config = await import("../../heart/config")
     config.resetConfigCache()
@@ -176,7 +176,7 @@ describe("Anthropic thinking request params", () => {
     })
 
     const { createAnthropicProviderRuntime } = await import("../../heart/providers/anthropic")
-    const runtime = createAnthropicProviderRuntime("claude-opus-4-6")
+    const runtime = createAnthropicProviderRuntime("claude-opus-5-5")
     await runtime.streamTurn({
       messages: [{ role: "user", content: "hi" }],
       activeTools: [],
@@ -194,13 +194,13 @@ describe("Anthropic thinking request params", () => {
     expect(capturedAnthropicParams.max_tokens).toBe(128000)
   })
 
-  it("sets max_tokens from registry maxOutputTokens for sonnet-4-6", async () => {
+  it("sets max_tokens from registry maxOutputTokens for sonnet-5-5", async () => {
     emitTestEvent("anthropic max_tokens from registry sonnet")
     vi.mocked(identity.loadAgentConfig).mockReturnValue({
       name: "testagent",
       provider: "anthropic",
-      humanFacing: { provider: "anthropic", model: "claude-sonnet-4-6" },
-      agentFacing: { provider: "anthropic", model: "claude-sonnet-4-6" },
+      humanFacing: { provider: "anthropic", model: "claude-sonnet-5-5" },
+      agentFacing: { provider: "anthropic", model: "claude-sonnet-5-5" },
     })
     const config = await import("../../heart/config")
     config.resetConfigCache()
@@ -209,7 +209,7 @@ describe("Anthropic thinking request params", () => {
     })
 
     const { createAnthropicProviderRuntime } = await import("../../heart/providers/anthropic")
-    const runtime = createAnthropicProviderRuntime("claude-sonnet-4-6")
+    const runtime = createAnthropicProviderRuntime("claude-sonnet-5-5")
     await runtime.streamTurn({
       messages: [{ role: "user", content: "hi" }],
       activeTools: [],
@@ -224,7 +224,7 @@ describe("Anthropic thinking request params", () => {
       },
     })
 
-    expect(capturedAnthropicParams.max_tokens).toBe(64000)
+    expect(capturedAnthropicParams.max_tokens).toBe(128000)
   })
 
   it("falls back to sensible default max_tokens when registry has no maxOutputTokens", async () => {

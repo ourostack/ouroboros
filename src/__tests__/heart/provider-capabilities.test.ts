@@ -125,8 +125,8 @@ describe("provider factory capability declarations", () => {
   })
 
   describe("Anthropic provider", () => {
-    it("returns reasoning-effort capability and correct efforts for claude-opus-4-6", async () => {
-      emitTestEvent("anthropic opus-4-6 capabilities")
+    it("returns reasoning-effort capability and correct efforts for claude-opus-5-5", async () => {
+      emitTestEvent("anthropic opus-5-5 capabilities")
       await setAgentProvider("anthropic")
       const config = await import("../../heart/config")
       config.resetConfigCache()
@@ -136,13 +136,13 @@ describe("provider factory capability declarations", () => {
         },
       })
       const { createAnthropicProviderRuntime } = await import("../../heart/providers/anthropic")
-      const runtime = createAnthropicProviderRuntime("claude-opus-4-6")
+      const runtime = createAnthropicProviderRuntime("claude-opus-5-5")
       expect(runtime.capabilities.has("reasoning-effort")).toBe(true)
-      expect(runtime.supportedReasoningEfforts).toEqual(["low", "medium", "high", "max"])
+      expect(runtime.supportedReasoningEfforts).toEqual(["low", "medium", "high", "xhigh", "max"])
     })
 
-    it("returns reasoning-effort capability and correct efforts for claude-sonnet-4-6", async () => {
-      emitTestEvent("anthropic sonnet-4-6 capabilities")
+    it("returns reasoning-effort capability and correct efforts for claude-sonnet-5-5", async () => {
+      emitTestEvent("anthropic sonnet-5-5 capabilities")
       await setAgentProvider("anthropic")
       const config = await import("../../heart/config")
       config.resetConfigCache()
@@ -152,15 +152,15 @@ describe("provider factory capability declarations", () => {
         },
       })
       const { createAnthropicProviderRuntime } = await import("../../heart/providers/anthropic")
-      const runtime = createAnthropicProviderRuntime("claude-sonnet-4-6")
+      const runtime = createAnthropicProviderRuntime("claude-sonnet-5-5")
       expect(runtime.capabilities.has("reasoning-effort")).toBe(true)
-      expect(runtime.supportedReasoningEfforts).toEqual(["low", "medium", "high"])
+      expect(runtime.supportedReasoningEfforts).toEqual(["low", "medium", "high", "xhigh", "max"])
     })
   })
 
   describe("Azure provider", () => {
-    it("returns reasoning-effort capability for gpt-5.4", async () => {
-      emitTestEvent("azure gpt-5.4 capabilities")
+    it("returns reasoning-effort capability for gpt-5.5", async () => {
+      emitTestEvent("azure gpt-5.5 capabilities")
       await setAgentProvider("azure")
       const config = await import("../../heart/config")
       config.resetConfigCache()
@@ -174,15 +174,15 @@ describe("provider factory capability declarations", () => {
         },
       })
       const { createAzureProviderRuntime } = await import("../../heart/providers/azure")
-      const runtime = createAzureProviderRuntime("gpt-5.4")
+      const runtime = createAzureProviderRuntime("gpt-5.5")
       expect(runtime.capabilities.has("reasoning-effort")).toBe(true)
-      expect(runtime.supportedReasoningEfforts).toEqual(["low", "medium", "high"])
+      expect(runtime.supportedReasoningEfforts).toEqual(["none", "low", "medium", "high", "xhigh"])
     })
   })
 
   describe("OpenAI Codex provider", () => {
-    it("returns reasoning-effort and phase-annotation capabilities for gpt-5.4", async () => {
-      emitTestEvent("codex gpt-5.4 capabilities")
+    it("returns reasoning-effort and phase-annotation capabilities for gpt-5.5", async () => {
+      emitTestEvent("codex gpt-5.5 capabilities")
       await setAgentProvider("openai-codex")
       const config = await import("../../heart/config")
       config.resetConfigCache()
@@ -194,10 +194,10 @@ describe("provider factory capability declarations", () => {
         },
       })
       const { createOpenAICodexProviderRuntime } = await import("../../heart/providers/openai-codex")
-      const runtime = createOpenAICodexProviderRuntime("gpt-5.4")
+      const runtime = createOpenAICodexProviderRuntime("gpt-5.5")
       expect(runtime.capabilities.has("reasoning-effort")).toBe(true)
       expect(runtime.capabilities.has("phase-annotation")).toBe(true)
-      expect(runtime.supportedReasoningEfforts).toEqual(["low", "medium", "high"])
+      expect(runtime.supportedReasoningEfforts).toEqual(["none", "low", "medium", "high", "xhigh"])
     })
 
     it("returns no optional capabilities for an uncatalogued codex model", async () => {
