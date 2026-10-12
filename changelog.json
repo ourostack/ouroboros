@@ -4,7 +4,7 @@
     {
       "version": "0.1.0-alpha.912",
       "changes": [
-        "BlueBubbles (iMessage) only acts as the Apple ID of the macOS account an agent declares as senses.bluebubbles.hostUsername. Before every send, edit, typing indicator, read receipt and health check, Ouro confirms the BlueBubbles server runs under that account (wherever Ouro itself runs), and refuses otherwise; every send rechecks. The sense also registers its webhook only on a server under that account and drops incoming webhook events it cannot confirm, so an agent never reads another account's iMessages either. The sense, send_message and RSVP sends are all covered. With no declared host, BlueBubbles does not start or send, ouro doctor fails (as does its webhook check when the server runs under another account), and the agent does not see it as ready. ouro connect bluebubbles asks for the host account by name and records it before installing, and ouro bluebubbles host install|repair refuses undeclared accounts."
+        "Shepherd judges a hooked agent that sits mid-turn at a prompt without stopping (a permission or trust question) after 20 quiet seconds, leaves idle and freshly started sessions alone, and no longer stays silent when the judge writes its reply as a bare string or with code-style backticks; a refused reply is logged with what was wrong."
       ]
     },
     {
