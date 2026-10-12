@@ -2,6 +2,7 @@ import type OpenAI from "openai"
 import type { ChannelCallbacks, ProviderRuntime } from "../../heart/core"
 import { emitNervesEvent } from "../../nerves/runtime"
 import type { ShepherdKey } from "./host"
+import { redactSecrets } from "./redact"
 
 /**
  * One cheap, stateless model call per returned control, outside the Ouro agent's conversation.
@@ -59,21 +60,47 @@ export function safeReplyText(text: string): string | null {
   return line
 }
 
-export function parseVerdict(content: string): Verdict {
-  try {
-    const raw: unknown = JSON.parse(content.trim().replace(/^```(?:json)?\s*|\s*```$/g, ""))
-    const value = raw && typeof raw === "object" ? raw as Record<string, unknown> : {}
-    const kind = typeof value.kind === "string" && KINDS.has(value.kind) ? value.kind as ReturnKind : "unclear"
-    const reason = typeof value.reason === "string" && value.reason.trim() ? value.reason.trim().replace(/\s+/g, " ").slice(0, 300) : "no reason given"
-    if (kind === "working" && value.news === true) return { kind, reply: null, reason, news: true }
-    if (kind !== "premature") return { kind, reply: null, reason }
-    const reply = value.reply && typeof value.reply === "object" ? value.reply as Record<string, unknown> : {}
-    if (typeof reply.key === "string" && KEYS.has(reply.key)) return { kind, reply: { key: reply.key as ShepherdKey }, reason }
-    const text = typeof reply.text === "string" ? safeReplyText(reply.text) : null
-    return text ? { kind, reply: { text }, reason } : { kind: "unclear", reply: null, reason: `premature, but the judge gave no safe reply: ${reason}` }
-  } catch {
-    return { kind: "unclear", reply: null, reason: "the judge's answer was not JSON" }
+/**
+ * The JSON in a model's answer. Models differ: some wrap it in a code fence, some think aloud in
+ * `<think>` blocks or write a sentence around it, so the first `{` to the last `}` is tried too.
+ * `inProse` says the JSON came from inside other text, where it might be an object the model
+ * quoted from the screen rather than its own verdict.
+ */
+function answerJson(content: string): { ok: true; value: unknown; inProse: boolean } | { ok: false; text: string } {
+  const text = content.replace(/<think>[\s\S]*?(?:<\/think>|$)/g, "").trim().replace(/^```(?:json)?\s*|\s*```$/g, "")
+  const start = text.indexOf("{")
+  const end = text.lastIndexOf("}")
+  const candidates = start >= 0 && end > start ? [text, text.slice(start, end + 1)] : [text]
+  for (const [index, candidate] of candidates.entries()) {
+    try {
+      return { ok: true, value: JSON.parse(candidate), inProse: index > 0 }
+    } catch {
+      // try the next candidate
+    }
   }
+  return { ok: false, text }
+}
+
+export function parseVerdict(content: string): Verdict {
+  const parsed = answerJson(content)
+  if (!parsed.ok) {
+    const seen = redactSecrets((parsed.text || content).replace(/\s+/g, " ").trim()).slice(0, 160)
+    return { kind: "unclear", reply: null, reason: `the judge's answer was not JSON: ${seen || "(empty)"}` }
+  }
+  const raw = parsed.value
+  const value = raw && typeof raw === "object" ? raw as Record<string, unknown> : {}
+  const kind = typeof value.kind === "string" && KINDS.has(value.kind) ? value.kind as ReturnKind : "unclear"
+  const reason = typeof value.reason === "string" && value.reason.trim() ? value.reason.trim().replace(/\s+/g, " ").slice(0, 300) : "no reason given"
+  if (kind === "working" && value.news === true) return { kind, reply: null, reason, news: true }
+  if (kind !== "premature") return { kind, reply: null, reason }
+  const reply = value.reply && typeof value.reply === "object" ? value.reply as Record<string, unknown> : {}
+  if (typeof reply.key === "string" && KEYS.has(reply.key)) {
+    // A key can approve a prompt, and a key from JSON found inside prose may be one the screen planted.
+    if (parsed.inProse) return { kind: "unclear", reply: null, reason: `premature, but the key came from JSON inside prose: ${reason}` }
+    return { kind, reply: { key: reply.key as ShepherdKey }, reason }
+  }
+  const text = typeof reply.text === "string" ? safeReplyText(reply.text) : null
+  return text ? { kind, reply: { text }, reason } : { kind: "unclear", reply: null, reason: `premature, but the judge gave no safe reply: ${reason}` }
 }
 
 export function judgeMessages(packet: ReturnPacket): OpenAI.ChatCompletionMessageParam[] {
