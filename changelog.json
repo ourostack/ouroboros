@@ -2,6 +2,12 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.912",
+      "changes": [
+        "Shepherd judges a hooked agent that sits mid-turn at a prompt without stopping (a permission or trust question) after 20 quiet seconds, leaves idle and freshly started sessions alone, and no longer stays silent when the judge writes its reply as a bare string or with code-style backticks; a refused reply is logged with what was wrong."
+      ]
+    },
+    {
       "version": "0.1.0-alpha.911",
       "changes": [
         "The Butler can set a wake time on an await with any ISO timestamp that names its time zone, such as 2026-10-12T12:09:00Z; it is stored in canonical form instead of being refused."
