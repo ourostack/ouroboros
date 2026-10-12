@@ -999,7 +999,7 @@ export function createTeamsSdkLogger(name = "teams-sdk"): import("@microsoft/tea
     warn: (...m: unknown[]) => write("warn", m),
     error: (...m: unknown[]) => write("error", m),
     trace: (...m: unknown[]) => write("trace", m),
-    log: (level: string, ...m: unknown[]) => write((level as SdkLogLevel) ?? "info", m),
+    log: (level: string, ...m: unknown[]) => write(level as SdkLogLevel, m),
     child: (child: string) => createTeamsSdkLogger(`${name}/${child}`),
   }
 }

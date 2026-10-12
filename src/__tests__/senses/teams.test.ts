@@ -3883,6 +3883,28 @@ describe("Teams adapter - phrase rotation", () => {
     expect(mockStream.emit).not.toHaveBeenCalled()
   })
 
+  it("the Teams SDK logger forwards warnings everywhere and stream chatter only from stream loggers", async () => {
+    vi.resetModules()
+    const teams = await import("../../senses/teams")
+    const nerves = await import("../../nerves/runtime")
+    const spy = vi.spyOn(nerves, "emitNervesEvent")
+    const root = teams.createTeamsSdkLogger()
+    root.debug("ignored"); root.info("ignored"); root.trace("ignored")
+    root.warn("careful", { a: 1 }); root.error(new Error("boom"))
+    const stream = root.child("stream")
+    stream.debug("waiting for id"); stream.info("chunk"); stream.trace("t"); stream.log("warn", "via log")
+    const sdk = spy.mock.calls.map((c: any) => c[0]).filter((e: any) => e.event === "teams.sdk_log")
+    expect(sdk.map((e: any) => [e.level, e.message])).toEqual([
+      ["warn", '[teams-sdk] careful {"a":1}'],
+      ["error", "[teams-sdk] boom"],
+      ["info", "[teams-sdk/stream] waiting for id"],
+      ["info", "[teams-sdk/stream] chunk"],
+      ["info", "[teams-sdk/stream] t"],
+      ["warn", "[teams-sdk/stream] via log"],
+    ])
+    spy.mockRestore()
+  })
+
   it("reasoningStatus returns the latest bold heading or null", async () => {
     const teams = await import("../../senses/teams")
     expect(teams.reasoningStatus("**First**\n\ntext**Second step**\nmore")).toBe("Second step…")
