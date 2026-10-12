@@ -13,6 +13,7 @@ vi.mock("../../nerves/runtime", () => ({
 
 // Mock bw-installer — ensureBwCli resolves immediately (bw assumed present)
 vi.mock("../../repertoire/bw-installer", () => ({
+  bwCommand: (file: string, args: string[]) => ({ file, args }),
   ensureBwCli: vi.fn().mockResolvedValue("/usr/local/bin/bw"),
 }))
 
@@ -293,6 +294,58 @@ describe("BitwardenCredentialStore", () => {
       await store.login()
 
       expect(onLoginSuccess).toHaveBeenCalledTimes(1)
+    })
+
+    it("reports each sign-in step, including a retry, to a watching human", async () => {
+      const steps: string[] = []
+      store = new BitwardenCredentialStore(
+        "https://vault.ouro.bot",
+        "ouroboros@ouro.bot",
+        "masterpass123",
+        { onProgress: (detail) => steps.push(detail) },
+      )
+      let statusCalls = 0
+      mockExecFile.mockImplementation((_cmd: string, args: string[], _opts: unknown, cb: Function) => {
+        if (args[0] === "status") {
+          statusCalls++
+          if (statusCalls === 1) cb(new Error("ECONNREFUSED\nsecond line"), "", "")
+          else cb(null, JSON.stringify({ status: "unauthenticated" }), "")
+          return
+        }
+        cb(null, args[0] === "login" ? "session-token" : "", "")
+      })
+
+      await store.login()
+
+      expect(steps[0]).toBe("finding the Bitwarden CLI")
+      expect(steps[1]).toBe("using bw (unknown version) at /usr/local/bin/bw")
+      expect(steps).toContain("reading the local bw profile")
+      expect(steps.some((step) => /^sign-in attempt 1 failed \(.*ECONNREFUSED\); retrying in \d+s$/.test(step))).toBe(true)
+      expect(steps).toContain("pointing bw at https://vault.ouro.bot")
+      expect(steps).toContain("signing in to https://vault.ouro.bot as ouroboros@ouro.bot")
+      expect(steps).toContain("syncing vault items")
+    })
+
+    it("reports unlocking when the local profile is already signed in", async () => {
+      const steps: string[] = []
+      store = new BitwardenCredentialStore(
+        "https://vault.ouro.bot",
+        "ouroboros@ouro.bot",
+        "masterpass123",
+        { onProgress: (detail) => steps.push(detail) },
+      )
+      mockExecFile.mockImplementation((_cmd: string, args: string[], _opts: unknown, cb: Function) => {
+        if (args[0] === "status") {
+          cb(null, JSON.stringify({ status: "locked", serverUrl: "https://vault.ouro.bot", userEmail: "ouroboros@ouro.bot" }), "")
+          return
+        }
+        cb(null, args[0] === "unlock" ? "session-token" : "", "")
+      })
+
+      await store.login()
+
+      expect(steps).toContain("unlocking ouroboros@ouro.bot")
+      expect(steps).not.toContain("pointing bw at https://vault.ouro.bot")
     })
 
     it("keeps the original login error when invalid-unlock cleanup fails", async () => {

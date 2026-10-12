@@ -167,7 +167,7 @@ export function getCredentialStore(agentNameInput?: string): CredentialStore {
 export async function probeCredentialVaultAccess(
   agentNameInput: string,
   unlockSecret: string,
-  options: { homeDir?: string } = {},
+  options: { homeDir?: string; onProgress?: (detail: string) => void } = {},
 ): Promise<void> {
   const agentName = agentNameInput
   const { configPath, vault } = loadVaultSectionForAgent(agentName)
@@ -183,6 +183,7 @@ export async function probeCredentialVaultAccess(
     {
       appDataDir: agentDataDir,
       onLoginSuccess: () => clearVaultUnlockRejection(agentDataDir),
+      onProgress: options.onProgress,
     },
   )
   await store.get("__ouro_vault_probe__")

@@ -2,6 +2,15 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.908",
+      "changes": [
+        "Vault commands use the Bitwarden CLI that ships with ouro (pinned 2026.6.0) instead of whichever bw is first on PATH. bw 2026.9 runs a user key id migration on sign-in that our Vaultwarden server answers with 404, so ouro vault unlock and create failed on machines with a newer global bw.",
+        "The bundled bw runs under ouro's own Node, so it works with no node on PATH and on Windows. A missing bundled bw is logged as repertoire.bw_cli_bundled_missing before ouro falls back to PATH, and the fallback npm install uses the same pinned version.",
+        "OURO_BW_BINARY names a specific bw to use ahead of the bundled one, for tests and unusual installs; ouro refuses it with a clear error when it is not an executable file.",
+        "ouro vault unlock now shows each step while it checks vault access: which bw it uses, pointing bw at the server, signing in or unlocking, syncing, and any retry with its reason."
+      ]
+    },
+    {
       "version": "0.1.0-alpha.907",
       "changes": [
         "When Ari hands his chat to someone, the Butler greets them in that same chat and starts the interview, instead of asking them to message it somewhere else first."

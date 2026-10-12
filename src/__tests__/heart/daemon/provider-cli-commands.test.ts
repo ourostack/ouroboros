@@ -5859,6 +5859,9 @@ describe("provider CLI command execution", () => {
     const deps = makeCliDeps(homeDir, bundlesRoot, {
       promptSecret: async () => "unlock-material",
     })
+    mockVaultDeps.probeCredentialVaultAccess.mockImplementationOnce(async (_agent: string, _secret: string, options?: { onProgress?: (detail: string) => void }) => {
+      options?.onProgress?.("signing in to https://vault.ouro.bot as slugger@ouro.bot")
+    })
     const result = await runOuroCli([
       "vault",
       "unlock",
@@ -5876,10 +5879,11 @@ describe("provider CLI command execution", () => {
     expect(output).toContain("... saving local unlock")
     expect(output).toContain("✓ saving local unlock")
     expect(output.indexOf("... checking vault access")).toBeLessThan(output.indexOf("... saving local unlock"))
+    expect(output).toContain("signing in to https://vault.ouro.bot as slugger@ouro.bot")
     expect(mockVaultDeps.probeCredentialVaultAccess).toHaveBeenCalledWith(
       "Slugger",
       "unlock-material",
-      { homeDir },
+      { homeDir, onProgress: expect.any(Function) },
     )
     expect(mockVaultDeps.storeVaultUnlockSecret).toHaveBeenCalledWith(
       { agentName: "Slugger", email: "slugger@ouro.bot", serverUrl: "https://vault.ouro.bot" },
@@ -5922,7 +5926,7 @@ describe("provider CLI command execution", () => {
     expect(mockVaultDeps.probeCredentialVaultAccess).toHaveBeenCalledWith(
       "Slugger",
       "wrong-unlock-material",
-      { homeDir },
+      { homeDir, onProgress: expect.any(Function) },
     )
     expect(mockVaultDeps.storeVaultUnlockSecret).not.toHaveBeenCalled()
   })

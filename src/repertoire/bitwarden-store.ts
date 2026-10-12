@@ -12,7 +12,7 @@ import * as fs from "node:fs"
 import * as path from "node:path"
 import type { CredentialMeta, CredentialStore } from "./credential-access"
 import { emitNervesEvent } from "../nerves/runtime"
-import { ensureBwCli } from "./bw-installer"
+import { bwCommand, ensureBwCli } from "./bw-installer"
 
 const MAX_ERROR_DETAIL_LENGTH = 500
 const LONG_ENCODED_TOKEN_PATTERN = /[A-Za-z0-9+/=]{32,}/g
@@ -373,7 +373,8 @@ function execBw(
 
   const runCommand = (lock?: BwLockControl): Promise<string> =>
     new Promise((resolve, reject) => {
-      const child = execFileCb(bwBinaryPath, args, { timeout: BW_COMMAND_TIMEOUT_MS, env }, (err, stdout, stderr) => {
+      const command = bwCommand(bwBinaryPath, args)
+      const child = execFileCb(command.file, command.args, { timeout: BW_COMMAND_TIMEOUT_MS, env }, (err, stdout, stderr) => {
         if (err) {
           if (isBwNotInstalled(err)) {
             reject(new Error("bw CLI not found. Install from https://bitwarden.com/help/cli/"))
@@ -625,6 +626,7 @@ export class BitwardenCredentialStore implements CredentialStore {
   private appDataDir?: string
   private readonly onInvalidUnlockSecret?: (error: Error) => void | Promise<void>
   private readonly onLoginSuccess?: () => void | Promise<void>
+  private readonly onProgress?: (detail: string) => void
   private sessionToken: string | null = null
   private terminalLoginError: Error | null = null
   private terminalLoginErrorAt = 0
@@ -639,6 +641,8 @@ export class BitwardenCredentialStore implements CredentialStore {
       appDataDir?: string
       onInvalidUnlockSecret?: (error: Error) => void | Promise<void>
       onLoginSuccess?: () => void | Promise<void>
+      /** Each step as it starts, for a human watching a vault command. */
+      onProgress?: (detail: string) => void
     } = {},
   ) {
     this.serverUrl = serverUrl
@@ -648,6 +652,7 @@ export class BitwardenCredentialStore implements CredentialStore {
     this.appDataDir = options.appDataDir
     this.onInvalidUnlockSecret = options.onInvalidUnlockSecret
     this.onLoginSuccess = options.onLoginSuccess
+    this.onProgress = options.onProgress
   }
 
   isReady(): boolean {
@@ -705,12 +710,14 @@ export class BitwardenCredentialStore implements CredentialStore {
     }
 
     // Ensure bw CLI is installed before any bw commands
+    this.onProgress?.("finding the Bitwarden CLI")
     this.bwBinaryPath = await ensureBwCli()
+    const bwVersion = readBwCliVersion(this.bwBinaryPath)
+    this.onProgress?.(`using bw ${bwVersion ?? "(unknown version)"} at ${this.bwBinaryPath}`)
     if (this.agentDataDir) {
       // Each bw version gets its own profile directory, so machines with
       // several bw installs (one per Node version) never migrate or fight
       // over one another's state.
-      const bwVersion = readBwCliVersion(this.bwBinaryPath)
       this.appDataDir = bwVersion ? path.join(this.agentDataDir, bwProfileDirName(bwVersion)) : this.agentDataDir
       fs.mkdirSync(this.appDataDir, { recursive: true, mode: 0o700 })
     }
@@ -746,6 +753,7 @@ export class BitwardenCredentialStore implements CredentialStore {
           meta: { attempt: attempt + 1, backoffMs, reason: lastError.message },
         })
 
+        this.onProgress?.(`sign-in attempt ${attempt + 1} failed (${lastError.message.split("\n")[0]!.slice(0, 120)}); retrying in ${Math.round(backoffMs / 1000)}s`)
         await delay(backoffMs)
       }
     }
@@ -819,6 +827,7 @@ export class BitwardenCredentialStore implements CredentialStore {
   }
 
   private async loginWithLocalProfile(): Promise<void> {
+    this.onProgress?.("reading the local bw profile")
     let status = await this.readStatus()
 
     if (this.shouldRebuildLocalProfile(status)) {
@@ -829,6 +838,7 @@ export class BitwardenCredentialStore implements CredentialStore {
     // Configure server URL if needed (only works when logged out)
     if (status.status === "unauthenticated" || !status.serverUrl) {
       try {
+        this.onProgress?.(`pointing bw at ${this.serverUrl}`)
         await this.execBw(["config", "server", this.serverUrl])
       } catch (error) {
         const err = error as Error
@@ -839,6 +849,7 @@ export class BitwardenCredentialStore implements CredentialStore {
     }
 
     if (!this.sessionToken) {
+      this.onProgress?.(status.status === "unauthenticated" || !status.status ? `signing in to ${this.serverUrl} as ${this.email}` : `unlocking ${this.email}`)
       if (status.status === "locked") {
         // Already logged in, just needs unlock.
         const unlockOutput = await this.execWithLocalProfileRebuild(
@@ -862,6 +873,7 @@ export class BitwardenCredentialStore implements CredentialStore {
     }
 
     if (this.shouldSyncVaultAfterSession(status)) {
+      this.onProgress?.("syncing vault items")
       /* v8 ignore next -- defensive: loginAttempt always sets sessionToken before sync @preserve */
       await this.execBw(["sync"], this.sessionToken ?? undefined)
       this.writeSyncMarker()

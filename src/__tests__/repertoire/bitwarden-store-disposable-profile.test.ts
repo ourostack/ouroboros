@@ -17,6 +17,7 @@ vi.mock("../../nerves/runtime", () => ({
 
 let bwBinaryPath = "/nonexistent/bw"
 vi.mock("../../repertoire/bw-installer", () => ({
+  bwCommand: (file: string, args: string[]) => ({ file, args }),
   ensureBwCli: vi.fn(async () => bwBinaryPath),
 }))
 

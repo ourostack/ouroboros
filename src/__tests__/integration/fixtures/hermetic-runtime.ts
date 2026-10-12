@@ -470,6 +470,7 @@ export async function createHermeticRuntimeHarness(
     ...process.env,
     HOME: homeDir,
     PATH: `${fakeBinDir}${path.delimiter}${process.env.PATH ?? ""}`,
+    OURO_BW_BINARY: path.join(fakeBinDir, "bw"),
   }
 
   let cleaned = false

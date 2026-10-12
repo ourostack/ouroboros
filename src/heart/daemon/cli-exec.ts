@@ -1024,12 +1024,12 @@ function createHumanCommandProgress(deps: OuroCliDeps, commandName: string): Com
 async function runCommandProgressPhase<T>(
   progress: CommandProgress,
   label: string,
-  run: () => T | Promise<T>,
+  run: (report: (detail: string) => void) => T | Promise<T>,
   detail: (result: T) => string,
 ): Promise<T> {
   progress.startPhase(label)
   try {
-    const result = await Promise.resolve(run())
+    const result = await Promise.resolve(run((step) => progress.updateDetail(step)))
     progress.completePhase(label, detail(result))
     return result
   } catch (error) {
@@ -2311,7 +2311,7 @@ async function executeVaultUnlock(
     await runCommandProgressPhase(
       progress,
       "checking vault access",
-      () => probeCredentialVaultAccess(command.agent, unlockSecret, { homeDir: deps.homeDir }),
+      (report) => probeCredentialVaultAccess(command.agent, unlockSecret, { homeDir: deps.homeDir, onProgress: report }),
       () => "ok",
     )
     store = await runCommandProgressPhase(

@@ -15,7 +15,9 @@ vi.mock("node:child_process", () => ({
   execFile: (...args: unknown[]) => mockExecFile(...args),
 }))
 
-import { ensureBwCli, findExecutableOnPath, findExecutableViaNpmPrefix } from "../../repertoire/bw-installer"
+import { bwCommand, ensureBwCli, findBundledBwCli, findExecutableOnPath, findExecutableViaNpmPrefix, PINNED_BW_CLI_VERSION } from "../../repertoire/bw-installer"
+
+const NO_BUNDLED = (): null => null
 
 function makeTempDir(): string {
   return fs.mkdtempSync(path.join(os.tmpdir(), "ouro-bw-installer-"))
@@ -37,6 +39,7 @@ describe("ensureBwCli", () => {
     nervesEvents.length = 0
     process.env.PATH = ""
     delete process.env.PATHEXT
+    delete process.env.OURO_BW_BINARY
   })
 
   afterEach(() => {
@@ -64,7 +67,7 @@ describe("ensureBwCli", () => {
     const bwPath = writeExecutable(path.join(binDir, "bw"))
     process.env.PATH = binDir
 
-    const result = await ensureBwCli()
+    const result = await ensureBwCli(NO_BUNDLED)
 
     expect(result).toBe(bwPath)
     expect(mockExecFile).not.toHaveBeenCalled()
@@ -124,6 +127,7 @@ describe("ensureBwCli", () => {
 
     mockExecFile.mockImplementation((cmd: string, args: string[], _opts: unknown, cb: Function) => {
       if (cmd === "npm" && args[0] === "install") {
+        expect(args).toEqual(["install", "-g", `@bitwarden/cli@${PINNED_BW_CLI_VERSION}`])
         cb(null, "added 1 package\n", "")
         return
       }
@@ -134,7 +138,7 @@ describe("ensureBwCli", () => {
       cb(new Error(`unexpected call: ${cmd} ${args.join(" ")}`), "", "")
     })
 
-    const result = await ensureBwCli()
+    const result = await ensureBwCli(NO_BUNDLED)
 
     expect(result).toBe(bwPath)
     expect(mockExecFile).toHaveBeenCalledTimes(2)
@@ -151,8 +155,8 @@ describe("ensureBwCli", () => {
       cb(new Error(`unexpected call: ${cmd} ${args.join(" ")}`), "", "")
     })
 
-    await expect(ensureBwCli()).rejects.toThrow("failed to install bw CLI via npm")
-    await expect(ensureBwCli()).rejects.toThrow("EACCES")
+    await expect(ensureBwCli(NO_BUNDLED)).rejects.toThrow("failed to install bw CLI via npm")
+    await expect(ensureBwCli(NO_BUNDLED)).rejects.toThrow("EACCES")
     expect(nervesEvents.some((event) => event.event === "repertoire.bw_cli_install_start")).toBe(true)
     expect(nervesEvents.some((event) => event.event === "repertoire.bw_cli_install_fail")).toBe(true)
   })
@@ -170,7 +174,7 @@ describe("ensureBwCli", () => {
       cb(new Error(`unexpected call: ${cmd} ${args.join(" ")}`), "", "")
     })
 
-    await expect(ensureBwCli()).rejects.toThrow("binary not found in PATH or npm global bin")
+    await expect(ensureBwCli(NO_BUNDLED)).rejects.toThrow("binary not found in PATH or npm global bin")
   })
 
   it("tolerates npm prefix lookup failing after a successful install", async () => {
@@ -186,6 +190,84 @@ describe("ensureBwCli", () => {
       cb(new Error(`unexpected call: ${cmd} ${args.join(" ")}`), "", "")
     })
 
-    await expect(ensureBwCli()).rejects.toThrow("binary not found in PATH or npm global bin")
+    await expect(ensureBwCli(NO_BUNDLED)).rejects.toThrow("binary not found in PATH or npm global bin")
   })
+
+  it("uses OURO_BW_BINARY before anything else, and refuses one that is not executable", async () => {
+    const override = writeExecutable(path.join(tempDir(), "custom-bw"))
+    process.env.OURO_BW_BINARY = ` ${override} `
+    await expect(ensureBwCli(() => "/should/not/be/used/bw.js")).resolves.toBe(override)
+    process.env.OURO_BW_BINARY = path.join(tempDir(), "absent-bw")
+    await expect(ensureBwCli(NO_BUNDLED)).rejects.toThrow(/OURO_BW_BINARY is set to .*absent-bw, which is not an executable file/)
+    process.env.OURO_BW_BINARY = "  "
+    await expect(ensureBwCli(() => override)).resolves.toBe(override)
+  })
+
+  it("prefers the bw that ships with ouro over one on PATH", async () => {
+    const binDir = tempDir()
+    writeExecutable(path.join(binDir, "bw"))
+    process.env.PATH = binDir
+    const bundled = writeExecutable(path.join(tempDir(), "bundled-bw"))
+
+    await expect(ensureBwCli(() => bundled)).resolves.toBe(bundled)
+    expect(mockExecFile).not.toHaveBeenCalled()
+  })
+
+  it("finds the bundled bw entry point from the @bitwarden/cli package, and says when it is missing", () => {
+    const pkgDir = tempDir()
+    const entry = path.join(pkgDir, "build", "bw.js")
+    fs.mkdirSync(path.dirname(entry), { recursive: true })
+    fs.writeFileSync(entry, "// not executable on purpose\n", { mode: 0o644 })
+    const pkgJson = path.join(pkgDir, "package.json")
+    const resolveTo = (target: string) => (id: string): string => {
+      expect(id).toBe("@bitwarden/cli/package.json")
+      return target
+    }
+
+    fs.writeFileSync(pkgJson, JSON.stringify({ bin: { bw: "build/bw.js" } }))
+    expect(findBundledBwCli(resolveTo(pkgJson))).toBe(entry)
+    fs.writeFileSync(pkgJson, JSON.stringify({ bin: "build/bw.js" }))
+    expect(findBundledBwCli(resolveTo(pkgJson))).toBe(entry)
+    expect(nervesEvents.some((event) => event.event === "repertoire.bw_cli_bundled_missing")).toBe(false)
+
+    fs.writeFileSync(pkgJson, JSON.stringify({ bin: { other: "x.js" } }))
+    expect(findBundledBwCli(resolveTo(pkgJson))).toBeNull()
+    fs.writeFileSync(pkgJson, JSON.stringify({}))
+    expect(findBundledBwCli(resolveTo(pkgJson))).toBeNull()
+    fs.writeFileSync(pkgJson, JSON.stringify({ bin: "missing.js" }))
+    expect(findBundledBwCli(resolveTo(pkgJson))).toBeNull()
+    expect(findBundledBwCli(() => { throw new Error("Cannot find module") })).toBeNull()
+    expect(findBundledBwCli(() => { throw "not an error" })).toBeNull()
+    const missing = nervesEvents.filter((event) => event.event === "repertoire.bw_cli_bundled_missing")
+    expect(missing).toHaveLength(5)
+    expect(missing.map((event) => (event.meta as { reason: string }).reason)).toEqual([
+      "@bitwarden/cli package.json names no bw entry point",
+      "@bitwarden/cli package.json names no bw entry point",
+      `bundled bw entry point is missing: ${path.join(pkgDir, "missing.js")}`,
+      "Cannot find module",
+      "not an error",
+    ])
+  })
+
+  it("runs a .js bw entry point under ouro's own node, and anything else directly", () => {
+    expect(bwCommand("/x/build/bw.js", ["status"], "/opt/node")).toEqual({ file: "/opt/node", args: ["/x/build/bw.js", "status"] })
+    expect(bwCommand("/usr/local/bin/bw", ["status"], "/opt/node")).toEqual({ file: "/usr/local/bin/bw", args: ["status"] })
+    expect(bwCommand("/x/build/bw.js", ["status"]).file).toBe(process.execPath)
+  })
+
+  it("finds the real bundled bw at the pinned version", () => {
+    const rootPkg = JSON.parse(fs.readFileSync(path.join(__dirname, "../../../package.json"), "utf8")) as { dependencies: Record<string, string> }
+    expect(rootPkg.dependencies["@bitwarden/cli"]).toBe(PINNED_BW_CLI_VERSION)
+    const found = findBundledBwCli()
+    expect(found).not.toBeNull()
+    const pkg = JSON.parse(fs.readFileSync(path.join(path.dirname(found!), "..", "package.json"), "utf8")) as { name: string; version: string }
+    expect(pkg).toMatchObject({ name: "@bitwarden/cli", version: PINNED_BW_CLI_VERSION })
+  })
+
+  it("starts the real bundled bw with no node on PATH and reports the pinned version", async () => {
+    const { execFileSync } = await vi.importActual<typeof import("node:child_process")>("node:child_process")
+    const command = bwCommand(findBundledBwCli()!, ["--version"])
+    const version = execFileSync(command.file, command.args, { env: { PATH: "", HOME: tempDir() }, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] }).trim()
+    expect(version).toBe(PINNED_BW_CLI_VERSION)
+  }, 60_000)
 })
