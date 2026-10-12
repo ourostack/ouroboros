@@ -74,8 +74,8 @@ describe("hatch flow", () => {
       email: "hatchling@ouro.bot",
       serverUrl: "https://vault.ouro.bot",
     })
-    expect(agentConfig.humanFacing).toEqual({ provider: "anthropic", model: "claude-opus-4-6" })
-    expect(agentConfig.agentFacing).toEqual({ provider: "anthropic", model: "claude-opus-4-6" })
+    expect(agentConfig.humanFacing).toEqual({ provider: "anthropic", model: "claude-opus-5-5" })
+    expect(agentConfig.agentFacing).toEqual({ provider: "anthropic", model: "claude-opus-5-5" })
 
     const friendDir = path.join(result.bundleRoot, "friends")
     const friendFiles = fs.readdirSync(friendDir).filter((name) => name.endsWith(".json"))
@@ -383,8 +383,8 @@ describe("hatch flow", () => {
     })
 
     const agentConfig = JSON.parse(fs.readFileSync(path.join(result.bundleRoot, "agent.json"), "utf-8")) as Record<string, any>
-    expect(agentConfig.humanFacing).toEqual({ provider: "openai-codex", model: "gpt-5.4" })
-    expect(agentConfig.agentFacing).toEqual({ provider: "openai-codex", model: "gpt-5.4" })
+    expect(agentConfig.humanFacing).toEqual({ provider: "openai-codex", model: "gpt-5.5" })
+    expect(agentConfig.agentFacing).toEqual({ provider: "openai-codex", model: "gpt-5.5" })
   })
 
   it("writes provider-specific secrets for minimax hatch flows", async () => {

@@ -282,7 +282,7 @@ Agents may run agent-runnable checks and refreshes. Agents must not ask the user
 Example human-required repair:
 
 ```text
-openai-codex / gpt-5.4 failed after refresh retry.
+openai-codex / gpt-5.5 failed after refresh retry.
 
 Why I cannot fix this automatically:
   OpenAI Codex auth requires a human browser login or refreshed OAuth credentials.
@@ -297,7 +297,7 @@ Then verify:
 Example manual API-key repair:
 
 ```text
-anthropic / claude-opus-4-6 has no valid credentials.
+anthropic / claude-opus-5-5 has no valid credentials.
 
 Why I cannot fix this automatically:
   Anthropic API keys must be created or rotated by a human in the provider console.
@@ -318,7 +318,7 @@ The system prompt should render a small provider section from current runtime st
 ```text
 runtime uses provider bindings from agent.json:
 - outward: minimax / MiniMax-M2.5 [ready; credentials: vault]
-- inner: openai-codex / gpt-5.4 [failed: auth; repair: ouro auth --agent <agent> --provider openai-codex]
+- inner: openai-codex / gpt-5.5 [failed: auth; repair: ouro auth --agent <agent> --provider openai-codex]
 ```
 
 When provider readiness is degraded, prompt guidance should include:

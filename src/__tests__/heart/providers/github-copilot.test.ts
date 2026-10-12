@@ -255,8 +255,48 @@ describe("createGithubCopilotProviderRuntime", () => {
       },
     })
     const { createGithubCopilotProviderRuntime } = await import("../../../heart/providers/github-copilot")
-    const runtime = createGithubCopilotProviderRuntime("claude-sonnet-4.6")
+    const runtime = createGithubCopilotProviderRuntime("claude-sonnet-5.5")
     expect(runtime.capabilities.has("reasoning-effort")).toBe(true)
+  })
+
+  it("Claude model: a required tool choice is sent as auto because thinking rejects required", async () => {
+    await setupConfig({
+      providers: {
+        "github-copilot": { githubToken: "ghp_test123", baseUrl: "https://api.copilot.example.com" },
+      },
+    })
+    mockStreamChatCompletion.mockResolvedValue({ content: "", toolCalls: [], outputItems: [] })
+    const { createGithubCopilotProviderRuntime } = await import("../../../heart/providers/github-copilot")
+    const runtime = createGithubCopilotProviderRuntime("claude-opus-5.5")
+    const callbacks = { onModelStart: vi.fn(), onModelStreamStart: vi.fn(), onTextChunk: vi.fn(), onReasoningChunk: vi.fn(), onToolStart: vi.fn(), onToolEnd: vi.fn(), onError: vi.fn() }
+    await runtime.streamTurn({
+      messages: [{ role: "user", content: "hi" }],
+      activeTools: [],
+      callbacks,
+      toolChoiceRequired: true,
+    })
+    const params = mockStreamChatCompletion.mock.calls[0][1] as Record<string, unknown>
+    expect(params.tool_choice).toBe("auto")
+  })
+
+  it("GPT model: a required tool choice is still sent as required", async () => {
+    await setupConfig({
+      providers: {
+        "github-copilot": { githubToken: "ghp_test123", baseUrl: "https://api.copilot.example.com" },
+      },
+    })
+    mockStreamResponsesApi.mockResolvedValue({ content: "", toolCalls: [], outputItems: [] })
+    const { createGithubCopilotProviderRuntime } = await import("../../../heart/providers/github-copilot")
+    const runtime = createGithubCopilotProviderRuntime("gpt-5.5")
+    const callbacks = { onModelStart: vi.fn(), onModelStreamStart: vi.fn(), onTextChunk: vi.fn(), onReasoningChunk: vi.fn(), onToolStart: vi.fn(), onToolEnd: vi.fn(), onError: vi.fn() }
+    await runtime.streamTurn({
+      messages: [{ role: "user", content: "hi" }],
+      activeTools: [],
+      callbacks,
+      toolChoiceRequired: true,
+    })
+    const params = mockStreamResponsesApi.mock.calls[0][1] as Record<string, unknown>
+    expect(params.tool_choice).toBe("required")
   })
 
   it("Claude model: streamTurn calls streamChatCompletion", async () => {

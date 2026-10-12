@@ -215,8 +215,8 @@ describe("buildDefaultAgentTemplate", () => {
     expect(template).toEqual({
       version: 2,
       enabled: true,
-      humanFacing: { provider: "anthropic", model: "claude-opus-4-6" },
-      agentFacing: { provider: "anthropic", model: "claude-opus-4-6" },
+      humanFacing: { provider: "anthropic", model: "claude-opus-5-5" },
+      agentFacing: { provider: "anthropic", model: "claude-opus-5-5" },
       context: {
         maxTokens: 80000,
         contextMargin: 20,
@@ -1374,13 +1374,13 @@ describe("buildDefaultAgentTemplate v2", () => {
     vi.resetModules()
   })
 
-  it("returns v2 config with both facings defaulting to anthropic claude-opus-4-6", async () => {
+  it("returns v2 config with both facings defaulting to anthropic claude-opus-5-5", async () => {
     const { buildDefaultAgentTemplate } = await import("../../heart/identity")
     const template = buildDefaultAgentTemplate("testbot")
 
     expect(template.version).toBe(2)
-    expect(template.humanFacing).toEqual({ provider: "anthropic", model: "claude-opus-4-6" })
-    expect(template.agentFacing).toEqual({ provider: "anthropic", model: "claude-opus-4-6" })
+    expect(template.humanFacing).toEqual({ provider: "anthropic", model: "claude-opus-5-5" })
+    expect(template.agentFacing).toEqual({ provider: "anthropic", model: "claude-opus-5-5" })
     // provider field should not be set on v2 templates
     expect(template.provider).toBeUndefined()
   })

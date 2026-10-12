@@ -280,8 +280,8 @@ export function buildDefaultAgentTemplate(_agentName: string): AgentConfig {
   return {
     version: 2,
     enabled: true,
-    humanFacing: { provider: "anthropic", model: "claude-opus-4-6" },
-    agentFacing: { provider: "anthropic", model: "claude-opus-4-6" },
+    humanFacing: { provider: "anthropic", model: "claude-opus-5-5" },
+    agentFacing: { provider: "anthropic", model: "claude-opus-5-5" },
     context: { ...DEFAULT_AGENT_CONTEXT },
     habitPaidTurnsPerDay: DEFAULT_HABIT_PAID_TURNS_PER_DAY,
     senses: {
