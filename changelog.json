@@ -5,7 +5,7 @@
       "version": "0.1.0-alpha.916",
       "changes": [
         "Security: the Teams sense waits for its bot credentials before listening and refuses to start without them (it used to start early in a developer mode that accepted messages from anyone); the daemon log no longer records values passed with --value, --secret, --password or --token.",
-        "Teams replies arrive: the reply was sent without a message type, so Teams dropped it and the chat showed a status bubble until \"This response was stopped\"; replies now finish with one AI label, no leading hourglass, and the status shows the current reasoning step's heading instead of raw reasoning. Delivery failures and the Teams SDK's own warnings now reach the Teams log."
+        "Teams replies arrive: the reply was sent without a message type, so Teams dropped it and the chat showed a status bubble until \"This response was stopped\"; replies now finish with one AI label, no leading hourglass, and the status shows the current reasoning step's heading instead of raw reasoning. Delivery failures, and the Teams SDK's own warnings and errors, now reach the Teams log."
       ]
     },
     {
