@@ -2122,6 +2122,14 @@ describe("daemon CLI default dependency branches", () => {
     expect(value).toBe("yes")
     expect(question).toHaveBeenCalledWith("Continue? ")
     expect(close).toHaveBeenCalledTimes(1)
+
+    vi.stubEnv("OURO_UNATTENDED", "1")
+    try {
+      expect(await deps.promptInput!("Continue? ")).toBe("")
+    } finally {
+      vi.unstubAllEnvs()
+    }
+    expect(question).toHaveBeenCalledTimes(1)
   })
 
   it("uses default promptSecret and trims readline responses", async () => {

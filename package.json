@@ -1,6 +1,6 @@
 {
   "name": "@ouro.bot/cli",
-  "version": "0.1.0-alpha.904",
+  "version": "0.1.0-alpha.905",
   "engines": {
     "node": ">=22"
   },
@@ -36,6 +36,7 @@
     "test": "vitest run",
     "test:integration": "npm run build && vitest run --config vitest.integration.config.ts",
     "test:e2e:package": "npm run build && node scripts/package-e2e.cjs",
+    "test:e2e:self-update": "node scripts/self-update-package-e2e.cjs",
     "test:e2e:ouro-bot-package": "node scripts/ouro-bot-package-e2e.cjs",
     "test:e2e:real-smoke": "npm run build && node scripts/nightly-real-smoke.cjs",
     "typecheck:mailbox-ui": "tsc --noEmit -p packages/mailbox-ui/tsconfig.json",

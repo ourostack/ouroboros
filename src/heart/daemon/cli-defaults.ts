@@ -32,6 +32,8 @@ import { listEnabledBundleAgents, listHomeBundleAgents } from "./agent-discovery
 import { getPackageVersion } from "../../mind/bundle-manifest"
 import { syncGlobalOuroBotWrapper as defaultSyncGlobalOuroBotWrapper } from "../versioning/ouro-bot-global-installer"
 import { readVersionIntent as defaultReadVersionIntent, writeVersionIntent as defaultWriteVersionIntent } from "../versioning/version-intent"
+import { ensureDefaultUpdaterAgent, isDefaultUpdaterAgentInstalled } from "../versioning/self-update-defaults"
+import { formatUpdateStatusLine, readUpdateState } from "../versioning/update-state"
 import { pruneDaemonLogs as defaultPruneDaemonLogs } from "./logs-prune"
 import { readHealth, getDefaultHealthPath } from "./daemon-health"
 import { discoverLogFiles, formatLogLine, readLastLines, tailLogs as defaultTailLogs } from "./log-tailer"
@@ -465,6 +467,10 @@ function defaultPrepareDaemonRuntimeReplacement(): void {
 }
 
 async function defaultPromptInput(question: string): Promise<string> {
+  // The unattended updater runs `ouro up` with no one to answer; take the
+  // default answer instead of waiting on a stdin that never ends. Piped
+  // stdin (scripts, tests) still answers prompts.
+  if (process.env.OURO_UNATTENDED === "1") return ""
   const readline = await import("readline/promises")
   const rl = readline.createInterface({
     input: process.stdin,
@@ -867,6 +873,16 @@ export function createDefaultOuroCliDeps(socketPath = DEFAULT_DAEMON_SOCKET_PATH
     getCurrentCliVersion: () => getCurrentVersion({}),
     getPreviousCliVersion: () => getPreviousVersion({}),
     listCliVersions: () => listInstalledVersions({}),
+    runSelfUpdate: async () => {
+      const { runSelfUpdate } = await import("../versioning/self-update")
+      const { createDefaultSelfUpdateDeps } = await import("../versioning/self-update-defaults")
+      return runSelfUpdate(createDefaultSelfUpdateDeps({ socketPath }))
+    },
+    ensureUpdaterAgent: () => ensureDefaultUpdaterAgent(),
+    readUpdateStatusLine: () => formatUpdateStatusLine(readUpdateState(), {
+      now: Date.now(),
+      updaterInstalled: isDefaultUpdaterAgentInstalled(),
+    }),
     reExecFromNewVersion: (reArgs: string[]) => {
       const entry = path.join(getOuroCliHome(), "CurrentVersion", "node_modules", "@ouro.bot", "cli", "dist", "heart", "daemon", "ouro-entry.js")
       require("child_process").execFileSync("node", [entry, ...reArgs], { stdio: "inherit" })
