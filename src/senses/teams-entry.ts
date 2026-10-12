@@ -3,6 +3,7 @@
 // 100% test coverage -- entrypoints can't be covered by vitest since
 // require.main !== module in the test runner.
 export {}
+import { configureDaemonRuntimeLogger } from "../heart/daemon/runtime-logging"
 import { emitNervesEvent } from "../nerves/runtime"
 
 // Fail fast if --agent is missing (before any src/ code tries getAgentName())
@@ -13,6 +14,9 @@ if (!agentName) {
   console.error("Missing required --agent <name> argument.\nUsage: node dist/senses/teams-entry.js --agent ouroboros")
   process.exit(1)
 }
+
+// Without this the sense's events go to a console nobody reads: the daemon discards its output.
+configureDaemonRuntimeLogger("teams")
 
 emitNervesEvent({
   component: "senses",
