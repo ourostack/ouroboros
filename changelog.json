@@ -2,6 +2,12 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.911",
+      "changes": [
+        "The Butler can set a wake time on an await with any ISO timestamp that names its time zone, such as 2026-10-12T12:09:00Z; it is stored in canonical form instead of being refused."
+      ]
+    },
+    {
       "version": "0.1.0-alpha.910",
       "changes": [
         "The Butler searches first whenever someone asks about a book's or show's characters or plot. The replay gate acknowledges its own test failure reports, test identities no longer hit the failure-report rate limit, and the look-it-up check is reported as model quality instead of blocking a release."
