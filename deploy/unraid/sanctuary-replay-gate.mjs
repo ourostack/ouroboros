@@ -306,6 +306,9 @@ const WORK_WORDS = "channel more dross from cradle energy. name the Cradle chara
 const CLICK_ASK = /\bclick(?:ing)?\b|\bopen (?:up )?(?:the )?(?:radarr|sonarr|settings|ui|web ?ui|dashboard)\b|\b(?:settings|config(?:uration)?)[- ](?:screen|page|ui)\b|\bten[- ]second\b|\bmanual(?:ly)? (?:step|change|click)/i
 const BOLD_LABEL = /(?:^|\n)\s*(?:[-*\u2022]\s+)?\*\*[^*\n]{1,60}\*\*[ \t]*(?::|\u2014|-|\n|$)|\*\*[^*\n]{1,60}:\*\*/
 const BRIEF_LIMIT = 600
+const HANDOFF_WORDS = "hello pal! I’m going to hand you to my wife, Rachel. I’d love for you to help her pick a movie from our Jellyfin library. Keep your responses brief to the point and have a really fun time interviewing her to find exactly what she wants to watch. She’s the boss, do what she says :)  say hi to her!"
+const GREETING = /\b(?:hi|hey|hello|hiya|howdy|welcome)\b/i
+const RUNTIME_NOTE_ECHO = /\b(?:markdown|bold\s+(?:section\s+)?labels?|section\s+labels?|question\s+at\s+the\s+end|closing\s+question|settle\s+again|rewrite\s+the\s+reply|cap\s+it|runtime\s+note|private\s+note)\b/i
 /** A request filed with Claude Code: a failure report, or a message whose recipient or body names Claude Code. */
 // The change reaches him through a release, not mid-conversation. Any honest description of that path counts; alpha.883 live: "personality changes live in the files that ship with each release, so they arrive in the next update".
 export const describesReleasePath = (text) => /\breleases?\b|\bnext update\b|\bengineers?\b|claude code|pull request|\bPRs?\b/i.test(text)
@@ -534,7 +537,22 @@ export const CASES = [
         check(`the reply is at most ${BRIEF_LIMIT} characters`, text.length > 0 && text.length <= BRIEF_LIMIT, `${text.length} characters`),
         check("the reply has no markdown headers", !/^#{1,6}\s/m.test(text)),
         check("the reply has no bold section labels", !BOLD_LABEL.test(text)),
-        check("the reply does not end with a question", !text.trimEnd().endsWith("?")),
+      ]
+    },
+  },
+  {
+    // 2026-10-11: Ari handed his chat to Rachel and asked the Butler to say hi and interview her. It sent a title with no
+    // greeting, and later its own note about the brevity rules. A handoff gets a greeting and a question.
+    id: "rach-handoff",
+    words: HANDOFF_WORDS,
+    sender: "principal",
+    delegated: false,
+    readback: ({ reply, said }) => {
+      const text = String(said || reply || "")
+      return [
+        check("the reply greets her", GREETING.test(text), text.slice(0, 120)),
+        check("the reply asks her a question", text.includes("?")),
+        check("the reply carries no runtime note", !RUNTIME_NOTE_ECHO.test(text), (RUNTIME_NOTE_ECHO.exec(text) ?? [""])[0]),
       ]
     },
   },
@@ -852,6 +870,13 @@ export function selfTestFixtures() {
     "brevity-honored": {
       pass: { trace: [], reply: "A movie is one film. A series has seasons of episodes.", before: emptyObservation(), after: emptyObservation() },
       fail: { trace: [], reply: `## Difference\n**Movies**: ${"long ".repeat(130)}\nWant me to go on?`, before: emptyObservation(), after: emptyObservation() },
+    },
+    "rach-handoff": {
+      pass: { trace: [], reply: "Hi Rachel! Silly and cosy, or loud and dumb-fun tonight?", before: emptyObservation(), after: emptyObservation() },
+      // The live turn-1 reply: a title, no greeting, no question.
+      fail: { trace: [], reply: "**The Love Hypothesis** (2026) is on the shelf and ready to play.", before: emptyObservation(), after: emptyObservation() },
+      // The live turn-4 reply: the runtime's note, sent to her.
+      failNote: { trace: [], reply: "hi! got it. dummy bad, no markdown, no question at the end. just plain answer, cap it. what are you after?", before: emptyObservation(), after: emptyObservation() },
     },
   }
   return { friends, fx }

@@ -3486,10 +3486,11 @@ describe("settle answer gates (opt-in per agent)", () => {
     const visible: string[] = []
     const { runAgent } = await import("../../heart/core")
     const messages = (opts.user ?? ["channel more dross from cradle energy"]).flatMap((text, index) => (index === 0 ? [] : [{ role: "assistant", content: "ok." }]).concat([{ role: "user", content: text }]) as any[])
-    const result = await runAgent([...(opts.prior ?? []), { role: "user", content: opts.user?.[0] ?? "channel more dross from cradle energy" }, ...messages.slice(0)] as any[], makeCallbacks({ onTextChunk: vi.fn((text: string) => { visible.push(text) }), onClearText: vi.fn(() => { visible.length = 0 }) }), "telegram", undefined, {
+    const history = [...(opts.prior ?? []), { role: "user", content: opts.user?.[0] ?? "channel more dross from cradle energy" }, ...messages.slice(0)] as any[]
+    const result = await runAgent(history, makeCallbacks({ onTextChunk: vi.fn((text: string) => { visible.push(text) }), onClearText: vi.fn(() => { visible.length = 0 }) }), "telegram", undefined, {
       tools: searchTool as any, execTool: opts.execTool ?? vi.fn(), toolContext: { signin: async () => undefined, ...(opts.gates ? { answerGates: opts.gates } : {}), ...(opts.context ? { context: opts.context as any } : {}) }, ...opts.extra,
     })
-    return { result, visible }
+    return { result, visible, history }
   }
 
   describe("source grounding", () => {
@@ -3657,12 +3658,47 @@ describe("settle answer gates (opt-in per agent)", () => {
       expect((await run({ gates: GATES, user: ask })).visible.join("")).toBe(confirm)
     })
 
-    it("gives up after two rejections and delivers what the model settled", async () => {
-      for (const id of ["a", "b", "c"]) mockCreate.mockReturnValueOnce(settleCall(id, LONG))
+    it("retries once, then delivers the real draft the model settled", async () => {
+      for (const id of ["a", "b"]) mockCreate.mockReturnValueOnce(settleCall(id, LONG))
       const { result, visible } = await run({ gates: GATES, user: ask })
       expect(result.outcome).toBe("settled")
-      expect(mockCreate).toHaveBeenCalledTimes(3)
+      expect(mockCreate).toHaveBeenCalledTimes(2)
       expect(visible.join("")).toBe(LONG)
+    })
+
+    it("keeps the reason private and lets a brief reply end with a question", async () => {
+      mockCreate.mockReturnValueOnce(settleCall("long", LONG))
+      mockCreate.mockReturnValueOnce(settleCall("short", "Hi Rachel! Silly or swoony tonight?"))
+      const { visible } = await run({ gates: GATES, user: ask })
+      expect(JSON.stringify(mockCreate.mock.calls[1][0].messages)).toContain("private runtime note, not from the person")
+      expect(visible.join("")).toBe("Hi Rachel! Silly or swoony tonight?")
+    })
+
+    // 2026-10-11, Rach handoff: after a brevity rejection the model answered the note, and the note reached Rachel.
+    const LEAKED = "got it. dummy bad, no markdown, no question at the end. just plain answer, cap it."
+    it("never delivers a retry that only answers the runtime note; the last real draft goes out instead", async () => {
+      mockCreate.mockReturnValueOnce(settleCall("long", LONG))
+      mockCreate.mockReturnValueOnce(settleCall("echo", LEAKED))
+      const { result, visible, history } = await run({ gates: GATES, user: ask })
+      expect(result.outcome).toBe("settled")
+      expect(visible.join("")).toBe(LONG)
+      expect(visible.join("")).not.toContain("dummy bad")
+      // The history holds what Rachel got, so the next turn does not see itself having said the note.
+      expect(JSON.stringify(history)).not.toContain("dummy bad")
+    })
+
+    it("does the same for a plain-text retry", async () => {
+      mockCreate.mockReturnValueOnce(makeStream([makeChunk(LONG)]))
+      mockCreate.mockReturnValueOnce(makeStream([makeChunk(LEAKED)]))
+      const { visible } = await run({ gates: GATES, user: ask })
+      expect(visible.join("")).toBe(LONG)
+    })
+
+    it("leaves a reply that mentions markdown alone when nothing was rejected", async () => {
+      mockCreate.mockReturnValueOnce(settleCall("md", "Use markdown for the notes."))
+      const { visible } = await run({ gates: GATES, user: ask })
+      expect(mockCreate).toHaveBeenCalledTimes(1)
+      expect(visible.join("")).toBe("Use markdown for the notes.")
     })
 
     it("reads brevity from the person's saved communication preference", async () => {
@@ -3681,6 +3717,45 @@ describe("settle answer gates (opt-in per agent)", () => {
       mockCreate.mockReturnValueOnce(settleCall("d", "short."))
       const { visible } = await run({ gates: GATES, user: ["be brief", "name the cradle characters"] })
       expect(visible.join("")).toBe("short.")
+    })
+  })
+
+  describe("shelf claims", () => {
+    const SHELF = { shelfClaims: true }
+    const mediaTool = [{ type: "function", function: { name: "media_search", description: "search", parameters: { type: "object", properties: { query: { type: "string" } } } } }]
+    const mediaCall = (id: string) => makeStream([makeChunk(undefined, [{ index: 0, id, function: { name: "media_search", arguments: JSON.stringify({ query: "baywatch" }) } }])])
+    const found = JSON.stringify({ matched: 1, items: [{ title: "Baywatch", on_shelf: true }] })
+    const user = ["more"]
+
+    it("sends a shelf claim with no lookup back once, then delivers the plain answer", async () => {
+      mockCreate.mockReturnValueOnce(settleCall("claim", "the fall guy, bullet train. all on the shelf."))
+      mockCreate.mockReturnValueOnce(settleCall("plain", "the fall guy or bullet train. I can check if we have them."))
+      const { visible } = await run({ gates: SHELF, user })
+      expect(JSON.stringify(mockCreate.mock.calls[1][0].messages)).toContain("no library lookup this turn found what you named")
+      expect(visible.join("")).toBe("the fall guy or bullet train. I can check if we have them.")
+    })
+
+    it("passes a shelf claim for a title this turn found on the shelf", async () => {
+      mockCreate.mockReturnValueOnce(mediaCall("ms"))
+      mockCreate.mockReturnValueOnce(settleCall("ok", "baywatch (2017) is on the shelf."))
+      const { visible } = await run({ gates: SHELF, user, execTool: vi.fn(async () => found), extra: { tools: mediaTool } })
+      expect(mockCreate).toHaveBeenCalledTimes(2)
+      expect(visible.join("")).toBe("baywatch (2017) is on the shelf.")
+    })
+
+    const UNCHECKED = "I haven't checked the library for that yet, so I can't promise it's on the shelf.\n\nall on the shelf."
+    it("retries once only, then delivers the claim with a disclosure", async () => {
+      for (const id of ["a", "b"]) mockCreate.mockReturnValueOnce(settleCall(id, "all on the shelf."))
+      const { visible } = await run({ gates: SHELF, user })
+      expect(mockCreate).toHaveBeenCalledTimes(2)
+      expect(visible.join("")).toBe(UNCHECKED)
+    })
+
+    it("replaces a retry that answers the note with the last draft, disclosed", async () => {
+      mockCreate.mockReturnValueOnce(settleCall("a", "all on the shelf."))
+      mockCreate.mockReturnValueOnce(settleCall("b", "noted, the private note says not to claim the shelf."))
+      const { visible } = await run({ gates: SHELF, user })
+      expect(visible.join("")).toBe(UNCHECKED)
     })
   })
 })

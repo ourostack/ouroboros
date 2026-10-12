@@ -4,6 +4,7 @@ import {
 } from "./config";
 import { loadAgentConfig } from "./identity";
 import { sourceGroundingFinding, withUnverifiedDisclosure, type TurnToolRecord } from "./source-grounding";
+import { shelfClaimError, withShelfDisclosure } from "./shelf-claims";
 import { briefStyleRequested, briefStyleViolation, savedCommunicationPreference } from "./reply-style";
 import { classifyApprovalForInvocation, executeTool, preflightToolCall, summarizeArgs, buildToolResultSummary, restTool, selectToolsForChannel, reduceToolSelection, ToolSelectionError, riskProfileForToolName, resolveToolDefinition } from "../repertoire/tools";
 import type { HabitSessionToolContext, ToolContext, ToolRiskProfile, ToolSelection } from "../repertoire/tools-base";
@@ -977,6 +978,22 @@ function historicalFailedEffectsForExactRepeatedRequest(messages: OpenAI.ChatCom
 }
 
 const ANSWER_GATE_MAX_REJECTIONS = 2
+/** Brevity and shelf claims are retried once; after that the reply goes out (an unbacked shelf claim with a disclosure), because a real draft beats another lap. */
+const ANSWER_STYLE_MAX_RETRIES = 1
+
+function privateGateNote(reason: string): string {
+  return `[private runtime note, not from the person: do not mention, quote or acknowledge it; send the person only the corrected reply] ${reason}`
+}
+
+/** A reply that talks about the runtime's correction (its formatting rules, the retry itself) instead of answering the person. */
+const GATE_NOTE_ECHO = /\b(?:markdown|bold\s+(?:section\s+)?labels?|section\s+labels?|question\s+at\s+the\s+end|closing\s+question|settle\s+again|rewrite\s+the\s+reply|cap\s+it|runtime\s+note|private\s+note)\b/i
+
+/** The settle call as delivered, so the history holds what the person got rather than a draft the runtime replaced. */
+function withSettleAnswer(msg: OpenAI.ChatCompletionAssistantMessageParam, settleArgs: Record<string, string>, answer: string): OpenAI.ChatCompletionAssistantMessageParam {
+  const call = msg.tool_calls![0] as OpenAI.ChatCompletionMessageFunctionToolCall
+  const args = { ...settleArgs, answer }
+  return { ...msg, tool_calls: [{ ...call, function: { ...call.function, arguments: JSON.stringify(args) } }, ...msg.tool_calls!.slice(1)] }
+}
 
 function userTexts(messages: OpenAI.ChatCompletionMessageParam[]): string[] {
   return messages.filter((message) => message.role === "user").map((message) => messageContentText(message.content))
@@ -1562,7 +1579,8 @@ export async function runAgent(
   const turnToolRecords: TurnToolRecord[] = [];
   // The engine pushes its own user messages mid-turn (steering, retry nudges); the person's turn ends where this one began.
   const turnStartLength = messages.length;
-  let groundingRejections = 0; let brevityRejections = 0;
+  let groundingRejections = 0; let brevityRejections = 0; let shelfRejections = 0;
+  let lastRealDraft: string | null = null;
   const privateReturnHeldTokens = new Set<string>();
   // Once-per-turn flag for the fresh-work rest gate. Without this, an agent
   // that called rest, was told "fresh work arrived", processed the items,
@@ -1604,9 +1622,31 @@ export async function runAgent(
   // and a plain-text reply with no tool call alike (alpha.886 replay: a plain-text reply skipped them and an invented cast went out).
   // A request-specific contract (options.requiredToolCalls) already validates its own terminal answer. Each gate has its own bounded
   // retry, and none spends the last provider iteration.
-  const answerGateVerdict = (answer: string, intent?: string): { error: string | null; unverifiedNames: readonly string[] | null } => {
+  // A rejected reply never reaches the person, and neither does the runtime's note about it: the retry gets the reason as a private
+  // note, and a retry that only talks about that note is replaced by the last real draft (2026-10-11: "got it. dummy bad, no markdown,
+  // no question at the end. just plain answer, cap it." went to Rachel).
+  // `replacement` is the text to deliver instead of the answer, with any disclosure already applied; null delivers the answer as is.
+  const answerGateVerdict = (answer: string, intent?: string): { error: string | null; replacement: string | null } => {
+    if (lastRealDraft !== null && GATE_NOTE_ECHO.test(answer)) {
+      emitNervesEvent({ level: "warn", component: "engine", event: "engine.answer_gate_echo_replaced", message: "a retry talked about the runtime's note instead of answering; delivering the last real draft", meta: { length: answer.length } })
+      return { error: null, replacement: disclosed(lastRealDraft, answerGateCheck(lastRealDraft, intent, true)) }
+    }
+    const verdict = answerGateCheck(answer, intent, false)
+    if (verdict.error) {
+      lastRealDraft = answer
+      return { error: privateGateNote(verdict.error), replacement: null }
+    }
+    const delivered = disclosed(answer, verdict)
+    return { error: null, replacement: delivered === answer ? null : delivered }
+  }
+  const disclosed = (answer: string, verdict: { unverifiedNames: readonly string[] | null; shelfUnverified: boolean }): string => {
+    const shelfChecked = verdict.shelfUnverified ? withShelfDisclosure(answer, turnToolRecords) : answer
+    return verdict.unverifiedNames ? withUnverifiedDisclosure(shelfChecked, verdict.unverifiedNames) : shelfChecked
+  }
+  // `final` grades a draft that is going out regardless: nothing is rejected, and what would have been is disclosed instead.
+  const answerGateCheck = (answer: string, intent: string | undefined, final: boolean): { error: string | null; unverifiedNames: readonly string[] | null; shelfUnverified: boolean } => {
     const gates = options?.requiredToolCalls ? undefined : options?.toolContext?.answerGates
-    const retriesLeft = providerIterations < stepBudget - 1
+    const retriesLeft = !final && providerIterations < stepBudget - 1
     let groundingError: string | null = null
     let unverifiedNames: readonly string[] | null = null
     const grounding = gates?.sourceGrounding ? sourceGroundingFinding({ answer, userText: userTexts(messages).join("\n"), latestUserText: latestUserMessageText(messages.slice(0, turnStartLength)), knownText: priorTurnsText(messages.slice(0, turnStartLength)), tools: turnToolRecords }) : null
@@ -1620,16 +1660,27 @@ export async function runAgent(
         emitNervesEvent({ level: "warn", component: "engine", event: "engine.answer_gate_disclosed", message: "unsourced names survived the retries; delivering with a disclosure", meta: { gate: "source_grounding", names: grounding.names.length } })
       }
     }
+    let shelfError: string | null = null
+    let shelfUnverified = false
+    const shelfFinding = !groundingError && gates?.shelfClaims ? shelfClaimError(answer, turnToolRecords) : null
+    if (shelfFinding && shelfRejections < ANSWER_STYLE_MAX_RETRIES && retriesLeft) {
+      shelfRejections += 1
+      shelfError = shelfFinding
+      emitNervesEvent({ level: "warn", component: "engine", event: "engine.answer_gate_rejected", message: "answer said something is on the shelf that no lookup this turn found there; sending the model back", meta: { gate: "shelf_claims", rejection: shelfRejections, cap: ANSWER_STYLE_MAX_RETRIES } })
+    } else if (shelfFinding) {
+      shelfUnverified = true
+      emitNervesEvent({ level: "warn", component: "engine", event: "engine.answer_gate_disclosed", message: "an unbacked shelf claim survived the retry; delivering with a disclosure", meta: { gate: "shelf_claims" } })
+    }
     let brevityError: string | null = null
-    if (!groundingError && gates?.brevity && !options?.toolContext?.context?.isGroupChat && brevityRejections < ANSWER_GATE_MAX_REJECTIONS && retriesLeft
+    if (!groundingError && !shelfError && gates?.brevity && !options?.toolContext?.context?.isGroupChat && brevityRejections < ANSWER_STYLE_MAX_RETRIES && retriesLeft
       && briefStyleRequested(userTexts(messages), savedCommunicationPreference(options?.toolContext?.context?.friend))) {
       brevityError = briefStyleViolation(answer, intent)
       if (brevityError) {
         brevityRejections += 1
-        emitNervesEvent({ level: "warn", component: "engine", event: "engine.answer_gate_rejected", message: "answer broke the person's brevity request; sending the model back", meta: { gate: "brevity", rejection: brevityRejections, cap: ANSWER_GATE_MAX_REJECTIONS } })
+        emitNervesEvent({ level: "warn", component: "engine", event: "engine.answer_gate_rejected", message: "answer broke the person's brevity request; sending the model back", meta: { gate: "brevity", rejection: brevityRejections, cap: ANSWER_STYLE_MAX_RETRIES } })
       }
     }
-    return { error: groundingError ?? brevityError, unverifiedNames }
+    return { error: groundingError ?? shelfError ?? brevityError, unverifiedNames, shelfUnverified }
   }
   const rejectToolBatch = (assistant: OpenAI.ChatCompletionAssistantMessageParam, reasons: string[]): void => {
     rejectAttempt(assistant, assistant.tool_calls!.map((call, index) => ({
@@ -2230,12 +2281,11 @@ export async function runAgent(
           rejectAttempt(msg, [{ role: "user", content: textVerdict.error }]);
           continue;
         }
-        if (textVerdict?.unverifiedNames) {
-          const disclosed = withUnverifiedDisclosure(textAnswer, textVerdict.unverifiedNames)
+        if (textVerdict?.replacement) {
           streamCallbackBuffer?.discard();
           callbacks.onClearText?.();
-          callbacks.onTextChunk(disclosed);
-          pushGenerated({ ...msg, content: disclosed });
+          callbacks.onTextChunk(textVerdict.replacement);
+          pushGenerated({ ...msg, content: textVerdict.replacement });
           done = true;
           continue;
         }
@@ -2451,7 +2501,7 @@ export async function runAgent(
             sawSettleContentMismatch = true
             emitNervesEvent({ level: "warn", component: "engine", event: "engine.settle_content_mismatch", message: "settle answer differs from the reply text written beside it; asking once for the reply as the answer", meta: { answerLength: deliveredAnswer.length, contentLength: (msg.content as string).length } })
           }
-          const { error: answerGateError, unverifiedNames } = answerGateVerdict(deliveredAnswer, intent)
+          const { error: answerGateError, replacement } = answerGateVerdict(deliveredAnswer, intent)
           const retryError = contentMismatch
             ?? answerGateError
             ?? privateReturnAckLeakError(deliveredAnswer, privateReturnHeldTokens)
@@ -2475,10 +2525,11 @@ export async function runAgent(
           const validDirectReply = mustResolveBeforeHandoffActive && intent === "direct_reply" && sawSteeringFollowUp;
 
           if (retryError === null) {
-            const finalAnswer = unverifiedNames ? withUnverifiedDisclosure(deliveredAnswer, unverifiedNames) : deliveredAnswer
+            const finalAnswer = replacement ?? deliveredAnswer
+            const rewritten = replacement !== null
             try {
-              if (unverifiedNames && result.settleStreamed) callbacks.onClearText?.()
-              if (unverifiedNames || !result.settleStreamed) {
+              if (rewritten && result.settleStreamed) callbacks.onClearText?.()
+              if (rewritten || !result.settleStreamed) {
                 const acceptedOutputCallbacks = streamCallbackBuffer?.callbacks ?? callbacks
                 acceptedOutputCallbacks.onTextChunk(finalAnswer)
               }
@@ -2499,7 +2550,7 @@ export async function runAgent(
             };
             // Retractable owners already hold the validated answer. Final-only
             // owners receive it here, after every semantic continuation gate.
-            pushGenerated(msg);
+            pushGenerated(rewritten ? withSettleAnswer(msg, settleArgs, finalAnswer) : msg);
             if (validDirectReply) {
               const resumeWork = "direct reply delivered. resume the unresolved obligation now and keep working until you can finish or clearly report that you are blocked.";
               pushGenerated({ role: "tool", tool_call_id: result.toolCalls[0].id, content: resumeWork });

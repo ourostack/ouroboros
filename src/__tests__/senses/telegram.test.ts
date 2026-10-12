@@ -1953,6 +1953,72 @@ describe("Telegram sense", () => {
     expect(session.events.filter((event: any) => event.content === "Books is still down. I’m looking into it.")).toHaveLength(1)
   })
 
+  // 2026-10-11: Ari handed his chat to Rachel, and two Jellyfin outage notes landed in her movie chat.
+  it("holds house notices while Ari's chat is handed to someone else, then sends them after the window", async () => {
+    const handedAt = Date.parse("2026-10-11T04:27:28.812Z")
+    vi.useFakeTimers({ toFake: ["Date"] })
+    vi.setSystemTime(handedAt + 64 * 60 * 1000)
+    try {
+      const f = fixture()
+      const subject = opaqueTelegramSubject("k".repeat(43), "test-token", "42", "42")
+      const sessionPath = getSenseSessionPath("butler", `telegram-user:${subject}`, "telegram", `telegram:${subject}`, f.agentRoot)
+      fs.mkdirSync(path.dirname(sessionPath), { recursive: true })
+      fs.writeFileSync(sessionPath, JSON.stringify({
+        version: 2,
+        events: [{
+          id: "evt-000001", sequence: 1, role: "user", content: "hello pal! I’m going to hand you to my wife, Rachel. say hi to her!", name: null, toolCallId: null, toolCalls: [], attachments: [],
+          time: { authoredAt: null, authoredAtSource: "unknown", observedAt: new Date(handedAt).toISOString(), observedAtSource: "ingest", recordedAt: new Date(handedAt).toISOString(), recordedAtSource: "save" },
+          relations: { replyToEventId: null, threadRootEventId: null, references: [], toolCallId: null, supersedesEventId: null, redactsEventId: null },
+          provenance: { captureKind: "live", legacyVersion: null, sourceMessageIndex: null },
+        }],
+        projection: { eventIds: ["evt-000001"], trimmed: false, maxTokens: null, contextMargin: null, inputTokens: null, projectedAt: null },
+        lastUsage: null,
+        state: { mustResolveBeforeHandoff: false, lastFriendActivityAt: null },
+      }))
+      const sends = () => f.api.request.mock.calls.filter(([method]: [string]) => method === "sendMessage").map(([, body]: [string, any]) => body.text)
+
+      await f.app.sendExternalEventDecision({ source: "sanctuary-health", eventId: "endpoint:media", generation: 23, text: "The shelf is down." })
+      await f.app.sendExternalEventDecision({ source: "sanctuary-health", eventId: "endpoint:media", generation: 23, text: "The shelf is down." })
+      await f.app.sendProactive("Self-recovered; the shelf was down for about 15 minutes.")
+      await f.app.sendOwnerNotice({ noticeId: "delegated:task-9", text: "Delegated command ran." })
+      expect(sends()).toEqual([])
+      // Rachel's next message gets its reply, and the notices keep waiting.
+      await f.getOnMessage()({ updateId: 90, messageId: "91", userId: "42", chatId: "42", text: "something silly please" })
+      expect(sends()).toEqual(["All systems nominal."])
+      expect(JSON.parse(fs.readFileSync(path.join(f.agentRoot, "state", "telegram", "held-owner-notices.json"), "utf8"))).toHaveLength(3)
+
+      vi.setSystemTime(Date.now() + 2 * 60 * 60 * 1000 + 1)
+      await f.app.sendExternalEventDecision({ source: "sanctuary-health", eventId: "endpoint:books", generation: 1, text: "Books is back." })
+      expect(sends()).toEqual(["All systems nominal.", "The shelf is down.", "Self-recovered; the shelf was down for about 15 minutes.", "Delegated command ran.", "Books is back."])
+      expect(JSON.parse(fs.readFileSync(path.join(f.agentRoot, "state", "telegram", "held-owner-notices.json"), "utf8"))).toEqual([])
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it("hands a held notice that fails to send to the effect journal without failing startup or blocking the next notice", async () => {
+    const events: string[] = []
+    setRuntimeLogger(createLogger({ sinks: [(entry) => { events.push(entry.event) }] }))
+    let failing = true
+    const api = { request: vi.fn(async (method: string) => { if (failing && method === "sendMessage") throw new Error("telegram down"); return { message_id: 72 } }), stop: vi.fn() }
+    const f = fixture({ api: api as any })
+    const heldPath = path.join(f.agentRoot, "state", "telegram", "held-owner-notices.json")
+    fs.mkdirSync(path.dirname(heldPath), { recursive: true })
+    fs.writeFileSync(heldPath, JSON.stringify([{ key: "external-event:held", text: "The shelf was down." }]))
+    try {
+      await expect(f.app.run()).resolves.toBeUndefined()
+      expect(events).toContain("senses.telegram_held_notice_release_error")
+      expect(JSON.parse(fs.readFileSync(heldPath, "utf8"))).toEqual([])
+      failing = false
+      await f.app.sendOwnerNotice({ noticeId: "after", text: "Next notice." })
+      const sent = api.request.mock.calls.filter(([method]) => method === "sendMessage").map(([, body]: any) => body.text)
+      expect(sent.at(-1)).toBe("Next notice.")
+    } finally {
+      await f.app.stop()
+      setRuntimeLogger(null)
+    }
+  })
+
   it("posts one owner notice per notice id through the effect journal and owner session", async () => {
     const f = fixture()
     await f.app.sendOwnerNotice({ noticeId: "delegated:task-1", text: "Delegated command from you via Claude Code." })
