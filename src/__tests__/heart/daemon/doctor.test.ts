@@ -43,6 +43,14 @@ import {
 import { refreshRuntimeCredentialConfig } from "../../../heart/runtime-credentials"
 import { buildBlueBubblesWebhookCallbackUrl } from "../../../senses/bluebubbles/webhook-registration"
 
+// The server-account check has its own tests (host-account-verifier.test.ts);
+// here every server runs under the agent's declared host account unless a test says otherwise.
+const hostAccount = vi.hoisted(() => ({ verify: vi.fn(async (_input: unknown) => undefined) }))
+vi.mock("../../../senses/bluebubbles/host-account-verifier", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../../../senses/bluebubbles/host-account-verifier")>()),
+  verifyBlueBubblesServerAccount: (input: unknown) => hostAccount.verify(input),
+}))
+
 function createMockDeps(overrides: Partial<DoctorDeps> = {}): DoctorDeps {
   return {
     existsSync: vi.fn().mockReturnValue(false),
@@ -522,7 +530,7 @@ describe("checkSenses", () => {
       senses: {
         cli: { enabled: true },
         teams: { enabled: false },
-        bluebubbles: { enabled: true },
+        bluebubbles: { enabled: true, hostUsername: "clawdbot" },
       },
     })
     seedRuntimeConfig("test", {
@@ -546,7 +554,7 @@ describe("checkSenses", () => {
     expect(cat.checks[1].detail).toBe("disabled")
     expect(cat.checks[3]).toEqual(expect.objectContaining({
       label: "test.ouro bluebubbles config",
-      detail: "http://bluebubbles.local",
+      detail: "http://bluebubbles.local (host account clawdbot)",
     }))
     // Configuration being well-formed says nothing about delivery: this bundle
     // has never recorded an inbound message, and that must not read as healthy.
@@ -555,6 +563,25 @@ describe("checkSenses", () => {
       label: "test.ouro bluebubbles inbound delivery",
       status: "warn",
     }))
+  })
+
+  it("fails the BlueBubbles host account check when no host account is declared", async () => {
+    const config = JSON.stringify({ senses: { bluebubbles: { enabled: true } } })
+    seedRuntimeConfig("test", {
+      bluebubbles: { serverUrl: "http://bluebubbles.local", password: "pw" },
+    })
+    const deps = createMockDeps({
+      existsSync: existsFor(["/tmp/bundles", "/tmp/bundles/test.ouro/agent.json"]),
+      readdirSync: readdirFor({ "/tmp/bundles": ["test.ouro"] }),
+      readFileSync: readFileFor({ "/tmp/bundles/test.ouro/agent.json": config }),
+    })
+    const cat = await checkSenses(deps)
+    expect(cat.checks).toContainEqual(expect.objectContaining({
+      label: "test.ouro bluebubbles host account",
+      status: "fail",
+      detail: expect.stringContaining("no host account declared (senses.bluebubbles.hostUsername)"),
+    }))
+    expect(cat.checks.some((c) => c.label === "test.ouro bluebubbles config")).toBe(false)
   })
 
   it("warns when senses config is missing", async () => {
@@ -973,7 +1000,7 @@ describe("checkSenses", () => {
   it("actively probes enabled BlueBubbles upstreams and surfaces actionable failures", async () => {
     const config = JSON.stringify({
       senses: {
-        bluebubbles: { enabled: true },
+        bluebubbles: { enabled: true, hostUsername: "clawdbot" },
       },
     })
     seedRuntimeConfig("test", {
@@ -1021,7 +1048,7 @@ describe("checkSenses", () => {
   it("passes enabled BlueBubbles upstream checks when the server responds", async () => {
     const config = JSON.stringify({
       senses: {
-        bluebubbles: { enabled: true },
+        bluebubbles: { enabled: true, hostUsername: "clawdbot" },
       },
     })
     seedRuntimeConfig("test", {
@@ -1055,7 +1082,7 @@ describe("checkSenses", () => {
   it("reports an exact owned BlueBubbles webhook without exposing its callback secret", async () => {
     const config = JSON.stringify({
       senses: {
-        bluebubbles: { enabled: true },
+        bluebubbles: { enabled: true, hostUsername: "clawdbot" },
       },
     })
     seedRuntimeConfig("test", {
@@ -1116,7 +1143,7 @@ describe("checkSenses", () => {
   })
 
   it("reports webhook drift separately from upstream reachability", async () => {
-    const config = JSON.stringify({ senses: { bluebubbles: { enabled: true } } })
+    const config = JSON.stringify({ senses: { bluebubbles: { enabled: true, hostUsername: "clawdbot" } } })
     seedRuntimeConfig("test", {
       bluebubbles: { serverUrl: "http://bluebubbles.local", password: "pw" },
       bluebubblesChannel: { port: 19001, webhookPath: "/incoming-bluebubbles" },
@@ -1148,7 +1175,7 @@ describe("checkSenses", () => {
   it("fails enabled BlueBubbles config checks before probing when secrets fields are missing", async () => {
     const config = JSON.stringify({
       senses: {
-        bluebubbles: { enabled: true },
+        bluebubbles: { enabled: true, hostUsername: "clawdbot" },
       },
     })
     seedRuntimeConfig("test", {
@@ -1182,7 +1209,7 @@ describe("checkSenses", () => {
   it("treats missing enabled BlueBubbles machine config as not attached", async () => {
     const config = JSON.stringify({
       senses: {
-        bluebubbles: { enabled: true },
+        bluebubbles: { enabled: true, hostUsername: "clawdbot" },
       },
     })
     const deps = createMockDeps({
@@ -1207,7 +1234,7 @@ describe("checkSenses", () => {
   it("fails enabled BlueBubbles config checks when machine runtime config is invalid", async () => {
     const config = JSON.stringify({
       senses: {
-        bluebubbles: { enabled: true },
+        bluebubbles: { enabled: true, hostUsername: "clawdbot" },
       },
     })
     mockMachineRuntimeConfigs.set("test", {

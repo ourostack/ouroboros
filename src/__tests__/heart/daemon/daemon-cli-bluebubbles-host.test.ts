@@ -1,4 +1,6 @@
+import * as fs from "fs"
 import * as os from "os"
+import * as path from "path"
 import { beforeEach, describe, expect, it, vi } from "vitest"
 
 const hostMocks = vi.hoisted(() => ({
@@ -20,8 +22,18 @@ vi.mock("../../../heart/daemon/bluebubbles-host", () => ({
 import { parseOuroCommand, runOuroCli, type OuroCliDeps } from "../../../heart/daemon/daemon-cli"
 import { setupBlueBubblesHostForConnect } from "../../../heart/daemon/cli-exec"
 
-function deps(): OuroCliDeps {
+function bundlesWithBlueBubblesHosts(hosts: Record<string, { enabled: boolean; hostUsername?: string }>): string {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "bb-host-bundles-"))
+  for (const [agent, bluebubbles] of Object.entries(hosts)) {
+    fs.mkdirSync(path.join(root, `${agent}.ouro`), { recursive: true })
+    fs.writeFileSync(path.join(root, `${agent}.ouro`, "agent.json"), JSON.stringify({ version: 2, enabled: true, senses: { bluebubbles } }))
+  }
+  return root
+}
+
+function deps(bundlesRoot = bundlesWithBlueBubblesHosts({ slugger: { enabled: true, hostUsername: "clawdbot" } })): OuroCliDeps {
   return {
+    bundlesRoot,
     socketPath: "/tmp/ouro-test.sock",
     sendCommand: vi.fn().mockResolvedValue({ ok: true }),
     startDaemonProcess: vi.fn().mockResolvedValue({ pid: 1 }),
@@ -243,6 +255,58 @@ describe("ouro bluebubbles host CLI", () => {
     })
     expect(output).toContain("human-required")
     expect(output).toContain("collect: ouro bluebubbles host collect")
+  })
+
+  it.each(["install", "repair"] as const)("refuses a same-user %s when no agent declares this account as its host", async (action) => {
+    const me = os.userInfo().username
+    await expect(runOuroCli(["bluebubbles", "host", action], deps()))
+      .rejects.toThrow(`BlueBubbles host setup refused for macOS account "${me}"`)
+    expect(hostMocks.runAction).not.toHaveBeenCalled()
+  })
+
+  it("allows a same-user install when an enabled agent declares this account as its host", async () => {
+    const me = os.userInfo().username
+    await runOuroCli(["bluebubbles", "host", "install"], deps(bundlesWithBlueBubblesHosts({ slugger: { enabled: true, hostUsername: me } })))
+    expect(hostMocks.runAction).toHaveBeenCalledWith("install", expect.anything())
+  })
+
+  it("ignores host accounts declared by agents with BlueBubbles disabled", async () => {
+    const me = os.userInfo().username
+    await expect(runOuroCli(["bluebubbles", "host", "install"], deps(bundlesWithBlueBubblesHosts({ old: { enabled: false, hostUsername: me } }))))
+      .rejects.toThrow("no agent with BlueBubbles enabled declares senses.bluebubbles.hostUsername")
+    expect(hostMocks.runAction).not.toHaveBeenCalled()
+  })
+
+  it("fails closed when the bundles root is missing", async () => {
+    await expect(runOuroCli(["bluebubbles", "host", "install"], deps(path.join(os.tmpdir(), "no-such-bundles-root-xyz"))))
+      .rejects.toThrow("no agent with BlueBubbles enabled declares senses.bluebubbles.hostUsername")
+  })
+
+  it("skips stray entries, unreadable bundles and blank host names when collecting declared hosts", async () => {
+    const root = bundlesWithBlueBubblesHosts({ blank: { enabled: true, hostUsername: "  " } })
+    fs.writeFileSync(path.join(root, "README.md"), "not a bundle")
+    fs.mkdirSync(path.join(root, "not-a-bundle"))
+    fs.mkdirSync(path.join(root, "broken.ouro"))
+    fs.writeFileSync(path.join(root, "broken.ouro", "agent.json"), "{ not json")
+    fs.mkdirSync(path.join(root, "nosenses.ouro"))
+    fs.writeFileSync(path.join(root, "nosenses.ouro", "agent.json"), JSON.stringify({ version: 2 }))
+    await expect(runOuroCli(["bluebubbles", "host", "install"], deps(root)))
+      .rejects.toThrow("no agent with BlueBubbles enabled declares senses.bluebubbles.hostUsername")
+    expect(hostMocks.runAction).not.toHaveBeenCalled()
+  })
+
+  it("refuses a cross-user repair handoff for an undeclared account", async () => {
+    await expect(runOuroCli([
+      "bluebubbles", "host", "repair",
+      "--username", "someone", "--uid", "503", "--home", "/Users/someone",
+    ], deps())).rejects.toThrow('BlueBubbles host setup refused for macOS account "someone"')
+    expect(hostMocks.requestCrossUser).not.toHaveBeenCalled()
+    expect(hostMocks.installHelper).not.toHaveBeenCalled()
+  })
+
+  it.each(["status", "remove"] as const)("still allows %s on an undeclared account so it can be inspected and cleaned up", async (action) => {
+    await runOuroCli(["bluebubbles", "host", action], deps(bundlesWithBlueBubblesHosts({})))
+    expect(hostMocks.runAction).toHaveBeenCalledWith(action, expect.anything())
   })
 
   it("collects one exact request and supports JSON output", async () => {

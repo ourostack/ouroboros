@@ -1,4 +1,5 @@
 import * as fs from "fs"
+import { checkBlueBubblesHostDeclared } from "../bluebubbles-host-account"
 import * as os from "os"
 import * as path from "path"
 import { emitNervesEvent } from "../../nerves/runtime"
@@ -73,6 +74,8 @@ interface SenseConfigFacts {
   configured: boolean
   detail: string
   optional?: boolean
+  /** BlueBubbles only: refused because the agent declares no iMessage host account. */
+  hostRefused?: boolean
 }
 
 interface SenseRuntimeFacts {
@@ -169,6 +172,11 @@ function readAgentSenses(agentJsonPath: string): { senses: AgentSensesConfig; wo
     const enabled = (rawSense as Record<string, unknown>).enabled
     if (typeof enabled === "boolean") {
       defaults[sense] = { enabled }
+      const hostUsername = (rawSense as Record<string, unknown>).hostUsername
+      // A missing or malformed host account stays unset, so BlueBubbles fails closed.
+      if (sense === "bluebubbles" && typeof hostUsername === "string" && hostUsername.trim().length > 0) {
+        defaults[sense] = { enabled, hostUsername: hostUsername.trim() }
+      }
     }
   }
 
@@ -317,6 +325,11 @@ function senseFactsFromRuntimeConfig(
               ? `missing ${missing.join("/")}`
               : runtimeConfigUnavailableDetail(agent, machineRuntimeConfig),
         }
+  }
+  if (senses.bluebubbles.enabled && base.bluebubbles.configured) {
+    // Attached here, but whose Apple ID? Without a declared host, never start.
+    const declared = checkBlueBubblesHostDeclared(agent, senses.bluebubbles.hostUsername)
+    if (!declared.ok) base.bluebubbles = { configured: false, hostRefused: true, detail: declared.message }
   }
 
   if (senses.mail.enabled) {
@@ -1000,15 +1013,21 @@ export class DaemonSenseManager implements DaemonSenseManagerLike {
     if (!context || !context.senses[parsed.sense].enabled) return null
 
     const managedName = `${parsed.agent}:${parsed.sense}`
+    const currentRow = (): DaemonSenseRow | null =>
+      this.listSenseRows().find((row) => row.agent === parsed.agent && row.sense === parsed.sense) ?? null
     const runtimeConfig = await refreshRuntimeCredentialConfig(parsed.agent, { preserveCachedOnFailure: true })
     const needsMachineConfig = needsMachineRuntimeConfig(parsed.agent, parsed.sense)
     const machineRuntimeConfig = needsMachineConfig
       ? await refreshMachineRuntimeCredentialConfig(parsed.agent, currentMachineId(), { preserveCachedOnFailure: true })
       : readMachineRuntimeCredentialConfig(parsed.agent)
     context.facts = senseFactsFromRuntimeConfig(parsed.agent, context.senses, runtimeConfig, machineRuntimeConfig, context.workbenchHasStaleBundleEntry)
+    if (context.facts[parsed.sense].hostRefused) {
+      // Never start iMessage without a declared host account.
+      return currentRow()
+    }
     this.processManager.resetAgentFailureState?.(managedName)
     await this.processManager.startAgent?.(managedName)
-    return this.listSenseRows().find((row) => row.agent === parsed.agent && row.sense === parsed.sense) ?? null
+    return currentRow()
   }
 
   listSenseRows(): DaemonSenseRow[] {

@@ -17,6 +17,14 @@ Provider-readiness pings are explicit readiness checks, not private turns.
 
 **Recovery**: run `ouro connect bluebubbles --agent <name>` again. Standard setup repairs the native host and reconciles one owned `[*]` callback without deleting unrelated BlueBubbles webhooks. The daemon retries that reconciliation every 180 seconds. For a dedicated BlueBubbles macOS account, run only the fresh nonce-bound `human-required` command returned by Ouro in that logged-in account's Terminal, then run the matching `ouro bluebubbles host collect --request-id <id>` from the origin account. A collected launchd receipt is point-in-time evidence; current process and HTTP checks remain authoritative for current serving health.
 
+### BlueBubbles refused: wrong or undeclared macOS host account
+
+**Symptom**: `ouro status` or `ouro doctor` shows BlueBubbles refused with `no host account is declared`, sends fail with `the BlueBubbles server at <url> runs under macOS account "<account>", but the agent's iMessage host is "<host>"`, the webhook check reports `host-account-refused`, incoming iMessages stop arriving because webhook events are answered with HTTP 403, or `ouro bluebubbles host install|repair` exits with `BlueBubbles host setup refused for macOS account "<account>"`.
+
+**Cause**: the agent's `senses.bluebubbles.hostUsername` is unset, or the BlueBubbles server that `bluebubbles.serverUrl` reaches runs under a different macOS account. Ouro fails closed here so an agent never sends iMessages from, or reads incoming iMessages of, a human's personal Apple ID.
+
+**Recovery**: run the BlueBubbles server under the declared account and point `bluebubbles.serverUrl` at it (`ouro connect bluebubbles --agent <name>` sets this up). If `hostUsername` is unset, a human sets it to the macOS account signed in to the agent's own Apple ID; agents should not choose it themselves. To remove a BlueBubbles server installed under the wrong account, run `ouro bluebubbles host remove` in that account. Ouro does not remove webhooks it registered on that server before this check existed, because it will not act on a server under another account; until the server is removed, it keeps posting events that Ouro answers with HTTP 403 and ignores.
+
 Do not send a synthetic iMessage just to make the diagnostic green. A real new inbound message may add evidence later, but diagnosis itself remains read-only.
 
 ## Doctor reports a hosted-mail cache mismatch

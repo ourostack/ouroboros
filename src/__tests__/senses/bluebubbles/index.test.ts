@@ -15,6 +15,14 @@ import { createHash } from "node:crypto"
 import { Readable } from "node:stream"
 import { currentTestObservedNervesEvent } from "../../helpers/current-test-nerves"
 
+// The server-account check has its own tests (host-account-verifier.test.ts);
+// here every server runs under the agent's declared host account unless a test says otherwise.
+const hostAccount = vi.hoisted(() => ({ verify: vi.fn(async (_input: unknown) => undefined) }))
+vi.mock("../../../senses/bluebubbles/host-account-verifier", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../../../senses/bluebubbles/host-account-verifier")>()),
+  verifyBlueBubblesServerAccount: (input: unknown) => hostAccount.verify(input),
+}))
+
 const mocks = vi.hoisted(() => ({
   runAgent: vi.fn(),
   buildSystem: vi.fn().mockResolvedValue({ stable: "system prompt", volatile: "" }),
@@ -3769,6 +3777,69 @@ describe("BlueBubbles sense runtime", () => {
     expect(mocks.runAgent).toHaveBeenCalledTimes(1)
   })
 
+  it("confirms the server runs under the agent's declared host account before taking in a webhook", async () => {
+    const { loadAgentConfig } = await import("../../../heart/identity")
+    const baseConfig = vi.mocked(loadAgentConfig).getMockImplementation()!
+    vi.mocked(loadAgentConfig).mockImplementation(() => ({
+      ...baseConfig(),
+      senses: { bluebubbles: { enabled: true, hostUsername: "clawdbot" } },
+    }) as any)
+    hostAccount.verify.mockClear()
+    const bluebubbles = await import("../../../senses/bluebubbles")
+    const handler = bluebubbles.createBlueBubblesWebhookHandler()
+    try {
+      const res = createMockResponse()
+      await handler(createMockRequest("POST", "/bluebubbles-webhook?password=secret-token", dmThreadPayload) as any, res.res as any)
+      await res.done
+      expect(res.res.statusCode).toBe(200)
+    } finally {
+      vi.mocked(loadAgentConfig).mockImplementation(baseConfig)
+    }
+    expect(hostAccount.verify).toHaveBeenCalledWith({
+      agent: "testagent",
+      hostUsername: "clawdbot",
+      serverUrl: "http://bluebubbles.local",
+      password: "secret-token",
+      requestTimeoutMs: 30000,
+      fresh: true,
+    })
+  })
+
+  it("refuses webhook messages, and starts no work, when the server runs under another account", async () => {
+    const verifyHostAccount = vi.fn(async () => {
+      throw new Error('the BlueBubbles server runs under macOS account "arimendelow"')
+    })
+    const bluebubbles = await import("../../../senses/bluebubbles")
+    const handler = bluebubbles.createBlueBubblesWebhookHandler({ verifyHostAccount })
+    const stringRes = createMockResponse()
+    await bluebubbles.createBlueBubblesWebhookHandler({ verifyHostAccount: async () => { throw "not confirmed" } })(
+      createMockRequest("POST", "/bluebubbles-webhook?password=secret-token", dmThreadPayload) as any,
+      stringRes.res as any,
+    )
+    await stringRes.done
+    expect(stringRes.res.statusCode).toBe(403)
+    expect(JSON.parse(stringRes.getBody()).error).toBe("not confirmed")
+
+    const unauthorizedRes = createMockResponse()
+    await handler(createMockRequest("POST", "/bluebubbles-webhook?password=wrong-token", dmThreadPayload) as any, unauthorizedRes.res as any)
+    await unauthorizedRes.done
+    expect(unauthorizedRes.res.statusCode).toBe(401)
+    expect(verifyHostAccount).not.toHaveBeenCalled()
+
+    const res = createMockResponse()
+    await handler(createMockRequest("POST", "/bluebubbles-webhook?password=secret-token", dmThreadPayload) as any, res.res as any)
+    await res.done
+
+    expect(res.res.statusCode).toBe(403)
+    expect(JSON.parse(res.getBody())).toEqual({
+      handled: false,
+      notifiedAgent: false,
+      error: 'the BlueBubbles server runs under macOS account "arimendelow"',
+    })
+    await flushAsyncWork()
+    expect(mocks.runAgent).not.toHaveBeenCalled()
+  })
+
   it("durably captures valid webhook messages and responds before slow turn handling completes", async () => {
     const tempAgentRoot = makeTempDir()
     const { getAgentRoot } = await import("../../../heart/identity")
@@ -4570,8 +4641,18 @@ describe("BlueBubbles sense runtime", () => {
   it("starts an HTTP server on the configured BlueBubbles port", async () => {
     const closableServer = createClosableServer()
     mocks.createServer.mockReturnValue(closableServer.server as any)
+    const { loadAgentConfig } = await import("../../../heart/identity")
+    const baseConfig = vi.mocked(loadAgentConfig).getMockImplementation()!
+    vi.mocked(loadAgentConfig).mockImplementation(() => ({
+      ...baseConfig(),
+      senses: { bluebubbles: { enabled: true, hostUsername: "clawdbot" } },
+    }) as any)
     const bluebubbles = await import("../../../senses/bluebubbles")
-    bluebubbles.startBlueBubblesApp()
+    try {
+      bluebubbles.startBlueBubblesApp()
+    } finally {
+      vi.mocked(loadAgentConfig).mockImplementation(baseConfig)
+    }
 
     expect(mocks.createServer).toHaveBeenCalledTimes(1)
     expect(closableServer.server.listen).toHaveBeenCalledWith(18790, expect.any(Function))
@@ -4584,6 +4665,7 @@ describe("BlueBubbles sense runtime", () => {
       machineId: "machine_test",
       requestTimeoutMs: 30000,
       listenerReady: true,
+      hostUsername: "clawdbot",
     })
     await flushAsyncWork()
     closableServer.close()
@@ -8991,6 +9073,39 @@ describe("BlueBubbles sense runtime", () => {
     )
     expect(mocks.emitNervesEvent).not.toHaveBeenCalledWith(expect.objectContaining({
       event: "senses.bluebubbles_capture_recovery_error",
+    }))
+  })
+
+  it("leaves queued messages queued, reading nothing, while the server's host account is not confirmed", async () => {
+    const tempAgentRoot = makeTempDir()
+    const { getAgentRoot } = await import("../../../heart/identity")
+    vi.mocked(getAgentRoot).mockReturnValue(tempAgentRoot)
+    await queueStoredSemanticCapture({
+      ...dmTopLevelPayload,
+      data: { ...dmTopLevelPayload.data, guid: "queued-host-refused-guid", text: "queued while refused" },
+    })
+    const verifyHostAccount = vi.fn(async () => {
+      throw 'the BlueBubbles server runs under macOS account "arimendelow"'
+    })
+    const createClient = vi.fn()
+
+    const bluebubbles = await import("../../../senses/bluebubbles")
+    const result = await bluebubbles.recoverQueuedBlueBubblesMessages({ verifyHostAccount, createClient })
+
+    expect(result).toEqual({ recovered: 0, skipped: 0, failed: 0, pendingRecoveryCount: 1 })
+    expect(createClient).not.toHaveBeenCalled()
+    expect(mocks.runAgent).not.toHaveBeenCalled()
+    expect(mocks.emitNervesEvent).toHaveBeenCalledWith(expect.objectContaining({
+      event: "senses.bluebubbles_recovery_host_refused",
+      meta: { pendingRecoveryCount: 1, reason: 'the BlueBubbles server runs under macOS account "arimendelow"' },
+    }))
+    await expect(bluebubbles.recoverQueuedBlueBubblesMessages({
+      verifyHostAccount: async () => { throw new Error("could not confirm the server's account") },
+      createClient,
+    })).resolves.toEqual({ recovered: 0, skipped: 0, failed: 0, pendingRecoveryCount: 1 })
+    expect(mocks.emitNervesEvent).toHaveBeenCalledWith(expect.objectContaining({
+      event: "senses.bluebubbles_recovery_host_refused",
+      meta: { pendingRecoveryCount: 1, reason: "could not confirm the server's account" },
     }))
   })
 

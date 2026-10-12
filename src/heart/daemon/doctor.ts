@@ -322,6 +322,7 @@ const DEFINITIVE_BLUEBUBBLES_WEBHOOK_STATES: ReadonlySet<BlueBubblesWebhookRegis
   "auth-failed",
   "malformed",
   "listener-not-ready",
+  "host-account-refused",
 ])
 
 function blueBubblesUpstreamEvidence(probe: BlueBubblesHealthProbeResult): BlueBubblesInfrastructureEvidence["upstream"] {
@@ -556,10 +557,20 @@ export async function checkSenses(deps: DoctorDeps): Promise<DoctorCategory> {
           continue
         }
 
+        const hostUsername = typeof senseObj.hostUsername === "string" ? senseObj.hostUsername.trim() : ""
+        if (!hostUsername) {
+          checks.push({
+            label: `${agentDir} bluebubbles host account`,
+            status: "fail",
+            detail: "no host account declared (senses.bluebubbles.hostUsername); BlueBubbles will not start or send. A human sets it to the macOS account signed in to the agent's own Apple ID.",
+          })
+          continue
+        }
+
         checks.push({
           label: `${agentDir} bluebubbles config`,
           status: "pass",
-          detail: serverUrl,
+          detail: `${serverUrl} (host account ${hostUsername})`,
         })
 
         let upstreamContext = "upstream probe not run in this pass"
@@ -591,6 +602,7 @@ export async function checkSenses(deps: DoctorDeps): Promise<DoctorCategory> {
             machineId,
             requestTimeoutMs,
             listenerReady: true,
+            hostUsername,
           }, { fetchImpl: deps.fetchImpl })
           checks.push({
             id: "senses.bluebubbles.webhook",

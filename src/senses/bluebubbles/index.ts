@@ -5,7 +5,7 @@ import { createHash } from "node:crypto"
 import OpenAI from "openai"
 import { runAgent, type ChannelCallbacks, createSummarize } from "../../heart/core"
 import { getBlueBubblesChannelConfig, getBlueBubblesConfig, sessionPath } from "../../heart/config"
-import { getAgentName, getAgentRoot } from "../../heart/identity"
+import { getAgentName, getAgentRoot, loadAgentConfig } from "../../heart/identity"
 import { loadOrCreateMachineIdentity } from "../../heart/machine-identity"
 import { recoverRuntimeCwd } from "../../heart/runtime-cwd"
 import { withSharedTurnLock } from "../../heart/turn-coordinator"
@@ -42,6 +42,7 @@ import {
   type BlueBubblesNormalizedMessage,
 } from "./model"
 import { BlueBubblesSendError, createBlueBubblesClient, type BlueBubblesClient } from "./client"
+import { verifyBlueBubblesServerAccount } from "./host-account-verifier"
 import { createBlueBubblesWebhookReconciler } from "./webhook-registration"
 import {
   listRecordedBlueBubblesInbound,
@@ -397,6 +398,8 @@ interface RuntimeDeps {
   promoteFailoverState: (sessionKey: string, state: FailoverState) => void
   recordProcessed: typeof recordProcessedBlueBubblesMessage
   withSessionTurnLease: <T>(sessionPath: string, work: (lease: SessionTurnLease) => Promise<T>) => Promise<T>
+  /** Confirm the BlueBubbles server runs under the agent's declared macOS host account; throws when it cannot be confirmed. */
+  verifyHostAccount: () => Promise<void>
 }
 
 export interface BlueBubblesReplyTargetController {
@@ -443,6 +446,16 @@ const defaultDeps: RuntimeDeps = {
   },
   recordProcessed: recordProcessedBlueBubblesMessage,
   withSessionTurnLease,
+  // Incoming events recheck every time, like sends, so a server that takes over
+  // the same URL under another account is refused immediately.
+  verifyHostAccount: () => verifyBlueBubblesServerAccount({
+    agent: getAgentName(),
+    hostUsername: loadAgentConfig().senses?.bluebubbles.hostUsername,
+    serverUrl: getBlueBubblesConfig().serverUrl,
+    password: getBlueBubblesConfig().password,
+    requestTimeoutMs: getBlueBubblesChannelConfig().requestTimeoutMs,
+    fresh: true,
+  }),
 }
 
 const BLUEBUBBLES_RUNTIME_SYNC_INTERVAL_MS = 30_000
@@ -3360,6 +3373,21 @@ export async function recoverQueuedBlueBubblesMessages(
   if (initialPending === 0) {
     return { recovered: 0, skipped: 0, failed: 0, pendingRecoveryCount: 0 }
   }
+  // Recovery re-reads queued messages from the server, so it only runs against
+  // a server confirmed to be under the agent's own host account. Queued work
+  // stays queued (not failed) until it is.
+  try {
+    await resolvedDeps.verifyHostAccount()
+  } catch (error) {
+    emitNervesEvent({
+      level: "warn",
+      component: "senses",
+      event: "senses.bluebubbles_recovery_host_refused",
+      message: "skipped bluebubbles recovery because the server's host account is not confirmed",
+      meta: { pendingRecoveryCount: initialPending, reason: error instanceof Error ? error.message : String(error) },
+    })
+    return { recovered: 0, skipped: 0, failed: 0, pendingRecoveryCount: initialPending }
+  }
 
   const captured = await recoverCapturedBlueBubblesInboundMessages(resolvedDeps, options)
   options.lifecycleSignal?.throwIfAborted()
@@ -3837,6 +3865,15 @@ export function createBlueBubblesWebhookHandler(
 
     if (!isWebhookPasswordValid(url, runtimeConfig.password)) {
       writeJson(res, 401, { error: "Unauthorized" })
+      return
+    }
+
+    // Only take in messages from the agent's own Apple ID: a server running
+    // under another macOS account would hand the agent that person's iMessages.
+    try {
+      await { ...defaultDeps, ...deps }.verifyHostAccount()
+    } catch (error) {
+      writeJson(res, 403, { handled: false, notifiedAgent: false, error: error instanceof Error ? error.message : String(error) })
       return
     }
 
@@ -4496,6 +4533,7 @@ export function startBlueBubblesApp(deps: Partial<RuntimeDeps> = {}): http.Serve
       machineId: loadOrCreateMachineIdentity().machineId,
       requestTimeoutMs: channelConfig.requestTimeoutMs,
       listenerReady: true,
+      hostUsername: loadAgentConfig().senses?.bluebubbles.hostUsername,
     })
     emitNervesEvent({
       component: "channels",

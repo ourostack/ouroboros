@@ -7,7 +7,7 @@ import { runDoctorChecks } from "../heart/daemon/doctor"
 import type { DoctorDeps } from "../heart/daemon/doctor-types"
 import type { BlueBubblesChannelConfig, BlueBubblesConfig } from "../heart/config"
 import { createDegradedHabitFile, parseHabitFile, type HabitFile } from "../heart/habits/habit-parser"
-import { getAgentBundlesRoot } from "../heart/identity"
+import { getAgentBundlesRoot, loadAgentConfig } from "../heart/identity"
 import { loadOrCreateMachineIdentity } from "../heart/machine-identity"
 import {
   readMachineRuntimeCredentialConfig,
@@ -17,7 +17,7 @@ import {
   type RuntimeCredentialConfigReadResult,
 } from "../heart/runtime-credentials"
 import { emitNervesEvent } from "../nerves/runtime"
-import { createBlueBubblesClient } from "../senses/bluebubbles/client"
+import { createBlueBubblesClient, type BlueBubblesClientHostOptions } from "../senses/bluebubbles/client"
 import type { BlueBubblesChatRef } from "../senses/bluebubbles/model"
 import { fetchAislePlannerRsvps } from "./aisleplanner-client"
 import { importLegacyRsvpConfig, readRsvpConfig, validateRsvpReadiness, type RsvpNativeConfig } from "./config"
@@ -412,6 +412,15 @@ function recordField(record: Record<string, unknown>, key: string): Record<strin
   return value && typeof value === "object" && !Array.isArray(value)
     ? value as Record<string, unknown>
     : null
+}
+
+/** The agent's declared iMessage host account; an unreadable config leaves it unset, so sending fails closed. */
+export function rsvpBlueBubblesHostOptions(agent: string, agentRoot: string): BlueBubblesClientHostOptions {
+  try {
+    return { agent, hostUsername: loadAgentConfig({ agentName: agent, agentRoot }).senses?.bluebubbles.hostUsername }
+  } catch {
+    return { agent, hostUsername: undefined }
+  }
 }
 
 function rsvpBlueBubblesClientConfig(
@@ -837,7 +846,7 @@ async function executeRefreshInner(
       }
     }
     const bluebubbles = rsvpBlueBubblesClientConfig(configResult.config, machineRuntimeConfig)
-    const client = createBlueBubblesClient(bluebubbles.config, bluebubbles.channelConfig)
+    const client = createBlueBubblesClient(bluebubbles.config, bluebubbles.channelConfig, rsvpBlueBubblesHostOptions(command.agent, agentRoot))
     sendBoundary = await executeRsvpSendBoundary({
       agentRoot,
       habitId: command.habitName,
@@ -1004,7 +1013,7 @@ async function executeSmoke(command: RsvpSmokeCommand, deps: OuroCliDeps): Promi
   let delivery: JsonValue | undefined
   if (sendAllowed) {
     const bluebubbles = rsvpBlueBubblesClientConfig(configResult.config, await resolveRsvpMachineRuntimeCredentialConfig(command.agent))
-    const sent = await createBlueBubblesClient(bluebubbles.config, bluebubbles.channelConfig).sendText({
+    const sent = await createBlueBubblesClient(bluebubbles.config, bluebubbles.channelConfig, rsvpBlueBubblesHostOptions(command.agent, agentRoot)).sendText({
       chat: blueBubblesChatFor(configResult.config),
       text: answer.text,
     })

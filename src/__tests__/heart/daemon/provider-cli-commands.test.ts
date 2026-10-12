@@ -8213,6 +8213,102 @@ describe("provider CLI command execution", () => {
     }
     expect(agentJson.senses?.bluebubbles?.enabled).toBe(true)
     expect(agentJson.senses?.bluebubbles?.preserved).toBe("yes")
+    expect((agentJson.senses?.bluebubbles as { hostUsername?: string } | undefined)?.hostUsername).toBe("clawdbot")
+  })
+
+  for (const [label, declaredHost, typedHost, expected] of [
+    ["a typed account that differs from the declared host", "clawdbot", "arimendelow", 'BlueBubbles host setup refused for macOS account "arimendelow"'],
+    ["a blank account with no declared host", undefined, "", "BlueBubbles host account cannot be blank"],
+  ] as const) {
+    it(`refuses BlueBubbles setup for ${label} before touching the host`, async () => {
+      emitTestEvent("provider cli connect bluebubbles host account refusal")
+      const bundlesRoot = makeTempDir("provider-cli-connect-bluebubbles-refusal-bundles")
+      const homeDir = makeTempDir("provider-cli-connect-bluebubbles-refusal-home")
+      writeAgentConfig(bundlesRoot, "Slugger")
+      if (declaredHost) {
+        updateAgentConfig(bundlesRoot, "Slugger", (config) => {
+          config.senses = { bluebubbles: { enabled: false, hostUsername: declaredHost } }
+        })
+      }
+      writeMachineIdentity(homeDir, "machine_bb_refusal")
+      const answers = ["http://127.0.0.1:1234", "", "", "", "", typedHost]
+      const prompts: string[] = []
+      const setupBlueBubblesHost = vi.fn()
+      const deps = makeCliDeps(homeDir, bundlesRoot, {
+        now: () => Date.parse(NOW),
+        promptInput: async (question) => {
+          prompts.push(question)
+          return answers.shift() ?? ""
+        },
+        promptSecret: async () => "bb-password",
+        ...({ setupBlueBubblesHost } as unknown as Partial<OuroCliDeps>),
+      })
+
+      await expect(runOuroCli(["connect", "bluebubbles", "--agent", "Slugger"], deps)).rejects.toThrow(expected)
+      expect(setupBlueBubblesHost).not.toHaveBeenCalled()
+      expect(prompts.at(-1)).toBe(declaredHost
+        ? `BlueBubbles macOS account username [${declaredHost}]: `
+        : "macOS account signed in to Slugger's own Apple ID (BlueBubbles host): ")
+    })
+  }
+
+  for (const [label, senses, expectedBlueBubbles] of [
+    ["an existing BlueBubbles entry", { bluebubbles: { enabled: false, preserved: "yes" } }, { enabled: false, preserved: "yes", hostUsername: "clawdbot" }],
+    ["no BlueBubbles entry", { cli: { enabled: true } }, { enabled: false, hostUsername: "clawdbot" }],
+  ] as const) {
+    it(`records the host account before host setup runs, even when setup fails (${label})`, async () => {
+      emitTestEvent("provider cli connect bluebubbles declares host first")
+      const bundlesRoot = makeTempDir("provider-cli-connect-bluebubbles-declare-bundles")
+      const homeDir = makeTempDir("provider-cli-connect-bluebubbles-declare-home")
+      writeAgentConfig(bundlesRoot, "Slugger")
+      updateAgentConfig(bundlesRoot, "Slugger", (config) => {
+        config.senses = senses as never
+      })
+      writeMachineIdentity(homeDir, "machine_bb_declare")
+      const answers = ["http://127.0.0.1:1234", "", "", "", "", "clawdbot"]
+      const configPath = path.join(agentRoot(bundlesRoot, "Slugger"), "agent.json")
+      let declaredAtSetup: unknown
+      const setupBlueBubblesHost = vi.fn(async () => {
+        declaredAtSetup = (JSON.parse(fs.readFileSync(configPath, "utf-8")) as { senses: { bluebubbles: unknown } }).senses.bluebubbles
+        throw new Error("helper unavailable")
+      })
+      const deps = makeCliDeps(homeDir, bundlesRoot, {
+        now: () => Date.parse(NOW),
+        promptInput: async () => answers.shift() ?? "",
+        promptSecret: async () => "bb-password",
+        ...({ setupBlueBubblesHost } as unknown as Partial<OuroCliDeps>),
+      })
+
+      await expect(runOuroCli(["connect", "bluebubbles", "--agent", "Slugger"], deps)).rejects.toThrow("helper unavailable")
+      expect(declaredAtSetup).toEqual(expectedBlueBubbles)
+    })
+  }
+
+  it("accepts the declared BlueBubbles host account when the prompt is left blank", async () => {
+    emitTestEvent("provider cli connect bluebubbles declared host default")
+    const bundlesRoot = makeTempDir("provider-cli-connect-bluebubbles-declared-bundles")
+    const homeDir = makeTempDir("provider-cli-connect-bluebubbles-declared-home")
+    writeAgentConfig(bundlesRoot, "Slugger")
+    updateAgentConfig(bundlesRoot, "Slugger", (config) => {
+      config.senses = { bluebubbles: { enabled: false, hostUsername: "clawdbot" } }
+    })
+    writeMachineIdentity(homeDir, "machine_bb_declared")
+    const answers = ["http://127.0.0.1:1234", "", "", "", "", ""]
+    const setupBlueBubblesHost = vi.fn().mockResolvedValue({
+      summary: "host: test",
+      bridgeUsername: "clawdbot",
+      bridgeUid: 502,
+      bridgeHomeDir: "/Users/clawdbot",
+    })
+    const deps = makeCliDeps(homeDir, bundlesRoot, {
+      now: () => Date.parse(NOW),
+      promptInput: async () => answers.shift() ?? "",
+      promptSecret: async () => "bb-password",
+      ...({ setupBlueBubblesHost } as unknown as Partial<OuroCliDeps>),
+    })
+
+    await runOuroCli(["connect", "bluebubbles", "--agent", "Slugger"], deps)
+    expect(setupBlueBubblesHost).toHaveBeenCalledWith({ bridgeUsername: "clawdbot" })
   })
 
   it("restarts a running daemon after connecting BlueBubbles so the local sense starts immediately", async () => {
@@ -8227,6 +8323,8 @@ describe("provider CLI command execution", () => {
       "18888",
       "/bb-webhook",
       "12000",
+      "",
+      "clawdbot",
     ]
     let nowMs = Date.parse(NOW)
     const cleanupStaleSocket = vi.fn()
@@ -8305,6 +8403,7 @@ describe("provider CLI command execution", () => {
       machineId: "machine_bb_live",
       requestTimeoutMs: 12000,
       listenerReady: true,
+      hostUsername: "clawdbot",
     }))
     expect(result).toContain("webhook: one exact Ouro-owned BlueBubbles webhook is registered")
   })
@@ -8321,6 +8420,8 @@ describe("provider CLI command execution", () => {
       "18888",
       "/bb-webhook",
       "12000",
+      "",
+      "clawdbot",
     ]
     const deps = makeCliDeps(homeDir, bundlesRoot, {
       now: () => Date.parse(NOW),
@@ -8349,6 +8450,8 @@ describe("provider CLI command execution", () => {
       "18888",
       "/bb-webhook",
       "12000",
+      "",
+      "clawdbot",
     ]
     const deps = makeCliDeps(homeDir, bundlesRoot, {
       now: () => Date.parse(NOW),
@@ -8381,6 +8484,8 @@ describe("provider CLI command execution", () => {
       "18888",
       "/bb-webhook",
       "12000",
+      "",
+      "clawdbot",
     ]
     const startDaemonProcess = vi.fn(async () => ({ pid: 42 }))
     const deps = makeCliDeps(homeDir, bundlesRoot, {
@@ -8414,6 +8519,8 @@ describe("provider CLI command execution", () => {
       "18888",
       "/bb-webhook",
       "12000",
+      "",
+      "clawdbot",
     ]
     let nowMs = Date.parse(NOW)
     let socketChecks = 0
@@ -8455,6 +8562,8 @@ describe("provider CLI command execution", () => {
       "18888",
       "/bb-webhook",
       "12000",
+      "",
+      "clawdbot",
     ]
     const deps = makeCliDeps(homeDir, bundlesRoot, {
       now: () => Date.parse(NOW),
@@ -8597,6 +8706,8 @@ describe("provider CLI command execution", () => {
       "",
       "bb-webhook",
       "",
+      "",
+      "clawdbot",
     ]
     await expect(runOuroCli(["connect", "bluebubbles", "--agent", "Slugger"], makeCliDeps(homeDir, bundlesRoot, {
       now: () => Date.parse(NOW),
@@ -8626,6 +8737,8 @@ describe("provider CLI command execution", () => {
       "",
       "bb-webhook",
       "",
+      "",
+      "clawdbot",
     ]
     const result = await runOuroCli(["connect", "bluebubbles", "--agent", "Slugger"], makeCliDeps(homeDir, bundlesRoot, {
       now: () => Date.parse(NOW),
@@ -8662,6 +8775,8 @@ describe("provider CLI command execution", () => {
       "",
       "",
       "",
+      "",
+      "clawdbot",
     ]
     const result = await runOuroCli(["connect", "bluebubbles", "--agent", "Slugger"], makeCliDeps(homeDir, bundlesRoot, {
       now: () => Date.parse(NOW),
@@ -9769,7 +9884,7 @@ describe("provider CLI command execution", () => {
     expect(noninteractive).toContain("ouro connect a2a --agent Slugger")
     expect(noninteractive).toContain("ouro connect workbench --agent Slugger")
 
-    const blueBubblesAnswers = ["5", "http://127.0.0.1:1234", "", "", ""]
+    const blueBubblesAnswers = ["5", "http://127.0.0.1:1234", "", "", "", "", "clawdbot"]
     const blueBubbles = await runOuroCli(["connect", "--agent", "Slugger"], makeCliDeps(homeDir, bundlesRoot, {
       now: () => Date.parse(NOW),
       promptInput: async () => blueBubblesAnswers.shift() ?? "",

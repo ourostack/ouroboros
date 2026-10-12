@@ -10,6 +10,14 @@ import {
   type BlueBubblesWebhookRegistrationInput,
 } from "../../../senses/bluebubbles/webhook-registration"
 
+// The server-account check has its own tests (host-account-verifier.test.ts);
+// here every server runs under the agent's declared host account unless a test says otherwise.
+const hostAccount = vi.hoisted(() => ({ verify: vi.fn(async (_input: unknown) => undefined) }))
+vi.mock("../../../senses/bluebubbles/host-account-verifier", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../../../senses/bluebubbles/host-account-verifier")>()),
+  verifyBlueBubblesServerAccount: (input: unknown) => hostAccount.verify(input),
+}))
+
 const input: BlueBubblesWebhookRegistrationInput = {
   serverUrl: "http://bluebubbles.local:1234",
   password: "super-secret",
@@ -19,6 +27,7 @@ const input: BlueBubblesWebhookRegistrationInput = {
   machineId: "machine_test",
   requestTimeoutMs: 1_234,
   listenerReady: true,
+  hostUsername: "clawdbot",
 }
 
 function json(data: unknown, status = 200): Response {
@@ -332,12 +341,12 @@ describe("BlueBubbles webhook registration", () => {
 
     expect(BLUEBUBBLES_WEBHOOK_RECONCILE_INTERVAL_MS).toBe(180_000)
     expect(first).toBe(second)
-    expect(fetchImpl).toHaveBeenCalledOnce()
+    await vi.waitFor(() => expect(fetchImpl).toHaveBeenCalledOnce())
     resolveFetch(json({ data: [hook(1, desiredUrl())] }))
     await expect(first).resolves.toMatchObject({ ok: true, state: "exact" })
 
     timerCallback()
-    expect(fetchImpl).toHaveBeenCalledTimes(2)
+    await vi.waitFor(() => expect(fetchImpl).toHaveBeenCalledTimes(2))
     const periodic = reconciler.reconcileNow()
     reconciler.close()
     reconciler.close()
@@ -365,5 +374,43 @@ describe("BlueBubbles webhook registration", () => {
       vi.unstubAllGlobals()
       vi.useRealTimers()
     }
+  })
+})
+
+describe("BlueBubbles webhook registration host account", () => {
+  it("confirms the server's account before reading hooks, with the registration's own server and fetch", async () => {
+    const fetchImpl = vi.fn().mockResolvedValue(json({ data: [hook(7, desiredUrl())] }))
+    hostAccount.verify.mockClear()
+
+    await expect(inspectBlueBubblesWebhookRegistration(input, { fetchImpl })).resolves.toMatchObject({ ok: true, state: "exact" })
+
+    expect(hostAccount.verify).toHaveBeenCalledWith({
+      agent: "slugger",
+      hostUsername: "clawdbot",
+      serverUrl: "http://bluebubbles.local:1234",
+      password: "super-secret",
+      requestTimeoutMs: 1_234,
+      fetchImpl,
+    })
+  })
+
+  it.each([
+    ["inspect", inspectBlueBubblesWebhookRegistration],
+    ["reconcile", reconcileBlueBubblesWebhookRegistration],
+  ] as const)("refuses to %s hooks on a server running under another account, touching nothing", async (_label, run) => {
+    const fetchImpl = vi.fn()
+    hostAccount.verify.mockRejectedValueOnce(new Error('the BlueBubbles server runs under macOS account "arimendelow"'))
+
+    const result = await run(input, { fetchImpl })
+
+    expect(result).toMatchObject({ ok: false, state: "host-account-refused", changed: false })
+    expect(result.detail).toContain('macOS account "arimendelow"')
+    expect(fetchImpl).not.toHaveBeenCalled()
+  })
+
+  it("reports a non-Error refusal as text", async () => {
+    hostAccount.verify.mockRejectedValueOnce("not confirmed")
+    await expect(inspectBlueBubblesWebhookRegistration(input, { fetchImpl: vi.fn() }))
+      .resolves.toMatchObject({ state: "host-account-refused", detail: "not confirmed" })
   })
 })

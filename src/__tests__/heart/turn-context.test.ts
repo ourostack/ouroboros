@@ -564,7 +564,7 @@ describe("buildTurnContext", () => {
 
   it("detects configured senses from runtime config and enabled config", async () => {
     mockLoadAgentConfig.mockReturnValue({
-      senses: { cli: { enabled: true }, teams: { enabled: true }, bluebubbles: { enabled: true }, mail: { enabled: true }, voice: { enabled: true }, a2a: { enabled: true }, workbench: { enabled: true } },
+      senses: { cli: { enabled: true }, teams: { enabled: true }, bluebubbles: { enabled: true, hostUsername: "clawdbot" }, mail: { enabled: true }, voice: { enabled: true }, a2a: { enabled: true }, workbench: { enabled: true } },
       mcpServers: { ouro_workbench: { command: "/Applications/Ouro Workbench.app/Contents/MacOS/OuroWorkbenchMCP" } },
     })
     mockLoadConfig.mockReturnValue({
@@ -748,7 +748,7 @@ describe("buildTurnContext", () => {
 
   it("detects BlueBubbles from cached machine runtime credentials when local config is stale", async () => {
     mockLoadAgentConfig.mockReturnValue({
-      senses: { cli: { enabled: true }, teams: { enabled: false }, bluebubbles: { enabled: true }, mail: { enabled: false } },
+      senses: { cli: { enabled: true }, teams: { enabled: false }, bluebubbles: { enabled: true, hostUsername: "clawdbot" }, mail: { enabled: false } },
     })
     mockLoadConfig.mockReturnValue({})
     mockReadMachineRuntimeCredentialConfig.mockReturnValue({
@@ -778,6 +778,23 @@ describe("buildTurnContext", () => {
     ])
   })
 
+  it("does not report BlueBubbles ready when no host account is declared, because every send would be refused", async () => {
+    mockLoadAgentConfig.mockReturnValue({
+      senses: { cli: { enabled: true }, bluebubbles: { enabled: true } },
+    })
+    mockLoadConfig.mockReturnValue({})
+    mockReadMachineRuntimeCredentialConfig.mockReturnValue({
+      ok: true,
+      itemPath: "vault:test-agent:runtime/machines/test-machine/config",
+      revision: "runtime_bluebubbles",
+      updatedAt: "2026-04-28T00:00:00.000Z",
+      config: { bluebubbles: { serverUrl: "http://127.0.0.1:18789", password: "secret" } },
+    })
+
+    const ctx = await buildTurnContext(makeInput())
+    expect(ctx.senseStatusLines).not.toContain("- BlueBubbles: ready")
+  })
+
   it("reports Shepherd ready only when this machine holds a terminal host connection", async () => {
     mockLoadAgentConfig.mockReturnValue({ senses: { cli: { enabled: true }, shepherd: { enabled: true } } })
     mockLoadConfig.mockReturnValue({})
@@ -799,7 +816,7 @@ describe("buildTurnContext", () => {
 
   it("detects needs_config when senses enabled but runtime config is incomplete", async () => {
     mockLoadAgentConfig.mockReturnValue({
-      senses: { cli: { enabled: true }, teams: { enabled: true }, bluebubbles: { enabled: true }, mail: { enabled: true }, voice: { enabled: true } },
+      senses: { cli: { enabled: true }, teams: { enabled: true }, bluebubbles: { enabled: true, hostUsername: "clawdbot" }, mail: { enabled: true }, voice: { enabled: true } },
     })
     mockLoadConfig.mockReturnValue({ teams: {}, bluebubbles: {} })
 
