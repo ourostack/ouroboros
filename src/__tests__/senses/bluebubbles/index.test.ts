@@ -3801,6 +3801,7 @@ describe("BlueBubbles sense runtime", () => {
       serverUrl: "http://bluebubbles.local",
       password: "secret-token",
       requestTimeoutMs: 30000,
+      fresh: true,
     })
   })
 
@@ -3810,6 +3811,14 @@ describe("BlueBubbles sense runtime", () => {
     })
     const bluebubbles = await import("../../../senses/bluebubbles")
     const handler = bluebubbles.createBlueBubblesWebhookHandler({ verifyHostAccount })
+    const stringRes = createMockResponse()
+    await bluebubbles.createBlueBubblesWebhookHandler({ verifyHostAccount: async () => { throw "not confirmed" } })(
+      createMockRequest("POST", "/bluebubbles-webhook?password=secret-token", dmThreadPayload) as any,
+      stringRes.res as any,
+    )
+    await stringRes.done
+    expect(stringRes.res.statusCode).toBe(403)
+    expect(JSON.parse(stringRes.getBody()).error).toBe("not confirmed")
 
     const unauthorizedRes = createMockResponse()
     await handler(createMockRequest("POST", "/bluebubbles-webhook?password=wrong-token", dmThreadPayload) as any, unauthorizedRes.res as any)
@@ -9064,6 +9073,39 @@ describe("BlueBubbles sense runtime", () => {
     )
     expect(mocks.emitNervesEvent).not.toHaveBeenCalledWith(expect.objectContaining({
       event: "senses.bluebubbles_capture_recovery_error",
+    }))
+  })
+
+  it("leaves queued messages queued, reading nothing, while the server's host account is not confirmed", async () => {
+    const tempAgentRoot = makeTempDir()
+    const { getAgentRoot } = await import("../../../heart/identity")
+    vi.mocked(getAgentRoot).mockReturnValue(tempAgentRoot)
+    await queueStoredSemanticCapture({
+      ...dmTopLevelPayload,
+      data: { ...dmTopLevelPayload.data, guid: "queued-host-refused-guid", text: "queued while refused" },
+    })
+    const verifyHostAccount = vi.fn(async () => {
+      throw 'the BlueBubbles server runs under macOS account "arimendelow"'
+    })
+    const createClient = vi.fn()
+
+    const bluebubbles = await import("../../../senses/bluebubbles")
+    const result = await bluebubbles.recoverQueuedBlueBubblesMessages({ verifyHostAccount, createClient })
+
+    expect(result).toEqual({ recovered: 0, skipped: 0, failed: 0, pendingRecoveryCount: 1 })
+    expect(createClient).not.toHaveBeenCalled()
+    expect(mocks.runAgent).not.toHaveBeenCalled()
+    expect(mocks.emitNervesEvent).toHaveBeenCalledWith(expect.objectContaining({
+      event: "senses.bluebubbles_recovery_host_refused",
+      meta: { pendingRecoveryCount: 1, reason: 'the BlueBubbles server runs under macOS account "arimendelow"' },
+    }))
+    await expect(bluebubbles.recoverQueuedBlueBubblesMessages({
+      verifyHostAccount: async () => { throw new Error("could not confirm the server's account") },
+      createClient,
+    })).resolves.toEqual({ recovered: 0, skipped: 0, failed: 0, pendingRecoveryCount: 1 })
+    expect(mocks.emitNervesEvent).toHaveBeenCalledWith(expect.objectContaining({
+      event: "senses.bluebubbles_recovery_host_refused",
+      meta: { pendingRecoveryCount: 1, reason: "could not confirm the server's account" },
     }))
   })
 

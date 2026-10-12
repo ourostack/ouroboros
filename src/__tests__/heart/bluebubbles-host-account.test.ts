@@ -57,6 +57,11 @@ describe("normalizeSenses hostUsername", () => {
       .toEqual({ enabled: true, hostUsername: "clawdbot" })
   })
 
+  it("trims surrounding whitespace from hostUsername", () => {
+    expect(normalizeSenses({ bluebubbles: { enabled: true, hostUsername: " clawdbot " } }, "/x/agent.json").bluebubbles)
+      .toEqual({ enabled: true, hostUsername: "clawdbot" })
+  })
+
   it("leaves hostUsername absent when not set", () => {
     expect(normalizeSenses({ bluebubbles: { enabled: true } }, "/x/agent.json").bluebubbles).toEqual({ enabled: true })
   })

@@ -267,7 +267,7 @@ export function normalizeSenses(value: unknown, configFile: string): AgentSenses
         })
         throw new Error(`agent.json at ${configFile}: senses.bluebubbles.hostUsername must be a non-empty string.`)
       }
-      defaults[senseName] = { enabled, hostUsername }
+      defaults[senseName] = { enabled, hostUsername: hostUsername.trim() }
       continue
     }
     defaults[senseName] = { enabled }

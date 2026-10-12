@@ -407,4 +407,10 @@ describe("BlueBubbles webhook registration host account", () => {
     expect(result.detail).toContain('macOS account "arimendelow"')
     expect(fetchImpl).not.toHaveBeenCalled()
   })
+
+  it("reports a non-Error refusal as text", async () => {
+    hostAccount.verify.mockRejectedValueOnce("not confirmed")
+    await expect(inspectBlueBubblesWebhookRegistration(input, { fetchImpl: vi.fn() }))
+      .resolves.toMatchObject({ state: "host-account-refused", detail: "not confirmed" })
+  })
 })

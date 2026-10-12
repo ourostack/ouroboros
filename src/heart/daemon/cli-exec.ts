@@ -4440,7 +4440,7 @@ function declaredBlueBubblesHosts(bundlesRoot: string): Array<{ agent: string; h
     const bluebubbles = parsed.senses?.bluebubbles
     if (bluebubbles?.enabled !== true) continue
     const hostUsername = typeof bluebubbles.hostUsername === "string" && bluebubbles.hostUsername.trim()
-      ? bluebubbles.hostUsername
+      ? bluebubbles.hostUsername.trim()
       : undefined
     declared.push({ agent: entry.name.slice(0, -".ouro".length), ...(hostUsername ? { hostUsername } : {}) })
   }

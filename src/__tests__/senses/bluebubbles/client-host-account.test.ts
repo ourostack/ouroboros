@@ -75,6 +75,17 @@ describe("BlueBubbles client host account gate", () => {
     expect(server.actions).toEqual([])
   })
 
+  it("refuses to read messages when the server runs under another account", async () => {
+    const server = fakeServer("arimendelow")
+    global.fetch = server.fetch
+    const client = createBlueBubblesClient(config, channel)
+    const refusal = 'runs under macOS account "arimendelow"'
+    await expect(client.queryRecentMessagesWithMetadata!({ limit: 5 })).rejects.toThrow(refusal)
+    await expect(client.getMessageText!("msg-guid")).rejects.toThrow(refusal)
+    await expect(client.repairEvent({ messageGuid: "msg-guid", requiresRepair: true, eventType: "message" } as any)).rejects.toThrow(refusal)
+    expect(server.actions).toEqual([])
+  })
+
   it("fails the health check when the server runs under another account", async () => {
     const server = fakeServer("arimendelow")
     global.fetch = server.fetch

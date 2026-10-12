@@ -175,7 +175,7 @@ function readAgentSenses(agentJsonPath: string): { senses: AgentSensesConfig; wo
       const hostUsername = (rawSense as Record<string, unknown>).hostUsername
       // A missing or malformed host account stays unset, so BlueBubbles fails closed.
       if (sense === "bluebubbles" && typeof hostUsername === "string" && hostUsername.trim().length > 0) {
-        defaults[sense] = { enabled, hostUsername }
+        defaults[sense] = { enabled, hostUsername: hostUsername.trim() }
       }
     }
   }

@@ -446,12 +446,15 @@ const defaultDeps: RuntimeDeps = {
   },
   recordProcessed: recordProcessedBlueBubblesMessage,
   withSessionTurnLease,
+  // Incoming events recheck every time, like sends, so a server that takes over
+  // the same URL under another account is refused immediately.
   verifyHostAccount: () => verifyBlueBubblesServerAccount({
     agent: getAgentName(),
     hostUsername: loadAgentConfig().senses?.bluebubbles.hostUsername,
     serverUrl: getBlueBubblesConfig().serverUrl,
     password: getBlueBubblesConfig().password,
     requestTimeoutMs: getBlueBubblesChannelConfig().requestTimeoutMs,
+    fresh: true,
   }),
 }
 
@@ -3370,6 +3373,21 @@ export async function recoverQueuedBlueBubblesMessages(
   if (initialPending === 0) {
     return { recovered: 0, skipped: 0, failed: 0, pendingRecoveryCount: 0 }
   }
+  // Recovery re-reads queued messages from the server, so it only runs against
+  // a server confirmed to be under the agent's own host account. Queued work
+  // stays queued (not failed) until it is.
+  try {
+    await resolvedDeps.verifyHostAccount()
+  } catch (error) {
+    emitNervesEvent({
+      level: "warn",
+      component: "senses",
+      event: "senses.bluebubbles_recovery_host_refused",
+      message: "skipped bluebubbles recovery because the server's host account is not confirmed",
+      meta: { pendingRecoveryCount: initialPending, reason: error instanceof Error ? error.message : String(error) },
+    })
+    return { recovered: 0, skipped: 0, failed: 0, pendingRecoveryCount: initialPending }
+  }
 
   const captured = await recoverCapturedBlueBubblesInboundMessages(resolvedDeps, options)
   options.lifecycleSignal?.throwIfAborted()
@@ -3855,7 +3873,7 @@ export function createBlueBubblesWebhookHandler(
     try {
       await { ...defaultDeps, ...deps }.verifyHostAccount()
     } catch (error) {
-      writeJson(res, 403, { handled: false, notifiedAgent: false, error: (error as Error).message })
+      writeJson(res, 403, { handled: false, notifiedAgent: false, error: error instanceof Error ? error.message : String(error) })
       return
     }
 

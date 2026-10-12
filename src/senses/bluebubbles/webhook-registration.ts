@@ -220,7 +220,7 @@ async function refuseForeignHostAccount(
     })
     return null
   } catch (error) {
-    return result("host-account-refused", (error as Error).message)
+    return result("host-account-refused", error instanceof Error ? error.message : String(error))
   }
 }
 

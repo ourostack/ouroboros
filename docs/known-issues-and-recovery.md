@@ -23,7 +23,7 @@ Provider-readiness pings are explicit readiness checks, not private turns.
 
 **Cause**: the agent's `senses.bluebubbles.hostUsername` is unset, or the BlueBubbles server that `bluebubbles.serverUrl` reaches runs under a different macOS account. Ouro fails closed here so an agent never sends iMessages from, or reads incoming iMessages of, a human's personal Apple ID.
 
-**Recovery**: run the BlueBubbles server under the declared account and point `bluebubbles.serverUrl` at it (`ouro connect bluebubbles --agent <name>` sets this up). If `hostUsername` is unset, a human sets it to the macOS account signed in to the agent's own Apple ID; agents should not choose it themselves. To remove a BlueBubbles server installed under the wrong account, run `ouro bluebubbles host remove` in that account.
+**Recovery**: run the BlueBubbles server under the declared account and point `bluebubbles.serverUrl` at it (`ouro connect bluebubbles --agent <name>` sets this up). If `hostUsername` is unset, a human sets it to the macOS account signed in to the agent's own Apple ID; agents should not choose it themselves. To remove a BlueBubbles server installed under the wrong account, run `ouro bluebubbles host remove` in that account. Ouro does not remove webhooks it registered on that server before this check existed, because it will not act on a server under another account; until the server is removed, it keeps posting events that Ouro answers with HTTP 403 and ignores.
 
 Do not send a synthetic iMessage just to make the diagnostic green. A real new inbound message may add evidence later, but diagnosis itself remains read-only.
 

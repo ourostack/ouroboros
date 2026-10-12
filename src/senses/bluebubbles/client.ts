@@ -634,6 +634,8 @@ export function createBlueBubblesClient(
     ): Promise<BlueBubblesMessageQueryResult> {
       const limit = Math.max(1, Math.min(100, Math.floor(params.limit ?? 50)))
       const offset = Math.max(0, Math.floor(params.offset ?? 0))
+      // Reading messages is gated like sending: never read another account's iMessages.
+      await assertHostAccount()
       const url = buildBlueBubblesApiUrl(config.serverUrl, "/api/v1/message/query", config.password)
 
       emitNervesEvent({
@@ -755,6 +757,7 @@ export function createBlueBubblesClient(
         },
       })
 
+      await assertHostAccount()
       const url = buildRepairUrl(config.serverUrl, event.messageGuid, config.password)
 
       try {
@@ -905,6 +908,7 @@ export function createBlueBubblesClient(
     },
 
     async getMessageText(messageGuid: string): Promise<string | null> {
+      await assertHostAccount()
       const url = buildRepairUrl(config.serverUrl, messageGuid, config.password)
       try {
         const response = await fetch(url, {

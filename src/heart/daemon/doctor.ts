@@ -557,7 +557,7 @@ export async function checkSenses(deps: DoctorDeps): Promise<DoctorCategory> {
           continue
         }
 
-        const hostUsername = typeof senseObj.hostUsername === "string" && senseObj.hostUsername.trim() ? senseObj.hostUsername : ""
+        const hostUsername = typeof senseObj.hostUsername === "string" ? senseObj.hostUsername.trim() : ""
         if (!hostUsername) {
           checks.push({
             label: `${agentDir} bluebubbles host account`,
