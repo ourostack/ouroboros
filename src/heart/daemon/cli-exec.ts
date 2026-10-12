@@ -6,6 +6,7 @@
  */
 
 import { execFileSync, execSync, spawn } from "child_process"
+import { checkBlueBubblesHostTarget, currentOsAccount } from "../bluebubbles-host-account"
 import { randomUUID } from "crypto"
 import type { EventEmitter } from "events"
 import * as fs from "fs"
@@ -3517,7 +3518,12 @@ function normalizeWebhookPath(value: string, fallback: string): string {
   return trimmed.startsWith("/") ? trimmed : `/${trimmed}`
 }
 
-function enableAgentSense(agent: string, sense: "bluebubbles" | "teams" | "mail" | "voice" | "a2a" | "telegram", deps: OuroCliDeps): void {
+function enableAgentSense(
+  agent: string,
+  sense: "bluebubbles" | "teams" | "mail" | "voice" | "a2a" | "telegram",
+  deps: OuroCliDeps,
+  extra: Record<string, unknown> = {},
+): void {
   const { configPath } = readAgentConfigForAgent(agent, deps.bundlesRoot)
   const raw = JSON.parse(fs.readFileSync(configPath, "utf-8")) as Record<string, unknown>
   const senses = raw.senses && typeof raw.senses === "object" && !Array.isArray(raw.senses)
@@ -3535,7 +3541,7 @@ function enableAgentSense(agent: string, sense: "bluebubbles" | "teams" | "mail"
     voice: senses.voice ?? { enabled: false },
     a2a: senses.a2a ?? { enabled: false },
     telegram: senses.telegram ?? { enabled: false },
-    [sense]: { ...existing, enabled: true },
+    [sense]: { ...existing, ...extra, enabled: true },
   }
   fs.writeFileSync(configPath, `${JSON.stringify(raw, null, 2)}\n`, "utf-8")
 }
@@ -4409,6 +4415,33 @@ async function executeConnectTeams(agent: string, deps: OuroCliDeps): Promise<st
   })
 }
 
+/** Host accounts declared by every bundle agent that has BlueBubbles enabled. */
+function declaredBlueBubblesHosts(bundlesRoot: string): Array<{ agent: string; hostUsername?: string }> {
+  let entries: fs.Dirent[]
+  try {
+    entries = fs.readdirSync(bundlesRoot, { withFileTypes: true })
+  } catch {
+    return []
+  }
+  const declared: Array<{ agent: string; hostUsername?: string }> = []
+  for (const entry of entries) {
+    if (!entry.isDirectory() || !entry.name.endsWith(".ouro")) continue
+    let parsed: { senses?: { bluebubbles?: { enabled?: unknown; hostUsername?: unknown } } }
+    try {
+      parsed = JSON.parse(fs.readFileSync(path.join(bundlesRoot, entry.name, "agent.json"), "utf-8"))
+    } catch {
+      continue
+    }
+    const bluebubbles = parsed.senses?.bluebubbles
+    if (bluebubbles?.enabled !== true) continue
+    const hostUsername = typeof bluebubbles.hostUsername === "string" && bluebubbles.hostUsername.trim()
+      ? bluebubbles.hostUsername
+      : undefined
+    declared.push({ agent: entry.name.slice(0, -".ouro".length), ...(hostUsername ? { hostUsername } : {}) })
+  }
+  return declared
+}
+
 export async function setupBlueBubblesHostForConnect(
   bridgeUsername: string,
   serverUrl: string,
@@ -4509,8 +4542,18 @@ async function executeConnectBlueBubbles(agent: string, deps: OuroCliDeps): Prom
   const ownHandles = ownHandlesRaw
     ? ownHandlesRaw.split(",").map((h) => h.trim()).filter((h) => h.length > 0)
     : []
-  const bridgeUsernameAnswer = (await promptInput(`BlueBubbles macOS account username [${os.userInfo().username}]: `)).trim()
-  const bridgeUsername = bridgeUsernameAnswer || os.userInfo().username
+  // iMessage sends as whichever Apple ID the host account is signed in to, so the
+  // host account is declared explicitly (never defaulted to whoever runs this).
+  const declaredHost = readAgentConfigForAgent(agent, deps.bundlesRoot).config.senses?.bluebubbles.hostUsername
+  const bridgeUsernameAnswer = (await promptInput(declaredHost
+    ? `BlueBubbles macOS account username [${declaredHost}]: `
+    : `macOS account signed in to ${agent}'s own Apple ID (BlueBubbles host): `)).trim()
+  const bridgeUsername = bridgeUsernameAnswer || declaredHost
+  if (!bridgeUsername) throw new Error(`BlueBubbles host account cannot be blank: name the macOS account signed in to ${agent}'s own Apple ID`)
+  if (declaredHost) {
+    const hostCheck = checkBlueBubblesHostTarget(bridgeUsername, [{ agent, hostUsername: declaredHost }])
+    if (!hostCheck.ok) throw new Error(hostCheck.message)
+  }
   const machineId = currentMachineId(deps)
 
   const progress = createHumanCommandProgress(deps, "connect bluebubbles")
@@ -4547,7 +4590,7 @@ async function executeConnectBlueBubbles(agent: string, deps: OuroCliDeps): Prom
     progress.updateDetail("storing local machine config")
     stored = await mergeMachineRuntimeCredentialConfig(agent, machineId, blueBubblesPatch, providerCliNow(deps))
     progress.updateDetail("enabling BlueBubbles in agent.json")
-    enableAgentSense(agent, "bluebubbles", deps)
+    enableAgentSense(agent, "bluebubbles", deps, { hostUsername: bridgeUsername })
     progress.completePhase("saving BlueBubbles attachment", "secret stored")
     daemonApply = await runCommandProgressPhase(
       progress,
@@ -7750,6 +7793,12 @@ export async function runOuroCli(args: string[], deps: OuroCliDeps = createDefau
   }
 
   if (command.kind === "bluebubbles.host") {
+    if (command.action === "install" || command.action === "repair") {
+      // Only an account some agent declares as its iMessage host may get a BlueBubbles server.
+      const targetUsername = command.target?.username ?? currentOsAccount().username
+      const hostCheck = checkBlueBubblesHostTarget(targetUsername, declaredBlueBubblesHosts(deps.bundlesRoot ?? getAgentBundlesRoot()))
+      if (!hostCheck.ok) throw new Error(hostCheck.message)
+    }
     if (command.target) {
       installBlueBubblesHostSharedHelper({
         assetPath: path.resolve(__dirname, "../../../assets/bluebubbles-host"),

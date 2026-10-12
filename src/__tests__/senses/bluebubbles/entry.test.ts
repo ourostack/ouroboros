@@ -6,6 +6,12 @@ function mockMachineIdentity(machineId = "machine_test"): void {
   }))
 }
 
+function mockHostAccount(result: { ok: true } | { ok: false; reason: "unset" | "mismatch"; message: string } = { ok: true }): void {
+  vi.doMock("../../../heart/bluebubbles-host-account", () => ({
+    checkBlueBubblesSenseHostAccount: vi.fn(() => result),
+  }))
+}
+
 function mockRuntimeCredentials(overrides: Record<string, unknown> = {}): void {
   vi.doMock("../../../heart/runtime-credentials", () => ({
     waitForRuntimeCredentialBootstrap: vi.fn(async () => false),
@@ -40,6 +46,7 @@ describe("bluebubbles entrypoint", () => {
     vi.doMock("../../../senses/bluebubbles/index", () => ({ startBlueBubblesApp }))
     vi.doMock("../../../heart/daemon/runtime-logging", () => ({ configureDaemonRuntimeLogger }))
     mockMachineIdentity()
+    mockHostAccount()
     mockRuntimeCredentials()
 
     const argvSpy = vi.spyOn(process, "argv", "get").mockReturnValue([
@@ -69,6 +76,7 @@ describe("bluebubbles entrypoint", () => {
     vi.doMock("../../../senses/bluebubbles/index", () => ({ startBlueBubblesApp }))
     vi.doMock("../../../heart/daemon/runtime-logging", () => ({ configureDaemonRuntimeLogger }))
     mockMachineIdentity()
+    mockHostAccount()
     mockRuntimeCredentials({
       refreshRuntimeCredentialConfig,
     })
@@ -102,6 +110,7 @@ describe("bluebubbles entrypoint", () => {
     vi.doMock("../../../senses/bluebubbles/index", () => ({ startBlueBubblesApp }))
     vi.doMock("../../../heart/daemon/runtime-logging", () => ({ configureDaemonRuntimeLogger }))
     mockMachineIdentity("machine_entry")
+    mockHostAccount()
     mockRuntimeCredentials({
       refreshMachineRuntimeCredentialConfig,
     })
@@ -134,6 +143,7 @@ describe("bluebubbles entrypoint", () => {
     vi.doMock("../../../senses/bluebubbles/index", () => ({ startBlueBubblesApp }))
     vi.doMock("../../../heart/daemon/runtime-logging", () => ({ configureDaemonRuntimeLogger }))
     mockMachineIdentity("machine_entry")
+    mockHostAccount()
     mockRuntimeCredentials({
       refreshMachineRuntimeCredentialConfig,
     })
@@ -170,6 +180,7 @@ describe("bluebubbles entrypoint", () => {
     vi.doMock("../../../senses/bluebubbles/index", () => ({ startBlueBubblesApp }))
     vi.doMock("../../../heart/daemon/runtime-logging", () => ({ configureDaemonRuntimeLogger }))
     mockMachineIdentity("machine_entry")
+    mockHostAccount()
     mockRuntimeCredentials({
       waitForRuntimeCredentialBootstrap,
       readMachineRuntimeCredentialConfig: vi.fn(() => ({ ok: true, config: { bluebubbles: { serverUrl: "http://localhost", password: "pw" } } })),
@@ -221,6 +232,7 @@ describe("bluebubbles entrypoint", () => {
     vi.doMock("../../../senses/bluebubbles/index", () => ({ startBlueBubblesApp }))
     vi.doMock("../../../heart/daemon/runtime-logging", () => ({ configureDaemonRuntimeLogger: vi.fn() }))
     mockMachineIdentity()
+    mockHostAccount()
     mockRuntimeCredentials()
     const argvSpy = vi.spyOn(process, "argv", "get").mockReturnValue([
       "node",
@@ -269,6 +281,32 @@ describe("bluebubbles entrypoint", () => {
     consoleError.mockRestore()
   })
 
+  it("refuses to start under the wrong macOS account and exits cleanly", async () => {
+    vi.resetModules()
+
+    const startBlueBubblesApp = vi.fn(() => createAlreadyClosedServer())
+    vi.doMock("../../../senses/bluebubbles/index", () => ({ startBlueBubblesApp }))
+    vi.doMock("../../../heart/daemon/runtime-logging", () => ({ configureDaemonRuntimeLogger: vi.fn() }))
+    mockMachineIdentity()
+    mockRuntimeCredentials()
+    mockHostAccount({ ok: false, reason: "mismatch", message: "BlueBubbles refused for agent \"slugger\": wrong account" })
+
+    const consoleError = vi.spyOn(console, "error").mockImplementation(() => undefined)
+    const exitSpy = vi.spyOn(process, "exit").mockImplementation((() => undefined) as never)
+    const argvSpy = vi.spyOn(process, "argv", "get").mockReturnValue(["node", "bluebubbles-entry.js", "--agent", "slugger"])
+
+    await import("../../../senses/bluebubbles/entry")
+    await vi.waitFor(() => {
+      expect(consoleError).toHaveBeenCalledWith("BlueBubbles refused for agent \"slugger\": wrong account")
+      expect(exitSpy).toHaveBeenCalledWith(0)
+    })
+    expect(startBlueBubblesApp).not.toHaveBeenCalled()
+
+    argvSpy.mockRestore()
+    exitSpy.mockRestore()
+    consoleError.mockRestore()
+  })
+
   it("prints BlueBubbles startup errors and exits", async () => {
     vi.resetModules()
 
@@ -279,6 +317,7 @@ describe("bluebubbles entrypoint", () => {
     vi.doMock("../../../senses/bluebubbles/index", () => ({ startBlueBubblesApp }))
     vi.doMock("../../../heart/daemon/runtime-logging", () => ({ configureDaemonRuntimeLogger }))
     mockMachineIdentity()
+    mockHostAccount()
     mockRuntimeCredentials()
 
     const consoleError = vi.spyOn(console, "error").mockImplementation(() => undefined)
@@ -311,6 +350,7 @@ describe("bluebubbles entrypoint", () => {
     vi.doMock("../../../senses/bluebubbles/index", () => ({ startBlueBubblesApp }))
     vi.doMock("../../../heart/daemon/runtime-logging", () => ({ configureDaemonRuntimeLogger }))
     mockMachineIdentity()
+    mockHostAccount()
     mockRuntimeCredentials()
 
     const consoleError = vi.spyOn(console, "error").mockImplementation(() => undefined)

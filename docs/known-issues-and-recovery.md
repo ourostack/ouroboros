@@ -17,6 +17,14 @@ Provider-readiness pings are explicit readiness checks, not private turns.
 
 **Recovery**: run `ouro connect bluebubbles --agent <name>` again. Standard setup repairs the native host and reconciles one owned `[*]` callback without deleting unrelated BlueBubbles webhooks. The daemon retries that reconciliation every 180 seconds. For a dedicated BlueBubbles macOS account, run only the fresh nonce-bound `human-required` command returned by Ouro in that logged-in account's Terminal, then run the matching `ouro bluebubbles host collect --request-id <id>` from the origin account. A collected launchd receipt is point-in-time evidence; current process and HTTP checks remain authoritative for current serving health.
 
+### BlueBubbles refused: wrong or undeclared macOS host account
+
+**Symptom**: `ouro status` shows the BlueBubbles sense as not configured with `BlueBubbles refused for agent "<name>": ...`, or `ouro bluebubbles host install|repair` exits with `BlueBubbles host setup refused for macOS account "<account>"`.
+
+**Cause**: the agent's `senses.bluebubbles.hostUsername` names a different macOS account than the one running Ouro, or it is unset. Ouro fails closed here so an agent never sends iMessages from a human's personal Apple ID.
+
+**Recovery**: run Ouro for that agent from the declared account (for example `ouro move <agent>` there), or set `senses.bluebubbles.hostUsername` in the agent's `agent.json` to the macOS account signed in to the agent's own Apple ID. To remove a BlueBubbles server installed under the wrong account, run `ouro bluebubbles host remove` in that account.
+
 Do not send a synthetic iMessage just to make the diagnostic green. A real new inbound message may add evidence later, but diagnosis itself remains read-only.
 
 ## Doctor reports a hosted-mail cache mismatch

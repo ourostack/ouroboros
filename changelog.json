@@ -2,6 +2,12 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.912",
+      "changes": [
+        "BlueBubbles (iMessage) only runs under the macOS account the agent declares as senses.bluebubbles.hostUsername. The sense, ouro connect bluebubbles and ouro bluebubbles host install|repair refuse any other account, and fail closed when the account is unset, so an agent never sends from a human's personal Apple ID."
+      ]
+    },
+    {
       "version": "0.1.0-alpha.911",
       "changes": [
         "The Butler can set a wake time on an await with any ISO timestamp that names its time zone, such as 2026-10-12T12:09:00Z; it is stored in canonical form instead of being refused."

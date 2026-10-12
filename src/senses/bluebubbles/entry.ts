@@ -27,6 +27,16 @@ import("../../heart/runtime-credentials")
     waitForRuntimeCredentialBootstrap,
   }) => {
     await waitForRuntimeCredentialBootstrap(agentName)
+    const { checkBlueBubblesSenseHostAccount } = await import("../../heart/bluebubbles-host-account")
+    const hostAccount = checkBlueBubblesSenseHostAccount(agentName)
+    if (!hostAccount.ok) {
+      // Wrong macOS account means the wrong Apple ID: refuse, and exit 0 so the
+      // process manager does not treat a deliberate refusal as a crash to restart.
+      // eslint-disable-next-line no-console -- operator-facing refusal for the sense process
+      console.error(hostAccount.message)
+      process.exit(0)
+      return
+    }
     const { loadOrCreateMachineIdentity } = await import("../../heart/machine-identity")
     const machine = loadOrCreateMachineIdentity()
     const machineConfig = readMachineRuntimeCredentialConfig(agentName)

@@ -1,4 +1,5 @@
 import * as fs from "fs"
+import { checkBlueBubblesHostAccount, currentOsAccount } from "../bluebubbles-host-account"
 import * as os from "os"
 import * as path from "path"
 import { emitNervesEvent } from "../../nerves/runtime"
@@ -169,6 +170,11 @@ function readAgentSenses(agentJsonPath: string): { senses: AgentSensesConfig; wo
     const enabled = (rawSense as Record<string, unknown>).enabled
     if (typeof enabled === "boolean") {
       defaults[sense] = { enabled }
+      const hostUsername = (rawSense as Record<string, unknown>).hostUsername
+      // A missing or malformed host account stays unset, so BlueBubbles fails closed.
+      if (sense === "bluebubbles" && typeof hostUsername === "string" && hostUsername.trim().length > 0) {
+        defaults[sense] = { enabled, hostUsername }
+      }
     }
   }
 
@@ -298,7 +304,13 @@ function senseFactsFromRuntimeConfig(
         }
   }
 
-  if (senses.bluebubbles.enabled) {
+  const blueBubblesHost = senses.bluebubbles.enabled
+    ? checkBlueBubblesHostAccount(agent, senses.bluebubbles.hostUsername, currentOsAccount())
+    : null
+  if (blueBubblesHost && !blueBubblesHost.ok) {
+    // Never spawn iMessage under an account whose Apple ID is not the agent's own.
+    base.bluebubbles = { configured: false, detail: blueBubblesHost.message }
+  } else if (senses.bluebubbles.enabled) {
     const missing: string[] = []
     if (!textField(bluebubbles, "serverUrl")) missing.push("bluebubbles.serverUrl")
     if (!textField(bluebubbles, "password")) missing.push("bluebubbles.password")
@@ -1000,15 +1012,21 @@ export class DaemonSenseManager implements DaemonSenseManagerLike {
     if (!context || !context.senses[parsed.sense].enabled) return null
 
     const managedName = `${parsed.agent}:${parsed.sense}`
+    const currentRow = (): DaemonSenseRow | null =>
+      this.listSenseRows().find((row) => row.agent === parsed.agent && row.sense === parsed.sense) ?? null
     const runtimeConfig = await refreshRuntimeCredentialConfig(parsed.agent, { preserveCachedOnFailure: true })
     const needsMachineConfig = needsMachineRuntimeConfig(parsed.agent, parsed.sense)
     const machineRuntimeConfig = needsMachineConfig
       ? await refreshMachineRuntimeCredentialConfig(parsed.agent, currentMachineId(), { preserveCachedOnFailure: true })
       : readMachineRuntimeCredentialConfig(parsed.agent)
     context.facts = senseFactsFromRuntimeConfig(parsed.agent, context.senses, runtimeConfig, machineRuntimeConfig, context.workbenchHasStaleBundleEntry)
+    if (parsed.sense === "bluebubbles" && !context.facts.bluebubbles.configured) {
+      // Never start iMessage that is not ready, including under the wrong macOS account.
+      return currentRow()
+    }
     this.processManager.resetAgentFailureState?.(managedName)
     await this.processManager.startAgent?.(managedName)
-    return this.listSenseRows().find((row) => row.agent === parsed.agent && row.sense === parsed.sense) ?? null
+    return currentRow()
   }
 
   listSenseRows(): DaemonSenseRow[] {

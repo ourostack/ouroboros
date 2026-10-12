@@ -29,6 +29,12 @@ export type LogLevel = "debug" | "info" | "warn" | "error"
 export type LogSinkType = "terminal" | "ndjson"
 export interface AgentSenseConfig {
   enabled: boolean
+  /**
+   * BlueBubbles only: the macOS account signed in to the agent's own Apple ID.
+   * The iMessage sense and BlueBubbles host setup refuse to run under any
+   * other account, and refuse when this is unset.
+   */
+  hostUsername?: string
 }
 
 export interface AgentSensesConfig {
@@ -247,6 +253,21 @@ export function normalizeSenses(value: unknown, configFile: string): AgentSenses
         meta: { path: configFile, sense: senseName, enabled: enabled ?? null },
       })
       throw new Error(`agent.json at ${configFile} must include senses.${senseName}.enabled as boolean.`)
+    }
+    const hostUsername = (rawSense as Record<string, unknown>).hostUsername
+    if (senseName === "bluebubbles" && hostUsername !== undefined) {
+      if (typeof hostUsername !== "string" || hostUsername.trim().length === 0) {
+        emitNervesEvent({
+          level: "error",
+          event: "config_identity.error",
+          component: "config/identity",
+          message: "agent config has invalid BlueBubbles host username",
+          meta: { path: configFile, sense: senseName },
+        })
+        throw new Error(`agent.json at ${configFile}: senses.bluebubbles.hostUsername must be a non-empty string.`)
+      }
+      defaults[senseName] = { enabled, hostUsername }
+      continue
     }
     defaults[senseName] = { enabled }
   }
