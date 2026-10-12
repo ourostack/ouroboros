@@ -9232,7 +9232,7 @@ describe("provider CLI command execution", () => {
 
     expect(result).toBe("connect cancelled.")
     const prompt = joinedPrompt(prompts)
-    expect(prompt).toContain("\x1b[38;2;30;61;40m─ \x1b[0m")
+    expect(prompt).toContain("\x1b[38;2;84;130;100m─ \x1b[0m")
     expect(stripAnsi(prompt)).toContain("Connect Slugger")
   })
 
