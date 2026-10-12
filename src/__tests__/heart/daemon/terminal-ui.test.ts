@@ -500,6 +500,49 @@ describe("terminal ui", () => {
     expect(output).toContain("No active steps yet.")
   })
 
+  it("uses only colours that read on light and on dark terminals, and leaves main text in the terminal's own colour", () => {
+    emitTestEvent("terminal ui light and dark contrast")
+
+    const output = [
+      renderTerminalBoard({
+        isTTY: true,
+        columns: 74,
+        masthead: { subtitle: "Vault unlocked." },
+        title: "Vault unlocked",
+        summary: "This machine can read the vault again.",
+        sections: [{ title: "What changed", lines: ["Unlock: stored for this machine"] }],
+        actions: [{ label: "Start Ouro", command: "ouro up", actor: "human-required", recommended: true }],
+        prompt: "Continue?",
+      }),
+      renderTerminalOperation({
+        isTTY: true,
+        columns: 74,
+        title: "Starting Ouro",
+        currentStep: { label: "provider checks", detailLines: ["checking"] },
+        steps: [{ label: "done", status: "done" }, { label: "bad", status: "failed", detail: "why" }, { label: "next", status: "pending" }],
+      }),
+    ].join("\n")
+    const channel = (value: number): number => {
+      const scaled = value / 255
+      return scaled <= 0.03928 ? scaled / 12.92 : ((scaled + 0.055) / 1.055) ** 2.4
+    }
+    const luminance = (rgb: number[]): number => 0.2126 * channel(rgb[0]!) + 0.7152 * channel(rgb[1]!) + 0.0722 * channel(rgb[2]!)
+    const contrast = (a: number[], b: number[]): number => {
+      const [light, dark] = [luminance(a), luminance(b)].sort((x, y) => y - x)
+      return (light! + 0.05) / (dark! + 0.05)
+    }
+    const colours = [...new Set([...output.matchAll(/\x1b\[38;2;(\d+);(\d+);(\d+)m/g)].map((match) => match.slice(1, 4).join(";")))]
+    expect(colours.length).toBeGreaterThan(2)
+    for (const colour of colours) {
+      const rgb = colour.split(";").map(Number)
+      expect(contrast(rgb, [255, 255, 255]), `${colour} on a white terminal`).toBeGreaterThan(3)
+      expect(contrast(rgb, [24, 24, 24]), `${colour} on a dark terminal`).toBeGreaterThan(3)
+    }
+    // Section text carries no colour of its own.
+    expect(output).toContain("Unlock: stored for this machine")
+    expect(output).not.toMatch(/\x1b\[38;2;[\d;]+mUnlock: stored/)
+  })
+
   it("keeps non-TTY boards free of ANSI escapes", () => {
     emitTestEvent("terminal ui plain board rendering")
 
