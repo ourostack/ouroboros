@@ -2,6 +2,12 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.907",
+      "changes": [
+        "When Ari hands his chat to someone, the Butler greets them in that same chat and starts the interview, instead of asking them to message it somewhere else first."
+      ]
+    },
+    {
       "version": "0.1.0-alpha.906",
       "changes": [
         "Shepherd's judge now finds the verdict when a model thinks aloud in <think> blocks or writes a sentence around its JSON, so judges on models such as MiniMax stop letting every return through as unclear.",
