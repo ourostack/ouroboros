@@ -26,7 +26,7 @@ export const QUIET_MS = 8_000
 /** A hooked agent mid-turn: long enough that a stop hook or a spinner normally speaks before the quiet screen does. */
 export const HOOKED_QUIET_MS = 20_000
 /** A quiet terminal judged as still working or not an agent is checked less often, doubling up to this. */
-export const QUIET_MAX_MS = 300_000
+export const QUIET_MAX_MS = 60_000
 const POLL_LINES = 40
 const RECONNECT_DELAYS_MS = [1_000, 2_000, 5_000, 10_000, 30_000]
 const STOP_HOOKS = new Set(["Stop", "StopFailure"])
