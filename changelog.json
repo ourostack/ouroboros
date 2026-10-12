@@ -5,7 +5,8 @@
       "version": "0.1.0-alpha.906",
       "changes": [
         "Shepherd's judge now finds the verdict when a model thinks aloud in <think> blocks or writes a sentence around its JSON, so judges on models such as MiniMax stop letting every return through as unclear.",
-        "When the judge's answer still is not JSON, the returns log shows the first 160 characters of what it said, so the next model mismatch is visible."
+        "When the judge's answer still is not JSON, the returns log shows the first 160 characters of what it said, so the next model mismatch is visible.",
+        "A key Shepherd would press is refused when its JSON was found inside the model's prose, since the screen may have planted it, and a logged unparseable answer is passed through the secret filter first."
       ]
     },
     {
