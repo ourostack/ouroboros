@@ -184,7 +184,7 @@ export interface ToolContext {
     readonly actor?: Readonly<{ friendId: string; trustLevel: import("@ouro.bot/friends").TrustLevel; sessionEventId: string }>;
   };
   /** Delivery checks on settle answers, opted in per agent profile (the Sanctuary tool context sets both). Absent means off. */
-  answerGates?: { sourceGrounding?: boolean; brevity?: boolean };
+  answerGates?: { sourceGrounding?: boolean; brevity?: boolean; shelfClaims?: boolean };
   /** Set only by the A2A server after it admitted a delegated principal command. */
   readonly delegatedCommand?: Readonly<import("../a2a/delegated-command").DelegatedCommandContext>;
   commerceAuthority?: {

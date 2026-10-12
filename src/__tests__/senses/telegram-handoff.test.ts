@@ -1,0 +1,51 @@
+import * as fs from "node:fs"
+import * as os from "node:os"
+import * as path from "node:path"
+import { describe, expect, it } from "vitest"
+import { OWNER_CHAT_HANDOFF_MS, ownerChatHandedOff, readHeldNotices, writeHeldNotices } from "../../senses/telegram-handoff"
+
+const at = Date.parse("2026-10-11T04:27:28.812Z")
+const event = (role: string, content: string, observedAt: string | null = new Date(at).toISOString(), recordedAt = new Date(at).toISOString()) => ({
+  id: "e", sequence: 1, role, content, name: null, toolCallId: null, toolCalls: [], attachments: [],
+  time: { authoredAt: null, authoredAtSource: "unknown", observedAt, observedAtSource: "ingest", recordedAt, recordedAtSource: "save" },
+  relations: { replyToEventId: null, threadRootEventId: null, references: [], toolCallId: null, supersedesEventId: null, redactsEventId: null },
+  provenance: { captureKind: "live", legacyVersion: null, sourceMessageIndex: null },
+}) as any
+
+describe("ownerChatHandedOff", () => {
+  it("is on within the window after Ari hands the chat over, and off after it", () => {
+    const events = [event("user", "hello pal! I’m going to hand you to my wife, Rachel."), event("user", "i want something silly")]
+    expect(ownerChatHandedOff(events, at + 60_000)).toBe(true)
+    expect(ownerChatHandedOff(events, at + OWNER_CHAT_HANDOFF_MS)).toBe(false)
+    expect(ownerChatHandedOff([event("user", "say hi to her!", null)], at + 60_000)).toBe(true)
+    expect(ownerChatHandedOff([event("user", "passing you over to Sam")], at + 60_000)).toBe(true)
+    expect(ownerChatHandedOff([event("user", "handing you off to Sam")], at + 60_000)).toBe(true)
+  })
+
+  it("stays on while the handed-off conversation keeps going, and goes off two hours after its last message", () => {
+    const later = new Date(at + OWNER_CHAT_HANDOFF_MS).toISOString()
+    const events = [event("user", "say hi to her!"), event("assistant", "Hi Rachel!", later), event("user", "something silly please", later)]
+    expect(ownerChatHandedOff(events, at + OWNER_CHAT_HANDOFF_MS + 60_000)).toBe(true)
+    expect(ownerChatHandedOff(events, at + 2 * OWNER_CHAT_HANDOFF_MS)).toBe(false)
+    expect(ownerChatHandedOff([event("user", "say hi to her!", null, "not a date")], at)).toBe(false)
+  })
+
+  it("is off with no handoff, or when only the Butler said the words", () => {
+    expect(ownerChatHandedOff([], at)).toBe(false)
+    expect(ownerChatHandedOff([event("user", "what's up?"), event("assistant", "I'll hand you to Ari")], at)).toBe(false)
+  })
+})
+
+describe("held notices", () => {
+  it("round-trips, and reads a missing or malformed file as empty", () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "held-notices-"))
+    const file = path.join(dir, "telegram", "held.json")
+    expect(readHeldNotices(file)).toEqual([])
+    writeHeldNotices(file, [{ key: "k", text: "t" }])
+    expect(readHeldNotices(file)).toEqual([{ key: "k", text: "t" }])
+    fs.writeFileSync(file, JSON.stringify([{ key: "k" }, null, { key: "a", text: "b" }]))
+    expect(readHeldNotices(file)).toEqual([{ key: "a", text: "b" }])
+    fs.writeFileSync(file, JSON.stringify({ not: "a list" }))
+    expect(readHeldNotices(file)).toEqual([])
+  })
+})

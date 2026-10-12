@@ -13,19 +13,16 @@ function catalogResult(totalItems = 11_870, titles: string[] = ["Moonstruck", "T
 
 describe("Sanctuary media catalog contract", () => {
   it.each([
-    "Of the films you have in stock, do you have a favorite?",
     "Do we have the movie Moonstruck?",
-    "What movie should I watch?",
     "First we gotta get you able to see the lib or this is moot.",
-    "What is in Jellyfin?",
-    "Find Moonstruck in Jellyfin",
-    "Find Running in Jellyfin",
     "Is Running in Jellyfin?",
+    "How many films do we have?",
+    "Show me three films from the shelf.",
   ])("requires the restricted catalog read for household media shelf questions (%s)", (request) => {
     const contract = sanctuaryMediaCatalogRequiredToolCalls(request, ["unraid_get_system", ...requiredTools, "settle"])
     expect(contract).toMatchObject({
       names: requiredTools,
-      retryMessage: expect.stringMatching(/sanctuary_search_media_catalog.*catalog evidence/is),
+      retryMessage: expect.stringMatching(/sanctuary_search_media_catalog/),
       validateRequiredToolResult: expect.any(Function),
     })
     expect(emitNervesEvent).toHaveBeenLastCalledWith(expect.objectContaining({
@@ -54,8 +51,20 @@ describe("Sanctuary media catalog contract", () => {
     expect(sanctuaryMediaCatalogRequiredToolCalls(request, requiredTools)).toBeUndefined()
   })
 
-  it("retains catalog grounding when a service request also asks for a movie", () => {
-    expect(sanctuaryMediaCatalogRequiredToolCalls("Restart Jellyfin and recommend a movie.", requiredTools)).toMatchObject({ names: requiredTools })
+  // 2026-10-11, Rach handoff: forcing a lookup and a returned title into every reply threw away the greeting and the questions.
+  // Picking and browsing are conversation; the shelf-claim answer gate holds what a reply says is on the shelf.
+  it.each([
+    "hello pal! I’m going to hand you to my wife, Rachel. I’d love for you to help her pick a movie from our Jellyfin library.",
+    "i want something silly and feel good. my originally idea was bay watch",
+    "Of the films you have in stock, do you have a favorite?",
+    "What movie should I watch?",
+    "What fall films should we add that we're missing?",
+    "Restart Jellyfin and recommend a movie.",
+    "What is in Jellyfin?",
+    "Find Moonstruck in Jellyfin",
+    "What films do we have?",
+  ])("leaves picking and browsing to the conversation (%s)", (request) => {
+    expect(sanctuaryMediaCatalogRequiredToolCalls(request, ["settle", ...requiredTools, "media_search"])).toBeUndefined()
   })
 
   it("keeps a simple visibility answer direct, compact, and in household language", () => {
@@ -169,35 +178,7 @@ describe("Sanctuary media catalog contract", () => {
     expect(lookup.validateRequiredToolResult?.("sanctuary_search_media_catalog", catalogResult(11_870, ["Up"]), { query: "Up" })).toBe(true)
     expect(lookup.validateTerminalAnswer("Yes—Up is on the shelf.")).toBeUndefined()
     expect(lookup.validateTerminalAnswer("Yes—a superb shelf choice.")).toContain("requested title")
-
-    const favorite = sanctuaryMediaCatalogRequiredToolCalls("Which movie is your favorite?", requiredTools)!
-    expect(favorite.validateRequiredToolResult?.("sanctuary_search_media_catalog", catalogResult(11_870, ["It"]), { query: "It" })).toBe(true)
-    expect(favorite.validateTerminalAnswer("It. Ominous, economical, effective.")).toBeUndefined()
-    expect(favorite.validateTerminalAnswer("With superb taste, as usual.")).toContain("returned by the current catalog")
-  })
-
-  it("allows a decisive grounded favorite while rejecting self-erasure and hedging", () => {
-    const contract = sanctuaryMediaCatalogRequiredToolCalls("Of the films you have in stock, do you have a favorite?", requiredTools)!
-    expect(contract.validateRequiredToolResult?.("sanctuary_search_media_catalog", catalogResult(11_870, ["The Princess Bride"]), { query: "The Princess Bride" })).toBe(true)
-    expect(contract.validateTerminalAnswer("The Princess Bride. Nimble, quotable, and suspiciously good for household morale.")).toBeUndefined()
-    expect(contract.validateTerminalAnswer("Moonstruck. A tidy bit of household magic.")).toContain("returned by the current catalog")
-    for (const answer of [
-      "I can’t watch it, but I’d pick The Princess Bride.",
-      "I don't actually watch films, but if I had to pick, perhaps The Princess Bride.",
-      "The Princess Bride. What are you in the mood for?",
-    ]) expect(contract.validateTerminalAnswer(answer), answer).toBeDefined()
-  })
-
-  it("allows an addition only after an exact absent-title search", () => {
-    const contract = sanctuaryMediaCatalogRequiredToolCalls("What movie should we add?", requiredTools)!
-    expect(contract.validateToolCallBeforeDispatch?.("sanctuary_search_media_catalog", {})).toContain("candidate title")
-    expect(contract.validateToolCallBeforeDispatch?.("sanctuary_search_media_catalog", { query: "Spirited Away" })).toBeUndefined()
-    expect(contract.validateRequiredToolResult?.("sanctuary_search_media_catalog", catalogResult(11_870, []), { query: "Spirited Away" })).toBe(true)
-    expect(contract.validateTerminalAnswer("Spirited Away. The shelf is poorer without it.")).toBeUndefined()
-    expect(contract.validateTerminalAnswer("I added Spirited Away to the request queue.")).toBeDefined()
-    const present = sanctuaryMediaCatalogRequiredToolCalls("What movie should we add?", requiredTools)!
-    expect(present.validateRequiredToolResult?.("sanctuary_search_media_catalog", catalogResult(11_870, ["Spirited Away"]), { query: "Spirited Away" })).toBe(true)
-    expect(present.validateTerminalAnswer("Spirited Away. The shelf is poorer without it.")).toContain("shows that candidate is absent")
+    expect(lookup.validateTerminalAnswer("Yes—Up is on the shelf. Want me to put it on?")).toBeUndefined()
   })
 
   it("keeps other catalog requests useful without visibility-only limits", () => {
@@ -210,18 +191,6 @@ describe("Sanctuary media catalog contract", () => {
     expect(contract.validateTerminalAnswer("Moonstruck, Arrival, Alien, and Heat are on the shelf.")).toContain("returned catalog titles")
     const numeric = sanctuaryMediaCatalogRequiredToolCalls("List 3 movies from the library.", requiredTools)!
     expect(numeric.retryMessage).toContain("limit 3")
-    const openEnded = sanctuaryMediaCatalogRequiredToolCalls("Sample the movie catalog.", requiredTools)!
-    expect(openEnded.retryMessage).toContain("base any named titles")
-    expect(openEnded.validateRequiredToolResult?.("sanctuary_search_media_catalog", catalogResult(11_870, ["Moonstruck", "Arrival"]), {})).toBe(true)
-    expect(openEnded.validateTerminalAnswer("Moonstruck and Arrival are on the shelf.")).toBeUndefined()
-    expect(openEnded.validateTerminalAnswer("Moonstruck and Heat are on the shelf.")).toContain("returned catalog titles")
-    expect(openEnded.validateTerminalAnswer("Heat and Solaris are on the shelf.")).toContain("returned catalog titles")
-
-    const broad = sanctuaryMediaCatalogRequiredToolCalls("What films do we have?", requiredTools)!
-    expect(broad.validateRequiredToolResult?.("sanctuary_search_media_catalog", catalogResult(11_870, ["Moonstruck", "Arrival"]), {})).toBe(true)
-    expect(broad.validateTerminalAnswer("Moonstruck and Arrival are on the shelf.")).toBeUndefined()
-    expect(broad.validateTerminalAnswer("Heat and Solaris are on the shelf.")).toContain("returned catalog titles")
-
     const count = sanctuaryMediaCatalogRequiredToolCalls("How many films do we have?", requiredTools)!
     expect(count.validateRequiredToolResult?.("sanctuary_search_media_catalog", catalogResult(11_870), {})).toBe(true)
     expect(count.validateTerminalAnswer("There are 11,870 movies and episodes on the shelf.")).toBeUndefined()
@@ -272,70 +241,37 @@ function mediaSearchResult(items: { title: string; year?: number; on_shelf?: boo
 
 describe("Sanctuary media catalog contract with the media tools", () => {
   it("requires media_search instead of the legacy catalog read when it is advertised", () => {
-    const contract = sanctuaryMediaCatalogRequiredToolCalls("What movie should I watch?", ["settle", ...requiredTools, ...mediaTools])
+    const contract = sanctuaryMediaCatalogRequiredToolCalls("Show me 3 films from the shelf.", ["settle", ...requiredTools, ...mediaTools])
     expect(contract?.names).toEqual(["media_search"])
     expect(contract?.retryMessage).toMatch(/media_search/u)
   })
 
   it("keeps the legacy catalog read when the media tools are absent", () => {
-    const contract = sanctuaryMediaCatalogRequiredToolCalls("What movie should I watch?", ["settle", ...requiredTools])
+    const contract = sanctuaryMediaCatalogRequiredToolCalls("Show me 3 films from the shelf.", ["settle", ...requiredTools])
     expect(contract?.names).toEqual(requiredTools)
   })
 
-  it("accepts media_search output as catalog evidence and grounds the choice in a returned title", () => {
-    const contract = sanctuaryMediaCatalogRequiredToolCalls("What movie should I watch?", ["settle", ...mediaTools])!
-    expect(contract.validateRequiredToolResult("media_search", mediaSearchResult([{ title: "Little Women" }, { title: "Knives Out" }]), {})).toBe(true)
-    expect(contract.validateTerminalAnswer("Little Women — New England autumn, candlelight, and real leaves.")).toBeUndefined()
-    expect(contract.validateTerminalAnswer("Try Autumn Sonata; it suits the mood.")).toMatch(/current catalog evidence/u)
-  })
-
-  it("allows recommending an addition that media_search returned as not on the shelf", () => {
-    const contract = sanctuaryMediaCatalogRequiredToolCalls("What fall films should we add that we're missing?", ["settle", ...mediaTools])!
-    expect(contract.validateRequiredToolResult("media_search", mediaSearchResult([{ title: "Practical Magic", on_shelf: false }]), {})).toBe(true)
-    expect(contract.validateTerminalAnswer("Practical Magic isn't on the shelf — worth adding for a coastal New England autumn.")).toBeUndefined()
-  })
-
-  it("refuses an addition the evidence shows is already on the shelf", () => {
-    const contract = sanctuaryMediaCatalogRequiredToolCalls("What fall films should we add that we're missing?", ["settle", ...mediaTools])!
-    contract.validateRequiredToolResult("media_search", mediaSearchResult([{ title: "Knives Out", on_shelf: true }]), {})
-    expect(contract.validateTerminalAnswer("Knives Out is worth adding.")).toMatch(/not on the shelf/u)
-  })
-
-  it("permits an added-it claim only when a media request tool is advertised", () => {
-    const withRequest = sanctuaryMediaCatalogRequiredToolCalls("What fall films should we add that we're missing?", ["settle", ...mediaTools])!
-    withRequest.validateRequiredToolResult("media_search", mediaSearchResult([{ title: "Practical Magic", on_shelf: false }]), {})
-    expect(withRequest.validateTerminalAnswer("Practical Magic wasn't here, so I requested it.")).toBeUndefined()
-
-    const withoutRequest = sanctuaryMediaCatalogRequiredToolCalls("What fall films should we add that we're missing?", ["settle", "media_search"])!
-    withoutRequest.validateRequiredToolResult("media_search", mediaSearchResult([{ title: "Practical Magic", on_shelf: false }]), {})
-    expect(withoutRequest.validateTerminalAnswer("Practical Magic wasn't here, so I requested it.")).toMatch(/no media-request action/u)
-  })
-
-  it("does not force a title query on media_search, which browses by filters", () => {
-    const contract = sanctuaryMediaCatalogRequiredToolCalls("What fall films should we add that we're missing?", ["settle", ...mediaTools])!
-    expect(contract.validateToolCallBeforeDispatch("media_search", { genres: "Drama" })).toBeUndefined()
-  })
-
   it("rejects a media_search result that is not usable evidence", () => {
-    const contract = sanctuaryMediaCatalogRequiredToolCalls("What movie should I watch?", ["settle", ...mediaTools])!
+    const contract = sanctuaryMediaCatalogRequiredToolCalls("Show me 3 films from the shelf.", ["settle", ...mediaTools])!
     expect(contract.validateRequiredToolResult("media_search", JSON.stringify({ error: "credentials_unavailable" }), {})).toBe(false)
   })
 })
 
 describe("Sanctuary media catalog contract media_search edge cases", () => {
   it("treats malformed media_search output as unusable evidence", () => {
-    const contract = sanctuaryMediaCatalogRequiredToolCalls("What movie should I watch?", ["settle", ...mediaTools])!
+    const contract = sanctuaryMediaCatalogRequiredToolCalls("Show me 3 films from the shelf.", ["settle", ...mediaTools])!
     expect(contract.validateRequiredToolResult("media_search", "not json at all", {})).toBe(false)
   })
 
   it("skips media_search entries that are not usable titles", () => {
-    const contract = sanctuaryMediaCatalogRequiredToolCalls("What movie should I watch?", ["settle", ...mediaTools])!
+    const contract = sanctuaryMediaCatalogRequiredToolCalls("Show me 3 films from the shelf.", ["settle", ...mediaTools])!
     const noisy = JSON.stringify({
       matched: 2,
       items: [null, "not an object", ["array"], { title: 42 }, { title: "   " }, { title: "Little Women", on_shelf: true }],
     })
     expect(contract.validateRequiredToolResult("media_search", noisy, {})).toBe(true)
     expect(contract.validateTerminalAnswer("Little Women it is.")).toBeUndefined()
+    expect(contract.validateToolCallBeforeDispatch("media_search", { genres: "Drama" })).toBeUndefined()
   })
 
   it("grounds a general shelf listing in the titles media_search returned", () => {

@@ -9,7 +9,7 @@ import { emitNervesEvent } from "../nerves/runtime"
 
 export const BRIEF_MAX_CHARS = 600
 
-const ASK_BRIEF = /\b(?:be|keep(?:\s+(?:it|things|replies|answers|your\s+(?:replies|answers|messages)))?|stay)\s+(?:more\s+)?(?:brief|briefer|concise|terse|short|shorter|tight|compact)\b|\bbrevity\b|\bno\s+sections\b|\bshort\s+(?:answers|replies|messages)\b/i
+const ASK_BRIEF = /\b(?:be|keep(?:\s+(?:it|things|replies|responses|answers|your\s+(?:replies|responses|answers|messages)))?|stay)\s+(?:more\s+)?(?:brief|briefer|concise|terse|short|shorter|tight|compact)\b|\bbrevity\b|\bno\s+sections\b|\bshort\s+(?:answers|replies|messages)\b/i
 const ASK_LONGER = /\b(?:be\s+(?:more\s+)?(?:detailed|thorough|verbose|longer)|(?:more|full)\s+detail|elaborate|longer\s+(?:answers|replies)|you\s+can\s+be\s+longer|in\s+depth)\b/i
 
 const NEGATED_BRIEF = /\b(?:don['’]?t|do\s+not|stop\s+being|no\s+more|not\s+so|less|never)\s+(?:be\s+|being\s+|so\s+|that\s+)*(?:brief|concise|terse|short|brevity|tight)\b/i
@@ -28,7 +28,6 @@ export function briefStyleRequested(userTexts: readonly string[], savedPreferenc
 
 const HEADER = /^#{1,6}\s/m
 const BOLD_LABEL = /(?:^|\n)\s*(?:[-*•]\s+)?\*\*[^*\n]{1,60}\*\*[ \t]*(?::|—|-|\n|$)|\*\*[^*\n]{1,60}:\*\*/
-const SENTENCE_END = /[.!?]+(?:\s+|$)/
 
 /** What is wrong with an answer that should be brief, or null when it is fine. */
 export function briefStyleViolation(answer: string, intent?: string): string | null {
@@ -37,8 +36,6 @@ export function briefStyleViolation(answer: string, intent?: string): string | n
   const problems: string[] = []
   if (HEADER.test(answer) || BOLD_LABEL.test(answer)) problems.push("no markdown headers or bold section labels, just plain sentences")
   if (answer.length > BRIEF_MAX_CHARS) problems.push(`about ${BRIEF_MAX_CHARS} characters at most (this one is ${answer.length})`)
-  const sentences = answer.split(SENTENCE_END).filter((part) => part.trim())
-  if (sentences.length > 1 && answer.trimEnd().endsWith("?")) problems.push("no closing question tacked onto an answer; answer and stop")
   if (problems.length > 0) emitNervesEvent({ level: "warn", component: "engine", event: "engine.brief_style_violation", message: "a reply broke the person's brevity request", meta: { problems: problems.length, length: answer.length } })
   return problems.length === 0 ? null : `the person asked you to be brief. rewrite the reply: ${problems.join("; ")}. say the answer once, in your own voice, keep every warning, uncertainty and required confirmation, cut everything else, and settle again.`
 }

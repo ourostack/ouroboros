@@ -246,8 +246,8 @@ export function createSanctuaryToolContext(agentName: string): Pick<ToolContext,
   })
   return {
     agentRoot,
-    // The Sanctuary profile opts in to the settle-time checks: replies about a work are held to what the turn looked up, and a brevity request is honored.
-    answerGates: { sourceGrounding: true, brevity: true },
+    // The Sanctuary profile opts in to the settle-time checks: replies about a work are held to what the turn looked up, "on the shelf" to what a library lookup found, and a brevity request is honored.
+    answerGates: { sourceGrounding: true, brevity: true, shelfClaims: true },
     sanctuary: {
       // The model-facing list carries the steward policy's desired state beside docker's: a container kept stopped on purpose is not a fault. The restart path reads the plain list.
       listContainers: acceptanceRead("unraid_list_containers", async (signal?: AbortSignal) => annotateContainers(signal ? await reads.listContainers(signal) : await reads.listContainers(), currentStewardPolicy(agentRoot), Date.now())),

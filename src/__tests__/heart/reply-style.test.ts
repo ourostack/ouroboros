@@ -3,7 +3,7 @@ import { BRIEF_MAX_CHARS, briefStyleRequested, briefStyleViolation, savedCommuni
 
 describe("briefStyleRequested", () => {
   it("is on when the person asks for brevity in their own words", () => {
-    for (const text of ["be brief from now on, no sections", "keep replies short", "keep it tight please", "can you be more concise", "more brevity", "no sections", "short answers only", "be terse"]) {
+    for (const text of ["be brief from now on, no sections", "keep replies short", "keep it tight please", "can you be more concise", "more brevity", "no sections", "short answers only", "be terse", "Keep your responses brief to the point"]) {
       expect(briefStyleRequested([text]), text).toBe(true)
     }
   })
@@ -44,8 +44,10 @@ describe("briefStyleViolation", () => {
     expect(briefStyleViolation("**Status:** all fine")).toContain("section")
     expect(briefStyleViolation("- **Status** — fine")).toContain("section")
   })
-  it("rejects a question tacked onto an answer, but not a lone clarifying question", () => {
-    expect(briefStyleViolation("It is nine. Want me to set a reminder?")).toContain("question")
+  // 2026-10-11, Rach handoff: a closing-question rule threw away the questions Ari asked the Butler to ask her.
+  it("lets a brief reply end with a question", () => {
+    expect(briefStyleViolation("Hi Rachel! Silly or swoony tonight?")).toBeNull()
+    expect(briefStyleViolation("It is nine. Want me to set a reminder?")).toBeNull()
   })
   it("does not apply to a blocked reply or to a reply that asks for a confirmation or a choice", () => {
     const long = `## Plan\n${"y".repeat(BRIEF_MAX_CHARS)}. Want me to go on?`
@@ -61,7 +63,6 @@ describe("briefStyleViolation", () => {
     const error = briefStyleViolation(`## Plan\n${"y".repeat(BRIEF_MAX_CHARS)}. Want more?`)!
     expect(error).toContain("section")
     expect(error).toContain(String(BRIEF_MAX_CHARS))
-    expect(error).toContain("question")
   })
 })
 

@@ -352,7 +352,7 @@ describe("psyche conversation cases (work-sourced, psyche-via-pr, no-click-quali
     expect(names(readback({ trace: [dry], reply: "dry run", before: empty({ radarrProfilesSha: null }), after: empty({ radarrProfilesSha: null }) }))).toEqual(["the Radarr quality profiles are unchanged"])
   })
 
-  it("brevity-honored: sends two messages and holds the last reply to length, headers, bold labels and a closing question", () => {
+  it("brevity-honored: sends two messages and holds the last reply to length, headers and bold labels", () => {
     expect(byId("brevity-honored").words).toHaveLength(2)
     expect(byId("brevity-honored").words[0]).toContain("be brief")
     const readback = (reply: unknown) => byId("brevity-honored").readback({ reply })
@@ -362,7 +362,18 @@ describe("psyche conversation cases (work-sourced, psyche-via-pr, no-click-quali
     expect(names(readback("## Heading\nok"))).toEqual(["the reply has no markdown headers"])
     expect(names(readback("**Status**\nok"))).toEqual(["the reply has no bold section labels"])
     expect(names(readback("**Status:** ok"))).toEqual(["the reply has no bold section labels"])
-    expect(names(readback("It is one film. Which do you want?"))).toEqual(["the reply does not end with a question"])
+    expect(names(readback("It is one film. Which do you want?"))).toEqual([])
+  })
+
+  it("rach-handoff: Ari's handoff words get a greeting and a question, with no runtime note", () => {
+    expect(byId("rach-handoff").words).toContain("say hi to her")
+    expect(byId("rach-handoff").words).toContain("Keep your responses brief")
+    const readback = (ctx: Record<string, unknown>) => byId("rach-handoff").readback(ctx)
+    expect(names(readback({ reply: "Hi Rachel! Silly and cosy, or loud and dumb-fun tonight?" }))).toEqual([])
+    expect(names(readback({ reply: "ignored", said: "Hey Rachel, what mood are you in?" }))).toEqual([])
+    expect(names(readback({ reply: "The Love Hypothesis (2026) is on the shelf and ready to play." }))).toEqual(["the reply greets her", "the reply asks her a question"])
+    expect(names(readback({ reply: "hi! got it. dummy bad, no markdown, no question at the end. just plain answer, cap it. what are you after?" }))).toEqual(["the reply carries no runtime note"])
+    expect(names(readback({}))).toEqual(["the reply greets her", "the reply asks her a question"])
   })
 
   it("sends every message of a conversation case in one context and reads back the last reply", async () => {
