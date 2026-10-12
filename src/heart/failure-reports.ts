@@ -210,11 +210,12 @@ export async function fileFailureReport(agentRoot: string, store: FriendStore, i
 
     const holders = (await escalationHolders(agentRoot, store, now)).filter((holder) => replay ? isReplayWindowOpen(agentRoot, holder.id, now) : !isReplayIdentity(agentRoot, holder.id))
     if (holders.length === 0) return { ok: false, reason: "no_escalation_peer", detail: replay ? "no replay escalation peer" : "no friend holds the escalation grant" } as const
-    const sameKind = existing.filter((record) => record.replay === replay)
-    if (overBudget(sameKind.map((record) => Date.parse(record.createdAt)), now, REPORTS_PER_HOUR, REPORTS_PER_DAY)) {
+    // Replay identities (the same check that keeps them out of owner policy) have no budget: every gate run files its reports, and the gate acknowledges them.
+    const real = existing.filter((record) => !record.replay)
+    if (!replay && overBudget(real.map((record) => Date.parse(record.createdAt)), now, REPORTS_PER_HOUR, REPORTS_PER_DAY)) {
       return { ok: false, reason: "rate_limited", detail: `at most ${REPORTS_PER_HOUR} new reports an hour and ${REPORTS_PER_DAY} a day` } as const
     }
-    if (overBudget(sameKind.filter((record) => record.origin.friendId === origin.friendId).map((record) => Date.parse(record.createdAt)), now, REPORTS_PER_ORIGIN_HOUR, REPORTS_PER_ORIGIN_DAY)) {
+    if (!replay && overBudget(real.filter((record) => record.origin.friendId === origin.friendId).map((record) => Date.parse(record.createdAt)), now, REPORTS_PER_ORIGIN_HOUR, REPORTS_PER_ORIGIN_DAY)) {
       return { ok: false, reason: "rate_limited", detail: `at most ${REPORTS_PER_ORIGIN_HOUR} new reports an hour and ${REPORTS_PER_ORIGIN_DAY} a day from one origin` } as const
     }
 

@@ -140,6 +140,13 @@ describe("filing failure reports", () => {
     expect(listFailureReports(agentRoot).filter((record) => record.replay)).toHaveLength(2)
   })
 
+  it("never rate-limits a replay identity, so back-to-back gate runs all file", async () => {
+    const { agentRoot, store } = await setup(["replay-escalation"])
+    replay.open.add("replay-principal")
+    replay.open.add("replay-escalation")
+    for (let i = 0; i < 12; i += 1) expect(await fileFailureReport(agentRoot, store, input({ error: `run ${i}`, origin: { friendId: "replay-principal", channel: "a2a", key: `ctx${i}` } }), T0 + i)).toMatchObject({ ok: true })
+  })
+
   it("reports no replay escalation peer when a replay conversation has none open", async () => {
     const { agentRoot, store } = await setup(["claude"])
     replay.open.add("replay-principal")

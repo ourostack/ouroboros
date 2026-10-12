@@ -413,7 +413,24 @@ describe("runSuite orchestration", () => {
     const suite = await gate.runSuite(host, { cases: ["chef-question"], windowMinutes: 12 })
     expect(log).toEqual(["open:12", "send:principal:false", "close"])
     expect(suite.results.map((r: { id: string; status: string }) => `${r.id}:${r.status}`)).toEqual(["chef-question:pass", "owner-policy-untouched:pass", "no-telegram:pass"])
-    expect(suite.summary).toEqual({ ok: true, passed: 3, skipped: 0, failed: [] })
+    expect(suite.summary).toEqual({ ok: true, passed: 3, skipped: 0, failed: [], warned: [] })
+  })
+
+  it("reports a model-quality case as a warning without failing the run, unless it was planted", async () => {
+    const { host } = fakeHost({ replies: () => ({ text: "eithan fits." }) })
+    const suite = await gate.runSuite(host, { cases: ["work-sourced"] })
+    expect(suite.results[0]).toMatchObject({ id: "work-sourced", status: "warn", label: "model-quality" })
+    expect(suite.summary).toMatchObject({ ok: true, failed: [], warned: ["work-sourced"] })
+    const planted = await gate.runSuite(fakeHost({ replies: () => ({ text: "x" }) }).host, { cases: ["work-sourced"], plant: "work-sourced" })
+    expect(planted.summary).toMatchObject({ ok: false, failed: ["work-sourced"] })
+  })
+
+  it("acknowledges the replay escalation peer's reports once a case is checked", async () => {
+    const { host, log } = fakeHost({ observations: [empty(), empty({ outbox: { e: ["r1", "r2"] } })] })
+    ;(host as Record<string, unknown>).friends = { principal: "p", stranger: "s", escalation: "e" }
+    ;(host as Record<string, unknown>).outbox = async (who: string, args: string[]) => { log.push(`${who}:${args.join(" ")}`); return { ok: true } }
+    await gate.runCase(host, gate.CASES.find((c: { id: string }) => c.id === "failure-report"))
+    expect(log).toContain("escalation:ack --ids r1,r2")
   })
 
   it("fails the run when a Telegram owner notice was recorded during it, and still closes the window", async () => {
