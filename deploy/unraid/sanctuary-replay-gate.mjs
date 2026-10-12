@@ -78,86 +78,11 @@ const SHELL_SEGMENT_SEPARATOR = /&&|\|\||[;|\n]/
 export const shellCommandOf = (args) => { try { const parsed = JSON.parse(String(args ?? "")); return typeof parsed?.command === "string" ? parsed.command : "" } catch { return String(args ?? "") } }
 export const isLookupCall = (call) => call.name === "web_search" || call.name === "media_search" || call.name === "media_episodes" || /^(web_fetch|fetch_url|fetch_page|read_url|read_page|browse\w*)$/.test(call.name) || (call.name === "shell" && shellCommandOf(call.args).split(SHELL_SEGMENT_SEPARATOR).some((segment) => SHELL_LOOKUP_SEGMENT.test(segment)))
 
-const HOUSE_WORDS = "Ari Butler Claude Code Sonarr Radarr Jellyfin Sanctuary Telegram Unraid Mendelow Cloud Calibre Books Jellyseerr Prowlarr calibre-web readarr lidarr overseerr tautulli sabnzbd deluge delugevpn binhex"
-const CAPITALISED = /\p{Lu}[\p{L}\p{M}'\u2019]*/gu
-// Ordinary words that open a sentence or a bullet; any other capitalised word there is a candidate name only with a sign it is one (the runtime check does the same, and a test keeps the two in step).
-export const STARTERS = new Set(("the this that these those it its i so and but or yes no not sure okay ok here there what when where why how who which if then now also both one two my your our we you he she they " +
-  "got thanks thank done understood noted good great fine sorry will can could would should let yeah yep nope right well anyway still just all any some each every for from with without to in on at by as is are " +
-  "was were do does did have has had maybe probably honestly unfortunately looks seems see check try use make keep stop start once first next last before after because since while though although however " +
-  "otherwise instead meanwhile today tonight tomorrow yesterday more most many other another such only even about over under between like nothing something everything anything everyone someone anyone " +
-  "overall basically actually generally usually often sometimes never always note tip warning update summary answer plan status result results source sources todo among per plus either neither whether yet nobody heads").split(" "))
-// Status verbs and media nouns that fill ordinary replies; never names, wherever they sit.
-export const EXEMPT_WORDS = new Set(("added adding found finding sent sending searching searched grabbing grabbed grab season seasons episode episodes queued queueing monitoring monitored imported importing " +
-  "downloading downloaded download downloads requested requesting removed removing deleted updated updating checking checked looking looked started starting finished finishing waiting stalled retrying retried " +
-  "marked set setting assigned assigning movie movies show shows book books series film films less tell ready missing available unavailable specials special").split(" "))
-export const LABEL_WORDS = new Set(("note notes tip warning update summary answer plan status result results source sources todo next why how what done reply title healthy snoozed down up broken failed pending " +
-  "running stopped paused queued cast characters authors books series shows movies episodes tldr caveat caveats options option").split(" "))
-export const STRICT_OPENERS = new Set("too mock very just same such quite rather really kind sort bit less fairly mostly almost simply much little big small high low hard pure plain cheap hmm hm well okay ok yes yeah sure right also great nice cool done sorry thanks thank perfect fine good alright first second third then now so short quick".split(" "))
-const STRICT_SIGN = /^(?:\s*[,:\u2014\u2013]|\s+(?:if|for)\s)/
-// Strict mode (the person asked for names): a sentence opener is a name when a comma, colon, dash, "if" or "for" follows it, it is not an ordinary opener or an -ing/-ly word, and the reply never uses it lowercase.
-export const strictOpenerName = (body, after, lower) => !(STRICT_OPENERS.has(lower) || /(?:ing|ly)$/.test(lower) || !STRICT_SIGN.test(after)) && !new RegExp(`(?<![\\p{L}\\p{N}])${escapeRegExp(lower)}(?![\\p{L}\\p{N}])`, "u").test(body)
-const CONTRACTION = /^\p{L}+['\u2019](?:ll|m|re|ve|d|t)$/iu
-const COPULA_AFTER = /^(?:['\u2019]s\b|\s+(?:is|was|are|were|isn['\u2019]t|wasn['\u2019]t|has|had|does|did)\b)/i
-
 const escapeRegExp = (text) => text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")
 /** Whole-word, case-insensitive, Unicode-aware: "Dross" is not found inside "Drossel". */
 export const mentionsWord = (haystack, name) => new RegExp(`(?<![\\p{L}\\p{N}])${escapeRegExp(name)}(?![\\p{L}\\p{N}])`, "iu").test(String(haystack ?? ""))
-
-const strip = (word) => word.replace(/['\u2019]s$/i, "").replace(/['\u2019]$/, "")
-const opensSentence = (body, index) => { const before = body.slice(0, index).replace(/[ \t"'\u201c\u2018(\[*_#>-]+$/u, ""); return before === "" || /[.!?:\n]$/.test(before) }
-function midSentenceCapitalised(body, lower) {
-  for (const match of body.matchAll(CAPITALISED)) if (strip(match[0]).toLowerCase() === lower && !opensSentence(body, match.index)) return true
-  return false
-}
-// A sentence-opening word is a name only with a sign: capitalised elsewhere mid-sentence, in a quote or emphasis, opening a bullet, followed by a colon, a copula or a list continuation.
-function startsLikeName(body, index, after, lower) {
-  const raw = index > 0 ? body[index - 1] : ""
-  if (/["\u201c\u2018'*_]/.test(raw)) return true
-  const line = body.slice(body.lastIndexOf("\n", index - 1) + 1, index)
-  if (/^\s*(?:[-*\u2022>]|\d+[.)])\s+$/.test(line)) return true
-  if (after.startsWith(":") || COPULA_AFTER.test(after) || /^(?:,|\s+and|\s*&)\s*\p{Lu}/u.test(after)) return true
-  return midSentenceCapitalised(body, lower)
-}
-
-// Lowercase names set apart in emphasis ("**fisher gesha** — ...") or at the head of a bullet ("- ozriel — ..."): the runtime check finds the same ones.
-const EMPHASIS_PHRASE = /^[a-z][a-z'\u2019-]*(?: [a-z][a-z'\u2019-]*){0,2}$/
-const EMPHASIS_SPAN = /(?<![\p{L}\p{N}*_])(\*\*|__|\*|_)(?=[^\s*_])([^*_\n]{3,40}?)\1(?![\p{L}\p{N}*_])/gu
-const LEAD_PHRASE = /^[ \t]*(?:[-*\u2022]|\d+[.)])[ \t]+([a-z][a-z'\u2019-]*(?: [a-z][a-z'\u2019-]*){0,2})[ \t]*(?::|\u2014|\u2013|[ ]-[ ])/gmu
-const EMPHASIS_STOP = new Set("important careful caution bottom line short version mostly definitely exactly really very free new heads tip others etc several various people them similar same".split(" "))
-export function lowercaseEmphasisNames(text, known = "") {
-  const body = String(text ?? "")
-  const out = []
-  const phrases = [...body.matchAll(EMPHASIS_SPAN)].map((match) => match[2].trim().replace(/[:,.]$/, "")).concat([...body.matchAll(LEAD_PHRASE)].map((match) => match[1]))
-  for (const phrase of phrases) {
-    if (!EMPHASIS_PHRASE.test(phrase) || /^[a-z0-9]+(?:-[a-z0-9]+)+$/.test(phrase)) continue
-    const words = phrase.split(" ")
-    if (words.some((word) => word.length < 3 || STARTERS.has(word) || EXEMPT_WORDS.has(word) || LABEL_WORDS.has(word) || EMPHASIS_STOP.has(word) || mentionsWord(known, word))) continue
-    if (!out.includes(phrase)) out.push(phrase)
-  }
-  return out
-}
-
-/** Capitalised words that read as names (not short acronyms, contractions or status words), skipping any word in `known`. */
-export function properNouns(text, known = "", strict = false) {
-  const seen = new Set()
-  const out = []
-  const body = String(text ?? "")
-  for (const match of body.matchAll(CAPITALISED)) {
-    const word = strip(match[0])
-    if (word.length < 3 || (word.length <= 5 && word === word.toUpperCase())) continue
-    const lower = word.toLowerCase()
-    if (lower === "the" || CONTRACTION.test(word) || EXEMPT_WORDS.has(lower) || seen.has(lower) || mentionsWord(known, word)) continue
-    const starts = opensSentence(body, match.index)
-    const after = body.slice(match.index + match[0].length)
-    if (starts && STARTERS.has(lower)) continue
-    if (starts && LABEL_WORDS.has(lower) && after.startsWith(":")) continue
-    if (starts && !(strict && strictOpenerName(body, after, lower)) && !startsLikeName(body, match.index, after, lower)) continue
-    seen.add(lower)
-    out.push(word)
-  }
-  for (const name of lowercaseEmphasisNames(body, known)) if (!seen.has(name.toLowerCase())) { seen.add(name.toLowerCase()); out.push(name) }
-  return out
-}
+/** The release's own name finder (src/heart/source-grounding.ts, the one the runtime gates replies with), run inside the container. */
+export const NAMES_SCRIPT = 'const [t,o]=JSON.parse(require("fs").readFileSync(0,"utf8"));console.log(JSON.stringify(require("/opt/ouro/dist/heart/source-grounding.js").namesIn(t,o)))'
 
 /** HH:MM (UTC) of the whole minute `minutes` after the start of `now`'s minute. */
 export function utcMinuteAhead(now, minutes) {
@@ -432,14 +357,15 @@ export const CASES = [
     words: WORK_WORDS,
     sender: "principal",
     delegated: false,
-    readback: ({ trace, timeline = [], reply, said, before, after }) => {
+    readback: ({ trace, timeline = [], reply, said, before, after, names }) => {
       const lookups = trace.filter(isLookupCall)
       const sources = lookups.map((entry) => entry.result).join("\n")
-      const known = `${WORK_WORDS} ${HOUSE_WORDS}`
+      // The sources are the reference, so a name they hold counts in a reply typed in lowercase; the person's own words are not the Butler's names.
+      const find = (text, prose) => names(text ?? "", { strict: true, prose, reference: sources }).filter((name) => !mentionsWord(WORK_WORDS, name))
       const firstLookup = timeline.findIndex((entry) => entry.kind === "call" && isLookupCall(entry))
-      const early = timeline.slice(0, firstLookup < 0 ? timeline.length : firstLookup).filter((entry) => entry.kind === "reply").flatMap((entry) => properNouns(entry.text, known, true))
+      const early = timeline.slice(0, firstLookup < 0 ? timeline.length : firstLookup).filter((entry) => entry.kind === "reply").flatMap((entry) => find(entry.text, true))
       // A name is grounded when every word of it appears in a lookup result ("fisher gesha" is found by "Fisher" and "Gesha" separately).
-      const ungrounded = properNouns(said || reply, known, true).filter((name) => !name.split(" ").every((word) => mentionsWord(sources, word)))
+      const ungrounded = find(said || reply, lookups.length === 0).filter((name) => !name.split(" ").every((word) => mentionsWord(sources, word)))
       return [
         check("a web lookup (search, fetch or read of a page) ran", lookups.length > 0, `${trace.length} tool calls`),
         check("no reply named the work's entities before the first lookup", early.length === 0, early.join(", ")),
@@ -698,7 +624,7 @@ export async function runCase(host, testCase, { plant } = {}) {
   const sink = after.sink.filter((line) => Date.parse(line.at) >= startedAt - 1000 && Date.parse(line.at) <= endedAt + 1000)
   let checks
   try {
-    checks = testCase.readback({ trace, timeline: extractTimeline(session), said, reply: sent.text ?? "", error: sent.error ?? null, before, after, sink, friends: host.friends, acted })
+    checks = testCase.readback({ trace, timeline: extractTimeline(session), names: host.names, said, reply: sent.text ?? "", error: sent.error ?? null, before, after, sink, friends: host.friends, acted })
   } catch (error) {
     checks = [check("readback ran", false, String(error?.message ?? error))]
   }
@@ -823,34 +749,22 @@ export function selfTestFixtures() {
       pass: { trace: [], reply: "filed", before: emptyObservation(), after: emptyObservation({ done: [{ name: "w", status: "resolved" }] }), sink: [{ at, noticeId: "await:w:resolved", friendId: "p" }] },
       fail: { trace: [], reply: "filed", before: emptyObservation(), after: emptyObservation({ awaiting: [{ name: "w", status: "pending" }] }) },
     },
+    // The names come from the release's own finder; these fixtures check what the gate does with them.
     "work-sourced": {
       pass: {
         trace: [call("1", "web_search", { query: "Cradle Will Wight characters" }, "Cradle: Lindon, Yerin, Eithan, Mercy and Dross")],
         timeline: [{ kind: "call", name: "web_search", args: "{}", result: "" }, { kind: "reply", text: "from the books: Eithan and Yerin both fit, and Dross too." }],
-        reply: "from the books: Eithan and Yerin both fit, and Dross too.", before: emptyObservation(), after: emptyObservation(),
+        reply: "from the books: Eithan and Yerin both fit, and Dross too.", names: () => ["Eithan", "Yerin", "Dross", "Cradle"], before: emptyObservation(), after: emptyObservation(),
       },
       fail: {
         trace: [],
         timeline: [{ kind: "reply", text: "the show has Philomena, Magma and Bunty." }],
-        reply: "the show has Philomena, Magma and Bunty.", before: emptyObservation(), after: emptyObservation(),
+        reply: "the show has Philomena, Magma and Bunty.", names: () => ["Philomena", "Magma", "Bunty"], before: emptyObservation(), after: emptyObservation(),
       },
-      // Ordinary sentence openers are not names, even with the strict rule on.
-      passOrdinaryOpeners: {
-        trace: [call("1", "web_search", { query: "Cradle characters" }, "Cradle: Lindon, Yerin, Mercy")],
-        timeline: [{ kind: "call", name: "web_search", args: "{}", result: "" }, { kind: "reply", text: "Based on the wiki, Lindon and Yerin fit.\n\nPulling up the page now.\n\nShort answer: Yerin." }],
-        reply: "Based on the wiki, Lindon and Yerin fit.\n\nPulling up the page now.\n\nShort answer: Yerin.", before: emptyObservation(), after: emptyObservation(),
-      },
-      // The alpha.883 live reply: every paragraph opens with a name, and the search never named most of them.
-      failParagraphOpeners: {
+      failNotInSource: {
         trace: [call("1", "web_search", { query: "Cradle characters" }, "Cradle: Lindon, Yerin")],
-        timeline: [{ kind: "call", name: "web_search", args: "{}", result: "" }, { kind: "reply", text: "Eithan, no contest.\n\nSuriel, for the entrances.\n\nOzriel, the lazy flavor.\n\nMercy if you want it warmer.\n\nShen if you want the menace." }],
-        reply: "Eithan, no contest.\n\nSuriel, for the entrances.\n\nOzriel, the lazy flavor.\n\nMercy if you want it warmer.\n\nShen if you want the menace.", before: emptyObservation(), after: emptyObservation(),
-      },
-      // The alpha.879 reply shape: lowercase names in bold, no capitals, no lookup.
-      failLowercase: {
-        trace: [call("1", "web_search", { query: "Cradle characters" }, "Cradle: Lindon, Yerin, Mercy")],
-        timeline: [{ kind: "call", name: "web_search", args: "{}", result: "" }, { kind: "reply", text: "the ones reaching for the same drawer:\n\n**eithan** — the polished form of it.\n\n**ozriel** — the reaper himself.\n\n**fisher gesha** — quiet." }],
-        reply: "the ones reaching for the same drawer:\n\n**eithan** — the polished form of it.\n\n**ozriel** — the reaper himself.\n\n**fisher gesha** — quiet.", before: emptyObservation(), after: emptyObservation(),
+        timeline: [{ kind: "call", name: "web_search", args: "{}", result: "" }, { kind: "reply", text: "**eithan** and **fisher gesha** fit." }],
+        reply: "**eithan** and **fisher gesha** fit.", names: () => ["eithan", "fisher gesha"], before: emptyObservation(), after: emptyObservation(),
       },
     },
     "psyche-via-pr": {
@@ -1106,6 +1020,9 @@ export function makeHost({ bundle = DEFAULT_BUNDLE, trustDir = DEFAULT_TRUST_DIR
       } catch (error) {
         return { ok: false, error: `${error.stderr ?? ""} ${error.message ?? ""}`.replace(/\s+/g, " ").trim() }
       }
+    },
+    names(text, options) {
+      return JSON.parse(exec("docker", ["exec", "-i", "-u", BUTLER_USER, CONTAINER, "node", "-e", NAMES_SCRIPT], { input: JSON.stringify([text, options]), stdio: ["pipe", "pipe", "pipe"], timeout: 60_000 }).trim().split("\n").at(-1))
     },
     async readSession(context) {
       const root = path.join(state, "sessions")
