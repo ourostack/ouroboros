@@ -11,9 +11,10 @@ import type { HostSession, HostWatchHandlers, ShepherdHost, ShepherdKey } from "
  * `agent.hook.Stop` event, which cmux publishes for every agent its hooks cover (Claude Code,
  * Codex, Copilot and more). After a short grace period, a stop is dropped if the agent resumed. A
  * stop that cmux's session store says left background work running waits longer, and is then
- * passed on marked as such: the agent is still working, not handing back control. Terminals no hook has spoken for
- * (an agent cmux does not hook, such as Agency today) are polled: output that stops changing for a
- * quiet window counts as a return. cmux has no bell or output event, so polling is the fallback.
+ * passed on marked as such: the agent is still working, not handing back control. Every terminal
+ * whose agent has not stopped is also polled: output that stops changing for a quiet window counts
+ * as a return. That covers an agent cmux does not hook, and a hooked agent sitting at a prompt that
+ * fires no stop (a permission or trust question). cmux has no bell or output event, so polling is the fallback.
  */
 export const CMUX_STATUS_KEY = "ouro"
 export const GRACE_MS = 3_000
@@ -80,7 +81,7 @@ export function createCmuxHost(client: CmuxClient, options: CmuxHostOptions = {}
   const now = options.now ?? Date.now
   const schedule = options.schedule ?? realSchedule
   /** What hook events taught: which surface a session runs in, and which agent and folder it has. */
-  const hooked = new Map<string, { agent: string; cwd: string | null; sessionId: string | null }>()
+  const hooked = new Map<string, { agent: string; cwd: string | null; sessionId: string | null; stopped: boolean }>()
   const sessionSurface = new Map<string, string>()
   /** Terminals showing a Shepherd status, so it can be cleared when the agent resumes. */
   const statused = new Map<string, { key: string; workspaceId: string }>()
@@ -219,9 +220,11 @@ export function createCmuxHost(client: CmuxClient, options: CmuxHostOptions = {}
         if (!surface) return
         const agent = str(payload._source) ?? str(frame.source) ?? "unknown"
         const cwd = str(payload.cwd)
-        hooked.set(surface, { agent, cwd, sessionId })
+        const neutral = NEUTRAL_HOOKS.has(hook)
+        // A stopped agent's return comes from its stop; the quiet-screen poll leaves it alone until it works again.
+        hooked.set(surface, { agent, cwd, sessionId, stopped: STOP_HOOKS.has(hook) || (neutral && hooked.get(surface)?.stopped === true) })
         if (STOP_HOOKS.has(hook)) return stopped(surface, `cmux:${String(frame.boot_id)}:${String(frame.seq)}`, agent, sessionId, cwd)
-        if (NEUTRAL_HOOKS.has(hook)) return
+        if (neutral) return
         // The agent is working again: no pending stop, and no stale status.
         cancelPending(surface)
         clearStatus(surface)
@@ -256,10 +259,10 @@ export function createCmuxHost(client: CmuxClient, options: CmuxHostOptions = {}
         })
       }
 
-      /** Terminals with no hook: output that changed and then held still for the quiet window is a return. */
+      /** Terminals whose agent has not stopped: output that changed and then held still for the quiet window is a return. */
       const poll = async (): Promise<void> => {
         try {
-          const terminals = (await surfaces()).filter((surface) => surface.type === "terminal" && !hooked.has(surface.id))
+          const terminals = (await surfaces()).filter((surface) => surface.type === "terminal" && hooked.get(surface.id)?.stopped !== true)
           const seen = new Set(terminals.map((surface) => surface.id))
           for (const id of screens.keys()) if (!seen.has(id)) screens.delete(id)
           for (const surface of terminals) {
@@ -272,7 +275,8 @@ export function createCmuxHost(client: CmuxClient, options: CmuxHostOptions = {}
               clearStatus(surface.id)
             } else if (last.active && at - last.changedAt >= (quietMs.get(surface.id) ?? QUIET_MS)) {
               last.active = false
-              handlers.returned({ sessionId: surface.id, transitionId: `cmux:quiet:${surface.id}:${last.changedAt}`, agent: null, cwd: null, lastBody: null, backgroundWork: null })
+              const hook = hooked.get(surface.id)
+              handlers.returned({ sessionId: surface.id, transitionId: `cmux:quiet:${surface.id}:${last.changedAt}`, agent: hook?.agent ?? null, cwd: hook?.cwd ?? null, lastBody: null, backgroundWork: null })
             }
           }
         } catch (error) {

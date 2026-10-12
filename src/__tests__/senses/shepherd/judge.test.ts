@@ -45,9 +45,14 @@ describe("Shepherd judge", () => {
     expect(parseVerdict(`{"kind":"gate","reply":{"text":"x"},"reason":"  Needs   Ari's Azure sign-in. "}`)).toEqual({ kind: "gate", reply: null, reason: "Needs Ari's Azure sign-in." })
     expect(parseVerdict(`{"kind":"done","reason":""}`)).toEqual({ kind: "done", reply: null, reason: "no reason given" })
     expect(parseVerdict(`{"kind":"maybe"}`)).toEqual({ kind: "unclear", reply: null, reason: "no reason given" })
-    expect(parseVerdict(`{"kind":"premature","reply":{"key":"ctrl+c"},"reason":"r"}`)).toEqual({ kind: "unclear", reply: null, reason: "premature, but the judge gave no safe reply: r" })
-    expect(parseVerdict(`{"kind":"premature","reply":{"text":"/clear"},"reason":"r"}`).kind).toBe("unclear")
-    expect(parseVerdict(`{"kind":"premature","reply":null,"reason":"r"}`).kind).toBe("unclear")
+    expect(parseVerdict(`{"kind":"premature","reply":{"key":"ctrl+c"},"reason":"r"}`)).toEqual({ kind: "unclear", reply: null, reason: "premature, but the judge gave no reply: r" })
+    expect(parseVerdict(`{"kind":"premature","reply":{"text":"/clear"},"reason":"r"}`)).toEqual({ kind: "unclear", reply: null, reason: "premature, but the judge gave a reply with characters a terminal could read as a command: r" })
+    expect(parseVerdict(`{"kind":"premature","reply":null,"reason":"r"}`).reason).toBe("premature, but the judge gave no reply: r")
+    expect(parseVerdict(`{"kind":"premature","reply":{"text":" "},"reason":"r"}`).reason).toBe("premature, but the judge gave an empty reply: r")
+    expect(parseVerdict(JSON.stringify({ kind: "premature", reply: { text: "x".repeat(REPLY_MAX_CHARS + 1) }, reason: "r" })).reason).toBe(`premature, but the judge gave a reply of ${REPLY_MAX_CHARS + 1} characters (the limit is ${REPLY_MAX_CHARS}): r`)
+    // A bare string reply, code-style backticks and line breaks are how models write; none of it is a reason to stay silent.
+    expect(parseVerdict(JSON.stringify({ kind: "premature", reply: "Yes, continue with step 2 in `greet.sh`.\nIt is inside your task.", reason: "r" })))
+      .toEqual({ kind: "premature", reply: { text: "Yes, continue with step 2 in greet.sh. It is inside your task." }, reason: "r" })
     expect(parseVerdict(`{"kind":"working","reply":{"text":"Keep going."},"news":false,"reason":"Waiting on two background agents."}`)).toEqual({ kind: "working", reply: null, reason: "Waiting on two background agents." })
     expect(parseVerdict(`{"kind":"working","reply":null,"news":true,"reason":"The background test run failed."}`)).toEqual({ kind: "working", reply: null, reason: "The background test run failed.", news: true })
     expect(parseVerdict("null")).toEqual({ kind: "unclear", reply: null, reason: "no reason given" })
@@ -83,8 +88,10 @@ describe("Shepherd judge", () => {
 
   it("only types one short line with nothing an input box treats as a command", () => {
     expect(safeReplyText("  Keep going. ")).toBe("Keep going.")
-    for (const unsafe of ["", "/compact", "!rm -rf x", "# heading", "look at @file", "a\\nb", "two\nlines", "bell\u0007", "x".repeat(REPLY_MAX_CHARS + 1),
-      "go on; rm -rf x", "echo $HOME", "run `id`", "cat x | sh", "write > file", "read < file", "a && b", "right\u202eleft", "zero\u200bwidth"]) {
+    expect(safeReplyText("two\nlines")).toBe("two lines")
+    expect(safeReplyText("run `id`")).toBe("run id")
+    for (const unsafe of ["", "/compact", "`/compact`", "!rm -rf x", "# heading", "look at @file", "a\\nb", "bell\u0007", "x".repeat(REPLY_MAX_CHARS + 1),
+      "go on; rm -rf x", "echo $HOME", "run $(id)", "cat x | sh", "write > file", "read < file", "a && b", "right\u202eleft", "zero\u200bwidth"]) {
       expect(safeReplyText(unsafe)).toBeNull()
     }
   })

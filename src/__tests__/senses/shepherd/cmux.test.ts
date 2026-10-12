@@ -296,10 +296,28 @@ describe("cmux host: returned control", () => {
     watcher.close()
   })
 
-  it("watches a terminal's screen again once its hooked agent's session ends", async () => {
-    const { watcher } = await watching()
-    server.push(hookEvent(100.5, "PreToolUse", { surface: "SF-3", session: "claude-s3" }))
+  it("judges a hooked agent that sits quiet without stopping (a permission or trust prompt), once", async () => {
+    const { watcher, returned } = await watching()
     server.push(hookEvent(101, "PreToolUse"))
+    server.push(hookEvent(102, "Notification"))
+    await new Promise((resolve) => setTimeout(resolve, 20))
+    screens["SF-1"] = "Do you want to run this command?\n> 1. Yes\n  2. No"
+    clock += POLL_MS
+    await scheduler.run(POLL_MS)
+    clock += QUIET_MS
+    await scheduler.run(POLL_MS)
+    expect(returned).toEqual([{ sessionId: "SF-1", transitionId: `cmux:quiet:SF-1:${1_000_000 + POLL_MS}`, agent: "claude", cwd: "/Users/a/code/app", lastBody: null, backgroundWork: null }])
+    clock += QUIET_MS
+    await scheduler.run(POLL_MS)
+    expect(returned).toHaveLength(1)
+    watcher.close()
+  })
+
+  it("leaves a stopped agent's screen to its stop, and watches it again when it works or its session ends", async () => {
+    const { watcher } = await watching()
+    server.push(hookEvent(100.5, "Stop", { surface: "SF-3", session: "claude-s3" }))
+    server.push(hookEvent(101, "Stop"))
+    server.push(hookEvent(101.5, "Notification"))
     await new Promise((resolve) => setTimeout(resolve, 20))
     const reads = () => server.methods.filter((call) => call.method === "surface.read_text").map((call) => call.params.surface_id)
     await scheduler.run(POLL_MS)

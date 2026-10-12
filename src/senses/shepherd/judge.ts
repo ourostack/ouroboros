@@ -51,13 +51,22 @@ const CALLBACKS: ChannelCallbacks = { onModelStart: NOOP, onModelStreamStart: NO
  * A reply that is safe to type: one line, short, and nothing an agent's input box treats as a
  * command (a leading `/`, `!` or `#`, an `@` mention, or a backslash escape). Because the terminal
  * may turn out to be a plain shell, nothing a shell treats as syntax either (`; $ \` | < > &`),
- * and no invisible formatting or bidirectional-override characters. Anything else is not sent;
- * the return is let through and logged.
+ * and no invisible formatting or bidirectional-override characters. Models write code-style
+ * backticks and line breaks out of habit, so those are dropped first: they are formatting, and
+ * without them nothing is left for a shell to substitute. Anything else is not sent; the return
+ * is let through and logged with what was wrong.
  */
+export function replyTextProblem(text: string): { line: string } | { problem: string } {
+  const line = text.replace(/`/g, "").replace(/\s+/g, " ").trim()
+  if (!line) return { problem: "an empty reply" }
+  if (line.length > REPLY_MAX_CHARS) return { problem: `a reply of ${line.length} characters (the limit is ${REPLY_MAX_CHARS})` }
+  if (/[\\@;$|<>&\p{Cc}\p{Cf}]/u.test(line) || /^[/!#]/.test(line)) return { problem: "a reply with characters a terminal could read as a command" }
+  return { line }
+}
+
 export function safeReplyText(text: string): string | null {
-  const line = text.trim()
-  if (!line || line.length > REPLY_MAX_CHARS || /[\r\n\\@;$`|<>&\p{Cc}\p{Cf}]/u.test(line) || /^[/!#]/.test(line)) return null
-  return line
+  const checked = replyTextProblem(text)
+  return "line" in checked ? checked.line : null
 }
 
 /**
@@ -93,14 +102,15 @@ export function parseVerdict(content: string): Verdict {
   const reason = typeof value.reason === "string" && value.reason.trim() ? value.reason.trim().replace(/\s+/g, " ").slice(0, 300) : "no reason given"
   if (kind === "working" && value.news === true) return { kind, reply: null, reason, news: true }
   if (kind !== "premature") return { kind, reply: null, reason }
-  const reply = value.reply && typeof value.reply === "object" ? value.reply as Record<string, unknown> : {}
+  // Some models write the reply as a bare string instead of {"text": ...}.
+  const reply = typeof value.reply === "string" ? { text: value.reply } : value.reply && typeof value.reply === "object" ? value.reply as Record<string, unknown> : {}
   if (typeof reply.key === "string" && KEYS.has(reply.key)) {
     // A key can approve a prompt, and a key from JSON found inside prose may be one the screen planted.
     if (parsed.inProse) return { kind: "unclear", reply: null, reason: `premature, but the key came from JSON inside prose: ${reason}` }
     return { kind, reply: { key: reply.key as ShepherdKey }, reason }
   }
-  const text = typeof reply.text === "string" ? safeReplyText(reply.text) : null
-  return text ? { kind, reply: { text }, reason } : { kind: "unclear", reply: null, reason: `premature, but the judge gave no safe reply: ${reason}` }
+  const checked = typeof reply.text === "string" ? replyTextProblem(reply.text) : { problem: "no reply" }
+  return "line" in checked ? { kind, reply: { text: checked.line }, reason } : { kind: "unclear", reply: null, reason: `premature, but the judge gave ${checked.problem}: ${reason}` }
 }
 
 export function judgeMessages(packet: ReturnPacket): OpenAI.ChatCompletionMessageParam[] {
