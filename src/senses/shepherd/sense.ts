@@ -25,6 +25,15 @@ import { appendReturn, type ReturnRecord } from "./returns"
 export const SHEPHERD_WAKE_TRIGGER = "shepherd"
 export const READ_LINES = 200
 export const SCREEN_LINES = 80
+
+/**
+ * A screen with its numbers blanked: a ticking timer or token counter at a waiting prompt is not
+ * the screen moving on. A timer can grow a unit (`59s` to `1m 0s`) and shift the padding beside
+ * it, so a run of numbers with time units counts as one, and runs of spaces as one space.
+ */
+function withoutNumbers(screen: string): string {
+  return screen.replace(/(\d+[hms]?[ \t]*)+/g, "0 ").replace(/[ \t]+/g, " ")
+}
 export const JUDGE_TIMEOUT_MS = 20_000
 /** Automatic answers in a row with no human focus in between, and per session per hour. */
 export const STREAK_MAX = 3
@@ -201,7 +210,7 @@ export async function startShepherdSenseApp(options: ShepherdSenseOptions): Prom
         } else if (now() - state.focusedAt < FOCUS_HOLD_MS || (await host.list()).some((session) => session.id === event.sessionId && session.focused)) {
           // Never type into the session the human is in, or one they just left.
           record.reason = `${human} is in this session or just left it, so it is theirs: ${verdict.reason}`
-        } else if (tail(redactSecrets(await host.read(event.sessionId, READ_LINES)), SCREEN_LINES) !== screen) {
+        } else if (withoutNumbers(tail(redactSecrets(await host.read(event.sessionId, READ_LINES)), SCREEN_LINES)) !== withoutNumbers(screen)) {
           record.reason = `the screen changed while judging, so nothing was sent: ${verdict.reason}`
         } else {
           if ("key" in verdict.reply) await host.key(event.sessionId, verdict.reply.key)

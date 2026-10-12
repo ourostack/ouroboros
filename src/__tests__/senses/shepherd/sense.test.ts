@@ -144,6 +144,13 @@ describe("Shepherd sense: answering premature returns", () => {
     expect(last()).toMatchObject({ action: "respond", reply: "key:2" })
   })
 
+  it("still answers when only a timer or counter ticked on the screen while judging", async () => {
+    const { host, returned, last } = await start(async () => verdict({ reply: { key: "1" } }))
+    host.screens.S2 = ["Shell Run startup    59s |\nDo you want to run this command?\n> 1. Yes\n  2. No", "Shell Run startup  1m 0s |\nDo you want to run this command?\n> 1. Yes\n  2. No"]
+    await returned({ sessionId: "S2", agent: null })
+    expect(last()).toMatchObject({ action: "respond", reply: "key:1" })
+  })
+
   it("sends nothing when the screen changed while judging or the human focused the session", async () => {
     const { host, returned, last } = await start(async () => verdict())
     host.screens.S1 = [SCREENS.claudePremature, `${SCREENS.claudePremature}\nAri typed something`]
