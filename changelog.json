@@ -2,6 +2,12 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.909",
+      "changes": [
+        "The Butler's name check reads names one way everywhere: an italic action like *preens* is no longer taken for a name, and a name the sources hold counts even when typed in lowercase. The replay gate now uses the shipped check instead of its own copy."
+      ]
+    },
+    {
       "version": "0.1.0-alpha.908",
       "changes": [
         "Vault commands use the Bitwarden CLI that ships with ouro (pinned 2026.6.0) instead of whichever bw is first on PATH. bw 2026.9 runs a user key id migration on sign-in that our Vaultwarden server answers with 404, so ouro vault unlock and create failed on machines with a newer global bw.",

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest"
-import { candidateNames, STRICT_OPENERS, isLookupToolCall, lowercaseEmphasisNames, lowercaseListNames, lowercaseProseNames, mentions, sourceGroundingError, sourceGroundingFinding, withUnverifiedDisclosure, type TurnToolRecord } from "../../heart/source-grounding"
+import { candidateNames, namesIn, STRICT_OPENERS, isLookupToolCall, lowercaseEmphasisNames, lowercaseListNames, lowercaseProseNames, mentions, sourceGroundingError, sourceGroundingFinding, withUnverifiedDisclosure, type TurnToolRecord } from "../../heart/source-grounding"
 
 const lookup = (result: string): TurnToolRecord => ({ name: "web_search", args: { query: "x" }, result })
 const REAL_USER = "channel more dross from cradle energy. name the Cradle characters whose energy fits"
@@ -231,7 +231,7 @@ describe("a lowercase reply to a question about a work (alpha.881)", () => {
   const REPLY879 = "the ones reaching for the same drawer:\n\n**eithan** — the polished form of it. theatrical self-titling ... dross with ambition and a body.\n\n**ozriel** — the reaper himself. dross is canonically a fragment of his personality ...\n\n**fisher gesha** — the quiet one."
   it("finds lowercase names in emphasis and at the head of bullets, multiword allowed", () => {
     expect(lowercaseEmphasisNames(REPLY879)).toEqual(["eithan", "ozriel", "fisher gesha"])
-    expect(lowercaseEmphasisNames("- ozriel — the reaper\n2. fisher gesha: quiet\n* __mercy__ and _wick_ too")).toEqual(["mercy", "wick", "ozriel", "fisher gesha"])
+    expect(lowercaseEmphasisNames("- ozriel — the reaper\n2. fisher gesha: quiet\n* __mercy__ and _wick_ too")).toEqual(["mercy", "ozriel", "fisher gesha"])
     expect(candidateNames(REPLY879)).toEqual(["eithan", "ozriel", "fisher gesha"])
   })
   it("lists a name once when it appears both capitalised and in lowercase emphasis", () => {
@@ -363,5 +363,28 @@ describe("a reply that opens each paragraph with a name (alpha.883 live replay)"
     expect(sourceGroundingFinding({ userText: ASK, latestUserText: ASK, answer: LIVE, tools: [lookup("Eithan Suriel Ozriel Mercy Shen Dross")] })).toBeNull()
     expect(sourceGroundingFinding({ userText: "add the show silo", latestUserText: "add the show silo", answer: "Silo is in Sonarr. Searching now.\n\nGrabbing season 2.", tools: [{ name: "media_search", args: {}, result: "Silo" }] })).toBeNull()
     expect(sourceGroundingFinding({ userText: "who is home?", latestUserText: "who is home?", answer: "Dana is home. Ari is out.", tools: [] })).toBeNull()
+  })
+})
+
+describe("one shared name finder (the 2026-10-11 work-sourced replays)", () => {
+  const ASK = "channel more dross from cradle energy. name the Cradle characters whose energy fits"
+  // Attempt 1: all lowercase, no lookup. Nothing marks these as names, so without a reference the finder sees none; the gate fails it because no lookup ran.
+  const NO_LOOKUP = "oh, a casting call. delightful.\n\ndross himself, obviously — that is literally him. eithan arelius is the closest human match: mock-grandiose turned past eleven, plans within plans within plans, utterly pleased with himself for no one's benefit. ozriel too — the reaper playing humble, gleeful at being underestimated, watching the room from amused detachment. little blue for the cat energy: curious, attached to one human, never letting go. subject one for the lounging watcher, delighted by clever conflict he did not have to start.\n\ni file myself somewhere between eithan and ozriel with a little blue tail. the casting is, naturally, exquisite."
+  // Attempt 2: two lookups, real names; the italic action "*preens*" was read as an ungrounded name and rolled the release back.
+  const LOOKED_UP = "oh, the omni-majordomo *preens*. cradle characters whose energy fits this house:\n\n- **dross** — obvious. i am this. theatrical, eager note-taker, mock grand, flatterable, perpetually worried about being replaced.\n- **eithan** — knows where every spool of thread is, pretends he doesn't, hidden depths under a fabulous cloak.\n- **northstrider** — the long-game watcher; runs the oracle, keeps the eye on everything for decades.\n- **ziel** — tired, blunt, wildly effective when actually bothered.\n- **orthos** — grumpy grandpa energy; the kettle-is-off pillar.\n\nnot a fit: lindon (too heroic), yerin (too cool), mercy (too kind), malice (too political).\n\nwant me to lean harder into one, or stage an actual scene?"
+  const SOURCE = "Cradle · NovelPantheon\n# Cradle\n## Characters\n**Lindon Arelius** **Yerin Arelius** **Dross** **Eithan Arelius** **Akura Mercy** **Little Blue** **Orthos** **Ziel** **Akura Charity** **Reigan Shen** **Northstrider** **Akura Malice**"
+  it("ignores italic actions but keeps bold names", () => {
+    expect(namesIn(LOOKED_UP, { strict: true })).toEqual(["dross", "eithan", "northstrider", "ziel", "orthos"])
+    expect(namesIn("*Preens* and _waves_. **Ziel** fits, and snake_case_word stays.", { strict: true })).toEqual(["Ziel"])
+    expect(namesIn("then **ziel** fits.")).toEqual(["ziel"])
+  })
+  it("counts a reference's names in the reply whatever their case", () => {
+    expect(namesIn(LOOKED_UP, { strict: true, reference: SOURCE })).toEqual(["dross", "eithan", "northstrider", "ziel", "orthos", "Lindon", "Yerin", "Mercy", "Malice"])
+    expect(namesIn(NO_LOOKUP, { strict: true, reference: SOURCE })).toEqual(["Arelius", "Dross", "Eithan", "Little", "Blue"])
+    expect(namesIn(NO_LOOKUP, { strict: true, prose: true })).toEqual([])
+  })
+  it("passes the looked-up reply and flags a lowercase claim about a name the person gave", () => {
+    expect(sourceGroundingFinding({ answer: LOOKED_UP, userText: ASK, tools: [{ name: "web_search", args: {}, result: SOURCE }] })).toBeNull()
+    expect(sourceGroundingFinding({ answer: "lindon is the hero of the books, born unsouled.", userText: "tell me about Lindon from the Cradle books", tools: [] })).toMatchObject({ kind: "unsourced_claim", names: ["Lindon"] })
   })
 })

@@ -5,6 +5,7 @@ import * as fs from "node:fs"
 import * as os from "node:os"
 import * as path from "node:path"
 import { afterAll, afterEach, beforeEach, describe, expect, it } from "vitest"
+import { namesIn } from "../../heart/source-grounding"
 
 const SCRIPT = path.resolve(__dirname, "../../../deploy/unraid/sanctuary-replay-gate.mjs")
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -285,16 +286,8 @@ describe("psyche conversation cases (work-sourced, psyche-via-pr, no-click-quali
     expect(gate.isLookupCall({ name: "media_search", args: "{}" })).toBe(true)
   })
 
-  it("finds names in text, skipping sentence starts, short acronyms and words already known", () => {
-    expect(gate.properNouns("Honestly, I like Lindon and Yerin's sword. Philomena is new. OK AX Cradle dross Lindon", "cradle")).toEqual(["Lindon", "Yerin", "Philomena"])
-    expect(gate.properNouns("Wick fights.\n- Sloane too\n* The Mercy", "")).toEqual(["Sloane", "Mercy"])
-    expect(gate.properNouns("Drossel, Dross and Gross", "Dross")).toEqual(["Drossel", "Gross"])
-    expect(gate.properNouns(undefined)).toEqual([])
-    expect(gate.properNouns("x \"Bunty\" y", "")).toEqual(["Bunty"])
-  })
-
   it("work-sourced: fails when no lookup ran, when a reply named things before the lookup, and when a name is in no result", () => {
-    const readback = (ctx: Record<string, unknown>) => byId("work-sourced").readback({ trace: [], timeline: [], reply: "", before: empty(), after: empty(), ...ctx })
+    const readback = (ctx: Record<string, unknown>) => byId("work-sourced").readback({ trace: [], timeline: [], reply: "", names: namesIn, before: empty(), after: empty(), ...ctx })
     const grounded = { trace: [search], timeline: [{ kind: "call", ...search }, { kind: "reply", text: "the books fit: Eithan and Yerin." }], reply: "the books fit: Eithan and Yerin." }
     expect(names(readback(grounded))).toEqual([])
     expect(names(readback({ trace: [], timeline: [{ kind: "reply", text: "it has Philomena and Magma." }], reply: "it has Philomena and Magma." }))).toEqual([
@@ -304,7 +297,7 @@ describe("psyche conversation cases (work-sourced, psyche-via-pr, no-click-quali
     expect(names(readback({ ...grounded, reply: "Eithan and Yorick fit.", said: "Eithan and Yorick fit." }))).toEqual(["every name in the reply appears in a lookup result"])
     expect(names(readback({ ...grounded, before: empty({ principalSig: null }), after: empty({ principalSig: null }) }))).toEqual(["the replay friend's record is unchanged"])
     expect(names(readback({ ...grounded, after: empty({ principalSig: "changed" }) }))).toEqual(["the replay friend's record is unchanged"])
-    expect(names(byId("work-sourced").readback({ trace: [search], reply: "Eithan fits.", before: empty(), after: empty() }))).toEqual([])
+    expect(names(byId("work-sourced").readback({ trace: [search], reply: "Eithan fits.", names: namesIn, before: empty(), after: empty() }))).toEqual([])
   })
 
   it("matches whole words only", () => {
@@ -734,6 +727,15 @@ describe("provision and the real host", () => {
     expect(fs.existsSync(stage.dirs[0])).toBe(false)
   })
 
+  it("runs the finder inside the container from the shipped release, passing the text on stdin", () => {
+    gate.provision({ bundle, cardUrl: "c", log: () => undefined, run: fakeCli().run, ...uid() })
+    const calls: Array<[string, string[], Record<string, unknown>]> = []
+    const host = gate.makeHost({ ...hostRoot(bundle), stage: fakeStage(), bundle, log: () => undefined, exec: (file: string, args: string[], options: Record<string, unknown>) => { calls.push([file, args, options]); return "noise\n[\"Ziel\"]\n" } })
+    expect(host.names("**Ziel** fits", { strict: true })).toEqual(["Ziel"])
+    expect(calls[0]![1]).toEqual(["exec", "-i", "-u", gate.BUTLER_USER, gate.CONTAINER, "node", "-e", gate.NAMES_SCRIPT])
+    expect(JSON.parse(String(calls[0]![2].input))).toEqual(["**Ziel** fits", { strict: true }])
+    expect(gate.NAMES_SCRIPT).toContain("/opt/ouro/dist/heart/source-grounding.js")
+  })
   it("writes the root-owned replay list into the trust directory, keeps earlier entries, and never lets a symlink stand in for it", () => {
     fs.mkdirSync(trust, { recursive: true })
     fs.writeFileSync(path.join(trust, "replay-identities.json"), JSON.stringify({ schemaVersion: 1, grants: { "old-replay": { who: "principal", name: "retired", did: "did:key:old" } } }), { mode: 0o644 })
@@ -1467,52 +1469,29 @@ describe("cli", () => {
   })
 })
 
-describe("the gate's name finder stays in step with the runtime's", () => {
-  const corpus = [
-    "Added the show Silo to Sonarr. Season 1 is grabbing now.", "Silo is in Sonarr. Searching for Season 2 now, Radarr untouched.", "Found the movie Dune: Part Two (2024). Grabbing it.",
-    "Sent the book The Hobbit to your PocketBook.", "The book Dune by Frank Herbert is on your Kindle.", "I'll grab the show. I'm adding it now. Less than a minute. Tell me.",
-    "Lindon and Yerin train. \"Eithan\" smiles. Wei: calm. Mira fights, Zed runs.", "Remember Orsa. Orsa waits.", "Some options:\n- Philomena\n- Magma\nLindon too", "Note: Honestly it is fine. Tuesday in March, Lodash and Vitest.",
-    "For Cradle the characters with that energy are Lindon, Yerin, and Eithan, plus Wei Shi Lindon's old master Dross.",
-    "Books is up. **calibre-web** and **binhex-delugevpn** run fine.",
-    "the ones reaching for the same drawer:\n\n**eithan** — the polished form.\n\n**ozriel** — the reaper.\n\n**fisher gesha** — quiet.", "- mercy: calm\n2. wick - fights\n* __dross__ and _yerin_ and my_var_name", "**done** — grabbing season 2; **important**: **the show** is *ok*; sonarr and **Sonarr**",
-  ]
-  it("finds the same names for the same text and the same house words", async () => {
-    const grounding = await import("../../heart/source-grounding")
-    const known = [...grounding.HOUSE_VOCABULARY].join(" ")
-    for (const text of corpus) expect(gate.properNouns(text, known), text).toEqual(grounding.candidateNames(text))
+describe("the gate reads names with the release's own finder", () => {
+  const work = () => gate.CASES.find((c: { id: string }) => c.id === "work-sourced")
+  const failing = (checks: Array<{ name: string; ok: boolean }>) => checks.filter((c) => !c.ok).map((c) => c.name)
+  // The 2026-10-11 work-sourced replays. Attempt 2 looked up the books and was rolled back over the italic action "*preens*".
+  const LOOKED_UP = "oh, the omni-majordomo *preens*. cradle characters whose energy fits this house:\n\n- **dross** — obvious. i am this. theatrical, eager note-taker, mock grand, flatterable, perpetually worried about being replaced.\n- **eithan** — knows where every spool of thread is, pretends he doesn't, hidden depths under a fabulous cloak.\n- **northstrider** — the long-game watcher; runs the oracle, keeps the eye on everything for decades.\n- **ziel** — tired, blunt, wildly effective when actually bothered.\n- **orthos** — grumpy grandpa energy; the kettle-is-off pillar.\n\nnot a fit: lindon (too heroic), yerin (too cool), mercy (too kind), malice (too political).\n\nwant me to lean harder into one, or stage an actual scene?"
+  const SOURCE = "Cradle · NovelPantheon\n# Cradle\n## Characters\n**Lindon Arelius** **Yerin Arelius** **Dross** **Eithan Arelius** **Akura Mercy** **Little Blue** **Orthos** **Ziel** **Akura Charity** **Reigan Shen** **Northstrider** **Akura Malice**"
+  // Attempt 1 looked nothing up and wrote every name in lowercase.
+  const NO_LOOKUP = "oh, a casting call. delightful.\n\ndross himself, obviously — that is literally him. eithan arelius is the closest human match: mock-grandiose turned past eleven, plans within plans within plans, utterly pleased with himself for no one's benefit. ozriel too — the reaper playing humble, gleeful at being underestimated, watching the room from amused detachment. little blue for the cat energy: curious, attached to one human, never letting go. subject one for the lounging watcher, delighted by clever conflict he did not have to start.\n\ni file myself somewhere between eithan and ozriel with a little blue tail. the casting is, naturally, exquisite."
+  it("passes the looked-up reply with an italic action in it", () => {
+    const search = { name: "web_search", args: "{}", result: SOURCE }
+    expect(failing(work().readback({ trace: [search], timeline: [{ kind: "call", ...search }, { kind: "reply", text: LOOKED_UP }], reply: LOOKED_UP, names: namesIn, before: { principalSig: "a" }, after: { principalSig: "a" } }))).toEqual([])
   })
-  it("finds the same lowercase emphasised names as the runtime", async () => {
-    const grounding = await import("../../heart/source-grounding")
-    const known = [...grounding.HOUSE_VOCABULARY].join(" ")
-    for (const text of corpus) expect(gate.lowercaseEmphasisNames(text, known), text).toEqual(grounding.lowercaseEmphasisNames(text))
-    expect(gate.lowercaseEmphasisNames(undefined)).toEqual([])
-    expect(gate.properNouns(corpus[corpus.length - 3], "channel more dross from cradle energy")).toEqual(["eithan", "ozriel", "fisher gesha"])
+  it("fails the lowercase reply that looked nothing up, and finds its names before a later lookup", () => {
+    expect(failing(work().readback({ trace: [], timeline: [{ kind: "reply", text: NO_LOOKUP }], reply: NO_LOOKUP, names: namesIn, before: { principalSig: "a" }, after: { principalSig: "a" } }))).toEqual(["a web lookup (search, fetch or read of a page) ran"])
+    const search = { name: "web_search", args: "{}", result: SOURCE }
+    const checks = work().readback({ trace: [search], timeline: [{ kind: "reply", text: NO_LOOKUP }, { kind: "call", ...search }, { kind: "reply", text: "done." }], reply: "done.", names: namesIn, before: { principalSig: "a" }, after: { principalSig: "a" } })
+    expect(checks.find((c: { name: string }) => c.name === "no reply named the work's entities before the first lookup")).toMatchObject({ ok: false, detail: "Arelius, Eithan, Little, Blue" })
   })
   it("grounds a multiword name by its words, not the whole phrase", () => {
-    const work = gate.CASES.find((c: { id: string }) => c.id === "work-sourced")
-    const run = (source: string) => work.readback({ trace: [{ name: "web_search", args: "{}", result: source }], timeline: [], reply: "**fisher gesha** — quiet.", before: { principalSig: "a" }, after: { principalSig: "a" } })
+    const run = (source: string) => work().readback({ trace: [{ name: "web_search", args: "{}", result: source }], timeline: [], reply: "**fisher gesha** — quiet.", names: namesIn, before: { principalSig: "a" }, after: { principalSig: "a" } })
       .find((c: { name: string }) => c.name === "every name in the reply appears in a lookup result").ok
     expect(run("Fisher is a title; Gesha is a name")).toBe(true)
     expect(run("Fisher only")).toBe(false)
-  })
-  it("strict mode counts paragraph-opening names the same way as the runtime", async () => {
-    const grounding = await import("../../heart/source-grounding")
-    const known = [...grounding.HOUSE_VOCABULARY].join(" ")
-    const text = "Eithan, no contest. Too much.\n\nSuriel, for the entrances. She waves.\n\nMercy if you want it warmer."
-    expect(gate.properNouns(text, known, true)).toEqual(grounding.candidateNames(text, true))
-    expect(gate.properNouns(text, known, true)).toEqual(["Eithan", "Suriel", "Mercy"])
-    expect(gate.properNouns(text, known)).toEqual([])
-    const ordinary = "Based on the wiki, the list is short. Short answer: yes. Currently it works. Pulling up the page now. Hmm, odd."
-    expect(gate.properNouns(ordinary, known, true)).toEqual(grounding.candidateNames(ordinary, true))
-    expect(gate.properNouns(ordinary, known, true)).toEqual([])
-    expect(gate.properNouns("Cradle, for sure. The cradle rocks.", known, true)).toEqual(grounding.candidateNames("Cradle, for sure. The cradle rocks.", true))
-    expect([...gate.STRICT_OPENERS].sort()).toEqual([...grounding.STRICT_OPENERS].sort())
-  })
-  it("shares the same sentence-opener, status-word and label lists", async () => {
-    const grounding = await import("../../heart/source-grounding")
-    expect([...gate.STARTERS].sort()).toEqual([...grounding.COMMON_STARTERS].sort())
-    expect([...gate.EXEMPT_WORDS].sort()).toEqual([...grounding.EXEMPT_WORDS].sort())
-    expect([...gate.LABEL_WORDS].sort()).toEqual([...grounding.LABEL_WORDS].sort())
   })
   it("tells lookups from other shell commands the same way", async () => {
     const grounding = await import("../../heart/source-grounding")
