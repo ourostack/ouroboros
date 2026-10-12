@@ -5,7 +5,7 @@ import { createHash } from "node:crypto"
 import OpenAI from "openai"
 import { runAgent, type ChannelCallbacks, createSummarize } from "../../heart/core"
 import { getBlueBubblesChannelConfig, getBlueBubblesConfig, sessionPath } from "../../heart/config"
-import { getAgentName, getAgentRoot } from "../../heart/identity"
+import { getAgentName, getAgentRoot, loadAgentConfig } from "../../heart/identity"
 import { loadOrCreateMachineIdentity } from "../../heart/machine-identity"
 import { recoverRuntimeCwd } from "../../heart/runtime-cwd"
 import { withSharedTurnLock } from "../../heart/turn-coordinator"
@@ -42,6 +42,7 @@ import {
   type BlueBubblesNormalizedMessage,
 } from "./model"
 import { BlueBubblesSendError, createBlueBubblesClient, type BlueBubblesClient } from "./client"
+import { verifyBlueBubblesServerAccount } from "./host-account-verifier"
 import { createBlueBubblesWebhookReconciler } from "./webhook-registration"
 import {
   listRecordedBlueBubblesInbound,
@@ -397,6 +398,8 @@ interface RuntimeDeps {
   promoteFailoverState: (sessionKey: string, state: FailoverState) => void
   recordProcessed: typeof recordProcessedBlueBubblesMessage
   withSessionTurnLease: <T>(sessionPath: string, work: (lease: SessionTurnLease) => Promise<T>) => Promise<T>
+  /** Confirm the BlueBubbles server runs under the agent's declared macOS host account; throws when it cannot be confirmed. */
+  verifyHostAccount: () => Promise<void>
 }
 
 export interface BlueBubblesReplyTargetController {
@@ -443,6 +446,13 @@ const defaultDeps: RuntimeDeps = {
   },
   recordProcessed: recordProcessedBlueBubblesMessage,
   withSessionTurnLease,
+  verifyHostAccount: () => verifyBlueBubblesServerAccount({
+    agent: getAgentName(),
+    hostUsername: loadAgentConfig().senses?.bluebubbles.hostUsername,
+    serverUrl: getBlueBubblesConfig().serverUrl,
+    password: getBlueBubblesConfig().password,
+    requestTimeoutMs: getBlueBubblesChannelConfig().requestTimeoutMs,
+  }),
 }
 
 const BLUEBUBBLES_RUNTIME_SYNC_INTERVAL_MS = 30_000
@@ -3840,6 +3850,15 @@ export function createBlueBubblesWebhookHandler(
       return
     }
 
+    // Only take in messages from the agent's own Apple ID: a server running
+    // under another macOS account would hand the agent that person's iMessages.
+    try {
+      await { ...defaultDeps, ...deps }.verifyHostAccount()
+    } catch (error) {
+      writeJson(res, 403, { handled: false, notifiedAgent: false, error: (error as Error).message })
+      return
+    }
+
     let payload: unknown
     try {
       const rawBody = await readRequestBody(req)
@@ -4496,6 +4515,7 @@ export function startBlueBubblesApp(deps: Partial<RuntimeDeps> = {}): http.Serve
       machineId: loadOrCreateMachineIdentity().machineId,
       requestTimeoutMs: channelConfig.requestTimeoutMs,
       listenerReady: true,
+      hostUsername: loadAgentConfig().senses?.bluebubbles.hostUsername,
     })
     emitNervesEvent({
       component: "channels",

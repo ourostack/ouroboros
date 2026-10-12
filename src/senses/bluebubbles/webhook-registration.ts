@@ -1,5 +1,6 @@
 import { createHash } from "crypto"
 import { emitNervesEvent } from "../../nerves/runtime"
+import { verifyBlueBubblesServerAccount } from "./host-account-verifier"
 
 export const BLUEBUBBLES_WEBHOOK_RECONCILE_INTERVAL_MS = 180_000
 
@@ -12,6 +13,8 @@ export interface BlueBubblesWebhookRegistrationInput {
   machineId: string
   requestTimeoutMs: number
   listenerReady: boolean
+  /** The agent's declared iMessage host account. A webhook is only registered on a server running under it. */
+  hostUsername: string | undefined
 }
 
 export type BlueBubblesWebhookRegistrationState =
@@ -22,6 +25,7 @@ export type BlueBubblesWebhookRegistrationState =
   | "api-unreachable"
   | "malformed"
   | "listener-not-ready"
+  | "host-account-refused"
 
 export interface BlueBubblesWebhookRegistrationResult {
   ok: boolean
@@ -196,12 +200,39 @@ function inspectHooks(
   })
 }
 
+/**
+ * A webhook subscribes the agent to every message of the Apple ID the server runs
+ * as, so registering or inspecting one first confirms that is the agent's own
+ * declared host account. Returns a refusal result, or null when confirmed.
+ */
+async function refuseForeignHostAccount(
+  input: BlueBubblesWebhookRegistrationInput,
+  fetchImpl: typeof fetch,
+): Promise<BlueBubblesWebhookRegistrationResult | null> {
+  try {
+    await verifyBlueBubblesServerAccount({
+      agent: input.agentName,
+      hostUsername: input.hostUsername,
+      serverUrl: input.serverUrl,
+      password: input.password,
+      requestTimeoutMs: input.requestTimeoutMs,
+      fetchImpl,
+    })
+    return null
+  } catch (error) {
+    return result("host-account-refused", (error as Error).message)
+  }
+}
+
 export async function inspectBlueBubblesWebhookRegistration(
   input: BlueBubblesWebhookRegistrationInput,
   deps: WebhookRegistrationDeps = {},
 ): Promise<BlueBubblesWebhookRegistrationResult> {
   if (!input.listenerReady) return result("listener-not-ready", "the local BlueBubbles listener is not ready")
-  const listed = await readHooks(input, deps.fetchImpl ?? fetch, deps.signal)
+  const fetchImpl = deps.fetchImpl ?? fetch
+  const refused = await refuseForeignHostAccount(input, fetchImpl)
+  if (refused) return refused
+  const listed = await readHooks(input, fetchImpl, deps.signal)
   return "hooks" in listed ? inspectHooks(listed.hooks, input) : listed
 }
 
@@ -234,6 +265,8 @@ export async function reconcileBlueBubblesWebhookRegistration(
 ): Promise<BlueBubblesWebhookRegistrationResult> {
   if (!input.listenerReady) return result("listener-not-ready", "the local BlueBubbles listener is not ready")
   const fetchImpl = deps.fetchImpl ?? fetch
+  const refused = await refuseForeignHostAccount(input, fetchImpl)
+  if (refused) return refused
   const listed = await readHooks(input, fetchImpl, deps.signal)
   if (!("hooks" in listed)) return listed
 

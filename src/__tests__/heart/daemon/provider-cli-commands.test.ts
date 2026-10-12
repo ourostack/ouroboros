@@ -8403,6 +8403,7 @@ describe("provider CLI command execution", () => {
       machineId: "machine_bb_live",
       requestTimeoutMs: 12000,
       listenerReady: true,
+      hostUsername: "clawdbot",
     }))
     expect(result).toContain("webhook: one exact Ouro-owned BlueBubbles webhook is registered")
   })

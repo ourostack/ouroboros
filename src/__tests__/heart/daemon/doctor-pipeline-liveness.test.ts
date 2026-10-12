@@ -16,6 +16,14 @@ import * as os from "node:os"
 import * as path from "node:path"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 
+// The server-account check has its own tests (host-account-verifier.test.ts);
+// here every server runs under the agent's declared host account unless a test says otherwise.
+const hostAccount = vi.hoisted(() => ({ verify: vi.fn(async (_input: unknown) => undefined) }))
+vi.mock("../../../senses/bluebubbles/host-account-verifier", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../../../senses/bluebubbles/host-account-verifier")>()),
+  verifyBlueBubblesServerAccount: (input: unknown) => hostAccount.verify(input),
+}))
+
 vi.mock("../../../nerves/runtime", () => ({
   emitNervesEvent: vi.fn(),
 }))
@@ -1466,6 +1474,28 @@ describe("checkSenses bluebubbles inbound-delivery liveness", () => {
     expect(inbound.status).toBe("fail")
     expect(inbound.detail).toContain("drifted owned-webhook evidence corroborates the silence")
     expect(fetchImpl).toHaveBeenCalledTimes(2)
+  })
+
+  it("fails the webhook check and corroborates stale inbound when the server runs under another account", async () => {
+    const bundlesRoot = makeBundlesRoot()
+    const agentRoot = writeAgent(bundlesRoot, "slugger", { bluebubbles: { enabled: true, hostUsername: "clawdbot" } })
+    writeInbound(agentRoot, { "chat_a.ndjson": 9 * DAY_MS })
+    seedBlueBubblesRuntime()
+    const fetchImpl = blueBubblesFetch("exact")
+    hostAccount.verify.mockClear()
+    hostAccount.verify.mockRejectedValueOnce(new Error('the BlueBubbles server runs under macOS account "arimendelow", but the agent\'s iMessage host is "clawdbot"'))
+
+    const checks = (await checkSenses(depsFor(bundlesRoot, {
+      fetchImpl: fetchImpl as unknown as typeof fetch,
+    }))).checks
+    const webhook = findCheck(checks, "senses.bluebubbles.webhook")
+    const inbound = findCheck(checks, "senses.bluebubbles.inbound_liveness")
+
+    expect(hostAccount.verify).toHaveBeenCalledWith(expect.objectContaining({ agent: "slugger", hostUsername: "clawdbot" }))
+    expect(webhook.status).toBe("fail")
+    expect(webhook.detail).toContain('runs under macOS account "arimendelow"')
+    expect(inbound.status).toBe("fail")
+    expect(inbound.detail).toContain("host-account-refused owned-webhook evidence corroborates the silence")
   })
 
   it("fails when a definitive upstream auth fault corroborates stale inbound", async () => {

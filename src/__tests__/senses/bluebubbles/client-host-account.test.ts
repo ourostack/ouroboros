@@ -53,6 +53,16 @@ describe("BlueBubbles client host account gate", () => {
     expect(server.actions).toEqual(["/api/v1/message/text"])
   })
 
+  it("rechecks the server's account before every send, even right after a confirmation", async () => {
+    const server = fakeServer("clawdbot")
+    global.fetch = server.fetch
+    const client = createBlueBubblesClient(config, channel)
+    await client.sendText({ chat, text: "one" })
+    await client.sendText({ chat, text: "two" })
+    const infoCalls = vi.mocked(server.fetch).mock.calls.filter(([url]) => String(url).includes("/api/v1/server/info"))
+    expect(infoCalls).toHaveLength(2)
+  })
+
   it("refuses every Apple ID action when the server runs under another account", async () => {
     const server = fakeServer("arimendelow")
     global.fetch = server.fetch

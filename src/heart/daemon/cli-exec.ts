@@ -4615,6 +4615,7 @@ async function executeConnectBlueBubbles(agent: string, deps: OuroCliDeps): Prom
       machineId,
       requestTimeoutMs,
       listenerReady: blueBubblesListenerReadyAfterApply(daemonApply),
+      hostUsername: bridgeUsername,
     }
     webhookRegistration = await reconcileBlueBubblesWebhookAfterConnect(webhookInput, {
       ...(deps.reconcileBlueBubblesWebhook ? { reconcile: deps.reconcileBlueBubblesWebhook } : {}),

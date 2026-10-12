@@ -390,7 +390,8 @@ export function createBlueBubblesClient(
 ): BlueBubblesClient {
   // Everything that acts as the signed-in Apple ID first confirms the server
   // runs under the agent's declared macOS host account.
-  const assertHostAccount = (): Promise<void> => verifyBlueBubblesServerAccount({
+  // Sends recheck every time; quieter actions may reuse a recent confirmation.
+  const assertHostAccount = (options: { fresh?: boolean } = {}): Promise<void> => verifyBlueBubblesServerAccount({
     agent: hostOptions.agent ?? getAgentName(),
     hostUsername: "hostUsername" in hostOptions
       ? hostOptions.hostUsername
@@ -398,6 +399,7 @@ export function createBlueBubblesClient(
     serverUrl: config.serverUrl,
     password: config.password,
     requestTimeoutMs: channelConfig.requestTimeoutMs,
+    fresh: options.fresh,
   })
   return {
     async sendText(params: BlueBubblesSendTextParams): Promise<BlueBubblesSendTextResult> {
@@ -405,7 +407,7 @@ export function createBlueBubblesClient(
       if (!trimmedText) {
         throw new Error("BlueBubbles send requires non-empty text.")
       }
-      await assertHostAccount()
+      await assertHostAccount({ fresh: true })
       const resolvedChatGuid = await resolveChatGuid(params.chat, config, channelConfig)
       if (!resolvedChatGuid) {
         throw new Error("BlueBubbles send currently requires chat.chatGuid from the inbound event.")

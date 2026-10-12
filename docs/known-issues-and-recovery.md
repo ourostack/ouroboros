@@ -19,9 +19,9 @@ Provider-readiness pings are explicit readiness checks, not private turns.
 
 ### BlueBubbles refused: wrong or undeclared macOS host account
 
-**Symptom**: `ouro status` or `ouro doctor` shows BlueBubbles refused with `no host account is declared`, sends fail with `the BlueBubbles server at <url> runs under macOS account "<account>", but the agent's iMessage host is "<host>"`, or `ouro bluebubbles host install|repair` exits with `BlueBubbles host setup refused for macOS account "<account>"`.
+**Symptom**: `ouro status` or `ouro doctor` shows BlueBubbles refused with `no host account is declared`, sends fail with `the BlueBubbles server at <url> runs under macOS account "<account>", but the agent's iMessage host is "<host>"`, the webhook check reports `host-account-refused`, incoming iMessages stop arriving because webhook events are answered with HTTP 403, or `ouro bluebubbles host install|repair` exits with `BlueBubbles host setup refused for macOS account "<account>"`.
 
-**Cause**: the agent's `senses.bluebubbles.hostUsername` is unset, or the BlueBubbles server that `bluebubbles.serverUrl` reaches runs under a different macOS account. Ouro fails closed here so an agent never sends iMessages from a human's personal Apple ID.
+**Cause**: the agent's `senses.bluebubbles.hostUsername` is unset, or the BlueBubbles server that `bluebubbles.serverUrl` reaches runs under a different macOS account. Ouro fails closed here so an agent never sends iMessages from, or reads incoming iMessages of, a human's personal Apple ID.
 
 **Recovery**: run the BlueBubbles server under the declared account and point `bluebubbles.serverUrl` at it (`ouro connect bluebubbles --agent <name>` sets this up). If `hostUsername` is unset, a human sets it to the macOS account signed in to the agent's own Apple ID; agents should not choose it themselves. To remove a BlueBubbles server installed under the wrong account, run `ouro bluebubbles host remove` in that account.
 

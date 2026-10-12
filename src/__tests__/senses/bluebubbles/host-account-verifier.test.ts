@@ -63,6 +63,14 @@ describe("verifyBlueBubblesServerAccount", () => {
     expect(fetchImpl).toHaveBeenCalledTimes(2)
   })
 
+  it("asks the server again when a fresh check is requested, despite a recent confirmation", async () => {
+    const fetchImpl = serverInfo("clawdbot@host")
+    const input = { ...base, hostUsername: "clawdbot", fetchImpl, now: () => 1_000_000 }
+    await verifyBlueBubblesServerAccount(input)
+    await verifyBlueBubblesServerAccount({ ...input, fresh: true })
+    expect(fetchImpl).toHaveBeenCalledTimes(2)
+  })
+
   it("forgets a confirmation as soon as the server reports another account", async () => {
     let now = 1_000_000
     let computerId = "clawdbot@host"

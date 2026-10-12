@@ -322,6 +322,7 @@ const DEFINITIVE_BLUEBUBBLES_WEBHOOK_STATES: ReadonlySet<BlueBubblesWebhookRegis
   "auth-failed",
   "malformed",
   "listener-not-ready",
+  "host-account-refused",
 ])
 
 function blueBubblesUpstreamEvidence(probe: BlueBubblesHealthProbeResult): BlueBubblesInfrastructureEvidence["upstream"] {
@@ -601,6 +602,7 @@ export async function checkSenses(deps: DoctorDeps): Promise<DoctorCategory> {
             machineId,
             requestTimeoutMs,
             listenerReady: true,
+            hostUsername,
           }, { fetchImpl: deps.fetchImpl })
           checks.push({
             id: "senses.bluebubbles.webhook",

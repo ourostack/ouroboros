@@ -4,9 +4,10 @@ import { emitNervesEvent } from "../../nerves/runtime"
  * BlueBubbles acts as whichever Apple ID is signed in to the macOS account its
  * server runs under, wherever Ouro itself runs. Before anything that acts as
  * that Apple ID (sending, editing, typing, read receipts), confirm the server
- * reports the agent's declared host account. BlueBubbles server info reports
- * `computer_id` as `<macOS username>@<hostname>`. Anything unconfirmed fails
- * closed.
+ * reports the agent's declared host account; the inbound webhook and its
+ * registration are gated the same way, so the agent neither speaks nor listens
+ * as another account's Apple ID. BlueBubbles server info reports `computer_id`
+ * as `<macOS username>@<hostname>`. Anything unconfirmed fails closed.
  */
 
 export class BlueBubblesHostAccountError extends Error {
@@ -24,6 +25,8 @@ export interface BlueBubblesServerAccountInput {
   requestTimeoutMs: number
   fetchImpl?: typeof fetch
   now?: () => number
+  /** Ignore a recent confirmation and ask the server again (used before every send). */
+  fresh?: boolean
 }
 
 const VERIFIED_TTL_MS = 60_000
@@ -74,21 +77,21 @@ export async function verifyBlueBubblesServerAccount(input: BlueBubblesServerAcc
   const { agent, hostUsername, serverUrl } = input
   if (hostUsername === undefined) {
     refuse(
-      `BlueBubbles refused for agent "${agent}": no host account is declared (senses.bluebubbles.hostUsername), so Ouro cannot tell whose Apple ID would send. `
-      + "Not sending. Fix: a human sets senses.bluebubbles.hostUsername in agent.json to the macOS account signed in to the agent's own Apple ID.",
+      `BlueBubbles refused for agent "${agent}": no host account is declared (senses.bluebubbles.hostUsername), so Ouro cannot tell whose Apple ID this is. `
+      + "Not acting. Fix: a human sets senses.bluebubbles.hostUsername in agent.json to the macOS account signed in to the agent's own Apple ID.",
       { agent, reason: "unset" },
     )
   }
   const now = (input.now ?? Date.now)()
   const key = `${serverUrl}\u0000${hostUsername}`
   const cached = verifiedAt.get(key)
-  if (cached !== undefined && now - cached < VERIFIED_TTL_MS) return
+  if (!input.fresh && cached !== undefined && now - cached < VERIFIED_TTL_MS) return
 
   const serverUsername = await readServerUsername(input)
   if (serverUsername === null) {
     verifiedAt.delete(key)
     refuse(
-      `BlueBubbles refused for agent "${agent}": could not confirm which macOS account the BlueBubbles server at ${serverUrl} runs under. Not sending.`,
+      `BlueBubbles refused for agent "${agent}": could not confirm which macOS account the BlueBubbles server at ${serverUrl} runs under. Not acting.`,
       { agent, reason: "unconfirmed", hostUsername },
     )
   }
@@ -96,7 +99,7 @@ export async function verifyBlueBubblesServerAccount(input: BlueBubblesServerAcc
     verifiedAt.delete(key)
     refuse(
       `BlueBubbles refused for agent "${agent}": the BlueBubbles server at ${serverUrl} runs under macOS account "${serverUsername}", `
-      + `but the agent's iMessage host is "${hostUsername}". Not sending, so the agent cannot speak from "${serverUsername}"'s Apple ID. `
+      + `but the agent's iMessage host is "${hostUsername}". Not acting, so the agent neither speaks nor listens as "${serverUsername}"'s Apple ID. `
       + `Fix: run BlueBubbles under "${hostUsername}" and point bluebubbles.serverUrl at it. Changing senses.bluebubbles.hostUsername is a human decision, because it chooses whose Apple ID the agent speaks as.`,
       { agent, reason: "mismatch", hostUsername, serverUsername },
     )

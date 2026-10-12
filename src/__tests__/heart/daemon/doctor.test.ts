@@ -43,6 +43,14 @@ import {
 import { refreshRuntimeCredentialConfig } from "../../../heart/runtime-credentials"
 import { buildBlueBubblesWebhookCallbackUrl } from "../../../senses/bluebubbles/webhook-registration"
 
+// The server-account check has its own tests (host-account-verifier.test.ts);
+// here every server runs under the agent's declared host account unless a test says otherwise.
+const hostAccount = vi.hoisted(() => ({ verify: vi.fn(async (_input: unknown) => undefined) }))
+vi.mock("../../../senses/bluebubbles/host-account-verifier", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../../../senses/bluebubbles/host-account-verifier")>()),
+  verifyBlueBubblesServerAccount: (input: unknown) => hostAccount.verify(input),
+}))
+
 function createMockDeps(overrides: Partial<DoctorDeps> = {}): DoctorDeps {
   return {
     existsSync: vi.fn().mockReturnValue(false),
