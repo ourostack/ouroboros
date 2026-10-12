@@ -862,7 +862,7 @@ describe("ouro up: interactive repair wiring", () => {
     expect(vaultMocks.probeCredentialVaultAccess).toHaveBeenCalledWith(
       "test-agent",
       "unlock-material",
-      { homeDir: "/tmp/ouro-home" },
+      { homeDir: "/tmp/ouro-home", onProgress: expect.any(Function) },
     )
     expect(vaultMocks.storeVaultUnlockSecret).toHaveBeenCalledWith(
       { agentName: "test-agent", email: "test-agent@ouro.bot", serverUrl: "https://vault.ouro.bot" },
