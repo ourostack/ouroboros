@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 import { emitNervesEvent } from "../../nerves/runtime"
+import { redactCliArgs } from "./cli-arg-redaction"
 import { runOuroCli } from "./daemon-cli"
 import { configureDaemonRuntimeLogger } from "./runtime-logging"
 
@@ -9,7 +10,7 @@ emitNervesEvent({
   component: "daemon",
   event: "daemon.cli_entry_start",
   message: "starting ouro CLI entrypoint",
-  meta: { args: process.argv.slice(2) },
+  meta: { args: redactCliArgs(process.argv.slice(2)) },
 })
 
 void runOuroCli(process.argv.slice(2)).catch((error) => {

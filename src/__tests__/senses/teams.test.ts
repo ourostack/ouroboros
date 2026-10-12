@@ -85,6 +85,9 @@ afterEach(() => {
 // Config is now loaded from config.json only (no env var fallbacks).
 // No env var save/restore needed.
 
+// These suites start the app with no bot credentials, which only the developer mode allows.
+process.env.OURO_TEAMS_DEVTOOLS = "1"
+
 describe("Teams adapter - exports", () => {
   it("exports createTeamsCallbacks", async () => {
     vi.resetModules()
@@ -1082,6 +1085,38 @@ describe("Teams adapter - splitMessage", () => {
 describe("Teams adapter - startTeamsApp (DevtoolsPlugin mode)", () => {
   afterEach(() => {
     // Config is loaded from config.json only, no env vars to clear
+  })
+
+  it("refuses to start with no bot credentials unless a developer asked for it", async () => {
+    vi.resetModules()
+    const mockStart = vi.fn()
+    vi.doMock("@microsoft/teams.apps", () => ({
+      App: class MockApp {
+        on = vi.fn()
+        event = vi.fn()
+        start = mockStart
+      },
+    }))
+    vi.doMock("@microsoft/teams.dev", () => ({
+      DevtoolsPlugin: class MockDevtoolsPlugin {},
+    }))
+    vi.doMock("../../heart/core", () => ({
+      createSummarize: vi.fn(() => vi.fn()),
+      runAgent: vi.fn(),
+      buildSystem: vi.fn().mockReturnValue({ stable: "system prompt", volatile: "" }),
+      summarizeArgs: vi.fn().mockReturnValue(""),
+      repairOrphanedToolCalls: vi.fn(),
+    }))
+    const asked = process.env.OURO_TEAMS_DEVTOOLS
+    delete process.env.OURO_TEAMS_DEVTOOLS
+    try {
+      const teams = await import("../../senses/teams")
+      expect(() => teams.startTeamsApp()).toThrow("it would accept messages from anyone")
+      expect(mockStart).not.toHaveBeenCalled()
+    } finally {
+      process.env.OURO_TEAMS_DEVTOOLS = asked
+      vi.restoreAllMocks()
+    }
   })
 
   it("creates App with DevtoolsPlugin when CLIENT_ID is not set", async () => {

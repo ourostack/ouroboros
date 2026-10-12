@@ -22,8 +22,13 @@ emitNervesEvent({
 })
 
 import("../heart/runtime-credentials")
-  .then(async ({ refreshRuntimeCredentialConfig }) => {
-    void refreshRuntimeCredentialConfig(agentName, { preserveCachedOnFailure: true }).catch(() => undefined)
+  .then(async ({ waitForRuntimeCredentialBootstrap, readRuntimeCredentialConfig, refreshRuntimeCredentialConfig }) => {
+    // The bot's credentials must be loaded before the listener starts: without them the Teams SDK
+    // validates no sender, and startTeamsApp refuses to start.
+    const bootstrapped = await waitForRuntimeCredentialBootstrap(agentName)
+    if (!bootstrapped && !readRuntimeCredentialConfig(agentName).ok) {
+      await refreshRuntimeCredentialConfig(agentName, { preserveCachedOnFailure: true }).catch(() => undefined)
+    }
     const { startTeamsApp } = await import("./teams")
     startTeamsApp()
   })

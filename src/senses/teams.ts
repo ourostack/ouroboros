@@ -926,6 +926,11 @@ function createBotApp(teamsConfig: { clientId: string, clientSecret: string, ten
       mode: "Bot Service (managed identity)",
     }
   } else {
+    // With no credentials the Teams SDK validates no sender, so anyone who can reach the port can
+    // talk to the agent. That is only acceptable when a developer asks for it on their own machine.
+    if (process.env.OURO_TEAMS_DEVTOOLS !== "1") {
+      throw new Error("Teams bot credentials are missing (teams.clientId), so the Teams sense will not start: without them it would accept messages from anyone. Run `ouro connect teams`, or set OURO_TEAMS_DEVTOOLS=1 for local development with no real bot.")
+    }
     return {
       app: new App({
         plugins: [new DevtoolsPlugin()],
