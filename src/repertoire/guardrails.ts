@@ -290,6 +290,11 @@ export const OURO_CLI_TRUST_MANIFEST: Record<string, TrustLevel> = {
   "friend show": "friend",
   "friend create": "friend",
   "friend update": "family",
+  // Linking and merging change who the agent believes someone is: family only.
+  "friend link": "family",
+  "friend unlink": "family",
+  "friend merge": "family",
+  "friend dedupe": "family",
   "config model": "friend",
   "config models": "friend",
   "mcp list": "acquaintance",
@@ -332,7 +337,8 @@ function resolveOuroSubcommand(command: string): string | null {
   /* v8 ignore next -- bare "ouro" is caught upstream by checkShellTrustGuardrails @preserve */
   if (!afterOuro) return null
 
-  const tokens = afterOuro.split(/\s+/)
+  // `--agent <name>` may come before the subcommand; it never changes which subcommand runs.
+  const tokens = afterOuro.split(/\s+/).filter((token, index, all) => token !== "--agent" && all[index - 1] !== "--agent")
   const twoWord = tokens.length >= 2 ? `${tokens[0]} ${tokens[1]}` : null
 
   // Two-word match first (e.g. "task board"), then one-word (e.g. "whoami")

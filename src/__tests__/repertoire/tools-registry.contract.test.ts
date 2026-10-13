@@ -258,7 +258,10 @@ describe("tool registry contract", () => {
     expect(names).toContain("list_delegations");
     expect(names).toContain("send_result");
 
-    // Exact count: 119 tools
-    expect(names).toHaveLength(119);
+    // Added in identity link codes: 1 family-only tool that issues a one-time link code
+    expect(names).toContain("friend_link_code");
+
+    // Exact count: 120 tools
+    expect(names).toHaveLength(120);
   });
 });
