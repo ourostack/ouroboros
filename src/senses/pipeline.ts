@@ -63,6 +63,7 @@ import { readFlightRecorderResume, recordFlightRecorderEvent } from "../arc/flig
 import { refreshContextLossSentinel } from "../heart/context-loss-sentinel"
 import { projectCareEvidence, type CareRecord } from "../arc/cares"
 import { withTurnExecutionLease } from "../heart/turn-execution-lease"
+import { parseLinkCode, redeemLinkCode } from "../mind/friend-link-codes"
 
 export interface FailoverState {
   pending: FailoverContext | null
@@ -843,16 +844,17 @@ async function handleInboundTurnExclusive(input: InboundTurnInput): Promise<Inbo
     }
   }
 
+  const firstUserMsg = input.messages.find((m) => m.role === "user")
+  const userText = firstUserMsg
+    ? (typeof firstUserMsg.content === "string"
+      ? firstUserMsg.content
+      : Array.isArray(firstUserMsg.content)
+        ? (firstUserMsg.content.find((p: any) => p.type === "text") as any)?.text ?? ""
+        : /* v8 ignore next -- defensive: content is always string or array @preserve */ "")
+    : ""
+
   // Step 0b: Slash command interception (before friend resolution / agent turn)
   {
-    const firstUserMsg = input.messages.find((m) => m.role === "user")
-    const userText = firstUserMsg
-      ? (typeof firstUserMsg.content === "string"
-        ? firstUserMsg.content
-        : Array.isArray(firstUserMsg.content)
-          ? (firstUserMsg.content.find((p: any) => p.type === "text") as any)?.text ?? ""
-          : /* v8 ignore next -- defensive: content is always string or array @preserve */ "")
-      : ""
     const parsed = parseSlashCommand(userText)
     if (parsed) {
       const registry = getSharedCommandRegistry()
@@ -892,6 +894,28 @@ async function handleInboundTurnExclusive(input: InboundTurnInput): Promise<Inbo
       senseType: input.capabilities.senseType,
     },
   })
+
+  // Step 1b: Identity link code. Runs before the trust gate so an identity the agent
+  // does not trust yet can prove it belongs to someone it does. Never a model turn.
+  if (input.channel !== "inner" && parseLinkCode(userText)) {
+    const agentRoot = getAgentRoot()
+    const redemption = (await redeemLinkCode({
+      agentRoot,
+      friendsDir: path.join(agentRoot, "friends"),
+      store: input.friendStore,
+      text: userText,
+      claimant: resolvedContext.friend,
+      channel: input.channel,
+      isGroupChat: input.isGroupChat ?? false,
+    }))!
+    input.callbacks.onTextChunk(redemption.reply)
+    return {
+      resolvedContext: redemption.status === "linked" ? { ...resolvedContext, friend: redemption.friend } : resolvedContext,
+      gateResult: { allowed: true },
+      turnOutcome: "command",
+      commandAction: "response",
+    }
+  }
 
   // Step 2: Trust gate
   const gateInput: TrustGateInput = {

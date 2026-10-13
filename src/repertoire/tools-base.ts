@@ -38,6 +38,7 @@ import { orientationToolDefinitions } from "./tools-orientation"
 import { rsvpToolDefinitions } from "./tools-rsvp"
 import { habitToolDefinitions } from "./tools-habits"
 import { telegramContactToolDefinition } from "./tools-telegram-contacts"
+import { friendLinkToolDefinition } from "./tools-friend-link"
 import type { OrientationFrame } from "../heart/orientation-frame"
 // Re-export flow tools for consumers that import them from tools-base
 export { ponderTool, observeTool, settleTool, restTool, speakTool } from "./tools-flow";
@@ -317,6 +318,7 @@ export const baseToolDefinitions: ToolDefinition[] = [
   ...rsvpToolDefinitions,
   ...habitToolDefinitions,
   telegramContactToolDefinition,
+  friendLinkToolDefinition,
 ];
 
 // Convenience array of just the tool schemas (no handler/integration metadata).

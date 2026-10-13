@@ -1558,10 +1558,69 @@ function parseFriendCommand(args: string[]): OuroCliCommand {
     } as OuroCliCommand
   }
 
-  if (sub === "link") return parseLinkCommand(rest, "friend.link")
-  if (sub === "unlink") return parseLinkCommand(rest, "friend.unlink")
+  if (sub === "link") {
+    // Without an explicit identity, `link` issues a code the person sends from the new account.
+    if (!rest.includes("--provider") && !rest.includes("--external-id") && (agent || rest[0]?.startsWith("--"))) {
+      return parseFriendLinkCodeCommand(rest, agent)
+    }
+    return parseLinkCommand(agent ? [agent, ...rest] : rest, "friend.link")
+  }
+  if (sub === "unlink") return parseLinkCommand(agent ? [agent, ...rest] : rest, "friend.unlink")
+
+  if (sub === "merge") {
+    const usage = "Usage: ouro friend merge --into <friend-id> <friend-id>... [--agent <name>] [--apply]"
+    let targetId: string | undefined
+    let apply = false
+    const sourceIds: string[] = []
+    for (let i = 0; i < rest.length; i += 1) {
+      const token = rest[i]!
+      if (token === "--into") {
+        targetId = rest[i + 1]
+        i += 1
+      } else if (token === "--apply") {
+        apply = true
+      } else if (token.startsWith("--")) {
+        throw new Error(usage)
+      } else {
+        sourceIds.push(token)
+      }
+    }
+    if (!targetId || sourceIds.length === 0) throw new Error(usage)
+    return { kind: "friend.merge", targetId, sourceIds, apply, ...(agent ? { agent } : {}) }
+  }
+
+  if (sub === "dedupe") {
+    const usage = "Usage: ouro friend dedupe [--agent <name>] [--apply]"
+    if (rest.some((token) => token !== "--apply")) throw new Error(usage)
+    return { kind: "friend.dedupe", apply: rest.includes("--apply"), ...(agent ? { agent } : {}) }
+  }
 
   throw new Error(`Usage\n${usage()}`)
+}
+
+const FRIEND_LINK_CODE_USAGE = "Usage: ouro friend link --agent <name> [--channel <teams|bluebubbles|telegram|mail|voice|mcp|cli>] [--friend <friend-id>] [--ttl-minutes <n>]"
+const LINK_CODE_CHANNELS = ["cli", "teams", "bluebubbles", "mail", "voice", "a2a", "mcp", "telegram"] as const
+
+function parseFriendLinkCodeCommand(rest: string[], agent: string | undefined): OuroCliCommand {
+  let friendId: string | undefined
+  let channel: (typeof LINK_CODE_CHANNELS)[number] | undefined
+  let ttlMinutes: number | undefined
+  for (let i = 0; i < rest.length; i += 2) {
+    const token = rest[i]
+    const value = rest[i + 1]
+    if (!value) throw new Error(FRIEND_LINK_CODE_USAGE)
+    if (token === "--friend") friendId = value
+    else if (token === "--channel" && (LINK_CODE_CHANNELS as readonly string[]).includes(value)) channel = value as typeof channel
+    else if (token === "--ttl-minutes" && /^[1-9][0-9]*$/.test(value)) ttlMinutes = Number(value)
+    else throw new Error(FRIEND_LINK_CODE_USAGE)
+  }
+  return {
+    kind: "friend.linkCode",
+    ...(agent ? { agent } : {}),
+    ...(friendId ? { friendId } : {}),
+    ...(channel ? { channel } : {}),
+    ...(ttlMinutes ? { ttlMinutes } : {}),
+  }
 }
 
 function parseA2ACommand(args: string[]): OuroCliCommand {
