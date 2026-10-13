@@ -2,6 +2,12 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.917",
+      "changes": [
+        "Shepherd judges approval prompts (command confirmations, folder trust, safety checks) on what they would do: one inside the agent's task that the human would plainly approve is answered with the approving key instead of being escalated. The check that the screen did not move on while judging also ignores a timer that comes and goes between redraws. A terminal judged still working is rechecked at most a minute after it goes quiet, down from five."
+      ]
+    },
+    {
       "version": "0.1.0-alpha.916",
       "changes": [
         "Security: the Teams sense waits for its bot credentials before listening and refuses to start without them (it used to start early in a developer mode that accepted messages from anyone); the daemon log no longer records values passed with --value, --secret, --password or --token.",
