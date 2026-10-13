@@ -2878,6 +2878,12 @@ describe("daemon sense manager", () => {
     const telegramAgent = (processManagerCtor.mock.calls[0]?.[0] as {
       agents: Array<{ name: string; getRuntimeCredentialBootstrap?: () => unknown }>
     }).agents.find((agent) => agent.name === "slugger:telegram")
+    const teamsAgent = (processManagerCtor.mock.calls[0]?.[0] as {
+      agents: Array<{ name: string; getRuntimeCredentialBootstrap?: () => unknown }>
+    }).agents.find((agent) => agent.name === "slugger:teams")
+    const mailAgent = (processManagerCtor.mock.calls[0]?.[0] as {
+      agents: Array<{ name: string; getRuntimeCredentialBootstrap?: () => unknown }>
+    }).agents.find((agent) => agent.name === "slugger:mail")
     expect(bluebubblesAgent?.getRuntimeCredentialBootstrap?.()).toEqual({
       agentName: "slugger",
       runtimeConfig: {
@@ -2926,6 +2932,9 @@ describe("daemon sense manager", () => {
       }),
       machineId: expect.stringMatching(/^machine_/),
     }))
+    // Chat-turn tools use the same machine attachment as standalone senses.
+    expect(teamsAgent?.getRuntimeCredentialBootstrap?.()).toEqual(bluebubblesAgent?.getRuntimeCredentialBootstrap?.())
+    expect(mailAgent?.getRuntimeCredentialBootstrap?.()).toEqual(bluebubblesAgent?.getRuntimeCredentialBootstrap?.())
     expect(manager.listSenseRows().find((row) => row.agent === "ouroboros" && row.sense === "teams")).toEqual(
       expect.objectContaining({ status: "disabled" }),
     )
