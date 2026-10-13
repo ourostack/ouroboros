@@ -176,6 +176,7 @@ export async function startShepherdSenseApp(options: ShepherdSenseOptions): Prom
     const record: ReturnRecord = {
       at: new Date(now()).toISOString(), host: host.name, session: event.sessionId, transition: event.transitionId,
       agent: event.agent, cwd: event.cwd, task: null, kind: "unclear", action: "let_through", reason: "", reply: null, latencyMs: null, inputTokens: null,
+      ...(event.title !== undefined ? { title: event.title, workspaceTitle: event.workspaceTitle } : {}),
     }
     const state = guardFor(event.sessionId)
     /** False for a return nothing new was decided about: the loop guard still holds, or the same background wait. */

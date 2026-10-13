@@ -63,6 +63,15 @@ describe("owner notice policy", () => {
 })
 
 describe("owner notice text", () => {
+  it("names the foreground agent, folder, workspace and tab for an unhooked return", () => {
+    const session = { id: "0a1b2c3d-4e5f", ref: "surface:30", workspace: "workspace:3", workspaceTitle: "workflows",
+      title: "Troubleshoot Outlook", agent: "Copilot", cwd: "/Users/a/personal-desk", focused: false }
+    expect(noticeMessage([record({ agent: null, cwd: null, kind: "done", reason: "Fixed the error." })], new Map([[session.id, session]])))
+      .toBe("Copilot in personal-desk (workflows / Troubleshoot Outlook; surface:30) says it is done. Why: Fixed the error.")
+    expect(noticeLine(record({ title: "Saved tab", workspaceTitle: "Saved workspace" }), session))
+      .toContain("(Saved workspace / Saved tab; surface:30)")
+  })
+
   it("keeps untrusted terminal text to one plain bounded line", () => {
     expect(plain("a\u0000b\nc‮d e", 50)).toBe("a b c d e")
     expect(plain("**bold** <at>Ari</at> [link](x) `code` #h | ~s~ \\n @everyone", 100)).toBe("bold at Ari /at link (x) code h s n everyone")

@@ -15,6 +15,8 @@ export interface ReturnRecord {
   transition: string
   agent: string | null
   cwd: string | null
+  workspaceTitle?: string | null
+  title?: string
   task: string | null
   kind: ReturnKind | "error" | "loop_guard"
   action: ReturnAction

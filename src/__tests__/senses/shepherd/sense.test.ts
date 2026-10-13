@@ -232,7 +232,7 @@ describe("Shepherd sense: letting returns through", () => {
     const { host, escalations, wakes, notices, returned } = await start(async () => verdicts.shift()!)
     host.screens.G = [SCREENS.copilotGate]
     host.screens.D = [SCREENS.agencyDone]
-    await returned({ sessionId: "G", transitionId: "g", agent: "copilot", cwd: "/Users/a/code/service" })
+    await returned({ sessionId: "G", transitionId: "g", agent: "copilot", cwd: "/Users/a/code/service", title: "Ship service", workspaceTitle: "ouro" })
     await returned({ sessionId: "D", transitionId: "d", agent: null, cwd: null })
     await returned({ sessionId: "X", transitionId: "x" })
     expect(host.actions.filter((action) => !action.startsWith("pace"))).toEqual(["status G needs Ari: It needs Ari's Azure sign-in.", "status D done: Merged and released with proof."])
@@ -245,6 +245,7 @@ describe("Shepherd sense: letting returns through", () => {
     await vi.waitFor(() => expect(wakes).toEqual([["g", "d"]]))
     expect(readReturns(agentRoot).map((record) => [record.kind, record.action])).toEqual([["gate", "let_through"], ["done", "let_through"], ["unclear", "let_through"]])
     expect(notices.map((record) => record.kind)).toEqual(["gate", "done", "unclear"])
+    expect(notices[0]).toMatchObject({ title: "Ship service", workspaceTitle: "ouro" })
   })
 
   it("treats a stop with the agent's own background work running as working: no reply, no wake, a status update", async () => {

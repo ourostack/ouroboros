@@ -1,0 +1,58 @@
+import { execFile } from "node:child_process"
+import * as path from "node:path"
+import { promisify } from "node:util"
+import { emitNervesEvent } from "../../nerves/runtime"
+
+export interface TerminalProcessIdentity { agent: string; cwd: string | null }
+type RunCommand = (command: string, args: string[]) => Promise<string>
+const exec = promisify(execFile)
+
+async function runCommand(command: string, args: string[]): Promise<string> {
+  const { stdout } = await exec(command, args, { timeout: 3_000, maxBuffer: 4 * 1024 * 1024 })
+  return stdout
+}
+
+/** One process snapshot and one cwd lookup for all terminals, not a subprocess per polling surface. */
+export async function identifyTerminalProcesses(ttys: string[], run: RunCommand = runCommand): Promise<Map<string, TerminalProcessIdentity>> {
+  const result = new Map<string, TerminalProcessIdentity>()
+  if (ttys.length === 0) return result
+  const wanted = new Set(ttys.map((tty) => tty.replace(/^\/dev\//, "")))
+  const agents = new Map<string, { pid: number; parent: number; agent: string }[]>()
+  try {
+    for (const line of (await run("ps", ["-axo", "pid=,ppid=,pgid=,tpgid=,tty=,comm="])).split("\n")) {
+      const match = line.trim().match(/^(\d+)\s+(\d+)\s+(\d+)\s+(-?\d+)\s+(\S+)\s+(.+)$/)
+      if (!match) continue
+      const [, pid, parent, group, foreground, tty, command] = match
+      if (!wanted.has(tty!) || group !== foreground) continue
+      const executable = path.basename(command!)
+      const agent = executable === "claude" ? "Claude Code" : executable === "copilot" ? "Copilot" : executable === "codex" ? "Codex" : null
+      if (!agent) continue
+      const candidates = agents.get(tty!) ?? []
+      candidates.push({ pid: Number(pid), parent: Number(parent), agent })
+      agents.set(tty!, candidates)
+    }
+  } catch (error) {
+    emitNervesEvent({ level: "warn", component: "senses", event: "senses.shepherd_process_lookup_error", message: "could not identify terminal foreground agents", meta: { error: String(error) } })
+    return result
+  }
+  const selected = new Map<string, { pid: number; agent: string }>()
+  for (const [tty, candidates] of agents) {
+    const outer = candidates.find((candidate) => !candidates.some((parent) => parent.pid === candidate.parent))!
+    selected.set(tty, outer)
+    result.set(tty, { agent: outer.agent, cwd: null })
+  }
+  if (selected.size === 0) return result
+  try {
+    const cwdByPid = new Map<number, string>()
+    let pid = 0
+    const output = await run("lsof", ["-a", "-p", [...selected.values()].map((agent) => agent.pid).join(","), "-d", "cwd", "-Fn"])
+    for (const line of output.split("\n")) {
+      if (line.startsWith("p")) pid = Number(line.slice(1))
+      else if (line.startsWith("n") && pid) cwdByPid.set(pid, line.slice(1))
+    }
+    for (const [tty, agent] of selected) result.set(tty, { agent: agent.agent, cwd: cwdByPid.get(agent.pid) ?? null })
+  } catch (error) {
+    emitNervesEvent({ level: "warn", component: "senses", event: "senses.shepherd_cwd_lookup_error", message: "could not read foreground agent folders", meta: { error: String(error) } })
+  }
+  return result
+}
