@@ -188,7 +188,7 @@ describe("provider failover", () => {
     expect(context.userMessage).toContain("minimax encountered an error.")
     expect(context.userMessage).toContain("provider detail: minimax encountered an error")
     expect(context.userMessage).toContain("...")
-    expect(context.readyProviders[0].model).toBe("claude-opus-4-6")
+    expect(context.readyProviders[0].model).toBe("claude-opus-5-5")
     expect(context.userMessage).toContain("azure: could not be reached")
   })
 
@@ -323,7 +323,7 @@ describe("provider failover", () => {
     try {
       const { runMachineProviderFailoverInventory: runInventory } = await import("../../heart/provider-failover")
       const inventory = await runInventory("slugger", "minimax")
-      expect(pingProvider).toHaveBeenCalledWith("anthropic", { setupToken: "tok" }, expect.objectContaining({ model: "claude-opus-4-6" }))
+      expect(pingProvider).toHaveBeenCalledWith("anthropic", { setupToken: "tok" }, expect.objectContaining({ model: "claude-opus-5-5" }))
       expect(inventory.ready).toMatchObject([{ provider: "anthropic" }])
     } finally {
       vi.doUnmock("../../heart/provider-ping")

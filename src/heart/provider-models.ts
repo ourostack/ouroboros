@@ -2,11 +2,11 @@ import type { AgentProvider } from "./identity"
 import { emitNervesEvent } from "../nerves/runtime"
 
 export const DEFAULT_PROVIDER_MODELS: Record<AgentProvider, string> = {
-  anthropic: "claude-opus-4-6",
+  anthropic: "claude-opus-5-5",
   azure: "gpt-4o-mini",
   minimax: "MiniMax-M3",
-  "openai-codex": "gpt-5.4",
-  "github-copilot": "claude-sonnet-4.6",
+  "openai-codex": "gpt-5.5",
+  "github-copilot": "claude-opus-5.5",
   "openai-compatible": "glm-5.3-flash",
   "openai-compatible-gemini": "gemini-3.6-flash",
 }

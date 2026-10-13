@@ -10,8 +10,8 @@ vi.mock("../../../nerves/runtime", () => ({
 vi.mock("../../../heart/identity", () => ({
   loadAgentConfig: vi.fn(() => ({
     provider: "anthropic",
-    humanFacing: { provider: "anthropic", model: "claude-opus-4-6" },
-    agentFacing: { provider: "anthropic", model: "claude-opus-4-6" },
+    humanFacing: { provider: "anthropic", model: "claude-opus-5-5" },
+    agentFacing: { provider: "anthropic", model: "claude-opus-5-5" },
   })),
   getAgentName: () => "slugger",
   getAgentRoot: () => "/tmp/AgentBundles/slugger.ouro",

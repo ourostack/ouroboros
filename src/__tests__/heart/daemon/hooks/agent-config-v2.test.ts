@@ -46,8 +46,8 @@ describe("agentConfigV2Hook", () => {
     expect(result.ok).toBe(true)
     const updated = JSON.parse(fs.readFileSync(configPath, "utf-8")) as Record<string, unknown>
     expect(updated.version).toBe(2)
-    expect(updated.humanFacing).toEqual({ provider: "anthropic", model: "claude-opus-4-6" })
-    expect(updated.agentFacing).toEqual({ provider: "anthropic", model: "claude-opus-4-6" })
+    expect(updated.humanFacing).toEqual({ provider: "anthropic", model: "claude-opus-5-5" })
+    expect(updated.agentFacing).toEqual({ provider: "anthropic", model: "claude-opus-5-5" })
   })
 
   it("is idempotent on v2 configs (no-op, files untouched)", async () => {

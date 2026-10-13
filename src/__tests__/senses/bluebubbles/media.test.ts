@@ -1573,7 +1573,7 @@ describe("BlueBubbles media hydration — capability-aware image routing", () =>
       baseChannel(),
       {
         fetchImpl: vi.fn().mockResolvedValue(pngResponse()),
-        chatModel: "claude-opus-4-6",
+        chatModel: "claude-opus-5-5",
         vlmDescribe,
       },
     )
@@ -1969,7 +1969,7 @@ describe("BlueBubbles media hydration — capability-aware image routing", () =>
         [{ guid: "g1", mimeType: "image/png", transferName: "pic.png" }],
         baseConfig(),
         baseChannel(),
-        { chatModel: "claude-opus-4-6" },
+        { chatModel: "claude-opus-5-5" },
       )
       expect(stub).toHaveBeenCalledTimes(1)
       expect(result.inputParts[0]).toMatchObject({ type: "image_url" })

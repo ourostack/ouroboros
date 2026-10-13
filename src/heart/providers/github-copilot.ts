@@ -65,7 +65,10 @@ export function createGithubCopilotProviderRuntime(model: string, config: Github
         };
         if (this.model) params.model = this.model;
         if (request.traceId) params.metadata = { trace_id: request.traceId };
-        if (request.toolChoiceRequired) params.tool_choice = "required";
+        // Copilot's Claude models think adaptively, and thinking only accepts
+        // tool_choice "auto" or "none"; "required" fails every turn with a 400.
+        // The engine already retries a turn that ends without a tool call.
+        if (request.toolChoiceRequired) params.tool_choice = "auto";
         try {
           return await streamChatCompletion(
             this.client as OpenAI,

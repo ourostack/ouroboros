@@ -1020,8 +1020,8 @@ describe("readAgentConfigForAgent v2 inline migration", () => {
 
     const { config } = readAgentConfigForAgent(agentName, bundlesRoot)
     expect(config.version).toBe(2)
-    expect(config.humanFacing).toEqual({ provider: "anthropic", model: "claude-opus-4-6" })
-    expect(config.agentFacing).toEqual({ provider: "anthropic", model: "claude-opus-4-6" })
+    expect(config.humanFacing).toEqual({ provider: "anthropic", model: "claude-opus-5-5" })
+    expect(config.agentFacing).toEqual({ provider: "anthropic", model: "claude-opus-5-5" })
   })
 
   it("returns v2 config directly without migration", () => {
@@ -1105,18 +1105,18 @@ describe("writeAgentProviderSelection with facing", () => {
     const bundlesRoot = makeTempDir("auth-flow-provider-human")
     const agentName = "FacingHumanBot"
     const configPath = writeAgentConfig(bundlesRoot, agentName, "anthropic", {
-      humanFacing: { provider: "anthropic", model: "claude-opus-4-6" },
-      agentFacing: { provider: "anthropic", model: "claude-opus-4-6" },
+      humanFacing: { provider: "anthropic", model: "claude-opus-5-5" },
+      agentFacing: { provider: "anthropic", model: "claude-opus-5-5" },
     })
 
     writeAgentProviderSelection(agentName, "human", "openai-codex", bundlesRoot)
 
     const updated = JSON.parse(fs.readFileSync(configPath, "utf8")) as Record<string, any>
     expect(updated.humanFacing.provider).toBe("openai-codex")
-    expect(updated.humanFacing.model).toBe("gpt-5.4")
+    expect(updated.humanFacing.model).toBe("gpt-5.5")
     // agentFacing should be unchanged
     expect(updated.agentFacing.provider).toBe("anthropic")
-    expect(updated.agentFacing.model).toBe("claude-opus-4-6")
+    expect(updated.agentFacing.model).toBe("claude-opus-5-5")
   })
 
   it("writes to agentFacing when facing is 'agent'", () => {
@@ -1142,15 +1142,15 @@ describe("writeAgentProviderSelection with facing", () => {
     const bundlesRoot = makeTempDir("auth-flow-provider-model-reset")
     const agentName = "FacingModelResetBot"
     const configPath = writeAgentConfig(bundlesRoot, agentName, "github-copilot", {
-      humanFacing: { provider: "github-copilot", model: "claude-sonnet-4.6" },
-      agentFacing: { provider: "github-copilot", model: "claude-sonnet-4.6" },
+      humanFacing: { provider: "github-copilot", model: "claude-sonnet-5.5" },
+      agentFacing: { provider: "github-copilot", model: "claude-sonnet-5.5" },
     })
 
     writeAgentProviderSelection(agentName, "human", "openai-codex", bundlesRoot)
 
     const updated = JSON.parse(fs.readFileSync(configPath, "utf8")) as Record<string, any>
-    expect(updated.humanFacing).toEqual({ provider: "openai-codex", model: "gpt-5.4" })
-    expect(updated.agentFacing).toEqual({ provider: "github-copilot", model: "claude-sonnet-4.6" })
+    expect(updated.humanFacing).toEqual({ provider: "openai-codex", model: "gpt-5.5" })
+    expect(updated.agentFacing).toEqual({ provider: "github-copilot", model: "claude-sonnet-5.5" })
   })
 })
 

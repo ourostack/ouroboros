@@ -13,68 +13,47 @@ function emitTestEvent(testName: string): void {
 
 describe("model-capabilities", () => {
   describe("MODEL_CAPABILITIES registry", () => {
-    it("has an entry for claude-opus-4-6", async () => {
-      emitTestEvent("claude-opus-4-6 registry entry")
+    const CLAUDE_EFFORTS = ["low", "medium", "high", "xhigh", "max"]
+    const GPT_EFFORTS = ["none", "low", "medium", "high", "xhigh", "max"]
+
+    it.each(["claude-opus-5.5", "claude-sonnet-5.5", "claude-haiku-5.5"])("has a Copilot row for %s without a thinking format", async (id) => {
+      emitTestEvent(`${id} registry entry`)
       const { MODEL_CAPABILITIES } = await import("../../heart/model-capabilities")
-      const entry = MODEL_CAPABILITIES["claude-opus-4-6"]
-      expect(entry).toBeDefined()
-      expect(entry.reasoningEffort).toEqual(["low", "medium", "high", "max"])
-      expect(entry.thinkingFormat).toBe("anthropic")
-      expect(entry.maxOutputTokens).toBe(128000)
+      expect(MODEL_CAPABILITIES[id]).toEqual({ reasoningEffort: CLAUDE_EFFORTS, maxOutputTokens: 128000, vision: true })
     })
 
-    it("has an entry for claude-sonnet-4-6", async () => {
-      emitTestEvent("claude-sonnet-4-6 registry entry")
+    it.each(["claude-opus-5-5", "claude-sonnet-5-5", "claude-haiku-5-5"])("has a direct Anthropic row for %s with the anthropic thinking format", async (id) => {
+      emitTestEvent(`${id} registry entry`)
       const { MODEL_CAPABILITIES } = await import("../../heart/model-capabilities")
-      const entry = MODEL_CAPABILITIES["claude-sonnet-4-6"]
-      expect(entry).toBeDefined()
-      expect(entry.reasoningEffort).toEqual(["low", "medium", "high"])
-      expect(entry.thinkingFormat).toBe("anthropic")
-      expect(entry.maxOutputTokens).toBe(64000)
+      expect(MODEL_CAPABILITIES[id]).toEqual({ reasoningEffort: CLAUDE_EFFORTS, thinkingFormat: "anthropic", maxOutputTokens: 128000, vision: true })
     })
 
-    it("has an entry for gpt-5.4 with phase support", async () => {
-      emitTestEvent("gpt-5.4 registry entry")
+    it.each(["gpt-6.1-sol", "gpt-6-sol", "gpt-6-luna", "gpt-5.6-sol", "gpt-5.6-sol-fast", "gpt-5.6-luna", "gpt-5.6-terra"])("has a GPT row for %s with phase support and effort none through max", async (id) => {
+      emitTestEvent(`${id} registry entry`)
       const { MODEL_CAPABILITIES } = await import("../../heart/model-capabilities")
-      const entry = MODEL_CAPABILITIES["gpt-5.4"]
-      expect(entry).toBeDefined()
-      expect(entry.reasoningEffort).toEqual(["low", "medium", "high"])
-      expect(entry.phase).toBe(true)
-      expect(entry.maxOutputTokens).toBeDefined()
+      expect(MODEL_CAPABILITIES[id]).toEqual({ reasoningEffort: GPT_EFFORTS, phase: true, maxOutputTokens: 128000, vision: true })
+    })
+
+    it("has a gpt-6-astra row without the none effort", async () => {
+      emitTestEvent("gpt-6-astra registry entry")
+      const { MODEL_CAPABILITIES } = await import("../../heart/model-capabilities")
+      expect(MODEL_CAPABILITIES["gpt-6-astra"]).toEqual({ reasoningEffort: CLAUDE_EFFORTS, phase: true, maxOutputTokens: 128000, vision: true })
+    })
+
+    it("has a gpt-5.5 row topping out at xhigh", async () => {
+      emitTestEvent("gpt-5.5 registry entry")
+      const { MODEL_CAPABILITIES } = await import("../../heart/model-capabilities")
+      expect(MODEL_CAPABILITIES["gpt-5.5"]).toEqual({ reasoningEffort: ["none", "low", "medium", "high", "xhigh"], phase: true, maxOutputTokens: 128000, vision: true })
+    })
+
+    it.each(["claude-opus-4-6", "claude-sonnet-4-6", "claude-opus-4.6", "claude-sonnet-4.6", "gpt-5.4", "gpt-5.3-codex"])("no longer lists retired model %s", async (id) => {
+      emitTestEvent(`${id} purged`)
+      const { MODEL_CAPABILITIES } = await import("../../heart/model-capabilities")
+      expect(MODEL_CAPABILITIES[id]).toBeUndefined()
     })
   })
 
   describe("vision capability rows", () => {
-    it("claude-opus-4-6 has vision: true", async () => {
-      emitTestEvent("claude-opus-4-6 vision")
-      const { getModelCapabilities } = await import("../../heart/model-capabilities")
-      expect(getModelCapabilities("claude-opus-4-6").vision).toBe(true)
-    })
-
-    it("claude-sonnet-4-6 has vision: true", async () => {
-      emitTestEvent("claude-sonnet-4-6 vision")
-      const { getModelCapabilities } = await import("../../heart/model-capabilities")
-      expect(getModelCapabilities("claude-sonnet-4-6").vision).toBe(true)
-    })
-
-    it("claude-opus-4.6 (dot alias) has vision: true", async () => {
-      emitTestEvent("claude-opus-4.6 vision")
-      const { getModelCapabilities } = await import("../../heart/model-capabilities")
-      expect(getModelCapabilities("claude-opus-4.6").vision).toBe(true)
-    })
-
-    it("claude-sonnet-4.6 (dot alias) has vision: true", async () => {
-      emitTestEvent("claude-sonnet-4.6 vision")
-      const { getModelCapabilities } = await import("../../heart/model-capabilities")
-      expect(getModelCapabilities("claude-sonnet-4.6").vision).toBe(true)
-    })
-
-    it("gpt-5.4 has vision: true", async () => {
-      emitTestEvent("gpt-5.4 vision")
-      const { getModelCapabilities } = await import("../../heart/model-capabilities")
-      expect(getModelCapabilities("gpt-5.4").vision).toBe(true)
-    })
-
     it("MiniMax-Text-01 has vision: true", async () => {
       emitTestEvent("MiniMax-Text-01 vision")
       const { getModelCapabilities } = await import("../../heart/model-capabilities")
@@ -127,8 +106,8 @@ describe("model-capabilities", () => {
     it("returns capabilities for a known model", async () => {
       emitTestEvent("getModelCapabilities known model")
       const { getModelCapabilities } = await import("../../heart/model-capabilities")
-      const caps = getModelCapabilities("claude-opus-4-6")
-      expect(caps.reasoningEffort).toEqual(["low", "medium", "high", "max"])
+      const caps = getModelCapabilities("claude-opus-5-5")
+      expect(caps.reasoningEffort).toEqual(["low", "medium", "high", "xhigh", "max"])
       expect(caps.thinkingFormat).toBe("anthropic")
       expect(caps.maxOutputTokens).toBe(128000)
     })
