@@ -413,3 +413,20 @@ describe("Shepherd sense: wiring", () => {
     expect(host.actions).toContain("closed")
   })
 })
+
+describe("Shepherd sense: the default owner notice", () => {
+  it("queues a notice for each judged return and names sessions from the host's list", async () => {
+    const host = fakeHost()
+    host.screens.S1 = [SCREENS.claudePremature]
+    const list = vi.spyOn(host, "list")
+    const app = await startShepherdSenseApp({ agentName: AGENT, now: () => clock, createHost: () => host, judge: async () => verdict(), escalate: () => undefined, wake: async () => undefined, schedule })
+    stop = app.stop
+    host.handlers!.returned({ transitionId: "n1", sessionId: "S1", agent: "claude", cwd: "/Users/a/code/app", lastBody: null, backgroundWork: null })
+    await vi.waitFor(() => expect(readReturns(agentRoot).some((record) => record.transition === "n1")).toBe(true))
+    const notice = tasks.find((task) => task.ms === 5_000)!
+    list.mockClear()
+    notice.fn()
+    // The only family friend has no Teams identity, so nothing is sent; the notifier still asked the host for names.
+    await vi.waitFor(() => expect(list).toHaveBeenCalledTimes(1))
+  })
+})
