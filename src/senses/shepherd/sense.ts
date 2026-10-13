@@ -27,12 +27,13 @@ export const READ_LINES = 200
 export const SCREEN_LINES = 80
 
 /**
- * A screen with its numbers blanked: a ticking timer or token counter at a waiting prompt is not
- * the screen moving on. A timer can grow a unit (`59s` to `1m 0s`) and shift the padding beside
- * it, so a run of numbers with time units counts as one, and runs of spaces as one space.
+ * A screen with its numbers taken out: a timer or token counter at a waiting prompt is not the
+ * screen moving on. A timer can tick, grow a unit (`59s` to `1m 0s`), and come and go between
+ * redraws, shifting the padding beside it, so runs of numbers with time units vanish along with
+ * the space around them, and runs of spaces and line-end padding do not count.
  */
 function withoutNumbers(screen: string): string {
-  return screen.replace(/(\d+[hms]?[ \t]*)+/g, "0 ").replace(/[ \t]+/g, " ")
+  return screen.replace(/[ \t]*(\d+[hms]?[ \t]*)+/g, " ").replace(/[ \t]+/g, " ").replace(/ $/gm, "")
 }
 export const JUDGE_TIMEOUT_MS = 20_000
 /** Automatic answers in a row with no human focus in between, and per session per hour. */
