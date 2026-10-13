@@ -90,6 +90,9 @@ export type OuroCliCommand =
   | { kind: "friend.update"; friendId: string; trustLevel?: TrustLevel; admissionState?: "unverified" | "active" | "revoked"; initiativePolicy?: "none" | "reactive_only" | "request_follow_up_only" | "proactive"; capabilityProfileId?: string; agent?: string }
   | { kind: "friend.link"; agent: string; friendId: string; provider: import("@ouro.bot/friends").IdentityProvider; externalId: string }
   | { kind: "friend.unlink"; agent: string; friendId: string; provider: import("@ouro.bot/friends").IdentityProvider; externalId: string }
+  | { kind: "friend.linkCode"; agent?: string; friendId?: string; channel?: import("@ouro.bot/friends").Channel; ttlMinutes?: number }
+  | { kind: "friend.merge"; agent?: string; targetId: string; sourceIds: string[]; apply: boolean }
+  | { kind: "friend.dedupe"; agent?: string; apply: boolean }
   | { kind: "a2a.card"; agent?: string; baseUrl?: string; json?: boolean }
   | { kind: "a2a.onboard"; agent?: string; cardUrl?: string; did?: string; trustLevel?: TrustLevel; name?: string }
   | { kind: "a2a.message"; to: string; text: string; conversationId?: string; /** Relay the text as the principal's own command (signed marker). */ delegated?: boolean; identityFile?: string; json?: boolean }
@@ -334,7 +337,7 @@ export interface DiscoveredCredential {
 }
 
 // ── Command group type aliases (used in toDaemonCommand exclusion) ──
-export type FriendCliCommand = Extract<OuroCliCommand, { kind: "friend.list" } | { kind: "friend.show" } | { kind: "friend.create" } | { kind: "friend.update" } | { kind: "friend.link" } | { kind: "friend.unlink" }>
+export type FriendCliCommand = Extract<OuroCliCommand, { kind: "friend.list" } | { kind: "friend.show" } | { kind: "friend.create" } | { kind: "friend.update" } | { kind: "friend.link" } | { kind: "friend.unlink" } | { kind: "friend.linkCode" } | { kind: "friend.merge" } | { kind: "friend.dedupe" }>
 export type A2ACliCommand = Extract<OuroCliCommand, { kind: "a2a.card" } | { kind: "a2a.onboard" } | { kind: "a2a.serve" } | { kind: "a2a.escalation" } | { kind: "a2a.delegatedCommands" }>
 /** Client-side A2A commands: this machine talks to an agent as a verified friend (no agent, no daemon). */
 export type A2AClientCliCommand = Extract<OuroCliCommand, { kind: "a2a.message" } | { kind: "a2a.identity" } | { kind: "a2a.outbox" }>

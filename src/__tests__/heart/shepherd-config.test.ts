@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest"
 
+import { normalizeSenses } from "../../heart/identity"
 import { defaultCmuxSocketPath, defaultHerdrSocketPath, resolveShepherdConnection, shepherdConfigFacts, shepherdRepairHint, shepherdSenseStatus } from "../../heart/shepherd-config"
 
 describe("Shepherd machine config", () => {
@@ -59,5 +60,16 @@ describe("Shepherd machine config", () => {
     expect(resolveShepherdConnection("slugger", { herdr: {} })).toEqual({ ok: true, connection: { host: "herdr", socketPath: defaultHerdrSocketPath() } })
     expect(resolveShepherdConnection("slugger", { herdr: {}, cmux: { socketCapability: "v1.a.b" } })).toMatchObject({ ok: true, connection: { host: "cmux" } })
     expect(defaultHerdrSocketPath("/h")).toBe("/h/.config/herdr/herdr.sock")
+  })
+})
+
+describe("Shepherd owner notice policy", () => {
+  it("keeps senses.shepherd.notify and refuses an unknown policy", () => {
+    expect(normalizeSenses({ shepherd: { enabled: true } }, "/tmp/agent.json").shepherd).toEqual({ enabled: true })
+    for (const notify of ["every", "needs-me", "off"]) {
+      expect(normalizeSenses({ shepherd: { enabled: true, notify } }, "/tmp/agent.json").shepherd).toEqual({ enabled: true, notify })
+    }
+    expect(() => normalizeSenses({ shepherd: { enabled: true, notify: "loud" } }, "/tmp/agent.json")).toThrow("senses.shepherd.notify must be one of every, needs-me, off")
+    expect(normalizeSenses({ teams: { enabled: true, notify: "loud" } }, "/tmp/agent.json").teams).toEqual({ enabled: true })
   })
 })

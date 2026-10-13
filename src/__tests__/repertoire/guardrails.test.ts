@@ -256,7 +256,7 @@ describe("guardInvocation — structural guardrails", () => {
 
   it("keeps the owner's terminals to family trust", async () => {
     const { guardInvocation } = await import("../../repertoire/guardrails")
-    for (const tool of ["shepherd_overview", "shepherd_read", "shepherd_signal"]) {
+    for (const tool of ["shepherd_overview", "shepherd_read", "shepherd_signal", "shepherd_send"]) {
       for (const trustLevel of ["stranger", "acquaintance", "friend"] as const) {
         expect(guardInvocation(tool, {}, { readPaths: new Set(), trustLevel })).toEqual(expect.objectContaining({ allowed: false }))
       }
@@ -870,6 +870,24 @@ describe("guardInvocation — trust-level guardrails", () => {
     const { guardInvocation } = await import("../../repertoire/guardrails")
     const result = guardInvocation("shell", { command: "ouro friend list" }, { readPaths: new Set(), trustLevel: "acquaintance" })
     expect(result.allowed).toBe(false)
+  })
+
+  it("acquaintance: linking, merging and deduping friends are blocked, even with --agent first", async () => {
+    const { guardInvocation } = await import("../../repertoire/guardrails")
+    for (const command of [
+      "ouro friend link --agent ouroboros --channel teams",
+      "ouro --agent ouroboros friend link --channel teams",
+      "ouro friend unlink ouroboros --friend f --provider aad --external-id x",
+      "ouro friend merge --into a b --apply",
+      "ouro --agent ouroboros friend dedupe --apply",
+      "ouro --agent ouroboros friend update f --trust family",
+    ]) {
+      expect(guardInvocation("shell", { command }, { readPaths: new Set(), trustLevel: "acquaintance" }).allowed).toBe(false)
+      expect(guardInvocation("shell", { command }, { readPaths: new Set(), trustLevel: "family" }).allowed).toBe(true)
+    }
+    const { OURO_CLI_TRUST_MANIFEST } = await import("../../repertoire/guardrails")
+    for (const subcommand of ["friend link", "friend unlink", "friend merge", "friend dedupe"]) expect(OURO_CLI_TRUST_MANIFEST[subcommand]).toBe("family")
+    expect(guardInvocation("shell", { command: "ouro --agent" }, { readPaths: new Set(), trustLevel: "acquaintance" }).allowed).toBe(false)
   })
 
   // --- ouro CLI trust manifest export ---

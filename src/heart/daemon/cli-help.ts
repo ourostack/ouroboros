@@ -257,9 +257,9 @@ export const COMMAND_REGISTRY: Record<string, CommandHelp & { category: CommandC
   friend: {
     category: "Friends",
     description: "Manage agent friends and identity links",
-    usage: "ouro friend <subcommand> [--agent <name>]",
-    example: "ouro friend list",
-    subcommands: ["list", "show", "create", "update", "link", "unlink"],
+    usage: "ouro friend <subcommand> [--agent <name>]  (link --channel <channel> issues a one-time code; merge/dedupe preview unless --apply)",
+    example: "ouro friend link --agent ouroboros --channel teams",
+    subcommands: ["list", "show", "create", "update", "link", "unlink", "merge", "dedupe"],
   },
   link: {
     category: "Friends",

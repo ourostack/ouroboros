@@ -128,6 +128,12 @@ vi.mock("../../heart/identity", () => ({
   setAgentName: vi.fn(),
 }))
 
+const mockRedeemLinkCode = vi.fn()
+vi.mock("../../mind/friend-link-codes", async () => {
+  const actual = await vi.importActual<typeof import("../../mind/friend-link-codes")>("../../mind/friend-link-codes")
+  return { ...actual, redeemLinkCode: (...args: any[]) => mockRedeemLinkCode(...args) }
+})
+
 // ── Test helpers ──────────────────────────────────────────────────
 
 function makeFriend(): FriendRecord {
@@ -413,6 +419,53 @@ describe("getSharedCommandRegistry caching", () => {
     const reg1 = getSharedCommandRegistry()
     const reg2 = getSharedCommandRegistry()
     expect(reg1).toBe(reg2)
+  })
+})
+
+describe("pipeline identity link codes", () => {
+  beforeEach(() => {
+    mockRedeemLinkCode.mockReset()
+    resetSharedCommandRegistry()
+  })
+
+  it("redeems a link code before the trust gate and answers without a model turn", async () => {
+    const { handleInboundTurn } = await import("../../senses/pipeline")
+    const linked = { ...makeFriend(), id: "family-1", trustLevel: "family" as const }
+    mockRedeemLinkCode.mockResolvedValue({ status: "linked", friend: linked, reply: "Linked." })
+    const callbacks = makeCallbacks()
+    const input = makeInput({ channel: "teams", messages: [{ role: "user", content: "OURO-ABCD-EF23" }], callbacks, isGroupChat: true })
+
+    const result = await handleInboundTurn(input)
+
+    expect(result).toMatchObject({ turnOutcome: "command", commandAction: "response", gateResult: { allowed: true } })
+    expect(result.resolvedContext.friend.id).toBe("family-1")
+    expect(callbacks.onTextChunk).toHaveBeenCalledWith("Linked.")
+    expect(mockRedeemLinkCode).toHaveBeenCalledWith(expect.objectContaining({
+      agentRoot: "/tmp/AgentBundles/testagent.ouro",
+      friendsDir: "/tmp/AgentBundles/testagent.ouro/friends",
+      channel: "teams",
+      isGroupChat: true,
+      text: "OURO-ABCD-EF23",
+    }))
+    expect(input.enforceTrustGate).not.toHaveBeenCalled()
+    expect(input.runAgent).not.toHaveBeenCalled()
+  })
+
+  it("keeps the sender's own record when a code is rejected", async () => {
+    const { handleInboundTurn } = await import("../../senses/pipeline")
+    mockRedeemLinkCode.mockResolvedValue({ status: "rejected", reason: "expired", reply: "Expired." })
+    const callbacks = makeCallbacks()
+    const result = await handleInboundTurn(makeInput({ channel: "teams", messages: [{ role: "user", content: "ouro abcd ef23" }], callbacks }))
+    expect(result.resolvedContext.friend.id).toBe("friend-1")
+    expect(callbacks.onTextChunk).toHaveBeenCalledWith("Expired.")
+    expect(mockRedeemLinkCode).toHaveBeenCalledWith(expect.objectContaining({ isGroupChat: false }))
+  })
+
+  it("never treats the inner channel as a link code, and ignores ordinary text", async () => {
+    const { handleInboundTurn } = await import("../../senses/pipeline")
+    await handleInboundTurn(makeInput({ channel: "inner", messages: [{ role: "user", content: "OURO-ABCD-EF23" }] }))
+    await handleInboundTurn(makeInput({ messages: [{ role: "user", content: "hello" }] }))
+    expect(mockRedeemLinkCode).not.toHaveBeenCalled()
   })
 })
 

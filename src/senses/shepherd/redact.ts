@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto"
 import { emitNervesEvent } from "../../nerves/runtime"
 
 /**
@@ -33,4 +34,32 @@ export function redactSecrets(text: string): string {
     emitNervesEvent({ component: "senses", event: "senses.shepherd_redacted", message: "redacted secret-shaped text from cmux output", meta: { removedChars: text.length - result.length } })
   }
   return result
+}
+
+/** The last `lines` lines of a screen, without its trailing blank space. */
+export function screenTail(text: string, lines: number): string {
+  return text.replace(/\s+$/, "").split("\n").slice(-lines).join("\n")
+}
+
+/**
+ * A screen with its numbers taken out: a timer or token counter at a waiting prompt is not the
+ * screen moving on. A timer can tick, grow a unit (`59s` to `1m 0s`), and come and go between
+ * redraws, shifting the padding beside it, so runs of numbers with time units vanish along with
+ * the space around them, and runs of spaces and line-end padding do not count.
+ */
+export function withoutNumbers(screen: string): string {
+  return screen.replace(/[ \t]*(\d+[hms]?[ \t]*)+/g, " ").replace(/[ \t]+/g, " ").replace(/ $/gm, "")
+}
+
+/** Lines a screen fingerprint covers, and the fewest lines a read must take to compute one. */
+export const FINGERPRINT_LINES = 20
+export const FINGERPRINT_READ_LINES = 40
+
+/**
+ * A short fingerprint of what a terminal shows now: its last lines, redacted, with numbers blanked so a ticking timer does
+ * not count as a change. `shepherd_read` hands it out and `shepherd_send` compares it, so a key is pressed only on the
+ * screen someone actually saw.
+ */
+export function screenFingerprint(text: string): string {
+  return createHash("sha256").update(withoutNumbers(screenTail(redactSecrets(text), FINGERPRINT_LINES))).digest("hex").slice(0, 16)
 }

@@ -34,7 +34,8 @@ const STOP_HOOKS = new Set(["Stop", "StopFailure"])
 const IDLE_HOOKS = new Set([...STOP_HOOKS, "SessionStart"])
 /** Hooks that say nothing about whether the main agent is working. */
 const NEUTRAL_HOOKS = new Set(["SubagentStop", "Notification"])
-const NAMED_KEYS = new Set<ShepherdKey>(["enter", "escape", "up", "down", "tab"])
+/** Keys cmux presses with `surface.send_key`, by its own names; every other key is typed as its character. */
+const NAMED_KEYS: Partial<Record<ShepherdKey, string>> = { enter: "enter", escape: "escape", up: "up", down: "down", tab: "tab", "ctrl-c": "ctrl+c" }
 const SUBMIT_DELAY_MS = 300
 
 /** A timer that can be cancelled; the sense and the host take it as an option so tests can drive time. */
@@ -150,7 +151,8 @@ export function createCmuxHost(client: CmuxClient, options: CmuxHostOptions = {}
     async key(sessionId, key) {
       const surface = await locate(sessionId)
       const target = { workspace_id: surface.workspaceId, surface_id: surface.id }
-      if (NAMED_KEYS.has(key)) await client.call("surface.send_key", { ...target, key })
+      const named = NAMED_KEYS[key]
+      if (named) await client.call("surface.send_key", { ...target, key: named })
       else await client.call("surface.send_text", { ...target, text: key })
     },
     async signal(sessionId, status, notification) {

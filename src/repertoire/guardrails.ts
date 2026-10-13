@@ -290,6 +290,11 @@ export const OURO_CLI_TRUST_MANIFEST: Record<string, TrustLevel> = {
   "friend show": "friend",
   "friend create": "friend",
   "friend update": "family",
+  // Linking and merging change who the agent believes someone is: family only.
+  "friend link": "family",
+  "friend unlink": "family",
+  "friend merge": "family",
+  "friend dedupe": "family",
   "config model": "friend",
   "config models": "friend",
   "mcp list": "acquaintance",
@@ -332,7 +337,8 @@ function resolveOuroSubcommand(command: string): string | null {
   /* v8 ignore next -- bare "ouro" is caught upstream by checkShellTrustGuardrails @preserve */
   if (!afterOuro) return null
 
-  const tokens = afterOuro.split(/\s+/)
+  // `--agent <name>` may come before the subcommand; it never changes which subcommand runs.
+  const tokens = afterOuro.split(/\s+/).filter((token, index, all) => token !== "--agent" && all[index - 1] !== "--agent")
   const twoWord = tokens.length >= 2 ? `${tokens[0]} ${tokens[1]}` : null
 
   // Two-word match first (e.g. "task board"), then one-word (e.g. "whoami")
@@ -441,7 +447,7 @@ const COMMERCE_FAMILY_TOOLS = new Set(["commerce_checkout_preview", "commerce_ch
 const COMMERCE_AUTHORITY_TOOLS = new Set(["stripe_create_card", "flight_hold", "flight_book"])
 // The Shepherd tools read the owner's terminals and speak to them through their desktop, so only family may use them.
 // A call with no known trust level fails closed.
-const SHEPHERD_FAMILY_TOOLS = new Set(["shepherd_overview", "shepherd_read", "shepherd_signal"])
+const SHEPHERD_FAMILY_TOOLS = new Set(["shepherd_overview", "shepherd_read", "shepherd_signal", "shepherd_send"])
 const MAIL_FAMILY_TOOLS = new Set(["mail_screener", "mail_decide", "mail_access_log", "mail_send", "mail_index_refresh"])
 const MAIL_DELEGATED_READ_TOOLS = new Set(["mail_recent", "mail_search"])
 

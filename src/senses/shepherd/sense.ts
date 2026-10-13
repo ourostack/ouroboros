@@ -4,7 +4,7 @@ import * as os from "node:os"
 import * as path from "node:path"
 import { getProviderRuntime } from "../../heart/core"
 import { requestPrivateWake } from "../../heart/daemon/socket-client"
-import { getAgentRoot } from "../../heart/identity"
+import { getAgentRoot, loadAgentConfig, type ShepherdNoticePolicy } from "../../heart/identity"
 import { readMachineRuntimeCredentialConfig } from "../../heart/runtime-credentials"
 import { resolveShepherdConnection, type ShepherdConnection } from "../../heart/shepherd-config"
 import { getPrivateRuntimePendingDir, queuePendingMessage } from "../../mind/pending"
@@ -12,7 +12,8 @@ import { emitNervesEvent } from "../../nerves/runtime"
 import { realSchedule } from "./cmux"
 import { createShepherdHost, type ReturnedControl, type ShepherdHost } from "./host"
 import { createShepherdJudge, type JudgeResult, type ShepherdJudge } from "./judge"
-import { redactSecrets } from "./redact"
+import { redactSecrets, screenTail as tail, withoutNumbers } from "./redact"
+import { createOwnerNotifier } from "./owner-notice"
 import { appendReturn, type ReturnRecord } from "./returns"
 
 /**
@@ -20,21 +21,12 @@ import { appendReturn, type ReturnRecord } from "./returns"
  * whether it should have. A premature return is answered in the terminal, visibly, as
  * `[Ouro for <human>] ...` (or one menu key), with the status line saying so. A gate or a finished
  * delivery is let through and brought to the Ouro agent, as is a session the loop guard stopped.
- * Every judgment is one line in `state/senses/shepherd/returns.jsonl`.
+ * Every judgment is one line in `state/senses/shepherd/returns.jsonl`, and the owner hears about it in a plain message
+ * on their own channel as `senses.shepherd.notify` says (see `owner-notice.ts`).
  */
 export const SHEPHERD_WAKE_TRIGGER = "shepherd"
 export const READ_LINES = 200
 export const SCREEN_LINES = 80
-
-/**
- * A screen with its numbers taken out: a timer or token counter at a waiting prompt is not the
- * screen moving on. A timer can tick, grow a unit (`59s` to `1m 0s`), and come and go between
- * redraws, shifting the padding beside it, so runs of numbers with time units vanish along with
- * the space around them, and runs of spaces and line-end padding do not count.
- */
-function withoutNumbers(screen: string): string {
-  return screen.replace(/[ \t]*(\d+[hms]?[ \t]*)+/g, " ").replace(/[ \t]+/g, " ").replace(/ $/gm, "")
-}
 export const JUDGE_TIMEOUT_MS = 20_000
 /** Automatic answers in a row with no human focus in between, and per session per hour. */
 export const STREAK_MAX = 3
@@ -52,6 +44,8 @@ export interface ShepherdSenseOptions {
   judge?: ShepherdJudge
   escalate?: (content: string) => void
   wake?: (ids: string[]) => Promise<void>
+  /** Tells the owner about one judged return (default: the owner notice, coalesced, on the policy in agent.json). */
+  notifyOwner?: (record: ReturnRecord) => void
   schedule?: (fn: () => void, ms: number) => () => void
 }
 
@@ -99,6 +93,16 @@ export function escalationContent(record: ReturnRecord, human: string): string {
   ].join("\n")
 }
 
+/** `senses.shepherd.notify` from agent.json; "every" when it is unset or the config cannot be read. */
+export function noticePolicy(agent: string, agentRoot: string): ShepherdNoticePolicy {
+  try {
+    return loadAgentConfig({ agentName: agent, agentRoot }).senses?.shepherd?.notify ?? "every"
+  } catch (error) {
+    emitNervesEvent({ level: "warn", component: "senses", event: "senses.shepherd_notice_policy_default", message: "could not read the Shepherd notice policy, so every return is reported", meta: { agent, error: (error as Error).message } })
+    return "every"
+  }
+}
+
 export function queueEscalation(agent: string, content: string, nowMs: number): void {
   queuePendingMessage(getPrivateRuntimePendingDir(agent), {
     from: "shepherd",
@@ -129,10 +133,6 @@ export async function wakeForEscalations(agent: string, ids: string[]): Promise<
   }
 }
 
-function tail(text: string, lines: number): string {
-  return text.replace(/\s+$/, "").split("\n").slice(-lines).join("\n")
-}
-
 export async function startShepherdSenseApp(options: ShepherdSenseOptions): Promise<{ stop: () => void }> {
   const agent = options.agentName
   const agentRoot = getAgentRoot(agent)
@@ -146,6 +146,8 @@ export async function startShepherdSenseApp(options: ShepherdSenseOptions): Prom
   const escalate = options.escalate ?? ((content: string) => queueEscalation(agent, content, now()))
   const wake = options.wake ?? ((ids: string[]) => wakeForEscalations(agent, ids))
   const human = humanName(agentRoot)
+  const notifier = options.notifyOwner ? null : createOwnerNotifier({ agent, agentRoot, policy: noticePolicy(agent, agentRoot), schedule, listSessions: () => host.list() })
+  const notifyOwner = options.notifyOwner ?? ((record: ReturnRecord) => notifier!.notify(record))
   /**
    * Per session: automatic answers in a row and in the last hour, whether the loop guard has tripped (it stays tripped until
    * the human focuses the session), when the human last focused it, and the last message of a background stop already judged.
@@ -176,15 +178,19 @@ export async function startShepherdSenseApp(options: ShepherdSenseOptions): Prom
       agent: event.agent, cwd: event.cwd, task: null, kind: "unclear", action: "let_through", reason: "", reply: null, latencyMs: null, inputTokens: null,
     }
     const state = guardFor(event.sessionId)
+    /** False for a return nothing new was decided about: the loop guard still holds, or the same background wait. */
+    let notice = true
     try {
       if (state.tripped) {
         // Tripped: no judge call and no new escalation until the human looks at the session.
         Object.assign(record, { kind: "loop_guard", reason: `Shepherd stopped answering this session until ${human} focuses it` })
+        notice = false
         return
       }
       if (event.backgroundWork && state.backgroundBody !== undefined && state.backgroundBody === event.lastBody) {
         // Still waiting on the same background work with nothing new to say: no judge call.
         Object.assign(record, { kind: "working", reason: "still waiting on its background work; nothing new since the last judgment" })
+        notice = false
         return
       }
       state.backgroundBody = event.backgroundWork ? event.lastBody : undefined
@@ -202,6 +208,7 @@ export async function startShepherdSenseApp(options: ShepherdSenseOptions): Prom
       if (kind === "working") {
         // Still working: a progress update, never an answer. It reaches the Ouro agent only when it carries news, and wakes nothing.
         if (news) escalate(escalationContent(record, human))
+        else notice = false
         await host.signal(event.sessionId, field(`${event.agent ?? "agent"} waiting on its background work: ${verdict.reason}`, 120))
       }
       if (kind === "premature" && verdict.reply) {
@@ -231,6 +238,7 @@ export async function startShepherdSenseApp(options: ShepherdSenseOptions): Prom
       Object.assign(record, { kind: record.reason ? record.kind : "error", reason: `${record.reason ? `${record.reason}; then ` : ""}${(error as Error).message}` })
     } finally {
       log(record)
+      if (notice) notifyOwner(record)
     }
   }
 
@@ -257,6 +265,7 @@ export async function startShepherdSenseApp(options: ShepherdSenseOptions): Prom
     stop() {
       watcher.close()
       cancelWake?.()
+      notifier?.stop()
       emitNervesEvent({ component: "senses", event: "senses.shepherd_stopped", message: "Shepherd stopped", meta: { agent } })
     },
   }

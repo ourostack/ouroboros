@@ -15,8 +15,10 @@ import * as path from "path"
 import * as semver from "semver"
 import { defaultStableVaultEmail, getAgentBundlesRoot, getAgentRoot, getRepoRoot, resolveVaultConfig, getAgentDaemonLogsDir, type AgentConfig, type AgentProvider } from "../identity"
 import { emitNervesEvent } from "../../nerves/runtime"
-import { FileFriendStore, FriendResolver, machineOwnerUsername, setFriendTrust, linkExternalId, unlinkExternalId } from "@ouro.bot/friends"
-import type { FriendStore, TrustLevel } from "@ouro.bot/friends"
+import { FileFriendStore, FriendResolver, isLocalMachineOwnerIdentity, machineOwnerUsername, setFriendTrust, linkExternalId, unlinkExternalId } from "@ouro.bot/friends"
+import type { ExternalId, FriendRecord, FriendStore, TrustLevel } from "@ouro.bot/friends"
+import { dedupeFriends, mergeFriends } from "../../mind/friend-merge"
+import { issueLinkCode } from "../../mind/friend-link-codes"
 import type { DaemonCommand, DaemonResponse } from "./daemon"
 import { getRuntimeMetadata } from "./runtime-metadata"
 import { detectRuntimeMode } from "./runtime-mode"
@@ -605,6 +607,9 @@ type MissingAgentResolvableKind =
   | "friend.show"
   | "friend.create"
   | "friend.update"
+  | "friend.linkCode"
+  | "friend.merge"
+  | "friend.dedupe"
   | "habit.list"
   | "habit.create"
   | "habit.runs"
@@ -713,6 +718,9 @@ function agentResolutionFailureMode(command: OuroCliCommand): AgentResolutionFai
     case "friend.show":
     case "friend.create":
     case "friend.update":
+    case "friend.linkCode":
+    case "friend.merge":
+    case "friend.dedupe":
     case "habit.list":
     case "habit.create":
     case "habit.runs":
@@ -7189,7 +7197,27 @@ async function performSystemSetup(deps: OuroCliDeps): Promise<void> {
 
 // ── Friend command execution ──
 
-async function executeFriendCommand(command: FriendCliCommand, store: FriendStore): Promise<string> {
+async function executeFriendCommand(command: FriendCliCommand, store: FriendStore, paths: { agentRoot: string; friendsDir: string }): Promise<string> {
+  if (command.kind === "friend.linkCode") return executeFriendLinkCode(command, store, paths.agentRoot)
+  if (command.kind === "friend.merge") {
+    const result = await mergeFriends({
+      store,
+      friendsDir: paths.friendsDir,
+      targetId: command.targetId,
+      sourceIds: command.sourceIds,
+      actor: "cli:friend-merge",
+      reason: "owner merged records from the CLI",
+      dryRun: !command.apply,
+    })
+    if (!result.ok) return `error: ${result.message}`
+    return renderFriendMerge(result.target, result.retired.map((retired) => retired.friendId), result.preservedNoteKeys, result.addedExternalIds, result.dryRun)
+  }
+  if (command.kind === "friend.dedupe") {
+    const result = await dedupeFriends({ store, friendsDir: paths.friendsDir, actor: "cli:friend-dedupe", dryRun: !command.apply })
+    if (result.groups.length === 0) return "no duplicate friend records found"
+    const blocks = result.groups.map((group) => renderFriendMerge(group.canonical, group.duplicateIds, group.preservedNoteKeys, group.addedExternalIds, result.dryRun))
+    return [...blocks, ...(result.dryRun ? ["", "dry run: nothing changed. Re-run with --apply to merge."] : [])].join("\n")
+  }
   if (command.kind === "friend.list") {
     const listAll = store.listAll
     if (!listAll) return "friend store does not support listing"
@@ -7269,6 +7297,45 @@ async function executeFriendCommand(command: FriendCliCommand, store: FriendStor
   if (result.status === "not_found") return `friend not found: ${command.friendId}`
   if (result.status === "noop") return `identity not linked: ${command.provider}:${command.externalId}`
   return `unlinked ${command.provider}:${command.externalId} from ${command.friendId}`
+}
+
+function renderFriendMerge(target: FriendRecord, retiredIds: string[], preservedNoteKeys: string[], addedExternalIds: ExternalId[], dryRun: boolean): string {
+  const verb = dryRun ? "would merge" : "merged"
+  const lines = [`${verb} ${retiredIds.length} record(s) into ${target.id} (${target.name}, ${target.trustLevel})`]
+  for (const id of retiredIds) lines.push(`  ${dryRun ? "would retire" : "retired"} ${id}`)
+  for (const externalId of addedExternalIds) lines.push(`  ${dryRun ? "would link" : "linked"} ${externalId.provider}:${externalId.externalId}${externalId.tenantId ? ` (tenant ${externalId.tenantId})` : ""}`)
+  if (preservedNoteKeys.length > 0) lines.push(`  kept conflicting notes as: ${preservedNoteKeys.join(", ")}`)
+  return lines.join("\n")
+}
+
+async function executeFriendLinkCode(command: Extract<FriendCliCommand, { kind: "friend.linkCode" }>, store: FriendStore, agentRoot: string): Promise<string> {
+  let friend: FriendRecord | null
+  if (command.friendId) {
+    friend = await store.get(command.friendId)
+    if (!friend || friend.id !== command.friendId) return `friend not found: ${command.friendId}`
+  } else {
+    // The person at this terminal owns the agent: their family record carries a local identity for this OS user.
+    const owner = machineOwnerUsername()
+    const all = store.listAll ? await store.listAll() : []
+    const candidates = all.filter((record) => record.trustLevel === "family"
+      && record.externalIds.some((externalId) => isLocalMachineOwnerIdentity(externalId.provider, externalId.externalId, owner)))
+    if (candidates.length === 0) return "error: no family record names this machine's owner. Pass --friend <friend-id>."
+    if (candidates.length > 1) return `error: ${candidates.length} family records name this machine's owner. Run \`ouro friend dedupe --apply\` first, or pass --friend <friend-id>.`
+    friend = candidates[0]!
+  }
+  const issued = issueLinkCode({
+    agentRoot,
+    friend,
+    ...(command.channel ? { channel: command.channel } : {}),
+    ...(command.ttlMinutes ? { ttlMs: command.ttlMinutes * 60 * 1000 } : {}),
+    issuedBy: "cli",
+  })
+  const minutes = Math.round((Date.parse(issued.expiresAt) - Date.now()) / 60000)
+  const where = issued.channel ? `from your ${issued.channel} account` : "from the account you want to link"
+  return [
+    `link code for ${friend.name} (${friend.trustLevel}): ${issued.code}`,
+    `Send exactly this code to ${path.basename(agentRoot, ".ouro")} ${where}, in a 1:1 chat, within ${minutes} minutes. It works once.`,
+  ].join("\n")
 }
 
 async function executeA2AClientCommand(command: A2AClientCliCommand, deps: OuroCliDeps): Promise<string> {
@@ -9235,19 +9302,16 @@ export async function runOuroCli(args: string[], deps: OuroCliDeps = createDefau
 
   // ── friend subcommands (local, no daemon socket needed) ──
   if (command.kind === "friend.list" || command.kind === "friend.show" || command.kind === "friend.create" ||
-      command.kind === "friend.update" || command.kind === "friend.link" || command.kind === "friend.unlink") {
-    /* v8 ignore start -- production default: requires full identity setup @preserve */
-    let store = deps.friendStore
-    if (!store) {
-      // Derive agent-scoped friends dir from --agent flag or link/unlink's agent field
-      const agentName = ("agent" in command && command.agent) ? command.agent : undefined
-      const friendsDir = agentName
-        ? path.join(deps.bundlesRoot ?? getAgentBundlesRoot(), `${agentName}.ouro`, "friends")
-        : path.join(deps.bundlesRoot ?? getAgentBundlesRoot(), "friends")
-      store = new FileFriendStore(friendsDir)
-    }
-    /* v8 ignore stop */
-    const message = await executeFriendCommand(command, store)
+      command.kind === "friend.update" || command.kind === "friend.link" || command.kind === "friend.unlink" ||
+      command.kind === "friend.linkCode" || command.kind === "friend.merge" || command.kind === "friend.dedupe") {
+    // Derive agent-scoped friends dir from --agent flag or link/unlink's agent field
+    const agentName = ("agent" in command && command.agent) ? command.agent : undefined
+    const bundlesRoot = deps.bundlesRoot ?? /* v8 ignore next -- production default @preserve */ getAgentBundlesRoot()
+    const agentRoot = agentName ? path.join(bundlesRoot, `${agentName}.ouro`) : bundlesRoot
+    const friendsDir = path.join(agentRoot, "friends")
+    /* v8 ignore next -- production default: requires full identity setup @preserve */
+    const store = deps.friendStore ?? new FileFriendStore(friendsDir)
+    const message = await executeFriendCommand(command, store, { agentRoot, friendsDir })
     deps.writeStdout(message)
     return message
   }

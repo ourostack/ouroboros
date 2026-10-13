@@ -15,7 +15,7 @@ const GRACE_MS = 3_000
 const TIMEOUT_MS = 10_000
 const RETURN_STATES = new Set(["idle", "done", "blocked"])
 const RECONNECT_DELAYS_MS = [1_000, 2_000, 5_000, 10_000, 30_000]
-const HERDR_KEYS: Record<ShepherdKey, string> = { enter: "enter", escape: "esc", up: "up", down: "down", tab: "tab", 1: "1", 2: "2", 3: "3", 4: "4", 5: "5", 6: "6", 7: "7", 8: "8", 9: "9", y: "y", n: "n" }
+const HERDR_KEYS: Record<ShepherdKey, string> = { enter: "enter", escape: "esc", up: "up", down: "down", tab: "tab", "ctrl-c": "ctrl+c", 1: "1", 2: "2", 3: "3", 4: "4", 5: "5", 6: "6", 7: "7", 8: "8", 9: "9", y: "y", n: "n" }
 
 export interface HerdrConnection {
   socketPath: string
