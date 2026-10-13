@@ -4,7 +4,8 @@
     {
       "version": "0.1.0-alpha.921",
       "changes": [
-        "Make Teams chat tools share Shepherd’s machine attachment and identify cmux agents by foreground process, folder, workspace and tab title."
+        "Make Teams chat tools share Shepherd’s machine attachment and identify cmux agents by foreground process, folder, workspace and tab title.",
+        "Initialize foreground process execution only when attached terminals need it, keeping unrelated prompt and daemon consumers free of lookup startup side effects."
       ]
     },
     {

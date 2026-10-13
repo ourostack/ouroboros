@@ -1,13 +1,13 @@
-import { execFile } from "node:child_process"
 import * as path from "node:path"
 import { promisify } from "node:util"
 import { emitNervesEvent } from "../../nerves/runtime"
 
 export interface TerminalProcessIdentity { agent: string; cwd: string | null }
 type RunCommand = (command: string, args: string[]) => Promise<string>
-const exec = promisify(execFile)
 
 async function runCommand(command: string, args: string[]): Promise<string> {
+  const { execFile } = await import("node:child_process")
+  const exec = promisify(execFile)
   const { stdout } = await exec(command, args, { timeout: 3_000, maxBuffer: 4 * 1024 * 1024 })
   return stdout
 }
