@@ -65,9 +65,13 @@ import { getPhrases } from "../../mind/phrases"
 
 // Helper: match an AI-labeled emit call (object with text + entities + channelData)
 function aiLabeled(text: string) {
+  // The SDK stream only accumulates text from activities typed "message"; an untyped
+  // activity is silently dropped and the reply never finalizes in Teams.
+  // The AI label rides on the first chunk only (asserted separately), so chunk matchers
+  // check the message type and text.
   return expect.objectContaining({
+    type: "message",
     text,
-    entities: expect.arrayContaining([expect.objectContaining({ additionalType: ["AIGeneratedContent"] })]),
     channelData: expect.objectContaining({ feedbackLoopEnabled: true }),
   })
 }
@@ -84,6 +88,9 @@ afterEach(() => {
 
 // Config is now loaded from config.json only (no env var fallbacks).
 // No env var save/restore needed.
+
+// These suites start the app with no bot credentials, which only the developer mode allows.
+process.env.OURO_TEAMS_DEVTOOLS = "1"
 
 describe("Teams adapter - exports", () => {
   it("exports createTeamsCallbacks", async () => {
@@ -277,8 +284,8 @@ describe("Teams adapter - MIN_INITIAL_CHARS streaming", () => {
     const callbacks = teams.createTeamsCallbacks(mockStream as any, controller)
     callbacks.onModelStart()  // starts phrases
     mockStream.update.mockClear()
-    callbacks.onReasoningChunk("thinking")
-    // Reasoning stops phrases immediately
+    callbacks.onReasoningChunk("**Thinking**")
+    // A reasoning heading stops phrases immediately
     vi.advanceTimersByTime(3000)
     const phraseUpdates = mockStream.update.mock.calls.filter((c: any) => {
       const text = c[0] as string
@@ -580,12 +587,12 @@ describe("Teams adapter - createTeamsCallbacks (SDK-delegated streaming)", () =>
     const teams = await import("../../senses/teams")
     const callbacks = teams.createTeamsCallbacks(mockStream as any, controller)
 
-    callbacks.onReasoningChunk("analyzing code")
+    callbacks.onReasoningChunk("**Analyzing code**\n\nThe raw reasoning stays private")
     // NOT sent per-token -- accumulated internally
     expect(mockStream.update).not.toHaveBeenCalled()
-    // After flush interval, reasoning is pushed via safeUpdate
+    // After flush interval, only the heading is pushed via safeUpdate
     vi.advanceTimersByTime(teams.DEFAULT_FLUSH_INTERVAL_MS)
-    expect(mockStream.update).toHaveBeenCalledWith("analyzing code")
+    expect(mockStream.update).toHaveBeenCalledWith("Analyzing code…")
     expect(mockStream.emit).not.toHaveBeenCalled()
     vi.useRealTimers()
   })
@@ -684,13 +691,18 @@ describe("Teams adapter - createTeamsCallbacks (SDK-delegated streaming)", () =>
     const teams = await import("../../senses/teams")
     const callbacks = teams.createTeamsCallbacks(mockStream as any, controller)
 
-    callbacks.onReasoningChunk("step 1")
-    callbacks.onReasoningChunk(" step 2")
+    callbacks.onReasoningChunk("**Step one**\n\ndetails")
+    callbacks.onReasoningChunk("**Step two**\n\nmore")
     // NOT sent per-token
     expect(mockStream.update).not.toHaveBeenCalled()
-    // After flush interval, cumulative reasoning pushed via update
+    // After flush interval, only the latest heading is pushed
     vi.advanceTimersByTime(teams.DEFAULT_FLUSH_INTERVAL_MS)
-    expect(mockStream.update).toHaveBeenCalledWith("step 1 step 2")
+    expect(mockStream.update).toHaveBeenCalledTimes(1)
+    expect(mockStream.update).toHaveBeenCalledWith("Step two…")
+    // An unchanged heading is not re-sent
+    callbacks.onReasoningChunk(" still step two")
+    vi.advanceTimersByTime(teams.DEFAULT_FLUSH_INTERVAL_MS)
+    expect(mockStream.update).toHaveBeenCalledTimes(1)
     expect(mockStream.emit).not.toHaveBeenCalled()
     vi.useRealTimers()
   })
@@ -1082,6 +1094,38 @@ describe("Teams adapter - splitMessage", () => {
 describe("Teams adapter - startTeamsApp (DevtoolsPlugin mode)", () => {
   afterEach(() => {
     // Config is loaded from config.json only, no env vars to clear
+  })
+
+  it("refuses to start with no bot credentials unless a developer asked for it", async () => {
+    vi.resetModules()
+    const mockStart = vi.fn()
+    vi.doMock("@microsoft/teams.apps", () => ({
+      App: class MockApp {
+        on = vi.fn()
+        event = vi.fn()
+        start = mockStart
+      },
+    }))
+    vi.doMock("@microsoft/teams.dev", () => ({
+      DevtoolsPlugin: class MockDevtoolsPlugin {},
+    }))
+    vi.doMock("../../heart/core", () => ({
+      createSummarize: vi.fn(() => vi.fn()),
+      runAgent: vi.fn(),
+      buildSystem: vi.fn().mockReturnValue({ stable: "system prompt", volatile: "" }),
+      summarizeArgs: vi.fn().mockReturnValue(""),
+      repairOrphanedToolCalls: vi.fn(),
+    }))
+    const asked = process.env.OURO_TEAMS_DEVTOOLS
+    delete process.env.OURO_TEAMS_DEVTOOLS
+    try {
+      const teams = await import("../../senses/teams")
+      expect(() => teams.startTeamsApp()).toThrow("it would accept messages from anyone")
+      expect(mockStart).not.toHaveBeenCalled()
+    } finally {
+      process.env.OURO_TEAMS_DEVTOOLS = asked
+      vi.restoreAllMocks()
+    }
   })
 
   it("creates App with DevtoolsPlugin when CLIENT_ID is not set", async () => {
@@ -3729,12 +3773,12 @@ describe("Teams adapter - phrase rotation", () => {
     const callbacks = teams.createTeamsCallbacks(mockStream as any, controller)
 
     callbacks.onModelStart()
-    callbacks.onReasoningChunk("thinking hard")
+    callbacks.onReasoningChunk("**Thinking hard**")
     mockStream.update.mockClear()
     vi.advanceTimersByTime(teams.DEFAULT_FLUSH_INTERVAL_MS)
-    // Phrase rotation stopped, but reasoning is flushed via periodic timer
+    // Phrase rotation stopped, but the heading is flushed via periodic timer
     expect(mockStream.update).toHaveBeenCalledTimes(1)
-    expect(mockStream.update).toHaveBeenCalledWith("thinking hard")
+    expect(mockStream.update).toHaveBeenCalledWith("Thinking hard…")
     // cleanup
     callbacks.onTextChunk("done")
   })
@@ -3789,7 +3833,7 @@ describe("Teams adapter - phrase rotation", () => {
     const callbacks = teams.createTeamsCallbacks(mockStream as any, controller)
 
     callbacks.onModelStart()
-    callbacks.onReasoningChunk("thinking") // sets hadRealOutput
+    callbacks.onReasoningChunk("**Thinking**") // sets hadRealOutput
     callbacks.onTextChunk("response")
     callbacks.onToolStart("read_file", { path: "x" })
     callbacks.onToolEnd("read_file", "x", true)
@@ -3801,13 +3845,111 @@ describe("Teams adapter - phrase rotation", () => {
     callbacks.onTextChunk("done") // cleanup
   })
 
+  it("reasoning without a heading keeps the phrases and never shows raw reasoning", async () => {
+    vi.resetModules()
+    const teams = await import("../../senses/teams")
+    const callbacks = teams.createTeamsCallbacks(mockStream as any, controller)
+
+    callbacks.onModelStart()
+    mockStream.update.mockClear()
+    callbacks.onReasoningChunk("raw private reasoning")
+    vi.advanceTimersByTime(teams.DEFAULT_FLUSH_INTERVAL_MS + 3000)
+    const texts = mockStream.update.mock.calls.map((c: any) => c[0] as string)
+    expect(texts.some((t: string) => t.includes("raw private reasoning"))).toBe(false)
+    expect(texts.some((t: string) => t.endsWith("..."))).toBe(true)
+
+    callbacks.onTextChunk("done") // cleanup
+  })
+
+  it("only the first stream chunk carries the AI label, so the final message has one root entity", async () => {
+    vi.resetModules()
+    const teams = await import("../../senses/teams")
+    const callbacks = teams.createTeamsCallbacks(mockStream as any, controller)
+    callbacks.onTextChunk("first chunk of a reply that is long enough")
+    vi.advanceTimersByTime(teams.DEFAULT_FLUSH_INTERVAL_MS)
+    callbacks.onTextChunk("second chunk")
+    await callbacks.flush()
+    const emitted = mockStream.emit.mock.calls.map((c: any) => c[0])
+    expect(emitted.length).toBeGreaterThanOrEqual(2)
+    expect(emitted[0].entities).toEqual(expect.arrayContaining([expect.objectContaining({ additionalType: ["AIGeneratedContent"] })]))
+    expect(emitted.slice(1).every((a: any) => a.entities === undefined)).toBe(true)
+  })
+
+  it("a tool starting before any text emits nothing into the reply (no placeholder glyph)", async () => {
+    vi.resetModules()
+    const teams = await import("../../senses/teams")
+    const callbacks = teams.createTeamsCallbacks(mockStream as any, controller)
+    callbacks.onToolStart("read_file", { path: "x" })
+    expect(mockStream.emit).not.toHaveBeenCalled()
+  })
+
+  it("the Teams SDK logger forwards warnings everywhere and stream chatter only from stream loggers", async () => {
+    vi.resetModules()
+    const teams = await import("../../senses/teams")
+    const nerves = await import("../../nerves/runtime")
+    const spy = vi.spyOn(nerves, "emitNervesEvent")
+    const root = teams.createTeamsSdkLogger()
+    root.debug("ignored"); root.info("ignored"); root.trace("ignored")
+    root.warn("careful", { a: 1 }); root.error(new Error("boom"))
+    const stream = root.child("stream")
+    stream.debug("waiting for id"); stream.info("chunk"); stream.trace("t"); stream.log("warn", "via log")
+    const sdk = spy.mock.calls.map((c: any) => c[0]).filter((e: any) => e.event === "teams.sdk_log")
+    expect(sdk.map((e: any) => [e.level, e.message])).toEqual([
+      ["warn", '[teams-sdk] careful {"a":1}'],
+      ["error", "[teams-sdk] boom"],
+      ["info", "[teams-sdk/stream] waiting for id"],
+      ["info", "[teams-sdk/stream] chunk"],
+      ["info", "[teams-sdk/stream] t"],
+      ["warn", "[teams-sdk/stream] via log"],
+    ])
+    spy.mockRestore()
+  })
+
+  it("a stopped stream records non-Error and missing causes too", async () => {
+    vi.resetModules()
+    const teams = await import("../../senses/teams")
+    const nerves = await import("../../nerves/runtime")
+    const spy = vi.spyOn(nerves, "emitNervesEvent")
+    mockStream.update.mockImplementation(() => { throw "plain failure" })
+    teams.createTeamsCallbacks(mockStream as any, controller).onToolStart("read_file", { path: "x" })
+    const other = new AbortController()
+    mockStream.update.mockImplementation(() => { throw undefined })
+    teams.createTeamsCallbacks(mockStream as any, other).onToolStart("read_file", { path: "x" })
+    const stops = spy.mock.calls.map((c: any) => c[0]).filter((e: any) => e.event === "teams.stream_stopped")
+    expect(stops.map((e: any) => e.meta.error)).toEqual(["plain failure", null])
+    expect(stops.every((e: any) => e.meta.conversationId === null)).toBe(true)
+    spy.mockRestore()
+  })
+
+  it("reasoningStatus returns the latest bold heading or null", async () => {
+    const teams = await import("../../senses/teams")
+    expect(teams.reasoningStatus("**First**\n\ntext**Second step**\nmore")).toBe("Second step…")
+    expect(teams.reasoningStatus("no heading here")).toBeNull()
+  })
+
+  it("a stopped stream logs a warning naming where and why", async () => {
+    vi.resetModules()
+    const teams = await import("../../senses/teams")
+    const nerves = await import("../../nerves/runtime")
+    const spy = vi.spyOn(nerves, "emitNervesEvent")
+    mockStream.update.mockImplementation(() => { throw new Error("403 Forbidden") })
+    const callbacks = teams.createTeamsCallbacks(mockStream as any, controller, undefined, { conversationId: "c1" })
+    callbacks.onToolStart("read_file", { path: "x" })
+    expect(spy).toHaveBeenCalledWith(expect.objectContaining({
+      level: "warn",
+      event: "teams.stream_stopped",
+      meta: expect.objectContaining({ where: "safeUpdate", error: "403 Forbidden", conversationId: "c1" }),
+    }))
+    spy.mockRestore()
+  })
+
   it("onModelStart is suppressed after reasoning output", async () => {
     vi.resetModules()
     const teams = await import("../../senses/teams")
     const callbacks = teams.createTeamsCallbacks(mockStream as any, controller)
 
     callbacks.onModelStart()
-    callbacks.onReasoningChunk("deep thought") // sets hadRealOutput
+    callbacks.onReasoningChunk("**Deep thought**") // sets hadRealOutput
     callbacks.onTextChunk("answer")
     // Second model call — no phrases
     mockStream.update.mockClear()
@@ -5723,11 +5865,11 @@ describe("Teams adapter - periodic flush timer", () => {
     const teams = await import("../../senses/teams")
     const callbacks = teams.createTeamsCallbacks(mockStream as any, controller, sendMessage)
     // Reasoning chunks start the flush timer
-    callbacks.onReasoningChunk("thinking about it...")
+    callbacks.onReasoningChunk("**Thinking about it**\n\n")
     callbacks.onReasoningChunk("more reasoning...")
     vi.advanceTimersByTime(teams.DEFAULT_FLUSH_INTERVAL_MS)
-    // Reasoning flushed via update, not emit or sendMessage
-    expect(mockStream.update).toHaveBeenCalledWith("thinking about it...more reasoning...")
+    // Reasoning heading flushed via update, not emit or sendMessage
+    expect(mockStream.update).toHaveBeenCalledWith("Thinking about it…")
     expect(mockStream.emit).not.toHaveBeenCalled()
     expect(sendMessage).not.toHaveBeenCalled()
     // Now text starts -- next tick flushes text via emit (>= 20 chars)

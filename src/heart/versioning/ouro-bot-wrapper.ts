@@ -1,3 +1,4 @@
+import { redactCliArgs } from "../daemon/cli-arg-redaction"
 import { emitNervesEvent } from "../../nerves/runtime"
 import { runOuroCli } from "../daemon/daemon-cli"
 
@@ -32,7 +33,7 @@ export async function runOuroBotWrapper(args: string[], deps: Partial<OuroBotWra
     component: "daemon",
     event: "daemon.ouro_bot_wrapper_start",
     message: "starting ouro.bot wrapper delegation",
-    meta: { args },
+    meta: { args: redactCliArgs(args) },
   })
 
   const loadCanonicalRunner = deps.loadCanonicalRunner ?? defaultLoadCanonicalRunner

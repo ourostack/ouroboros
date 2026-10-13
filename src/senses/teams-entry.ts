@@ -3,6 +3,7 @@
 // 100% test coverage -- entrypoints can't be covered by vitest since
 // require.main !== module in the test runner.
 export {}
+import { configureDaemonRuntimeLogger } from "../heart/daemon/runtime-logging"
 import { emitNervesEvent } from "../nerves/runtime"
 
 // Fail fast if --agent is missing (before any src/ code tries getAgentName())
@@ -14,6 +15,9 @@ if (!agentName) {
   process.exit(1)
 }
 
+// Without this the sense's events go to a console nobody reads: the daemon discards its output.
+configureDaemonRuntimeLogger("teams")
+
 emitNervesEvent({
   component: "senses",
   event: "senses.entry_boot",
@@ -22,8 +26,13 @@ emitNervesEvent({
 })
 
 import("../heart/runtime-credentials")
-  .then(async ({ refreshRuntimeCredentialConfig }) => {
-    void refreshRuntimeCredentialConfig(agentName, { preserveCachedOnFailure: true }).catch(() => undefined)
+  .then(async ({ waitForRuntimeCredentialBootstrap, readRuntimeCredentialConfig, refreshRuntimeCredentialConfig }) => {
+    // The bot's credentials must be loaded before the listener starts: without them the Teams SDK
+    // validates no sender, and startTeamsApp refuses to start.
+    const bootstrapped = await waitForRuntimeCredentialBootstrap(agentName)
+    if (!bootstrapped && !readRuntimeCredentialConfig(agentName).ok) {
+      await refreshRuntimeCredentialConfig(agentName, { preserveCachedOnFailure: true }).catch(() => undefined)
+    }
     const { startTeamsApp } = await import("./teams")
     startTeamsApp()
   })

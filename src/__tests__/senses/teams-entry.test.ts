@@ -12,6 +12,8 @@ describe("teams entrypoint", () => {
     const refreshRuntimeCredentialConfig = vi.fn(async () => ({ ok: false, reason: "missing" }))
     vi.doMock("../../senses/teams", () => ({ startTeamsApp }))
     vi.doMock("../../heart/runtime-credentials", () => ({
+      waitForRuntimeCredentialBootstrap: vi.fn(async () => false),
+      readRuntimeCredentialConfig: vi.fn(() => ({ ok: false, reason: "missing" })),
       refreshRuntimeCredentialConfig,
     }))
 
@@ -40,6 +42,8 @@ describe("teams entrypoint", () => {
     })
     vi.doMock("../../senses/teams", () => ({ startTeamsApp }))
     vi.doMock("../../heart/runtime-credentials", () => ({
+      waitForRuntimeCredentialBootstrap: vi.fn(async () => false),
+      readRuntimeCredentialConfig: vi.fn(() => ({ ok: false, reason: "missing" })),
       refreshRuntimeCredentialConfig,
     }))
 
@@ -59,29 +63,40 @@ describe("teams entrypoint", () => {
     argvSpy.mockRestore()
   })
 
-  it("starts the Teams sense without waiting for runtime config refresh", async () => {
+  it("waits for the bot's credentials before starting, and skips the vault when they are already loaded", async () => {
     vi.resetModules()
 
     const startTeamsApp = vi.fn()
-    const refreshRuntimeCredentialConfig = vi.fn(() => new Promise(() => undefined))
-    vi.doMock("../../senses/teams", () => ({ startTeamsApp }))
-    vi.doMock("../../heart/runtime-credentials", () => ({
+    let loaded: (() => void) | undefined
+    const refreshRuntimeCredentialConfig = vi.fn(() => new Promise<void>((resolve) => { loaded = resolve }))
+    const runtime = {
+      waitForRuntimeCredentialBootstrap: vi.fn(async () => false),
+      readRuntimeCredentialConfig: vi.fn(() => ({ ok: false, reason: "missing" })),
       refreshRuntimeCredentialConfig,
-    }))
-
-    const argvSpy = vi.spyOn(process, "argv", "get").mockReturnValue([
-      "node",
-      "teams-entry.js",
-      "--agent",
-      "slugger",
-    ])
+    }
+    vi.doMock("../../senses/teams", () => ({ startTeamsApp }))
+    vi.doMock("../../heart/runtime-credentials", () => runtime)
+    const argvSpy = vi.spyOn(process, "argv", "get").mockReturnValue(["node", "teams-entry.js", "--agent", "slugger"])
 
     await import("../../senses/teams-entry")
+    await vi.waitFor(() => expect(refreshRuntimeCredentialConfig).toHaveBeenCalledTimes(1))
+    await new Promise((resolve) => setTimeout(resolve, 20))
+    expect(startTeamsApp).not.toHaveBeenCalled()
+    loaded!()
+    await vi.waitFor(() => expect(startTeamsApp).toHaveBeenCalledTimes(1))
 
-    await vi.waitFor(() => {
-      expect(refreshRuntimeCredentialConfig).toHaveBeenCalledWith("slugger", { preserveCachedOnFailure: true })
-      expect(startTeamsApp).toHaveBeenCalledTimes(1)
-    })
+    for (const ready of [{ bootstrapped: true, cached: false }, { bootstrapped: false, cached: true }]) {
+      vi.resetModules()
+      startTeamsApp.mockClear()
+      refreshRuntimeCredentialConfig.mockClear()
+      runtime.waitForRuntimeCredentialBootstrap.mockResolvedValue(ready.bootstrapped)
+      runtime.readRuntimeCredentialConfig.mockReturnValue(ready.cached ? { ok: true } as never : { ok: false, reason: "missing" })
+      vi.doMock("../../senses/teams", () => ({ startTeamsApp }))
+      vi.doMock("../../heart/runtime-credentials", () => runtime)
+      await import("../../senses/teams-entry")
+      await vi.waitFor(() => expect(startTeamsApp).toHaveBeenCalledTimes(1))
+      expect(refreshRuntimeCredentialConfig).not.toHaveBeenCalled()
+    }
     argvSpy.mockRestore()
   })
 
@@ -90,6 +105,8 @@ describe("teams entrypoint", () => {
 
     vi.doMock("../../senses/teams", () => ({ startTeamsApp: vi.fn() }))
     vi.doMock("../../heart/runtime-credentials", () => ({
+      waitForRuntimeCredentialBootstrap: vi.fn(async () => false),
+      readRuntimeCredentialConfig: vi.fn(() => ({ ok: false, reason: "missing" })),
       refreshRuntimeCredentialConfig: vi.fn(async () => ({ ok: false, reason: "missing" })),
     }))
 
@@ -118,6 +135,8 @@ describe("teams entrypoint", () => {
     })
     vi.doMock("../../senses/teams", () => ({ startTeamsApp }))
     vi.doMock("../../heart/runtime-credentials", () => ({
+      waitForRuntimeCredentialBootstrap: vi.fn(async () => false),
+      readRuntimeCredentialConfig: vi.fn(() => ({ ok: false, reason: "missing" })),
       refreshRuntimeCredentialConfig: vi.fn(async () => ({ ok: false, reason: "missing" })),
     }))
 
@@ -149,6 +168,8 @@ describe("teams entrypoint", () => {
     })
     vi.doMock("../../senses/teams", () => ({ startTeamsApp }))
     vi.doMock("../../heart/runtime-credentials", () => ({
+      waitForRuntimeCredentialBootstrap: vi.fn(async () => false),
+      readRuntimeCredentialConfig: vi.fn(() => ({ ok: false, reason: "missing" })),
       refreshRuntimeCredentialConfig: vi.fn(async () => ({ ok: false, reason: "missing" })),
     }))
 

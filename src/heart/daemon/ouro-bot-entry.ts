@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { redactCliArgs } from "./cli-arg-redaction"
 import { emitNervesEvent } from "../../nerves/runtime"
 import { configureDaemonRuntimeLogger } from "./runtime-logging"
 import { runOuroBotWrapper } from "../versioning/ouro-bot-wrapper"
@@ -9,7 +10,7 @@ emitNervesEvent({
   component: "daemon",
   event: "daemon.ouro_bot_entry_start",
   message: "starting ouro.bot wrapper entrypoint",
-  meta: { args: process.argv.slice(2) },
+  meta: { args: redactCliArgs(process.argv.slice(2)) },
 })
 
 void runOuroBotWrapper(process.argv.slice(2)).catch((error) => {

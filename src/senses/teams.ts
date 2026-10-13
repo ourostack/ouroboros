@@ -195,15 +195,30 @@ export function createTeamsCallbacks(
   let flushTimer: NodeJS.Timeout | null = null
   const flushInterval = options?.flushIntervalMs ?? DEFAULT_FLUSH_INTERVAL_MS
 
+  // The SDK merges every chunk's entities into the final message, and Teams rejects a final
+  // message with more than one root message entity (400 BadSyntax), so only the first chunk
+  // carries the AI label.
+  let aiLabelAttached = false
+  function streamChunk(text: string): { type: "message"; text: string; entities?: ReturnType<typeof aiLabelEntities>; channelData: { feedbackLoopEnabled: true } } {
+    if (aiLabelAttached) return { type: "message", text, channelData: { feedbackLoopEnabled: true } }
+    aiLabelAttached = true
+    return { type: "message", text, entities: aiLabelEntities(), channelData: { feedbackLoopEnabled: true } }
+  }
+
   // Track whether reasoning has changed since last flush (avoid redundant updates).
   let lastFlushedReasoningLen = 0
+  let lastReasoningStatus = ""
 
   // Periodic tick: flush text buffer and push reasoning updates.
   function flushTick(): void {
     flushTextBuffer()
     if (reasoningBuf.length > lastFlushedReasoningLen) {
-      safeUpdate(reasoningBuf)
       lastFlushedReasoningLen = reasoningBuf.length
+      const status = reasoningStatus(reasoningBuf)
+      if (status && status !== lastReasoningStatus) {
+        lastReasoningStatus = status
+        safeUpdate(status)
+      }
     }
   }
 
@@ -219,8 +234,15 @@ export function createTeamsCallbacks(
   }
 
   // Mark stream as broken and abort the agent loop.
-  function markStopped(): void {
+  function markStopped(where: string, err?: unknown): void {
     if (stopped) return
+    emitNervesEvent({
+      level: "warn",
+      component: "senses",
+      event: "teams.stream_stopped",
+      message: `teams stream stopped at ${where}`,
+      meta: { where, error: err instanceof Error ? err.message : err === undefined ? null : String(err), conversationId: options?.conversationId ?? null },
+    })
     stopped = true
     stopPhraseRotation()
     stopFlushTimer()
@@ -238,7 +260,7 @@ export function createTeamsCallbacks(
   // catch its rejection so we detect a dead stream and abort the agent loop.
   function catchAsync(result: unknown): void {
     if (result && typeof (result as { catch?: Function }).catch === "function") {
-      (result as Promise<unknown>).catch(() => markStopped())
+      (result as Promise<unknown>).catch((err) => markStopped("stream-async", err))
     }
   }
 
@@ -248,11 +270,11 @@ export function createTeamsCallbacks(
     /* v8 ignore next -- defensive guard: stopped set by prior 403; tested via flush abort path @preserve */
     if (stopped) return
     try {
-      catchAsync(stream.emit({ text, entities: aiLabelEntities(), channelData: { feedbackLoopEnabled: true } }))
+      catchAsync(stream.emit(streamChunk(text)))
       streamHasContent = true
       totalEmitted += text.length
-    } catch {
-      markStopped()
+    } catch (err) {
+      markStopped("safeEmit", err)
     }
   }
 
@@ -264,14 +286,14 @@ export function createTeamsCallbacks(
     try {
       // stream.emit() is typed as void but the Teams SDK returns a Promise
       // internally (async HTTP). Cast to capture the result for awaiting.
-      const result: unknown = stream.emit({ text, entities: aiLabelEntities(), channelData: { feedbackLoopEnabled: true } })
+      const result: unknown = stream.emit(streamChunk(text))
       streamHasContent = true
       if (result && typeof (result as { then?: Function }).then === "function") {
         await (result as Promise<unknown>)
       }
       return true
-    } catch {
-      markStopped()
+    } catch (err) {
+      markStopped("tryEmit", err)
       return false
     }
   }
@@ -285,7 +307,7 @@ export function createTeamsCallbacks(
   // responsible for the `!stopped` precondition; no defensive guard here.
   async function tryEmitNoAbort(text: string): Promise<boolean> {
     try {
-      const result: unknown = stream.emit({ text, entities: aiLabelEntities(), channelData: { feedbackLoopEnabled: true } })
+      const result: unknown = stream.emit(streamChunk(text))
       streamHasContent = true
       if (result && typeof (result as { then?: Function }).then === "function") {
         await (result as Promise<unknown>)
@@ -302,8 +324,8 @@ export function createTeamsCallbacks(
     if (stopped) return
     try {
       catchAsync(stream.update(text))
-    } catch {
-      markStopped()
+    } catch (err) {
+      markStopped("safeUpdate", err)
     }
   }
 
@@ -318,17 +340,17 @@ export function createTeamsCallbacks(
       // Chain is idle -- start the send synchronously and mark busy
       sendChainBusy = true
       try {
-        sendChain = sendMessage(text).catch(() => markStopped()).finally(() => { sendChainBusy = false })
-      } catch {
+        sendChain = sendMessage(text).catch((err) => markStopped("send", err)).finally(() => { sendChainBusy = false })
+      } catch (err) {
         sendChainBusy = false
-        markStopped()
+        markStopped("send", err)
       }
     } else {
       // Chain is busy -- queue onto the existing chain
       sendChain = sendChain.then(() => {
         if (stopped) return
         return sendMessage(text)
-      }).catch(() => markStopped())
+      }).catch((err) => markStopped("send-queued", err))
     }
   }
 
@@ -408,9 +430,12 @@ export function createTeamsCallbacks(
     onReasoningChunk: (text: string) => {
       /* v8 ignore next -- defensive guard: stopped set by prior error @preserve */
       if (stopped) return
-      stopPhraseRotation()
-      hadRealOutput = true
       reasoningBuf += text
+      // Keep the friendly phrases until a reasoning heading can replace them.
+      if (reasoningStatus(reasoningBuf)) {
+        stopPhraseRotation()
+        hadRealOutput = true
+      }
       startFlushTimer()
     },
     onTextChunk: (text: string) => {
@@ -465,7 +490,7 @@ export function createTeamsCallbacks(
         // All delivery paths exhausted — now it is correct to abort the turn.
         // markStopped() halts further stream activity and aborts the controller
         // so the engine catches up and ends the turn cleanly.
-        markStopped()
+        markStopped("speak", lastError)
         throw new Error(
           `teams speak delivery failed: ${lastError?.message ?? "no fallback available"}`,
         )
@@ -484,7 +509,7 @@ export function createTeamsCallbacks(
         onToolStart: (name: string, args: Record<string, string>) => {
           // speak is flow-control: its visible output is the message itself
           // (delivered via onTextChunk + flushNow). Do NOT stop phrase rotation
-          // here, do NOT emit the \u23f3 placeholder, do NOT post a tool-activity
+          // here, do NOT post a tool-activity
           // status update \u2014 all of those would create UI churn right before the
           // actual speak content arrives.
           if (name === "speak") return
@@ -492,12 +517,6 @@ export function createTeamsCallbacks(
           // Force-flush any accumulated text, bypassing MIN_INITIAL_CHARS threshold
           firstContentEmitted = true
           flushTextBuffer()
-          // Emit a placeholder to satisfy the 15s Copilot timeout for initial
-          // stream.emit(). Without this, long tool chains (e.g. ADO batch ops)
-          // never emit before the timeout and the user sees "this response was
-          // stopped". The placeholder is replaced by actual content on next emit.
-          // https://learn.microsoft.com/en-us/answers/questions/2288017/m365-custom-engine-agents-timeout-message-after-15
-          if (!streamHasContent) safeEmit("\u23f3")
           toolCbs.onToolStart(name, args)
           hadToolRun = true
         },
@@ -546,7 +565,7 @@ export function createTeamsCallbacks(
           // Stream is alive — await the emit so we can catch async 413/failure
           // and fall through to sendMessage recovery.
           const ok = await tryEmit(text)
-          if (!ok) markStopped()
+          if (!ok) markStopped("flush")
         }
         if (stopped && !streamFinalized && sendMessage) {
           // Stream is dead (not from finalization) — fall back to sendMessage; split on failure as recovery.
@@ -560,8 +579,22 @@ export function createTeamsCallbacks(
       } else if (!streamHasContent && !options?.suppressEmptyStreamMessage) {
         safeEmit("(completed with tool calls only — no text response)")
       }
+      emitNervesEvent({
+        component: "senses",
+        event: "teams.flush_done",
+        message: "teams end-of-turn flush finished",
+        meta: { stopped, streamHasContent, streamFinalized, conversationId: options?.conversationId ?? null },
+      })
     },
   }
+}
+
+// The status bubble shows the latest reasoning heading (models write "**Heading**"
+// before each reasoning step), never the raw reasoning text itself.
+export function reasoningStatus(reasoning: string): string | null {
+  const headings = [...reasoning.matchAll(/\*\*([^*\n]+)\*\*/g)]
+  const last = headings.at(-1)?.[1]?.trim()
+  return last ? `${last}…` : null
 }
 
 const _turnCoordinator = createTurnCoordinator()
@@ -911,6 +944,7 @@ function createBotApp(teamsConfig: { clientId: string, clientSecret: string, ten
         tenantId: teamsConfig.tenantId,
         oauth: { defaultConnectionName: oauthConfig.graphConnectionName },
         ...mentionStripping,
+        logger: createTeamsSdkLogger(),
       }),
       mode: "Bot Service (client secret)",
     }
@@ -922,20 +956,53 @@ function createBotApp(teamsConfig: { clientId: string, clientSecret: string, ten
         ...(teamsConfig.managedIdentityClientId ? { managedIdentityClientId: teamsConfig.managedIdentityClientId } : {}),
         oauth: { defaultConnectionName: oauthConfig.graphConnectionName },
         ...mentionStripping,
+        logger: createTeamsSdkLogger(),
       }),
       mode: "Bot Service (managed identity)",
     }
   } else {
+    // With no credentials the Teams SDK validates no sender, so anyone who can reach the port can
+    // talk to the agent. That is only acceptable when a developer asks for it on their own machine.
+    if (process.env.OURO_TEAMS_DEVTOOLS !== "1") {
+      throw new Error("Teams bot credentials are missing (teams.clientId), so the Teams sense will not start: without them it would accept messages from anyone. Run `ouro connect teams`, or set OURO_TEAMS_DEVTOOLS=1 for local development with no real bot.")
+    }
     return {
       app: new App({
         plugins: [new DevtoolsPlugin()],
         ...mentionStripping,
+        logger: createTeamsSdkLogger(),
       }),
       mode: "DevtoolsPlugin",
     }
   }
 }
 /* v8 ignore stop */
+
+// Route the Teams SDK's own logger into nerves. Its stream reports why a reply was never
+// finalized (no stream id, queue timeout, cancellation) only through this logger.
+type SdkLogLevel = "error" | "warn" | "info" | "debug" | "trace"
+export function createTeamsSdkLogger(name = "teams-sdk"): import("@microsoft/teams.common").ILogger {
+  const verbose = /stream/i.test(name)
+  const write = (level: SdkLogLevel, msg: unknown[]): void => {
+    if ((level === "debug" || level === "trace" || level === "info") && !verbose) return
+    emitNervesEvent({
+      level: level === "error" ? "error" : level === "warn" ? "warn" : "info",
+      component: "senses",
+      event: "teams.sdk_log",
+      message: `[${name}] ${msg.map((m) => (m instanceof Error ? m.message : typeof m === "string" ? m : JSON.stringify(m))).join(" ").slice(0, 300)}`,
+      meta: { logger: name, sdkLevel: level },
+    })
+  }
+  return {
+    debug: (...m: unknown[]) => write("debug", m),
+    info: (...m: unknown[]) => write("info", m),
+    warn: (...m: unknown[]) => write("warn", m),
+    error: (...m: unknown[]) => write("error", m),
+    trace: (...m: unknown[]) => write("trace", m),
+    log: (level: string, ...m: unknown[]) => write(level as SdkLogLevel, m),
+    child: (child: string) => createTeamsSdkLogger(`${name}/${child}`),
+  }
+}
 
 // Register message, verify-state, and error handlers on an App instance.
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
