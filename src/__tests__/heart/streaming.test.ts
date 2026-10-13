@@ -1875,6 +1875,32 @@ describe("streamChatCompletion settle streaming", () => {
     }
   })
 
+  it.each<{ index: number; mode: "final_only" | "retractable_buffer" }>([
+    { index: 1, mode: "final_only" },
+    { index: 1, mode: "retractable_buffer" },
+    { index: 3, mode: "final_only" },
+  ])("recognizes a sole settle at provider index $index in $mode without leaking preliminary text", async ({ index, mode }) => {
+    let visible = ""
+    const client = { chat: { completions: { create: vi.fn().mockReturnValue(makeStream([
+      makeChunk("The complete answer."),
+      makeChunk(undefined, [{ index, id: "call_1", function: { name: "settle", arguments: '{"answer":"The complete' } }]),
+      makeChunk(undefined, [{ index, function: { arguments: ' answer.","intent":"complete"}' } }]),
+    ])) } } }
+    const callbacks = {
+      ...makeCallbacks({
+        onTextChunk: (text: string) => { visible += text },
+        onClearText: () => { visible = "" },
+      }),
+      settleOutputMode: mode,
+    }
+
+    const result = await streamChatCompletion(client, { messages: [], stream: true }, callbacks)
+
+    expect(result.settleFinalization).toEqual({ ok: true, answer: "The complete answer." })
+    expect(visible).toBe(mode === "final_only" ? "" : "The complete answer.")
+    expect(result.settleStreamed).toBe(mode === "retractable_buffer")
+  })
+
   it("keeps a retractable Chat Completions settle exact when provider text follows it", async () => {
     let visible = ""
     const client = { chat: { completions: { create: vi.fn().mockReturnValue(makeStream([

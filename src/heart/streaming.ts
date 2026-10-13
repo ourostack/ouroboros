@@ -800,10 +800,10 @@ export async function streamChatCompletion(
           if (tc.function?.name) {
             toolCalls[tc.index].name = tc.function.name;
             // Detect settle tool call on first name delta.
-            // Only activate streaming if this is the sole tool call (index 0
-            // and no other indices seen). Mixed calls are rejected by core.ts.
+            // Count calls rather than assuming a sole tool arrives at index 0.
+            // Mixed calls are rejected by core.ts.
             if (tc.function.name === "settle" && !answerStreamer.detected
-                && tc.index === 0 && Object.keys(toolCalls).length === 1) {
+                && Object.keys(toolCalls).length === 1) {
               answerStreamer.activate();
               textOutput.suppress();
             }
