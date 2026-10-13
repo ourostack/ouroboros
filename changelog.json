@@ -2,6 +2,12 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.923",
+      "changes": [
+        "Recognize a sole settle at any provider tool index so final-only channels suppress preliminary answer text instead of delivering it twice."
+      ]
+    },
+    {
       "version": "0.1.0-alpha.922",
       "changes": [
         "Make Shepherd overview read fresh bounded screens for every terminal, separate historical returns, and report individual read failures."
