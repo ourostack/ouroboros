@@ -657,6 +657,11 @@ export function toResponsesTools(
   }));
 }
 
+/** Providers send an empty string for a tool called with no arguments; every reader expects a JSON object. */
+export function toolArgumentsOrEmptyObject(raw: string): string {
+  return raw.trim() === "" ? "{}" : raw
+}
+
 export async function streamChatCompletion(
   client: OpenAI,
   createParams: Record<string, unknown>,
@@ -823,7 +828,7 @@ export async function streamChatCompletion(
   // Flush any remaining buffer at end of stream
   if (contentBuf) processContentBuf(true);
 
-  const completedToolCalls = Object.values(toolCalls);
+  const completedToolCalls = Object.values(toolCalls).map((call) => ({ ...call, arguments: toolArgumentsOrEmptyObject(call.arguments) }));
   let settleFinalization: SettleParserFinishResult | undefined;
   if (signal?.aborted) {
     textOutput.discard();
@@ -935,7 +940,7 @@ export async function streamResponsesApi(
           toolCalls.push({
             id: String(event.item.call_id),
             name: String(event.item.name),
-            arguments: String(event.item.arguments),
+            arguments: toolArgumentsOrEmptyObject(String(event.item.arguments)),
           });
           currentToolCall = null;
         }

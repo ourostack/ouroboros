@@ -2,6 +2,12 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.920",
+      "changes": [
+        "Accept empty provider tool arguments as an empty object so no-argument tools execute without exhausting the turn."
+      ]
+    },
+    {
       "version": "0.1.0-alpha.919",
       "changes": [
         "Shepherd now sends the agent's owner a short Teams message for every coding-agent return it judges, saying what it did and why; set senses.shepherd.notify to needs-me or off to hear less.",
