@@ -1,7 +1,7 @@
 import * as fs from "node:fs"
 import * as os from "node:os"
 import * as path from "node:path"
-import { afterEach, beforeEach, describe, expect, it } from "vitest"
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 
 import { registerGlobalLogSink, type LogEvent } from "../../nerves"
 
@@ -9,6 +9,7 @@ import { cacheMachineRuntimeCredentialConfig, resetRuntimeCredentialConfigCache 
 import type { ToolContext, ToolDefinition } from "../../repertoire/tools-base"
 import { shepherdOverviewToolDefinition, shepherdReadToolDefinition, shepherdSendToolDefinition, shepherdSignalToolDefinition, shepherdToolDefinitions, shepherdToolsEnabled } from "../../repertoire/tools-shepherd"
 import { screenFingerprint } from "../../senses/shepherd/redact"
+import * as shepherdHost from "../../senses/shepherd/host"
 import { appendReturn, type ReturnRecord } from "../../senses/shepherd/returns"
 import { startFakeCmux, type FakeCmux } from "../senses/shepherd/fake-cmux"
 import { SCREENS, tree } from "../senses/shepherd/fixtures"
@@ -57,15 +58,101 @@ describe("Shepherd tools", () => {
   })
 
   it("overview lists each terminal with the last return Shepherd judged there", async () => {
+    server.respond("surface.read_text", params => ({ text: `current ${params.surface_id}` }))
     appendReturn(root, record({ transition: "old", reason: "older" }))
     appendReturn(root, record({ transition: "new", kind: "gate", action: "let_through", reason: "needs Ari", reply: null, task: "desk/x" }))
     expect(await call(shepherdOverviewToolDefinition, {})).toEqual({
       host: "cmux",
+      terminalCount: 2,
       sessions: [
-        { id: "SF-1", ref: "surface:1", workspace: "workspace:1", workspaceTitle: "app", title: "app", tty: null, cwd: null, agent: null, focused: false, lastReturn: { at: "2026-10-10T20:00:00.000Z", kind: "gate", action: "let_through", reason: "needs Ari", reply: null, task: "desk/x" } },
-        { id: "SF-2", ref: "surface:2", workspace: "workspace:1", workspaceTitle: "app", title: "zsh", tty: null, cwd: null, agent: null, focused: false },
+        { id: "SF-1", ref: "surface:1", workspace: "workspace:1", workspaceTitle: "app", title: "app", tty: null, cwd: null, agent: null, focused: false, currentScreen: { at: expect.any(String), text: "current SF-1", truncated: false }, lastReturn: { at: "2026-10-10T20:00:00.000Z", kind: "gate", action: "let_through", reason: "needs Ari", reply: null, task: "desk/x" } },
+        { id: "SF-2", ref: "surface:2", workspace: "workspace:1", workspaceTitle: "app", title: "zsh", tty: null, cwd: null, agent: null, focused: false, currentScreen: { at: expect.any(String), text: "current SF-2", truncated: false } },
       ],
     })
+  })
+
+  it("overview reads every current screen rather than presenting an old done judgment as current work", async () => {
+    appendReturn(root, record({ kind: "done", action: "let_through", reason: "The earlier task finished." }))
+    server.respond("surface.read_text", (params) => ({ text: params.surface_id === "SF-1" ? "Running the new task's tests." : "Waiting for your approval." }))
+    const overview = await call(shepherdOverviewToolDefinition, {})
+    expect(overview.terminalCount).toBe(2)
+    expect(overview.sessions).toEqual([
+      expect.objectContaining({
+        id: "SF-1",
+        currentScreen: { at: expect.any(String), text: "Running the new task's tests.", truncated: false },
+        lastReturn: expect.objectContaining({ kind: "done", reason: "The earlier task finished." }),
+      }),
+      expect.objectContaining({
+        id: "SF-2",
+        currentScreen: { at: expect.any(String), text: "Waiting for your approval.", truncated: false },
+      }),
+    ])
+    expect(server.methods.filter(m => m.method === "surface.read_text").map(m => m.params)).toEqual([
+      { surface_id: "SF-1", lines: 80, scrollback: true },
+      { surface_id: "SF-2", lines: 80, scrollback: true },
+    ])
+  })
+
+  it("overview redacts before bounding and removes terminal frame padding from the snapshot", async () => {
+    server.respond("surface.read_text", () => ({ text: `╭────╮\n│\n│ Work completed.      │\n│ ghp_${"a".repeat(36)}      │\n╰────╯\n${"x".repeat(5_000)}` }))
+    const overview = await call(shepherdOverviewToolDefinition, {})
+    const sessions = overview.sessions as Array<{ currentScreen: { text: string; truncated: boolean } }>
+    expect(sessions.every(s => s.currentScreen.text.length === 4_000 && s.currentScreen.truncated)).toBe(true)
+    server.respond("surface.read_text", () => ({ text: `╭────╮\n│\n│ Work completed.      │\n│ ghp_${"a".repeat(36)}      │\n╰────╯\n` }))
+    const compact = (await call(shepherdOverviewToolDefinition, {})).sessions as Array<{ currentScreen: { text: string; truncated: boolean } }>
+    expect(compact[0]!.currentScreen).toEqual({ at: expect.any(String), text: " Work completed.\n [redacted]", truncated: false })
+    expect(compact.every(s => !s.currentScreen.text.includes("ghp_") && !s.currentScreen.text.includes("─"))).toBe(true)
+  })
+
+  it("overview bounds the combined screen payload as the terminal count grows", async () => {
+    server.respond("system.tree", () => tree(Array.from({ length: 20 }, (_, i) => ({ id: `SF-${i}`, ref: `surface:${i}` }))))
+    server.respond("surface.read_text", () => ({ text: "x".repeat(5_000) }))
+    const overview = await call(shepherdOverviewToolDefinition, {})
+    const sessions = overview.sessions as Array<{ currentScreen: { text: string } }>
+    expect(overview.terminalCount).toBe(20)
+    expect(sessions.map(s => s.currentScreen.text.length)).toEqual(Array(20).fill(3_200))
+    expect(sessions.reduce((sum, s) => sum + s.currentScreen.text.length, 0)).toBe(64_000)
+  })
+
+  it("overview keeps a failed terminal read explicit without dropping other live screens", async () => {
+    const events: LogEvent[] = []
+    const unregister = registerGlobalLogSink(event => events.push(event))
+    server.respond("surface.read_text", params => {
+      if (params.surface_id === "SF-1") throw new Error("terminal is gone")
+      return { text: "Still working." }
+    })
+    try {
+      const overview = await call(shepherdOverviewToolDefinition, {})
+      expect(overview.sessions).toEqual([
+        expect.objectContaining({ id: "SF-1", currentScreen: { at: expect.any(String), error: "terminal is gone" } }),
+        expect.objectContaining({ id: "SF-2", currentScreen: { at: expect.any(String), text: "Still working.", truncated: false } }),
+      ])
+      expect(events).toContainEqual(expect.objectContaining({ event: "repertoire.shepherd_overview_read_error", level: "warn" }))
+    } finally {
+      unregister()
+    }
+    server.respond("system.tree", () => tree([]))
+    expect(await call(shepherdOverviewToolDefinition, {})).toEqual({ host: "cmux", terminalCount: 0, sessions: [] })
+  })
+
+  it("overview redacts even a non-Error read rejection in its inline error and warning", async () => {
+    const createHost = shepherdHost.createShepherdHost
+    const spy = vi.spyOn(shepherdHost, "createShepherdHost").mockImplementation((...args) => {
+      const host = createHost(...args)
+      host.read = async () => { throw `failed ghp_${"a".repeat(36)}` }
+      return host
+    })
+    const events: LogEvent[] = []
+    const unregister = registerGlobalLogSink(event => events.push(event))
+    try {
+      const sessions = (await call(shepherdOverviewToolDefinition, {})).sessions as Array<{ currentScreen: { error: string } }>
+      expect(sessions.every(s => s.currentScreen.error === "failed [redacted]")).toBe(true)
+      expect(events.filter(e => e.event === "repertoire.shepherd_overview_read_error")).toHaveLength(2)
+      expect(JSON.stringify(events)).not.toContain("ghp_")
+    } finally {
+      spy.mockRestore()
+      unregister()
+    }
   })
 
   it("read redacts and bounds the screen", async () => {
