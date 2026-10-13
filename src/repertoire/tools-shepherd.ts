@@ -3,18 +3,23 @@ import * as path from "node:path"
 import { readMachineRuntimeCredentialConfig } from "../heart/runtime-credentials"
 import { resolveShepherdConnection } from "../heart/shepherd-config"
 import { emitNervesEvent } from "../nerves/runtime"
-import { createShepherdHost, type ShepherdHost } from "../senses/shepherd/host"
-import { redactSecrets } from "../senses/shepherd/redact"
+import { createShepherdHost, type ShepherdHost, type ShepherdKey } from "../senses/shepherd/host"
+import { FINGERPRINT_READ_LINES, redactSecrets, screenFingerprint } from "../senses/shepherd/redact"
 import { readReturns, type ReturnRecord } from "../senses/shepherd/returns"
-import type { ToolContext, ToolDefinition } from "./tools-base"
+import { SELF_FRIEND_ID, type ToolContext, type ToolDefinition } from "./tools-base"
 
 /**
  * Shepherd's tools: every coding-agent session on this machine's terminal host with what Shepherd
- * last decided about it (`shepherd_overview`), what a session shows (`shepherd_read`), and a status
- * line or notification for the human (`shepherd_signal`).
+ * last decided about it (`shepherd_overview`), what a session shows (`shepherd_read`), a status
+ * line or notification for the human (`shepherd_signal`), and a line or key typed for the human
+ * who asked for it (`shepherd_send`).
  */
 const STATUS_MAX_CHARS = 120
 const READ_MAX_CHARS = 16_000
+export const SEND_TEXT_MAX_CHARS = 2_000
+export const SEND_KEYS: readonly ShepherdKey[] = ["enter", "escape", "up", "down", "tab", "ctrl-c", "1", "2", "3", "4", "5", "6", "7", "8", "9", "y", "n"]
+/** Keys that can approve or choose something on a prompt: pressed only on the screen the caller last read. */
+const CHOOSING_KEYS = new Set<string>(["enter", "tab", "1", "2", "3", "4", "5", "6", "7", "8", "9", "y", "n"])
 
 function text(value: unknown): string {
   return typeof value === "string" ? value : ""
@@ -84,7 +89,7 @@ export const shepherdReadToolDefinition: ToolDefinition = {
     type: "function",
     function: {
       name: "shepherd_read",
-      description: "Read the text of one terminal session (what a coding agent shows now and what it did recently). Secret-shaped strings are redacted and the text is bounded. Read-only. Take the session id or ref from shepherd_overview.",
+      description: "Read the text of one terminal session (what a coding agent shows now and what it did recently). Secret-shaped strings are redacted and the text is bounded. Read-only. Take the session id or ref from shepherd_overview. It also returns screen, a fingerprint of what the terminal shows now, for shepherd_send.",
       parameters: {
         type: "object",
         properties: {
@@ -100,8 +105,11 @@ export const shepherdReadToolDefinition: ToolDefinition = {
     const session = text(args.session).trim()
     if (!session) return Promise.resolve(JSON.stringify({ error: "name a session id or ref from shepherd_overview" }))
     return withHost("shepherd_read", ctx, async (host) => {
-      const screen = redactSecrets(await host.read(session, boundedLines(args.lines)))
-      return { session, text: screen.slice(-READ_MAX_CHARS), truncated: screen.length > READ_MAX_CHARS }
+      const lines = boundedLines(args.lines)
+      // A fingerprint needs enough lines to match the one shepherd_send takes, whatever the caller asked to see.
+      const raw = await host.read(session, Math.max(lines, FINGERPRINT_READ_LINES))
+      const screen = redactSecrets(raw).replace(/\n$/, "").split("\n").slice(-lines).join("\n")
+      return { session, text: screen.slice(-READ_MAX_CHARS), truncated: screen.length > READ_MAX_CHARS, screen: screenFingerprint(raw) }
     })
   },
   summaryKeys: ["session"],
@@ -142,4 +150,68 @@ export const shepherdSignalToolDefinition: ToolDefinition = {
   riskProfile: { mutates: "external_side_effect", risk: "high", reason: "changes what the terminal host shows the human (a status line or a desktop notification)" },
 }
 
-export const shepherdToolDefinitions: ToolDefinition[] = [shepherdOverviewToolDefinition, shepherdReadToolDefinition, shepherdSignalToolDefinition]
+function refused(reason: string, meta: Record<string, unknown>): Record<string, unknown> {
+  emitNervesEvent({ level: "warn", component: "repertoire", event: "repertoire.shepherd_send_refused", message: "refused to type into a terminal", meta: { ...meta, reason } })
+  return { error: reason }
+}
+
+export const shepherdSendToolDefinition: ToolDefinition = {
+  tool: {
+    type: "function",
+    function: {
+      name: "shepherd_send",
+      description: `Type into one coding agent's terminal on this machine for the human you are talking with, because they asked you to. Use it only to deliver that human's own instruction or keypress ("tell it to run the tests", "approve that", "stop it"): never on your own initiative, and never for anyone else. Give exactly one of text or key. text is one line (at most ${SEND_TEXT_MAX_CHARS} characters, no control characters), typed as "[Ouro for <their name>] <text>" and submitted with Enter. key is pressed alone: one of ${SEND_KEYS.join(", ")} (a menu or permission prompt, escape to interrupt, ctrl-c to cancel). enter, tab, a digit, y and n can approve or choose on a prompt, so they need screen from a shepherd_read made just before, and nothing is sent if the terminal changed since; tell the human what a prompt asks before approving it unless they have seen it. Pass screen with text too when the text answers what is on screen. To interrupt and then instruct, send escape, read again, then send the text. It also types into the terminal the human has focused on this machine.`,
+      parameters: {
+        type: "object",
+        properties: {
+          session: { type: "string", description: "Session id or ref (surface:12) from shepherd_overview." },
+          text: { type: "string", description: "The human's instruction, one line. Sent with the [Ouro for <name>] prefix and Enter." },
+          key: { type: "string", enum: [...SEND_KEYS], description: "One key to press instead of text." },
+          screen: { type: "string", description: "The screen fingerprint from the shepherd_read just before. Required for enter, tab, a digit, y and n." },
+        },
+        required: ["session"],
+        additionalProperties: false,
+      },
+    },
+  },
+  handler: (args, ctx) => {
+    const session = text(args.session).trim()
+    const line = text(args.text).trim()
+    const key = text(args.key).trim().toLowerCase()
+    const seen = text(args.screen).trim()
+    const friend = ctx?.context?.friend
+    const meta = { session, chars: line.length, key: key || null, friendId: friend?.id ?? null }
+    const refuse = (reason: string): Promise<string> => Promise.resolve(JSON.stringify(refused(reason, meta)))
+    // The private runtime talks to itself as a family "friend"; only a real family member's request may type.
+    if (!friend || friend.trustLevel !== "family" || friend.id === SELF_FRIEND_ID) return refuse("shepherd_send types only for a family member who asked for it in this conversation")
+    if (!session) return refuse("name a session id or ref from shepherd_overview")
+    if (!line === !key) return refuse("give exactly one of text or key")
+    if (key && !(SEND_KEYS as readonly string[]).includes(key)) return refuse(`key must be one of ${SEND_KEYS.join(", ")}`)
+    if (line.length > SEND_TEXT_MAX_CHARS) return refuse(`text must be at most ${SEND_TEXT_MAX_CHARS} characters`)
+    if (/[\p{Cc}\u2028\u2029]/u.test(line)) return refuse("text must be one line with no control characters; press enter, escape or ctrl-c with key")
+    if (CHOOSING_KEYS.has(key) && !seen) return refuse(`${key} can approve or choose on a prompt, so pass screen from a shepherd_read made just before`)
+    return withHost("shepherd_send", ctx, async (host) => {
+      const target = (await host.list()).find((entry) => entry.id === session || entry.ref === session)
+      if (!target) return refused(`session ${session} is gone; check shepherd_overview`, meta)
+      // Read again right before typing, as Shepherd does before its own answers: a gone or changed screen gets nothing.
+      const now = screenFingerprint(await host.read(target.id, FINGERPRINT_READ_LINES))
+      if (seen && seen !== now) return refused("the terminal changed since it was read, so nothing was sent; read it again", meta)
+      const typed = key ? null : `[Ouro for ${friend.name}] ${line}`
+      if (key) await host.key(target.id, key as ShepherdKey)
+      else await host.prompt(target.id, typed!)
+      emitNervesEvent({
+        component: "repertoire",
+        event: "repertoire.shepherd_send",
+        message: "typed into a terminal for a family member",
+        meta: { ...meta, session: target.id, ref: target.ref, agent: target.agent, focused: target.focused, screenChecked: !!seen },
+      })
+      // The status line shows the human at the machine who typed; it is best effort, the send already happened.
+      await host.signal(target.id, `sent for ${friend.name}`.slice(0, STATUS_MAX_CHARS)).catch(() => undefined)
+      return { session: target.ref, sent: key ? { key } : { text: typed }, focused: target.focused }
+    })
+  },
+  summaryKeys: ["session", "key"],
+  riskProfile: { mutates: "external_side_effect", risk: "high", reason: "types into a coding agent's terminal for the human, which can answer or approve its prompts" },
+}
+
+export const shepherdToolDefinitions: ToolDefinition[] = [shepherdOverviewToolDefinition, shepherdReadToolDefinition, shepherdSignalToolDefinition, shepherdSendToolDefinition]

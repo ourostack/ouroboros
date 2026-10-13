@@ -69,9 +69,10 @@ describe("Herdr host: panes", () => {
 
     await herdr.prompt("w1:p1", "[Ouro for Ari] Go ahead with option 2.")
     expect(server.requests.at(-1)).toEqual({ method: "agent.prompt", params: { target: "w1:p1", text: "[Ouro for Ari] Go ahead with option 2." } })
+    await herdr.key("w1:p1", "ctrl-c")
     await herdr.key("w1:p1", "escape")
     await herdr.key("w1:p1", "2")
-    expect(server.requests.slice(-2)).toEqual([{ method: "agent.send_keys", params: { target: "w1:p1", keys: ["esc"] } }, { method: "agent.send_keys", params: { target: "w1:p1", keys: ["2"] } }])
+    expect(server.requests.slice(-3)).toEqual([{ method: "agent.send_keys", params: { target: "w1:p1", keys: ["ctrl+c"] } }, { method: "agent.send_keys", params: { target: "w1:p1", keys: ["esc"] } }, { method: "agent.send_keys", params: { target: "w1:p1", keys: ["2"] } }])
 
     await herdr.signal("w1:p1", "answered for Ari", { title: "Shepherd", body: "answered" })
     await herdr.signal("w1:p1", null)
