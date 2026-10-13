@@ -3905,6 +3905,22 @@ describe("Teams adapter - phrase rotation", () => {
     spy.mockRestore()
   })
 
+  it("a stopped stream records non-Error and missing causes too", async () => {
+    vi.resetModules()
+    const teams = await import("../../senses/teams")
+    const nerves = await import("../../nerves/runtime")
+    const spy = vi.spyOn(nerves, "emitNervesEvent")
+    mockStream.update.mockImplementation(() => { throw "plain failure" })
+    teams.createTeamsCallbacks(mockStream as any, controller).onToolStart("read_file", { path: "x" })
+    const other = new AbortController()
+    mockStream.update.mockImplementation(() => { throw undefined })
+    teams.createTeamsCallbacks(mockStream as any, other).onToolStart("read_file", { path: "x" })
+    const stops = spy.mock.calls.map((c: any) => c[0]).filter((e: any) => e.event === "teams.stream_stopped")
+    expect(stops.map((e: any) => e.meta.error)).toEqual(["plain failure", null])
+    expect(stops.every((e: any) => e.meta.conversationId === null)).toBe(true)
+    spy.mockRestore()
+  })
+
   it("reasoningStatus returns the latest bold heading or null", async () => {
     const teams = await import("../../senses/teams")
     expect(teams.reasoningStatus("**First**\n\ntext**Second step**\nmore")).toBe("Second step…")
