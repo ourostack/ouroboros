@@ -5,6 +5,7 @@ import * as path from "node:path"
 import { emitNervesEvent } from "../../nerves/runtime"
 import type { CmuxClient, CmuxSocketError } from "./client"
 import type { HostSession, HostWatchHandlers, ShepherdHost, ShepherdKey } from "./host"
+import { identifyTerminalProcesses } from "./terminal-process"
 
 /**
  * The cmux host (0.64.22 or later). A return is cmux's own "agent stopped" signal: an
@@ -48,6 +49,7 @@ export interface CmuxHostOptions {
   homeDir?: string
   now?: () => number
   schedule?: (fn: () => void, ms: number) => () => void
+  identifyTerminals?: typeof identifyTerminalProcesses
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -108,18 +110,26 @@ export function createCmuxHost(client: CmuxClient, options: CmuxHostOptions = {}
 
   async function surfaces(): Promise<Surface[]> {
     const tree = await client.call("system.tree", { all_windows: true })
-    return list(tree.windows).flatMap((window) => list(window.workspaces).map((workspace) => ({ window, workspace }))).flatMap(({ window, workspace }) =>
+    const entries = list(tree.windows).flatMap((window) => list(window.workspaces).map((workspace) => ({ window, workspace }))).flatMap(({ window, workspace }) =>
       list(workspace.panes).flatMap((pane) => list(pane.surfaces)).map((surface) => ({
         id: str(surface.id) ?? "",
         ref: str(surface.ref) ?? "",
         workspace: str(workspace.ref),
+        workspaceTitle: str(workspace.title),
         workspaceId: str(workspace.id) ?? "",
         title: str(surface.title) ?? "",
+        tty: str(surface.tty),
         type: str(surface.type) ?? "",
         agent: hooked.get(str(surface.id) ?? "")?.agent ?? null,
+        cwd: hooked.get(str(surface.id) ?? "")?.cwd ?? null,
         // The human's terminal: the focused surface of the selected workspace in a visible window.
         focused: surface.focused === true && workspace.selected === true && window.visible !== false,
       })))
+    const identities = await (options.identifyTerminals ?? identifyTerminalProcesses)(entries.filter((entry) => entry.type === "terminal" && entry.tty).map((entry) => entry.tty!))
+    return entries.map((entry) => {
+      const identity = entry.tty ? identities.get(entry.tty) : undefined
+      return { ...entry, agent: identity?.agent ?? entry.agent, cwd: identity?.cwd ?? entry.cwd }
+    })
   }
 
   async function locate(sessionId: string): Promise<Surface> {
@@ -136,7 +146,7 @@ export function createCmuxHost(client: CmuxClient, options: CmuxHostOptions = {}
   return {
     name: "cmux",
     async list() {
-      return (await surfaces()).filter((surface) => surface.type === "terminal").map(({ id, ref, workspace, title, agent, focused }) => ({ id, ref, workspace, title, agent, focused }))
+      return (await surfaces()).filter((surface) => surface.type === "terminal").map(({ workspaceId: _workspaceId, type: _type, ...session }) => session)
     },
     read,
     async prompt(sessionId, line) {
@@ -283,8 +293,7 @@ export function createCmuxHost(client: CmuxClient, options: CmuxHostOptions = {}
               clearStatus(surface.id)
             } else if (last.active && at - last.changedAt >= Math.max(quietMs.get(surface.id) ?? QUIET_MS, hooked.has(surface.id) ? HOOKED_QUIET_MS : 0)) {
               last.active = false
-              const hook = hooked.get(surface.id)
-              handlers.returned({ sessionId: surface.id, transitionId: `cmux:quiet:${surface.id}:${last.changedAt}`, agent: hook?.agent ?? null, cwd: hook?.cwd ?? null, lastBody: null, backgroundWork: null })
+              handlers.returned({ sessionId: surface.id, transitionId: `cmux:quiet:${surface.id}:${last.changedAt}`, agent: surface.agent, cwd: surface.cwd ?? null, title: surface.title, workspaceTitle: surface.workspaceTitle, lastBody: null, backgroundWork: null })
             }
           }
         } catch (error) {

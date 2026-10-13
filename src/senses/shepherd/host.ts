@@ -16,7 +16,10 @@ export interface HostSession {
   /** A short handle the agent can pass back (cmux `surface:12`, Herdr `w1:p2`). */
   ref: string
   workspace: string | null
+  workspaceTitle?: string | null
   title: string
+  tty?: string | null
+  cwd?: string | null
   /** The coding agent running there, when the host knows it. */
   agent: string | null
   /** The human's current terminal: Shepherd never types into it. */
@@ -29,6 +32,8 @@ export interface ReturnedControl {
   transitionId: string
   agent: string | null
   cwd: string | null
+  workspaceTitle?: string | null
+  title?: string
   /** The host's own summary of the agent's last message, when it keeps one. */
   lastBody: string | null
   /** True when the host itself says the agent still has background work running (subagents, shells, watchers); null when it cannot tell. */

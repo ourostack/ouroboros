@@ -42,16 +42,22 @@ export function plain(value: string, max: number): string {
   return flat.length <= max ? flat : `${flat.slice(0, max - 1).trimEnd()}…`
 }
 
-function who(record: ReturnRecord, ref: string | undefined): string {
-  const agent = record.agent ? plain(record.agent, NAME_MAX) : ""
-  const folder = record.cwd ? plain(path.basename(record.cwd), NAME_MAX) : ""
-  const where = plain(ref ?? record.session.slice(0, 8), NAME_MAX)
+function who(record: ReturnRecord, location: string | HostSession | undefined): string {
+  const session = typeof location === "object" ? location : undefined
+  const agentName = record.agent ?? session?.agent
+  const cwd = record.cwd ?? session?.cwd
+  const agent = agentName ? plain(agentName, NAME_MAX) : ""
+  const folder = cwd ? plain(path.basename(cwd), NAME_MAX) : ""
+  const ref = typeof location === "string" ? location : session?.ref
+  const handle = plain(ref ?? record.session.slice(0, 8), NAME_MAX)
+  const labels = [record.workspaceTitle ?? session?.workspaceTitle, record.title ?? session?.title].filter((label): label is string => !!label).map((label) => plain(label, NAME_MAX))
+  const where = labels.length ? `${labels.join(" / ")}; ${handle}` : handle
   return `${agent || "A coding agent"}${folder ? ` in ${folder}` : ""}${where ? ` (${where})` : ""}`
 }
 
 /** One return as one sentence pair: who returned, what Shepherd did, and why. */
-export function noticeLine(record: ReturnRecord, ref?: string): string {
-  const subject = who(record, ref)
+export function noticeLine(record: ReturnRecord, location?: string | HostSession): string {
+  const subject = who(record, location)
   const why = `Why: ${plain(record.reason, REASON_MAX) || "no reason given"}`
   switch (record.kind) {
     case "premature":
@@ -76,7 +82,7 @@ export function noticeLine(record: ReturnRecord, ref?: string): string {
 }
 
 /** One message for a burst: a single return is its line; several are a short list, the extra ones counted. */
-export function noticeMessage(records: ReturnRecord[], refs: ReadonlyMap<string, string> = new Map()): string {
+export function noticeMessage(records: ReturnRecord[], refs: ReadonlyMap<string, string | HostSession> = new Map()): string {
   const lines = records.slice(0, NOTICE_LIST_MAX).map((record) => noticeLine(record, refs.get(record.session)))
   if (records.length === 1) return lines[0]!
   const more = records.length - lines.length
@@ -197,9 +203,9 @@ export function createOwnerNotifier(options: OwnerNotifierOptions): OwnerNotifie
     const records = waiting.splice(0)
     if (records.length === 0) return
     try {
-      const refs = new Map<string, string>()
+      const refs = new Map<string, HostSession>()
       try {
-        for (const session of await options.listSessions()) refs.set(session.id, session.ref)
+        for (const session of await options.listSessions()) refs.set(session.id, session)
       } catch {
         // Without the host's handles, each notice names a short session id instead.
       }

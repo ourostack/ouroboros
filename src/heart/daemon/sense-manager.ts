@@ -506,7 +506,7 @@ function managedSenseEntry(sense: Exclude<SenseName, "cli" | "workbench">): stri
   return "senses/mail-entry.js"
 }
 
-function runtimeCredentialBootstrapFor(agent: string, sense: Exclude<SenseName, "cli" | "workbench">): {
+function runtimeCredentialBootstrapFor(agent: string): {
   agentName: string
   runtimeConfig?: RuntimeCredentialConfig
   machineRuntimeConfig?: RuntimeCredentialConfig
@@ -514,9 +514,9 @@ function runtimeCredentialBootstrapFor(agent: string, sense: Exclude<SenseName, 
   providerCredentialRecords?: ProviderCredentialRecord[]
 } | null {
   const runtime = readRuntimeCredentialConfig(agent)
-  const usesMachineConfig = sense === "bluebubbles" || sense === "voice" || sense === "a2a" || sense === "telegram" || sense === "shepherd"
-  const machineId = usesMachineConfig ? currentMachineId() : undefined
-  const machine = usesMachineConfig ? readMachineRuntimeCredentialConfig(agent) : null
+  // Every sense can run chat-turn tools against this machine's attachments.
+  const machineId = currentMachineId()
+  const machine = readMachineRuntimeCredentialConfig(agent)
   const providerPool = readProviderCredentialPool(agent)
   const providerCredentialRecords = providerPool.ok
     ? Object.values(providerPool.pool.providers).filter((record): record is ProviderCredentialRecord => !!record)
@@ -524,7 +524,7 @@ function runtimeCredentialBootstrapFor(agent: string, sense: Exclude<SenseName, 
   const bootstrap = {
     agentName: agent,
     runtimeConfig: runtime.ok ? runtime.config : undefined,
-    machineRuntimeConfig: machine?.ok ? machine.config : undefined,
+    machineRuntimeConfig: machine.ok ? machine.config : undefined,
     machineId,
     providerCredentialRecords: providerCredentialRecords.length > 0 ? providerCredentialRecords : undefined,
   }
@@ -736,7 +736,7 @@ export class DaemonSenseManager implements DaemonSenseManagerLike {
           channel: sense,
           autoStart: true,
           ...(sense === "a2a" ? { args: managedA2AArgs(agent), getArgs: () => managedA2AArgs(agent) } : {}),
-          getRuntimeCredentialBootstrap: () => runtimeCredentialBootstrapFor(agent, sense),
+          getRuntimeCredentialBootstrap: () => runtimeCredentialBootstrapFor(agent),
         }))
     })
 

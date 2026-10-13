@@ -64,12 +64,26 @@ afterEach(async () => {
 })
 
 describe("cmux host: terminals", () => {
+  it("identifies unhooked terminals by tty and keeps the workspace and tab title", async () => {
+    server.respond("system.tree", () => ({
+      windows: [{ visible: true, workspaces: [{ id: "WS-1", ref: "workspace:1", title: "ouro", selected: true,
+        panes: [{ surfaces: [{ id: "SF-1", ref: "surface:1", title: "Ship Shepherd", type: "terminal", tty: "ttys007" }] }],
+      }] }],
+    }))
+    const cmux = createCmuxHost(createCmuxClient({ socketPath: server.socketPath, auth: { kind: "capability", token: "v1.t.s" } }), {
+      identifyTerminals: async () => new Map([["ttys007", { agent: "Copilot", cwd: "/Users/a/personal-desk" }]]),
+    })
+    expect(await cmux.list()).toEqual([expect.objectContaining({
+      agent: "Copilot", cwd: "/Users/a/personal-desk", workspaceTitle: "ouro", title: "Ship Shepherd", tty: "ttys007",
+    })])
+  })
+
   it("lists terminal surfaces, reads them, types a line then Enter, presses keys and sets the status", async () => {
     const cmux = host()
     expect(cmux.name).toBe("cmux")
     expect(await cmux.list()).toEqual([
-      { id: "SF-1", ref: "surface:1", workspace: "workspace:1", title: "app", agent: null, focused: false },
-      { id: "SF-2", ref: "surface:2", workspace: "workspace:1", title: "agency", agent: null, focused: false },
+      { id: "SF-1", ref: "surface:1", workspace: "workspace:1", workspaceTitle: "app", title: "app", tty: null, cwd: null, agent: null, focused: false },
+      { id: "SF-2", ref: "surface:2", workspace: "workspace:1", workspaceTitle: "app", title: "agency", tty: null, cwd: null, agent: null, focused: false },
     ])
     // The human's terminal is the focused surface of the selected workspace.
     server.respond("system.tree", () => tree([{ id: "SF-1", ref: "surface:1", focused: true }]))
@@ -137,6 +151,26 @@ describe("cmux host: terminals", () => {
 })
 
 describe("cmux host: returned control", () => {
+  it("carries the foreground identity and titles through a quiet-screen return without hooks", async () => {
+    server.respond("system.tree", () => tree([{ id: "SF-2", ref: "surface:2", title: "Ship agent tools", tty: "ttys007" }]))
+    const returned: ReturnedControl[] = []
+    const cmux = createCmuxHost(createCmuxClient({ socketPath: server.socketPath, auth: { kind: "capability", token: "v1.t.s" } }), {
+      now: () => clock, schedule: scheduler.schedule,
+      identifyTerminals: async () => new Map([["ttys007", { agent: "Copilot", cwd: "/Users/a/personal-desk" }]]),
+    })
+    const watcher = cmux.watch({ returned: event => returned.push(event), focused: () => undefined })
+    await vi.waitFor(() => expect(server.methods.some(call => call.method === "surface.read_text")).toBe(true))
+    screens["SF-2"] = "Done. Tests passed."
+    clock += POLL_MS
+    await scheduler.run(POLL_MS)
+    clock += QUIET_MS
+    await scheduler.run(POLL_MS)
+    expect(returned).toEqual([expect.objectContaining({
+      agent: "Copilot", cwd: "/Users/a/personal-desk", title: "Ship agent tools", workspaceTitle: "app", backgroundWork: null,
+    })])
+    watcher.close()
+  })
+
   async function watching() {
     const returned: ReturnedControl[] = []
     const focused: string[] = []
@@ -311,7 +345,7 @@ describe("cmux host: returned control", () => {
     expect(returned).toEqual([])
     clock += HOOKED_QUIET_MS - QUIET_MS
     await scheduler.run(POLL_MS)
-    expect(returned).toEqual([{ sessionId: "SF-1", transitionId: `cmux:quiet:SF-1:${1_000_000 + POLL_MS}`, agent: "claude", cwd: "/Users/a/code/app", lastBody: null, backgroundWork: null }])
+    expect(returned).toEqual([{ sessionId: "SF-1", transitionId: `cmux:quiet:SF-1:${1_000_000 + POLL_MS}`, agent: "claude", cwd: "/Users/a/code/app", title: "app", workspaceTitle: "app", lastBody: null, backgroundWork: null }])
     clock += HOOKED_QUIET_MS
     await scheduler.run(POLL_MS)
     expect(returned).toHaveLength(1)
@@ -397,7 +431,7 @@ describe("cmux host: returned control", () => {
     expect(returned).toEqual([])
     clock += QUIET_MS
     await scheduler.run(POLL_MS)
-    expect(returned).toEqual([{ sessionId: "SF-2", transitionId: `cmux:quiet:SF-2:${1_000_000 + POLL_MS}`, agent: null, cwd: null, lastBody: null, backgroundWork: null }])
+    expect(returned).toEqual([{ sessionId: "SF-2", transitionId: `cmux:quiet:SF-2:${1_000_000 + POLL_MS}`, agent: null, cwd: null, title: "agency", workspaceTitle: "app", lastBody: null, backgroundWork: null }])
     clock += QUIET_MS
     await scheduler.run(POLL_MS)
     expect(returned).toHaveLength(1)

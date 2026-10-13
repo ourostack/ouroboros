@@ -62,8 +62,8 @@ describe("Shepherd tools", () => {
     expect(await call(shepherdOverviewToolDefinition, {})).toEqual({
       host: "cmux",
       sessions: [
-        { id: "SF-1", ref: "surface:1", workspace: "workspace:1", title: "app", agent: null, focused: false, lastReturn: { at: "2026-10-10T20:00:00.000Z", kind: "gate", action: "let_through", reason: "needs Ari", reply: null, task: "desk/x" } },
-        { id: "SF-2", ref: "surface:2", workspace: "workspace:1", title: "zsh", agent: null, focused: false },
+        { id: "SF-1", ref: "surface:1", workspace: "workspace:1", workspaceTitle: "app", title: "app", tty: null, cwd: null, agent: null, focused: false, lastReturn: { at: "2026-10-10T20:00:00.000Z", kind: "gate", action: "let_through", reason: "needs Ari", reply: null, task: "desk/x" } },
+        { id: "SF-2", ref: "surface:2", workspace: "workspace:1", workspaceTitle: "app", title: "zsh", tty: null, cwd: null, agent: null, focused: false },
       ],
     })
   })
