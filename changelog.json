@@ -2,6 +2,12 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.920",
+      "changes": [
+        "Link a new account, such as Teams, to yourself by sending your agent a one-time code from it, and merge duplicate friend records with ouro friend dedupe."
+      ]
+    },
+    {
       "version": "0.1.0-alpha.917",
       "changes": [
         "Shepherd judges approval prompts (command confirmations, folder trust, safety checks) on what they would do: one inside the agent's task that the human would plainly approve is answered with the approving key instead of being escalated. The check that the screen did not move on while judging also ignores a timer that comes and goes between redraws. A terminal judged still working is rechecked at most a minute after it goes quiet, down from five."
