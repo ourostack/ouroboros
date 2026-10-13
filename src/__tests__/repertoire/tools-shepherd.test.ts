@@ -3,9 +3,12 @@ import * as os from "node:os"
 import * as path from "node:path"
 import { afterEach, beforeEach, describe, expect, it } from "vitest"
 
+import { registerGlobalLogSink, type LogEvent } from "../../nerves"
+
 import { cacheMachineRuntimeCredentialConfig, resetRuntimeCredentialConfigCache } from "../../heart/runtime-credentials"
 import type { ToolContext, ToolDefinition } from "../../repertoire/tools-base"
-import { shepherdOverviewToolDefinition, shepherdReadToolDefinition, shepherdSignalToolDefinition, shepherdToolDefinitions, shepherdToolsEnabled } from "../../repertoire/tools-shepherd"
+import { shepherdOverviewToolDefinition, shepherdReadToolDefinition, shepherdSendToolDefinition, shepherdSignalToolDefinition, shepherdToolDefinitions, shepherdToolsEnabled } from "../../repertoire/tools-shepherd"
+import { screenFingerprint } from "../../senses/shepherd/redact"
 import { appendReturn, type ReturnRecord } from "../../senses/shepherd/returns"
 import { startFakeCmux, type FakeCmux } from "../senses/shepherd/fake-cmux"
 import { SCREENS, tree } from "../senses/shepherd/fixtures"
@@ -46,11 +49,11 @@ describe("Shepherd tools", () => {
     expect(shepherdToolsEnabled(root)).toBe(true)
     fs.writeFileSync(path.join(root, "agent.json"), JSON.stringify({}))
     expect(shepherdToolsEnabled(root)).toBe(false)
-    expect(shepherdToolDefinitions.map((definition) => definition.tool.function.name)).toEqual(["shepherd_overview", "shepherd_read", "shepherd_signal"])
+    expect(shepherdToolDefinitions.map((definition) => definition.tool.function.name)).toEqual(["shepherd_overview", "shepherd_read", "shepherd_signal", "shepherd_send"])
     const { selectToolsForChannel } = await import("../../repertoire/tools")
     fs.writeFileSync(path.join(root, "agent.json"), JSON.stringify({ senses: { shepherd: { enabled: true } } }))
     expect(selectToolsForChannel(undefined, undefined, undefined, undefined, undefined, undefined, { agentName: AGENT, agentRoot: root })
-      .ordinary.map((definition) => definition.tool.function.name).filter((name) => name.startsWith("shepherd_"))).toEqual(["shepherd_overview", "shepherd_read", "shepherd_signal"])
+      .ordinary.map((definition) => definition.tool.function.name).filter((name) => name.startsWith("shepherd_"))).toEqual(["shepherd_overview", "shepherd_read", "shepherd_signal", "shepherd_send"])
   })
 
   it("overview lists each terminal with the last return Shepherd judged there", async () => {
@@ -69,9 +72,12 @@ describe("Shepherd tools", () => {
     const read = await call(shepherdReadToolDefinition, { session: "surface:1", lines: "9999" })
     expect(read.text).toContain("Want me to go ahead")
     expect(read.text).not.toContain("ghp_")
+    expect(read.screen).toBe(screenFingerprint(`${SCREENS.claudePremature}\nghp_${"a".repeat(36)}`))
     expect(server.methods.at(-1)?.params).toMatchObject({ lines: 400 })
+    // A short read still takes enough lines for a fingerprint, and shows only the lines asked for.
+    expect((await call(shepherdReadToolDefinition, { session: "surface:1", lines: 1 })).text).toBe("[redacted]")
     expect(await call(shepherdReadToolDefinition, { session: "surface:2", lines: 0 })).toMatchObject({ truncated: true })
-    expect(server.methods.at(-1)?.params).toMatchObject({ lines: 1 })
+    expect(server.methods.at(-1)?.params).toMatchObject({ lines: 40 })
     await call(shepherdReadToolDefinition, { session: "surface:2", lines: "x" })
     expect(server.methods.at(-1)?.params).toMatchObject({ lines: 60 })
     expect(await call(shepherdReadToolDefinition, { session: " " })).toEqual({ error: "name a session id or ref from shepherd_overview" })
@@ -90,5 +96,103 @@ describe("Shepherd tools", () => {
     expect(await call(shepherdOverviewToolDefinition, {}, "none")).toEqual({ error: "the Shepherd tools need an agent runtime" })
     resetRuntimeCredentialConfigCache()
     expect((await call(shepherdOverviewToolDefinition, {})).error).toContain("no terminal host is attached on this machine")
+  })
+
+  describe("send", () => {
+    const family = (overrides: Record<string, unknown> = {}): ToolContext => ctx({ context: { friend: { id: "friend-ari", name: "Ari", trustLevel: "family", ...overrides } } } as unknown as Partial<ToolContext>)
+    const screen = "Bash command\n  npm test\nDo you want to proceed?\n> 1. Yes\n  2. No\nesc to cancel · 12s"
+    let events: LogEvent[] = []
+    let unregister = () => {}
+    const sends = () => server.methods.filter((entry) => ["terminal.paste", "surface.send_key", "surface.send_text"].includes(entry.method)).map(({ method, params }) => ({ method, key: params.key, text: params.text }))
+
+    beforeEach(() => {
+      events = []
+      unregister = registerGlobalLogSink((entry) => { if (entry.event.startsWith("repertoire.shepherd_send")) events.push(entry) })
+      server.respond("surface.read_text", () => ({ text: screen }))
+      for (const method of ["terminal.paste", "surface.send_key", "surface.send_text"]) server.respond(method, () => ({}))
+    })
+    afterEach(() => unregister())
+
+    it("types only for a family member who asked in this conversation", async () => {
+      const refusal = { error: "shepherd_send types only for a family member who asked for it in this conversation" }
+      expect(await call(shepherdSendToolDefinition, { session: "surface:1", text: "go" }, "none")).toEqual(refusal)
+      expect(await call(shepherdSendToolDefinition, { session: "surface:1", text: "go" })).toEqual(refusal)
+      for (const trustLevel of ["stranger", "acquaintance", "friend"]) {
+        expect(await call(shepherdSendToolDefinition, { session: "surface:1", text: "go" }, family({ trustLevel }))).toEqual(refusal)
+      }
+      // The private runtime's self friend is family, but it is Ouro acting on its own.
+      expect(await call(shepherdSendToolDefinition, { session: "surface:1", text: "go" }, family({ id: "self" }))).toEqual(refusal)
+      expect(sends()).toEqual([])
+      expect(events.map((entry) => [entry.event, entry.meta.friendId])).toEqual([
+        ["repertoire.shepherd_send_refused", null], ["repertoire.shepherd_send_refused", null],
+        ["repertoire.shepherd_send_refused", "friend-ari"], ["repertoire.shepherd_send_refused", "friend-ari"], ["repertoire.shepherd_send_refused", "friend-ari"],
+        ["repertoire.shepherd_send_refused", "self"],
+      ])
+    })
+
+    it("validates the session, text and key before touching the terminal", async () => {
+      const send = (args: Record<string, unknown>) => call(shepherdSendToolDefinition, args, family())
+      expect(await send({ session: " ", text: "go" })).toEqual({ error: "name a session id or ref from shepherd_overview" })
+      expect(await send({ session: "surface:1" })).toEqual({ error: "give exactly one of text or key" })
+      expect(await send({ session: "surface:1", text: "go", key: "enter", screen: "x" })).toEqual({ error: "give exactly one of text or key" })
+      expect((await send({ session: "surface:1", key: "ctrl-d" })).error).toBe("key must be one of enter, escape, up, down, tab, ctrl-c, 1, 2, 3, 4, 5, 6, 7, 8, 9, y, n")
+      expect(await send({ session: "surface:1", text: "a".repeat(2_001) })).toEqual({ error: "text must be at most 2000 characters" })
+      for (const text of ["run\nrm -rf /", "go\u001b[A", "go\tnow", "a\u2028b"]) {
+        expect(await send({ session: "surface:1", text })).toEqual({ error: "text must be one line with no control characters; press enter, escape or ctrl-c with key" })
+      }
+      for (const key of ["enter", "tab", "2", "y", "N"]) {
+        expect((await send({ session: "surface:1", key })).error).toContain("can approve or choose on a prompt, so pass screen from a shepherd_read made just before")
+      }
+      expect(sends()).toEqual([])
+      expect(events.every((entry) => entry.event === "repertoire.shepherd_send_refused" && !JSON.stringify(entry.meta).includes("rm -rf"))).toBe(true)
+    })
+
+    it("types the human's line with Shepherd's prefix, and audits it without the text", async () => {
+      expect(await call(shepherdSendToolDefinition, { session: "surface:1", text: "  Run the tests, then open a PR. token=abc123  " }, family())).toEqual({ session: "surface:1", sent: { text: "[Ouro for Ari] Run the tests, then open a PR. token=abc123" }, focused: false })
+      expect(sends()).toEqual([
+        { method: "terminal.paste", key: undefined, text: "[Ouro for Ari] Run the tests, then open a PR. token=abc123" },
+        { method: "surface.send_key", key: "enter", text: undefined },
+      ])
+      expect(server.methods.filter((entry) => entry.method === "surface.read_text").at(-1)?.params).toMatchObject({ surface_id: "SF-1", lines: 40 })
+      expect(server.lines.some((line) => line.includes("set_status ouro_surface_1 \"sent for Ari\""))).toBe(true)
+      expect(events).toHaveLength(1)
+      expect(events[0]).toMatchObject({ event: "repertoire.shepherd_send", meta: { session: "SF-1", ref: "surface:1", chars: 43, key: null, friendId: "friend-ari", focused: false, screenChecked: false } })
+      expect(JSON.stringify(events[0])).not.toContain("abc123")
+    })
+
+    it("presses one key, mapping ctrl-c and checking the screen for keys that choose", async () => {
+      const seen = screenFingerprint(screen.replace("12s", "13s"))
+      expect(await call(shepherdSendToolDefinition, { session: "SF-1", key: "escape" }, family())).toEqual({ session: "surface:1", sent: { key: "escape" }, focused: false })
+      expect(await call(shepherdSendToolDefinition, { session: "surface:1", key: "ctrl-c" }, family())).toMatchObject({ sent: { key: "ctrl-c" } })
+      expect(await call(shepherdSendToolDefinition, { session: "surface:1", key: "1", screen: seen }, family())).toMatchObject({ sent: { key: "1" } })
+      expect(await call(shepherdSendToolDefinition, { session: "surface:1", key: "Enter", screen: seen }, family())).toMatchObject({ sent: { key: "enter" } })
+      expect(sends()).toEqual([
+        { method: "surface.send_key", key: "escape", text: undefined },
+        { method: "surface.send_key", key: "ctrl+c", text: undefined },
+        { method: "surface.send_text", key: undefined, text: "1" },
+        { method: "surface.send_key", key: "enter", text: undefined },
+      ])
+      expect(events.map((entry) => [entry.meta.key, entry.meta.screenChecked])).toEqual([["escape", false], ["ctrl-c", false], ["1", true], ["enter", true]])
+    })
+
+    it("sends nothing when the terminal changed since it was read or is gone", async () => {
+      const seen = screenFingerprint(screen)
+      server.respond("surface.read_text", () => ({ text: `${screen}\nBash command\n  git push --force` }))
+      expect(await call(shepherdSendToolDefinition, { session: "surface:1", key: "enter", screen: seen }, family())).toEqual({ error: "the terminal changed since it was read, so nothing was sent; read it again" })
+      expect(await call(shepherdSendToolDefinition, { session: "surface:1", text: "yes, go", screen: seen }, family())).toEqual({ error: "the terminal changed since it was read, so nothing was sent; read it again" })
+      expect(await call(shepherdSendToolDefinition, { session: "surface:9", text: "go" }, family())).toEqual({ error: "session surface:9 is gone; check shepherd_overview" })
+      expect(sends()).toEqual([])
+      expect(events.map((entry) => entry.event)).toEqual(["repertoire.shepherd_send_refused", "repertoire.shepherd_send_refused", "repertoire.shepherd_send_refused"])
+    })
+
+    it("reports a failed send, and a status line that fails does not undo a send", async () => {
+      server.respond("terminal.paste", () => { throw new Error("paste refused") })
+      expect(await call(shepherdSendToolDefinition, { session: "surface:1", text: "go" }, family())).toEqual({ error: "paste refused" })
+      expect(events).toEqual([])
+      server.respond("terminal.paste", () => ({}))
+      server.v1(() => "ERROR: status refused")
+      expect(await call(shepherdSendToolDefinition, { session: "surface:1", text: "go" }, family())).toMatchObject({ sent: { text: "[Ouro for Ari] go" } })
+      expect(events.map((entry) => entry.event)).toEqual(["repertoire.shepherd_send"])
+    })
   })
 })

@@ -12,7 +12,7 @@ import { emitNervesEvent } from "../../nerves/runtime"
 import { realSchedule } from "./cmux"
 import { createShepherdHost, type ReturnedControl, type ShepherdHost } from "./host"
 import { createShepherdJudge, type JudgeResult, type ShepherdJudge } from "./judge"
-import { redactSecrets } from "./redact"
+import { redactSecrets, screenTail as tail, withoutNumbers } from "./redact"
 import { createOwnerNotifier } from "./owner-notice"
 import { appendReturn, type ReturnRecord } from "./returns"
 
@@ -27,16 +27,6 @@ import { appendReturn, type ReturnRecord } from "./returns"
 export const SHEPHERD_WAKE_TRIGGER = "shepherd"
 export const READ_LINES = 200
 export const SCREEN_LINES = 80
-
-/**
- * A screen with its numbers taken out: a timer or token counter at a waiting prompt is not the
- * screen moving on. A timer can tick, grow a unit (`59s` to `1m 0s`), and come and go between
- * redraws, shifting the padding beside it, so runs of numbers with time units vanish along with
- * the space around them, and runs of spaces and line-end padding do not count.
- */
-function withoutNumbers(screen: string): string {
-  return screen.replace(/[ \t]*(\d+[hms]?[ \t]*)+/g, " ").replace(/[ \t]+/g, " ").replace(/ $/gm, "")
-}
 export const JUDGE_TIMEOUT_MS = 20_000
 /** Automatic answers in a row with no human focus in between, and per session per hour. */
 export const STREAK_MAX = 3
@@ -141,10 +131,6 @@ export async function wakeForEscalations(agent: string, ids: string[]): Promise<
   } catch (error) {
     emitNervesEvent({ level: "warn", component: "senses", event: "senses.shepherd_wake_error", message: "could not wake the private runtime for Shepherd escalations; they wait for the next private turn", meta: { agent, error: (error as Error).message } })
   }
-}
-
-function tail(text: string, lines: number): string {
-  return text.replace(/\s+$/, "").split("\n").slice(-lines).join("\n")
 }
 
 export async function startShepherdSenseApp(options: ShepherdSenseOptions): Promise<{ stop: () => void }> {

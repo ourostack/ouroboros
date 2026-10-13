@@ -86,9 +86,11 @@ describe("cmux host: terminals", () => {
       { method: "terminal.paste", params: { workspace_id: "WS-1", surface_id: "SF-1", text: "[Ouro for Ari] Go ahead.", submit_key: "none" } },
       { method: "surface.send_key", params: { workspace_id: "WS-1", surface_id: "SF-1", key: "enter" } },
     ])
+    await cmux.key("SF-1", "ctrl-c")
     await cmux.key("SF-1", "down")
     await cmux.key("SF-1", "2")
-    expect(server.methods.filter((call) => call.method.startsWith("surface.send")).slice(-2)).toEqual([
+    expect(server.methods.filter((call) => call.method.startsWith("surface.send")).slice(-3)).toEqual([
+      { method: "surface.send_key", params: { workspace_id: "WS-1", surface_id: "SF-1", key: "ctrl+c" } },
       { method: "surface.send_key", params: { workspace_id: "WS-1", surface_id: "SF-1", key: "down" } },
       { method: "surface.send_text", params: { workspace_id: "WS-1", surface_id: "SF-1", text: "2" } },
     ])

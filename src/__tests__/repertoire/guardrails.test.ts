@@ -256,7 +256,7 @@ describe("guardInvocation — structural guardrails", () => {
 
   it("keeps the owner's terminals to family trust", async () => {
     const { guardInvocation } = await import("../../repertoire/guardrails")
-    for (const tool of ["shepherd_overview", "shepherd_read", "shepherd_signal"]) {
+    for (const tool of ["shepherd_overview", "shepherd_read", "shepherd_signal", "shepherd_send"]) {
       for (const trustLevel of ["stranger", "acquaintance", "friend"] as const) {
         expect(guardInvocation(tool, {}, { readPaths: new Set(), trustLevel })).toEqual(expect.objectContaining({ allowed: false }))
       }

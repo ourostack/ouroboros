@@ -72,8 +72,16 @@ The tools appear only for an agent whose `agent.json` has `senses.shepherd.enabl
 | Tool | What it does |
 | --- | --- |
 | `shepherd_overview` | Lists every terminal with its agent and the last return Shepherd judged there. |
-| `shepherd_read` | Reads one terminal's text, 1 to 400 lines (default 60), redacted and capped at 16,000 characters. |
+| `shepherd_read` | Reads one terminal's text, 1 to 400 lines (default 60), redacted and capped at 16,000 characters, with `screen`, a fingerprint of what it shows now. |
 | `shepherd_signal` | Sets or clears the one-line status (at most 120 characters) on a terminal's workspace, and can post a desktop notification. |
+| `shepherd_send` | Types into one terminal for the human who asked for it: a line, or one key. |
+
+`shepherd_send` lets the human run their coding agents from wherever they talk to the Ouro agent, such as Teams on a phone. It types only for a family friend in their own conversation; the private runtime (the agent on its own) is refused, so it never types on its own initiative. Each call takes exactly one of:
+
+- `text`: one line of at most 2,000 characters with no control characters, typed as `[Ouro for <their name>] <text>` and submitted with Enter, as Shepherd's own answers are.
+- `key`: one of `enter`, `escape`, `up`, `down`, `tab`, `ctrl-c`, `1` to `9`, `y` or `n`, pressed alone. `enter`, `tab`, a digit, `y` and `n` can approve or choose on a prompt, so they need the `screen` fingerprint from a `shepherd_read` made just before.
+
+Right before typing it finds the session again (refusing one that is gone) and reads its screen; if a `screen` was passed and the last 20 lines changed since, ignoring numbers, nothing is sent. Unlike Shepherd's own answers, it also types into the terminal the human has focused, because the human asked. Every send emits `repertoire.shepherd_send` (session, ref, agent, character count, key, requesting friend id, focus, whether the screen was checked; never the text) and sets the status line to `sent for <name>`. Every refusal emits `repertoire.shepherd_send_refused` with the reason.
 
 ## Turning it on
 

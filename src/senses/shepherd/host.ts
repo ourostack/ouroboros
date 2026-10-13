@@ -41,8 +41,11 @@ export interface HostWatchHandlers {
   focused: (sessionId: string) => void
 }
 
-/** A key Shepherd may press in a menu. Text never goes into a menu, and keys never go anywhere else. */
-export type ShepherdKey = "enter" | "escape" | "up" | "down" | "tab" | "1" | "2" | "3" | "4" | "5" | "6" | "7" | "8" | "9" | "y" | "n"
+/**
+ * A key Shepherd may press in a menu. Text never goes into a menu, and keys never go anywhere else. Shepherd's own
+ * judge never presses `ctrl-c`; only the human can, through `shepherd_send`.
+ */
+export type ShepherdKey = "enter" | "escape" | "up" | "down" | "tab" | "ctrl-c" | "1" | "2" | "3" | "4" | "5" | "6" | "7" | "8" | "9" | "y" | "n"
 
 export interface ShepherdHost {
   name: string
