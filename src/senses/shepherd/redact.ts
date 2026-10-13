@@ -42,11 +42,6 @@ export function screenTail(text: string, lines: number): string {
 }
 
 /**
- * A screen with its numbers blanked: a ticking timer or token counter at a waiting prompt is not
- * the screen moving on. A timer can grow a unit (`59s` to `1m 0s`) and shift the padding beside
- * it, so a run of numbers with time units counts as one, and runs of spaces as one space.
- */
-/**
  * A screen with its numbers taken out: a timer or token counter at a waiting prompt is not the
  * screen moving on. A timer can tick, grow a unit (`59s` to `1m 0s`), and come and go between
  * redraws, shifting the padding beside it, so runs of numbers with time units vanish along with

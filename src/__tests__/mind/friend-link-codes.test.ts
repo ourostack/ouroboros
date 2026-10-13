@@ -119,6 +119,11 @@ describe("redeemLinkCode", () => {
     expect(await redeem(issued.code, replayClaimant)).toMatchObject({ status: "rejected", reason: "unknown_or_used" })
   })
 
+  it("uses the real clock when none is injected", async () => {
+    const result = await redeem("OURO-ZZZZ-ZZZZ", await teamsStranger(), { now: undefined })
+    expect(result).toMatchObject({ status: "rejected", reason: "unknown_or_used" })
+  })
+
   it("rejects an unknown code", async () => {
     expect(await redeem("OURO-AAAA-BBBB", await teamsStranger())).toMatchObject({ status: "rejected", reason: "unknown_or_used" })
   })

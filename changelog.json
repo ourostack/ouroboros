@@ -2,6 +2,14 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.919",
+      "changes": [
+        "Shepherd now sends the agent's owner a short Teams message for every coding-agent return it judges, saying what it did and why; set senses.shepherd.notify to needs-me or off to hear less.",
+        "Link a new account, such as Teams, to yourself by sending your agent a one-time code from it, and merge duplicate friend records with ouro friend dedupe.",
+        "Your agent can now type an instruction or press a key in one of your coding agents' terminals when you ask it to, so you can steer them from your phone."
+      ]
+    },
+    {
       "version": "0.1.0-alpha.918",
       "changes": [
         "The model table now lists today's Claude 5.5 and GPT 5.5 through 6.1 models with their reasoning levels and image support, new agents default to Claude Opus 5.5, retired 4.6, GPT-5.4 and GPT-5.3 Codex entries are gone, and Claude through GitHub Copilot no longer fails every turn with a tool_choice error."

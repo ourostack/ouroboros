@@ -144,9 +144,9 @@ function consumeCode(agentRoot: string, codeBody: string, nowIso: string): { rec
   try {
     fs.renameSync(path.join(root, "pending", name), usedPath)
   } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === "ENOENT") return null
     /* v8 ignore next -- only ENOENT is expected; other filesystem failures propagate @preserve */
-    throw error
+    if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error
+    return null
   }
   const record = JSON.parse(fs.readFileSync(usedPath, "utf-8")) as LinkCodeRecord
   fs.writeFileSync(usedPath, `${JSON.stringify({ ...record, consumedAt: nowIso }, null, 2)}\n`, { mode: 0o600 })
@@ -211,7 +211,7 @@ export async function redeemLinkCode(input: {
     component: "friends",
     event: "friends.link_code_redeemed",
     message: "linked a new identity through a link code",
-    meta: { ...meta, trustLevel: merged.target.trustLevel ?? "unknown", linkedExternalIds: merged.addedExternalIds.map((externalId) => externalId.provider) },
+    meta: { ...meta, trustLevel: merged.target.trustLevel, linkedExternalIds: merged.addedExternalIds.map((externalId) => externalId.provider) },
   })
   return {
     status: "linked",

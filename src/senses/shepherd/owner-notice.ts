@@ -151,6 +151,7 @@ export function createTeamsNoticeSender(agentRoot: string, deps: {
     if (!config) return { delivered: false, reason: "no_teams_bot" }
     let bot = bots.get(config.clientId)
     if (!bot) {
+      /* v8 ignore next -- tests inject the bot client; the live Bot Framework client is built only in the running sense @preserve */
       bot = (deps.botApi ?? liveBotApi)(config)
       bots.set(config.clientId, bot)
       // A client that could not be built is built again for the next notice.
