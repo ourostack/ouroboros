@@ -874,6 +874,15 @@ describe("sendProactiveTeamsMessageToSession", () => {
     )
   })
 
+  it("asks Teams for plain text when the caller says so", async () => {
+    const friendStore = { get: vi.fn().mockResolvedValue(makeFriend()), put: vi.fn(), delete: vi.fn(), findByExternalId: vi.fn(), hasAnyFriends: vi.fn(), listAll: vi.fn() }
+    const botApi = makeBotApi()
+    const teams = await loadTeams() as any
+    const result = await teams.sendProactiveTeamsMessageToSession({ friendId: "friend-uuid-1", sessionKey: "session", text: "**not bold**", textFormat: "plain" }, { botApi, store: friendStore as any })
+    expect(result).toEqual({ delivered: true })
+    expect(botApi._mocks.activityCreate).toHaveBeenCalledWith({ type: "message", text: "**not bold**", textFormat: "plain" })
+  })
+
   it("prefers an explicitly provided friend store over createFriendStore", async () => {
     const friend = makeFriend()
     const providedStore = {

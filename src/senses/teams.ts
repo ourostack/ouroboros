@@ -1248,6 +1248,8 @@ export interface ProactiveTeamsSessionSendParams {
   friendId: string
   sessionKey: string
   text: string
+  /** "plain" asks Teams not to read the text as markdown, for text that carries untrusted fields. */
+  textFormat?: "plain"
   intent?: "generic_outreach" | "explicit_cross_chat"
   authorizingSession?: {
     friendId: string
@@ -1371,6 +1373,7 @@ export async function sendProactiveTeamsMessageToSession(
     await conversations.activities(conversation.id).create({
       type: "message",
       text: params.text,
+      ...(params.textFormat ? { textFormat: params.textFormat } : {}),
     })
 
     emitNervesEvent({
