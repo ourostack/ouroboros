@@ -45,6 +45,22 @@ Shepherd's status is one entry per terminal (cmux key `ouro_<surface>`, attached
 
 Escalation queues one pending message in the agent's private runtime (from `shepherd`, dropped unread after 30 minutes) and asks the daemon for a private turn (trigger `shepherd`, which the daemon's policy allows only with a `shepherd-return` reference and the `sense: shepherd` reference). Escalations in a burst share one wake. The message names the agent, folder, task and why, and ends with the usual untrusted-input line. If the daemon refuses the wake, the message waits for the next private turn.
 
+## Telling the owner
+
+After every judged return, the owner hears what happened in one short plain-text message on Teams, written by Shepherd itself with no model turn, so it costs no premium request and does not depend on the Ouro agent deciding the return matters. It names the agent, folder and terminal, what Shepherd did and the judge's reason, for example:
+
+> Claude Code in ouroboros (surface:12) stopped early, so I sent it back: "keep going, run the tests". Why: it asked whether to continue a task it was told to finish.
+
+> Copilot in desk (surface:3) needs you. Why: it wants to push to main.
+
+- **Who hears it.** Every family friend with a Teams user id the agent's bot can open a chat with, once per Teams user. The message goes through the Teams sense's proactive path (trust check and internal-content guard) using a bot client of Shepherd's own, built from the agent's Teams credentials (the secondary bot when it serves the friend's tenant). When no family friend is reachable on Teams, Shepherd logs `senses.shepherd_notice_no_target` and does nothing else.
+- **Bursts.** Returns within 5 seconds of the first share one message (up to six named, the rest counted). Each return is in at most one message. A send that fails or is refused is logged and never stops the sense.
+- **What counts.** Every judged return, including errors. A return the loop guard already holds, and a background wait with nothing new, are not judged again and send nothing. A `working` update is sent only when the judge flags news.
+- **Untrusted text.** Agent, folder, reply and reason are cut to one bounded line with control characters and anything Teams could read as markup or a mention (`< > [ ] * ~ # | \ @`, backticks) removed, and the message is sent as plain text.
+- **Policy.** `senses.shepherd.notify` in `agent.json`: `every` (the default), `needs-me` (gates, finished work and a tripped loop guard) or `off`.
+
+The private escalation to the Ouro agent above is unchanged, so it can still act on gates and deliveries.
+
 Every judgment is one JSON line in `state/senses/shepherd/returns.jsonl` in the agent bundle (directory `0700`, file `0600`, rotated once at 2 MB, never synced): time, host, terminal, transition id, agent, folder, task, kind, action, reason, reply, latency and input tokens.
 
 **Menu keys can approve permission prompts.** An agent that asks for permission before doing work inside its task has stopped too early under TTFA (time to first action), so the judge may answer it with a key, which can approve the prompt. That is deliberate: the human's standing authority covers routine work, and gates (credentials, money, irreversible acts, decisions that are the human's) are never answered. Every such answer is logged and shown on the status line.
@@ -91,6 +107,7 @@ ouro vault config set --agent <agent> --scope machine --key herdr.socketPath --v
 - `src/senses/shepherd/herdr.ts`: the Herdr adapter and its socket client.
 - `src/senses/shepherd/judge.ts`: the judge and the reply safety rules.
 - `src/senses/shepherd/sense.ts`: the sense process (checks, answers, escalation); `src/senses/shepherd-entry.ts` is its daemon entry point.
+- `src/senses/shepherd/owner-notice.ts`: the owner notice (policy, wording, targets, coalescing, Teams send).
 - `src/senses/shepherd/returns.ts`: the returns log.
 - `src/senses/shepherd/redact.ts`: best-effort secret redaction.
 - `src/heart/private-runtime/policy.ts`: the `shepherd` private-turn trigger.

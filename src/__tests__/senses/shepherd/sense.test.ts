@@ -8,7 +8,7 @@ import { cacheMachineRuntimeCredentialConfig, resetRuntimeCredentialConfigCache 
 import type { HostWatchHandlers, ReturnedControl, ShepherdHost } from "../../../senses/shepherd/host"
 import type { JudgeResult, ReturnPacket } from "../../../senses/shepherd/judge"
 import { appendReturn, readReturns, returnsLogPath, type ReturnRecord } from "../../../senses/shepherd/returns"
-import { escalationContent, field, humanName, queueEscalation, startShepherdSenseApp, wakeForEscalations } from "../../../senses/shepherd/sense"
+import { escalationContent, field, humanName, noticePolicy, queueEscalation, startShepherdSenseApp, wakeForEscalations } from "../../../senses/shepherd/sense"
 import { ackFrame, startFakeCmux } from "./fake-cmux"
 import { hookEvent, SCREENS, tree } from "./fixtures"
 
@@ -74,6 +74,7 @@ const schedule = (fn: () => void, ms: number) => {
 async function start(judge: (packet: ReturnPacket) => Promise<JudgeResult>, host: FakeHost = fakeHost()) {
   const escalations: string[] = []
   const wakes: string[][] = []
+  const notices: ReturnRecord[] = []
   const app = await startShepherdSenseApp({
     agentName: AGENT,
     now: () => clock,
@@ -81,6 +82,7 @@ async function start(judge: (packet: ReturnPacket) => Promise<JudgeResult>, host
     judge,
     escalate: (content) => escalations.push(content),
     wake: async (ids) => { wakes.push(ids) },
+    notifyOwner: (record) => notices.push(record),
     schedule,
   })
   stop = app.stop
@@ -88,7 +90,7 @@ async function start(judge: (packet: ReturnPacket) => Promise<JudgeResult>, host
     host.handlers!.returned({ transitionId: `t-${clock}`, agent: "claude", cwd: "/Users/a/code/app", lastBody: null, backgroundWork: null, ...event })
     await vi.waitFor(() => expect(readReturns(agentRoot).some((record) => record.transition === `t-${clock}` || record.transition === event.transitionId)).toBe(true))
   }
-  return { host, escalations, wakes, returned, last: () => readReturns(agentRoot).at(-1)! }
+  return { host, escalations, wakes, notices, returned, last: () => readReturns(agentRoot).at(-1)! }
 }
 
 function writeFriend(name: string, record: Record<string, unknown>): void {
@@ -170,7 +172,7 @@ describe("Shepherd sense: answering premature returns", () => {
 
   it("stops answering after three in a row, escalates once, and starts again when the human focuses the session", async () => {
     let judged = 0
-    const { host, escalations, wakes, returned, last } = await start(async () => { judged += 1; return verdict() })
+    const { host, escalations, wakes, notices, returned, last } = await start(async () => { judged += 1; return verdict() })
     host.screens.S1 = [SCREENS.claudePremature]
     for (const id of ["1", "2", "3", "4"]) {
       clock += 1_000
@@ -198,6 +200,8 @@ describe("Shepherd sense: answering premature returns", () => {
     clock += 120_000
     await returned({ sessionId: "S1", transitionId: "5" })
     expect(last()).toMatchObject({ action: "respond" })
+    // The owner hears about every judged return once, and about the tripped guard only when it trips.
+    expect(notices.map((record) => [record.transition, record.kind])).toEqual([["1", "premature"], ["2", "premature"], ["3", "premature"], ["4", "loop_guard"], ["5", "premature"]])
   })
 
   it("also caps automatic answers per session per hour", async () => {
@@ -221,7 +225,7 @@ describe("Shepherd sense: letting returns through", () => {
       verdict({ kind: "done", reply: null, reason: "Merged and released with proof." }),
       verdict({ kind: "unclear", reply: null, reason: "A plain shell." }),
     ]
-    const { host, escalations, wakes, returned } = await start(async () => verdicts.shift()!)
+    const { host, escalations, wakes, notices, returned } = await start(async () => verdicts.shift()!)
     host.screens.G = [SCREENS.copilotGate]
     host.screens.D = [SCREENS.agencyDone]
     await returned({ sessionId: "G", transitionId: "g", agent: "copilot", cwd: "/Users/a/code/service" })
@@ -236,6 +240,7 @@ describe("Shepherd sense: letting returns through", () => {
     tasks.shift()!.fn()
     await vi.waitFor(() => expect(wakes).toEqual([["g", "d"]]))
     expect(readReturns(agentRoot).map((record) => [record.kind, record.action])).toEqual([["gate", "let_through"], ["done", "let_through"], ["unclear", "let_through"]])
+    expect(notices.map((record) => record.kind)).toEqual(["gate", "done", "unclear"])
   })
 
   it("treats a stop with the agent's own background work running as working: no reply, no wake, a status update", async () => {
@@ -250,7 +255,7 @@ describe("Shepherd sense: letting returns through", () => {
       // News the judge flagged on its own.
       verdict({ kind: "working", reply: null, reason: "The background test run failed on main.", news: true }),
     ]
-    const { host, escalations, wakes, returned } = await start(async (packet) => { packets.push(packet); return verdicts.shift()! })
+    const { host, escalations, wakes, notices, returned } = await start(async (packet) => { packets.push(packet); return verdicts.shift()! })
     host.screens.C = [SCREENS.claudeBackground]
     host.screens.X = [SCREENS.codexBackground]
     await returned({ sessionId: "C", transitionId: "c1", agent: "claude" })
@@ -273,6 +278,8 @@ describe("Shepherd sense: letting returns through", () => {
     expect(escalations[0]).toContain("A coding agent in app ended its turn while its own background work runs, so it is still working")
     expect(tasks).toHaveLength(0)
     expect(wakes).toEqual([])
+    // Background work is not a return: the owner hears only the updates that carry news.
+    expect(notices.map((record) => record.transition)).toEqual(["x1", "x2"])
   })
 
   it("checks a quiet terminal less often after it is judged working or not an agent, and at the normal pace otherwise", async () => {
@@ -287,9 +294,10 @@ describe("Shepherd sense: letting returns through", () => {
     const results: Array<() => Promise<JudgeResult>> = [async () => { throw new Error("provider down") }, async () => verdict()]
     const host = fakeHost()
     host.prompt = async () => { throw new Error("terminal gone") }
-    const { returned, last } = await start(() => results.shift()!(), host)
+    const { returned, last, notices } = await start(() => results.shift()!(), host)
     await returned({ sessionId: "S1", transitionId: "e1" })
     expect(last()).toMatchObject({ kind: "error", action: "let_through", reason: "provider down" })
+    expect(notices.map((record) => record.kind)).toEqual(["error"])
     await returned({ sessionId: "S1", transitionId: "e2" })
     expect(last()).toMatchObject({ kind: "premature", action: "let_through", reason: "It stopped after a plan.; then terminal gone" })
   })
@@ -333,6 +341,17 @@ describe("Shepherd sense: wiring", () => {
       stop = null
       await server.close()
     }
+  })
+
+  it("reads the owner notice policy from agent.json, and reports every return when it cannot", () => {
+    expect(noticePolicy(AGENT, agentRoot)).toBe("every")
+    const config = { version: 2, enabled: true, humanFacing: { provider: "anthropic", model: "m" }, agentFacing: { provider: "anthropic", model: "m" }, phrases: { thinking: ["t"], tool: ["t"], followup: ["f"] }, senses: { shepherd: { enabled: true } } }
+    fs.writeFileSync(path.join(agentRoot, "agent.json"), JSON.stringify(config))
+    expect(noticePolicy(AGENT, agentRoot)).toBe("every")
+    fs.writeFileSync(path.join(agentRoot, "agent.json"), JSON.stringify({ ...config, senses: { shepherd: { enabled: true, notify: "needs-me" } } }))
+    expect(noticePolicy(AGENT, agentRoot)).toBe("needs-me")
+    fs.writeFileSync(path.join(agentRoot, "agent.json"), JSON.stringify({ ...config, senses: { shepherd: { enabled: true, notify: "loud" } } }))
+    expect(noticePolicy(AGENT, agentRoot)).toBe("every")
   })
 
   it("names the human from the family friend for this OS user, else any family friend", () => {

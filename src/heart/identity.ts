@@ -36,7 +36,16 @@ export interface AgentSenseConfig {
    * setup only targets it.
    */
   hostUsername?: string
+  /**
+   * Shepherd only: which judged returns the owner hears about directly, as a plain message on their
+   * channel with no model turn. "every" (the default), "needs-me" (gates, finished work and a tripped
+   * loop guard), or "off".
+   */
+  notify?: ShepherdNoticePolicy
 }
+
+export type ShepherdNoticePolicy = "every" | "needs-me" | "off"
+export const SHEPHERD_NOTICE_POLICIES: readonly ShepherdNoticePolicy[] = ["every", "needs-me", "off"]
 
 export interface AgentSensesConfig {
   cli: AgentSenseConfig
@@ -268,6 +277,21 @@ export function normalizeSenses(value: unknown, configFile: string): AgentSenses
         throw new Error(`agent.json at ${configFile}: senses.bluebubbles.hostUsername must be a non-empty string.`)
       }
       defaults[senseName] = { enabled, hostUsername: hostUsername.trim() }
+      continue
+    }
+    const notify = (rawSense as Record<string, unknown>).notify
+    if (senseName === "shepherd" && notify !== undefined) {
+      if (!SHEPHERD_NOTICE_POLICIES.includes(notify as ShepherdNoticePolicy)) {
+        emitNervesEvent({
+          level: "error",
+          event: "config_identity.error",
+          component: "config/identity",
+          message: "agent config has invalid Shepherd notice policy",
+          meta: { path: configFile, sense: senseName },
+        })
+        throw new Error(`agent.json at ${configFile}: senses.shepherd.notify must be one of ${SHEPHERD_NOTICE_POLICIES.join(", ")}.`)
+      }
+      defaults[senseName] = { enabled, notify: notify as ShepherdNoticePolicy }
       continue
     }
     defaults[senseName] = { enabled }
