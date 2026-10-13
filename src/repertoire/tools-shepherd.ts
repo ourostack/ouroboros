@@ -9,13 +9,16 @@ import { readReturns, type ReturnRecord } from "../senses/shepherd/returns"
 import { SELF_FRIEND_ID, type ToolContext, type ToolDefinition } from "./tools-base"
 
 /**
- * Shepherd's tools: every coding-agent session on this machine's terminal host with what Shepherd
- * last decided about it (`shepherd_overview`), what a session shows (`shepherd_read`), a status
+ * Shepherd's tools: every coding-agent session on this machine's terminal host with a current screen
+ * and what Shepherd last decided about it (`shepherd_overview`), a deeper read (`shepherd_read`), a status
  * line or notification for the human (`shepherd_signal`), and a line or key typed for the human
  * who asked for it (`shepherd_send`).
  */
 const STATUS_MAX_CHARS = 120
 const READ_MAX_CHARS = 16_000
+const OVERVIEW_READ_LINES = 80
+const OVERVIEW_SCREEN_MAX_CHARS = 4_000
+const OVERVIEW_TOTAL_SCREEN_MAX_CHARS = 64_000
 export const SEND_TEXT_MAX_CHARS = 2_000
 export const SEND_KEYS: readonly ShepherdKey[] = ["enter", "escape", "up", "down", "tab", "ctrl-c", "1", "2", "3", "4", "5", "6", "7", "8", "9", "y", "n"]
 /** Keys that can approve or choose something on a prompt: pressed only on the screen the caller last read. */
@@ -55,24 +58,42 @@ async function withHost(tool: string, ctx: ToolContext | undefined, run: (host: 
   }
 }
 
+async function currentScreen(host: ShepherdHost, session: string, maxChars: number) {
+  try {
+    const raw = await host.read(session, OVERVIEW_READ_LINES)
+    // Frame glyphs and padded empty rows otherwise crowd actual work out of a multi-terminal snapshot.
+    const content = redactSecrets(raw).split("\n")
+      .map(line => line.replace(/[\u2500-\u259f]/g, "").trimEnd())
+      .filter(line => line.trim().length > 0).join("\n")
+    return { at: new Date().toISOString(), text: content.slice(Math.max(0, content.length - maxChars)), truncated: content.length > maxChars }
+  } catch (error) {
+    const message = redactSecrets(error instanceof Error ? error.message : String(error))
+    emitNervesEvent({ level: "warn", component: "repertoire", event: "repertoire.shepherd_overview_read_error", message: "could not read one terminal in the live Shepherd overview", meta: { session, error: message } })
+    return { at: new Date().toISOString(), error: message }
+  }
+}
+
 export const shepherdOverviewToolDefinition: ToolDefinition = {
   tool: {
     type: "function",
     function: {
       name: "shepherd_overview",
-      description: "Every terminal session on this machine's terminal host (cmux), with the coding agent there when known, and the last time Shepherd judged a return of control in it: when, what kind (premature, gate, done, unclear, loop_guard, error), whether it answered, and why. Read-only.",
+      description: "A live, read-only snapshot of every terminal on this machine's host (cmux): agent, folder, workspace and tab, plus a freshly read, redacted, bounded currentScreen with its observation time. Use currentScreen to answer what agents are doing now in one reply; lastReturn is historical and must not be presented as current status. A currentScreen.error explicitly identifies a terminal that could not be read; explain it inline with the other sessions, not by asking for another turn. For deeper details use shepherd_read. terminalCount is authoritative; derive any category counts from the actual listed sessions. Historical lastReturn includes the prior judgment time, kind, action and reason.",
       parameters: { type: "object", properties: {}, additionalProperties: false },
     },
   },
   handler: (_args, ctx) => withHost("shepherd_overview", ctx, async (host) => {
     const last = new Map<string, ReturnRecord>()
     for (const record of readReturns(ctx!.agentRoot!)) last.set(record.session, record)
+    const sessions = await host.list()
+    const screenLimit = Math.min(OVERVIEW_SCREEN_MAX_CHARS, Math.floor(OVERVIEW_TOTAL_SCREEN_MAX_CHARS / Math.max(1, sessions.length)))
     return {
       host: host.name,
-      sessions: (await host.list()).map((session) => {
+      terminalCount: sessions.length,
+      sessions: await Promise.all(sessions.map(async (session) => {
         const record = last.get(session.id)
-        return { ...session, ...(record ? { lastReturn: { at: record.at, kind: record.kind, action: record.action, reason: record.reason, reply: record.reply, task: record.task } } : {}) }
-      }),
+        return { ...session, currentScreen: await currentScreen(host, session.id, screenLimit), ...(record ? { lastReturn: { at: record.at, kind: record.kind, action: record.action, reason: record.reason, reply: record.reply, task: record.task } } : {}) }
+      })),
     }
   }),
   summaryKeys: [],
