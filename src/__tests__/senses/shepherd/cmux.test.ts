@@ -151,6 +151,26 @@ describe("cmux host: terminals", () => {
 })
 
 describe("cmux host: returned control", () => {
+  it("carries the foreground identity and titles through a quiet-screen return without hooks", async () => {
+    server.respond("system.tree", () => tree([{ id: "SF-2", ref: "surface:2", title: "Ship agent tools", tty: "ttys007" }]))
+    const returned: ReturnedControl[] = []
+    const cmux = createCmuxHost(createCmuxClient({ socketPath: server.socketPath, auth: { kind: "capability", token: "v1.t.s" } }), {
+      now: () => clock, schedule: scheduler.schedule,
+      identifyTerminals: async () => new Map([["ttys007", { agent: "Copilot", cwd: "/Users/a/personal-desk" }]]),
+    })
+    const watcher = cmux.watch({ returned: event => returned.push(event), focused: () => undefined })
+    await vi.waitFor(() => expect(server.methods.some(call => call.method === "surface.read_text")).toBe(true))
+    screens["SF-2"] = "Done. Tests passed."
+    clock += POLL_MS
+    await scheduler.run(POLL_MS)
+    clock += QUIET_MS
+    await scheduler.run(POLL_MS)
+    expect(returned).toEqual([expect.objectContaining({
+      agent: "Copilot", cwd: "/Users/a/personal-desk", title: "Ship agent tools", workspaceTitle: "app", backgroundWork: null,
+    })])
+    watcher.close()
+  })
+
   async function watching() {
     const returned: ReturnedControl[] = []
     const focused: string[] = []

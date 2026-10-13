@@ -110,7 +110,7 @@ export function surfaceEvent(seq: number, name: string, surface: string): Record
 }
 
 /** `system.tree` with the given terminal surfaces in one workspace. */
-export function tree(surfaces: Array<{ id: string; ref: string; title?: string; type?: string; focused?: boolean }>, selected = true): Record<string, unknown> {
+export function tree(surfaces: Array<{ id: string; ref: string; title?: string; type?: string; focused?: boolean; tty?: string }>, selected = true): Record<string, unknown> {
   return {
     windows: [{
       id: "WIN-1",
