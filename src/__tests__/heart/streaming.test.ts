@@ -653,6 +653,18 @@ describe("streamChatCompletion", () => {
     expect(result.toolCalls).toEqual([{ id: "call_1", name: "read_file", arguments: '{"path":"a.txt"}' }])
   })
 
+  it("returns an empty object for a tool called with no arguments", async () => {
+    const client = { chat: { completions: { create: vi.fn().mockReturnValue(makeStream([
+      makeChunk(undefined, [{ index: 0, id: "call_1", function: { name: "shepherd_overview", arguments: "" } }]),
+      makeChunk(undefined, [{ index: 1, id: "call_2", function: { name: "read_file", arguments: " " } }]),
+    ])) } } }
+    const result = await streamChatCompletion(client, { messages: [], stream: true }, makeCallbacks())
+    expect(result.toolCalls).toEqual([
+      { id: "call_1", name: "shepherd_overview", arguments: "{}" },
+      { id: "call_2", name: "read_file", arguments: "{}" },
+    ])
+  })
+
   it("calls onReasoningChunk for reasoning_content delta", async () => {
     const reasoningChunks: string[] = []
     const client = { chat: { completions: { create: vi.fn().mockReturnValue(makeStream([
@@ -1068,7 +1080,8 @@ describe("streamResponsesApi", () => {
     ])) } }
     const callbacks = makeCallbacks()
     const result = await streamResponsesApi(client, {}, callbacks)
-    expect(result.toolCalls).toEqual([{ id: "c1", name: "get_current_time", arguments: "" }])
+    // An empty string is how providers send "no arguments"; it must reach the tool as an empty object.
+    expect(result.toolCalls).toEqual([{ id: "c1", name: "get_current_time", arguments: "{}" }])
   })
 
   // --- Unit 2a: Capture Azure usage from response.completed ---
