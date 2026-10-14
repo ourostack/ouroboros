@@ -7,7 +7,7 @@ import { SocketFrontendClient, type FrontendProtocolClient } from "../../heart/f
 import { emitNervesEvent } from "../../nerves/runtime"
 import { ShepherdComposer, selectShepherdTarget } from "./composer"
 import { localShepherdFriendStore, resolveExistingLocalOwner, SHEPHERD_UUID, type ShepherdSession } from "./surface"
-import { attentionPage } from "./attention-page"
+import { attentionPage, MAX_ATTENTION_BODY_BYTES } from "./attention-page"
 import { installAttentionSidebar } from "./attention-sidebar"
 
 interface Message { role: "you" | "ouro" | "notice"; text: string }
@@ -90,11 +90,15 @@ export async function startShepherdAttention(options: {
       if (request.method === "GET" && request.url === "/state") return json(200, state(view, viewId, pendingId))
       if (request.method !== "POST" || request.headers.origin !== origin
         || request.headers["content-type"] !== "application/json") return json(403, { error: "Invalid attention origin or content type." })
-      let body = ""
+      const chunks: Buffer[] = []
+      let bytes = 0
       for await (const chunk of request) {
-        body += chunk.toString()
-        if (Buffer.byteLength(body) > 16_384) return json(413, { error: "Message is too large." })
+        const buffer = Buffer.from(chunk)
+        bytes += buffer.length
+        if (bytes > MAX_ATTENTION_BODY_BYTES) return json(413, { error: "Message is too large." })
+        chunks.push(buffer)
       }
+      const body = Buffer.concat(chunks).toString("utf8")
       let input: unknown
       try { input = JSON.parse(body) } catch { return json(400, { error: "Invalid JSON." }) }
       if (!input || typeof input !== "object" || Array.isArray(input)) return json(400, { error: "Invalid request." })

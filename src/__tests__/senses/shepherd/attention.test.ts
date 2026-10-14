@@ -156,6 +156,24 @@ describe("compact independent attention entry", () => {
     expect((await api("/send", { ...message, target: second.id })).status).toBe(409)
   })
 
+  it("preserves a UTF-8 message split across HTTP chunks while enforcing the raw byte limit", async () => {
+    const { origin, app, request } = await start()
+    const url = new URL(app.url)
+    const message = "Keep 界 readable."
+    const body = Buffer.from(JSON.stringify({ id: crypto.randomUUID(), message }))
+    const split = body.indexOf(Buffer.from("界")) + 1
+    const status = await new Promise<number | undefined>((resolve, reject) => {
+      const sending = httpRequest(`${origin}/send`, { method: "POST", headers: {
+        "X-Ouro-Attention": url.hash.slice(1), Origin: origin, "Content-Type": "application/json",
+      } }, response => { response.resume(); resolve(response.statusCode) })
+      sending.on("error", reject)
+      sending.write(body.subarray(0, split))
+      setTimeout(() => sending.end(body.subarray(split)), 10)
+    })
+    expect(status).toBe(202)
+    await vi.waitFor(() => expect(request.mock.calls.find(([method]) => method === "turn.start")![1].message).toBe(message))
+  })
+
   it("does not retarget if a send begins during the asynchronous target refresh", async () => {
     const { api, request } = await start()
     const refresh = Promise.withResolvers<{ targets: typeof first[] }>()

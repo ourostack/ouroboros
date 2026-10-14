@@ -1,3 +1,5 @@
+export const MAX_ATTENTION_BODY_BYTES = 16_384
+
 /** No model content or target metadata is interpolated into executable HTML. */
 export function attentionPage(nonce: string): string {
   return `<!doctype html>
@@ -34,6 +36,7 @@ try {
   pendingFault=true;
   el('error').textContent=error.message+' Check this conversation before resending; its request identity has not been discarded.';
 }
+let pendingWasUncertain=!!pending;
 el('draft').value=sessionStorage.getItem('ouroAttentionDraft')||'';el('draft').oninput=()=>sessionStorage.setItem('ouroAttentionDraft',el('draft').value);
 async function api(route,body) {
   const response=await fetch(route,{
@@ -42,12 +45,13 @@ async function api(route,body) {
     ...(body?{body:JSON.stringify(body)}:{})
   });
   const data=await response.json();
-  if(!response.ok)throw Error(data.error||'Ouro could not accept this action.');
+  if(!response.ok) {const error=Error(data.error||'Ouro could not accept this action.');error.status=response.status;throw error;}
   return data;
 }
 function acknowledge(submitted) {
   if(!pending||pending.id!==submitted.id)return;
   pending=null;
+  pendingWasUncertain=false;
   sessionStorage.removeItem('ouroAttentionPending');
   if(el('draft').value===submitted.message) {
     el('draft').value='';
@@ -111,12 +115,26 @@ el('compose').onsubmit=async event=>{
   if(pending&&(pending.message!==message||pending.target!==state.target)) {
     el('error').textContent='Reconnect before changing a message whose acknowledgement was lost.';return;
   }
-  pending=pending||{id:crypto.randomUUID(),target:state.target,message};
-  const submitted=pending;
+  const submitted=pending||{id:crypto.randomUUID(),target:state.target,message};
+  if(new TextEncoder().encode(JSON.stringify(submitted)).byteLength>${MAX_ATTENTION_BODY_BYTES}) {
+    el('error').textContent=pending?'The saved request is too large; check its original receipt before changing it.':'Message too large; shorten it. Nothing was sent.';
+    return;
+  }
+  pending=submitted;
   sessionStorage.setItem('ouroAttentionPending',JSON.stringify(pending));
   sending=true;render(state);
   try {const next=await api('/send',submitted);acknowledge(submitted);render(next);}
-  catch(error) {if(pending?.id===submitted.id)el('error').textContent=error.message+' Your draft and original request identity are preserved.';}
+  catch(error) {
+    if(pending?.id===submitted.id) {
+      if(error.status===413&&!pendingWasUncertain) {
+        pending=null;sessionStorage.removeItem('ouroAttentionPending');
+        el('error').textContent=error.message+' Nothing was submitted; shorten the preserved draft.';
+      } else {
+        pendingWasUncertain=true;
+        el('error').textContent=error.message+' Your draft and original request identity are preserved.';
+      }
+    }
+  }
   finally {sending=false;if(state)render(state);}
 };
 el('cancel').onclick=async()=>{

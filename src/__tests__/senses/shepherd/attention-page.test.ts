@@ -8,12 +8,13 @@ const id = "11111111-1111-4111-8111-111111111111"
 const initial = { targets: [{ id, label: "Ship attention" }], target: id, active: false, messages: [] as Array<{ role: string; text: string }> }
 
 function page(options: { active?: boolean; messages?: typeof initial.messages; loseAck?: boolean; savedDraft?: string; fragment?: string;
-  saved?: Record<string, string>; failFirstSelect?: boolean; deferSend?: boolean; reconcileAcks?: boolean } = {}) {
+  saved?: Record<string, string>; failFirstSelect?: boolean; deferSend?: boolean; reconcileAcks?: boolean; rejectFirstSend?: number; rejectRetry?: number } = {}) {
   let state = { ...initial, active: options.active ?? false, messages: options.messages ?? [] }
   const requests: Array<{ route: string; body?: { id: string; message: string } }> = []
   let poll: () => void = () => {}
   let lost = false
   let selectionFailed = false
+  let sendRejected = false
   const held = Promise.withResolvers<void>()
   const accepted = new Map<string, { id: string; target: string }>()
   const dom = new JSDOM(attentionPage("test"), {
@@ -22,12 +23,18 @@ function page(options: { active?: boolean; messages?: typeof initial.messages; l
       if (options.savedDraft) window.sessionStorage.setItem("ouroAttentionDraft", options.savedDraft)
       for (const [key, value] of Object.entries(options.saved ?? {})) window.sessionStorage.setItem(key, value)
       Object.defineProperty(window.crypto, "randomUUID", { value: () => crypto.randomUUID() })
+      window.TextEncoder = TextEncoder
       window.setInterval = ((fn: () => void) => { poll = fn; return 1 }) as typeof window.setInterval
       window.fetch = vi.fn(async (route, init) => {
         const body = init?.body ? JSON.parse(String(init.body)) : undefined
         requests.push({ route: String(route), body })
         if (route === "/select" && options.failFirstSelect && !selectionFailed) { selectionFailed = true; throw new Error("initial discovery unavailable") }
         if (route === "/send") {
+          if (options.rejectFirstSend && !sendRejected) {
+            sendRejected = true
+            return { ok: false, status: options.rejectFirstSend, json: async () => ({ error: "Message too large." }) } as Response
+          }
+          if (options.rejectRetry && lost) return { ok: false, status: options.rejectRetry, json: async () => ({ error: "Message too large." }) } as Response
           accepted.set(body.id, { id: body.id, target: state.target })
           if (options.deferSend) await held.promise
         }
@@ -161,5 +168,54 @@ describe("compact attention interaction", () => {
     await vi.waitFor(() => expect(dom.window.sessionStorage.getItem("ouroAttentionPending")).toBeNull())
     expect(draft.value).toBe("newer unsent thought")
     expect(dom.window.sessionStorage.getItem("ouroAttentionDraft")).toBe("newer unsent thought")
+  })
+
+  it("checks the actual UTF-8 JSON budget before arming a multibyte draft's pending identity", async () => {
+    const { dom, requests } = page()
+    const document = dom.window.document
+    await vi.waitFor(() => expect((document.getElementById("send") as HTMLButtonElement).disabled).toBe(false))
+    const draft = document.getElementById("draft") as HTMLTextAreaElement
+    draft.value = "界".repeat(6_000)
+    document.getElementById("compose")!.dispatchEvent(new dom.window.Event("submit", { cancelable: true }))
+    await vi.waitFor(() => expect(document.getElementById("error")!.textContent).toContain("too large"))
+    expect(requests.some(request => request.route === "/send")).toBe(false)
+    expect(dom.window.sessionStorage.getItem("ouroAttentionPending")).toBeNull()
+    expect((document.getElementById("target") as HTMLSelectElement).disabled).toBe(false)
+    expect(draft.value).toHaveLength(6_000)
+    draft.value = "shortened message"
+    document.getElementById("compose")!.dispatchEvent(new dom.window.Event("submit", { cancelable: true }))
+    await vi.waitFor(() => expect(requests.filter(request => request.route === "/send")).toHaveLength(1))
+  })
+
+  it("releases a first-attempt explicit size refusal without deleting the unsent draft", async () => {
+    const { dom } = page({ rejectFirstSend: 413 })
+    const document = dom.window.document
+    await vi.waitFor(() => expect((document.getElementById("send") as HTMLButtonElement).disabled).toBe(false))
+    const draft = document.getElementById("draft") as HTMLTextAreaElement
+    draft.value = "the server refused this first attempt"
+    draft.dispatchEvent(new dom.window.Event("input"))
+    document.getElementById("compose")!.dispatchEvent(new dom.window.Event("submit", { cancelable: true }))
+    await vi.waitFor(() => expect(document.getElementById("error")!.textContent).toContain("too large"))
+    expect(dom.window.sessionStorage.getItem("ouroAttentionPending")).toBeNull()
+    expect(draft.value).toBe("the server refused this first attempt")
+    expect((document.getElementById("target") as HTMLSelectElement).disabled).toBe(false)
+  })
+
+  it("never treats a retry's size refusal as proof that its earlier unknown-ack execution did not occur", async () => {
+    const { dom, requests } = page({ loseAck: true, rejectRetry: 413 })
+    const document = dom.window.document
+    await vi.waitFor(() => expect((document.getElementById("send") as HTMLButtonElement).disabled).toBe(false))
+    const draft = document.getElementById("draft") as HTMLTextAreaElement
+    draft.value = "earlier attempt is uncertain"
+    const send = () => document.getElementById("compose")!.dispatchEvent(new dom.window.Event("submit", { cancelable: true }))
+    send()
+    await vi.waitFor(() => expect(document.getElementById("error")!.textContent).toContain("ack lost"))
+    const original = dom.window.sessionStorage.getItem("ouroAttentionPending")
+    send()
+    await vi.waitFor(() => expect(document.getElementById("error")!.textContent).toContain("too large"))
+    expect(dom.window.sessionStorage.getItem("ouroAttentionPending")).toBe(original)
+    expect((document.getElementById("target") as HTMLSelectElement).disabled).toBe(true)
+    const sent = requests.filter(request => request.route === "/send")
+    expect(sent[0]!.body).toEqual(sent[1]!.body)
   })
 })

@@ -6,7 +6,8 @@
       "changes": [
         "Open a compact independent Ouro session composer with short About labels, draft preservation, canonical replies and no blind resubmission.",
         "Install a managed cmux Swift Talk to Ouro entry that opens a browser split without moving coding focus; pin each conversation independently and retain the existing family-only terminal authority.",
-        "Preserve the original session and request identity through lost acknowledgements and listener restarts; refresh choices without retargeting, recover definitively refused starts, and keep one-off web views from replacing the managed native entry."
+        "Preserve the original session and request identity through lost acknowledgements and listener restarts; refresh choices without retargeting, recover definitively refused starts, and keep one-off web views from replacing the managed native entry.",
+        "Validate the UTF-8 request budget before arming a send, keep explicitly oversized unsent drafts editable, and decode multibyte HTTP messages without corruption; an earlier unknown acknowledgement still retains its original identity."
       ]
     },
     {
