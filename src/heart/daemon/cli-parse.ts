@@ -2819,19 +2819,21 @@ export function parseOuroCommand(args: string[]): OuroCliCommand {
   if (head === "config") return parseConfigCommand(args.slice(1))
   if (head === "mcp") return parseMcpCommand(args.slice(1))
   if (head === "shepherd") {
-    const usage = "Usage: ouro shepherd chat --agent <name> [--session <UUID>]"
+    const usage = "Usage: ouro shepherd chat --agent <name> [--session <UUID>] [--web]"
     if (args[1] !== "chat") throw new Error(usage)
     const values = new Map<string, string>()
-    for (let i = 2; i < args.length; i += 2) {
+    for (let i = 2; i < args.length; i += 1) {
       const flag = args[i]!
+      if (flag === "--web" && !values.has(flag)) { values.set(flag, "true"); continue }
       const value = args[i + 1]
       if (!["--agent", "--session"].includes(flag) || values.has(flag) || !value || value.startsWith("--")) throw new Error(usage)
       values.set(flag, value)
+      i += 1
     }
     const agent = values.get("--agent")
     const session = values.get("--session")
     if (!agent || !/^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(agent) || (session !== undefined && !SHEPHERD_UUID.test(session))) throw new Error(usage)
-    return { kind: "shepherd.chat", agent, ...(session ? { session } : {}) }
+    return { kind: "shepherd.chat", agent, ...(session ? { session } : {}), ...(values.has("--web") ? { web: true } : {}) }
   }
   if (head === "voice") return parseVoiceCommand(args.slice(1))
   if (head === "whoami") {

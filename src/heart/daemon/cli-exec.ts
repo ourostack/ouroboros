@@ -9011,7 +9011,10 @@ export async function runOuroCli(args: string[], deps: OuroCliDeps = createDefau
     const { frontendSocketPathForDaemon } = await import("../frontend-socket")
     const socketPath = frontendSocketPathForDaemon(deps.socketPath)
     if (deps.startShepherdChat) {
-      await deps.startShepherdChat({ agent: command.agent, ...(command.session ? { session: command.session } : {}), socketPath })
+      await deps.startShepherdChat({ agent: command.agent, ...(command.session ? { session: command.session } : {}), ...(command.web ? { web: true } : {}), socketPath })
+    } else if (command.web) {
+      const { runShepherdAttention } = await import("../../senses/shepherd/attention")
+      await runShepherdAttention({ agent: command.agent, ...(command.session ? { session: command.session } : {}), socketPath })
     } else {
       const { runShepherdComposer } = await import("../../senses/shepherd/composer")
       await runShepherdComposer({ agent: command.agent, ...(command.session ? { session: command.session } : {}), socketPath })

@@ -124,6 +124,8 @@ export function createCmuxHost(client: CmuxClient, options: CmuxHostOptions = {}
         cwd: hooked.get(str(surface.id) ?? "")?.cwd ?? null,
         // The human's terminal: the focused surface of the selected workspace in a visible window.
         focused: surface.focused === true && workspace.selected === true && window.visible !== false,
+        ...(surface.focused === true && workspace.selected === true && window.visible !== false && window.key === true
+          ? { selected: true } : {}),
       })))
     const identities = await (options.identifyTerminals ?? identifyTerminalProcesses)(entries.filter((entry) => entry.type === "terminal" && entry.tty).map((entry) => entry.tty!))
     return entries.map((entry) => {

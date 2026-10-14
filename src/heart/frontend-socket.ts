@@ -6,7 +6,8 @@ import * as readline from "node:readline"
 
 import type { Channel } from "@ouro.bot/friends"
 
-import type { FrontendSessionService, FrontendTurnRequest } from "./frontend-session-service"
+import type { FrontendSessionService, FrontendTurnRequest, PreparedFrontendTurn } from "./frontend-session-service"
+import { FrontendTurnConflictError } from "./frontend-turn-errors"
 import type { RuntimeMcpServers } from "../repertoire/mcp-manager"
 import { emitNervesEvent } from "../nerves/runtime"
 
@@ -309,38 +310,45 @@ export async function startFrontendSocketServer(options: {
     }
 
     if (method === "turn.start" || method === "turn.start.observe-only") {
-      const observeOnly = method === "turn.start.observe-only"
-      if (params.toolMode !== undefined) {
-        throw new Error("toolMode is unsupported; use turn.start.observe-only")
+      let prepared: PreparedFrontendTurn
+      // Only preparation can be definitively refused; duplicate IDs must still reconcile.
+      try {
+        const observeOnly = method === "turn.start.observe-only"
+        if (params.toolMode !== undefined) {
+          throw new Error("toolMode is unsupported; use turn.start.observe-only")
+        }
+        if (observeOnly && params.runtimeMcpServers !== undefined) {
+          throw new Error("turn.start.observe-only cannot include runtimeMcpServers")
+        }
+        const runtimeMcpServers = validatedRuntimeMcpServers(params.runtimeMcpServers)
+        const shepherdSession = params.shepherdSession === undefined ? undefined : await options.service.resolveShepherdSession(
+          requiredString(params.agent, "agent"), requiredString(params.friendId, "friendId"), params.shepherdSession,
+          params.composerTty === undefined ? undefined : requiredString(params.composerTty, "composerTty"),
+        )
+        if (shepherdSession && (observeOnly || params.channel !== "cli" || params.sessionKey !== `shepherd:${shepherdSession.id}`)) {
+          throw new Error("Shepherd routing requires a cli turn and the exact per-surface session key")
+        }
+        const turnRequest: FrontendTurnRequest = {
+          turnId: requiredString(params.turnId, "turnId"),
+          agent: requiredString(params.agent, "agent"),
+          friendId: requiredString(params.friendId, "friendId"),
+          channel: requiredString(params.channel, "channel") as Channel,
+          sessionKey: requiredString(params.sessionKey, "sessionKey"),
+          message: (requiredString(params.message, "message"), params.message as string),
+          ...(shepherdSession ? { shepherdSession } : {}),
+          ...(observeOnly ? { disableTools: true, ephemeral: true } : {}),
+          ...(runtimeMcpServers ? { runtimeMcpServers } : {}),
+        }
+        // Validation may await the host while this connection exits. Ownership must
+        // never be acquired after cleanup has already drained this client's turns.
+        if (client.closed || client.socket.destroyed || stopped) return
+        prepared = options.service.prepareTurn(turnRequest)
+      } catch (error) {
+        client.writer.send(errorResponse(id, error instanceof FrontendTurnConflictError ? "turn_conflict" : "turn_rejected", error instanceof Error ? error.message : String(error)))
+        return
       }
-      if (observeOnly && params.runtimeMcpServers !== undefined) {
-        throw new Error("turn.start.observe-only cannot include runtimeMcpServers")
-      }
-      const runtimeMcpServers = validatedRuntimeMcpServers(params.runtimeMcpServers)
-      const shepherdSession = params.shepherdSession === undefined ? undefined : await options.service.resolveShepherdSession(
-        requiredString(params.agent, "agent"), requiredString(params.friendId, "friendId"), params.shepherdSession,
-        params.composerTty === undefined ? undefined : requiredString(params.composerTty, "composerTty"),
-      )
-      if (shepherdSession && (observeOnly || params.channel !== "cli" || params.sessionKey !== `shepherd:${shepherdSession.id}`)) {
-        throw new Error("Shepherd routing requires a cli turn and the exact per-surface session key")
-      }
-      const turnRequest: FrontendTurnRequest = {
-        turnId: requiredString(params.turnId, "turnId"),
-        agent: requiredString(params.agent, "agent"),
-        friendId: requiredString(params.friendId, "friendId"),
-        channel: requiredString(params.channel, "channel") as Channel,
-        sessionKey: requiredString(params.sessionKey, "sessionKey"),
-        message: (requiredString(params.message, "message"), params.message as string),
-        ...(shepherdSession ? { shepherdSession } : {}),
-        ...(observeOnly ? { disableTools: true, ephemeral: true } : {}),
-        ...(runtimeMcpServers ? { runtimeMcpServers } : {}),
-      }
-      // Validation may await the host while this connection exits. Ownership must
-      // never be acquired after cleanup has already drained this client's turns.
-      if (client.closed || client.socket.destroyed || stopped) return
-      const prepared = options.service.prepareTurn(turnRequest)
-      client.ownedTurnIds.add(turnRequest.turnId)
-      client.writer.send(response(id, { accepted: true, turnId: turnRequest.turnId }))
+      client.ownedTurnIds.add(prepared.request.turnId)
+      client.writer.send(response(id, { accepted: true, turnId: prepared.request.turnId }))
       queueMicrotask(() => {
         void options.service.runPreparedTurn(prepared).catch(() => undefined)
       })

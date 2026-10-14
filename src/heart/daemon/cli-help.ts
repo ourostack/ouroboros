@@ -137,8 +137,8 @@ export const COMMAND_REGISTRY: Record<string, CommandHelp & { category: CommandC
   },
   shepherd: {
     category: "Agents",
-    description: "Open an independent Ouro composer for one coding terminal. Uses a named picker when ambiguous; /cancel cancels only Ouro's turn, /quit exits. Not an input hook in the coding agent.",
-    usage: "ouro shepherd chat --agent <name> [--session <UUID>]",
+    description: "Open an independent Ouro composer for one coding terminal. --web opens the compact graphical view in cmux; the managed cmux Shepherd sense also installs a native Talk to Ouro button. Without --web, /cancel cancels only Ouro's turn and /quit exits. Not an input hook in the coding agent.",
+    usage: "ouro shepherd chat --agent <name> [--session <UUID>] [--web]",
     example: "ouro shepherd chat --agent ouroboros",
     subcommands: ["chat"],
   },

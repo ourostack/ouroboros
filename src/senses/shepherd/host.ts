@@ -24,6 +24,8 @@ export interface HostSession {
   agent: string | null
   /** The human's current terminal: Shepherd never types into it. */
   focused: boolean
+  /** Advisory selection hint from the key window, never a permission to write. */
+  selected?: boolean
 }
 
 /** A coding agent stopped and is waiting for the human. `transitionId` is the host's own id for that stop. */
