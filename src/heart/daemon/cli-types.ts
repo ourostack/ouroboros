@@ -74,7 +74,7 @@ export type OuroCliCommand =
   | { kind: "auth.verify"; agent?: string; provider?: AgentProvider }
   | { kind: "auth.switch"; agent?: string; provider: AgentProvider; facing?: Facing }
   | { kind: "chat.connect"; agent: string }
-  | { kind: "shepherd.chat"; agent: string; session?: string }
+  | { kind: "shepherd.chat"; agent: string; session?: string; web?: boolean }
   | { kind: "message.send"; from: string; to: string; content: string; sessionId?: string; taskRef?: string }
   | { kind: "external.event.submit"; agent: string; source: string; eventType: string; eventId: string; summary?: string; evidence?: string[]; payloadPath?: string; priority?: string; sessionId?: string; taskRef?: string; wake?: boolean; observationRevision?: string; transition?: import("../external-events/router").ExternalEventTransition }
   | { kind: "external.event.repair"; manifestPath: string }
@@ -194,7 +194,7 @@ export interface OuroCliDeps {
   prepareDaemonRuntimeReplacement?: () => Promise<void> | void
   ensureDaemonBootPersistence?: (socketPath: string) => Promise<void> | void
   startChat?: (agentName: string) => Promise<void>
-  startShepherdChat?: (options: { agent: string; session?: string; socketPath: string }) => Promise<void>
+  startShepherdChat?: (options: { agent: string; session?: string; socketPath: string; web?: boolean }) => Promise<void>
   tailLogs?: (options?: { follow?: boolean; lines?: number; agentFilter?: string }) => () => void
   pruneDaemonLogs?: (options?: { logsDir?: string; agentName?: string; bundlesRoot?: string }) => { filesCompacted: number; bytesFreed: number }
   friendStore?: FriendStore

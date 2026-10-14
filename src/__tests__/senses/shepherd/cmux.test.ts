@@ -64,6 +64,17 @@ afterEach(async () => {
 })
 
 describe("cmux host: terminals", () => {
+  it("hints only the key window's current coding terminal, without weakening visible-window protection", async () => {
+    const window = (key: boolean, id: string) => ({
+      key, visible: true, workspaces: [{ id: `WS-${id}`, selected: true,
+        panes: [{ surfaces: [{ id, ref: id, focused: true, type: "terminal" }] }],
+      }],
+    })
+    server.respond("system.tree", () => ({ windows: [window(false, "SF-1"), window(true, "SF-2")] }))
+    const sessions = await host().list()
+    expect(sessions.map(session => session.focused)).toEqual([true, true])
+    expect(sessions.map(session => session.selected === true)).toEqual([false, true])
+  })
   it("identifies unhooked terminals by tty and keeps the workspace and tab title", async () => {
     server.respond("system.tree", () => ({
       windows: [{ visible: true, workspaces: [{ id: "WS-1", ref: "workspace:1", title: "ouro", selected: true,

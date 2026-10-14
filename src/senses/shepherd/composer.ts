@@ -52,8 +52,9 @@ export class ShepherdComposer {
   private readonly unsubscribe: () => void
   private readonly unsubscribeClose: () => void
   private readonly notice: (message: string) => void
+  private readonly answer: (message: string) => void
 
-  constructor(options: { client: FrontendProtocolClient; agent: string; friendId: string; target: ShepherdSession; composerTty?: string; notice?: (message: string) => void }) {
+  constructor(options: { client: FrontendProtocolClient; agent: string; friendId: string; target: ShepherdSession; composerTty?: string; notice?: (message: string) => void; answer?: (message: string) => void }) {
     this.client = options.client
     this.agent = options.agent
     this.friendId = options.friendId
@@ -61,6 +62,7 @@ export class ShepherdComposer {
     this.target = Object.freeze({ ...options.target })
     this.sessionKey = `shepherd:${this.target.id}`
     this.notice = options.notice ?? (() => {})
+    this.answer = options.answer ?? (() => {})
     this.unsubscribe = this.client.onEvent(frame => {
       if (frame.event === "replay_required") {
         const turn = this.active
@@ -76,6 +78,8 @@ export class ShepherdComposer {
       void this.recover().catch(error => { if (this.active === turn) this.fail(error, true) })
     })
   }
+
+  get busy(): boolean { return this.active !== null }
 
   async submit(input: string): Promise<string> {
     if (this.active) throw new Error("Ouro already has an active turn; use /cancel")
@@ -191,6 +195,7 @@ export class ShepherdComposer {
         turn.reject(new Error(`Ouro turn ${data.result.outcome}`))
       } else {
         const answer = deliveries.length ? deliveries.join("\n") : String(data.result?.response ?? "")
+        this.answer(answer)
         if (turn.unresolved) this.notice(`Ouro: ${answer}`)
         turn.resolve(answer)
       }

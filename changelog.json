@@ -2,6 +2,13 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.926",
+      "changes": [
+        "Open a compact independent Ouro session composer with short About labels, draft preservation, canonical replies and no blind resubmission.",
+        "Install a managed cmux Swift Talk to Ouro entry that opens a browser split without moving coding focus; pin each conversation independently and retain the existing family-only terminal authority."
+      ]
+    },
+    {
       "version": "0.1.0-alpha.925",
       "changes": [
         "Report every Shepherd terminal with its full label and distinguish outside dependency waits, idle local completion, and delivered work; forgetting a learned preference leaves built-in waiting policy unchanged."

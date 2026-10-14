@@ -12,6 +12,8 @@ export interface ShepherdSession {
   readonly id: string
   readonly host: "cmux"
   readonly label: string
+  readonly displayLabel?: string
+  readonly selected?: boolean
 }
 
 export const SHEPHERD_UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
@@ -64,6 +66,10 @@ export async function listShepherdTargets(host: ShepherdHost, composerTty?: stri
     host: "cmux" as const,
     label: [session.agent, session.cwd, session.workspaceTitle, session.title]
       .filter(Boolean).map(part => part!.replace(/[\x00-\x1f\x7f-\x9f]/g, "").slice(0, 160)).join(" / "),
+    displayLabel: [session.title, session.workspaceTitle, `${session.agent} session`, "Coding session"]
+      .map(part => (part ?? "").replace(/[\x00-\x1f\x7f-\x9f]/g, "").trim())
+      .find(part => part && !/[\\/]/.test(part) && !/[0-9a-f]{8}-[0-9a-f-]{27,}/i.test(part))!.slice(0, 72),
+    selected: session.selected === true,
   }))
 }
 

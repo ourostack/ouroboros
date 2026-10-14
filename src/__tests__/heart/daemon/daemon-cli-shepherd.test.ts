@@ -3,6 +3,9 @@ import { parseOuroCommand } from "../../../heart/daemon/cli-parse"
 import { getCommandHelp } from "../../../heart/daemon/cli-help"
 import { runOuroCli } from "../../../heart/daemon/cli-exec"
 import type { OuroCliDeps } from "../../../heart/daemon/cli-types"
+import { runShepherdAttention } from "../../../senses/shepherd/attention"
+
+vi.mock("../../../senses/shepherd/attention", () => ({ runShepherdAttention: vi.fn(async () => {}) }))
 
 describe("dedicated Shepherd CLI", () => {
   it("uses the daemon frontend lifecycle and launches the independent composer, not chat.connect", async () => {
@@ -21,11 +24,14 @@ describe("dedicated Shepherd CLI", () => {
     await expect(runOuroCli(["shepherd", "chat", "--agent", "ouro"], deps)).resolves.toBe("")
     expect(launch).toEqual({ agent: "ouro", socketPath: "/tmp/composer-cli.sock.frontend" })
     expect(deps.ensureDaemonForFrontend).toHaveBeenCalledWith("ouro")
+    await runOuroCli(["shepherd", "chat", "--agent", "ouro", "--web"], { ...deps, startShepherdChat: undefined })
+    expect(runShepherdAttention).toHaveBeenCalledWith({ agent: "ouro", socketPath: "/tmp/composer-cli.sock.frontend" })
   })
   it("parses a dedicated chat with an explicit stable target", () => {
     expect(parseOuroCommand(["shepherd", "chat", "--agent", "ouro", "--session", "11111111-1111-4111-8111-111111111111"]))
       .toEqual({ kind: "shepherd.chat", agent: "ouro", session: "11111111-1111-4111-8111-111111111111" })
     expect(parseOuroCommand(["shepherd", "chat", "--agent", "ouro"])).toEqual({ kind: "shepherd.chat", agent: "ouro" })
+    expect(parseOuroCommand(["shepherd", "chat", "--web", "--agent", "ouro"])).toEqual({ kind: "shepherd.chat", agent: "ouro", web: true })
   })
 
   it.each([
@@ -35,6 +41,7 @@ describe("dedicated Shepherd CLI", () => {
     ["shepherd", "chat", "--agent", "ouro", "--friend", "someone"],
     ["shepherd", "chat", "--agent", "ouro", "--agent", "other"],
     ["shepherd", "chat", "--agent", "ouro", "--session"],
+    ["shepherd", "chat", "--agent", "ouro", "--web", "--web"],
   ])("rejects ambiguous or unsafe arguments %j", (...args) => {
     expect(() => parseOuroCommand(args)).toThrow("ouro shepherd chat")
   })

@@ -65,6 +65,20 @@ Every judgment is one JSON line in `state/senses/shepherd/returns.jsonl` in the 
 
 **Menu keys can approve permission prompts.** An agent that asks for permission before doing work inside its task has stopped too early under TTFA (time to first action), so the judge may answer it with a key, which can approve the prompt. That is deliberate: the human's standing authority covers routine work, and gates (credentials, money, irreversible acts, decisions that are the human's) are never answered. Every such answer is logged and shown on the status line.
 
+## Talking to Ouro about one session
+
+The independent graphical composer is a short **About** selector, a message box, and Ouro's actual reply, not a terminal inventory. It stays usable while the coding agent is working and never borrows its input. Open it in cmux with:
+
+```sh
+ouro shepherd chat --agent ouroboros --web
+```
+
+The browser opens beside the current terminal without moving its focus. On first opening, the composer offers the current coding session when cmux can identify exactly one; otherwise choose its short title under **About**. Once selected, the conversation is pinned to that terminal's stable UUID. Switching terminals or windows does not retarget it. Enter sends; Shift+Enter adds a line. **Cancel Ouro** cancels only Ouro's reply, not coding work. **Reconnect** checks the authoritative journal without submitting the message again. Unacknowledged messages keep their draft and request ID, so retrying the same message cannot start it twice.
+
+The managed Shepherd sense on this Mac also installs a small native **Talk to Ouro** entry at `~/.config/cmux/sidebars/ouro-attention-<agent>.swift`. It can be opened as a cmux sidebar pane with `cmux sidebar open ouro-attention-ouroboros`; its button opens the same graphical composer. This uses the installed cmux Swift interpreter, not a newer JavaScript sidebar API or an unsupported custom right-sidebar mode. No layout or keyboard focus is changed merely because Shepherd starts. The loopback entry is restricted to the existing OS user's local-family identity, with a private entry token and same-origin checks; it is not a remote chat server.
+
+For a terminal-only composer, omit `--web`. `--session <UUID>` explicitly selects a terminal in either mode. Neither mode registers an `@ouro` receiver inside Copilot or Claude: `@ouro` at the start of a message is accepted in this independent composer, not intercepted from the coding agent's prompt.
+
 ## Tools
 
 The tools appear only for an agent whose `agent.json` has `senses.shepherd.enabled: true`. Only family trust may call them.
