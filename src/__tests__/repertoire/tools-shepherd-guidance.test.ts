@@ -67,9 +67,14 @@ describe("family-only Shepherd guidance tools", () => {
   it("redacts even a non-Error receipt read failure while retaining private return history", async () => {
     const noticeModule = await import("../../senses/shepherd/notice-outbox")
     vi.spyOn(noticeModule, "readNoticeOutbox").mockImplementationOnce(() => { throw "token=abc123secret failed" })
-    const history = await call("shepherd_history")
-    expect(history.ownerNoticeError).toBe("token=[redacted] failed")
-    expect(history.returns).toEqual([{ id: shepherdReturnId(returned), ...returned }])
+    const events: LogEvent[] = []
+    const unregister = registerGlobalLogSink(event => events.push(event))
+    try {
+      const history = await call("shepherd_history")
+      expect(history.ownerNoticeError).toBe("token=[redacted] failed")
+      expect(history.returns).toEqual([{ id: shepherdReturnId(returned), ...returned }])
+      expect(JSON.stringify(events)).not.toMatch(/\btoken\b["']?\s*[:=]/)
+    } finally { unregister() }
   })
 
   it("traces an executed guidance tool without the private human instruction", async () => {
@@ -166,7 +171,12 @@ describe("family-only Shepherd guidance tools", () => {
     expect(await call("shepherd_correct", { session: "live", request_id: "project", feedback: "Future instruction", principle: "Wait for review.", scope: "project" })).toMatchObject({ revision: 1 })
     expect(readGuidance(root).principles[0]!.scope).toBe("project")
     vi.mocked(hostModule.createShepherdHost).mockImplementation((...args) => ({ ...create(...args), list: async () => { throw "token=abc123secret failed" } }))
-    expect((await call("shepherd_guidance", { session: "unrecorded" })).error).toBe("token=[redacted] failed")
+    const events: LogEvent[] = []
+    const unregister = registerGlobalLogSink(event => events.push(event))
+    try {
+      expect((await call("shepherd_guidance", { session: "unrecorded" })).error).toBe("token=[redacted] failed")
+      expect(JSON.stringify(events)).not.toMatch(/\btoken\b["']?\s*[:=]/)
+    } finally { unregister() }
   })
 
   it("keeps malformed argument types from recording invented preferences", async () => {

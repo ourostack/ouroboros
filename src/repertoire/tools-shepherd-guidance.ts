@@ -90,7 +90,7 @@ function definition(name: string, description: string, properties: Record<string
       }
       catch (error) {
         const message = redactSecrets(error instanceof Error ? error.message : String(error))
-        emitNervesEvent({ level: "warn", component: "repertoire", event: "repertoire.shepherd_guidance_tool_error", message: "private Shepherd guidance tool failed", meta: { tool: name, error: message } })
+        emitNervesEvent({ level: "warn", component: "repertoire", event: "repertoire.shepherd_guidance_tool_error", message: "private Shepherd guidance tool failed", meta: { tool: name, error: "private_guidance_operation_failed" } })
         return json({ error: message })
       }
     },
@@ -113,7 +113,7 @@ export const shepherdGuidanceToolDefinitions: ToolDefinition[] = [
       return { returns }
     } catch (error) {
       const message = redactSecrets(error instanceof Error ? error.message : String(error))
-      emitNervesEvent({ level: "warn", component: "repertoire", event: "repertoire.shepherd_notice_history_error", message: "owner notice receipt evidence is unavailable; return history remains readable", meta: { error: message } })
+      emitNervesEvent({ level: "warn", component: "repertoire", event: "repertoire.shepherd_notice_history_error", message: "owner notice receipt evidence is unavailable; return history remains readable", meta: { error: "notice_receipts_unavailable" } })
       return { returns, ownerNoticeError: message }
     }
   }),
