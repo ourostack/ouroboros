@@ -29,6 +29,19 @@ afterEach(() => {
   resetRuntimeCredentialConfigCache()
 })
 describe("family-only Shepherd guidance tools", () => {
+  it("refuses steering mutations outside the composer's bound UUID without modifying guidance", async () => {
+    const bound = { ...ctx(), currentShepherdSurface: { id: "other", host: "cmux", label: "selected" } } as ToolContext
+    for (const name of ["shepherd_pause", "shepherd_resume", "shepherd_correct"]) {
+      expect((await call(name, { host: "cmux", session: "gone", request_id: name, feedback: "Leave it alone", principle: "Do not nudge" }, bound)).error).toMatch(/bound/)
+    }
+    expect((await call("shepherd_correct", { return_id: shepherdReturnId(returned), request_id: "historical", feedback: "wrong" }, bound)).error).toMatch(/bound/)
+    expect(readGuidance(root).revision).toBe(0)
+    const current = { ...bound, currentShepherdSurface: { id: "gone", host: "cmux" as const, label: "selected" } }
+    expect(await call("shepherd_pause", { session: "gone", request_id: "same" }, current)).toMatchObject({ paused: true })
+    expect((await call("shepherd_resume", { host: "herdr", session: "gone", request_id: "wrong-host" }, current)).error).toMatch(/bound/)
+    expect(readGuidance(root).revision).toBe(1)
+  })
+
   it("refuses every private operation without a real family conversation", async () => {
     for (const definition of shepherdGuidanceToolDefinitions) {
       for (const context of [ctx("self"), ctx("", "family"), ctx("stranger", "stranger"), ctx("friend", "friend"), { ...ctx(), context: undefined }, { ...ctx(), agentRoot: undefined }, { ...ctx(), agentName: undefined }]) {

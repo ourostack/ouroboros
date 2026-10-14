@@ -198,6 +198,31 @@ describe("Shepherd tools", () => {
     expect((await call(shepherdOverviewToolDefinition, {})).error).toContain("no terminal host is attached on this machine")
   })
 
+  it("enforces the bound composer UUID on reads, signals and sends even when its short ref is recycled", async () => {
+    const bound = ctx({
+      currentShepherdSurface: { id: "SF-1", host: "cmux", label: "original" },
+      context: { friend: { id: "friend-ari", name: "Ari", trustLevel: "family" } },
+    } as unknown as Partial<ToolContext>)
+    server.respond("system.tree", () => tree([{ id: "SF-2", ref: "surface:1", title: "replacement" }]))
+    for (const session of ["surface:1", "SF-2", "SF-1"]) {
+      for (const [definition, args] of [
+        [shepherdReadToolDefinition, { session }],
+        [shepherdSignalToolDefinition, { session, status: "changed" }],
+        [shepherdSendToolDefinition, { session, text: "continue" }],
+      ] as const) {
+        expect((await call(definition, args, bound)).error).toMatch(/bound|gone|no cmux terminal/)
+      }
+    }
+    expect(server.methods.filter(entry => ["terminal.paste", "surface.send_key", "surface.send_text", "surface.read_text", "notification.create"].includes(entry.method))).toEqual([])
+    expect(server.lines.filter(line => /\b(?:set_status|clear_status)\b/.test(line))).toEqual([])
+  })
+
+  it("allows operations on the exact bound UUID but refuses a different host", async () => {
+    const bound = ctx({ currentShepherdSurface: { id: "SF-1", host: "cmux", label: "original" } })
+    expect((await call(shepherdReadToolDefinition, { session: "SF-1" }, bound)).text).toBeTruthy()
+    expect((await call(shepherdReadToolDefinition, { session: "SF-1" }, { ...bound, currentShepherdSurface: { id: "SF-1", host: "herdr", label: "other host" } } as unknown as ToolContext)).error).toMatch(/host|bound/)
+  })
+
   describe("send", () => {
     const family = (overrides: Record<string, unknown> = {}): ToolContext => ctx({ context: { friend: { id: "friend-ari", name: "Ari", trustLevel: "family", ...overrides } } } as unknown as Partial<ToolContext>)
     const screen = "Bash command\n  npm test\nDo you want to proceed?\n> 1. Yes\n  2. No\nesc to cancel · 12s"

@@ -9,6 +9,7 @@ import {
 } from "../senses/shepherd/guidance"
 import { redactSecrets } from "../senses/shepherd/redact"
 import { readReturns } from "../senses/shepherd/returns"
+import { assertBoundShepherdTarget } from "../senses/shepherd/target-binding"
 import { SELF_FRIEND_ID, type ToolContext, type ToolDefinition } from "./tools-base"
 
 type Args = Record<string, unknown>
@@ -32,11 +33,13 @@ function fingerprint(name: string, args: Args): string {
  * the existing machine connection primitives. Resolving it never reads a screen, signals, presses a key or sends.
  */
 async function targetFor(ctx: ToolContext, args: Args): Promise<{ target: ShepherdGuidanceTarget; live: ShepherdGuidanceTarget[] }> {
+  if (text(args.session)) assertBoundShepherdTarget(ctx.currentShepherdSurface, text(args.session), text(args.host) || undefined)
   const records = readReturns(ctx.agentRoot!)
   const returnId = text(args.return_id)
   if (returnId) {
     const record = records.find(r => shepherdReturnId(r) === returnId)
     if (!record) throw new Error("Shepherd return ID not found")
+    assertBoundShepherdTarget(ctx.currentShepherdSurface, record.session, record.host)
     if ((text(args.host) && text(args.host) !== record.host) || (text(args.session) && text(args.session) !== record.session)) throw new Error("target does not match the recorded return")
     return { target: { host: record.host, session: record.session, cwd: record.cwd, task: record.task }, live: [] }
   }
@@ -46,7 +49,10 @@ async function targetFor(ctx: ToolContext, args: Args): Promise<{ target: Shephe
   const matching = records.filter(r => r.session === session && (!hostName || r.host === hostName))
   if (new Set(matching.map(r => r.host)).size > 1) throw new Error("session is ambiguous across hosts; name its host")
   const record = matching.at(-1)
-  if (record) return { target: { host: record.host, session, cwd: record.cwd, task: record.task }, live: [] }
+  if (record) {
+    assertBoundShepherdTarget(ctx.currentShepherdSurface, record.session, record.host)
+    return { target: { host: record.host, session, cwd: record.cwd, task: record.task }, live: [] }
+  }
   const machine = readMachineRuntimeCredentialConfig(ctx.agentName!)
   const resolved = resolveShepherdConnection(ctx.agentName!, machine.ok ? machine.config : {})
   if (!resolved.ok) throw new Error(resolved.error)
@@ -55,6 +61,7 @@ async function targetFor(ctx: ToolContext, args: Args): Promise<{ target: Shephe
   const live = sessions.map(s => ({ host: host.name, session: s.id, cwd: s.cwd ?? null, task: null }))
   const found = sessions.find(s => s.id === session || s.ref === session)
   if (!found || (hostName && hostName !== host.name)) throw new Error("unknown session on the configured Shepherd host")
+  assertBoundShepherdTarget(ctx.currentShepherdSurface, found.id, host.name)
   return { target: live.find(t => t.session === found.id)!, live }
 }
 

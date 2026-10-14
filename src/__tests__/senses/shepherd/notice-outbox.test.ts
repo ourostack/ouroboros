@@ -3,7 +3,7 @@ import * as os from "node:os"
 import * as path from "node:path"
 import { beforeEach, describe, expect, it, vi } from "vitest"
 import { registerGlobalLogSink, type LogEvent } from "../../../nerves"
-import { declareNoticeTargets, enqueueNotice, noticeDeliveryState, noticeRecordId, readNoticeOutbox, recordNoticeDelivery } from "../../../senses/shepherd/notice-outbox"
+import { claimPendingNotices, declareNoticeTargets, enqueueNotice, noticeDeliveryState, noticeRecordId, readNoticeOutbox, recordNoticeDelivery } from "../../../senses/shepherd/notice-outbox"
 import { shepherdStateDir, type ReturnRecord } from "../../../senses/shepherd/returns"
 
 vi.mock("node:fs", async () => {
@@ -42,6 +42,16 @@ describe("private Shepherd notice outbox", () => {
     expect(noticeDeliveryState(entries[0]!, "owner")).toBe("sent")
     expect(entries[0]!.deliveries.owner).toMatchObject({ messageId: "activity-1", attempts: 1 })
     expect(noticeDeliveryState(entries[0]!, "another-family-member")).toBe("pending")
+  })
+
+  it("publishes the claim before returning a transport body and never reclaims uncertainty or acceptance", async () => {
+    const id = await enqueueNotice(root, record())
+    expect(await claimPendingNotices(root, [id], "owner", "now")).toHaveLength(1)
+    expect(readNoticeOutbox(root)[0]!.deliveries.owner).toMatchObject({ state: "unknown", attempts: 1 })
+    expect(await claimPendingNotices(root, [id], "owner", "later")).toEqual([])
+    await recordNoticeDelivery(root, [id], "owner", { state: "sent", at: "now" })
+    expect(await claimPendingNotices(root, [id], "owner", "later")).toEqual([])
+    await expect(claimPendingNotices(root, [id], "__proto__", "now")).rejects.toThrow("invalid notice target")
   })
 
   it("retains definite failures for retry and uncertain sends as explicitly unknown", async () => {
@@ -189,6 +199,7 @@ describe("private Shepherd notice outbox", () => {
     fs.writeFileSync(file, JSON.stringify({ id, record: value, deliveries: { owner: { state: "sent", at: "now", attempts: 1 } } }))
     await expect(declareNoticeTargets(root, [id], ["new-target"], "now")).rejects.toThrow("settled")
     await expect(recordNoticeDelivery(root, [id], "new-target", { state: "pending", at: "now" })).rejects.toThrow("settled")
+    await expect(claimPendingNotices(root, [id], "new-target", "now")).rejects.toThrow("settled")
     await declareNoticeTargets(root, [id], ["owner"], "later")
     expect(JSON.parse(fs.readFileSync(file, "utf8")).deliveries).not.toHaveProperty("new-target")
   })

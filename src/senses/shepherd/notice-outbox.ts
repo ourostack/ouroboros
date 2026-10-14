@@ -177,6 +177,21 @@ export function declareNoticeTargets(root: string, ids: readonly string[], frien
   })
 }
 
+/** Claim under the same cross-process lock as receipts, before any transport side effect. */
+export function claimPendingNotices(root: string, ids: readonly string[], friendId: string, at: string): Promise<NoticeOutboxEntry[]> {
+  if (!validTarget(friendId)) return Promise.reject(new Error("invalid notice target"))
+  return mutate(root, entries => {
+    const claimed = selectedEntries(root, entries, ids).filter(entry => noticeDeliveryState(entry, friendId) === "pending")
+    for (const entry of claimed) {
+      if (!entries.includes(entry)) throw new Error("notice is already settled; it cannot acquire new recipients")
+      entry.deliveries[friendId] = {
+        state: "unknown", at, reason: "awaiting transport acceptance", attempts: (entry.deliveries[friendId]?.attempts ?? 0) + 1,
+      }
+    }
+    return claimed
+  })
+}
+
 export function recordNoticeDelivery(
   root: string, ids: readonly string[], friendId: string,
   receipt: Omit<NoticeDelivery, "attempts">,

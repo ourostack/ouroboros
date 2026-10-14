@@ -7,7 +7,7 @@ import { emitNervesEvent } from "../../nerves/runtime"
 import type { TeamsBotApi } from "../teams"
 import type { HostSession } from "./host"
 import { readReturns, type ReturnRecord } from "./returns"
-import { declareNoticeTargets, enqueueNotice, knownNotice, noticeDeliveryState, noticeRecordId, readNoticeOutbox, recordNoticeDelivery } from "./notice-outbox"
+import { claimPendingNotices, declareNoticeTargets, enqueueNotice, knownNotice, noticeDeliveryState, noticeRecordId, readNoticeOutbox, recordNoticeDelivery } from "./notice-outbox"
 
 /**
  * The owner notice: after a judged return, the agent's owner hears what happened in one short plain message on their
@@ -256,10 +256,10 @@ export function createOwnerNotifier(options: OwnerNotifierOptions): OwnerNotifie
       for (const target of targets) {
         const pending = entries.filter(entry => noticeDeliveryState(entry, target.friendId) === "pending")
         for (let start = 0; start < pending.length && !stopped; start += NOTICE_LIST_MAX) {
-          const batch = pending.slice(start, start + NOTICE_LIST_MAX)
+          // Only the worker that atomically claims a pending entry may initiate transport.
+          const batch = await claimPendingNotices(options.agentRoot, pending.slice(start, start + NOTICE_LIST_MAX).map(entry => entry.id), target.friendId, new Date().toISOString())
+          if (batch.length === 0) continue
           const ids = batch.map(entry => entry.id)
-          // Persist uncertainty before initiating an external send, so a crash cannot blindly replay it.
-          await recordNoticeDelivery(options.agentRoot, ids, target.friendId, { state: "unknown", at: new Date().toISOString(), reason: "awaiting transport acceptance" })
           try {
             const result = await send(target, noticeMessage(batch.map(entry => entry.record), refs))
             const state = result.delivered ? "sent"

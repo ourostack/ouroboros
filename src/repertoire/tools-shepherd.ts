@@ -9,6 +9,7 @@ import { readReturns, type ReturnRecord } from "../senses/shepherd/returns"
 import { SELF_FRIEND_ID, type ToolContext, type ToolDefinition } from "./tools-base"
 import { shepherdGuidanceToolDefinitions } from "./tools-shepherd-guidance"
 import { shepherdReturnId } from "../senses/shepherd/guidance"
+import { assertBoundShepherdTarget } from "../senses/shepherd/target-binding"
 
 /**
  * Shepherd's tools: every coding-agent session on this machine's terminal host with a current screen
@@ -51,6 +52,11 @@ async function withHost(tool: string, ctx: ToolContext | undefined, run: (host: 
   const host = hostFor(ctx.agentName)
   if (typeof host === "string") return JSON.stringify({ error: host })
   try {
+    if (ctx.currentShepherdSurface) {
+      const bound = ctx.currentShepherdSurface
+      assertBoundShepherdTarget(bound, bound.id, host.name)
+      if (!(await host.list()).some(session => session.id === bound.id)) throw new Error(`bound terminal ${bound.id} is gone; nothing was read or sent`)
+    }
     const result = await run(host)
     emitNervesEvent({ component: "repertoire", event: "repertoire.shepherd_tool", message: "ran a Shepherd tool", meta: { tool } })
     return JSON.stringify(result)
@@ -128,6 +134,7 @@ export const shepherdReadToolDefinition: ToolDefinition = {
     const session = text(args.session).trim()
     if (!session) return Promise.resolve(JSON.stringify({ error: "name a session id or ref from shepherd_overview" }))
     return withHost("shepherd_read", ctx, async (host) => {
+      assertBoundShepherdTarget(ctx?.currentShepherdSurface, session, host.name)
       const lines = boundedLines(args.lines)
       // A fingerprint needs enough lines to match the one shepherd_send takes, whatever the caller asked to see.
       const raw = await host.read(session, Math.max(lines, FINGERPRINT_READ_LINES))
@@ -165,6 +172,7 @@ export const shepherdSignalToolDefinition: ToolDefinition = {
     if (!session) return Promise.resolve(JSON.stringify({ error: "name a session id or ref from shepherd_overview" }))
     if (status.length > STATUS_MAX_CHARS || /[\r\n]/.test(status)) return Promise.resolve(JSON.stringify({ error: `status must be one line of at most ${STATUS_MAX_CHARS} characters` }))
     return withHost("shepherd_signal", ctx, async (host) => {
+      assertBoundShepherdTarget(ctx?.currentShepherdSurface, session, host.name)
       await host.signal(session, status || null, title ? { title, body: text(args.notify_body) } : undefined)
       return { session, status: status ? "set" : "cleared", notified: !!title }
     })
@@ -214,6 +222,7 @@ export const shepherdSendToolDefinition: ToolDefinition = {
     if (/[\p{Cc}\u2028\u2029]/u.test(line)) return refuse("text must be one line with no control characters; press enter, escape or ctrl-c with key")
     if (CHOOSING_KEYS.has(key) && !seen) return refuse(`${key} can approve or choose on a prompt, so pass screen from a shepherd_read made just before`)
     return withHost("shepherd_send", ctx, async (host) => {
+      assertBoundShepherdTarget(ctx?.currentShepherdSurface, session, host.name)
       const target = (await host.list()).find((entry) => entry.id === session || entry.ref === session)
       if (!target) return refused(`session ${session} is gone; check shepherd_overview`, meta)
       // Read again right before typing, as Shepherd does before its own answers: a gone or changed screen gets nothing.

@@ -23,6 +23,10 @@ import {
 } from "../../../senses/shepherd/owner-notice"
 
 const mockSend = vi.fn()
+vi.mock("node:fs", async original => {
+  const actual = await original<typeof import("node:fs")>()
+  return { ...actual, renameSync: vi.fn(actual.renameSync) }
+})
 vi.mock("../../../senses/teams", () => ({
   sendProactiveTeamsMessageToSession: (...args: unknown[]) => mockSend(...args),
 }))
@@ -221,6 +225,72 @@ describe("owner notifier", () => {
     })
     return { instance, sent }
   }
+
+  it("retains an enqueue failure for retry and reports custody explicitly instead of silently dropping it", async () => {
+    const { instance, sent } = notifier()
+    vi.mocked(fs.renameSync).mockImplementationOnce(() => { throw new Error("outbox publication unavailable") })
+    await instance.notify(record())
+    expect(sent).toEqual([])
+    expect(events).toContainEqual(expect.objectContaining({ level: "error", message: "could not persist a Shepherd owner notice intent; it remains waiting" }))
+    await instance.flush()
+    expect(sent).toHaveLength(1)
+    expect(readNoticeOutbox(root)[0]!.deliveries[ari.friendId]!.state).toBe("sent")
+  })
+
+  it("reports a corrupt outbox at startup and keeps a retry scheduled without initiating transport", async () => {
+    fs.mkdirSync(path.join(root, "state", "senses", "shepherd"), { recursive: true })
+    fs.writeFileSync(path.join(root, "state", "senses", "shepherd", "notice-outbox.json"), "{invalid")
+    const { instance, sent } = notifier()
+    expect(events).toContainEqual(expect.objectContaining({ level: "error", message: "could not read waiting Shepherd owner notices" }))
+    await instance.flush()
+    expect(sent).toEqual([])
+    expect(tasks.map(task => task.ms)).toEqual([NOTICE_RETRY_MS])
+    instance.stop()
+  })
+
+  it("shares an in-flight flush and leaves a definite failure durable without rescheduling after stop", async () => {
+    const started = Promise.withResolvers<void>()
+    const receipt = Promise.withResolvers<{ delivered: boolean; delivery: { state: "not_sent" } }>()
+    const { instance } = notifier({ send: async () => { started.resolve(); return receipt.promise } })
+    await instance.notify(record())
+    const first = instance.flush()
+    expect(instance.flush()).toBe(first)
+    await started.promise
+    instance.stop()
+    receipt.resolve({ delivered: false, delivery: { state: "not_sent" } })
+    await first
+    expect(tasks).toEqual([])
+    expect(readNoticeOutbox(root)[0]!.deliveries[ari.friendId]!.state).toBe("pending")
+  })
+
+  it("retains the actual accepted Teams activity ID with the notice receipt", async () => {
+    const { instance } = notifier({ send: async () => ({ delivered: true, delivery: { state: "accepted", messageId: "activity-accepted", conversationId: "conversation-accepted" } }) })
+    await instance.notify(record())
+    await instance.flush()
+    expect(readNoticeOutbox(root)[0]!.deliveries[ari.friendId]).toMatchObject({ state: "sent", messageId: "activity-accepted", attempts: 1 })
+  })
+
+  it.each(["sent", "unknown"] as const)("only one concurrent notifier can initiate transport when the winner becomes %s", async outcome => {
+    const loaded = Promise.withResolvers<void>()
+    let readers = 0
+    const targets = async () => {
+      if (++readers === 2) loaded.resolve()
+      await loaded.promise
+      return [ari]
+    }
+    const transport: string[] = []
+    const send = async (_target: NoticeTarget, message: string) => {
+      transport.push(message)
+      return outcome === "sent" ? { delivered: true } : { delivered: false, delivery: { state: "unknown" as const } }
+    }
+    const first = notifier({ resolveTargets: targets, send })
+    await first.instance.notify(record())
+    const second = notifier({ resolveTargets: targets, send })
+    await Promise.all([first.instance.flush(), second.instance.flush()])
+    expect(transport).toHaveLength(1)
+    expect(readNoticeOutbox(root)[0]!.deliveries[ari.friendId]!.state).toBe(outcome)
+    expect(readNoticeOutbox(root)[0]!.deliveries[ari.friendId]!.attempts).toBe(1)
+  })
 
   it("retains an eligible return across stop and a fresh notifier before any send", async () => {
     const first = notifier()
