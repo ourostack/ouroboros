@@ -61,6 +61,87 @@ describe("frontend socket", () => {
     while (cleanup.length > 0) await cleanup.pop()!()
   })
 
+  it("validates daemon target/identity, pins a UUID despite focus changes and fails disappearance", async () => {
+    const { FrontendSessionService } = await import("../../heart/frontend-session-service")
+    const { startFrontendSocketServer } = await import("../../heart/frontend-socket")
+    const { SocketFrontendClient } = await import("../../heart/frontend-socket-client")
+    const session = { id: "11111111-1111-4111-8111-111111111111", host: "cmux" as const, label: "Copilot / repo / work / tab" }
+    let targets = [session]
+    const received: any[] = []
+    const service = new FrontendSessionService({
+      runner: async input => { received.push(input); return settledResult() },
+      shepherdTargets: async (_agent, friendId) => {
+        if (friendId !== "owner") throw new Error("existing local-family identity required")
+        return targets
+      },
+    })
+    const server = await startFrontendSocketServer({ socketPath: socketPath("composer-routing"), service })
+    cleanup.push(() => server.stop())
+    const client = new SocketFrontendClient(server.socketPath)
+    cleanup.push(async () => client.close())
+    await expect(client.request("shepherd.targets", { agent: "boss", friendId: "wrong" })).rejects.toThrow("local-family")
+    expect(await client.request("shepherd.targets", { agent: "boss", friendId: "owner" })).toEqual({ targets: [session] })
+    await expect(client.request("shepherd.targets", { agent: "boss", friendId: "owner", composerTty: "../invalid" })).rejects.toThrow("terminal device")
+    const request = { turnId: "composer-turn", agent: "boss", friendId: "owner", channel: "cli", sessionKey: `shepherd:${session.id}`,
+      message: "  exact message  ", shepherdSession: { ...session, label: "client-spoofed label" } }
+    await expect(client.request("turn.start", { ...request, sessionKey: "wrong" })).rejects.toThrow("per-surface")
+    await expect(client.request("turn.start", request)).resolves.toMatchObject({ accepted: true })
+    await new Promise(resolve => setTimeout(resolve, 10))
+    expect(received[0]).toMatchObject({ userMessage: "  exact message  ", shepherdSession: session })
+    targets = [{ ...session, id: "22222222-2222-4222-8222-222222222222" }]
+    await expect(client.request("turn.start", { ...request, turnId: "gone" })).rejects.toThrow("unavailable")
+    await expect(client.request("turn.start", { ...request, turnId: "bad", shepherdSession: {} })).rejects.toThrow("UUID")
+    expect(await client.request("turn.status", { ...request, turnId: "missing" })).toEqual({ state: "unknown", events: [] })
+    expect(received).toHaveLength(1)
+  })
+
+  it("reconciles a dropped first acknowledgement over the real Unix socket and durable journal exactly once", async () => {
+    const { FrontendSessionService } = await import("../../heart/frontend-session-service")
+    const { FrontendJournalStore } = await import("../../heart/frontend-journal")
+    const { startFrontendSocketServer } = await import("../../heart/frontend-socket")
+    const { SocketFrontendClient } = await import("../../heart/frontend-socket-client")
+    const { ShepherdComposer } = await import("../../senses/shepherd/composer")
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "composer-ack-journal-"))
+    console.info(`Resources: exact-owned journal fixture ${root}`)
+    const target = { id: "11111111-1111-4111-8111-111111111111", host: "cmux" as const, label: "Copilot / isolated fixture" }
+    let turns = 0
+    const service = new FrontendSessionService({
+      journal: new FrontendJournalStore({ agentRoot: () => root }),
+      shepherdTargets: async () => [target],
+      runner: async input => {
+        turns += 1
+        input.frontendEventSink!.onEvent({ type: "text_delta", data: { text: "preliminary" } })
+        input.frontendEventSink!.onEvent({ type: "assistant_delivery", data: { text: "journal-authoritative answer" } })
+        return settledResult("final fallback")
+      },
+    })
+    const server = await startFrontendSocketServer({ socketPath: socketPath("composer-ack"), service })
+    cleanup.push(() => server.stop())
+    const transport = new SocketFrontendClient(server.socketPath)
+    const composer = new ShepherdComposer({
+      agent: "boss", friendId: "owner", target,
+      client: {
+        async request(method, params) {
+          const result = await transport.request(method, params)
+          if (method === "turn.start") {
+            transport.close()
+            throw new Error("first acknowledgement lost")
+          }
+          return result
+        },
+        // Simulate a failed acknowledgement connection dropping its event frames too.
+        onEvent: () => () => {},
+        onClose: () => () => {},
+        close: () => transport.close(),
+      },
+    })
+    cleanup.push(async () => composer.close())
+    await expect(composer.submit("exact human")).resolves.toBe("journal-authoritative answer")
+    expect(turns).toBe(1)
+    expect(service.loadSession({ agent: "boss", friendId: "owner", sessionKey: composer.sessionKey }).events.filter(event => event.type === "user_message"))
+      .toHaveLength(1)
+  })
+
   it("derives a stable frontend path within the Unix socket limit", async () => {
     const { frontendSocketPathForDaemon } = await import("../../heart/frontend-socket")
     expect(frontendSocketPathForDaemon("/tmp/ouro.sock")).toBe("/tmp/ouro.sock.frontend")

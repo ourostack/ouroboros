@@ -9,6 +9,8 @@ import {
   type FrontendJournalRef,
 } from "./frontend-journal"
 import { emitNervesEvent } from "../nerves/runtime"
+import { authorizedShepherdTargets, type ShepherdSession } from "../senses/shepherd/surface"
+import type { FrontendJournalEvent } from "./frontend-journal"
 
 export class FrontendTurnConflictError extends Error {
   constructor(turnId: string) {
@@ -31,6 +33,7 @@ export interface FrontendTurnRequest {
   channel: Channel
   sessionKey: string
   message: string
+  shepherdSession?: ShepherdSession
   runtimeMcpServers?: RuntimeMcpServers
   disableTools?: boolean
   ephemeral?: boolean
@@ -112,20 +115,56 @@ function required(value: string, field: string): string {
 export class FrontendSessionService {
   private readonly activeTurns = new Map<string, AbortController>()
   private readonly activeSessions = new Map<string, string>()
+  private readonly turnRefs = new Map<string, FrontendSessionRef>()
   private readonly listeners = new Set<FrontendServiceListener>()
   private readonly runner: FrontendTurnRunner
   private readonly journal: FrontendJournalStore | null
   private readonly authority: FrontendAuthorityRuntime | null
   private closed = false
+  private readonly shepherdTargets: typeof authorizedShepherdTargets
 
   constructor(options: {
     runner?: FrontendTurnRunner
     journal?: FrontendJournalStore | null
     authority?: FrontendAuthorityRuntime | null
+    shepherdTargets?: typeof authorizedShepherdTargets
   } = {}) {
     this.runner = options.runner ?? runSenseTurn
     this.journal = options.journal ?? null
     this.authority = options.authority ?? null
+    this.shepherdTargets = options.shepherdTargets ?? authorizedShepherdTargets
+  }
+
+  listShepherdTargets(agent: string, friendId: string, composerTty?: string): Promise<ShepherdSession[]> {
+    if (composerTty !== undefined && !/^\/dev\/[A-Za-z0-9/_-]{1,120}$/.test(composerTty)) throw new Error("composerTty must be a terminal device path")
+    return this.shepherdTargets(required(agent, "agent"), required(friendId, "friendId"), composerTty)
+  }
+
+  async resolveShepherdSession(agent: string, friendId: string, value: unknown, composerTty?: string): Promise<ShepherdSession> {
+    const id = value && typeof value === "object" ? (value as { id?: unknown }).id : undefined
+    if (typeof id !== "string") throw new Error("shepherdSession requires a stable UUID")
+    const targets = await this.listShepherdTargets(agent, friendId, composerTty)
+    const target = targets.find(candidate => candidate.id.toLowerCase() === id.toLowerCase())
+    if (!target) throw new Error(`selected Shepherd terminal is unavailable: ${id}`)
+    return Object.freeze({ ...target })
+  }
+
+  turnStatus(ref: FrontendSessionRef, turnId: string): { state: "active" | "completed" | "incomplete" | "unknown"; events: FrontendJournalEvent[] } {
+    const events: FrontendJournalEvent[] = []
+    if (this.journal) {
+      let afterSequence = 0
+      for (;;) {
+        const replay = this.loadSession(ref, { afterSequence })
+        if (replay.degraded) throw new Error("frontend journal is degraded; turn status is unknown")
+        events.push(...replay.events.filter(event => event.turnId === turnId))
+        if (!replay.hasMore) break
+        afterSequence = replay.events.at(-1)!.sequence
+      }
+    }
+    const activeRef = this.turnRefs.get(turnId)
+    const active = activeRef && activeRef.agent === ref.agent && activeRef.friendId === ref.friendId && activeRef.sessionKey === ref.sessionKey
+    const terminal = events.some(event => ["turn_completed", "turn_failed", "turn_cancelled"].includes(event.type))
+    return { state: terminal ? "completed" : active ? "active" : events.length ? "incomplete" : "unknown", events }
   }
 
   hasTurn(turnId: string): boolean {
@@ -193,14 +232,17 @@ export class FrontendSessionService {
       agent: required(request.agent, "agent"),
       friendId: required(request.friendId, "friendId"),
       sessionKey: required(request.sessionKey, "sessionKey"),
-      message: required(request.message, "message"),
+      message: (required(request.message, "message"), request.message),
+      ...(request.shepherdSession ? { shepherdSession: Object.freeze({ ...request.shepherdSession }) } : {}),
     }
     if (this.activeTurns.has(turnId)) throw new FrontendTurnConflictError(turnId)
+    if (this.journal && this.turnStatus(normalized, turnId).state !== "unknown") throw new FrontendTurnConflictError(turnId)
     const sessionIdentity = [normalized.agent, normalized.friendId, normalized.channel, normalized.sessionKey].join("\0")
     if (this.activeSessions.has(sessionIdentity)) throw new FrontendSessionConflictError(normalized.sessionKey)
 
     const controller = new AbortController()
     this.activeTurns.set(turnId, controller)
+    this.turnRefs.set(turnId, normalized)
     this.activeSessions.set(sessionIdentity, turnId)
     return { request: normalized, sessionIdentity, controller, started: false }
   }
@@ -234,6 +276,7 @@ export class FrontendSessionService {
         channel: normalized.channel,
         sessionKey: normalized.sessionKey,
         userMessage: normalized.message,
+        ...(normalized.shepherdSession ? { shepherdSession: normalized.shepherdSession } : {}),
         signal: controller.signal,
         latencyMode: "live",
         frontendEventSink,
@@ -276,6 +319,7 @@ export class FrontendSessionService {
       throw error
     } finally {
       this.activeTurns.delete(turnId)
+      this.turnRefs.delete(turnId)
       this.activeSessions.delete(sessionIdentity)
     }
   }
