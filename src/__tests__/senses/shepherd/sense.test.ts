@@ -10,6 +10,7 @@ import type { JudgeResult, ReturnPacket } from "../../../senses/shepherd/judge"
 import { appendReturn, readReturns, returnsLogPath, type ReturnRecord } from "../../../senses/shepherd/returns"
 import { escalationContent, field, humanName, noticePolicy, queueEscalation, startShepherdSenseApp, wakeForEscalations } from "../../../senses/shepherd/sense"
 import { ackFrame, startFakeCmux } from "./fake-cmux"
+import { recordShepherdCorrection, setShepherdSessionPause } from "../../../senses/shepherd/guidance"
 import { hookEvent, SCREENS, tree } from "./fixtures"
 
 const mockRequestPrivateWake = vi.fn()
@@ -119,6 +120,74 @@ afterEach(() => {
 })
 
 describe("Shepherd sense: answering premature returns", () => {
+  const target = { host: "fake", session: "S1", cwd: "/Users/a/code/app", task: null }
+  const establish = () => appendReturn(agentRoot, { at: "earlier", host: "fake", session: "S1", transition: "earlier", agent: "claude", cwd: target.cwd, task: null, kind: "gate", action: "let_through", reason: "review", reply: null, latencyMs: 1, inputTokens: 1 })
+
+  it("includes persisted applicable principles in the next judgment but excludes other sessions", async () => {
+    establish()
+    await recordShepherdCorrection(agentRoot, { actorId: "ari", requestId: "learn", target, feedback: "Review is external", principle: "Wait for review." })
+    const packets: ReturnPacket[] = []
+    const { host, returned } = await start(async packet => { packets.push(packet); return verdict({ kind: "waiting", reply: null }) })
+    host.screens.S1 = ["PR awaiting review"]
+    host.screens.S2 = ["other"]
+    await returned({ sessionId: "S1", transitionId: "next" })
+    await returned({ sessionId: "S2", transitionId: "other" })
+    expect(packets[0]!.guidance).toMatchObject({ revision: 1, principles: [{ text: "Wait for review." }] })
+    expect(packets[1]!.guidance!.principles).toEqual([])
+  })
+
+  it("honors pause and resume with no automatic input while paused", async () => {
+    establish()
+    await setShepherdSessionPause(agentRoot, { actorId: "ari", requestId: "pause", target, paused: true })
+    const { host, returned, last } = await start(async () => verdict())
+    host.screens.S1 = [SCREENS.claudePremature]
+    await returned({ sessionId: "S1", transitionId: "paused" })
+    expect(last().action).toBe("let_through")
+    expect(last().reason).toMatch(/paused/)
+    expect(host.actions.some(action => action.startsWith("prompt"))).toBe(false)
+    await setShepherdSessionPause(agentRoot, { actorId: "ari", requestId: "resume", target, paused: false })
+    await returned({ sessionId: "S1", transitionId: "resumed" })
+    expect(last().action).toBe("respond")
+  })
+
+  it.each(["pause", "revision", "corrupt"])("fails closed when guidance %s changes during an in-flight judgment", async change => {
+    establish()
+    const { host, returned, last, notices } = await start(async () => {
+      if (change === "pause") await setShepherdSessionPause(agentRoot, { actorId: "ari", requestId: "pause", target, paused: true })
+      else if (change === "revision") await recordShepherdCorrection(agentRoot, { actorId: "ari", requestId: "learn", target, feedback: "Different", principle: "Do not approve it." })
+      else fs.writeFileSync(path.join(agentRoot, "state/senses/shepherd/guidance.json"), "broken")
+      return verdict()
+    })
+    host.screens.S1 = [SCREENS.claudePremature]
+    await returned({ sessionId: "S1", transitionId: `change-${change}` })
+    expect(host.actions.some(action => /^(prompt|key) /.test(action))).toBe(false)
+    expect(last().action).toBe("let_through")
+    expect(last().reason).toMatch(/guidance|paused/)
+    expect(notices).toHaveLength(1)
+  })
+
+  it("reports unreadable guidance before judging and blocks an automatic reply", async () => {
+    establish()
+    fs.writeFileSync(path.join(agentRoot, "state/senses/shepherd/guidance.json"), "broken")
+    let judged = false
+    const { host, returned, last } = await start(async () => { judged = true; return verdict() })
+    host.screens.S1 = [SCREENS.claudePremature]
+    await returned({ sessionId: "S1", transitionId: "corrupt" })
+    expect(judged).toBe(false)
+    expect(last()).toMatchObject({ kind: "error", action: "let_through" })
+    expect(last().reason).toMatch(/Shepherd guidance/)
+  })
+
+  it("escalates waiting as an outside dependency, without sending or claiming delivery", async () => {
+    const { host, returned, last, escalations, notices } = await start(async () => verdict({ kind: "waiting", reply: null, reason: "PR awaiting someone else's review." }))
+    host.screens.S1 = ["PR awaiting review"]
+    await returned({ sessionId: "S1", transitionId: "waiting" })
+    expect(last()).toMatchObject({ kind: "waiting", action: "let_through" })
+    expect(escalations[0]).toContain("waiting on an outside dependency")
+    expect(escalations[0]).not.toContain("work is done")
+    expect(notices[0]!.kind).toBe("waiting")
+    expect(host.actions.some(action => /^(prompt|key) /.test(action))).toBe(false)
+  })
   it("types the judge's line visibly as the human's Ouro, sets the status, and logs it", async () => {
     const packets: ReturnPacket[] = []
     const { host, escalations, last } = await start(async (packet) => { packets.push(packet); return verdict() })
@@ -133,6 +202,7 @@ describe("Shepherd sense: answering premature returns", () => {
     expect(last()).toEqual({
       at: "2026-10-10T20:00:00.000Z", host: "fake", session: "S1", transition: "cmux:B:101", agent: "claude", cwd: "/Users/a/code/app", task: "ouro-md/toolbar-polish",
       kind: "premature", action: "respond", reason: "It stopped after a plan.", reply: "Go ahead and implement it.", latencyMs: 900, inputTokens: 1200,
+      guidanceRevision: 0,
     })
     expect(escalations).toEqual([])
     expect(fs.statSync(returnsLogPath(agentRoot)).mode & 0o777).toBe(0o600)

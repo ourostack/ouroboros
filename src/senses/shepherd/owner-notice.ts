@@ -70,6 +70,8 @@ export function noticeLine(record: ReturnRecord, location?: string | HostSession
       return `${subject} needs you. ${why}`
     case "done":
       return `${subject} says it is done. ${why}`
+    case "waiting":
+      return `${subject} is waiting on an outside dependency; the work is not yet delivered. ${why}`
     case "loop_guard":
       return `${subject}: I stopped answering it after too many replies, so it is waiting for you. ${why}`
     case "working":
