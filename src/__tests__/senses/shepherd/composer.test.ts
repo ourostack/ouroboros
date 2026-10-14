@@ -5,6 +5,7 @@ import { runShepherdComposer, composerTerminalTty } from "../../../senses/shephe
 import { PassThrough } from "node:stream"
 import * as surface from "../../../senses/shepherd/surface"
 import * as frontend from "../../../heart/frontend-socket-client"
+import { FrontendRequestError } from "../../../heart/frontend-socket-client"
 import * as readline from "node:readline"
 import * as childProcess from "node:child_process"
 import { registerGlobalLogSink, type LogEvent } from "../../../nerves"
@@ -91,6 +92,33 @@ describe("Shepherd composer", () => {
       expect(JSON.stringify(events)).not.toContain("hello coding friend")
       composer.close()
     } finally { unregister() }
+  })
+
+  it("rejects an invalid explicit request identity before transport work", async () => {
+    const wire = transport()
+    const composer = new ShepherdComposer({ client: wire.client, agent: "ouro", friendId: "owner", target: first })
+    await expect(composer.submit("message", "not-a-UUID")).rejects.toThrow("request id")
+    expect(wire.calls).toEqual([])
+    expect(composer.busy).toBe(false)
+    composer.close()
+  })
+
+  it("does not change a closed composer when a definitive refusal arrives after local shutdown", async () => {
+    const wire = transport()
+    const refused = Promise.withResolvers<never>()
+    const request = wire.client.request.bind(wire.client)
+    wire.client.request = async (method, params) => {
+      const result = await request(method, params)
+      return method === "turn.start" ? refused.promise : result
+    }
+    const composer = new ShepherdComposer({ client: wire.client, agent: "ouro", friendId: "owner", target: first })
+    const sending = composer.submit("message")
+    const rejected = expect(sending).rejects.toThrow("closed")
+    await vi.waitFor(() => expect(wire.calls.some(call => call.method === "turn.start")).toBe(true))
+    refused.reject(new FrontendRequestError("turn_rejected", "definitively not started"))
+    composer.close()
+    await rejected
+    expect(composer.busy).toBe(false)
   })
 
   it("reconciles a lost first acknowledgement from status without resubmitting", async () => {

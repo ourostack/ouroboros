@@ -2,8 +2,8 @@ import { randomUUID } from "node:crypto"
 import { spawnSync } from "node:child_process"
 import * as readline from "node:readline"
 import type { Readable, Writable } from "node:stream"
-import { SocketFrontendClient, type FrontendProtocolClient } from "../../heart/frontend-socket-client"
-import { localShepherdFriendStore, resolveExistingLocalOwner, type ShepherdSession } from "./surface"
+import { FrontendRequestError, SocketFrontendClient, type FrontendProtocolClient } from "../../heart/frontend-socket-client"
+import { localShepherdFriendStore, resolveExistingLocalOwner, SHEPHERD_UUID, type ShepherdSession } from "./surface"
 import { emitNervesEvent } from "../../nerves/runtime"
 
 /** Identify only this UI's own device, never capture a changing focused terminal. */
@@ -81,12 +81,13 @@ export class ShepherdComposer {
 
   get busy(): boolean { return this.active !== null }
 
-  async submit(input: string): Promise<string> {
+  async submit(input: string, requestId?: string): Promise<string> {
     if (this.active) throw new Error("Ouro already has an active turn; use /cancel")
+    if (requestId !== undefined && !SHEPHERD_UUID.test(requestId)) throw new Error("Ouro request id must be a UUID")
     const message = input.replace(/^@ouro(?:\s+|$)/i, "")
     if (!message.trim()) throw new Error("message must not be empty")
     const completion = Promise.withResolvers<string>()
-    const turn: ComposerTurn = { id: randomUUID(), events: [], seen: new Set(), recovering: 0, reconciliationPending: false, dispatched: false, cancelled: false,
+    const turn: ComposerTurn = { id: requestId ?? randomUUID(), events: [], seen: new Set(), recovering: 0, reconciliationPending: false, dispatched: false, cancelled: false,
       unresolved: false, resolve: completion.resolve, reject: completion.reject }
     this.active = turn
     // Attach a rejection handler before transport work to avoid unhandled rejection races.
@@ -102,6 +103,10 @@ export class ShepherdComposer {
       })
       emitNervesEvent({ component: "senses", event: "senses.shepherd_composer_turn_submitted", message: "submitted an independent fixed-target Ouro turn", meta: { agent: this.agent, session: this.target.id, turnId } })
     } catch (sendError) {
+      if (sendError instanceof FrontendRequestError && sendError.code === "turn_rejected") {
+        if (this.active === turn) this.fail(sendError)
+        return completion.promise
+      }
       // Unknown acknowledgement is never retried. Even a rejected send may have run.
       if (this.active === turn) {
         try { await this.recover() } catch (error) {

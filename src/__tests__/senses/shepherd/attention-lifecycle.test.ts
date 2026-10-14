@@ -84,6 +84,32 @@ describe("managed native attention lifecycle", () => {
     await expect(runShepherdAttention({ agent: "ouro", socketPath: "/test" })).rejects.toThrow("open missing")
   })
 
+  it("never replaces the managed native entry with a one-off web listener, even on open failure", async () => {
+    const managed = await startManagedShepherdAttention({ agent: "ouro", socketPath: "/test" })
+    const file = path.join(runtime.home, ".config/cmux/sidebars/ouro-attention-ouro.swift")
+    const original = fs.readFileSync(file, "utf8")
+    let stop: () => void = () => {}
+    const originalOnce = process.once.bind(process)
+    vi.spyOn(process, "once").mockImplementation((event, listener) => {
+      if (event === "SIGINT" || event === "SIGTERM") { stop = listener; return process }
+      return originalOnce(event, listener)
+    })
+    runtime.spawn.mockClear()
+    const running = runShepherdAttention({ agent: "ouro", socketPath: "/test" })
+    try {
+      await vi.waitFor(() => expect(runtime.spawn.mock.calls.some(([, args]) => args[0] === "browser")).toBe(true))
+      expect(fs.readFileSync(file, "utf8")).toBe(original)
+    } finally {
+      stop()
+      await running
+      runtime.spawn.mockImplementation(() => ({ status: 1, stderr: "one-off open failed" }))
+      await expect(runShepherdAttention({ agent: "ouro", socketPath: "/test" })).rejects.toThrow("open failed")
+      const final = fs.readFileSync(file, "utf8")
+      await managed.close()
+      expect(final).toBe(original)
+    }
+  })
+
   it("does not create a view when owner or target discovery is unavailable", async () => {
     runtime.owner.mockRejectedValueOnce(new Error("owner unavailable"))
     await expect(startManagedShepherdAttention({ agent: "ouro", socketPath: "/test" })).rejects.toThrow("owner unavailable")

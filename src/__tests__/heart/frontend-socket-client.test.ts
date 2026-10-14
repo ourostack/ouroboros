@@ -2,7 +2,7 @@ import * as net from "node:net"
 import * as path from "node:path"
 import { afterEach, describe, expect, it } from "vitest"
 
-import { SocketFrontendClient } from "../../heart/frontend-socket-client"
+import { FrontendRequestError, SocketFrontendClient } from "../../heart/frontend-socket-client"
 
 function socketPath(name: string): string {
   return path.join("/tmp", `${name}-${Date.now()}-${Math.random().toString(16).slice(2)}.sock`)
@@ -84,7 +84,7 @@ describe("frontend socket client", () => {
             protocolVersion: 1,
             id: request.id,
             ok: false,
-            error: count === 1 ? { message: "denied" } : {},
+            error: count === 1 ? { message: "denied", code: "turn_rejected" } : {},
           })}\n`)
         }
       })
@@ -92,7 +92,10 @@ describe("frontend socket client", () => {
     cleanup.push(() => close(server))
     const client = new SocketFrontendClient(target)
 
-    await expect(client.request("one", {})).rejects.toThrow("denied")
+    const rejected = client.request("one", {})
+    await expect(rejected).rejects.toThrow("denied")
+    await expect(rejected).rejects.toBeInstanceOf(FrontendRequestError)
+    await expect(rejected).rejects.toMatchObject({ code: "turn_rejected" })
     await expect(client.request("two", {})).rejects.toThrow("frontend request failed")
     client.close()
   })

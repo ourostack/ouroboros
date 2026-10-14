@@ -56,9 +56,11 @@ export async function startShepherdAttention(options: {
     })
     return view.composer
   }
-  const state = (view: AttentionView) => ({
+  const state = (view: AttentionView, viewId: string, requestId?: string) => ({
     targets: targets.map(item => ({ id: item.id, label: item.displayLabel ?? "Coding session" })),
     target: view.target?.id ?? null, active: view.composer?.busy ?? false, messages: view.messages,
+    acknowledged: requestId && submissions.get(requestId)?.view === viewId
+      ? { id: requestId, target: submissions.get(requestId)!.target } : null,
   })
   const server = http.createServer((request, response) => {
     const json = (status: number, value: unknown) => {
@@ -84,7 +86,8 @@ export async function startShepherdAttention(options: {
         view = { target: selected ?? null, composer: null, messages: [] }
         views.set(viewId, view)
       }
-      if (request.method === "GET" && request.url === "/state") return json(200, state(view))
+      const pendingId = typeof request.headers["x-ouro-pending"] === "string" ? request.headers["x-ouro-pending"] : undefined
+      if (request.method === "GET" && request.url === "/state") return json(200, state(view, viewId, pendingId))
       if (request.method !== "POST" || request.headers.origin !== origin
         || request.headers["content-type"] !== "application/json") return json(403, { error: "Invalid attention origin or content type." })
       let body = ""
@@ -96,6 +99,11 @@ export async function startShepherdAttention(options: {
       try { input = JSON.parse(body) } catch { return json(400, { error: "Invalid JSON." }) }
       if (!input || typeof input !== "object" || Array.isArray(input)) return json(400, { error: "Invalid request." })
       const fields = input as Record<string, unknown>
+      if (request.url === "/targets") {
+        const refresh = makeClient()
+        try { targets = (await refresh.request("shepherd.targets", { agent: options.agent, friendId })).targets } finally { refresh.close() }
+        return json(200, state(view, viewId, pendingId))
+      }
       if (request.url === "/select") {
         if (view.composer?.busy) return json(409, { error: "Wait for or cancel Ouro before changing the session." })
         if (typeof fields.target !== "string") return json(400, { error: "Choose a session." })
@@ -109,16 +117,17 @@ export async function startShepherdAttention(options: {
           view.target = next
           view.messages = []
         }
-        return json(200, state(view))
+        return json(200, state(view, viewId, pendingId))
       }
       if (request.url === "/send") {
         if (typeof fields.id !== "string" || !SHEPHERD_UUID.test(fields.id)
           || typeof fields.message !== "string" || !fields.message.replace(/^@ouro(?:\s+|$)/i, "").trim()) return json(400, { error: "Enter a message for Ouro." })
         if (!view.target) return json(409, { error: "Choose the session you want to discuss." })
+        if (fields.target !== undefined && fields.target !== view.target.id) return json(409, { error: "This pending message is pinned to another session." })
         const prior = submissions.get(fields.id)
         if (prior) {
           if (prior.view !== viewId || prior.target !== view.target.id || prior.message !== fields.message) return json(409, { error: "This request id belongs to a different message or session." })
-          return json(202, state(view))
+          return json(202, state(view, viewId, fields.id))
         }
         if (view.composer?.busy) return json(409, { error: "Ouro is already replying. Your draft has not been sent." })
         if (submissions.size >= 2_000) return json(409, { error: "Attention reached its message limit. Restart Shepherd before sending more messages." })
@@ -126,8 +135,8 @@ export async function startShepherdAttention(options: {
         submissions.set(fields.id, { view: viewId, target: view.target.id, message: fields.message })
         append(view, "you", fields.message)
         const submittedView = view
-        void bound.submit(fields.message).catch(error => append(submittedView, "notice", String(error)))
-        return json(202, state(view))
+        void bound.submit(fields.message, fields.id).catch(error => append(submittedView, "notice", String(error)))
+        return json(202, state(view, viewId, fields.id))
       }
       if (request.url === "/cancel") {
         const cancelled = await view.composer?.cancel() ?? false
@@ -135,7 +144,7 @@ export async function startShepherdAttention(options: {
       }
       if (request.url === "/recover") {
         await view.composer?.recover()
-        return json(200, state(view))
+        return json(200, state(view, viewId, pendingId))
       }
       return json(404, { error: "Unknown attention action." })
     })().catch(error => {
@@ -181,7 +190,7 @@ export async function startManagedShepherdAttention(options: { agent: string; se
 }
 
 export async function runShepherdAttention(options: { agent: string; session?: string; socketPath: string }): Promise<void> {
-  const app = await startManagedShepherdAttention(options)
+  const app = await startShepherdAttention(options)
   try {
     const opened = spawnSync("cmux", ["browser", "open", app.url + (options.session ? `&session=${options.session}` : ""), "--focus", "false"], { encoding: "utf8" })
     if (opened.error || opened.status !== 0) throw new Error(`Could not open Ouro attention in cmux: ${opened.error?.message ?? opened.stderr}`)

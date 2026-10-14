@@ -134,6 +134,28 @@ describe("compact independent attention entry", () => {
     expect((await (await api("/state")).json()).target).toBe(second.id)
   })
 
+  it("refreshes target availability without changing the bound UUID or conversation", async () => {
+    const { api, request } = await start()
+    request.mockResolvedValue({ targets: [second] })
+    const refreshed = await api("/targets", {})
+    expect(refreshed.status).toBe(200)
+    const state = await refreshed.json()
+    expect(state.targets).toEqual([{ id: second.id, label: "Fix tests" }])
+    expect(state.target).toBe(first.id)
+  })
+
+  it("acknowledges only the original view and target, and refuses a pending target mismatch", async () => {
+    const { api } = await start()
+    const id = crypto.randomUUID()
+    const message = { id, target: first.id, message: "receipt bound here" }
+    expect((await api("/send", message)).status).toBe(202)
+    const receipt = await (await api("/state", undefined, { "X-Ouro-Pending": id })).json()
+    expect(receipt.acknowledged).toEqual({ id, target: first.id })
+    const other = await (await api("/state", undefined, { "X-Ouro-Pending": id, "X-Ouro-View": crypto.randomUUID() })).json()
+    expect(other.acknowledged).toBeNull()
+    expect((await api("/send", { ...message, target: second.id })).status).toBe(409)
+  })
+
   it("does not retarget if a send begins during the asynchronous target refresh", async () => {
     const { api, request } = await start()
     const refresh = Promise.withResolvers<{ targets: typeof first[] }>()
