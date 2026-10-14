@@ -478,6 +478,21 @@ describe("runSenseTurn", () => {
     expect(input.runAgentOptions.toolContext.currentUserMessage).toBe("  human original  ")
   })
 
+  it.each([
+    { kind: "no system prompt", messages: [{ role: "assistant" as const, content: "legacy reply" }] },
+    { kind: "rich system content", messages: [{ role: "system" as const, content: [{ type: "text" as const, text: "rich system prompt" }] }] },
+  ])("keeps execution binding without overwriting a legacy projection: $kind", async ({ messages }) => {
+    mockLoadSession.mockReturnValue({ messages, usage: { inputTokens: 0, outputTokens: 0, reasoningTokens: 0, totalTokens: 0 }, state: {} })
+    const target = { id: "11111111-1111-4111-8111-111111111111", host: "cmux" as const, label: "selected" }
+    const { runSenseTurn } = await import("../../senses/shared-turn")
+    await runSenseTurn({ agentName: "test-agent", friendId: "friend-1", channel: "cli",
+      sessionKey: `shepherd:${target.id}`, userMessage: "exact human message", shepherdSession: target })
+    const input = mockHandleInboundTurn.mock.calls[0]![0]
+    expect(input.runAgentOptions.toolContext.currentShepherdSurface).toEqual(target)
+    expect(input.messages.at(-1).content).toBe("exact human message")
+    expect((await input.sessionLoader.loadOrCreate()).messages[0]).toEqual(messages[0])
+  })
+
   it("carries authenticated ingress relations on the synthesized user message", async () => {
     const ingressRelations = {
       replyToEventId: "evt-000010",

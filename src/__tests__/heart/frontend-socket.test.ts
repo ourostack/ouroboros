@@ -117,7 +117,7 @@ describe("frontend socket", () => {
     expect(await client.request("shepherd.targets", { agent: "boss", friendId: "owner" })).toEqual({ targets: [session] })
     await expect(client.request("shepherd.targets", { agent: "boss", friendId: "owner", composerTty: "../invalid" })).rejects.toThrow("terminal device")
     const request = { turnId: "composer-turn", agent: "boss", friendId: "owner", channel: "cli", sessionKey: `shepherd:${session.id}`,
-      message: "  exact message  ", shepherdSession: { ...session, label: "client-spoofed label" } }
+      message: "  exact message  ", composerTty: "/dev/ttys009", shepherdSession: { ...session, label: "client-spoofed label" } }
     await expect(client.request("turn.start", { ...request, sessionKey: "wrong" })).rejects.toThrow("per-surface")
     await expect(client.request("turn.start", request)).resolves.toMatchObject({ accepted: true })
     await new Promise(resolve => setTimeout(resolve, 10))

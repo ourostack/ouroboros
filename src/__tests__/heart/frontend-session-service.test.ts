@@ -27,6 +27,52 @@ function request(turnId = "turn-1") {
 }
 
 describe("frontend session service", () => {
+  it("merges every default journal page before deciding a recovered turn is complete", async () => {
+    const { FrontendJournalStore } = await import("../../heart/frontend-journal")
+    const { FrontendSessionService } = await import("../../heart/frontend-session-service")
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "composer-paginated-status-"))
+    const journal = new FrontendJournalStore({ agentRoot: () => root })
+    const ref = { agent: "boss", friendId: "friend-1", sessionKey: "session-1" }
+    const identity = { agent: "boss", friendId: "friend-1", sessionId: "session-1" }
+    for (let index = 0; index < 999; index++) journal.append(identity, { turnId: "other", type: "assistant_delivery", data: { text: "not this turn" } })
+    journal.append(identity, { turnId: "recover", type: "assistant_delivery", data: { text: "first-page answer" } })
+    journal.append(identity, { turnId: "recover", type: "turn_completed", data: { result: { response: "final" } } })
+    const service = new FrontendSessionService({ journal, runner: async () => settledResult() })
+    expect(service.turnStatus(ref, "recover")).toMatchObject({
+      state: "completed",
+      events: [{ sequence: 1000, type: "assistant_delivery", data: { text: "first-page answer" } }, { sequence: 1001, type: "turn_completed" }],
+    })
+  }, 20000)
+
+  it("reports incomplete history and refuses degraded recovery rather than calling either complete", async () => {
+    const { FrontendJournalStore } = await import("../../heart/frontend-journal")
+    const { FrontendSessionService } = await import("../../heart/frontend-session-service")
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "composer-incomplete-status-"))
+    const journal = new FrontendJournalStore({ agentRoot: () => root })
+    const identity = { agent: "boss", friendId: "friend-1", sessionId: "session-1" }
+    const ref = { agent: "boss", friendId: "friend-1", sessionKey: "session-1" }
+    journal.append(identity, { turnId: "incomplete", type: "turn_started", data: {} })
+    const service = new FrontendSessionService({ journal, runner: async () => settledResult() })
+    expect(service.turnStatus(ref, "incomplete").state).toBe("incomplete")
+    fs.appendFileSync(journal.pathFor(identity), "{invalid\n")
+    expect(() => service.turnStatus(ref, "incomplete")).toThrow("degraded")
+    const memory = new FrontendSessionService({ runner: async () => settledResult() })
+    const prepared = memory.prepareTurn(request())
+    expect(memory.turnStatus({ ...ref, agent: "other" }, "turn-1").state).toBe("unknown")
+    expect(memory.turnStatus({ ...ref, sessionKey: "other" }, "turn-1").state).toBe("unknown")
+    await memory.runPreparedTurn(prepared)
+  })
+
+  it("rejects missing and malformed composer locators before any target can be selected", async () => {
+    const { FrontendSessionService } = await import("../../heart/frontend-session-service")
+    const service = new FrontendSessionService({ shepherdTargets: async () => [] })
+    for (const value of [null, "surface:1", {}, { id: 1 }]) {
+      await expect(service.resolveShepherdSession("boss", "owner", value)).rejects.toThrow("UUID")
+    }
+    expect(() => service.listShepherdTargets("", "owner")).toThrow("agent")
+    expect(() => service.listShepherdTargets("boss", "")).toThrow("friendId")
+  })
+
   it("reconciles completed and active IDs against the exact journal/session and rejects durable duplicates", async () => {
     const { FrontendJournalStore } = await import("../../heart/frontend-journal")
     const { FrontendSessionService } = await import("../../heart/frontend-session-service")
