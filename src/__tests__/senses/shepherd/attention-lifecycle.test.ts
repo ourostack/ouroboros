@@ -3,6 +3,9 @@ import * as os from "node:os"
 import * as path from "node:path"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { runShepherdAttention, startManagedShepherdAttention } from "../../../senses/shepherd/attention"
+import type { CmuxConnection } from "../../../heart/shepherd-config"
+
+const cmuxConnection: CmuxConnection = { socketPath: "/test.cmux", auth: { kind: "capability", token: "machine-capability" } }
 
 const runtime = vi.hoisted(() => ({
   home: "",
@@ -40,11 +43,15 @@ afterEach(() => vi.restoreAllMocks())
 describe("managed native attention lifecycle", () => {
   it("uses the existing local owner and socket, installs a validated per-agent entry, and closes", async () => {
     runtime.request.mockResolvedValue({ targets: [{ id: "11111111-1111-4111-8111-111111111111", host: "cmux", label: "legacy diagnostic label" }] })
-    const app = await startManagedShepherdAttention({ agent: "ouro", socketPath: "/test.frontend" })
+    const app = await startManagedShepherdAttention({ agent: "ouro", socketPath: "/test.frontend", cmuxConnection })
     try {
       expect(runtime.owner).toHaveBeenCalled()
       expect(runtime.request).toHaveBeenCalledWith("shepherd.targets", { agent: "ouro", friendId: "owner" })
-      expect(runtime.spawn).toHaveBeenCalledWith("cmux", ["sidebar", "validate", "ouro-attention-ouro"], { encoding: "utf8" })
+      const [command, args, options] = runtime.spawn.mock.calls[0]
+      expect({ command, args, encoding: options.encoding, capability: options.env?.CMUX_SOCKET_CAPABILITY, password: options.env?.CMUX_SOCKET_PASSWORD }).toEqual({
+        command: "cmux", args: ["--socket", "/test.cmux", "sidebar", "validate", "ouro-attention-ouro"],
+        encoding: "utf8", capability: "machine-capability", password: undefined,
+      })
       const source = fs.readFileSync(path.join(runtime.home, ".config/cmux/sidebars/ouro-attention-ouro.swift"), "utf8")
       expect(source).toContain(app.url)
       expect(source).not.toContain("/test.frontend")
@@ -55,11 +62,39 @@ describe("managed native attention lifecycle", () => {
     } finally { await app.close() }
   })
 
+  it.each([
+    { auth: { kind: "capability", token: "owned-capability" }, capability: "owned-capability", password: undefined },
+    { auth: { kind: "password", password: "owned-password" }, capability: undefined, password: "owned-password" },
+    { auth: { kind: "none" }, capability: undefined, password: undefined },
+  ] satisfies Array<{ auth: CmuxConnection["auth"]; capability: string | undefined; password: string | undefined }>)(
+    "validates with the managed $auth.kind authority rather than inherited terminal credentials",
+    async ({ auth, capability, password }) => {
+      vi.stubEnv("CMUX_SOCKET_CAPABILITY", "unrelated-terminal-capability")
+      vi.stubEnv("CMUX_SOCKET_PASSWORD", "unrelated-terminal-password")
+      const app = await startManagedShepherdAttention({
+        agent: "ouro", socketPath: "/test", cmuxConnection: { socketPath: "/owned.cmux", auth },
+      })
+      try {
+        const [command, args, options] = runtime.spawn.mock.calls[0]
+        expect({ command, args, encoding: options.encoding, capability: options.env?.CMUX_SOCKET_CAPABILITY, password: options.env?.CMUX_SOCKET_PASSWORD }).toEqual({
+          command: "cmux", args: ["--socket", "/owned.cmux", "sidebar", "validate", "ouro-attention-ouro"],
+          encoding: "utf8", capability, password,
+        })
+        expect(args).not.toContain(capability)
+        expect(args).not.toContain(password)
+        expect((await fetch(new URL(app.url).origin)).status).toBe(200)
+      } finally {
+        await app.close()
+        vi.unstubAllEnvs()
+      }
+    },
+  )
+
   it("fails and closes the listener when native validation fails", async () => {
     runtime.spawn.mockReturnValue({ status: 1, stderr: "unsupported sidebar" })
-    await expect(startManagedShepherdAttention({ agent: "ouro", socketPath: "/test" })).rejects.toThrow("unsupported sidebar")
+    await expect(startManagedShepherdAttention({ agent: "ouro", socketPath: "/test", cmuxConnection })).rejects.toThrow("unsupported sidebar")
     runtime.spawn.mockReturnValue({ error: new Error("cmux missing"), status: null })
-    await expect(startManagedShepherdAttention({ agent: "ouro", socketPath: "/test" })).rejects.toThrow("cmux missing")
+    await expect(startManagedShepherdAttention({ agent: "ouro", socketPath: "/test", cmuxConnection })).rejects.toThrow("cmux missing")
   })
 
   it("closes cleanly after an owned signal callback and never sends terminal text", async () => {
@@ -85,7 +120,7 @@ describe("managed native attention lifecycle", () => {
   })
 
   it("never replaces the managed native entry with a one-off web listener, even on open failure", async () => {
-    const managed = await startManagedShepherdAttention({ agent: "ouro", socketPath: "/test" })
+    const managed = await startManagedShepherdAttention({ agent: "ouro", socketPath: "/test", cmuxConnection })
     const file = path.join(runtime.home, ".config/cmux/sidebars/ouro-attention-ouro.swift")
     const original = fs.readFileSync(file, "utf8")
     let stop: () => void = () => {}
@@ -112,9 +147,9 @@ describe("managed native attention lifecycle", () => {
 
   it("does not create a view when owner or target discovery is unavailable", async () => {
     runtime.owner.mockRejectedValueOnce(new Error("owner unavailable"))
-    await expect(startManagedShepherdAttention({ agent: "ouro", socketPath: "/test" })).rejects.toThrow("owner unavailable")
+    await expect(startManagedShepherdAttention({ agent: "ouro", socketPath: "/test", cmuxConnection })).rejects.toThrow("owner unavailable")
     runtime.request.mockRejectedValueOnce(new Error("daemon unavailable"))
-    await expect(startManagedShepherdAttention({ agent: "ouro", socketPath: "/test" })).rejects.toThrow("daemon unavailable")
+    await expect(startManagedShepherdAttention({ agent: "ouro", socketPath: "/test", cmuxConnection })).rejects.toThrow("daemon unavailable")
     expect(runtime.close).toHaveBeenCalled()
   })
 })
