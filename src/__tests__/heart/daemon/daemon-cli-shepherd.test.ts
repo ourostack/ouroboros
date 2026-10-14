@@ -24,6 +24,8 @@ describe("dedicated Shepherd CLI", () => {
     await expect(runOuroCli(["shepherd", "chat", "--agent", "ouro"], deps)).resolves.toBe("")
     expect(launch).toEqual({ agent: "ouro", socketPath: "/tmp/composer-cli.sock.frontend" })
     expect(deps.ensureDaemonForFrontend).toHaveBeenCalledWith("ouro")
+    await runOuroCli(["shepherd", "chat", "--agent", "ouro", "--web", "--session", "11111111-1111-4111-8111-111111111111"], deps)
+    expect(launch).toEqual({ agent: "ouro", web: true, session: "11111111-1111-4111-8111-111111111111", socketPath: "/tmp/composer-cli.sock.frontend" })
     await runOuroCli(["shepherd", "chat", "--agent", "ouro", "--web"], { ...deps, startShepherdChat: undefined })
     expect(runShepherdAttention).toHaveBeenCalledWith({ agent: "ouro", socketPath: "/tmp/composer-cli.sock.frontend" })
   })
