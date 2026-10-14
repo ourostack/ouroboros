@@ -11,42 +11,6 @@ const MUTATE_METHODS = ["POST", "PATCH", "DELETE"];
 const DEFAULT_ADO_QUERY = "SELECT [System.Id], [System.Title], [System.State], [System.AssignedTo] FROM WorkItems WHERE [System.AssignedTo] = @Me AND [System.State] <> 'Closed' ORDER BY [System.ChangedDate] DESC";
 
 export const teamsToolDefinitions: ToolDefinition[] = [
-  {
-    tool: {
-      type: "function",
-      function: {
-        name: "teams_send_image",
-        description: "Send a local PNG or JPEG image into the current Teams conversation, without publishing it or using OneDrive. Requires family trust. Images are resized/compressed for inline delivery. An activity receipt confirms Teams acceptance, not client rendering.",
-        parameters: {
-          type: "object",
-          properties: {
-            path: { type: "string", description: "Absolute path to a local PNG or JPEG image" },
-            caption: { type: "string", maxLength: MAX_TEAMS_IMAGE_CAPTION_LENGTH, description: "Optional short caption (up to 1024 characters)" },
-          },
-          required: ["path"],
-          additionalProperties: false,
-        },
-      },
-    },
-    handler: async (args, ctx) => {
-      if (ctx?.noSend || ctx?.habitSession || ctx?.autonomousTurnKind) {
-        throw new Error("Teams image sending is unavailable in no-send or autonomous turns");
-      }
-      if (ctx?.context?.friend.trustLevel !== "family" || ctx.context.channel.channel !== "teams") {
-        throw new Error("Sending local images in Teams requires a family-trusted Teams conversation");
-      }
-      if (!ctx.teamsSendImage || !ctx.agentName || !ctx.agentRoot) {
-        throw new Error("Teams image sending requires an authenticated current-conversation sender and agent owner");
-      }
-      const caption = args.caption ?? "";
-      if (caption.length > MAX_TEAMS_IMAGE_CAPTION_LENGTH) throw new Error("Teams image caption exceeds 1024 characters");
-      const attachment = await prepareTeamsImage({ path: args.path, agentName: ctx.agentName, agentRoot: ctx.agentRoot });
-      const activityId = await ctx.teamsSendImage(attachment, caption);
-      return `image accepted by Teams in the current conversation (activity ${activityId}); client rendering is not verified`;
-    },
-    summaryKeys: ["path"],
-    riskProfile: { mutates: "external_side_effect", risk: "high", reason: "sends local image bytes to the current Teams conversation" },
-  },
   // -- Generic Graph tools --
   {
     tool: {
@@ -318,6 +282,42 @@ export const teamsToolDefinitions: ToolDefinition[] = [
     },
     integration: "ado",
     summaryKeys: ["query"],
+  },
+  {
+    tool: {
+      type: "function",
+      function: {
+        name: "teams_send_image",
+        description: "Send a local PNG or JPEG image into the current Teams conversation, without publishing it or using OneDrive. Requires family trust. Images are resized/compressed for inline delivery. An activity receipt confirms Teams acceptance, not client rendering.",
+        parameters: {
+          type: "object",
+          properties: {
+            path: { type: "string", description: "Absolute path to a local PNG or JPEG image" },
+            caption: { type: "string", maxLength: MAX_TEAMS_IMAGE_CAPTION_LENGTH, description: "Optional short caption (up to 1024 characters)" },
+          },
+          required: ["path"],
+          additionalProperties: false,
+        },
+      },
+    },
+    handler: async (args, ctx) => {
+      if (ctx?.noSend || ctx?.habitSession || ctx?.autonomousTurnKind) {
+        throw new Error("Teams image sending is unavailable in no-send or autonomous turns");
+      }
+      if (ctx?.context?.friend.trustLevel !== "family" || ctx.context.channel.channel !== "teams") {
+        throw new Error("Sending local images in Teams requires a family-trusted Teams conversation");
+      }
+      if (!ctx.teamsSendImage || !ctx.agentName || !ctx.agentRoot) {
+        throw new Error("Teams image sending requires an authenticated current-conversation sender and agent owner");
+      }
+      const caption = args.caption ?? "";
+      if (caption.length > MAX_TEAMS_IMAGE_CAPTION_LENGTH) throw new Error("Teams image caption exceeds 1024 characters");
+      const attachment = await prepareTeamsImage({ path: args.path, agentName: ctx.agentName, agentRoot: ctx.agentRoot });
+      const activityId = await ctx.teamsSendImage(attachment, caption);
+      return `image accepted by Teams in the current conversation (activity ${activityId}); client rendering is not verified`;
+    },
+    summaryKeys: ["path"],
+    riskProfile: { mutates: "external_side_effect", risk: "high", reason: "sends local image bytes to the current Teams conversation" },
   },
 ];
 
