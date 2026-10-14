@@ -2,6 +2,7 @@ export const MAX_ATTENTION_BODY_BYTES = 16_384
 
 /** No model content or target metadata is interpolated into executable HTML. */
 export function attentionPage(nonce: string): string {
+  emitNervesEvent({ component: "senses", event: "senses.shepherd_attention_page_rendered", message: "rendered the independent session attention view" })
   return `<!doctype html>
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Ouro</title>
 <style nonce="${nonce}">
@@ -156,3 +157,4 @@ async function initialize() {
 initialize();setInterval(refresh,1000);
 </script></body></html>`
 }
+import { emitNervesEvent } from "../../nerves/runtime"
