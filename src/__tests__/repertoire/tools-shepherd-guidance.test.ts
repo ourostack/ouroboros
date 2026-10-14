@@ -11,6 +11,7 @@ import * as hostModule from "../../senses/shepherd/host"
 import { startFakeCmux } from "../senses/shepherd/fake-cmux"
 import { tree } from "../senses/shepherd/fixtures"
 import { registerGlobalLogSink, type LogEvent } from "../../nerves"
+import { enqueueNotice, readNoticeOutbox, recordNoticeDelivery } from "../../senses/shepherd/notice-outbox"
 
 let root: string
 const returned: ReturnRecord = { at: "2026-10-13", host: "cmux", session: "gone", transition: "t1", agent: "coding", cwd: "/code/app", task: null, kind: "premature", action: "respond", reason: "A plan", reply: "Continue.", latencyMs: 1, inputTokens: 2 }
@@ -30,6 +31,47 @@ afterEach(() => {
   resetRuntimeCredentialConfigCache()
 })
 describe("family-only Shepherd guidance tools", () => {
+  it.each(["pending", "unknown", "sent"] as const)("reports the human's actual %s notice receipt without exposing another recipient's receipt", async state => {
+    const value = { ...returned, transition: `notice-${state}`, noticeEligible: true }
+    appendReturn(root, value)
+    const id = await enqueueNotice(root, value)
+    await recordNoticeDelivery(root, [id], "ari", { state, at: "now", ...(state === "sent" ? { messageId: "own-activity" } : { reason: "not confirmed" }) })
+    await recordNoticeDelivery(root, [id], "other", { state: "sent", at: "now", messageId: "OTHER_PRIVATE_ACTIVITY" })
+    const history = await call("shepherd_history", { session: "gone" })
+    expect(history.returns.at(-1).ownerNotice).toMatchObject({ state, attempts: 1 })
+    expect(JSON.stringify(history)).not.toContain("OTHER_PRIVATE_ACTIVITY")
+    expect((await call("shepherd_history", { session: "gone" }, ctx("not-targeted"))).returns.at(-1).ownerNotice).toBeNull()
+  })
+
+  it("keeps archived acceptance inspectable without replaying transport", async () => {
+    const value = { ...returned, transition: "archived-notice", noticeEligible: true }
+    appendReturn(root, value)
+    const id = await enqueueNotice(root, value)
+    await recordNoticeDelivery(root, [id], "ari", { state: "sent", at: "now", messageId: "archived-activity" })
+    const entry = readNoticeOutbox(root)[0]!
+    const dir = path.join(root, "state", "senses", "shepherd")
+    fs.mkdirSync(path.join(dir, "notice-receipts"))
+    fs.writeFileSync(path.join(dir, "notice-receipts", `${id}.json`), JSON.stringify(entry))
+    fs.writeFileSync(path.join(dir, "notice-outbox.json"), JSON.stringify({ schemaVersion: 1, entries: [] }))
+    expect((await call("shepherd_history", { session: "gone" })).returns.at(-1).ownerNotice).toMatchObject({ state: "sent", messageId: "archived-activity" })
+  })
+
+  it("reports unavailable notice evidence without losing return history or claiming delivery", async () => {
+    const dir = path.join(root, "state", "senses", "shepherd")
+    fs.writeFileSync(path.join(dir, "notice-outbox.json"), "{invalid")
+    const history = await call("shepherd_history", { session: "gone" })
+    expect(history.returns).toEqual([{ id: shepherdReturnId(returned), ...returned }])
+    expect(history.ownerNoticeError).toMatch(/malformed JSON/)
+  })
+
+  it("redacts even a non-Error receipt read failure while retaining private return history", async () => {
+    const noticeModule = await import("../../senses/shepherd/notice-outbox")
+    vi.spyOn(noticeModule, "readNoticeOutbox").mockImplementationOnce(() => { throw "token=abc123secret failed" })
+    const history = await call("shepherd_history")
+    expect(history.ownerNoticeError).toBe("token=[redacted] failed")
+    expect(history.returns).toEqual([{ id: shepherdReturnId(returned), ...returned }])
+  })
+
   it("traces an executed guidance tool without the private human instruction", async () => {
     const events: LogEvent[] = []
     const unregister = registerGlobalLogSink(event => events.push(event))

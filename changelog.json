@@ -9,7 +9,8 @@
         "Retain every eligible owner notice across restart, record Teams acceptance, and retry only definitely unsent deliveries.",
         "Enforce the composer's fixed UUID and host at terminal and guidance execution boundaries; concurrent notice workers cannot replay an accepted or uncertain send.",
         "Recognize current Node-hosted Copilot terminals by their foreground launcher entry point, so the independent composer remains available on Copilot 1.0.97.",
-        "Trace fixed-target composer submissions, authorized target discovery, committed guidance revisions, and bound-target refusals without logging private human feedback."
+        "Trace fixed-target composer submissions, authorized target discovery, committed guidance revisions, and bound-target refusals without logging private human feedback.",
+        "Answer notice-delivery questions from private recipient-specific accepted, pending or uncertain receipts, including archived acceptances, without replaying sends or hiding unavailable evidence."
       ]
     },
     {

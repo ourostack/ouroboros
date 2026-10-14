@@ -8,7 +8,8 @@ import {
   type ShepherdGuidanceScope, type ShepherdGuidanceTarget,
 } from "../senses/shepherd/guidance"
 import { redactSecrets } from "../senses/shepherd/redact"
-import { readReturns } from "../senses/shepherd/returns"
+import { readReturns, type ReturnRecord } from "../senses/shepherd/returns"
+import { knownNotice, noticeRecordId, readNoticeOutbox, type NoticeDelivery } from "../senses/shepherd/notice-outbox"
 import { assertBoundShepherdTarget } from "../senses/shepherd/target-binding"
 import { SELF_FRIEND_ID, type ToolContext, type ToolDefinition } from "./tools-base"
 import { emitNervesEvent } from "../nerves/runtime"
@@ -99,9 +100,23 @@ function definition(name: string, description: string, properties: Record<string
 }
 
 export const shepherdGuidanceToolDefinitions: ToolDefinition[] = [
-  definition("shepherd_history", "Read private Shepherd return history with stable return IDs, the actual judgment, reply and outcome. Historical, not current status; a vanished terminal remains readable. Use to understand 'that was wrong because…' before correcting it. Never types into a terminal.", targetProperties, [], async (args, ctx) => ({
-    returns: readReturns(ctx.agentRoot!).filter(r => (!text(args.session) || r.session === text(args.session)) && (!text(args.host) || r.host === text(args.host))).map(record => ({ id: shepherdReturnId(record), ...record })),
-  })),
+  definition("shepherd_history", "Read private Shepherd return history with stable return IDs, actual judgment/reply/outcome and your own ownerNotice receipts when tracked. Historical, not current status; a vanished terminal remains readable. The session filter is a stable ID, not a short ref. Use to understand 'that was wrong because...' before correcting it, or to check whether a notice was sent. ownerNotice.state sent means transport acceptance, not proof the human read it; pending awaits a safe retry; unknown may already have arrived and must not be blindly replayed. ownerNotice null means no receipt recorded for this recipient, not proof of non-delivery. ownerNoticeError explicitly identifies unavailable receipt evidence. Never types into a terminal.", targetProperties, [], async (args, ctx, request) => {
+    const returns: Array<ReturnRecord & { id: string; ownerNotice?: NoticeDelivery | null }> = readReturns(ctx.agentRoot!)
+      .filter(r => (!text(args.session) || r.session === text(args.session)) && (!text(args.host) || r.host === text(args.host)))
+      .map(record => ({ id: shepherdReturnId(record), ...record }))
+    try {
+      const notices = readNoticeOutbox(ctx.agentRoot!)
+      for (const record of returns) {
+        const notice = knownNotice(ctx.agentRoot!, noticeRecordId(record), notices)
+        if (notice) record.ownerNotice = Object.hasOwn(notice.deliveries, request.actorId) ? notice.deliveries[request.actorId]! : null
+      }
+      return { returns }
+    } catch (error) {
+      const message = redactSecrets(error instanceof Error ? error.message : String(error))
+      emitNervesEvent({ level: "warn", component: "repertoire", event: "repertoire.shepherd_notice_history_error", message: "owner notice receipt evidence is unavailable; return history remains readable", meta: { error: message } })
+      return { returns, ownerNoticeError: message }
+    }
+  }),
   definition("shepherd_correct", "Record the human's post-action correction ('that was wrong because…') or prospective instruction. Optionally learn a principle for 'in future…'. A return_id must name a real history entry; omit it for a prospective instruction, never fabricate one. Session scope is the default; project is the exact recorded folder and optional task; global only when the human deliberately generalizes. Feedback <=2000 characters; principle <=1000; at most 20 active rules. This is not an approval gate and never sends anything. For requested immediate steering use existing shepherd_send.", {
     ...targetProperties, ...requestProperty,
     return_id: stringProperty("Real stable return ID from shepherd_history, if correcting an actual judgment."),
