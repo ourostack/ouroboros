@@ -63,6 +63,11 @@ describe("owner notice policy", () => {
 })
 
 describe("owner notice text", () => {
+  it("reports an outside dependency without calling it done or asking the owner to act", () => {
+    expect(noticeLine(record({ kind: "waiting", reason: "PR awaits review." }))).toContain("waiting on an outside dependency")
+    expect(noticeLine(record({ kind: "waiting" }))).not.toMatch(/needs you|done|waiting for you/)
+    expect(noticeWanted("needs-me", record({ kind: "waiting" }))).toBe(false)
+  })
   it("names the foreground agent, folder, workspace and tab for an unhooked return", () => {
     const session = { id: "0a1b2c3d-4e5f", ref: "surface:30", workspace: "workspace:3", workspaceTitle: "workflows",
       title: "Troubleshoot Outlook", agent: "Copilot", cwd: "/Users/a/personal-desk", focused: false }

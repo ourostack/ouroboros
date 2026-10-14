@@ -15,6 +15,10 @@ import { createShepherdJudge, type JudgeResult, type ShepherdJudge } from "./jud
 import { redactSecrets, screenTail as tail, withoutNumbers } from "./redact"
 import { createOwnerNotifier } from "./owner-notice"
 import { appendReturn, type ReturnRecord } from "./returns"
+import { applicableGuidance, readGuidance, type ShepherdGuidanceTarget } from "./guidance"
+
+/** Keeps the judgment's guidance revision in telemetry without changing the shared returns-store contract. */
+export interface ShepherdJudgedReturnRecord extends ReturnRecord { guidanceRevision?: number }
 
 /**
  * Ouro Shepherd: every time a coding agent in a terminal hands control back, a cheap judge decides
@@ -78,7 +82,7 @@ export function escalationContent(record: ReturnRecord, human: string): string {
   const who = `${record.agent ? field(record.agent) : "A coding agent"}${record.cwd ? ` in ${field(path.basename(record.cwd))}` : ""}`
   const what = record.kind === "loop_guard"
     ? `Shepherd answered it ${STREAK_MAX} times in a row (or ${HOURLY_MAX} in an hour) and stopped`
-    : record.kind === "gate" ? `it needs ${human}` : "it says the work is done"
+    : record.kind === "gate" ? `it needs ${human}` : record.kind === "waiting" ? "it is waiting on an outside dependency, not delivered done" : "it says the work is done"
   return [
     record.kind === "working" ? "[Shepherd update]" : "[Shepherd return]",
     record.kind === "working"
@@ -173,7 +177,7 @@ export async function startShepherdSenseApp(options: ShepherdSenseOptions): Prom
 
   /** Judges one return and acts on it. Every outcome, including a failure, is one log line. */
   async function handle(event: ReturnedControl): Promise<void> {
-    const record: ReturnRecord = {
+    const record: ShepherdJudgedReturnRecord = {
       at: new Date(now()).toISOString(), host: host.name, session: event.sessionId, transition: event.transitionId,
       agent: event.agent, cwd: event.cwd, task: null, kind: "unclear", action: "let_through", reason: "", reply: null, latencyMs: null, inputTokens: null,
       ...(event.title !== undefined ? { title: event.title, workspaceTitle: event.workspaceTitle } : {}),
@@ -198,7 +202,10 @@ export async function startShepherdSenseApp(options: ShepherdSenseOptions): Prom
       const text = redactSecrets(await host.read(event.sessionId, READ_LINES))
       record.task = [...text.matchAll(/Desk-Task:\s*(\S+)/g)].pop()?.[1] ?? null
       const screen = tail(text, SCREEN_LINES)
-      const verdict: JudgeResult = await judge({ human, agent: event.agent, cwd: event.cwd, task: record.task, lastBody: event.lastBody ? redactSecrets(event.lastBody) : null, backgroundWork: event.backgroundWork, screen })
+      const target: ShepherdGuidanceTarget = { host: host.name, session: event.sessionId, cwd: event.cwd, task: record.task }
+      const guidance = guidanceFor(target)
+      record.guidanceRevision = guidance.revision
+      const verdict: JudgeResult = await judge({ human, agent: event.agent, cwd: event.cwd, task: record.task, lastBody: event.lastBody ? redactSecrets(event.lastBody) : null, backgroundWork: event.backgroundWork, screen, guidance })
       // The host's own word that background work is running outranks a reading of the screen: such a stop is never a return.
       const kind = event.backgroundWork ? "working" : verdict.kind
       const news = verdict.news === true || (kind === "working" && verdict.kind === "gate")
@@ -213,7 +220,9 @@ export async function startShepherdSenseApp(options: ShepherdSenseOptions): Prom
         await host.signal(event.sessionId, field(`${event.agent ?? "agent"} waiting on its background work: ${verdict.reason}`, 120))
       }
       if (kind === "premature" && verdict.reply) {
-        if (state.streak >= STREAK_MAX || state.answers.length >= HOURLY_MAX) {
+        if (guidance.paused) {
+          record.reason = `Shepherd guidance has this session paused, so nothing was sent: ${verdict.reason}`
+        } else if (state.streak >= STREAK_MAX || state.answers.length >= HOURLY_MAX) {
           Object.assign(record, { kind: "loop_guard", reason: `loop guard: ${verdict.reason}` })
           state.tripped = true
         } else if (now() - state.focusedAt < FOCUS_HOLD_MS || (await host.list()).some((session) => session.id === event.sessionId && session.focused)) {
@@ -222,24 +231,38 @@ export async function startShepherdSenseApp(options: ShepherdSenseOptions): Prom
         } else if (withoutNumbers(tail(redactSecrets(await host.read(event.sessionId, READ_LINES)), SCREEN_LINES)) !== withoutNumbers(screen)) {
           record.reason = `the screen changed while judging, so nothing was sent: ${verdict.reason}`
         } else {
-          if ("key" in verdict.reply) await host.key(event.sessionId, verdict.reply.key)
-          else await host.prompt(event.sessionId, `[Ouro for ${human}] ${verdict.reply.text}`)
-          Object.assign(record, { action: "respond", reply: "key" in verdict.reply ? `key:${verdict.reply.key}` : verdict.reply.text })
-          state.streak += 1
-          state.answers.push(now())
-          await host.signal(event.sessionId, field(`answered for ${human}: ${verdict.reason}`, 120))
+          // No awaited host reads between this final check and initiating the send.
+          const latest = guidanceFor(target)
+          if (latest.paused || latest.revision !== guidance.revision) {
+            record.reason = `Shepherd guidance paused or changed while judging (revision ${guidance.revision} to ${latest.revision}), so nothing was sent: ${verdict.reason}`
+          } else {
+            if ("key" in verdict.reply) await host.key(event.sessionId, verdict.reply.key)
+            else await host.prompt(event.sessionId, `[Ouro for ${human}] ${verdict.reply.text}`)
+            Object.assign(record, { action: "respond", reply: "key" in verdict.reply ? `key:${verdict.reply.key}` : verdict.reply.text })
+            state.streak += 1
+            state.answers.push(now())
+            await host.signal(event.sessionId, field(`answered for ${human}: ${verdict.reason}`, 120))
+          }
         }
       }
-      if (record.kind === "gate" || record.kind === "done" || record.kind === "loop_guard") {
+      if (record.kind === "gate" || record.kind === "done" || record.kind === "waiting" || record.kind === "loop_guard") {
         escalate(escalationContent(record, human))
         requestWake(event.transitionId)
-        await host.signal(event.sessionId, field(`${record.kind === "gate" ? `needs ${human}` : record.kind === "done" ? "done" : "stopped answering"}: ${verdict.reason}`, 120))
+        await host.signal(event.sessionId, field(`${record.kind === "gate" ? `needs ${human}` : record.kind === "done" ? "done" : record.kind === "waiting" ? "waiting on an outside dependency" : "stopped answering"}: ${verdict.reason}`, 120))
       }
     } catch (error) {
       Object.assign(record, { kind: record.reason ? record.kind : "error", reason: `${record.reason ? `${record.reason}; then ` : ""}${(error as Error).message}` })
     } finally {
       log(record)
       if (notice) notifyOwner(record)
+    }
+  }
+
+  function guidanceFor(target: ShepherdGuidanceTarget) {
+    try { return applicableGuidance(readGuidance(agentRoot), target) }
+    catch (error) {
+      emitNervesEvent({ level: "warn", component: "senses", event: "senses.shepherd_guidance_error", message: "could not load Shepherd guidance; automatic replies fail closed", meta: { agent, session: target.session, error: redactSecrets((error as Error).message) } })
+      throw error
     }
   }
 
