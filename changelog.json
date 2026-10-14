@@ -6,7 +6,8 @@
       "changes": [
         "Talk to Ouro about a fixed coding terminal through an independent Shepherd composer, even while its agent is busy.",
         "Correct Shepherd after an intervention, inspect or change scoped learned guidance, and pause automatic replies without interrupting coding work.",
-        "Retain every eligible owner notice across restart, record Teams acceptance, and retry only definitely unsent deliveries."
+        "Retain every eligible owner notice across restart, record Teams acceptance, and retry only definitely unsent deliveries.",
+        "Enforce the composer's fixed UUID and host at terminal and guidance execution boundaries; concurrent notice workers cannot replay an accepted or uncertain send."
       ]
     },
     {
