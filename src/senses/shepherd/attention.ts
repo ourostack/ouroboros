@@ -9,6 +9,7 @@ import { ShepherdComposer, selectShepherdTarget } from "./composer"
 import { localShepherdFriendStore, resolveExistingLocalOwner, SHEPHERD_UUID, type ShepherdSession } from "./surface"
 import { attentionPage, MAX_ATTENTION_BODY_BYTES } from "./attention-page"
 import { installAttentionSidebar } from "./attention-sidebar"
+import type { CmuxConnection } from "../../heart/shepherd-config"
 
 interface Message { role: "you" | "ouro" | "notice"; text: string }
 interface AttentionView {
@@ -180,11 +181,19 @@ export async function startShepherdAttention(options: {
   }
 }
 
-export async function startManagedShepherdAttention(options: { agent: string; session?: string; socketPath: string }): Promise<{ url: string; close(): Promise<void> }> {
+export async function startManagedShepherdAttention(options: { agent: string; session?: string; socketPath: string; cmuxConnection: CmuxConnection }): Promise<{ url: string; close(): Promise<void> }> {
   const app = await startShepherdAttention(options)
   try {
     installAttentionSidebar(path.join(os.homedir(), ".config/cmux/sidebars"), app.url, options.agent)
-    const validated = spawnSync("cmux", ["sidebar", "validate", `ouro-attention-${options.agent}`], { encoding: "utf8" })
+    const { socketPath, auth } = options.cmuxConnection
+    const validated = spawnSync("cmux", ["--socket", socketPath, "sidebar", "validate", `ouro-attention-${options.agent}`], {
+      encoding: "utf8",
+      env: {
+        ...process.env,
+        CMUX_SOCKET_CAPABILITY: auth.kind === "capability" ? auth.token : undefined,
+        CMUX_SOCKET_PASSWORD: auth.kind === "password" ? auth.password : undefined,
+      },
+    })
     if (validated.error || validated.status !== 0) throw new Error(`Could not validate Ouro's native entry: ${validated.error?.message ?? validated.stderr}`)
     return app
   } catch (error) {

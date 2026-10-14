@@ -40,7 +40,7 @@ import("../heart/runtime-credentials")
         const { DEFAULT_DAEMON_SOCKET_PATH } = await import("../heart/daemon/socket-client")
         const { frontendSocketPathForDaemon } = await import("../heart/frontend-socket")
         try {
-          attention = await startManagedShepherdAttention({ agent: agentName!, socketPath: frontendSocketPathForDaemon(DEFAULT_DAEMON_SOCKET_PATH) })
+          attention = await startManagedShepherdAttention({ agent: agentName!, socketPath: frontendSocketPathForDaemon(DEFAULT_DAEMON_SOCKET_PATH), cmuxConnection: connection.connection })
         } catch (error) {
           emitNervesEvent({ level: "warn", component: "senses", event: "senses.shepherd_attention_unavailable", message: "native session attention is unavailable; Shepherd supervision remains running", meta: { agentName, error: String(error) } })
         }
