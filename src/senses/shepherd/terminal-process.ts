@@ -12,12 +12,13 @@ async function runCommand(command: string, args: string[]): Promise<string> {
   return stdout
 }
 
-/** One process snapshot and one cwd lookup for all terminals, not a subprocess per polling surface. */
+/** Batched process/cwd lookups; Node launchers need one additional argv snapshot, never a subprocess per surface. */
 export async function identifyTerminalProcesses(ttys: string[], run: RunCommand = runCommand): Promise<Map<string, TerminalProcessIdentity>> {
   const result = new Map<string, TerminalProcessIdentity>()
   if (ttys.length === 0) return result
   const wanted = new Set(ttys.map((tty) => tty.replace(/^\/dev\//, "")))
   const agents = new Map<string, { pid: number; parent: number; agent: string }[]>()
+  const nodeLaunchers = new Map<number, { parent: number; tty: string }>()
   try {
     for (const line of (await run("ps", ["-axo", "pid=,ppid=,pgid=,tpgid=,tty=,comm="])).split("\n")) {
       const match = line.trim().match(/^(\d+)\s+(\d+)\s+(\d+)\s+(-?\d+)\s+(\S+)\s+(.+)$/)
@@ -25,6 +26,7 @@ export async function identifyTerminalProcesses(ttys: string[], run: RunCommand 
       const [, pid, parent, group, foreground, tty, command] = match
       if (!wanted.has(tty!) || group !== foreground) continue
       const executable = path.basename(command!)
+      if (executable === "node") nodeLaunchers.set(Number(pid), { parent: Number(parent), tty: tty! })
       const agent = executable === "claude" ? "Claude Code" : executable === "copilot" ? "Copilot" : executable === "codex" ? "Codex" : null
       if (!agent) continue
       const candidates = agents.get(tty!) ?? []
@@ -34,6 +36,21 @@ export async function identifyTerminalProcesses(ttys: string[], run: RunCommand 
   } catch (error) {
     emitNervesEvent({ level: "warn", component: "senses", event: "senses.shepherd_process_lookup_error", message: "could not identify terminal foreground agents", meta: { error: String(error) } })
     return result
+  }
+  if (nodeLaunchers.size > 0) {
+    try {
+      for (const line of (await run("ps", ["-p", [...nodeLaunchers.keys()].join(","), "-o", "pid=,args="])).split("\n")) {
+        const match = line.trim().match(/^(\d+)\s+\S+\s+(\S+)/)
+        if (!match) continue
+        const launcher = nodeLaunchers.get(Number(match[1]))
+        if (!launcher || !/(?:^|\/)copilot\/pkg\/[^/]+\/[^/]+\/cli-main\.js$/.test(match[2]!)) continue
+        const candidates = agents.get(launcher.tty) ?? []
+        candidates.push({ pid: Number(match[1]), parent: launcher.parent, agent: "Copilot" })
+        agents.set(launcher.tty, candidates)
+      }
+    } catch (error) {
+      emitNervesEvent({ level: "warn", component: "senses", event: "senses.shepherd_process_lookup_error", message: "could not identify Node-hosted terminal agents", meta: { error: String(error) } })
+    }
   }
   const selected = new Map<string, { pid: number; agent: string }>()
   for (const [tty, candidates] of agents) {
