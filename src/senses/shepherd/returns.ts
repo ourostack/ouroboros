@@ -24,6 +24,8 @@ export interface ReturnRecord {
   reply: string | null
   latencyMs: number | null
   inputTokens: number | null
+  /** Recorded before notification custody so a restart can recover an interrupted enqueue. */
+  noticeEligible?: boolean
 }
 
 export function shepherdStateDir(agentRoot: string): string {

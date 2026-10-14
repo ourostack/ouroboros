@@ -1250,6 +1250,8 @@ export interface ProactiveTeamsSessionSendParams {
   text: string
   /** "plain" asks Teams not to read the text as markdown, for text that carries untrusted fields. */
   textFormat?: "plain"
+  /** Request transport receipts without changing the historical result shape for other callers. */
+  captureReceipt?: boolean
   intent?: "generic_outreach" | "explicit_cross_chat"
   authorizingSession?: {
     friendId: string
@@ -1262,6 +1264,11 @@ export interface ProactiveTeamsSessionSendParams {
 export interface ProactiveTeamsSessionSendResult {
   delivered: boolean
   reason?: "friend_not_found" | "trust_skip" | "missing_target" | "send_error" | "internal_content_blocked"
+  delivery?: {
+    state: "accepted" | "not_sent" | "unknown"
+    conversationId?: string
+    messageId?: string
+  }
 }
 
 interface ProactiveTeamsSessionSendDeps {
@@ -1363,6 +1370,8 @@ export async function sendProactiveTeamsMessageToSession(
     return { delivered: false, reason: "internal_content_blocked" }
   }
 
+  let conversationId: string | undefined
+  let activityAttempted = false
   try {
     const conversation = await conversations.create({
       bot: { id: deps.botApi.id },
@@ -1370,7 +1379,9 @@ export async function sendProactiveTeamsMessageToSession(
       tenantId: aadInfo.tenantId,
       isGroup: false,
     })
-    await conversations.activities(conversation.id).create({
+    conversationId = conversation.id
+    activityAttempted = true
+    const activity = await conversations.activities(conversation.id).create({
       type: "message",
       text: params.text,
       ...(params.textFormat ? { textFormat: params.textFormat } : {}),
@@ -1382,7 +1393,11 @@ export async function sendProactiveTeamsMessageToSession(
       message: "proactive teams message sent",
       meta: { friendId: params.friendId, aadObjectId: aadInfo.aadObjectId, sessionKey: params.sessionKey },
     })
-    return { delivered: true }
+    const messageId = activity && typeof activity === "object" && "id" in activity && typeof activity.id === "string" ? activity.id : undefined
+    return {
+      delivered: true,
+      ...(params.captureReceipt ? { delivery: { state: "accepted" as const, conversationId, ...(messageId ? { messageId } : {}) } } : {}),
+    }
   } catch (error) {
     emitNervesEvent({
       level: "error",
@@ -1396,7 +1411,17 @@ export async function sendProactiveTeamsMessageToSession(
         reason: error instanceof Error ? error.message : String(error),
       },
     })
-    return { delivered: false, reason: "send_error" }
+    let status: unknown
+    if (error && typeof error === "object") {
+      if ("statusCode" in error) status = error.statusCode
+      else if ("status" in error) status = error.status
+    }
+    const rejected = typeof status === "number" && status >= 400 && status < 500 && status !== 408 && status !== 409
+    const state = !activityAttempted || rejected ? "not_sent" : "unknown"
+    return {
+      delivered: false, reason: "send_error",
+      ...(params.captureReceipt ? { delivery: { state, ...(conversationId ? { conversationId } : {}) } } : {}),
+    }
   }
 }
 

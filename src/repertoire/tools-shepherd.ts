@@ -7,6 +7,8 @@ import { createShepherdHost, type ShepherdHost, type ShepherdKey } from "../sens
 import { FINGERPRINT_READ_LINES, redactSecrets, screenFingerprint } from "../senses/shepherd/redact"
 import { readReturns, type ReturnRecord } from "../senses/shepherd/returns"
 import { SELF_FRIEND_ID, type ToolContext, type ToolDefinition } from "./tools-base"
+import { shepherdGuidanceToolDefinitions } from "./tools-shepherd-guidance"
+import { shepherdReturnId } from "../senses/shepherd/guidance"
 
 /**
  * Shepherd's tools: every coding-agent session on this machine's terminal host with a current screen
@@ -92,7 +94,7 @@ export const shepherdOverviewToolDefinition: ToolDefinition = {
       terminalCount: sessions.length,
       sessions: await Promise.all(sessions.map(async (session) => {
         const record = last.get(session.id)
-        return { ...session, currentScreen: await currentScreen(host, session.id, screenLimit), ...(record ? { lastReturn: { at: record.at, kind: record.kind, action: record.action, reason: record.reason, reply: record.reply, task: record.task } } : {}) }
+        return { ...session, currentScreen: await currentScreen(host, session.id, screenLimit), ...(record ? { lastReturn: { id: shepherdReturnId(record), at: record.at, kind: record.kind, action: record.action, reason: record.reason, reply: record.reply, task: record.task } } : {}) }
       })),
     }
   }),
@@ -235,4 +237,4 @@ export const shepherdSendToolDefinition: ToolDefinition = {
   riskProfile: { mutates: "external_side_effect", risk: "high", reason: "types into a coding agent's terminal for the human, which can answer or approve its prompts" },
 }
 
-export const shepherdToolDefinitions: ToolDefinition[] = [shepherdOverviewToolDefinition, shepherdReadToolDefinition, shepherdSignalToolDefinition, shepherdSendToolDefinition]
+export const shepherdToolDefinitions: ToolDefinition[] = [shepherdOverviewToolDefinition, shepherdReadToolDefinition, shepherdSignalToolDefinition, shepherdSendToolDefinition, ...shepherdGuidanceToolDefinitions]

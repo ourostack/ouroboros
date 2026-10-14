@@ -148,14 +148,18 @@ export function noticeDeliveryState(entry: NoticeOutboxEntry, friendId: string):
   return Object.hasOwn(entry.deliveries, friendId) ? entry.deliveries[friendId]!.state : "pending"
 }
 
+export function knownNotice(root: string, id: string, entries: readonly NoticeOutboxEntry[]): NoticeOutboxEntry | undefined {
+  if (!/^[a-f0-9]{64}$/.test(id)) throw new Error(`unknown notice: ${id}`)
+  return entries.find(value => value.id === id) ?? archived(root, id)
+}
+
 function validTarget(friendId: string): boolean {
   return !!friendId && !["__proto__", "constructor", "prototype"].includes(friendId)
 }
 
 function selectedEntries(root: string, entries: NoticeOutboxEntry[], ids: readonly string[]): NoticeOutboxEntry[] {
   return ids.map(id => {
-    if (!/^[a-f0-9]{64}$/.test(id)) throw new Error(`unknown notice: ${id}`)
-    const entry = entries.find(value => value.id === id) ?? archived(root, id)
+    const entry = knownNotice(root, id, entries)
     if (!entry) throw new Error(`unknown notice: ${id}`)
     return entry
   })
@@ -188,7 +192,7 @@ export function recordNoticeDelivery(
       entry.deliveries[friendId] = {
         ...receipt,
         ...(receipt.reason ? { reason: redactSecrets(receipt.reason) } : {}),
-        attempts: (previous?.attempts ?? 0) + 1,
+        attempts: previous?.state === "unknown" ? previous.attempts : (previous?.attempts ?? 0) + 1,
       }
       updated += 1
     }

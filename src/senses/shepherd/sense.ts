@@ -49,7 +49,7 @@ export interface ShepherdSenseOptions {
   escalate?: (content: string) => void
   wake?: (ids: string[]) => Promise<void>
   /** Tells the owner about one judged return (default: the owner notice, coalesced, on the policy in agent.json). */
-  notifyOwner?: (record: ReturnRecord) => void
+  notifyOwner?: (record: ReturnRecord) => void | Promise<void>
   schedule?: (fn: () => void, ms: number) => () => void
 }
 
@@ -253,8 +253,14 @@ export async function startShepherdSenseApp(options: ShepherdSenseOptions): Prom
     } catch (error) {
       Object.assign(record, { kind: record.reason ? record.kind : "error", reason: `${record.reason ? `${record.reason}; then ` : ""}${(error as Error).message}` })
     } finally {
+      record.noticeEligible = notice
       log(record)
-      if (notice) notifyOwner(record)
+      if (notice) {
+        try { await notifyOwner(record) }
+        catch (error) {
+          emitNervesEvent({ level: "error", component: "senses", event: "senses.shepherd_notice_error", message: "owner notice custody failed; the eligible return remains logged for recovery", meta: { agent, error: (error as Error).message } })
+        }
+      }
     }
   }
 

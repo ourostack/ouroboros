@@ -64,6 +64,49 @@ function fakeHost(): FakeHost {
 
 const verdict = (overrides: Partial<JudgeResult> = {}): JudgeResult => ({ kind: "premature", reply: { text: "Go ahead and implement it." }, reason: "It stopped after a plan.", latencyMs: 900, inputTokens: 1200, ...overrides })
 
+describe("owner notice producer custody", () => {
+  it("does not advance its return chain while durable notice custody is still pending", async () => {
+    const host = fakeHost()
+    host.screens.S = [SCREENS.claudePremature]
+    let release!: () => void
+    const held = new Promise<void>(resolve => { release = resolve })
+    const judge = vi.fn(async () => verdict())
+    const notifyOwner = vi.fn(async () => { if (notifyOwner.mock.calls.length === 1) await held })
+    const app = await startShepherdSenseApp({
+      agentName: AGENT, now: () => clock, createHost: () => host, judge,
+      escalate: () => {}, wake: async () => {}, notifyOwner, schedule,
+    })
+    stop = app.stop
+    const event = (transitionId: string): ReturnedControl => ({
+      sessionId: "S", transitionId, agent: "Copilot", cwd: "/project", lastBody: null, backgroundWork: null,
+    })
+    host.handlers!.returned(event("first"))
+    await vi.waitFor(() => expect(notifyOwner).toHaveBeenCalledTimes(1))
+    host.handlers!.returned(event("second"))
+    await new Promise(resolve => setImmediate(resolve))
+    expect(judge).toHaveBeenCalledTimes(1)
+    release()
+    await vi.waitFor(() => expect(judge).toHaveBeenCalledTimes(2))
+  })
+
+  it("keeps processing later returns when an owner-notice callback fails", async () => {
+    const host = fakeHost()
+    host.screens.S = [SCREENS.claudePremature]
+    const judge = vi.fn(async () => verdict())
+    const notifyOwner = vi.fn().mockRejectedValueOnce(new Error("notice store unavailable")).mockResolvedValue(undefined)
+    const app = await startShepherdSenseApp({
+      agentName: AGENT, now: () => clock, createHost: () => host, judge,
+      escalate: () => {}, wake: async () => {}, notifyOwner, schedule,
+    })
+    stop = app.stop
+    for (const transitionId of ["first", "second"]) host.handlers!.returned({
+      sessionId: "S", transitionId, agent: "Copilot", cwd: "/project", lastBody: null, backgroundWork: null,
+    })
+    await vi.waitFor(() => expect(judge).toHaveBeenCalledTimes(2))
+    expect(readReturns(agentRoot).filter(record => record.noticeEligible)).toHaveLength(2)
+  })
+})
+
 interface Task { fn: () => void; ms: number }
 const tasks: Task[] = []
 const schedule = (fn: () => void, ms: number) => {
@@ -83,7 +126,7 @@ async function start(judge: (packet: ReturnPacket) => Promise<JudgeResult>, host
     judge,
     escalate: (content) => escalations.push(content),
     wake: async (ids) => { wakes.push(ids) },
-    notifyOwner: (record) => notices.push(record),
+    notifyOwner: (record) => { notices.push(record) },
     schedule,
   })
   stop = app.stop
@@ -203,6 +246,7 @@ describe("Shepherd sense: answering premature returns", () => {
       at: "2026-10-10T20:00:00.000Z", host: "fake", session: "S1", transition: "cmux:B:101", agent: "claude", cwd: "/Users/a/code/app", task: "ouro-md/toolbar-polish",
       kind: "premature", action: "respond", reason: "It stopped after a plan.", reply: "Go ahead and implement it.", latencyMs: 900, inputTokens: 1200,
       guidanceRevision: 0,
+      noticeEligible: true,
     })
     expect(escalations).toEqual([])
     expect(fs.statSync(returnsLogPath(agentRoot)).mode & 0o777).toBe(0o600)

@@ -6,7 +6,8 @@ import type { ShepherdNoticePolicy } from "../../heart/identity"
 import { emitNervesEvent } from "../../nerves/runtime"
 import type { TeamsBotApi } from "../teams"
 import type { HostSession } from "./host"
-import type { ReturnRecord } from "./returns"
+import { readReturns, type ReturnRecord } from "./returns"
+import { declareNoticeTargets, enqueueNotice, knownNotice, noticeDeliveryState, noticeRecordId, readNoticeOutbox, recordNoticeDelivery } from "./notice-outbox"
 
 /**
  * The owner notice: after a judged return, the agent's owner hears what happened in one short plain message on their
@@ -16,6 +17,7 @@ import type { ReturnRecord } from "./returns"
 export const NOTICE_COALESCE_MS = 5_000
 /** Returns named one by one in a coalesced message; the rest are counted. */
 export const NOTICE_LIST_MAX = 6
+export const NOTICE_RETRY_MS = 30_000
 const NAME_MAX = 60
 const REASON_MAX = 300
 const REPLY_MAX = 240
@@ -122,7 +124,11 @@ export async function resolveNoticeTargets(agentRoot: string, store: { listAll()
   return targets
 }
 
-export type NoticeSender = (target: NoticeTarget, text: string) => Promise<{ delivered: boolean; reason?: string }>
+export type NoticeSender = (target: NoticeTarget, text: string) => Promise<{
+  delivered: boolean
+  reason?: string
+  delivery?: { state: "accepted" | "not_sent" | "unknown"; messageId?: string; conversationId?: string }
+}>
 
 /** The bot whose tenant is the friend's: the secondary bot when it serves that tenant, else the primary. */
 export function chooseTeamsBot(tenantId: string | undefined, primary: TeamsConfig, secondary: TeamsConfig): TeamsConfig | null {
@@ -167,7 +173,7 @@ export function createTeamsNoticeSender(agentRoot: string, deps: {
     }
     const { sendProactiveTeamsMessageToSession } = await import("../teams")
     return sendProactiveTeamsMessageToSession(
-      { friendId: target.friendId, sessionKey: target.key, text, textFormat: "plain", intent: "generic_outreach" },
+      { friendId: target.friendId, sessionKey: target.key, text, textFormat: "plain", intent: "generic_outreach", captureReceipt: true },
       { botApi: await bot, store: new FileFriendStore(path.join(agentRoot, "friends")) },
     )
   }
@@ -185,7 +191,7 @@ export interface OwnerNotifierOptions {
 }
 
 export interface OwnerNotifier {
-  notify(record: ReturnRecord): void
+  notify(record: ReturnRecord): Promise<void>
   /** Sends what is waiting now; resolves when it is sent or has failed. */
   flush(): Promise<void>
   stop(): void
@@ -196,54 +202,120 @@ export function createOwnerNotifier(options: OwnerNotifierOptions): OwnerNotifie
   const { agent, policy } = options
   const resolveTargets = options.resolveTargets ?? (() => resolveNoticeTargets(options.agentRoot))
   const send = options.send ?? createTeamsNoticeSender(options.agentRoot)
-  const waiting: ReturnRecord[] = []
+  const retryWrites = new Map<string, ReturnRecord>()
+  const writes = new Set<Promise<void>>()
   let cancel: (() => void) | null = null
+  let stopped = false
+  let flushing: Promise<void> | null = null
 
-  async function flush(): Promise<void> {
+  function schedule(ms: number): void {
+    if (!stopped && policy !== "off") cancel ??= options.schedule(() => { void flush() }, ms)
+  }
+
+  function persistIntent(record: ReturnRecord): Promise<void> {
+    const key = `${record.host}:${record.session}:${record.transition}:${record.at}`
+    retryWrites.set(key, record)
+    const write = enqueueNotice(options.agentRoot, record).then(() => {
+      retryWrites.delete(key)
+    }).catch(error => {
+      emitNervesEvent({ level: "error", component: "senses", event: "senses.shepherd_notice_error", message: "could not persist a Shepherd owner notice intent; it remains waiting", meta: { agent, error: (error as Error).message } })
+      schedule(NOTICE_RETRY_MS)
+    }).finally(() => { writes.delete(write) })
+    writes.add(write)
+    return write
+  }
+
+  async function runFlush(): Promise<void> {
     cancel?.()
     cancel = null
-    const records = waiting.splice(0)
-    if (records.length === 0) return
+    if (stopped || policy === "off") return
+    await Promise.all([...writes])
+    for (const record of [...retryWrites.values()]) await persistIntent(record)
     try {
+      const entries = readNoticeOutbox(options.agentRoot).filter(entry =>
+        noticeWanted(policy, entry.record) && (Object.keys(entry.deliveries).length === 0 || Object.values(entry.deliveries).some(value => value.state !== "sent")),
+      )
+      if (entries.length === 0) return
       const refs = new Map<string, HostSession>()
       try {
         for (const session of await options.listSessions()) refs.set(session.id, session)
       } catch {
         // Without the host's handles, each notice names a short session id instead.
       }
-      const text = noticeMessage(records, refs)
       const targets = await resolveTargets()
       if (targets.length === 0) {
-        emitNervesEvent({ level: "warn", component: "senses", event: "senses.shepherd_notice_no_target", message: "no family friend is reachable on Teams, so the Shepherd owner notice was not sent", meta: { agent, returns: records.length } })
+        emitNervesEvent({ level: "warn", component: "senses", event: "senses.shepherd_notice_no_target", message: "no family friend is reachable on Teams, so the Shepherd owner notice was not sent", meta: { agent, returns: entries.length } })
+        schedule(NOTICE_RETRY_MS)
         return
       }
+      await declareNoticeTargets(options.agentRoot, entries.map(entry => entry.id), targets.map(target => target.friendId), new Date().toISOString())
+      let retry = false
       for (const target of targets) {
-        try {
-          const result = await send(target, text)
-          emitNervesEvent({
-            level: result.delivered ? "info" : "warn",
-            component: "senses",
-            event: result.delivered ? "senses.shepherd_notice_sent" : "senses.shepherd_notice_not_sent",
-            message: result.delivered ? "sent the Shepherd owner notice" : "the Shepherd owner notice was not delivered",
-            meta: { agent, friendId: target.friendId, returns: records.length, ...(result.delivered ? {} : { reason: result.reason ?? "unknown" }) },
-          })
-        } catch (error) {
-          emitNervesEvent({ level: "error", component: "senses", event: "senses.shepherd_notice_error", message: "sending the Shepherd owner notice failed", meta: { agent, friendId: target.friendId, error: (error as Error).message } })
+        const pending = entries.filter(entry => noticeDeliveryState(entry, target.friendId) === "pending")
+        for (let start = 0; start < pending.length && !stopped; start += NOTICE_LIST_MAX) {
+          const batch = pending.slice(start, start + NOTICE_LIST_MAX)
+          const ids = batch.map(entry => entry.id)
+          // Persist uncertainty before initiating an external send, so a crash cannot blindly replay it.
+          await recordNoticeDelivery(options.agentRoot, ids, target.friendId, { state: "unknown", at: new Date().toISOString(), reason: "awaiting transport acceptance" })
+          try {
+            const result = await send(target, noticeMessage(batch.map(entry => entry.record), refs))
+            const state = result.delivered ? "sent"
+              : result.delivery ? result.delivery.state === "not_sent" ? "pending" : "unknown"
+                : result.reason && result.reason !== "send_error" ? "pending" : "unknown"
+            await recordNoticeDelivery(options.agentRoot, ids, target.friendId, {
+              state, at: new Date().toISOString(), ...(result.reason ? { reason: result.reason } : {}),
+              ...(result.delivery?.messageId ? { messageId: result.delivery.messageId } : {}),
+            })
+            retry ||= state === "pending"
+            emitNervesEvent({
+              level: result.delivered ? "info" : "warn", component: "senses",
+              event: result.delivered ? "senses.shepherd_notice_sent" : "senses.shepherd_notice_not_sent",
+              message: result.delivered ? "sent the Shepherd owner notice" : "the Shepherd owner notice was not delivered",
+              meta: { agent, friendId: target.friendId, returns: batch.length, ...(result.delivered ? {} : { reason: result.reason ?? "unknown" }) },
+            })
+          } catch (error) {
+            emitNervesEvent({ level: "error", component: "senses", event: "senses.shepherd_notice_error", message: "sending the Shepherd owner notice failed; its outcome remains unknown", meta: { agent, friendId: target.friendId, error: (error as Error).message } })
+          }
         }
       }
+      if (retry) schedule(NOTICE_RETRY_MS)
     } catch (error) {
       emitNervesEvent({ level: "error", component: "senses", event: "senses.shepherd_notice_error", message: "preparing the Shepherd owner notice failed", meta: { agent, error: (error as Error).message } })
+      schedule(NOTICE_RETRY_MS)
     }
+  }
+
+  function flush(): Promise<void> {
+    if (flushing) return flushing
+    flushing = runFlush().finally(() => { flushing = null })
+    return flushing
+  }
+
+  try {
+    const existing = readNoticeOutbox(options.agentRoot)
+    let recovered = false
+    for (const record of readReturns(options.agentRoot)) {
+      if (record.noticeEligible === true && noticeWanted(policy, record) && !knownNotice(options.agentRoot, noticeRecordId(record), existing)) {
+        void persistIntent(record)
+        recovered = true
+      }
+    }
+    if (recovered || existing.some(entry => Object.keys(entry.deliveries).length === 0 || Object.values(entry.deliveries).some(value => value.state === "pending"))) schedule(NOTICE_RETRY_MS)
+  } catch (error) {
+    emitNervesEvent({ level: "error", component: "senses", event: "senses.shepherd_notice_error", message: "could not read waiting Shepherd owner notices", meta: { agent, error: (error as Error).message } })
+    schedule(NOTICE_RETRY_MS)
   }
 
   return {
     notify(record) {
-      if (!noticeWanted(policy, record)) return
-      waiting.push(record)
-      cancel ??= options.schedule(() => { void flush() }, NOTICE_COALESCE_MS)
+      if (stopped || !noticeWanted(policy, record)) return Promise.resolve()
+      const write = persistIntent(record)
+      schedule(NOTICE_COALESCE_MS)
+      return write
     },
     flush,
     stop() {
+      stopped = true
       cancel?.()
       cancel = null
     },
