@@ -61,6 +61,40 @@ describe("frontend socket", () => {
     while (cleanup.length > 0) await cleanup.pop()!()
   })
 
+  it("does not prepare or run a turn when its client closes during asynchronous target validation", async () => {
+    const { FrontendSessionService } = await import("../../heart/frontend-session-service")
+    const { startFrontendSocketServer } = await import("../../heart/frontend-socket")
+    const validating = Promise.withResolvers<void>()
+    const release = Promise.withResolvers<void>()
+    const session = { id: "11111111-1111-4111-8111-111111111111", host: "cmux" as const, label: "isolated coding terminal" }
+    const runner = vi.fn(async () => settledResult())
+    const service = new FrontendSessionService({
+      runner,
+      shepherdTargets: async () => { validating.resolve(); await release.promise; return [session] },
+    })
+    const prepare = vi.spyOn(service, "prepareTurn")
+    const target = socketPath("composer-validation-close")
+    console.info(`Resources: exact-owned closed-validation socket ${target}`)
+    const server = await startFrontendSocketServer({ socketPath: target, service })
+    cleanup.push(() => server.stop())
+    const socket = await connect(target)
+    socket.write(`${JSON.stringify({ protocolVersion: 1, id: "start", method: "turn.start", params: {
+      turnId: "closed-composer-turn", agent: "boss", friendId: "owner", channel: "cli",
+      sessionKey: `shepherd:${session.id}`, message: "must not run", shepherdSession: session,
+    } })}\n`)
+    await validating.promise
+    const closed = new Promise<void>(resolve => socket.once("close", resolve))
+    socket.destroy()
+    await closed
+    // Allow the server's remote close cleanup to run before target validation resolves.
+    await new Promise(resolve => setTimeout(resolve, 20))
+    release.resolve()
+    await new Promise(resolve => setTimeout(resolve, 20))
+    expect(prepare).not.toHaveBeenCalled()
+    expect(runner).not.toHaveBeenCalled()
+    expect(service.hasTurn("closed-composer-turn")).toBe(false)
+  })
+
   it("validates daemon target/identity, pins a UUID despite focus changes and fails disappearance", async () => {
     const { FrontendSessionService } = await import("../../heart/frontend-session-service")
     const { startFrontendSocketServer } = await import("../../heart/frontend-socket")

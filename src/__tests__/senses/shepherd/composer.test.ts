@@ -135,6 +135,109 @@ describe("Shepherd composer", () => {
     composer.close()
   })
 
+  it("cancels locally during pending subscription and never dispatches the cancelled turn", async () => {
+    const wire = transport()
+    const subscription = Promise.withResolvers<void>()
+    const original = wire.client.request
+    wire.client.request = async (method, params) => {
+      const result = await original(method, params)
+      if (method === "session.subscribe") await subscription.promise
+      return method === "turn.cancel" ? { cancelled: false } : result
+    }
+    const composer = new ShepherdComposer({ client: wire.client, agent: "ouro", friendId: "owner", target: first })
+    const pending = composer.submit("must not dispatch")
+    void pending.catch(() => {})
+    await new Promise(resolve => setImmediate(resolve))
+    const cancelled = await composer.cancel()
+    subscription.resolve()
+    await new Promise(resolve => setImmediate(resolve))
+    const start = wire.calls.find(call => call.method === "turn.start")
+    if (start) wire.emit({ event: "turn.cancelled", turnId: start.params.turnId, sessionKey: composer.sessionKey })
+    await expect(pending).rejects.toThrow("cancelled")
+    expect(cancelled).toBe(true)
+    expect(wire.calls.filter(call => call.method === "turn.start" || call.method === "turn.cancel")).toEqual([])
+    composer.close()
+  })
+
+  it("does not dispatch when the composer exits before subscription acknowledges", async () => {
+    const wire = transport()
+    const subscription = Promise.withResolvers<void>()
+    const original = wire.client.request
+    wire.client.request = async (method, params) => {
+      const result = await original(method, params)
+      if (method === "session.subscribe") await subscription.promise
+      return result
+    }
+    const composer = new ShepherdComposer({ client: wire.client, agent: "ouro", friendId: "owner", target: first })
+    const pending = composer.submit("must not dispatch")
+    void pending.catch(() => {})
+    await new Promise(resolve => setImmediate(resolve))
+    composer.close()
+    subscription.resolve()
+    await expect(pending).rejects.toThrow("closed")
+    expect(wire.calls.filter(call => call.method === "turn.start")).toEqual([])
+  })
+
+  it("does not reconcile a newer turn when an earlier cancelled subscription rejects", async () => {
+    const wire = transport()
+    const subscription = Promise.withResolvers<void>()
+    const original = wire.client.request
+    let subscriptions = 0
+    wire.client.request = async (method, params) => {
+      const result = await original(method, params)
+      if (method === "session.subscribe" && ++subscriptions === 1) await subscription.promise
+      return result
+    }
+    const composer = new ShepherdComposer({ client: wire.client, agent: "ouro", friendId: "owner", target: first })
+    const cancelled = composer.submit("old turn")
+    void cancelled.catch(() => {})
+    await new Promise(resolve => setImmediate(resolve))
+    await composer.cancel()
+    const current = composer.submit("new turn")
+    await new Promise(resolve => setImmediate(resolve))
+    subscription.reject(new Error("old subscription failed"))
+    await expect(cancelled).rejects.toThrow("cancelled")
+    const start = wire.calls.find(call => call.method === "turn.start")!
+    wire.emit({ event: "turn.completed", turnId: start.params.turnId, sessionKey: composer.sessionKey, result: { response: "new answer" } })
+    await expect(current).resolves.toBe("new answer")
+    expect(wire.calls.filter(call => call.method === "turn.start")).toHaveLength(1)
+    expect(wire.calls.filter(call => call.method === "turn.status")).toEqual([])
+    composer.close()
+  })
+
+  it.each(["disconnect", "replay_required"])("does not apply late %s recovery failure to a newer turn after local cancellation", async event => {
+    const wire = transport()
+    const subscription = Promise.withResolvers<void>()
+    const status = Promise.withResolvers<any>()
+    const original = wire.client.request
+    let subscriptions = 0
+    wire.client.request = async (method, params) => {
+      const result = await original(method, params)
+      if (method === "session.subscribe" && ++subscriptions === 1) await subscription.promise
+      if (method === "turn.status") return status.promise
+      return result
+    }
+    const composer = new ShepherdComposer({ client: wire.client, agent: "ouro", friendId: "owner", target: first })
+    const old = composer.submit("old turn")
+    void old.catch(() => {})
+    await new Promise(resolve => setImmediate(resolve))
+    if (event === "disconnect") wire.disconnect()
+    else wire.emit({ event })
+    await new Promise(resolve => setImmediate(resolve))
+    await composer.cancel()
+    const current = composer.submit("current turn")
+    void current.catch(() => {})
+    await new Promise(resolve => setImmediate(resolve))
+    status.reject(new Error("old recovery failed"))
+    subscription.resolve()
+    await expect(old).rejects.toThrow("cancelled")
+    await new Promise(resolve => setImmediate(resolve))
+    const start = wire.calls.find(call => call.method === "turn.start")!
+    wire.emit({ event: "turn.completed", turnId: start.params.turnId, sessionKey: composer.sessionKey, result: { response: "current answer" } })
+    await expect(current).resolves.toBe("current answer")
+    composer.close()
+  })
+
   it.each(["turn.failed", "turn.cancelled"])("shows terminal failure %s plainly", async event => {
     const wire = transport()
     const composer = new ShepherdComposer({ client: wire.client, agent: "ouro", friendId: "owner", target: first })
@@ -248,6 +351,115 @@ describe("Shepherd composer", () => {
     response.resolve({ state: "unknown", events: [] })
     await recovery
     await expect(pending).resolves.toBe("winner")
+    composer.close()
+  })
+
+  it("defers live completion until journal deliveries merge in sequence order without duplicates", async () => {
+    const wire = transport()
+    const status = Promise.withResolvers<any>()
+    const original = wire.client.request
+    wire.client.request = (method, params) => method === "turn.status" ? status.promise : original(method, params)
+    const composer = new ShepherdComposer({ client: wire.client, agent: "ouro", friendId: "owner", target: first })
+    let settled = false
+    const pending = composer.submit("hello").then(answer => { settled = true; return answer })
+    await new Promise(resolve => setImmediate(resolve))
+    const start = wire.calls.find(call => call.method === "turn.start")!
+    const recovering = composer.recover()
+    await new Promise(resolve => setImmediate(resolve))
+    wire.emit({ event: "assistant.delivery", turnId: start.params.turnId, sessionKey: composer.sessionKey,
+      journalSequence: 4, text: "second delivery" })
+    wire.emit({ event: "turn.completed", turnId: start.params.turnId, sessionKey: composer.sessionKey,
+      journalSequence: 5, result: { response: "final fallback" } })
+    await new Promise(resolve => setImmediate(resolve))
+    const settledBeforeJournal = settled
+    status.resolve({ state: "completed", events: [
+      { type: "assistant_delivery", sequence: 4, data: { text: "second delivery" } },
+      { type: "assistant_delivery", sequence: 3, data: { text: "first delivery" } },
+      { type: "turn_completed", sequence: 5, data: { result: { response: "final fallback" } } },
+    ] })
+    await recovering
+    await expect(pending).resolves.toBe("first delivery\nsecond delivery")
+    expect(settledBeforeJournal).toBe(false)
+    composer.close()
+  })
+
+  it.each(["resolved", "rejected"])("does not reanimate an exited turn when its recovery request is %s", async disposition => {
+    const wire = transport()
+    wire.loseAck({ state: "active", events: [] })
+    const status = Promise.withResolvers<any>()
+    const original = wire.client.request
+    wire.client.request = (method, params) => method === "turn.status" ? status.promise : original(method, params)
+    const composer = new ShepherdComposer({ client: wire.client, agent: "ouro", friendId: "owner", target: first })
+    const pending = composer.submit("hello")
+    void pending.catch(() => {})
+    await new Promise(resolve => setImmediate(resolve))
+    composer.close()
+    if (disposition === "resolved") status.resolve({ state: "completed", events: [] })
+    else status.reject(new Error("late recovery failure"))
+    await expect(pending).rejects.toThrow("closed")
+    expect(wire.calls.filter(call => call.method === "turn.start")).toHaveLength(1)
+  })
+
+  it("waits for overlapping journal reconciliations before finalizing the ordered answer", async () => {
+    const wire = transport()
+    const one = Promise.withResolvers<any>()
+    const two = Promise.withResolvers<any>()
+    const original = wire.client.request
+    let requests = 0
+    wire.client.request = (method, params) => method === "turn.status"
+      ? (++requests === 1 ? one.promise : two.promise) : original(method, params)
+    const composer = new ShepherdComposer({ client: wire.client, agent: "ouro", friendId: "owner", target: first })
+    let settled = false
+    const pending = composer.submit("hello").then(answer => { settled = true; return answer })
+    await new Promise(resolve => setImmediate(resolve))
+    const recoveryOne = composer.recover().then(() => null, error => error)
+    const recoveryTwo = composer.recover()
+    await new Promise(resolve => setImmediate(resolve))
+    one.resolve({ state: "completed", events: [
+      { type: "assistant_delivery", sequence: 4, data: { text: "second" } },
+      { type: "turn_completed", sequence: 5, data: { result: { response: "fallback" } } },
+    ] })
+    const firstResult = await recoveryOne
+    const settledBeforeSecondJournal = settled
+    two.resolve({ state: "completed", events: [
+      { type: "assistant_delivery", sequence: 3, data: { text: "first" } },
+      { type: "assistant_delivery", sequence: 4, data: { text: "second" } },
+      { type: "turn_completed", sequence: 5, data: { result: { response: "fallback" } } },
+    ] })
+    await recoveryTwo
+    await expect(pending).resolves.toBe("first\nsecond")
+    expect(settledBeforeSecondJournal).toBe(false)
+    expect(firstResult).toBeNull()
+    composer.close()
+  })
+
+  it("keeps live completion deferred after a failed journal request until reconciliation succeeds", async () => {
+    const wire = transport()
+    const status = Promise.withResolvers<any>()
+    const original = wire.client.request
+    let requests = 0
+    wire.client.request = (method, params) => method === "turn.status" && ++requests === 1
+      ? status.promise : original(method, params)
+    const notices: string[] = []
+    const composer = new ShepherdComposer({ client: wire.client, agent: "ouro", friendId: "owner", target: first, notice: value => notices.push(value) })
+    const pending = composer.submit("hello")
+    void pending.catch(() => {})
+    await new Promise(resolve => setImmediate(resolve))
+    const start = wire.calls.find(call => call.method === "turn.start")!
+    wire.disconnect()
+    await new Promise(resolve => setImmediate(resolve))
+    wire.emit({ event: "assistant.delivery", turnId: start.params.turnId, sessionKey: composer.sessionKey, journalSequence: 4, text: "second" })
+    status.reject(new Error("journal unavailable"))
+    await expect(pending).rejects.toThrow("journal unavailable")
+    wire.emit({ event: "turn.completed", turnId: start.params.turnId, sessionKey: composer.sessionKey, journalSequence: 5, result: { response: "fallback" } })
+    expect(notices.filter(value => value.startsWith("Ouro:"))).toEqual([])
+    wire.loseAck({ state: "completed", events: [
+      { type: "assistant_delivery", sequence: 3, data: { text: "first" } },
+      { type: "assistant_delivery", sequence: 4, data: { text: "second" } },
+      { type: "turn_completed", sequence: 5, data: { result: { response: "fallback" } } },
+    ] })
+    await composer.recover()
+    expect(notices.filter(value => value.startsWith("Ouro:"))).toEqual(["Ouro: first\nsecond"])
     composer.close()
   })
 

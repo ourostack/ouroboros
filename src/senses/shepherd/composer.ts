@@ -28,8 +28,12 @@ export function selectShepherdTarget(targets: readonly ShepherdSession[], explic
 
 interface ComposerTurn {
   id: string
-  deliveries: string[]
+  events: Array<{ type: string; data: Record<string, any>; sequence?: number }>
   seen: Set<number>
+  recovering: number
+  reconciliationPending: boolean
+  dispatched: boolean
+  cancelled: boolean
   unresolved: boolean
   resolve(answer: string): void
   reject(error: Error): void
@@ -58,15 +62,17 @@ export class ShepherdComposer {
     this.notice = options.notice ?? (() => {})
     this.unsubscribe = this.client.onEvent(frame => {
       if (frame.event === "replay_required") {
+        const turn = this.active
         this.notice("Ouro disconnected: journal replay required.")
-        void this.recover().catch(error => this.fail(error, true))
+        void this.recover().catch(error => { if (this.active === turn) this.fail(error, true) })
       } else if (this.active && frame.turnId === this.active.id && frame.sessionKey === this.sessionKey) {
-        this.consume(frame.event.replaceAll(".", "_"), frame, frame.journalSequence)
+        this.consume(this.active, frame.event.replaceAll(".", "_"), frame, frame.journalSequence)
       }
     })
     this.unsubscribeClose = this.client.onClose(() => {
+      const turn = this.active
       this.notice("Ouro disconnected; resolving this turn through its journal. No turn will be resubmitted.")
-      void this.recover().catch(error => this.fail(error, true))
+      void this.recover().catch(error => { if (this.active === turn) this.fail(error, true) })
     })
   }
 
@@ -75,41 +81,65 @@ export class ShepherdComposer {
     const message = input.replace(/^@ouro(?:\s+|$)/i, "")
     if (!message.trim()) throw new Error("message must not be empty")
     const completion = Promise.withResolvers<string>()
-    this.active = { id: randomUUID(), deliveries: [], seen: new Set(), unresolved: false, resolve: completion.resolve, reject: completion.reject }
+    const turn: ComposerTurn = { id: randomUUID(), events: [], seen: new Set(), recovering: 0, reconciliationPending: false, dispatched: false, cancelled: false,
+      unresolved: false, resolve: completion.resolve, reject: completion.reject }
+    this.active = turn
     // Attach a rejection handler before transport work to avoid unhandled rejection races.
     void completion.promise.catch(() => {})
-    const turnId = this.active.id
+    const turnId = turn.id
     try {
       await this.client.request("session.subscribe", { sessionKey: this.sessionKey })
+      if (turn.cancelled || this.active !== turn) return completion.promise
+      turn.dispatched = true
       await this.client.request("turn.start", {
         ...this.ref(), turnId, channel: "cli", message, shepherdSession: this.target,
         ...(this.composerTty ? { composerTty: this.composerTty } : {}),
       })
     } catch (sendError) {
       // Unknown acknowledgement is never retried. Even a rejected send may have run.
-      try { await this.recover() } catch (error) {
-        this.fail(new Error(`${String(sendError)}; ${String(error)}`), true)
+      if (this.active === turn) {
+        try { await this.recover() } catch (error) {
+          if (this.active === turn) this.fail(new Error(`${String(sendError)}; ${String(error)}`), true)
+        }
       }
     }
     return completion.promise
   }
 
   async cancel(): Promise<boolean> {
-    if (!this.active) return false
-    const result = await this.client.request("turn.cancel", { turnId: this.active.id })
+    const turn = this.active
+    if (!turn) return false
+    turn.cancelled = true
+    if (!turn.dispatched) {
+      this.fail(new Error("Ouro turn cancelled"))
+      return true
+    }
+    const result = await this.client.request("turn.cancel", { turnId: turn.id })
     return result.cancelled === true
   }
 
   async recover(): Promise<void> {
     const turn = this.active
     if (!turn) return
-    await this.client.request("session.subscribe", { sessionKey: this.sessionKey })
-    const status = await this.client.request("turn.status", { ...this.ref(), turnId: turn.id })
-    if (this.active !== turn) return
-    for (const event of status.events) {
-      this.consume(event.type, event.data, event.sequence)
+    turn.recovering += 1
+    turn.reconciliationPending = true
+    let status: { state: string; events: Array<{ type: string; data: Record<string, any>; sequence?: number }> }
+    try {
+      await this.client.request("session.subscribe", { sessionKey: this.sessionKey })
+      status = await this.client.request("turn.status", { ...this.ref(), turnId: turn.id })
+      if (this.active !== turn) return
+      for (const event of status.events) {
+        this.consume(turn, event.type, event.data, event.sequence)
+      }
+    } finally {
+      turn.recovering -= 1
     }
-    if (this.active === turn && status.state !== "active") {
+    // A live terminal event must wait for the authoritative journal merge. Failed
+    // reconciliation never finalizes a potentially truncated buffered answer.
+    if (turn.recovering === 0) turn.reconciliationPending = false
+    this.finishTurn()
+    if (this.active === turn && turn.recovering === 0 && status.state !== "active") {
+      turn.reconciliationPending = true
       throw new Error(`Ouro turn status is ${status.state}; not resubmitting ${turn.id}`)
     }
   }
@@ -134,24 +164,35 @@ export class ShepherdComposer {
     turn?.reject(error instanceof Error ? error : new Error(String(error)))
   }
 
-  private consume(type: string, data: Record<string, any>, sequence?: number): void {
-    const turn = this.active
-    if (!turn) return
+  private consume(turn: ComposerTurn, type: string, data: Record<string, any>, sequence?: number): void {
+    if (!["assistant_delivery", "turn_completed", "turn_failed", "turn_cancelled"].includes(type)) return
     if (typeof sequence === "number") {
       if (turn.seen.has(sequence)) return
       turn.seen.add(sequence)
     }
-    if (type === "assistant_delivery" && typeof data.text === "string") turn.deliveries.push(data.text)
+    turn.events.push({ type, data, sequence })
+    this.finishTurn()
+  }
+
+  private finishTurn(): void {
+    const turn = this.active
+    if (!turn || turn.reconciliationPending) return
+    const ordered = [...turn.events].sort((a, b) => (a.sequence ?? Number.MAX_SAFE_INTEGER) - (b.sequence ?? Number.MAX_SAFE_INTEGER))
+    const terminalIndex = ordered.findIndex(event => event.type !== "assistant_delivery")
+    if (terminalIndex < 0) return
+    const { type, data } = ordered[terminalIndex]!
+    const deliveries = ordered.slice(0, terminalIndex)
+      .filter(event => typeof event.data.text === "string").map(event => event.data.text as string)
     if (type === "turn_completed") {
       this.active = null
       if (data.result?.outcome === "errored" || data.result?.outcome === "aborted") {
         turn.reject(new Error(`Ouro turn ${data.result.outcome}`))
       } else {
-        const answer = turn.deliveries.length ? turn.deliveries.join("\n") : String(data.result?.response ?? "")
+        const answer = deliveries.length ? deliveries.join("\n") : String(data.result?.response ?? "")
         if (turn.unresolved) this.notice(`Ouro: ${answer}`)
         turn.resolve(answer)
       }
-    } else if (type === "turn_failed" || type === "turn_cancelled") {
+    } else {
       this.fail(new Error(type === "turn_cancelled" ? "Ouro turn cancelled" : String(data.error ?? "Ouro turn failed")))
     }
   }
