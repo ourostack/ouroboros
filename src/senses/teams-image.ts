@@ -3,6 +3,7 @@ import * as path from "node:path"
 import type { Entity } from "@microsoft/teams.api"
 import { normalizeImageForVision, MAX_ATTACHMENT_DOWNLOAD_BYTES_IMAGE } from "../heart/attachments/image-normalize"
 import { buildCliLocalFileAttachmentRecord } from "../heart/attachments/sources/cli-local-file"
+import { emitNervesEvent } from "../nerves/runtime"
 
 export const MAX_TEAMS_INLINE_IMAGE_BYTES = 56 * 1024
 export const MAX_TEAMS_IMAGE_CAPTION_LENGTH = 1024
@@ -61,6 +62,11 @@ export async function prepareTeamsImage(input: {
   const bytes = await readBoundedImage(normalized.path, MAX_TEAMS_INLINE_IMAGE_BYTES)
   const contentType = imageMime(bytes)
   if (normalized.mimeType !== contentType) throw new Error("Normalized Teams image MIME does not match its bytes")
+  emitNervesEvent({
+    component: "channels", event: "channel.teams_image_prepared",
+    message: "private image prepared for inline Teams delivery",
+    meta: { mimeType: contentType, byteCount: bytes.length, maxEdge: 1024 },
+  })
   return {
     contentType,
     contentUrl: `data:${contentType};base64,${bytes.toString("base64")}`,
@@ -87,6 +93,11 @@ export function createTeamsImageSender(
       || typeof receipt.id !== "string" || !receipt.id.trim()) {
       throw new Error("Teams image delivery is unknown: no activity receipt returned; do not retry automatically")
     }
+    emitNervesEvent({
+      component: "channels", event: "channel.teams_image_accepted",
+      message: "Teams accepted an inline image activity; client rendering is not verified",
+      meta: { activityId: receipt.id, mimeType: attachment.contentType },
+    })
     return receipt.id
   }
 }

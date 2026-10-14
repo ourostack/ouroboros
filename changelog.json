@@ -5,7 +5,8 @@
       "version": "0.1.0-alpha.928",
       "changes": [
         "Teams can send private local PNG and JPEG images into the current conversation, with bounded inline bytes, family trust, no-send enforcement and honest activity receipts.",
-        "Preserves the existing Teams integration schema order when adding inline image delivery."
+        "Preserves the existing Teams integration schema order when adding inline image delivery.",
+        "Records private-image preparation and Teams acceptance in structured telemetry without logging image bytes, paths or captions."
       ]
     },
     {

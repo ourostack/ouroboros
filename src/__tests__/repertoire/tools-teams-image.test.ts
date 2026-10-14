@@ -8,6 +8,7 @@ import { teamsToolDefinitions } from "../../repertoire/tools-teams"
 import { selectToolsForChannel, executeTool } from "../../repertoire/tools"
 import { normalizeImageForVision } from "../../heart/attachments/image-normalize"
 import { createTeamsImageSender, prepareTeamsImage } from "../../senses/teams-image"
+import * as nerves from "../../nerves/runtime"
 
 vi.mock("../../heart/attachments/image-normalize", () => ({
   MAX_ATTACHMENT_DOWNLOAD_BYTES_IMAGE: 32 * 1024 * 1024,
@@ -189,6 +190,27 @@ describe("teams_send_image", () => {
 })
 
 describe("Teams inline-image preparation and transport bounds", () => {
+  it("records preparation and acceptance without logging image bytes, paths or captions", async () => {
+    const { root, source, send } = await fixture()
+    const emit = vi.spyOn(nerves, "emitNervesEvent")
+    try {
+      const attachment = await prepareTeamsImage({ path: source, agentName: "test", agentRoot: root })
+      await createTeamsImageSender(send)(attachment, "private caption")
+      expect(emit).toHaveBeenCalledWith(expect.objectContaining({
+        event: "channel.teams_image_prepared", meta: { mimeType: "image/png", byteCount: png.length, maxEdge: 1024 },
+      }))
+      expect(emit).toHaveBeenCalledWith(expect.objectContaining({
+        event: "channel.teams_image_accepted", meta: { activityId: "teams-activity-123", mimeType: "image/png" },
+      }))
+      const telemetry = JSON.stringify(emit.mock.calls)
+      expect(telemetry).not.toContain("base64")
+      expect(telemetry).not.toContain(source)
+      expect(telemetry).not.toContain("private caption")
+    } finally {
+      emit.mockRestore()
+    }
+  })
+
   it.each(["relative.png", "", "~/capture.png"])("rejects non-absolute path %s", async (source) => {
     await expect(prepareTeamsImage({ path: source, agentName: "test", agentRoot: "/tmp/test" })).rejects.toThrow("absolute")
   })
