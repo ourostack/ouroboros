@@ -31,6 +31,29 @@ afterEach(() => {
 })
 
 describe("normalizeImageForVision", () => {
+  it.each([0, -1, 1.5, Number.NaN])("rejects invalid maximum edge %s", async (maxEdge) => {
+    const root = makeAgentRoot()
+    const source = makeFile(root, "small.png")
+    await expect(normalizeImageForVision({
+      attachment: buildCliLocalFileAttachmentRecord({ path: source }),
+      sourcePath: source, agentName: "test", agentRoot: root, maxEdge,
+    })).rejects.toThrow("positive integer")
+  })
+
+  it("forces encoding within an explicit dimension and byte budget even for a small PNG", async () => {
+    const root = makeAgentRoot()
+    const source = makeFile(root, "small.png")
+    const encodeVariant = vi.fn(async () => ({ path: source, mimeType: "image/png", byteCount: 20 }))
+    await normalizeImageForVision({
+      attachment: buildCliLocalFileAttachmentRecord({ path: source, mimeType: "image/png", byteCount: 10 }),
+      sourcePath: source, agentName: "test", agentRoot: root,
+      maxEdge: 1024, maxVlmBytes: 24 * 1024,
+      probeImage: async () => ({ hasAlpha: true }), encodeVariant,
+    })
+    expect(encodeVariant).toHaveBeenCalledOnce()
+    expect(encodeVariant).toHaveBeenCalledWith(expect.objectContaining({ maxEdge: 1024 }))
+  })
+
   it("uses the built-in sips helpers when no overrides are supplied", async () => {
     vi.resetModules()
     const execFile = vi.fn((_: string, args: string[], callback: (error: Error | null, stdout?: string, stderr?: string) => void) => {

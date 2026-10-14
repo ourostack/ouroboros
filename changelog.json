@@ -2,6 +2,14 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.928",
+      "changes": [
+        "Teams can send private local PNG and JPEG images into the current conversation, with bounded inline bytes, family trust, no-send enforcement and honest activity receipts.",
+        "Preserves the existing Teams integration schema order when adding inline image delivery.",
+        "Records private-image preparation and Teams acceptance in structured telemetry without logging image bytes, paths or captions."
+      ]
+    },
+    {
       "version": "0.1.0-alpha.927",
       "changes": [
         "Keep the managed session-attention listener alive under cmuxOnly by validating its native entry with the configured machine-scoped cmux socket authority, without exposing credentials in command arguments."
