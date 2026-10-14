@@ -11,6 +11,7 @@ import { shepherdOverviewToolDefinition, shepherdReadToolDefinition, shepherdSen
 import { screenFingerprint } from "../../senses/shepherd/redact"
 import * as shepherdHost from "../../senses/shepherd/host"
 import { appendReturn, type ReturnRecord } from "../../senses/shepherd/returns"
+import { shepherdReturnId } from "../../senses/shepherd/guidance"
 import { startFakeCmux, type FakeCmux } from "../senses/shepherd/fake-cmux"
 import { SCREENS, tree } from "../senses/shepherd/fixtures"
 
@@ -50,11 +51,15 @@ describe("Shepherd tools", () => {
     expect(shepherdToolsEnabled(root)).toBe(true)
     fs.writeFileSync(path.join(root, "agent.json"), JSON.stringify({}))
     expect(shepherdToolsEnabled(root)).toBe(false)
-    expect(shepherdToolDefinitions.map((definition) => definition.tool.function.name)).toEqual(["shepherd_overview", "shepherd_read", "shepherd_signal", "shepherd_send"])
+    expect(shepherdToolDefinitions.map((definition) => definition.tool.function.name)).toEqual([
+      "shepherd_overview", "shepherd_read", "shepherd_signal", "shepherd_send",
+      "shepherd_history", "shepherd_correct", "shepherd_guidance", "shepherd_update_principle",
+      "shepherd_forget_principle", "shepherd_pause", "shepherd_resume",
+    ])
     const { selectToolsForChannel } = await import("../../repertoire/tools")
     fs.writeFileSync(path.join(root, "agent.json"), JSON.stringify({ senses: { shepherd: { enabled: true } } }))
     expect(selectToolsForChannel(undefined, undefined, undefined, undefined, undefined, undefined, { agentName: AGENT, agentRoot: root })
-      .ordinary.map((definition) => definition.tool.function.name).filter((name) => name.startsWith("shepherd_"))).toEqual(["shepherd_overview", "shepherd_read", "shepherd_signal", "shepherd_send"])
+      .ordinary.map((definition) => definition.tool.function.name).filter((name) => name.startsWith("shepherd_"))).toEqual(shepherdToolDefinitions.map(definition => definition.tool.function.name))
   })
 
   it("overview lists each terminal with the last return Shepherd judged there", async () => {
@@ -65,7 +70,7 @@ describe("Shepherd tools", () => {
       host: "cmux",
       terminalCount: 2,
       sessions: [
-        { id: "SF-1", ref: "surface:1", workspace: "workspace:1", workspaceTitle: "app", title: "app", tty: null, cwd: null, agent: null, focused: false, currentScreen: { at: expect.any(String), text: "current SF-1", truncated: false }, lastReturn: { at: "2026-10-10T20:00:00.000Z", kind: "gate", action: "let_through", reason: "needs Ari", reply: null, task: "desk/x" } },
+        { id: "SF-1", ref: "surface:1", workspace: "workspace:1", workspaceTitle: "app", title: "app", tty: null, cwd: null, agent: null, focused: false, currentScreen: { at: expect.any(String), text: "current SF-1", truncated: false }, lastReturn: { id: shepherdReturnId(record({ transition: "new", kind: "gate", action: "let_through", reason: "needs Ari", reply: null, task: "desk/x" })), at: "2026-10-10T20:00:00.000Z", kind: "gate", action: "let_through", reason: "needs Ari", reply: null, task: "desk/x" } },
         { id: "SF-2", ref: "surface:2", workspace: "workspace:1", workspaceTitle: "app", title: "zsh", tty: null, cwd: null, agent: null, focused: false, currentScreen: { at: expect.any(String), text: "current SF-2", truncated: false } },
       ],
     })
@@ -91,6 +96,14 @@ describe("Shepherd tools", () => {
       { surface_id: "SF-1", lines: 80, scrollback: true },
       { surface_id: "SF-2", lines: 80, scrollback: true },
     ])
+  })
+
+  it("overview attaches a real stable historical return id for natural correction", async () => {
+    const value = record({ kind: "done", action: "let_through", reply: null })
+    appendReturn(root, value)
+    const overview = await call(shepherdOverviewToolDefinition, {})
+    const sessions = overview.sessions as Array<{ lastReturn?: { id: string } }>
+    expect(sessions[0]!.lastReturn!.id).toBe(shepherdReturnId(value))
   })
 
   it("overview redacts before bounding and removes terminal frame padding from the snapshot", async () => {
@@ -183,6 +196,36 @@ describe("Shepherd tools", () => {
     expect(await call(shepherdOverviewToolDefinition, {}, "none")).toEqual({ error: "the Shepherd tools need an agent runtime" })
     resetRuntimeCredentialConfigCache()
     expect((await call(shepherdOverviewToolDefinition, {})).error).toContain("no terminal host is attached on this machine")
+  })
+
+  it("enforces the bound composer UUID on reads, signals and sends even when its short ref is recycled", async () => {
+    const bound = ctx({
+      currentShepherdSurface: { id: "SF-1", host: "cmux", label: "original" },
+      context: { friend: { id: "friend-ari", name: "Ari", trustLevel: "family" } },
+    } as unknown as Partial<ToolContext>)
+    server.respond("system.tree", () => tree([{ id: "SF-2", ref: "surface:1", title: "replacement" }]))
+    for (const session of ["surface:1", "SF-2", "SF-1"]) {
+      for (const [definition, args] of [
+        [shepherdReadToolDefinition, { session }],
+        [shepherdSignalToolDefinition, { session, status: "changed" }],
+        [shepherdSendToolDefinition, { session, text: "continue" }],
+      ] as const) {
+        expect((await call(definition, args, bound)).error).toMatch(/bound|gone|no cmux terminal/)
+      }
+    }
+    expect(server.methods.filter(entry => ["terminal.paste", "surface.send_key", "surface.send_text", "surface.read_text", "notification.create"].includes(entry.method))).toEqual([])
+    expect(server.lines.filter(line => /\b(?:set_status|clear_status)\b/.test(line))).toEqual([])
+  })
+
+  it("allows operations on the exact bound UUID but refuses a different host", async () => {
+    const events: LogEvent[] = []
+    const unregister = registerGlobalLogSink(event => events.push(event))
+    try {
+      const bound = ctx({ currentShepherdSurface: { id: "SF-1", host: "cmux", label: "original" } })
+      expect((await call(shepherdReadToolDefinition, { session: "SF-1" }, bound)).text).toBeTruthy()
+      expect((await call(shepherdReadToolDefinition, { session: "SF-1" }, { ...bound, currentShepherdSurface: { id: "SF-1", host: "herdr", label: "other host" } } as unknown as ToolContext)).error).toMatch(/host|bound/)
+      expect(events).toContainEqual(expect.objectContaining({ event: "senses.shepherd_target_refused", meta: { host: "herdr", session: "SF-1" } }))
+    } finally { unregister() }
   })
 
   describe("send", () => {

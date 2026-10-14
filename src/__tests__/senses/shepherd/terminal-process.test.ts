@@ -2,6 +2,38 @@ import { describe, expect, it, vi } from "vitest"
 import { identifyTerminalProcesses } from "../../../senses/shepherd/terminal-process"
 
 describe("terminal foreground identity", () => {
+  it("identifies the real Node-hosted Copilot entry script without treating arbitrary Node arguments as an agent", async () => {
+    const run = vi.fn(async (command: string, args: string[]) => {
+      if (command === "lsof") return "p20\nn/probe/copilot\n"
+      if (args[0] === "-axo") return [
+        "20 1 20 20 ttys001 /Users/microsoft/.nvm/versions/node/v22.23.3/bin/node",
+        "30 1 30 30 ttys002 /usr/local/bin/node",
+        "40 1 40 40 ttys003 node",
+      ].join("\n")
+      return [
+        "20 /Users/microsoft/.nvm/versions/node/v22.23.3/bin/node /Users/microsoft/Library/Caches/copilot/pkg/darwin-arm64/1.0.97/cli-main.js --allow-all",
+        "30 node /tmp/server.js --prompt /Users/microsoft/Library/Caches/copilot/pkg/darwin-arm64/1.0.97/cli-main.js",
+        "40 node /tmp/copilot/cli-main.js --allow-all",
+        "999 node /Users/microsoft/Library/Caches/copilot/pkg/darwin-arm64/1.0.97/cli-main.js",
+        "junk",
+      ].join("\n")
+    })
+    expect([...await identifyTerminalProcesses(["ttys001", "ttys002", "ttys003"], run)]).toEqual([
+      ["ttys001", { agent: "Copilot", cwd: "/probe/copilot" }],
+    ])
+  })
+
+  it("preserves native identities if a Node argv lookup fails", async () => {
+    const run = async (command: string, args: string[]) => {
+      if (command === "lsof") return "p20\nn/native\n"
+      if (args[0] !== "-axo") throw new Error("Node process exited")
+      return "20 1 20 20 ttys001 /opt/copilot\n30 1 30 30 ttys002 node"
+    }
+    expect([...await identifyTerminalProcesses(["ttys001", "ttys002"], run)]).toEqual([
+      ["ttys001", { agent: "Copilot", cwd: "/native" }],
+    ])
+  })
+
   it("finds the outermost agent in the foreground group and batches cwd reads", async () => {
     const run = vi.fn(async (command: string) => command === "ps" ? [
       "1 0 1 20 ttys001 /bin/zsh",

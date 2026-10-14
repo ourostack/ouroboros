@@ -6,9 +6,11 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 
 import type { TeamsConfig } from "../../../heart/config"
 import { resetIdentity, setAgentName } from "../../../heart/identity"
-import type { ReturnRecord } from "../../../senses/shepherd/returns"
+import { appendReturn, type ReturnRecord } from "../../../senses/shepherd/returns"
+import { noticeDeliveryState, readNoticeOutbox } from "../../../senses/shepherd/notice-outbox"
 import {
   NOTICE_COALESCE_MS,
+  NOTICE_RETRY_MS,
   chooseTeamsBot,
   createOwnerNotifier,
   createTeamsNoticeSender,
@@ -21,6 +23,10 @@ import {
 } from "../../../senses/shepherd/owner-notice"
 
 const mockSend = vi.fn()
+vi.mock("node:fs", async original => {
+  const actual = await original<typeof import("node:fs")>()
+  return { ...actual, renameSync: vi.fn(actual.renameSync) }
+})
 vi.mock("../../../senses/teams", () => ({
   sendProactiveTeamsMessageToSession: (...args: unknown[]) => mockSend(...args),
 }))
@@ -30,8 +36,9 @@ vi.mock("../../../nerves/runtime", async (importOriginal) => ({
   emitNervesEvent: (entry: { event: string; level?: string; meta?: Record<string, unknown> }) => { events.push(entry) },
 }))
 
+let returnSequence = 0
 const record = (overrides: Partial<ReturnRecord> = {}): ReturnRecord => ({
-  at: "2026-10-12T20:00:00.000Z", host: "cmux", session: "0a1b2c3d-4e5f", transition: "cmux:B:1", agent: "Claude Code", cwd: "/Users/a/code/ouroboros",
+  at: "2026-10-12T20:00:00.000Z", host: "cmux", session: "0a1b2c3d-4e5f", transition: `cmux:B:${++returnSequence}`, agent: "Claude Code", cwd: "/Users/a/code/ouroboros",
   task: null, kind: "premature", action: "respond", reason: "It asked whether to continue a task it was told to finish.", reply: "keep going, run the tests", latencyMs: 900, inputTokens: 1000,
   ...overrides,
 })
@@ -48,6 +55,7 @@ beforeEach(() => {
   root = fs.mkdtempSync(path.join(os.tmpdir(), "shepherd-notice-"))
   events.length = 0
   mockSend.mockReset().mockResolvedValue({ delivered: true })
+  returnSequence = 0
 })
 afterEach(() => {
   vi.restoreAllMocks()
@@ -63,6 +71,11 @@ describe("owner notice policy", () => {
 })
 
 describe("owner notice text", () => {
+  it("reports an outside dependency without calling it done or asking the owner to act", () => {
+    expect(noticeLine(record({ kind: "waiting", reason: "PR awaits review." }))).toContain("waiting on an outside dependency")
+    expect(noticeLine(record({ kind: "waiting" }))).not.toMatch(/needs you|done|waiting for you/)
+    expect(noticeWanted("needs-me", record({ kind: "waiting" }))).toBe(false)
+  })
   it("names the foreground agent, folder, workspace and tab for an unhooked return", () => {
     const session = { id: "0a1b2c3d-4e5f", ref: "surface:30", workspace: "workspace:3", workspaceTitle: "workflows",
       title: "Troubleshoot Outlook", agent: "Copilot", cwd: "/Users/a/personal-desk", focused: false }
@@ -156,7 +169,7 @@ describe("owner notice over Teams", () => {
     await send(target, "again")
     expect(botApi).toHaveBeenCalledTimes(1)
     expect(mockSend).toHaveBeenCalledWith(
-      { friendId: "f1", sessionKey: "conv-1", text: "hello", textFormat: "plain", intent: "generic_outreach" },
+      { friendId: "f1", sessionKey: "conv-1", text: "hello", textFormat: "plain", intent: "generic_outreach", captureReceipt: true },
       expect.objectContaining({ botApi: { id: "p", conversations: {} } }),
     )
   })
@@ -212,6 +225,176 @@ describe("owner notifier", () => {
     })
     return { instance, sent }
   }
+
+  it("retains an enqueue failure for retry and reports custody explicitly instead of silently dropping it", async () => {
+    const { instance, sent } = notifier()
+    vi.mocked(fs.renameSync).mockImplementationOnce(() => { throw new Error("outbox publication unavailable") })
+    await instance.notify(record())
+    expect(sent).toEqual([])
+    expect(events).toContainEqual(expect.objectContaining({ level: "error", message: "could not persist a Shepherd owner notice intent; it remains waiting" }))
+    await instance.flush()
+    expect(sent).toHaveLength(1)
+    expect(readNoticeOutbox(root)[0]!.deliveries[ari.friendId]!.state).toBe("sent")
+  })
+
+  it("reports a corrupt outbox at startup and keeps a retry scheduled without initiating transport", async () => {
+    fs.mkdirSync(path.join(root, "state", "senses", "shepherd"), { recursive: true })
+    fs.writeFileSync(path.join(root, "state", "senses", "shepherd", "notice-outbox.json"), "{invalid")
+    const { instance, sent } = notifier()
+    expect(events).toContainEqual(expect.objectContaining({ level: "error", message: "could not read waiting Shepherd owner notices" }))
+    await instance.flush()
+    expect(sent).toEqual([])
+    expect(tasks.map(task => task.ms)).toEqual([NOTICE_RETRY_MS])
+    instance.stop()
+  })
+
+  it("shares an in-flight flush and leaves a definite failure durable without rescheduling after stop", async () => {
+    const started = Promise.withResolvers<void>()
+    const receipt = Promise.withResolvers<{ delivered: boolean; delivery: { state: "not_sent" } }>()
+    const { instance } = notifier({ send: async () => { started.resolve(); return receipt.promise } })
+    await instance.notify(record())
+    const first = instance.flush()
+    expect(instance.flush()).toBe(first)
+    await started.promise
+    instance.stop()
+    receipt.resolve({ delivered: false, delivery: { state: "not_sent" } })
+    await first
+    expect(tasks).toEqual([])
+    expect(readNoticeOutbox(root)[0]!.deliveries[ari.friendId]!.state).toBe("pending")
+  })
+
+  it("retains the actual accepted Teams activity ID with the notice receipt", async () => {
+    const { instance } = notifier({ send: async () => ({ delivered: true, delivery: { state: "accepted", messageId: "activity-accepted", conversationId: "conversation-accepted" } }) })
+    await instance.notify(record())
+    await instance.flush()
+    expect(readNoticeOutbox(root)[0]!.deliveries[ari.friendId]).toMatchObject({ state: "sent", messageId: "activity-accepted", attempts: 1 })
+  })
+
+  it.each(["sent", "unknown"] as const)("only one concurrent notifier can initiate transport when the winner becomes %s", async outcome => {
+    const loaded = Promise.withResolvers<void>()
+    let readers = 0
+    const targets = async () => {
+      if (++readers === 2) loaded.resolve()
+      await loaded.promise
+      return [ari]
+    }
+    const transport: string[] = []
+    const send = async (_target: NoticeTarget, message: string) => {
+      transport.push(message)
+      return outcome === "sent" ? { delivered: true } : { delivered: false, delivery: { state: "unknown" as const } }
+    }
+    const first = notifier({ resolveTargets: targets, send })
+    await first.instance.notify(record())
+    const second = notifier({ resolveTargets: targets, send })
+    await Promise.all([first.instance.flush(), second.instance.flush()])
+    expect(transport).toHaveLength(1)
+    expect(readNoticeOutbox(root)[0]!.deliveries[ari.friendId]!.state).toBe(outcome)
+    expect(readNoticeOutbox(root)[0]!.deliveries[ari.friendId]!.attempts).toBe(1)
+  })
+
+  it("retains an eligible return across stop and a fresh notifier before any send", async () => {
+    const first = notifier()
+    await first.instance.notify(record())
+    first.instance.stop()
+    expect(first.sent).toEqual([])
+    const second = notifier()
+    await second.instance.flush()
+    expect(second.sent).toHaveLength(1)
+    expect(noticeDeliveryState(readNoticeOutbox(root)[0]!, ari.friendId)).toBe("sent")
+    expect(readNoticeOutbox(root)[0]!.deliveries[ari.friendId]!.attempts).toBe(1)
+  })
+
+  it("keeps a definite failed delivery pending and retries it from a fresh notifier", async () => {
+    const first = notifier({ send: async () => ({ delivered: false, reason: "not ready", delivery: { state: "not_sent" } }) })
+    await first.instance.notify(record())
+    await first.instance.flush()
+    expect(noticeDeliveryState(readNoticeOutbox(root)[0]!, ari.friendId)).toBe("pending")
+    first.instance.stop()
+    const recovered = notifier()
+    await recovered.instance.flush()
+    expect(recovered.sent).toHaveLength(1)
+    expect(noticeDeliveryState(readNoticeOutbox(root)[0]!, ari.friendId)).toBe("sent")
+  })
+
+  it("does not blindly retry an uncertain send acknowledgement", async () => {
+    const send = vi.fn().mockResolvedValue({ delivered: false, reason: "send_error", delivery: { state: "unknown" } })
+    const first = notifier({ send })
+    await first.instance.notify(record())
+    await first.instance.flush()
+    first.instance.stop()
+    const recovered = notifier({ send })
+    await recovered.instance.flush()
+    expect(send).toHaveBeenCalledTimes(1)
+    expect(noticeDeliveryState(readNoticeOutbox(root)[0]!, ari.friendId)).toBe("unknown")
+  })
+
+  it("does not let a friendly error label override an explicit uncertain receipt", async () => {
+    const send = vi.fn().mockResolvedValue({ delivered: false, reason: "network trouble", delivery: { state: "unknown" } })
+    const { instance } = notifier({ send })
+    await instance.notify(record())
+    await instance.flush()
+    await instance.flush()
+    expect(send).toHaveBeenCalledTimes(1)
+    expect(noticeDeliveryState(readNoticeOutbox(root)[0]!, ari.friendId)).toBe("unknown")
+  })
+
+  it("delivers the what and why for every return instead of replacing excess returns with a count", async () => {
+    const { instance, sent } = notifier()
+    for (let index = 0; index < 9; index++) await instance.notify(record({ session: `S${index}`, reason: `reason-${index}` }))
+    await instance.flush()
+    expect(sent).toHaveLength(2)
+    expect(sent.map(value => value.text).join("\n")).not.toContain("and 3 more")
+    for (let index = 0; index < 9; index++) expect(sent.map(value => value.text).join("\n")).toContain(`reason-${index}`)
+  })
+
+  it("persists no-target returns for delivery after linking an owner", async () => {
+    const first = notifier({ resolveTargets: async () => [] })
+    await first.instance.notify(record())
+    await first.instance.flush()
+    first.instance.stop()
+    const recovered = notifier()
+    await recovered.instance.flush()
+    expect(recovered.sent).toHaveLength(1)
+  })
+
+  it("keeps retrying a pending owner absent from the current target list without replaying accepted owners", async () => {
+    const sam: NoticeTarget = { friendId: "f2", name: "Sam", key: "conv-2" }
+    const first = notifier({
+      resolveTargets: async () => [ari, sam],
+      send: async target => target.friendId === sam.friendId
+        ? { delivered: false, delivery: { state: "not_sent" } }
+        : { delivered: true },
+    })
+    await first.instance.notify(record())
+    await first.instance.flush()
+    first.instance.stop()
+    let targets = [ari]
+    const recovered = notifier({ resolveTargets: async () => targets })
+    await recovered.instance.flush()
+    expect(recovered.sent).toEqual([])
+    expect(tasks.map(task => task.ms)).toEqual([NOTICE_RETRY_MS])
+    targets = [ari, sam]
+    tasks[0]!.fn()
+    await vi.waitFor(() => expect(recovered.sent).toHaveLength(1))
+    expect(recovered.sent[0]!.target.friendId).toBe(sam.friendId)
+    expect(readNoticeOutbox(root)[0]!.deliveries[sam.friendId]!.state).toBe("sent")
+    expect(tasks).toEqual([])
+  })
+
+  it("recovers a logged eligible return interrupted before its outbox write", async () => {
+    appendReturn(root, record({ noticeEligible: true }))
+    const { instance, sent } = notifier()
+    await instance.flush()
+    expect(sent).toHaveLength(1)
+  })
+
+  it("does not replay legacy or explicitly suppressed returns when recovering", async () => {
+    appendReturn(root, record())
+    appendReturn(root, record({ noticeEligible: false }))
+    const { instance, sent } = notifier()
+    await instance.flush()
+    expect(sent).toEqual([])
+  })
 
   it("sends a burst of returns as one message after the coalescing window", async () => {
     const { instance, sent } = notifier()

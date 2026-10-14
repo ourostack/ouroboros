@@ -2,6 +2,20 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.924",
+      "changes": [
+        "Talk to Ouro about a fixed coding terminal through an independent Shepherd composer, even while its agent is busy.",
+        "Correct Shepherd after an intervention, inspect or change scoped learned guidance, and pause automatic replies without interrupting coding work.",
+        "Retain every eligible owner notice across restart, record Teams acceptance, and retry only definitely unsent deliveries.",
+        "Enforce the composer's fixed UUID and host at terminal and guidance execution boundaries; concurrent notice workers cannot replay an accepted or uncertain send.",
+        "Recognize current Node-hosted Copilot terminals by their foreground launcher entry point, so the independent composer remains available on Copilot 1.0.97.",
+        "Trace fixed-target composer submissions, authorized target discovery, committed guidance revisions, and bound-target refusals without logging private human feedback.",
+        "Answer notice-delivery questions from private recipient-specific accepted, pending or uncertain receipts, including archived acceptances, without replaying sends or hiding unavailable evidence.",
+        "Keep private error details in redacted human responses and record only structured failure codes in control/learning telemetry.",
+        "Use authoritative short return labels in human answers while retaining exact immutable identifiers for post-action corrections."
+      ]
+    },
+    {
       "version": "0.1.0-alpha.923",
       "changes": [
         "Recognize a sole settle at any provider tool index so final-only channels suppress preliminary answer text instead of delivering it twice."

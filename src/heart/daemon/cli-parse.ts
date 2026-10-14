@@ -16,6 +16,7 @@ import type { HatchCredentialsInput } from "../hatch/hatch-flow"
 import type { DnsWorkflowAction, OuroCliCommand, RsvpCliMode, RsvpCutoverAction, RsvpSmokeMode, RsvpSmokeSurface } from "./cli-types"
 import type { VaultItemTemplate } from "./vault-items"
 import { suggestCommand } from "./cli-help"
+import { SHEPHERD_UUID } from "../../senses/shepherd/surface"
 import { parseNotifySession } from "../../senses/voice/local-audio-control"
 import type { LocalAudioJoinRequest } from "../../senses/voice/local-audio-transport"
 import { parseDeskCommand, parseTaskAliasCommand } from "./cli-desk"
@@ -2817,6 +2818,21 @@ export function parseOuroCommand(args: string[]): OuroCliCommand {
   if (head === "a2a") return parseA2ACommand(args.slice(1))
   if (head === "config") return parseConfigCommand(args.slice(1))
   if (head === "mcp") return parseMcpCommand(args.slice(1))
+  if (head === "shepherd") {
+    const usage = "Usage: ouro shepherd chat --agent <name> [--session <UUID>]"
+    if (args[1] !== "chat") throw new Error(usage)
+    const values = new Map<string, string>()
+    for (let i = 2; i < args.length; i += 2) {
+      const flag = args[i]!
+      const value = args[i + 1]
+      if (!["--agent", "--session"].includes(flag) || values.has(flag) || !value || value.startsWith("--")) throw new Error(usage)
+      values.set(flag, value)
+    }
+    const agent = values.get("--agent")
+    const session = values.get("--session")
+    if (!agent || !/^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(agent) || (session !== undefined && !SHEPHERD_UUID.test(session))) throw new Error(usage)
+    return { kind: "shepherd.chat", agent, ...(session ? { session } : {}) }
+  }
   if (head === "voice") return parseVoiceCommand(args.slice(1))
   if (head === "whoami") {
     const { agent } = extractAgentFlag(args.slice(1))

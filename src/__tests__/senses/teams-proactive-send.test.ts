@@ -831,6 +831,76 @@ describe("drainAndSendPendingTeams", () => {
 })
 
 describe("sendProactiveTeamsMessageToSession", () => {
+  it("captures the actual proactive activity acceptance when the owner notifier asks for a receipt", async () => {
+    const store = new FileFriendStore("/mock")
+    vi.mocked(store.get).mockResolvedValue(makeFriend({ trustLevel: "family" }))
+    const botApi = makeBotApi()
+    botApi._mocks.activityCreate.mockResolvedValue({ id: "activity-1" })
+    const teams = await loadTeams()
+    expect(await teams.sendProactiveTeamsMessageToSession({
+      friendId: "friend-uuid-1", sessionKey: "session", text: "Coding agent returned.",
+      captureReceipt: true,
+    }, { botApi, store })).toEqual({
+      delivered: true,
+      delivery: { state: "accepted", conversationId: "conv-123", messageId: "activity-1" },
+    })
+  })
+
+  it("distinguishes a failure before sending from an uncertain activity acknowledgement", async () => {
+    const store = new FileFriendStore("/mock")
+    vi.mocked(store.get).mockResolvedValue(makeFriend({ trustLevel: "family" }))
+    const teams = await loadTeams()
+    const before = await teams.sendProactiveTeamsMessageToSession({
+      friendId: "friend-uuid-1", sessionKey: "session", text: "Coding agent returned.", captureReceipt: true,
+    }, { botApi: makeBotApi({ createError: new Error("connection refused") }), store })
+    expect(before).toEqual({ delivered: false, reason: "send_error", delivery: { state: "not_sent" } })
+    const uncertain = await teams.sendProactiveTeamsMessageToSession({
+      friendId: "friend-uuid-1", sessionKey: "session", text: "Coding agent returned.", captureReceipt: true,
+    }, { botApi: makeBotApi({ sendError: new Error("acknowledgement lost") }), store })
+    expect(uncertain).toEqual({ delivered: false, reason: "send_error", delivery: { state: "unknown", conversationId: "conv-123" } })
+  })
+
+  it("treats an explicit HTTP rejection as not sent rather than retrying an unknown outcome", async () => {
+    const store = new FileFriendStore("/mock")
+    vi.mocked(store.get).mockResolvedValue(makeFriend({ trustLevel: "family" }))
+    const teams = await loadTeams()
+    expect(await teams.sendProactiveTeamsMessageToSession({
+      friendId: "friend-uuid-1", sessionKey: "session", text: "Coding agent returned.", captureReceipt: true,
+    }, { botApi: makeBotApi({ sendError: Object.assign(new Error("bad request"), { statusCode: 400 }) }), store })).toEqual({
+      delivered: false, reason: "send_error", delivery: { state: "not_sent", conversationId: "conv-123" },
+    })
+  })
+
+  it.each([
+    [Object.assign(new Error("unauthorized"), { status: 401 }), "not_sent"],
+    [Object.assign(new Error("rate limited"), { statusCode: 429 }), "not_sent"],
+    [Object.assign(new Error("request timeout"), { statusCode: 408 }), "unknown"],
+    [Object.assign(new Error("conflict"), { statusCode: 409 }), "unknown"],
+    [Object.assign(new Error("server failure"), { statusCode: 500 }), "unknown"],
+    [Object.assign(new Error("bad status shape"), { statusCode: "400" }), "unknown"],
+    ["transport failed", "unknown"],
+  ] as const)("keeps conservative activity-failure receipts for %j", async (failure, state) => {
+    const store = new FileFriendStore("/mock")
+    vi.mocked(store.get).mockResolvedValue(makeFriend({ trustLevel: "family" }))
+    const botApi = makeBotApi()
+    botApi._mocks.activityCreate.mockRejectedValue(failure)
+    const teams = await loadTeams()
+    expect(await teams.sendProactiveTeamsMessageToSession({
+      friendId: "friend-uuid-1", sessionKey: "session", text: "Coding agent returned.", captureReceipt: true,
+    }, { botApi, store })).toEqual({ delivered: false, reason: "send_error", delivery: { state, conversationId: "conv-123" } })
+  })
+
+  it.each([null, "accepted", { id: 1 }, { id: "" }])("does not invent a message id from an incomplete SDK acceptance: %j", async activity => {
+    const store = new FileFriendStore("/mock")
+    vi.mocked(store.get).mockResolvedValue(makeFriend({ trustLevel: "family" }))
+    const botApi = makeBotApi()
+    botApi._mocks.activityCreate.mockResolvedValue(activity)
+    const teams = await loadTeams()
+    expect(await teams.sendProactiveTeamsMessageToSession({
+      friendId: "friend-uuid-1", sessionKey: "session", text: "Coding agent returned.", captureReceipt: true,
+    }, { botApi, store })).toEqual({ delivered: true, delivery: { state: "accepted", conversationId: "conv-123" } })
+  })
+
   it("allows explicit cross-chat delivery from a trusted asking session even when the target record is only acquaintance", async () => {
     const friend = makeFriend({ trustLevel: "acquaintance" })
     const friendStore = {
