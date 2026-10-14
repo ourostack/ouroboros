@@ -5,6 +5,7 @@ import { readMachineRuntimeCredentialConfig } from "../../heart/runtime-credenti
 import { resolveShepherdConnection } from "../../heart/shepherd-config"
 import { shepherdToolsEnabled } from "../../repertoire/tools-shepherd"
 import { createShepherdHost, type ShepherdHost } from "./host"
+import { emitNervesEvent } from "../../nerves/runtime"
 
 /** A daemon-validated locator, never an authorization grant or a mutable short ref. */
 export interface ShepherdSession {
@@ -76,5 +77,7 @@ export async function validateShepherdTarget(host: ShepherdHost, id: string): Pr
 export async function authorizedShepherdTargets(agent: string, friendId: string, composerTty?: string): Promise<ShepherdSession[]> {
   const owner = await resolveExistingLocalOwner(localShepherdFriendStore(agent))
   if (owner !== friendId) throw new Error("Shepherd composer requires this OS user's existing local-family identity")
-  return listShepherdTargets(machineShepherdHost(agent), composerTty)
+  const targets = await listShepherdTargets(machineShepherdHost(agent), composerTty)
+  emitNervesEvent({ component: "senses", event: "senses.shepherd_targets_resolved", message: "resolved authorized independent composer targets", meta: { agent, count: targets.length } })
+  return targets
 }

@@ -11,6 +11,7 @@ import { redactSecrets } from "../senses/shepherd/redact"
 import { readReturns } from "../senses/shepherd/returns"
 import { assertBoundShepherdTarget } from "../senses/shepherd/target-binding"
 import { SELF_FRIEND_ID, type ToolContext, type ToolDefinition } from "./tools-base"
+import { emitNervesEvent } from "../nerves/runtime"
 
 type Args = Record<string, unknown>
 type ToolRun = { actorId: string; requestId: string; requestFingerprint: string }
@@ -82,9 +83,15 @@ function definition(name: string, description: string, properties: Record<string
             return json(prior.receipt)
           }
         }
-        return json(await run(args, ctx, request))
+        const result = await run(args, ctx, request)
+        emitNervesEvent({ component: "repertoire", event: "repertoire.shepherd_guidance_tool", message: "executed a private Shepherd guidance tool", meta: { tool: name, mutates } })
+        return json(result)
       }
-      catch (error) { return json({ error: error instanceof Error ? error.message : String(error) }) }
+      catch (error) {
+        const message = redactSecrets(error instanceof Error ? error.message : String(error))
+        emitNervesEvent({ level: "warn", component: "repertoire", event: "repertoire.shepherd_guidance_tool_error", message: "private Shepherd guidance tool failed", meta: { tool: name, error: message } })
+        return json({ error: message })
+      }
     },
     summaryKeys: [],
     riskProfile: mutates ? { mutates: "durable_state_write", risk: "high", reason: "changes private operator preferences or the automatic-reply pause" } : { mutates: "none", risk: "low" },

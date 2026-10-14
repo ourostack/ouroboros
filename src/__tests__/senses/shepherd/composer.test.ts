@@ -7,6 +7,7 @@ import * as surface from "../../../senses/shepherd/surface"
 import * as frontend from "../../../heart/frontend-socket-client"
 import * as readline from "node:readline"
 import * as childProcess from "node:child_process"
+import { registerGlobalLogSink, type LogEvent } from "../../../nerves"
 
 vi.mock("node:readline", async original => {
   const actual = await original<typeof import("node:readline")>()
@@ -67,23 +68,29 @@ describe("Shepherd composer", () => {
   })
 
   it("pins the UUID and per-surface key while preserving natural input", async () => {
-    const wire = transport()
-    const composer = new ShepherdComposer({ client: wire.client, agent: "ouro", friendId: "local-owner", target: first, composerTty: "/dev/ttys009" })
-    const sending = composer.submit("  hello coding friend  ")
-    await Promise.resolve()
-    await Promise.resolve()
-    const start = wire.calls.find(call => call.method === "turn.start")!
-    expect(start.params).toMatchObject({ agent: "ouro", friendId: "local-owner", channel: "cli",
-      sessionKey: `shepherd:${first.id}`, message: "  hello coding friend  ", shepherdSession: { id: first.id } })
-    expect(start.params.turnId).toMatch(/^[0-9a-f-]{36}$/)
-    expect(start.params.composerTty).toBe("/dev/ttys009")
-    wire.emit({ event: "text.delta", turnId: start.params.turnId, sessionKey: `shepherd:${first.id}`, text: "preliminary" })
-    wire.emit({ event: "assistant.delivery", turnId: "other", sessionKey: `shepherd:${first.id}`, text: "wrong" })
-    wire.emit({ event: "assistant.delivery", turnId: start.params.turnId, sessionKey: "other", text: "wrong" })
-    wire.emit({ event: "assistant.delivery", turnId: start.params.turnId, sessionKey: `shepherd:${first.id}`, text: "authoritative" })
-    wire.emit({ event: "turn.completed", turnId: start.params.turnId, sessionKey: `shepherd:${first.id}`, result: { response: "preliminary plus answer" } })
-    await expect(sending).resolves.toBe("authoritative")
-    composer.close()
+    const events: LogEvent[] = []
+    const unregister = registerGlobalLogSink(event => events.push(event))
+    try {
+      const wire = transport()
+      const composer = new ShepherdComposer({ client: wire.client, agent: "ouro", friendId: "local-owner", target: first, composerTty: "/dev/ttys009" })
+      const sending = composer.submit("  hello coding friend  ")
+      await Promise.resolve()
+      await Promise.resolve()
+      const start = wire.calls.find(call => call.method === "turn.start")!
+      expect(start.params).toMatchObject({ agent: "ouro", friendId: "local-owner", channel: "cli",
+        sessionKey: `shepherd:${first.id}`, message: "  hello coding friend  ", shepherdSession: { id: first.id } })
+      expect(start.params.turnId).toMatch(/^[0-9a-f-]{36}$/)
+      expect(start.params.composerTty).toBe("/dev/ttys009")
+      wire.emit({ event: "text.delta", turnId: start.params.turnId, sessionKey: `shepherd:${first.id}`, text: "preliminary" })
+      wire.emit({ event: "assistant.delivery", turnId: "other", sessionKey: `shepherd:${first.id}`, text: "wrong" })
+      wire.emit({ event: "assistant.delivery", turnId: start.params.turnId, sessionKey: "other", text: "wrong" })
+      wire.emit({ event: "assistant.delivery", turnId: start.params.turnId, sessionKey: `shepherd:${first.id}`, text: "authoritative" })
+      wire.emit({ event: "turn.completed", turnId: start.params.turnId, sessionKey: `shepherd:${first.id}`, result: { response: "preliminary plus answer" } })
+      await expect(sending).resolves.toBe("authoritative")
+      expect(events).toContainEqual(expect.objectContaining({ event: "senses.shepherd_composer_turn_submitted", meta: { agent: "ouro", session: first.id, turnId: start.params.turnId } }))
+      expect(JSON.stringify(events)).not.toContain("hello coding friend")
+      composer.close()
+    } finally { unregister() }
   })
 
   it("reconciles a lost first acknowledgement from status without resubmitting", async () => {

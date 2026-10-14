@@ -4,6 +4,7 @@ import * as path from "node:path"
 import { withFileLock } from "../../heart/file-lock"
 import { redactSecrets } from "./redact"
 import { readReturns, shepherdStateDir, type ReturnRecord } from "./returns"
+import { emitNervesEvent } from "../../nerves/runtime"
 
 export type ShepherdGuidanceScope = "session" | "project" | "global"
 export type ShepherdGuidanceTarget = { host: string; session: string; cwd: string | null; task: string | null }
@@ -193,6 +194,7 @@ async function mutate(root: string, op: string, input: ShepherdGuidanceRequest, 
     const receipt = { revision: state.revision, provenance: clean, ...result }
     state.requests.push({ actorId: input.actorId, requestId: input.requestId, hash: bodyHash, requestFingerprint: input.requestFingerprint ?? null, receipt })
     persist(root, state)
+    emitNervesEvent({ component: "senses", event: "senses.shepherd_guidance_mutated", message: "committed a private Shepherd guidance revision", meta: { operation: op, revision: state.revision } })
     return receipt
   })
 }

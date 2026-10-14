@@ -8,7 +8,8 @@
         "Correct Shepherd after an intervention, inspect or change scoped learned guidance, and pause automatic replies without interrupting coding work.",
         "Retain every eligible owner notice across restart, record Teams acceptance, and retry only definitely unsent deliveries.",
         "Enforce the composer's fixed UUID and host at terminal and guidance execution boundaries; concurrent notice workers cannot replay an accepted or uncertain send.",
-        "Recognize current Node-hosted Copilot terminals by their foreground launcher entry point, so the independent composer remains available on Copilot 1.0.97."
+        "Recognize current Node-hosted Copilot terminals by their foreground launcher entry point, so the independent composer remains available on Copilot 1.0.97.",
+        "Trace fixed-target composer submissions, authorized target discovery, committed guidance revisions, and bound-target refusals without logging private human feedback."
       ]
     },
     {

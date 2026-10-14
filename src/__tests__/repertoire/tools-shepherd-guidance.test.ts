@@ -10,6 +10,7 @@ import { cacheMachineRuntimeCredentialConfig, resetRuntimeCredentialConfigCache 
 import * as hostModule from "../../senses/shepherd/host"
 import { startFakeCmux } from "../senses/shepherd/fake-cmux"
 import { tree } from "../senses/shepherd/fixtures"
+import { registerGlobalLogSink, type LogEvent } from "../../nerves"
 
 let root: string
 const returned: ReturnRecord = { at: "2026-10-13", host: "cmux", session: "gone", transition: "t1", agent: "coding", cwd: "/code/app", task: null, kind: "premature", action: "respond", reason: "A plan", reply: "Continue.", latencyMs: 1, inputTokens: 2 }
@@ -29,6 +30,16 @@ afterEach(() => {
   resetRuntimeCredentialConfigCache()
 })
 describe("family-only Shepherd guidance tools", () => {
+  it("traces an executed guidance tool without the private human instruction", async () => {
+    const events: LogEvent[] = []
+    const unregister = registerGlobalLogSink(event => events.push(event))
+    try {
+      expect(await call("shepherd_correct", { session: "gone", request_id: "traced", feedback: "PRIVATE_HUMAN_INSTRUCTION" })).toMatchObject({ revision: 1 })
+      expect(events).toContainEqual(expect.objectContaining({ event: "repertoire.shepherd_guidance_tool", meta: { tool: "shepherd_correct", mutates: true } }))
+      expect(JSON.stringify(events)).not.toContain("PRIVATE_HUMAN_INSTRUCTION")
+    } finally { unregister() }
+  })
+
   it("refuses steering mutations outside the composer's bound UUID without modifying guidance", async () => {
     const bound = { ...ctx(), currentShepherdSurface: { id: "other", host: "cmux", label: "selected" } } as ToolContext
     for (const name of ["shepherd_pause", "shepherd_resume", "shepherd_correct"]) {

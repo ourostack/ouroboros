@@ -2,6 +2,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest"
 import type { FriendStore } from "@ouro.bot/friends"
 import { resolveExistingLocalOwner, listShepherdTargets, validateShepherdTarget, localShepherdFriendStore, machineShepherdHost, authorizedShepherdTargets } from "../../../senses/shepherd/surface"
 import type { ShepherdHost } from "../../../senses/shepherd/host"
+import { registerGlobalLogSink, type LogEvent } from "../../../nerves"
 
 const runtime = vi.hoisted(() => ({
   enabled: vi.fn(() => true),
@@ -96,10 +97,15 @@ describe("local Shepherd surface contract", () => {
   })
 
   it("authorizes the daemon's target listing only for the existing local owner", async () => {
-    await expect(authorizedShepherdTargets("ouro", "wrong")).rejects.toThrow("OS user's")
-    const live = host()
-    runtime.host.mockReturnValue(live.value)
-    await expect(authorizedShepherdTargets("ouro", "owner")).resolves.toEqual([{ id, host: "cmux", label: "Copilot / /repo / work / tab" }])
-    await expect(authorizedShepherdTargets("ouro", "owner", "/dev/ttys009")).resolves.toEqual([])
+    const events: LogEvent[] = []
+    const unregister = registerGlobalLogSink(event => events.push(event))
+    try {
+      await expect(authorizedShepherdTargets("ouro", "wrong")).rejects.toThrow("OS user's")
+      const live = host()
+      runtime.host.mockReturnValue(live.value)
+      await expect(authorizedShepherdTargets("ouro", "owner")).resolves.toEqual([{ id, host: "cmux", label: "Copilot / /repo / work / tab" }])
+      await expect(authorizedShepherdTargets("ouro", "owner", "/dev/ttys009")).resolves.toEqual([])
+      expect(events.filter(event => event.event === "senses.shepherd_targets_resolved").map(event => event.meta)).toEqual([{ agent: "ouro", count: 1 }, { agent: "ouro", count: 0 }])
+    } finally { unregister() }
   })
 })

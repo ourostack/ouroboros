@@ -4,6 +4,7 @@ import * as readline from "node:readline"
 import type { Readable, Writable } from "node:stream"
 import { SocketFrontendClient, type FrontendProtocolClient } from "../../heart/frontend-socket-client"
 import { localShepherdFriendStore, resolveExistingLocalOwner, type ShepherdSession } from "./surface"
+import { emitNervesEvent } from "../../nerves/runtime"
 
 /** Identify only this UI's own device, never capture a changing focused terminal. */
 export function composerTerminalTty(isTTY: boolean = process.stdin.isTTY === true): string | undefined {
@@ -95,6 +96,7 @@ export class ShepherdComposer {
         ...this.ref(), turnId, channel: "cli", message, shepherdSession: this.target,
         ...(this.composerTty ? { composerTty: this.composerTty } : {}),
       })
+      emitNervesEvent({ component: "senses", event: "senses.shepherd_composer_turn_submitted", message: "submitted an independent fixed-target Ouro turn", meta: { agent: this.agent, session: this.target.id, turnId } })
     } catch (sendError) {
       // Unknown acknowledgement is never retried. Even a rejected send may have run.
       if (this.active === turn) {

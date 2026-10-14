@@ -10,6 +10,7 @@ import {
   type ShepherdGuidanceTarget,
 } from "../../../senses/shepherd/guidance"
 import { appendReturn, shepherdStateDir, type ReturnRecord } from "../../../senses/shepherd/returns"
+import { registerGlobalLogSink, type LogEvent } from "../../../nerves"
 
 // Only inject otherwise nondeterministic read/stat faults; normal persistence and locking remain real.
 vi.mock("node:fs", async importOriginal => {
@@ -32,6 +33,17 @@ beforeEach(() => {
 })
 
 describe("durable Shepherd guidance", () => {
+  it("traces only a durably committed guidance revision, without feedback or principle text", async () => {
+    const events: LogEvent[] = []
+    const unregister = registerGlobalLogSink(event => events.push(event))
+    try {
+      await recordShepherdCorrection(root, { ...input(), feedback: "PRIVATE_FEEDBACK_SENTINEL", principle: "PRIVATE_PRINCIPLE_SENTINEL" })
+      expect(events).toContainEqual(expect.objectContaining({ event: "senses.shepherd_guidance_mutated", meta: { operation: "correct", revision: 1 } }))
+      expect(readGuidance(root).revision).toBe(1)
+      expect(JSON.stringify(events)).not.toMatch(/PRIVATE_FEEDBACK_SENTINEL|PRIVATE_PRINCIPLE_SENTINEL/)
+    } finally { unregister() }
+  })
+
   it("derives return identity from the full immutable tuple, not judgment or short ref", () => {
     const id = shepherdReturnId(returned)
     expect(id).toMatch(/^return:[a-f0-9]{64}$/)

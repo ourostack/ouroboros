@@ -218,9 +218,14 @@ describe("Shepherd tools", () => {
   })
 
   it("allows operations on the exact bound UUID but refuses a different host", async () => {
-    const bound = ctx({ currentShepherdSurface: { id: "SF-1", host: "cmux", label: "original" } })
-    expect((await call(shepherdReadToolDefinition, { session: "SF-1" }, bound)).text).toBeTruthy()
-    expect((await call(shepherdReadToolDefinition, { session: "SF-1" }, { ...bound, currentShepherdSurface: { id: "SF-1", host: "herdr", label: "other host" } } as unknown as ToolContext)).error).toMatch(/host|bound/)
+    const events: LogEvent[] = []
+    const unregister = registerGlobalLogSink(event => events.push(event))
+    try {
+      const bound = ctx({ currentShepherdSurface: { id: "SF-1", host: "cmux", label: "original" } })
+      expect((await call(shepherdReadToolDefinition, { session: "SF-1" }, bound)).text).toBeTruthy()
+      expect((await call(shepherdReadToolDefinition, { session: "SF-1" }, { ...bound, currentShepherdSurface: { id: "SF-1", host: "herdr", label: "other host" } } as unknown as ToolContext)).error).toMatch(/host|bound/)
+      expect(events).toContainEqual(expect.objectContaining({ event: "senses.shepherd_target_refused", meta: { host: "herdr", session: "SF-1" } }))
+    } finally { unregister() }
   })
 
   describe("send", () => {
