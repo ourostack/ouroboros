@@ -10,6 +10,7 @@ import { appendReturn, type ReturnRecord } from "../../../senses/shepherd/return
 import { noticeDeliveryState, readNoticeOutbox } from "../../../senses/shepherd/notice-outbox"
 import {
   NOTICE_COALESCE_MS,
+  NOTICE_RETRY_MS,
   chooseTeamsBot,
   createOwnerNotifier,
   createTeamsNoticeSender,
@@ -284,6 +285,30 @@ describe("owner notifier", () => {
     const recovered = notifier()
     await recovered.instance.flush()
     expect(recovered.sent).toHaveLength(1)
+  })
+
+  it("keeps retrying a pending owner absent from the current target list without replaying accepted owners", async () => {
+    const sam: NoticeTarget = { friendId: "f2", name: "Sam", key: "conv-2" }
+    const first = notifier({
+      resolveTargets: async () => [ari, sam],
+      send: async target => target.friendId === sam.friendId
+        ? { delivered: false, delivery: { state: "not_sent" } }
+        : { delivered: true },
+    })
+    await first.instance.notify(record())
+    await first.instance.flush()
+    first.instance.stop()
+    let targets = [ari]
+    const recovered = notifier({ resolveTargets: async () => targets })
+    await recovered.instance.flush()
+    expect(recovered.sent).toEqual([])
+    expect(tasks.map(task => task.ms)).toEqual([NOTICE_RETRY_MS])
+    targets = [ari, sam]
+    tasks[0]!.fn()
+    await vi.waitFor(() => expect(recovered.sent).toHaveLength(1))
+    expect(recovered.sent[0]!.target.friendId).toBe(sam.friendId)
+    expect(readNoticeOutbox(root)[0]!.deliveries[sam.friendId]!.state).toBe("sent")
+    expect(tasks).toEqual([])
   })
 
   it("recovers a logged eligible return interrupted before its outbox write", async () => {

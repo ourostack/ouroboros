@@ -249,7 +249,10 @@ export function createOwnerNotifier(options: OwnerNotifierOptions): OwnerNotifie
         return
       }
       await declareNoticeTargets(options.agentRoot, entries.map(entry => entry.id), targets.map(target => target.friendId), new Date().toISOString())
-      let retry = false
+      const reachable = new Set(targets.map(target => target.friendId))
+      let retry = entries.some(entry => Object.entries(entry.deliveries).some(([friendId, delivery]) =>
+        delivery.state === "pending" && !reachable.has(friendId),
+      ))
       for (const target of targets) {
         const pending = entries.filter(entry => noticeDeliveryState(entry, target.friendId) === "pending")
         for (let start = 0; start < pending.length && !stopped; start += NOTICE_LIST_MAX) {
