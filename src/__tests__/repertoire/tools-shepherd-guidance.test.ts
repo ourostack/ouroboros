@@ -31,6 +31,21 @@ afterEach(() => {
   resetRuntimeCredentialConfigCache()
 })
 describe("family-only Shepherd guidance tools", () => {
+  it("provides a deterministic human label without changing the full correction identifier", async () => {
+    const history = await call("shepherd_history")
+    expect(history.returns[0].displayId).toBe("22e694c3")
+    expect(history.returns[0].id).toBe(shepherdReturnId(returned))
+  })
+
+  it("does not let stored extra fields forge the canonical return identifier or display label", async () => {
+    const value = { ...returned, transition: "forged", id: "untrusted-id", displayId: "untrusted-label" }
+    appendReturn(root, value)
+    const row = (await call("shepherd_history")).returns.at(-1)
+    expect(row.id).toBe(shepherdReturnId(value))
+    expect(row.displayId).not.toBe("untrusted-label")
+    expect(row.displayId).toHaveLength(8)
+  })
+
   it.each(["pending", "unknown", "sent"] as const)("reports the human's actual %s notice receipt without exposing another recipient's receipt", async state => {
     const value = { ...returned, transition: `notice-${state}`, noticeEligible: true }
     appendReturn(root, value)
@@ -60,7 +75,7 @@ describe("family-only Shepherd guidance tools", () => {
     const dir = path.join(root, "state", "senses", "shepherd")
     fs.writeFileSync(path.join(dir, "notice-outbox.json"), "{invalid")
     const history = await call("shepherd_history", { session: "gone" })
-    expect(history.returns).toEqual([{ id: shepherdReturnId(returned), ...returned }])
+    expect(history.returns).toEqual([{ id: shepherdReturnId(returned), displayId: "22e694c3", ...returned }])
     expect(history.ownerNoticeError).toMatch(/malformed JSON/)
   })
 
@@ -72,7 +87,7 @@ describe("family-only Shepherd guidance tools", () => {
     try {
       const history = await call("shepherd_history")
       expect(history.ownerNoticeError).toBe("token=[redacted] failed")
-      expect(history.returns).toEqual([{ id: shepherdReturnId(returned), ...returned }])
+      expect(history.returns).toEqual([{ id: shepherdReturnId(returned), displayId: "22e694c3", ...returned }])
       expect(JSON.stringify(events)).not.toMatch(/\btoken\b["']?\s*[:=]/)
     } finally { unregister() }
   })
@@ -112,7 +127,7 @@ describe("family-only Shepherd guidance tools", () => {
   })
   it("reads vanished-terminal history with stable IDs without resolving or sending to a host", async () => {
     const result = await call("shepherd_history")
-    expect(result.returns).toEqual([{ id: shepherdReturnId(returned), ...returned }])
+    expect(result.returns).toEqual([{ id: shepherdReturnId(returned), displayId: "22e694c3", ...returned }])
     expect(await call("shepherd_history", { session: "else" })).toEqual({ returns: [] })
     expect(await call("shepherd_history", { host: "other" })).toEqual({ returns: [] })
   })
