@@ -148,7 +148,7 @@ export const shepherdGuidanceToolDefinitions: ToolDefinition[] = [
   }, ["request_id", "principle_id", "text"], async (args, ctx, request) => updateShepherdPrinciple(ctx.agentRoot!, {
     ...request, principleId: text(args.principle_id), text: typeof args.text === "string" ? args.text : "",
   }), true),
-  definition("shepherd_forget_principle", "Forget a learned preference ('forget that') by its ID. Removes it from future judgments but retains the private operator trail. No send.", {
+  definition("shepherd_forget_principle", "Forget a learned preference ('forget that') by its ID. Removes only that preference from future judgments but retains the private operator trail. Built-in judgment policy, including legitimate outside dependency waits, and all existing guards remain unchanged: forgetting does not make dependency waits premature or delivered done. No send.", {
     ...requestProperty, principle_id: stringProperty("Active principle ID from shepherd_guidance."),
   }, ["request_id", "principle_id"], async (args, ctx, request) => forgetShepherdPrinciple(ctx.agentRoot!, {
     ...request, principleId: text(args.principle_id),
