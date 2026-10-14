@@ -33,6 +33,7 @@ import { SessionTurnBusyError, withSessionTurnLease, type SessionTurnLease } fro
 const teamsFailoverStates = new Map<string, FailoverState>()
 import { drainDeferredReturns, drainPending, getPendingDir } from "../mind/pending"
 import { classifySteeringFollowUpEffect, type SteeringFollowUpEffect } from "./continuity"
+import { createTeamsImageSender } from "./teams-image"
 
 // Stream interface matching IStreamer from @microsoft/teams.apps
 // emit() accepts string or object with text+entities+channelData (matches SDK's
@@ -630,6 +631,7 @@ export interface TeamsMessageContext {
   githubConnectionName?: string
   // Bot Framework API client for proactive messaging
   botApi?: ToolContext["botApi"]
+  teamsSendImage?: ToolContext["teamsSendImage"]
 }
 
 function createTeamsCommandRegistry() {
@@ -732,6 +734,7 @@ export async function handleTeamsMessage(text: string, stream: TeamsStream, conv
     summarize: createSummarize("human"),
     tenantId: teamsContext.tenantId,
     botApi: teamsContext.botApi,
+    teamsSendImage: teamsContext.teamsSendImage,
   } : {}) }
 
   let currentText = text
@@ -1210,6 +1213,7 @@ function registerBotHandlers(app: InstanceType<typeof App> & { id?: string; api?
         githubConnectionName: tenantOAuth.githubConnectionName,
         /* v8 ignore next -- bot API availability branch; requires live SDK context @preserve */
         botApi: app.id && api ? { id: app.id, conversations: api.conversations } : undefined,
+        teamsSendImage: createTeamsImageSender((message) => ctx.send(message), activity.id, aiLabelEntities() as Entity[]),
       }
 
       /* v8 ignore next 5 -- bot-framework integration callback; tested via handleTeamsMessage sendMessage path @preserve */

@@ -164,7 +164,8 @@ export function selectToolsForChannel(
       : []
   } else {
     const available = new Set(capabilities?.availableIntegrations ?? [])
-    const integrations = available.size === 0 ? [] : [...teamsToolDefinitions, ...adoSemanticToolDefinitions, ...githubToolDefinitions]
+    const integrations = [...teamsToolDefinitions, ...adoSemanticToolDefinitions, ...githubToolDefinitions]
+      .filter((definition) => available.size > 0 || definition.tool.function.name === "teams_send_image")
       .filter((definition) => definition.integration ? available.has(definition.integration) : capabilities?.channel === "teams")
       .map((definition) => {
         const preference = definition.integration ? toolPreferences?.[definition.integration] : undefined
@@ -196,6 +197,8 @@ export function selectToolsForChannel(
     }
   }
   ordinary = ordinary.filter((definition) =>
+    (definition.tool.function.name !== "teams_send_image" || (!context?.noSend && !context?.habitSession && !context?.autonomousTurnKind))
+    &&
     (!relationship || relationship.advertisedToolNames.includes(definition.tool.function.name))
     && (!definition.requiredCapability || providerCapabilities?.has(definition.requiredCapability) === true))
   const engine = [

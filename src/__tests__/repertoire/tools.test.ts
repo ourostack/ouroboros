@@ -338,6 +338,7 @@ describe("execTool", () => {
       ["graph_mutate", ["external_side_effect"]],
       ["ado_mutate", ["external_side_effect"]],
       ["teams_send_message", ["external_side_effect"]],
+      ["teams_send_image", ["external_side_effect"]],
       ["ado_create_epic", ["external_side_effect"]],
       ["ado_create_issue", ["external_side_effect"]],
       ["ado_move_items", ["external_side_effect"]],
@@ -1058,7 +1059,7 @@ describe("ToolDefinition type and registry", () => {
       expect(def.tool.function.name).toBeDefined()
       expect(typeof def.handler).toBe("function")
       // All teams tools have an integration, except teams_send_message (uses botApi, not OAuth)
-      if (def.tool.function.name !== "teams_send_message") {
+      if (def.tool.function.name !== "teams_send_message" && def.tool.function.name !== "teams_send_image") {
         expect(def.integration).toBeDefined()
         expect(["ado", "graph"]).toContain(def.integration)
       }
@@ -1261,7 +1262,7 @@ describe("getToolsForChannel with ChannelCapabilities", () => {
     expect(names).toContain("ado_preview_changes")
     expect(names).toContain("teams_send_message")
     expect(names).toEqual(expect.arrayContaining(["ponder", "observe", "settle"]))
-    expect(result.length).toBe(baseCount + 20 + 3)
+    expect(result.length).toBe(baseCount + 21 + 3)
   })
 
   it("returns base + graph-only tools when only graph integration", async () => {
@@ -1291,7 +1292,7 @@ describe("getToolsForChannel with ChannelCapabilities", () => {
     expect(names).not.toContain("ado_work_items")
     expect(names).not.toContain("ado_docs")
     expect(names).toEqual(expect.arrayContaining(["ponder", "observe", "settle"]))
-    expect(result.length).toBe(baseCount + 5 + 3)
+    expect(result.length).toBe(baseCount + 6 + 3)
   })
 
   it("returns base + ado-only tools when only ado integration", async () => {
@@ -1323,7 +1324,7 @@ describe("getToolsForChannel with ChannelCapabilities", () => {
     // Should have semantic ado tools
     expect(names).toContain("ado_backlog_list")
     expect(names).toEqual(expect.arrayContaining(["ponder", "observe", "settle"]))
-    expect(result.length).toBe(baseCount + 16 + 3)
+    expect(result.length).toBe(baseCount + 17 + 3)
   })
 })
 
@@ -2411,7 +2412,7 @@ describe("getToolsForChannel includes docs tools", () => {
     expect(names).toContain("read_file")
     expect(names).toContain("shell")
     expect(names).toEqual(expect.arrayContaining(["ponder", "observe", "settle"]))
-    expect(teamsTools.length).toBe(baseCount + 20 + 3)
+    expect(teamsTools.length).toBe(baseCount + 21 + 3)
   })
 
   it("cli channel does NOT include graph_docs or ado_docs", async () => {

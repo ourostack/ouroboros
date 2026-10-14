@@ -117,6 +117,8 @@ export interface ToolContext {
     id: string;
     conversations: unknown;
   };
+  /** Authenticated adapter closure bound to this turn's current Teams conversation. */
+  teamsSendImage?: (attachment: import("../senses/teams-image").TeamsImageAttachment, caption: string) => Promise<string>;
   bluebubblesReplyTarget?: BlueBubblesReplyTargetController;
   currentSession?: BridgeSessionRef;
   /**

@@ -38,6 +38,7 @@ export interface NormalizeImageForVisionParams {
   agentName: string
   agentRoot: string
   maxVlmBytes?: number
+  maxEdge?: number
   probeImage?: (input: ProbeImageInput) => Promise<ProbeImageResult>
   rasterizeWithQuickLook?: (input: RasterizeQuickLookInput) => Promise<string>
   encodeVariant?: (input: EncodeVariantInput) => Promise<{
@@ -124,12 +125,16 @@ export async function normalizeImageForVision(
   params: NormalizeImageForVisionParams,
 ): Promise<NormalizeImageForVisionResult> {
   const maxVlmBytes = params.maxVlmBytes ?? MAX_VLM_IMAGE_BYTES
+  if (params.maxEdge !== undefined && (!Number.isInteger(params.maxEdge) || params.maxEdge < 1)) {
+    throw new Error("Image maximum edge must be a positive integer")
+  }
   const originalMimeType = params.attachment.mimeType?.trim().toLowerCase()
   const originalByteCount = params.attachment.byteCount
   const outputDir = materializedOutputDir(params.agentRoot, params.attachment.id)
 
   if (
     originalMimeType
+    && params.maxEdge === undefined
     && SAFE_VLM_MIME_TYPES.has(originalMimeType)
     && typeof originalByteCount === "number"
     && originalByteCount <= maxVlmBytes
@@ -177,9 +182,12 @@ export async function normalizeImageForVision(
   }
 
   const targetFormats: Array<"png" | "jpeg"> = probe.hasAlpha ? ["png", "jpeg"] : ["jpeg"]
+  const requestedMaxEdge = params.maxEdge
+  const sizes = requestedMaxEdge === undefined ? SIZE_STEPS
+    : [...new Set([requestedMaxEdge, ...SIZE_STEPS.filter((size) => size < requestedMaxEdge)])]
 
   for (const targetFormat of targetFormats) {
-    for (const maxEdge of SIZE_STEPS) {
+    for (const maxEdge of sizes) {
       const qualities = targetFormat === "jpeg" ? JPEG_QUALITIES : [undefined]
       for (const quality of qualities) {
         const variant = await encodeVariant({

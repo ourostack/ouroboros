@@ -5302,7 +5302,7 @@ describe("Teams adapter - handleTeamsMessage with sendMessage", () => {
     expect(mockStream.emit).toHaveBeenCalledWith(aiLabeled("response text"))
   })
 
-  it("startTeamsApp passes sendMessage wrapping ctx.send to handleTeamsMessage", async () => {
+  it("startTeamsApp binds text and image senders to the authenticated activity", async () => {
     vi.resetModules()
 
     let capturedHandler: ((args: any) => Promise<void>) | null = null
@@ -5320,10 +5320,13 @@ describe("Teams adapter - handleTeamsMessage with sendMessage", () => {
       DevtoolsPlugin: class MockDevtoolsPlugin {},
     }))
 
-    const mockRunAgent = vi.fn().mockImplementation(async (_msgs: any, callbacks: any) => {
+    const mockRunAgent = vi.fn().mockImplementation(async (_msgs: any, callbacks: any, _channel: any, _signal: any, options: any) => {
       // Simulate onKick -- in buffered mode this should call sendMessage
       if (callbacks.onKick) callbacks.onKick()
       callbacks.onTextChunk("answer")
+      await options.toolContext.teamsSendImage({
+        contentType: "image/png", contentUrl: "data:image/png;base64,aW1hZ2U=", name: "capture.png",
+      }, "requested capture")
       return { usage: undefined }
     })
     vi.doMock("../../heart/core", () => ({
@@ -5364,11 +5367,11 @@ describe("Teams adapter - handleTeamsMessage with sendMessage", () => {
     teams.startTeamsApp()
 
     expect(capturedHandler).not.toBeNull()
-    const mockSend = vi.fn().mockResolvedValue(undefined)
+    const mockSend = vi.fn().mockResolvedValue({ id: "image-activity" })
     const mockStream = { emit: vi.fn(), update: vi.fn(), close: vi.fn() }
     await capturedHandler!({
       stream: mockStream,
-      activity: { text: "hello", conversation: { id: "conv-ctx-send" }, from: { id: "user1" }, channelId: "msteams" },
+      activity: { id: "current-inbound", text: "hello", conversation: { id: "conv-ctx-send" }, from: { id: "user1" }, channelId: "msteams" },
       api: { users: { token: { get: vi.fn().mockResolvedValue(null) } } },
       signin: vi.fn(),
       send: mockSend,
@@ -5376,6 +5379,12 @@ describe("Teams adapter - handleTeamsMessage with sendMessage", () => {
 
     // In buffered mode, onKick now uses safeUpdate (stream.update) not safeSend (ctx.send)
     expect(mockStream.update).toHaveBeenCalledWith("\u21BB kick")
+    expect(mockSend).toHaveBeenCalledWith(expect.objectContaining({
+      type: "message", replyToId: "current-inbound", text: "requested capture",
+      attachments: [expect.objectContaining({ contentType: "image/png", name: "capture.png" })],
+      entities: expect.arrayContaining([expect.objectContaining({ additionalType: ["AIGeneratedContent"] })]),
+      channelData: { feedbackLoopEnabled: true },
+    }))
 
     vi.restoreAllMocks()
   })
@@ -6683,6 +6692,7 @@ describe("Teams adapter - pipeline integration (U7)", () => {
     const teams = await import("../../senses/teams")
     const mockStream = { emit: vi.fn(), update: vi.fn(), close: vi.fn() }
     const signinFn = vi.fn()
+    const teamsSendImage = vi.fn()
 
     await teams.handleTeamsMessage("hello", mockStream as any, "conv-123", {
       graphToken: "g-token",
@@ -6692,6 +6702,7 @@ describe("Teams adapter - pipeline integration (U7)", () => {
       aadObjectId: "aad-user-123",
       tenantId: "tenant-abc",
       displayName: "Test User",
+      teamsSendImage,
     })
 
     const input = mockHandleInboundTurn.mock.calls[0][0]
@@ -6700,6 +6711,7 @@ describe("Teams adapter - pipeline integration (U7)", () => {
     expect(input.runAgentOptions?.toolContext?.adoToken).toBe("a-token")
     expect(input.runAgentOptions?.toolContext?.githubToken).toBe("gh-token")
     expect(typeof input.runAgentOptions?.toolContext?.signin).toBe("function")
+    expect(input.runAgentOptions?.toolContext?.teamsSendImage).toBe(teamsSendImage)
   })
 
   it("passes traceId in runAgentOptions", async () => {
