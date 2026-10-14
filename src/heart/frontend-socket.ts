@@ -254,6 +254,25 @@ export async function startFrontendSocketServer(options: {
     const method = requiredString(request.method, "method")
     const params = record(request.params ?? {})
 
+    if (method === "shepherd.targets") {
+      const targets = await options.service.listShepherdTargets(
+        requiredString(params.agent, "agent"), requiredString(params.friendId, "friendId"),
+        params.composerTty === undefined ? undefined : requiredString(params.composerTty, "composerTty"),
+      )
+      client.writer.send(response(id, { targets }))
+      return
+    }
+
+    if (method === "turn.status") {
+      const result = options.service.turnStatus({
+        agent: requiredString(params.agent, "agent"),
+        friendId: requiredString(params.friendId, "friendId"),
+        sessionKey: requiredString(params.sessionKey, "sessionKey"),
+      }, requiredString(params.turnId, "turnId"))
+      client.writer.send(response(id, result))
+      return
+    }
+
     if (method === "session.load") {
       const result = options.service.loadSession({
         agent: requiredString(params.agent, "agent"),
@@ -297,13 +316,21 @@ export async function startFrontendSocketServer(options: {
         throw new Error("turn.start.observe-only cannot include runtimeMcpServers")
       }
       const runtimeMcpServers = validatedRuntimeMcpServers(params.runtimeMcpServers)
+      const shepherdSession = params.shepherdSession === undefined ? undefined : await options.service.resolveShepherdSession(
+        requiredString(params.agent, "agent"), requiredString(params.friendId, "friendId"), params.shepherdSession,
+        params.composerTty === undefined ? undefined : requiredString(params.composerTty, "composerTty"),
+      )
+      if (shepherdSession && (observeOnly || params.channel !== "cli" || params.sessionKey !== `shepherd:${shepherdSession.id}`)) {
+        throw new Error("Shepherd routing requires a cli turn and the exact per-surface session key")
+      }
       const turnRequest: FrontendTurnRequest = {
         turnId: requiredString(params.turnId, "turnId"),
         agent: requiredString(params.agent, "agent"),
         friendId: requiredString(params.friendId, "friendId"),
         channel: requiredString(params.channel, "channel") as Channel,
         sessionKey: requiredString(params.sessionKey, "sessionKey"),
-        message: requiredString(params.message, "message"),
+        message: (requiredString(params.message, "message"), params.message as string),
+        ...(shepherdSession ? { shepherdSession } : {}),
         ...(observeOnly ? { disableTools: true, ephemeral: true } : {}),
         ...(runtimeMcpServers ? { runtimeMcpServers } : {}),
       }

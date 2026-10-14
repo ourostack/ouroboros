@@ -135,6 +135,13 @@ export const COMMAND_REGISTRY: Record<string, CommandHelp & { category: CommandC
     example: "ouro voice join --agent slugger --participants \"Ari and Sam\" --occasion \"podcast prep\"",
     subcommands: ["join", "leave", "status"],
   },
+  shepherd: {
+    category: "Agents",
+    description: "Open an independent Ouro composer for one coding terminal. Uses a named picker when ambiguous; /cancel cancels only Ouro's turn, /quit exits. Not an input hook in the coding agent.",
+    usage: "ouro shepherd chat --agent <name> [--session <UUID>]",
+    example: "ouro shepherd chat --agent ouroboros",
+    subcommands: ["chat"],
+  },
   config: {
     category: "Agents",
     description: "Legacy model compatibility helpers; prefer `ouro use` and `ouro check`",

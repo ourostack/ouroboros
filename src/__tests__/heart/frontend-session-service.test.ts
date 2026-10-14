@@ -27,6 +27,37 @@ function request(turnId = "turn-1") {
 }
 
 describe("frontend session service", () => {
+  it("reconciles completed and active IDs against the exact journal/session and rejects durable duplicates", async () => {
+    const { FrontendJournalStore } = await import("../../heart/frontend-journal")
+    const { FrontendSessionService } = await import("../../heart/frontend-session-service")
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "composer-status-"))
+    console.info(`Resources: exact-owned status fixture ${root}`)
+    const journal = new FrontendJournalStore({ agentRoot: () => root })
+    const service = new FrontendSessionService({ journal, runner: async () => settledResult("final") })
+    const ref = { agent: "boss", friendId: "friend-1", sessionKey: "session-1" }
+    expect(service.turnStatus(ref, "missing").state).toBe("unknown")
+    const prepared = service.prepareTurn(request())
+    expect(service.turnStatus(ref, "turn-1").state).toBe("active")
+    expect(service.turnStatus({ ...ref, friendId: "wrong" }, "turn-1").state).toBe("unknown")
+    await service.runPreparedTurn(prepared)
+    expect(service.turnStatus(ref, "turn-1")).toMatchObject({ state: "completed", events: [{ type: "user_message" }, { type: "turn_started" }, { type: "turn_completed" }] })
+    expect(() => service.prepareTurn(request())).toThrow("already exists")
+    // The existing isolated-tmpdir harness owns this exact fixture's lifecycle.
+  })
+
+  it("keeps the human message exact and freezes the separate terminal routing context", async () => {
+    const { FrontendSessionService } = await import("../../heart/frontend-session-service")
+    const target = { id: "11111111-1111-4111-8111-111111111111", host: "cmux" as const, label: "Copilot / repo / workspace / tab" }
+    let received: any
+    const service = new FrontendSessionService({ runner: async (input) => { received = input; return settledResult() } })
+    const prepared = service.prepareTurn({ ...request(), message: "  exact human text  ", shepherdSession: target })
+    target.id = "22222222-2222-4222-8222-222222222222"
+    await service.runPreparedTurn(prepared)
+    expect(received.userMessage).toBe("  exact human text  ")
+    expect(received.shepherdSession).toEqual({ id: "11111111-1111-4111-8111-111111111111", host: "cmux", label: "Copilot / repo / workspace / tab" })
+    expect(Object.isFrozen(received.shepherdSession)).toBe(true)
+  })
+
   it("passes an owned signal to the turn and returns the structured result", async () => {
     const runner = vi.fn(async (input: any) => {
       expect(input.signal).toBeInstanceOf(AbortSignal)

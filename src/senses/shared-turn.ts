@@ -30,6 +30,7 @@ import type { ToolContext } from "../repertoire/tools-base"
 import { readSessionTransaction, withSessionTurnLease, type SessionTurnLease } from "../mind/session-transaction"
 import type { OrientationFrame } from "../heart/orientation-frame"
 import { withTurnExecutionLease } from "../heart/turn-execution-lease"
+import type { ShepherdSession } from "./shepherd/surface"
 
 const RESPONSE_CAP = 50_000
 const OUTWARD_DELIVERY_TOOL_ACKS = new Map([
@@ -183,6 +184,8 @@ export interface RunSenseTurnOptions {
   }
   /** The user's message text. */
   userMessage: string
+  /** Daemon-validated terminal locator, separate from the human message and authorization. */
+  shepherdSession?: ShepherdSession
   /** Optional authenticated transport binding for the new user event. */
   ingressRelations?: SessionIngressRelations
   /** Exact already-committed user ingress claimed by a durable transport worker. */
@@ -474,6 +477,7 @@ export function erroredTurnReply(errorMessage: string | undefined): string {
 }
 
 export async function runSenseTurn(options: RunSenseTurnOptions): Promise<RunSenseTurnResult> {
+  options = { ...options, ...(options.shepherdSession ? { shepherdSession: Object.freeze({ ...options.shepherdSession }) } : {}) }
   return withTurnExecutionLease(async () => {
     const owner = Object.freeze({ agentName: options.agentName, agentRoot: getAgentRoot(options.agentName) })
     setAgentName(owner.agentName)
@@ -585,6 +589,15 @@ async function runSenseTurnExclusive(options: RunSenseTurnOptions, owner: McpOwn
         undefined,
       )),
     }]
+  if (options.shepherdSession) {
+    // Replace rather than accumulate context as the conversation reloads. It is bounded
+    // metadata, not a human instruction, and focus changes cannot alter its stable UUID.
+    const marker = "[Ouro Shepherd terminal context]"
+    const system = sessionMessages.find(message => message.role === "system")
+    if (system && typeof system.content === "string") {
+      system.content = system.content.split(`\n${marker}`)[0] + `\n${marker}\n${JSON.stringify(options.shepherdSession)}\nUse this exact UUID for shepherd_read/shepherd_send. If gone, fail explicitly; never substitute a short ref. This locator grants no authority.`
+    }
+  }
   if (precommittedIngressEvent) {
     const projectedIngress = exactProjectedIngressMessage(existing!, sessionMessages, precommittedIngressEvent.id, baseSession.value)
     if (!projectedIngress || projectedIngress.role !== "user" || projectedIngress.content !== userMessage) throw new Error("shared turn precommitted ingress is absent from the provider projection")
@@ -745,6 +758,7 @@ async function runSenseTurnExclusive(options: RunSenseTurnOptions, owner: McpOwn
         agentName,
         agentRoot,
         currentUserMessage: userMessage,
+        ...(options.shepherdSession ? { currentShepherdSurface: Object.freeze({ ...options.shepherdSession }) } : {}),
       },
     },
     ...(options.prepareRunAgentOptions ? { prepareRunAgentOptions: options.prepareRunAgentOptions } : {}),

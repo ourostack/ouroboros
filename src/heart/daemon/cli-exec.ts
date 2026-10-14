@@ -1961,7 +1961,7 @@ export async function checkManualCloneBundles(deps: ManualCloneCheckDeps): Promi
 
 // ── toDaemonCommand ──
 
-function toDaemonCommand(command: Exclude<OuroCliCommand, { kind: "daemon.up" } | { kind: "daemon.dev" } | { kind: "daemon.logs.prune" } | { kind: "mailbox" } | { kind: "hatch.start" } | AuthCliCommand | AuthVerifyCliCommand | AuthSwitchCliCommand | ProviderCliCommand | RepairCliCommand | VaultCliCommand | DnsCliCommand | FriendCliCommand | A2ACliCommand | A2AClientCliCommand | WhoamiCliCommand | VoiceCliCommand | SessionCliCommand | ThoughtsCliCommand | ChangelogCliCommand | ConfigModelCliCommand | ConfigModelsCliCommand | RollbackCliCommand | VersionsCliCommand | SelfUpdateCliCommand | AttentionCliCommand | PrivateDecisionsCliCommand | PrivateStatusCliCommand | WorkCardCliCommand | WorkGauntletCliCommand | WorkSentinelCliCommand | NervesReviewCliCommand | McpServeCliCommand | AcpServeCliCommand | McpCanaryCliCommand | McpDoctorCliCommand | SetupCliCommand | HookCliCommand | HabitLocalCliCommand | DeskCliCommand | MigrateToDeskCliCommand | DoctorCliCommand | RsvpCliCommand | CloneCliCommand | HelpCliCommand | { kind: "bluebubbles.replay" } | { kind: "bluebubbles.context-smoke" } | { kind: "bluebubbles.host" } | { kind: "bluebubbles.host.collect" } | { kind: "connect" } | { kind: "account.ensure" } | { kind: "mail.import-mbox" } | { kind: "mail.backfill-indexes" } | { kind: "mail.sync-cache" } | { kind: "plugin.install" } | { kind: "plugin.list" } | { kind: "plugin.remove" } | { kind: "agent.move" }>): DaemonCommand {
+function toDaemonCommand(command: Exclude<OuroCliCommand, { kind: "shepherd.chat" } | { kind: "daemon.up" } | { kind: "daemon.dev" } | { kind: "daemon.logs.prune" } | { kind: "mailbox" } | { kind: "hatch.start" } | AuthCliCommand | AuthVerifyCliCommand | AuthSwitchCliCommand | ProviderCliCommand | RepairCliCommand | VaultCliCommand | DnsCliCommand | FriendCliCommand | A2ACliCommand | A2AClientCliCommand | WhoamiCliCommand | VoiceCliCommand | SessionCliCommand | ThoughtsCliCommand | ChangelogCliCommand | ConfigModelCliCommand | ConfigModelsCliCommand | RollbackCliCommand | VersionsCliCommand | SelfUpdateCliCommand | AttentionCliCommand | PrivateDecisionsCliCommand | PrivateStatusCliCommand | WorkCardCliCommand | WorkGauntletCliCommand | WorkSentinelCliCommand | NervesReviewCliCommand | McpServeCliCommand | AcpServeCliCommand | McpCanaryCliCommand | McpDoctorCliCommand | SetupCliCommand | HookCliCommand | HabitLocalCliCommand | DeskCliCommand | MigrateToDeskCliCommand | DoctorCliCommand | RsvpCliCommand | CloneCliCommand | HelpCliCommand | { kind: "bluebubbles.replay" } | { kind: "bluebubbles.context-smoke" } | { kind: "bluebubbles.host" } | { kind: "bluebubbles.host.collect" } | { kind: "connect" } | { kind: "account.ensure" } | { kind: "mail.import-mbox" } | { kind: "mail.backfill-indexes" } | { kind: "mail.sync-cache" } | { kind: "plugin.install" } | { kind: "plugin.list" } | { kind: "plugin.remove" } | { kind: "agent.move" }>): DaemonCommand {
   if (command.kind === "habit.probe") {
     return {
       kind: "habit.probe",
@@ -8994,6 +8994,28 @@ export async function runOuroCli(args: string[], deps: OuroCliDeps = createDefau
       meta: { agent: command.agent, friendId, workbenchRuntimeMcp: !!runtimeMcp },
     })
     await runMcpServeCliLifecycle(server, mcpInput)
+    return ""
+  }
+
+  if (command.kind === "shepherd.chat") {
+    const daemonResult = deps.ensureDaemonForFrontend
+      ? await deps.ensureDaemonForFrontend(command.agent)
+      : await ensureDaemonRunning({
+        ...deps,
+        startDaemonProcess: (socketPath) => deps.startDaemonForFrontend
+          ? deps.startDaemonForFrontend(socketPath, command.agent)
+          : deps.startDaemonProcess(socketPath),
+        reportDaemonStartupPhase: () => {},
+      })
+    if (!daemonResult.ok) throw new Error(daemonResult.message)
+    const { frontendSocketPathForDaemon } = await import("../frontend-socket")
+    const socketPath = frontendSocketPathForDaemon(deps.socketPath)
+    if (deps.startShepherdChat) {
+      await deps.startShepherdChat({ agent: command.agent, ...(command.session ? { session: command.session } : {}), socketPath })
+    } else {
+      const { runShepherdComposer } = await import("../../senses/shepherd/composer")
+      await runShepherdComposer({ agent: command.agent, ...(command.session ? { session: command.session } : {}), socketPath })
+    }
     return ""
   }
 
