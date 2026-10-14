@@ -115,7 +115,7 @@ const schedule = (fn: () => void, ms: number) => {
   return () => { tasks.splice(tasks.indexOf(task), 1) }
 }
 
-async function start(judge: (packet: ReturnPacket) => Promise<JudgeResult>, host: FakeHost = fakeHost()) {
+async function start(judge: (packet: ReturnPacket) => Promise<JudgeResult>, host: FakeHost = fakeHost(), recovery = {}) {
   const escalations: string[] = []
   const wakes: string[][] = []
   const notices: ReturnRecord[] = []
@@ -128,6 +128,7 @@ async function start(judge: (packet: ReturnPacket) => Promise<JudgeResult>, host
     wake: async (ids) => { wakes.push(ids) },
     notifyOwner: (record) => { notices.push(record) },
     schedule,
+    ...recovery,
   })
   stop = app.stop
   const returned = async (event: Partial<ReturnedControl> & { sessionId: string }) => {
@@ -333,6 +334,207 @@ describe("Shepherd sense: answering premature returns", () => {
     }
     expect(host.actions.filter((action) => action.startsWith("prompt"))).toHaveLength(10)
     expect(last()).toMatchObject({ kind: "loop_guard" })
+  })
+})
+
+describe("Shepherd sense: connectivity recovery", () => {
+  const networkWait = () => ({ ...verdict({ kind: "waiting", reply: null, reason: "Internet is offline." }), waitingOnNetwork: true })
+  async function poll() {
+    const task = tasks.find(task => task.ms === 15_000)
+    expect(task, "network waits must schedule a connectivity check").toBeDefined()
+    tasks.splice(tasks.indexOf(task!), 1)
+    task!.fn()
+    await new Promise(resolve => setImmediate(resolve))
+    await new Promise(resolve => setImmediate(resolve))
+  }
+
+  it("rejudges each network-stopped session after a confirmed offline-to-online transition and nudges once", async () => {
+    let online = false
+    const packets: ReturnPacket[] = []
+    const { host, returned } = await start(async packet => {
+      packets.push(packet)
+      return packets.length <= 2 ? networkWait() : verdict()
+    }, fakeHost(), { checkConnectivity: async () => online ? "online" : "offline" })
+    host.screens.A = ["Internet disconnected. Waiting for connectivity."]
+    host.screens.B = ["Connection error. Resume after internet returns."]
+    await returned({ sessionId: "A", transitionId: "a" })
+    await returned({ sessionId: "B", transitionId: "b" })
+    await poll()
+    expect(host.actions.filter(action => action.startsWith("prompt"))).toEqual([])
+    online = true
+    await poll()
+    await vi.waitFor(() => expect(host.actions.filter(action => action.startsWith("prompt"))).toHaveLength(2))
+    expect(packets.slice(2)).toEqual([
+      expect.objectContaining({ networkRecovered: true }),
+      expect.objectContaining({ networkRecovered: true }),
+    ])
+    expect(host.actions.filter(action => action.startsWith("prompt")).every(action => action.includes("Check uncertain writes before retrying"))).toBe(true)
+    expect(readReturns(agentRoot).filter(record => record.action === "respond").map(record => record.transition)).toEqual(["network:1:a", "network:1:b"])
+    expect(tasks.filter(task => task.ms === 15_000)).toHaveLength(0)
+  })
+
+  it.each(["online", "unknown"])("does not nudge without a confirmed offline baseline (%s)", async connectivity => {
+    const { host, returned } = await start(async () => networkWait(), fakeHost(), { checkConnectivity: async () => connectivity })
+    host.screens.S = ["Offline."]
+    await returned({ sessionId: "S", transitionId: "s" })
+    await poll()
+    await poll()
+    expect(host.actions.some(action => /^(prompt|key) /.test(action))).toBe(false)
+    expect(readReturns(agentRoot)).toHaveLength(1)
+  })
+
+  it.each(["gate", "done", "working", "unclear", "waiting", "key"])("fresh %s verdict never becomes a network resume", async kind => {
+    let first = true
+    let online = false
+    const { host, returned } = await start(async () => {
+      if (first) { first = false; return networkWait() }
+      return kind === "key" ? verdict({ reply: { key: "enter" } }) : verdict({ kind: kind as JudgeResult["kind"], reply: null })
+    }, fakeHost(), { checkConnectivity: async () => online ? "online" : "offline" })
+    host.screens.S = ["Offline."]
+    await returned({ sessionId: "S", transitionId: "s" })
+    await poll()
+    online = true
+    await poll()
+    expect(host.actions.some(action => /^(prompt|key) /.test(action))).toBe(false)
+  })
+
+  it("rechecks a return whose judge failed on the network but never retries an uncertain prompt send", async () => {
+    let judged = 0
+    let online = false
+    const host = fakeHost()
+    host.prompt = async (id, line) => { host.actions.push(`prompt ${id} ${line}`); throw new Error("fetch failed") }
+    const { returned } = await start(async () => {
+      if (++judged === 1) throw new Error("fetch failed")
+      return verdict()
+    }, host, { checkConnectivity: async () => online ? "online" : "offline" })
+    host.screens.S = ["Connection error. Stopped."]
+    await returned({ sessionId: "S", transitionId: "s" })
+    await poll()
+    online = true
+    await poll()
+    await vi.waitFor(() => expect(host.actions.filter(action => action.startsWith("prompt"))).toHaveLength(1))
+    expect(tasks.filter(task => task.ms === 15_000)).toHaveLength(0)
+    expect(readReturns(agentRoot).at(-1)!.reason).toContain("fetch failed")
+  })
+
+  it.each(["focus", "paused", "new-return", "screen", "removed"])("drops a stale or protected recovery candidate (%s)", async protection => {
+    let online = false
+    const { host, returned } = await start(async packet => packet.networkRecovered ? verdict() : networkWait(), fakeHost(), { checkConnectivity: async () => online ? "online" : "offline" })
+    host.screens.S = ["Offline."]
+    await returned({ sessionId: "S", transitionId: "s" })
+    await poll()
+    if (protection === "focus") host.handlers!.focused("S")
+    if (protection === "paused") await setShepherdSessionPause(agentRoot, { actorId: "ari", requestId: "pause", target: { host: "fake", session: "S", cwd: "/Users/a/code/app", task: null }, paused: true })
+    if (protection === "new-return") await returned({ sessionId: "S", transitionId: "background", backgroundWork: true })
+    if (protection === "screen") host.screens.S = ["Work resumed without Shepherd."]
+    if (protection === "removed") delete host.screens.S
+    online = true
+    await poll()
+    expect(host.actions.some(action => /^(prompt|key) /.test(action))).toBe(false)
+  })
+
+  it("requires offline evidence after each candidate stopped, not an earlier session's outage", async () => {
+    let online = false
+    const { host, returned } = await start(async packet => packet.networkRecovered ? verdict() : networkWait(), fakeHost(), { checkConnectivity: async () => online ? "online" : "offline" })
+    host.screens.A = ["Offline."]
+    host.screens.B = ["Network error."]
+    await returned({ sessionId: "A", transitionId: "a" })
+    await poll()
+    host.handlers!.focused("A")
+    online = true
+    await returned({ sessionId: "B", transitionId: "b" })
+    await poll()
+    expect(host.actions.some(action => action.startsWith("prompt"))).toBe(false)
+  })
+
+  it("honors a human focus event during the final recovery screen read", async () => {
+    let online = false
+    const host = fakeHost()
+    host.screens.S = ["Offline."]
+    const read = host.read
+    let reads = 0
+    host.read = async (id, lines) => {
+      const text = await read(id, lines)
+      if (++reads === 3) host.handlers!.focused(id)
+      return text
+    }
+    const { returned } = await start(async packet => packet.networkRecovered ? verdict() : networkWait(), host, { checkConnectivity: async () => online ? "online" : "offline" })
+    await returned({ sessionId: "S", transitionId: "s" })
+    await poll()
+    online = true
+    await poll()
+    expect(host.actions.some(action => action.startsWith("prompt"))).toBe(false)
+  })
+
+  it("cancels a pending connectivity check when stopped", async () => {
+    const { host, returned } = await start(async () => networkWait(), fakeHost(), { checkConnectivity: async () => "offline" })
+    host.screens.S = ["Offline."]
+    await returned({ sessionId: "S", transitionId: "s" })
+    stop!()
+    stop = null
+    expect(tasks).toHaveLength(0)
+  })
+
+  it("discards an in-flight probe result and late host events after stop", async () => {
+    let release!: (value: "offline") => void
+    const held = new Promise<"offline">(resolve => { release = resolve })
+    const { host, returned } = await start(async () => networkWait(), fakeHost(), { checkConnectivity: () => held })
+    host.screens.S = ["Offline."]
+    await returned({ sessionId: "S", transitionId: "s" })
+    await poll()
+    stop!()
+    stop = null
+    release("offline")
+    await returned({ sessionId: "S", transitionId: "s" })
+    expect(tasks).toHaveLength(0)
+    expect(readReturns(agentRoot)).toHaveLength(1)
+  })
+
+  it("stops the recovery batch before touching a second session when stopped during the first judgment", async () => {
+    let online = false
+    const { host, returned } = await start(async packet => {
+      if (packet.networkRecovered) { stop!(); stop = null; return verdict() }
+      return networkWait()
+    }, fakeHost(), { checkConnectivity: async () => online ? "online" : "offline" })
+    host.screens.A = ["Offline."]
+    host.screens.B = ["Offline."]
+    await returned({ sessionId: "A", transitionId: "a" })
+    await returned({ sessionId: "B", transitionId: "b" })
+    await poll()
+    online = true
+    await poll()
+    expect(host.actions.some(action => action.startsWith("prompt"))).toBe(false)
+    expect(readReturns(agentRoot).map(record => record.transition)).toEqual(["a", "b", "network:1:a"])
+  })
+
+  it("retries a failed connectivity check without inventing online evidence", async () => {
+    let failed = true
+    const { host, returned } = await start(async () => networkWait(), fakeHost(), { checkConnectivity: async () => {
+      if (failed) { failed = false; throw new Error("probe unavailable") }
+      return "online"
+    } })
+    host.screens.S = ["Offline."]
+    await returned({ sessionId: "S", transitionId: "s" })
+    await poll()
+    await poll()
+    expect(host.actions.some(action => action.startsWith("prompt"))).toBe(false)
+  })
+
+  it("does not retain an outdated judgment when a new background return arrived meanwhile", async () => {
+    let first = true
+    const host = fakeHost()
+    host.screens.S = ["Offline."]
+    const { returned } = await start(async () => {
+      if (first) {
+        first = false
+        host.handlers!.returned({ sessionId: "S", transitionId: "new", agent: "claude", cwd: null, lastBody: null, backgroundWork: true })
+      }
+      return networkWait()
+    }, host)
+    await returned({ sessionId: "S", transitionId: "s" })
+    await vi.waitFor(() => expect(readReturns(agentRoot)).toHaveLength(2))
+    expect(tasks.filter(task => task.ms === 15_000)).toHaveLength(0)
+    expect(host.actions.some(action => action.startsWith("prompt"))).toBe(false)
   })
 })
 

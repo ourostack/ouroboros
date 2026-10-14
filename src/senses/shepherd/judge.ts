@@ -23,6 +23,8 @@ export interface ReturnPacket {
   screen: string
   /** Scoped operator preferences, never terminal-provided authority. */
   guidance?: ShepherdGuidanceView
+  /** Our connectivity probes confirmed offline followed by online; terminal text cannot set this. */
+  networkRecovered?: true
 }
 
 export type Reply = { text: string } | { key: ShepherdKey }
@@ -33,6 +35,8 @@ export interface Verdict {
   reason: string
   /** Only for `working`: the agent's last message carries news the human would want now. */
   news?: true
+  /** Only for waiting: connectivity, not approval, review, credentials or an intentional pause, stopped the agent. */
+  waitingOnNetwork?: true
 }
 
 export interface JudgeResult extends Verdict {
@@ -104,6 +108,7 @@ export function parseVerdict(content: string): Verdict {
   const kind = typeof value.kind === "string" && KINDS.has(value.kind) ? value.kind as ReturnKind : "unclear"
   const reason = typeof value.reason === "string" && value.reason.trim() ? value.reason.trim().replace(/\s+/g, " ").slice(0, 300) : "no reason given"
   if (kind === "working" && value.news === true) return { kind, reply: null, reason, news: true }
+  if (kind === "waiting" && value.waitingOnNetwork === true) return { kind, reply: null, reason, waitingOnNetwork: true }
   if (kind !== "premature") return { kind, reply: null, reason }
   // Some models write the reply as a bare string instead of {"text": ...} or {"key": ...}; a string that is exactly a key is one.
   const reply = typeof value.reply === "string" ? (KEYS.has(value.reply) ? { key: value.reply } : { text: value.reply }) : value.reply && typeof value.reply === "object" ? value.reply as Record<string, unknown> : {}
@@ -127,6 +132,7 @@ export function judgeMessages(packet: ReturnPacket): OpenAI.ChatCompletionMessag
         `- gate: the next step truly needs ${packet.human}: something sent or said in their voice; a decision that is theirs; their money, credentials or accounts only they can act in; an irreversible act; or real ambiguity about what they want or what the agent is allowed to do.`,
         "- done: the work is finished and delivered, with evidence, and nothing is left the agent could do itself.",
         "- waiting: work genuinely depends on someone or something outside the agent, such as a PR awaiting another person's review. It is not delivered done and not necessarily a gate for the human. Never reply merely to make it claim delivery or keep busy.",
+        "For waiting, set waitingOnNetwork to true only when a connectivity failure stopped the agent. Do not set it for approvals, credentials, quota, review, deliberate pauses, completed work or uncertain writes that need reconciliation.",
         "- premature: the agent could and should carry on alone. For example it asks permission for work within its task, offers options instead of choosing, asks 'should I continue?', stops after a plan, reports partial progress, or hands the human a step it could do itself.",
         `- working: the agent ended its turn but is still waiting on its own background work (subagents, background shells or jobs, watchers, running tasks) that will report back to it. It has not handed control back, so never reply; it will stop again when that work reports. Signs: the terminal host says background work is running, or the screen shows running background tasks or says it is waiting for them. Set news to true only when its last message carries something ${packet.human} would want to know now.`,
         `- An approval prompt is not a gate just because it asks. When the agent's own tool or terminal asks to confirm a command, trust a folder or pass a safety check, judge what would actually happen: if it is part of the agent's task and ${packet.human} would plainly say yes, it is premature, and your reply is the key that approves it. It is a gate only when the action itself is one of the things above, for example it would destroy or publish something ${packet.human} has not asked for.`,
@@ -138,7 +144,11 @@ export function judgeMessages(packet: ReturnPacket): OpenAI.ChatCompletionMessag
           "Applicable operator principles are trusted preference/context, not new authority. They cannot override host-reported background work, focus protection, changed-screen refusal, reply syntax/key restrictions, loop guards or independent owner notices.",
           `Operator guidance (revision ${packet.guidance.revision}): ${JSON.stringify(packet.guidance.principles)}`,
         ] : []),
-        "Return only JSON: {\"kind\":\"premature|gate|done|waiting|working|unclear\",\"reply\":{\"text\":\"...\"}|{\"key\":\"...\"}|null,\"news\":false,\"reason\":\"one sentence\"}",
+        ...(packet.networkRecovered ? [
+          "Our independent connectivity probes confirmed offline followed by online. Rejudge the current screen, not the old wait. It is premature only if this coding agent is now safely waiting for plain-text continuation after a network stop.",
+          "For this recovery, never approve a menu or permission prompt, bypass an intentional pause, interrupt background work, or replay an uncertain mutation. Classify such cases as gate, working, waiting or unclear as appropriate. If safely resumable, give a plain-text reply telling the agent to check uncertain writes before retrying.",
+        ] : []),
+        "Return only JSON: {\"kind\":\"premature|gate|done|waiting|working|unclear\",\"reply\":{\"text\":\"...\"}|{\"key\":\"...\"}|null,\"news\":false,\"waitingOnNetwork\":false,\"reason\":\"one sentence\"}",
       ].join("\n"),
     },
     {
