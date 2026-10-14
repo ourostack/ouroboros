@@ -97,6 +97,7 @@ interface FrontendClient {
   writer: FrontendFrameWriter
   subscriptions: Set<string>
   ownedTurnIds: Set<string>
+  closed: boolean
 }
 
 export interface FrontendSocketServer {
@@ -334,6 +335,9 @@ export async function startFrontendSocketServer(options: {
         ...(observeOnly ? { disableTools: true, ephemeral: true } : {}),
         ...(runtimeMcpServers ? { runtimeMcpServers } : {}),
       }
+      // Validation may await the host while this connection exits. Ownership must
+      // never be acquired after cleanup has already drained this client's turns.
+      if (client.closed || client.socket.destroyed || stopped) return
       const prepared = options.service.prepareTurn(turnRequest)
       client.ownedTurnIds.add(turnRequest.turnId)
       client.writer.send(response(id, { accepted: true, turnId: turnRequest.turnId }))
@@ -353,6 +357,7 @@ export async function startFrontendSocketServer(options: {
       writer: new FrontendFrameWriter(socket, maxQueuedFrames, ownedTurnIds.clear.bind(ownedTurnIds)),
       subscriptions: new Set(),
       ownedTurnIds,
+      closed: false,
     }
     clients.add(client)
     const lines = readline.createInterface({ input: socket, crlfDelay: Infinity })
@@ -361,6 +366,7 @@ export async function startFrontendSocketServer(options: {
       /* v8 ignore next -- socket error and close can race; the first cleanup owns the state transition @preserve */
       if (cleanedUp) return
       cleanedUp = true
+      client.closed = true
       for (const turnId of client.ownedTurnIds) options.service.cancelTurn(turnId)
       clients.delete(client)
       lines.close()
