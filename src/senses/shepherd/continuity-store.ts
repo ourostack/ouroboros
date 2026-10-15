@@ -34,6 +34,11 @@ const bindingSchema = object({
   id: text, agent: text, host: text, incarnation: text, surfaceId: text, surfaceGeneration: text,
   nativeSessionId: text, runner: choice("copilot", "claude", "codex"),
   process: processSchema, wrapper: nullable(processSchema), launchCwd: text, worktree: text,
+  root: object({
+    id: text, path: text, namespace: text, receiptBase: text,
+    launchRoots: array(text, 32), worktreeRoots: array(text, 32),
+    identity: object({ dev: count, ino: count }),
+  }),
   rootId: text, taskRef: text, taskKey: text, profileId: nullable(text),
   profileFingerprint: nullable(digest), configFingerprint: digest, enrollmentEpoch: text,
 })
@@ -118,6 +123,7 @@ function validateState(value: unknown): asserts value is ContinuityState {
   unique(value.dispatches.map(dispatch => JSON.stringify([dispatch.agent, dispatch.requestId])), "dispatch requests")
   for (const batch of value.batches) {
     if (batch.origin.requestId !== batch.requestId || batch.targets.some(target => target.binding.agent !== batch.agent)) refuse("batch binding identity mismatch")
+    if (batch.targets.some(target => target.binding.rootId !== target.binding.root.id)) refuse("frozen root binding mismatch")
   }
   for (const claim of value.claims) {
     const batch = value.batches.find(batch => batch.id === claim.batchId && batch.agent === claim.agent)

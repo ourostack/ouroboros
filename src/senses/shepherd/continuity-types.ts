@@ -56,6 +56,7 @@ export interface ContinuityBinding {
   launchCwd: string
   worktree: string
   rootId: string
+  root: ContinuityRoot
   taskRef: string
   taskKey: string
   profileId: string | null

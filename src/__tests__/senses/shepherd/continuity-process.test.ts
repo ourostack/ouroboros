@@ -35,6 +35,8 @@ function binding(): ContinuityBinding {
     surfaceGeneration: "surface-1", nativeSessionId: "native", runner: "copilot",
     process: { pid: 10, birth: "darwin:100:10", uid: process.getuid!() }, wrapper: null,
     launchCwd: "/desk", worktree: "/code", rootId: "desk", taskRef: "track/task", taskKey: "root:track/task",
+    root: { id: "desk", path: "/desk", namespace: "track", receiptBase: ".receipts", launchRoots: ["/desk"],
+      worktreeRoots: ["/code"], identity: { dev: 1, ino: 2 } },
     profileId: "worker", profileFingerprint: "a".repeat(64), configFingerprint: "b".repeat(64), enrollmentEpoch: "epoch",
   }
 }

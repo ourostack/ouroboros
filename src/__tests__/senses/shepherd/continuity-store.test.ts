@@ -23,6 +23,8 @@ function binding(agent = "ouro", taskKey = "root:track/task"): ContinuityBinding
     surfaceGeneration: "surface-1", nativeSessionId: `native-${agent}`, runner: "copilot",
     process: { pid: 100, birth: "1:123456789", uid: process.getuid!() }, wrapper: null,
     launchCwd: "/desk", worktree: "/code", rootId: "desk", taskRef: "track/task", taskKey,
+    root: { id: "desk", path: "/desk", namespace: "track", receiptBase: ".receipts", launchRoots: ["/desk"],
+      worktreeRoots: ["/code"], identity: { dev: 1, ino: 2 } },
     profileId: "worker", profileFingerprint: "a".repeat(64), configFingerprint: "b".repeat(64),
     enrollmentEpoch: "epoch1",
   }
@@ -249,6 +251,7 @@ describe("machine continuity transaction authority", () => {
       state => { state.holds.push(structuredClone(state.holds[0])) },
       state => { state.batches[0].origin.requestId = "wrong" },
       state => { state.batches[0].targets[0].binding.agent = "other" },
+      state => { state.batches[0].targets[0].binding.root.id = "other" },
       state => { state.claims[0].batchId = "missing" },
       state => { state.claims[0].targetId = "missing" },
       state => { state.claims[0].taskKey = "wrong" },
