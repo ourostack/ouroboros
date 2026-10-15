@@ -1,0 +1,128 @@
+export type ContinuityRunner = "copilot" | "claude" | "codex"
+export type ContinuityFileIdentity = { dev: number; ino: number }
+
+export interface ContinuityRoot {
+  id: string
+  path: string
+  namespace: string
+  receiptBase: string
+  launchRoots: string[]
+  worktreeRoots: string[]
+  identity: ContinuityFileIdentity
+}
+
+export interface ContinuityProfile {
+  id: string
+  runner: ContinuityRunner
+  launcher: "direct" | "agency"
+  executable: string
+  argv: string[]
+  rootIds: string[]
+  settingsPath: string
+  version: string
+  executableIdentity: ContinuityFileIdentity
+  fingerprint: string
+}
+
+export interface ContinuityConfig {
+  schemaVersion: 1
+  roots: ContinuityRoot[]
+  profiles: ContinuityProfile[]
+}
+
+export interface ProcessGeneration {
+  pid: number
+  birth: string
+  uid: number
+}
+
+export interface ContinuityOrigin {
+  actorId: string
+  requestId: string
+  surfaceId?: string
+}
+
+export interface ContinuityBinding {
+  id: string
+  agent: string
+  host: string
+  incarnation: string
+  surfaceId: string
+  surfaceGeneration: string
+  nativeSessionId: string
+  runner: ContinuityRunner
+  process: ProcessGeneration
+  wrapper: ProcessGeneration | null
+  launchCwd: string
+  worktree: string
+  rootId: string
+  taskRef: string
+  taskKey: string
+  profileId: string | null
+  profileFingerprint: string | null
+  configFingerprint: string
+  enrollmentEpoch: string
+}
+
+export type ContinuityRoundKind = "preparation" | "followup" | "correction"
+export interface ContinuityRound {
+  kind: ContinuityRoundKind
+  nonce: string
+  receiptSlot: string
+  phase: "reserved" | "issued" | "acknowledged" | "uncertain" | "blocked"
+  attemptId: string
+  expectedRevision: number
+}
+
+export interface ContinuityReceiptCorrelation {
+  schemaVersion: 1
+  batchId: string
+  bindingId: string
+  generation: number
+  round: ContinuityRoundKind | "bootstrap" | "execute"
+  nonce: string
+  launchAttemptId: string | null
+}
+
+export interface ContinuityKnownJob {
+  id: string
+  kind: string
+  owner: string
+  effects: string
+  status: string
+  disposition: string
+  reference: string
+}
+
+export interface ContinuityUncertainMutation {
+  id: string
+  operation: string
+  disposition: string
+  evidence: string
+}
+
+export interface ContinuityReceipt extends ContinuityReceiptCorrelation {
+  checkpoint: { rootId: string; relativePath: string; sha256: string }
+  task: {
+    ref: string
+    rootId: string
+    launchCwd: string
+    worktree: string
+    branch: string
+    head: string
+    nextAction: string
+  }
+  confirmation: boolean
+  knownJobs: ContinuityKnownJob[]
+  uncertainMutations: ContinuityUncertainMutation[]
+}
+
+export interface ContinuityAssurance {
+  checkpoint: "unverified" | "verified"
+  endReadiness: "unconfirmed" | "agent-confirmed-as-of-native-boundary" | "native-observed"
+  backgroundCoverage: "unknown" | "native-managed-snapshot"
+  jobInventory: "unverified" | "preserved-agent-reported"
+  reopen: "unverified" | "eligible" | "blocked"
+  observedAt: string | null
+  qualifications: string[]
+}
