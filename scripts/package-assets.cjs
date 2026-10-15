@@ -7,6 +7,7 @@ const REQUIRED_PACKAGE_ASSET_PATHS = [
   "dist/heart/daemon/sanctuary-telegram-authority-entry.js",
   "dist/heart/daemon/sanctuary-host-supervisor-entry.js",
   "assets/bluebubbles-host",
+  "assets/shepherd-process-proof.c",
   "assets/sanctuary-host-launcher.sh",
   "RepairGuide.ouro/agent.json",
   "RepairGuide.ouro/psyche/IDENTITY.md",
