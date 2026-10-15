@@ -358,4 +358,15 @@ describe("fixed-slot continuity evidence", () => {
     f.write()
     expect(() => readContinuityReceipt(f.slot, f.slot.correlation)).toThrow(/redacted receipt/)
   })
+  it("rejects nanosecond descriptor changes even when rounded millisecond metadata is identical", () => {
+    const f = fixture()
+    const original = fs.fstatSync
+    let calls = 0
+    vi.spyOn(fs, "fstatSync").mockImplementation((...args: Parameters<typeof fs.fstatSync>) => {
+      const stat = Reflect.apply(original, fs, args)
+      if (++calls === 2) Object.assign(stat, { ctimeNs: typeof stat.ctimeNs === "bigint" ? stat.ctimeNs + 1n : 1n })
+      return stat
+    })
+    expect(() => f.verify()).toThrow(/changed/)
+  })
 })

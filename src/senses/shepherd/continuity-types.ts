@@ -67,6 +67,7 @@ export interface ContinuityBinding {
 
 export type ContinuityRoundKind = "preparation" | "followup" | "correction"
 export interface ContinuityRound {
+  batchId: string
   kind: ContinuityRoundKind
   nonce: string
   receiptSlot: string
@@ -128,6 +129,31 @@ export interface ContinuityAssurance {
   qualifications: string[]
 }
 
+export interface ContinuityCheckpointProjection {
+  goal: string
+  scope: string
+  decisions: string[]
+  nextAction: string
+  knownJobs: ContinuityKnownJob[]
+  uncertainMutations: ContinuityUncertainMutation[]
+  references: string[]
+  checkpointSha256: string
+}
+
+export interface ContinuityEnrollment {
+  id: string
+  agent: string
+  runner: ContinuityRunner
+  nativeSessionId: string
+  process: ProcessGeneration
+  wrapper: ProcessGeneration | null
+  profileId: string
+  profileFingerprint: string
+  configFingerprint: string
+  launchCwd: string
+  observedAt: string
+}
+
 export interface ContinuityLaunch {
   attemptId: string
   bootstrapNonce: string
@@ -153,6 +179,8 @@ export interface ContinuityTarget {
   reasons: string[]
   assurance: ContinuityAssurance
   receipt: ContinuityReceipt | null
+  projection: ContinuityCheckpointProjection | null
+  observedTransitions: string[]
   launch: ContinuityLaunch | null
 }
 
@@ -206,6 +234,7 @@ export interface ContinuityDispatchReservation extends ContinuityDispatch {
 export interface ContinuityState {
   schemaVersion: 1
   revision: number
+  enrollments: ContinuityEnrollment[]
   batches: ContinuityBatch[]
   claims: ContinuityClaim[]
   holds: ContinuityHold[]

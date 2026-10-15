@@ -6,7 +6,7 @@ import Ajv from "ajv"
 import { emitNervesEvent } from "../../nerves/runtime"
 import { redactSecrets } from "./redact"
 import type {
-  ContinuityAssurance, ContinuityBinding, ContinuityKnownJob, ContinuityReceipt,
+  ContinuityAssurance, ContinuityBinding, ContinuityCheckpointProjection, ContinuityKnownJob, ContinuityReceipt,
   ContinuityReceiptCorrelation, ContinuityUncertainMutation,
 } from "./continuity-types"
 
@@ -54,9 +54,7 @@ export interface VerifiedContinuityReceipt {
   receipt: ContinuityReceipt
   slot: ContinuityReceiptSlot
 }
-export interface ContinuityCheckpointProjection extends CheckpointDocument {
-  checkpointSha256: string
-}
+export type { ContinuityCheckpointProjection } from "./continuity-types"
 export interface ContinuityEvidenceDeps {
   filesystem?: typeof fs
 }
@@ -128,13 +126,14 @@ export function reserveContinuityReceiptSlot(
   return { path: path.join(binding.root.path, relativePath), relativePath, binding: structuredClone(binding), attemptId, correlation }
 }
 
-interface Pin { path: string; stat: fs.Stats }
-function same(a: fs.Stats, b: fs.Stats): boolean {
+interface Pin { path: string; stat: fs.BigIntStats }
+function same(a: fs.BigIntStats, b: fs.BigIntStats): boolean {
   return a.dev === b.dev && a.ino === b.ino && a.mode === b.mode && a.uid === b.uid && a.nlink === b.nlink &&
-    a.size === b.size && a.mtimeMs === b.mtimeMs && a.ctimeMs === b.ctimeMs
+    a.size === b.size && a.mtimeNs === b.mtimeNs && a.ctimeNs === b.ctimeNs
 }
-function identity(stat: fs.Stats): void {
-  if (!Number.isSafeInteger(stat.dev) || !Number.isSafeInteger(stat.ino)) refuse("inexact filesystem identity")
+function identity(stat: fs.BigIntStats): void {
+  if (typeof stat.dev !== "bigint" || typeof stat.ino !== "bigint" ||
+    !Number.isSafeInteger(Number(stat.dev)) || !Number.isSafeInteger(Number(stat.ino))) refuse("inexact filesystem identity")
 }
 function pins(binding: ContinuityBinding, file: string, io: typeof fs): Pin[] {
   const root = binding.root
@@ -143,12 +142,12 @@ function pins(binding: ContinuityBinding, file: string, io: typeof fs): Pin[] {
   let current = ""
   for (let index = 0; index < parts.length; index++) {
     current += `/${parts[index]}`
-    const stat = io.lstatSync(current)
+    const stat = io.lstatSync(current, { bigint: true })
     identity(stat)
     if (stat.isSymbolicLink() || (index < parts.length - 1 && !stat.isDirectory())) refuse("symlink or non-directory ancestor")
-    if (within(root.path, current) && ((stat.mode & 0o022) !== 0 || (stat.uid !== process.getuid!() && stat.uid !== 0))) refuse("untrusted evidence path")
-    if (current === root.path && (stat.dev !== root.identity.dev || stat.ino !== root.identity.ino)) refuse("root identity changed")
-    if (index === parts.length - 1 && (!stat.isFile() || stat.nlink !== 1 || stat.uid !== process.getuid!())) refuse("nonregular or ambiguous evidence file")
+    if (within(root.path, current) && ((stat.mode & 0o022n) !== 0n || (stat.uid !== BigInt(process.getuid!()) && stat.uid !== 0n))) refuse("untrusted evidence path")
+    if (current === root.path && (stat.dev !== BigInt(root.identity.dev) || stat.ino !== BigInt(root.identity.ino))) refuse("root identity changed")
+    if (index === parts.length - 1 && (!stat.isFile() || stat.nlink !== 1n || stat.uid !== BigInt(process.getuid!()))) refuse("nonregular or ambiguous evidence file")
     result.push({ path: current, stat })
   }
   return result
@@ -159,10 +158,10 @@ function readBounded(binding: ContinuityBinding, relativePath: string, limit: nu
   const file = path.join(binding.root.path, relative(relativePath))
   const before = pins(binding, file, io)
   const expected = before[before.length - 1].stat
-  if (expected.size > limit) refuse("byte limit")
+  if (expected.size > BigInt(limit)) refuse("byte limit")
   const fd = io.openSync(file, fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW | fs.constants.O_NONBLOCK)
   try {
-    if (!same(expected, io.fstatSync(fd))) refuse("opened descriptor identity changed")
+    if (!same(expected, io.fstatSync(fd, { bigint: true }))) refuse("opened descriptor identity changed")
     const buffer = Buffer.alloc(limit + 1)
     let count = 0
     while (count < buffer.length) {
@@ -171,7 +170,7 @@ function readBounded(binding: ContinuityBinding, relativePath: string, limit: nu
       count += read
     }
     if (count > limit) refuse("byte limit")
-    if (count !== expected.size || !same(expected, io.fstatSync(fd))) refuse("descriptor content changed")
+    if (BigInt(count) !== expected.size || !same(expected, io.fstatSync(fd, { bigint: true }))) refuse("descriptor content changed")
     const after = pins(binding, file, io)
     if (before.some((pin, index) => {
       const current = after[index].stat

@@ -38,7 +38,7 @@ function batch(agent = "ouro", taskKey = "root:track/task", requestId = `request
       id: `target-${agent}`, binding: binding(agent, taskKey), generation: 1,
       state: "pending-boundary", reopen: "not-requested", rounds: [], reasons: [],
       assurance: { checkpoint: "unverified", endReadiness: "unconfirmed", backgroundCoverage: "unknown", jobInventory: "unverified", reopen: "unverified", observedAt: null, qualifications: [] },
-      receipt: null, launch: null,
+      receipt: null, projection: null, observedTransitions: [], launch: null,
     }],
   }
 }
@@ -153,7 +153,7 @@ describe("machine continuity transaction authority", () => {
     await transactContinuity(f.file, 0, state => {
       createContinuityBatch(state, batch())
       const target = state.batches[0].targets[0]
-      target.rounds.push({ kind: "preparation", nonce: "nonce", receiptSlot: "receipts/preparation.json", phase: "issued", attemptId: "attempt", expectedRevision: 0 })
+      target.rounds.push({ batchId: "batch-ouro", kind: "preparation", nonce: "nonce", receiptSlot: "receipts/preparation.json", phase: "issued", attemptId: "attempt", expectedRevision: 0 })
       expect(cancelContinuityBatch(state, "batch-ouro", "ouro")).toBe("cancelling")
       state.claims[0].phase = "uncertain"
       state.claims[0].attemptId = "launch-attempt"
@@ -353,7 +353,7 @@ describe("machine continuity transaction authority", () => {
       }
       expect(cancelContinuityBatch(state, "batch-ouro", "ouro")).toBe("cancelling")
       target.launch = null
-      target.rounds = [{ kind: "preparation", nonce: "n", receiptSlot: "r", phase: "acknowledged", attemptId: "a", expectedRevision: 0 }]
+      target.rounds = [{ batchId: "batch-ouro", kind: "preparation", nonce: "n", receiptSlot: "r", phase: "acknowledged", attemptId: "a", expectedRevision: 0 }]
       expect(cancelContinuityBatch(state, "batch-ouro", "ouro")).toBe("cancelled")
       expect(continuityHold(state, "ouro", "cmux", "surface-ouro")).toBeNull()
     })

@@ -20,6 +20,7 @@ export interface ContinuityTransactionOptions {
 }
 
 const text = { type: "string", minLength: 1, maxLength: 4096, pattern: "^[^\\u0000-\\u001f\\u007f]+$" }
+const narrative = { ...text, pattern: "^[^\\u0000-\\u0008\\u000b\\u000c\\u000e-\\u001f\\u007f]+$" }
 const digest = { type: "string", pattern: "^[a-f0-9]{64}$" }
 const count = { type: "integer", minimum: 0, maximum: Number.MAX_SAFE_INTEGER }
 const nullable = (schema: object) => ({ anyOf: [schema, { type: "null" }] })
@@ -50,17 +51,17 @@ const assuranceSchema = object({
   observedAt: nullable(text), qualifications: array(text, 64),
 })
 const roundSchema = object({
-  kind: choice("preparation", "followup", "correction"), nonce: text, receiptSlot: text,
+  batchId: text, kind: choice("preparation", "followup", "correction"), nonce: text, receiptSlot: text,
   phase: choice("reserved", "issued", "acknowledged", "uncertain", "blocked"), attemptId: text, expectedRevision: count,
 })
 const receiptSchema = object({
   schemaVersion: { const: 1 }, batchId: text, bindingId: text, generation: { type: "integer", minimum: 1 },
   round: choice("preparation", "followup", "correction", "bootstrap", "execute"), nonce: text, launchAttemptId: nullable(text),
   checkpoint: object({ rootId: text, relativePath: text, sha256: digest }),
-  task: object({ ref: text, rootId: text, launchCwd: text, worktree: text, branch: text, head: text, nextAction: text }),
+  task: object({ ref: text, rootId: text, launchCwd: text, worktree: text, branch: text, head: text, nextAction: narrative }),
   confirmation: { type: "boolean" },
-  knownJobs: array(object({ id: text, kind: text, owner: text, effects: text, status: text, disposition: text, reference: text }), 64),
-  uncertainMutations: array(object({ id: text, operation: text, disposition: text, evidence: text }), 64),
+  knownJobs: array(object({ id: narrative, kind: narrative, owner: narrative, effects: narrative, status: narrative, disposition: narrative, reference: narrative }), 64),
+  uncertainMutations: array(object({ id: narrative, operation: narrative, disposition: narrative, evidence: narrative }), 64),
 })
 const launchSchema = object({
   attemptId: text, bootstrapNonce: text, bootstrapSlot: text,
@@ -75,6 +76,12 @@ const targetSchema = object({
   reopen: choice("not-requested", "eligible", "launching", "launched", "blocked", "unsupported", "uncertain"),
   rounds: array(roundSchema, 3), reasons: array(text, 64), assurance: assuranceSchema,
   receipt: nullable(receiptSchema), launch: nullable(launchSchema),
+  projection: nullable(object({
+    goal: narrative, scope: narrative, decisions: array(narrative, 64), nextAction: narrative,
+    knownJobs: receiptSchema.properties.knownJobs, uncertainMutations: receiptSchema.properties.uncertainMutations,
+    references: array(narrative, 64), checkpointSha256: digest,
+  })),
+  observedTransitions: array(digest, 64),
 })
 const batchSchema = object({
   id: text, agent: text, requestId: text, bodyHash: digest,
@@ -94,13 +101,18 @@ const dispatchSchema = object({
 const validate = new Ajv({ strict: true }).compile<ContinuityState>({
   ...object({
     schemaVersion: { const: 1 }, revision: count, batches: array(ref("batch"), 128),
+    enrollments: array(object({
+      id: text, agent: text, runner: choice("copilot", "claude", "codex"), nativeSessionId: text,
+      process: processSchema, wrapper: nullable(processSchema), profileId: text, profileFingerprint: digest,
+      configFingerprint: digest, launchCwd: text, observedAt: text,
+    }), 256),
     claims: array(ref("claim"), 256), holds: array(ref("hold"), 256), dispatches: array(ref("dispatch"), 2048),
   }),
   $defs: { batch: batchSchema, claim: claimSchema, hold: holdSchema, dispatch: dispatchSchema },
 })
 
 function empty(): ContinuityState {
-  return { schemaVersion: 1, revision: 0, batches: [], claims: [], holds: [], dispatches: [] }
+  return { schemaVersion: 1, revision: 0, enrollments: [], batches: [], claims: [], holds: [], dispatches: [] }
 }
 
 function refuse(message: string): never {
@@ -116,6 +128,7 @@ function validateState(value: unknown): asserts value is ContinuityState {
   const targets = value.batches.flatMap(batch => batch.targets)
   if (targets.length > 256) refuse("target capacity exceeded")
   unique(value.batches.map(batch => batch.id), "batch IDs")
+  unique(value.enrollments.map(enrollment => enrollment.id), "enrollment IDs")
   unique(value.batches.map(batch => JSON.stringify([batch.agent, batch.requestId])), "batch requests")
   unique(targets.map(target => target.id), "target IDs")
   unique(value.claims.map(claim => claim.taskKey), "canonical claims")
