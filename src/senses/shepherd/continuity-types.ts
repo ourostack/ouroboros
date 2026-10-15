@@ -126,3 +126,104 @@ export interface ContinuityAssurance {
   observedAt: string | null
   qualifications: string[]
 }
+
+export interface ContinuityLaunch {
+  attemptId: string
+  bootstrapNonce: string
+  bootstrapSlot: string
+  phase: "reserved" | "created" | "bootstrapped" | "grant-issued" | "working" | "reconciling" | "uncertain" | "blocked"
+  nativeSessionId: string
+  wrapper: ProcessGeneration | null
+  actor: ProcessGeneration | null
+  workspaceId: string | null
+  surfaceId: string | null
+  executeNonce: string | null
+  executeSlot: string | null
+  milestones: string[]
+}
+
+export interface ContinuityTarget {
+  id: string
+  binding: ContinuityBinding
+  generation: number
+  state: "previewed" | "pending-boundary" | "checkpoint-requested" | "verifying" | "ready" | "blocked" | "unsupported" | "uncertain" | "cancelled"
+  reopen: "not-requested" | "eligible" | "launching" | "launched" | "blocked" | "unsupported" | "uncertain"
+  rounds: ContinuityRound[]
+  reasons: string[]
+  assurance: ContinuityAssurance
+  receipt: ContinuityReceipt | null
+  launch: ContinuityLaunch | null
+}
+
+export interface ContinuityBatch {
+  id: string
+  agent: string
+  requestId: string
+  bodyHash: string
+  origin: ContinuityOrigin
+  createdAt: string
+  cancellation: "none" | "cancelling" | "cancelled"
+  targets: ContinuityTarget[]
+}
+
+export interface ContinuityClaim {
+  taskKey: string
+  agent: string
+  batchId: string
+  targetId: string
+  bindingId: string
+  phase: "source" | "launch-reserved" | "created" | "transferred" | "uncertain" | "ended"
+  actor: ProcessGeneration | null
+  attemptId: string | null
+}
+
+export interface ContinuityHold {
+  agent: string
+  host: string
+  surface: string
+  batchId: string
+  targetId: string
+}
+
+export interface ContinuityDispatchRequest {
+  agent: string
+  host: string
+  surface: string
+  requestId: string
+  bodyHash: string
+}
+
+export interface ContinuityDispatch extends ContinuityDispatchRequest {
+  id: string
+  phase: "reserved" | "issued" | "acknowledged" | "uncertain" | "blocked"
+}
+
+export interface ContinuityDispatchReservation extends ContinuityDispatch {
+  newlyReserved: boolean
+}
+
+export interface ContinuityState {
+  schemaVersion: 1
+  revision: number
+  batches: ContinuityBatch[]
+  claims: ContinuityClaim[]
+  holds: ContinuityHold[]
+  dispatches: ContinuityDispatch[]
+}
+
+export interface ContinuitySummary {
+  agent: string
+  revision: number
+  batches: ContinuityBatch[]
+  counts: {
+    selected: number
+    ready: number
+    blocked: number
+    unsupported: number
+    uncertain: number
+    cancelled: number
+    pending: number
+    launched: number
+    backgroundUnknown: number
+  }
+}
