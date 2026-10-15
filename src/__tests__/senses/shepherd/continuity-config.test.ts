@@ -307,6 +307,8 @@ describe("continuity registry authority", () => {
       ["--allow-all", '--mcp-config={"mcpServers":{"fixture":{"command":"placeholder","env":{"API_KEY":"synthetic"}}}}'],
       ["--allow-all", "--mcp-config", '{"nested":{"token":"synthetic"}}'],
       ["--allow-all", '--mcp-config={"nested":{"password":"synthetic"}}'],
+      ["--allow-all", "--mcp-config", '{"args":["fixture=value"],"env":{"API_KEY":"synthetic"}}'],
+      ["--allow-all", "--mcp-config", '["fixture=value",{"token":"synthetic"}]'],
     ]) {
       f.document.profiles[0].argv = argv
       expect(() => parseContinuityConfig(f.document)).toThrow()
