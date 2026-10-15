@@ -106,6 +106,10 @@ describe("passive kernel process identity", () => {
     }
     const result = await resolveContinuityCaller({ adapterPid: 30, nativeSessionId: "native", runner: "copilot", profiles: [profile()] }, deps([adapter, present(10, 1)]))
     expect(result).toMatchObject({ state: "verified", profileId: "worker", generation: binding().process, wrapper: null })
+    expect(result).toMatchObject({ lineage: [
+      { pid: 30, birth: "darwin:100:30", uid: process.getuid!() },
+      { pid: 10, birth: "darwin:100:10", uid: process.getuid!() },
+    ] })
   })
 
   it("blocks nested/ambiguous native ancestors, background harnesses and wrong UID", async () => {

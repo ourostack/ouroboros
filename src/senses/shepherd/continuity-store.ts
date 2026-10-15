@@ -66,14 +66,17 @@ const receiptSchema = object({
   uncertainMutations: array(mutationSchema, 64),
 })
 const launchSchema = object({
+  requestId: text, bodyHash: digest, originActorId: text,
   attemptId: text, bootstrapNonce: text, bootstrapSlot: text,
   phase: choice("reserved", "created", "bootstrapped", "grant-issued", "working", "reconciling", "uncertain", "blocked"),
-  nativeSessionId: text, wrapper: nullable(processSchema), actor: nullable(processSchema),
+  nativeSessionId: text, wrapper: nullable(processSchema), bootstrapProcess: nullable(processSchema), actor: nullable(processSchema),
   workspaceId: nullable(text), surfaceId: nullable(text), executeNonce: nullable(text), executeSlot: nullable(text),
+  bootstrapReceipt: nullable(receiptSchema), executeReceipt: nullable(receiptSchema),
   milestones: array(text, 32),
 })
 const targetSchema = object({
   id: text, binding: bindingSchema, generation: { type: "integer", minimum: 1, maximum: Number.MAX_SAFE_INTEGER },
+  unfinished: nullable({ type: "boolean" }),
   state: choice("previewed", "pending-boundary", "checkpoint-requested", "verifying", "ready", "blocked", "unsupported", "uncertain", "cancelled"),
   reopen: choice("not-requested", "eligible", "launching", "launched", "blocked", "unsupported", "uncertain"),
   rounds: array(roundSchema, 3), reasons: array(text, 64), assurance: assuranceSchema,
@@ -93,6 +96,9 @@ const batchSchema = object({
   id: text, agent: text, requestId: text, bodyHash: digest,
   origin: object({ actorId: text, requestId: text, surfaceId: text }, ["surfaceId"]),
   createdAt: text, cancellation: choice("none", "cancelling", "cancelled"), targets: array(targetSchema, 256),
+  unboundTargets: array(object({
+    id: text, host: text, surfaceId: text, label: text, state: choice("unsupported", "blocked"), reasons: array(text, 64),
+  }), 256),
 })
 const claimSchema = object({
   taskKey: text, agent: text, batchId: text, targetId: text, bindingId: text,
@@ -132,7 +138,7 @@ function unique(values: string[], field: string): void {
 function validateState(value: unknown): asserts value is ContinuityState {
   if (!validate(value)) refuse("state schema is invalid")
   const targets = value.batches.flatMap(batch => batch.targets)
-  if (targets.length > 256) refuse("target capacity exceeded")
+  if (targets.length + value.batches.reduce((count, batch) => count + batch.unboundTargets.length, 0) > 256) refuse("target capacity exceeded")
   unique(value.batches.map(batch => batch.id), "batch IDs")
   unique(value.enrollments.map(enrollment => enrollment.id), "enrollment IDs")
   unique(value.batches.map(batch => JSON.stringify([batch.agent, batch.requestId])), "batch requests")
@@ -153,7 +159,8 @@ function validateState(value: unknown): asserts value is ContinuityState {
   for (const hold of value.holds) {
     const batch = value.batches.find(batch => batch.id === hold.batchId && batch.agent === hold.agent)
     const target = batch?.targets.find(target => target.id === hold.targetId)
-    if (!target || hold.host !== target.binding.host || hold.surface !== target.binding.surfaceId) refuse("hold target mismatch")
+    if (!target || hold.host !== target.binding.host ||
+      hold.surface !== target.binding.surfaceId && hold.surface !== target.launch?.surfaceId) refuse("hold target mismatch")
   }
   if (Buffer.byteLength(JSON.stringify(value), "utf8") > 2 * 1024 * 1024) refuse("state byte capacity exceeded")
 }
@@ -162,6 +169,7 @@ function frozenAuthority(batch: ContinuityBatch): string {
   return JSON.stringify({
     id: batch.id, agent: batch.agent, requestId: batch.requestId, bodyHash: batch.bodyHash,
     origin: batch.origin, createdAt: batch.createdAt,
+    unboundTargets: batch.unboundTargets,
     targets: batch.targets.map(target => ({ id: target.id, generation: target.generation, binding: target.binding })),
   })
 }

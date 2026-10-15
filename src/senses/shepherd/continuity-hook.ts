@@ -2,6 +2,7 @@ import { createHash, randomUUID } from "node:crypto"
 import path from "node:path"
 import { isDeepStrictEqual } from "node:util"
 import { emitNervesEvent } from "../../nerves/runtime"
+import { handleContinuityReplacementStop } from "./continuity-bootstrap"
 import {
   continuityEvidenceAssurance, readContinuityReceipt, reserveContinuityReceiptSlot, verifyContinuityCheckpoint,
 } from "./continuity-evidence"
@@ -130,14 +131,18 @@ async function boundedProof(input: NativeContinuityStop, context: ContinuityHook
 export async function handleContinuityStop(input: NativeContinuityStop, context: ContinuityHookContext): Promise<NativeContinuityHookOutput> {
   if (!input.normal) return {}
   const deadline = Date.now() + 1900
-  let failureTargets: Array<{ batchId: string; targetId: string }> = []
+  let failureTargets: Array<{ batchId: string; targetId: string; replacement?: boolean }> = []
   try {
     let snapshot = readContinuityState(context.storePath)
     const selected = snapshot.batches.flatMap(batch => batch.agent === context.agent && batch.cancellation === "none"
       ? batch.targets.filter(target => target.binding.runner === input.runner && target.binding.nativeSessionId === input.nativeSessionId)
         .map(target => ({ batch, target })) : [])
-    failureTargets = selected.map(entry => ({ batchId: entry.batch.id, targetId: entry.target.id }))
-    if (selected.length > 1) throw new Error("ambiguous native target")
+    const provisionalReplacements = snapshot.batches.flatMap(batch => batch.agent === context.agent
+      ? batch.targets.filter(target => target.binding.runner === input.runner && target.launch?.nativeSessionId === input.nativeSessionId &&
+        !["working", "blocked", "uncertain"].includes(target.launch.phase)).map(target => ({ batch, target })) : [])
+    failureTargets = [...selected.map(entry => ({ batchId: entry.batch.id, targetId: entry.target.id })),
+      ...provisionalReplacements.map(entry => ({ batchId: entry.batch.id, targetId: entry.target.id, replacement: true }))]
+    if (selected.length > 1 || provisionalReplacements.length > 1) throw new Error("ambiguous native target")
     const entry = selected[0]
     const target = entry?.target
     if (target && (["blocked", "unsupported", "uncertain", "cancelled", "ready"].includes(target.state) ||
@@ -152,11 +157,32 @@ export async function handleContinuityStop(input: NativeContinuityStop, context:
         current.state = refusal
         current.reasons = [reason]
       }, { busyTimeoutMs: 100 })
+      else if (provisionalReplacements.length === 1) await transactContinuity(context.storePath, snapshot.revision, state => {
+        const entry = provisionalReplacements[0]
+        const current = state.batches.find(batch => batch.id === entry.batch.id)!.targets.find(value => value.id === entry.target.id)!
+        current.launch!.phase = "blocked"
+        current.reopen = refusal
+        current.reasons = [reason]
+        state.claims.find(claim => claim.taskKey === current.binding.taskKey)!.phase = "uncertain"
+      }, { busyTimeoutMs: 100 })
     }
     if (proof.state !== "verified" || !profile || profile.version !== CONTINUITY_NATIVE_VERSIONS[input.runner]) {
       await recordRefusal(proof.state === "verified" ? "unsupported" : proof.state,
         proof.state === "verified" ? "native-version" : proof.reason)
       return {}
+    }
+    const replacements = snapshot.batches.flatMap(batch => batch.agent === context.agent
+      ? batch.targets.filter(target => target.launch && target.binding.runner === input.runner &&
+        (target.launch.nativeSessionId === input.nativeSessionId ||
+          input.runner === "codex" && target.launch.bootstrapProcess !== null &&
+          proof.lineage.some(generation => isDeepStrictEqual(generation, target.launch!.bootstrapProcess))))
+        .map(target => ({ batch, target })) : [])
+    if (replacements.length > 1) throw new Error("ambiguous replacement target")
+    if (replacements.length) {
+      const replacement = replacements[0]
+      failureTargets = [{ batchId: replacement.batch.id, targetId: replacement.target.id, replacement: true }]
+      return await handleContinuityReplacementStop(input, context, proof, profile, snapshot,
+        replacement.batch.id, replacement.target.id, deadline)
     }
     let refusal: "blocked" | "unsupported" | undefined
     let reason = ""
@@ -271,6 +297,13 @@ export async function handleContinuityStop(input: NativeContinuityStop, context:
             const batch = current.batches.find(batch => batch.id === failed.batchId)!
             const target = batch.targets.find(target => target.id === failed.targetId)!
             if (batch.cancellation !== "none") continue
+            if (failed.replacement && target.launch) {
+              target.launch.phase = "uncertain"
+              target.reopen = "uncertain"
+              state.claims.find(claim => claim.taskKey === target.binding.taskKey)!.phase = "uncertain"
+              target.reasons = ["native-state-or-budget"]
+              continue
+            }
             target.state = target.rounds.some(round => round.phase === "reserved" || round.phase === "issued") ? "uncertain" : "blocked"
             target.reasons = ["native-state-or-budget"]
           }

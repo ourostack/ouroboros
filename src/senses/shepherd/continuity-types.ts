@@ -155,17 +155,23 @@ export interface ContinuityEnrollment {
 }
 
 export interface ContinuityLaunch {
+  requestId: string
+  bodyHash: string
+  originActorId: string
   attemptId: string
   bootstrapNonce: string
   bootstrapSlot: string
   phase: "reserved" | "created" | "bootstrapped" | "grant-issued" | "working" | "reconciling" | "uncertain" | "blocked"
   nativeSessionId: string
   wrapper: ProcessGeneration | null
+  bootstrapProcess: ProcessGeneration | null
   actor: ProcessGeneration | null
   workspaceId: string | null
   surfaceId: string | null
   executeNonce: string | null
   executeSlot: string | null
+  bootstrapReceipt: ContinuityReceipt | null
+  executeReceipt: ContinuityReceipt | null
   milestones: string[]
 }
 
@@ -173,6 +179,7 @@ export interface ContinuityTarget {
   id: string
   binding: ContinuityBinding
   generation: number
+  unfinished: boolean | null
   state: "previewed" | "pending-boundary" | "checkpoint-requested" | "verifying" | "ready" | "blocked" | "unsupported" | "uncertain" | "cancelled"
   reopen: "not-requested" | "eligible" | "launching" | "launched" | "blocked" | "unsupported" | "uncertain"
   rounds: ContinuityRound[]
@@ -197,6 +204,14 @@ export interface ContinuityBatch {
   createdAt: string
   cancellation: "none" | "cancelling" | "cancelled"
   targets: ContinuityTarget[]
+  unboundTargets: Array<{
+    id: string
+    host: string
+    surfaceId: string
+    label: string
+    state: "unsupported" | "blocked"
+    reasons: string[]
+  }>
 }
 
 export interface ContinuityClaim {

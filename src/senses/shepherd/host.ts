@@ -48,6 +48,19 @@ export interface HostWatchHandlers {
   focused: (sessionId: string) => void
 }
 
+export interface ContinuityHostLaunchRequest {
+  attemptId: string
+  title: string
+  launchCwd: string
+  ouroEntry: string
+  agent: string
+  batchId: string
+  targetId: string
+}
+export interface ContinuityHostLaunchReceipt {
+  workspaceId: string
+  surfaceId: string
+}
 /**
  * A key Shepherd may press in a menu. Text never goes into a menu, and keys never go anywhere else. Shepherd's own
  * judge never presses `ctrl-c`; only the human can, through `shepherd_send`.
@@ -70,6 +83,8 @@ export interface ShepherdHost {
    */
   pace?(sessionId: string, slower: boolean): void
   watch(handlers: HostWatchHandlers): { close(): void }
+  /** One new unfocused workspace. An unknown outcome must never be retried. */
+  launchContinuity?(request: ContinuityHostLaunchRequest): Promise<ContinuityHostLaunchReceipt>
 }
 
 /** The host for this machine's connection. */

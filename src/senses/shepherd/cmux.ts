@@ -68,6 +68,9 @@ function list(value: unknown): Record<string, unknown>[] {
 function socketQuote(value: string): string {
   return `"${value.replace(/\\/g, "\\\\").replace(/"/g, "\\\"")}"`
 }
+const uuid = (value: unknown): value is string => typeof value === "string" &&
+  /^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/i.test(value)
+const shellQuote = (value: string): string => `'${value.replace(/'/g, "'\\''")}'`
 
 interface Surface extends HostSession { workspaceId: string; type: string }
 
@@ -147,6 +150,24 @@ export function createCmuxHost(client: CmuxClient, options: CmuxHostOptions = {}
 
   return {
     name: "cmux",
+    async launchContinuity(request) {
+      if (!uuid(request.attemptId) || Object.values(request).some(value => typeof value !== "string" ||
+        !value.length || value.length > 4096 || /[\x00-\x1f\x7f]/.test(value)) ||
+        !path.isAbsolute(request.launchCwd) || !path.isAbsolute(request.ouroEntry)) {
+        throw new Error("Invalid continuity workspace request")
+      }
+      const initialInput = [request.ouroEntry, "shepherd", "bootstrap", "--agent", request.agent,
+        "--batch", request.batchId, "--target", request.targetId, "--attempt", request.attemptId].map(shellQuote).join(" ") + "\r"
+      const result = await client.call("workspace.create", {
+        operation_id: request.attemptId, title: request.title, working_directory: request.launchCwd,
+        initial_input: initialInput, focus: false, eager_load_terminal: true,
+      })
+      if (!uuid(result.workspace_id) || !uuid(result.surface_id)) throw new Error("Uncertain continuity workspace receipt")
+      const observed = (await surfaces()).find(surface => surface.id === result.surface_id &&
+        surface.workspaceId === result.workspace_id && surface.type === "terminal")
+      if (!observed || observed.focused) throw new Error("Uncertain continuity workspace readback")
+      return { workspaceId: result.workspace_id, surfaceId: result.surface_id }
+    },
     async list() {
       return (await surfaces()).filter((surface) => surface.type === "terminal").map(({ workspaceId: _workspaceId, type: _type, ...session }) => session)
     },

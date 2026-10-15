@@ -44,7 +44,7 @@ export interface ProcessProofDeps {
 
 export type ContinuityCallerProof =
   | { state: "unsupported" | "blocked"; reason: string }
-  | { state: "verified"; profileId: string; generation: ProcessGeneration; wrapper: ProcessGeneration | null; nativeSessionId: string; cwd: string | null }
+  | { state: "verified"; profileId: string; generation: ProcessGeneration; wrapper: ProcessGeneration | null; nativeSessionId: string; cwd: string | null; lineage: ProcessGeneration[] }
 
 export interface ContinuityTerminationProof {
   source: "ended" | "live" | "unknown"
@@ -225,7 +225,7 @@ export async function inspectContinuityProcess(pid: number, deps: ProcessProofDe
   } catch { return unknown("inspection-failed") }
 }
 
-function matches(observation: Extract<ProcessProofObservation, { state: "present" }>, executable: string, entryScript: string | null = executable): boolean {
+export function matchesContinuityProcess(observation: Extract<ProcessProofObservation, { state: "present" }>, executable: string, entryScript: string | null = executable): boolean {
   return observation.executable === executable || (/\/node(?:js)?$/.test(observation.executable) && entryScript !== null && observation.entryScript === entryScript)
 }
 
@@ -249,10 +249,10 @@ export async function resolveContinuityCaller(
   const candidates: Array<{ profile: ContinuityProfile; actor: typeof chain[number]; wrapper: typeof chain[number] | null }> = []
   for (const p of input.profiles.filter(p => p.runner === input.runner)) {
     for (const actor of chain.slice(1)) {
-      if (p.launcher === "direct" && matches(actor, p.executable)) candidates.push({ profile: p, actor, wrapper: null })
+      if (p.launcher === "direct" && matchesContinuityProcess(actor, p.executable)) candidates.push({ profile: p, actor, wrapper: null })
       if (p.launcher === "agency") {
-        const entry = deps.nativeEntries?.find(entry => entry.runner === p.runner && entry.version === p.version && matches(actor, entry.executable, entry.entryScript))
-        const wrapper = chain.slice(chain.indexOf(actor) + 1).find(parent => matches(parent, p.executable))
+        const entry = deps.nativeEntries?.find(entry => entry.runner === p.runner && entry.version === p.version && matchesContinuityProcess(actor, entry.executable, entry.entryScript))
+        const wrapper = chain.slice(chain.indexOf(actor) + 1).find(parent => matchesContinuityProcess(parent, p.executable))
         if (entry && wrapper) candidates.push({ profile: p, actor, wrapper })
       }
     }
@@ -268,7 +268,8 @@ export async function resolveContinuityCaller(
       now.parentPid !== observed.parentPid || now.executable !== observed.executable || now.entryScript !== observed.entryScript ||
       now.processGroupId !== observed.processGroupId || now.foregroundProcessGroupId !== observed.foregroundProcessGroupId || now.ttyDevice !== observed.ttyDevice) return { state: "blocked", reason: "ancestry-changed" }
   }
-  return { state: "verified", profileId: candidate.profile.id, generation: candidate.actor.generation, wrapper: candidate.wrapper?.generation ?? null, nativeSessionId: input.nativeSessionId, cwd: candidate.actor.cwd }
+  return { state: "verified", profileId: candidate.profile.id, generation: candidate.actor.generation, wrapper: candidate.wrapper?.generation ?? null,
+    nativeSessionId: input.nativeSessionId, cwd: candidate.actor.cwd, lineage: chain.map(observation => observation.generation) }
 }
 
 function generationDisposition(generation: ProcessGeneration, observation: ProcessProofObservation): "ended" | "live" | "unknown" {

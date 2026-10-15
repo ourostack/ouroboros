@@ -33,9 +33,9 @@ function binding(agent = "ouro", taskKey = "root:track/task"): ContinuityBinding
 function batch(agent = "ouro", taskKey = "root:track/task", requestId = `request-${agent}`): ContinuityBatch {
   return {
     id: `batch-${agent}`, agent, requestId, bodyHash: createHash("sha256").update(taskKey).digest("hex"),
-    origin: { actorId: "operator", requestId }, createdAt: "2026-10-15T03:00:00.000Z", cancellation: "none",
+    origin: { actorId: "operator", requestId }, createdAt: "2026-10-15T03:00:00.000Z", cancellation: "none", unboundTargets: [],
     targets: [{
-      id: `target-${agent}`, binding: binding(agent, taskKey), generation: 1,
+      id: `target-${agent}`, binding: binding(agent, taskKey), generation: 1, unfinished: null,
       state: "pending-boundary", reopen: "not-requested", rounds: [], reasons: [],
       assurance: { checkpoint: "unverified", endReadiness: "unconfirmed", backgroundCoverage: "unknown", jobInventory: "unverified", reopen: "unverified", observedAt: null, qualifications: [] },
       receipt: null, projection: null, unresolvedInventory: { knownJobs: [], uncertainMutations: [] }, observedTransitions: [], launch: null,
@@ -347,7 +347,9 @@ describe("machine continuity transaction authority", () => {
       createContinuityBatch(state, batch())
       const target = state.batches[0].targets[0]
       target.launch = {
-        attemptId: "attempt", bootstrapNonce: "nonce", bootstrapSlot: "slot", phase: "created",
+        requestId: "reopen1", bodyHash: "a".repeat(64), originActorId: "operator",
+        attemptId: "attempt", bootstrapNonce: "nonce", bootstrapSlot: "slot", phase: "created", bootstrapProcess: null,
+        bootstrapReceipt: null, executeReceipt: null,
         nativeSessionId: "new", wrapper: null, actor: binding().process, workspaceId: "workspace", surfaceId: "surface",
         executeNonce: null, executeSlot: null, milestones: ["created"],
       }

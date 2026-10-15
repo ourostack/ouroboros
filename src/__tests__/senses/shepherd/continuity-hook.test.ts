@@ -39,9 +39,9 @@ async function fixture(runner: ContinuityRunner = "copilot", prepared = true) {
   const enrollment = readContinuityState(file).enrollments[0]
   const batch: ContinuityBatch = {
     id: "batch1", agent: "ouro", requestId: "request1", bodyHash: "b".repeat(64),
-    origin: { actorId: "operator", requestId: "request1" }, createdAt: "2026-10-15T04:00:00Z", cancellation: "none",
+    origin: { actorId: "operator", requestId: "request1" }, createdAt: "2026-10-15T04:00:00Z", cancellation: "none", unboundTargets: [],
     targets: [{
-      id: "target1", generation: 1, state: "pending-boundary", reopen: "not-requested", rounds: [], reasons: [],
+      id: "target1", generation: 1, unfinished: null, state: "pending-boundary", reopen: "not-requested", rounds: [], reasons: [],
       binding: {
         id: "binding1", agent: "ouro", host: "cmux", incarnation: "host1", surfaceId: "surface1", surfaceGeneration: "sg1",
         nativeSessionId: "native1", runner, process: actor, wrapper: null, launchCwd: home, worktree: home,

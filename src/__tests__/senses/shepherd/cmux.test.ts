@@ -64,6 +64,41 @@ afterEach(async () => {
 })
 
 describe("cmux host: terminals", () => {
+  it("creates one nonfocused continuity workspace using a durable operation and a quoted wrapper command", async () => {
+    const workspaceId = "88e98bdd-01f6-4c58-96ac-641fae36ddaf"
+    const surfaceId = "d6f2b0bb-2eab-43c7-b63f-06c3e8a1cf9c"
+    server.respond("workspace.create", () => ({ workspace_id: workspaceId, surface_id: surfaceId }))
+    server.respond("system.tree", () => ({ windows: [{ workspaces: [{ id: workspaceId, title: "desk / track/task",
+      panes: [{ surfaces: [{ id: surfaceId, ref: "surface:9", type: "terminal" }] }] }] }] }))
+    const result = await host().launchContinuity!({
+      attemptId: "19768d31-24f7-4b9c-9860-0f3c6c039c65", title: "desk / track/task", launchCwd: "/desk with spaces",
+      ouroEntry: "/opt/Ouro's tools/ouro", agent: "ouro", batchId: "batch1", targetId: "target1",
+    })
+    expect(result).toEqual({ workspaceId, surfaceId })
+    const calls = server.methods.filter(call => call.method === "workspace.create")
+    expect(calls).toHaveLength(1)
+    expect(calls[0].params).toEqual({
+      operation_id: "19768d31-24f7-4b9c-9860-0f3c6c039c65", title: "desk / track/task",
+      working_directory: "/desk with spaces", focus: false, eager_load_terminal: true,
+      initial_input: "'/opt/Ouro'\\''s tools/ouro' 'shepherd' 'bootstrap' '--agent' 'ouro' '--batch' 'batch1' '--target' 'target1' '--attempt' '19768d31-24f7-4b9c-9860-0f3c6c039c65'\r",
+    })
+    expect(server.methods.some(call => ["terminal.paste", "surface.send_key", "surface.send_text", "surface.focus", "workspace.select"].includes(call.method))).toBe(false)
+  })
+  it.each(["malformed", "missing", "focused"] as const)("refuses %s create readback without retrying a workspace", async problem => {
+    const workspaceId = "88e98bdd-01f6-4c58-96ac-641fae36ddaf"
+    const surfaceId = "d6f2b0bb-2eab-43c7-b63f-06c3e8a1cf9c"
+    server.respond("workspace.create", () => ({ workspace_id: workspaceId, surface_id: problem === "malformed" ? "not-a-uuid" : surfaceId }))
+    server.respond("system.tree", () => problem === "missing" ? { windows: [] } : {
+      windows: [{ visible: true, workspaces: [{ id: workspaceId, selected: true, panes: [{
+        surfaces: [{ id: surfaceId, type: "terminal", focused: true }],
+      }] }] }],
+    })
+    await expect(host().launchContinuity!({
+      attemptId: "19768d31-24f7-4b9c-9860-0f3c6c039c65", title: "desk / task", launchCwd: "/desk",
+      ouroEntry: "/opt/ouro", agent: "ouro", batchId: "batch1", targetId: "target1",
+    })).rejects.toThrow()
+    expect(server.methods.filter(call => call.method === "workspace.create")).toHaveLength(1)
+  })
   it("hints only the key window's current coding terminal, without weakening visible-window protection", async () => {
     const window = (key: boolean, id: string) => ({
       key, visible: true, workspaces: [{ id: `WS-${id}`, selected: true,
