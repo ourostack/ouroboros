@@ -2,6 +2,13 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.929",
+      "changes": [
+        "Shepherd resumes network-stopped coding sessions once after independently confirmed offline-to-online recovery, with a fresh judgment and existing focus, pause, changed-screen and loop guards.",
+        "Connectivity recovery never presses approval keys or blindly retries uncertain writes; changed sessions, background work and uncertain terminal sends are not replayed."
+      ]
+    },
+    {
       "version": "0.1.0-alpha.928",
       "changes": [
         "Teams can send private local PNG and JPEG images into the current conversation, with bounded inline bytes, family trust, no-send enforcement and honest activity receipts.",
