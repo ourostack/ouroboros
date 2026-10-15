@@ -459,4 +459,38 @@ describe("machine continuity transaction authority", () => {
     fs.mkdirSync(path.dirname(f.file), { recursive: true, mode: 0o700 })
     expect(readContinuityState(f.file).revision).toBe(0)
   })
+
+  it("preserves frozen selection and binding authority across all later transactions", async () => {
+    const f = fixture()
+    await transactContinuity(f.file, 0, state => createContinuityBatch(state, batch()))
+    for (const mutate of [
+      (state: ContinuityState) => { state.batches[0].targets[0].binding.process.pid = 999 },
+      (state: ContinuityState) => { state.batches[0].targets[0].binding.worktree = "/substitution" },
+      (state: ContinuityState) => { state.batches[0].targets[0].binding.launchCwd = "/substitution" },
+      (state: ContinuityState) => { state.batches[0].targets[0].generation++ },
+      (state: ContinuityState) => { state.batches[0].createdAt = "changed" },
+      (state: ContinuityState) => { state.batches[0].bodyHash = "d".repeat(64) },
+      (state: ContinuityState) => { state.batches[0].origin.actorId = "changed" },
+      (state: ContinuityState) => { state.batches[0].targets = [] },
+      (state: ContinuityState) => { state.batches = [] },
+      (state: ContinuityState) => { state.claims[0].actor!.pid = 999 },
+      (state: ContinuityState) => { state.claims[0].actor!.birth = "wrong" },
+      (state: ContinuityState) => { state.claims[0].actor!.uid++ },
+    ]) await expect(transactContinuity(f.file, 1, mutate)).rejects.toThrow()
+    expect(readContinuityState(f.file).revision).toBe(1)
+    expect(readContinuityState(f.file).batches[0].targets[0].binding.worktree).toBe("/code")
+  })
+
+  it("retains cancelling protection for an uncertain canonical claim with no returned launch object", async () => {
+    const f = fixture()
+    await transactContinuity(f.file, 0, state => {
+      createContinuityBatch(state, batch())
+      state.claims[0].phase = "uncertain"
+      state.claims[0].attemptId = "unknown-launch"
+      expect(cancelContinuityBatch(state, "batch-ouro", "ouro")).toBe("cancelling")
+      expect(continuityHold(state, "ouro", "cmux", "surface-ouro")).not.toBeNull()
+      expect(() => reserveContinuityDispatch(state, dispatch())).toThrow(/hold/)
+    })
+    expect(readContinuityState(f.file).claims[0].phase).toBe("uncertain")
+  })
 })

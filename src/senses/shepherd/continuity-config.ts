@@ -93,6 +93,8 @@ function validateArgs(runner: ContinuityRunner, launcher: "direct" | "agency", a
   }
   for (const arg of nativeArgs) {
     const flag = arg.split("=")[0]
+    const value = arg.includes("=") ? arg.slice(arg.indexOf("=") + 1) : arg
+    if (/^\s*[\[{]/.test(value)) invalid("profile inline configuration; register a configuration path instead")
     if (/^(?:--(?:resume|continue|session-id|prompt|interactive|print|bootstrap(?:-.*)?|execute(?:-.*)?|receipt(?:-.*)?|nonce)|-r.*)$/.test(flag)) invalid("profile reserved argv")
     if (runner !== "codex" && /^-[pi].*/.test(flag)) invalid("profile interactive argv")
     if (runner === "claude" && (/^-c.*/.test(flag) || ["--fork-session", "--from-pr", "--teleport"].includes(flag))) invalid("Claude reuse argv")

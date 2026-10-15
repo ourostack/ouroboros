@@ -123,7 +123,7 @@ function validateState(value: unknown): asserts value is ContinuityState {
     const batch = value.batches.find(batch => batch.id === claim.batchId && batch.agent === claim.agent)
     const target = batch?.targets.find(target => target.id === claim.targetId)
     if (!target || claim.taskKey !== target.binding.taskKey) refuse("claim target mismatch")
-    if (claim.phase === "source" && (claim.bindingId !== target.binding.id || !claim.actor)) refuse("source claim mismatch")
+    if (claim.phase === "source" && (claim.bindingId !== target.binding.id || !claim.actor || JSON.stringify(claim.actor) !== JSON.stringify(target.binding.process))) refuse("source claim mismatch")
   }
   for (const hold of value.holds) {
     const batch = value.batches.find(batch => batch.id === hold.batchId && batch.agent === hold.agent)
@@ -131,6 +131,14 @@ function validateState(value: unknown): asserts value is ContinuityState {
     if (!target || hold.host !== target.binding.host || hold.surface !== target.binding.surfaceId) refuse("hold target mismatch")
   }
   if (Buffer.byteLength(JSON.stringify(value), "utf8") > 2 * 1024 * 1024) refuse("state byte capacity exceeded")
+}
+
+function frozenAuthority(batch: ContinuityBatch): string {
+  return JSON.stringify({
+    id: batch.id, agent: batch.agent, requestId: batch.requestId, bodyHash: batch.bodyHash,
+    origin: batch.origin, createdAt: batch.createdAt,
+    targets: batch.targets.map(target => ({ id: target.id, generation: target.generation, binding: target.binding })),
+  })
 }
 
 export function continuityStatePath(homeDir: string, machineId: string): string {
@@ -237,12 +245,17 @@ export async function transactContinuity<T>(
     db.exec("CREATE TABLE IF NOT EXISTS continuity_state (id INTEGER PRIMARY KEY CHECK(id=1), revision INTEGER NOT NULL, payload TEXT NOT NULL) STRICT")
     db.prepare("INSERT OR IGNORE INTO continuity_state (id, revision, payload) VALUES (1, 0, ?)").run(JSON.stringify(empty()))
     const state = readRow(db)
+    const frozen = state.batches.map(batch => ({ id: batch.id, authority: frozenAuthority(batch) }))
     if (expectedRevision !== undefined && expectedRevision !== state.revision) throw new ContinuityStoreError("revision", "expected revision is stale")
     const revision = state.revision + 1
     const result = apply(state)
     if (result && (typeof result === "object" || typeof result === "function") && "then" in result) refuse("transaction callback must be synchronous")
     state.revision = revision
     validateState(state)
+    for (const original of frozen) {
+      const current = state.batches.find(batch => batch.id === original.id)
+      if (!current || frozenAuthority(current) !== original.authority) refuse("frozen batch authority changed")
+    }
     checkPins(pins)
     checkPath(file, false)
     db.prepare("UPDATE continuity_state SET revision=?, payload=? WHERE id=1").run(revision, JSON.stringify(state))
@@ -311,7 +324,8 @@ export function reserveContinuityDispatch(state: ContinuityState, request: Conti
 export function cancelContinuityBatch(state: ContinuityState, batchId: string, agent: string): "cancelled" | "cancelling" {
   const batch = state.batches.find(value => value.id === batchId && value.agent === agent)
   if (!batch) refuse("batch does not belong to agent")
-  const unresolved = batch.targets.some(target =>
+  const unresolvedClaim = state.claims.some(claim => claim.batchId === batchId && claim.phase !== "source" && claim.phase !== "ended")
+  const unresolved = unresolvedClaim || batch.targets.some(target =>
     target.launch !== null ||
     target.rounds.some(round => ["reserved", "issued", "uncertain"].includes(round.phase)) ||
     state.dispatches.some(dispatch => dispatch.agent === agent && dispatch.host === target.binding.host && dispatch.surface === target.binding.surfaceId && ["reserved", "issued", "uncertain"].includes(dispatch.phase)),

@@ -301,4 +301,15 @@ describe("continuity registry authority", () => {
     f.document.profiles[0].argv = ["--allow-all", "--model=test"]
     expect(parseContinuityConfig(f.document).profiles[0].argv).toEqual(["--allow-all", "--model=test"])
   })
+
+  it("does not accept inline JSON configuration containing nested credentials or environment maps", () => {
+    for (const argv of [
+      ["--allow-all", '--mcp-config={"mcpServers":{"fixture":{"command":"placeholder","env":{"API_KEY":"synthetic"}}}}'],
+      ["--allow-all", "--mcp-config", '{"nested":{"token":"synthetic"}}'],
+      ["--allow-all", '--mcp-config={"nested":{"password":"synthetic"}}'],
+    ]) {
+      f.document.profiles[0].argv = argv
+      expect(() => parseContinuityConfig(f.document)).toThrow()
+    }
+  })
 })
