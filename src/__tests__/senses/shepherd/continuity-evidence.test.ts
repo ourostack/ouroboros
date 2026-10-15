@@ -45,6 +45,21 @@ function fixture() {
 
 describe("fixed-slot continuity evidence", () => {
   afterEach(() => vi.restoreAllMocks())
+  it.each(["job-id", "kind", "owner", "effects", "mutation-id", "operation"] as const)(
+    "rejects redaction-altered exact inventory identity %s", field => {
+      const f = fixture()
+      const job = { id: "job1", kind: "shell", owner: "source", effects: "writes fixture", status: "running",
+        disposition: "unsafe", reference: "jobs/job1" }
+      const mutation = { id: "mutation1", operation: "publish fixture", disposition: "unknown", evidence: "no acknowledgement" }
+      if (field === "job-id") job.id = "token=first"
+      else if (field === "kind" || field === "owner" || field === "effects") job[field] = "token=first"
+      else if (field === "mutation-id") mutation.id = "token=first"
+      else mutation.operation = "token=first"
+      f.receipt.knownJobs = [job]
+      f.receipt.uncertainMutations = [mutation]
+      f.write()
+      expect(() => readContinuityReceipt(f.slot, f.slot.correlation)).toThrow(/inventory identity/)
+    })
   it("reserves independent fixed slots only from the frozen root and returns a bounded projection", () => {
     const f = fixture()
     expect(f.slot.path).toBe(path.join(f.root, ".receipts/batch1/binding1/1-followup-attempt1.json"))
@@ -352,8 +367,8 @@ describe("fixed-slot continuity evidence", () => {
     expect(() => readContinuityReceipt(f.slot, f.slot.correlation)).toThrow(/redacted receipt/)
     f.receipt.task.nextAction = f.checkpoint.nextAction
     f.receipt.knownJobs = Array.from({ length: 12 }, (_, index) => ({
-      id: `job${index}`, kind: "CI", owner: "service", effects: "token=x ".repeat(100).trim(),
-      status: "running", disposition: "independent", reference: "job.json",
+      id: `job${index}`, kind: "CI", owner: "service", effects: "read-only",
+      status: "running", disposition: "independent", reference: "token=x ".repeat(100).trim(),
     }))
     f.write()
     expect(() => readContinuityReceipt(f.slot, f.slot.correlation)).toThrow(/redacted receipt/)

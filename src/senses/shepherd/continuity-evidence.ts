@@ -199,6 +199,13 @@ function checkTask(receipt: ContinuityReceipt, binding: ContinuityBinding): void
   for (const list of [receipt.knownJobs, receipt.uncertainMutations]) {
     if (new Set(list.map(item => item.id)).size !== list.length) refuse("duplicate inventory")
   }
+  // Exact cross-round identity must never be compared after lossy narrative redaction.
+  for (const job of receipt.knownJobs) {
+    if ([job.id, job.kind, job.owner, job.effects].some(value => redact(value) !== value)) refuse("redacted inventory identity")
+  }
+  for (const mutation of receipt.uncertainMutations) {
+    if ([mutation.id, mutation.operation].some(value => redact(value) !== value)) refuse("redacted inventory identity")
+  }
 }
 export function readContinuityReceipt(
   slot: ContinuityReceiptSlot, expected: ContinuityReceiptCorrelation, deps: ContinuityEvidenceDeps = {},

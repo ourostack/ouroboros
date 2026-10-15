@@ -253,6 +253,31 @@ describe("native continuity Stop broker", () => {
     expect(f.target().unresolvedInventory.knownJobs.map(value => value.id)).toEqual(["job1"])
     expect(f.target().unresolvedInventory.uncertainMutations.map(value => value.id)).toEqual(["mutation1"])
   })
+  it.each(["job-id", "kind", "owner", "effects", "mutation-id", "operation"] as const)(
+    "refuses cross-round redaction aliasing of %s before accepting inventory authority", async field => {
+      const f = await fixture()
+      const job = { id: "job1", kind: "shell", owner: "source", effects: "writes fixture", status: "running",
+        disposition: "unsafe", reference: "jobs/job1" }
+      const mutation = { id: "mutation1", operation: "publish fixture", disposition: "unknown", evidence: "no acknowledgement" }
+      const write = (secret: string, resolved: boolean) => {
+        const reportedJob = { ...job, ...(resolved ? { status: "completed", disposition: "completed" } : {}) }
+        const reportedMutation = { ...mutation, ...(resolved ? { disposition: "reconciled", evidence: "confirmed second operation" } : {}) }
+        if (field === "job-id") reportedJob.id = `token=${secret}`
+        else if (field === "kind" || field === "owner" || field === "effects") reportedJob[field] = `token=${secret}`
+        else if (field === "mutation-id") reportedMutation.id = `token=${secret}`
+        else reportedMutation.operation = `token=${secret}`
+        f.writeReceipt({ knownJobs: [reportedJob], uncertainMutations: [reportedMutation] })
+      }
+      await handleContinuityStop(f.stop(1), f.context)
+      write("first", false)
+      await handleContinuityStop(f.stop(2), f.context)
+      write("second", true)
+      expect(await handleContinuityStop(f.stop(3), f.context)).toEqual({})
+      expect(f.target().assurance.endReadiness).toBe("unconfirmed")
+      expect(f.target().state).toBe("uncertain")
+      expect(f.target().rounds).toHaveLength(1)
+      expect(f.target().receipt).toBeNull()
+    })
   it("correlates a correction receipt and never treats malformed/missing nonce as consumption", async () => {
     const f = await fixture()
     await handleContinuityStop(f.stop(1), f.context)

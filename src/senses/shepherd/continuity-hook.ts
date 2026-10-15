@@ -84,6 +84,7 @@ export function renderContinuityRoundInstruction(target: ContinuityTarget, round
     "Add checkpoint:{rootId,relativePath,sha256}, task:{ref,rootId,launchCwd,worktree,branch,head,nextAction}, confirmation:boolean, knownJobs and uncertainMutations. Use the SHA-256 of the exact projection bytes. The inventories and nextAction must match the projection.",
     "Use disposition independent only for independently owned jobs with durable references; stopped/completed require matching ended status. Unknown or unsafe work must remain explicit. This is your reported inventory, not native proof of zero background jobs.",
     "Previously reported unresolved items cannot disappear. Repeat each ID with its original job kind/owner/effects or mutation operation. Resolve a mutation only with disposition reconciled and explicit readback evidence; do not replay it.",
+    "Inventory IDs and exact identity fields (job kind/owner/effects and mutation operation) must be stable nonsecret values; any value changed by credential redaction is refused.",
     `Outstanding reported inventory: ${JSON.stringify(target.unresolvedInventory)}`,
     `Evidence gaps: ${JSON.stringify(target.reasons)}`,
     "Finish this receipt and return to the native Stop boundary. Do not discover or substitute another receipt path.",
@@ -95,10 +96,6 @@ export function renderContinuityRoundInstruction(target: ContinuityTarget, round
 function accumulateContinuityInventory(target: ContinuityTarget, receipt: ContinuityReceipt, verified: boolean): void {
   const jobs = new Map(target.unresolvedInventory.knownJobs.map(job => [job.id, job]))
   const mutations = new Map(target.unresolvedInventory.uncertainMutations.map(mutation => [mutation.id, mutation]))
-  if (new Set(receipt.knownJobs.map(job => job.id)).size !== receipt.knownJobs.length ||
-    new Set(receipt.uncertainMutations.map(mutation => mutation.id)).size !== receipt.uncertainMutations.length) {
-    throw new Error("duplicate reported inventory IDs")
-  }
   for (const job of receipt.knownJobs) {
     const prior = jobs.get(job.id)
     if (prior && (prior.kind !== job.kind || prior.owner !== job.owner || prior.effects !== job.effects)) {
