@@ -1,10 +1,13 @@
+import { agentAddressPattern, agentPresentation, type AgentPresentation } from "./agent-presentation"
+
 export const MAX_ATTENTION_BODY_BYTES = 16_384
 
 /** No model content or target metadata is interpolated into executable HTML. */
-export function attentionPage(nonce: string): string {
+export function attentionPage(nonce: string, presentation: AgentPresentation = agentPresentation("Agent", {})): string {
   emitNervesEvent({ component: "senses", event: "senses.shepherd_attention_page_rendered", message: "rendered the independent session attention view" })
+  const name = presentation.name.replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;").replaceAll('"', "&quot;")
   return `<!doctype html>
-<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Ouro</title>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>${name}</title>
 <style nonce="${nonce}">
 :root{color-scheme:dark;font:15px -apple-system,BlinkMacSystemFont,sans-serif;color:#eee;background:#17191d}
 *{box-sizing:border-box}body{margin:0}main{max-width:680px;height:100dvh;min-height:340px;margin:auto;display:flex;flex-direction:column;padding:20px;gap:16px}
@@ -18,12 +21,13 @@ textarea{width:100%;resize:none;min-height:82px;outline:none}textarea:focus{bord
 button{cursor:pointer}button:disabled{opacity:.45;cursor:default}#send{background:#a8b8ff;color:#141823;border-color:transparent;font-weight:600}
 #status{font-size:12px;color:#9da4ae}#error{color:#e0b275;font-size:13px;margin:0}form{display:flex;flex-direction:column;gap:8px}
 </style></head><body><main>
-<header><h1>Ouro</h1><span class="badge">Your session companion</span></header>
+<header><h1>${name}</h1><span class="badge">Your session companion</span></header>
 <label for="target">About<select id="target" aria-label="Session to discuss"></select><button id="refresh" type="button" aria-label="Refresh session choices">Refresh</button></label>
-<section id="conversation" aria-live="polite"><p id="empty">Ask Ouro about this session, steer the work, or correct a handback.<br>Your coding agent's input stays untouched.</p></section>
-<p id="error" role="alert"></p><form id="compose"><textarea id="draft" aria-label="Message Ouro" placeholder="Message Ouro..." maxlength="12000"></textarea>
-<footer><span id="status">Independent of the coding agent</span><div class="actions"><button id="recover" type="button" hidden>Reconnect</button><button id="cancel" type="button" hidden>Cancel Ouro</button><button id="send" type="submit" disabled>Send</button></div></footer></form>
+<section id="conversation" aria-live="polite"><p id="empty">Ask ${name} about this session, steer the work, or correct a handback.<br>Your coding agent's input stays untouched.</p></section>
+<p id="error" role="alert"></p><form id="compose"><textarea id="draft" aria-label="Message ${name}" placeholder="Message ${name}..." maxlength="12000"></textarea>
+<footer><span id="status">Independent of the coding agent</span><div class="actions"><button id="recover" type="button" hidden>Reconnect</button><button id="cancel" type="button" hidden>Cancel ${name}</button><button id="send" type="submit" disabled>Send</button></div></footer></form>
 </main><script nonce="${nonce}">
+const agentName=${JSON.stringify(presentation.name).replaceAll("<", "\\u003c")},address=new RegExp(${JSON.stringify(agentAddressPattern(presentation.aliases))},'iu');
 const fragment=new URLSearchParams(location.hash.slice(1));const initialTarget=fragment.get('session');const token=fragment.get('token')||location.hash.slice(1).split('&')[0]||sessionStorage.getItem('ouroAttentionToken');
 if(token){sessionStorage.setItem('ouroAttentionToken',token);history.replaceState(null,'',location.pathname);}
 const view=sessionStorage.getItem('ouroAttentionView')||crypto.randomUUID();sessionStorage.setItem('ouroAttentionView',view);
@@ -46,7 +50,7 @@ async function api(route,body) {
     ...(body?{body:JSON.stringify(body)}:{})
   });
   const data=await response.json();
-  if(!response.ok) {const error=Error(data.error||'Ouro could not accept this action.');error.status=response.status;throw error;}
+  if(!response.ok) {const error=Error(data.error||agentName+' could not accept this action.');error.status=response.status;throw error;}
   return data;
 }
 function acknowledge(submitted) {
@@ -83,13 +87,13 @@ function render(next) {
     if(atBottom)conversation.scrollTop=conversation.scrollHeight;
   } else if(!next.messages.length&&!el('empty')) {
     conversation.replaceChildren();
-    const p=document.createElement('p');p.id='empty';p.textContent="Ask Ouro about this session. Your coding agent's input stays untouched.";conversation.append(p);
+    const p=document.createElement('p');p.id='empty';p.textContent="Ask "+agentName+" about this session. Your coding agent's input stays untouched.";conversation.append(p);
   }
   messagesSignature=nextMessages;
   const available=next.targets.some(target=>target.id===next.target);
   el('send').disabled=next.active||sending||!bindingReady||!available||pendingFault||!!(pending&&pending.target!==next.target);
   el('cancel').hidden=!next.active;el('recover').hidden=!next.active&&!pending;
-  el('status').textContent=next.active?'Ouro is replying...':!next.targets.length?'No coding sessions available':!available?'Choose an available session':'Independent of the coding agent';
+  el('status').textContent=next.active?agentName+' is replying...':!next.targets.length?'No coding sessions available':!available?'Choose an available session':'Independent of the coding agent';
 }
 async function refresh() {
   try {render(await api('/state'));}
@@ -112,7 +116,7 @@ el('compose').onsubmit=async event=>{
   event.preventDefault();
   if(sending||!bindingReady||pendingFault||!state?.target||state.active)return;
   const message=el('draft').value;
-  if(!message.replace(/^@ouro(?:\\s+|$)/i,'').trim())return;
+  if(!message.replace(address,'').trim())return;
   if(pending&&(pending.message!==message||pending.target!==state.target)) {
     el('error').textContent='Reconnect before changing a message whose acknowledgement was lost.';return;
   }

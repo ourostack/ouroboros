@@ -31,6 +31,7 @@ const record = (overrides: Partial<ReturnRecord>): ReturnRecord => ({ at: "2026-
 
 beforeEach(async () => {
   root = fs.mkdtempSync(path.join(os.tmpdir(), "shepherd-tools-"))
+  fs.writeFileSync(path.join(root, "agent.json"), JSON.stringify({ displayName: "Ouro" }))
   server = await startFakeCmux({ capability: "v1.t.s" })
   cacheMachineRuntimeCredentialConfig(AGENT, { cmux: { socketCapability: "v1.t.s", socketPath: server.socketPath } })
   server.respond("system.tree", () => tree([{ id: "SF-1", ref: "surface:1", title: "app" }, { id: "SF-2", ref: "surface:2", title: "zsh" }]))
@@ -44,8 +45,18 @@ afterEach(async () => {
 })
 
 describe("Shepherd tools", () => {
+  it("attributes requested terminal text to this configured agent instead of a universal name", async () => {
+    fs.writeFileSync(path.join(root, "agent.json"), JSON.stringify({ displayName: "Orchid One" }))
+    for (const method of ["terminal.paste", "surface.send_key"]) server.respond(method, () => ({}))
+    const result = await call(shepherdSendToolDefinition, { session: "SF-1", text: "Continue the requested tests." }, ctx({
+      context: { friend: { id: "owner", name: "Ari", trustLevel: "family" } } as ToolContext["context"],
+    }))
+    expect(result.sent).toEqual({ text: "[Orchid One for Ari] Continue the requested tests." })
+  })
+
   it("are offered only when agent.json turns Shepherd on", async () => {
     expect(shepherdToolsEnabled(undefined)).toBe(false)
+    expect(shepherdToolsEnabled(path.join(root, "missing"))).toBe(false)
     expect(shepherdToolsEnabled(root)).toBe(false)
     fs.writeFileSync(path.join(root, "agent.json"), JSON.stringify({ senses: { shepherd: { enabled: true } } }))
     expect(shepherdToolsEnabled(root)).toBe(true)

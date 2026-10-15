@@ -149,6 +149,7 @@ beforeEach(() => {
   resetIdentity()
   agentRoot = path.join(home, "AgentBundles", `${AGENT}.ouro`)
   writeFriend("ari.json", { name: "Ari", trustLevel: "family", externalIds: [{ provider: "local", externalId: os.userInfo().username }] })
+  fs.writeFileSync(path.join(agentRoot, "agent.json"), JSON.stringify({ displayName: "Ouro" }))
   cacheMachineRuntimeCredentialConfig(AGENT, { cmux: { socketCapability: "v1.t.s", socketPath: "/nowhere.sock" } })
   mockRequestPrivateWake.mockReset().mockResolvedValue({ ok: true })
   clock = Date.parse("2026-10-10T20:00:00.000Z")
@@ -164,6 +165,14 @@ afterEach(() => {
 })
 
 describe("Shepherd sense: answering premature returns", () => {
+  it("attributes automatic replies to the configured supervising agent's display identity", async () => {
+    fs.writeFileSync(path.join(agentRoot, "agent.json"), JSON.stringify({ displayName: "Orchid One" }))
+    const { host, returned } = await start(async () => verdict())
+    host.screens.S1 = [SCREENS.claudePremature]
+    await returned({ sessionId: "S1" })
+    expect(host.actions).toContain("prompt S1 [Orchid One for Ari] Go ahead and implement it.")
+  })
+
   const target = { host: "fake", session: "S1", cwd: "/Users/a/code/app", task: null }
   const establish = () => appendReturn(agentRoot, { at: "earlier", host: "fake", session: "S1", transition: "earlier", agent: "claude", cwd: target.cwd, task: null, kind: "gate", action: "let_through", reason: "review", reply: null, latencyMs: 1, inputTokens: 1 })
 

@@ -16,6 +16,7 @@ describe("attention transport diagnostics", () => {
       attentionSidebar(`http://127.0.0.1:12345/#${token}`)
       expect(events.map(event => event.event)).toEqual([
         "heart.frontend_turn_conflict", "heart.frontend_session_conflict",
+        "senses.agent_presentation_resolved",
         "senses.shepherd_attention_page_rendered", "senses.shepherd_attention_sidebar_generated",
       ])
       const serialized = JSON.stringify(events)

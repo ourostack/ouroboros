@@ -48,6 +48,20 @@ function transport() {
 
 describe("Shepherd composer", () => {
   afterEach(() => vi.restoreAllMocks())
+  it("routes the configured display-name address to the original agent and uses that name in receipts", async () => {
+    const wire = transport()
+    const composer = new ShepherdComposer({ client: wire.client, agent: "orchid-runtime", displayName: "Orchid One", friendId: "owner", target: first })
+    const sending = composer.submit("@Orchid One inspect this")
+    await Promise.resolve()
+    await Promise.resolve()
+    const start = wire.calls.find(call => call.method === "turn.start")!
+    expect(start.params).toMatchObject({ agent: "orchid-runtime", message: "inspect this", shepherdSession: { id: first.id } })
+    await expect(composer.submit("another message")).rejects.toThrow("Orchid One already")
+    wire.emit({ event: "turn.completed", turnId: start.params.turnId, sessionKey: `shepherd:${first.id}`, result: { response: "Confirmed." } })
+    await expect(sending).resolves.toBe("Confirmed.")
+    composer.close()
+  })
+
   it("excludes its own terminal TTY instead of capturing focus as the target", () => {
     expect(composerTerminalTty(false)).toBeUndefined()
     vi.mocked(childProcess.spawnSync).mockReturnValue({ status: 0, stdout: "/dev/ttys009\n" } as any)
@@ -307,7 +321,7 @@ describe("Shepherd composer", () => {
     const output = new PassThrough()
     let text = ""
     output.on("data", chunk => { text += chunk.toString() })
-    const running = runShepherdComposer({ agent: "ouro", socketPath: "/unused", client: wire.client, input, output, resolveOwner: async () => "owner", composerTty: "/dev/ttys009" })
+    const running = runShepherdComposer({ agent: "ouro", displayName: "Orchid One", socketPath: "/unused", client: wire.client, input, output, resolveOwner: async () => "owner", composerTty: "/dev/ttys009" })
     await new Promise(resolve => setImmediate(resolve))
     expect(text).toContain(first.label)
     expect(text).toContain(second.label)
@@ -318,7 +332,8 @@ describe("Shepherd composer", () => {
     expect(start.params.shepherdSession).toEqual(second)
     wire.emit({ event: "turn.completed", turnId: start.params.turnId, sessionKey: `shepherd:${second.id}`, result: { response: "selected answer" } })
     await new Promise(resolve => setImmediate(resolve))
-    expect(text).toContain("Ouro: selected answer")
+    expect(text).toContain("Orchid One: selected answer")
+    expect(text).toContain("Type to Orchid One.")
     input.write("/quit\n")
     await running
   })
@@ -365,7 +380,7 @@ describe("Shepherd composer", () => {
       { type: "text_delta", sequence: 5, data: { text: "not an answer" } },
     ] })
     await composer.recover()
-    expect(notices.join("\n")).toContain("Ouro: recovered answer")
+    expect(notices.join("\n")).toContain("ouro: recovered answer")
     expect(wire.calls.filter(call => call.method === "turn.start")).toHaveLength(1)
     expect(start.params.turnId).toMatch(/^[0-9a-f-]{36}$/)
     composer.close()
@@ -494,7 +509,7 @@ describe("Shepherd composer", () => {
       { type: "turn_completed", sequence: 5, data: { result: { response: "fallback" } } },
     ] })
     await composer.recover()
-    expect(notices.filter(value => value.startsWith("Ouro:"))).toEqual(["Ouro: first\nsecond"])
+    expect(notices.filter(value => value.startsWith("ouro:"))).toEqual(["ouro: first\nsecond"])
     composer.close()
   })
 
