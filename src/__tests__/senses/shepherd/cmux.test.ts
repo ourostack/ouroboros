@@ -64,6 +64,16 @@ afterEach(async () => {
 })
 
 describe("cmux host: terminals", () => {
+  it.each(["attempt", "title", "entry", "cwd"] as const)("refuses invalid %s continuity launch input before any socket mutation", async bad => {
+    const request = { attemptId: "19768d31-24f7-4b9c-9860-0f3c6c039c65", title: "desk / task",
+      launchCwd: "/desk", ouroEntry: "/opt/ouro", agent: "ouro", batchId: "batch1", targetId: "target1" }
+    if (bad === "attempt") request.attemptId = "not-a-uuid"
+    if (bad === "title") request.title = "bad\r"
+    if (bad === "entry") request.ouroEntry = "relative"
+    if (bad === "cwd") request.launchCwd = "relative"
+    await expect(host().launchContinuity!(request)).rejects.toThrow(/Invalid/)
+    expect(server.methods).toHaveLength(0)
+  })
   it("creates one nonfocused continuity workspace using a durable operation and a quoted wrapper command", async () => {
     const workspaceId = "88e98bdd-01f6-4c58-96ac-641fae36ddaf"
     const surfaceId = "d6f2b0bb-2eab-43c7-b63f-06c3e8a1cf9c"

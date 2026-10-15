@@ -58,25 +58,26 @@ export async function fixture() {
   const coordinator = createContinuityCoordinator(options)
   const origin = (requestId: string) => ({ actorId: "operator", requestId })
   const prepare = (requestId = "prepare1") => coordinator.prepare({ requestId, selection: "all" }, origin(requestId))
-  const finalEvidence = async (batchId: string, decisions = ["Preserve work"]) => {
+  const finalEvidence = async (batchId: string, decisions = ["Preserve work"], targetIndex = 0) => {
     const state = readContinuityState(file)
-    const target = state.batches.find(batch => batch.id === batchId)!.targets[0]
+    const target = state.batches.find(batch => batch.id === batchId)!.targets[targetIndex]
     const slot = reserveContinuityReceiptSlot(target.binding, batchId, 1, "followup", "followup1")
     const document = { goal: "Finish fixture", scope: "Fixture only", decisions, nextAction: "Run fixture test",
       knownJobs: [], uncertainMutations: [], references: ["task.md"] }
-    const checkpointFile = path.join(home, "track/task/checkpoint.json")
+    const checkpointRelativePath = `${target.binding.taskRef}/checkpoint.json`
+    const checkpointFile = path.join(home, checkpointRelativePath)
     fs.mkdirSync(path.dirname(checkpointFile), { recursive: true, mode: 0o700 })
     fs.writeFileSync(checkpointFile, JSON.stringify(document), { mode: 0o600 })
     const receipt: ContinuityReceipt = { ...slot.correlation,
-      checkpoint: { rootId: "desk", relativePath: "track/task/checkpoint.json", sha256: createHash("sha256").update(fs.readFileSync(checkpointFile)).digest("hex") },
-      task: { ref: "track/task", rootId: "desk", launchCwd: home, worktree, branch: "fixture", head: "a".repeat(40), nextAction: document.nextAction },
+      checkpoint: { rootId: "desk", relativePath: checkpointRelativePath, sha256: createHash("sha256").update(fs.readFileSync(checkpointFile)).digest("hex") },
+      task: { ref: target.binding.taskRef, rootId: "desk", launchCwd: home, worktree, branch: "fixture", head: "a".repeat(40), nextAction: document.nextAction },
       confirmation: true, knownJobs: [], uncertainMutations: [],
     }
     fs.mkdirSync(path.dirname(slot.path), { recursive: true, mode: 0o700 })
     fs.writeFileSync(slot.path, JSON.stringify(receipt), { mode: 0o600 })
     const projection = verifyContinuityCheckpoint(readContinuityReceipt(slot, slot.correlation), target.binding)
     await transactContinuity(file, state.revision, current => {
-      const saved = current.batches.find(batch => batch.id === batchId)!.targets[0]
+      const saved = current.batches.find(batch => batch.id === batchId)!.targets[targetIndex]
       saved.rounds = [{ batchId, kind: "followup", nonce: receipt.nonce, receiptSlot: slot.relativePath,
         phase: "acknowledged", attemptId: "followup1", expectedRevision: current.revision }]
       saved.receipt = receipt

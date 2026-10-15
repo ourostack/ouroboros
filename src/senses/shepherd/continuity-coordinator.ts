@@ -173,7 +173,7 @@ export function createContinuityCoordinator(options: ContinuityCoordinatorOption
     if (selected.length > 256 || new Set(selected.map(session => session.id)).size !== selected.length) refuse("discovery capacity")
     const targets = await Promise.all(selected.map(async (session: HostSession): Promise<ContinuityPreviewTarget> => {
       const candidates = bindings.filter(binding => binding.surfaceId === session.id)
-      const label = redactSecrets(`${session.workspaceTitle ?? session.title} / ${session.ref}`).replace(/[\x00-\x1f\x7f]/g, " ").slice(0, 4096) || "coding session"
+      const label = redactSecrets(`${session.workspaceTitle ?? session.title} / ${session.ref}`).replace(/[\x00-\x1f\x7f]/g, " ").slice(0, 4096)
       const unsupported = (reason: string): ContinuityPreviewTarget => ({ id: session.id, label, state: "unsupported", binding: null, reasons: [reason] })
       if (candidates.length !== 1) return unsupported("unbound-or-ambiguous-source")
       const binding = structuredClone(candidates[0])
@@ -203,22 +203,23 @@ export function createContinuityCoordinator(options: ContinuityCoordinatorOption
     const ended = observed.state === "absent" || !isDeepStrictEqual(observed.generation, target.binding.process)
     const termination = ended ? await observeContinuityTermination(target.binding, options.processDeps) : null
     let screen: string | null = null
+    let viewportSha256: string | null = null
     if (!ended) {
       if (!session || !matchesProfile(profile, observed, options.processDeps) ||
         session.cwd !== target.binding.launchCwd || observed.cwd !== null && observed.cwd !== target.binding.launchCwd) refuse("source host changed")
       const raw = await options.host.read(session.id, 40)
       if (Buffer.byteLength(raw) > 16384) refuse("source viewport byte limit")
+      viewportSha256 = createHash("sha256").update(raw).digest("hex")
       screen = redactSecrets(raw).replace(/(https?:\/\/)[^\s/@]+:[^\s/@]+@/gi, "$1[redacted]@")
       if (Buffer.byteLength(screen) > 16384) refuse("redacted viewport byte limit")
     }
     return { source: ended ? "ended" as const : "present" as const, focused: session?.focused ?? null,
-      workspace: session?.workspace ?? null, cwd: session?.cwd ?? null, screen, termination }
+      workspace: session?.workspace ?? null, cwd: session?.cwd ?? null, screen, viewportSha256, termination }
   }
   return {
     preview, status,
     async prepare(request, origin) {
       await authority(origin, "prepare", request.requestId)
-      if (!clean(request.requestId)) refuse("request ID")
       if (request.selection !== "all") assertScope(request.selection)
       const bodyHash = hash(request)
       const snapshot = readContinuityState(options.storePath)
@@ -341,7 +342,7 @@ export function createContinuityCoordinator(options: ContinuityCoordinatorOption
             const entry = fs.lstatSync(options.ouroEntry)
             if (!entry.isFile() || entry.isSymbolicLink() || (entry.mode & 0o111) === 0 || (entry.mode & 0o022) !== 0) refuse("bootstrap entry trust")
           }
-        } catch { diagnostic("reopen-preconditions"); reason = "reopen-preconditions-unverified" }
+        } catch { diagnostic("reopen-preconditions"); eligible = false; reason = "reopen-preconditions-unverified" }
         const reservation = await transactContinuity(options.storePath, snapshot.revision, state => {
           const currentBatch = state.batches.find(value => value.id === batch.id)!
           const current = currentBatch.targets.find(value => value.id === target.id)!

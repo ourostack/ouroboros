@@ -60,6 +60,30 @@ async function run(executable: string, args: string[], cwd: string): Promise<num
   })
 }
 export async function runContinuityBootstrap(request: ContinuityBootstrapRequest, deps: ContinuityBootstrapDeps): Promise<void> {
+  const ownership = { registered: false }
+  try { await bootstrap(request, deps, ownership) }
+  catch (error) {
+    try {
+      await transactContinuity(request.storePath, undefined, state => {
+        const batch = state.batches.find(batch => batch.id === request.batchId && batch.agent === request.agent)
+        const target = batch?.targets.find(target => target.id === request.targetId)
+        const launch = target?.launch
+        const claim = state.claims.find(claim => claim.taskKey === target?.binding.taskKey)
+        if (!target || !launch || launch.attemptId !== request.attemptId || !claim ||
+          claim.attemptId !== request.attemptId || claim.batchId !== request.batchId || claim.targetId !== request.targetId ||
+          !["reserved", "created"].includes(launch.phase) || launch.bootstrapProcess !== null && !ownership.registered) return
+        launch.phase = launch.milestones.includes("runner-start-issued") ? "uncertain" : "blocked"
+        target.reopen = launch.phase
+        target.reasons = ["fresh-bootstrap-preflight-failed"]
+        claim.phase = "uncertain"
+      })
+    } catch { diagnostic("bootstrap-failure-state-unpersisted") }
+    throw error
+  }
+}
+async function bootstrap(
+  request: ContinuityBootstrapRequest, deps: ContinuityBootstrapDeps, ownership: { registered: boolean },
+): Promise<void> {
   const snapshot = readContinuityState(request.storePath)
   const target = find(snapshot, request)
   const batch = snapshot.batches.find(batch => batch.id === request.batchId)!
@@ -73,13 +97,38 @@ export async function runContinuityBootstrap(request: ContinuityBootstrapRequest
   if (observed.state !== "present" || observed.generation.uid !== process.getuid!()) refuse("wrapper generation unverified")
   const brief = renderContinuityRestoreBrief(target, batch.id)
   const args = buildFreshRunnerArgs(profile, brief, launch.nativeSessionId)
-  await transactContinuity(request.storePath, snapshot.revision, state => {
+  // Creation readback may commit during proof IO; attempt-specific checks, not that old global revision, own this reservation.
+  await transactContinuity(request.storePath, undefined, state => {
     const current = find(state, request)
-    if (state.batches.find(batch => batch.id === request.batchId)!.cancellation !== "none" || current.launch!.bootstrapProcess !== null) refuse("wrapper reservation changed")
+    if (state.batches.find(batch => batch.id === request.batchId)!.cancellation !== "none" ||
+      !["reserved", "created"].includes(current.launch!.phase) || current.launch!.bootstrapProcess !== null) refuse("wrapper reservation changed")
     const claim = state.claims.find(claim => claim.taskKey === current.binding.taskKey)
     if (!claim || claim.attemptId !== request.attemptId || !["launch-reserved", "created"].includes(claim.phase)) refuse("wrapper canonical claim")
     current.launch!.bootstrapProcess = observed.generation
     current.launch!.milestones.push("wrapper-observed")
+  })
+  ownership.registered = true
+  const readbackDeadline = Date.now() + 15000
+  let ready: ContinuityTarget
+  for (;;) {
+    const state = readContinuityState(request.storePath)
+    ready = find(state, request)
+    if (state.batches.find(batch => batch.id === request.batchId)!.cancellation !== "none") refuse("creation readback cancelled")
+    if (ready.launch!.phase === "created" && ready.launch!.workspaceId !== null && ready.launch!.surfaceId !== null) break
+    if (ready.launch!.phase !== "reserved" || Date.now() >= readbackDeadline) refuse("creation readback unverified")
+    await new Promise(resolve => setTimeout(resolve, 20))
+  }
+  continuityBindingProfile(ready.binding, await deps.config())
+  readFinalContinuityEvidence(ready, batch.id)
+  if (!(await observeContinuityTermination(ready.binding, deps.processDeps)).eligible) refuse("source termination changed")
+  await transactContinuity(request.storePath, undefined, state => {
+    const current = find(state, request)
+    const claim = state.claims.find(claim => claim.taskKey === current.binding.taskKey)
+    if (state.batches.find(batch => batch.id === request.batchId)!.cancellation !== "none" ||
+      current.launch!.phase !== "created" || !isDeepStrictEqual(current.launch!.bootstrapProcess, observed.generation) ||
+      current.launch!.milestones.includes("runner-start-issued") || !claim || claim.phase !== "created" ||
+      claim.attemptId !== request.attemptId || claim.batchId !== request.batchId || claim.targetId !== request.targetId) refuse("runner reservation changed")
+    current.launch!.milestones.push("runner-start-issued")
   })
   let exit: number | null = null
   let failed = false

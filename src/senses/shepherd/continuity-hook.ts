@@ -300,7 +300,7 @@ export async function handleContinuityStop(input: NativeContinuityStop, context:
             if (failed.replacement && target.launch) {
               target.launch.phase = "uncertain"
               target.reopen = "uncertain"
-              state.claims.find(claim => claim.taskKey === target.binding.taskKey)!.phase = "uncertain"
+              current.claims.find(claim => claim.taskKey === target.binding.taskKey)!.phase = "uncertain"
               target.reasons = ["native-state-or-budget"]
               continue
             }
