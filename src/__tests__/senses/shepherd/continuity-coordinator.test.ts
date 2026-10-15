@@ -8,6 +8,101 @@ import { fixture } from "./continuity-coordinator-fixture"
 
 describe("fleet continuity coordinator", () => {
   afterEach(() => vi.restoreAllMocks())
+  it("retains a milestone slot for an outstanding workspace readback", async () => {
+    const f = await fixture()
+    const prepared = await f.prepare()
+    await f.finalEvidence(prepared.batchId)
+    await f.coordinator.processPendingJudgments()
+    f.end()
+    const coordinator = createContinuityCoordinator({ ...f.options, host: { ...f.options.host, launchContinuity: async () => {
+      await expect(transactContinuity(f.file, undefined, state => {
+        state.batches[0].targets[0].launch!.milestones = Array.from({ length: 32 }, (_, n) => `observed${n}`)
+      })).rejects.toThrow(/milestone capacity/)
+      return { workspaceId: "workspace-new", surfaceId: "surface-new" }
+    } } })
+    await coordinator.reopen({ requestId: "reopen1", batchId: prepared.batchId, selection: "all" }, f.origin("reopen1"))
+    expect(readContinuityState(f.file).batches[0].targets[0].launch!.milestones).toContain("workspace-readback")
+  })
+  it.each([{ workspaceId: "", surfaceId: "surface-new" }, { workspaceId: "x".repeat(65), surfaceId: "surface-new" },
+    { workspaceId: "workspace-new", surfaceId: "" }, { workspaceId: "workspace-new", surfaceId: "x".repeat(65) },
+    { workspaceId: "token=private", surfaceId: "surface-new" }])(
+    "retains uncertain authority instead of persisting an invalid host readback %#", async receipt => {
+      const f = await fixture()
+      const prepared = await f.prepare()
+      await f.finalEvidence(prepared.batchId)
+      await f.coordinator.processPendingJudgments()
+      f.end()
+      const coordinator = createContinuityCoordinator({ ...f.options, host: { ...f.options.host, launchContinuity: async () => receipt } })
+      await coordinator.reopen({ requestId: "reopen1", batchId: prepared.batchId, selection: "all" }, f.origin("reopen1"))
+      expect(readContinuityState(f.file).batches[0].targets[0]).toMatchObject({ reopen: "uncertain", launch: { phase: "uncertain", surfaceId: null } })
+    })
+  it("reserves successful readback byte capacity before any external creation", async () => {
+    const probe = await fixture()
+    const probeBatch = await probe.prepare()
+    await probe.finalEvidence(probeBatch.batchId)
+    await probe.coordinator.processPendingJudgments()
+    probe.end()
+    const priorBytes = Buffer.byteLength(JSON.stringify(readContinuityState(probe.file)))
+    let reservationBytes = 0
+    const coordinator = createContinuityCoordinator({ ...probe.options, host: { ...probe.options.host, launchContinuity: async () => {
+      reservationBytes = Buffer.byteLength(JSON.stringify(readContinuityState(probe.file))) - priorBytes
+      return { workspaceId: "workspace-new", surfaceId: "surface-new" }
+    } } })
+    await coordinator.reopen({ requestId: "reopen1", batchId: probeBatch.batchId, selection: "all" }, probe.origin("reopen1"))
+    const f = await fixture()
+    const prepared = await f.prepare()
+    await f.finalEvidence(prepared.batchId)
+    await f.coordinator.processPendingJudgments()
+    const desiredBytes = 2 * 1024 * 1024 - reservationBytes - 100
+    await transactContinuity(f.file, undefined, state => {
+      const make = (n: number, width: number) => ({ id: `padding${n}`, agent: "padding", requestId: `padding${n}`,
+        host: "p".repeat(width), surface: "p".repeat(width), bodyHash: "f".repeat(64), phase: "blocked" as const })
+      for (let n = 0; ; n++) {
+        const record = make(n, 4096)
+        const bytes = Buffer.byteLength(JSON.stringify(state))
+        const increment = Buffer.byteLength(JSON.stringify(record)) + 1
+        if (bytes + increment <= desiredBytes) { state.dispatches.push(record); continue }
+        const last = make(n, 1)
+        state.dispatches.push(last)
+        const remaining = desiredBytes - Buffer.byteLength(JSON.stringify(state))
+        expect(remaining).toBeGreaterThanOrEqual(0)
+        last.host += "p".repeat(Math.min(4095, remaining))
+        last.surface += "p".repeat(Math.max(0, remaining - 4095))
+        break
+      }
+    })
+    f.end()
+    await expect(f.coordinator.reopen({ requestId: "reopen1", batchId: prepared.batchId, selection: "all" }, f.origin("reopen1"))).rejects.toThrow(/capacity/)
+    expect(f.launches).toHaveLength(0)
+    expect(readContinuityState(f.file).batches[0].targets[0].launch).toBeNull()
+  })
+  it("persists replacement readback while retaining source holds at the full 256-target capacity", async () => {
+    const f = await fixture()
+    const prepared = await f.prepare()
+    await f.finalEvidence(prepared.batchId)
+    await f.coordinator.processPendingJudgments()
+    await transactContinuity(f.file, undefined, state => {
+      const extra = structuredClone(state.batches[0])
+      extra.id = "capacity-batch"
+      extra.requestId = extra.origin.requestId = "capacity-request"
+      extra.targets = Array.from({ length: 255 }, (_, n) => {
+        const target = structuredClone(extra.targets[0])
+        target.id = `capacity-target${n}`
+        Object.assign(target.binding, { id: `capacity-binding${n}`, surfaceId: `capacity-surface${n}`,
+          nativeSessionId: `capacity-native${n}`, taskRef: `track/capacity${n}`, taskKey: `${f.home}:track/capacity${n}` })
+        target.state = "pending-boundary"
+        return target
+      })
+      createContinuityBatch(state, extra)
+    })
+    expect(readContinuityState(f.file).holds).toHaveLength(256)
+    f.end()
+    await f.coordinator.reopen({ requestId: "reopen1", batchId: prepared.batchId, selection: "all" }, f.origin("reopen1"))
+    expect(f.launches).toHaveLength(1)
+    const state = readContinuityState(f.file)
+    expect(state.holds).toHaveLength(257)
+    expect(state.batches[0].targets[0].launch).toMatchObject({ phase: "created", workspaceId: "workspace-new", surfaceId: "surface-new" })
+  })
   it("does not reserve a later target after cancellation during an earlier host create", async () => {
     const f = await fixture()
     const second = structuredClone(f.binding)

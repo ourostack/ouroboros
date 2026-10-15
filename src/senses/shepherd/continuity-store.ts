@@ -118,7 +118,7 @@ const validate = new Ajv({ strict: true }).compile<ContinuityState>({
       process: processSchema, wrapper: nullable(processSchema), profileId: text, profileFingerprint: digest,
       configFingerprint: digest, launchCwd: text, observedAt: text,
     }), 256),
-    claims: array(ref("claim"), 256), holds: array(ref("hold"), 256), dispatches: array(ref("dispatch"), 2048),
+    claims: array(ref("claim"), 256), holds: array(ref("hold"), 512), dispatches: array(ref("dispatch"), 2048),
   }),
   $defs: { batch: batchSchema, claim: claimSchema, hold: holdSchema, dispatch: dispatchSchema },
 })
@@ -162,7 +162,18 @@ function validateState(value: unknown): asserts value is ContinuityState {
     if (!target || hold.host !== target.binding.host ||
       hold.surface !== target.binding.surfaceId && hold.surface !== target.launch?.surfaceId) refuse("hold target mismatch")
   }
-  if (Buffer.byteLength(JSON.stringify(value), "utf8") > 2 * 1024 * 1024) refuse("state byte capacity exceeded")
+  let readbackBytes = 0
+  for (const batch of value.batches) {
+    for (const target of batch.targets) {
+      if (target.launch?.surfaceId !== null) continue
+      if (target.launch.milestones.length >= 32) refuse("launch readback milestone capacity exceeded")
+      // Each pending external create owns room for two bounded IDs, its fresh hold, and one readback milestone.
+      readbackBytes += 448 + Buffer.byteLength(JSON.stringify({
+        agent: batch.agent, host: target.binding.host, surface: "\u0800".repeat(64), batchId: batch.id, targetId: target.id,
+      }))
+    }
+  }
+  if (Buffer.byteLength(JSON.stringify(value), "utf8") + readbackBytes > 2 * 1024 * 1024) refuse("state byte capacity exceeded")
 }
 
 function frozenAuthority(batch: ContinuityBatch): string {

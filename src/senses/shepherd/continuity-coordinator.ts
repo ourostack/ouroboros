@@ -371,7 +371,12 @@ export function createContinuityCoordinator(options: ContinuityCoordinatorOption
         })
         if (!reservation.result) continue
         let created: { workspaceId: string; surfaceId: string } | null = null
-        try { created = await options.host.launchContinuity!(reservation.result) } catch { diagnostic("launch-create-uncertain") }
+        try {
+          const receipt = await options.host.launchContinuity!(reservation.result)
+          if (!clean(receipt.workspaceId) || receipt.workspaceId.length > 64 ||
+            !clean(receipt.surfaceId) || receipt.surfaceId.length > 64) refuse("launch readback identity")
+          created = receipt
+        } catch { diagnostic("launch-create-uncertain") }
         const observed = readContinuityState(options.storePath)
         await transactContinuity(options.storePath, observed.revision, state => {
           const current = state.batches.find(value => value.id === batch.id)!.targets.find(value => value.id === target.id)!
