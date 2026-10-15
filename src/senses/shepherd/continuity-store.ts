@@ -54,14 +54,16 @@ const roundSchema = object({
   batchId: text, kind: choice("preparation", "followup", "correction"), nonce: text, receiptSlot: text,
   phase: choice("reserved", "issued", "acknowledged", "uncertain", "blocked"), attemptId: text, expectedRevision: count,
 })
+const jobSchema = object({ id: narrative, kind: narrative, owner: narrative, effects: narrative, status: narrative, disposition: narrative, reference: narrative })
+const mutationSchema = object({ id: narrative, operation: narrative, disposition: narrative, evidence: narrative })
 const receiptSchema = object({
   schemaVersion: { const: 1 }, batchId: text, bindingId: text, generation: { type: "integer", minimum: 1 },
   round: choice("preparation", "followup", "correction", "bootstrap", "execute"), nonce: text, launchAttemptId: nullable(text),
   checkpoint: object({ rootId: text, relativePath: text, sha256: digest }),
   task: object({ ref: text, rootId: text, launchCwd: text, worktree: text, branch: text, head: text, nextAction: narrative }),
   confirmation: { type: "boolean" },
-  knownJobs: array(object({ id: narrative, kind: narrative, owner: narrative, effects: narrative, status: narrative, disposition: narrative, reference: narrative }), 64),
-  uncertainMutations: array(object({ id: narrative, operation: narrative, disposition: narrative, evidence: narrative }), 64),
+  knownJobs: array(jobSchema, 64),
+  uncertainMutations: array(mutationSchema, 64),
 })
 const launchSchema = object({
   attemptId: text, bootstrapNonce: text, bootstrapSlot: text,
@@ -82,6 +84,10 @@ const targetSchema = object({
     references: array(narrative, 64), checkpointSha256: digest,
   })),
   observedTransitions: array(digest, 64),
+  unresolvedInventory: object({
+    knownJobs: array(jobSchema, 192),
+    uncertainMutations: array(mutationSchema, 192),
+  }),
 })
 const batchSchema = object({
   id: text, agent: text, requestId: text, bodyHash: digest,

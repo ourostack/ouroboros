@@ -180,6 +180,10 @@ export interface ContinuityTarget {
   assurance: ContinuityAssurance
   receipt: ContinuityReceipt | null
   projection: ContinuityCheckpointProjection | null
+  unresolvedInventory: {
+    knownJobs: ContinuityKnownJob[]
+    uncertainMutations: ContinuityUncertainMutation[]
+  }
   observedTransitions: string[]
   launch: ContinuityLaunch | null
 }

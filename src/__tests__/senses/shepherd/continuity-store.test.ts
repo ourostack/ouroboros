@@ -38,7 +38,7 @@ function batch(agent = "ouro", taskKey = "root:track/task", requestId = `request
       id: `target-${agent}`, binding: binding(agent, taskKey), generation: 1,
       state: "pending-boundary", reopen: "not-requested", rounds: [], reasons: [],
       assurance: { checkpoint: "unverified", endReadiness: "unconfirmed", backgroundCoverage: "unknown", jobInventory: "unverified", reopen: "unverified", observedAt: null, qualifications: [] },
-      receipt: null, projection: null, observedTransitions: [], launch: null,
+      receipt: null, projection: null, unresolvedInventory: { knownJobs: [], uncertainMutations: [] }, observedTransitions: [], launch: null,
     }],
   }
 }

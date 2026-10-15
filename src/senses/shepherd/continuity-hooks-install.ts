@@ -115,7 +115,10 @@ export function planContinuityHookInstall(input: ContinuityHookInstallRequest): 
     { hooks: [{ type: "command", command: ownCommand, timeout: 5 }] })
   else {
     const hook = matches[0]
-    if (hook.type !== "command" || hook[input.runner === "copilot" ? "timeoutSec" : "timeout"] !== 5) refuse("owned hook differs from required contract")
+    if (hook.type !== "command" || hook[input.runner === "copilot" ? "timeoutSec" : "timeout"] !== 5 ||
+      hook.async !== undefined && hook.async !== false || hook.asyncRewake !== undefined && hook.asyncRewake !== false) {
+      refuse("owned hook differs from required contract")
+    }
   }
   hooks[key] = entries
   if (Buffer.byteLength(JSON.stringify(document)) > LIMIT) refuse("planned settings byte limit")

@@ -235,13 +235,14 @@ export function verifyContinuityCheckpoint(
 }
 export function continuityEvidenceAssurance(
   receipt: ContinuityReceipt, projection: ContinuityCheckpointProjection,
-  facts: { round: string; observedAt: string; knownUnsafeJobIds?: string[] },
+  facts: { round: string; observedAt: string; knownUnsafeJobIds?: string[]; unresolvedInventory?: boolean },
 ): ContinuityAssurance {
   const safe = receipt.confirmation && receipt.round === facts.round && ["followup", "correction"].includes(facts.round) &&
     projection.checkpointSha256 === receipt.checkpoint.sha256 &&
     isDeepStrictEqual(projection.knownJobs, receipt.knownJobs) &&
     isDeepStrictEqual(projection.uncertainMutations, receipt.uncertainMutations) &&
-    !receipt.uncertainMutations.length && !(facts.knownUnsafeJobIds?.length) &&
+    receipt.uncertainMutations.every(mutation => mutation.disposition === "reconciled") &&
+    !(facts.knownUnsafeJobIds?.length) && !facts.unresolvedInventory &&
     receipt.knownJobs.every(job => job.disposition === "independent" ||
       (["stopped", "completed"].includes(job.disposition) && ["stopped", "completed", "ended"].includes(job.status)))
   return {

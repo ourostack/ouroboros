@@ -6,7 +6,7 @@ import Database from "better-sqlite3"
 import { afterEach, describe, expect, it, vi } from "vitest"
 import { handleContinuityStop, parseNativeContinuityStop, renderContinuityRoundInstruction } from "../../../senses/shepherd/continuity-hook"
 import { continuityStatePath, createContinuityBatch, readContinuityState, transactContinuity } from "../../../senses/shepherd/continuity-store"
-import type { ContinuityBatch, ContinuityProfile, ContinuityRunner } from "../../../senses/shepherd/continuity-types"
+import type { ContinuityBatch, ContinuityKnownJob, ContinuityProfile, ContinuityRunner, ContinuityUncertainMutation } from "../../../senses/shepherd/continuity-types"
 import type { ProcessProofDeps, ProcessProofObservation } from "../../../senses/shepherd/continuity-process"
 import * as continuityStore from "../../../senses/shepherd/continuity-store"
 
@@ -52,16 +52,18 @@ async function fixture(runner: ContinuityRunner = "copilot", prepared = true) {
       },
       assurance: { checkpoint: "unverified", endReadiness: "unconfirmed", backgroundCoverage: "unknown", jobInventory: "unverified",
         reopen: "unverified", observedAt: null, qualifications: [] },
-      receipt: null, projection: null, observedTransitions: [], launch: null,
+      receipt: null, projection: null, unresolvedInventory: { knownJobs: [], uncertainMutations: [] }, observedTransitions: [], launch: null,
     }],
   }
   if (prepared) await transactContinuity(file, undefined, state => createContinuityBatch(state, batch))
   const target = () => readContinuityState(file).batches[0].targets[0]
-  const writeReceipt = (options: { confirmation?: boolean; corruptCheckpoint?: boolean; nonce?: string; nextAction?: string } = {}) => {
+  const writeReceipt = (options: { confirmation?: boolean; corruptCheckpoint?: boolean; nonce?: string; nextAction?: string;
+    knownJobs?: ContinuityKnownJob[]; uncertainMutations?: ContinuityUncertainMutation[] } = {}) => {
     const current = target()
     const round = current.rounds[current.rounds.length - 1]
     const checkpoint = { goal: "Finish this disposable task", scope: "Fixture only", decisions: ["Preserve dirty work"],
-      nextAction: options.nextAction ?? "Run targeted test", knownJobs: [], uncertainMutations: [], references: ["task.md"] }
+      nextAction: options.nextAction ?? "Run targeted test", knownJobs: options.knownJobs ?? [],
+      uncertainMutations: options.uncertainMutations ?? [], references: ["task.md"] }
     const checkpointFile = path.join(home, "track/task/continuity.json")
     fs.mkdirSync(path.dirname(checkpointFile), { recursive: true, mode: 0o700 })
     fs.writeFileSync(checkpointFile, options.corruptCheckpoint ? "invalid" : JSON.stringify(checkpoint), { mode: 0o600 })
@@ -71,7 +73,7 @@ async function fixture(runner: ContinuityRunner = "copilot", prepared = true) {
       checkpoint: { rootId: "desk", relativePath: "track/task/continuity.json",
         sha256: createHash("sha256").update(fs.readFileSync(checkpointFile)).digest("hex") },
       task: { ref: "track/task", rootId: "desk", launchCwd: home, worktree: home, branch: "fixture", head: "a".repeat(40), nextAction: checkpoint.nextAction },
-      confirmation: options.confirmation ?? true, knownJobs: [], uncertainMutations: [],
+      confirmation: options.confirmation ?? true, knownJobs: checkpoint.knownJobs, uncertainMutations: checkpoint.uncertainMutations,
     }
     const slot = path.join(home, round.receiptSlot)
     fs.mkdirSync(path.dirname(slot), { recursive: true, mode: 0o700 })
@@ -155,6 +157,101 @@ describe("native continuity Stop broker", () => {
     expect(f.target().state).toBe("blocked")
     expect(await handleContinuityStop(f.stop(5), f.context)).toEqual({})
     expect(f.target().rounds).toHaveLength(3)
+  })
+  it.each(["job", "mutation"] as const)("does not let a followup omit a previously reported unsafe %s", async item => {
+    const f = await fixture()
+    const job = { id: "job1", kind: "shell", owner: "source", effects: "writes fixture", status: "running",
+      disposition: "unsafe", reference: "jobs/job1" }
+    const mutation = { id: "mutation1", operation: "fixture write", disposition: "unknown", evidence: "write not acknowledged" }
+    await handleContinuityStop(f.stop(1), f.context)
+    f.writeReceipt(item === "job" ? { knownJobs: [job] } : { uncertainMutations: [mutation] })
+    await handleContinuityStop(f.stop(2), f.context)
+    f.writeReceipt()
+    expect(await handleContinuityStop(f.stop(3), f.context)).toMatchObject({ decision: "block" })
+    expect(f.target().assurance.endReadiness).toBe("unconfirmed")
+    expect(f.target().reasons).toContain("prior-inventory-unresolved")
+    f.writeReceipt()
+    expect(await handleContinuityStop(f.stop(4), f.context)).toEqual({})
+    expect(f.target().state).toBe("blocked")
+    expect(f.target().receipt?.knownJobs).toEqual([])
+    expect(f.target().projection?.uncertainMutations).toEqual([])
+  })
+  it("retains old and newly introduced unsafe inventory through the one correction", async () => {
+    const f = await fixture()
+    const job = { id: "job1", kind: "shell", owner: "source", effects: "writes fixture", status: "running",
+      disposition: "unsafe", reference: "jobs/job1" }
+    const mutation = { id: "mutation1", operation: "fixture write", disposition: "unknown", evidence: "no acknowledgement" }
+    await handleContinuityStop(f.stop(1), f.context)
+    f.writeReceipt({ knownJobs: [job], uncertainMutations: [mutation] })
+    await handleContinuityStop(f.stop(2), f.context)
+    f.writeReceipt({ knownJobs: [{ ...job, id: "job2" }], uncertainMutations: [{ ...mutation, id: "mutation2" }] })
+    expect(await handleContinuityStop(f.stop(3), f.context)).toMatchObject({ decision: "block" })
+    f.writeReceipt()
+    await handleContinuityStop(f.stop(4), f.context)
+    expect(f.target().state).toBe("blocked")
+    expect(f.target().reasons).toContain("prior-inventory-unresolved")
+    expect(JSON.stringify(f.target())).toContain("job1")
+    expect(JSON.stringify(f.target())).toContain("job2")
+    expect(JSON.stringify(f.target())).toContain("mutation1")
+    expect(JSON.stringify(f.target())).toContain("mutation2")
+  })
+  it("allows only explicit verified disposition and reconciliation of the accumulated inventory", async () => {
+    const f = await fixture()
+    const job = { id: "job1", kind: "shell", owner: "source", effects: "writes fixture", status: "running",
+      disposition: "unsafe", reference: "jobs/job1" }
+    const mutation = { id: "mutation1", operation: "fixture write", disposition: "unknown", evidence: "no acknowledgement" }
+    await handleContinuityStop(f.stop(1), f.context)
+    f.writeReceipt({ knownJobs: [job], uncertainMutations: [mutation] })
+    await handleContinuityStop(f.stop(2), f.context)
+    f.writeReceipt({ confirmation: false, knownJobs: [job], uncertainMutations: [mutation] })
+    await handleContinuityStop(f.stop(3), f.context)
+    f.writeReceipt({ knownJobs: [{ ...job, status: "ended", disposition: "completed" }],
+      uncertainMutations: [{ ...mutation, disposition: "reconciled", evidence: "fixture readback confirmed the write" }] })
+    expect(await handleContinuityStop(f.stop(4), f.context)).toEqual({})
+    expect(f.target().state).toBe("verifying")
+    expect(f.target().assurance.endReadiness).toBe("agent-confirmed-as-of-native-boundary")
+    expect(f.target().receipt?.uncertainMutations[0]?.disposition).toBe("reconciled")
+  })
+  it.each(["kind", "owner", "effects", "operation", "duplicate-job", "duplicate-mutation", "redacted-job-ids", "redacted-mutation-ids"] as const)(
+    "refuses %s inventory identity ambiguity without losing the prior unsafe item", async change => {
+      const f = await fixture()
+      const job = { id: "job1", kind: "shell", owner: "source", effects: "writes fixture", status: "running",
+        disposition: "unsafe", reference: "jobs/job1" }
+      const mutation = { id: "mutation1", operation: "fixture write", disposition: "unknown", evidence: "no acknowledgement" }
+      await handleContinuityStop(f.stop(1), f.context)
+      f.writeReceipt({ knownJobs: [job], uncertainMutations: [mutation] })
+      await handleContinuityStop(f.stop(2), f.context)
+      const resolvedJob = { ...job, status: "completed", disposition: "completed" }
+      const resolvedMutation = { ...mutation, disposition: "reconciled", evidence: "fixture readback confirmed" }
+      if (change === "kind" || change === "owner" || change === "effects") resolvedJob[change] = "different item"
+      if (change === "operation") resolvedMutation.operation = "different operation"
+      f.writeReceipt({
+        knownJobs: change === "redacted-job-ids" ? [{ ...job, id: "token=first" }, { ...resolvedJob, id: "token=second" }] :
+          change === "duplicate-job" ? [job, resolvedJob] : [resolvedJob],
+        uncertainMutations: change === "redacted-mutation-ids" ? [{ ...mutation, id: "token=first" }, { ...resolvedMutation, id: "token=second" }] :
+          change === "duplicate-mutation" ? [mutation, resolvedMutation] : [resolvedMutation],
+      })
+      expect(await handleContinuityStop(f.stop(3), f.context)).toEqual({})
+      expect(f.target().state).toBe("uncertain")
+      expect(f.target().assurance.endReadiness).toBe("unconfirmed")
+      expect(f.target().unresolvedInventory).toEqual({ knownJobs: [job], uncertainMutations: [mutation] })
+    })
+  it("cannot reconcile old inventory using a receipt with an unverified checkpoint", async () => {
+    const f = await fixture()
+    const job = { id: "job1", kind: "shell", owner: "source", effects: "writes fixture", status: "running",
+      disposition: "unsafe", reference: "jobs/job1" }
+    const mutation = { id: "mutation1", operation: "fixture write", disposition: "unknown", evidence: "no acknowledgement" }
+    await handleContinuityStop(f.stop(1), f.context)
+    f.writeReceipt({ knownJobs: [job], uncertainMutations: [mutation] })
+    await handleContinuityStop(f.stop(2), f.context)
+    f.writeReceipt({ corruptCheckpoint: true, knownJobs: [{ ...job, status: "ended", disposition: "completed" }],
+      uncertainMutations: [{ ...mutation, disposition: "reconciled", evidence: "claimed readback" }] })
+    expect(await handleContinuityStop(f.stop(3), f.context)).toMatchObject({ decision: "block" })
+    f.writeReceipt()
+    await handleContinuityStop(f.stop(4), f.context)
+    expect(f.target().state).toBe("blocked")
+    expect(f.target().unresolvedInventory.knownJobs.map(value => value.id)).toEqual(["job1"])
+    expect(f.target().unresolvedInventory.uncertainMutations.map(value => value.id)).toEqual(["mutation1"])
   })
   it("correlates a correction receipt and never treats malformed/missing nonce as consumption", async () => {
     const f = await fixture()

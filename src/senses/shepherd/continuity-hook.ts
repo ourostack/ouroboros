@@ -83,11 +83,39 @@ export function renderContinuityRoundInstruction(target: ContinuityTarget, round
     `Copy these exact correlation fields: ${JSON.stringify(correlation)}.`,
     "Add checkpoint:{rootId,relativePath,sha256}, task:{ref,rootId,launchCwd,worktree,branch,head,nextAction}, confirmation:boolean, knownJobs and uncertainMutations. Use the SHA-256 of the exact projection bytes. The inventories and nextAction must match the projection.",
     "Use disposition independent only for independently owned jobs with durable references; stopped/completed require matching ended status. Unknown or unsafe work must remain explicit. This is your reported inventory, not native proof of zero background jobs.",
+    "Previously reported unresolved items cannot disappear. Repeat each ID with its original job kind/owner/effects or mutation operation. Resolve a mutation only with disposition reconciled and explicit readback evidence; do not replay it.",
+    `Outstanding reported inventory: ${JSON.stringify(target.unresolvedInventory)}`,
     `Evidence gaps: ${JSON.stringify(target.reasons)}`,
     "Finish this receipt and return to the native Stop boundary. Do not discover or substitute another receipt path.",
   ].filter(Boolean).join("\n")
   if (Buffer.byteLength(instruction) > 16384) throw new Error("Native continuity instruction exceeds byte limit")
   return instruction
+}
+
+function accumulateContinuityInventory(target: ContinuityTarget, receipt: ContinuityReceipt, verified: boolean): void {
+  const jobs = new Map(target.unresolvedInventory.knownJobs.map(job => [job.id, job]))
+  const mutations = new Map(target.unresolvedInventory.uncertainMutations.map(mutation => [mutation.id, mutation]))
+  if (new Set(receipt.knownJobs.map(job => job.id)).size !== receipt.knownJobs.length ||
+    new Set(receipt.uncertainMutations.map(mutation => mutation.id)).size !== receipt.uncertainMutations.length) {
+    throw new Error("duplicate reported inventory IDs")
+  }
+  for (const job of receipt.knownJobs) {
+    const prior = jobs.get(job.id)
+    if (prior && (prior.kind !== job.kind || prior.owner !== job.owner || prior.effects !== job.effects)) {
+      throw new Error("reported job identity changed")
+    }
+    const safe = job.disposition === "independent" ||
+      (["stopped", "completed"].includes(job.disposition) && ["stopped", "completed", "ended"].includes(job.status))
+    if (verified && safe) jobs.delete(job.id)
+    else jobs.set(job.id, job)
+  }
+  for (const mutation of receipt.uncertainMutations) {
+    const prior = mutations.get(mutation.id)
+    if (prior && prior.operation !== mutation.operation) throw new Error("reported mutation identity changed")
+    if (verified && mutation.disposition === "reconciled") mutations.delete(mutation.id)
+    else mutations.set(mutation.id, mutation)
+  }
+  target.unresolvedInventory = { knownJobs: [...jobs.values()], uncertainMutations: [...mutations.values()] }
 }
 
 async function boundedProof(input: NativeContinuityStop, context: ContinuityHookContext, deadline: number): Promise<ContinuityCallerProof> {
@@ -189,20 +217,24 @@ export async function handleContinuityStop(input: NativeContinuityStop, context:
         current.reasons = [evidenceReason]
         return null
       }
-      if (previous) {
+      if (previous && receipt) {
+        accumulateContinuityInventory(current, receipt, projection !== null)
         current.rounds[current.rounds.length - 1].phase = "acknowledged"
         current.receipt = receipt
         current.projection = projection
       }
       const final = previous && previous.kind !== "preparation"
       if (final && projection && receipt) {
-        current.assurance = continuityEvidenceAssurance(receipt, projection, { round: previous.kind, observedAt: new Date().toISOString() })
+        const unresolved = current.unresolvedInventory.knownJobs.length > 0 || current.unresolvedInventory.uncertainMutations.length > 0
+        current.assurance = continuityEvidenceAssurance(receipt, projection, {
+          round: previous.kind, observedAt: new Date().toISOString(), unresolvedInventory: unresolved,
+        })
         if (current.assurance.endReadiness !== "unconfirmed") {
           current.state = "verifying"
           current.reasons = []
           return null
         }
-        evidenceReason = "final-confirmation-unresolved"
+        evidenceReason = unresolved ? "prior-inventory-unresolved" : "final-confirmation-unresolved"
       }
       current.reasons = evidenceReason ? [evidenceReason] : []
       if (final && current.rounds.length >= 3) {

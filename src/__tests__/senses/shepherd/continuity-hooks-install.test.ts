@@ -137,6 +137,22 @@ describe("explicit native hook installation", () => {
     fs.writeFileSync(f.settingsPath, JSON.stringify(document))
     expect(() => planContinuityHookInstall(request)).toThrow(/duplicate/)
   })
+  it.each(["claude", "codex", "copilot"] as const)("refuses background execution drift in an owned %s hook without touching other hooks", runner => {
+    for (const flag of ["async", "asyncRewake"]) {
+      const f = fixture()
+      const request = { ...f, runner, version: runner === "copilot" ? "1.0.97" : runner === "claude" ? "2.1.299" : "0.162.1" }
+      installContinuityHook(planContinuityHookInstall(request))
+      const document = JSON.parse(fs.readFileSync(f.settingsPath, "utf8"))
+      const entries = document.hooks[runner === "copilot" ? "agentStop" : "Stop"]
+      const hook = runner === "copilot" ? entries[0] : entries[0].hooks[0]
+      hook[flag] = true
+      entries.push({ unrelated: true, async: true })
+      const bytes = JSON.stringify(document)
+      fs.writeFileSync(f.settingsPath, bytes)
+      expect(() => planContinuityHookInstall(request)).toThrow(/contract/)
+      expect(fs.readFileSync(f.settingsPath, "utf8")).toBe(bytes)
+    }
+  })
   it("checks formatted-byte bounds before replacing any settings", () => {
     const f = fixture()
     const content = JSON.stringify({ untouched: Array.from({ length: 20000 }, () => ({ x: 0 })) })
