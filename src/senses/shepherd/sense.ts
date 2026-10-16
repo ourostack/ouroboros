@@ -547,7 +547,13 @@ export async function startShepherdSenseApp(options: ShepherdSenseOptions): Prom
         observationSignature = fingerprint([...noticeBasis, record.kind, record.actionBlockReason === "custody" ? null : record.actionBlockReason ?? null])
         noticeSignature = record.action === "respond" ? fingerprint([observationSignature, "respond", record.reply])
           : record.dispatch?.state === "unknown" ? fingerprint([observationSignature, "unknown"]) : observationSignature
-        notice = custody.shouldNotify(noticeSignature)
+        try {
+          notice = custody.shouldNotify(noticeSignature)
+        } catch (error) {
+          notice = false
+          record.noticeState = "failed"
+          emitNervesEvent({ level: "error", component: "senses", event: "senses.shepherd_notice_error", message: "could not compare owner-notice suppression; no new delivery intent accepted", meta: { agent, reason: "signature_read_failed", error: (error as Error).message } })
+        }
       }
       try {
         if (notice && escalateOutcome) {

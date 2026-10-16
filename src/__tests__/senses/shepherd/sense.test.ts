@@ -14,6 +14,7 @@ import { ackFrame, startFakeCmux } from "./fake-cmux"
 import { recordShepherdCorrection, setShepherdSessionPause } from "../../../senses/shepherd/guidance"
 import { hookEvent, SCREENS, tree } from "./fixtures"
 import type { FeedbackWorkerOptions } from "../../../senses/shepherd/feedback-worker"
+import { openCheckInStore } from "../../../senses/shepherd/checkin-store"
 
 const mockRequestPrivateWake = vi.fn()
 vi.mock("../../../heart/daemon/socket-client", async (importOriginal) => ({
@@ -68,6 +69,32 @@ const verdict = (overrides: Partial<JudgeResult> = {}): JudgeResult => ({ kind: 
 const idleFeedbackWorker = () => ({ drain: async () => {}, stop() {} })
 
 describe("owner notice producer custody", () => {
+  it("audits an accepted action and keeps later returns running after a one-time signature-read failure", async () => {
+    const judge = vi.fn(async () => verdict())
+    const { host, notices } = await start(judge, fakeHost(), {
+      openCheckInStore: (file: string) => {
+        const store = openCheckInStore(file)
+        const shouldNotify = store.shouldNotify
+        let reads = 0
+        store.shouldNotify = signature => {
+          if (++reads === 1) throw new Error("SQLITE_BUSY fixture")
+          return shouldNotify(signature)
+        }
+        return store
+      },
+    })
+    host.screens.S1 = [SCREENS.claudePremature]
+    for (const transitionId of ["first", "next"]) host.handlers!.returned({
+      sessionId: "S1", transitionId, agent: "Copilot", cwd: "/project", lastBody: null, backgroundWork: false,
+    })
+    await vi.waitFor(() => expect(readReturns(agentRoot)).toHaveLength(2))
+    expect(judge).toHaveBeenCalledTimes(2)
+    expect(readReturns(agentRoot)[0]).toMatchObject({ action: "respond", noticeState: "failed" })
+    expect(readReturns(agentRoot)[1]).toMatchObject({ action: "let_through", noticeState: "queued" })
+    expect(notices).toHaveLength(1)
+    expect(host.actions.filter(action => action.startsWith("prompt "))).toHaveLength(1)
+  })
+
   it("does not advance its return chain while durable notice custody is still pending", async () => {
     const host = fakeHost()
     host.screens.S = [SCREENS.claudePremature]
