@@ -1,4 +1,5 @@
 import * as net from "node:net"
+import { createHash } from "node:crypto"
 import { emitNervesEvent } from "../../nerves/runtime"
 import { realSchedule } from "./cmux"
 import type { HostSession, HostWatchHandlers, ShepherdHost, ShepherdKey } from "./host"
@@ -130,7 +131,7 @@ export function createHerdrHost(connection: HerdrConnection, options: HerdrHostO
           focused: pane.focused === true,
         },
         // Herdr's semantic states do not establish a process start or composer.
-        instance: null, screen: redactSecrets(read.text), composer: "unknown",
+        instance: null, screen: redactSecrets(read.text), screenFingerprint: createHash("sha256").update(read.text).digest("hex"), composer: "unknown",
         activity: agent.agent_status === "working" ? "working" : RETURN_STATES.has(str(agent.agent_status) ?? "") ? "idle" : "unknown",
         backgroundWork: null,
       }

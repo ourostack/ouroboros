@@ -188,11 +188,13 @@ export function createCmuxHost(client: CmuxClient, options: CmuxHostOptions = {}
     const stable = sameBinding(before, current) && sameBinding(current, after) && first === screen
     const state = stable ? inspectCodingPrompt(after.agent ?? "unknown", screen) : { activity: "unknown", composer: "unknown" } as const
     const { workspaceId: _workspaceId, type: _type, ...session } = after
-    const inspection: ShepherdInspection = {
+    const screenFingerprint = createHash("sha256").update(screen).digest("hex")
+    const inspection = {
       session, instance: after.instance ?? null, screen: redactSecrets(screen), ...state,
+      screenFingerprint,
       backgroundWork: state.activity === "unknown" ? null : state.activity === "working",
     }
-    inspectedScreens.set(inspection, { hash: createHash("sha256").update(screen).digest("hex"), target: after })
+    inspectedScreens.set(inspection, { hash: screenFingerprint, target: after })
     return inspection
   }
 
