@@ -76,11 +76,25 @@ the current normalizer's early return for `notify` must not discard it. Do not
 add an environment variable, another process, another machine credential or a
 separate agent conversation runtime.
 
+Make the normalizer's Shepherd branch unconditional on
+`senseName === "shepherd"`; validate and preserve `notify` and `checkInMinutes`
+independently inside it, including when only the latter is set.
+
 One serial timer belongs to `startShepherdSenseApp`. At most one sweep is
 queued/running, with no catch-up burst after sleep. Shutdown cancels it and
 invalidates work already awaiting I/O. The cadence is measured between sweep
-starts using the existing injected clock/scheduler; ordinary events never wait
-for it. Config changes take effect on the normal sense restart.
+actual dequeued starts using the existing injected clock/scheduler. A busy
+serial chain can delay a sweep; it cannot start a concurrent sweep or accumulate
+missed sweeps. Record scheduling delay as telemetry, and schedule the next due
+start from the actual start rather than enqueuing catch-up work. Ordinary events
+never wait for a timer tick. Config changes take effect on the normal sense
+restart.
+
+Periodic rejudgment is a third typed variant of the existing `handle(event,
+recovery?)` path, enqueued onto the same `chain`. It reuses `guardFor()`,
+`latestReturns` invalidation and `guidanceFor()`. No periodic path calls
+`judge`, `host.prompt` or `host.key` outside that chain. Read-only discovery may
+prepare candidates; it cannot mutate dispatch guards or send independently.
 
 ## Discovery and startup
 
@@ -128,6 +142,9 @@ just a reusable PID, title, short surface ref or cwd. Extend the existing
 batched terminal-process lookup to obtain it. Ambiguous foreground roots or
 unavailable start identity leave inspection unknown; they do not select the
 first process as a scheduled-action authority.
+On unsupported operating systems or failed `ps`/process-start lookups, the
+new instance evidence is unavailable/unknown rather than a startup exception
+or a fabricated identifier.
 
 The cmux adapter must use explicitly named UUID targets and validate target
 echoes on the new inspection path. Never fall back to focus. Refresh its
@@ -143,6 +160,8 @@ or unverified state remain unknown and cannot receive scheduled input. Never
 clear or submit a pre-existing draft. Synthetic fixtures cover supported
 Copilot, Claude and Codex shapes; unsupported shapes are an honest no-send limit,
 not a guess that they are empty.
+This is a default-deny allowlist of known rendered shapes, not a general-purpose
+terminal parser that also accepts unrecognized providers by heuristic.
 
 A scheduled-count badge by itself is neither a running job nor a human blocker.
 Actual running subprocess/subagent indicators outrank the judge. Provider error
@@ -207,9 +226,10 @@ target resolution and immediately before initiating the paste. Preserve the
 existing no-focus behavior and never clear/replace input. Do not claim an atomic
 server-side compare-and-swap that the installed host does not expose.
 
-Use a small private SQLite custody table under the existing Shepherd state
-directory for scheduled attempts. Reuse the established dependency and private
-ownership/mode checks; no transaction spans host/model I/O. The key binds host,
+Use one small private SQLite custody database under the existing Shepherd state
+directory, mirroring `feedback-store.ts`'s `claimDelivery`/`completeDelivery`
+two-phase pattern and private ownership/mode checks. No transaction spans
+host/model I/O. The dispatch key binds host,
 stable session, process-start identity, source transition, judged screen
 fingerprint and guidance revision. Claims are kernel-owned and durable before
 send. A second worker or restart cannot send the same attempt twice.
@@ -222,10 +242,22 @@ erase unresolved attempt identity or silently turn an unknown send into
 definitely-not-sent. Bound ledger records; capacity or corruption is an explicit
 no-send error rather than eviction or an in-memory success fallback.
 
-Immediate return handling and network-recovery handling share loop/focus/
-guidance accounting with periodic handling. Design review must ensure they
-cannot race a periodic reservation or replay its uncertain input under a
-different trigger. Do not implement parallel sends to the same terminal.
+Immediate return, network recovery and periodic handling all use one dispatch
+reservation helper inside `handle`, before any automatic `prompt` or `key`.
+This is necessary even for an immediate attempt: otherwise an uncertain
+immediate send could later be replayed through the new periodic trigger.
+Store the trigger as metadata, not as part of a key that permits duplicate
+claims for the same input. A claimed/unknown attempt also places a durable
+host/session-instance barrier against all automatic input, not merely a
+same-fingerprint retry. A later tick, changed screen or different trigger
+cannot clear that barrier. When instance evidence is unavailable on an existing
+immediate path, its uncertainty barrier conservatively binds the stable
+host/session and cannot be evaded by a newly observed instance.
+
+Only positive transport completion closes its reservation; exceptions remain
+unknown. Existing immediate menu policy is otherwise unchanged. Shared
+loop/focus/guidance accounting remains in the existing chain. Do not introduce
+another automatic sender or parallel sends to a terminal.
 
 ## Low-noise visibility
 
@@ -238,8 +270,13 @@ An unchanged blocked/done/working/unknown session does not produce a repeated
 Teams notice, private wake or terminal status rewrite merely because a timer
 fired. Notify under the existing policy for an actual continuation or a
 meaningful newly changed human blocker. Do not alter ordinary return notices.
-Persist the suppression key so a restart cannot turn an unchanged blocker into
-a new hourly notification.
+Persist the suppression key in a non-dispatch table in that same SQLite
+custody database: host/session-instance plus classification signature and
+guidance revision maps to the last-notified evidence fingerprint/timestamp.
+This table must not claim a terminal send. Use it before issuing a periodic
+notice, and keep an unchanged blocker suppressed across restart. The existing
+notice outbox still owns delivery custody for the selected notice; it does not
+own cross-sweep classification suppression. Do not add another durable store.
 
 Provider/judge errors keep the scheduler alive and produce bounded error
 telemetry, not false “recovered” or “continued” outcomes. A failure in one
