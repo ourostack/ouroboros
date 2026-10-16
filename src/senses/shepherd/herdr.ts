@@ -2,6 +2,7 @@ import * as net from "node:net"
 import { emitNervesEvent } from "../../nerves/runtime"
 import { realSchedule } from "./cmux"
 import type { HostSession, HostWatchHandlers, ShepherdHost, ShepherdKey } from "./host"
+import { redactSecrets } from "./redact"
 
 /**
  * The Herdr host. Herdr detects every agent in its panes itself and publishes each change of its
@@ -111,6 +112,31 @@ export function createHerdrHost(connection: HerdrConnection, options: HerdrHostO
       const result = await call("pane.read", { pane_id: sessionId, source: "visible", strip_ansi: true })
       const read = isRecord(result.read) ? result.read : {}
       return typeof read.text === "string" ? read.text : ""
+    },
+    async inspect(sessionId) {
+      const pane = (await panes()).find(pane => pane.pane_id === sessionId)
+      if (!pane) throw new Error("Herdr inspection pane disappeared")
+      const result = await call("agent.get", { target: sessionId })
+      const agent = isRecord(result.agent) ? result.agent : {}
+      if (agent.pane_id !== sessionId) throw new Error("Herdr inspection agent target mismatch")
+      const response = await call("pane.read", { pane_id: sessionId, source: "visible", strip_ansi: true })
+      const read = isRecord(response.read) ? response.read : {}
+      if (read.pane_id !== sessionId || typeof read.text !== "string") throw new Error("Herdr inspection read target mismatch")
+      return {
+        session: {
+          id: sessionId, ref: sessionId, workspace: str(pane.workspace_id),
+          title: str(pane.title) ?? str(pane.terminal_title_stripped) ?? str(pane.label) ?? "",
+          agent: str(agent.agent), cwd: str(agent.foreground_cwd) ?? str(agent.cwd),
+          focused: pane.focused === true,
+        },
+        // Herdr's semantic states do not establish a process start or composer.
+        instance: null, screen: redactSecrets(read.text), composer: "unknown",
+        activity: agent.agent_status === "working" ? "working" : RETURN_STATES.has(str(agent.agent_status) ?? "") ? "idle" : "unknown",
+        backgroundWork: null,
+      }
+    },
+    async promptIfUnchanged() {
+      return { state: "not_sent", reason: "Herdr cannot verify process-start identity and empty composer" }
     },
     async prompt(sessionId, line) {
       // Herdr pastes the text as one block and then presses Enter; a blocked agent is refused without input.
