@@ -15,7 +15,7 @@ import { claimPendingNotices, declareNoticeTargets, enqueueNotice, noticeDeliver
  * policy covers whether or not the Ouro agent decides it matters. Returns that arrive close together share one message.
  */
 export const NOTICE_COALESCE_MS = 5_000
-/** Returns named one by one in a coalesced message; the rest are counted. */
+/** Distinct sessions named in a digest; the remaining sessions are counted. */
 export const NOTICE_LIST_MAX = 6
 export const NOTICE_RETRY_MS = 30_000
 const NAME_MAX = 60
@@ -85,12 +85,28 @@ export function noticeLine(record: ReturnRecord, location?: string | HostSession
   }
 }
 
-/** One message for a burst: a single return is its line; several are a short list, the extra ones counted. */
-export function noticeMessage(records: ReturnRecord[], refs: ReadonlyMap<string, string | HostSession> = new Map()): string {
-  const lines = records.slice(0, NOTICE_LIST_MAX).map((record) => noticeLine(record, refs.get(record.session)))
-  if (records.length === 1) return lines[0]!
-  const more = records.length - lines.length
-  return [`${records.length} coding agents stopped:`, ...lines.map((line) => `- ${line}`), ...(more > 0 ? [`- and ${more} more.`] : [])].join("\n")
+/** A bounded display of latest observations; all input records retain delivery custody. */
+export function noticeMessage(records: ReturnRecord[], refs: ReadonlyMap<string, string | HostSession> = new Map(), context: { recovered?: boolean } = {}): string {
+  const latest = new Map<string, ReturnRecord>()
+  for (const record of records) {
+    const key = JSON.stringify([record.host, record.session])
+    const previous = latest.get(key)
+    const at = Date.parse(record.at)
+    const previousAt = previous ? Date.parse(previous.at) : NaN
+    if (!previous || (Number.isFinite(at) && (!Number.isFinite(previousAt) || at > previousAt))
+      || ((!Number.isFinite(at) && !Number.isFinite(previousAt) || at === previousAt) && record.transition > previous.transition)) latest.set(key, record)
+  }
+  const sessions = [...latest].sort(([a], [b]) => a < b ? -1 : a > b ? 1 : 0).map(([, record]) => record)
+  const lines = sessions.slice(0, NOTICE_LIST_MAX).map(record => {
+    const line = noticeLine(record, refs.get(record.session))
+    if (!context.recovered) return line
+    const at = Date.parse(record.at)
+    return `${line} (${Number.isFinite(at) ? `observed at ${new Date(at).toISOString()}` : "observation time unknown"})`
+  })
+  const more = sessions.length - lines.length
+  const body = sessions.length === 1 ? lines[0]!
+    : [`Updates from ${sessions.length} coding sessions:`, ...lines.map(line => `- ${line}`), ...(more > 0 ? [`- and ${more} more.`] : [])].join("\n")
+  return context.recovered ? `Includes recovered historical observations, not live status:\n${body}` : body
 }
 
 export interface NoticeTarget {
@@ -207,13 +223,20 @@ export function createOwnerNotifier(options: OwnerNotifierOptions): OwnerNotifie
   const resolveTargets = options.resolveTargets ?? (() => resolveNoticeTargets(options.agentRoot))
   const send = options.send ?? createTeamsNoticeSender(options.agentRoot)
   const retryWrites = new Map<string, ReturnRecord>()
+  const recoveredNoticeIds = new Set<string>()
   const writes = new Set<Promise<string>>()
   let cancel: (() => void) | null = null
   let stopped = false
   let flushing: Promise<void> | null = null
+  let drainRequested = false
 
   function schedule(ms: number): void {
-    if (!stopped && policy !== "off") cancel ??= options.schedule(() => { void flush() }, ms)
+    if (!stopped && policy !== "off") cancel ??= options.schedule(() => {
+      cancel?.()
+      cancel = null
+      if (flushing) drainRequested = true
+      else void flush()
+    }, ms)
   }
 
   function persistIntent(record: ReturnRecord): Promise<string> {
@@ -252,6 +275,7 @@ export function createOwnerNotifier(options: OwnerNotifierOptions): OwnerNotifie
         // Without the host's handles, each notice names a short session id instead.
       }
       const targets = await resolveTargets()
+      if (stopped) return
       if (targets.length === 0) {
         emitNervesEvent({ level: "warn", component: "senses", event: "senses.shepherd_notice_no_target", message: "no family friend is reachable on Teams, so the Shepherd owner notice was not sent", meta: { agent, returns: entries.length } })
         schedule(NOTICE_RETRY_MS)
@@ -263,14 +287,19 @@ export function createOwnerNotifier(options: OwnerNotifierOptions): OwnerNotifie
         delivery.state === "pending" && !reachable.has(friendId),
       ))
       for (const target of targets) {
+        if (stopped) break
         const pending = entries.filter(entry => noticeDeliveryState(entry, target.friendId) === "pending")
-        for (let start = 0; start < pending.length && !stopped; start += NOTICE_LIST_MAX) {
+        if (pending.length > 0) {
           // Only the worker that atomically claims a pending entry may initiate transport.
-          const batch = await claimPendingNotices(options.agentRoot, pending.slice(start, start + NOTICE_LIST_MAX).map(entry => entry.id), target.friendId, new Date().toISOString())
+          const batch = await claimPendingNotices(options.agentRoot, pending.map(entry => entry.id), target.friendId, new Date().toISOString())
           if (batch.length === 0) continue
           const ids = batch.map(entry => entry.id)
+          if (stopped) {
+            await recordNoticeDelivery(options.agentRoot, ids, target.friendId, { state: "pending", at: new Date().toISOString(), reason: "stopped before transport" })
+            break
+          }
           try {
-            const result = await send(target, noticeMessage(batch.map(entry => entry.record), refs))
+            const result = await send(target, noticeMessage(batch.map(entry => entry.record), refs, { recovered: ids.some(id => recoveredNoticeIds.has(id)) }))
             const state = result.delivered ? "sent"
               : result.delivery ? result.delivery.state === "not_sent" ? "pending" : "unknown"
                 : result.reason && result.reason !== "send_error" ? "pending" : "unknown"
@@ -299,12 +328,19 @@ export function createOwnerNotifier(options: OwnerNotifierOptions): OwnerNotifie
 
   function flush(): Promise<void> {
     if (flushing) return flushing
-    flushing = runFlush().finally(() => { flushing = null })
+    flushing = runFlush().finally(() => {
+      flushing = null
+      if (drainRequested) {
+        drainRequested = false
+        schedule(NOTICE_COALESCE_MS)
+      }
+    })
     return flushing
   }
 
   try {
     const existing = readNoticeOutbox(options.agentRoot)
+    for (const entry of existing) recoveredNoticeIds.add(entry.id)
     if (existing.some(entry => Object.keys(entry.deliveries).length === 0 || Object.values(entry.deliveries).some(value => value.state === "pending"))) schedule(NOTICE_RETRY_MS)
   } catch (error) {
     emitNervesEvent({ level: "error", component: "senses", event: "senses.shepherd_notice_error", message: "could not read waiting Shepherd owner notices", meta: { agent, error: (error as Error).message } })

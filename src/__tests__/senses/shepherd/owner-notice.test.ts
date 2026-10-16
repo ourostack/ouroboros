@@ -116,10 +116,30 @@ describe("owner notice text", () => {
   it("puts a burst in one message and counts what does not fit", () => {
     expect(noticeMessage([record()], new Map([["0a1b2c3d-4e5f", "surface:12"]]))).toBe(noticeLine(record(), "surface:12"))
     const two = noticeMessage([record(), record({ session: "S2", kind: "gate", agent: "Codex" })], new Map([["S2", "surface:2"]]))
-    expect(two.split("\n")).toEqual(["2 coding agents stopped:", `- ${noticeLine(record())}`, `- ${noticeLine(record({ session: "S2", kind: "gate", agent: "Codex" }), "surface:2")}`])
+    expect(two.split("\n")).toEqual(["Updates from 2 coding sessions:", `- ${noticeLine(record())}`, `- ${noticeLine(record({ session: "S2", kind: "gate", agent: "Codex" }), "surface:2")}`])
     const many = noticeMessage(Array.from({ length: 9 }, (_, index) => record({ session: `S${index}` })))
     expect(many.split("\n")).toHaveLength(1 + 6 + 1)
     expect(many.split("\n").at(-1)).toBe("- and 3 more.")
+  })
+
+  it("counts six observations of one stable target as one session and displays the latest", () => {
+    const records = Array.from({ length: 6 }, (_, index) => record({
+      at: `2026-10-12T20:0${index}:00.000Z`, reason: `observation-${index}`,
+    }))
+    const original = structuredClone(records)
+    expect(noticeMessage(records)).toBe(noticeLine(records[5]!))
+    expect(noticeMessage([...records].reverse())).toBe(noticeLine(records[5]!))
+    expect(records).toEqual(original)
+    expect(noticeMessage([records[0]!, { ...records[1]!, host: "other-host" }])).toContain("Updates from 2 coding sessions:")
+  })
+
+  it("labels recovered observations with their own time, never restart time or live status", () => {
+    const message = noticeMessage([record({ at: "invalid-time" })], new Map(), { recovered: true })
+    expect(message).toMatch(/historical/i)
+    expect(message).toContain("observation time unknown")
+    expect(message).not.toContain("invalid-time")
+    const dated = noticeMessage([record()], new Map(), { recovered: true })
+    expect(dated).toContain("2026-10-12T20:00:00.000Z")
   })
 })
 
@@ -366,13 +386,67 @@ describe("owner notifier", () => {
     expect(noticeDeliveryState(readNoticeOutbox(root)[0]!, ari.friendId)).toBe("unknown")
   })
 
-  it("delivers the what and why for every return instead of replacing excess returns with a count", async () => {
+  it("bounds a burst to one digest while preserving receipts for undisplayed sessions", async () => {
     const { instance, sent } = notifier()
     for (let index = 0; index < 9; index++) await instance.notify(record({ session: `S${index}`, reason: `reason-${index}` }))
     await instance.flush()
-    expect(sent).toHaveLength(2)
-    expect(sent.map(value => value.text).join("\n")).not.toContain("and 3 more")
-    for (let index = 0; index < 9; index++) expect(sent.map(value => value.text).join("\n")).toContain(`reason-${index}`)
+    expect(sent).toHaveLength(1)
+    expect(sent[0]!.text).toContain("Updates from 9 coding sessions:")
+    expect(sent[0]!.text).toContain("and 3 more")
+    expect(readNoticeOutbox(root).every(entry => entry.deliveries[ari.friendId]?.state === "sent")).toBe(true)
+  })
+
+  it("turns a recovered 207-observation backlog into one historical digest with one receipt relationship", async () => {
+    const first = notifier()
+    for (let index = 0; index < 207; index++) await first.instance.notify(record({ session: `S${index % 7}` }))
+    first.instance.stop()
+    const send = vi.fn(async () => ({ delivered: true, delivery: { state: "accepted" as const, messageId: "digest-accepted" } }))
+    const recovered = notifier({ send })
+    await recovered.instance.flush()
+    expect(send).toHaveBeenCalledTimes(1)
+    expect(send.mock.calls[0]).toEqual([ari, expect.stringContaining("Updates from 7 coding sessions:")])
+    expect(send.mock.calls[0]).toEqual([ari, expect.stringMatching(/historical/i)])
+    const entries = readNoticeOutbox(root)
+    expect(entries).toHaveLength(207)
+    expect(entries.every(entry => entry.deliveries[ari.friendId]?.messageId === "digest-accepted")).toBe(true)
+  })
+
+  it("drains work accepted while an earlier send and its scheduled callback are in flight", async () => {
+    const begun = Promise.withResolvers<void>()
+    const release = Promise.withResolvers<void>()
+    const send = vi.fn(async () => {
+      if (send.mock.calls.length === 1) { begun.resolve(); await release.promise }
+      return { delivered: true }
+    })
+    const { instance } = notifier({ send })
+    await instance.notify(record())
+    const active = instance.flush()
+    await begun.promise
+    await instance.notify(record({ session: "new-session" }))
+    const fired = tasks.shift()!
+    fired.fn()
+    release.resolve()
+    await active
+    expect(tasks).toHaveLength(1)
+    tasks.shift()!.fn()
+    await vi.waitFor(() => expect(send).toHaveBeenCalledTimes(2))
+    await instance.flush()
+    expect(readNoticeOutbox(root).every(entry => entry.deliveries[ari.friendId]?.state === "sent")).toBe(true)
+    instance.stop()
+  })
+
+  it("does not start a send when stopped during an asynchronous claim", async () => {
+    const { instance, sent } = notifier()
+    await instance.notify(record())
+    const rename = vi.mocked(fs.renameSync).getMockImplementation()!
+    let publications = 0
+    vi.mocked(fs.renameSync).mockImplementation((from, to) => {
+      rename(from, to)
+      if (++publications === 2) instance.stop()
+    })
+    await instance.flush()
+    expect(sent).toEqual([])
+    expect(readNoticeOutbox(root)[0]!.deliveries[ari.friendId]?.state).toBe("pending")
   })
 
   it("persists no-target returns for delivery after linking an owner", async () => {

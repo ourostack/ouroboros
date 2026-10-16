@@ -173,6 +173,16 @@ afterEach(() => {
 })
 
 describe("Shepherd sense: answering premature returns", () => {
+  it("suppresses equivalent immediate observations without depending on transition IDs or reason paraphrases", async () => {
+    let calls = 0
+    const { host, returned, notices } = await start(async () => verdict({ kind: "gate", reply: null, reason: `Review remains pending (${++calls})` }))
+    host.screens.S1 = ["Build 42 awaits review"]
+    await returned({ sessionId: "S1", transitionId: "first-observation" })
+    await returned({ sessionId: "S1", transitionId: "second-observation" })
+    expect(notices).toHaveLength(1)
+    expect(host.actions.some(action => action.startsWith("prompt "))).toBe(false)
+  })
+
   it("owns one feedback worker in this agent's existing sense process and stops it with the sense", async () => {
     const opened: FeedbackWorkerOptions[] = []
     let closed = 0

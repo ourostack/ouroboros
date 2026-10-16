@@ -376,6 +376,12 @@ export async function startShepherdSenseApp(options: ShepherdSenseOptions): Prom
     /** False for a return nothing new was decided about: the loop guard still holds, or the same background wait. */
     let notice = true
     let noticeSignature: string | null = null
+    let observationSignature: string | null = null
+    let noticeBasis: unknown[] | null = null
+    let status: string | null = null
+    let quietWorkingStatus = false
+    let escalateOutcome = false
+    let wakeOutcome = false
     let judged = false
     try {
       let current: ShepherdInspection | undefined
@@ -439,16 +445,18 @@ export async function startShepherdSenseApp(options: ShepherdSenseOptions): Prom
       const news = verdict.news === true || (kind === "working" && verdict.kind === "gate")
       Object.assign(record, { kind, reason: verdict.reason, latencyMs: verdict.latencyMs, inputTokens: verdict.inputTokens })
       if (!recovery && !periodic && kind === "waiting" && verdict.waitingOnNetwork) rememberNetworkWait(event, screen)
-      noticeSignature = fingerprint([host.name, event.sessionId, record.agent, record.cwd, record.task, screen, guidance.revision, kind])
-      notice = !periodic || custody.shouldNotify(noticeSignature)
+      const noticeScreen = screen.replace(/\b\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})\b/g, "<observation-time>")
+      noticeBasis = [host.name, event.sessionId, record.agent, record.cwd, record.task, noticeScreen, guidance.revision]
+      notice = true
       // A terminal that keeps going quiet without needing anything is checked less often.
       if (!periodic) host.pace?.(event.sessionId, kind === "working" || kind === "unclear")
       state.answers = state.answers.filter((at) => now() - at < 3_600_000)
       if (kind === "working") {
         // Still working: a progress update, never an answer. It reaches the Ouro agent only when it carries news, and wakes nothing.
-        if (news && notice) escalate(escalationContent(record, human))
+        if (news) escalateOutcome = true
         else notice = false
-        if (!periodic || notice) await host.signal(event.sessionId, field(`${record.agent ?? "agent"} waiting on its background work: ${verdict.reason}`, 120))
+        quietWorkingStatus = !periodic && !news
+        status = `${record.agent ?? "agent"} waiting on its background work: ${verdict.reason}`
       }
       if (kind === "premature" && verdict.reply) {
         if ((recovery || periodic) && "key" in verdict.reply) {
@@ -496,20 +504,35 @@ export async function startShepherdSenseApp(options: ShepherdSenseOptions): Prom
                 Object.assign(record, { action: "respond", reply: "key" in reply ? `key:${reply.key}` : reply.text })
                 state.streak += 1
                 state.answers.push(now())
-                if (!periodic || notice) await host.signal(event.sessionId, field(`answered for ${human}: ${verdict.reason}`, 120))
+                status = `answered for ${human}: ${verdict.reason}`
               }
             }
           }
         }
       }
-      if ((!periodic || notice) && (record.kind === "gate" || record.kind === "done" || record.kind === "waiting" || record.kind === "loop_guard")) {
-        escalate(escalationContent(record, human))
-        requestWake(record.transition)
-        await host.signal(event.sessionId, field(`${record.kind === "gate" ? `needs ${human}` : record.kind === "done" ? "done" : record.kind === "waiting" ? "waiting on an outside dependency" : "stopped answering"}: ${verdict.reason}`, 120))
+      if (record.kind === "gate" || record.kind === "done" || record.kind === "waiting" || record.kind === "loop_guard") {
+        escalateOutcome = true
+        wakeOutcome = true
+        status = `${record.kind === "gate" ? `needs ${human}` : record.kind === "done" ? "done" : record.kind === "waiting" ? "waiting on an outside dependency" : "stopped answering"}: ${verdict.reason}`
       }
     } catch (error) {
       Object.assign(record, { kind: record.reason ? record.kind : "error", reason: `${record.reason ? `${record.reason}; then ` : ""}${(error as Error).message}` })
     } finally {
+      if (noticeBasis && notice) {
+        observationSignature = fingerprint([...noticeBasis, record.kind])
+        noticeSignature = record.action === "respond" ? fingerprint([observationSignature, "respond", record.reply])
+          : record.dispatch?.state === "unknown" ? fingerprint([observationSignature, "unknown"]) : observationSignature
+        notice = custody.shouldNotify(noticeSignature)
+      }
+      try {
+        if (notice && escalateOutcome) {
+          escalate(escalationContent(record, human))
+          if (wakeOutcome) requestWake(record.transition)
+        }
+        if (status && (notice || quietWorkingStatus)) await host.signal(event.sessionId, field(status, 120))
+      } catch (error) {
+        record.reason += `; outcome signaling failed: ${(error as Error).message}`
+      }
       record.noticeEligible = notice
       if (notice) {
         try {
@@ -517,7 +540,11 @@ export async function startShepherdSenseApp(options: ShepherdSenseOptions): Prom
           record.noticeState = acceptance.state
           if (acceptance.state === "queued") record.noticeId = acceptance.noticeId
           else record.noticeSuppressionReason = acceptance.reason
-          if (noticeSignature && (acceptance.state === "queued" || acceptance.reason === "policy")) custody.markNotified(noticeSignature, record.at)
+          if (noticeSignature && (acceptance.state === "queued" || acceptance.reason === "policy")) {
+            custody.markNotified(noticeSignature, record.at)
+            // A sent/uncertain effect also settles the unchanged observation, not just that action outcome.
+            if (observationSignature && observationSignature !== noticeSignature) custody.markNotified(observationSignature, record.at)
+          }
         }
         catch (error) {
           record.noticeState = "failed"

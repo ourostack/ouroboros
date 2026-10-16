@@ -532,7 +532,7 @@ describe("fresh all-returned-session periodic check-ins", () => {
     expect(readReturns(root).at(-1)?.reason).toContain("cannot verify")
   })
 
-  it("can safely send a previously refused attempt at a future cadence without repeating unchanged status", async () => {
+  it("reports the changed outcome when a previously refused attempt is safely sent at a future cadence", async () => {
     host.promptIfUnchanged = vi.fn()
       .mockResolvedValueOnce({ state: "not_sent", reason: "pre-input guard" })
       .mockImplementation(async (id, line) => { actions.push(`prompt ${id} ${line}`); return { state: "sent" } })
@@ -542,7 +542,23 @@ describe("fresh all-returned-session periodic check-ins", () => {
     await advance(3_600_000)
     await advance(8000)
     expect(prompts()).toHaveLength(1)
-    expect(actions.filter(action => action.startsWith("status "))).toHaveLength(statuses)
+    expect(actions.filter(action => action.startsWith("status "))).toHaveLength(statuses + 1)
+    expect(notices).toHaveLength(2)
+  })
+
+  it("ignores ISO observation timestamps only for notice suppression, not meaningful counters", async () => {
+    inspections.S!.screen = "Build 42 awaits review. Observed 2026-10-16T04:00:00Z"
+    await start(vi.fn(async () => verdict("gate")))
+    await advance(8000)
+    expect(notices).toHaveLength(1)
+    inspections.S!.screen = "Build 42 awaits review. Observed 2026-10-16T05:00:00Z"
+    await advance(3_600_000)
+    await advance(8000)
+    expect(notices).toHaveLength(1)
+    inspections.S!.screen = "Build 43 awaits review. Observed 2026-10-16T06:00:00Z"
+    await advance(3_600_000)
+    await advance(8000)
+    expect(notices).toHaveLength(2)
   })
 
   it("still closes custody when an unexpected synchronous callback rejects the serial chain", async () => {
