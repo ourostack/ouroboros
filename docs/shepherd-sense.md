@@ -58,6 +58,9 @@ PID-plus-start instance, positively idle state, no running background work and a
 positively empty composer. cmux supports tested Copilot, Claude Code and Codex
 rendered shapes; unknown/clipped layouts, ambiguous placeholders, menus and drafts
 are default-deny. The model name in a footer does not establish harness identity.
+Copilot's block-framed composer recognizes its current `╻` top border as well as
+the already supported `╭` variant, with matching border widths; neither variant relaxes
+the empty-composer, background-work or approval/menu checks.
 Herdr currently lacks verified process-start/empty-composer evidence, so periodic
 checks there are read/judge-only. Its ordinary immediate-return policy is unchanged.
 
