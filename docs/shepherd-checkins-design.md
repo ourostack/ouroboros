@@ -131,6 +131,7 @@ interface ShepherdInspection {
   session: HostSession
   instance: string | null
   screen: string
+  screenFingerprint: string
   activity: "idle" | "working" | "unknown"
   composer: "empty" | "draft" | "unknown"
   backgroundWork: boolean | null
@@ -147,6 +148,14 @@ instance means unknown, never a fabricated identifier or a startup exception.
 On unsupported operating systems or failed `ps`/process-start lookups, the
 new instance evidence is unavailable/unknown rather than a startup exception
 or a fabricated identifier.
+
+The screen fingerprint is an opaque digest of the exact raw screen, so changes
+hidden by exported redaction still invalidate the quiet interval and judgment.
+The guarded input call receives the original judged inspection, not a copied or
+newer snapshot. Its optional synchronous `canSend` callback rechecks the parent's
+event generation, current guidance, focus hold and shutdown state after all
+adapter I/O, immediately before attempting input. This closes awaited-lookup
+invalidation without claiming a server-side atomic compare-and-swap.
 
 The cmux adapter must use explicitly named UUID targets and validate target
 echoes on the new inspection path. Never fall back to focus. Refresh its

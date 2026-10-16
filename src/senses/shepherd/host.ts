@@ -33,6 +33,8 @@ export interface ShepherdInspection {
   session: HostSession
   instance: string | null
   screen: string
+  /** Opaque digest of the exact raw screen, including changes hidden by redaction. */
+  screenFingerprint: string
   activity: "idle" | "working" | "unknown"
   composer: "empty" | "draft" | "unknown"
   backgroundWork: boolean | null
@@ -76,7 +78,8 @@ export interface ShepherdHost {
   /** The screen tail with scrollback, plain text. */
   read(sessionId: string, lines: number): Promise<string>
   inspect?(sessionId: string): Promise<ShepherdInspection>
-  promptIfUnchanged?(sessionId: string, line: string, expected: ShepherdInspection): Promise<GuardedPromptResult>
+  /** canSend is checked synchronously after adapter I/O, immediately before attempting input. */
+  promptIfUnchanged?(sessionId: string, line: string, expected: ShepherdInspection, canSend?: () => boolean): Promise<GuardedPromptResult>
   /** Types one line and submits it, so it cannot be mistaken for a paste or a keystroke. */
   prompt(sessionId: string, line: string): Promise<void>
   key(sessionId: string, key: ShepherdKey): Promise<void>
