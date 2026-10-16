@@ -101,6 +101,8 @@ export interface HabitSessionToolContext {
 export interface ToolContext {
   /** A validated immutable terminal locator, not relationship authority. */
   readonly currentShepherdSurface?: import("../senses/shepherd/surface").ShepherdSession;
+  /** Trusted turn-local subtraction from the normal engine menu; never grants a tool. */
+  readonly allowedEngineTools?: readonly string[];
   graphToken?: string;
   adoToken?: string;
   githubToken?: string;

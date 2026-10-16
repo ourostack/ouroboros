@@ -12,6 +12,7 @@ import { escalationContent, field, humanName, noticePolicy, queueEscalation, sta
 import { ackFrame, startFakeCmux } from "./fake-cmux"
 import { recordShepherdCorrection, setShepherdSessionPause } from "../../../senses/shepherd/guidance"
 import { hookEvent, SCREENS, tree } from "./fixtures"
+import type { FeedbackWorkerOptions } from "../../../senses/shepherd/feedback-worker"
 
 const mockRequestPrivateWake = vi.fn()
 vi.mock("../../../heart/daemon/socket-client", async (importOriginal) => ({
@@ -63,6 +64,7 @@ function fakeHost(): FakeHost {
 }
 
 const verdict = (overrides: Partial<JudgeResult> = {}): JudgeResult => ({ kind: "premature", reply: { text: "Go ahead and implement it." }, reason: "It stopped after a plan.", latencyMs: 900, inputTokens: 1200, ...overrides })
+const idleFeedbackWorker = () => ({ drain: async () => {}, stop() {} })
 
 describe("owner notice producer custody", () => {
   it("does not advance its return chain while durable notice custody is still pending", async () => {
@@ -75,6 +77,7 @@ describe("owner notice producer custody", () => {
     const app = await startShepherdSenseApp({
       agentName: AGENT, now: () => clock, createHost: () => host, judge,
       escalate: () => {}, wake: async () => {}, notifyOwner, schedule,
+      feedbackWorker: idleFeedbackWorker,
     })
     stop = app.stop
     const event = (transitionId: string): ReturnedControl => ({
@@ -97,6 +100,7 @@ describe("owner notice producer custody", () => {
     const app = await startShepherdSenseApp({
       agentName: AGENT, now: () => clock, createHost: () => host, judge,
       escalate: () => {}, wake: async () => {}, notifyOwner, schedule,
+      feedbackWorker: idleFeedbackWorker,
     })
     stop = app.stop
     for (const transitionId of ["first", "second"]) host.handlers!.returned({
@@ -128,6 +132,7 @@ async function start(judge: (packet: ReturnPacket) => Promise<JudgeResult>, host
     wake: async (ids) => { wakes.push(ids) },
     notifyOwner: (record) => { notices.push(record) },
     schedule,
+    feedbackWorker: idleFeedbackWorker,
     ...recovery,
   })
   stop = app.stop
@@ -165,6 +170,20 @@ afterEach(() => {
 })
 
 describe("Shepherd sense: answering premature returns", () => {
+  it("owns one feedback worker in this agent's existing sense process and stops it with the sense", async () => {
+    const opened: FeedbackWorkerOptions[] = []
+    let closed = 0
+    await start(async () => verdict(), fakeHost(), { feedbackWorker: (options: FeedbackWorkerOptions) => {
+      opened.push(options)
+      return { drain: async () => {}, stop() { closed++ } }
+    } })
+    expect(opened).toHaveLength(1)
+    expect(opened[0]).toMatchObject({ agent: AGENT, agentRoot, now: expect.any(Function), schedule: expect.any(Function) })
+    stop!()
+    stop = null
+    expect(closed).toBe(1)
+  })
+
   it("attributes automatic replies to the configured supervising agent's display identity", async () => {
     fs.writeFileSync(path.join(agentRoot, "agent.json"), JSON.stringify({ displayName: "Orchid One" }))
     const { host, returned } = await start(async () => verdict())
@@ -745,7 +764,7 @@ describe("Shepherd sense: the default owner notice", () => {
     const host = fakeHost()
     host.screens.S1 = [SCREENS.claudePremature]
     const list = vi.spyOn(host, "list")
-    const app = await startShepherdSenseApp({ agentName: AGENT, now: () => clock, createHost: () => host, judge: async () => verdict(), escalate: () => undefined, wake: async () => undefined, schedule })
+    const app = await startShepherdSenseApp({ agentName: AGENT, now: () => clock, createHost: () => host, judge: async () => verdict(), escalate: () => undefined, wake: async () => undefined, schedule, feedbackWorker: idleFeedbackWorker })
     stop = app.stop
     host.handlers!.returned({ transitionId: "n1", sessionId: "S1", agent: "claude", cwd: "/Users/a/code/app", lastBody: null, backgroundWork: null })
     await vi.waitFor(() => expect(readReturns(agentRoot).some((record) => record.transition === "n1")).toBe(true))

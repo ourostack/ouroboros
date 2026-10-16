@@ -31,6 +31,22 @@ afterEach(() => {
   resetRuntimeCredentialConfigCache()
 })
 describe("family-only Shepherd guidance tools", () => {
+  it("defaults bound feedback history/corrections/guidance to that session and refuses a different one", async () => {
+    appendReturn(root, { ...returned, session: "other", transition: "t2" })
+    const bound = { ...ctx(), currentShepherdSurface: { id: "gone", host: "cmux" as const, label: "selected" } }
+    expect((await call("shepherd_history", {}, bound)).returns.map((record: ReturnRecord) => record.session)).toEqual(["gone"])
+    expect((await call("shepherd_history", { session: "other" }, bound)).error).toContain("bound")
+    const args = { request_id: "default-bound", feedback: "Do not stop at the plan.", principle: "Finish the requested implementation." }
+    expect(await call("shepherd_correct", args, bound)).toMatchObject({ revision: 1 })
+    const second = { ...bound, currentShepherdSurface: { id: "other", host: "cmux" as const, label: "other" } }
+    expect((await call("shepherd_correct", args, second)).error).toContain("different body")
+    expect(await call("shepherd_correct", { ...args, request_id: "second-source" }, second)).toMatchObject({ revision: 2 })
+    const guidance = await call("shepherd_guidance", {}, bound)
+    expect(guidance.principles).toHaveLength(1)
+    expect(readGuidance(root).corrections.map(record => record.target.session)).toEqual(["gone", "other"])
+    expect((await call("shepherd_history")).returns).toHaveLength(2)
+  })
+
   it("provides a deterministic human label without changing the full correction identifier", async () => {
     const history = await call("shepherd_history")
     expect(history.returns[0].displayId).toBe("22e694c3")

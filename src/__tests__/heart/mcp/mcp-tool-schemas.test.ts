@@ -3,7 +3,7 @@ import { emitNervesEvent } from "../../../nerves/runtime"
 import { getToolSchemas } from "../../../heart/mcp/mcp-server"
 
 describe("MCP tool schemas", () => {
-  it("returns exactly 15 tool schemas", () => {
+  it("returns exactly 17 tool schemas", () => {
     emitNervesEvent({
       component: "daemon",
       event: "daemon.mcp_schema_test_start",
@@ -12,7 +12,7 @@ describe("MCP tool schemas", () => {
     })
 
     const schemas = getToolSchemas()
-    expect(schemas).toHaveLength(15)
+    expect(schemas).toHaveLength(17)
 
     emitNervesEvent({
       component: "daemon",
