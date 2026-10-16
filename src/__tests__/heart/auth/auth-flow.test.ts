@@ -88,6 +88,25 @@ function emitTestEvent(testName: string): void {
 
 const cleanup: string[] = []
 
+describe("Shepherd cadence configuration parity", () => {
+  it.each([
+    { enabled: true, checkInMinutes: 30 },
+    { enabled: true, notify: "off", checkInMinutes: 0 },
+  ])("preserves cadence through the actual auth config reader: %j", shepherd => {
+    const bundlesRoot = makeTempDir("checkin-auth-config")
+    writeAgentConfig(bundlesRoot, "CheckInBot", "anthropic", { senses: { shepherd } })
+    expect(readAgentConfigForAgent("CheckInBot", bundlesRoot).config).toMatchObject({ senses: { shepherd } })
+  })
+
+  it("refuses an invalid explicit cadence through the auth reader", () => {
+    const bundlesRoot = makeTempDir("checkin-auth-invalid")
+    writeAgentConfig(bundlesRoot, "CheckInBot", "anthropic", {
+      senses: { shepherd: { enabled: true, checkInMinutes: 5 } },
+    })
+    expect(() => readAgentConfigForAgent("CheckInBot", bundlesRoot)).toThrow("checkInMinutes")
+  })
+})
+
 function makeTempDir(prefix: string): string {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), `${prefix}-`))
   cleanup.push(dir)

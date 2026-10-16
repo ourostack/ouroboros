@@ -5,6 +5,7 @@ import { emitNervesEvent } from "../nerves/runtime"
 import { migrateAgentConfigV1ToV2 } from "./migrate-config"
 import { DEFAULT_HABIT_PAID_TURNS_PER_DAY, normalizeHabitPaidTurnsPerDay } from "./autonomy-budget"
 import { validateAgentDisplayName } from "../senses/shepherd/agent-presentation"
+import { normalizeShepherdCheckInMinutes } from "../senses/shepherd/checkin-config"
 
 export { normalizeHabitPaidTurnsPerDay } from "./autonomy-budget"
 
@@ -43,6 +44,7 @@ export interface AgentSenseConfig {
    * loop guard), or "off".
    */
   notify?: ShepherdNoticePolicy
+  checkInMinutes?: number
 }
 
 export type ShepherdNoticePolicy = "every" | "needs-me" | "off"
@@ -282,9 +284,9 @@ export function normalizeSenses(value: unknown, configFile: string): AgentSenses
       defaults[senseName] = { enabled, hostUsername: hostUsername.trim() }
       continue
     }
-    const notify = (rawSense as Record<string, unknown>).notify
-    if (senseName === "shepherd" && notify !== undefined) {
-      if (!SHEPHERD_NOTICE_POLICIES.includes(notify as ShepherdNoticePolicy)) {
+    if (senseName === "shepherd") {
+      const notify = (rawSense as Record<string, unknown>).notify
+      if (notify !== undefined && !SHEPHERD_NOTICE_POLICIES.includes(notify as ShepherdNoticePolicy)) {
         emitNervesEvent({
           level: "error",
           event: "config_identity.error",
@@ -294,7 +296,13 @@ export function normalizeSenses(value: unknown, configFile: string): AgentSenses
         })
         throw new Error(`agent.json at ${configFile}: senses.shepherd.notify must be one of ${SHEPHERD_NOTICE_POLICIES.join(", ")}.`)
       }
-      defaults[senseName] = { enabled, notify: notify as ShepherdNoticePolicy }
+      const checkInMinutes = (rawSense as Record<string, unknown>).checkInMinutes
+      const normalizedCheckInMinutes = normalizeShepherdCheckInMinutes(checkInMinutes)
+      defaults[senseName] = {
+        enabled,
+        ...(notify !== undefined ? { notify: notify as ShepherdNoticePolicy } : {}),
+        ...(checkInMinutes !== undefined ? { checkInMinutes: normalizedCheckInMinutes } : {}),
+      }
       continue
     }
     defaults[senseName] = { enabled }
