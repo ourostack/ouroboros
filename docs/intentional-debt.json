@@ -2,6 +2,13 @@
   "schemaVersion": 1,
   "items": [
     {
+      "id": "shepherd-feedback-unresolved-capacity",
+      "status": "open",
+      "owner": "Shepherd",
+      "due": "2026-11-15",
+      "removalCriteria": "Add an explicitly authorized, audited reconciliation/archive path for permanently uncertain feedback review or delivery records, preserving immutable receipts, actor/conversation binding and no automatic replay; verify capacity can be reclaimed without re-invoking model/tool effects or duplicating unknown Teams sends."
+    },
+    {
       "id": "mailroom-encrypted-raw-orphans",
       "status": "open",
       "owner": "Mailroom",
