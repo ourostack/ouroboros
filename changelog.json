@@ -5,7 +5,8 @@
       "version": "0.1.0-alpha.934",
       "changes": [
         "Hold duplicate Teams activities durably before model execution, steering or quoted queuing, preserving receipts across restart and session reset.",
-        "Do not replay uncertain Teams sends after a lost acknowledgement; split-message recovery requires an explicit HTTP 413 and smaller payloads."
+        "Do not replay uncertain Teams sends after a lost acknowledgement; split-message recovery requires an explicit HTTP 413 and smaller payloads.",
+        "Preserve unconsumed Teams steering in its original request context, reject incomplete production identities, and bypass the SDK stream hidden retry loop with acknowledged single-attempt messages."
       ]
     },
     {

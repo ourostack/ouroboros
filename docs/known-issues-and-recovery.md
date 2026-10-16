@@ -38,10 +38,14 @@ Storage failure or capacity exhaustion requires preserving receipt evidence and
 repairing the underlying storage before resuming new work.
 
 A failed reply send with no acknowledgement is uncertain, not proof of
-rejection. The adapter does not resend it as split-message recovery. Splitting
-is permitted only after a structured HTTP 413 response and only when the text
-can actually be reduced. Neither a healthy tunnel nor a held retry proves a
-successful human conversation.
+rejection. Normal message replies use the SDK's single-attempt, awaitable
+`send` API and standard typing indicators, rather than its cumulative HTTP
+stream: that stream queues void emits and retries unknown transport errors
+internally. Accepted sends retain the incoming reply target and AI labels.
+The adapter does not resend an uncertain reply as split-message recovery.
+Splitting is permitted only after a structured HTTP 413 response and only when
+the text can actually be reduced. Neither a healthy tunnel nor a held retry
+proves a successful human conversation.
 
 ## BlueBubbles is running but inbound messages are silent
 

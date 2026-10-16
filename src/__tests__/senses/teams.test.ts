@@ -76,7 +76,16 @@ function aiLabeled(text: string) {
   })
 }
 
+const sdkSends = vi.fn()
+function withSdkSend(handler: (ctx: any) => Promise<void>): (ctx: any) => Promise<void> {
+  return ctx => handler({ ...ctx, send: async (value: unknown) => {
+    sdkSends(value)
+    return ctx.send ? await ctx.send(value) : { id: "outgoing" }
+  } })
+}
+
 beforeEach(() => {
+  sdkSends.mockClear()
   mockIdentityPaths.agentRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ouro-teams-test-"))
 })
 
@@ -1291,7 +1300,7 @@ describe("Teams adapter - startTeamsApp (DevtoolsPlugin mode)", () => {
       App: class MockApp {
         constructor(_opts: any) {}
         on = vi.fn().mockImplementation((_event: string, handler: any) => {
-          capturedHandler = handler
+          capturedHandler = withSdkSend(handler)
         })
         event = vi.fn()
         start = vi.fn()
@@ -1350,7 +1359,7 @@ describe("Teams adapter - startTeamsApp (DevtoolsPlugin mode)", () => {
       App: class MockApp {
         constructor(_opts: any) {}
         on = vi.fn().mockImplementation((_event: string, handler: any) => {
-          capturedHandler = handler
+          capturedHandler = withSdkSend(handler)
         })
         event = vi.fn()
         start = vi.fn()
@@ -1478,7 +1487,7 @@ describe("Teams adapter - startTeamsApp (DevtoolsPlugin mode)", () => {
       App: class MockApp {
         constructor(_opts: any) {}
         on = vi.fn().mockImplementation((_event: string, handler: any) => {
-          capturedHandler = handler
+          capturedHandler = withSdkSend(handler)
         })
         event = vi.fn()
         start = vi.fn()
@@ -1579,7 +1588,7 @@ describe("Teams adapter - startTeamsApp (DevtoolsPlugin mode)", () => {
       App: class MockApp {
         constructor(_opts: any) {}
         on = vi.fn().mockImplementation((_event: string, handler: any) => {
-          capturedHandler = handler
+          capturedHandler = withSdkSend(handler)
         })
         event = vi.fn()
         start = vi.fn()
@@ -1671,7 +1680,7 @@ describe("Teams adapter - startTeamsApp (DevtoolsPlugin mode)", () => {
       App: class MockApp {
         constructor(_opts: any) {}
         on = vi.fn().mockImplementation((_event: string, handler: any) => {
-          capturedHandler = handler
+          capturedHandler = withSdkSend(handler)
         })
         event = vi.fn()
         start = vi.fn()
@@ -1750,7 +1759,7 @@ describe("Teams adapter - startTeamsApp (DevtoolsPlugin mode)", () => {
       send: vi.fn(),
     })
 
-    expect(stream2.emit).toHaveBeenCalledWith(expect.stringContaining("session cleared"))
+    expect(sdkSends).toHaveBeenCalledWith(expect.objectContaining({ type: "message", text: expect.stringContaining("session cleared") }))
     expect(deleteSessionCalls).toContain("/tmp/teams-session.json")
 
     releaseFirst?.()
@@ -1770,7 +1779,7 @@ describe("Teams adapter - startTeamsApp (DevtoolsPlugin mode)", () => {
       App: class MockApp {
         constructor(_opts: any) {}
         on = vi.fn().mockImplementation((_event: string, handler: any) => {
-          capturedHandler = handler
+          capturedHandler = withSdkSend(handler)
         })
         event = vi.fn()
         start = vi.fn()
@@ -1877,7 +1886,7 @@ describe("Teams adapter - startTeamsApp (DevtoolsPlugin mode)", () => {
       send: vi.fn(),
     })
 
-    expect(stream2.emit).toHaveBeenCalledWith("/new - start new")
+    expect(sdkSends).toHaveBeenCalledWith(expect.objectContaining({ type: "message", text: "/new - start new" }))
     expect(runAgentFn).toHaveBeenCalledTimes(1)
 
     releaseFirst?.()
@@ -1896,7 +1905,7 @@ describe("Teams adapter - startTeamsApp (DevtoolsPlugin mode)", () => {
       App: class MockApp {
         constructor(_opts: any) {}
         on = vi.fn().mockImplementation((_event: string, handler: any) => {
-          capturedHandler = handler
+          capturedHandler = withSdkSend(handler)
         })
         event = vi.fn()
         start = vi.fn()
@@ -1990,7 +1999,7 @@ describe("Teams adapter - startTeamsApp (DevtoolsPlugin mode)", () => {
       App: class MockApp {
         constructor(_opts: any) {}
         on = vi.fn().mockImplementation((_event: string, handler: any) => {
-          capturedHandler = handler
+          capturedHandler = withSdkSend(handler)
         })
         event = vi.fn()
         start = vi.fn()
@@ -2084,7 +2093,7 @@ describe("Teams adapter - startTeamsApp (DevtoolsPlugin mode)", () => {
       App: class MockApp {
         constructor(_opts: any) {}
         on = vi.fn().mockImplementation((_event: string, handler: any) => {
-          capturedHandler = handler
+          capturedHandler = withSdkSend(handler)
         })
         event = vi.fn()
         start = vi.fn()
@@ -2168,7 +2177,7 @@ describe("Teams adapter - startTeamsApp (DevtoolsPlugin mode)", () => {
       send: vi.fn(),
     })
 
-    expect(stream.emit).toHaveBeenCalledWith("")
+    expect(sdkSends).toHaveBeenCalledWith(expect.objectContaining({ type: "message", text: "" }))
     expect(runAgentFn).not.toHaveBeenCalled()
 
     vi.restoreAllMocks()
@@ -2182,7 +2191,7 @@ describe("Teams adapter - startTeamsApp (DevtoolsPlugin mode)", () => {
       App: class MockApp {
         constructor(_opts: any) {}
         on = vi.fn().mockImplementation((_event: string, handler: any) => {
-          capturedHandler = handler
+          capturedHandler = withSdkSend(handler)
         })
         event = vi.fn()
         start = vi.fn()
@@ -2273,7 +2282,7 @@ describe("Teams adapter - startTeamsApp (DevtoolsPlugin mode)", () => {
     })
 
     expect(deleteSessionCalls).toContain("/tmp/teams-session.json")
-    expect(stream.emit).toHaveBeenCalledWith("session cleared")
+    expect(sdkSends).toHaveBeenCalledWith(expect.objectContaining({ type: "message", text: "session cleared" }))
     expect(runAgentFn).not.toHaveBeenCalled()
 
     vi.restoreAllMocks()
@@ -2287,7 +2296,7 @@ describe("Teams adapter - startTeamsApp (DevtoolsPlugin mode)", () => {
       App: class MockApp {
         constructor(_opts: any) {}
         on = vi.fn().mockImplementation((_event: string, handler: any) => {
-          capturedHandler = handler
+          capturedHandler = withSdkSend(handler)
         })
         event = vi.fn()
         start = vi.fn()
@@ -2383,7 +2392,7 @@ describe("Teams adapter - startTeamsApp (DevtoolsPlugin mode)", () => {
       App: class MockApp {
         constructor(_opts: any) {}
         on = vi.fn().mockImplementation((_event: string, handler: any) => {
-          capturedHandler = handler
+          capturedHandler = withSdkSend(handler)
         })
         event = vi.fn()
         start = vi.fn()
@@ -2489,7 +2498,7 @@ describe("Teams adapter - startTeamsApp (DevtoolsPlugin mode)", () => {
       App: class MockApp {
         constructor(_opts: any) {}
         on = vi.fn().mockImplementation((_event: string, handler: any) => {
-          capturedHandler = handler
+          capturedHandler = withSdkSend(handler)
         })
         event = vi.fn()
         start = vi.fn()
@@ -2576,7 +2585,7 @@ describe("Teams adapter - startTeamsApp (DevtoolsPlugin mode)", () => {
       App: class MockApp {
         constructor(_opts: any) {}
         on = vi.fn().mockImplementation((_event: string, handler: any) => {
-          capturedHandler = handler
+          capturedHandler = withSdkSend(handler)
         })
         event = vi.fn()
         start = vi.fn()
@@ -2640,7 +2649,7 @@ describe("Teams adapter - startTeamsApp (DevtoolsPlugin mode)", () => {
       App: class MockApp {
         constructor(_opts: any) {}
         on = vi.fn().mockImplementation((_event: string, handler: any) => {
-          capturedHandler = handler
+          capturedHandler = withSdkSend(handler)
         })
         event = vi.fn()
         start = vi.fn()
@@ -2686,7 +2695,7 @@ describe("Teams adapter - startTeamsApp (DevtoolsPlugin mode)", () => {
       App: class MockApp {
         constructor(_opts: any) {}
         on = vi.fn().mockImplementation((_event: string, handler: any) => {
-          capturedHandler = handler
+          capturedHandler = withSdkSend(handler)
         })
         event = vi.fn()
         start = vi.fn()
@@ -2733,7 +2742,7 @@ describe("Teams adapter - startTeamsApp (DevtoolsPlugin mode)", () => {
       App: class MockApp {
         constructor(_opts: any) {}
         on = vi.fn().mockImplementation((_event: string, handler: any) => {
-          capturedHandler = handler
+          capturedHandler = withSdkSend(handler)
         })
         event = vi.fn()
         start = vi.fn()
@@ -2807,7 +2816,7 @@ describe("Teams adapter - startTeamsApp (DevtoolsPlugin mode)", () => {
       App: class MockApp {
         constructor(_opts: any) {}
         on = vi.fn().mockImplementation((_event: string, handler: any) => {
-          capturedHandler = handler
+          capturedHandler = withSdkSend(handler)
         })
         event = vi.fn()
         start = vi.fn()
@@ -2880,7 +2889,7 @@ describe("Teams adapter - startTeamsApp (DevtoolsPlugin mode)", () => {
       App: class MockApp {
         constructor(_opts: any) {}
         on = vi.fn().mockImplementation((_event: string, handler: any) => {
-          capturedHandler = handler
+          capturedHandler = withSdkSend(handler)
         })
         event = vi.fn()
         start = vi.fn()
@@ -3122,7 +3131,7 @@ describe("Teams adapter - channel.message_received event", () => {
       App: class MockApp {
         constructor(_opts: any) {}
         on = vi.fn().mockImplementation((_event: string, handler: any) => {
-          capturedHandler = handler
+          capturedHandler = withSdkSend(handler)
         })
         event = vi.fn()
         start = vi.fn()
@@ -3179,7 +3188,7 @@ describe("Teams adapter - channel.message_received event", () => {
       App: class MockApp {
         constructor(_opts: any) {}
         on = vi.fn().mockImplementation((_event: string, handler: any) => {
-          capturedHandler = handler
+          capturedHandler = withSdkSend(handler)
         })
         event = vi.fn()
         start = vi.fn()
@@ -3241,7 +3250,7 @@ describe("Teams adapter - startTeamsApp AAD extraction (Bug 1)", () => {
       App: class MockApp {
         constructor(_opts: any) {}
         on = vi.fn().mockImplementation((_event: string, handler: any) => {
-          capturedHandler = handler
+          capturedHandler = withSdkSend(handler)
         })
         event = vi.fn()
         start = vi.fn()
@@ -3331,7 +3340,7 @@ describe("Teams adapter - startTeamsApp AAD extraction (Bug 1)", () => {
       App: class MockApp {
         constructor(_opts: any) {}
         on = vi.fn().mockImplementation((_event: string, handler: any) => {
-          capturedHandler = handler
+          capturedHandler = withSdkSend(handler)
         })
         event = vi.fn()
         start = vi.fn()
@@ -5352,7 +5361,7 @@ describe("Teams adapter - handleTeamsMessage with sendMessage", () => {
       App: class MockApp {
         constructor(_opts: any) {}
         on = vi.fn().mockImplementation((_event: string, handler: any) => {
-          capturedHandler = handler
+          capturedHandler = withSdkSend(handler)
         })
         event = vi.fn()
         start = vi.fn()
@@ -5419,8 +5428,7 @@ describe("Teams adapter - handleTeamsMessage with sendMessage", () => {
       send: mockSend,
     })
 
-    // In buffered mode, onKick now uses safeUpdate (stream.update) not safeSend (ctx.send)
-    expect(mockStream.update).toHaveBeenCalledWith("\u21BB kick")
+    expect(mockSend).toHaveBeenCalledWith({ type: "typing" })
     expect(mockSend).toHaveBeenCalledWith(expect.objectContaining({
       type: "message", replyToId: "current-inbound", text: "requested capture",
       attachments: [expect.objectContaining({ contentType: "image/png", name: "capture.png" })],
