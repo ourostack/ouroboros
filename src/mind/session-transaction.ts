@@ -169,19 +169,84 @@ function checkTemporary(pin: SessionConfinement, filePath: string, identity: fs.
 function openLeaseDatabase(lockPath: string, busyTimeoutMs = 0, confinement: SessionConfinement | null = null): Database.Database {
   checkConfinement(confinement)
   const database = new Database(lockPath)
-  database.pragma(`busy_timeout = ${busyTimeoutMs}`)
-  database.exec(`
-    CREATE TABLE IF NOT EXISTS session_turn_lease (
-      singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
-      pid INTEGER NOT NULL,
-      owner_id TEXT NOT NULL,
-      owner_token TEXT NOT NULL
-    )
-  `)
-  const columns = new Set((database.prepare(`PRAGMA table_info(session_turn_lease)`).all() as Array<{ name: string }>).map((column) => column.name))
-  if (!columns.has("boot_identity")) database.exec(`ALTER TABLE session_turn_lease ADD COLUMN boot_identity TEXT`)
-  if (!columns.has("process_started_at")) database.exec(`ALTER TABLE session_turn_lease ADD COLUMN process_started_at TEXT`)
-  return database
+  try {
+    database.pragma(`busy_timeout = ${busyTimeoutMs}`)
+    database.transaction(() => {
+      database.exec(`
+        CREATE TABLE IF NOT EXISTS session_turn_lease (
+          singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
+          pid INTEGER NOT NULL,
+          owner_id TEXT NOT NULL,
+          owner_token TEXT NOT NULL
+        )
+      `)
+      const columns = new Set((database.prepare(`PRAGMA table_info(session_turn_lease)`).all() as Array<{ name: string }>).map((column) => column.name))
+      if (!columns.has("boot_identity")) database.exec(`ALTER TABLE session_turn_lease ADD COLUMN boot_identity TEXT`)
+      if (!columns.has("process_started_at")) database.exec(`ALTER TABLE session_turn_lease ADD COLUMN process_started_at TEXT`)
+    }).immediate()
+    return database
+  } catch (error) {
+    database.close()
+    throw error
+  }
+}
+
+export interface SessionActivityInput {
+  namespace: string
+  activityId: string
+  payloadDigest: string
+}
+
+export interface SessionActivityAdmission {
+  state: "admitted" | "duplicate"
+  receiptId: string
+}
+
+/** Immutable admission, not proof of execution or delivery. Unknown effects must never be replayed. */
+export function admitSessionActivity(sessionPath: string, input: SessionActivityInput): SessionActivityAdmission {
+  if (typeof input.namespace !== "string" || !input.namespace.trim() || Buffer.byteLength(input.namespace) > 4096
+    || typeof input.activityId !== "string" || !input.activityId.trim() || Buffer.byteLength(input.activityId) > 1024
+    || typeof input.payloadDigest !== "string" || !/^[a-f0-9]{64}$/.test(input.payloadDigest)) {
+    throw new SessionTransactionError("invalid session activity admission")
+  }
+  const canonical = canonicalSessionPath(sessionPath)
+  const lockPath = `${canonical}.turn.lock`
+  fs.mkdirSync(path.dirname(canonical), { recursive: true, mode: 0o700 })
+  const receiptId = revision(JSON.stringify([input.namespace, input.activityId]))
+  const database = openLeaseDatabase(lockPath, 1000)
+  try {
+    database.pragma("synchronous = FULL")
+    const state = database.transaction((): SessionActivityAdmission["state"] => {
+      database.exec(`
+        CREATE TABLE IF NOT EXISTS session_activity_receipts (
+          receipt_id TEXT PRIMARY KEY,
+          payload_digest TEXT NOT NULL,
+          admitted_at TEXT NOT NULL
+        )
+      `)
+      const existing = database.prepare("SELECT payload_digest FROM session_activity_receipts WHERE receipt_id = ?")
+        .get(receiptId) as { payload_digest: unknown } | undefined
+      if (existing) {
+        if (typeof existing.payload_digest !== "string" || !/^[a-f0-9]{64}$/.test(existing.payload_digest)) {
+          throw new SessionTransactionError("invalid session activity receipt")
+        }
+        if (existing.payload_digest !== input.payloadDigest) throw new SessionTransactionError("conflicting session activity payload")
+        return "duplicate"
+      }
+      // Never evict an admission: losing its identity would authorize uncertain work again.
+      if (fs.statSync(lockPath).size >= 64 * 1024 * 1024) throw new SessionTransactionError("session activity receipt capacity exceeded")
+      database.prepare("INSERT INTO session_activity_receipts (receipt_id, payload_digest, admitted_at) VALUES (?, ?, ?)")
+        .run(receiptId, input.payloadDigest, new Date().toISOString())
+      return "admitted"
+    }).immediate()
+    emitNervesEvent({
+      component: "mind", event: "mind.session_activity_admission", message: "recorded session activity admission decision",
+      meta: { receiptId, state },
+    })
+    return { state, receiptId }
+  } finally {
+    database.close()
+  }
 }
 
 function acquisitionRecord(options: AcquireSessionTurnLeaseOptions): LeaseRecord {

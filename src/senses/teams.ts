@@ -26,9 +26,10 @@ import { createToolActivityCallbacks } from "../heart/tool-activity-callbacks"
 import { getDebugMode } from "./commands"
 import * as http from "http"
 import * as path from "path"
+import { createHash } from "node:crypto"
 import { enforceTrustGate } from "./trust-gate"
 import { handleInboundTurn, type FailoverState } from "./pipeline"
-import { SessionTurnBusyError, withSessionTurnLease, type SessionTurnLease } from "../mind/session-transaction"
+import { admitSessionActivity, SessionTransactionError, SessionTurnBusyError, withSessionTurnLease, type SessionTurnLease } from "../mind/session-transaction"
 
 const teamsFailoverStates = new Map<string, FailoverState>()
 import { drainDeferredReturns, drainPending, getPendingDir } from "../mind/pending"
@@ -176,6 +177,12 @@ export type TeamsCallbacksWithFlush = ChannelCallbacks & { flush(): void | Promi
 // safeSend (ctx.send). Tool results, kicks, and errors use safeUpdate
 // (transient status) or safeSend (terminal errors). Reasoning is accumulated
 // and periodically pushed via safeUpdate on the same flush timer tick.
+function isTeamsSizeRejection(error: unknown): boolean {
+  return typeof error === "object" && error !== null && "response" in error
+    && typeof error.response === "object" && error.response !== null && "status" in error.response
+    && error.response.status === 413
+}
+
 export function createTeamsCallbacks(
   stream: TeamsStream,
   controller: AbortController,
@@ -285,17 +292,20 @@ export function createTeamsCallbacks(
   async function tryEmit(text: string): Promise<boolean> {
     /* v8 ignore next -- defensive guard: stopped set by prior error; tested via flush abort path @preserve */
     if (stopped) return false
+    let awaitingTransport = false
     try {
       // stream.emit() is typed as void but the Teams SDK returns a Promise
       // internally (async HTTP). Cast to capture the result for awaiting.
       const result: unknown = stream.emit(streamChunk(text))
       streamHasContent = true
       if (result && typeof (result as { then?: Function }).then === "function") {
+        awaitingTransport = true
         await (result as Promise<unknown>)
       }
       return true
     } catch (err) {
       markStopped("tryEmit", err)
+      if (awaitingTransport && !isTeamsSizeRejection(err)) throw err
       return false
     }
   }
@@ -308,14 +318,20 @@ export function createTeamsCallbacks(
   // which has a sendMessage fallback that may still succeed. Caller (flushNow) is
   // responsible for the `!stopped` precondition; no defensive guard here.
   async function tryEmitNoAbort(text: string): Promise<boolean> {
+    let awaitingTransport = false
     try {
       const result: unknown = stream.emit(streamChunk(text))
       streamHasContent = true
       if (result && typeof (result as { then?: Function }).then === "function") {
+        awaitingTransport = true
         await (result as Promise<unknown>)
       }
       return true
-    } catch {
+    } catch (error) {
+      if (awaitingTransport && !isTeamsSizeRejection(error)) {
+        markStopped("speak-unknown", error)
+        throw error
+      }
       return false
     }
   }
@@ -573,7 +589,9 @@ export function createTeamsCallbacks(
           // Stream is dead (not from finalization) — fall back to sendMessage; split on failure as recovery.
           try {
             await sendMessage(text)
-          } catch {
+          } catch (error) {
+            // A lost acknowledgement is not a rejection. Only a definite size rejection permits a smaller retry.
+            if (!isTeamsSizeRejection(error) || text.length <= RECOVERY_CHUNK_SIZE) throw error
             const chunks = splitMessage(text, RECOVERY_CHUNK_SIZE)
             for (const chunk of chunks) await sendMessage(chunk)
           }
@@ -603,6 +621,10 @@ const _turnCoordinator = createTurnCoordinator()
 
 function teamsTurnKey(conversationId: string): string {
   return `teams:${conversationId}`
+}
+
+function teamsAdmissionKey(conversationId: string): string {
+  return `teams-admission:${conversationId}`
 }
 
 interface QueuedTeamsTurn {
@@ -653,6 +675,8 @@ async function coordinateTeamsTurn(
         next.reject(error)
       }
       first = false
+      // Preserve received order while identity/admission I/O finishes, without holding admission through a model turn.
+      await _turnCoordinator.withTurnLock(teamsAdmissionKey(conversationId), async () => {})
       next = queuedTeamsTurns.get(key)?.shift()
     }
   } finally {
@@ -698,7 +722,7 @@ export interface TeamsMessageContext {
 }
 
 function reportTeamsRequest(
-  stage: "admitted" | "running" | "reply_emitted" | "replied" | "failed",
+  stage: "admitted" | "duplicate_held" | "running" | "reply_emitted" | "replied" | "failed",
   conversationId: string,
   context: Pick<TeamsMessageContext, "inboundActivityId" | "tenantId" | "botApi"> | undefined,
   details: Record<string, unknown> = {},
@@ -1230,6 +1254,43 @@ function registerBotHandlers(app: InstanceType<typeof App> & { id?: string; api?
 
     emitNervesEvent({ level: "info", event: "channel.message_received", component: "channels", message: `[${label}] incoming teams message`, meta: { stage: "received", inboundActivityId: activity.id, botId: app.id, tenantId: requestContext.tenantId, userId: userId.slice(0, 12), conversationId: convId } })
 
+    let work: Promise<void> | undefined
+    await _turnCoordinator.withTurnLock(teamsAdmissionKey(convId), async () => {
+    try {
+      if (!activity.id) {
+        if (process.env.OURO_TEAMS_DEVTOOLS !== "1") throw new SessionTransactionError("Teams activity identity is missing")
+      } else {
+        const store = getFriendStore()
+        const identity = await new FriendResolver(store, {
+          provider: activity.from?.aadObjectId ? "aad" : "teams-conversation",
+          externalId: activity.from?.aadObjectId || convId,
+          tenantId: activity.conversation?.tenantId,
+          displayName: activity.from?.name || "Unknown",
+          channel: "teams",
+        }).resolve()
+        const admission = admitSessionActivity(sessionPath(identity.friend.id, "teams", convId), {
+          namespace: JSON.stringify(["teams.message", channelId, app.id?.toLowerCase() ?? null,
+            activity.conversation?.tenantId?.toLowerCase() ?? null,
+            activity.from?.aadObjectId?.toLowerCase() ?? userId, convId]),
+          activityId: activity.id,
+          payloadDigest: createHash("sha256").update(JSON.stringify([text, activity.replyToId ?? null])).digest("hex"),
+        })
+        if (admission.state === "duplicate") {
+          reportTeamsRequest("duplicate_held", convId, requestContext, { receiptId: admission.receiptId, outcome: "not_replayed" })
+          return
+        }
+      }
+      reportTeamsRequest("admitted", convId, requestContext)
+    } catch (error) {
+      reportTeamsRequest("failed", convId, requestContext, { reason: "activity_admission_failed" })
+      emitNervesEvent({
+        level: "error", component: "channels", event: "channel.activity_admission_error",
+        message: "Teams activity was not safely admitted; no new turn or steering was started",
+        meta: { conversationId: convId, inboundActivityId: activity.id, reason: "activity_admission_failed" },
+      })
+      throw error
+    }
+
     const commandRegistry = createTeamsCommandRegistry()
     const parsedSlashCommand = parseSlashCommand(text)
     if (parsedSlashCommand) {
@@ -1266,12 +1327,11 @@ function registerBotHandlers(app: InstanceType<typeof App> & { id?: string; api?
       }
     }
 
-    await coordinateTeamsTurn(convId, text, {
+    work = coordinateTeamsTurn(convId, text, {
       aadObjectId: activity.from?.aadObjectId, userId, tenantId: activity.conversation?.tenantId,
       replyToId: activity.replyToId,
     }, async () => {
     try {
-      reportTeamsRequest("admitted", convId, requestContext)
       // Resolve OAuth connection names for this user's tenant (supports per-tenant overrides).
       const tenantId = activity.conversation?.tenantId
       const tenantOAuth = resolveOAuthForTenant(tenantId)
@@ -1343,6 +1403,8 @@ function registerBotHandlers(app: InstanceType<typeof App> & { id?: string; api?
       emitNervesEvent({ level: "error", event: "channel.handler_error", component: "channels", message: msg.slice(0, 200), meta: {} })
     }
     })
+    })
+    await work
   })
 
   app.event("error", ({ error }: { error: unknown }) => {

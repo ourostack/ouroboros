@@ -9,20 +9,52 @@ import { loadSession } from "../../mind/context"
 import { createOwnerNotifier } from "../../senses/shepherd/owner-notice"
 import { readNoticeOutbox } from "../../senses/shepherd/notice-outbox"
 import { appendReturn, type ReturnRecord } from "../../senses/shepherd/returns"
+import { EventEmitter } from "node:events"
+import { createHash } from "node:crypto"
 
 const state = vi.hoisted(() => ({
   root: "", handlers: new Map<string, (ctx: any) => Promise<void>>(), run: vi.fn(), handlerLogFailures: 0,
   refusalLogFailures: 0,
   requestEvents: [] as Array<{ event: string; meta?: Record<string, unknown> }>,
+  processActivity: undefined as ((body: unknown) => Promise<unknown>) | undefined,
+  sdkAcceptances: [] as Array<{ activityId: string; conversationId: string; outgoingId: string }>,
+  sdkLostAck: false,
+  sdkStreamLostAck: false,
 }))
-vi.mock("@microsoft/teams.apps", () => ({
-  App: class {
-    id = "fake-app"
-    on(event: string, handler: (ctx: any) => Promise<void>) { state.handlers.set(event, handler) }
+vi.mock("@microsoft/teams.apps", async original => {
+  const actual = await original<typeof import("@microsoft/teams.apps")>()
+  const client = { clone() { return this }, get: async () => ({ data: {} }), post: async () => ({ data: {} }), request: async () => ({ data: {} }) }
+  return { ...actual, App: class extends actual.App {
+    constructor(options: ConstructorParameters<typeof actual.App>[0]) {
+      super({ ...options, client: client as never })
+      const on = this.on.bind(this)
+      this.on = (event: any, handler: any) => { state.handlers.set(event, handler); return on(event, handler) }
+      this.getUserToken = async () => undefined
+      this.activitySender = {
+        createStream: (ref: { activityId: string; conversation: { id: string } }) => ({
+          events: new EventEmitter(),
+          emit() {
+            if (state.sdkStreamLostAck) {
+              state.sdkAcceptances.push({ activityId: ref.activityId, conversationId: ref.conversation.id, outgoingId: "sdk-stream-accepted" })
+              return Promise.reject(new Error("fixture lost stream acknowledgement after acceptance"))
+            }
+            throw new Error("fixture rejected before transport")
+          },
+          update() {}, close: async () => undefined,
+        }),
+        send: async (value: unknown, ref: { activityId: string; conversation: { id: string } }) => {
+          const outgoingId = `sdk-accepted-${state.sdkAcceptances.length + 1}`
+          state.sdkAcceptances.push({ activityId: ref.activityId, conversationId: ref.conversation.id, outgoingId })
+          if (state.sdkLostAck) throw new Error("fixture lost acknowledgement after acceptance")
+          return { ...(value as object), id: outgoingId }
+        },
+      } as never
+      state.processActivity = body => this.process({ body, token: { serviceUrl: "https://fixture.invalid" } } as never)
+    }
     event() {}
     start() {}
-  },
-}))
+  } }
+})
 vi.mock("../../heart/identity", async (original) => ({
   ...await original<typeof import("../../heart/identity")>(),
   getAgentName: () => "orchid",
@@ -108,14 +140,19 @@ async function setup() {
   startTeamsApp()
 }
 
+let incomingSequence = 0
 function activity(text: string, replyToId?: string, aad = "aad-owner", conversation = "private-chat") {
   return {
     stream: { emit: vi.fn(), update: vi.fn(), close: vi.fn() },
-    activity: { id: "incoming", text, replyToId, conversation: { id: conversation, tenantId: "tenant" },
+    activity: { id: `incoming-${++incomingSequence}`, text, replyToId, conversation: { id: conversation, tenantId: "tenant" },
       from: { id: aad, aadObjectId: aad, name: aad }, channelId: "msteams" },
     api: { users: { token: { get: vi.fn().mockResolvedValue(undefined) } } },
     signin: vi.fn(), send: vi.fn().mockResolvedValue({ id: "outgoing" }),
   }
+}
+
+function sdkActivity(text: string, replyToId?: string) {
+  return { ...activity(text, replyToId).activity, type: "message", serviceUrl: "https://fixture.invalid", recipient: { id: "fake-app", role: "bot" } }
 }
 
 beforeEach(async () => {
@@ -124,6 +161,10 @@ beforeEach(async () => {
   state.handlerLogFailures = 0
   state.refusalLogFailures = 0
   state.requestEvents = []
+  state.sdkAcceptances = []
+  state.sdkLostAck = false
+  state.sdkStreamLostAck = false
+  incomingSequence = 0
   state.run.mockReset().mockImplementation(async (messages, callbacks: ChannelCallbacks) => {
     messages.push({ role: "assistant", content: "Clarification recorded." })
     callbacks.onTextChunk("Clarification recorded.")
@@ -133,6 +174,130 @@ beforeEach(async () => {
 }, 60_000)
 
 describe("actual Teams feedback adapter and leased pipeline", () => {
+  it("holds an admission left before execution without claiming that it answered", async () => {
+    const body = sdkActivity("The previous process stopped before executing this.")
+    const { admitSessionActivity } = await import("../../mind/session-transaction")
+    admitSessionActivity(path.join(state.root, "sessions", "owner", "private-chat.json"), {
+      namespace: JSON.stringify(["teams.message", "msteams", "fake-app", "tenant", "aad-owner", "private-chat"]),
+      activityId: body.id,
+      payloadDigest: createHash("sha256").update(JSON.stringify([body.text, null])).digest("hex"),
+    })
+    vi.resetModules()
+    const { startTeamsApp } = await import("../../senses/teams")
+    startTeamsApp()
+    await expect(state.processActivity!(body)).resolves.toMatchObject({ status: 200 })
+    expect(state.run).not.toHaveBeenCalled()
+    expect(state.sdkAcceptances).toEqual([])
+    expect(state.requestEvents).toContainEqual(expect.objectContaining({ meta: expect.objectContaining({ stage: "duplicate_held", outcome: "not_replayed" }) }))
+    expect(state.requestEvents.some(event => event.meta?.stage === "replied")).toBe(false)
+    expect(fs.existsSync(path.join(state.root, "sessions", "owner", "private-chat.json"))).toBe(false)
+  })
+
+  it.each([undefined, "sent-b"])("holds duplicate SDK activity before busy steering or quoted queue (%s)", async quote => {
+    const entered = Promise.withResolvers<void>()
+    const release = Promise.withResolvers<void>()
+    let drained: unknown[] = []
+    state.run.mockImplementationOnce(async (messages, callbacks: ChannelCallbacks, _channel, _signal, options: RunAgentOptions) => {
+      entered.resolve()
+      await release.promise
+      drained = options.drainSteeringFollowUps!()
+      messages.push({ role: "assistant", content: "First answer." })
+      callbacks.onTextChunk("First answer.")
+      return { outcome: "settled" }
+    })
+    const body = sdkActivity("First request.")
+    const running = state.processActivity!(structuredClone(body))
+    await entered.promise
+    const queuedBody = quote ? sdkActivity("Quoted clarification.", quote) : body
+    const queued = quote ? state.processActivity!(structuredClone(queuedBody)) : undefined
+    try {
+      await expect(state.processActivity!(structuredClone(queuedBody))).resolves.toMatchObject({ status: 200 })
+    } finally { release.resolve() }
+    await Promise.all([running, queued])
+    expect(drained).toEqual([])
+    expect(state.run).toHaveBeenCalledTimes(quote ? 2 : 1)
+    expect(state.sdkAcceptances).toHaveLength(quote ? 2 : 1)
+    const persisted = loadSession(path.join(state.root, "sessions", "owner", "private-chat.json"))
+    const text = quote ? "Quoted clarification." : "First request."
+    expect(persisted?.messages.filter(message => message.role === "user" && message.content === text)).toHaveLength(1)
+  })
+
+  it.each(["send", "stream"])("never resends after an uncertain SDK %s acceptance, including after restart", async transport => {
+    state.sdkLostAck = transport === "send"
+    state.sdkStreamLostAck = transport === "stream"
+    const body = sdkActivity("Do this once even if the acknowledgement is lost.")
+    await state.processActivity!(structuredClone(body))
+    expect(state.sdkAcceptances).toHaveLength(1)
+    vi.resetModules()
+    const { startTeamsApp } = await import("../../senses/teams")
+    startTeamsApp()
+    state.sdkLostAck = false
+    state.sdkStreamLostAck = false
+    await state.processActivity!(structuredClone(body))
+    expect(state.run).toHaveBeenCalledTimes(1)
+    expect(state.sdkAcceptances).toHaveLength(1)
+    expect(state.requestEvents).toContainEqual(expect.objectContaining({ meta: expect.objectContaining({ stage: "duplicate_held", outcome: "not_replayed" }) }))
+    expect(state.requestEvents).not.toContainEqual(expect.objectContaining({ meta: expect.objectContaining({ stage: "replied", delivery: "accepted" }) }))
+  })
+
+  it("fails closed on corrupt admission storage without poisoning the next admission", async () => {
+    const lock = path.join(state.root, "sessions", "owner", "private-chat.json.turn.lock")
+    fs.mkdirSync(path.dirname(lock), { recursive: true })
+    fs.writeFileSync(lock, "not a SQLite database")
+    const body = sdkActivity("Do not run without durable evidence.")
+    await expect(state.processActivity!(structuredClone(body))).resolves.toMatchObject({ status: 500 })
+    expect(state.run).not.toHaveBeenCalled()
+    expect(state.sdkAcceptances).toEqual([])
+    fs.renameSync(lock, `${lock}.fixture-corrupt`)
+    await expect(state.processActivity!(structuredClone(body))).resolves.toMatchObject({ status: 200 })
+    expect(state.run).toHaveBeenCalledTimes(1)
+    expect(state.sdkAcceptances).toHaveLength(1)
+  })
+
+  it("rejects a production SDK message without an activity ID before execution", async () => {
+    vi.stubEnv("OURO_TEAMS_DEVTOOLS", "0")
+    try {
+      const body = { ...sdkActivity("No identity must mean no execution."), id: undefined }
+      await expect(state.processActivity!(body)).resolves.toMatchObject({ status: 500 })
+      expect(state.run).not.toHaveBeenCalled()
+      expect(state.sdkAcceptances).toEqual([])
+    } finally { vi.unstubAllEnvs() }
+  })
+
+  it("admits identical text with a distinct SDK ID but rejects changed payload under an existing ID", async () => {
+    const body = sdkActivity("Same words, independent requests.")
+    await state.processActivity!(structuredClone(body))
+    await state.processActivity!({ ...body, id: "different-id" })
+    await expect(state.processActivity!({ ...body, text: "Changed payload." })).resolves.toMatchObject({ status: 500 })
+    expect(state.run).toHaveBeenCalledTimes(2)
+    expect(state.sdkAcceptances).toHaveLength(2)
+    const persisted = loadSession(path.join(state.root, "sessions", "owner", "private-chat.json"))
+    expect(persisted?.messages.filter(message => message.role === "user" && message.content === body.text)).toHaveLength(2)
+    expect(JSON.stringify(persisted?.messages)).not.toContain("Changed payload.")
+  })
+
+  it.each(["sequential", "restart", "reset"] as const)("admits a repeated real SDK activity once across %s", async boundary => {
+    state.run.mockImplementation(async (messages, callbacks: ChannelCallbacks) => {
+      messages.push({ role: "assistant", content: "One synthetic answer." })
+      callbacks.onTextChunk("One synthetic answer.")
+      await callbacks.flushNow?.()
+      return { outcome: "settled" }
+    })
+    const body = { ...activity("One synthetic request.").activity, type: "message", serviceUrl: "https://fixture.invalid", recipient: { id: "fake-app", role: "bot" } }
+    await state.processActivity!(structuredClone(body))
+    if (boundary === "restart") {
+      vi.resetModules()
+      const { startTeamsApp } = await import("../../senses/teams")
+      startTeamsApp()
+    }
+    if (boundary === "reset") await state.handlers.get("message")!(activity("/new"))
+    await state.processActivity!(structuredClone(body))
+    expect(state.run).toHaveBeenCalledTimes(1)
+    expect(state.sdkAcceptances).toHaveLength(1)
+    expect(state.sdkAcceptances[0]).toMatchObject({ activityId: body.id, conversationId: "private-chat" })
+    expect(state.requestEvents).toContainEqual(expect.objectContaining({ meta: expect.objectContaining({ stage: "duplicate_held", inboundActivityId: body.id }) }))
+  })
+
   it("waits for the SDK stream promise instead of losing asynchronous delivery errors", async () => {
     const emitted = Promise.withResolvers<void>()
     const ctx = activity("Give me the short version.")

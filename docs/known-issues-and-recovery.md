@@ -9,6 +9,40 @@ Starting the private runtime worker is process supervision, not a model turn.
 Denied/default private-runtime policy records or queues work with zero provider calls.
 Provider-readiness pings are explicit readiness checks, not private turns.
 
+## Teams retries an activity or a reply acknowledgement is lost
+
+Teams message admission records an immutable receipt in the session's existing
+`<session>.turn.lock` SQLite database before starting a turn, steering an active
+turn, or queuing a quoted follow-up. Receipt identity includes the bot, channel,
+tenant, actor, conversation and incoming activity ID; text and quote target are
+hashed separately to reject conflicting reuse. The database stores hashes and
+admission time, not message text or raw identity. Identical text with a new
+activity ID remains a new request.
+
+An identical retry reports `channel.teams_request_stage` with
+`stage: duplicate_held` and `outcome: not_replayed`. This means only that the
+activity was previously admitted, **not** that execution or delivery completed.
+Receipts survive process restart and `/new`. A process lost after admission can
+therefore leave an unanswered request held rather than risk repeating its tools
+or an uncertain send. A missing production activity ID, corrupt database,
+conflicting payload, write-lock timeout or full receipt store fails admission
+before model execution. The existing local developer mode permits ID-less
+fixtures without durable deduplication.
+
+**Recovery**: inspect the correlated request stages and actual conversation
+before deciding whether new work is needed. Do not delete the lock database,
+clear receipts, or automatically replay a held activity. If execution is still
+needed, a genuinely new message must carry a new activity ID. New receipts fail
+closed once the database reaches 64 MiB; existing receipts are never evicted.
+Storage failure or capacity exhaustion requires preserving receipt evidence and
+repairing the underlying storage before resuming new work.
+
+A failed reply send with no acknowledgement is uncertain, not proof of
+rejection. The adapter does not resend it as split-message recovery. Splitting
+is permitted only after a structured HTTP 413 response and only when the text
+can actually be reduced. Neither a healthy tunnel nor a held retry proves a
+successful human conversation.
+
 ## BlueBubbles is running but inbound messages are silent
 
 **Symptom**: the BlueBubbles app/process and Ouro daemon look healthy, but new iMessages do not reach the agent.
