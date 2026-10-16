@@ -6,8 +6,8 @@ import type { ShepherdNoticePolicy } from "../../heart/identity"
 import { emitNervesEvent } from "../../nerves/runtime"
 import type { TeamsBotApi } from "../teams"
 import type { HostSession } from "./host"
-import { readReturns, type ReturnRecord } from "./returns"
-import { claimPendingNotices, declareNoticeTargets, enqueueNotice, knownNotice, noticeDeliveryState, noticeRecordId, readNoticeOutbox, recordNoticeDelivery } from "./notice-outbox"
+import type { ReturnRecord } from "./returns"
+import { claimPendingNotices, declareNoticeTargets, enqueueNotice, noticeDeliveryState, readNoticeOutbox, recordNoticeDelivery } from "./notice-outbox"
 
 /**
  * The owner notice: after a judged return, the agent's owner hears what happened in one short plain message on their
@@ -190,20 +190,24 @@ export interface OwnerNotifierOptions {
   send?: NoticeSender
 }
 
+export type NoticeIntentAcceptance =
+  | { state: "queued"; noticeId: string }
+  | { state: "suppressed"; reason: "policy" | "stopped" }
+
 export interface OwnerNotifier {
-  notify(record: ReturnRecord): Promise<void>
+  notify(record: ReturnRecord): Promise<NoticeIntentAcceptance>
   /** Sends what is waiting now; resolves when it is sent or has failed. */
   flush(): Promise<void>
   stop(): void
 }
 
-/** Collects notices for NOTICE_COALESCE_MS after the first, then sends them as one message. It never throws. */
+/** Collects durable notice intents; acceptance is distinct from transport delivery. */
 export function createOwnerNotifier(options: OwnerNotifierOptions): OwnerNotifier {
   const { agent, policy } = options
   const resolveTargets = options.resolveTargets ?? (() => resolveNoticeTargets(options.agentRoot))
   const send = options.send ?? createTeamsNoticeSender(options.agentRoot)
   const retryWrites = new Map<string, ReturnRecord>()
-  const writes = new Set<Promise<void>>()
+  const writes = new Set<Promise<string>>()
   let cancel: (() => void) | null = null
   let stopped = false
   let flushing: Promise<void> | null = null
@@ -212,16 +216,20 @@ export function createOwnerNotifier(options: OwnerNotifierOptions): OwnerNotifie
     if (!stopped && policy !== "off") cancel ??= options.schedule(() => { void flush() }, ms)
   }
 
-  function persistIntent(record: ReturnRecord): Promise<void> {
+  function persistIntent(record: ReturnRecord): Promise<string> {
     const key = `${record.host}:${record.session}:${record.transition}:${record.at}`
     retryWrites.set(key, record)
-    const write = enqueueNotice(options.agentRoot, record).then(() => {
+    const write = enqueueNotice(options.agentRoot, record).then(id => {
       retryWrites.delete(key)
+      return id
     }).catch(error => {
       emitNervesEvent({ level: "error", component: "senses", event: "senses.shepherd_notice_error", message: "could not persist a Shepherd owner notice intent; it remains waiting", meta: { agent, error: (error as Error).message } })
       schedule(NOTICE_RETRY_MS)
-    }).finally(() => { writes.delete(write) })
+      throw error
+    })
     writes.add(write)
+    // Observe cleanup immediately, while the producer still receives the rejecting promise.
+    void write.then(() => { writes.delete(write) }, () => { writes.delete(write) })
     return write
   }
 
@@ -229,9 +237,10 @@ export function createOwnerNotifier(options: OwnerNotifierOptions): OwnerNotifie
     cancel?.()
     cancel = null
     if (stopped || policy === "off") return
-    await Promise.all([...writes])
-    for (const record of [...retryWrites.values()]) await persistIntent(record)
     try {
+      await Promise.allSettled([...writes])
+      const retried = await Promise.allSettled([...retryWrites.values()].map(persistIntent))
+      if (retried.some(result => result.status === "rejected")) schedule(NOTICE_RETRY_MS)
       const entries = readNoticeOutbox(options.agentRoot).filter(entry =>
         noticeWanted(policy, entry.record) && (Object.keys(entry.deliveries).length === 0 || Object.values(entry.deliveries).some(value => value.state !== "sent")),
       )
@@ -296,14 +305,7 @@ export function createOwnerNotifier(options: OwnerNotifierOptions): OwnerNotifie
 
   try {
     const existing = readNoticeOutbox(options.agentRoot)
-    let recovered = false
-    for (const record of readReturns(options.agentRoot)) {
-      if (record.noticeEligible === true && noticeWanted(policy, record) && !knownNotice(options.agentRoot, noticeRecordId(record), existing)) {
-        void persistIntent(record)
-        recovered = true
-      }
-    }
-    if (recovered || existing.some(entry => Object.keys(entry.deliveries).length === 0 || Object.values(entry.deliveries).some(value => value.state === "pending"))) schedule(NOTICE_RETRY_MS)
+    if (existing.some(entry => Object.keys(entry.deliveries).length === 0 || Object.values(entry.deliveries).some(value => value.state === "pending"))) schedule(NOTICE_RETRY_MS)
   } catch (error) {
     emitNervesEvent({ level: "error", component: "senses", event: "senses.shepherd_notice_error", message: "could not read waiting Shepherd owner notices", meta: { agent, error: (error as Error).message } })
     schedule(NOTICE_RETRY_MS)
@@ -311,10 +313,11 @@ export function createOwnerNotifier(options: OwnerNotifierOptions): OwnerNotifie
 
   return {
     notify(record) {
-      if (stopped || !noticeWanted(policy, record)) return Promise.resolve()
+      if (stopped) return Promise.resolve({ state: "suppressed", reason: "stopped" })
+      if (!noticeWanted(policy, record)) return Promise.resolve({ state: "suppressed", reason: "policy" })
       const write = persistIntent(record)
       schedule(NOTICE_COALESCE_MS)
-      return write
+      return write.then(noticeId => ({ state: "queued", noticeId }))
     },
     flush,
     stop() {

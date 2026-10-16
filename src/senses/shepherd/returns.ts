@@ -24,8 +24,11 @@ export interface ReturnRecord {
   reply: string | null
   latencyMs: number | null
   inputTokens: number | null
-  /** Recorded before notification custody so a restart can recover an interrupted enqueue. */
+  /** Observation eligibility is audit metadata, never authority to create delivery intent. */
   noticeEligible?: boolean
+  noticeState?: "queued" | "suppressed" | "failed"
+  noticeId?: string
+  noticeSuppressionReason?: "policy" | "stopped"
   trigger?: "immediate" | "network" | "periodic"
   dispatch?: { id: string; state: "claimed" | "sent" | "not_sent" | "unknown" }
 }

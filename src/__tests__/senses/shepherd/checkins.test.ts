@@ -55,7 +55,7 @@ function configure(checkInMinutes?: number) {
 }
 async function start(judge = vi.fn(async (_packet: ReturnPacket) => verdict()), extra: Partial<ShepherdSenseOptions> = {}) {
   const app = await startShepherdSenseApp({ agentName: AGENT, now: () => clock, schedule, createHost: () => host, judge,
-    notifyOwner: record => { notices.push(record) }, escalate: text => { escalations.push(text) },
+    notifyOwner: record => { notices.push(record); return { state: "queued", noticeId: "fixture-notice" } }, escalate: text => { escalations.push(text) },
     wake: async ids => { wakes.push(ids) }, feedbackWorker: () => ({ drain: async () => {}, stop() {} }), ...extra })
   stop = app.stop
   await flush()
@@ -108,6 +108,28 @@ afterEach(async () => {
 })
 
 describe("fresh all-returned-session periodic check-ins", () => {
+  it.each(["queued", "policy", "stopped", "failed"] as const)(
+    "only marks a periodic notice handled after queued custody or intentional policy suppression: %s", async acceptance => {
+      let attempts = 0
+      const notifyOwner = async () => {
+        attempts++
+        expect(readReturns(root).filter(record => record.trigger === "periodic")).toHaveLength(attempts - 1)
+        if (attempts === 1 && acceptance === "failed") throw new Error("notice write failed")
+        return acceptance === "policy" || acceptance === "stopped"
+          ? { state: "suppressed" as const, reason: acceptance }
+          : { state: "queued" as const, noticeId: "fixture-notice" }
+      }
+      await start(vi.fn(async () => verdict("gate")), { notifyOwner })
+      await advance(8000)
+      expect(attempts).toBe(1)
+      expect(readReturns(root).at(-1)).toMatchObject({
+        noticeState: acceptance === "failed" ? "failed" : acceptance === "queued" ? "queued" : "suppressed",
+      })
+      await advance(3_600_000)
+      await advance(8000)
+      expect(attempts).toBe(acceptance === "stopped" || acceptance === "failed" ? 2 : 1)
+    })
+
   it.each(["premature", "gate", "done", "waiting", "working", "unclear", "error", "loop_guard", null] as const)(
     "freshly rejudges prior %s and uses a fixed plain-text continuation", async kind => {
       if (kind) history(kind)

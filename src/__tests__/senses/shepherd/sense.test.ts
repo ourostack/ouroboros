@@ -73,7 +73,10 @@ describe("owner notice producer custody", () => {
     let release!: () => void
     const held = new Promise<void>(resolve => { release = resolve })
     const judge = vi.fn(async () => verdict())
-    const notifyOwner = vi.fn(async () => { if (notifyOwner.mock.calls.length === 1) await held })
+    const notifyOwner = vi.fn(async () => {
+      if (notifyOwner.mock.calls.length === 1) await held
+      return { state: "queued" as const, noticeId: "fixture-notice" }
+    })
     const app = await startShepherdSenseApp({
       agentName: AGENT, now: () => clock, createHost: () => host, judge,
       escalate: () => {}, wake: async () => {}, notifyOwner, schedule,
@@ -96,7 +99,7 @@ describe("owner notice producer custody", () => {
     const host = fakeHost()
     host.screens.S = [SCREENS.claudePremature]
     const judge = vi.fn(async () => verdict())
-    const notifyOwner = vi.fn().mockRejectedValueOnce(new Error("notice store unavailable")).mockResolvedValue(undefined)
+    const notifyOwner = vi.fn().mockRejectedValueOnce(new Error("notice store unavailable")).mockResolvedValue({ state: "queued", noticeId: "fixture-notice" })
     const app = await startShepherdSenseApp({
       agentName: AGENT, now: () => clock, createHost: () => host, judge,
       escalate: () => {}, wake: async () => {}, notifyOwner, schedule,
@@ -130,7 +133,7 @@ async function start(judge: (packet: ReturnPacket) => Promise<JudgeResult>, host
     judge,
     escalate: (content) => escalations.push(content),
     wake: async (ids) => { wakes.push(ids) },
-    notifyOwner: (record) => { notices.push(record) },
+    notifyOwner: (record) => { notices.push(record); return { state: "queued", noticeId: "fixture-notice" } },
     schedule,
     feedbackWorker: idleFeedbackWorker,
     ...recovery,
@@ -276,6 +279,7 @@ describe("Shepherd sense: answering premature returns", () => {
       kind: "premature", action: "respond", reason: "It stopped after a plan.", reply: "Go ahead and implement it.", latencyMs: 900, inputTokens: 1200,
       guidanceRevision: 0,
       noticeEligible: true,
+      noticeState: "queued", noticeId: "fixture-notice",
       trigger: "immediate",
       dispatch: { id: expect.stringMatching(/^[a-f0-9]{64}$/), state: "sent" },
     })

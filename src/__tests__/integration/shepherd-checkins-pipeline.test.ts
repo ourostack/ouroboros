@@ -149,7 +149,7 @@ describe("compiled periodic check-in pipeline on owned PTYs", () => {
           watch: () => ({ close() {} }),
         }),
         judge: createShepherdJudge(async () => provider, 5000),
-        notifyOwner: record => { notices.push(record) },
+        notifyOwner: record => { notices.push(record); return { state: "queued", noticeId: "fixture-notice" } },
         escalate: text => { escalations.push(text) }, wake: async ids => { wakes.push(ids) },
         feedbackWorker: () => ({ drain: async () => {}, stop() {} }),
       })

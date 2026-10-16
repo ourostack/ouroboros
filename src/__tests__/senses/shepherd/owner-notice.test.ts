@@ -52,6 +52,7 @@ const bot = (clientId: string, tenantId: string): TeamsConfig => ({ clientId, cl
 
 let root = ""
 beforeEach(() => {
+  vi.mocked(fs.renameSync).mockReset()
   root = fs.mkdtempSync(path.join(os.tmpdir(), "shepherd-notice-"))
   events.length = 0
   mockSend.mockReset().mockResolvedValue({ delivered: true })
@@ -226,15 +227,42 @@ describe("owner notifier", () => {
     return { instance, sent }
   }
 
-  it("retains an enqueue failure for retry and reports custody explicitly instead of silently dropping it", async () => {
+  it("rejects failed enqueue instead of reporting queued custody, then retries safely", async () => {
     const { instance, sent } = notifier()
     vi.mocked(fs.renameSync).mockImplementationOnce(() => { throw new Error("outbox publication unavailable") })
-    await instance.notify(record())
+    await expect(instance.notify(record())).rejects.toThrow("outbox publication unavailable")
     expect(sent).toEqual([])
     expect(events).toContainEqual(expect.objectContaining({ level: "error", message: "could not persist a Shepherd owner notice intent; it remains waiting" }))
     await instance.flush()
     expect(sent).toHaveLength(1)
     expect(readNoticeOutbox(root)[0]!.deliveries[ari.friendId]!.state).toBe("sent")
+  })
+
+  it("returns explicit queued and policy/stopped suppression acceptance", async () => {
+    const { instance } = notifier()
+    const value = record()
+    await expect(instance.notify(value)).resolves.toEqual({ state: "queued", noticeId: expect.any(String) })
+    const off = notifier({ policy: "off" })
+    await expect(off.instance.notify(record())).resolves.toEqual({ state: "suppressed", reason: "policy" })
+    instance.stop()
+    await expect(instance.notify(record())).resolves.toEqual({ state: "suppressed", reason: "stopped" })
+    expect(readNoticeOutbox(root)).toHaveLength(1)
+  })
+
+  it("handles a failed write observed by a scheduled flush without an unhandled rejection", async () => {
+    const { instance, sent } = notifier()
+    vi.mocked(fs.renameSync).mockImplementation(() => { throw new Error("disk unavailable") })
+    const accepted = instance.notify(record())
+    const rejected = expect(accepted).rejects.toThrow("disk unavailable")
+    tasks[0]!.fn()
+    await rejected
+    await instance.flush()
+    expect(sent).toEqual([])
+    expect(tasks.map(task => task.ms)).toEqual([NOTICE_RETRY_MS])
+    vi.mocked(fs.renameSync).mockRestore()
+    tasks[0]!.fn()
+    await vi.waitFor(() => expect(sent).toHaveLength(1))
+    instance.stop()
   })
 
   it("reports a corrupt outbox at startup and keeps a retry scheduled without initiating transport", async () => {
@@ -381,11 +409,13 @@ describe("owner notifier", () => {
     expect(tasks).toEqual([])
   })
 
-  it("recovers a logged eligible return interrupted before its outbox write", async () => {
-    appendReturn(root, record({ noticeEligible: true }))
+  it("startup does not import 207 eligible audit records as new notice intent", async () => {
+    for (let index = 0; index < 207; index++) appendReturn(root, record({ noticeEligible: true }))
     const { instance, sent } = notifier()
     await instance.flush()
-    expect(sent).toHaveLength(1)
+    expect(sent).toEqual([])
+    expect(readNoticeOutbox(root)).toEqual([])
+    expect(tasks).toEqual([])
   })
 
   it("does not replay legacy or explicitly suppressed returns when recovering", async () => {

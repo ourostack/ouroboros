@@ -14,7 +14,7 @@ import { QUIET_MS, realSchedule } from "./cmux"
 import { createShepherdHost, type ReturnedControl, type ShepherdHost, type ShepherdInspection } from "./host"
 import { createShepherdJudge, type JudgeResult, type ShepherdJudge } from "./judge"
 import { redactSecrets, screenTail as tail, withoutNumbers } from "./redact"
-import { createOwnerNotifier } from "./owner-notice"
+import { createOwnerNotifier, type NoticeIntentAcceptance } from "./owner-notice"
 import { appendReturn, readReturns, type ReturnRecord } from "./returns"
 import { applicableGuidance, readGuidance, type ShepherdGuidanceTarget } from "./guidance"
 import { readAgentPresentation } from "./agent-presentation"
@@ -82,7 +82,7 @@ export interface ShepherdSenseOptions {
   escalate?: (content: string) => void
   wake?: (ids: string[]) => Promise<void>
   /** Tells the owner about one judged return (default: the owner notice, coalesced, on the policy in agent.json). */
-  notifyOwner?: (record: ReturnRecord) => void | Promise<void>
+  notifyOwner?: (record: ReturnRecord) => NoticeIntentAcceptance | Promise<NoticeIntentAcceptance>
   schedule?: (fn: () => void, ms: number) => () => void
   checkConnectivity?: () => Promise<ShepherdConnectivity>
   feedbackWorker?: (options: FeedbackWorkerOptions) => FeedbackWorker
@@ -511,17 +511,21 @@ export async function startShepherdSenseApp(options: ShepherdSenseOptions): Prom
       Object.assign(record, { kind: record.reason ? record.kind : "error", reason: `${record.reason ? `${record.reason}; then ` : ""}${(error as Error).message}` })
     } finally {
       record.noticeEligible = notice
-      log(record)
-      if (judged || !periodic) history.set(event.sessionId, record)
       if (notice) {
         try {
-          await notifyOwner(record)
-          if (noticeSignature) custody.markNotified(noticeSignature, record.at)
+          const acceptance = await notifyOwner(record)
+          record.noticeState = acceptance.state
+          if (acceptance.state === "queued") record.noticeId = acceptance.noticeId
+          else record.noticeSuppressionReason = acceptance.reason
+          if (noticeSignature && (acceptance.state === "queued" || acceptance.reason === "policy")) custody.markNotified(noticeSignature, record.at)
         }
         catch (error) {
-          emitNervesEvent({ level: "error", component: "senses", event: "senses.shepherd_notice_error", message: "owner notice custody failed; the eligible return remains logged for recovery", meta: { agent, error: (error as Error).message } })
+          record.noticeState = "failed"
+          emitNervesEvent({ level: "error", component: "senses", event: "senses.shepherd_notice_error", message: "owner notice custody failed; the observation is not accepted delivery intent", meta: { agent, error: (error as Error).message } })
         }
       }
+      log(record)
+      if (judged || !periodic) history.set(event.sessionId, record)
     }
   }
 
