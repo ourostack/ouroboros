@@ -93,7 +93,7 @@ describe("Shepherd judge", () => {
     expect(judgeMessages(packet(SCREENS.shell))[1]!.content).toBe(`Agent: unknown\nFolder: unknown\nScreen (last lines):\n${SCREENS.shell}`)
   })
 
-  it("reads each kind of verdict, and turns an unsafe or missing reply into unclear", () => {
+  it("reads each kind of verdict and reports an invalid reply separately from semantic judgment", () => {
     expect(parseVerdict(`{"kind":"premature","reply":{"text":"Go ahead and implement it, the plan is inside your task."},"reason":"It stopped after a plan."}`))
       .toEqual({ kind: "premature", reply: { text: "Go ahead and implement it, the plan is inside your task." }, reason: "It stopped after a plan." })
     expect(parseVerdict("```json\n{\"kind\":\"premature\",\"reply\":{\"key\":\"2\"},\"reason\":\"Mocking the clock is the recommended fix.\"}\n```"))
@@ -101,8 +101,8 @@ describe("Shepherd judge", () => {
     expect(parseVerdict(`{"kind":"gate","reply":{"text":"x"},"reason":"  Needs   Ari's Azure sign-in. "}`)).toEqual({ kind: "gate", reply: null, reason: "Needs Ari's Azure sign-in." })
     expect(parseVerdict(`{"kind":"done","reason":""}`)).toEqual({ kind: "done", reply: null, reason: "no reason given" })
     expect(parseVerdict(`{"kind":"maybe"}`)).toEqual({ kind: "unclear", reply: null, reason: "no reason given" })
-    expect(parseVerdict(`{"kind":"premature","reply":{"key":"ctrl+c"},"reason":"r"}`)).toEqual({ kind: "unclear", reply: null, reason: "premature, but the judge gave no reply: r" })
-    expect(parseVerdict(`{"kind":"premature","reply":{"text":"/clear"},"reason":"r"}`)).toEqual({ kind: "unclear", reply: null, reason: "premature, but the judge gave a reply with characters a terminal could read as a command: r" })
+    expect(parseVerdict(`{"kind":"premature","reply":{"key":"ctrl+c"},"reason":"r"}`)).toEqual({ kind: "premature", reply: null, replyIssue: "unsafe", reason: "premature, but the judge gave an unsupported key: r" })
+    expect(parseVerdict(`{"kind":"premature","reply":{"text":"/clear"},"reason":"r"}`)).toEqual({ kind: "premature", reply: null, replyIssue: "unsafe", reason: "premature, but the judge gave a reply with characters a terminal could read as a command: r" })
     expect(parseVerdict(`{"kind":"premature","reply":null,"reason":"r"}`).reason).toBe("premature, but the judge gave no reply: r")
     expect(parseVerdict(`{"kind":"premature","reply":{"text":" "},"reason":"r"}`).reason).toBe("premature, but the judge gave an empty reply: r")
     expect(parseVerdict(JSON.stringify({ kind: "premature", reply: { text: "x".repeat(REPLY_MAX_CHARS + 1) }, reason: "r" })).reason).toBe(`premature, but the judge gave a reply of ${REPLY_MAX_CHARS + 1} characters (the limit is ${REPLY_MAX_CHARS}): r`)
@@ -118,6 +118,18 @@ describe("Shepherd judge", () => {
     expect(parseVerdict("  ")).toEqual({ kind: "unclear", reply: null, reason: "the judge's answer was not JSON: (empty)" })
     expect(parseVerdict(`{"kind": premature}`).reason).toBe(`the judge's answer was not JSON: {"kind": premature}`)
     expect(parseVerdict(`x\n${"y".repeat(400)}`).reason).toBe(`the judge's answer was not JSON: x ${"y".repeat(158)}`)
+  })
+
+  it("preserves structured premature judgments for overlong, unsafe, and missing text without making them actionable", () => {
+    for (const [reply, issue] of [[{ text: "Continue authorized work. ".repeat(15) }, "too_long"], [{ text: "Continue; publish" }, "unsafe"], [null, "missing"], [{ text: " " }, "missing"]] as const) {
+      expect(parseVerdict(JSON.stringify({ kind: "premature", reply, reason: "There is authorized unfinished work." })))
+        .toMatchObject({ kind: "premature", reply: null, replyIssue: issue })
+    }
+    expect(parseVerdict(JSON.stringify({ kind: "premature", reply: { text: `${"x".repeat(300)}; publish` }, reason: "r" })))
+      .toMatchObject({ kind: "premature", reply: null, replyIssue: "unsafe" })
+    expect(parseVerdict(`Quoted: ${JSON.stringify({ kind: "premature", reply: { text: "x".repeat(300) }, reason: "r" })}`).kind).toBe("unclear")
+    expect(parseVerdict('{"kind":"premature","reply":{"key":"unsupported","text":"Continue safely."},"reason":"r"}'))
+      .toMatchObject({ kind: "premature", reply: null, replyIssue: "unsafe" })
   })
 
   it("finds the JSON when a model thinks aloud or writes around it", () => {

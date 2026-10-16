@@ -330,6 +330,7 @@ export async function startShepherdSenseApp(options: ShepherdSenseOptions): Prom
       guidanceRevision: String(record.guidanceRevision), reply: "key" in reply ? `key:${reply.key}` : reply.text,
       trigger: record.trigger!, transition: record.transition, at: record.at }, dispatchOwner)
     if (!claim) {
+      record.actionBlockReason = "custody"
       record.reason = `durable dispatch custody refused duplicate or unresolved input: ${record.reason}`
       return false
     }
@@ -343,6 +344,7 @@ export async function startShepherdSenseApp(options: ShepherdSenseOptions): Prom
         result = { state: "sent" }
       }
     } catch (error) {
+      record.actionBlockReason = "custody"
       record.dispatch.state = "unknown"
       try { custody.completeDispatch(claim.id, dispatchOwner, { state: "unknown", reason: field(redactSecrets(String(error)), 200) }) }
       catch (custodyError) {
@@ -355,6 +357,7 @@ export async function startShepherdSenseApp(options: ShepherdSenseOptions): Prom
       ...(result.reason ? { reason: field(redactSecrets(result.reason), 200) } : {}) })
     record.dispatch.state = result.state
     if (result.state === "not_sent") {
+      record.actionBlockReason = "state_changed"
       record.reason = `guarded host refused before input: ${result.reason ?? "target changed"}; ${record.reason}`
       return false
     }
@@ -388,12 +391,14 @@ export async function startShepherdSenseApp(options: ShepherdSenseOptions): Prom
       if (periodic) {
         notice = false
         if (periodic.generation !== generationFor(event.sessionId) || now() - periodic.observedAt < QUIET_MS) {
+          record.actionBlockReason = "state_changed"
           record.reason = "the check-in observation was invalidated or has not been quiet long enough"
           return
         }
         current = await host.inspect!(event.sessionId)
         if (stopped || periodic.generation !== generationFor(event.sessionId) ||
           inspectionFingerprint(current) !== inspectionFingerprint(periodic.first) || current.session.focused) {
+          record.actionBlockReason = stopped ? "stopped" : current.session.focused ? "focus" : "state_changed"
           record.reason = "the check-in target changed during the quiet interval"
           return
         }
@@ -402,6 +407,7 @@ export async function startShepherdSenseApp(options: ShepherdSenseOptions): Prom
       if (state.tripped) {
         // Tripped: no judge call and no new escalation until the human looks at the session.
         Object.assign(record, { kind: "loop_guard", reason: `Shepherd stopped answering this session until ${human} focuses it` })
+        record.actionBlockReason = "loop_guard"
         notice = false
         return
       }
@@ -417,11 +423,16 @@ export async function startShepherdSenseApp(options: ShepherdSenseOptions): Prom
       record.task = [...text.matchAll(/Desk-Task:\s*(\S+)/g)].pop()?.[1] ?? null
       const screen = tail(text, SCREEN_LINES)
       if (recovery && screen !== recovery.screen) {
+        record.actionBlockReason = "state_changed"
         record.reason = "the screen changed since the network stop, so recovery was not sent"
         return
       }
       const target: ShepherdGuidanceTarget = { host: host.name, session: event.sessionId, cwd: record.cwd, task: record.task }
-      const guidance = guidanceFor(target)
+      const checkedGuidance = () => {
+        try { return guidanceFor(target) }
+        catch (error) { record.actionBlockReason = "guidance"; throw error }
+      }
+      const guidance = checkedGuidance()
       record.guidanceRevision = guidance.revision
       let verdict: JudgeResult
       try {
@@ -437,13 +448,15 @@ export async function startShepherdSenseApp(options: ShepherdSenseOptions): Prom
       }
       judged = true
       if (periodic && (stopped || periodic.generation !== generationFor(event.sessionId))) {
+        record.actionBlockReason = stopped ? "stopped" : "state_changed"
         record.reason = "the check-in was invalidated during judgment; no input or notice sent"
         return
       }
       // The host's own word that background work is running outranks a reading of the screen: such a stop is never a return.
       const kind = (current ? current.backgroundWork : event.backgroundWork) ? "working" : verdict.kind
       const news = verdict.news === true || (kind === "working" && verdict.kind === "gate")
-      Object.assign(record, { kind, reason: verdict.reason, latencyMs: verdict.latencyMs, inputTokens: verdict.inputTokens })
+      Object.assign(record, { kind, judgeKind: verdict.kind, reason: verdict.reason, latencyMs: verdict.latencyMs, inputTokens: verdict.inputTokens,
+        ...(verdict.replyIssue ? { replyIssue: verdict.replyIssue } : {}) })
       if (!recovery && !periodic && kind === "waiting" && verdict.waitingOnNetwork) rememberNetworkWait(event, screen)
       const noticeScreen = screen.replace(/\b\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})\b/g, "<observation-time>")
       noticeBasis = [host.name, event.sessionId, record.agent, record.cwd, record.task, noticeScreen, guidance.revision]
@@ -458,46 +471,58 @@ export async function startShepherdSenseApp(options: ShepherdSenseOptions): Prom
         quietWorkingStatus = !periodic && !news
         status = `${record.agent ?? "agent"} waiting on its background work: ${verdict.reason}`
       }
-      if (kind === "premature" && verdict.reply) {
-        if ((recovery || periodic) && "key" in verdict.reply) {
+      const actionableReply = verdict.reply ?? (periodic && verdict.replyIssue === "too_long" ? { text: PERIODIC_RESUME } : null)
+      if (kind === "premature" && !actionableReply) record.actionBlockReason = "reply_invalid"
+      if (kind === "premature" && actionableReply) {
+        if ((recovery || periodic) && "key" in actionableReply) {
+          record.actionBlockReason = "menu_disallowed"
           record.reason = `${periodic ? "periodic check-in" : "connectivity recovery"} never presses approval or menu keys: ${verdict.reason}`
         } else if (periodic && (!current!.instance || current!.activity !== "idle" || current!.composer !== "empty" ||
           current!.backgroundWork !== false || !current!.session.agent || !host.promptIfUnchanged)) {
+          record.actionBlockReason = "host_unverified"
           record.reason = `the host cannot verify an idle, empty, supported agent process for guarded input: ${verdict.reason}`
         } else if (guidance.paused) {
+          record.actionBlockReason = "guidance"
           record.reason = `Shepherd guidance has this session paused, so nothing was sent: ${verdict.reason}`
         } else if (state.streak >= STREAK_MAX || state.answers.length >= HOURLY_MAX) {
           Object.assign(record, { kind: "loop_guard", reason: `loop guard: ${verdict.reason}` })
+          record.actionBlockReason = "loop_guard"
           state.tripped = true
         } else {
           const sessions = await host.list()
           const session = sessions.find(session => session.id === event.sessionId)
           if (now() - state.focusedAt < FOCUS_HOLD_MS || session?.focused) {
+            record.actionBlockReason = "focus"
             // Never type into the session the human is in, or one they just left.
             record.reason = `${human} is in this session or just left it, so it is theirs: ${verdict.reason}`
           } else if (periodic && (!session || session.agent !== current!.session.agent || session.cwd !== current!.session.cwd)) {
+            record.actionBlockReason = "state_changed"
             record.reason = `the check-in target changed while judging, so nothing was sent: ${verdict.reason}`
           } else if (!periodic && withoutNumbers(tail(redactSecrets(await host.read(event.sessionId, READ_LINES)), SCREEN_LINES)) !== withoutNumbers(screen)) {
+            record.actionBlockReason = "state_changed"
             record.reason = `the screen changed while judging, so nothing was sent: ${verdict.reason}`
           } else {
             const finalInspection = periodic ? await host.inspect!(event.sessionId) : undefined
             if (periodic && (stopped || periodic.generation !== generationFor(event.sessionId) ||
               finalInspection!.session.focused || inspectionFingerprint(finalInspection!) !== inspectionFingerprint(current!))) {
+              record.actionBlockReason = stopped ? "stopped" : finalInspection!.session.focused ? "focus" : "state_changed"
               record.reason = `the check-in changed while judging, so nothing was sent: ${verdict.reason}`
               return
             }
             // No awaited host reads between this final check and initiating the send.
-            const latest = guidanceFor(target)
+            const latest = checkedGuidance()
             if (stopped || (recovery && (latestReturns.get(event.sessionId) !== event || now() - state.focusedAt < FOCUS_HOLD_MS)) ||
               periodic && (periodic.generation !== generationFor(event.sessionId) || now() - state.focusedAt < FOCUS_HOLD_MS)) {
+              record.actionBlockReason = stopped ? "stopped" : now() - state.focusedAt < FOCUS_HOLD_MS ? "focus" : "state_changed"
               record.reason = `Shepherd stopped, the human focused this session, or it returned again while judging, so nothing was sent: ${verdict.reason}`
             } else if (latest.paused || latest.revision !== guidance.revision) {
+              record.actionBlockReason = "guidance"
               record.reason = `Shepherd guidance paused or changed while judging (revision ${guidance.revision} to ${latest.revision}), so nothing was sent: ${verdict.reason}`
             } else {
-              const reply = periodic ? { text: PERIODIC_RESUME } : recovery ? { text: NETWORK_RESUME } : verdict.reply
+              const reply = periodic ? { text: PERIODIC_RESUME } : recovery ? { text: NETWORK_RESUME } : actionableReply
               const canSend = periodic ? () => {
                 if (stopped || periodic.generation !== generationFor(event.sessionId) || now() - state.focusedAt < FOCUS_HOLD_MS) return false
-                const live = guidanceFor(target)
+                const live = checkedGuidance()
                 return !live.paused && live.revision === guidance.revision
               } : undefined
               if (await dispatch(record, reply, current?.instance ?? session?.instance ?? null, fingerprint(screen), periodic ? current : undefined, canSend)) {
@@ -519,7 +544,7 @@ export async function startShepherdSenseApp(options: ShepherdSenseOptions): Prom
       Object.assign(record, { kind: record.reason ? record.kind : "error", reason: `${record.reason ? `${record.reason}; then ` : ""}${(error as Error).message}` })
     } finally {
       if (noticeBasis && notice) {
-        observationSignature = fingerprint([...noticeBasis, record.kind])
+        observationSignature = fingerprint([...noticeBasis, record.kind, record.actionBlockReason === "custody" ? null : record.actionBlockReason ?? null])
         noticeSignature = record.action === "respond" ? fingerprint([observationSignature, "respond", record.reply])
           : record.dispatch?.state === "unknown" ? fingerprint([observationSignature, "unknown"]) : observationSignature
         notice = custody.shouldNotify(noticeSignature)

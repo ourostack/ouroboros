@@ -1,12 +1,16 @@
 import * as fs from "node:fs"
 import * as path from "node:path"
 import { emitNervesEvent } from "../../nerves/runtime"
-import type { ReturnKind } from "./judge"
+import type { ReplyIssue, ReturnKind } from "./judge"
 
 /** The returns log: one line per judgment, read by the sense, the Shepherd tools and the human. */
 const LOG_MAX_BYTES = 2 * 1024 * 1024
 
 export type ReturnAction = "respond" | "let_through"
+export type ShepherdActionBlockReason =
+  | "reply_invalid" | "menu_disallowed" | "host_unverified"
+  | "guidance" | "loop_guard" | "focus" | "state_changed"
+  | "custody" | "stopped"
 
 export interface ReturnRecord {
   at: string
@@ -19,6 +23,9 @@ export interface ReturnRecord {
   title?: string
   task: string | null
   kind: ReturnKind | "error" | "loop_guard"
+  judgeKind?: ReturnKind
+  replyIssue?: ReplyIssue
+  actionBlockReason?: ShepherdActionBlockReason
   action: ReturnAction
   reason: string
   reply: string | null

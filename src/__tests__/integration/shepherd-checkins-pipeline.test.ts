@@ -134,7 +134,7 @@ describe("compiled periodic check-in pipeline on owned PTYs", () => {
       expect(request.messages[0]!.content).toContain("periodic check-in")
       expect(request.activeTools).toEqual([])
       return { content: JSON.stringify({ kind: current.includes("AUTH:") ? "gate" : "premature",
-        reply: { text: "Never send this provider-selected text." }, reason: current.includes("AUTH:") ? "Human sign-in required." : "Existing work can continue safely." }) }
+        reply: { text: "Never send this provider-selected text. ".repeat(10) }, reason: current.includes("AUTH:") ? "Human sign-in required." : "Existing work can continue safely." }) }
     } }
     const start = async () => {
       const app = await startShepherdSenseApp({ agentName: agent, now: () => clock,
@@ -177,6 +177,7 @@ describe("compiled periodic check-in pipeline on owned PTYs", () => {
     expect(notices.map(record => [record.session, record.kind, record.action])).toEqual([
       [ids[0], "premature", "respond"], [ids[1], "gate", "let_through"],
     ])
+    expect(notices[0]).toMatchObject({ judgeKind: "premature", replyIssue: "too_long" })
     expect(providerRequests.every(request => request.includes("history only"))).toBe(true)
     const statusCount = cmux.lines.filter(line => line.includes("set_status")).length
     const wake = jobs.find(job => job.ms === 2000)!

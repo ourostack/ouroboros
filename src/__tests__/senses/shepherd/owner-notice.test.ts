@@ -72,6 +72,12 @@ describe("owner notice policy", () => {
 })
 
 describe("owner notice text", () => {
+  it("reports machine-format refusal without claiming the human must decide", () => {
+    const text = noticeLine(record({ action: "let_through", reply: null, actionBlockReason: "reply_invalid", replyIssue: "too_long" }))
+    expect(text).toMatch(/no input sent because/)
+    expect(text).not.toMatch(/waiting for you|needs you|could not tell/)
+  })
+
   it("reports an outside dependency without calling it done or asking the owner to act", () => {
     expect(noticeLine(record({ kind: "waiting", reason: "PR awaits review." }))).toContain("waiting on an outside dependency")
     expect(noticeLine(record({ kind: "waiting" }))).not.toMatch(/needs you|done|waiting for you/)

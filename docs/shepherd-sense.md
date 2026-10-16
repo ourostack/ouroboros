@@ -115,7 +115,20 @@ license to send test prompts to real work.
 
 The judge reads a packet (the human's name, the agent, folder, the `Desk-Task:` line if the screen has one, the agent's last message and the last 80 screen lines, all redacted) and answers with JSON: `premature` with a reply, `gate`, `done`, `waiting`, `working` (with a `news` flag) or `unclear`. The screen is untrusted data. It runs on the agent's own `agent` provider lane with no tools, low reasoning effort and a 20-second timeout, and its latency and input tokens are logged.
 
-A reply is either one key from a fixed set (enter, escape, up, down, tab, 1-9, y, n) or one line of at most 240 characters. The line has no line breaks, backslashes, `@`, control characters, invisible formatting or bidirectional-override characters, or leading `/`, `!` or `#`, so an input box never reads it as a command, a file mention or more than one line. Because the terminal might turn out to be a plain shell, it also has none of these shell characters: semicolon, dollar sign, backtick, pipe, `<`, `>` and `&`. Anything else turns the verdict into `unclear`.
+A reply is either one key from a fixed set (enter, escape, up, down, tab, 1-9, y, n) or one line of at most 240 characters. Whitespace is flattened and code-formatting backticks are removed before validation. The resulting line has no backslashes, `@`, control characters, invisible formatting or bidirectional-override characters, or leading `/`, `!` or `#`, so an input box never reads it as a command, a file mention or more than one line. Because the terminal might turn out to be a plain shell, it also has none of these shell characters: semicolon, dollar sign, backtick, pipe, `<`, `>` and `&`.
+
+A structured, valid `premature` classification is retained even if its proposed
+reply is invalid: `replyIssue` reports `too_long`, `unsafe` or `missing` separately.
+Syntax is checked before length, so unsafe-and-long is never a length-only failure.
+Immediate handling still requires a valid reply. Periodic handling alone may use
+its existing fixed plain continuation after a length-only failure, and only after
+all existing host/process, draft, focus, guidance, loop, fresh-screen and input-custody
+guards pass. Keys, unsafe/missing replies and untrusted prose extraction never gain
+that fallback. Malformed or uncertain judgments remain `unclear`.
+
+Audit records retain `judgeKind`, `replyIssue` and an explicit `actionBlockReason`
+when applicable. A machine-format, changed-state or verification refusal is
+reported as no input sent, not falsely presented as a decision the human must make.
 
 ## What Shepherd does with a verdict
 

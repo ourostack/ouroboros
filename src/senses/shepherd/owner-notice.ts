@@ -6,7 +6,7 @@ import type { ShepherdNoticePolicy } from "../../heart/identity"
 import { emitNervesEvent } from "../../nerves/runtime"
 import type { TeamsBotApi } from "../teams"
 import type { HostSession } from "./host"
-import type { ReturnRecord } from "./returns"
+import type { ReturnRecord, ShepherdActionBlockReason } from "./returns"
 import { claimPendingNotices, declareNoticeTargets, enqueueNotice, noticeDeliveryState, readNoticeOutbox, recordNoticeDelivery } from "./notice-outbox"
 
 /**
@@ -21,6 +21,17 @@ export const NOTICE_RETRY_MS = 30_000
 const NAME_MAX = 60
 const REASON_MAX = 300
 const REPLY_MAX = 240
+const BLOCK_DESCRIPTION: Record<ShepherdActionBlockReason, string> = {
+  reply_invalid: "the suggested reply was invalid",
+  menu_disallowed: "scheduled continuation cannot approve a menu",
+  host_unverified: "the host could not verify safe input state",
+  guidance: "operator guidance blocked input",
+  loop_guard: "the reply limit was reached",
+  focus: "the human owns the focused session",
+  state_changed: "the target state changed",
+  custody: "input delivery was already claimed or needs reconciliation",
+  stopped: "Shepherd stopped",
+}
 
 /** Kinds a "needs-me" owner still hears about. */
 const NEEDS_ME = new Set<ReturnRecord["kind"]>(["gate", "done", "loop_guard"])
@@ -67,6 +78,7 @@ export function noticeLine(record: ReturnRecord, location?: string | HostSession
         const sent = record.reply.startsWith("key:") ? `pressed ${plain(record.reply.slice(4), 10)}` : `sent it back: "${plain(record.reply, REPLY_MAX)}"`
         return `${subject} stopped early, so I ${sent}. ${why}`
       }
+      if (record.actionBlockReason) return `${subject} stopped early; no input sent because ${BLOCK_DESCRIPTION[record.actionBlockReason]}. ${why}`
       return `${subject} stopped early, but I did not answer it, so it is waiting for you. ${why}`
     case "gate":
       return `${subject} needs you. ${why}`

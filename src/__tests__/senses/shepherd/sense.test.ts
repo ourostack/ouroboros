@@ -7,6 +7,7 @@ import { resetIdentity } from "../../../heart/identity"
 import { cacheMachineRuntimeCredentialConfig, resetRuntimeCredentialConfigCache } from "../../../heart/runtime-credentials"
 import type { HostWatchHandlers, ReturnedControl, ShepherdHost } from "../../../senses/shepherd/host"
 import type { JudgeResult, ReturnPacket } from "../../../senses/shepherd/judge"
+import { parseVerdict } from "../../../senses/shepherd/judge"
 import { appendReturn, readReturns, returnsLogPath, type ReturnRecord } from "../../../senses/shepherd/returns"
 import { escalationContent, field, humanName, noticePolicy, queueEscalation, startShepherdSenseApp, wakeForEscalations } from "../../../senses/shepherd/sense"
 import { ackFrame, startFakeCmux } from "./fake-cmux"
@@ -173,6 +174,16 @@ afterEach(() => {
 })
 
 describe("Shepherd sense: answering premature returns", () => {
+  it.each(["too_long", "unsafe", "missing"] as const)("does not replace an immediate %s reply with periodic continuation", async issue => {
+    const reply = issue === "missing" ? null : { text: issue === "unsafe" ? "Continue; publish" : "Continue authorized work. ".repeat(15) }
+    const parsed = parseVerdict(JSON.stringify({ kind: "premature", reply, reason: "Unfinished work." }))
+    const { host, returned, last } = await start(async () => ({ ...parsed, latencyMs: 2, inputTokens: 10 }))
+    host.screens.S1 = [SCREENS.claudePremature]
+    await returned({ sessionId: "S1" })
+    expect(host.actions.some(action => /^(prompt|key) /.test(action))).toBe(false)
+    expect(last()).toMatchObject({ kind: "premature", judgeKind: "premature", replyIssue: issue, action: "let_through", actionBlockReason: "reply_invalid" })
+  })
+
   it("suppresses equivalent immediate observations without depending on transition IDs or reason paraphrases", async () => {
     let calls = 0
     const { host, returned, notices } = await start(async () => verdict({ kind: "gate", reply: null, reason: `Review remains pending (${++calls})` }))
@@ -286,7 +297,7 @@ describe("Shepherd sense: answering premature returns", () => {
     expect(host.actions.filter((action) => !action.startsWith("pace"))).toEqual(["prompt S1 [Ouro for Ari] Go ahead and implement it.", "status S1 answered for Ari: It stopped after a plan."])
     expect(last()).toEqual({
       at: "2026-10-10T20:00:00.000Z", host: "fake", session: "S1", transition: "cmux:B:101", agent: "claude", cwd: "/Users/a/code/app", task: "ouro-md/toolbar-polish",
-      kind: "premature", action: "respond", reason: "It stopped after a plan.", reply: "Go ahead and implement it.", latencyMs: 900, inputTokens: 1200,
+      kind: "premature", judgeKind: "premature", action: "respond", reason: "It stopped after a plan.", reply: "Go ahead and implement it.", latencyMs: 900, inputTokens: 1200,
       guidanceRevision: 0,
       noticeEligible: true,
       noticeState: "queued", noticeId: "fixture-notice",

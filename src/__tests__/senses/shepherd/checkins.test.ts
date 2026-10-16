@@ -7,6 +7,7 @@ import { resetIdentity } from "../../../heart/identity"
 import { cacheMachineRuntimeCredentialConfig, resetRuntimeCredentialConfigCache } from "../../../heart/runtime-credentials"
 import type { HostWatchHandlers, ShepherdHost, ShepherdInspection } from "../../../senses/shepherd/host"
 import type { JudgeResult, ReturnPacket } from "../../../senses/shepherd/judge"
+import { parseVerdict } from "../../../senses/shepherd/judge"
 import { appendReturn, readReturns, type ReturnRecord } from "../../../senses/shepherd/returns"
 import { startShepherdSenseApp, type ShepherdSenseOptions } from "../../../senses/shepherd/sense"
 import { recordShepherdCorrection, setShepherdSessionPause } from "../../../senses/shepherd/guidance"
@@ -108,6 +109,47 @@ afterEach(async () => {
 })
 
 describe("fresh all-returned-session periodic check-ins", () => {
+  it("uses only fixed periodic text after a structured length-only rejection", async () => {
+    const parsed = parseVerdict(JSON.stringify({ kind: "premature", reply: { text: "Continue authorized work. ".repeat(15) }, reason: "Unfinished work." }))
+    await start(vi.fn(async () => ({ ...parsed, latencyMs: 2, inputTokens: 10 })))
+    await advance(8000)
+    expect(prompts()).toEqual([`prompt S [Test Shepherd for the human] ${FIXED}`])
+    expect(readReturns(root).at(-1)).toMatchObject({ kind: "premature", judgeKind: "premature", replyIssue: "too_long", action: "respond" })
+    expect(readReturns(root).at(-1)).not.toHaveProperty("actionBlockReason")
+  })
+
+  it.each(["unsafe", "unsafe-and-long", "missing", "menu", "malformed", "prose-key"] as const)(
+    "does not convert %s into periodic text", async failure => {
+      const content = failure === "malformed" ? "not JSON" : failure === "prose-key" ? 'Quoted: {"kind":"premature","reply":{"key":"y"}}'
+        : JSON.stringify({ kind: "premature", reply: failure === "missing" ? null : failure === "menu" ? { key: "2" }
+          : { text: `${failure === "unsafe-and-long" ? "x".repeat(300) : "Continue"}; publish` }, reason: "r" })
+      const parsed = parseVerdict(content)
+      await start(vi.fn(async () => ({ ...parsed, latencyMs: 2, inputTokens: 10 })))
+      await advance(8000)
+      expect(prompts()).toEqual([])
+      expect(actions.some(action => action.startsWith("key "))).toBe(false)
+      if (parsed.kind === "premature") expect(readReturns(root).at(-1)).toMatchObject({ actionBlockReason: failure === "menu" ? "menu_disallowed" : "reply_invalid" })
+    })
+
+  it.each(["draft", "focus", "background", "instance", "paused", "changed", "stopped"] as const)(
+    "retains the %s guard for length-only periodic fallback", async guard => {
+      const parsed = parseVerdict(JSON.stringify({ kind: "premature", reply: { text: "Continue authorized work. ".repeat(15) }, reason: "r" }))
+      if (guard === "draft") inspections.S!.composer = "draft"
+      if (guard === "focus") inspections.S!.session.focused = true
+      if (guard === "background") inspections.S!.backgroundWork = true
+      if (guard === "instance") inspections.S!.instance = null
+      if (guard === "paused") await setShepherdSessionPause(root, { actorId: "owner", requestId: "pause",
+        target: { host: "fake", session: "S", cwd: "/project", task: null }, paused: true },
+      [{ host: "fake", session: "S", cwd: "/project", task: null }])
+      await start(vi.fn(async () => {
+        if (guard === "changed") inspections.S!.screen += " changed"
+        if (guard === "stopped") { stop!(); stop = null }
+        return { ...parsed, latencyMs: 2, inputTokens: 10 }
+      }))
+      await advance(8000)
+      expect(prompts()).toEqual([])
+    })
+
   it.each(["queued", "policy", "stopped", "failed"] as const)(
     "only marks a periodic notice handled after queued custody or intentional policy suppression: %s", async acceptance => {
       let attempts = 0
