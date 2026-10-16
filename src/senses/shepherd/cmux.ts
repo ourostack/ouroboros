@@ -129,7 +129,7 @@ export function createCmuxHost(client: CmuxClient, options: CmuxHostOptions = {}
       })))
     const identities = await (options.identifyTerminals ?? identifyTerminalProcesses)(entries.filter((entry) => entry.type === "terminal" && entry.tty).map((entry) => entry.tty!))
     return entries.map((entry) => {
-      const identity = entry.tty ? identities.get(entry.tty) : undefined
+      const identity = entry.tty ? identities.get(entry.tty.replace(/^\/dev\//, "")) : undefined
       return { ...entry, agent: identity?.agent ?? entry.agent, cwd: identity?.cwd ?? entry.cwd }
     })
   }

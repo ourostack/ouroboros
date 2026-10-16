@@ -101,4 +101,50 @@ describe("native MCP feedback route", () => {
     expect(connection.frames[0]!.result.isError).toBe(true)
     expect(connection.frames[0]!.result.content[0]!.text).not.toContain("abc123secret")
   })
+
+  it.each([
+    { feedback: "" },
+    { feedback: "x".repeat(2001) },
+    { feedback: "feedback", context: 42 },
+    { feedback: "feedback", context: "x".repeat(9000) },
+  ])("rejects invalid native feedback fields without running the source inspector: %j", async args => {
+    const connection = bridge()
+    connection.request(1, "tools/call", { name: "shepherd_feedback", arguments: {
+      request_id: "11111111-1111-4111-8111-111111111111", ...args,
+    } })
+    await vi.waitFor(() => expect(connection.frames).toHaveLength(1))
+    expect(connection.frames[0]!.result.isError).toBe(true)
+    expect(runtime.origin).not.toHaveBeenCalled()
+    expect(runtime.send).not.toHaveBeenCalled()
+  })
+
+  it.each([
+    { ok: false },
+    { ok: false, error: "definite daemon refusal" },
+    { ok: true, message: "looks accepted" },
+    { ok: true, message: "looks accepted", data: { id: "wrong" } },
+    { ok: true, message: "looks accepted", data: { id: "feedback:11111111-1111-4111-8111-111111111111" } },
+    { ok: true, message: "looks accepted", data: { id: "feedback:11111111-1111-4111-8111-111111111111", receipt: "different", state: "pending" } },
+    { ok: true, message: "looks accepted", data: { id: "feedback:11111111-1111-4111-8111-111111111111", receipt: "looks accepted", state: "invented" } },
+  ])("never turns an invalid/missing durable receipt into successful native acknowledgement: %j", async response => {
+    runtime.send.mockResolvedValue(response)
+    const connection = bridge()
+    connection.request(1, "tools/call", { name: "shepherd_feedback", arguments: {
+      request_id: "11111111-1111-4111-8111-111111111111", feedback: "feedback",
+    } })
+    await vi.waitFor(() => expect(connection.frames).toHaveLength(1))
+    expect(connection.frames[0]!.result.isError).toBe(true)
+  })
+
+  it("reports source-inspection failures without submitting a request or leaking a thrown string", async () => {
+    runtime.origin.mockRejectedValueOnce("token=abc123secret native origin missing")
+    const connection = bridge()
+    connection.request(1, "tools/call", { name: "shepherd_feedback", arguments: {
+      request_id: "11111111-1111-4111-8111-111111111111", feedback: "feedback",
+    } })
+    await vi.waitFor(() => expect(connection.frames).toHaveLength(1))
+    expect(connection.frames[0]!.result.isError).toBe(true)
+    expect(connection.frames[0]!.result.content[0]!.text).not.toContain("abc123secret")
+    expect(runtime.send).not.toHaveBeenCalled()
+  })
 })

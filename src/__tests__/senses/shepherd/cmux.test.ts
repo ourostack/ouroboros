@@ -75,17 +75,17 @@ describe("cmux host: terminals", () => {
     expect(sessions.map(session => session.focused)).toEqual([true, true])
     expect(sessions.map(session => session.selected === true)).toEqual([false, true])
   })
-  it("identifies unhooked terminals by tty and keeps the workspace and tab title", async () => {
+  it.each(["ttys007", "/dev/ttys007"])("identifies an unhooked terminal with tty %s and keeps its workspace and tab title", async tty => {
     server.respond("system.tree", () => ({
       windows: [{ visible: true, workspaces: [{ id: "WS-1", ref: "workspace:1", title: "ouro", selected: true,
-        panes: [{ surfaces: [{ id: "SF-1", ref: "surface:1", title: "Ship Shepherd", type: "terminal", tty: "ttys007" }] }],
+        panes: [{ surfaces: [{ id: "SF-1", ref: "surface:1", title: "Ship Shepherd", type: "terminal", tty }] }],
       }] }],
     }))
     const cmux = createCmuxHost(createCmuxClient({ socketPath: server.socketPath, auth: { kind: "capability", token: "v1.t.s" } }), {
       identifyTerminals: async () => new Map([["ttys007", { agent: "Copilot", cwd: "/Users/a/personal-desk" }]]),
     })
     expect(await cmux.list()).toEqual([expect.objectContaining({
-      agent: "Copilot", cwd: "/Users/a/personal-desk", workspaceTitle: "ouro", title: "Ship Shepherd", tty: "ttys007",
+      agent: "Copilot", cwd: "/Users/a/personal-desk", workspaceTitle: "ouro", title: "Ship Shepherd", tty,
     })])
   })
 

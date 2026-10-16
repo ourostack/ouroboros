@@ -79,14 +79,15 @@ function validInput(value: unknown): value is FeedbackInput {
     object(recipient) && recipient.friendId === value.actorId && text(recipient.aadObjectId) && nullable(recipient.tenantId)
 }
 function validRecord(value: unknown): value is FeedbackRecord {
-  if (!validInput(value) || !object(value)) return false
+  if (!object(value) || !validInput(value)) return false
   const review = value.review, delivery = value.delivery
-  const shape = object(review) && ["pending", "claimed", "complete", "uncertain"].includes(String(review.state)) &&
+  if (!object(review) || !object(delivery)) return false
+  const shape = ["pending", "claimed", "complete", "uncertain"].includes(String(review.state)) &&
     nullable(review.owner) && nullable(review.response) && nullable(review.reason) &&
-    object(delivery) && ["pending", "unknown", "sent"].includes(String(delivery.state)) &&
+    ["pending", "unknown", "sent"].includes(String(delivery.state)) &&
     nullable(delivery.owner) && Number.isSafeInteger(delivery.attempts) && Number(delivery.attempts) >= 0 &&
     nullable(delivery.conversationId) && nullable(delivery.messageId) && nullable(delivery.reason)
-  if (!shape || !object(review) || !object(delivery)) return false
+  if (!shape) return false
   const reviewPhase = review.state === "pending" ? review.owner === null && review.response === null && review.reason === null
     : review.state === "claimed" ? text(review.owner) && review.response === null && review.reason === null
     : text(review.owner) && text(review.response) && (review.state === "complete" ? review.reason === null : text(review.reason))
@@ -105,13 +106,13 @@ function parse(encoded: string): FeedbackRecord {
 function privateDirectory(directory: string): void {
   fs.mkdirSync(directory, { recursive: true, mode: 0o700 })
   const stat = fs.lstatSync(directory)
-  if (!stat.isDirectory() || stat.isSymbolicLink() || (stat.mode & 0o077) !== 0 || stat.uid !== process.getuid!()) {
+  if (!stat.isDirectory() || (stat.mode & 0o077) !== 0 || stat.uid !== process.getuid!()) {
     refuse("private directory ownership or mode")
   }
 }
 function privateFile(file: string): void {
   const stat = fs.lstatSync(file)
-  if (!stat.isFile() || stat.isSymbolicLink() || stat.nlink !== 1 || (stat.mode & 0o077) !== 0 || stat.uid !== process.getuid!()) {
+  if (!stat.isFile() || stat.nlink !== 1 || (stat.mode & 0o077) !== 0 || stat.uid !== process.getuid!()) {
     refuse("private file ownership or mode")
   }
 }

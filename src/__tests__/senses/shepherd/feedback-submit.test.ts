@@ -6,7 +6,7 @@ import { afterEach, describe, expect, it, vi } from "vitest"
 import type { FriendRecord } from "@ouro.bot/friends"
 import type { HostSession, ShepherdHost } from "../../../senses/shepherd/host"
 import { openFeedbackStore, type FeedbackStore } from "../../../senses/shepherd/feedback-store"
-import { executeFeedbackCommand, shepherdFeedbackStatus, submitShepherdFeedback, type FeedbackSubmitDeps } from "../../../senses/shepherd/feedback-submit"
+import { executeFeedbackCommand, feedbackRecipient, shepherdFeedbackStatus, submitShepherdFeedback, type FeedbackSubmitDeps } from "../../../senses/shepherd/feedback-submit"
 import * as surface from "../../../senses/shepherd/surface"
 import { getAgentRoot, resetIdentity } from "../../../heart/identity"
 import { feedbackStorePath } from "../../../senses/shepherd/feedback-store"
@@ -83,6 +83,9 @@ describe("bound native feedback submission", () => {
       const absent = await executeFeedbackCommand({ kind: "agent.shepherdFeedbackStatus", agent: "other", friendId: "owner", requestId: randomUUID() })
       expect(absent.ok).toBe(false)
       expect(fs.existsSync(feedbackStorePath(getAgentRoot("other")))).toBe(false)
+      const unconfigured = await executeFeedbackCommand({ kind: "agent.shepherdFeedback", ...fixture.request, agent: "unconfigured" })
+      expect(unconfigured.ok).toBe(false)
+      expect(fs.existsSync(getAgentRoot("unconfigured"))).toBe(false)
     } finally {
       host.mockRestore()
       if (previous === undefined) delete process.env.HOME
@@ -213,5 +216,32 @@ describe("bound native feedback submission", () => {
     }
     await expect(submitShepherdFeedback({ ...fixture.request, friendId: "self" }, fixture.deps)).rejects.toThrow("local")
     expect(fixture.actions).toEqual([])
+  })
+
+  it("keeps absent caller context, cwd, task and tenant explicitly unknown rather than inventing coordinates", async () => {
+    const fixture = setup()
+    fixture.sessions([{ ...source, cwd: null }])
+    fixture.friend({ ...friend, externalIds: [{ provider: "aad", externalId: "owner-aad", linkedAt: "2026-10-15" }] })
+    fixture.deps.returns = () => [{
+      at: "2026-10-15T19:00:00.000Z", host: "cmux", session: source.id, transition: "turn-1",
+      agent: "Copilot", cwd: null, task: null, kind: "unclear", action: "let_through",
+      reason: "Source unknown.", reply: null, latencyMs: 1, inputTokens: 1,
+    }]
+    const result = await submitShepherdFeedback({ ...fixture.request, submission: {
+      requestId: fixture.request.submission.requestId, feedback: fixture.request.submission.feedback,
+    } }, fixture.deps)
+    expect(fixture.store.read(result.id, "owner")).toMatchObject({
+      source: { cwd: null, task: null }, packet: { context: null }, recipient: { tenantId: null },
+    })
+  })
+
+  it.each([
+    { externalId: " " },
+    { externalId: "x".repeat(513) },
+    { externalId: "owner-aad", tenantId: "x".repeat(513) },
+  ])("refuses malformed private Teams coordinates before promising a follow-up: %j", identity => {
+    expect(() => feedbackRecipient({ ...friend, externalIds: [{
+      provider: "aad", linkedAt: "2026-10-15", ...identity,
+    }] })).toThrow("identity")
   })
 })

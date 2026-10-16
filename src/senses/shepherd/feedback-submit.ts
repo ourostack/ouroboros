@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto"
 import * as fs from "node:fs"
+import * as path from "node:path"
 import type { FriendRecord, FriendStore } from "@ouro.bot/friends"
 import { getAgentRoot } from "../../heart/identity"
 import type { DaemonResponse } from "../../heart/daemon/daemon"
@@ -72,6 +73,7 @@ function defaultDeps(agent: string): FeedbackSubmitDeps {
 export async function submitShepherdFeedback(input: FeedbackRequest, injected?: FeedbackSubmitDeps): Promise<FeedbackReceipt> {
   validate(input.submission)
   agentPresentation(input.agent, {})
+  if (!injected && !fs.existsSync(path.join(getAgentRoot(input.agent), "agent.json"))) refuse("existing configured agent required")
   const deps = injected ?? defaultDeps(input.agent)
   try {
     if (!input.friendId || input.friendId === SELF_FRIEND_ID || await deps.resolveOwner() !== input.friendId) refuse("existing local-family owner required")

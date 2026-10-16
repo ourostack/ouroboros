@@ -23,6 +23,22 @@ The only Ouro-owned durable credential locations are the bundle and the agent va
 
 Do not introduce a second credential source of truth. Raw credentials belong in the owning agent's vault. Bundle files may contain references, configuration, state, and vault coordinates, but not raw credentials.
 
+### Agent display identity
+
+`agent.json` may include `displayName`, the agent's human-facing name. It does not
+rename its bundle, change the `--agent` identifier, select providers or grant
+authority. For example, the bundle `orchid-runtime.ouro` can have
+`"displayName": "Orchid One"`. Add that field to the existing document; do not
+replace the rest of its configuration.
+
+An explicit display name must contain 1–80 characters, without surrounding
+whitespace, markup delimiters, control or invisible formatting characters. Both
+runtime config readers validate it. Existing bundles without the field use their
+configured agent identifier; the runtime never guesses a name from psyche prose
+or maps every agent to "Ouro". Shepherd's session entry, composer, attribution and
+feedback acknowledgements use this explicit identity. **Ouro Shepherd** remains
+the product name.
+
 ## Provider Selection
 
 Every agent has two provider lanes in `agent.json`:

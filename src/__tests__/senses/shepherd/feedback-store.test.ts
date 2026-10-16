@@ -2,12 +2,17 @@ import * as fs from "node:fs"
 import * as os from "node:os"
 import * as path from "node:path"
 import { createHash, randomUUID } from "node:crypto"
-import { afterEach, describe, expect, it } from "vitest"
+import { afterEach, describe, expect, it, vi } from "vitest"
 import Database from "better-sqlite3"
 import { openFeedbackStore, type FeedbackInput, type FeedbackStore } from "../../../senses/shepherd/feedback-store"
 
+vi.mock("node:fs", async original => {
+  const actual = await original<typeof import("node:fs")>()
+  return { ...actual, openSync: vi.fn(actual.openSync), readFileSync: vi.fn(actual.readFileSync) }
+})
+
 const stores: FeedbackStore[] = []
-afterEach(() => { for (const store of stores.splice(0)) store.close() })
+afterEach(() => { for (const store of stores.splice(0)) store.close(); vi.restoreAllMocks() })
 
 function open(file = path.join(fs.mkdtempSync(path.join(os.tmpdir(), "shepherd-feedback-")), "feedback", "queue.sqlite")) {
   const store = openFeedbackStore(file)
@@ -161,5 +166,213 @@ describe("durable session feedback custody", () => {
     const malformed: FeedbackInput = JSON.parse(JSON.stringify(original))
     Object.assign(malformed.packet, { previousReturn: {} })
     expect(() => store.submit(malformed)).toThrow("schema")
+  })
+
+  it("retains custody when a late sender/unknown request or malformed outcome tries to change it", () => {
+    const { store } = open()
+    const record = store.submit(input())
+    expect(store.claimDelivery(record.id, record.actorId, "sender")).toBeNull()
+    expect(() => store.claimReview("unknown", "owner", "worker")).toThrow("unknown")
+    expect(() => store.claimReview(record.id, "owner", "")).toThrow("owner")
+    store.claimReview(record.id, "owner", "worker")
+    expect(() => store.completeReview(record.id, "owner", "worker", "answer", "")).toThrow("uncertainty")
+    store.completeReview(record.id, "owner", "worker", "answer")
+    store.claimDelivery(record.id, "owner", "sender")
+    expect(() => store.completeDelivery(record.id, "owner", "other", { state: "pending" })).toThrow("owner")
+    expect(() => store.completeDelivery(record.id, "owner", "sender", { state: "sent" })).toThrow("receipt")
+    const malformed = JSON.parse('{"state":"fabricated"}')
+    expect(() => store.completeDelivery(record.id, "owner", "sender", malformed)).toThrow("state")
+    expect(store.read(record.id, "owner")?.delivery.state).toBe("unknown")
+  })
+
+  it.each([
+    { actorId: "x".repeat(513) },
+    { agent: "x".repeat(257) },
+    { receipt: "x".repeat(4097) },
+  ])("refuses oversized identity/receipt metadata before creating custody: %j", override => {
+    const { store } = open()
+    const value = input(override)
+    if (override.actorId) value.recipient.friendId = override.actorId
+    expect(() => store.submit(value)).toThrow("limit")
+    expect(store.pending()).toEqual([])
+  })
+
+  it("reserves enough space for the later full response even when each source field fits its own bound", () => {
+    const { store } = open()
+    const value = input()
+    value.packet.context = "x".repeat(7000)
+    value.packet.screen = "x".repeat(14000)
+    value.packet.previousReturn = {
+      at: "now", host: "cmux", session: value.source.id, transition: "old", agent: "Copilot", cwd: "/project", task: null,
+      kind: "done", action: "let_through", reason: "x".repeat(30000), reply: null, latencyMs: null, inputTokens: null,
+    }
+    expect(() => store.submit(value)).toThrow("reserved response capacity")
+    expect(store.pending()).toEqual([])
+  })
+
+  it("refuses unsafe database locations, permissions and unsupported existing table layouts", () => {
+    expect(() => openFeedbackStore("relative.sqlite")).toThrow("path")
+    const { store, file } = open()
+    store.close()
+    fs.chmodSync(path.dirname(file), 0o755)
+    expect(() => openFeedbackStore(file)).toThrow("directory")
+    fs.chmodSync(path.dirname(file), 0o700)
+    fs.chmodSync(file, 0o644)
+    expect(() => openFeedbackStore(file)).toThrow("file")
+    fs.chmodSync(file, 0o600)
+    const directory = fs.mkdtempSync(path.join(os.tmpdir(), "malformed-feedback-db-"))
+    const malformed = path.join(directory, "queue.sqlite")
+    const database = new Database(malformed)
+    database.exec("CREATE TABLE feedback (wrong TEXT)")
+    database.pragma("user_version = 1")
+    database.close()
+    fs.chmodSync(malformed, 0o600)
+    expect(() => openFeedbackStore(malformed)).toThrow()
+  })
+
+  it("refuses a changed process owner before trusting either directory or database bytes", () => {
+    const { store, file } = open()
+    store.close()
+    const uid = process.getuid!()
+    const owner = vi.spyOn(process, "getuid")
+    try {
+      owner.mockReturnValue(uid + 1)
+      expect(() => openFeedbackStore(file)).toThrow("ownership")
+      owner.mockReset().mockReturnValueOnce(uid).mockReturnValue(uid + 1)
+      expect(() => openFeedbackStore(file)).toThrow("ownership")
+    } finally { owner.mockRestore() }
+  })
+
+  it("reconciles an already-written identical archive without overwriting a conflicting one", () => {
+    const { store, file } = open()
+    const record = store.submit(input())
+    store.claimReview(record.id, "owner", "worker")
+    store.completeReview(record.id, "owner", "worker", "Recorded.")
+    store.claimDelivery(record.id, "owner", "sender")
+    const before = store.read(record.id, "owner")!
+    const receipt = { state: "sent" as const, conversationId: "chat", messageId: "activity" }
+    store.completeDelivery(record.id, "owner", "sender", receipt)
+    const directory = path.join(path.dirname(file), "receipts")
+    const archive = path.join(directory, fs.readdirSync(directory)[0]!)
+    const database = new Database(file)
+    try {
+      database.prepare("UPDATE feedback SET data=?,archive_hash=NULL,conversation=NULL,message=NULL WHERE id=?")
+        .run(JSON.stringify(before), record.id)
+      store.completeDelivery(record.id, "owner", "sender", receipt)
+      expect(store.read(record.id, "owner")?.delivery.state).toBe("sent")
+      database.prepare("UPDATE feedback SET data=?,archive_hash=NULL,conversation=NULL,message=NULL WHERE id=?")
+        .run(JSON.stringify(before), record.id)
+      fs.writeFileSync(archive, "conflicting immutable bytes")
+      expect(() => store.completeDelivery(record.id, "owner", "sender", receipt)).toThrow("archive conflict")
+      expect(fs.readFileSync(archive, "utf8")).toBe("conflicting immutable bytes")
+      expect(store.read(record.id, "owner")?.delivery.state).toBe("unknown")
+    } finally { database.close() }
+  })
+
+  it("rejects oversized or changed archived receipt bytes instead of presenting a made-up acknowledgement", () => {
+    const { store, file } = open()
+    const record = store.submit(input())
+    store.claimReview(record.id, "owner", "worker")
+    store.completeReview(record.id, "owner", "worker", "Recorded.")
+    store.claimDelivery(record.id, "owner", "sender")
+    store.completeDelivery(record.id, "owner", "sender", { state: "sent", conversationId: "chat", messageId: "activity" })
+    const directory = path.join(path.dirname(file), "receipts")
+    const archive = path.join(directory, fs.readdirSync(directory)[0]!)
+    const original = fs.readFileSync(archive, "utf8")
+    fs.writeFileSync(archive, "x".repeat(70000))
+    expect(() => store.read(record.id, "owner")).toThrow("byte limit")
+    fs.writeFileSync(archive, original.replace("Recorded.", "Forged!!"))
+    expect(() => store.read(record.id, "owner")).toThrow("fingerprint")
+  })
+
+  it.each([
+    { label: "non-record", patch: null },
+    { label: "mismatched recipient", patch: { actorId: "different-actor" } },
+    { label: "missing review", patch: { review: null } },
+    { label: "missing delivery", patch: { delivery: null } },
+    { label: "invalid review phase", patch: { review: { state: "invented", owner: null, response: null, reason: null } } },
+  ])("refuses corrupted stored $label data before exposing a receipt", ({ patch }) => {
+    const { store, file } = open()
+    const record = store.submit(input())
+    const value = patch === null ? null : { ...record, ...patch }
+    const database = new Database(file)
+    try { database.prepare("UPDATE feedback SET data=?").run(JSON.stringify(value)) } finally { database.close() }
+    expect(() => store.read(record.id, "owner")).toThrow("schema")
+  })
+
+  it("rejects oversized row bytes and valid-but-substituted row identities", () => {
+    const { store, file } = open()
+    const record = store.submit(input())
+    const database = new Database(file)
+    try {
+      database.prepare("UPDATE feedback SET data=?").run("x".repeat(70000))
+      expect(() => store.read(record.id, "owner")).toThrow("byte limit")
+      database.prepare("UPDATE feedback SET data=?").run(JSON.stringify({ ...record, id: `feedback:${randomUUID()}` }))
+      expect(() => store.read(record.id, "owner")).toThrow("identity")
+    } finally { database.close() }
+  })
+
+  it("surfaces a failed database creation rather than creating an in-memory success substitute", async () => {
+    const directory = fs.mkdtempSync(path.join(os.tmpdir(), "failed-feedback-store-"))
+    const file = path.join(directory, "queue.sqlite")
+    const nativeOpen = (await vi.importActual<typeof import("node:fs")>("node:fs")).openSync
+    const hook = vi.spyOn(fs, "openSync").mockImplementation((target, flags, mode) => {
+      if (target === file) throw Object.assign(new Error("storage unavailable"), { code: "EIO" })
+      return nativeOpen(target, flags, mode)
+    })
+    try {
+      expect(() => openFeedbackStore(file)).toThrow("storage unavailable")
+      expect(fs.existsSync(file)).toBe(false)
+    } finally { hook.mockRestore() }
+  })
+
+  it("retains uncertain delivery when receipt archival fails after transport acceptance", async () => {
+    const { store, file } = open()
+    const record = store.submit(input())
+    store.claimReview(record.id, "owner", "worker")
+    store.completeReview(record.id, "owner", "worker", "Recorded.")
+    store.claimDelivery(record.id, "owner", "sender")
+    const before = store.read(record.id, "owner")!
+    const receipt = { state: "sent" as const, conversationId: "chat", messageId: "activity" }
+    store.completeDelivery(record.id, "owner", "sender", receipt)
+    const directory = path.join(path.dirname(file), "receipts")
+    const archive = path.join(directory, fs.readdirSync(directory)[0]!)
+    fs.renameSync(archive, `${archive}.preserved`)
+    const database = new Database(file)
+    database.prepare("UPDATE feedback SET data=?,archive_hash=NULL,conversation=NULL,message=NULL").run(JSON.stringify(before))
+    database.close()
+    const nativeOpen = (await vi.importActual<typeof import("node:fs")>("node:fs")).openSync
+    const hook = vi.spyOn(fs, "openSync").mockImplementation((target, flags, mode) => {
+      if (target === archive) throw Object.assign(new Error("archive disk failure"), { code: "EIO" })
+      return nativeOpen(target, flags, mode)
+    })
+    try {
+      expect(() => store.completeDelivery(record.id, "owner", "sender", receipt)).toThrow("archive disk failure")
+      expect(store.read(record.id, "owner")?.delivery.state).toBe("unknown")
+    } finally { hook.mockRestore() }
+  })
+
+  it("refuses a receipt file swapped during its descriptor read, even when replacement bytes match", async () => {
+    const { store, file } = open()
+    const record = store.submit(input())
+    store.claimReview(record.id, "owner", "worker")
+    store.completeReview(record.id, "owner", "worker", "Recorded.")
+    store.claimDelivery(record.id, "owner", "sender")
+    store.completeDelivery(record.id, "owner", "sender", { state: "sent", conversationId: "chat", messageId: "activity" })
+    const directory = path.join(path.dirname(file), "receipts")
+    const archive = path.join(directory, fs.readdirSync(directory)[0]!)
+    const replacement = `${archive}.replacement`
+    fs.writeFileSync(replacement, fs.readFileSync(archive), { mode: 0o600 })
+    const nativeRead = (await vi.importActual<typeof import("node:fs")>("node:fs")).readFileSync
+    const hook = vi.spyOn(fs, "readFileSync").mockImplementation((...args) => {
+      const result = nativeRead(...args)
+      if (typeof args[0] === "number") {
+        fs.renameSync(archive, `${archive}.preserved`)
+        fs.renameSync(replacement, archive)
+      }
+      return result
+    })
+    try { expect(() => store.read(record.id, "owner")).toThrow("archive changed") }
+    finally { hook.mockRestore() }
   })
 })

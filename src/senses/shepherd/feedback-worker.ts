@@ -110,7 +110,7 @@ export function startFeedbackWorker(options: FeedbackWorkerOptions): FeedbackWor
       attempted = true
       const result = await send({ friendId: recipient.friendId, name: record.actorId, key: record.id,
         ...(recipient.tenantId ? { tenantId: recipient.tenantId } : {}) }, text)
-      if (result.delivery?.state === "accepted" && result.delivery.conversationId && result.delivery.messageId) {
+      if (result.delivered && result.delivery?.state === "accepted" && result.delivery.conversationId && result.delivery.messageId) {
         store.completeDelivery(record.id, record.actorId, owner, { state: "sent",
           conversationId: result.delivery.conversationId, messageId: result.delivery.messageId })
       } else {

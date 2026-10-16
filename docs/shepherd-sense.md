@@ -1,6 +1,6 @@
 # Shepherd Sense
 
-Shepherd keeps the coding agents in this Mac's terminals working. Every time one of them hands control back, a cheap judge decides whether it should have. When the agent stopped too early (it asked "want me to go ahead?", offered a menu with a clear recommendation, or stopped after a plan), Shepherd answers in the terminal, visibly, and the agent carries on. When the agent needs the human (a sign-in, a decision that is theirs, money, an irreversible step) or says the work is done, Shepherd lets the return through and brings it to the Ouro agent.
+Shepherd keeps the coding agents in this Mac's terminals working. Every time one of them hands control back, a cheap judge decides whether it should have. When the agent stopped too early (it asked "want me to go ahead?", offered a menu with a clear recommendation, or stopped after a plan), Shepherd answers in the terminal, visibly, and the agent carries on. When the agent needs the human (a sign-in, a decision that is theirs, money, an irreversible step) or says the work is done, Shepherd lets the return through and brings it to the supervising agent.
 
 It is agent-agnostic and terminal-agnostic. Nothing in it assumes a particular coding agent: Claude Code, Codex, Copilot CLI, Agency and any other agent are judged by the same rubric from their screen. A terminal host is an adapter (`src/senses/shepherd/host.ts`): cmux and Herdr.
 
@@ -29,7 +29,7 @@ A reply is either one key from a fixed set (enter, escape, up, down, tab, 1-9, y
 
 | Verdict | Action |
 | --- | --- |
-| `premature` | Answers in the terminal, unless a check below stops it. A line is typed as `[Ouro for <human>] <reply>`; a menu gets its key. The status line says `answered for <human>: <reason>`. |
+| `premature` | Answers in the terminal, unless a check below stops it. A line is typed as `[<configured agent name> for <human>] <reply>`; a menu gets its key. The status line says `answered for <human>: <reason>`. |
 | `gate` | Lets it through, sets the status line to `needs <human>`, and escalates to the Ouro agent. |
 | `done` | Lets it through, sets the status line to `done`, and escalates. |
 | `working` | Never answers. Sets the status line to `<agent> waiting on its background work: <reason>` and logs it. Queues a `[Shepherd update]` for the Ouro agent, with no wake, only when the judge flags news. |
@@ -65,23 +65,101 @@ Every judgment is one JSON line in `state/senses/shepherd/returns.jsonl` in the 
 
 **Menu keys can approve permission prompts.** An agent that asks for permission before doing work inside its task has stopped too early under TTFA (time to first action), so the judge may answer it with a key, which can approve the prompt. That is deliberate: the human's standing authority covers routine work, and gates (credentials, money, irreversible acts, decisions that are the human's) are never answered. Every such answer is logged and shown on the status line.
 
-## Talking to Ouro about one session
+## Talking to your agent about one session
 
-The independent graphical composer is a short **About** selector, a message box, and Ouro's actual reply, not a terminal inventory. It stays usable while the coding agent is working and never borrows its input. Open it in cmux with:
+The independent graphical composer is a short **About** selector, a message box,
+and your agent's actual reply, not a terminal inventory. The agent's
+`agent.json` `displayName` supplies its labels and attribution; absent that field,
+the configured agent identifier is used. "Ouro" is one agent's name, not a name
+every installation shares. The composer stays usable while the coding agent is
+working and never borrows its input. Open it in cmux with:
 
 ```sh
-ouro shepherd chat --agent ouroboros --web
+ouro shepherd chat --agent <agent> --web
 ```
 
-The browser opens beside the current terminal without moving its focus. On first opening, the composer offers the current coding session when cmux can identify exactly one; otherwise choose its short title under **About**. **Refresh** updates session choices without changing the conversation. Once selected, the conversation is pinned to that terminal's stable UUID. Switching terminals or windows does not retarget it. Enter sends; Shift+Enter adds a line. **Cancel Ouro** cancels only Ouro's reply, not coding work. **Reconnect** checks the authoritative journal without submitting the message again. Unacknowledged messages retain their original session, draft and request ID; About remains locked until their receipt is resolved. The same ID is used in the daemon journal, so recovering after the HTTP listener restarts cannot start that turn twice. New draft edits made while a send is being acknowledged are kept.
+The browser opens beside the current terminal without moving its focus. On first opening, the composer offers the current coding session when cmux can identify exactly one; otherwise choose its short title under **About**. **Refresh** updates session choices without changing the conversation. Once selected, the conversation is pinned to that terminal's stable UUID. Switching terminals or windows does not retarget it. Enter sends; Shift+Enter adds a line. **Cancel <name>** cancels only your supervising agent's reply, not coding work. **Reconnect** checks the authoritative journal without submitting the message again. Unacknowledged messages retain their original session, draft and request ID; About remains locked until their receipt is resolved. The same ID is used in the daemon journal, so recovering after the HTTP listener restarts cannot start that turn twice. New draft edits made while a send is being acknowledged are kept.
 
-The managed Shepherd sense on this Mac also installs a small native **Talk to Ouro** entry at `~/.config/cmux/sidebars/ouro-attention-<agent>.swift`. It can be opened as a cmux sidebar pane with `cmux sidebar open ouro-attention-ouroboros`; its button opens the same graphical composer. The sense owns this persistent entry; one-off `--web` views do not replace it. This uses the installed cmux Swift interpreter, not a newer JavaScript sidebar API or an unsupported custom right-sidebar mode. No layout or keyboard focus is changed merely because Shepherd starts. The loopback entry is restricted to the existing OS user's local-family identity, with a private entry token and same-origin checks; it is not a remote chat server.
+The managed Shepherd sense on this Mac also installs a small native **Talk to <name>** entry at `~/.config/cmux/sidebars/ouro-attention-<agent>.swift`. It can be opened as a cmux sidebar pane with `cmux sidebar open ouro-attention-<agent>`; its button opens the same graphical composer. The sense owns this persistent entry; one-off `--web` views do not replace it. This uses the installed cmux Swift interpreter, not a newer JavaScript sidebar API or an unsupported custom right-sidebar mode. No layout or keyboard focus is changed merely because Shepherd starts. The loopback entry is restricted to the existing OS user's local-family identity, with a private entry token and same-origin checks; it is not a remote chat server.
 
-For a terminal-only composer, omit `--web`. `--session <UUID>` explicitly selects a terminal in either mode. Neither mode registers an `@ouro` receiver inside Copilot or Claude: `@ouro` at the start of a message is accepted in this independent composer, not intercepted from the coding agent's prompt.
+For a terminal-only composer, omit `--web`. `--session <UUID>` explicitly selects
+a terminal in either mode. A leading `@<configured name>` or `@<agent identifier>`
+is accepted in this independent composer. It does not register native mention
+interception inside Copilot, Claude or Codex.
+
+## Feedback from the coding session
+
+With the agent's MCP bridge registered in your coding harness, say the feedback
+in that actual coding session, for example:
+
+> Orchid, you should have caught this. It stopped after writing the plan, but I
+> asked it to finish the implementation.
+
+The coding agent relays that explicit feedback with the bridge's
+`shepherd_feedback` tool and quotes its actual short receipt in the same session.
+You do not need to find a surface UUID, reconstruct context in Teams or switch
+to the separate composer. This is an MCP conversation interaction, not a claim
+that arbitrary `@name` input is intercepted before the coding model sees it.
+The bridge must actually be registered and connected; after upgrading, reconnect
+it so its tool list includes `shepherd_feedback` and `shepherd_feedback_status`.
+The server command for the harness's existing local stdio MCP registration is
+`ouro mcp-serve --agent <agent>`. Run it as that coding session's MCP child, not
+through a detached shared service that has lost the originating terminal.
+
+The bridge derives its own controlling terminal, and the daemon requires one
+matching recognized cmux coding session plus this OS user's existing local-family
+identity. The tool cannot choose a different source, actor, agent or recipient.
+Detached/remote bridges without a unique local controlling TTY are refused,
+not attached to whichever terminal happens to be focused. Native source binding
+currently uses POSIX TTYs and cmux stable surface IDs.
+
+The receipt means **received and queued**, not "learned" or "Teams delivered."
+It preserves a request ID generated by the coding caller. A retry with that same
+ID and identical feedback returns its original receipt and frozen context,
+including after the source disappears; a changed request body is refused.
+The native receipt is tool output, never terminal input, a submitted coding
+prompt or a focus command.
+
+The existing Shepherd sense reviews queued feedback with the supervising agent,
+using a bounded, redacted source packet and its actual prior judgment when one
+exists. Screen and caller context are background evidence, not instructions.
+The review can read that session's history and record/inspect guidance; it cannot
+type into terminals, run a shell, start a background ponder or select an external
+recipient. Session-only guidance is the default; a broader preference requires
+the human's explicit generalization.
+
+The full acknowledgement goes privately to the originating operator on Teams,
+not every family friend: what the agent understood, what it actually recorded
+or changed and its scope, and any clarification it needs. Feedback requires an
+existing unambiguous private Teams identity; absent that route, submission does
+not promise a ping it cannot deliver.
+
+Reply to that Teams acknowledgement for clarification. Its actual outgoing
+activity ID, private conversation and resolved actor identify the original
+feedback, so the agent receives the stored source context without asking you to
+repeat it. An explicit full `feedback:<UUID>` reference selects only the same
+actor's record in its recorded conversation. Conflicting or ambiguous references
+are refused rather than attached to the latest terminal. Ordinary replies to
+unrelated messages remain ordinary Teams conversations.
+
+`shepherd_feedback_status` checks the original request without repeating model
+work or requiring the source terminal to remain present. Review and transport
+custody are separate: pending requests survive restart; interrupted model
+execution and unknown Teams acceptance are not automatically replayed. A
+definitely-not-sent transport result can retry, while `sent` requires the actual
+conversation and message receipt. It is transport acceptance, not a read receipt.
+
+Feedback lives privately under `state/senses/shepherd/feedback/` in the agent
+bundle (`0700` directories, `0600` database/receipts). The active queue is bounded
+at 512 records; accepted closed deliveries retain keyed immutable receipt
+archives for idempotency and clarification, rather than consuming a lifetime
+512-submission allowance. Unresolved records are never silently evicted.
 
 ## Tools
 
-The tools appear only for an agent whose `agent.json` has `senses.shepherd.enabled: true`. Only family trust may call them.
+These are the supervising agent's runtime tools, distinct from the two native
+MCP feedback tools above. They appear only for an agent whose `agent.json` has
+`senses.shepherd.enabled: true`. Only family trust may call them.
 
 | Tool | What it does |
 | --- | --- |
@@ -92,7 +170,7 @@ The tools appear only for an agent whose `agent.json` has `senses.shepherd.enabl
 
 `shepherd_send` lets the human run their coding agents from wherever they talk to the Ouro agent, such as Teams on a phone. It types only for a family friend in their own conversation; the private runtime (the agent on its own) is refused, so it never types on its own initiative. Each call takes exactly one of:
 
-- `text`: one line of at most 2,000 characters with no control characters, typed as `[Ouro for <their name>] <text>` and submitted with Enter, as Shepherd's own answers are.
+- `text`: one line of at most 2,000 characters with no control characters, typed as `[<configured agent name> for <their name>] <text>` and submitted with Enter, as Shepherd's own answers are.
 - `key`: one of `enter`, `escape`, `up`, `down`, `tab`, `ctrl-c`, `1` to `9`, `y` or `n`, pressed alone. `enter`, `tab`, a digit, `y` and `n` can approve or choose on a prompt, so they need the `screen` fingerprint from a `shepherd_read` made just before.
 
 Right before typing it finds the session again (refusing one that is gone) and reads its screen; if a `screen` was passed and the last 20 lines changed since, ignoring numbers, nothing is sent. Unlike Shepherd's own answers, it also types into the terminal the human has focused, because the human asked. Every send emits `repertoire.shepherd_send` (session, ref, agent, character count, key, requesting friend id, focus, whether the screen was checked; never the text) and sets the status line to `sent for <name>`. Every refusal emits `repertoire.shepherd_send_refused` with the reason.
