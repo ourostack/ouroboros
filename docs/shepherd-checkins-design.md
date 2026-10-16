@@ -230,8 +230,9 @@ Use one small private SQLite custody database under the existing Shepherd state
 directory, mirroring `feedback-store.ts`'s `claimDelivery`/`completeDelivery`
 two-phase pattern and private ownership/mode checks. No transaction spans
 host/model I/O. The dispatch key binds host,
-stable session, process-start identity, source transition, judged screen
-fingerprint and guidance revision. Claims are kernel-owned and durable before
+stable session, process-start identity, judged screen fingerprint and guidance
+revision. The source transition and trigger are metadata only and are excluded
+from the dispatch key. Claims are kernel-owned and durable before
 send. A second worker or restart cannot send the same attempt twice.
 
 Only positively reconciled successful host acceptance is recorded as sent.
