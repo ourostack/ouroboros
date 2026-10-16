@@ -80,6 +80,8 @@ describe("durable session feedback custody", () => {
     expect(store.findReply("owner", "private-chat", "activity-1")?.id).toBe(record.id)
     expect(store.findReply("other", "private-chat", "activity-1")).toBeNull()
     expect(store.findReply("owner", "other-chat", "activity-1")).toBeNull()
+    expect(store.hasReply("activity-1")).toBe(true)
+    expect(store.hasReply("ordinary-activity")).toBe(false)
     expect(store.pending()).toEqual([])
     expect(store.read(record.id, "owner")?.delivery.state).toBe("sent")
   })
@@ -117,6 +119,7 @@ describe("durable session feedback custody", () => {
     expect(() => store.submit(input())).toThrow("capacity")
     expect(store.read(first.id, "owner")?.delivery.messageId).toBe("first")
     expect(store.findReply("owner", "chat", "first")?.id).toBe(first.id)
+    expect(store.hasReply("first")).toBe(true)
   })
 
   it("refuses database and archive symlinks instead of following another file", () => {

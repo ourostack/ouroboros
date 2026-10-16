@@ -40,6 +40,7 @@ export interface FeedbackStore {
   claimDelivery(id: string, actorId: string, owner: string): FeedbackRecord | null
   completeDelivery(id: string, actorId: string, owner: string, delivery: FeedbackDelivery): void
   findReply(actorId: string, conversationId: string, messageId: string): FeedbackRecord | null
+  hasReply(messageId: string): boolean
   close(): void
 }
 interface Row { id: string; actor: string; body_hash: string; data: string | null; archive_hash: string | null }
@@ -275,6 +276,9 @@ export function openFeedbackStore(file: string): FeedbackStore {
       const row = database.prepare("SELECT id FROM feedback WHERE actor=? AND conversation=? AND message=?")
         .get(actorId, conversationId, messageId) as { id: string } | undefined
       return row ? read(row.id, actorId) : null
+    },
+    hasReply(messageId) {
+      return database.prepare("SELECT 1 FROM feedback WHERE message=? LIMIT 1").get(messageId) !== undefined
     },
     close() { if (database.open) database.close() },
   }
