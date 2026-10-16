@@ -2,6 +2,12 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.932",
+      "changes": [
+        "Shepherd recognizes the current Copilot block-framed composer border without relaxing draft, background-work, approval/menu, identity or screen-stability guards."
+      ]
+    },
+    {
       "version": "0.1.0-alpha.931",
       "changes": [
         "Shepherd freshly rechecks all returned coding sessions hourly, with a configurable cadence of 30 minutes or longer and no repeated unchanged-blocker notices.",
