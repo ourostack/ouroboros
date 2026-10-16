@@ -5,10 +5,41 @@ import { SCREENS } from "./fixtures"
 // Synthetic renderings, not private terminal transcripts.
 const copilot = (input = "┃  ", footer = " Interactive · Allow All · / commands · ? help · worker · Claude Opus 5.5") =>
   ["● Synthetic task returned.", "╭" + "▄".repeat(30), input, "╹" + "▀".repeat(30), footer].join("\n")
+const copilotThick = (input?: string, footer?: string) => copilot(input, footer).replace("╭", "╻")
 const codex = (input = "› ", footer = "  ? for shortcuts · 100% context left") =>
   ["• Synthetic result.", "", input, "", footer].join("\n")
 
 describe("known rendered coding composers", () => {
+  it.each(["Copilot", "copilot"])("recognizes the known thick-top %s idle-empty frame independently of the footer model", agent => {
+    expect(inspectCodingPrompt(agent, copilotThick())).toEqual({ activity: "idle", composer: "empty" })
+    expect(inspectCodingPrompt(agent, copilotThick("┃  ", " Interactive · Allow All · / commands · ? help · 1 scheduled"))).toEqual({ activity: "idle", composer: "empty" })
+  })
+  it.each(["┃  first\n┃  second", "┃ \n┃    unfinished"])("keeps the thick-top composer's multiline draft (%s)", input => {
+    expect(inspectCodingPrompt("Copilot", copilotThick(input))).toEqual({ activity: "idle", composer: "draft" })
+  })
+  it.each([
+    " Working · esc interrupt · 1 scheduled",
+    " Interactive · Allow All · / commands · ? help · 1 running · 1 scheduled",
+  ])("keeps the thick-top empty composer working with an active footer (%s)", footer => {
+    expect(inspectCodingPrompt("Copilot", copilotThick("┃  ", footer))).toEqual({ activity: "working", composer: "empty" })
+  })
+  it.each([
+    copilotThick().replace("╻" + "▄".repeat(30), ""),
+    copilotThick().replace("╹" + "▀".repeat(30), ""),
+    copilotThick().replace("╻" + "▄".repeat(30), "╻" + "▄".repeat(12)),
+    copilotThick().replace("╹" + "▀".repeat(30), "╹" + "▀".repeat(12)),
+    ...["┏", "╷", "|", "╵", "╹"].map(glyph => copilotThick().replace("╻", glyph)),
+    copilotThick("unbounded input"),
+    copilotThick("┃ Enter a prompt"),
+    copilotThick("┃ ", " mystery footer"),
+    copilotThick() + "\n Press enter to confirm or esc to cancel",
+    copilotThick() + "\n Allow this operation?",
+  ])("refuses clipped, unknown and approval variants of the thick-top frame (%#)", screen => {
+    expect(inspectCodingPrompt("Copilot", screen)).toEqual({ activity: "unknown", composer: "unknown" })
+  })
+  it.each(["unknown", "Claude Code", "Codex"])("does not infer Copilot identity from its thick frame or footer for %s", agent => {
+    expect(inspectCodingPrompt(agent, copilotThick())).toEqual({ activity: "unknown", composer: "unknown" })
+  })
   it.each(["Copilot", "copilot"])("recognizes %s regardless of footer model identity and ignores a timer-only badge", agent => {
     expect(inspectCodingPrompt(agent, copilot())).toEqual({ activity: "idle", composer: "empty" })
     expect(inspectCodingPrompt(agent, copilot("┃  ", " Interactive · / commands · 1 scheduled"))).toEqual({ activity: "idle", composer: "empty" })
