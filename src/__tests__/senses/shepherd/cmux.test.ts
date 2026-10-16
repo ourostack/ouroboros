@@ -105,6 +105,7 @@ describe("cmux host: terminals", () => {
     expect(inspection).toEqual({
       session: expect.objectContaining({ id: uuid, tty: "ttys007", cwd: "/synthetic/project", agent: "Copilot", instance: "20:Thu Oct 15 23:00:00 2026", focused: false }),
       instance: "20:Thu Oct 15 23:00:00 2026", screen: state.screen, activity: "idle", composer: "empty", backgroundWork: false,
+      screenFingerprint: expect.stringMatching(/^[0-9a-f]{64}$/),
     })
     expect(server.methods.filter(call => call.method === "surface.read_text").every(call => call.params.scrollback === false && call.params.surface_id === uuid && call.params.workspace_id === state.workspaceId)).toBe(true)
     expect(inputs()).toEqual([])
@@ -127,6 +128,7 @@ describe("cmux host: terminals", () => {
     expect(await cmux.inspect!(uuid)).toEqual({
       session: expect.objectContaining({ id: uuid, agent: null, cwd: null }),
       instance: null, screen: state.screen, activity: "unknown", composer: "unknown", backgroundWork: null,
+      screenFingerprint: expect.stringMatching(/^[0-9a-f]{64}$/),
     })
     expect((await cmux.list())[0]!.instance).toBeUndefined()
   })
@@ -197,6 +199,20 @@ describe("cmux host: terminals", () => {
     expect(inputs()).toEqual([])
     state.screen = state.screen.replace("┃ ", "┃ token=draft-secret")
     expect((await cmux.inspect!(uuid)).composer).toBe("draft")
+  })
+
+  it("exports exact raw-screen SHA-256 across separate inspections even when public redacted screens are equal", async () => {
+    const { cmux, state } = inspectedHost()
+    state.screen = "token=first-secret\n"
+    const first = await cmux.inspect!(uuid)
+    state.screen = "token=other-secret\n"
+    const second = await cmux.inspect!(uuid)
+    expect(first.screen).toBe("token=[redacted]\n")
+    expect(second.screen).toBe(first.screen)
+    expect(first.screenFingerprint).toBe("f20457dfe4ae481973b609d73c68e536e5e8d32410d89f9a3986b8055026d9c8")
+    expect(second.screenFingerprint).toBe("28e38a8a09e2f17f2e0edb0dfbbc15e0d67d6343b85dd2ee66f5976f787dcfb2")
+    expect(first.screenFingerprint).not.toBe(second.screenFingerprint)
+    expect(inputs()).toEqual([])
   })
 
   it.each(["id", "tty", "cwd", "instance", "screen", "draft", "focused", "agent", "missing-instance"])("refuses %s changed during guarded target lookup before any input", async change => {
