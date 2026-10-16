@@ -2,6 +2,15 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.933",
+      "changes": [
+        "Recover existing supervised Teams tunnels after permanent rejection or sustained readiness loss, with scoped and confirmed bot endpoint registration.",
+        "Recover accepted Shepherd notice intent without importing audit history, and compact pending observations into bounded historical session digests with durable receipt custody.",
+        "Preserve valid premature judgments independently of invalid suggested replies; keep length-only periodic fixed-text continuation behind all existing input safety guards.",
+        "Correlate Teams request and reply stages without message bodies, and contain notice-ledger failures so later returns remain runnable."
+      ]
+    },
+    {
       "version": "0.1.0-alpha.932",
       "changes": [
         "Shepherd recognizes the current Copilot block-framed composer border without relaxing draft, background-work, approval/menu, identity or screen-stability guards."

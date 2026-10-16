@@ -7,6 +7,7 @@ import { resetIdentity } from "../../../heart/identity"
 import { cacheMachineRuntimeCredentialConfig, resetRuntimeCredentialConfigCache } from "../../../heart/runtime-credentials"
 import type { HostWatchHandlers, ShepherdHost, ShepherdInspection } from "../../../senses/shepherd/host"
 import type { JudgeResult, ReturnPacket } from "../../../senses/shepherd/judge"
+import { parseVerdict } from "../../../senses/shepherd/judge"
 import { appendReturn, readReturns, type ReturnRecord } from "../../../senses/shepherd/returns"
 import { startShepherdSenseApp, type ShepherdSenseOptions } from "../../../senses/shepherd/sense"
 import { recordShepherdCorrection, setShepherdSessionPause } from "../../../senses/shepherd/guidance"
@@ -55,7 +56,7 @@ function configure(checkInMinutes?: number) {
 }
 async function start(judge = vi.fn(async (_packet: ReturnPacket) => verdict()), extra: Partial<ShepherdSenseOptions> = {}) {
   const app = await startShepherdSenseApp({ agentName: AGENT, now: () => clock, schedule, createHost: () => host, judge,
-    notifyOwner: record => { notices.push(record) }, escalate: text => { escalations.push(text) },
+    notifyOwner: record => { notices.push(record); return { state: "queued", noticeId: "fixture-notice" } }, escalate: text => { escalations.push(text) },
     wake: async ids => { wakes.push(ids) }, feedbackWorker: () => ({ drain: async () => {}, stop() {} }), ...extra })
   stop = app.stop
   await flush()
@@ -108,6 +109,99 @@ afterEach(async () => {
 })
 
 describe("fresh all-returned-session periodic check-ins", () => {
+  it.each(["quiet-stop", "quiet-focus", "final-stop", "final-focus"] as const)(
+    "records the %s boundary without sending input", async boundary => {
+      const inspect = host.inspect!
+      let count = 0
+      host.inspect = vi.fn(async id => {
+        const current = await inspect(id)
+        if (++count === (boundary.startsWith("quiet") ? 2 : 3)) {
+          if (boundary.endsWith("stop")) { stop!(); stop = null }
+          else current.session.focused = true
+        }
+        return current
+      })
+      await start()
+      await advance(8000)
+      expect(prompts()).toEqual([])
+      expect(readReturns(root).at(-1)).toMatchObject({ actionBlockReason: boundary.endsWith("stop") ? "stopped" : "focus" })
+    })
+
+  it("retains accepted queue custody when notice-signature bookkeeping fails", async () => {
+    await start(vi.fn(async () => verdict("gate")), {
+      openCheckInStore: file => {
+        const store = openCheckInStore(file)
+        store.markNotified = () => { throw new Error("signature store unavailable") }
+        return store
+      },
+    })
+    await advance(8000)
+    expect(readReturns(root).at(-1)).toMatchObject({ noticeState: "queued", noticeId: "fixture-notice" })
+  })
+
+  it("uses only fixed periodic text after a structured length-only rejection", async () => {
+    const parsed = parseVerdict(JSON.stringify({ kind: "premature", reply: { text: "Continue authorized work. ".repeat(15) }, reason: "Unfinished work." }))
+    await start(vi.fn(async () => ({ ...parsed, latencyMs: 2, inputTokens: 10 })))
+    await advance(8000)
+    expect(prompts()).toEqual([`prompt S [Test Shepherd for the human] ${FIXED}`])
+    expect(readReturns(root).at(-1)).toMatchObject({ kind: "premature", judgeKind: "premature", replyIssue: "too_long", action: "respond" })
+    expect(readReturns(root).at(-1)).not.toHaveProperty("actionBlockReason")
+  })
+
+  it.each(["unsafe", "unsafe-and-long", "missing", "menu", "malformed", "prose-key"] as const)(
+    "does not convert %s into periodic text", async failure => {
+      const content = failure === "malformed" ? "not JSON" : failure === "prose-key" ? 'Quoted: {"kind":"premature","reply":{"key":"y"}}'
+        : JSON.stringify({ kind: "premature", reply: failure === "missing" ? null : failure === "menu" ? { key: "2" }
+          : { text: `${failure === "unsafe-and-long" ? "x".repeat(300) : "Continue"}; publish` }, reason: "r" })
+      const parsed = parseVerdict(content)
+      await start(vi.fn(async () => ({ ...parsed, latencyMs: 2, inputTokens: 10 })))
+      await advance(8000)
+      expect(prompts()).toEqual([])
+      expect(actions.some(action => action.startsWith("key "))).toBe(false)
+      if (parsed.kind === "premature") expect(readReturns(root).at(-1)).toMatchObject({ actionBlockReason: failure === "menu" ? "menu_disallowed" : "reply_invalid" })
+    })
+
+  it.each(["draft", "focus", "background", "instance", "paused", "changed", "stopped"] as const)(
+    "retains the %s guard for length-only periodic fallback", async guard => {
+      const parsed = parseVerdict(JSON.stringify({ kind: "premature", reply: { text: "Continue authorized work. ".repeat(15) }, reason: "r" }))
+      if (guard === "draft") inspections.S!.composer = "draft"
+      if (guard === "focus") inspections.S!.session.focused = true
+      if (guard === "background") inspections.S!.backgroundWork = true
+      if (guard === "instance") inspections.S!.instance = null
+      if (guard === "paused") await setShepherdSessionPause(root, { actorId: "owner", requestId: "pause",
+        target: { host: "fake", session: "S", cwd: "/project", task: null }, paused: true },
+      [{ host: "fake", session: "S", cwd: "/project", task: null }])
+      await start(vi.fn(async () => {
+        if (guard === "changed") inspections.S!.screen += " changed"
+        if (guard === "stopped") { stop!(); stop = null }
+        return { ...parsed, latencyMs: 2, inputTokens: 10 }
+      }))
+      await advance(8000)
+      expect(prompts()).toEqual([])
+    })
+
+  it.each(["queued", "policy", "stopped", "failed"] as const)(
+    "only marks a periodic notice handled after queued custody or intentional policy suppression: %s", async acceptance => {
+      let attempts = 0
+      const notifyOwner = async () => {
+        attempts++
+        expect(readReturns(root).filter(record => record.trigger === "periodic")).toHaveLength(attempts - 1)
+        if (attempts === 1 && acceptance === "failed") throw new Error("notice write failed")
+        return acceptance === "policy" || acceptance === "stopped"
+          ? { state: "suppressed" as const, reason: acceptance }
+          : { state: "queued" as const, noticeId: "fixture-notice" }
+      }
+      await start(vi.fn(async () => verdict("gate")), { notifyOwner })
+      await advance(8000)
+      expect(attempts).toBe(1)
+      expect(readReturns(root).at(-1)).toMatchObject({
+        noticeState: acceptance === "failed" ? "failed" : acceptance === "queued" ? "queued" : "suppressed",
+      })
+      await advance(3_600_000)
+      await advance(8000)
+      expect(attempts).toBe(acceptance === "stopped" || acceptance === "failed" ? 2 : 1)
+    })
+
   it.each(["premature", "gate", "done", "waiting", "working", "unclear", "error", "loop_guard", null] as const)(
     "freshly rejudges prior %s and uses a fixed plain-text continuation", async kind => {
       if (kind) history(kind)
@@ -510,7 +604,7 @@ describe("fresh all-returned-session periodic check-ins", () => {
     expect(readReturns(root).at(-1)?.reason).toContain("cannot verify")
   })
 
-  it("can safely send a previously refused attempt at a future cadence without repeating unchanged status", async () => {
+  it("reports the changed outcome when a previously refused attempt is safely sent at a future cadence", async () => {
     host.promptIfUnchanged = vi.fn()
       .mockResolvedValueOnce({ state: "not_sent", reason: "pre-input guard" })
       .mockImplementation(async (id, line) => { actions.push(`prompt ${id} ${line}`); return { state: "sent" } })
@@ -520,7 +614,23 @@ describe("fresh all-returned-session periodic check-ins", () => {
     await advance(3_600_000)
     await advance(8000)
     expect(prompts()).toHaveLength(1)
-    expect(actions.filter(action => action.startsWith("status "))).toHaveLength(statuses)
+    expect(actions.filter(action => action.startsWith("status "))).toHaveLength(statuses + 1)
+    expect(notices).toHaveLength(2)
+  })
+
+  it("ignores ISO observation timestamps only for notice suppression, not meaningful counters", async () => {
+    inspections.S!.screen = "Build 42 awaits review. Observed 2026-10-16T04:00:00Z"
+    await start(vi.fn(async () => verdict("gate")))
+    await advance(8000)
+    expect(notices).toHaveLength(1)
+    inspections.S!.screen = "Build 42 awaits review. Observed 2026-10-16T05:00:00Z"
+    await advance(3_600_000)
+    await advance(8000)
+    expect(notices).toHaveLength(1)
+    inspections.S!.screen = "Build 43 awaits review. Observed 2026-10-16T06:00:00Z"
+    await advance(3_600_000)
+    await advance(8000)
+    expect(notices).toHaveLength(2)
   })
 
   it("still closes custody when an unexpected synchronous callback rejects the serial chain", async () => {

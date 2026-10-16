@@ -6,13 +6,18 @@ import { FileFriendStore, type FriendRecord } from "@ouro.bot/friends"
 import type { RunAgentOptions, ChannelCallbacks } from "../../heart/core"
 import { feedbackStorePath, openFeedbackStore } from "../../senses/shepherd/feedback-store"
 import { loadSession } from "../../mind/context"
+import { createOwnerNotifier } from "../../senses/shepherd/owner-notice"
+import { readNoticeOutbox } from "../../senses/shepherd/notice-outbox"
+import { appendReturn, type ReturnRecord } from "../../senses/shepherd/returns"
 
 const state = vi.hoisted(() => ({
   root: "", handlers: new Map<string, (ctx: any) => Promise<void>>(), run: vi.fn(), handlerLogFailures: 0,
   refusalLogFailures: 0,
+  requestEvents: [] as Array<{ event: string; meta?: Record<string, unknown> }>,
 }))
 vi.mock("@microsoft/teams.apps", () => ({
   App: class {
+    id = "fake-app"
     on(event: string, handler: (ctx: any) => Promise<void>) { state.handlers.set(event, handler) }
     event() {}
     start() {}
@@ -47,6 +52,7 @@ vi.mock("../../repertoire/mcp-manager", () => ({ getSharedMcpManager: async () =
 vi.mock("../../nerves/runtime", async (original) => {
   const actual = await original<typeof import("../../nerves/runtime")>()
   return { ...actual, emitNervesEvent: (event: Parameters<typeof actual.emitNervesEvent>[0]) => {
+    if (event.event === "channel.message_received" || event.event === "channel.teams_request_stage") state.requestEvents.push(event)
     if (event.event === "senses.shepherd_feedback_reply_refused" && state.refusalLogFailures > 0) {
       state.refusalLogFailures--
       throw new Error("fixture refusal-reporting sink unavailable")
@@ -117,6 +123,7 @@ beforeEach(async () => {
   state.handlers.clear()
   state.handlerLogFailures = 0
   state.refusalLogFailures = 0
+  state.requestEvents = []
   state.run.mockReset().mockImplementation(async (messages, callbacks: ChannelCallbacks) => {
     messages.push({ role: "assistant", content: "Clarification recorded." })
     callbacks.onTextChunk("Clarification recorded.")
@@ -126,6 +133,110 @@ beforeEach(async () => {
 }, 60_000)
 
 describe("actual Teams feedback adapter and leased pipeline", () => {
+  it("waits for the SDK stream promise instead of losing asynchronous delivery errors", async () => {
+    const emitted = Promise.withResolvers<void>()
+    const ctx = activity("Give me the short version.")
+    ctx.stream.emit.mockImplementationOnce(() => emitted.promise)
+    let complete = false
+    const request = state.handlers.get("message")!(ctx).then(() => { complete = true })
+    await vi.waitFor(() => expect(ctx.stream.emit).toHaveBeenCalledTimes(1))
+    await new Promise(resolve => setImmediate(resolve))
+    expect(complete).toBe(false)
+    emitted.resolve()
+    await request
+    expect(complete).toBe(true)
+  })
+
+  it.each(["every", "off"] as const)("human_request_is_not_satisfied_by_proactive_notice with %s notice policy", async policy => {
+    const backlog: ReturnRecord[] = Array.from({ length: 207 }, (_, index) => ({
+      at: "2026-10-15T10:00:00.000Z", host: "fixture-host", session: `session-${index % 7}`,
+      transition: `observation-${index}`, agent: "Fixture coding agent", cwd: "/fixture/project", task: null,
+      kind: "waiting", action: "let_through", reason: "Historical backlog waiting for review.", reply: null,
+      latencyMs: 2, inputTokens: 10, noticeEligible: true,
+    }))
+    for (const record of backlog) appendReturn(state.root, record)
+    const proactive = vi.fn(async () => ({ delivered: true, delivery: { state: "accepted" as const, messageId: "historical-digest" } }))
+    const makeNotifier = (noticePolicy: "every" | "off") => createOwnerNotifier({
+      agent: "orchid", agentRoot: state.root, policy: noticePolicy, schedule: () => () => {},
+      listSessions: async () => [],
+      resolveTargets: async () => [{ friendId: "owner", name: "Owner", key: "private-chat" }],
+      send: proactive,
+    })
+    const before = makeNotifier("every")
+    await before.flush()
+    expect(proactive).not.toHaveBeenCalled()
+    for (const record of backlog) await before.notify(record)
+    before.stop()
+    const recovered = makeNotifier(policy)
+    try {
+      await recovered.flush()
+      expect(proactive).toHaveBeenCalledTimes(policy === "every" ? 1 : 0)
+      if (policy === "every") expect(proactive.mock.calls[0]).toEqual([
+        expect.objectContaining({ friendId: "owner" }), expect.stringContaining("historical observations"),
+      ])
+      const request = "Give me a short, funny summary of current coding work that fits on my phone."
+      const answer = "Seven sessions: progress, tests, and one heroic argument with a semicolon."
+      state.run.mockImplementationOnce(async (messages, callbacks: ChannelCallbacks) => {
+        messages.push({ role: "assistant", content: answer })
+        callbacks.onTextChunk(answer)
+        await callbacks.flushNow?.()
+        return { outcome: "settled" }
+      })
+      const ctx = activity(request)
+      ctx.activity.id = "phone-summary"
+      // A definite local rejection lets this fixture test the real SDK send adapter, not an uncertain resend.
+      ctx.stream.emit.mockImplementationOnce(() => { throw new Error("fixture rejected before transport") })
+      await state.handlers.get("message")!(ctx)
+      expect(state.run).toHaveBeenCalledTimes(1)
+      const options = state.run.mock.calls[0][4] as RunAgentOptions
+      expect(options.toolContext?.currentUserMessage).toBe(request)
+      expect(options.toolContext?.currentShepherdSurface).toBeUndefined()
+      expect(ctx.send).toHaveBeenCalledTimes(1)
+      expect(ctx.send).toHaveBeenCalledWith(expect.objectContaining({ text: answer, replyToId: "phone-summary" }))
+      expect(answer.length).toBeLessThan(160)
+      expect(state.requestEvents).toContainEqual(expect.objectContaining({ meta: expect.objectContaining({
+        stage: "replied", inboundActivityId: "phone-summary", conversationId: "private-chat", outboundActivityId: "outgoing", delivery: "accepted",
+      }) }))
+      const persisted = loadSession(path.join(state.root, "sessions", "owner", "private-chat.json"))
+      expect(JSON.stringify(persisted?.messages)).toContain(request)
+      expect(JSON.stringify(persisted?.messages)).toContain(answer)
+      const intents = readNoticeOutbox(state.root)
+      expect(intents).toHaveLength(207)
+      expect(intents.every(entry => policy === "every"
+        ? entry.deliveries.owner?.messageId === "historical-digest"
+        : Object.keys(entry.deliveries).length === 0)).toBe(true)
+      expect(proactive).toHaveBeenCalledTimes(policy === "every" ? 1 : 0)
+    } finally { recovered.stop() }
+  })
+
+  it("personal_request_preserves_activity_identity_and_reply_target", async () => {
+    const request = "Give me a short, funny summary of these coding sessions that fits on a phone."
+    const answer = "Three coding sessions: one shipping, one testing, one negotiating with a semicolon."
+    state.run.mockImplementationOnce(async (messages, callbacks: ChannelCallbacks) => {
+      messages.push({ role: "assistant", content: answer })
+      callbacks.onTextChunk(answer)
+      return { outcome: "settled" }
+    })
+    const ctx = activity(request)
+    ctx.activity.id = "summary-request"
+    await state.handlers.get("message")!(ctx)
+    expect(state.run).toHaveBeenCalledTimes(1)
+    const options = state.run.mock.calls[0][4] as RunAgentOptions
+    expect(options.toolContext?.currentUserMessage).toBe(request)
+    expect(options.toolContext?.context?.friend.id).toBe("owner")
+    expect(ctx.stream.emit.mock.calls.some(([value]) => JSON.stringify(value).includes(answer))).toBe(true)
+    const stages = state.requestEvents.map(event => event.meta?.stage)
+    expect(stages).toContain("received")
+    expect(stages).toContain("admitted")
+    expect(stages).toContain("running")
+    expect(stages).toContain("reply_emitted")
+    expect(state.requestEvents.every(event => event.meta?.inboundActivityId === "summary-request")).toBe(true)
+    expect(state.requestEvents.every(event => event.meta?.conversationId === "private-chat")).toBe(true)
+    expect(state.requestEvents.some(event => event.meta?.botId === "fake-app")).toBe(true)
+    expect(JSON.stringify(state.requestEvents)).not.toContain(request)
+    expect(JSON.stringify(state.requestEvents)).not.toContain(answer)
+  })
+
   // Dropping incoming replyToId would remove this source and archived question.
   it("threads SDK incoming quote into the real leased pipeline without rewriting the utterance", async () => {
     const ctx = activity("Only this session, please.", "sent-a")

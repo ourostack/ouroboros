@@ -52,6 +52,7 @@ const bot = (clientId: string, tenantId: string): TeamsConfig => ({ clientId, cl
 
 let root = ""
 beforeEach(() => {
+  vi.mocked(fs.renameSync).mockReset()
   root = fs.mkdtempSync(path.join(os.tmpdir(), "shepherd-notice-"))
   events.length = 0
   mockSend.mockReset().mockResolvedValue({ delivered: true })
@@ -71,6 +72,12 @@ describe("owner notice policy", () => {
 })
 
 describe("owner notice text", () => {
+  it("reports machine-format refusal without claiming the human must decide", () => {
+    const text = noticeLine(record({ action: "let_through", reply: null, actionBlockReason: "reply_invalid", replyIssue: "too_long" }))
+    expect(text).toMatch(/no input sent because/)
+    expect(text).not.toMatch(/waiting for you|needs you|could not tell/)
+  })
+
   it("reports an outside dependency without calling it done or asking the owner to act", () => {
     expect(noticeLine(record({ kind: "waiting", reason: "PR awaits review." }))).toContain("waiting on an outside dependency")
     expect(noticeLine(record({ kind: "waiting" }))).not.toMatch(/needs you|done|waiting for you/)
@@ -115,10 +122,43 @@ describe("owner notice text", () => {
   it("puts a burst in one message and counts what does not fit", () => {
     expect(noticeMessage([record()], new Map([["0a1b2c3d-4e5f", "surface:12"]]))).toBe(noticeLine(record(), "surface:12"))
     const two = noticeMessage([record(), record({ session: "S2", kind: "gate", agent: "Codex" })], new Map([["S2", "surface:2"]]))
-    expect(two.split("\n")).toEqual(["2 coding agents stopped:", `- ${noticeLine(record())}`, `- ${noticeLine(record({ session: "S2", kind: "gate", agent: "Codex" }), "surface:2")}`])
+    expect(two.split("\n")).toEqual(["Updates from 2 coding sessions:", `- ${noticeLine(record())}`, `- ${noticeLine(record({ session: "S2", kind: "gate", agent: "Codex" }), "surface:2")}`])
     const many = noticeMessage(Array.from({ length: 9 }, (_, index) => record({ session: `S${index}` })))
     expect(many.split("\n")).toHaveLength(1 + 6 + 1)
     expect(many.split("\n").at(-1)).toBe("- and 3 more.")
+  })
+
+  it("counts six observations of one stable target as one session and displays the latest", () => {
+    const records = Array.from({ length: 6 }, (_, index) => record({
+      at: `2026-10-12T20:0${index}:00.000Z`, reason: `observation-${index}`,
+    }))
+    const original = structuredClone(records)
+    expect(noticeMessage(records)).toBe(noticeLine(records[5]!))
+    expect(noticeMessage([...records].reverse())).toBe(noticeLine(records[5]!))
+    expect(records).toEqual(original)
+    expect(noticeMessage([records[0]!, { ...records[1]!, host: "other-host" }])).toContain("Updates from 2 coding sessions:")
+  })
+
+  it("orders distinct targets and treats invalid timestamps conservatively with deterministic ties", () => {
+    const valid = record({ transition: "z", reason: "valid", at: "2026-10-12T20:00:00.000Z" })
+    const invalid = record({ transition: "a", reason: "unknown", at: "invalid" })
+    expect(noticeMessage([invalid, valid])).toBe(noticeLine(valid))
+    expect(noticeMessage([valid, invalid])).toBe(noticeLine(valid))
+    expect(noticeMessage([valid, { ...valid, transition: "a", reason: "older tie" }])).toBe(noticeLine(valid))
+    const lastInvalid = { ...invalid, transition: "z", reason: "later unknown" }
+    expect(noticeMessage([invalid, lastInvalid])).toBe(noticeLine(lastInvalid))
+    expect(noticeMessage([lastInvalid, invalid])).toBe(noticeLine(lastInvalid))
+    const reversed = noticeMessage([record({ session: "Z" }), record({ session: "A" })])
+    expect(reversed.indexOf("(A)")).toBeLessThan(reversed.indexOf("(Z)"))
+  })
+
+  it("labels recovered observations with their own time, never restart time or live status", () => {
+    const message = noticeMessage([record({ at: "invalid-time" })], new Map(), { recovered: true })
+    expect(message).toMatch(/historical/i)
+    expect(message).toContain("observation time unknown")
+    expect(message).not.toContain("invalid-time")
+    const dated = noticeMessage([record()], new Map(), { recovered: true })
+    expect(dated).toContain("2026-10-12T20:00:00.000Z")
   })
 })
 
@@ -226,15 +266,42 @@ describe("owner notifier", () => {
     return { instance, sent }
   }
 
-  it("retains an enqueue failure for retry and reports custody explicitly instead of silently dropping it", async () => {
+  it("rejects failed enqueue instead of reporting queued custody, then retries safely", async () => {
     const { instance, sent } = notifier()
     vi.mocked(fs.renameSync).mockImplementationOnce(() => { throw new Error("outbox publication unavailable") })
-    await instance.notify(record())
+    await expect(instance.notify(record())).rejects.toThrow("outbox publication unavailable")
     expect(sent).toEqual([])
     expect(events).toContainEqual(expect.objectContaining({ level: "error", message: "could not persist a Shepherd owner notice intent; it remains waiting" }))
     await instance.flush()
     expect(sent).toHaveLength(1)
     expect(readNoticeOutbox(root)[0]!.deliveries[ari.friendId]!.state).toBe("sent")
+  })
+
+  it("returns explicit queued and policy/stopped suppression acceptance", async () => {
+    const { instance } = notifier()
+    const value = record()
+    await expect(instance.notify(value)).resolves.toEqual({ state: "queued", noticeId: expect.any(String) })
+    const off = notifier({ policy: "off" })
+    await expect(off.instance.notify(record())).resolves.toEqual({ state: "suppressed", reason: "policy" })
+    instance.stop()
+    await expect(instance.notify(record())).resolves.toEqual({ state: "suppressed", reason: "stopped" })
+    expect(readNoticeOutbox(root)).toHaveLength(1)
+  })
+
+  it("handles a failed write observed by a scheduled flush without an unhandled rejection", async () => {
+    const { instance, sent } = notifier()
+    vi.mocked(fs.renameSync).mockImplementation(() => { throw new Error("disk unavailable") })
+    const accepted = instance.notify(record())
+    const rejected = expect(accepted).rejects.toThrow("disk unavailable")
+    tasks[0]!.fn()
+    await rejected
+    await instance.flush()
+    expect(sent).toEqual([])
+    expect(tasks.map(task => task.ms)).toEqual([NOTICE_RETRY_MS])
+    vi.mocked(fs.renameSync).mockRestore()
+    tasks[0]!.fn()
+    await vi.waitFor(() => expect(sent).toHaveLength(1))
+    instance.stop()
   })
 
   it("reports a corrupt outbox at startup and keeps a retry scheduled without initiating transport", async () => {
@@ -338,13 +405,83 @@ describe("owner notifier", () => {
     expect(noticeDeliveryState(readNoticeOutbox(root)[0]!, ari.friendId)).toBe("unknown")
   })
 
-  it("delivers the what and why for every return instead of replacing excess returns with a count", async () => {
+  it("bounds a burst to one digest while preserving receipts for undisplayed sessions", async () => {
     const { instance, sent } = notifier()
     for (let index = 0; index < 9; index++) await instance.notify(record({ session: `S${index}`, reason: `reason-${index}` }))
     await instance.flush()
-    expect(sent).toHaveLength(2)
-    expect(sent.map(value => value.text).join("\n")).not.toContain("and 3 more")
-    for (let index = 0; index < 9; index++) expect(sent.map(value => value.text).join("\n")).toContain(`reason-${index}`)
+    expect(sent).toHaveLength(1)
+    expect(sent[0]!.text).toContain("Updates from 9 coding sessions:")
+    expect(sent[0]!.text).toContain("and 3 more")
+    expect(readNoticeOutbox(root).every(entry => entry.deliveries[ari.friendId]?.state === "sent")).toBe(true)
+  })
+
+  it("turns a recovered 207-observation backlog into one historical digest with one receipt relationship", async () => {
+    const first = notifier()
+    for (let index = 0; index < 207; index++) await first.instance.notify(record({ session: `S${index % 7}` }))
+    first.instance.stop()
+    const send = vi.fn(async () => ({ delivered: true, delivery: { state: "accepted" as const, messageId: "digest-accepted" } }))
+    const recovered = notifier({ send })
+    await recovered.instance.flush()
+    expect(send).toHaveBeenCalledTimes(1)
+    expect(send.mock.calls[0]).toEqual([ari, expect.stringContaining("Updates from 7 coding sessions:")])
+    expect(send.mock.calls[0]).toEqual([ari, expect.stringMatching(/historical/i)])
+    const entries = readNoticeOutbox(root)
+    expect(entries).toHaveLength(207)
+    expect(entries.every(entry => entry.deliveries[ari.friendId]?.messageId === "digest-accepted")).toBe(true)
+  })
+
+  it("drains work accepted while an earlier send and its scheduled callback are in flight", async () => {
+    const begun = Promise.withResolvers<void>()
+    const release = Promise.withResolvers<void>()
+    const send = vi.fn(async () => {
+      if (send.mock.calls.length === 1) { begun.resolve(); await release.promise }
+      return { delivered: true }
+    })
+    const { instance } = notifier({ send })
+    await instance.notify(record())
+    const active = instance.flush()
+    await begun.promise
+    await instance.notify(record({ session: "new-session" }))
+    const fired = tasks.shift()!
+    fired.fn()
+    release.resolve()
+    await active
+    expect(tasks).toHaveLength(1)
+    tasks.shift()!.fn()
+    await vi.waitFor(() => expect(send).toHaveBeenCalledTimes(2))
+    await instance.flush()
+    expect(readNoticeOutbox(root).every(entry => entry.deliveries[ari.friendId]?.state === "sent")).toBe(true)
+    instance.stop()
+  })
+
+  it("does not start a send when stopped during an asynchronous claim", async () => {
+    const { instance, sent } = notifier()
+    await instance.notify(record())
+    const rename = vi.mocked(fs.renameSync).getMockImplementation()!
+    let publications = 0
+    vi.mocked(fs.renameSync).mockImplementation((from, to) => {
+      rename(from, to)
+      if (++publications === 2) instance.stop()
+    })
+    await instance.flush()
+    expect(sent).toEqual([])
+    expect(readNoticeOutbox(root)[0]!.deliveries[ari.friendId]?.state).toBe("pending")
+  })
+
+  it.each(["targets", "declaration"] as const)("does not send after stopping during %s", async boundary => {
+    const { instance, sent } = notifier({ resolveTargets: async () => {
+      if (boundary === "targets") instance.stop()
+      return [ari]
+    } })
+    await instance.notify(record())
+    if (boundary === "declaration") {
+      const rename = vi.mocked(fs.renameSync).getMockImplementation()!
+      vi.mocked(fs.renameSync).mockImplementationOnce((from, to) => { rename(from, to); instance.stop() })
+    }
+    await instance.flush()
+    expect(sent).toEqual([])
+    expect(readNoticeOutbox(root)).toHaveLength(1)
+    expect(Object.values(readNoticeOutbox(root)[0]!.deliveries).every(delivery => delivery.state === "pending")).toBe(true)
   })
 
   it("persists no-target returns for delivery after linking an owner", async () => {
@@ -381,11 +518,13 @@ describe("owner notifier", () => {
     expect(tasks).toEqual([])
   })
 
-  it("recovers a logged eligible return interrupted before its outbox write", async () => {
-    appendReturn(root, record({ noticeEligible: true }))
+  it("startup does not import 207 eligible audit records as new notice intent", async () => {
+    for (let index = 0; index < 207; index++) appendReturn(root, record({ noticeEligible: true }))
     const { instance, sent } = notifier()
     await instance.flush()
-    expect(sent).toHaveLength(1)
+    expect(sent).toEqual([])
+    expect(readNoticeOutbox(root)).toEqual([])
+    expect(tasks).toEqual([])
   })
 
   it("does not replay legacy or explicitly suppressed returns when recovering", async () => {

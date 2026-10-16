@@ -94,8 +94,12 @@ Inspect and reconcile custody explicitly: never delete keys, evict unresolved or
 sent attempts, or retry unknown effects to reclaim capacity. This release adds
 no automatic retention/replay mechanism.
 
-Classification/evidence/guidance signatures in a separate ledger table suppress
-unchanged periodic notices, escalations, wakes and status rewrites across restart.
+Observation/outcome/guidance signatures in a separate ledger table suppress
+equivalent notices, escalations, wakes and status rewrites across triggers and restart.
+The notice-only comparison excludes ISO observation timestamps and judge-reason
+paraphrases, but retains meaningful counters. Raw screen/process/input validation
+is unchanged. Signatures are computed after the action outcome, so a formerly
+withheld input becoming accepted can be reported.
 The existing serialized return chain orders these checks; signature suppression
 is not an independent multi-worker delivery claim. Actual owner-message custody
 and transport remain with the existing notice outbox. Meaningful new evidence or
@@ -111,7 +115,20 @@ license to send test prompts to real work.
 
 The judge reads a packet (the human's name, the agent, folder, the `Desk-Task:` line if the screen has one, the agent's last message and the last 80 screen lines, all redacted) and answers with JSON: `premature` with a reply, `gate`, `done`, `waiting`, `working` (with a `news` flag) or `unclear`. The screen is untrusted data. It runs on the agent's own `agent` provider lane with no tools, low reasoning effort and a 20-second timeout, and its latency and input tokens are logged.
 
-A reply is either one key from a fixed set (enter, escape, up, down, tab, 1-9, y, n) or one line of at most 240 characters. The line has no line breaks, backslashes, `@`, control characters, invisible formatting or bidirectional-override characters, or leading `/`, `!` or `#`, so an input box never reads it as a command, a file mention or more than one line. Because the terminal might turn out to be a plain shell, it also has none of these shell characters: semicolon, dollar sign, backtick, pipe, `<`, `>` and `&`. Anything else turns the verdict into `unclear`.
+A reply is either one key from a fixed set (enter, escape, up, down, tab, 1-9, y, n) or one line of at most 240 characters. Whitespace is flattened and code-formatting backticks are removed before validation. The resulting line has no backslashes, `@`, control characters, invisible formatting or bidirectional-override characters, or leading `/`, `!` or `#`, so an input box never reads it as a command, a file mention or more than one line. Because the terminal might turn out to be a plain shell, it also has none of these shell characters: semicolon, dollar sign, backtick, pipe, `<`, `>` and `&`.
+
+A structured, valid `premature` classification is retained even if its proposed
+reply is invalid: `replyIssue` reports `too_long`, `unsafe` or `missing` separately.
+Syntax is checked before length, so unsafe-and-long is never a length-only failure.
+Immediate handling still requires a valid reply. Periodic handling alone may use
+its existing fixed plain continuation after a length-only failure, and only after
+all existing host/process, draft, focus, guidance, loop, fresh-screen and input-custody
+guards pass. Keys, unsafe/missing replies and untrusted prose extraction never gain
+that fallback. Malformed or uncertain judgments remain `unclear`.
+
+Audit records retain `judgeKind`, `replyIssue` and an explicit `actionBlockReason`
+when applicable. A machine-format, changed-state or verification refusal is
+reported as no input sent, not falsely presented as a decision the human must make.
 
 ## What Shepherd does with a verdict
 
@@ -143,7 +160,20 @@ After every judged return, the owner hears what happened in one short plain-text
 > Copilot in desk (surface:3) needs you. Why: it wants to push to main.
 
 - **Who hears it.** Every family friend with a Teams user id the agent's bot can open a chat with, once per Teams user. The message goes through the Teams sense's proactive path (trust check and internal-content guard) using a bot client of Shepherd's own, built from the agent's Teams credentials (the secondary bot when it serves the friend's tenant). When no family friend is reachable on Teams, Shepherd logs `senses.shepherd_notice_no_target` and does nothing else.
-- **Bursts.** Returns within 5 seconds of the first share one message (up to six named, the rest counted). Each return is in at most one message. A send that fails or is refused is logged and never stops the sense.
+- **Custody.** The outbox, not the returns log, owns accepted delivery intent.
+  Enqueue returns explicit `queued` acceptance or `suppressed` with a policy/shutdown
+  reason; persistence failures reject and are logged. The observation audit is
+  written after that handoff. Restart recovers existing pending intents without
+  turning historical eligible audit rows into new notices. Unknown sends remain
+  held for reconciliation, never automatically replayed.
+- **Bursts and recovery.** Returns within 5 seconds share one bounded digest per
+  recipient. Display the latest observation per stable host/session, at most six
+  distinct sessions, and count remaining sessions rather than raw records. All
+  represented records retain their relationship to the actual transport receipt,
+  even if not individually displayed. Recovered pending observations are labelled
+  historical, with their own observation times (or explicitly unknown time), not
+  live status. A slow send cannot strand newly accepted work; shutdown starts no
+  further sends and preserves the outcome of any send already attempted.
 - **What counts.** Every judged return, including errors. A return the loop guard already holds, and a background wait with nothing new, are not judged again and send nothing. A `working` update is sent only when the judge flags news.
 - **Untrusted text.** Agent, folder, reply and reason are cut to one bounded line with control characters and anything Teams could read as markup or a mention (`< > [ ] * ~ # | \ @`, backticks) removed, and the message is sent as plain text.
 - **Policy.** `senses.shepherd.notify` in `agent.json`: `every` (the default), `needs-me` (gates, finished work and a tripped loop guard) or `off`.

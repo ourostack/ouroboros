@@ -30,11 +30,13 @@ export interface ReturnPacket {
 }
 
 export type Reply = { text: string } | { key: ShepherdKey }
+export type ReplyIssue = "too_long" | "unsafe" | "missing"
 
 export interface Verdict {
   kind: ReturnKind
   reply: Reply | null
   reason: string
+  replyIssue?: ReplyIssue
   /** Only for `working`: the agent's last message carries news the human would want now. */
   news?: true
   /** Only for waiting: connectivity, not approval, review, credentials or an intentional pause, stopped the agent. */
@@ -65,11 +67,11 @@ const CALLBACKS: ChannelCallbacks = { onModelStart: NOOP, onModelStreamStart: NO
  * without them nothing is left for a shell to substitute. Anything else is not sent; the return
  * is let through and logged with what was wrong.
  */
-export function replyTextProblem(text: string): { line: string } | { problem: string } {
+export function replyTextProblem(text: string): { line: string } | { problem: string; issue: ReplyIssue } {
   const line = text.replace(/`/g, "").replace(/\s+/g, " ").trim()
-  if (!line) return { problem: "an empty reply" }
-  if (line.length > REPLY_MAX_CHARS) return { problem: `a reply of ${line.length} characters (the limit is ${REPLY_MAX_CHARS})` }
-  if (/[\\@;$|<>&\p{Cc}\p{Cf}]/u.test(line) || /^[/!#]/.test(line)) return { problem: "a reply with characters a terminal could read as a command" }
+  if (!line) return { problem: "an empty reply", issue: "missing" }
+  if (/[\\@;$|<>&\p{Cc}\p{Cf}]/u.test(line) || /^[/!#]/.test(line)) return { problem: "a reply with characters a terminal could read as a command", issue: "unsafe" }
+  if (line.length > REPLY_MAX_CHARS) return { problem: `a reply of ${line.length} characters (the limit is ${REPLY_MAX_CHARS})`, issue: "too_long" }
   return { line }
 }
 
@@ -119,8 +121,10 @@ export function parseVerdict(content: string): Verdict {
     if (parsed.inProse) return { kind: "unclear", reply: null, reason: `premature, but the key came from JSON inside prose: ${reason}` }
     return { kind, reply: { key: reply.key as ShepherdKey }, reason }
   }
-  const checked = typeof reply.text === "string" ? replyTextProblem(reply.text) : { problem: "no reply" }
-  return "line" in checked ? { kind, reply: { text: checked.line }, reason } : { kind: "unclear", reply: null, reason: `premature, but the judge gave ${checked.problem}: ${reason}` }
+  const checked = Object.hasOwn(reply, "key") ? { problem: "an unsupported key", issue: "unsafe" as const }
+    : typeof reply.text === "string" ? replyTextProblem(reply.text) : { problem: "no reply", issue: "missing" as const }
+  return "line" in checked ? { kind, reply: { text: checked.line }, reason }
+    : { kind: parsed.inProse ? "unclear" : kind, reply: null, replyIssue: checked.issue, reason: `premature, but the judge gave ${checked.problem}: ${reason}` }
 }
 
 export function judgeMessages(packet: ReturnPacket): OpenAI.ChatCompletionMessageParam[] {

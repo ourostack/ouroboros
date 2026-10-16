@@ -7,12 +7,14 @@ import { resetIdentity } from "../../../heart/identity"
 import { cacheMachineRuntimeCredentialConfig, resetRuntimeCredentialConfigCache } from "../../../heart/runtime-credentials"
 import type { HostWatchHandlers, ReturnedControl, ShepherdHost } from "../../../senses/shepherd/host"
 import type { JudgeResult, ReturnPacket } from "../../../senses/shepherd/judge"
+import { parseVerdict } from "../../../senses/shepherd/judge"
 import { appendReturn, readReturns, returnsLogPath, type ReturnRecord } from "../../../senses/shepherd/returns"
 import { escalationContent, field, humanName, noticePolicy, queueEscalation, startShepherdSenseApp, wakeForEscalations } from "../../../senses/shepherd/sense"
 import { ackFrame, startFakeCmux } from "./fake-cmux"
 import { recordShepherdCorrection, setShepherdSessionPause } from "../../../senses/shepherd/guidance"
 import { hookEvent, SCREENS, tree } from "./fixtures"
 import type { FeedbackWorkerOptions } from "../../../senses/shepherd/feedback-worker"
+import { openCheckInStore } from "../../../senses/shepherd/checkin-store"
 
 const mockRequestPrivateWake = vi.fn()
 vi.mock("../../../heart/daemon/socket-client", async (importOriginal) => ({
@@ -67,13 +69,42 @@ const verdict = (overrides: Partial<JudgeResult> = {}): JudgeResult => ({ kind: 
 const idleFeedbackWorker = () => ({ drain: async () => {}, stop() {} })
 
 describe("owner notice producer custody", () => {
+  it("audits an accepted action and keeps later returns running after a one-time signature-read failure", async () => {
+    const judge = vi.fn(async () => verdict())
+    const { host, notices } = await start(judge, fakeHost(), {
+      openCheckInStore: (file: string) => {
+        const store = openCheckInStore(file)
+        const shouldNotify = store.shouldNotify
+        let reads = 0
+        store.shouldNotify = signature => {
+          if (++reads === 1) throw new Error("SQLITE_BUSY fixture")
+          return shouldNotify(signature)
+        }
+        return store
+      },
+    })
+    host.screens.S1 = [SCREENS.claudePremature]
+    for (const transitionId of ["first", "next"]) host.handlers!.returned({
+      sessionId: "S1", transitionId, agent: "Copilot", cwd: "/project", lastBody: null, backgroundWork: false,
+    })
+    await vi.waitFor(() => expect(readReturns(agentRoot)).toHaveLength(2))
+    expect(judge).toHaveBeenCalledTimes(2)
+    expect(readReturns(agentRoot)[0]).toMatchObject({ action: "respond", noticeState: "failed" })
+    expect(readReturns(agentRoot)[1]).toMatchObject({ action: "let_through", noticeState: "queued" })
+    expect(notices).toHaveLength(1)
+    expect(host.actions.filter(action => action.startsWith("prompt "))).toHaveLength(1)
+  })
+
   it("does not advance its return chain while durable notice custody is still pending", async () => {
     const host = fakeHost()
     host.screens.S = [SCREENS.claudePremature]
     let release!: () => void
     const held = new Promise<void>(resolve => { release = resolve })
     const judge = vi.fn(async () => verdict())
-    const notifyOwner = vi.fn(async () => { if (notifyOwner.mock.calls.length === 1) await held })
+    const notifyOwner = vi.fn(async () => {
+      if (notifyOwner.mock.calls.length === 1) await held
+      return { state: "queued" as const, noticeId: "fixture-notice" }
+    })
     const app = await startShepherdSenseApp({
       agentName: AGENT, now: () => clock, createHost: () => host, judge,
       escalate: () => {}, wake: async () => {}, notifyOwner, schedule,
@@ -96,7 +127,7 @@ describe("owner notice producer custody", () => {
     const host = fakeHost()
     host.screens.S = [SCREENS.claudePremature]
     const judge = vi.fn(async () => verdict())
-    const notifyOwner = vi.fn().mockRejectedValueOnce(new Error("notice store unavailable")).mockResolvedValue(undefined)
+    const notifyOwner = vi.fn().mockRejectedValueOnce(new Error("notice store unavailable")).mockResolvedValue({ state: "queued", noticeId: "fixture-notice" })
     const app = await startShepherdSenseApp({
       agentName: AGENT, now: () => clock, createHost: () => host, judge,
       escalate: () => {}, wake: async () => {}, notifyOwner, schedule,
@@ -130,7 +161,7 @@ async function start(judge: (packet: ReturnPacket) => Promise<JudgeResult>, host
     judge,
     escalate: (content) => escalations.push(content),
     wake: async (ids) => { wakes.push(ids) },
-    notifyOwner: (record) => { notices.push(record) },
+    notifyOwner: (record) => { notices.push(record); return { state: "queued", noticeId: "fixture-notice" } },
     schedule,
     feedbackWorker: idleFeedbackWorker,
     ...recovery,
@@ -170,6 +201,36 @@ afterEach(() => {
 })
 
 describe("Shepherd sense: answering premature returns", () => {
+  it("retains action and notice custody when outcome signaling fails", async () => {
+    const host = fakeHost()
+    host.screens.S1 = [SCREENS.claudePremature]
+    host.signal = async () => { throw new Error("status unavailable") }
+    const { returned, last } = await start(async () => verdict(), host)
+    await returned({ sessionId: "S1" })
+    expect(last()).toMatchObject({ action: "respond", noticeState: "queued" })
+    expect(last().reason).toContain("outcome signaling failed: status unavailable")
+  })
+
+  it.each(["too_long", "unsafe", "missing"] as const)("does not replace an immediate %s reply with periodic continuation", async issue => {
+    const reply = issue === "missing" ? null : { text: issue === "unsafe" ? "Continue; publish" : "Continue authorized work. ".repeat(15) }
+    const parsed = parseVerdict(JSON.stringify({ kind: "premature", reply, reason: "Unfinished work." }))
+    const { host, returned, last } = await start(async () => ({ ...parsed, latencyMs: 2, inputTokens: 10 }))
+    host.screens.S1 = [SCREENS.claudePremature]
+    await returned({ sessionId: "S1" })
+    expect(host.actions.some(action => /^(prompt|key) /.test(action))).toBe(false)
+    expect(last()).toMatchObject({ kind: "premature", judgeKind: "premature", replyIssue: issue, action: "let_through", actionBlockReason: "reply_invalid" })
+  })
+
+  it("suppresses equivalent immediate observations without depending on transition IDs or reason paraphrases", async () => {
+    let calls = 0
+    const { host, returned, notices } = await start(async () => verdict({ kind: "gate", reply: null, reason: `Review remains pending (${++calls})` }))
+    host.screens.S1 = ["Build 42 awaits review"]
+    await returned({ sessionId: "S1", transitionId: "first-observation" })
+    await returned({ sessionId: "S1", transitionId: "second-observation" })
+    expect(notices).toHaveLength(1)
+    expect(host.actions.some(action => action.startsWith("prompt "))).toBe(false)
+  })
+
   it("owns one feedback worker in this agent's existing sense process and stops it with the sense", async () => {
     const opened: FeedbackWorkerOptions[] = []
     let closed = 0
@@ -273,9 +334,10 @@ describe("Shepherd sense: answering premature returns", () => {
     expect(host.actions.filter((action) => !action.startsWith("pace"))).toEqual(["prompt S1 [Ouro for Ari] Go ahead and implement it.", "status S1 answered for Ari: It stopped after a plan."])
     expect(last()).toEqual({
       at: "2026-10-10T20:00:00.000Z", host: "fake", session: "S1", transition: "cmux:B:101", agent: "claude", cwd: "/Users/a/code/app", task: "ouro-md/toolbar-polish",
-      kind: "premature", action: "respond", reason: "It stopped after a plan.", reply: "Go ahead and implement it.", latencyMs: 900, inputTokens: 1200,
+      kind: "premature", judgeKind: "premature", action: "respond", reason: "It stopped after a plan.", reply: "Go ahead and implement it.", latencyMs: 900, inputTokens: 1200,
       guidanceRevision: 0,
       noticeEligible: true,
+      noticeState: "queued", noticeId: "fixture-notice",
       trigger: "immediate",
       dispatch: { id: expect.stringMatching(/^[a-f0-9]{64}$/), state: "sent" },
     })
@@ -480,7 +542,7 @@ describe("Shepherd sense: connectivity recovery", () => {
     expect(host.actions.some(action => action.startsWith("prompt"))).toBe(false)
   })
 
-  it("honors a human focus event during the final recovery screen read", async () => {
+  it.each(["focus", "new-return"] as const)("honors a %s event during the final recovery screen read", async change => {
     let online = false
     const host = fakeHost()
     host.screens.S = ["Offline."]
@@ -488,7 +550,10 @@ describe("Shepherd sense: connectivity recovery", () => {
     let reads = 0
     host.read = async (id, lines) => {
       const text = await read(id, lines)
-      if (++reads === 3) host.handlers!.focused(id)
+      if (++reads === 3) {
+        if (change === "focus") host.handlers!.focused(id)
+        else host.handlers!.returned({ sessionId: id, transitionId: "new-return", agent: "Copilot", cwd: "/project", lastBody: null, backgroundWork: false })
+      }
       return text
     }
     const { returned } = await start(async packet => packet.networkRecovered ? verdict() : networkWait(), host, { checkConnectivity: async () => online ? "online" : "offline" })

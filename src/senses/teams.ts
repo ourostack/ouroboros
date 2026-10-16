@@ -676,6 +676,8 @@ function getFriendStore(): InstanceType<typeof FileFriendStore> {
 
 // Context from the Teams activity that carries OAuth tokens and signin ability
 export interface TeamsMessageContext {
+  /** The incoming activity itself, distinct from a quoted reply target. */
+  inboundActivityId?: string
   /** Actual incoming quote target, never the incoming activity's own id. */
   replyToId?: string
   graphToken?: string
@@ -693,6 +695,19 @@ export interface TeamsMessageContext {
   // Bot Framework API client for proactive messaging
   botApi?: ToolContext["botApi"]
   teamsSendImage?: ToolContext["teamsSendImage"]
+}
+
+function reportTeamsRequest(
+  stage: "admitted" | "running" | "reply_emitted" | "replied" | "failed",
+  conversationId: string,
+  context: Pick<TeamsMessageContext, "inboundActivityId" | "tenantId" | "botApi"> | undefined,
+  details: Record<string, unknown> = {},
+): void {
+  if (!context?.inboundActivityId) return
+  emitNervesEvent({
+    component: "channels", event: "channel.teams_request_stage", message: "Teams conversational request stage",
+    meta: { stage, inboundActivityId: context.inboundActivityId, conversationId, tenantId: context.tenantId, botId: context.botApi?.id, ...details },
+  })
 }
 
 function createTeamsCommandRegistry() {
@@ -772,8 +787,17 @@ export async function handleTeamsMessage(text: string, stream: TeamsStream, conv
   // ── Teams adapter concerns: controller, callbacks, session path ──────────
   const controller = new AbortController()
   const channelConfig = getTeamsChannelConfig()
-  const callbacks = createTeamsCallbacks(stream, controller, sendMessage, { conversationId, flushIntervalMs: channelConfig.flushIntervalMs, ...(reactionOverrides?.suppressEmptyStreamMessage ? { suppressEmptyStreamMessage: true } : {}) })
   const traceId = createTraceId()
+  const observedStream: TeamsStream = {
+    emit(activity) {
+      const result = stream.emit(activity)
+      reportTeamsRequest("reply_emitted", conversationId, teamsContext, { traceId, delivery: "unconfirmed_stream" })
+      return result
+    },
+    update(text) { return stream.update(text) },
+    close: stream.close.bind(stream),
+  }
+  const callbacks = createTeamsCallbacks(observedStream, controller, sendMessage, { conversationId, flushIntervalMs: channelConfig.flushIntervalMs, ...(reactionOverrides?.suppressEmptyStreamMessage ? { suppressEmptyStreamMessage: true } : {}) })
   const sessPath = sessionPath(friendId, "teams", conversationId)
   const teamsCapabilities = getChannelCapabilities("teams")
   const pendingDir = getPendingDir(agentName, friendId, "teams", conversationId)
@@ -781,6 +805,7 @@ export async function handleTeamsMessage(text: string, stream: TeamsStream, conv
 
   try {
   await runWithLease(sessPath, async (sessionTurnLease) => {
+  reportTeamsRequest("running", conversationId, teamsContext, { traceId, friendId })
   // Proactive feedback acknowledgements are not magically in this model session's
   // history. Recover their frozen packet only after identity and lease ownership.
   let feedbackReply
@@ -994,9 +1019,11 @@ export async function handleTeamsMessage(text: string, stream: TeamsStream, conv
   })
   } catch (error) {
     if (error instanceof SessionTurnBusyError || (error instanceof Error && error.name === "SessionTurnBusyError")) {
+      reportTeamsRequest("failed", conversationId, teamsContext, { traceId, reason: "lease_busy" })
       stream.emit("this conversation is busy finishing another turn; please try again")
       return
     }
+    reportTeamsRequest("failed", conversationId, teamsContext, { traceId, reason: "turn_failed" })
     throw error
   }
 }
@@ -1196,8 +1223,12 @@ function registerBotHandlers(app: InstanceType<typeof App> & { id?: string; api?
     const turnKey = teamsTurnKey(convId)
     const userId = activity.from?.id || ""
     const channelId = activity.channelId || "msteams"
+    const requestContext = {
+      inboundActivityId: activity.id, tenantId: activity.conversation?.tenantId,
+      botApi: app.id && api ? { id: app.id, conversations: api.conversations } : undefined,
+    }
 
-    emitNervesEvent({ level: "info", event: "channel.message_received", component: "channels", message: `[${label}] incoming teams message`, meta: { userId: userId.slice(0, 12), conversationId: convId.slice(0, 20) } })
+    emitNervesEvent({ level: "info", event: "channel.message_received", component: "channels", message: `[${label}] incoming teams message`, meta: { stage: "received", inboundActivityId: activity.id, botId: app.id, tenantId: requestContext.tenantId, userId: userId.slice(0, 12), conversationId: convId } })
 
     const commandRegistry = createTeamsCommandRegistry()
     const parsedSlashCommand = parseSlashCommand(text)
@@ -1240,6 +1271,7 @@ function registerBotHandlers(app: InstanceType<typeof App> & { id?: string; api?
       replyToId: activity.replyToId,
     }, async () => {
     try {
+      reportTeamsRequest("admitted", convId, requestContext)
       // Resolve OAuth connection names for this user's tenant (supports per-tenant overrides).
       const tenantId = activity.conversation?.tenantId
       const tenantOAuth = resolveOAuthForTenant(tenantId)
@@ -1264,6 +1296,7 @@ function registerBotHandlers(app: InstanceType<typeof App> & { id?: string; api?
       emitNervesEvent({ level: "info", event: "channel.token_status", component: "channels", message: "oauth token availability", meta: { graph: !!graphToken, ado: !!adoToken, github: !!githubToken, tenantId } })
 
       const teamsContext: TeamsMessageContext = {
+        inboundActivityId: activity.id,
         replyToId: activity.replyToId,
         graphToken,
         adoToken,
@@ -1294,10 +1327,18 @@ function registerBotHandlers(app: InstanceType<typeof App> & { id?: string; api?
       const ctxSend = async (t: string) => {
         // Use send with replyToId (not reply, which adds a blockquote).
         // replyToId anchors the message after the user's message in Copilot Chat.
-        await ctx.send({ type: "message", text: t, replyToId: activity.id, entities: aiLabelEntities() as Entity[], channelData: { feedbackLoopEnabled: true } })
+        try {
+          const receipt = await ctx.send({ type: "message", text: t, replyToId: activity.id, entities: aiLabelEntities() as Entity[], channelData: { feedbackLoopEnabled: true } })
+          const messageId = receipt && typeof receipt === "object" && "id" in receipt && typeof receipt.id === "string" ? receipt.id : undefined
+          reportTeamsRequest(messageId ? "replied" : "reply_emitted", convId, teamsContext, { delivery: messageId ? "accepted" : "unconfirmed", ...(messageId ? { outboundActivityId: messageId } : {}) })
+        } catch (error) {
+          reportTeamsRequest("failed", convId, teamsContext, { reason: "send_unknown" })
+          throw error
+        }
       }
       await handleTeamsMessage(text, stream, convId, teamsContext, ctxSend)
     } catch (err: unknown) {
+      reportTeamsRequest("failed", convId, requestContext, { reason: "handler_failed" })
       const msg = err instanceof Error ? err.message : String(err)
       emitNervesEvent({ level: "error", event: "channel.handler_error", component: "channels", message: msg.slice(0, 200), meta: {} })
     }

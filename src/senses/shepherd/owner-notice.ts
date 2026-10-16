@@ -6,8 +6,8 @@ import type { ShepherdNoticePolicy } from "../../heart/identity"
 import { emitNervesEvent } from "../../nerves/runtime"
 import type { TeamsBotApi } from "../teams"
 import type { HostSession } from "./host"
-import { readReturns, type ReturnRecord } from "./returns"
-import { claimPendingNotices, declareNoticeTargets, enqueueNotice, knownNotice, noticeDeliveryState, noticeRecordId, readNoticeOutbox, recordNoticeDelivery } from "./notice-outbox"
+import type { ReturnRecord, ShepherdActionBlockReason } from "./returns"
+import { claimPendingNotices, declareNoticeTargets, enqueueNotice, noticeDeliveryState, readNoticeOutbox, recordNoticeDelivery } from "./notice-outbox"
 
 /**
  * The owner notice: after a judged return, the agent's owner hears what happened in one short plain message on their
@@ -15,12 +15,23 @@ import { claimPendingNotices, declareNoticeTargets, enqueueNotice, knownNotice, 
  * policy covers whether or not the Ouro agent decides it matters. Returns that arrive close together share one message.
  */
 export const NOTICE_COALESCE_MS = 5_000
-/** Returns named one by one in a coalesced message; the rest are counted. */
+/** Distinct sessions named in a digest; the remaining sessions are counted. */
 export const NOTICE_LIST_MAX = 6
 export const NOTICE_RETRY_MS = 30_000
 const NAME_MAX = 60
 const REASON_MAX = 300
 const REPLY_MAX = 240
+const BLOCK_DESCRIPTION: Record<ShepherdActionBlockReason, string> = {
+  reply_invalid: "the suggested reply was invalid",
+  menu_disallowed: "scheduled continuation cannot approve a menu",
+  host_unverified: "the host could not verify safe input state",
+  guidance: "operator guidance blocked input",
+  loop_guard: "the reply limit was reached",
+  focus: "the human owns the focused session",
+  state_changed: "the target state changed",
+  custody: "input delivery was already claimed or needs reconciliation",
+  stopped: "Shepherd stopped",
+}
 
 /** Kinds a "needs-me" owner still hears about. */
 const NEEDS_ME = new Set<ReturnRecord["kind"]>(["gate", "done", "loop_guard"])
@@ -67,6 +78,7 @@ export function noticeLine(record: ReturnRecord, location?: string | HostSession
         const sent = record.reply.startsWith("key:") ? `pressed ${plain(record.reply.slice(4), 10)}` : `sent it back: "${plain(record.reply, REPLY_MAX)}"`
         return `${subject} stopped early, so I ${sent}. ${why}`
       }
+      if (record.actionBlockReason) return `${subject} stopped early; no input sent because ${BLOCK_DESCRIPTION[record.actionBlockReason]}. ${why}`
       return `${subject} stopped early, but I did not answer it, so it is waiting for you. ${why}`
     case "gate":
       return `${subject} needs you. ${why}`
@@ -85,12 +97,28 @@ export function noticeLine(record: ReturnRecord, location?: string | HostSession
   }
 }
 
-/** One message for a burst: a single return is its line; several are a short list, the extra ones counted. */
-export function noticeMessage(records: ReturnRecord[], refs: ReadonlyMap<string, string | HostSession> = new Map()): string {
-  const lines = records.slice(0, NOTICE_LIST_MAX).map((record) => noticeLine(record, refs.get(record.session)))
-  if (records.length === 1) return lines[0]!
-  const more = records.length - lines.length
-  return [`${records.length} coding agents stopped:`, ...lines.map((line) => `- ${line}`), ...(more > 0 ? [`- and ${more} more.`] : [])].join("\n")
+/** A bounded display of latest observations; all input records retain delivery custody. */
+export function noticeMessage(records: ReturnRecord[], refs: ReadonlyMap<string, string | HostSession> = new Map(), context: { recovered?: boolean } = {}): string {
+  const latest = new Map<string, ReturnRecord>()
+  for (const record of records) {
+    const key = JSON.stringify([record.host, record.session])
+    const previous = latest.get(key)
+    const at = Date.parse(record.at)
+    const previousAt = previous ? Date.parse(previous.at) : NaN
+    if (!previous || (Number.isFinite(at) && (!Number.isFinite(previousAt) || at > previousAt))
+      || ((!Number.isFinite(at) && !Number.isFinite(previousAt) || at === previousAt) && record.transition > previous.transition)) latest.set(key, record)
+  }
+  const sessions = [...latest].sort(([a], [b]) => a < b ? -1 : 1).map(([, record]) => record)
+  const lines = sessions.slice(0, NOTICE_LIST_MAX).map(record => {
+    const line = noticeLine(record, refs.get(record.session))
+    if (!context.recovered) return line
+    const at = Date.parse(record.at)
+    return `${line} (${Number.isFinite(at) ? `observed at ${new Date(at).toISOString()}` : "observation time unknown"})`
+  })
+  const more = sessions.length - lines.length
+  const body = sessions.length === 1 ? lines[0]!
+    : [`Updates from ${sessions.length} coding sessions:`, ...lines.map(line => `- ${line}`), ...(more > 0 ? [`- and ${more} more.`] : [])].join("\n")
+  return context.recovered ? `Includes recovered historical observations, not live status:\n${body}` : body
 }
 
 export interface NoticeTarget {
@@ -190,38 +218,53 @@ export interface OwnerNotifierOptions {
   send?: NoticeSender
 }
 
+export type NoticeIntentAcceptance =
+  | { state: "queued"; noticeId: string }
+  | { state: "suppressed"; reason: "policy" | "stopped" }
+
 export interface OwnerNotifier {
-  notify(record: ReturnRecord): Promise<void>
+  notify(record: ReturnRecord): Promise<NoticeIntentAcceptance>
   /** Sends what is waiting now; resolves when it is sent or has failed. */
   flush(): Promise<void>
   stop(): void
 }
 
-/** Collects notices for NOTICE_COALESCE_MS after the first, then sends them as one message. It never throws. */
+/** Collects durable notice intents; acceptance is distinct from transport delivery. */
 export function createOwnerNotifier(options: OwnerNotifierOptions): OwnerNotifier {
   const { agent, policy } = options
   const resolveTargets = options.resolveTargets ?? (() => resolveNoticeTargets(options.agentRoot))
   const send = options.send ?? createTeamsNoticeSender(options.agentRoot)
   const retryWrites = new Map<string, ReturnRecord>()
-  const writes = new Set<Promise<void>>()
+  const recoveredNoticeIds = new Set<string>()
+  const writes = new Set<Promise<string>>()
   let cancel: (() => void) | null = null
   let stopped = false
   let flushing: Promise<void> | null = null
+  let drainRequested = false
 
   function schedule(ms: number): void {
-    if (!stopped && policy !== "off") cancel ??= options.schedule(() => { void flush() }, ms)
+    if (!stopped && policy !== "off") cancel ??= options.schedule(() => {
+      cancel?.()
+      cancel = null
+      if (flushing) drainRequested = true
+      else void flush()
+    }, ms)
   }
 
-  function persistIntent(record: ReturnRecord): Promise<void> {
+  function persistIntent(record: ReturnRecord): Promise<string> {
     const key = `${record.host}:${record.session}:${record.transition}:${record.at}`
     retryWrites.set(key, record)
-    const write = enqueueNotice(options.agentRoot, record).then(() => {
+    const write = enqueueNotice(options.agentRoot, record).then(id => {
       retryWrites.delete(key)
+      return id
     }).catch(error => {
       emitNervesEvent({ level: "error", component: "senses", event: "senses.shepherd_notice_error", message: "could not persist a Shepherd owner notice intent; it remains waiting", meta: { agent, error: (error as Error).message } })
       schedule(NOTICE_RETRY_MS)
-    }).finally(() => { writes.delete(write) })
+      throw error
+    })
     writes.add(write)
+    // Observe cleanup immediately, while the producer still receives the rejecting promise.
+    void write.then(() => { writes.delete(write) }, () => { writes.delete(write) })
     return write
   }
 
@@ -229,9 +272,10 @@ export function createOwnerNotifier(options: OwnerNotifierOptions): OwnerNotifie
     cancel?.()
     cancel = null
     if (stopped || policy === "off") return
-    await Promise.all([...writes])
-    for (const record of [...retryWrites.values()]) await persistIntent(record)
     try {
+      await Promise.allSettled([...writes])
+      const retried = await Promise.allSettled([...retryWrites.values()].map(persistIntent))
+      if (retried.some(result => result.status === "rejected")) schedule(NOTICE_RETRY_MS)
       const entries = readNoticeOutbox(options.agentRoot).filter(entry =>
         noticeWanted(policy, entry.record) && (Object.keys(entry.deliveries).length === 0 || Object.values(entry.deliveries).some(value => value.state !== "sent")),
       )
@@ -243,6 +287,7 @@ export function createOwnerNotifier(options: OwnerNotifierOptions): OwnerNotifie
         // Without the host's handles, each notice names a short session id instead.
       }
       const targets = await resolveTargets()
+      if (stopped) return
       if (targets.length === 0) {
         emitNervesEvent({ level: "warn", component: "senses", event: "senses.shepherd_notice_no_target", message: "no family friend is reachable on Teams, so the Shepherd owner notice was not sent", meta: { agent, returns: entries.length } })
         schedule(NOTICE_RETRY_MS)
@@ -254,14 +299,19 @@ export function createOwnerNotifier(options: OwnerNotifierOptions): OwnerNotifie
         delivery.state === "pending" && !reachable.has(friendId),
       ))
       for (const target of targets) {
+        if (stopped) break
         const pending = entries.filter(entry => noticeDeliveryState(entry, target.friendId) === "pending")
-        for (let start = 0; start < pending.length && !stopped; start += NOTICE_LIST_MAX) {
+        if (pending.length > 0) {
           // Only the worker that atomically claims a pending entry may initiate transport.
-          const batch = await claimPendingNotices(options.agentRoot, pending.slice(start, start + NOTICE_LIST_MAX).map(entry => entry.id), target.friendId, new Date().toISOString())
+          const batch = await claimPendingNotices(options.agentRoot, pending.map(entry => entry.id), target.friendId, new Date().toISOString())
           if (batch.length === 0) continue
           const ids = batch.map(entry => entry.id)
+          if (stopped) {
+            await recordNoticeDelivery(options.agentRoot, ids, target.friendId, { state: "pending", at: new Date().toISOString(), reason: "stopped before transport" })
+            break
+          }
           try {
-            const result = await send(target, noticeMessage(batch.map(entry => entry.record), refs))
+            const result = await send(target, noticeMessage(batch.map(entry => entry.record), refs, { recovered: ids.some(id => recoveredNoticeIds.has(id)) }))
             const state = result.delivered ? "sent"
               : result.delivery ? result.delivery.state === "not_sent" ? "pending" : "unknown"
                 : result.reason && result.reason !== "send_error" ? "pending" : "unknown"
@@ -290,20 +340,20 @@ export function createOwnerNotifier(options: OwnerNotifierOptions): OwnerNotifie
 
   function flush(): Promise<void> {
     if (flushing) return flushing
-    flushing = runFlush().finally(() => { flushing = null })
+    flushing = runFlush().finally(() => {
+      flushing = null
+      if (drainRequested) {
+        drainRequested = false
+        schedule(NOTICE_COALESCE_MS)
+      }
+    })
     return flushing
   }
 
   try {
     const existing = readNoticeOutbox(options.agentRoot)
-    let recovered = false
-    for (const record of readReturns(options.agentRoot)) {
-      if (record.noticeEligible === true && noticeWanted(policy, record) && !knownNotice(options.agentRoot, noticeRecordId(record), existing)) {
-        void persistIntent(record)
-        recovered = true
-      }
-    }
-    if (recovered || existing.some(entry => Object.keys(entry.deliveries).length === 0 || Object.values(entry.deliveries).some(value => value.state === "pending"))) schedule(NOTICE_RETRY_MS)
+    for (const entry of existing) recoveredNoticeIds.add(entry.id)
+    if (existing.some(entry => Object.keys(entry.deliveries).length === 0 || Object.values(entry.deliveries).some(value => value.state === "pending"))) schedule(NOTICE_RETRY_MS)
   } catch (error) {
     emitNervesEvent({ level: "error", component: "senses", event: "senses.shepherd_notice_error", message: "could not read waiting Shepherd owner notices", meta: { agent, error: (error as Error).message } })
     schedule(NOTICE_RETRY_MS)
@@ -311,10 +361,11 @@ export function createOwnerNotifier(options: OwnerNotifierOptions): OwnerNotifie
 
   return {
     notify(record) {
-      if (stopped || !noticeWanted(policy, record)) return Promise.resolve()
+      if (stopped) return Promise.resolve({ state: "suppressed", reason: "stopped" })
+      if (!noticeWanted(policy, record)) return Promise.resolve({ state: "suppressed", reason: "policy" })
       const write = persistIntent(record)
       schedule(NOTICE_COALESCE_MS)
-      return write
+      return write.then(noticeId => ({ state: "queued", noticeId }))
     },
     flush,
     stop() {
