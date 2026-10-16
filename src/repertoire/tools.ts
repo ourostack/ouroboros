@@ -119,7 +119,7 @@ function applyPreference(tool: OpenAI.ChatCompletionFunctionTool, pref: string):
   };
 }
 
-type SelectionContext = Pick<ToolContext, "noSend" | "habitSession" | "autonomousTurnKind" | "delegatedCommand" | "voiceCall"> & RootHostSelectionContext
+type SelectionContext = Pick<ToolContext, "noSend" | "habitSession" | "autonomousTurnKind" | "delegatedCommand" | "voiceCall" | "allowedEngineTools"> & RootHostSelectionContext
 
 export function selectToolsForChannel(
   capabilities?: ChannelCapabilities,
@@ -206,7 +206,8 @@ export function selectToolsForChannel(
     ...(inner ? [restTool] : [observeTool, settleTool]),
     ...(capabilities?.chatStyle ? [speakTool] : []),
   ].filter((tool) => (!sanctuary || (knownSanctuaryProfile && tool.function.name !== "observe"))
-    && (!relationship || relationship.advertisedToolNames.includes(tool.function.name)))
+    && (!relationship || relationship.advertisedToolNames.includes(tool.function.name))
+    && (!context?.allowedEngineTools || context.allowedEngineTools.includes(tool.function.name)))
   return Object.freeze({
     ordinary: Object.freeze(ordinary.map((definition) => definition === hostTool ? definition : Object.freeze({
       ...definition,

@@ -10,6 +10,7 @@ import { SELF_FRIEND_ID, type ToolContext, type ToolDefinition } from "./tools-b
 import { shepherdGuidanceToolDefinitions } from "./tools-shepherd-guidance"
 import { shepherdReturnId } from "../senses/shepherd/guidance"
 import { assertBoundShepherdTarget } from "../senses/shepherd/target-binding"
+import { readAgentPresentation } from "../senses/shepherd/agent-presentation"
 
 /**
  * Shepherd's tools: every coding-agent session on this machine's terminal host with a current screen
@@ -86,7 +87,7 @@ export const shepherdOverviewToolDefinition: ToolDefinition = {
     type: "function",
     function: {
       name: "shepherd_overview",
-      description: "A live, read-only snapshot of every terminal on this machine's host (cmux): agent, folder, workspace and tab, plus a freshly read, redacted, bounded currentScreen with its observation time. Use currentScreen to answer what agents are doing now in one reply; lastReturn is historical and must not be presented as current status. Include every listed terminal exactly once with its complete ref (surface:12), including plain shells and Ouro composers; never omit a row or abbreviate subsequent refs to bare numbers. terminalCount is authoritative; derive disjoint category counts from those same rows. Classify activity as working, needs human, waiting on outside dependency, idle/local work finished, shell, or unknown. An idle prompt does not establish delivered work: do not use a generic Done bucket for locally finished work that still needs review, approval, merge, publication, deployment or verification. State those remaining steps inline. An agent explicitly reporting an outside reviewer wait belongs under waiting even when its prompt is idle; that is neither premature completion nor a request for routine continuation. A currentScreen.error explicitly identifies a terminal that could not be read; explain it inline with the other sessions, not by asking for another turn. For deeper details use shepherd_read. Historical lastReturn includes the prior judgment time, kind, action and reason.",
+      description: "A live, read-only snapshot of every terminal on this machine's host (cmux): agent, folder, workspace and tab, plus a freshly read, redacted, bounded currentScreen with its observation time. Use currentScreen to answer what agents are doing now in one reply; lastReturn is historical and must not be presented as current status. Include every listed terminal exactly once with its complete ref (surface:12), including plain shells and supervisor composers; never omit a row or abbreviate subsequent refs to bare numbers. terminalCount is authoritative; derive disjoint category counts from those same rows. Classify activity as working, needs human, waiting on outside dependency, idle/local work finished, shell, or unknown. An idle prompt does not establish delivered work: do not use a generic Done bucket for locally finished work that still needs review, approval, merge, publication, deployment or verification. State those remaining steps inline. An agent explicitly reporting an outside reviewer wait belongs under waiting even when its prompt is idle; that is neither premature completion nor a request for routine continuation. A currentScreen.error explicitly identifies a terminal that could not be read; explain it inline with the other sessions, not by asking for another turn. For deeper details use shepherd_read. Historical lastReturn includes the prior judgment time, kind, action and reason.",
       parameters: { type: "object", properties: {}, additionalProperties: false },
     },
   },
@@ -191,12 +192,12 @@ export const shepherdSendToolDefinition: ToolDefinition = {
     type: "function",
     function: {
       name: "shepherd_send",
-      description: `Type into one coding agent's terminal on this machine for the human you are talking with, because they asked you to. Use it only to deliver that human's own instruction or keypress ("tell it to run the tests", "approve that", "stop it"): never on your own initiative, and never for anyone else. Give exactly one of text or key. text is one line (at most ${SEND_TEXT_MAX_CHARS} characters, no control characters), typed as "[Ouro for <their name>] <text>" and submitted with Enter. key is pressed alone: one of ${SEND_KEYS.join(", ")} (a menu or permission prompt, escape to interrupt, ctrl-c to cancel). enter, tab, a digit, y and n can approve or choose on a prompt, so they need screen from a shepherd_read made just before, and nothing is sent if the terminal changed since; tell the human what a prompt asks before approving it unless they have seen it. Pass screen with text too when the text answers what is on screen. To interrupt and then instruct, send escape, read again, then send the text. It also types into the terminal the human has focused on this machine.`,
+      description: `Type into one coding agent's terminal on this machine for the human you are talking with, because they asked you to. Use it only to deliver that human's own instruction or keypress ("tell it to run the tests", "approve that", "stop it"): never on your own initiative, and never for anyone else. Give exactly one of text or key. text is one line (at most ${SEND_TEXT_MAX_CHARS} characters, no control characters), typed as "[<your configured name> for <their name>] <text>" and submitted with Enter. key is pressed alone: one of ${SEND_KEYS.join(", ")} (a menu or permission prompt, escape to interrupt, ctrl-c to cancel). enter, tab, a digit, y and n can approve or choose on a prompt, so they need screen from a shepherd_read made just before, and nothing is sent if the terminal changed since; tell the human what a prompt asks before approving it unless they have seen it. Pass screen with text too when the text answers what is on screen. To interrupt and then instruct, send escape, read again, then send the text. It also types into the terminal the human has focused on this machine.`,
       parameters: {
         type: "object",
         properties: {
           session: { type: "string", description: "Session id or ref (surface:12) from shepherd_overview." },
-          text: { type: "string", description: "The human's instruction, one line. Sent with the [Ouro for <name>] prefix and Enter." },
+          text: { type: "string", description: "The human's instruction, one line. Sent with [<your configured name> for <their name>] and Enter." },
           key: { type: "string", enum: [...SEND_KEYS], description: "One key to press instead of text." },
           screen: { type: "string", description: "The screen fingerprint from the shepherd_read just before. Required for enter, tab, a digit, y and n." },
         },
@@ -228,7 +229,7 @@ export const shepherdSendToolDefinition: ToolDefinition = {
       // Read again right before typing, as Shepherd does before its own answers: a gone or changed screen gets nothing.
       const now = screenFingerprint(await host.read(target.id, FINGERPRINT_READ_LINES))
       if (seen && seen !== now) return refused("the terminal changed since it was read, so nothing was sent; read it again", meta)
-      const typed = key ? null : `[Ouro for ${friend.name}] ${line}`
+      const typed = key ? null : `[${readAgentPresentation(ctx!.agentName!, ctx!.agentRoot!).name} for ${friend.name}] ${line}`
       if (key) await host.key(target.id, key as ShepherdKey)
       else await host.prompt(target.id, typed!)
       emitNervesEvent({

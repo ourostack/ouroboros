@@ -10,6 +10,8 @@ import { localShepherdFriendStore, resolveExistingLocalOwner, SHEPHERD_UUID, typ
 import { attentionPage, MAX_ATTENTION_BODY_BYTES } from "./attention-page"
 import { installAttentionSidebar } from "./attention-sidebar"
 import type { CmuxConnection } from "../../heart/shepherd-config"
+import { getAgentRoot } from "../../heart/identity"
+import { agentPresentation, readAgentPresentation, stripAgentAddress } from "./agent-presentation"
 
 interface Message { role: "you" | "ouro" | "notice"; text: string }
 interface AttentionView {
@@ -26,11 +28,16 @@ function suggestedTarget(targets: ShepherdSession[]): ShepherdSession | null {
 /** An owner-only loopback view of the existing fixed-target composer, not another model runtime. */
 export async function startShepherdAttention(options: {
   agent: string
+  displayName?: string
   session?: string
   socketPath: string
   resolveOwner?: () => Promise<string>
   client?: () => FrontendProtocolClient
 }): Promise<{ url: string; close(): Promise<void> }> {
+  const presentation = options.displayName === undefined
+    ? readAgentPresentation(options.agent, getAgentRoot(options.agent))
+    : agentPresentation(options.agent, { displayName: options.displayName })
+  const name = presentation.name
   const friendId = await (options.resolveOwner ?? (() => resolveExistingLocalOwner(localShepherdFriendStore(options.agent))))()
   const makeClient = options.client ?? (() => new SocketFrontendClient(options.socketPath))
   const discovery = makeClient()
@@ -52,7 +59,7 @@ export async function startShepherdAttention(options: {
   }
   const getComposer = (view: AttentionView, target: ShepherdSession) => {
     if (!view.composer) view.composer = new ShepherdComposer({
-      client: makeClient(), agent: options.agent, friendId, target,
+      client: makeClient(), agent: options.agent, displayName: name, friendId, target,
       notice: text => append(view, "notice", text), answer: text => append(view, "ouro", text),
     })
     return view.composer
@@ -76,7 +83,7 @@ export async function startShepherdAttention(options: {
           "Content-Security-Policy": `default-src 'none'; script-src 'nonce-${nonce}'; style-src 'nonce-${nonce}'; connect-src 'self'; base-uri 'none'; frame-ancestors 'none'; form-action 'none'`,
           "Referrer-Policy": "no-referrer", "X-Content-Type-Options": "nosniff",
         })
-        return response.end(attentionPage(nonce))
+        return response.end(attentionPage(nonce, presentation))
       }
       if (request.headers["x-ouro-attention"] !== token) return json(403, { error: "Open attention from its local entry." })
       const viewId = request.headers["x-ouro-view"] ?? "default"
@@ -110,11 +117,11 @@ export async function startShepherdAttention(options: {
         return json(200, state(view, viewId, pendingId))
       }
       if (request.url === "/select") {
-        if (view.composer?.busy) return json(409, { error: "Wait for or cancel Ouro before changing the session." })
+        if (view.composer?.busy) return json(409, { error: `Wait for or cancel ${name} before changing the session.` })
         if (typeof fields.target !== "string") return json(400, { error: "Choose a session." })
         const refresh = makeClient()
         try { targets = (await refresh.request("shepherd.targets", { agent: options.agent, friendId })).targets } finally { refresh.close() }
-        if (view.composer?.busy) return json(409, { error: "Ouro started replying while the session list refreshed; the conversation was not changed." })
+        if (view.composer?.busy) return json(409, { error: `${name} started replying while the session list refreshed; the conversation was not changed.` })
         const next = fields.target === "current" ? suggestedTarget(targets) : selectShepherdTarget(targets, fields.target)
         if (view.target?.id !== next?.id) {
           view.composer?.close()
@@ -126,7 +133,7 @@ export async function startShepherdAttention(options: {
       }
       if (request.url === "/send") {
         if (typeof fields.id !== "string" || !SHEPHERD_UUID.test(fields.id)
-          || typeof fields.message !== "string" || !fields.message.replace(/^@ouro(?:\s+|$)/i, "").trim()) return json(400, { error: "Enter a message for Ouro." })
+          || typeof fields.message !== "string" || !stripAgentAddress(fields.message, presentation.aliases).trim()) return json(400, { error: `Enter a message for ${name}.` })
         if (!view.target) return json(409, { error: "Choose the session you want to discuss." })
         if (fields.target !== undefined && fields.target !== view.target.id) return json(409, { error: "This pending message is pinned to another session." })
         const prior = submissions.get(fields.id)
@@ -134,7 +141,7 @@ export async function startShepherdAttention(options: {
           if (prior.view !== viewId || prior.target !== view.target.id || prior.message !== fields.message) return json(409, { error: "This request id belongs to a different message or session." })
           return json(202, state(view, viewId, fields.id))
         }
-        if (view.composer?.busy) return json(409, { error: "Ouro is already replying. Your draft has not been sent." })
+        if (view.composer?.busy) return json(409, { error: `${name} is already replying. Your draft has not been sent.` })
         if (submissions.size >= 2_000) return json(409, { error: "Attention reached its message limit. Restart Shepherd before sending more messages." })
         const bound = getComposer(view, view.target)
         submissions.set(fields.id, { view: viewId, target: view.target.id, message: fields.message })
@@ -182,9 +189,10 @@ export async function startShepherdAttention(options: {
 }
 
 export async function startManagedShepherdAttention(options: { agent: string; session?: string; socketPath: string; cmuxConnection: CmuxConnection }): Promise<{ url: string; close(): Promise<void> }> {
-  const app = await startShepherdAttention(options)
+  const presentation = readAgentPresentation(options.agent, getAgentRoot(options.agent))
+  const app = await startShepherdAttention({ ...options, displayName: presentation.name })
   try {
-    installAttentionSidebar(path.join(os.homedir(), ".config/cmux/sidebars"), app.url, options.agent)
+    installAttentionSidebar(path.join(os.homedir(), ".config/cmux/sidebars"), app.url, options.agent, presentation.name)
     const { socketPath, auth } = options.cmuxConnection
     const validated = spawnSync("cmux", ["--socket", socketPath, "sidebar", "validate", `ouro-attention-${options.agent}`], {
       encoding: "utf8",
@@ -194,7 +202,7 @@ export async function startManagedShepherdAttention(options: { agent: string; se
         CMUX_SOCKET_PASSWORD: auth.kind === "password" ? auth.password : undefined,
       },
     })
-    if (validated.error || validated.status !== 0) throw new Error(`Could not validate Ouro's native entry: ${validated.error?.message ?? validated.stderr}`)
+    if (validated.error || validated.status !== 0) throw new Error(`Could not validate ${presentation.name}'s native entry: ${validated.error?.message ?? validated.stderr}`)
     return app
   } catch (error) {
     await app.close()
@@ -206,7 +214,7 @@ export async function runShepherdAttention(options: { agent: string; session?: s
   const app = await startShepherdAttention(options)
   try {
     const opened = spawnSync("cmux", ["browser", "open", app.url + (options.session ? `&session=${options.session}` : ""), "--focus", "false"], { encoding: "utf8" })
-    if (opened.error || opened.status !== 0) throw new Error(`Could not open Ouro attention in cmux: ${opened.error?.message ?? opened.stderr}`)
+    if (opened.error || opened.status !== 0) throw new Error(`Could not open session attention in cmux: ${opened.error?.message ?? opened.stderr}`)
     await new Promise<void>(resolve => {
       const stop = () => {
         process.removeListener("SIGINT", stop)

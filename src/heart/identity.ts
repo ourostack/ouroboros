@@ -4,6 +4,7 @@ import * as path from "path"
 import { emitNervesEvent } from "../nerves/runtime"
 import { migrateAgentConfigV1ToV2 } from "./migrate-config"
 import { DEFAULT_HABIT_PAID_TURNS_PER_DAY, normalizeHabitPaidTurnsPerDay } from "./autonomy-budget"
+import { validateAgentDisplayName } from "../senses/shepherd/agent-presentation"
 
 export { normalizeHabitPaidTurnsPerDay } from "./autonomy-budget"
 
@@ -73,6 +74,8 @@ export interface AgentFacingConfig {
 
 export interface AgentConfig {
   version: number
+  /** Human-facing identity; does not change the bundle/routing identifier. */
+  displayName?: string
   enabled: boolean
   /** @deprecated Use humanFacing/agentFacing instead */
   provider?: AgentProvider
@@ -633,6 +636,7 @@ export function loadAgentConfig(owner?: Readonly<{ agentName: string; agentRoot:
   // Required<AgentConfig> contract test in identity-contract.test.ts.
   const config: AgentConfig = {
     ...(parsed as unknown as AgentConfig),
+    displayName: validateAgentDisplayName(parsed.displayName),
     version,
     enabled,
     humanFacing,

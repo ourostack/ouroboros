@@ -5,6 +5,8 @@ import type { Readable, Writable } from "node:stream"
 import { FrontendRequestError, SocketFrontendClient, type FrontendProtocolClient } from "../../heart/frontend-socket-client"
 import { localShepherdFriendStore, resolveExistingLocalOwner, SHEPHERD_UUID, type ShepherdSession } from "./surface"
 import { emitNervesEvent } from "../../nerves/runtime"
+import { getAgentRoot } from "../../heart/identity"
+import { agentPresentation, readAgentPresentation, stripAgentAddress, type AgentPresentation } from "./agent-presentation"
 
 /** Identify only this UI's own device, never capture a changing focused terminal. */
 export function composerTerminalTty(isTTY: boolean = process.stdin.isTTY === true): string | undefined {
@@ -44,6 +46,7 @@ interface ComposerTurn {
 export class ShepherdComposer {
   private readonly client: FrontendProtocolClient
   private readonly agent: string
+  private readonly presentation: AgentPresentation
   private readonly friendId: string
   private readonly composerTty?: string
   readonly target: ShepherdSession
@@ -54,9 +57,10 @@ export class ShepherdComposer {
   private readonly notice: (message: string) => void
   private readonly answer: (message: string) => void
 
-  constructor(options: { client: FrontendProtocolClient; agent: string; friendId: string; target: ShepherdSession; composerTty?: string; notice?: (message: string) => void; answer?: (message: string) => void }) {
+  constructor(options: { client: FrontendProtocolClient; agent: string; displayName?: string; friendId: string; target: ShepherdSession; composerTty?: string; notice?: (message: string) => void; answer?: (message: string) => void }) {
     this.client = options.client
     this.agent = options.agent
+    this.presentation = agentPresentation(options.agent, { displayName: options.displayName })
     this.friendId = options.friendId
     this.composerTty = options.composerTty
     this.target = Object.freeze({ ...options.target })
@@ -66,7 +70,7 @@ export class ShepherdComposer {
     this.unsubscribe = this.client.onEvent(frame => {
       if (frame.event === "replay_required") {
         const turn = this.active
-        this.notice("Ouro disconnected: journal replay required.")
+        this.notice(`${this.presentation.name} disconnected: journal replay required.`)
         void this.recover().catch(error => { if (this.active === turn) this.fail(error, true) })
       } else if (this.active && frame.turnId === this.active.id && frame.sessionKey === this.sessionKey) {
         this.consume(this.active, frame.event.replaceAll(".", "_"), frame, frame.journalSequence)
@@ -74,7 +78,7 @@ export class ShepherdComposer {
     })
     this.unsubscribeClose = this.client.onClose(() => {
       const turn = this.active
-      this.notice("Ouro disconnected; resolving this turn through its journal. No turn will be resubmitted.")
+      this.notice(`${this.presentation.name} disconnected; resolving this turn through its journal. No turn will be resubmitted.`)
       void this.recover().catch(error => { if (this.active === turn) this.fail(error, true) })
     })
   }
@@ -82,9 +86,9 @@ export class ShepherdComposer {
   get busy(): boolean { return this.active !== null }
 
   async submit(input: string, requestId?: string): Promise<string> {
-    if (this.active) throw new Error("Ouro already has an active turn; use /cancel")
-    if (requestId !== undefined && !SHEPHERD_UUID.test(requestId)) throw new Error("Ouro request id must be a UUID")
-    const message = input.replace(/^@ouro(?:\s+|$)/i, "")
+    if (this.active) throw new Error(`${this.presentation.name} already has an active turn; use /cancel`)
+    if (requestId !== undefined && !SHEPHERD_UUID.test(requestId)) throw new Error(`${this.presentation.name} request id must be a UUID`)
+    const message = stripAgentAddress(input, this.presentation.aliases)
     if (!message.trim()) throw new Error("message must not be empty")
     const completion = Promise.withResolvers<string>()
     const turn: ComposerTurn = { id: requestId ?? randomUUID(), events: [], seen: new Set(), recovering: 0, reconciliationPending: false, dispatched: false, cancelled: false,
@@ -101,7 +105,7 @@ export class ShepherdComposer {
         ...this.ref(), turnId, channel: "cli", message, shepherdSession: this.target,
         ...(this.composerTty ? { composerTty: this.composerTty } : {}),
       })
-      emitNervesEvent({ component: "senses", event: "senses.shepherd_composer_turn_submitted", message: "submitted an independent fixed-target Ouro turn", meta: { agent: this.agent, session: this.target.id, turnId } })
+      emitNervesEvent({ component: "senses", event: "senses.shepherd_composer_turn_submitted", message: "submitted an independent fixed-target agent turn", meta: { agent: this.agent, session: this.target.id, turnId } })
     } catch (sendError) {
       if (sendError instanceof FrontendRequestError && sendError.code === "turn_rejected") {
         if (this.active === turn) this.fail(sendError)
@@ -122,7 +126,7 @@ export class ShepherdComposer {
     if (!turn) return false
     turn.cancelled = true
     if (!turn.dispatched) {
-      this.fail(new Error("Ouro turn cancelled"))
+      this.fail(new Error(`${this.presentation.name} turn cancelled`))
       return true
     }
     const result = await this.client.request("turn.cancel", { turnId: turn.id })
@@ -151,14 +155,14 @@ export class ShepherdComposer {
     this.finishTurn()
     if (this.active === turn && turn.recovering === 0 && status.state !== "active") {
       turn.reconciliationPending = true
-      throw new Error(`Ouro turn status is ${status.state}; not resubmitting ${turn.id}`)
+      throw new Error(`${this.presentation.name} turn status is ${status.state}; not resubmitting ${turn.id}`)
     }
   }
 
   close(): void {
     this.unsubscribe()
     this.unsubscribeClose()
-    this.fail(new Error("Ouro composer closed"))
+    this.fail(new Error(`${this.presentation.name} composer closed`))
     this.client.close()
   }
 
@@ -170,7 +174,7 @@ export class ShepherdComposer {
     const turn = this.active
     if (retain && turn) {
       turn.unresolved = true
-      this.notice(`Ouro turn ${turn.id} is unresolved; use /recover or /cancel. It will not be resubmitted.`)
+      this.notice(`${this.presentation.name} turn ${turn.id} is unresolved; use /recover or /cancel. It will not be resubmitted.`)
     } else this.active = null
     turn?.reject(error instanceof Error ? error : new Error(String(error)))
   }
@@ -197,21 +201,22 @@ export class ShepherdComposer {
     if (type === "turn_completed") {
       this.active = null
       if (data.result?.outcome === "errored" || data.result?.outcome === "aborted") {
-        turn.reject(new Error(`Ouro turn ${data.result.outcome}`))
+        turn.reject(new Error(`${this.presentation.name} turn ${data.result.outcome}`))
       } else {
         const answer = deliveries.length ? deliveries.join("\n") : String(data.result?.response ?? "")
         this.answer(answer)
-        if (turn.unresolved) this.notice(`Ouro: ${answer}`)
+        if (turn.unresolved) this.notice(`${this.presentation.name}: ${answer}`)
         turn.resolve(answer)
       }
     } else {
-      this.fail(new Error(type === "turn_cancelled" ? "Ouro turn cancelled" : String(data.error ?? "Ouro turn failed")))
+      this.fail(new Error(type === "turn_cancelled" ? `${this.presentation.name} turn cancelled` : String(data.error ?? `${this.presentation.name} turn failed`)))
     }
   }
 }
 
 export async function runShepherdComposer(options: {
   agent: string
+  displayName?: string
   session?: string
   socketPath: string
   input?: Readable
@@ -220,6 +225,10 @@ export async function runShepherdComposer(options: {
   resolveOwner?: () => Promise<string>
   composerTty?: string
 }): Promise<void> {
+  const presentation = options.displayName === undefined
+    ? readAgentPresentation(options.agent, getAgentRoot(options.agent))
+    : agentPresentation(options.agent, { displayName: options.displayName })
+  const name = presentation.name
   const composerTty = options.composerTty ?? composerTerminalTty()
   const friendId = await (options.resolveOwner ?? (() => resolveExistingLocalOwner(localShepherdFriendStore(options.agent))))()
   const client = options.client ?? new SocketFrontendClient(options.socketPath)
@@ -229,7 +238,7 @@ export async function runShepherdComposer(options: {
   const lines = readline.createInterface({ input, crlfDelay: Infinity })
   let composer: ShepherdComposer | undefined
   const interrupt = () => {
-    if (composer) void composer.cancel().catch(error => write(`Ouro error: ${String(error)}`))
+    if (composer) void composer.cancel().catch(error => write(`${name} error: ${String(error)}`))
     else lines.close()
   }
   lines.on("SIGINT", interrupt)
@@ -244,8 +253,8 @@ export async function runShepherdComposer(options: {
       write("Select a terminal by number. Focus changes do not select or retarget a conversation.")
     }
     const attach = (selected: ShepherdSession) => {
-      composer = new ShepherdComposer({ client, agent: options.agent, friendId, target: selected, ...(composerTty ? { composerTty } : {}), notice: write })
-      write(`Ouro → ${selected.label} [${selected.id}]\nType to Ouro. /cancel cancels only Ouro; /recover checks the journal; /quit exits.`)
+      composer = new ShepherdComposer({ client, agent: options.agent, displayName: name, friendId, target: selected, ...(composerTty ? { composerTty } : {}), notice: write })
+      write(`${name} → ${selected.label} [${selected.id}]\nType to ${name}. /cancel cancels only ${name}; /recover checks the journal; /quit exits.`)
     }
     if (target) attach(target)
     for await (const line of lines) {
@@ -259,18 +268,18 @@ export async function runShepherdComposer(options: {
       }
       if (!line.trim()) continue
       if (line === "/cancel") {
-        void composer!.cancel().then(cancelled => write(cancelled ? "Ouro cancellation requested." : "Ouro has no cancellable turn.")).catch(error => write(`Ouro error: ${String(error)}`))
+        void composer!.cancel().then(cancelled => write(cancelled ? `${name} cancellation requested.` : `${name} has no cancellable turn.`)).catch(error => write(`${name} error: ${String(error)}`))
       } else if (line === "/recover") {
-        void composer!.recover().catch(error => write(`Ouro error: ${String(error)}`))
+        void composer!.recover().catch(error => write(`${name} error: ${String(error)}`))
       } else {
-        void composer!.submit(line).then(answer => write(`Ouro: ${answer}`)).catch(error => write(`Ouro error: ${String(error)}`))
+        void composer!.submit(line).then(answer => write(`${name}: ${answer}`)).catch(error => write(`${name} error: ${String(error)}`))
       }
     }
   } finally {
     process.removeListener("SIGINT", interrupt)
     lines.close()
     if (composer) {
-      try { await composer.cancel() } catch { write("Ouro disconnected while closing; check journal status before another turn.") }
+      try { await composer.cancel() } catch { write(`${name} disconnected while closing; check journal status before another turn.`) }
       composer.close()
     } else client.close()
   }

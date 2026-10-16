@@ -13,7 +13,7 @@ vi.mock("node:http", async original => {
 })
 afterEach(async () => { for (const close of cleanups.splice(0)) await close(); vi.restoreAllMocks() })
 
-async function start() {
+async function start(displayName = "Ouro") {
   const events = new Set<(frame: Record<string, unknown>) => void>()
   const request = vi.fn(async (method: string, params: Record<string, unknown>) => {
     if (method === "shepherd.targets") return { targets: [first, second] }
@@ -24,7 +24,7 @@ async function start() {
     request, onEvent: listener => { events.add(listener); return () => { events.delete(listener) } },
     onClose: () => () => {}, close: () => {},
   })
-  const app = await startShepherdAttention({ agent: "ouro", socketPath: "/unused", resolveOwner: async () => "owner", client })
+  const app = await startShepherdAttention({ agent: "ouro", displayName, socketPath: "/unused", resolveOwner: async () => "owner", client })
   cleanups.push(app.close)
   const url = new URL(app.url)
   const origin = url.origin
@@ -37,6 +37,18 @@ async function start() {
 }
 
 describe("compact independent attention entry", () => {
+  it("serves the explicit agent identity through the real HTTP entry and configured address route", async () => {
+    const { origin, api, request } = await start("Orchid One")
+    const html = await (await fetch(origin)).text()
+    expect(html).toContain("<h1>Orchid One</h1>")
+    const id = crypto.randomUUID()
+    expect((await api("/send", { id, message: "@Orchid One inspect this session" })).status).toBe(202)
+    await vi.waitFor(() => expect(request.mock.calls.some(([method]) => method === "turn.start")).toBe(true))
+    expect(request.mock.calls.find(([method]) => method === "turn.start")?.[1]).toMatchObject({
+      agent: "ouro", message: "inspect this session",
+    })
+  })
+
   it("serves a graphical composer and publishes short labels, not diagnostic paths", async () => {
     const { origin, api } = await start()
     const page = await fetch(origin)

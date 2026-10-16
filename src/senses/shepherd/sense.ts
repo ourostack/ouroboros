@@ -17,6 +17,8 @@ import { redactSecrets, screenTail as tail, withoutNumbers } from "./redact"
 import { createOwnerNotifier } from "./owner-notice"
 import { appendReturn, type ReturnRecord } from "./returns"
 import { applicableGuidance, readGuidance, type ShepherdGuidanceTarget } from "./guidance"
+import { readAgentPresentation } from "./agent-presentation"
+import { startFeedbackWorker, type FeedbackWorker, type FeedbackWorkerOptions } from "./feedback-worker"
 
 /** Keeps the judgment's guidance revision in telemetry without changing the shared returns-store contract. */
 export interface ShepherdJudgedReturnRecord extends ReturnRecord { guidanceRevision?: number }
@@ -72,6 +74,7 @@ export interface ShepherdSenseOptions {
   notifyOwner?: (record: ReturnRecord) => void | Promise<void>
   schedule?: (fn: () => void, ms: number) => () => void
   checkConnectivity?: () => Promise<ShepherdConnectivity>
+  feedbackWorker?: (options: FeedbackWorkerOptions) => FeedbackWorker
 }
 
 /** Untrusted terminal text, kept to one bounded line. */
@@ -161,6 +164,7 @@ export async function wakeForEscalations(agent: string, ids: string[]): Promise<
 export async function startShepherdSenseApp(options: ShepherdSenseOptions): Promise<{ stop: () => void }> {
   const agent = options.agentName
   const agentRoot = getAgentRoot(agent)
+  const presentation = readAgentPresentation(agent, agentRoot)
   const now = options.now ?? Date.now
   const schedule = options.schedule ?? realSchedule
   const machine = readMachineRuntimeCredentialConfig(agent)
@@ -173,6 +177,7 @@ export async function startShepherdSenseApp(options: ShepherdSenseOptions): Prom
   const human = humanName(agentRoot)
   const notifier = options.notifyOwner ? null : createOwnerNotifier({ agent, agentRoot, policy: noticePolicy(agent, agentRoot), schedule, listSessions: () => host.list() })
   const notifyOwner = options.notifyOwner ?? ((record: ReturnRecord) => notifier!.notify(record))
+  const feedback = (options.feedbackWorker ?? startFeedbackWorker)({ agent, agentRoot, now, schedule })
   /**
    * Per session: automatic answers in a row and in the last hour, whether the loop guard has tripped (it stays tripped until
    * the human focuses the session), when the human last focused it, and the last message of a background stop already judged.
@@ -322,7 +327,7 @@ export async function startShepherdSenseApp(options: ShepherdSenseOptions): Prom
             record.reason = `Shepherd guidance paused or changed while judging (revision ${guidance.revision} to ${latest.revision}), so nothing was sent: ${verdict.reason}`
           } else {
             if ("key" in verdict.reply) await host.key(event.sessionId, verdict.reply.key)
-            else await host.prompt(event.sessionId, `[Ouro for ${human}] ${recovery ? NETWORK_RESUME : verdict.reply.text}`)
+            else await host.prompt(event.sessionId, `[${presentation.name} for ${human}] ${recovery ? NETWORK_RESUME : verdict.reply.text}`)
             Object.assign(record, { action: "respond", reply: "key" in verdict.reply ? `key:${verdict.reply.key}` : recovery ? NETWORK_RESUME : verdict.reply.text })
             state.streak += 1
             state.answers.push(now())
@@ -388,6 +393,7 @@ export async function startShepherdSenseApp(options: ShepherdSenseOptions): Prom
       cancelWake?.()
       cancelConnectivity?.()
       notifier?.stop()
+      feedback.stop()
       emitNervesEvent({ component: "senses", event: "senses.shepherd_stopped", message: "Shepherd stopped", meta: { agent } })
     },
   }

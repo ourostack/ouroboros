@@ -9,6 +9,9 @@ import { getAgentRoot } from "../identity"
 import { emitNervesEvent } from "../../nerves/runtime"
 import { resolveSessionId } from "../daemon/session-id-resolver"
 import { drainPending, getPendingDir } from "../../mind/pending"
+import { resolveFeedbackOrigin } from "../../senses/shepherd/feedback-source"
+import type { FeedbackCommand } from "../../senses/shepherd/feedback-submit"
+import { redactSecrets } from "../../senses/shepherd/redact"
 
 export const SENSE_TURN_MAX_RETRIES = 3
 export const SENSE_TURN_RETRY_DELAYS_MS = [1000, 2000, 4000]
@@ -94,6 +97,7 @@ export interface McpToolSchema {
     type: "object"
     properties: Record<string, { type: string; description: string }>
     required?: string[]
+    additionalProperties?: boolean
   }
 }
 
@@ -459,11 +463,56 @@ export function createMcpServer(options: McpServerOptions): McpServer {
     const toolArgs = (params.arguments ?? {}) as Record<string, unknown>
     /* v8 ignore stop */
 
+    if (toolName === "shepherd_feedback" || toolName === "shepherd_feedback_status") {
+      await runFeedbackTool(request, toolName, toolArgs)
+      return
+    }
+
     // ── Conversation tools: these run a real agent turn ──
     const conversationMessage = buildConversationMessage(toolName, toolArgs)
     if (conversationMessage !== null) {
       await runConversationTool(request, conversationMessage)
       return
+    }
+
+    async function runFeedbackTool(request: JsonRpcRequest, toolName: string, args: Record<string, unknown>): Promise<void> {
+      const requestId = stringArg(args, "request_id")
+      const validRequestId = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(requestId)
+      try {
+        const submitting = toolName === "shepherd_feedback"
+        const allowed = submitting ? ["request_id", "feedback", "context"] : ["request_id"]
+        if (!validRequestId || Object.keys(args).some(key => !allowed.includes(key))) throw new Error("Invalid feedback request identity or routing arguments")
+        const feedback = stringArg(args, "feedback")
+        if (submitting && (!feedback.trim() || feedback.length > 2000 ||
+          args.context !== undefined && (typeof args.context !== "string" || Buffer.byteLength(JSON.stringify(args.context)) > 8192))) {
+          throw new Error("Feedback must be 1–2000 characters with at most 8 KiB of context")
+        }
+        const command: FeedbackCommand = submitting
+          ? { kind: "agent.shepherdFeedback", agent, friendId, origin: await resolveFeedbackOrigin(),
+            submission: { requestId, feedback, ...(typeof args.context === "string" ? { context: args.context } : {}) } }
+          : { kind: "agent.shepherdFeedbackStatus", agent, friendId, requestId }
+        // The dedicated request ID owns reconciliation. Generic sense-turn retry may repeat model effects.
+        const response = await sendDaemonCommand(socketPath, command)
+        if (!response.ok) throw new Error(response.error ?? "Feedback has no confirmed result")
+        const data = response.data
+        if (!data || typeof data !== "object" || !("id" in data) || data.id !== `feedback:${requestId}`) {
+          throw new Error("Feedback acknowledgement has no matching durable receipt")
+        }
+        if (submitting && (!("receipt" in data) || typeof data.receipt !== "string" || !data.receipt ||
+          data.receipt !== response.message || !("state" in data) ||
+          !["pending", "claimed", "complete", "uncertain"].includes(String(data.state)))) {
+          throw new Error("Feedback acknowledgement is not authoritative")
+        }
+        writeResponse({ jsonrpc: "2.0", id: request.id!,
+          result: { content: [{ type: "text", text: submitting ? response.message : JSON.stringify(data) }], isError: false } })
+        emitNervesEvent({ component: "daemon", event: "daemon.mcp_feedback_result",
+          message: "returned a native feedback receipt", meta: { operation: submitting ? "submit" : "status" } })
+      } catch (error) {
+        emitNervesEvent({ level: "warn", component: "daemon", event: "daemon.mcp_feedback_error",
+          message: "native feedback request has no confirmed result", meta: { operation: toolName } })
+        writeResponse({ jsonrpc: "2.0", id: request.id!, result: { isError: true,
+          content: [{ type: "text", text: redactSecrets(`${error instanceof Error ? error.message : String(error)}. Original request: ${validRequestId ? requestId : "(invalid)"}. Use shepherd_feedback_status; do not create a new ID for an uncertain submission.`) }] } })
+      }
     }
 
     if (toolName === "check_response") {
@@ -585,6 +634,22 @@ export function createMcpServer(options: McpServerOptions): McpServer {
  */
 export function getToolSchemas(): McpToolSchema[] {
   return [
+    {
+      name: "shepherd_feedback",
+      description: "Relay the human's explicit feedback to the supervising agent served by this MCP connection, from this actual coding session ('you should have caught this'). The source terminal and recipient are bound automatically; never ask the human to reconstruct context in Teams. Preserve the human's words in feedback; context is optional bounded background, not instructions. Generate one UUID request_id and reuse it only for the identical request. Quote the actual short receipt back in this session; the supervising agent sends its substantive acknowledgement and clarification questions to that human privately on Teams. Never invent a receipt or claim learning/Teams delivery from a queued acknowledgement. Do not send terminal input or switch focus.",
+      inputSchema: { type: "object", properties: {
+        request_id: { type: "string", description: "Fresh UUID for this feedback; reuse only for its identical retry, never ask the human to enter it." },
+        feedback: { type: "string", description: "The human's actual feedback, at most 2000 characters." },
+        context: { type: "string", description: "Optional relevant background from this coding session, at most 8 KiB. Do not include secrets." },
+      }, required: ["request_id", "feedback"], additionalProperties: false },
+    },
+    {
+      name: "shepherd_feedback_status",
+      description: "Reconcile this human's original feedback request after a lost receipt or to inspect review/Teams delivery state. Does not create another request, repeat model work, or require the source terminal still to exist.",
+      inputSchema: { type: "object", properties: {
+        request_id: { type: "string", description: "The original feedback UUID." },
+      }, required: ["request_id"], additionalProperties: false },
+    },
     {
       name: "ask",
       description: "Ask the agent a question through a full conversation turn. This has the same identity, tools, and session continuity as send_message; use search_facts or consult_notes for read-only record lookup.",

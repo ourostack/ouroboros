@@ -6,6 +6,7 @@ import { emitNervesEvent } from "../../nerves/runtime"
 import { getAgentBundlesRoot, normalizeHabitPaidTurnsPerDay, normalizeSenses, PROVIDER_CREDENTIALS, type AgentConfig, type AgentProvider } from "../identity"
 import { migrateAgentConfigV1ToV2 } from "../migrate-config"
 import { resolveModelForProviderSelection } from "../provider-models"
+import { validateAgentDisplayName } from "../../senses/shepherd/agent-presentation"
 import type { Facing } from "@ouro.bot/friends"
 import type { HatchCredentialsInput } from "../hatch/hatch-flow"
 import {
@@ -115,6 +116,7 @@ export function readAgentConfigForAgent(
   // equivalent configs for the same file.
   const config: AgentConfig = {
     ...(parsed as unknown as AgentConfig),
+    displayName: validateAgentDisplayName(parsed.displayName),
     senses: normalizeSenses(parsed.senses, configPath),
     habitPaidTurnsPerDay: normalizeHabitPaidTurnsPerDay(agentName, parsed.habitPaidTurnsPerDay, configPath),
   }

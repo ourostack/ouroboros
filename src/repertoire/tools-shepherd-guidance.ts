@@ -35,7 +35,9 @@ function fingerprint(name: string, args: Args): string {
  * the existing machine connection primitives. Resolving it never reads a screen, signals, presses a key or sends.
  */
 async function targetFor(ctx: ToolContext, args: Args): Promise<{ target: ShepherdGuidanceTarget; live: ShepherdGuidanceTarget[] }> {
-  if (text(args.session)) assertBoundShepherdTarget(ctx.currentShepherdSurface, text(args.session), text(args.host) || undefined)
+  const session = text(args.session) || ctx.currentShepherdSurface?.id || ""
+  const hostName = text(args.host) || ctx.currentShepherdSurface?.host || ""
+  if (session) assertBoundShepherdTarget(ctx.currentShepherdSurface, session, hostName || undefined)
   const records = readReturns(ctx.agentRoot!)
   const returnId = text(args.return_id)
   if (returnId) {
@@ -45,9 +47,7 @@ async function targetFor(ctx: ToolContext, args: Args): Promise<{ target: Shephe
     if ((text(args.host) && text(args.host) !== record.host) || (text(args.session) && text(args.session) !== record.session)) throw new Error("target does not match the recorded return")
     return { target: { host: record.host, session: record.session, cwd: record.cwd, task: record.task }, live: [] }
   }
-  const session = text(args.session)
   if (!session) throw new Error("name a session from Shepherd history or overview")
-  const hostName = text(args.host)
   const matching = records.filter(r => r.session === session && (!hostName || r.host === hostName))
   if (new Set(matching.map(r => r.host)).size > 1) throw new Error("session is ambiguous across hosts; name its host")
   const record = matching.at(-1)
@@ -76,7 +76,9 @@ function definition(name: string, description: string, properties: Record<string
       if (!friend || friend.trustLevel !== "family" || !friend.id || friend.id === SELF_FRIEND_ID) return json({ error: "Shepherd private guidance is only for a real family member in this conversation" })
       if (!ctx?.agentRoot || !ctx.agentName) return json({ error: "Shepherd guidance needs an agent runtime" })
       try {
-        const request: ToolRun = { actorId: friend.id, requestId: text(args.request_id), requestFingerprint: fingerprint(name, args) }
+        const boundDefault = name === "shepherd_correct" && !text(args.session) && !text(args.return_id) && ctx.currentShepherdSurface
+        const request: ToolRun = { actorId: friend.id, requestId: text(args.request_id), requestFingerprint: fingerprint(name,
+          boundDefault ? { ...args, session: boundDefault.id, host: boundDefault.host } : args) }
         if (mutates) {
           const prior = readGuidance(ctx.agentRoot).requests.find(r => r.actorId === request.actorId && r.requestId === request.requestId)
           if (prior) {
@@ -101,8 +103,11 @@ function definition(name: string, description: string, properties: Record<string
 
 export const shepherdGuidanceToolDefinitions: ToolDefinition[] = [
   definition("shepherd_history", "Read private Shepherd return history with stable return IDs, actual judgment/reply/outcome and your own ownerNotice receipts when tracked. Historical, not current status; a vanished terminal remains readable. The session filter is a stable ID, not a short ref. Use to understand 'that was wrong because...' before correcting it, or to check whether a notice was sent. Use displayId as the human-facing return label; never invent a shortened ID suffix. Mutations require the exact full id, not displayId. ownerNotice.state sent means transport acceptance, not proof the human read it; pending awaits a safe retry; unknown may already have arrived and must not be blindly replayed. messageId is the activity ID returned by transport. ownerNotice null means no receipt recorded for this recipient, not proof of non-delivery. ownerNoticeError explicitly identifies unavailable receipt evidence. Never types into a terminal.", targetProperties, [], async (args, ctx, request) => {
+    const session = text(args.session) || ctx.currentShepherdSurface?.id
+    const host = text(args.host) || ctx.currentShepherdSurface?.host
+    if (session) assertBoundShepherdTarget(ctx.currentShepherdSurface, session, host)
     const returns: Array<ReturnRecord & { id: string; displayId: string; ownerNotice?: NoticeDelivery | null }> = readReturns(ctx.agentRoot!)
-      .filter(r => (!text(args.session) || r.session === text(args.session)) && (!text(args.host) || r.host === text(args.host)))
+      .filter(r => (!session || r.session === session) && (!host || r.host === host))
       .map(record => {
         const id = shepherdReturnId(record)
         return { ...record, id, displayId: id.slice("return:".length, "return:".length + 8) }
@@ -136,7 +141,7 @@ export const shepherdGuidanceToolDefinitions: ToolDefinition[] = [
     }, live)
   }, true),
   definition("shepherd_guidance", "Inspect what Shepherd learned ('what did you learn?'). With a session, returns revision, pause and applicable active principles with IDs, scopes and operator provenance. Omit session to inspect all active principles and pauses, including their exact targets. No send.", targetProperties, [], async (args, ctx) => {
-    if (args.session === undefined) {
+    if (args.session === undefined && !ctx.currentShepherdSurface) {
       const state = readGuidance(ctx.agentRoot!)
       return { revision: state.revision, principles: state.principles.filter(p => p.active), pauses: state.pauses.filter(p => p.paused) }
     }

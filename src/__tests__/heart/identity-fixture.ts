@@ -27,6 +27,7 @@ export type DeepRequired<T> = T extends (...args: unknown[]) => unknown
 
 export const FULL_AGENT_JSON = {
   version: 2,
+  displayName: "Fixture Agent",
   enabled: true,
   // Deprecated legacy field — still part of AgentConfig as `provider?`.
   // Included so the DeepRequired<AgentConfig> satisfies check passes.
