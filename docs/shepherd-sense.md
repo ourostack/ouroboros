@@ -2,7 +2,7 @@
 
 Shepherd keeps the coding agents in this Mac's terminals working. Every time one of them hands control back, a cheap judge decides whether it should have. When the agent stopped too early (it asked "want me to go ahead?", offered a menu with a clear recommendation, or stopped after a plan), Shepherd answers in the terminal, visibly, and the agent carries on. When the agent needs the human (a sign-in, a decision that is theirs, money, an irreversible step) or says the work is done, Shepherd lets the return through and brings it to the supervising agent.
 
-It is agent-agnostic and terminal-agnostic. Nothing in it assumes a particular coding agent: Claude Code, Codex, Copilot CLI, Agency and any other agent are judged by the same rubric from their screen. A terminal host is an adapter (`src/senses/shepherd/host.ts`): cmux and Herdr.
+The judge is agent-agnostic: Claude Code, Codex, Copilot CLI, Agency and other agents are judged by the same rubric from their screen. A terminal host is an adapter (`src/senses/shepherd/host.ts`): cmux and Herdr. Periodic automatic input has a narrower, default-deny rendered-UI allowlist described below.
 
 ## What a return is
 
@@ -19,9 +19,94 @@ An agent that ends its turn while its own background work runs (subagents, backg
 
 Shepherd knows about background work two ways. The terminal host may say so (cmux's `hadPendingBackgroundWorkAtStop`, or a session lifecycle of `running` or `backgroundWorkPending`); then the judge is told, and a `premature` or `done` verdict becomes `working`. Otherwise, as on Herdr, whose agent states do not say, the judge reads the screen: running-task indicators or wording such as "waiting for background agents" mean `working`. The session is judged afresh at its next real stop, after the background work reports back and the agent's next turn ends.
 
+## Periodic fresh check-ins
+
+Shepherd also reconsiders **all currently returned-control sessions**, regardless
+of their old classification, every hour by default. This includes an agent that
+exhausted provider retries while connectivity remained online, a previously
+misclassified gate or delivery, and an idle session present when Shepherd starts.
+A missing or rotated returns log does not exclude an otherwise verified target.
+Old judgments are labelled history, never current evidence or permission.
+
+Set `senses.shepherd.checkInMinutes` in the existing `agent.json`: omitted means
+`60`, `0` disables periodic checks, and an explicit value must be an integer from
+`30` through `1440`. Invalid values fail explicitly. Restart the sense to apply a
+changed cadence. Check-ins are a fallback, **not pacing**: agents should continue
+authorized work now rather than wait for a tick. A scheduled-count badge alone
+is neither active background work nor a human blocker.
+
+Startup takes a read-only baseline. A single quiet-batch timer waits eight
+seconds outside the return-handling chain, so it does not block immediate returns.
+The next observation must match the original target, process-start identity,
+folder, current screen and input state. Raw-screen digests detect changes hidden
+by redaction. Subsequent sweeps use actual execution time, without catch-up bursts.
+Each terminal's read failure is isolated; stopping the sense cancels pending work.
+
+Only a fresh `premature` verdict can lead to scheduled input, with this fixed
+plain-text continuation, visibly attributed to the supervising agent:
+
+> Reassess your existing task and continue only already-authorized remaining work. Respect human decisions and pauses. Reconcile uncertain effects before retrying; do not wait for a scheduled tick when you can work now.
+
+Periodic checks never press approval/menu/navigation keys, choose a new project,
+invent work for a completed task, or treat time as authority over a real human,
+sign-in, credential, account, money, scope or outside-dependency blocker. An
+exhausted network/provider retry can be reconsidered without claiming connectivity
+recovered. Uncertain effects require reconciliation before retrying.
+
+Scheduled input additionally requires a recognized coding process with a verified
+PID-plus-start instance, positively idle state, no running background work and a
+positively empty composer. cmux supports tested Copilot, Claude Code and Codex
+rendered shapes; unknown/clipped layouts, ambiguous placeholders, menus and drafts
+are default-deny. The model name in a footer does not establish harness identity.
+Herdr currently lacks verified process-start/empty-composer evidence, so periodic
+checks there are read/judge-only. Its ordinary immediate-return policy is unchanged.
+
+Focus/recent-focus, current scoped guidance and the existing three-answer streak
+and ten-per-hour guards still apply; time does not reset a streak. A final
+inspection must agree with the judged inspection. The guarded adapter revalidates
+the explicit target after its lookups, and synchronously rechecks parent event
+generation, guidance, focus hold and shutdown immediately before paste. This is
+bounded client-side protection, **not an atomic cmux server compare-and-swap**.
+It never clears or replaces a draft.
+
+### Shared automatic-input custody and quiet notices
+
+Immediate returns, connectivity recovery and periodic checks reserve input in
+the same private SQLite ledger before any automatic text or key. Its key binds
+host, stable session, process instance, judged-screen fingerprint and guidance
+revision; trigger and transition are metadata, not separate retry routes.
+Successful acceptance deduplicates that attempt. An exception, crash after claim
+or ambiguous acceptance remains claimed/unknown and blocks all automatic input
+for that host/session-instance, even with a changed screen or trigger. When the
+instance was unavailable, the uncertainty barrier covers the stable host/session.
+Only a definite **pre-input not-sent** result permits a later safe claim; there
+is no same-pass retry loop. Human-requested `shepherd_send` is unchanged.
+
+The ledger is `state/senses/shepherd/checkins/custody.sqlite` in the owning bundle,
+with `0700` directories and a `0600` file. Each record is bounded to 4096 encoded
+bytes. At 48 MiB it emits standard telemetry only, not a Teams message or wake.
+At 64 MiB it refuses further writes/input explicitly, reserving conservative
+write headroom. Corruption and unsafe ownership/modes/links also fail closed.
+Inspect and reconcile custody explicitly: never delete keys, evict unresolved or
+sent attempts, or retry unknown effects to reclaim capacity. This release adds
+no automatic retention/replay mechanism.
+
+Classification/evidence/guidance signatures in a separate ledger table suppress
+unchanged periodic notices, escalations, wakes and status rewrites across restart.
+The existing serialized return chain orders these checks; signature suppression
+is not an independent multi-worker delivery claim. Actual owner-message custody
+and transport remain with the existing notice outbox. Meaningful new evidence or
+classification can be reported; an unchanged blocker does not produce an hourly
+"still blocked" message.
+
+Source tests, published release, normal package-managed installation and live
+observation are separate proofs. An updated checkout alone does not mean the
+running daemon has this feature, and a read-only fleet observation is not a
+license to send test prompts to real work.
+
 ## The judge
 
-The judge reads a packet (the human's name, the agent, folder, the `Desk-Task:` line if the screen has one, the agent's last message and the last 80 screen lines, all redacted) and answers with JSON: `premature` with a reply, `gate`, `done`, `working` (with a `news` flag) or `unclear`. The screen is untrusted data. It runs on the agent's own `agent` provider lane with no tools, low reasoning effort and a 20-second timeout, and its latency and input tokens are logged.
+The judge reads a packet (the human's name, the agent, folder, the `Desk-Task:` line if the screen has one, the agent's last message and the last 80 screen lines, all redacted) and answers with JSON: `premature` with a reply, `gate`, `done`, `waiting`, `working` (with a `news` flag) or `unclear`. The screen is untrusted data. It runs on the agent's own `agent` provider lane with no tools, low reasoning effort and a 20-second timeout, and its latency and input tokens are logged.
 
 A reply is either one key from a fixed set (enter, escape, up, down, tab, 1-9, y, n) or one line of at most 240 characters. The line has no line breaks, backslashes, `@`, control characters, invisible formatting or bidirectional-override characters, or leading `/`, `!` or `#`, so an input box never reads it as a command, a file mention or more than one line. Because the terminal might turn out to be a plain shell, it also has none of these shell characters: semicolon, dollar sign, backtick, pipe, `<`, `>` and `&`. Anything else turns the verdict into `unclear`.
 
@@ -32,6 +117,7 @@ A reply is either one key from a fixed set (enter, escape, up, down, tab, 1-9, y
 | `premature` | Answers in the terminal, unless a check below stops it. A line is typed as `[<configured agent name> for <human>] <reply>`; a menu gets its key. The status line says `answered for <human>: <reason>`. |
 | `gate` | Lets it through, sets the status line to `needs <human>`, and escalates to the Ouro agent. |
 | `done` | Lets it through, sets the status line to `done`, and escalates. |
+| `waiting` | Leaves it untouched, records an outside dependency rather than claiming delivery, sets status and escalates. |
 | `working` | Never answers. Sets the status line to `<agent> waiting on its background work: <reason>` and logs it. Queues a `[Shepherd update]` for the Ouro agent, with no wake, only when the judge flags news. |
 | `unclear`, or an error | Lets it through and logs it. No escalation. |
 
@@ -63,7 +149,7 @@ The private escalation to the Ouro agent above is unchanged, so it can still act
 
 Every judgment is one JSON line in `state/senses/shepherd/returns.jsonl` in the agent bundle (directory `0700`, file `0600`, rotated once at 2 MB, never synced): time, host, terminal, transition id, agent, folder, task, kind, action, reason, reply, latency and input tokens.
 
-**Menu keys can approve permission prompts.** An agent that asks for permission before doing work inside its task has stopped too early under TTFA (time to first action), so the judge may answer it with a key, which can approve the prompt. That is deliberate: the human's standing authority covers routine work, and gates (credentials, money, irreversible acts, decisions that are the human's) are never answered. Every such answer is logged and shown on the status line.
+**Immediate-return menu keys can approve permission prompts.** An agent that asks for permission before doing work inside its task has stopped too early under TTFA (time to first action), so the immediate judge may answer it with a key, which can approve the prompt. That is deliberate: the human's standing authority covers routine work, and gates (credentials, money, irreversible acts, decisions that are the human's) are never answered. Every such answer is logged and shown on the status line. Periodic and connectivity-recovery paths never press those keys.
 
 ## Talking to your agent about one session
 
@@ -209,6 +295,8 @@ ouro vault config set --agent <agent> --scope machine --key herdr.socketPath --v
 - `src/senses/shepherd/sense.ts`: the sense process (checks, answers, escalation); `src/senses/shepherd-entry.ts` is its daemon entry point.
 - `src/senses/shepherd/owner-notice.ts`: the owner notice (policy, wording, targets, coalescing, Teams send).
 - `src/senses/shepherd/returns.ts`: the returns log.
+- `src/senses/shepherd/checkin-config.ts` and `checkin-store.ts`: cadence validation, private automatic-input custody and periodic notice signatures.
+- `src/senses/shepherd/prompt-state.ts` and `terminal-process.ts`: default-deny rendered input-state classification and current coding-process identity.
 - `src/senses/shepherd/redact.ts`: best-effort secret redaction.
 - `src/heart/private-runtime/policy.ts`: the `shepherd` private-turn trigger.
 - `src/repertoire/tools-shepherd.ts`: the three tools.

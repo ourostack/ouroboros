@@ -26,6 +26,8 @@ export interface ReturnRecord {
   inputTokens: number | null
   /** Recorded before notification custody so a restart can recover an interrupted enqueue. */
   noticeEligible?: boolean
+  trigger?: "immediate" | "network" | "periodic"
+  dispatch?: { id: string; state: "claimed" | "sent" | "not_sent" | "unknown" }
 }
 
 export function shepherdStateDir(agentRoot: string): string {

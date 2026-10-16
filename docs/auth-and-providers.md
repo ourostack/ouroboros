@@ -39,6 +39,23 @@ or maps every agent to "Ouro". Shepherd's session entry, composer, attribution a
 feedback acknowledgements use this explicit identity. **Ouro Shepherd** remains
 the product name.
 
+### Shepherd periodic check-in cadence
+
+The owning bundle's existing `agent.json` may set
+`senses.shepherd.checkInMinutes`. Omitted means `60` (hourly); `0` disables
+periodic checks; otherwise it must be an integer from `30` through `1440`.
+Invalid values are explicit configuration errors, not silent defaults. Restart
+the Shepherd sense after editing this setting. It is portable agent policy, not
+a machine credential or provider setting; add it without replacing other fields.
+
+The timer only initiates fresh triage of returned-control sessions. It is not
+agent pacing, a provider retry promise, recovered-connectivity evidence or
+permission to bypass human decisions, drafts, unknown input state or background
+work. The existing provider lanes and retry policy are unchanged. Unchanged
+periodic blockers do not repeat owner notices or private wakes. See
+[Shepherd Sense](shepherd-sense.md#periodic-fresh-check-ins) for host limits,
+guarded input and shared durable uncertain-send custody.
+
 ## Provider Selection
 
 Every agent has two provider lanes in `agent.json`:

@@ -22,10 +22,28 @@ export interface HostSession {
   cwd?: string | null
   /** The coding agent running there, when the host knows it. */
   agent: string | null
+  instance?: string | null
   /** The human's current terminal: Shepherd never types into it. */
   focused: boolean
   /** Advisory selection hint from the key window, never a permission to write. */
   selected?: boolean
+}
+
+export interface ShepherdInspection {
+  session: HostSession
+  instance: string | null
+  screen: string
+  /** Exact raw-screen digest; distinct from the judged-text custody key and human-send proof. */
+  screenFingerprint: string
+  activity: "idle" | "working" | "unknown"
+  composer: "empty" | "draft" | "unknown"
+  backgroundWork: boolean | null
+}
+
+/** Ambiguous input throws; not_sent guarantees zero attempted terminal input. */
+export interface GuardedPromptResult {
+  state: "sent" | "not_sent"
+  reason?: string
 }
 
 /** A coding agent stopped and is waiting for the human. `transitionId` is the host's own id for that stop. */
@@ -59,6 +77,9 @@ export interface ShepherdHost {
   list(): Promise<HostSession[]>
   /** The screen tail with scrollback, plain text. */
   read(sessionId: string, lines: number): Promise<string>
+  inspect?(sessionId: string): Promise<ShepherdInspection>
+  /** canSend is checked synchronously after adapter I/O, immediately before attempting input. */
+  promptIfUnchanged?(sessionId: string, line: string, expected: ShepherdInspection, canSend?: () => boolean): Promise<GuardedPromptResult>
   /** Types one line and submits it, so it cannot be mistaken for a paste or a keystroke. */
   prompt(sessionId: string, line: string): Promise<void>
   key(sessionId: string, key: ShepherdKey): Promise<void>

@@ -19,6 +19,21 @@ function runtime(content: string | (() => Promise<{ content?: string; usage?: { 
 }
 
 describe("Shepherd judge", () => {
+  it("reconsiders all current evidence periodically without granting authority from time or historical kinds", () => {
+    const messages = judgeMessages(packet("Provider retries exhausted", { periodicCheckIn: {
+      priorJudgment: { kind: "done", reason: "old claim", at: "2026-10-15" },
+    } }))
+    const system = String(messages[0]!.content)
+    expect(system).toContain("periodic check-in")
+    expect(system).toContain("not evidence that connectivity recovered")
+    expect(system).toContain("fallback timer alone is not active background work")
+    expect(system).toContain("never approval/menu/navigation keys")
+    expect(system).toContain("do not invent work")
+    expect(system).not.toContain("old claim")
+    expect(messages[1]!.content).toContain("Prior judgment (history only")
+    expect(messages[1]!.content).toContain("old claim")
+  })
+
   it("retains explicit network waits only for waiting verdicts", () => {
     expect(parseVerdict('{"kind":"waiting","waitingOnNetwork":true,"reason":"Internet is offline."}'))
       .toEqual({ kind: "waiting", reply: null, reason: "Internet is offline.", waitingOnNetwork: true })

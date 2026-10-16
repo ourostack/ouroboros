@@ -2,7 +2,7 @@ import * as path from "node:path"
 import { promisify } from "node:util"
 import { emitNervesEvent } from "../../nerves/runtime"
 
-export interface TerminalProcessIdentity { agent: string; cwd: string | null }
+export interface TerminalProcessIdentity { agent: string; cwd: string | null; instance?: string }
 type RunCommand = (command: string, args: string[]) => Promise<string>
 
 async function runCommand(command: string, args: string[]): Promise<string> {
@@ -18,6 +18,7 @@ export async function identifyTerminalProcesses(ttys: string[], run: RunCommand 
   if (ttys.length === 0) return result
   const wanted = new Set(ttys.map((tty) => tty.replace(/^\/dev\//, "")))
   const agents = new Map<string, { pid: number; parent: number; agent: string }[]>()
+  const snapshots = new Map<number, string>()
   const nodeLaunchers = new Map<number, { parent: number; tty: string }>()
   try {
     for (const line of (await run("ps", ["-axo", "pid=,ppid=,pgid=,tpgid=,tty=,comm="])).split("\n")) {
@@ -25,6 +26,7 @@ export async function identifyTerminalProcesses(ttys: string[], run: RunCommand 
       if (!match) continue
       const [, pid, parent, group, foreground, tty, command] = match
       if (!wanted.has(tty!) || group !== foreground) continue
+      snapshots.set(Number(pid), `${pid} ${parent} ${group} ${foreground} ${tty} ${command}`)
       const executable = path.basename(command!)
       if (executable === "node") nodeLaunchers.set(Number(pid), { parent: Number(parent), tty: tty! })
       const agent = executable === "claude" ? "Claude Code" : executable === "copilot" ? "Copilot" : executable === "codex" ? "Codex" : null
@@ -52,10 +54,11 @@ export async function identifyTerminalProcesses(ttys: string[], run: RunCommand 
       emitNervesEvent({ level: "warn", component: "senses", event: "senses.shepherd_process_lookup_error", message: "could not identify Node-hosted terminal agents", meta: { error: String(error) } })
     }
   }
-  const selected = new Map<string, { pid: number; agent: string }>()
+  const selected = new Map<string, { pid: number; agent: string; unique: boolean }>()
   for (const [tty, candidates] of agents) {
-    const outer = candidates.find((candidate) => !candidates.some((parent) => parent.pid === candidate.parent))!
-    selected.set(tty, outer)
+    const roots = candidates.filter((candidate) => !candidates.some((parent) => parent.pid === candidate.parent))
+    const outer = roots[0] ?? candidates[0]!
+    selected.set(tty, { ...outer, unique: roots.length === 1 })
     result.set(tty, { agent: outer.agent, cwd: null })
   }
   if (selected.size === 0) return result
@@ -70,6 +73,26 @@ export async function identifyTerminalProcesses(ttys: string[], run: RunCommand 
     for (const [tty, agent] of selected) result.set(tty, { agent: agent.agent, cwd: cwdByPid.get(agent.pid) ?? null })
   } catch (error) {
     emitNervesEvent({ level: "warn", component: "senses", event: "senses.shepherd_cwd_lookup_error", message: "could not read foreground agent folders", meta: { error: String(error) } })
+  }
+  // A fresh batched snapshot verifies the same foreground process, not just a reusable PID.
+  // Unsupported ps variants and disappearing processes leave presentation intact but no authority.
+  try {
+    const starts = new Map<number, string[]>()
+    for (const line of (await run("ps", ["-p", [...selected.values()].map(agent => agent.pid).join(","), "-o", "pid=,ppid=,pgid=,tpgid=,tty=,lstart=,comm="])).split("\n")) {
+      const match = line.trim().match(/^(\d+)\s+(\d+)\s+(\d+)\s+(-?\d+)\s+(\S+)\s+([A-Z][a-z]{2}\s+[A-Z][a-z]{2}\s+\d{1,2}\s+\d{2}:\d{2}:\d{2}\s+\d{4})\s+(.+)$/)
+      if (!match) continue
+      const [, pid, parent, group, foreground, tty, start, command] = match
+      if (snapshots.get(Number(pid)) !== `${pid} ${parent} ${group} ${foreground} ${tty} ${command}`) continue
+      const values = starts.get(Number(pid)) ?? []
+      values.push(start!.replace(/\s+/g, " "))
+      starts.set(Number(pid), values)
+    }
+    for (const [tty, agent] of selected) {
+      const values = starts.get(agent.pid)
+      if (agent.unique && values?.length === 1) result.get(tty)!.instance = `${agent.pid}:${values[0]}`
+    }
+  } catch (error) {
+    emitNervesEvent({ level: "warn", component: "senses", event: "senses.shepherd_process_lookup_error", message: "could not verify foreground process start identity", meta: { error: String(error) } })
   }
   return result
 }

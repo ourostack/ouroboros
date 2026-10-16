@@ -276,6 +276,8 @@ describe("Shepherd sense: answering premature returns", () => {
       kind: "premature", action: "respond", reason: "It stopped after a plan.", reply: "Go ahead and implement it.", latencyMs: 900, inputTokens: 1200,
       guidanceRevision: 0,
       noticeEligible: true,
+      trigger: "immediate",
+      dispatch: { id: expect.stringMatching(/^[a-f0-9]{64}$/), state: "sent" },
     })
     expect(escalations).toEqual([])
     expect(fs.statSync(returnsLogPath(agentRoot)).mode & 0o777).toBe(0o600)
@@ -323,6 +325,7 @@ describe("Shepherd sense: answering premature returns", () => {
     host.screens.S1 = [SCREENS.claudePremature]
     for (const id of ["1", "2", "3", "4"]) {
       clock += 1_000
+      host.screens.S1 = [`${SCREENS.claudePremature}\nNew progress before return ${id}`]
       await returned({ sessionId: "S1", transitionId: id })
     }
     expect(host.actions.filter((action) => action.startsWith("prompt"))).toHaveLength(3)
@@ -345,6 +348,7 @@ describe("Shepherd sense: answering premature returns", () => {
 
     host.handlers!.focused("S1")
     clock += 120_000
+    host.screens.S1 = [`${SCREENS.claudePremature}\nNew progress after human focus`]
     await returned({ sessionId: "S1", transitionId: "5" })
     expect(last()).toMatchObject({ action: "respond" })
     // The owner hears about every judged return once, and about the tripped guard only when it trips.
@@ -358,6 +362,7 @@ describe("Shepherd sense: answering premature returns", () => {
       clock += 120_000
       if (index % 3 === 0) host.handlers!.focused("S1")
       clock += 61_000
+      host.screens.S1 = [`${SCREENS.claudePremature}\nNew progress before return ${index}`]
       await returned({ sessionId: "S1", transitionId: `h${index}` })
     }
     expect(host.actions.filter((action) => action.startsWith("prompt"))).toHaveLength(10)

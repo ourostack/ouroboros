@@ -6,6 +6,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { createCmuxClient } from "../../../senses/shepherd/client"
 import { BACKGROUND_GRACE_MS, createCmuxHost, GRACE_MS, HOOKED_QUIET_MS, POLL_MS, QUIET_MAX_MS, QUIET_MS, readCmuxHookSession, realSchedule } from "../../../senses/shepherd/cmux"
 import type { ReturnedControl } from "../../../senses/shepherd/host"
+import { identifyTerminalProcesses } from "../../../senses/shepherd/terminal-process"
 import { ackFrame, startFakeCmux, type FakeCmux } from "./fake-cmux"
 import { hookEvent, SCREENS, surfaceEvent, tree } from "./fixtures"
 
@@ -64,6 +65,256 @@ afterEach(async () => {
 })
 
 describe("cmux host: terminals", () => {
+  const uuid = "11111111-1111-4111-8111-111111111111"
+  function inspectedHost() {
+    const state = {
+      id: uuid, tty: "ttys007", cwd: "/synthetic/project", instance: "20:Thu Oct 15 23:00:00 2026",
+      focused: false, agent: "Copilot", workspaceId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", hasIdentity: true,
+      onIdentity: null as (() => void) | null,
+      screen: ["● Synthetic returned task.", "╭▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄", "┃ ", "╹▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀", " Interactive · Allow All · / commands · 1 scheduled"].join("\n"),
+    }
+    const renderTree = () => {
+      const result = tree([{ id: state.id, ref: "surface:1", tty: state.tty, focused: state.focused }])
+      const window = (result.windows as Array<{ workspaces: Array<{ id: string }> }>)[0]!
+      window.workspaces[0]!.id = state.workspaceId
+      return result
+    }
+    server.respond("system.tree", renderTree)
+    const readResult = () => ({
+      window_id: "WIN-1", window_ref: "window:1", workspace_id: state.workspaceId, workspace_ref: "workspace:1",
+      surface_id: state.id.toLowerCase(), surface_ref: "surface:1", text: state.screen,
+      base64: Buffer.from(state.screen).toString("base64"),
+    })
+    server.respond("surface.read_text", readResult)
+    const cmux = createCmuxHost(createCmuxClient({ socketPath: server.socketPath, auth: { kind: "capability", token: "v1.t.s" } }), {
+      homeDir: home, schedule: scheduler.schedule,
+      identifyTerminals: async () => {
+        const result = state.hasIdentity ? new Map([[state.tty, { agent: state.agent, cwd: state.cwd, ...(state.instance ? { instance: state.instance } : {}) }]]) : new Map()
+        state.onIdentity?.()
+        return result
+      },
+    })
+    return { cmux, state, readResult, renderTree }
+  }
+  const inputs = () => server.methods.filter(call => call.method === "terminal.paste" || call.method.startsWith("surface.send"))
+
+  it("inspects UUID-bound current process evidence, with no hook-store authority and no focus action", async () => {
+    const { cmux, state } = inspectedHost()
+    writeSessions("copilot", { newest: { surfaceId: state.id, agentLifecycle: "running", cwd: "/stale" } })
+    const inspection = await cmux.inspect!(uuid)
+    expect(inspection).toEqual({
+      session: expect.objectContaining({ id: uuid, tty: "ttys007", cwd: "/synthetic/project", agent: "Copilot", instance: "20:Thu Oct 15 23:00:00 2026", focused: false }),
+      instance: "20:Thu Oct 15 23:00:00 2026", screen: state.screen, activity: "idle", composer: "empty", backgroundWork: false,
+      screenFingerprint: expect.stringMatching(/^[0-9a-f]{64}$/),
+    })
+    expect(server.methods.filter(call => call.method === "surface.read_text").every(call => call.params.scrollback === false && call.params.surface_id === uuid && call.params.workspace_id === state.workspaceId)).toBe(true)
+    expect(inputs()).toEqual([])
+    state.instance = ""
+    expect((await cmux.inspect!(uuid)).instance).toBeNull()
+    await expect(cmux.inspect!("surface:1")).rejects.toThrow()
+  })
+
+  it("refuses workspace UUID replacement even when short workspace refs are reused", async () => {
+    const { cmux, state } = inspectedHost()
+    const expected = await cmux.inspect!(uuid)
+    state.workspaceId = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"
+    expect((await cmux.promptIfUnchanged!(uuid, "continue", expected)).state).toBe("not_sent")
+    expect(inputs()).toEqual([])
+  })
+
+  it("leaves unsupported process/composer state unknown without startup failure", async () => {
+    const { cmux, state } = inspectedHost()
+    state.hasIdentity = false
+    expect(await cmux.inspect!(uuid)).toEqual({
+      session: expect.objectContaining({ id: uuid, agent: null, cwd: null }),
+      instance: null, screen: state.screen, activity: "unknown", composer: "unknown", backgroundWork: null,
+      screenFingerprint: expect.stringMatching(/^[0-9a-f]{64}$/),
+    })
+    expect((await cmux.list())[0]!.instance).toBeUndefined()
+  })
+
+  it.each(["restart", "missing PID", "unsupported start", "ambiguous roots"])("integrates native batched process verification with guarded refusal on %s", async change => {
+    inspectedHost()
+    let changed = false
+    const cmux = createCmuxHost(createCmuxClient({ socketPath: server.socketPath, auth: { kind: "capability", token: "v1.t.s" } }), {
+      schedule: scheduler.schedule,
+      identifyTerminals: ttys => identifyTerminalProcesses(ttys, async (command, args) => {
+        if (command === "lsof") return "p20\nn/synthetic/project"
+        if (args[0] === "-axo") {
+          if (changed && change === "missing PID") return ""
+          return "20 1 20 20 ttys007 copilot" + (changed && change === "ambiguous roots" ? "\n21 1 20 20 ttys007 copilot" : "")
+        }
+        if (changed && change === "unsupported start") throw new Error("ps start unsupported")
+        return changed && change === "restart"
+          ? "20 1 20 20 ttys007 Thu Oct 15 23:01:00 2026 copilot"
+          : "20 1 20 20 ttys007 Thu Oct 15 23:00:00 2026 copilot"
+      }),
+    })
+    const expected = await cmux.inspect!(uuid)
+    expect(expected.instance).toBe("20:Thu Oct 15 23:00:00 2026")
+    changed = true
+    expect((await cmux.promptIfUnchanged!(uuid, "continue", expected)).state).toBe("not_sent")
+    expect(inputs()).toEqual([])
+  })
+
+  it("rejects a read echo mismatch introduced after the expected inspection without input", async () => {
+    const { cmux, readResult } = inspectedHost()
+    const expected = await cmux.inspect!(uuid)
+    server.respond("surface.read_text", () => ({ ...readResult(), surface_id: "22222222-2222-4222-8222-222222222222" }))
+    await expect(cmux.promptIfUnchanged!(uuid, "continue", expected)).rejects.toThrow("echo")
+    expect(inputs()).toEqual([])
+  })
+
+  it.each(["instance", "working", "draft", "unknown", "focused", "copied", "background"])("refuses unsafe expected %s evidence with zero input", async mode => {
+    const { cmux, state } = inspectedHost()
+    if (mode === "instance") state.instance = ""
+    if (mode === "working") state.screen = state.screen.replace("Interactive", "Working esc interrupt · Interactive")
+    if (mode === "draft") state.screen = state.screen.replace("┃ ", "┃ unfinished")
+    if (mode === "unknown") state.screen = "unrecognized terminal"
+    if (mode === "focused") state.focused = true
+    let expected = await cmux.inspect!(uuid)
+    if (mode === "copied") expected = { ...expected }
+    if (mode === "background") expected.backgroundWork = null
+    expect((await cmux.promptIfUnchanged!(uuid, "continue", expected)).state).toBe("not_sent")
+    expect(inputs()).toEqual([])
+  })
+
+  it.each(["surface", "workspace", "missing", "text"])("rejects mismatched or absent actual %s read echoes", async mismatch => {
+    const { cmux, readResult } = inspectedHost()
+    server.respond("surface.read_text", () => ({
+      ...readResult(), ...(mismatch === "surface" ? { surface_id: "22222222-2222-4222-8222-222222222222" } :
+        mismatch === "workspace" ? { workspace_id: "WS-other" } : mismatch === "text" ? { text: null } : { surface_id: undefined }),
+    }))
+    await expect(cmux.inspect!(uuid)).rejects.toThrow()
+    expect(inputs()).toEqual([])
+  })
+
+  it("redacts only exported evidence, preserving draft classification and exact original screen checks", async () => {
+    const { cmux, state } = inspectedHost()
+    state.screen = state.screen.replace("Synthetic returned task.", "token=first-secret")
+    const expected = await cmux.inspect!(uuid)
+    expect(expected.screen).toContain("token=[redacted]")
+    state.screen = state.screen.replace("first-secret", "other-secret")
+    expect((await cmux.promptIfUnchanged!(uuid, "continue", expected)).state).toBe("not_sent")
+    expect(inputs()).toEqual([])
+    state.screen = state.screen.replace("┃ ", "┃ token=draft-secret")
+    expect((await cmux.inspect!(uuid)).composer).toBe("draft")
+  })
+
+  it("exports exact raw-screen SHA-256 across separate inspections even when public redacted screens are equal", async () => {
+    const { cmux, state } = inspectedHost()
+    state.screen = "token=first-secret\n"
+    const first = await cmux.inspect!(uuid)
+    state.screen = "token=other-secret\n"
+    const second = await cmux.inspect!(uuid)
+    expect(first.screen).toBe("token=[redacted]\n")
+    expect(second.screen).toBe(first.screen)
+    expect(first.screenFingerprint).toBe("f20457dfe4ae481973b609d73c68e536e5e8d32410d89f9a3986b8055026d9c8")
+    expect(second.screenFingerprint).toBe("28e38a8a09e2f17f2e0edb0dfbbc15e0d67d6343b85dd2ee66f5976f787dcfb2")
+    expect(first.screenFingerprint).not.toBe(second.screenFingerprint)
+    expect(inputs()).toEqual([])
+  })
+
+  it.each(["id", "tty", "cwd", "instance", "screen", "draft", "focused", "agent", "missing-instance"])("refuses %s changed during guarded target lookup before any input", async change => {
+    const { cmux, state, renderTree } = inspectedHost()
+    const expected = await cmux.inspect!(uuid)
+    let once = false
+    server.respond("system.tree", () => {
+      if (!once) {
+        once = true
+        if (change === "id") state.id = "22222222-2222-4222-8222-222222222222"
+        if (change === "tty") state.tty = "ttys008"
+        if (change === "cwd") state.cwd = "/synthetic/changed"
+        if (change === "instance") state.instance = "20:Thu Oct 15 23:01:00 2026"
+        if (change === "missing-instance") state.instance = ""
+        if (change === "screen") state.screen = state.screen.replace("returned", "changed")
+        if (change === "draft") state.screen = state.screen.replace("┃ ", "┃ unfinished\n┃ second line")
+        if (change === "focused") state.focused = true
+        if (change === "agent") state.agent = "unknown"
+      }
+      return renderTree()
+    })
+    // Disappearance can throw before input; that is honestly uncertain to the caller.
+    if (change === "id") await expect(cmux.promptIfUnchanged!(uuid, "continue", expected)).rejects.toThrow()
+    else expect((await cmux.promptIfUnchanged!(uuid, "continue", expected)).state).toBe("not_sent")
+    expect(inputs()).toEqual([])
+  })
+
+  it.each(["focused", "draft", "instance", "cwd", "screen", "tty"])("refuses %s changing during an awaited screen read", async change => {
+    const { cmux, state, readResult } = inspectedHost()
+    const expected = await cmux.inspect!(uuid)
+    server.respond("surface.read_text", () => {
+      const reply = readResult()
+      if (change === "focused") state.focused = true
+      if (change === "draft") state.screen = state.screen.replace("┃ ", "┃ human draft")
+      if (change === "instance") state.instance = "20:Thu Oct 15 23:01:00 2026"
+      if (change === "cwd") state.cwd = "/changed"
+      if (change === "screen") state.screen += "\nnew output"
+      if (change === "tty") state.tty = "ttys008"
+      return reply
+    })
+    expect((await cmux.promptIfUnchanged!(uuid, "continue", expected)).state).toBe("not_sent")
+    expect(inputs()).toEqual([])
+  })
+
+  it.each(["focus", "tty", "workspace"])("rechecks %s after the final awaited process lookup, before paste", async change => {
+    const { cmux, state } = inspectedHost()
+    const expected = await cmux.inspect!(uuid)
+    let lookups = 0
+    state.onIdentity = () => {
+      if (++lookups !== 4) return
+      if (change === "focus") state.focused = true
+      if (change === "tty") state.tty = "ttys008"
+      if (change === "workspace") state.workspaceId = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"
+    }
+    expect((await cmux.promptIfUnchanged!(uuid, "continue", expected)).state).toBe("not_sent")
+    expect(inputs()).toEqual([])
+  })
+
+  it("checks the parent's synchronous guard after awaited lookups and refuses late invalidation before input", async () => {
+    const { cmux, state } = inspectedHost()
+    const expected = await cmux.inspect!(uuid)
+    let allowed = true
+    state.onIdentity = () => { allowed = false }
+    expect((await cmux.promptIfUnchanged!(uuid, "continue", expected, () => allowed)).state).toBe("not_sent")
+    expect(inputs()).toEqual([])
+    state.onIdentity = null
+    await expect(cmux.promptIfUnchanged!(uuid, "continue", expected, () => { throw new Error("guidance unavailable") })).rejects.toThrow("guidance unavailable")
+    expect(inputs()).toEqual([])
+  })
+
+  it("initiates paste immediately after a successful synchronous final parent guard", async () => {
+    const { cmux } = inspectedHost()
+    const expected = await cmux.inspect!(uuid)
+    let methodsAtGuard = 0
+    let calls = 0
+    server.respond("terminal.paste", () => {
+      expect(server.methods.length).toBe(methodsAtGuard + 1)
+      return {}
+    })
+    expect((await cmux.promptIfUnchanged!(uuid, "continue", expected, () => {
+      calls++
+      methodsAtGuard = server.methods.length
+      return true
+    })).state).toBe("sent")
+    expect(calls).toBe(1)
+    expect(inputs().map(call => call.method)).toEqual(["terminal.paste", "surface.send_key"])
+  })
+
+  it("sends only after a fresh supported idle empty inspection and throws on partial transport effects", async () => {
+    const { cmux, state } = inspectedHost()
+    const expected = await cmux.inspect!(uuid)
+    expect(await cmux.promptIfUnchanged!(uuid, "continue", expected)).toEqual({ state: "sent" })
+    expect(inputs()).toEqual([
+      { method: "terminal.paste", params: { surface_id: uuid, workspace_id: state.workspaceId, text: "continue", submit_key: "none" } },
+      { method: "surface.send_key", params: { surface_id: uuid, workspace_id: state.workspaceId, key: "enter" } },
+    ])
+    server.respond("surface.send_key", () => { throw new Error("submit disconnected after paste") })
+    await expect(cmux.promptIfUnchanged!(uuid, "continue", expected)).rejects.toThrow("submit disconnected")
+    server.respond("terminal.paste", () => { throw new Error("paste acceptance uncertain") })
+    await expect(cmux.promptIfUnchanged!(uuid, "continue", expected)).rejects.toThrow("paste acceptance uncertain")
+  })
+
   it("hints only the key window's current coding terminal, without weakening visible-window protection", async () => {
     const window = (key: boolean, id: string) => ({
       key, visible: true, workspaces: [{ id: `WS-${id}`, selected: true,

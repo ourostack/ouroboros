@@ -4,8 +4,10 @@ import * as os from "node:os"
 import * as path from "node:path"
 import { emitNervesEvent } from "../../nerves/runtime"
 import type { CmuxClient, CmuxSocketError } from "./client"
-import type { HostSession, HostWatchHandlers, ShepherdHost, ShepherdKey } from "./host"
+import type { HostSession, HostWatchHandlers, ShepherdHost, ShepherdInspection, ShepherdKey } from "./host"
 import { identifyTerminalProcesses } from "./terminal-process"
+import { inspectCodingPrompt } from "./prompt-state"
+import { redactSecrets } from "./redact"
 
 /**
  * The cmux host (0.64.22 or later). A return is cmux's own "agent stopped" signal: an
@@ -95,6 +97,9 @@ export function createCmuxHost(client: CmuxClient, options: CmuxHostOptions = {}
   const statused = new Map<string, { key: string; workspaceId: string }>()
   /** Quiet windows stretched by `pace`. */
   const quietMs = new Map<string, number>()
+  // Keep only an opaque digest, never a second private screen store. A copied/forged
+  // inspection has no original-screen authority and is conservatively refused.
+  const inspectedScreens = new WeakMap<ShepherdInspection, { hash: string; target: Surface }>()
 
   /** One status entry per terminal: cmux keys status pills per workspace, and a workspace can hold several agents. */
   const statusKey = (surface: Surface): string => `${CMUX_STATUS_KEY}_${surface.ref.replace(/\W/g, "_")}`
@@ -108,9 +113,9 @@ export function createCmuxHost(client: CmuxClient, options: CmuxHostOptions = {}
     })
   }
 
-  async function surfaces(): Promise<Surface[]> {
+  async function surfaceEntries(): Promise<Surface[]> {
     const tree = await client.call("system.tree", { all_windows: true })
-    const entries = list(tree.windows).flatMap((window) => list(window.workspaces).map((workspace) => ({ window, workspace }))).flatMap(({ window, workspace }) =>
+    return list(tree.windows).flatMap((window) => list(window.workspaces).map((workspace) => ({ window, workspace }))).flatMap(({ window, workspace }) =>
       list(workspace.panes).flatMap((pane) => list(pane.surfaces)).map((surface) => ({
         id: str(surface.id) ?? "",
         ref: str(surface.ref) ?? "",
@@ -127,10 +132,18 @@ export function createCmuxHost(client: CmuxClient, options: CmuxHostOptions = {}
         ...(surface.focused === true && workspace.selected === true && window.visible !== false && window.key === true
           ? { selected: true } : {}),
       })))
+  }
+
+  async function surfaces(freshFocus = false): Promise<Surface[]> {
+    const entries = await surfaceEntries()
     const identities = await (options.identifyTerminals ?? identifyTerminalProcesses)(entries.filter((entry) => entry.type === "terminal" && entry.tty).map((entry) => entry.tty!))
-    return entries.map((entry) => {
-      const identity = entry.tty ? identities.get(entry.tty.replace(/^\/dev\//, "")) : undefined
-      return { ...entry, agent: identity?.agent ?? entry.agent, cwd: identity?.cwd ?? entry.cwd }
+    // Process lookup is awaited. On inspection paths, do not return focus from
+    // the tree sampled before that await. A moved/rebound TTY loses authority.
+    const current = freshFocus ? await surfaceEntries() : entries
+    return current.map((entry) => {
+      const bound = entries.some(before => before.id === entry.id && before.tty === entry.tty && before.workspaceId === entry.workspaceId && before.type === entry.type)
+      const identity = entry.tty && bound ? identities.get(entry.tty.replace(/^\/dev\//, "")) : undefined
+      return { ...entry, agent: identity?.agent ?? entry.agent, cwd: identity?.cwd ?? entry.cwd, ...(identity?.instance ? { instance: identity.instance } : {}) }
     })
   }
 
@@ -145,12 +158,84 @@ export function createCmuxHost(client: CmuxClient, options: CmuxHostOptions = {}
     return typeof result.text === "string" ? result.text : ""
   }
 
+  const sameBinding = (a: Surface, b: Surface): boolean =>
+    a.id.toLowerCase() === b.id.toLowerCase() && a.workspaceId.toLowerCase() === b.workspaceId.toLowerCase() &&
+    a.type === b.type && a.tty === b.tty && a.instance === b.instance && a.cwd === b.cwd &&
+    a.agent === b.agent && a.focused === b.focused && a.title === b.title &&
+    a.ref === b.ref && a.workspace === b.workspace && a.workspaceTitle === b.workspaceTitle && a.selected === b.selected
+
+  async function explicitTarget(sessionId: string): Promise<Surface> {
+    if (!/^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/i.test(sessionId)) throw new Error("cmux inspection requires a surface UUID")
+    const target = (await surfaces(true)).find(entry => entry.id.toLowerCase() === sessionId.toLowerCase() && entry.type === "terminal")
+    if (!target) throw new Error("cmux inspection target disappeared")
+    return target
+  }
+
+  async function boundRead(target: Surface): Promise<string> {
+    const result = await client.call("surface.read_text", { surface_id: target.id, workspace_id: target.workspaceId, lines: 80, scrollback: false })
+    if (str(result.surface_id)?.toLowerCase() !== target.id.toLowerCase() ||
+      str(result.workspace_id)?.toLowerCase() !== target.workspaceId.toLowerCase() ||
+      typeof result.text !== "string") throw new Error("cmux inspection target echo or text unavailable")
+    return result.text
+  }
+
+  async function inspect(sessionId: string): Promise<ShepherdInspection> {
+    const before = await explicitTarget(sessionId)
+    const first = await boundRead(before)
+    const current = await explicitTarget(sessionId)
+    const screen = await boundRead(current)
+    const after = await explicitTarget(sessionId)
+    const stable = sameBinding(before, current) && sameBinding(current, after) && first === screen
+    const state = stable ? inspectCodingPrompt(after.agent ?? "unknown", screen) : { activity: "unknown", composer: "unknown" } as const
+    const { workspaceId: _workspaceId, type: _type, ...session } = after
+    const screenFingerprint = createHash("sha256").update(screen).digest("hex")
+    const inspection = {
+      session, instance: after.instance ?? null, screen: redactSecrets(screen), ...state,
+      screenFingerprint,
+      backgroundWork: state.activity === "unknown" ? null : state.activity === "working",
+    }
+    inspectedScreens.set(inspection, { hash: screenFingerprint, target: after })
+    return inspection
+  }
+
   return {
     name: "cmux",
     async list() {
       return (await surfaces()).filter((surface) => surface.type === "terminal").map(({ workspaceId: _workspaceId, type: _type, ...session }) => session)
     },
     read,
+    inspect,
+    async promptIfUnchanged(sessionId, line, expected, canSend?: () => boolean) {
+      // Resolve first, then re-inspect. No server-side atomic CAS exists in cmux
+      // 0.64: these are fresh client-side observations, not a lock on a human's UI.
+      const target = await explicitTarget(sessionId)
+      const current = await inspect(sessionId)
+      const original = inspectedScreens.get(expected)
+      const fresh = inspectedScreens.get(current)!
+      if (!expected.instance || expected.activity !== "idle" || expected.composer !== "empty" ||
+        expected.backgroundWork !== false || expected.session.focused ||
+        current.instance !== expected.instance || current.activity !== "idle" ||
+        current.composer !== "empty" || current.backgroundWork !== false || current.session.focused ||
+        !current.session.tty || !current.session.cwd ||
+        current.session.id !== expected.session.id || current.session.tty !== expected.session.tty ||
+        current.session.cwd !== expected.session.cwd || current.session.agent !== expected.session.agent ||
+        current.session.workspace !== expected.session.workspace || current.screen !== expected.screen ||
+        !sameBinding(target, fresh.target) || !original || !sameBinding(original.target, fresh.target) ||
+        fresh.hash !== original.hash) {
+        return { state: "not_sent", reason: "inspection changed or lacks idle empty unfocused instance authority" }
+      }
+      const inputTarget = { workspace_id: target.workspaceId, surface_id: target.id }
+      // The sense owns generation, shutdown, recent focus and guidance. Its
+      // synchronous last check closes invalidation during the awaited host reads.
+      if (canSend && !canSend()) return { state: "not_sent", reason: "parent dispatch guard invalidated" }
+      // From this point every exception is uncertain, including a rejected or
+      // partially accepted paste. Never turn it into a definite not_sent.
+      await client.call("terminal.paste", { ...inputTarget, text: line, submit_key: "none" })
+      await new Promise(resolve => schedule(() => resolve(undefined), SUBMIT_DELAY_MS))
+      await client.call("surface.send_key", { ...inputTarget, key: "enter" })
+      emitNervesEvent({ component: "senses", event: "senses.shepherd_cmux_prompted", message: "typed a guarded line into a cmux terminal", meta: { chars: line.length } })
+      return { state: "sent" }
+    },
     async prompt(sessionId, line) {
       const surface = await locate(sessionId)
       const target = { workspace_id: surface.workspaceId, surface_id: surface.id }

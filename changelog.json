@@ -2,6 +2,14 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.931",
+      "changes": [
+        "Shepherd freshly rechecks all returned coding sessions hourly, with a configurable cadence of 30 minutes or longer and no repeated unchanged-blocker notices.",
+        "Periodic continuation uses fixed plain text only after fresh process, quiet-screen, empty-input, focus and guidance checks; real blockers, drafts and background work remain untouched.",
+        "All automatic Shepherd input shares durable cross-trigger custody so uncertain sends cannot replay through another event, restart or changed screen."
+      ]
+    },
+    {
       "version": "0.1.0-alpha.930",
       "changes": [
         "Receive session-native Shepherd feedback with automatic source context, durable receipts, private Teams acknowledgements and correlated clarification replies.",

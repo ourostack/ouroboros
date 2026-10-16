@@ -56,6 +56,68 @@ afterEach(async () => {
 })
 
 describe("Herdr host: panes", () => {
+  it("inspects current semantic state but never invents process-start or composer authority", async () => {
+    const herdr = host()
+    const inspection = await herdr.inspect!("w1:p1")
+    expect(inspection).toEqual({
+      session: expect.objectContaining({ id: "w1:p1", agent: "codex", cwd: "/Users/a/code/app/pkg" }),
+      instance: null, screen: SCREENS.codexMenu, activity: "idle", composer: "unknown", backgroundWork: null,
+      screenFingerprint: expect.stringMatching(/^[0-9a-f]{64}$/),
+    })
+    expect(await herdr.promptIfUnchanged!("w1:p1", "continue", inspection)).toEqual({ state: "not_sent", reason: expect.any(String) })
+    expect(server.requests.some(request => request.method === "agent.prompt" || request.method === "agent.send_keys")).toBe(false)
+    agents["w1:p1"] = agentInfo("w1:p1", { agent_status: "working" })
+    expect((await herdr.inspect!("w1:p1")).activity).toBe("working")
+    agents["w1:p1"] = agentInfo("w1:p1", { agent_status: "unknown" })
+    expect((await herdr.inspect!("w1:p1")).activity).toBe("unknown")
+  })
+
+  it("refuses Herdr missing/mismatched current target echoes and redacts semantic reads", async () => {
+    const herdr = host()
+    await expect(herdr.inspect!("missing")).rejects.toThrow()
+    agents["w1:p1"] = agentInfo("other")
+    await expect(herdr.inspect!("w1:p1")).rejects.toThrow()
+    agents["w1:p1"] = agentInfo("w1:p1", { foreground_cwd: null })
+    server.respond("pane.read", () => ({ read: { pane_id: "other", text: "private" } }))
+    await expect(herdr.inspect!("w1:p1")).rejects.toThrow()
+    server.respond("pane.read", () => ({ read: { pane_id: "w1:p1", text: "token=synthetic-secret" } }))
+    expect((await herdr.inspect!("w1:p1")).screen).toBe("token=[redacted]")
+  })
+
+  it("keeps sparse Herdr semantic evidence unknown and rejects malformed replies", async () => {
+    const herdr = host()
+    server.respond("agent.get", () => ({}))
+    await expect(herdr.inspect!("w1:p1")).rejects.toThrow("agent target mismatch")
+    server.respond("agent.get", () => ({ agent: { pane_id: "w1:p1" } }))
+    server.respond("pane.read", () => ({}))
+    await expect(herdr.inspect!("w1:p1")).rejects.toThrow("read target mismatch")
+    server.respond("pane.read", () => ({ read: { pane_id: "w1:p1" } }))
+    await expect(herdr.inspect!("w1:p1")).rejects.toThrow("read target mismatch")
+    server.respond("pane.read", () => ({ read: { pane_id: "w1:p1", text: "" } }))
+    panes[0] = { pane_id: "w1:p1", label: "fallback label" }
+    expect(await herdr.inspect!("w1:p1")).toEqual({
+      session: { id: "w1:p1", ref: "w1:p1", workspace: null, title: "fallback label", agent: null, cwd: null, focused: false },
+      instance: null, screen: "", activity: "unknown", composer: "unknown", backgroundWork: null,
+      screenFingerprint: "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    })
+    panes[0] = { pane_id: "w1:p1" }
+    expect((await herdr.inspect!("w1:p1")).session.title).toBe("")
+  })
+
+  it("exports exact raw-screen SHA-256 across separate inspections even when public redacted screens are equal", async () => {
+    const herdr = host()
+    let text = "token=first-secret\n"
+    server.respond("pane.read", () => ({ read: { pane_id: "w1:p1", text } }))
+    const first = await herdr.inspect!("w1:p1")
+    text = "token=other-secret\n"
+    const second = await herdr.inspect!("w1:p1")
+    expect(first.screen).toBe("token=[redacted]\n")
+    expect(second.screen).toBe(first.screen)
+    expect(first.screenFingerprint).toBe("f20457dfe4ae481973b609d73c68e536e5e8d32410d89f9a3986b8055026d9c8")
+    expect(second.screenFingerprint).toBe("28e38a8a09e2f17f2e0edb0dfbbc15e0d67d6343b85dd2ee66f5976f787dcfb2")
+    expect(first.screenFingerprint).not.toBe(second.screenFingerprint)
+    expect(server.requests.some(request => request.method === "agent.prompt" || request.method === "agent.send_keys")).toBe(false)
+  })
   it("lists panes, reads recent text, prompts, presses keys and shows Shepherd's status", async () => {
     const herdr = host()
     expect(herdr.name).toBe("herdr")
