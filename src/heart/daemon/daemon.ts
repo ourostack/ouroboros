@@ -551,6 +551,7 @@ export type DaemonCommand =
   | { kind: "mcp.call"; agent?: string; server: string; tool: string; args?: string }
   | { kind: "hatch.start" }
   | { kind: "agent.senseTurn"; agent: string; friendId: string; channel: string; sessionKey: string; message: string; runtimeMcp?: RuntimeMcpServers }
+  | import("../../senses/shepherd/feedback-submit").FeedbackCommand
 
 export interface DaemonResponse {
   ok: boolean
@@ -2416,6 +2417,9 @@ export class OuroDaemon {
       case "agent.senseTurn":
         return handleAgentSenseTurn(command, { socketPath: this.socketPath })
       /* v8 ignore stop */
+      case "agent.shepherdFeedback":
+      case "agent.shepherdFeedbackStatus":
+        return (await import("../../senses/shepherd/feedback-submit")).executeFeedbackCommand(command)
       case "cron.list": {
         const jobs = this.scheduler.listJobs()
         const summary = jobs.length === 0
