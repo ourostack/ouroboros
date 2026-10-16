@@ -656,7 +656,7 @@ async function coordinateTeamsTurn(
   run: () => Promise<void>,
 ): Promise<void> {
   const key = teamsTurnKey(conversationId)
-  const actorKey = JSON.stringify([identity.aadObjectId ?? identity.userId ?? "", identity.tenantId ?? ""])
+  const actorKey = JSON.stringify([identity.aadObjectId || identity.userId || "", identity.tenantId ?? ""])
   if (!_turnCoordinator.tryBeginTurn(key)) {
     if (!identity.replyToId && !/\bfeedback:/i.test(text) && consumingTeamsSteering.has(key) &&
       activeTeamsActors.get(key) === actorKey && !queuedTeamsTurns.get(key)?.some(turn => !turn.steering)) {
@@ -1313,7 +1313,7 @@ function registerBotHandlers(app: InstanceType<typeof App> & { id?: string; api?
         const admission = admitSessionActivity(sessionPath(identity.friend.id, "teams", convId), {
           namespace: JSON.stringify(["teams.message", channelId, app.id?.toLowerCase() ?? null,
             activity.conversation?.tenantId?.toLowerCase() ?? null,
-            activity.from?.aadObjectId?.toLowerCase() ?? userId, convId]),
+            activity.from?.aadObjectId?.toLowerCase() || userId, convId]),
           activityId: activity.id,
           payloadDigest: createHash("sha256").update(JSON.stringify([text, activity.replyToId ?? null])).digest("hex"),
         })

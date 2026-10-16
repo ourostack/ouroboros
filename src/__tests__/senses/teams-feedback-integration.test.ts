@@ -360,6 +360,40 @@ describe("actual Teams feedback adapter and leased pipeline", () => {
     } finally { vi.unstubAllEnvs() }
   })
 
+  it("keeps distinct fallback actors separate when their optional AAD identity is empty", async () => {
+    const store = new FileFriendStore(path.join(state.root, "friends"))
+    const friend = (await store.get("owner"))!
+    friend.externalIds.push({ provider: "teams-conversation", externalId: "private-chat", tenantId: "tenant", linkedAt: "2026-10-16" })
+    await store.put("owner", friend)
+    const entered = Promise.withResolvers<void>()
+    const release = Promise.withResolvers<void>()
+    let drained: unknown[] = []
+    state.run.mockImplementationOnce(async (messages, callbacks: ChannelCallbacks, _channel, _signal, options: RunAgentOptions) => {
+      entered.resolve()
+      await release.promise
+      drained = options.drainSteeringFollowUps!()
+      messages.push({ role: "assistant", content: "First answer." })
+      callbacks.onTextChunk("First answer.")
+      return { outcome: "settled" }
+    })
+    const firstBody = sdkActivity("Request from the first fallback actor.")
+    firstBody.from = { ...firstBody.from, id: "sender-one", aadObjectId: "" }
+    const first = state.processActivity!(firstBody)
+    await entered.promise
+    const nextBody = sdkActivity("Request from the second fallback actor.")
+    nextBody.from = { ...nextBody.from, id: "sender-two", aadObjectId: "" }
+    const next = state.processActivity!(nextBody)
+    try {
+      await vi.waitFor(() => expect(state.requestEvents).toContainEqual(expect.objectContaining({ meta: expect.objectContaining({
+        stage: "admitted", inboundActivityId: nextBody.id,
+      }) })))
+    } finally { release.resolve() }
+    await Promise.all([first, next])
+    expect(drained).toEqual([])
+    expect(state.run).toHaveBeenCalledTimes(2)
+    expect(state.sdkAcceptances).toHaveLength(2)
+  })
+
   it("holds an admission left before execution without claiming that it answered", async () => {
     const body = sdkActivity("The previous process stopped before executing this.")
     const { admitSessionActivity } = await import("../../mind/session-transaction")
