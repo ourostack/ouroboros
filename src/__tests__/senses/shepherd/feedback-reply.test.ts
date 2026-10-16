@@ -83,6 +83,17 @@ describe("feedback reply selection", () => {
     expect(resolveFeedbackReply(input)).toBeNull()
   })
 
+  // A scoped miss must not confuse another actor/chat's archived receipt with
+  // an ordinary quote and let private-feedback steering reach the model.
+  it.each([
+    { friendId: "other-actor" },
+    { conversationId: "other-chat" },
+  ])("refuses known archived quotes outside their actor/chat binding: %j", (change) => {
+    const input = fixture()
+    expect(() => resolveFeedbackReply({ ...input, ...change, replyToId: "sent-a" }))
+      .toThrow(FeedbackReplyRefusal)
+  })
+
   it("never creates a queue for ordinary traffic and refuses absent explicit feedback", () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "feedback-teams-absent-"))
     console.info(`created private test root: ${root}`)
