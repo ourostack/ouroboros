@@ -97,7 +97,7 @@ describe("compiled periodic check-in pipeline on owned PTYs", () => {
     }))
     const frame = [
       "● Provider retries exhausted; already-authorized implementation is unfinished.",
-      "╭" + "▄".repeat(30), "┃  ", "╹" + "▀".repeat(30),
+      "╻" + "▄".repeat(30), "┃  ", "╹" + "▀".repeat(30),
       " Interactive · / commands · 1 scheduled",
     ].join("\n")
     const screens = new Map([
