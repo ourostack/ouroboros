@@ -15,7 +15,7 @@ export function inspectCodingPrompt(agent: string, screen: string): {
   let input: string[]
   let footer: string
   if (name === "copilot") {
-    const top = lines.findLastIndex(line => /^\s*╭▄{8,}$/.test(line))
+    const top = lines.findLastIndex(line => /^\s*[╭╻]▄{8,}$/.test(line))
     const bottom = lines.findIndex((line, i) => i > top && /^\s*╹▀{8,}$/.test(line))
     if (top < 0 || bottom <= top + 1) return unknown
     if (lines[top]!.length !== lines[bottom]!.length) return unknown
