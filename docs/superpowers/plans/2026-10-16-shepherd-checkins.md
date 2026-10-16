@@ -92,12 +92,15 @@ An independent whole-source/code/scope/debt gate precedes release.
 - `AgentSenseConfig.checkInMinutes?: number`; unconditional Shepherd normalizer
   branch preserves `enabled`, optional `notify`, normalized `checkInMinutes`.
 - `HostSession.instance?: string | null`, a verified opaque process-start ID.
-- `ShepherdInspection` exactly as the spec, with a redacted `screen`.
+- `ShepherdInspection` exactly as the corrected spec, with a redacted `screen`
+  and top-level `instance: string | null`. Null is explicit unknown evidence
+  and prevents periodic dispatch, not an invented sentinel or startup error.
 - Optional `ShepherdHost.inspect(sessionId): Promise<ShepherdInspection>` and
   `promptIfUnchanged(sessionId, line, expected): Promise<GuardedPromptResult>`.
   `GuardedPromptResult` is `{ state: "sent" | "not_sent"; reason?: string }`;
   `not_sent` means no terminal input was attempted. Any exception after paste
-  begins is uncertain, never `not_sent`.
+  begins is uncertain, never `not_sent`. Document on the type that unknown is
+  deliberately represented by a throw, not a redundant third result enum.
 
 - [ ] **Step 1: Write failing interval/normalizer parity tests.**
 
@@ -133,7 +136,9 @@ mirrored tests. Consume the Task 1 interfaces; do not change their signatures.
   "idle"|"working"|"unknown"; composer: "empty"|"draft"|"unknown" }`.
 - `TerminalProcessIdentity.instance?: string`: uniquely selected foreground PID
   plus actual process-start output from one batched `ps` query. Failed/ambiguous
-  identity leaves it absent; no PID-only or title-based substitute.
+  identity leaves it absent; no PID-only or title-based substitute. Process
+  lookup omits unresolved evidence; host inspection exposes that absence as
+  explicit null, preserving the deliberate shape distinction.
 - cmux `inspect` resolves the explicit target, verifies echoed UUID/TTY and
   current unique process instance, reads its screen, classifies supported UI,
   and returns current evidence. Do not select stale hook-store records.
@@ -141,8 +146,9 @@ mirrored tests. Consume the Task 1 interfaces; do not change their signatures.
   session/instance/cwd/screen, idle/empty state and focus immediately before
   paste. Refusal returns `not_sent` with zero input calls. Successful paste plus
   submit returns `sent`; any partial/ambiguous effect throws.
-- Herdr `inspect` uses current semantic reads. Unknown composer authority means
-  no periodic guarded send. Existing ordinary `prompt`/`key` behavior remains.
+- Herdr `inspect` uses current semantic reads and always returns `instance:null`
+  because this adapter has no process-start authority. Unknown composer/instance
+  means no periodic guarded send. Existing ordinary `prompt`/`key` remains.
 
 - [ ] **Step 1: Add synthetic failing classifier and real-adapter tests.**
   Blank supported Copilot/Claude/Codex composers are empty; multiline drafts,
@@ -210,7 +216,9 @@ mirrored tests. Consume the Task 1 interfaces; do not change their signatures.
   Suppression survives reopen but changes on meaningful new evidence. Permission,
   ownership, symlink, corrupt DB/rows and oversized values refuse explicitly.
   Bound each stored row to 4096 encoded bytes and database writes to 64 MiB;
-  do not evict unresolved/sent keys to manufacture capacity.
+  do not evict unresolved/sent keys to manufacture capacity. Add standard
+  capacity-warning telemetry at 48 MiB, with no Teams/wake side effect; test the
+  warning and the explicit no-send capacity error rather than silent idling.
 - [ ] **Step 2: Observe RED with** `npx vitest run src/__tests__/senses/shepherd/checkin-store.test.ts`.
 - [ ] **Step 3: Implement using existing better-sqlite3 claim/complete and private
   file patterns from `feedback-store.ts`, with no external I/O in transactions.**
@@ -292,7 +300,10 @@ release metadata set using `scripts/release-bump.cjs`, after implementation.
   observe RED, implement only the missing integration, then GREEN.
 - [ ] **Step 3: Document cadence/default/disable, fallback-not-pacing, current
   supported UI/host limits, true blockers/drafts, no keys, shared unknown custody,
-  quiet notices and honest source/release/install distinctions.**
+  quiet notices and honest source/release/install distinctions.** Document the
+  48 MiB warning and 64 MiB fail-closed cap: inspect/reconcile custody explicitly,
+  never delete keys or retry unknown effects to reclaim space. No automatic
+  retention or unsafe replay feature is introduced in this change.
 - [ ] **Step 4: Run final frozen-source coverage/Nerves, typecheck, lint, UI,
   hermetic integration, package and release preflight.** Preserve exact logs.
   Use `npm run test:coverage -- --skip-mailbox-ui-install` with existing prepared

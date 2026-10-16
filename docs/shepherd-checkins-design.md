@@ -129,7 +129,7 @@ state:
 ```ts
 interface ShepherdInspection {
   session: HostSession
-  instance: string
+  instance: string | null
   screen: string
   activity: "idle" | "working" | "unknown"
   composer: "empty" | "draft" | "unknown"
@@ -142,6 +142,8 @@ just a reusable PID, title, short surface ref or cwd. Extend the existing
 batched terminal-process lookup to obtain it. Ambiguous foreground roots or
 unavailable start identity leave inspection unknown; they do not select the
 first process as a scheduled-action authority.
+Periodic dispatch requires a positively verified non-null instance. A null
+instance means unknown, never a fabricated identifier or a startup exception.
 On unsupported operating systems or failed `ps`/process-start lookups, the
 new instance evidence is unavailable/unknown rather than a startup exception
 or a fabricated identifier.
