@@ -47,6 +47,7 @@ export function resolveFeedbackReply(input: FeedbackReplyInput, deps: {
     const store = (deps.open ?? openFeedbackStore)(file)
     try {
       const quoted = input.replyToId ? store.findReply(input.friendId, input.conversationId, input.replyToId) : null
+      if (input.replyToId && !quoted && store.hasReply(input.replyToId)) refuse()
       if (quoted && (quoted.delivery.state !== "sent" || quoted.delivery.conversationId !== input.conversationId ||
         quoted.delivery.messageId !== input.replyToId)) refuse()
       const explicit = unique.length ? store.read(unique[0], input.friendId) : null

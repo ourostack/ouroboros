@@ -8,7 +8,8 @@ import { feedbackStorePath, openFeedbackStore } from "../../senses/shepherd/feed
 import { loadSession } from "../../mind/context"
 
 const state = vi.hoisted(() => ({
-  root: "", handlers: new Map<string, (ctx: any) => Promise<void>>(), run: vi.fn(),
+  root: "", handlers: new Map<string, (ctx: any) => Promise<void>>(), run: vi.fn(), handlerLogFailures: 0,
+  refusalLogFailures: 0,
 }))
 vi.mock("@microsoft/teams.apps", () => ({
   App: class {
@@ -46,7 +47,19 @@ vi.mock("../../repertoire/mcp-manager", () => ({ getSharedMcpManager: async () =
 vi.mock("../../nerves/runtime", async (original) => {
   const actual = await original<typeof import("../../nerves/runtime")>()
   return { ...actual, emitNervesEvent: (event: Parameters<typeof actual.emitNervesEvent>[0]) => {
-    if (event.event === "channel.handler_error" || event.event === "channel.feedback_handler_error") console.error(event)
+    if (event.event === "senses.shepherd_feedback_reply_refused" && state.refusalLogFailures > 0) {
+      state.refusalLogFailures--
+      throw new Error("fixture refusal-reporting sink unavailable")
+    }
+    if (event.event === "channel.handler_error" || event.event === "channel.feedback_handler_error") {
+      // External error reporting can itself fail. Preserve the actual provider,
+      // binding, lease and persistence path; inject only the failing sink.
+      if (state.handlerLogFailures > 0) {
+        state.handlerLogFailures--
+        throw new Error("fixture error-reporting sink unavailable")
+      }
+      console.error(event)
+    }
     actual.emitNervesEvent(event)
   } }
 })
@@ -102,6 +115,8 @@ function activity(text: string, replyToId?: string, aad = "aad-owner", conversat
 beforeEach(async () => {
   vi.resetModules()
   state.handlers.clear()
+  state.handlerLogFailures = 0
+  state.refusalLogFailures = 0
   state.run.mockReset().mockImplementation(async (messages, callbacks: ChannelCallbacks) => {
     messages.push({ role: "assistant", content: "Clarification recorded." })
     callbacks.onTextChunk("Clarification recorded.")
@@ -143,6 +158,18 @@ describe("actual Teams feedback adapter and leased pipeline", () => {
     expect(JSON.stringify(ctx.stream.emit.mock.calls)).not.toMatch(/Historical|Feedback for|Question about|33333333|44444444|\/historical/)
   })
 
+  it.each([
+    ["other-actor", "private-chat"],
+    ["aad-owner", "other-chat"],
+  ])("refuses a known archived bare quote before model/tools for actor %s in chat %s", async (actor, chat) => {
+    const ctx = activity("Only this one, please.", "sent-a", actor, chat)
+    await state.handlers.get("message")!(ctx)
+    expect(state.run).not.toHaveBeenCalled()
+    expect(ctx.stream.emit).toHaveBeenCalledTimes(1)
+    expect(JSON.stringify(ctx.stream.emit.mock.calls)).toContain("feedback")
+    expect(JSON.stringify(ctx.stream.emit.mock.calls)).not.toMatch(/Historical|Feedback for|Question about|33333333|44444444|\/historical|sent-a|owner|other-chat/)
+  })
+
   it("keeps an ordinary unknown quote on the normal path", async () => {
     await state.handlers.get("message")!(activity("hello", "ordinary-message"))
     expect(state.run).toHaveBeenCalledTimes(1)
@@ -160,6 +187,32 @@ describe("actual Teams feedback adapter and leased pipeline", () => {
     const ctx = activity("", "sent-b")
     Object.assign(ctx.activity, { value: { actionName: "feedback", actionValue: { reaction: "like", feedback: "yes" } } })
     await state.handlers.get("message.submit.feedback")!(ctx)
+    expect(state.run).toHaveBeenCalledTimes(1)
+    expect(state.run.mock.calls[0][4].toolContext.currentShepherdSurface?.id).toBe(sourceB)
+  })
+
+  it("does not grant a reaction with missing actor metadata the archived owner's context", async () => {
+    const ctx = activity("", "sent-a")
+    const anonymous = { ...ctx, activity: { ...ctx.activity, from: undefined,
+      value: { actionName: "feedback", actionValue: { reaction: "like" } } } }
+    await state.handlers.get("message.submit.feedback")!(anonymous)
+    expect(state.run).not.toHaveBeenCalled()
+    expect(JSON.stringify(ctx.stream.emit.mock.calls)).toContain("feedback")
+    expect(JSON.stringify(ctx.stream.emit.mock.calls)).not.toMatch(/Historical|Question about|33333333|\/historical/)
+  })
+
+  it("propagates unexpected selection infrastructure failure and releases its actual lease", async () => {
+    const { handleTeamsMessage } = await import("../../senses/teams")
+    const { currentSessionTurnLease } = await import("../../mind/session-transaction")
+    const ctx = activity("feedback:invalid")
+    state.refusalLogFailures = 1
+    await expect(handleTeamsMessage(ctx.activity.text, ctx.stream, "private-chat",
+      { signin: async () => undefined, aadObjectId: "aad-owner", tenantId: "tenant" }))
+      .rejects.toThrow("fixture refusal-reporting sink unavailable")
+    expect(state.run).not.toHaveBeenCalled()
+    expect(ctx.stream.emit).not.toHaveBeenCalled()
+    expect(currentSessionTurnLease(path.join(state.root, "sessions", "owner", "private-chat.json"))).toBeNull()
+    await state.handlers.get("message")!(activity("a subsequent safe clarification", "sent-b"))
     expect(state.run).toHaveBeenCalledTimes(1)
     expect(state.run.mock.calls[0][4].toolContext.currentShepherdSurface?.id).toBe(sourceB)
   })
@@ -226,5 +279,43 @@ describe("actual Teams feedback adapter and leased pipeline", () => {
     await running
     expect(drained).toEqual([{ text: "one more thing", effect: "none" }])
     expect(state.run).toHaveBeenCalledTimes(1)
+  })
+
+  // Losing the coordinator catch/reject/finally path would strand later SDK
+  // requests or leave the conversation permanently active after an adapter fault.
+  it("rejects failed initial and deferred turns without stranding the next leased request", async () => {
+    const entered = Promise.withResolvers<void>()
+    const release = Promise.withResolvers<void>()
+    state.handlerLogFailures = 2
+    state.run.mockImplementationOnce(async (_messages, _callbacks, _channel, _signal, options: RunAgentOptions) => {
+      entered.resolve()
+      await release.promise
+      expect(options.drainSteeringFollowUps!()).toEqual([])
+      throw new Error("fixture first provider failure")
+    })
+    state.run.mockRejectedValueOnce(new Error("fixture deferred provider failure"))
+    const initial = state.handlers.get("message")!(activity("first", "sent-a"))
+    const initialResult = Promise.allSettled([initial])
+    await entered.promise
+    const deferred = state.handlers.get("message")!(activity("second", "sent-b"))
+    const deferredResult = Promise.allSettled([deferred])
+    // Even an ordinary followup behind the context-changing boundary must not
+    // leapfrog it and steer the still-running first source.
+    const tail = activity("after the queued clarification")
+    const tailResult = state.handlers.get("message")!(tail)
+    release.resolve()
+    const [first, second] = await Promise.all([initialResult, deferredResult])
+    await tailResult
+    expect(first[0]).toMatchObject({ status: "rejected", reason: { message: "fixture error-reporting sink unavailable" } })
+    expect(second[0]).toMatchObject({ status: "rejected", reason: { message: "fixture error-reporting sink unavailable" } })
+    expect(state.run).toHaveBeenCalledTimes(3)
+    expect(state.run.mock.calls[2][4].toolContext.currentUserMessage).toBe("after the queued clarification")
+    expect(state.run.mock.calls[2][4].toolContext.currentShepherdSurface).toBeUndefined()
+    expect(JSON.stringify(tail.stream.emit.mock.calls)).toContain("Clarification recorded.")
+    const later = activity("new independent clarification", "sent-a")
+    await state.handlers.get("message")!(later)
+    expect(state.run).toHaveBeenCalledTimes(4)
+    expect(state.run.mock.calls[3][4].toolContext.currentShepherdSurface?.id).toBe(sourceA)
+    expect(JSON.stringify(later.stream.emit.mock.calls)).toContain("Clarification recorded.")
   })
 })
