@@ -2,6 +2,13 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.930",
+      "changes": [
+        "Receive session-native Shepherd feedback with automatic source context, durable receipts, private Teams acknowledgements and correlated clarification replies.",
+        "Use each supervising agent's configured display name across Shepherd entry points, addressing and acknowledgements."
+      ]
+    },
+    {
       "version": "0.1.0-alpha.929",
       "changes": [
         "Shepherd resumes network-stopped coding sessions once after independently confirmed offline-to-online recovery, with a fresh judgment and existing focus, pause, changed-screen and loop guards.",
