@@ -33,7 +33,7 @@ export interface ShepherdInspection {
   session: HostSession
   instance: string | null
   screen: string
-  /** Opaque digest of the exact raw screen, including changes hidden by redaction. */
+  /** Exact raw-screen digest; distinct from the judged-text custody key and human-send proof. */
   screenFingerprint: string
   activity: "idle" | "working" | "unknown"
   composer: "empty" | "draft" | "unknown"

@@ -9,6 +9,7 @@ export interface DispatchInput {
   host: string
   session: string
   instance: string | null
+  /** Hash of redacted judge text, not the raw inspection digest or human-send proof. */
   screenFingerprint: string
   guidanceRevision: string
   reply: string
