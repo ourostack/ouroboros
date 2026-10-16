@@ -109,6 +109,36 @@ afterEach(async () => {
 })
 
 describe("fresh all-returned-session periodic check-ins", () => {
+  it.each(["quiet-stop", "quiet-focus", "final-stop", "final-focus"] as const)(
+    "records the %s boundary without sending input", async boundary => {
+      const inspect = host.inspect!
+      let count = 0
+      host.inspect = vi.fn(async id => {
+        const current = await inspect(id)
+        if (++count === (boundary.startsWith("quiet") ? 2 : 3)) {
+          if (boundary.endsWith("stop")) { stop!(); stop = null }
+          else current.session.focused = true
+        }
+        return current
+      })
+      await start()
+      await advance(8000)
+      expect(prompts()).toEqual([])
+      expect(readReturns(root).at(-1)).toMatchObject({ actionBlockReason: boundary.endsWith("stop") ? "stopped" : "focus" })
+    })
+
+  it("retains accepted queue custody when notice-signature bookkeeping fails", async () => {
+    await start(vi.fn(async () => verdict("gate")), {
+      openCheckInStore: file => {
+        const store = openCheckInStore(file)
+        store.markNotified = () => { throw new Error("signature store unavailable") }
+        return store
+      },
+    })
+    await advance(8000)
+    expect(readReturns(root).at(-1)).toMatchObject({ noticeState: "queued", noticeId: "fixture-notice" })
+  })
+
   it("uses only fixed periodic text after a structured length-only rejection", async () => {
     const parsed = parseVerdict(JSON.stringify({ kind: "premature", reply: { text: "Continue authorized work. ".repeat(15) }, reason: "Unfinished work." }))
     await start(vi.fn(async () => ({ ...parsed, latencyMs: 2, inputTokens: 10 })))

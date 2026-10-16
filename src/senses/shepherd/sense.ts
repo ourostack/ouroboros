@@ -566,9 +566,13 @@ export async function startShepherdSenseApp(options: ShepherdSenseOptions): Prom
           if (acceptance.state === "queued") record.noticeId = acceptance.noticeId
           else record.noticeSuppressionReason = acceptance.reason
           if (noticeSignature && (acceptance.state === "queued" || acceptance.reason === "policy")) {
-            custody.markNotified(noticeSignature, record.at)
-            // A sent/uncertain effect also settles the unchanged observation, not just that action outcome.
-            if (observationSignature && observationSignature !== noticeSignature) custody.markNotified(observationSignature, record.at)
+            try {
+              custody.markNotified(noticeSignature, record.at)
+              // A sent/uncertain effect also settles the unchanged observation, not just that action outcome.
+              if (observationSignature && observationSignature !== noticeSignature) custody.markNotified(observationSignature, record.at)
+            } catch (error) {
+              emitNervesEvent({ level: "error", component: "senses", event: "senses.shepherd_notice_error", message: "owner notice was accepted but its suppression signature could not be recorded", meta: { agent, error: (error as Error).message } })
+            }
           }
         }
         catch (error) {

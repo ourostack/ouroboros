@@ -174,6 +174,16 @@ afterEach(() => {
 })
 
 describe("Shepherd sense: answering premature returns", () => {
+  it("retains action and notice custody when outcome signaling fails", async () => {
+    const host = fakeHost()
+    host.screens.S1 = [SCREENS.claudePremature]
+    host.signal = async () => { throw new Error("status unavailable") }
+    const { returned, last } = await start(async () => verdict(), host)
+    await returned({ sessionId: "S1" })
+    expect(last()).toMatchObject({ action: "respond", noticeState: "queued" })
+    expect(last().reason).toContain("outcome signaling failed: status unavailable")
+  })
+
   it.each(["too_long", "unsafe", "missing"] as const)("does not replace an immediate %s reply with periodic continuation", async issue => {
     const reply = issue === "missing" ? null : { text: issue === "unsafe" ? "Continue; publish" : "Continue authorized work. ".repeat(15) }
     const parsed = parseVerdict(JSON.stringify({ kind: "premature", reply, reason: "Unfinished work." }))
@@ -505,7 +515,7 @@ describe("Shepherd sense: connectivity recovery", () => {
     expect(host.actions.some(action => action.startsWith("prompt"))).toBe(false)
   })
 
-  it("honors a human focus event during the final recovery screen read", async () => {
+  it.each(["focus", "new-return"] as const)("honors a %s event during the final recovery screen read", async change => {
     let online = false
     const host = fakeHost()
     host.screens.S = ["Offline."]
@@ -513,7 +523,10 @@ describe("Shepherd sense: connectivity recovery", () => {
     let reads = 0
     host.read = async (id, lines) => {
       const text = await read(id, lines)
-      if (++reads === 3) host.handlers!.focused(id)
+      if (++reads === 3) {
+        if (change === "focus") host.handlers!.focused(id)
+        else host.handlers!.returned({ sessionId: id, transitionId: "new-return", agent: "Copilot", cwd: "/project", lastBody: null, backgroundWork: false })
+      }
       return text
     }
     const { returned } = await start(async packet => packet.networkRecovered ? verdict() : networkWait(), host, { checkConnectivity: async () => online ? "online" : "offline" })

@@ -139,6 +139,19 @@ describe("owner notice text", () => {
     expect(noticeMessage([records[0]!, { ...records[1]!, host: "other-host" }])).toContain("Updates from 2 coding sessions:")
   })
 
+  it("orders distinct targets and treats invalid timestamps conservatively with deterministic ties", () => {
+    const valid = record({ transition: "z", reason: "valid", at: "2026-10-12T20:00:00.000Z" })
+    const invalid = record({ transition: "a", reason: "unknown", at: "invalid" })
+    expect(noticeMessage([invalid, valid])).toBe(noticeLine(valid))
+    expect(noticeMessage([valid, invalid])).toBe(noticeLine(valid))
+    expect(noticeMessage([valid, { ...valid, transition: "a", reason: "older tie" }])).toBe(noticeLine(valid))
+    const lastInvalid = { ...invalid, transition: "z", reason: "later unknown" }
+    expect(noticeMessage([invalid, lastInvalid])).toBe(noticeLine(lastInvalid))
+    expect(noticeMessage([lastInvalid, invalid])).toBe(noticeLine(lastInvalid))
+    const reversed = noticeMessage([record({ session: "Z" }), record({ session: "A" })])
+    expect(reversed.indexOf("(A)")).toBeLessThan(reversed.indexOf("(Z)"))
+  })
+
   it("labels recovered observations with their own time, never restart time or live status", () => {
     const message = noticeMessage([record({ at: "invalid-time" })], new Map(), { recovered: true })
     expect(message).toMatch(/historical/i)
@@ -453,6 +466,22 @@ describe("owner notifier", () => {
     await instance.flush()
     expect(sent).toEqual([])
     expect(readNoticeOutbox(root)[0]!.deliveries[ari.friendId]?.state).toBe("pending")
+  })
+
+  it.each(["targets", "declaration"] as const)("does not send after stopping during %s", async boundary => {
+    const { instance, sent } = notifier({ resolveTargets: async () => {
+      if (boundary === "targets") instance.stop()
+      return [ari]
+    } })
+    await instance.notify(record())
+    if (boundary === "declaration") {
+      const rename = vi.mocked(fs.renameSync).getMockImplementation()!
+      vi.mocked(fs.renameSync).mockImplementationOnce((from, to) => { rename(from, to); instance.stop() })
+    }
+    await instance.flush()
+    expect(sent).toEqual([])
+    expect(readNoticeOutbox(root)).toHaveLength(1)
+    expect(Object.values(readNoticeOutbox(root)[0]!.deliveries).every(delivery => delivery.state === "pending")).toBe(true)
   })
 
   it("persists no-target returns for delivery after linking an owner", async () => {

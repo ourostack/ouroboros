@@ -108,7 +108,7 @@ export function noticeMessage(records: ReturnRecord[], refs: ReadonlyMap<string,
     if (!previous || (Number.isFinite(at) && (!Number.isFinite(previousAt) || at > previousAt))
       || ((!Number.isFinite(at) && !Number.isFinite(previousAt) || at === previousAt) && record.transition > previous.transition)) latest.set(key, record)
   }
-  const sessions = [...latest].sort(([a], [b]) => a < b ? -1 : a > b ? 1 : 0).map(([, record]) => record)
+  const sessions = [...latest].sort(([a], [b]) => a < b ? -1 : 1).map(([, record]) => record)
   const lines = sessions.slice(0, NOTICE_LIST_MAX).map(record => {
     const line = noticeLine(record, refs.get(record.session))
     if (!context.recovered) return line
