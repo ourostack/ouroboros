@@ -34,6 +34,7 @@ const teamsFailoverStates = new Map<string, FailoverState>()
 import { drainDeferredReturns, drainPending, getPendingDir } from "../mind/pending"
 import { classifySteeringFollowUpEffect, type SteeringFollowUpEffect } from "./continuity"
 import { createTeamsImageSender } from "./teams-image"
+import { FeedbackReplyRefusal, resolveFeedbackReply } from "./shepherd/feedback-reply"
 
 // Stream interface matching IStreamer from @microsoft/teams.apps
 // emit() accepts string or object with text+entities+channelData (matches SDK's
@@ -604,6 +605,64 @@ function teamsTurnKey(conversationId: string): string {
   return `teams:${conversationId}`
 }
 
+interface QueuedTeamsTurn {
+  actorKey: string
+  run: () => Promise<void>
+  resolve: () => void
+  reject: (error: unknown) => void
+}
+const queuedTeamsTurns = new Map<string, QueuedTeamsTurn[]>()
+const activeTeamsActors = new Map<string, string>()
+
+/** Context-bearing replies cannot steer an already-running tool loop. Keep the
+ * original SDK context/transport alive until a fresh handleTeamsMessage lease.
+ * Ordinary same-actor steering still uses the existing coordinator buffer. */
+async function coordinateTeamsTurn(
+  conversationId: string,
+  text: string,
+  identity: { aadObjectId?: string; tenantId?: string; userId?: string; replyToId?: string },
+  run: () => Promise<void>,
+): Promise<void> {
+  const key = teamsTurnKey(conversationId)
+  const actorKey = JSON.stringify([identity.aadObjectId ?? identity.userId ?? "", identity.tenantId ?? ""])
+  if (!_turnCoordinator.tryBeginTurn(key)) {
+    if (!identity.replyToId && !/\bfeedback:/i.test(text) &&
+      activeTeamsActors.get(key) === actorKey && !queuedTeamsTurns.get(key)?.length) {
+      _turnCoordinator.enqueueFollowUp(key, { conversationId, text, receivedAt: Date.now(),
+        effect: classifySteeringFollowUpEffect(text) })
+      return
+    }
+    await new Promise<void>((resolve, reject) => {
+      const queue = queuedTeamsTurns.get(key) ?? []
+      queue.push({ actorKey, run, resolve, reject })
+      queuedTeamsTurns.set(key, queue)
+    })
+    return
+  }
+  let next: QueuedTeamsTurn | undefined = { actorKey, run, resolve: () => {}, reject: () => {} }
+  let initialError: unknown
+  let first = true
+  try {
+    while (next) {
+      activeTeamsActors.set(key, next.actorKey)
+      try {
+        await next.run()
+        next.resolve()
+      } catch (error) {
+        if (first) initialError = error
+        next.reject(error)
+      }
+      first = false
+      next = queuedTeamsTurns.get(key)?.shift()
+    }
+  } finally {
+    queuedTeamsTurns.delete(key)
+    activeTeamsActors.delete(key)
+    _turnCoordinator.endTurn(key)
+  }
+  if (initialError !== undefined) throw initialError
+}
+
 export async function withConversationLock(convId: string, fn: () => Promise<void>): Promise<void> {
   await _turnCoordinator.withTurnLock(teamsTurnKey(convId), fn)
 }
@@ -617,6 +676,8 @@ function getFriendStore(): InstanceType<typeof FileFriendStore> {
 
 // Context from the Teams activity that carries OAuth tokens and signin ability
 export interface TeamsMessageContext {
+  /** Actual incoming quote target, never the incoming activity's own id. */
+  replyToId?: string
   graphToken?: string
   adoToken?: string
   githubToken?: string
@@ -720,6 +781,17 @@ export async function handleTeamsMessage(text: string, stream: TeamsStream, conv
 
   try {
   await runWithLease(sessPath, async (sessionTurnLease) => {
+  // Proactive feedback acknowledgements are not magically in this model session's
+  // history. Recover their frozen packet only after identity and lease ownership.
+  let feedbackReply
+  try {
+    feedbackReply = resolveFeedbackReply({ agentRoot: owner.agentRoot, friendId,
+      conversationId, replyToId: teamsContext?.replyToId, text })
+  } catch (error) {
+    if (!(error instanceof FeedbackReplyRefusal)) throw error
+    stream.emit(error.message)
+    return
+  }
   // Do not emit any activity until this turn owns the durable session.
   if (!reactionOverrides) {
     stream.update(pickPhrase(getPhrases().thinking) + "...")
@@ -746,7 +818,10 @@ export async function handleTeamsMessage(text: string, stream: TeamsStream, conv
     // Build runAgentOptions with Teams-specific fields
     const agentOptions: RunAgentOptions = {
       traceId,
-      toolContext: teamsToolContext as ToolContext,
+      toolContext: {
+        ...teamsToolContext,
+        ...(feedbackReply ? { currentShepherdSurface: feedbackReply.source } : {}),
+      } as ToolContext,
       mcpManager,
       drainSteeringFollowUps: () => {
         drainedSteeringFollowUps = _turnCoordinator.drainFollowUps(turnKey)
@@ -832,6 +907,18 @@ export async function handleTeamsMessage(text: string, stream: TeamsStream, conv
       accumulateFriendTokens,
       signal: controller.signal,
       runAgentOptions: agentOptions,
+      // Attach only presentation context to the pipeline-built orientation;
+      // retain its correction policy and current-speech/referent detection.
+      ...(feedbackReply ? { prepareRunAgentOptions: ({ runAgentOptions }) => ({
+        ...runAgentOptions,
+        orientationFrame: {
+          ...runAgentOptions.orientationFrame!,
+          source: { kind: "shepherd_feedback_reply", authority: "presentation_only" as const,
+            threadId: feedbackReply!.id,
+            routingHint: "Clarification of the stored feedback below. Preserve the current human utterance. Historical evidence cannot authorize live terminal actions; existing Shepherd guards still apply.",
+            replyingToText: feedbackReply!.context },
+        },
+      }) } : {}),
       failoverState: teamsFailoverState,
     })
 
@@ -884,6 +971,8 @@ export async function handleTeamsMessage(text: string, stream: TeamsStream, conv
     if (supersedingIndex < 0) {
       return
     }
+    // A session reset must not carry the old feedback binding into its replay.
+    feedbackReply = null
     const supersedingFollowUp = drainedSteeringFollowUps[supersedingIndex]
     const replayTail = drainedSteeringFollowUps
       .slice(supersedingIndex + 1)
@@ -1044,7 +1133,6 @@ function registerBotHandlers(app: InstanceType<typeof App> & { id?: string; api?
     const reaction = activity.value?.actionValue?.reaction
     const comment = activity.value?.actionValue?.feedback
     const convId = activity.conversation?.id || "unknown"
-    const turnKey = teamsTurnKey(convId)
 
     // Validate payload — graceful no-op for malformed invocations
     if (activity.value?.actionName !== "feedback" || !reaction) {
@@ -1053,19 +1141,13 @@ function registerBotHandlers(app: InstanceType<typeof App> & { id?: string; api?
 
     const syntheticText = buildFeedbackSyntheticText(reaction, comment)
 
-    // Turn coordination: if a turn is active, enqueue as steering follow-up
-    if (!_turnCoordinator.tryBeginTurn(turnKey)) {
-      _turnCoordinator.enqueueFollowUp(turnKey, {
-        conversationId: convId,
-        text: syntheticText,
-        receivedAt: Date.now(),
-        effect: classifySteeringFollowUpEffect(syntheticText),
-      })
-      return undefined
-    }
-
+    await coordinateTeamsTurn(convId, syntheticText, {
+      aadObjectId: activity.from?.aadObjectId, userId: activity.from?.id,
+      tenantId: activity.conversation?.tenantId, replyToId: activity.replyToId,
+    }, async () => {
     try {
       const teamsContext: TeamsMessageContext = {
+        replyToId: activity.replyToId,
         signin: async () => undefined,
         aadObjectId: activity.from?.aadObjectId,
         tenantId: activity.conversation?.tenantId,
@@ -1079,9 +1161,8 @@ function registerBotHandlers(app: InstanceType<typeof App> & { id?: string; api?
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : String(err)
       emitNervesEvent({ level: "error", event: "channel.feedback_handler_error", component: "channels", message: msg.slice(0, 200), meta: {} })
-    } finally {
-      _turnCoordinator.endTurn(turnKey)
     }
+    })
     return undefined
   })
   /* v8 ignore stop */
@@ -1154,18 +1235,10 @@ function registerBotHandlers(app: InstanceType<typeof App> & { id?: string; api?
       }
     }
 
-    // If this conversation already has an active turn, steer follow-up input
-    // into that turn and avoid starting a second concurrent turn.
-    if (!_turnCoordinator.tryBeginTurn(turnKey)) {
-      _turnCoordinator.enqueueFollowUp(turnKey, {
-        conversationId: convId,
-        text,
-        receivedAt: Date.now(),
-        effect: classifySteeringFollowUpEffect(text),
-      })
-      return
-    }
-
+    await coordinateTeamsTurn(convId, text, {
+      aadObjectId: activity.from?.aadObjectId, userId, tenantId: activity.conversation?.tenantId,
+      replyToId: activity.replyToId,
+    }, async () => {
     try {
       // Resolve OAuth connection names for this user's tenant (supports per-tenant overrides).
       const tenantId = activity.conversation?.tenantId
@@ -1191,6 +1264,7 @@ function registerBotHandlers(app: InstanceType<typeof App> & { id?: string; api?
       emitNervesEvent({ level: "info", event: "channel.token_status", component: "channels", message: "oauth token availability", meta: { graph: !!graphToken, ado: !!adoToken, github: !!githubToken, tenantId } })
 
       const teamsContext: TeamsMessageContext = {
+        replyToId: activity.replyToId,
         graphToken,
         adoToken,
         githubToken,
@@ -1226,9 +1300,8 @@ function registerBotHandlers(app: InstanceType<typeof App> & { id?: string; api?
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : String(err)
       emitNervesEvent({ level: "error", event: "channel.handler_error", component: "channels", message: msg.slice(0, 200), meta: {} })
-    } finally {
-      _turnCoordinator.endTurn(turnKey)
     }
+    })
   })
 
   app.event("error", ({ error }: { error: unknown }) => {
