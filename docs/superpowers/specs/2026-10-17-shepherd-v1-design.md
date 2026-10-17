@@ -158,9 +158,22 @@ do not infer them from optional methods or a minimum version alone.
 The conditional operation binds a one-use observation token to exact surface,
 workspace, process-start instance, raw active-screen revision, input revision,
 focus revision, empty/idle evidence and a short expiry. A host must validate the
-token and admission fields and enqueue the complete attributed paste/submission
-on its serialized input path, without an intervening client round trip or the
-existing 300 ms paste/Enter delay. Never clear/replace the composer.
+token and admission fields and admit the attributed paste on its serialized
+input path without an intervening client round trip. Never clear/replace the
+composer or enqueue blind input to a cold/deferred surface.
+
+Paste and submission are not a fictional atomic transaction with the external
+editor. The current native paste path explicitly waits 150 ms because some
+editors otherwise treat Enter as a newline or submit a stale empty buffer.
+Preserve the required editor-processing separation inside a host-owned
+reservation, not a client-side sleep followed by unconditional Enter. After the
+separation, submit only if the same live process/surface remains bound, there
+has been no intervening physical/programmatic input or focus, and supported
+render evidence positively shows exactly our inserted composer text with no
+other material screen/activity change. Unknown, a dialog or a changed process
+withholds submission. The reservation expires within two seconds. Other
+programmatic input is rejected while reserved; physical input cancels the
+reservation rather than being blocked or delayed.
 
 Implement and qualify the missing cmux capability as a companion native-host
 change, rather than call repeated client reads atomic. Use our patch branch/PR
@@ -174,7 +187,11 @@ probe in an owned disposable native instance: obtain an identity-bound token,
 invalidate it by focus, physical input, output, process exit and a queued-input
 interleaving, and demonstrate zero admitted input for each invalidation. Then
 demonstrate one attributed paste/submission with a stable token and idempotent
-request reconciliation. The implementation plan names the exact native modules,
+request reconciliation. Invalidation **before paste admission** must admit zero
+input. Invalidation **after paste admission** must admit no submit key, preserve
+the partial-input receipt and leave custody held; do not claim the pasted text
+can be rolled back. Test actual editor consumption, not merely a successful
+native queue call. The implementation plan names the exact native modules,
 test hooks, build prerequisites and probe result. A failed probe blocks the
 production automatic-input stage; redesign the host boundary and review it rather
 than silently substitute repeated client reads.
@@ -186,8 +203,11 @@ explicit outcomes. A queue admission receipt means input was accepted by the
 terminal host, not that the coding agent acted or completed the task.
 
 Return `not_sent` only when no terminal input was admitted; `accepted` only with
-an identity-bound host receipt; every lost reply or possibly partial admission is
-`unknown`. No automatic fallback or retry after unknown. The custody ledger stores
+an identity-bound host receipt for admitted paste and submission; a known paste
+with withheld/failed submission is explicitly partial and maps to a held
+`unknown` custody outcome with its partial-stage reason. Every lost reply or
+possibly partial admission is also `unknown`. No automatic fallback or retry
+after unknown. The custody ledger stores
 receipt/token digests, not raw screens or credentials. Host request IDs reconcile
 repeated requests to the same outcome rather than send them again.
 
@@ -381,6 +401,11 @@ and `docs/shepherd-sense.md`.
 Native discovery: cmux mirror `main`
 `3e7ed5a562ae01cb1cd6ff1faa1a41bbf9f6251b`;
 `Sources/TerminalController+{Capabilities,SurfaceInputState,AgentPromptDelivery}.swift`.
+`TerminalController.swift:v2MobileTerminalPaste` documents the required editor
+separation and partial-success semantics; `TerminalController+MobileInputDelivery.swift`
+and `Sources/Mobile/MobileHostTerminalInputApplier.swift` provide native input
+receipt/idempotency prior art. Reuse those distinctions, not the unconditional
+mobile-input authority or its prompt-clearing helper.
 Default `ouro` at `5144799f4005ddd40441b44cd6b225d3c956c2e3` is repository
 management metadata, not the native implementation. `ouro-patches` was 54 commits
 behind that mirror during discovery, with no ahead commits; do not assume it is
@@ -400,3 +425,9 @@ the requested dependable autonomous continuation outcome. Such intermediate
 improvements can ship under the existing alpha line without closing the v1 gate.
 The focused resolution review approved all six finding dispositions without
 remaining material blockers.
+
+Subsequent native-source discovery showed that removing the editor-processing
+separation would break actual prompt consumption. The host section now specifies
+a cancellable reservation and truthful post-paste partial outcome instead of
+pretending paste plus Enter can be atomic with an external editor. This amendment
+requires focused feasibility/design review with the implementation plan.
