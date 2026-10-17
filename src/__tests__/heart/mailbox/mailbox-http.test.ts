@@ -83,6 +83,27 @@ function createRouteOptions(overrides: Record<string, unknown> = {}) {
 }
 
 describe("mailbox http", () => {
+  it("exposes Supervision reads through both aliases and refuses browser mutations", async () => {
+    const { createMailboxHttpRequestHandler } = await import("../../../heart/mailbox/mailbox-http-routes")
+    const readAgentSupervision = vi.fn(() => ({ agentName: "slugger", counts: null }))
+    const options = createRouteOptions()
+    options.hooks.readAgentSupervision = readAgentSupervision
+    const handler = createMailboxHttpRequestHandler(options)
+    for (const prefix of ["", "/mailbox", "/outlook"]) {
+      const response = createMockResponse()
+      handler(createMockRequest(`${prefix}/api/agents/slugger/supervision`), response)
+      expect(response.statusCode).toBe(200)
+      expect(JSON.parse(response.body.toString("utf8"))).toEqual({ agentName: "slugger", counts: null })
+    }
+    expect(readAgentSupervision).toHaveBeenCalledTimes(3)
+    for (const method of ["POST", "PUT", "PATCH", "DELETE", "HEAD"]) {
+      const response = createMockResponse()
+      handler(createMockRequest("/api/agents/slugger/supervision", method), response)
+      expect(response.statusCode).toBe(405)
+    }
+    expect(readAgentSupervision).toHaveBeenCalledTimes(3)
+  })
+
 	  it("rejects unsafe encoded agent names before habit summary readers run", async () => {
 	    const { createMailboxHttpRequestHandler } = await import("../../../heart/mailbox/mailbox-http-routes")
 	    const options = createRouteOptions()

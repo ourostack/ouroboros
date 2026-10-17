@@ -2,7 +2,7 @@ import * as net from "node:net"
 import { createHash } from "node:crypto"
 import { emitNervesEvent } from "../../nerves/runtime"
 import { realSchedule } from "./cmux"
-import type { HostSession, HostWatchHandlers, ShepherdHost, ShepherdKey } from "./host"
+import type { HostSession, HostWatchHandlers, ShepherdHost, ShepherdHostObservation, ShepherdKey } from "./host"
 import { redactSecrets } from "./redact"
 
 /**
@@ -161,6 +161,42 @@ export function createHerdrHost(connection: HerdrConnection, options: HerdrHostO
       let refresh = false
       const status = new Map<string, string>()
       const pending = new Map<string, () => void>()
+      const inventory = new Map<string, ShepherdHostObservation["sessions"][number]>()
+      let cancelObservation: (() => void) | null = null
+      let inventoryGeneration = 0
+      const publishObservation = (error?: "host_unavailable"): void => {
+        if (!closed) handlers.observed?.({ at: Date.now(), sessions: [...inventory.values()], ...(error ? { error } : {}) })
+      }
+      const inventoryRow = (pane: Record<string, unknown>): void => {
+        const id = str(pane.pane_id)
+        if (!id) return
+        const state = str(pane.agent_status)
+        inventory.set(id, {
+          session: { id, ref: id, workspace: str(pane.workspace_id),
+            title: str(pane.title) ?? str(pane.terminal_title_stripped) ?? str(pane.label) ?? "",
+            agent: str(pane.agent), cwd: str(pane.foreground_cwd) ?? str(pane.cwd), focused: pane.focused === true },
+          activity: state === "working" ? "working" : RETURN_STATES.has(state ?? "") ? "idle" : "unknown",
+          observedAt: Date.now(),
+        })
+      }
+      const replaceInventory = (current: Record<string, unknown>[]): void => {
+        const ids = new Set(current.flatMap(pane => str(pane.pane_id) ?? []))
+        for (const id of inventory.keys()) if (!ids.has(id)) inventory.delete(id)
+        for (const pane of current) inventoryRow(pane)
+        publishObservation()
+      }
+      // Read-only refresh belongs to this host watcher, never to the judge or the browser.
+      const refreshObservation = async (): Promise<void> => {
+        cancelObservation = null
+        const generation = ++inventoryGeneration
+        try {
+          const current = await panes()
+          if (!closed && generation === inventoryGeneration) replaceInventory(current)
+        } catch {
+          if (!closed && generation === inventoryGeneration) publishObservation("host_unavailable")
+        }
+        if (!closed) cancelObservation = schedule(() => void refreshObservation(), 5_000)
+      }
 
       const cancelPending = (paneId: string): void => {
         pending.get(paneId)?.()
@@ -234,11 +270,19 @@ export function createHerdrHost(connection: HerdrConnection, options: HerdrHostO
         if (name === "pane_closed") {
           cancelPending(paneId)
           status.delete(paneId)
+          inventory.delete(paneId)
           refresh = true
           stream?.close()
           return
         }
         if (name !== "pane_agent_status_changed") return
+        const row = inventory.get(paneId)
+        if (row) {
+          const next = str(data.agent_status)
+          row.activity = next === "working" ? "working" : RETURN_STATES.has(next ?? "") ? "idle" : "unknown"
+          row.observedAt = Date.now()
+          publishObservation()
+        }
         observed(paneId, str(data.agent_status) ?? "unknown")
       }
 
@@ -252,12 +296,14 @@ export function createHerdrHost(connection: HerdrConnection, options: HerdrHostO
         const delay = RECONNECT_DELAYS_MS[Math.min(attempt, RECONNECT_DELAYS_MS.length - 1)]!
         attempt += 1
         emitNervesEvent({ level: "warn", component: "senses", event: "senses.shepherd_herdr_closed", message: "Herdr event subscription closed; resubscribing", meta: { delay, error: error?.message ?? null } })
+        publishObservation("host_unavailable")
         cancelReconnect = schedule(() => void subscribe(), delay)
       }
 
       const subscribe = async (): Promise<void> => {
         cancelReconnect = null
         let current: Record<string, unknown>[]
+        const generation = ++inventoryGeneration
         try {
           current = await panes()
         } catch (error) {
@@ -279,6 +325,8 @@ export function createHerdrHost(connection: HerdrConnection, options: HerdrHostO
           if (status.has(id)) observed(id, next)
           else if (next !== "unknown") status.set(id, next)
         }
+        if (generation === inventoryGeneration) replaceInventory(current)
+        if (handlers.observed && !cancelObservation) cancelObservation = schedule(() => void refreshObservation(), 5_000)
         const subscriptions = [
           { type: "pane.created" }, { type: "pane.closed" }, { type: "pane.focused" }, { type: "pane.moved" },
           ...current.flatMap((pane) => str(pane.pane_id) ? [{ type: "pane.agent_status_changed", pane_id: pane.pane_id }] : []),
@@ -299,6 +347,8 @@ export function createHerdrHost(connection: HerdrConnection, options: HerdrHostO
       return {
         close() {
           closed = true
+          inventoryGeneration += 1
+          cancelObservation?.()
           cancelReconnect?.()
           for (const cancel of pending.values()) cancel()
           stream?.close()

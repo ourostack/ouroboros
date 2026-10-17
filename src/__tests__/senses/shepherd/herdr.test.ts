@@ -179,6 +179,29 @@ describe("Herdr host: panes", () => {
 })
 
 describe("Herdr host: returned control", () => {
+  it("publishes initial and changed pane observations without reading screens or inventing process identity", async () => {
+    const observed = vi.fn()
+    const returned = vi.fn()
+    const watcher = host().watch({ returned, focused: vi.fn(), observed })
+    await vi.waitFor(() => expect(observed).toHaveBeenCalled())
+    await vi.waitFor(() => expect(server.streamCount()).toBe(1))
+    expect(observed.mock.calls[0]![0].sessions).toHaveLength(3)
+    expect(observed.mock.calls[0]![0].sessions[0]).toMatchObject({ session: { id: "w1:p1" }, activity: "working" })
+    expect(server.requests.some(request => request.method === "pane.read")).toBe(false)
+    server.push(statusEvent("w1:p1", "idle"))
+    await vi.waitFor(() => expect(observed.mock.calls.at(-1)![0].sessions[0].activity).toBe("idle"))
+    server.push(statusEvent("w1:p1", "unknown"))
+    await vi.waitFor(() => expect(observed.mock.calls.at(-1)![0].sessions[0].activity).toBe("unknown"))
+    panes[0]!.agent_status = "idle"
+    await scheduler.run(5_000)
+    await vi.waitFor(() => expect(observed.mock.calls.at(-1)![0].sessions[0].activity).toBe("idle"))
+    expect(returned).not.toHaveBeenCalled()
+    watcher.close()
+    const count = observed.mock.calls.length
+    await scheduler.run(5_000)
+    expect(observed).toHaveBeenCalledTimes(count)
+  })
+
   async function watching() {
     const returned: ReturnedControl[] = []
     const focused: string[] = []

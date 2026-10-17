@@ -64,6 +64,19 @@ export interface HostWatchHandlers {
   returned: (event: ReturnedControl) => void
   /** The human focused this session. */
   focused: (sessionId: string) => void
+  /** Read-only inventory from the existing watcher, independent of the judgment queue. No screen payloads. */
+  observed?: (observation: ShepherdHostObservation) => void
+}
+
+export interface ShepherdHostObservation {
+  at: number
+  sessions: Array<{
+    session: HostSession
+    activity: "working" | "idle" | "shell" | "unknown"
+    observedAt: number | null
+    error?: "read_failed"
+  }>
+  error?: "host_unavailable" | "sense_stopped"
 }
 
 /**

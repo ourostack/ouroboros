@@ -4,6 +4,10 @@ export {
 } from "../../../src/heart/mailbox/mailbox-types"
 
 export type {
+  ShepherdSupervisionView,
+  ShepherdSupervisionSession,
+  ShepherdSupervisionEvent,
+  ShepherdSupervisionError,
   MailboxAgentView,
   MailboxAgentInnerView,
   MailboxAttentionQueueItem,

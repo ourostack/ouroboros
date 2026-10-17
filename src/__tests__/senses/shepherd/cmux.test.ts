@@ -413,6 +413,25 @@ describe("cmux host: terminals", () => {
 })
 
 describe("cmux host: returned control", () => {
+  it("observes all terminal rows, including a failed read, independently of return handling", async () => {
+    const observed = vi.fn()
+    server.respond("surface.read_text", params => {
+      if (params.surface_id === "SF-1") throw new Error("synthetic read failure")
+      return { text: screens[params.surface_id as string] ?? "" }
+    })
+    const watcher = host().watch({ returned: vi.fn(), focused: vi.fn(), observed })
+    await vi.waitFor(() => expect(observed).toHaveBeenCalled())
+    const batch = observed.mock.calls.at(-1)![0]
+    expect(batch.sessions).toHaveLength(2)
+    expect(batch.sessions[0]).toMatchObject({ session: { id: "SF-1" }, activity: "unknown", observedAt: null, error: "read_failed" })
+    expect(batch.sessions[1].session.id).toBe("SF-2")
+    expect(JSON.stringify(batch)).not.toContain(screens["SF-2"])
+    watcher.close()
+    const count = observed.mock.calls.length
+    await scheduler.run(POLL_MS)
+    expect(observed).toHaveBeenCalledTimes(count)
+  })
+
   it("carries the foreground identity and titles through a quiet-screen return without hooks", async () => {
     server.respond("system.tree", () => tree([{ id: "SF-2", ref: "surface:2", title: "Ship agent tools", tty: "ttys007" }]))
     const returned: ReturnedControl[] = []

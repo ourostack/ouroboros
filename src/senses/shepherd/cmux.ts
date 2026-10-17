@@ -4,7 +4,7 @@ import * as os from "node:os"
 import * as path from "node:path"
 import { emitNervesEvent } from "../../nerves/runtime"
 import type { CmuxClient, CmuxSocketError } from "./client"
-import type { HostSession, HostWatchHandlers, ShepherdHost, ShepherdInspection, ShepherdKey } from "./host"
+import type { HostSession, HostWatchHandlers, ShepherdHost, ShepherdHostObservation, ShepherdInspection, ShepherdKey } from "./host"
 import { identifyTerminalProcesses } from "./terminal-process"
 import { inspectCodingPrompt } from "./prompt-state"
 import { redactSecrets } from "./redact"
@@ -364,14 +364,30 @@ export function createCmuxHost(client: CmuxClient, options: CmuxHostOptions = {}
         })
       }
 
-      /** Terminals whose agent is not idle: output that changed and then held still for the quiet window is a return. */
+      let lastObserved: ShepherdHostObservation["sessions"] = []
+      /** Inventory reads stay outside the judge queue; idle-hook terminals are observed but never rejudged here. */
       const poll = async (): Promise<void> => {
         try {
-          const terminals = (await surfaces()).filter((surface) => surface.type === "terminal" && hooked.get(surface.id)?.idle !== true)
+          const terminals = (await surfaces()).filter((surface) => surface.type === "terminal")
+          if (closed) return
           const seen = new Set(terminals.map((surface) => surface.id))
           for (const id of screens.keys()) if (!seen.has(id)) screens.delete(id)
+          const rows: ShepherdHostObservation["sessions"] = []
           for (const surface of terminals) {
-            const hash = createHash("sha256").update(await read(surface.id, POLL_LINES)).digest("hex")
+            const idle = hooked.get(surface.id)?.idle === true
+            if (idle) screens.delete(surface.id)
+            if (idle && !handlers.observed) continue
+            let text: string
+            try { text = await read(surface.id, POLL_LINES) } catch (error) {
+              rows.push({ session: surface, activity: "unknown", observedAt: null, error: "read_failed" })
+              emitNervesEvent({ level: "warn", component: "senses", event: "senses.shepherd_cmux_poll_error",
+                message: "could not read one cmux terminal; other terminals remain observable", meta: { error: redactSecrets(String(error)) } })
+              continue
+            }
+            if (closed) return
+            rows.push({ session: surface, activity: surface.agent ? inspectCodingPrompt(surface.agent, text).activity : "unknown", observedAt: now() })
+            if (idle) continue
+            const hash = createHash("sha256").update(text).digest("hex")
             const last = screens.get(surface.id)
             const at = now()
             if (!last) screens.set(surface.id, { hash, changedAt: at, active: false })
@@ -383,8 +399,12 @@ export function createCmuxHost(client: CmuxClient, options: CmuxHostOptions = {}
               handlers.returned({ sessionId: surface.id, transitionId: `cmux:quiet:${surface.id}:${last.changedAt}`, agent: surface.agent, cwd: surface.cwd ?? null, title: surface.title, workspaceTitle: surface.workspaceTitle, lastBody: null, backgroundWork: null })
             }
           }
+          if (closed) return
+          lastObserved = rows
+          handlers.observed?.({ at: now(), sessions: rows })
         } catch (error) {
           emitNervesEvent({ level: "warn", component: "senses", event: "senses.shepherd_cmux_poll_error", message: "could not poll cmux terminals; the next poll retries", meta: { error: (error as Error).message } })
+          if (!closed) handlers.observed?.({ at: now(), sessions: lastObserved, error: "host_unavailable" })
         }
         if (!closed) cancelPoll = schedule(() => void poll(), POLL_MS)
       }
