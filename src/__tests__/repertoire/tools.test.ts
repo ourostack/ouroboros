@@ -26,7 +26,7 @@ vi.mock("../../heart/daemon/socket-client", () => ({
 }))
 
 vi.mock("child_process", () => ({
-  execSync: vi.fn(),
+  exec: vi.fn(),
   spawnSync: vi.fn(),
 }))
 
@@ -83,9 +83,16 @@ vi.mock("../../heart/identity", () => {
 })
 
 import * as fs from "fs"
-import { execSync, spawnSync } from "child_process"
+import { exec, spawnSync } from "child_process"
 import { listSkills, loadSkill } from "../../repertoire/skills"
 import type { ToolContext } from "../../repertoire/tools-base"
+
+function mockShellOutput(output: string | ((command: string) => string)) {
+  vi.mocked(exec).mockImplementation(((command, _options, callback) => {
+    queueMicrotask(() => callback(null, typeof output === "string" ? output : output(command), ""))
+    return {}
+  }) as typeof exec)
+}
 
 describe("execTool", () => {
   let execTool: (name: string, args: any, ctx?: any) => Promise<string>
@@ -121,7 +128,7 @@ describe("execTool", () => {
     vi.mocked(fs.writeFileSync).mockReset()
     vi.mocked(fs.readdirSync).mockReset()
     vi.mocked(fs.rmSync).mockReset()
-    vi.mocked(execSync).mockReset()
+    vi.mocked(exec).mockReset()
     vi.mocked(spawnSync).mockReset()
     vi.mocked(listSkills).mockReset()
     vi.mocked(loadSkill).mockReset()
@@ -239,7 +246,7 @@ describe("execTool", () => {
     }
 
     expect(fs.writeFileSync).not.toHaveBeenCalled()
-    expect(execSync).not.toHaveBeenCalled()
+    expect(exec).not.toHaveBeenCalled()
   })
 
   it("orientation hold respects blockedMutationKinds instead of blocking every high-risk tool", async () => {
@@ -377,9 +384,9 @@ describe("execTool", () => {
     const ctx = orientationHoldCtx()
 
     await expect(execTool("shell", { command: "rm -rf /tmp/ouro-test" }, ctx)).resolves.toContain("orientation hold")
-    expect(execSync).not.toHaveBeenCalled()
+    expect(exec).not.toHaveBeenCalled()
 
-    vi.mocked(execSync).mockReturnValue("repo status\n")
+    mockShellOutput("repo status\n")
     await expect(execTool("shell", { command: "git status --short" }, ctx)).resolves.toBe("repo status\n")
   })
 
@@ -392,7 +399,7 @@ describe("execTool", () => {
 
     expect(result).toContain("orientation hold")
     expect(result).toContain("restart_runtime tool")
-    expect(execSync).not.toHaveBeenCalled()
+    expect(exec).not.toHaveBeenCalled()
   })
 
   it("orientation hold blocks risky Ouro lifecycle/config shell commands", async () => {
@@ -407,12 +414,12 @@ describe("execTool", () => {
     ]) {
       await expect(execTool("shell", { command }, ctx)).resolves.toContain("orientation hold")
     }
-    expect(execSync).not.toHaveBeenCalled()
+    expect(exec).not.toHaveBeenCalled()
   })
 
   it("orientation hold allows read-only Ouro shell inspection commands", async () => {
     const ctx = orientationHoldCtx()
-    vi.mocked(execSync).mockImplementation((command: string) => `ran ${command}\n`)
+    mockShellOutput(command => `ran ${command}\n`)
 
     await expect(execTool("shell", { command: "ouro status" }, ctx)).resolves.toBe("ran ouro status\n")
     await expect(execTool("shell", { command: "ouro --help" }, ctx)).resolves.toBe("ran ouro --help\n")
@@ -501,10 +508,10 @@ describe("execTool", () => {
 
   // ── shell ──
   it("shell runs command and returns output", async () => {
-    vi.mocked(execSync).mockReturnValue("shell output")
+    mockShellOutput("shell output")
     const result = await execTool("shell", { command: "echo hello" })
     expect(result).toBe("shell output")
-    expect(execSync).toHaveBeenCalledWith("echo hello", { encoding: "utf-8", timeout: 30000 })
+    expect(exec).toHaveBeenCalledWith("echo hello", { encoding: "utf-8", timeout: 30000 }, expect.any(Function))
   })
 
   it("safe_workspace is no longer a registered tool", async () => {
@@ -513,12 +520,13 @@ describe("execTool", () => {
   })
 
   it("shell does not rewrite commands (no workspace routing)", async () => {
-    vi.mocked(execSync).mockReturnValue("direct output")
+    mockShellOutput("direct output")
     const result = await execTool("shell", { command: "cd /mock/repo && git status" })
     expect(result).toBe("direct output")
-    expect(execSync).toHaveBeenCalledWith(
+    expect(exec).toHaveBeenCalledWith(
       "cd /mock/repo && git status",
       { encoding: "utf-8", timeout: 30000 },
+      expect.any(Function),
     )
   })
 
