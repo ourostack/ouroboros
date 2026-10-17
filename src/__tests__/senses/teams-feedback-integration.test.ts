@@ -1,7 +1,7 @@
 import * as fs from "node:fs"
 import * as os from "node:os"
 import * as path from "node:path"
-import { beforeEach, describe, expect, it, vi } from "vitest"
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { FileFriendStore, type FriendRecord } from "@ouro.bot/friends"
 import type { RunAgentOptions, ChannelCallbacks } from "../../heart/core"
 import { feedbackStorePath, openFeedbackStore } from "../../senses/shepherd/feedback-store"
@@ -9,20 +9,65 @@ import { loadSession } from "../../mind/context"
 import { createOwnerNotifier } from "../../senses/shepherd/owner-notice"
 import { readNoticeOutbox } from "../../senses/shepherd/notice-outbox"
 import { appendReturn, type ReturnRecord } from "../../senses/shepherd/returns"
+import { EventEmitter } from "node:events"
+import { createHash } from "node:crypto"
+import { checkErrorContext, type PerTestEvent } from "../../nerves/coverage/audit-rules"
 
 const state = vi.hoisted(() => ({
   root: "", handlers: new Map<string, (ctx: any) => Promise<void>>(), run: vi.fn(), handlerLogFailures: 0,
   refusalLogFailures: 0,
-  requestEvents: [] as Array<{ event: string; meta?: Record<string, unknown> }>,
+  requestEvents: [] as PerTestEvent[],
+  processActivity: undefined as ((body: unknown) => Promise<unknown>) | undefined,
+  sdkAcceptances: [] as Array<{ activityId: string; conversationId: string; outgoingId: string }>,
+  sdkLostAck: false,
+  sdkRealTransport: false,
+  sdkTransportLostAckOnce: false,
+  sdkHttpBodies: [] as Array<Record<string, unknown>>,
 }))
-vi.mock("@microsoft/teams.apps", () => ({
-  App: class {
-    id = "fake-app"
-    on(event: string, handler: (ctx: any) => Promise<void>) { state.handlers.set(event, handler) }
+vi.mock("@microsoft/teams.apps", async original => {
+  const actual = await original<typeof import("@microsoft/teams.apps")>()
+  const client = {
+    clone() { return this }, get: async () => ({ data: {} }), request: async () => ({ data: {} }),
+    post: async (_url: string, value: { type?: string; text?: string; replyToId?: string; channelData?: { streamType?: string } }) => {
+      if (state.sdkRealTransport) state.sdkHttpBodies.push(structuredClone(value))
+      if (state.sdkRealTransport && value.text && value.channelData?.streamType !== "informative") {
+        const outgoingId = `http-accepted-${state.sdkAcceptances.length + 1}`
+        state.sdkAcceptances.push({ activityId: value.replyToId ?? "sdk-stream", conversationId: "private-chat", outgoingId })
+        if (state.sdkTransportLostAckOnce) {
+          state.sdkTransportLostAckOnce = false
+          throw new Error("fixture HTTP accepted but lost acknowledgement")
+        }
+        return { data: { id: outgoingId } }
+      }
+      return { data: {} }
+    },
+  }
+  return { ...actual, App: class extends actual.App {
+    constructor(options: ConstructorParameters<typeof actual.App>[0]) {
+      super({ ...options, client: client as never })
+      const on = this.on.bind(this)
+      this.on = (event: any, handler: any) => { state.handlers.set(event, handler); return on(event, handler) }
+      this.getUserToken = async () => undefined
+      if (!state.sdkRealTransport) this.activitySender = {
+        createStream: () => ({
+          events: new EventEmitter(),
+          emit() { throw new Error("fixture rejected before transport") },
+          update() {}, close: async () => undefined,
+        }),
+        send: async (value: unknown, ref: { activityId: string; conversation: { id: string } }) => {
+          if ((value as { type?: string }).type === "typing") return { id: "fixture-typing" }
+          const outgoingId = `sdk-accepted-${state.sdkAcceptances.length + 1}`
+          state.sdkAcceptances.push({ activityId: ref.activityId, conversationId: ref.conversation.id, outgoingId })
+          if (state.sdkLostAck) throw new Error("fixture lost acknowledgement after acceptance")
+          return { ...(value as object), id: outgoingId }
+        },
+      } as never
+      state.processActivity = body => this.process({ body, token: { serviceUrl: "https://fixture.invalid" } } as never)
+    }
     event() {}
     start() {}
-  },
-}))
+  } }
+})
 vi.mock("../../heart/identity", async (original) => ({
   ...await original<typeof import("../../heart/identity")>(),
   getAgentName: () => "orchid",
@@ -66,6 +111,7 @@ vi.mock("../../nerves/runtime", async (original) => {
       }
       console.error(event)
     }
+    if (event.level === "error") state.requestEvents.push(event)
     actual.emitNervesEvent(event)
   } }
 })
@@ -108,14 +154,19 @@ async function setup() {
   startTeamsApp()
 }
 
+let incomingSequence = 0
 function activity(text: string, replyToId?: string, aad = "aad-owner", conversation = "private-chat") {
   return {
     stream: { emit: vi.fn(), update: vi.fn(), close: vi.fn() },
-    activity: { id: "incoming", text, replyToId, conversation: { id: conversation, tenantId: "tenant" },
+    activity: { id: `incoming-${++incomingSequence}`, text, replyToId, conversation: { id: conversation, tenantId: "tenant" },
       from: { id: aad, aadObjectId: aad, name: aad }, channelId: "msteams" },
     api: { users: { token: { get: vi.fn().mockResolvedValue(undefined) } } },
     signin: vi.fn(), send: vi.fn().mockResolvedValue({ id: "outgoing" }),
   }
+}
+
+function sdkActivity(text: string, replyToId?: string) {
+  return { ...activity(text, replyToId).activity, type: "message", serviceUrl: "https://fixture.invalid", recipient: { id: "fake-app", role: "bot" } }
 }
 
 beforeEach(async () => {
@@ -124,6 +175,12 @@ beforeEach(async () => {
   state.handlerLogFailures = 0
   state.refusalLogFailures = 0
   state.requestEvents = []
+  state.sdkAcceptances = []
+  state.sdkLostAck = false
+  state.sdkRealTransport = false
+  state.sdkTransportLostAckOnce = false
+  state.sdkHttpBodies = []
+  incomingSequence = 0
   state.run.mockReset().mockImplementation(async (messages, callbacks: ChannelCallbacks) => {
     messages.push({ role: "assistant", content: "Clarification recorded." })
     callbacks.onTextChunk("Clarification recorded.")
@@ -132,17 +189,349 @@ beforeEach(async () => {
   await setup()
 }, 60_000)
 
+afterEach(() => {
+  expect(checkErrorContext({ "actual Teams SDK integration": state.requestEvents })).toEqual({ status: "pass", violations: [] })
+})
+
 describe("actual Teams feedback adapter and leased pipeline", () => {
-  it("waits for the SDK stream promise instead of losing asynchronous delivery errors", async () => {
-    const emitted = Promise.withResolvers<void>()
+  it("uses actual SDK single-attempt messages with correlation and AI labels, without stream finalization", async () => {
+    state.sdkRealTransport = true
+    vi.resetModules()
+    const { startTeamsApp } = await import("../../senses/teams")
+    startTeamsApp()
+    const body = sdkActivity("One ordinary acknowledged reply.")
+    await state.processActivity!(body)
+    expect(state.sdkHttpBodies.filter(value => value.type === "message")).toEqual([
+      expect.objectContaining({ text: "Clarification recorded.", replyToId: body.id,
+        entities: expect.arrayContaining([expect.objectContaining({ additionalType: ["AIGeneratedContent"] })]),
+        channelData: { feedbackLoopEnabled: true } }),
+    ])
+    expect(state.sdkHttpBodies.filter(value => value.type === "typing")).toEqual([{ type: "typing",
+      from: expect.any(Object), conversation: expect.any(Object) }])
+    expect(state.sdkAcceptances).toHaveLength(1)
+    expect(state.requestEvents).toContainEqual(expect.objectContaining({ meta: expect.objectContaining({
+      stage: "replied", outboundActivityId: "http-accepted-1", delivery: "accepted", inboundActivityId: body.id,
+    }) }))
+  })
+
+  it("delivers long SDK output as bounded single-attempt messages without an SDK stream resend", async () => {
+    state.sdkRealTransport = true
+    vi.resetModules()
+    const { startTeamsApp } = await import("../../senses/teams")
+    startTeamsApp()
+    const text = "x".repeat(5000)
+    state.run.mockImplementationOnce(async (messages, callbacks: ChannelCallbacks) => {
+      messages.push({ role: "assistant", content: text })
+      callbacks.onTextChunk(text)
+      callbacks.onToolStart("read_file", {})
+      return { outcome: "settled" }
+    })
+    const body = sdkActivity("A long bounded answer.")
+    await state.processActivity!(body)
+    const sent = state.sdkHttpBodies.filter(value => value.type === "message")
+    expect(sent.map(value => value.text)).toEqual(["x".repeat(4000), "x".repeat(1000)])
+    expect(sent.every(value => value.replyToId === body.id)).toBe(true)
+    expect(state.sdkAcceptances).toHaveLength(2)
+  })
+
+  it("awaits an uncertain slash-command reply without replaying it on SDK redelivery", async () => {
+    state.sdkRealTransport = true
+    state.sdkTransportLostAckOnce = true
+    vi.resetModules()
+    const { startTeamsApp } = await import("../../senses/teams")
+    startTeamsApp()
+    const body = sdkActivity("/new")
+    await expect(state.processActivity!(structuredClone(body))).resolves.toMatchObject({ status: 500 })
+    await expect(state.processActivity!(structuredClone(body))).resolves.toMatchObject({ status: 200 })
+    expect(state.run).not.toHaveBeenCalled()
+    expect(state.sdkAcceptances).toHaveLength(1)
+  })
+
+  it("does not let the real SDK stream retry an accepted HTTP reply with a lost acknowledgement", async () => {
+    state.sdkRealTransport = true
+    state.sdkTransportLostAckOnce = true
+    vi.resetModules()
+    const { startTeamsApp } = await import("../../senses/teams")
+    startTeamsApp()
+    const body = sdkActivity("One reply at the actual SDK transport boundary.")
+    await state.processActivity!(structuredClone(body))
+    await state.processActivity!(structuredClone(body))
+    expect(state.run).toHaveBeenCalledTimes(1)
+    expect(state.sdkAcceptances).toHaveLength(1)
+    expect(state.requestEvents.some(event => event.meta?.stage === "replied")).toBe(false)
+  })
+
+  it("runs an ordinary follow-up admitted after the previous provider exits instead of stranding steering", async () => {
+    const entered = Promise.withResolvers<void>()
+    const releaseProvider = Promise.withResolvers<void>()
+    const admissionEntered = Promise.withResolvers<void>()
+    const releaseAdmission = Promise.withResolvers<void>()
+    state.run.mockImplementationOnce(async (messages, callbacks: ChannelCallbacks, _channel, _signal, options: RunAgentOptions) => {
+      entered.resolve()
+      await releaseProvider.promise
+      expect(options.drainSteeringFollowUps!()).toEqual([])
+      messages.push({ role: "assistant", content: "First answer." })
+      callbacks.onTextChunk("First answer.")
+      return { outcome: "settled" }
+    })
+    const first = state.processActivity!(sdkActivity("First request."))
+    await entered.promise
+    const original = FileFriendStore.prototype.findByExternalId
+    const lookup = vi.spyOn(FileFriendStore.prototype, "findByExternalId").mockImplementationOnce(async function (...args) {
+      admissionEntered.resolve()
+      await releaseAdmission.promise
+      return original.apply(this, args)
+    })
+    const second = sdkActivity("A follow-up arriving at the exit boundary.")
+    const following = state.processActivity!(structuredClone(second))
+    await admissionEntered.promise
+    releaseProvider.resolve()
+    try {
+      const { currentSessionTurnLease } = await import("../../mind/session-transaction")
+      await vi.waitFor(() => expect(currentSessionTurnLease(path.join(state.root, "sessions", "owner", "private-chat.json"))).toBeNull())
+    } finally { releaseAdmission.resolve(); lookup.mockRestore() }
+    await Promise.all([first, following])
+    expect(state.run).toHaveBeenCalledTimes(2)
+    expect(state.run.mock.calls[1][4].toolContext.currentUserMessage).toBe(second.text)
+    expect(state.sdkAcceptances).toHaveLength(2)
+    await state.processActivity!(structuredClone(second))
+    expect(state.run).toHaveBeenCalledTimes(2)
+  })
+
+  it("runs admitted steering in its own context if the active provider exits without consuming it", async () => {
+    const entered = Promise.withResolvers<void>()
+    const release = Promise.withResolvers<void>()
+    state.run.mockImplementationOnce(async (messages, callbacks: ChannelCallbacks) => {
+      entered.resolve()
+      await release.promise
+      messages.push({ role: "assistant", content: "First answer." })
+      callbacks.onTextChunk("First answer.")
+      return { outcome: "settled" }
+    })
+    const first = state.processActivity!(sdkActivity("First request."))
+    await entered.promise
+    const body = sdkActivity("A follow-up the active model does not consume.")
+    await state.processActivity!(structuredClone(body))
+    const tail = sdkActivity("Another follow-up preserving its original SDK context.")
+    await state.processActivity!(structuredClone(tail))
+    release.resolve()
+    await first
+    expect(state.run).toHaveBeenCalledTimes(3)
+    expect(state.run.mock.calls[1][4].toolContext.currentUserMessage).toBe(body.text)
+    expect(state.run.mock.calls[2][4].toolContext.currentUserMessage).toBe(tail.text)
+    expect(state.sdkAcceptances).toHaveLength(3)
+    expect(state.sdkAcceptances[1].activityId).toBe(body.id)
+    expect(state.sdkAcceptances[2].activityId).toBe(tail.id)
+  })
+
+  it("does not strand later turns when an unconsumed steering fallback and its error sink fail", async () => {
+    const entered = Promise.withResolvers<void>()
+    const release = Promise.withResolvers<void>()
+    state.run.mockImplementationOnce(async (messages, callbacks: ChannelCallbacks) => {
+      entered.resolve()
+      await release.promise
+      messages.push({ role: "assistant", content: "First answer." })
+      callbacks.onTextChunk("First answer.")
+      return { outcome: "settled" }
+    })
+    state.run.mockRejectedValueOnce(new Error("fixture queued steering provider failure"))
+    state.handlerLogFailures = 1
+    const first = state.processActivity!(sdkActivity("First request."))
+    await entered.promise
+    const failed = sdkActivity("The unconsumed request whose provider fails.")
+    await state.processActivity!(failed)
+    release.resolve()
+    await first
+    expect(state.run).toHaveBeenCalledTimes(2)
+    expect(state.requestEvents).toContainEqual(expect.objectContaining({ meta: expect.objectContaining({
+      stage: "failed", inboundActivityId: failed.id, reason: "handler_failed",
+    }) }))
+    await state.processActivity!(sdkActivity("An independent request after the failure."))
+    expect(state.run).toHaveBeenCalledTimes(3)
+    expect(state.sdkAcceptances).toHaveLength(2)
+  })
+
+  it.each(["conversation", "tenant", "actor", "channel"])("refuses incomplete production %s identity before admission", async missing => {
+    vi.stubEnv("OURO_TEAMS_DEVTOOLS", "0")
+    try {
+      const body = sdkActivity("Incomplete identity must not authorize execution.")
+      if (missing === "conversation") body.conversation.id = ""
+      if (missing === "tenant") body.conversation.tenantId = ""
+      if (missing === "actor") body.from.id = body.from.aadObjectId = ""
+      if (missing === "channel") body.channelId = ""
+      await expect(state.processActivity!(body)).resolves.toMatchObject({ status: 500 })
+      expect(state.run).not.toHaveBeenCalled()
+      expect(state.sdkAcceptances).toEqual([])
+      expect(fs.existsSync(path.join(state.root, "sessions", "owner", "private-chat.json.turn.lock"))).toBe(false)
+    } finally { vi.unstubAllEnvs() }
+  })
+
+  it("keeps distinct fallback actors separate when their optional AAD identity is empty", async () => {
+    const store = new FileFriendStore(path.join(state.root, "friends"))
+    const friend = (await store.get("owner"))!
+    friend.externalIds.push({ provider: "teams-conversation", externalId: "private-chat", tenantId: "tenant", linkedAt: "2026-10-16" })
+    await store.put("owner", friend)
+    const entered = Promise.withResolvers<void>()
+    const release = Promise.withResolvers<void>()
+    let drained: unknown[] = []
+    state.run.mockImplementationOnce(async (messages, callbacks: ChannelCallbacks, _channel, _signal, options: RunAgentOptions) => {
+      entered.resolve()
+      await release.promise
+      drained = options.drainSteeringFollowUps!()
+      messages.push({ role: "assistant", content: "First answer." })
+      callbacks.onTextChunk("First answer.")
+      return { outcome: "settled" }
+    })
+    const firstBody = sdkActivity("Request from the first fallback actor.")
+    firstBody.from = { ...firstBody.from, id: "sender-one", aadObjectId: "" }
+    const first = state.processActivity!(firstBody)
+    await entered.promise
+    const nextBody = sdkActivity("Request from the second fallback actor.")
+    nextBody.from = { ...nextBody.from, id: "sender-two", aadObjectId: "" }
+    const next = state.processActivity!(nextBody)
+    try {
+      await vi.waitFor(() => expect(state.requestEvents).toContainEqual(expect.objectContaining({ meta: expect.objectContaining({
+        stage: "admitted", inboundActivityId: nextBody.id,
+      }) })))
+    } finally { release.resolve() }
+    await Promise.all([first, next])
+    expect(drained).toEqual([])
+    expect(state.run).toHaveBeenCalledTimes(2)
+    expect(state.sdkAcceptances).toHaveLength(2)
+  })
+
+  it("holds an admission left before execution without claiming that it answered", async () => {
+    const body = sdkActivity("The previous process stopped before executing this.")
+    const { admitSessionActivity } = await import("../../mind/session-transaction")
+    admitSessionActivity(path.join(state.root, "sessions", "owner", "private-chat.json"), {
+      namespace: JSON.stringify(["teams.message", "msteams", "fake-app", "tenant", "aad-owner", "private-chat"]),
+      activityId: body.id,
+      payloadDigest: createHash("sha256").update(JSON.stringify([body.text, null])).digest("hex"),
+    })
+    vi.resetModules()
+    const { startTeamsApp } = await import("../../senses/teams")
+    startTeamsApp()
+    await expect(state.processActivity!(body)).resolves.toMatchObject({ status: 200 })
+    expect(state.run).not.toHaveBeenCalled()
+    expect(state.sdkAcceptances).toEqual([])
+    expect(state.requestEvents).toContainEqual(expect.objectContaining({ meta: expect.objectContaining({ stage: "duplicate_held", outcome: "not_replayed" }) }))
+    expect(state.requestEvents.some(event => event.meta?.stage === "replied")).toBe(false)
+    expect(fs.existsSync(path.join(state.root, "sessions", "owner", "private-chat.json"))).toBe(false)
+  })
+
+  it.each([undefined, "sent-b"])("holds duplicate SDK activity before busy steering or quoted queue (%s)", async quote => {
+    const entered = Promise.withResolvers<void>()
+    const release = Promise.withResolvers<void>()
+    let drained: unknown[] = []
+    state.run.mockImplementationOnce(async (messages, callbacks: ChannelCallbacks, _channel, _signal, options: RunAgentOptions) => {
+      entered.resolve()
+      await release.promise
+      drained = options.drainSteeringFollowUps!()
+      messages.push({ role: "assistant", content: "First answer." })
+      callbacks.onTextChunk("First answer.")
+      return { outcome: "settled" }
+    })
+    const body = sdkActivity("First request.")
+    const running = state.processActivity!(structuredClone(body))
+    await entered.promise
+    const queuedBody = quote ? sdkActivity("Quoted clarification.", quote) : body
+    const queued = quote ? state.processActivity!(structuredClone(queuedBody)) : undefined
+    try {
+      await expect(state.processActivity!(structuredClone(queuedBody))).resolves.toMatchObject({ status: 200 })
+    } finally { release.resolve() }
+    await Promise.all([running, queued])
+    expect(drained).toEqual([])
+    expect(state.run).toHaveBeenCalledTimes(quote ? 2 : 1)
+    expect(state.sdkAcceptances).toHaveLength(quote ? 2 : 1)
+    const persisted = loadSession(path.join(state.root, "sessions", "owner", "private-chat.json"))
+    const text = quote ? "Quoted clarification." : "First request."
+    expect(persisted?.messages.filter(message => message.role === "user" && message.content === text)).toHaveLength(1)
+  })
+
+  it("never resends after an uncertain SDK send acceptance, including after restart", async () => {
+    state.sdkLostAck = true
+    const body = sdkActivity("Do this once even if the acknowledgement is lost.")
+    await state.processActivity!(structuredClone(body))
+    expect(state.sdkAcceptances).toHaveLength(1)
+    vi.resetModules()
+    const { startTeamsApp } = await import("../../senses/teams")
+    startTeamsApp()
+    state.sdkLostAck = false
+    await state.processActivity!(structuredClone(body))
+    expect(state.run).toHaveBeenCalledTimes(1)
+    expect(state.sdkAcceptances).toHaveLength(1)
+    expect(state.requestEvents).toContainEqual(expect.objectContaining({ meta: expect.objectContaining({ stage: "duplicate_held", outcome: "not_replayed" }) }))
+    expect(state.requestEvents).not.toContainEqual(expect.objectContaining({ meta: expect.objectContaining({ stage: "replied", delivery: "accepted" }) }))
+  })
+
+  it("fails closed on corrupt admission storage without poisoning the next admission", async () => {
+    const lock = path.join(state.root, "sessions", "owner", "private-chat.json.turn.lock")
+    fs.mkdirSync(path.dirname(lock), { recursive: true })
+    fs.writeFileSync(lock, "not a SQLite database")
+    const body = sdkActivity("Do not run without durable evidence.")
+    await expect(state.processActivity!(structuredClone(body))).resolves.toMatchObject({ status: 500 })
+    expect(state.run).not.toHaveBeenCalled()
+    expect(state.sdkAcceptances).toEqual([])
+    fs.renameSync(lock, `${lock}.fixture-corrupt`)
+    await expect(state.processActivity!(structuredClone(body))).resolves.toMatchObject({ status: 200 })
+    expect(state.run).toHaveBeenCalledTimes(1)
+    expect(state.sdkAcceptances).toHaveLength(1)
+  })
+
+  it("rejects a production SDK message without an activity ID before execution", async () => {
+    vi.stubEnv("OURO_TEAMS_DEVTOOLS", "0")
+    try {
+      const body = { ...sdkActivity("No identity must mean no execution."), id: undefined }
+      await expect(state.processActivity!(body)).resolves.toMatchObject({ status: 500 })
+      expect(state.run).not.toHaveBeenCalled()
+      expect(state.sdkAcceptances).toEqual([])
+    } finally { vi.unstubAllEnvs() }
+  })
+
+  it("admits identical text with a distinct SDK ID but rejects changed payload under an existing ID", async () => {
+    const body = sdkActivity("Same words, independent requests.")
+    await state.processActivity!(structuredClone(body))
+    await state.processActivity!({ ...body, id: "different-id" })
+    await expect(state.processActivity!({ ...body, text: "Changed payload." })).resolves.toMatchObject({ status: 500 })
+    expect(state.run).toHaveBeenCalledTimes(2)
+    expect(state.sdkAcceptances).toHaveLength(2)
+    const persisted = loadSession(path.join(state.root, "sessions", "owner", "private-chat.json"))
+    expect(persisted?.messages.filter(message => message.role === "user" && message.content === body.text)).toHaveLength(2)
+    expect(JSON.stringify(persisted?.messages)).not.toContain("Changed payload.")
+  })
+
+  it.each(["sequential", "restart", "reset"] as const)("admits a repeated real SDK activity once across %s", async boundary => {
+    state.run.mockImplementation(async (messages, callbacks: ChannelCallbacks) => {
+      messages.push({ role: "assistant", content: "One synthetic answer." })
+      callbacks.onTextChunk("One synthetic answer.")
+      await callbacks.flushNow?.()
+      return { outcome: "settled" }
+    })
+    const body = { ...activity("One synthetic request.").activity, type: "message", serviceUrl: "https://fixture.invalid", recipient: { id: "fake-app", role: "bot" } }
+    await state.processActivity!(structuredClone(body))
+    if (boundary === "restart") {
+      vi.resetModules()
+      const { startTeamsApp } = await import("../../senses/teams")
+      startTeamsApp()
+    }
+    if (boundary === "reset") await state.handlers.get("message")!(activity("/new"))
+    await state.processActivity!(structuredClone(body))
+    expect(state.run).toHaveBeenCalledTimes(1)
+    expect(state.sdkAcceptances).toHaveLength(1)
+    expect(state.sdkAcceptances[0]).toMatchObject({ activityId: body.id, conversationId: "private-chat" })
+    expect(state.requestEvents).toContainEqual(expect.objectContaining({ meta: expect.objectContaining({ stage: "duplicate_held", inboundActivityId: body.id }) }))
+  })
+
+  it("waits for the SDK send acknowledgement instead of claiming early completion", async () => {
+    const emitted = Promise.withResolvers<{ id: string }>()
     const ctx = activity("Give me the short version.")
-    ctx.stream.emit.mockImplementationOnce(() => emitted.promise)
+    ctx.send.mockImplementation(value => value.type === "typing" ? Promise.resolve({ id: "typing" }) : emitted.promise)
     let complete = false
     const request = state.handlers.get("message")!(ctx).then(() => { complete = true })
-    await vi.waitFor(() => expect(ctx.stream.emit).toHaveBeenCalledTimes(1))
+    await vi.waitFor(() => expect(ctx.send).toHaveBeenCalledWith(expect.objectContaining({ type: "message" })))
     await new Promise(resolve => setImmediate(resolve))
     expect(complete).toBe(false)
-    emitted.resolve()
+    emitted.resolve({ id: "acknowledged" })
     await request
     expect(complete).toBe(true)
   })
@@ -184,14 +573,12 @@ describe("actual Teams feedback adapter and leased pipeline", () => {
       })
       const ctx = activity(request)
       ctx.activity.id = "phone-summary"
-      // A definite local rejection lets this fixture test the real SDK send adapter, not an uncertain resend.
-      ctx.stream.emit.mockImplementationOnce(() => { throw new Error("fixture rejected before transport") })
       await state.handlers.get("message")!(ctx)
       expect(state.run).toHaveBeenCalledTimes(1)
       const options = state.run.mock.calls[0][4] as RunAgentOptions
       expect(options.toolContext?.currentUserMessage).toBe(request)
       expect(options.toolContext?.currentShepherdSurface).toBeUndefined()
-      expect(ctx.send).toHaveBeenCalledTimes(1)
+      expect(ctx.send.mock.calls.filter(([value]) => value.type === "message")).toHaveLength(1)
       expect(ctx.send).toHaveBeenCalledWith(expect.objectContaining({ text: answer, replyToId: "phone-summary" }))
       expect(answer.length).toBeLessThan(160)
       expect(state.requestEvents).toContainEqual(expect.objectContaining({ meta: expect.objectContaining({
@@ -224,7 +611,7 @@ describe("actual Teams feedback adapter and leased pipeline", () => {
     const options = state.run.mock.calls[0][4] as RunAgentOptions
     expect(options.toolContext?.currentUserMessage).toBe(request)
     expect(options.toolContext?.context?.friend.id).toBe("owner")
-    expect(ctx.stream.emit.mock.calls.some(([value]) => JSON.stringify(value).includes(answer))).toBe(true)
+    expect(ctx.send.mock.calls.some(([value]) => JSON.stringify(value).includes(answer))).toBe(true)
     const stages = state.requestEvents.map(event => event.meta?.stage)
     expect(stages).toContain("received")
     expect(stages).toContain("admitted")
@@ -253,7 +640,7 @@ describe("actual Teams feedback adapter and leased pipeline", () => {
     const persisted = loadSession(path.join(state.root, "sessions", "owner", "private-chat.json"))
     expect(JSON.stringify(persisted?.messages)).toContain("Only this session, please.")
     expect(JSON.stringify(persisted?.messages)).toContain("Clarification recorded.")
-    expect(ctx.stream.emit.mock.calls.some(([value]) => JSON.stringify(value).includes("Clarification recorded."))).toBe(true)
+    expect(ctx.send.mock.calls.some(([value]) => JSON.stringify(value).includes("Clarification recorded."))).toBe(true)
   })
 
   it.each([
@@ -265,8 +652,8 @@ describe("actual Teams feedback adapter and leased pipeline", () => {
     const ctx = activity(text!, quote, actor, chat)
     await state.handlers.get("message")!(ctx)
     expect(state.run).not.toHaveBeenCalled()
-    expect(ctx.stream.emit).toHaveBeenCalled()
-    expect(JSON.stringify(ctx.stream.emit.mock.calls)).not.toMatch(/Historical|Feedback for|Question about|33333333|44444444|\/historical/)
+    expect(ctx.send).toHaveBeenCalledWith(expect.objectContaining({ type: "message" }))
+    expect(JSON.stringify(ctx.send.mock.calls)).not.toMatch(/Historical|Feedback for|Question about|33333333|44444444|\/historical/)
   })
 
   it.each([
@@ -276,9 +663,9 @@ describe("actual Teams feedback adapter and leased pipeline", () => {
     const ctx = activity("Only this one, please.", "sent-a", actor, chat)
     await state.handlers.get("message")!(ctx)
     expect(state.run).not.toHaveBeenCalled()
-    expect(ctx.stream.emit).toHaveBeenCalledTimes(1)
-    expect(JSON.stringify(ctx.stream.emit.mock.calls)).toContain("feedback")
-    expect(JSON.stringify(ctx.stream.emit.mock.calls)).not.toMatch(/Historical|Feedback for|Question about|33333333|44444444|\/historical|sent-a|owner|other-chat/)
+    expect(ctx.send.mock.calls.filter(([value]) => value.type === "message")).toHaveLength(1)
+    expect(JSON.stringify(ctx.send.mock.calls)).toContain("feedback")
+    expect(JSON.stringify(ctx.send.mock.calls)).not.toMatch(/Historical|Feedback for|Question about|33333333|44444444|\/historical|sent-a|owner|other-chat/)
   })
 
   it("keeps an ordinary unknown quote on the normal path", async () => {
@@ -368,8 +755,8 @@ describe("actual Teams feedback adapter and leased pipeline", () => {
     expect(state.run).toHaveBeenCalledTimes(2)
     expect(state.run.mock.calls.map(call => call[4].toolContext.currentShepherdSurface?.id)).toEqual([sourceA, sourceB])
     expect(state.run.mock.calls[1][4].toolContext.currentUserMessage).toBe("Answer B")
-    expect(JSON.stringify(second.stream.emit.mock.calls)).toContain("Clarification recorded.")
-    expect(JSON.stringify(first.stream.emit.mock.calls)).not.toContain("Clarification recorded.")
+    expect(JSON.stringify(second.send.mock.calls)).toContain("Clarification recorded.")
+    expect(JSON.stringify(first.send.mock.calls)).not.toContain("Clarification recorded.")
   })
 
   it("leaves ordinary same-actor unquoted busy steering in the active turn", async () => {
@@ -422,11 +809,11 @@ describe("actual Teams feedback adapter and leased pipeline", () => {
     expect(state.run).toHaveBeenCalledTimes(3)
     expect(state.run.mock.calls[2][4].toolContext.currentUserMessage).toBe("after the queued clarification")
     expect(state.run.mock.calls[2][4].toolContext.currentShepherdSurface).toBeUndefined()
-    expect(JSON.stringify(tail.stream.emit.mock.calls)).toContain("Clarification recorded.")
+    expect(JSON.stringify(tail.send.mock.calls)).toContain("Clarification recorded.")
     const later = activity("new independent clarification", "sent-a")
     await state.handlers.get("message")!(later)
     expect(state.run).toHaveBeenCalledTimes(4)
     expect(state.run.mock.calls[3][4].toolContext.currentShepherdSurface?.id).toBe(sourceA)
-    expect(JSON.stringify(later.stream.emit.mock.calls)).toContain("Clarification recorded.")
+    expect(JSON.stringify(later.send.mock.calls)).toContain("Clarification recorded.")
   })
 })
