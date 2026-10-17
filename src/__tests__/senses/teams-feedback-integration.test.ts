@@ -1,7 +1,7 @@
 import * as fs from "node:fs"
 import * as os from "node:os"
 import * as path from "node:path"
-import { beforeEach, describe, expect, it, vi } from "vitest"
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { FileFriendStore, type FriendRecord } from "@ouro.bot/friends"
 import type { RunAgentOptions, ChannelCallbacks } from "../../heart/core"
 import { feedbackStorePath, openFeedbackStore } from "../../senses/shepherd/feedback-store"
@@ -11,11 +11,12 @@ import { readNoticeOutbox } from "../../senses/shepherd/notice-outbox"
 import { appendReturn, type ReturnRecord } from "../../senses/shepherd/returns"
 import { EventEmitter } from "node:events"
 import { createHash } from "node:crypto"
+import { checkErrorContext, type PerTestEvent } from "../../nerves/coverage/audit-rules"
 
 const state = vi.hoisted(() => ({
   root: "", handlers: new Map<string, (ctx: any) => Promise<void>>(), run: vi.fn(), handlerLogFailures: 0,
   refusalLogFailures: 0,
-  requestEvents: [] as Array<{ event: string; meta?: Record<string, unknown> }>,
+  requestEvents: [] as PerTestEvent[],
   processActivity: undefined as ((body: unknown) => Promise<unknown>) | undefined,
   sdkAcceptances: [] as Array<{ activityId: string; conversationId: string; outgoingId: string }>,
   sdkLostAck: false,
@@ -110,6 +111,7 @@ vi.mock("../../nerves/runtime", async (original) => {
       }
       console.error(event)
     }
+    if (event.level === "error") state.requestEvents.push(event)
     actual.emitNervesEvent(event)
   } }
 })
@@ -186,6 +188,10 @@ beforeEach(async () => {
   })
   await setup()
 }, 60_000)
+
+afterEach(() => {
+  expect(checkErrorContext({ "actual Teams SDK integration": state.requestEvents })).toEqual({ status: "pass", violations: [] })
+})
 
 describe("actual Teams feedback adapter and leased pipeline", () => {
   it("uses actual SDK single-attempt messages with correlation and AI labels, without stream finalization", async () => {

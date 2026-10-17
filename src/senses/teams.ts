@@ -1429,7 +1429,7 @@ function registerBotHandlers(app: InstanceType<typeof App> & { id?: string; api?
     } catch (err: unknown) {
       reportTeamsRequest("failed", convId, requestContext, { reason: "handler_failed" })
       const msg = err instanceof Error ? err.message : String(err)
-      emitNervesEvent({ level: "error", event: "channel.handler_error", component: "channels", message: msg.slice(0, 200), meta: {} })
+      emitNervesEvent({ level: "error", event: "channel.handler_error", component: "channels", message: msg.slice(0, 200), meta: { conversationId: convId, inboundActivityId: activity.id, botId: app.id } })
     }
     })
     })
@@ -1438,7 +1438,7 @@ function registerBotHandlers(app: InstanceType<typeof App> & { id?: string; api?
 
   app.event("error", ({ error }: { error: unknown }) => {
     const msg = error instanceof Error ? error.message : String(error)
-    emitNervesEvent({ level: "error", event: "channel.app_error", component: "channels", message: `[${label}] ${msg}`, meta: {} })
+    emitNervesEvent({ level: "error", event: "channel.app_error", component: "channels", message: `[${label}] ${msg}`, meta: { botId: app.id, label } })
   })
 }
 
