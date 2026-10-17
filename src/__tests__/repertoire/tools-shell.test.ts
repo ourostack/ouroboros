@@ -21,7 +21,7 @@ vi.mock("../../heart/daemon/socket-client", () => ({
 }))
 
 vi.mock("child_process", () => ({
-  execSync: vi.fn(),
+  exec: vi.fn(),
   spawnSync: vi.fn(),
   spawn: vi.fn(),
 }))
@@ -81,12 +81,19 @@ vi.mock("../../heart/identity", () => {
   }
 })
 
-import { execSync, spawn } from "child_process"
+import { exec, spawn } from "child_process"
 import { getAgentName, getAgentRoot, loadAgentConfig } from "../../heart/identity"
 import { EventEmitter } from "events"
 import { resetShellSessions } from "../../repertoire/shell-sessions"
 
 const SHELL_OWNER = { agentName: "testagent", agentRoot: "/mock/repo/testagent" }
+
+function mockShellOutput(output: string) {
+  vi.mocked(exec).mockImplementation(((_command, _options, callback) => {
+    queueMicrotask(() => callback(null, output, ""))
+    return {}
+  }) as typeof exec)
+}
 
 describe("shell tool", () => {
   let execTool: (name: string, args: any, ctx?: any) => Promise<string>
@@ -109,14 +116,14 @@ describe("shell tool", () => {
       vi.mocked(getAgentRoot).mockClear()
       vi.mocked(loadAgentConfig).mockClear()
       vi.mocked(spawn).mockClear()
-      vi.mocked(execSync).mockReturnValue("wrong ambient output")
+      mockShellOutput("wrong ambient output")
       await expect(Promise.resolve().then(() => tool.handler({ command: "printf fixture", id: "foreign" }, context)))
         .rejects.toThrow(/explicit.*owner|owner.*required/i)
       expect(getAgentName).not.toHaveBeenCalled()
       expect(getAgentRoot).not.toHaveBeenCalled()
       expect(loadAgentConfig).not.toHaveBeenCalled()
       expect(spawn).not.toHaveBeenCalled()
-      expect(execSync).not.toHaveBeenCalled()
+      expect(exec).not.toHaveBeenCalled()
     },
   )
 
@@ -127,7 +134,7 @@ describe("shell tool", () => {
   beforeEach(async () => {
     vi.resetModules()
     resetShellSessions()
-    vi.mocked(execSync).mockReset()
+    vi.mocked(exec).mockReset()
     vi.mocked(loadAgentConfig).mockReset().mockReturnValue({
       name: "testagent",
       provider: "minimax",
@@ -159,18 +166,18 @@ describe("shell tool", () => {
     it.each([false, true])("surfaces unavailable explicit-owner configuration without a foreground effect: explicit=%s", async (explicit) => {
       const error = new Error("configuration unavailable")
       vi.mocked(loadAgentConfig).mockImplementation(() => { throw error })
-      vi.mocked(execSync).mockReturnValue("legacy foreground")
+      mockShellOutput("legacy foreground")
       if (explicit) {
         await expect(execTool("shell", { command: "pwd" }, { ...SHELL_OWNER, signin: async () => undefined })).rejects.toBe(error)
-        expect(execSync).not.toHaveBeenCalled()
+        expect(exec).not.toHaveBeenCalled()
       } else {
         expect(await execTool("shell", { command: "pwd" })).toBe("legacy foreground")
-        expect(execSync).toHaveBeenCalledWith("pwd", expect.objectContaining({ timeout: 30000 }))
+        expect(exec).toHaveBeenCalledWith("pwd", expect.objectContaining({ timeout: 30000 }), expect.any(Function))
       }
     })
 
     it("keeps legacy root-only context while naming its ambient owner explicitly", async () => {
-      vi.mocked(execSync).mockReturnValue("legacy foreground")
+      mockShellOutput("legacy foreground")
       await execTool("shell", { command: "pwd" }, { signin: async () => undefined, agentRoot: "/legacy/root" })
       expect(loadAgentConfig).toHaveBeenCalledWith({ agentName: "testagent", agentRoot: "/legacy/root" })
     })
@@ -188,33 +195,33 @@ describe("shell tool", () => {
     })
 
     it("uses default timeout (30000ms) when no timeout_ms provided", async () => {
-      vi.mocked(execSync).mockReturnValue("ok")
+      mockShellOutput("ok")
       await execTool("shell", { command: "echo hi" })
-      expect(execSync).toHaveBeenCalledWith("echo hi", expect.objectContaining({ timeout: 30000 }))
+      expect(exec).toHaveBeenCalledWith("echo hi", expect.objectContaining({ timeout: 30000 }), expect.any(Function))
     })
 
     it("uses custom timeout_ms when provided", async () => {
-      vi.mocked(execSync).mockReturnValue("ok")
+      mockShellOutput("ok")
       await execTool("shell", { command: "sleep 5", timeout_ms: "60000" })
-      expect(execSync).toHaveBeenCalledWith("sleep 5", expect.objectContaining({ timeout: 60000 }))
+      expect(exec).toHaveBeenCalledWith("sleep 5", expect.objectContaining({ timeout: 60000 }), expect.any(Function))
     })
 
     it("clamps timeout_ms to maximum cap of 600000ms", async () => {
-      vi.mocked(execSync).mockReturnValue("ok")
+      mockShellOutput("ok")
       await execTool("shell", { command: "long-task", timeout_ms: "999999" })
-      expect(execSync).toHaveBeenCalledWith("long-task", expect.objectContaining({ timeout: 600000 }))
+      expect(exec).toHaveBeenCalledWith("long-task", expect.objectContaining({ timeout: 600000 }), expect.any(Function))
     })
 
     it("uses default timeout when timeout_ms is 0", async () => {
-      vi.mocked(execSync).mockReturnValue("ok")
+      mockShellOutput("ok")
       await execTool("shell", { command: "echo hi", timeout_ms: "0" })
-      expect(execSync).toHaveBeenCalledWith("echo hi", expect.objectContaining({ timeout: 30000 }))
+      expect(exec).toHaveBeenCalledWith("echo hi", expect.objectContaining({ timeout: 30000 }), expect.any(Function))
     })
 
     it("uses default timeout when timeout_ms is negative", async () => {
-      vi.mocked(execSync).mockReturnValue("ok")
+      mockShellOutput("ok")
       await execTool("shell", { command: "echo hi", timeout_ms: "-5000" })
-      expect(execSync).toHaveBeenCalledWith("echo hi", expect.objectContaining({ timeout: 30000 }))
+      expect(exec).toHaveBeenCalledWith("echo hi", expect.objectContaining({ timeout: 30000 }), expect.any(Function))
     })
 
     it("uses agent config shell.defaultTimeout when set", async () => {
@@ -229,9 +236,9 @@ describe("shell tool", () => {
       const config = await import("../../heart/config")
       config.resetConfigCache()
       const tools = await import("../../repertoire/tools")
-      vi.mocked(execSync).mockReturnValue("ok")
+      mockShellOutput("ok")
       await tools.execTool("shell", { command: "echo hi" })
-      expect(execSync).toHaveBeenCalledWith("echo hi", expect.objectContaining({ timeout: 45000 }))
+      expect(exec).toHaveBeenCalledWith("echo hi", expect.objectContaining({ timeout: 45000 }), expect.any(Function))
     })
 
     it("timeout_ms overrides agent config default", async () => {
@@ -245,9 +252,9 @@ describe("shell tool", () => {
       const config = await import("../../heart/config")
       config.resetConfigCache()
       const tools = await import("../../repertoire/tools")
-      vi.mocked(execSync).mockReturnValue("ok")
+      mockShellOutput("ok")
       await tools.execTool("shell", { command: "echo hi", timeout_ms: "10000" })
-      expect(execSync).toHaveBeenCalledWith("echo hi", expect.objectContaining({ timeout: 10000 }))
+      expect(exec).toHaveBeenCalledWith("echo hi", expect.objectContaining({ timeout: 10000 }), expect.any(Function))
     })
 
     it("agent config defaultTimeout is also capped at 600000ms", async () => {
@@ -261,9 +268,9 @@ describe("shell tool", () => {
       const config = await import("../../heart/config")
       config.resetConfigCache()
       const tools = await import("../../repertoire/tools")
-      vi.mocked(execSync).mockReturnValue("ok")
+      mockShellOutput("ok")
       await tools.execTool("shell", { command: "echo hi" })
-      expect(execSync).toHaveBeenCalledWith("echo hi", expect.objectContaining({ timeout: 600000 }))
+      expect(exec).toHaveBeenCalledWith("echo hi", expect.objectContaining({ timeout: 600000 }), expect.any(Function))
     })
   })
 
@@ -325,11 +332,11 @@ describe("shell tool", () => {
         name: "testagent", provider: "minimax", context: { maxTokens: 80000, contextMargin: 20 },
         shell: { defaultTimeout: owner?.agentRoot === "/bundles/a.ouro" ? 47000 : 30000 },
       }) as ReturnType<typeof loadAgentConfig>)
-      vi.mocked(execSync).mockReturnValue("owned foreground")
+      mockShellOutput("owned foreground")
       const owner = { agentName: "owner-a", agentRoot: "/bundles/a.ouro" }
       expect(await execTool("shell", { command: "pwd" }, { ...owner, signin: async () => undefined })).toBe("owned foreground")
       expect(loadAgentConfig).toHaveBeenCalledWith(owner)
-      expect(execSync).toHaveBeenCalledWith("pwd", expect.objectContaining({ timeout: 47000 }))
+      expect(exec).toHaveBeenCalledWith("pwd", expect.objectContaining({ timeout: 47000 }), expect.any(Function))
     })
 
     it("shell tool schema includes optional background parameter", async () => {
@@ -361,11 +368,11 @@ describe("shell tool", () => {
       expect(parsed.status).toBe("running")
     })
 
-    it("non-background execution behaves as before (synchronous)", async () => {
-      vi.mocked(execSync).mockReturnValue("sync output")
+    it("non-background execution still returns the completed command output", async () => {
+      mockShellOutput("sync output")
       const result = await execTool("shell", { command: "echo hi" })
       expect(result).toBe("sync output")
-      expect(execSync).toHaveBeenCalled()
+      expect(exec).toHaveBeenCalled()
     })
 
     it("shell_status tool is registered", async () => {
@@ -724,14 +731,14 @@ describe("shell tool", () => {
     })
 
     it("shell handler includes warning in result for destructive commands", async () => {
-      vi.mocked(execSync).mockReturnValue("pushed")
+      mockShellOutput("pushed")
       const result = await execTool("shell", { command: "git reset --hard HEAD~1" })
       expect(result).toContain("pushed")
       expect(result).toContain("destructive pattern detected")
     })
 
     it("shell handler does NOT block execution of destructive commands (friction only)", async () => {
-      vi.mocked(execSync).mockReturnValue("executed")
+      mockShellOutput("executed")
       const result = await execTool("shell", { command: "git reset --hard HEAD~1" })
       // The command still executes (returns its output) -- detection is friction, not a gate
       expect(result).toContain("executed")
@@ -739,7 +746,7 @@ describe("shell tool", () => {
     })
 
     it("non-destructive commands have no warning appended", async () => {
-      vi.mocked(execSync).mockReturnValue("clean output")
+      mockShellOutput("clean output")
       const result = await execTool("shell", { command: "echo hello" })
       expect(result).toBe("clean output")
       expect(result).not.toContain("destructive")

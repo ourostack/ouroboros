@@ -3,7 +3,7 @@ import * as os from "node:os"
 import * as path from "node:path"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { FileFriendStore, type FriendRecord } from "@ouro.bot/friends"
-import type { RunAgentOptions, ChannelCallbacks } from "../../heart/core"
+import type { RunAgentOptions, ChannelCallbacks, ProviderRuntime } from "../../heart/core"
 import { feedbackStorePath, openFeedbackStore } from "../../senses/shepherd/feedback-store"
 import { loadSession } from "../../mind/context"
 import { createOwnerNotifier } from "../../senses/shepherd/owner-notice"
@@ -22,6 +22,9 @@ const state = vi.hoisted(() => ({
   sdkLostAck: false,
   sdkRealTransport: false,
   sdkTransportLostAckOnce: false,
+  sdkTypingRejectAt: 0,
+  sdkTypingAttempts: 0,
+  sdkTypingError: undefined as unknown,
   sdkHttpBodies: [] as Array<Record<string, unknown>>,
 }))
 vi.mock("@microsoft/teams.apps", async original => {
@@ -30,6 +33,9 @@ vi.mock("@microsoft/teams.apps", async original => {
     clone() { return this }, get: async () => ({ data: {} }), request: async () => ({ data: {} }),
     post: async (_url: string, value: { type?: string; text?: string; replyToId?: string; channelData?: { streamType?: string } }) => {
       if (state.sdkRealTransport) state.sdkHttpBodies.push(structuredClone(value))
+      if (value.type === "typing" && ++state.sdkTypingAttempts === state.sdkTypingRejectAt) {
+        throw state.sdkTypingError
+      }
       if (state.sdkRealTransport && value.text && value.channelData?.streamType !== "informative") {
         const outgoingId = `http-accepted-${state.sdkAcceptances.length + 1}`
         state.sdkAcceptances.push({ activityId: value.replyToId ?? "sdk-stream", conversationId: "private-chat", outgoingId })
@@ -111,7 +117,7 @@ vi.mock("../../nerves/runtime", async (original) => {
       }
       console.error(event)
     }
-    if (event.level === "error") state.requestEvents.push(event)
+    if (event.level === "error" || event.level === "warn") state.requestEvents.push(event)
     actual.emitNervesEvent(event)
   } }
 })
@@ -179,6 +185,9 @@ beforeEach(async () => {
   state.sdkLostAck = false
   state.sdkRealTransport = false
   state.sdkTransportLostAckOnce = false
+  state.sdkTypingRejectAt = 0
+  state.sdkTypingAttempts = 0
+  state.sdkTypingError = new Error("fixture typing status rejected: 403")
   state.sdkHttpBodies = []
   incomingSequence = 0
   state.run.mockReset().mockImplementation(async (messages, callbacks: ChannelCallbacks) => {
@@ -194,6 +203,49 @@ afterEach(() => {
 })
 
 describe("actual Teams feedback adapter and leased pipeline", () => {
+  it.each([1, 2])("delivers the real core's settled answer when the SDK rejects advisory typing attempt %s", async (rejectAt) => {
+    state.sdkRealTransport = true
+    state.sdkTypingRejectAt = rejectAt
+    if (rejectAt === 1) state.sdkTypingError = "fixture typing status rejected: 403"
+    vi.resetModules()
+    const { startTeamsApp } = await import("../../senses/teams")
+    startTeamsApp()
+    let providerAttempts = 0
+    const signals: AbortSignal[] = []
+    const runtime: ProviderRuntime = {
+      id: "minimax", model: "local-teams-delivery-fixture", client: {}, capabilities: new Set(),
+      resetTurnState() {}, appendToolOutput() {}, async ping() {}, classifyError: () => "unknown",
+      async streamTurn(request) {
+        providerAttempts++
+        signals.push(request.signal!)
+        await new Promise(resolve => setImmediate(resolve))
+        return { content: "", outputItems: [], toolCalls: [{
+          id: "settled-reply", name: "settle",
+          arguments: JSON.stringify({ answer: "Your request has a useful answer.", intent: "complete" }),
+        }] }
+      },
+    }
+    state.run.mockImplementation(async (messages, callbacks, channel, signal, options) => {
+      const actual = await vi.importActual<typeof import("../../heart/core")>("../../heart/core")
+      return actual.runAgent(messages, callbacks, channel, signal, {
+        ...options, providerRuntimeOverride: runtime, skipKeptNotes: true,
+      })
+    })
+    const body = sdkActivity("Please answer my request.")
+    await state.processActivity!(structuredClone(body))
+    await state.processActivity!(structuredClone(body))
+    expect(providerAttempts).toBe(1)
+    expect(signals.every(signal => !signal.aborted)).toBe(true)
+    expect(state.sdkHttpBodies.filter(value => value.type === "message")).toEqual([
+      expect.objectContaining({ text: "Your request has a useful answer.", replyToId: body.id }),
+    ])
+    expect(state.sdkAcceptances).toHaveLength(1)
+    expect(state.requestEvents).toContainEqual(expect.objectContaining({
+      level: "warn", event: "channel.teams_typing_failed",
+      meta: expect.objectContaining({ inboundActivityId: body.id, conversationId: "private-chat" }),
+    }))
+  })
+
   it("uses actual SDK single-attempt messages with correlation and AI labels, without stream finalization", async () => {
     state.sdkRealTransport = true
     vi.resetModules()

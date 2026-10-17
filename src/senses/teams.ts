@@ -1286,7 +1286,18 @@ function registerBotHandlers(app: InstanceType<typeof App> & { id?: string; api?
     // Use the SDK's single-attempt, awaitable send instead of that hidden retry loop.
     const stream: TeamsStream = {
       emit: value => sendText(typeof value === "string" ? value : value.text),
-      update: () => ctx.send({ type: "typing" }),
+      update: async () => {
+        try {
+          await ctx.send({ type: "typing" })
+        } catch (error) {
+          emitNervesEvent({
+            level: "warn", component: "channels", event: "channel.teams_typing_failed",
+            message: "Teams rejected an advisory typing update; the reply is still pending",
+            meta: { conversationId: convId, inboundActivityId: activity.id,
+              error: error instanceof Error ? error.message : String(error) },
+          })
+        }
+      },
       close: async () => undefined,
     }
 
