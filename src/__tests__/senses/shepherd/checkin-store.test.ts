@@ -3,7 +3,10 @@ import * as os from "node:os"
 import * as path from "node:path"
 import Database from "better-sqlite3"
 import { afterEach, describe, expect, it, vi } from "vitest"
-import { checkInStorePath, openCheckInStore, type CheckInStore, type DispatchInput } from "../../../senses/shepherd/checkin-store"
+import {
+  advanceCustodyRevision, checkInStorePath, custodyCapacity, custodyRevision, openCheckInStore, openCustodyDatabase,
+  type CheckInStore, type DispatchInput,
+} from "../../../senses/shepherd/checkin-store"
 import { emitNervesEvent } from "../../../nerves/runtime"
 
 vi.mock("../../../nerves/runtime", () => ({ emitNervesEvent: vi.fn() }))
@@ -241,5 +244,105 @@ describe("private cross-trigger check-in custody", () => {
     expect(() => store.markNotified("new-signature", "2026-10-16T05:00:00Z")).toThrow("capacity")
     store.close()
     expect(() => openCheckInStore(file)).toThrow("capacity")
+  })
+
+  it("binds host receipts to the original request, surface, process and honest input outcome", () => {
+    const { store, file } = open()
+    const claim = store.claimDispatch(input(), "owner")!
+    const receipt = {
+      requestId: claim.id, surfaceId: claim.session, workspaceId: "workspace-1", processInstance: claim.instance!,
+      pasteAdmitted: true, submitAdmitted: true,
+    }
+    expect(() => store.completeDispatch(claim.id, "owner", { state: "sent", receipt: { ...receipt, submitAdmitted: "yes" as never } })).toThrow(/receipt schema/)
+    expect(() => store.completeDispatch(claim.id, "owner", { state: "sent", receipt: { ...receipt, pasteAdmitted: false } })).toThrow(/receipt schema/)
+    for (const change of [{ requestId: "other" }, { surfaceId: "other" }, { processInstance: "other" }]) {
+      expect(() => store.completeDispatch(claim.id, "owner", { state: "sent", receipt: { ...receipt, ...change } })).toThrow(/receipt identity/)
+    }
+    expect(() => store.completeDispatch(claim.id, "owner", { state: "not_sent", receipt })).toThrow(/contradicts/)
+    expect(() => store.completeDispatch(claim.id, "owner", { state: "sent", receipt: { ...receipt, submitAdmitted: false } })).toThrow(/contradicts/)
+    store.completeDispatch(claim.id, "owner", { state: "sent", receipt })
+    const data = new Database(file, { readonly: true })
+    try { expect(JSON.parse((data.prepare("SELECT data FROM dispatches WHERE id=?").get(claim.id) as { data: string }).data)).toMatchObject({ state: "sent", receipt }) } finally { data.close() }
+    expect(store.claimDispatch(input(), "retry")).toBeNull()
+    const refused = store.claimDispatch(input({ session: "refused" }), "owner")!
+    store.completeDispatch(refused.id, "owner", { state: "not_sent", receipt: {
+      ...receipt, requestId: refused.id, surfaceId: refused.session, pasteAdmitted: false, submitAdmitted: false,
+    } })
+    expect(store.claimDispatch(input({ session: "refused" }), "retry")).not.toBeNull()
+    const partial = store.claimDispatch(input({ session: "partial" }), "owner")!
+    store.completeDispatch(partial.id, "owner", { state: "unknown", receipt: { ...receipt, requestId: partial.id, surfaceId: partial.session, submitAdmitted: false } })
+    expect(store.claimDispatch(input({ session: "partial", screenFingerprint: "new" }), "retry")).toBeNull()
+  })
+
+  it("refuses corrupt stored receipts rather than treating their partial input as retryable", () => {
+    const { store, file } = open()
+    const claim = store.claimDispatch(input(), "owner")!
+    const receipt = {
+      requestId: claim.id, surfaceId: claim.session, workspaceId: "workspace-1", processInstance: claim.instance!,
+      pasteAdmitted: true, submitAdmitted: true,
+    }
+    for (const change of [{ requestId: "other" }, { surfaceId: "other" }, { processInstance: "other" }, { submitAdmitted: "invalid" }]) {
+      mutate(file, db => db.prepare("UPDATE dispatches SET data=? WHERE id=?").run(JSON.stringify({ ...claim, receipt: { ...receipt, ...change } }), claim.id))
+      expect(() => store.claimDispatch(input(), "retry")).toThrow(/schema/)
+    }
+    mutate(file, db => db.prepare("UPDATE dispatches SET data=? WHERE id=?").run(JSON.stringify({ ...claim, state: "not_sent", receipt }), claim.id))
+    expect(() => store.claimDispatch(input(), "retry")).toThrow(/schema/)
+  })
+
+  it("rejects invalid metadata revisions and exhausted monotonic counters", () => {
+    const { file } = open()
+    const db = new Database(file)
+    try {
+      db.prepare("UPDATE custody_meta SET revision=-1").run()
+      expect(() => custodyRevision(db)).toThrow(/revision schema/)
+      db.prepare("UPDATE custody_meta SET revision=?").run(Number.MAX_SAFE_INTEGER)
+      expect(() => advanceCustodyRevision(db)).toThrow(/revision capacity/)
+      db.prepare("DELETE FROM custody_meta").run()
+      expect(() => custodyRevision(db)).toThrow(/revision schema/)
+    } finally { db.close() }
+  })
+
+  it("reads missing files without creation and refuses unsupported empty databases", () => {
+    const file = location()
+    fs.mkdirSync(path.dirname(file), { recursive: true, mode: 0o700 })
+    expect(openCustodyDatabase(file, "read")).toBeNull()
+    expect(fs.existsSync(file)).toBe(false)
+    fs.writeFileSync(file, "", { mode: 0o600 })
+    expect(() => openCustodyDatabase(file, "read")).toThrow(/schema/)
+  })
+
+  it("validates private journal files instead of trusting a safe main database alone", () => {
+    const { store, file } = open()
+    store.close()
+    fs.writeFileSync(`${file}-journal`, "unsafe", { mode: 0o644 })
+    expect(() => openCustodyDatabase(file, "read")).toThrow(/private file/)
+  })
+
+  it("does not rerun a migration another process completed before the write lock was acquired", () => {
+    const { file } = open()
+    const pragma = Database.prototype.pragma
+    let initial = true
+    vi.spyOn(Database.prototype, "pragma").mockImplementation(function (this: Database.Database, source, options) {
+      if (initial && source === "user_version") { initial = false; return 0 }
+      return pragma.call(this, source, options)
+    })
+    const other = open(file).store
+    expect(other.claimDispatch(input(), "owner")).not.toBeNull()
+  })
+
+  it("reports refusal headroom at the capacity boundary without pretending the store is empty", () => {
+    const { store, file } = open()
+    store.claimDispatch(input(), "owner")
+    mutate(file, db => {
+      db.exec("CREATE TABLE capacity_fixture (data BLOB)")
+      const current = Number(db.pragma("page_count", { simple: true })) * Number(db.pragma("page_size", { simple: true }))
+      db.prepare("INSERT INTO capacity_fixture VALUES(zeroblob(?))").run(64 * 1024 * 1024 - current - 65536)
+    })
+    const db = openCustodyDatabase(file, "read")!
+    try {
+      expect(custodyCapacity(db)).toMatchObject({ capacity: "refused" })
+      expect(custodyCapacity(db).bytes).toBeLessThanOrEqual(64 * 1024 * 1024)
+    } finally { db.close() }
+    expect(() => store.claimDispatch(input({ session: "new" }), "retry")).toThrow(/capacity/)
   })
 })
