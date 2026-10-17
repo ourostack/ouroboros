@@ -20,7 +20,7 @@ vi.mock("fs", () => ({
 }))
 
 vi.mock("child_process", () => ({
-  execSync: vi.fn(),
+  exec: vi.fn(),
   spawnSync: vi.fn(),
   spawn: vi.fn(),
 }))
@@ -185,7 +185,7 @@ describe("relationship-scoped canonical option boundaries", () => {
     const shellSessions = await import("../../repertoire/shell-sessions")
     const { runAgent } = await import("../../heart/core")
     vi.mocked(childProcess.spawn).mockReset().mockImplementation(actualChildProcess.spawn)
-    vi.mocked(childProcess.execSync).mockReset().mockReturnValue("foreground result")
+    vi.mocked(childProcess.exec).mockReset().mockImplementation(actualChildProcess.exec)
     const owner = { agentName: "sanctuary", agentRoot: "/mock/repo/sanctuary" }
     const command = `exec ${JSON.stringify(process.execPath)} -e ${JSON.stringify("process.stdin.resume(); process.stdout.write('owned-ready')")}`
     const live = context()
@@ -195,11 +195,15 @@ describe("relationship-scoped canonical option boundaries", () => {
       .mockReturnValueOnce(call("shell", { command, ...(background === undefined ? {} : { background }) }))
       .mockReturnValueOnce(call("settle", { answer: "finished" }))
     try {
-      await runAgent([{ role: "user", content: "run the bounded local shell fixture" }], makeCallbacks(), "telegram", undefined, {
+      const messages: ChatCompletionMessageParam[] = [{ role: "user", content: "run the bounded local shell fixture" }]
+      await runAgent(messages, makeCallbacks(), "telegram", undefined, {
         toolContext: live,
       })
       expect(childProcess.spawn).toHaveBeenCalledTimes(background === true ? 1 : 0)
-      expect(childProcess.execSync).toHaveBeenCalledTimes(background === false || background === undefined ? 1 : 0)
+      expect(childProcess.exec).toHaveBeenCalledTimes(background === false || background === undefined ? 1 : 0)
+      if (background === false || background === undefined) {
+        expect(messages).toContainEqual(expect.objectContaining({ role: "tool", content: "owned-ready" }))
+      }
       if (background === true) {
         await vi.waitFor(() => expect(shellSessions.listShellSessions(owner)).toHaveLength(1))
         const [session] = shellSessions.listShellSessions(owner)
