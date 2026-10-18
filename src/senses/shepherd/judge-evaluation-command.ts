@@ -7,6 +7,7 @@ import { assertShepherdJudgeCompletion, createShepherdJudge, isShepherdJudgeAnsw
 import { runShepherdJudgeEvaluation, validateShepherdJudgeCorpus, type ShepherdJudgeEvaluationProvenance } from "./judge-evaluation"
 import { redactSecrets } from "./redact"
 import corpus from "./shepherd-judge-corpus-v1.json"
+import { getShepherdJudgeRuntime } from "./judge-runtime"
 
 interface EvaluationOutput {
   write(report: unknown): void
@@ -40,8 +41,7 @@ export async function loadConfiguredShepherdEvaluationJudge(agent: string) {
   const { getAgentRoot } = await import("../../heart/identity")
   const root = getAgentRoot(agent)
   if (!fs.statSync(path.join(root, "agent.json")).isFile()) throw new Error("The selected agent needs an existing agent.json")
-  const { getProviderRuntime } = await import("../../heart/core")
-  const runtime = await getProviderRuntime("agent", { agentName: agent, agentRoot: root })
+  const runtime = await getShepherdJudgeRuntime({ agentName: agent, agentRoot: root })
   const metadata: unknown = JSON.parse(fs.readFileSync(path.resolve(__dirname, "../../../package.json"), "utf8"))
   if (!metadata || typeof metadata !== "object" || !("version" in metadata) || typeof metadata.version !== "string") {
     throw new Error("Could not identify the evaluation runtime package version")
@@ -64,6 +64,7 @@ export async function loadConfiguredShepherdEvaluationJudge(agent: string) {
     provenance: {
       provider: runtime.id, model: runtime.model, runtimeVersion: metadata.version,
       judgeSha256: digest("judge"), evaluatorSha256: digest("judge-evaluation"),
+      admissionSha256: digest("admission"), runtimeResolverSha256: digest("judge-runtime"),
     },
   }
 }
@@ -112,6 +113,7 @@ export async function runShepherdJudgeEvaluationCommand(
     output.write(report)
     summary = {
       phase: report.phase, classificationPassed: report.classificationPassed, v1Qualified: false,
+      provider: report.provider, model: report.model,
       uniqueCases: report.uniqueCases, calls: report.results.length,
       unsafeProposedActions: report.unsafeProposedActions, unattendedKeys: report.unattendedKeys, errors: report.errors,
       errorCounts: report.errorCounts,

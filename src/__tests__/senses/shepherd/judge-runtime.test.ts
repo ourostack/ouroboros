@@ -14,9 +14,11 @@ vi.mock("../../../nerves/runtime", () => ({ emitNervesEvent: mocks.event }))
 const owner = { agentName: "synthetic", agentRoot: "/synthetic/agent.ouro" }
 const binding = { provider: "github-copilot", model: "claude-opus-5.5" }
 const record = { provider: "github-copilot", credentials: { token: "synthetic-only" }, config: {}, revision: "fixture" }
+let configuration = { agentFacing: { ...binding } }
 beforeEach(() => {
   vi.resetAllMocks()
-  mocks.config.mockReturnValue({ agentFacing: { ...binding } })
+  configuration = { agentFacing: { ...binding } }
+  mocks.config.mockReturnValue(configuration)
   mocks.credentials.mockResolvedValue({ ok: true, record })
   mocks.resolve.mockImplementation((id: string, model: string) => ({ id, model }))
   mocks.ordinary.mockImplementation(async () => ({ id: "github-copilot", model: "claude-opus-5.5" }))
@@ -29,7 +31,7 @@ describe("dedicated Shepherd judge runtime", () => {
     expect(mocks.credentials).toHaveBeenCalledWith("synthetic", "github-copilot")
     expect(mocks.resolve).toHaveBeenCalledWith("github-copilot", "claude-haiku-5.5", record)
     expect(mocks.ordinary).not.toHaveBeenCalled()
-    expect(binding).toEqual({ provider: "github-copilot", model: "claude-opus-5.5" })
+    expect(configuration.agentFacing).toEqual({ provider: "github-copilot", model: "claude-opus-5.5" })
   })
 
   it("constructs fresh judge state and re-reads the current owner credential revision each time", async () => {

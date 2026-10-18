@@ -10,7 +10,9 @@ import corpus from "../../../senses/shepherd/shepherd-judge-corpus-v1.json"
 
 const mocks = vi.hoisted(() => ({ getAgentRoot: vi.fn(), getProviderRuntime: vi.fn() }))
 vi.mock("../../../heart/identity", () => ({ getAgentRoot: mocks.getAgentRoot }))
-vi.mock("../../../heart/core", () => ({ getProviderRuntime: mocks.getProviderRuntime }))
+vi.mock("../../../senses/shepherd/judge-runtime", () => ({
+  getShepherdJudgeRuntime: (owner: { agentName: string; agentRoot: string }) => mocks.getProviderRuntime("agent", owner),
+}))
 vi.mock("node:fs", async importOriginal => {
   const actual = await importOriginal<typeof import("node:fs")>()
   return { ...actual, readFileSync: vi.fn(actual.readFileSync), writeSync: vi.fn(actual.writeSync) }

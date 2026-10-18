@@ -34,6 +34,8 @@ export interface ShepherdJudgeEvaluationProvenance {
   runtimeVersion: string
   judgeSha256: string
   evaluatorSha256: string
+  admissionSha256?: string
+  runtimeResolverSha256?: string
 }
 export interface ShepherdJudgeEvaluationResult {
   caseId: string

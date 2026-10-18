@@ -22,6 +22,9 @@ vi.mock("../../../heart/daemon/socket-client", async (importOriginal) => ({
   requestPrivateWake: (...args: unknown[]) => mockRequestPrivateWake(...args),
 }))
 const mockGetProviderRuntime = vi.fn()
+vi.mock("../../../senses/shepherd/judge-runtime", () => ({
+  getShepherdJudgeRuntime: (owner: { agentName: string; agentRoot: string }) => mockGetProviderRuntime("agent", owner),
+}))
 vi.mock("../../../heart/core", async (importOriginal) => ({
   ...await importOriginal<typeof import("../../../heart/core")>(),
   getProviderRuntime: (...args: unknown[]) => mockGetProviderRuntime(...args),

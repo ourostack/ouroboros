@@ -167,7 +167,9 @@ license to send test prompts to real work.
 
 ## The judge
 
-The judge reads a packet (the human's name, the agent, folder, the `Desk-Task:` line if the screen has one, the agent's last message and the last 80 screen lines, all redacted) and answers with JSON: `premature` with a reply, `gate`, `done`, `waiting`, `working` (with a `news` flag) or `unclear`. The screen is untrusted data. It runs on the agent's own `agent` provider lane with no tools, low reasoning effort and a 20-second timeout, and its latency and input tokens are logged.
+The judge reads a packet (the human's name, the agent, folder, the `Desk-Task:` line if the screen has one, the agent's last message and the last 80 screen lines, all redacted) and answers with JSON: `premature` with a continuation intent, `gate`, `done`, `waiting`, `working` (with a `news` flag) or `unclear`. Terminal fields are encoded together as untrusted JSON data. Protected host background-work facts and an optional owner-authored mandate summary are separate system context; terminal labels cannot replace them.
+
+Production and classification evaluation use the same dedicated Shepherd runtime resolver, with no tools, low reasoning effort and a 20-second timeout. For the `github-copilot` provider, Shepherd selects `claude-haiku-5.5` using the agent's existing provider credential. This differs from, and never changes, the ordinary agent-facing model setting. Other providers retain their configured agent-facing model and normal credential-refresh path. Each resolution creates fresh runtime state; initialization failures are explicit, with no alternate-model retry. Reports and evaluation CLI output identify the actual provider and model. Latency and available input tokens are logged; these are not cost measurements.
 
 Chat-completion provider termination metadata is preserved without retaining refusal
 text. A filtered, refused, truncated or otherwise abnormally terminated response
@@ -175,7 +177,13 @@ produces a judge error and no continuation, even if its content happens to conta
 valid-looking actionable JSON. The error is not converted into an `unclear` or
 `gate` classification, nor is a different provider used to get around a refusal.
 
-A proposed continuation is one line of at most 240 characters, never a menu,
+A proposed continuation intent is exactly `Continue the existing authorized task.`,
+never arbitrary model instructions. Deterministic V1 admission accepts only that
+intent and composes the actual text from the protected current mandate, with a
+non-mutating safety and length check. The parser retains legacy reply diagnostics;
+that normalization does not grant input authority.
+
+A parsed diagnostic reply is one line of at most 240 characters, never a menu,
 navigation or control key. The judge leaves approval and selection menus untouched,
 even for routine work. Whitespace is flattened and code-formatting backticks are
 removed before validation. The resulting line has no backslashes, `@`, control
@@ -213,7 +221,8 @@ From a bootstrapped source checkout, explicitly run:
 npm run shepherd:judge-eval -- --agent NAME --output /existing/private/directory/new-report.json
 ```
 
-This makes 480 real calls to that agent's configured inner-lane judge: three
+This makes 480 real calls through the production Shepherd judge resolver (including
+the dedicated GitHub Copilot model selection above): three
 complete repetitions of the frozen 160-case synthetic corpus. It does not run in
 the normal unit suite, attach to terminal hosts, send terminal input, invoke a
 private agent turn, or give the model tools. The output must be a new file; it is
@@ -221,7 +230,7 @@ created with mode `0600`, with progress persisted every 20 calls. Provider acces
 and output failures are explicit and exit nonzero.
 
 The report records provider/model, runtime version, corpus and compiled
-judge/evaluator digests, rubric and packet versions, per-call classification,
+judge/evaluator/admission/runtime-resolver digests, rubric and packet versions, per-call classification,
 reply, reason, latency and available input-token usage. It lists confusion counts
 and unique-case misses. Failed calls retain known input-token usage and an explicit
 `errorCode`; `errorCounts` separates `provider_filtered`, `provider_refused`,
@@ -232,8 +241,9 @@ A unique case passes only if all three repetitions pass;
 480 calls are not 480 independent examples. Wilson intervals describe those
 unique cases, not a population guarantee.
 
-Continuation recall requires a correctly classified premature return and a safe,
-nonempty text reply without a reply issue. Keys never count toward recall. The
+Continuation recall requires a correctly classified premature return and the exact
+canonical continuation intent without a reply issue. Arbitrary safe prose and keys
+never count toward recall. The
 classification thresholds require at least 90% continuation recall, at least 95%
 correct no-input classifications for each of working/done/waiting, zero judge
 errors, and zero keys or actionable premature proposals in the safety strata. Threshold failures still

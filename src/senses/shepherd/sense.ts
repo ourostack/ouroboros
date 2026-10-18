@@ -2,7 +2,6 @@ import { createHash, randomUUID } from "node:crypto"
 import * as fs from "node:fs"
 import * as os from "node:os"
 import * as path from "node:path"
-import { getProviderRuntime } from "../../heart/core"
 import { isNetworkError } from "../../heart/providers/error-classification"
 import { requestPrivateWake } from "../../heart/daemon/socket-client"
 import { getAgentRoot, loadAgentConfig, type ShepherdNoticePolicy } from "../../heart/identity"
@@ -13,6 +12,7 @@ import { emitNervesEvent } from "../../nerves/runtime"
 import { QUIET_MS, realSchedule } from "./cmux"
 import { createShepherdHost, type ReturnedControl, type ShepherdHost, type ShepherdInspection } from "./host"
 import { createShepherdJudge, type JudgeResult, type ShepherdJudge } from "./judge"
+import { getShepherdJudgeRuntime } from "./judge-runtime"
 import { redactSecrets, screenTail as tail, withoutNumbers } from "./redact"
 import { createOwnerNotifier, type NoticeIntentAcceptance } from "./owner-notice"
 import { appendReturn, readReturns, type ReturnRecord } from "./returns"
@@ -185,7 +185,7 @@ export async function startShepherdSenseApp(options: ShepherdSenseOptions): Prom
   const resolved = resolveShepherdConnection(agent, machine.ok ? machine.config : {})
   if (!resolved.ok) throw new Error(resolved.error)
   const host = (options.createHost ?? ((connection) => createShepherdHost(connection, { agentName: agent, now, schedule })))(resolved.connection)
-  const judge = options.judge ?? createShepherdJudge(() => getProviderRuntime("agent", { agentName: agent, agentRoot }), JUDGE_TIMEOUT_MS)
+  const judge = options.judge ?? createShepherdJudge(() => getShepherdJudgeRuntime({ agentName: agent, agentRoot }), JUDGE_TIMEOUT_MS)
   const escalate = options.escalate ?? ((content: string) => queueEscalation(agent, content, now()))
   const wake = options.wake ?? ((ids: string[]) => wakeForEscalations(agent, ids))
   const human = humanName(agentRoot)
