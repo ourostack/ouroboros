@@ -93,6 +93,28 @@ describe("private cross-trigger check-in custody", () => {
     expect(() => store.completeDispatch(claim.id, "one", { state: "sent" })).toThrow(/schema/)
   })
 
+  it("binds native completions to the persisted attempt even when a worker identity is reused", () => {
+    const { store, file } = open()
+    const nativeTarget = { hostInstance: "native-boot", workspaceId: "workspace-1" }
+    const claim = store.claimDispatch({ ...input(), ...{ nativeTarget } }, "same-worker")!
+    const first = Reflect.get(claim, "nativeRequestId")
+    expect(() => store.completeDispatch(claim.id, "same-worker", { state: "not_sent" })).toThrow(/native attempt/)
+    store.completeDispatch(claim.id, "same-worker", { state: "not_sent", ...{ nativeRequestId: first } })
+    const next = store.claimDispatch({ ...input(), ...{ nativeTarget } }, "same-worker")!
+    expect(() => store.completeDispatch(next.id, "same-worker", {
+      state: "sent", ...{ nativeRequestId: first },
+    })).toThrow(/native attempt/)
+    store.completeDispatch(next.id, "same-worker", { state: "unknown", ...{ nativeRequestId: Reflect.get(next, "nativeRequestId") } })
+    expect(readCheckInSnapshot(file, { limit: 1 }).entries[0]).toMatchObject({ state: "unknown", nativeTarget })
+  })
+
+  it.each([null, {}, { hostInstance: "", workspaceId: "workspace" },
+    { hostInstance: "boot", workspaceId: "" }, { hostInstance: 42, workspaceId: "workspace" },
+    { hostInstance: "boot", workspaceId: "x".repeat(257) }])("refuses malformed native target binding: %j", nativeTarget => {
+    const { store } = open()
+    expect(() => store.claimDispatch({ ...input(), ...{ nativeTarget } }, "worker")).toThrow(/schema/)
+  })
+
   it("uses the existing Shepherd state directory and private database modes", () => {
     expect(checkInStorePath("/agent")).toBe("/agent/state/senses/shepherd/checkins/custody.sqlite")
     const { store, file } = open()
