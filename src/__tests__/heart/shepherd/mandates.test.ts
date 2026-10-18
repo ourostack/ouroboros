@@ -178,25 +178,36 @@ describe("trusted Shepherd mandate store", () => {
     expect(readShepherdMandates(root).mandates).toHaveLength(101)
   })
 
-  it("bounds encoded bytes without pruning historical provenance or changing the last good state", async () => {
+  it.each([0, 80, 160])("bounds encoded bytes with %i extra project-path characters without pruning historical provenance or changing the last good state", async padding => {
+    if (padding) project = fs.mkdirSync(path.join(root, "p".repeat(padding)), { recursive: true })!
     const receipt = await updateShepherdMandate(root, { ...grant(), task: "\u{1f9ed}".repeat(1000) } as ShepherdMandateRequest)
     await updateShepherdMandate(root, { operation: "revoke", context: context("revoke"), expectedRevision: 1, mandateId: receipt.mandateId })
     const state = readShepherdMandates(root)
+    const maxBytes = 2 * 1024 * 1024
     // Seed valid revoked history so this tests bytes, not hundreds of unrelated fsyncs.
-    while (Buffer.byteLength(JSON.stringify(state)) < 2 * 1024 * 1024 - 3000) {
+    while (true) {
       const previous = state.mandates[0]!
       const requestId = `historical-${state.revision}`
       const id = `mandate:${createHash("sha256").update(JSON.stringify(["existing-owner", requestId])).digest("hex")}`
       const provenance = { ...previous.provenance, requestId }
       const revoked = { ...previous.revoked!, requestId: `revoke-${requestId}` }
-      const grantReceipt = { ...state.requests[0]!.receipt, revision: ++state.revision, mandateId: id, provenance }
-      const revokeReceipt = { ...state.requests[1]!.receipt, revision: ++state.revision, mandateId: id, provenance: revoked }
-      state.mandates.push({ ...previous, id, revision: state.revision, provenance, revoked })
-      state.requests.push(
-        { ...state.requests[0]!, requestId, receipt: grantReceipt },
-        { ...state.requests[1]!, requestId: revoked.requestId, receipt: revokeReceipt },
-      )
+      const grantReceipt = { ...state.requests[0]!.receipt, revision: state.revision + 1, mandateId: id, provenance }
+      const revokeReceipt = { ...state.requests[1]!.receipt, revision: state.revision + 2, mandateId: id, provenance: revoked }
+      const entry = { ...previous, id, revision: state.revision + 2, provenance, revoked }
+      const next = {
+        ...state, revision: state.revision + 2, mandates: [...state.mandates, entry],
+        requests: [...state.requests,
+          { ...state.requests[0]!, requestId, receipt: grantReceipt },
+          { ...state.requests[1]!, requestId: revoked.requestId, receipt: revokeReceipt },
+        ],
+      }
+      if (Buffer.byteLength(JSON.stringify(next)) > maxBytes) entry.task = "x"
+      if (Buffer.byteLength(JSON.stringify(next)) > maxBytes) break
+      Object.assign(state, next)
     }
+    const bytes = Buffer.byteLength(JSON.stringify(state))
+    expect(bytes).toBeLessThanOrEqual(maxBytes)
+    expect(maxBytes - bytes).toBeLessThan(Buffer.byteLength("\u{1f9ed}".repeat(1000)))
     save(state)
     expect(readShepherdMandates(root).revision).toBe(state.revision)
     const before = fs.readFileSync(file(), "utf8")
