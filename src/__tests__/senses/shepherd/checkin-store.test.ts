@@ -8,6 +8,7 @@ import {
   type CheckInStore, type DispatchInput,
 } from "../../../senses/shepherd/checkin-store"
 import { emitNervesEvent } from "../../../nerves/runtime"
+import { readCheckInSnapshot } from "../../../senses/shepherd/recovery"
 
 vi.mock("../../../nerves/runtime", () => ({ emitNervesEvent: vi.fn() }))
 vi.mock("node:fs", async original => {
@@ -37,6 +38,61 @@ function mutate(file: string, work: (database: Database.Database) => void) {
 }
 
 describe("private cross-trigger check-in custody", () => {
+  it("persists a distinct native UUID before exposing a new claim without changing its custody identity", () => {
+    const { store, file } = open()
+    const claim = store.claimDispatch(input(), "one")!
+    expect(claim).toHaveProperty("nativeRequestId", expect.stringMatching(/^[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/))
+    expect(claim.id).toMatch(/^[a-f0-9]{64}$/)
+    expect(readCheckInSnapshot(file, { limit: 1 }).entries[0]).toHaveProperty("nativeRequestId", Reflect.get(claim, "nativeRequestId"))
+    store.close()
+    const other = open(file).store
+    expect(other.claimDispatch(input(), "two")).toBeNull()
+    expect(readCheckInSnapshot(file, { limit: 1 }).entries[0]).toHaveProperty("nativeRequestId", Reflect.get(claim, "nativeRequestId"))
+    const different = other.claimDispatch(input({ session: "different" }), "two")!
+    expect(Reflect.get(different, "nativeRequestId")).not.toBe(Reflect.get(claim, "nativeRequestId"))
+  })
+
+  it("assigns a fresh native UUID only to a proven zero-input retry, never adopting caller identity", () => {
+    const { store, file } = open()
+    const claim = store.claimDispatch(input(), "one")!
+    store.completeDispatch(claim.id, "one", { state: "not_sent", reason: "pre-input refusal" })
+    const retry = store.claimDispatch({ ...input(), ...{ nativeRequestId: Reflect.get(claim, "nativeRequestId") } }, "two")!
+    expect(retry.id).toBe(claim.id)
+    expect(retry).toHaveProperty("nativeRequestId", expect.any(String))
+    expect(Reflect.get(retry, "nativeRequestId")).not.toBe(Reflect.get(claim, "nativeRequestId"))
+    store.completeDispatch(retry.id, "two", { state: "unknown", reason: "lost native reply" })
+    store.close()
+    const other = open(file).store
+    expect(other.claimDispatch(input({ screenFingerprint: "changed" }), "three")).toBeNull()
+    expect(readCheckInSnapshot(file, { limit: 1 }).entries[0]).toMatchObject({
+      id: claim.id, state: "unknown", nativeRequestId: Reflect.get(retry, "nativeRequestId"),
+    })
+  })
+
+  it.each(["claimed", "sent", "not_sent", "unknown"] as const)("does not upgrade or retry legacy %s custody without a native identity", state => {
+    const { store, file } = open()
+    const claim = store.claimDispatch(input(), "one")!
+    const legacy = { ...claim, state }
+    Reflect.deleteProperty(legacy, "nativeRequestId")
+    const data = JSON.stringify(legacy)
+    mutate(file, db => db.prepare("UPDATE dispatches SET data=? WHERE id=?").run(data, claim.id))
+    store.close()
+    const other = open(file).store
+    expect(other.claimDispatch(input(), "two")).toBeNull()
+    mutate(file, db => expect(db.prepare("SELECT data FROM dispatches WHERE id=?").get(claim.id)).toEqual({ data }))
+    expect(readCheckInSnapshot(file, { limit: 1 }).entries[0]).not.toHaveProperty("nativeRequestId")
+  })
+
+  it.each([null, "", "not-a-uuid", "00000000-0000-0000-0000-000000000000",
+    "12345678-1234-4234-8234-123456789abc-extra", 42])("refuses corrupt native attempt identities: %j", nativeRequestId => {
+    const { store, file } = open()
+    const claim = store.claimDispatch(input(), "one")!
+    mutate(file, db => db.prepare("UPDATE dispatches SET data=? WHERE id=?")
+      .run(JSON.stringify({ ...claim, nativeRequestId }), claim.id))
+    expect(() => store.claimDispatch(input(), "two")).toThrow(/schema/)
+    expect(() => store.completeDispatch(claim.id, "one", { state: "sent" })).toThrow(/schema/)
+  })
+
   it("uses the existing Shepherd state directory and private database modes", () => {
     expect(checkInStorePath("/agent")).toBe("/agent/state/senses/shepherd/checkins/custody.sqlite")
     const { store, file } = open()
