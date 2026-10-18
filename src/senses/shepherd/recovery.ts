@@ -73,8 +73,9 @@ function reconciliationRows(db: Database.Database, claim: DispatchClaim): { rece
   return { receipts, count: count.count, receipt }
 }
 
-export function readCheckInSnapshot(file: string, options: { limit: number; cursor?: string }): ShepherdCustodySnapshot {
+export function readCheckInSnapshot(file: string, options: { limit: number; cursor?: string; id?: string }): ShepherdCustodySnapshot {
   if (!Number.isSafeInteger(options.limit) || options.limit < 1 || options.limit > 200) refuse("inspection limit must be 1..200")
+  if (options.id !== undefined && (!/^[a-f0-9]{64}$/.test(options.id) || options.cursor !== undefined)) refuse("invalid inspection ID or conflicting cursor")
   let cursor: { after: string; revision: number } | null = null
   if (options.cursor !== undefined) {
     let parsed: unknown
@@ -102,7 +103,9 @@ export function readCheckInSnapshot(file: string, options: { limit: number; curs
         if (!["claimed", "sent", "not_sent", "unknown"].includes(group.state)) refuse("invalid custody state schema")
         counts[group.state as keyof typeof counts] = group.count
       }
-      const rows = db.prepare("SELECT id,host,session,instance,data FROM dispatches WHERE id>? ORDER BY id LIMIT ?").all(cursor?.after ?? "", options.limit + 1) as DispatchRow[]
+      const rows = (options.id !== undefined
+        ? db.prepare("SELECT id,host,session,instance,data FROM dispatches WHERE id=?").all(options.id)
+        : db.prepare("SELECT id,host,session,instance,data FROM dispatches WHERE id>? ORDER BY id LIMIT ?").all(cursor?.after ?? "", options.limit + 1)) as DispatchRow[]
       const page = rows.slice(0, options.limit)
       const entries = page.map(row => {
         const claim = parseCustodyDispatch(row)
@@ -155,7 +158,7 @@ function matchesReceipt(claim: DispatchClaim, evidence: unknown, requireFresh = 
 export async function reconcileShepherdDispatch(root: string, request: ShepherdRecoveryRequest): Promise<ShepherdRecoveryReceipt> {
   if (!object(request) || !validActor(request) || !identity(request.id)) refuse("invalid owner reconciliation request")
   request = structuredClone(request)
-  const hash = digest(canonical({ operation: "reconcile", request }))
+  const hash = digest(canonical({ operation: "reconcile", request: { ...request, evidence: { ...request.evidence, checkedAt: undefined } } }))
   const file = checkInStorePath(root)
   // Do not turn a missing ledger into a new source of authority.
   const inspection = readCheckInSnapshot(file, { limit: 1 })
@@ -319,9 +322,10 @@ function requireStoppedSense(request: ShepherdMaintenanceRequest): void {
 /** Fresh lifecycle observations are preconditions, not a change to the operator's archival intent. */
 export async function maintainShepherdCustody(root: string, request: ShepherdMaintenanceRequest): Promise<ShepherdMaintenanceReceipt> {
   if (!object(request) || !validActor(request) || typeof request.destination !== "string" || request.destination.length > 2000
-    || !Array.isArray(request.retiredInstances) || request.retiredInstances.length > 200) refuse("invalid owner maintenance request")
+    || !Array.isArray(request.retiredInstances) || request.retiredInstances.length > 200
+    || request.requestFingerprint !== undefined && !/^[a-f0-9]{64}$/.test(request.requestFingerprint)) refuse("invalid owner maintenance request")
   request = structuredClone(request)
-  const hash = digest(canonical({ operation: "maintenance", request: {
+  const hash = request.requestFingerprint ?? digest(canonical({ operation: "maintenance", request: {
     ...request, sense: undefined, retiredInstances: request.retiredInstances.map(proof => ({ ...proof, checkedAt: undefined })),
   } }))
   const file = checkInStorePath(root)

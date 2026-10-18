@@ -134,6 +134,25 @@ export function createCmuxHost(client: CmuxClient, options: CmuxHostOptions = {}
       })))
   }
 
+  async function retirementInventory(): Promise<string[]> {
+    const tree = await client.call("system.tree", { all_windows: true })
+    const records = (value: unknown): Record<string, unknown>[] => {
+      if (!Array.isArray(value) || !value.every(isRecord)) throw new Error("invalid cmux retirement inventory")
+      return value
+    }
+    const ids: string[] = []
+    const seen = new Set<string>()
+    for (const window of records(tree.windows)) for (const workspace of records(window.workspaces)) {
+      for (const pane of records(workspace.panes)) for (const surface of records(pane.surfaces)) {
+        if (typeof surface.id !== "string" || !surface.id.trim() || typeof surface.type !== "string"
+          || !["terminal", "browser"].includes(surface.type) || seen.has(surface.id)) throw new Error("invalid cmux retirement inventory identity")
+        seen.add(surface.id)
+        if (surface.type === "terminal") ids.push(surface.id)
+      }
+    }
+    return ids
+  }
+
   async function surfaces(freshFocus = false): Promise<Surface[]> {
     const entries = await surfaceEntries()
     const identities = await (options.identifyTerminals ?? identifyTerminalProcesses)(entries.filter((entry) => entry.type === "terminal" && entry.tty).map((entry) => entry.tty!))
@@ -203,6 +222,7 @@ export function createCmuxHost(client: CmuxClient, options: CmuxHostOptions = {}
     async list() {
       return (await surfaces()).filter((surface) => surface.type === "terminal").map(({ workspaceId: _workspaceId, type: _type, ...session }) => session)
     },
+    retirementInventory,
     read,
     inspect,
     async promptIfUnchanged(sessionId, line, expected, canSend?: () => boolean) {

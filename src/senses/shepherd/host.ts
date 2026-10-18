@@ -88,6 +88,8 @@ export type ShepherdKey = "enter" | "escape" | "up" | "down" | "tab" | "ctrl-c" 
 export interface ShepherdHost {
   name: string
   list(): Promise<HostSession[]>
+  /** Strict complete stable-terminal inventory. Sparse/malformed replies throw, never mean absence. */
+  retirementInventory?(): Promise<string[]>
   /** The screen tail with scrollback, plain text. */
   read(sessionId: string, lines: number): Promise<string>
   inspect?(sessionId: string): Promise<ShepherdInspection>

@@ -65,6 +65,19 @@ afterEach(async () => {
 })
 
 describe("cmux host: terminals", () => {
+  it("uses a strict all-window tree for retirement, never sparse or malformed inventory as absence", async () => {
+    expect(await host().retirementInventory!()).toEqual(["SF-1", "SF-2"])
+    for (const malformed of [{}, { windows: null }, { windows: [null] }, { windows: [{}] },
+      { windows: [{ workspaces: [{ panes: [{}] }] }] }, tree([{ id: "", ref: "surface:1" }]),
+      tree([{ id: "duplicate", ref: "surface:1" }, { id: "duplicate", ref: "surface:2" }])]) {
+      server.respond("system.tree", () => malformed)
+      await expect(host().retirementInventory!()).rejects.toThrow(/inventory/i)
+    }
+    server.respond("system.tree", () => ({ windows: [] }))
+    expect(await host().retirementInventory!()).toEqual([])
+    expect(server.methods.filter(call => call.method === "system.tree").every(call => call.params.all_windows === true)).toBe(true)
+  })
+
   const uuid = "11111111-1111-4111-8111-111111111111"
   function inspectedHost() {
     const state = {

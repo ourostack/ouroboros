@@ -98,6 +98,18 @@ export function createHerdrHost(connection: HerdrConnection, options: HerdrHostO
 
   return {
     name: "herdr",
+    async retirementInventory() {
+      const result = await call("pane.list", {})
+      if (!Array.isArray(result.panes)) throw new Error("invalid Herdr retirement inventory")
+      const ids: string[] = []
+      for (const pane of result.panes) {
+        if (!isRecord(pane) || typeof pane.pane_id !== "string" || !pane.pane_id.trim() || ids.includes(pane.pane_id)) {
+          throw new Error("invalid Herdr retirement inventory identity")
+        }
+        ids.push(pane.pane_id)
+      }
+      return ids
+    },
     async list(): Promise<HostSession[]> {
       return (await panes()).map((pane) => ({
         id: str(pane.pane_id) ?? "",

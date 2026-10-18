@@ -95,6 +95,18 @@ beforeEach(async () => {
 })
 
 describe("bounded readonly custody inspection", () => {
+  it("looks up an exact dispatch beyond the maximum first page without scanning pages", () => {
+    const ids = Array.from({ length: 205 }, (_, index) => seed("unknown", { session: `terminal-${index}` }).id).sort()
+    const id = ids.at(-1)!
+    expect(readCheckInSnapshot(file, { limit: 200 }).entries.some(entry => entry.id === id)).toBe(false)
+    const exact = readCheckInSnapshot(file, { limit: 1, id })
+    expect(exact.entries.map(entry => entry.id)).toEqual([id])
+    expect(exact.nextCursor).toBeNull()
+    expect(exact.totalCount).toBe(205)
+    expect(() => readCheckInSnapshot(file, { limit: 1, id, cursor: "ambiguous" })).toThrow(/inspection/)
+    expect(() => readCheckInSnapshot(file, { limit: 1, id: "invalid" })).toThrow(/inspection/)
+  })
+
   it("reports missing without creating a database, directories, or a comforting empty count", () => {
     expect(readCheckInSnapshot(file, { limit: 20 })).toEqual({
       state: "missing", schemaVersion: null, revision: null, bytes: null, capacity: "unknown",

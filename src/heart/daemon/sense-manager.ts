@@ -21,6 +21,7 @@ import { A2A_DEFAULT_PATH, defaultA2APort, normalizeA2APath } from "../../a2a/co
 // HTTP health probe import intentionally removed — see the comment in
 // listHealthProbes() for the 2026-05-11 incident context.
 import type { SenseProbe } from "./health-monitor"
+import type { ShepherdSenseStoppedProof } from "../shepherd/custody-types"
 
 export interface DaemonSenseRow {
   agent: string
@@ -52,6 +53,8 @@ export interface DaemonSenseManagerLike {
   listSenseRows(): DaemonSenseRow[]
   listHealthProbes?(): SenseProbe[]
   listManagedPids?(): number[]
+  shepherdStoppedProof?(agent: string): ShepherdSenseStoppedProof
+  quiesceShepherd?(agent: string): Promise<ShepherdSenseStoppedProof>
   restartSense?(managedName: string): Promise<void>
   reviveSense?(agent: string, sense: string): Promise<DaemonSenseRow | null>
 }
@@ -66,6 +69,7 @@ export interface DaemonSenseManagerOptions {
     restartAgent?(agent: string): Promise<void>
     resetAgentFailureState?(agent: string): void
     stopAll(): Promise<void>
+    stopAgent?(agent: string): Promise<void>
     listAgentSnapshots(): Array<{ name: string; status: string; pid?: number | null }>
   }
 }
@@ -708,6 +712,8 @@ export class DaemonSenseManager implements DaemonSenseManagerLike {
   private readonly configRefreshRetryTimers = new Map<string, ReturnType<typeof setTimeout>>()
   private readonly configRefreshRetryAttempts = new Map<string, number>()
   private readonly bundlesRoot: string
+  private readonly quiescedShepherdOwners = new Set<string>()
+  private readonly initiallyUnmanagedShepherdOwners: Set<string>
 
   constructor(options: DaemonSenseManagerOptions) {
     const bundlesRoot = options.bundlesRoot ?? path.join(os.homedir(), "AgentBundles")
@@ -726,6 +732,7 @@ export class DaemonSenseManager implements DaemonSenseManagerLike {
       }),
     )
 
+    this.initiallyUnmanagedShepherdOwners = new Set([...this.contexts.entries()].filter(([, context]) => !context.senses.shepherd.enabled).map(([agent]) => agent))
     const managedSenseAgents = [...this.contexts.entries()].flatMap(([agent, context]) => {
       return (["teams", "bluebubbles", "mail", "voice", "a2a", "telegram", "shepherd"] as Exclude<SenseName, "cli" | "workbench">[])
         .filter((sense) => context.senses[sense].enabled)
@@ -745,6 +752,7 @@ export class DaemonSenseManager implements DaemonSenseManagerLike {
       configCheck: async (name) => {
         const parsed = parseSenseSnapshotName(name)
         if (!parsed) return { ok: true }
+        if (parsed.sense === "shepherd" && this.quiescedShepherdOwners.has(parsed.agent)) return { ok: false, skip: true, error: "Shepherd is quiesced for maintenance until daemon restart" }
         const context = this.contexts.get(parsed.agent)
         if (!context) return { ok: true }
         context.facts = senseFactsFromRuntimeConfig(
@@ -849,6 +857,7 @@ export class DaemonSenseManager implements DaemonSenseManagerLike {
       const context = this.contexts.get(parsed.agent)
       /* v8 ignore next -- defensive: config refreshes are only scheduled for known agent contexts @preserve */
       if (!context) return
+      if (parsed.sense === "shepherd" && this.quiescedShepherdOwners.has(parsed.agent)) return
       context.facts = senseFactsFromRuntimeConfig(parsed.agent, context.senses, refreshed, machineRefreshed, context.workbenchHasStaleBundleEntry)
       if (!context.facts[parsed.sense].configured) {
         if (this.shouldRetryConfigRefresh(parsed.agent, parsed.sense, refreshed, machineRefreshed)) {
@@ -860,6 +869,7 @@ export class DaemonSenseManager implements DaemonSenseManagerLike {
       }
       this.clearConfigRetryState(name)
       setTimeout(() => {
+        if (parsed.sense === "shepherd" && this.quiescedShepherdOwners.has(parsed.agent)) return
         void this.processManager.startAgent?.(name).catch((error) => {
           emitNervesEvent({
             level: "error",
@@ -957,6 +967,45 @@ export class DaemonSenseManager implements DaemonSenseManagerLike {
   }
   /* v8 ignore stop */
 
+  private assertShepherdDisabled(agent: string): void {
+    if (!/^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(agent) || !this.contexts.has(agent)) throw new Error("unknown Shepherd owner")
+    const config: unknown = JSON.parse(fs.readFileSync(path.join(this.bundlesRoot, `${agent}.ouro`, "agent.json"), "utf8"))
+    const object = (value: unknown): value is Record<string, unknown> => value !== null && typeof value === "object" && !Array.isArray(value)
+    if (!object(config) || !object(config.senses) || !object(config.senses.shepherd) || config.senses.shepherd.enabled !== false) {
+      throw new Error("maintenance requires explicitly disabled Shepherd in fresh agent.json")
+    }
+  }
+
+  async quiesceShepherd(agent: string): Promise<ShepherdSenseStoppedProof> {
+    this.assertShepherdDisabled(agent)
+    this.quiescedShepherdOwners.add(agent)
+    this.contexts.get(agent)!.senses.shepherd.enabled = false
+    const managedName = `${agent}:shepherd`
+    const snapshot = this.processManager.listAgentSnapshots().find(row => row.name === managedName)
+    if (snapshot && (snapshot.status !== "stopped" || snapshot.pid !== null)) {
+      if (!this.processManager.stopAgent) throw new Error("managed Shepherd stop is unavailable")
+      const retry = this.configRefreshRetryTimers.get(managedName)
+      if (retry) clearTimeout(retry)
+      this.configRefreshRetryTimers.delete(managedName)
+      this.configRefreshRetryAttempts.delete(managedName)
+      await this.processManager.stopAgent(managedName)
+    }
+    return this.shepherdStoppedProof(agent)
+  }
+
+  shepherdStoppedProof(agent: string): ShepherdSenseStoppedProof {
+    this.assertShepherdDisabled(agent)
+    const snapshots = this.processManager.listAgentSnapshots().filter(row => row.name === `${agent}:shepherd`)
+    // Disabled-at-startup senses are never registered with this process manager.
+    if (snapshots.length === 0 && this.initiallyUnmanagedShepherdOwners.has(agent)) {
+      return { kind: "daemon_lifecycle", checkedAt: new Date().toISOString(), enabled: false, processState: "stopped" }
+    }
+    if (snapshots.length !== 1) throw new Error("actual managed Shepherd process snapshot is unavailable")
+    const snapshot = snapshots[0]!
+    if (snapshot.status !== "stopped" || snapshot.pid !== null) throw new Error("maintenance requires stopped Shepherd with no active PID")
+    return { kind: "daemon_lifecycle", checkedAt: new Date().toISOString(), enabled: false, processState: "stopped" }
+  }
+
   listHealthProbes(): SenseProbe[] {
     const probes: SenseProbe[] = []
     for (const [agent, context] of this.contexts.entries()) {
@@ -999,6 +1048,8 @@ export class DaemonSenseManager implements DaemonSenseManagerLike {
   }
 
   async restartSense(managedName: string): Promise<void> {
+    const parsed = parseSenseSnapshotName(managedName)
+    if (parsed?.sense === "shepherd" && this.quiescedShepherdOwners.has(parsed.agent)) throw new Error("Shepherd is quiesced for maintenance until daemon restart")
     if (this.processManager.restartAgent) {
       await this.processManager.restartAgent(managedName)
       return

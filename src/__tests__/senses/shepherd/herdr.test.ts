@@ -56,6 +56,16 @@ afterEach(async () => {
 })
 
 describe("Herdr host: panes", () => {
+  it("requires a complete well-formed pane inventory before proving terminal retirement", async () => {
+    expect(await host().retirementInventory!()).toEqual(["w1:p1", "w1:p2", "w2:p1"])
+    for (const result of [{}, { panes: null }, { panes: [null] }, { panes: [{}] }, { panes: [{ pane_id: "x" }, { pane_id: "x" }] }]) {
+      server.respond("pane.list", () => result)
+      await expect(host().retirementInventory!()).rejects.toThrow(/inventory/i)
+    }
+    server.respond("pane.list", () => ({ panes: [] }))
+    expect(await host().retirementInventory!()).toEqual([])
+  })
+
   it("inspects current semantic state but never invents process-start or composer authority", async () => {
     const herdr = host()
     const inspection = await herdr.inspect!("w1:p1")

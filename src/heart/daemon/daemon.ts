@@ -505,6 +505,8 @@ export type DaemonCommand =
   | { kind: "daemon.restart"; reason?: string; requestedBy?: string }
   | { kind: "daemon.status" }
   | { kind: "daemon.health" }
+  | { kind: "daemon.shepherd_stopped"; agent: string }
+  | { kind: "daemon.shepherd_quiesce"; agent: string }
   | { kind: "daemon.logs" }
   | { kind: "daemon.sense_revive"; agent: string; sense: string; reason: string }
   | { kind: "agent.start"; agent: string }
@@ -2295,6 +2297,20 @@ export class OuroDaemon {
           summary: formatStatusSummary(data),
           data,
         }
+      }
+      case "daemon.shepherd_stopped": {
+        if (typeof command.agent !== "string" || !this.senseManager?.shepherdStoppedProof) {
+          return { ok: false, error: "Shepherd lifecycle proof is unavailable" }
+        }
+        const data = this.senseManager.shepherdStoppedProof(command.agent)
+        return { ok: true, data }
+      }
+      case "daemon.shepherd_quiesce": {
+        if (typeof command.agent !== "string" || !this.senseManager?.quiesceShepherd) {
+          return { ok: false, error: "Shepherd lifecycle control is unavailable" }
+        }
+        const data = await this.senseManager.quiesceShepherd(command.agent)
+        return { ok: true, data }
       }
       case "daemon.health": {
         const checks = await this.healthMonitor.runChecks()

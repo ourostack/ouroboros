@@ -77,6 +77,8 @@ export interface ShepherdSenseStoppedProof {
 }
 
 export interface ShepherdMaintenanceRequest {
+  /** Trusted local adapter's canonical original intent; excludes derived live proofs and pagination. */
+  requestFingerprint?: string
   expectedRevision: number
   requestId: string
   actor: Omit<ShepherdAdministrationContext, "requestId">

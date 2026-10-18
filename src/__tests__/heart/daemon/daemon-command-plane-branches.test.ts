@@ -102,6 +102,8 @@ describe("daemon command plane branches", () => {
       stopAll: vi.fn(async () => undefined),
       listSenseRows: vi.fn(() => []),
       reviveSense: vi.fn(),
+      shepherdStoppedProof: vi.fn(),
+      quiesceShepherd: vi.fn(),
     }
 
     const daemon = new OuroDaemon({
@@ -135,6 +137,18 @@ describe("daemon command plane branches", () => {
     } as any)
     return { daemon, processManager, scheduler, healthMonitor, router, senseManager }
   }
+
+  it("serves private lifecycle reads and awaited maintenance quiescence without weakening errors", async () => {
+    const { daemon, senseManager } = make(tmpSocketPath("shepherd-maintenance"))
+    const proof = { kind: "daemon_lifecycle", checkedAt: new Date().toISOString(), enabled: false, processState: "stopped" }
+    senseManager.shepherdStoppedProof.mockReturnValue(proof)
+    expect(await daemon.handleCommand({ kind: "daemon.shepherd_stopped", agent: "ouro" })).toMatchObject({ ok: true, data: proof })
+    expect(senseManager.shepherdStoppedProof).toHaveBeenCalledWith("ouro")
+    senseManager.quiesceShepherd.mockResolvedValue(proof)
+    expect(await daemon.handleCommand({ kind: "daemon.shepherd_quiesce", agent: "ouro" })).toMatchObject({ ok: true, data: proof })
+    senseManager.quiesceShepherd.mockRejectedValue(new Error("worker failed to stop"))
+    await expect(daemon.handleCommand({ kind: "daemon.shepherd_quiesce", agent: "ouro" })).rejects.toThrow("worker failed to stop")
+  })
 
   it("delegates default external-event readiness to the Sanctuary runtime owner", async () => {
     const socketPath = tmpSocketPath("daemon-default-external-event-readiness")
