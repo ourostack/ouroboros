@@ -91,24 +91,25 @@ export function createHerdrHost(connection: HerdrConnection, options: HerdrHostO
   const schedule = options.schedule ?? realSchedule
   const call = (method: string, params: Record<string, unknown>) => herdrRequest(connection.socketPath, method, params)
 
-  async function panes(): Promise<Record<string, unknown>[]> {
+  async function panes(strict = false): Promise<Record<string, unknown>[]> {
     const result = await call("pane.list", {})
+    if (strict) {
+      if (!Array.isArray(result.panes)) throw new Error("invalid Herdr terminal inventory")
+      const seen = new Set<string>()
+      for (const pane of result.panes) {
+        if (!isRecord(pane) || typeof pane.pane_id !== "string" || !pane.pane_id.trim() || seen.has(pane.pane_id)) {
+          throw new Error("invalid Herdr terminal inventory identity")
+        }
+        seen.add(pane.pane_id)
+      }
+    }
     return Array.isArray(result.panes) ? result.panes.filter(isRecord) : []
   }
 
   return {
     name: "herdr",
     async retirementInventory() {
-      const result = await call("pane.list", {})
-      if (!Array.isArray(result.panes)) throw new Error("invalid Herdr retirement inventory")
-      const ids: string[] = []
-      for (const pane of result.panes) {
-        if (!isRecord(pane) || typeof pane.pane_id !== "string" || !pane.pane_id.trim() || ids.includes(pane.pane_id)) {
-          throw new Error("invalid Herdr retirement inventory identity")
-        }
-        ids.push(pane.pane_id)
-      }
-      return ids
+      return (await panes(true)).map(pane => pane.pane_id as string)
     },
     async list(): Promise<HostSession[]> {
       return (await panes()).map((pane) => ({
@@ -202,7 +203,7 @@ export function createHerdrHost(connection: HerdrConnection, options: HerdrHostO
         cancelObservation = null
         const generation = ++inventoryGeneration
         try {
-          const current = await panes()
+          const current = await panes(true)
           if (!closed && generation === inventoryGeneration) replaceInventory(current)
         } catch {
           if (!closed && generation === inventoryGeneration) publishObservation("host_unavailable")
@@ -317,7 +318,7 @@ export function createHerdrHost(connection: HerdrConnection, options: HerdrHostO
         let current: Record<string, unknown>[]
         const generation = ++inventoryGeneration
         try {
-          current = await panes()
+          current = await panes(!!handlers.observed)
         } catch (error) {
           return reconnect(error as Error)
         }

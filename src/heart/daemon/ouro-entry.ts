@@ -4,7 +4,7 @@ import { redactCliArgs } from "./cli-arg-redaction"
 import { runOuroCli } from "./daemon-cli"
 import { configureDaemonRuntimeLogger } from "./runtime-logging"
 
-configureDaemonRuntimeLogger("ouro")
+configureDaemonRuntimeLogger("ouro", process.argv[2] === "shepherd" && process.argv[3] !== "chat" ? { machine: true } : {})
 
 emitNervesEvent({
   component: "daemon",

@@ -4,7 +4,7 @@ import * as path from "node:path"
 import Database from "better-sqlite3"
 import { beforeEach, describe, expect, it, vi } from "vitest"
 import { checkInStorePath, openCheckInStore, type DispatchInput } from "../../../senses/shepherd/checkin-store"
-import { readCheckInSnapshot, reconcileShepherdDispatch, maintainShepherdCustody } from "../../../senses/shepherd/recovery"
+import { readCheckInSnapshot, readMaintenanceCheckInSnapshot, reconcileShepherdDispatch, maintainShepherdCustody } from "../../../senses/shepherd/recovery"
 import type {
   ShepherdMaintenanceRequest, ShepherdRecoveryRequest, ShepherdRetirementProof,
 } from "../../../heart/shepherd/custody-types"
@@ -95,6 +95,20 @@ beforeEach(async () => {
 })
 
 describe("bounded readonly custody inspection", () => {
+  it("keeps marker-aware recovery inspection read-only and gated on fresh daemon stoppage", async () => {
+    const sense = { kind: "daemon_lifecycle" as const, checkedAt: at(), enabled: false as const, processState: "stopped" as const }
+    expect(readMaintenanceCheckInSnapshot(file, { limit: 1 }, sense).state).toBe("missing")
+    expect(fs.existsSync(path.join(root, "state"))).toBe(false)
+    await interrupted("prepared")
+    const before = fs.readFileSync(file)
+    const marker = fs.readFileSync(`${file}.maintenance.json`)
+    expect(() => readCheckInSnapshot(file, { limit: 1 })).toThrow(/maintenance/)
+    expect(() => readMaintenanceCheckInSnapshot(file, { limit: 1 }, { ...sense, checkedAt: new Date(NOW - 31_000).toISOString() })).toThrow(/stopped/)
+    expect(readMaintenanceCheckInSnapshot(file, { limit: 1 }, sense).entries).toHaveLength(1)
+    expect(fs.readFileSync(file)).toEqual(before)
+    expect(fs.readFileSync(`${file}.maintenance.json`)).toEqual(marker)
+  })
+
   it("looks up an exact dispatch beyond the maximum first page without scanning pages", () => {
     const ids = Array.from({ length: 205 }, (_, index) => seed("unknown", { session: `terminal-${index}` }).id).sort()
     const id = ids.at(-1)!

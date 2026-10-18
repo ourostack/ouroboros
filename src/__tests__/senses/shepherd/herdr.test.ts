@@ -56,6 +56,21 @@ afterEach(async () => {
 })
 
 describe("Herdr host: panes", () => {
+  it("retains previous pane observations and reports malformed successful inventories as unavailable", async () => {
+    const observed = vi.fn()
+    const watcher = host().watch({ returned: vi.fn(), focused: vi.fn(), observed })
+    try {
+      await vi.waitFor(() => expect(observed).toHaveBeenCalled())
+      expect(observed.mock.calls.at(-1)![0].sessions).toHaveLength(3)
+      for (const result of [{}, { panes: [null] }, { panes: [{}] }]) {
+        server.respond("pane.list", () => result)
+        await scheduler.run(5_000)
+        expect(observed.mock.calls.at(-1)![0]).toMatchObject({ error: "host_unavailable" })
+        expect(observed.mock.calls.at(-1)![0].sessions).toHaveLength(3)
+      }
+    } finally { watcher.close() }
+  })
+
   it("requires a complete well-formed pane inventory before proving terminal retirement", async () => {
     expect(await host().retirementInventory!()).toEqual(["w1:p1", "w1:p2", "w2:p1"])
     for (const result of [{}, { panes: null }, { panes: [null] }, { panes: [{}] }, { panes: [{ pane_id: "x" }, { pane_id: "x" }] }]) {

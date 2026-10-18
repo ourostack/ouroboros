@@ -44,6 +44,7 @@ export function App() {
   const [refreshGeneration, setRefreshGeneration] = useState(0)
   const refreshRef = useRef(0)
   const initialRoute = useRef(getInitialRoute())
+  const [agentRoute, setAgentRoute] = useState(getInitialRoute)
   const selectedRef = useRef(selectedAgent)
   const mounted = useRef(true)
   const machineRequest = useRef(0)
@@ -147,6 +148,7 @@ export function App() {
       const route = parseHash(window.location.hash)
       if (route) {
         machineMode.current = false
+        setAgentRoute(route)
         setSupervisionRoute(null)
         selectAgent(route.agent)
       }
@@ -156,10 +158,12 @@ export function App() {
   }, [selectAgent])
 
   const handleSelectAgent = useCallback((name: string) => {
+    const route: RouteState = { agent: name, tab: "overview", focus: undefined }
+    setAgentRoute(route)
     machineMode.current = false
     setSupervisionRoute(null)
     selectAgent(name)
-    window.history.pushState(null, "", buildHash({ agent: name, tab: "overview", focus: undefined }))
+    window.history.pushState(null, "", buildHash(route))
   }, [selectAgent])
 
   const handleSupervision = useCallback((agent: string | null) => {
@@ -322,7 +326,8 @@ export function App() {
           view={currentView}
           deskPrefs={deskPrefs}
           refreshGeneration={refreshGeneration}
-          initialRoute={initialRoute.current?.agent === selectedAgent ? initialRoute.current : undefined}
+          initialRoute={agentRoute?.agent === selectedAgent ? agentRoute : undefined}
+          onNavigate={setAgentRoute}
         />
       ) : (
         <p role="status" className="py-12 text-ouro-mist">

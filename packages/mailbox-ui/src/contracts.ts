@@ -3,6 +3,7 @@ export {
   getMailboxTranscriptTimestamp,
 } from "../../../src/heart/mailbox/mailbox-types"
 export { shepherdInspectionCommand, shepherdRetirementCommand } from "../../../src/heart/shepherd/operation-commands"
+export { SHEPHERD_ALPHA_AUTOMATION_WARNING } from "../../../src/heart/shepherd/supervision"
 
 export type {
   ShepherdSupervisionView,

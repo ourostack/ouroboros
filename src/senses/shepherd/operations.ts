@@ -4,9 +4,10 @@ import type { ShepherdOperation } from "../../heart/shepherd/operations"
 import type { ShepherdRetirementProof, ShepherdSenseStoppedProof } from "../../heart/shepherd/custody-types"
 import { readShepherdMandates, updateShepherdMandate } from "../../heart/shepherd/mandates"
 import { readMailboxSupervision } from "../../heart/mailbox/mailbox-supervision"
+import { SHEPHERD_ALPHA_AUTOMATION_WARNING } from "../../heart/shepherd/supervision"
 import { readGuidance, setShepherdSessionPause } from "./guidance"
 import { checkInStorePath } from "./checkin-store"
-import { maintainShepherdCustody, readCheckInSnapshot, reconcileShepherdDispatch } from "./recovery"
+import { maintainShepherdCustody, readCheckInSnapshot, readMaintenanceCheckInSnapshot, reconcileShepherdDispatch } from "./recovery"
 import { emitNervesEvent } from "../../nerves/runtime"
 
 export interface ShepherdOperationDeps {
@@ -29,6 +30,7 @@ export async function runShepherdOperation(command: ShepherdOperation, deps: She
     const file = checkInStorePath(root)
     if (command.kind === "shepherd.status") return {
       boundary: "same_uid_local_owner_administration_not_human_presence",
+      automation: { mode: "legacy_unqualified", mandatesEnforcedForAllTriggers: false, unattendedKeysPossible: true, warning: SHEPHERD_ALPHA_AUTOMATION_WARNING },
       supervision: readMailboxSupervision(command.agent, { agentRoot: root }),
       guidance: readGuidance(root), mandates: readShepherdMandates(root),
       custody: readCheckInSnapshot(file, { limit: 50 }),
@@ -82,7 +84,7 @@ export async function runShepherdOperation(command: ShepherdOperation, deps: She
     const seen = new Set<string>()
     let cursor: string | undefined
     do {
-      const page = readCheckInSnapshot(file, { limit: 200, ...(cursor ? { cursor } : {}) })
+      const page = readMaintenanceCheckInSnapshot(file, { limit: 200, ...(cursor ? { cursor } : {}) }, sense)
       if (page.state !== "ready") throw new Error("custody store is missing")
       for (const entry of page.entries) {
         if (entry.host !== host.name || sessions.includes(entry.session)) continue

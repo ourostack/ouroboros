@@ -1,7 +1,10 @@
 import { beforeEach, describe, expect, it, vi } from "vitest"
+import * as fs from "node:fs"
+import * as os from "node:os"
+import * as path from "node:path"
 import { createDefaultShepherdOperationDeps } from "../../../senses/shepherd/operations-defaults"
 import { createShepherdHost } from "../../../senses/shepherd/host"
-import { resolveExistingLocalOwner } from "../../../senses/shepherd/surface"
+import { localShepherdFriendStore, resolveExistingLocalOwner } from "../../../senses/shepherd/surface"
 import { readMachineRuntimeCredentialConfig } from "../../../heart/runtime-credentials"
 
 vi.mock("../../../senses/shepherd/host", () => ({ createShepherdHost: vi.fn(() => ({ name: "herdr" })) }))
@@ -10,11 +13,28 @@ vi.mock("../../../senses/shepherd/surface", () => ({
   resolveExistingLocalOwner: vi.fn(async () => "existing-owner"),
 }))
 vi.mock("../../../heart/runtime-credentials", () => ({ readMachineRuntimeCredentialConfig: vi.fn() }))
+const fixture = vi.hoisted(() => ({ bundlesRoot: "" }))
+vi.mock("../../../heart/identity", () => ({ getAgentBundlesRoot: () => fixture.bundlesRoot }))
 
-beforeEach(() => { vi.clearAllMocks() })
+beforeEach(() => {
+  vi.clearAllMocks()
+  fixture.bundlesRoot = fs.mkdtempSync(path.join(os.tmpdir(), "shepherd-default-owner-"))
+})
 
 describe("production owner-administration composition", () => {
+  it("does not construct a creating friend store for an unknown or unlinked bundle", async () => {
+    const deps = createDefaultShepherdOperationDeps(vi.fn())
+    await expect(deps.resolveOwner("missing")).rejects.toThrow(/existing.*owner/i)
+    expect(localShepherdFriendStore).not.toHaveBeenCalled()
+    expect(fs.readdirSync(fixture.bundlesRoot)).toEqual([])
+    const root = path.join(fixture.bundlesRoot, "unlinked.ouro")
+    fs.mkdirSync(root)
+    await expect(deps.resolveOwner("unlinked")).rejects.toThrow(/existing.*owner/i)
+    expect(fs.readdirSync(root)).toEqual([])
+  })
+
   it("uses existing owner resolution and allows the configured Herdr host without enabling Shepherd", async () => {
+    fs.mkdirSync(path.join(fixture.bundlesRoot, "ouro.ouro", "friends"), { recursive: true })
     vi.mocked(readMachineRuntimeCredentialConfig).mockReturnValue({ ok: true, config: { herdr: { socketPath: "/synthetic/herdr.sock" } } })
     const deps = createDefaultShepherdOperationDeps(vi.fn())
     expect(await deps.resolveOwner("ouro")).toEqual({ actorId: "existing-owner" })

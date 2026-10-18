@@ -25,6 +25,33 @@ beforeEach(() => { root = fs.mkdtempSync(path.join(os.tmpdir(), "shepherd-observ
 afterEach(() => { fs.rmSync(root, { recursive: true, force: true }) })
 
 describe("sense-owned observation publisher", () => {
+  it("never upgrades a legacy sent report into bound native admission evidence", () => {
+    const store = openCheckInStore(checkInStorePath(root))
+    const ids: string[] = []
+    try {
+      for (const qualified of [false, true]) {
+        const sessionId = qualified ? "bound-terminal" : "legacy-terminal"
+        const claim = store.claimDispatch({
+          host: "cmux", session: sessionId, instance: session.instance, screenFingerprint: "screen",
+          guidanceRevision: "0", reply: "Continue.", trigger: "immediate", transition: sessionId, at: record.at,
+        }, "owner")!
+        ids.push(claim.id)
+        store.completeDispatch(claim.id, "owner", {
+          state: "sent", ...(qualified ? { receipt: {
+            requestId: claim.id, surfaceId: sessionId, workspaceId: "workspace-1", processInstance: session.instance,
+            pasteAdmitted: true, submitAdmitted: true,
+          } } : {}),
+        })
+      }
+    } finally { store.close() }
+    const publisher = createShepherdObservationPublisher({ agentRoot: root, agentName: "slugger", host: "cmux", now: () => now })
+    publisher.observe({ at: now, sessions: [{ session, activity: "idle", observedAt: now }] })
+    const view = readMailboxSupervision("slugger", { agentRoot: root, nowMs: now })
+    expect(view.timeline.items.find(event => event.id === `input:${ids[0]}`))
+      .toMatchObject({ kind: "legacy_input_reported", summary: expect.stringContaining("no qualified") })
+    expect(view.timeline.items.find(event => event.id === `input:${ids[1]}`)).toMatchObject({ kind: "input_admitted" })
+  })
+
   it("publishes private whitelisted rows from the existing host observation without storing screens or replies", () => {
     appendReturn(root, record)
     const publisher = createShepherdObservationPublisher({ agentRoot: root, agentName: "slugger", host: "cmux", now: () => now })

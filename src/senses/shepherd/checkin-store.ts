@@ -169,13 +169,14 @@ function validateRetiredRow(row: RetiredRow): Record<string, unknown> {
   return data
 }
 
-export function openCustodyDatabase(file: string, mode: "read"): Database.Database | null
+export function openCustodyDatabase(file: string, mode: "read" | "maintenance-read"): Database.Database | null
 export function openCustodyDatabase(file: string, mode: "write" | "maintenance"): Database.Database
-export function openCustodyDatabase(file: string, mode: "read" | "write" | "maintenance"): Database.Database | null {
+export function openCustodyDatabase(file: string, mode: "read" | "maintenance-read" | "write" | "maintenance"): Database.Database | null {
+  const readonly = mode === "read" || mode === "maintenance-read"
   if (!path.isAbsolute(file) || path.normalize(file) !== file) refuse("database path")
-  if (mode !== "maintenance") assertNoCustodyMaintenance(file)
-  if (!validateCustodyDirectory(path.dirname(file), mode !== "read")) return null
-  if (mode === "read") {
+  if (mode !== "maintenance" && mode !== "maintenance-read") assertNoCustodyMaintenance(file)
+  if (!validateCustodyDirectory(path.dirname(file), !readonly)) return null
+  if (readonly) {
     if (!fs.lstatSync(file, { throwIfNoEntry: false })) return null
   } else {
     try {
@@ -187,17 +188,17 @@ export function openCustodyDatabase(file: string, mode: "read" | "write" | "main
   }
   privateFile(file)
   for (const suffix of ["-journal", "-wal", "-shm"]) if (fs.lstatSync(`${file}${suffix}`, { throwIfNoEntry: false })) privateFile(`${file}${suffix}`)
-  const database = new Database(file, { fileMustExist: true, readonly: mode === "read" })
+  const database = new Database(file, { fileMustExist: true, readonly })
   try {
     const version = database.pragma("user_version", { simple: true })
-    if (![0, 1, 2].includes(Number(version)) || version === 0 && mode === "read") refuse("unsupported database schema")
+    if (![0, 1, 2].includes(Number(version)) || version === 0 && readonly) refuse("unsupported database schema")
     custodyCapacity(database)
     database.pragma("busy_timeout = 1000")
     if (version !== 0) {
       database.prepare("SELECT id,host,session,instance,data FROM dispatches LIMIT 0").all()
       database.prepare("SELECT signature,data FROM notices LIMIT 0").all()
     }
-    if (mode === "read") {
+    if (readonly) {
       if (version === 2) validateCustodyV2(database)
       return database
     }

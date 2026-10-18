@@ -67,6 +67,10 @@ describe("Supervision", () => {
     expect(screen.getByText(/Observation age:/)).toBeTruthy()
     expect(screen.getByText(/Guarded input: unsupported/)).toBeTruthy()
     expect(screen.getByText(/Last recorded action: Let through without a response/)).toBeTruthy()
+    expect(screen.getByText(/legacy immediate.*network.*may still type or press keys/i)).toBeTruthy()
+    expect(screen.getByText(/absent or revoked mandates do not disable/i)).toBeTruthy()
+    expect(screen.getByText(/Stored mandate.*pause state: absent/i)).toBeTruthy()
+    expect(screen.queryByText(/^Authority:/)).toBeNull()
   })
 
   it("never commits late data for a previous owner and clears old identity immediately", async () => {

@@ -129,10 +129,14 @@ export function createShepherdObservationPublisher(options: {
         }
         events.custody = page(current.entries.flatMap(entry => {
           const base = { host: safe(entry.host), session: safe(entry.session), instance: entry.instance === null ? null : safe(entry.instance) }
+          const boundAdmission = entry.receipt?.requestId === entry.id && entry.receipt.surfaceId === entry.session
+            && entry.receipt.processInstance === entry.instance && entry.receipt.pasteAdmitted && entry.receipt.submitAdmitted
           return [{
             ...base, id: `input:${entry.id}`, at: iso(entry.claimedAt),
-            kind: entry.state === "sent" ? "input_admitted" as const : entry.state === "not_sent" ? "observation" as const : "input_unknown" as const,
-            summary: entry.state === "sent" ? "Terminal input admitted; not proof of task completion"
+            kind: entry.state === "sent" ? boundAdmission ? "input_admitted" as const : "legacy_input_reported" as const
+              : entry.state === "not_sent" ? "observation" as const : "input_unknown" as const,
+            summary: entry.state === "sent" ? boundAdmission ? "Bound host receipt reports paste and submit admission; not proof of task completion"
+              : "Legacy dispatcher reported sent; no qualified bound paste-and-submit receipt. Not proof of input admission or task completion."
               : entry.state === "not_sent" ? "Input refused; no terminal input"
                 : "Claim held; input outcome is unknown. Reconcile evidence, do not retry blindly.",
           }, ...entry.reconciliations.map(receipt => ({
@@ -162,7 +166,7 @@ export function createShepherdObservationPublisher(options: {
     const sessions = (observed?.sessions ?? []).slice(0, SHEPHERD_SUPERVISION_LIMIT).map(row => {
       const session = row.session
       let authority: "active" | "absent" | "paused" | "ambiguous" | "unknown" = "unknown"
-      let withheldReason = row.error ? "Terminal could not be read" : "Guarded automatic input is not qualified for this host"
+      let withheldReason = row.error ? "Terminal could not be read; no current policy assessment" : "Guarded automatic input is not qualified for this host"
       if (row.error && errors.length < 50) errors.push({ source: "host", code: "row_read_failed", detail: `Terminal ${safe(session.id)} could not be read` })
       if (guidance && mandates) {
         if (applicableGuidance(guidance, { host: options.host, session: session.id, cwd: session.cwd ?? null, task: null }).paused) authority = "paused"
@@ -172,9 +176,9 @@ export function createShepherdObservationPublisher(options: {
           }, at)
           authority = resolution.state === "authorized" ? "active" : resolution.reason === "ambiguous_mandates" ? "ambiguous" : "absent"
         } else authority = "absent"
-        if (authority === "paused") withheldReason = "Operator paused this terminal"
-        else if (authority === "absent") withheldReason = "No applicable current mandate"
-        else if (authority === "ambiguous") withheldReason = "Multiple mandates apply; authority is ambiguous"
+        if (authority === "paused") withheldReason = "Stored terminal pause is set"
+        else if (authority === "absent") withheldReason = "No applicable stored mandate; legacy automatic paths are not uniformly mandate-enforced"
+        else if (authority === "ambiguous") withheldReason = "Multiple stored mandates apply; policy scope is ambiguous"
       }
       const last = returns.filter(record => record.host === options.host && record.session === safe(session.id)).sort((a, b) => b.at.localeCompare(a.at))[0]
       return {

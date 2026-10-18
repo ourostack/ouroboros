@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from "react"
 import { fetchJson } from "../api"
 import { Badge } from "../catalyst/badge"
 import type { ShepherdSupervisionEvent, ShepherdSupervisionView } from "../contracts"
-import { shepherdInspectionCommand, shepherdRetirementCommand } from "../contracts"
+import { shepherdInspectionCommand, shepherdRetirementCommand, SHEPHERD_ALPHA_AUTOMATION_WARNING } from "../contracts"
 
 interface SupervisionProps {
   agents: string[]
@@ -13,6 +13,7 @@ interface SupervisionProps {
 }
 const eventLabels: Record<ShepherdSupervisionEvent["kind"], string> = {
   observation: "Observation", judgment: "Judgment", input_admitted: "Input admitted", input_unknown: "Input unknown",
+  legacy_input_reported: "Legacy input report (unqualified)",
   notification_queued: "Notification queued", notification_delivered: "Notification transport acceptance",
   notification_unknown: "Notification unknown", recovery: "Acknowledged recovery",
 }
@@ -142,6 +143,10 @@ export function Supervision({ agents, agentName, focus, refreshGeneration, onSel
           </select>
         </label>
       </header>
+      <aside className={`${panel} text-sm text-ouro-gold`} aria-label="Alpha automation boundary">
+        <p className="font-semibold">Alpha automation boundary</p>
+        <p className="mt-1">{SHEPHERD_ALPHA_AUTOMATION_WARNING}</p>
+      </aside>
 
       {!agentName ? <p className={panel}>Choose an owning Ouro agent to inspect its terminal supervision. No fleet counts are available until an owner is selected.</p> : (
         <>
@@ -193,8 +198,8 @@ export function Supervision({ agents, agentName, focus, refreshGeneration, onSel
                     <div><dt className="inline">Process instance: </dt><dd className="inline font-mono">{row.instance ?? "Unknown"}</dd></div>
                     <div><dt className="inline">Last observed: </dt><dd className="inline">{ageLabel(row.observedAt, now)} ago</dd></div>
                   </dl>
-                  <p className="text-sm">Authority: {row.authority}. Guarded input: {row.capability}.</p>
-                  <p className="break-words text-sm text-ouro-gold">Guarded-input eligibility: {row.withheldReason ?? "Unknown."}</p>
+                  <p className="text-sm">Stored mandate / pause state: {row.authority}. Guarded input: {row.capability}.</p>
+                  <p className="break-words text-sm text-ouro-gold">Stored policy assessment, not an enforced dispatch decision: {row.withheldReason ?? "Unknown."}</p>
                   <p className="text-sm">Last recorded judgment: <span>{row.lastDecisionLabel ?? "None recorded"}</span></p>
                   <p className="break-words text-sm text-ouro-mist">
                     Last recorded action: {row.lastAction === "respond" ? "Reported terminal response" : row.lastAction === "let_through" ? "Let through without a response" : "None recorded"}.

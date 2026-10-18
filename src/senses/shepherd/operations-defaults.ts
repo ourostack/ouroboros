@@ -1,4 +1,5 @@
 import * as path from "node:path"
+import * as fs from "node:fs"
 import { getAgentBundlesRoot } from "../../heart/identity"
 import { readMachineRuntimeCredentialConfig } from "../../heart/runtime-credentials"
 import { resolveShepherdConnection } from "../../heart/shepherd-config"
@@ -10,7 +11,15 @@ import { localShepherdFriendStore, resolveExistingLocalOwner } from "./surface"
 export function createDefaultShepherdOperationDeps(lifecycle: (agent: string) => Promise<DaemonResponse>): ShepherdOperationDeps {
   return {
     agentRoot: agent => path.join(getAgentBundlesRoot(), `${agent}.ouro`),
-    resolveOwner: async agent => ({ actorId: await resolveExistingLocalOwner(localShepherdFriendStore(agent)) }),
+    resolveOwner: async agent => {
+      if (!/^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(agent)) throw new Error("existing local owner requires a safe agent name")
+      const root = path.join(getAgentBundlesRoot(), `${agent}.ouro`)
+      if (!fs.lstatSync(root, { throwIfNoEntry: false })?.isDirectory()
+        || !fs.lstatSync(path.join(root, "friends"), { throwIfNoEntry: false })?.isDirectory()) {
+        throw new Error("existing local owner linking is required; no bundle or friends directory was created")
+      }
+      return { actorId: await resolveExistingLocalOwner(localShepherdFriendStore(agent)) }
+    },
     host: async agent => {
       const machine = readMachineRuntimeCredentialConfig(agent)
       if (!machine.ok) throw new Error("machine Shepherd connection configuration is unavailable")

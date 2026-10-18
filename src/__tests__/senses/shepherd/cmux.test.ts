@@ -65,6 +65,21 @@ afterEach(async () => {
 })
 
 describe("cmux host: terminals", () => {
+  it("retains last observed terminals with a host error after a malformed successful inventory response", async () => {
+    const observed = vi.fn()
+    const watcher = host().watch({ returned: vi.fn(), focused: vi.fn(), observed })
+    try {
+      await vi.waitFor(() => expect(observed).toHaveBeenCalled())
+      expect(observed.mock.calls.at(-1)![0].sessions).toHaveLength(2)
+      for (const malformed of [{}, { windows: [{ workspaces: [{}] }] }, tree([{ id: "", ref: "surface:1" }])]) {
+        server.respond("system.tree", () => malformed)
+        await scheduler.run(POLL_MS)
+        expect(observed.mock.calls.at(-1)![0]).toMatchObject({ error: "host_unavailable" })
+        expect(observed.mock.calls.at(-1)![0].sessions).toHaveLength(2)
+      }
+    } finally { watcher.close() }
+  })
+
   it("uses a strict all-window tree for retirement, never sparse or malformed inventory as absence", async () => {
     expect(await host().retirementInventory!()).toEqual(["SF-1", "SF-2"])
     for (const malformed of [{}, { windows: null }, { windows: [null] }, { windows: [{}] },

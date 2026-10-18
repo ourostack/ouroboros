@@ -8,6 +8,11 @@ import { checkInStorePath, openCheckInStore } from "../../../senses/shepherd/che
 import { readCheckInSnapshot } from "../../../senses/shepherd/recovery"
 import { readShepherdMandates } from "../../../heart/shepherd/mandates"
 
+vi.mock("node:fs", async importOriginal => {
+  const actual = await importOriginal<typeof import("node:fs")>()
+  return { ...actual, renameSync: vi.fn(actual.renameSync), writeFileSync: vi.fn(actual.writeFileSync), unlinkSync: vi.fn(actual.unlinkSync) }
+})
+
 let root: string
 let deps: ShepherdOperationDeps
 let sessions: Array<{ id: string; cwd: string; instance: string }>
@@ -24,7 +29,11 @@ function claim() {
   } finally { store.close() }
 }
 
-beforeEach(() => {
+beforeEach(async () => {
+  const actual = await vi.importActual<typeof import("node:fs")>("node:fs")
+  vi.mocked(fs.renameSync).mockReset().mockImplementation(actual.renameSync)
+  vi.mocked(fs.writeFileSync).mockReset().mockImplementation(actual.writeFileSync)
+  vi.mocked(fs.unlinkSync).mockReset().mockImplementation(actual.unlinkSync)
   root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "shepherd-operations-")))
   sessions = [{ id: "terminal-1", cwd: root, instance: "pid:7:start:42" }]
   deps = {
@@ -36,10 +45,51 @@ beforeEach(() => {
 })
 
 describe("trusted local-owner operation composition", () => {
+  it.each(["copying", "prepared", "swapped"])("resumes the actual maintenance operation after a %s interruption", async stage => {
+    const id = claim()
+    sessions = []
+    await runShepherdOperation({
+      kind: "shepherd.reconcile", ...admin, id, resolution: "retired",
+      expectedRevision: readCheckInSnapshot(checkInStorePath(root), { limit: 1 }).revision!,
+    }, deps)
+    const command = {
+      kind: "shepherd.maintenance" as const, ...admin, requestId: "archive",
+      expectedRevision: readCheckInSnapshot(checkInStorePath(root), { limit: 1 }).revision!, destination: path.join(root, "archives"),
+    }
+    const actual = await vi.importActual<typeof import("node:fs")>("node:fs")
+    const file = checkInStorePath(root)
+    if (stage === "copying") {
+      vi.mocked(fs.writeFileSync).mockImplementation((candidate, data, options) => {
+        if (String(candidate).includes("/archives/custody-") && data === "") throw new Error("interrupted fixture")
+        return actual.writeFileSync(candidate, data, options)
+      })
+    } else if (stage === "prepared") {
+      vi.mocked(fs.renameSync).mockImplementation((from, to) => {
+        if (String(from).includes(".replacement-") && String(to) === file) throw new Error("interrupted fixture")
+        return actual.renameSync(from, to)
+      })
+    } else {
+      vi.mocked(fs.unlinkSync).mockImplementation(candidate => {
+        if (String(candidate) === `${file}.maintenance.json`) throw new Error("interrupted fixture")
+        return actual.unlinkSync(candidate)
+      })
+    }
+    await expect(runShepherdOperation(command, deps)).rejects.toThrow("interrupted fixture")
+    vi.mocked(fs.writeFileSync).mockImplementation(actual.writeFileSync)
+    vi.mocked(fs.renameSync).mockImplementation(actual.renameSync)
+    vi.mocked(fs.unlinkSync).mockImplementation(actual.unlinkSync)
+    expect(() => readCheckInSnapshot(file, { limit: 1 })).toThrow(/maintenance/)
+    expect(await runShepherdOperation(command, deps)).toMatchObject({ archivedCount: 1, retainedCount: 0 })
+    expect(fs.existsSync(`${file}.maintenance.json`)).toBe(false)
+  })
+
   it("reports unavailable observation and missing custody honestly without contacting the host", async () => {
     deps.host = vi.fn()
     const result = await runShepherdOperation({ kind: "shepherd.status", agent: "ouro" }, deps)
-    expect(result).toMatchObject({ supervision: { freshness: { status: "unknown" } }, custody: { state: "missing", totalCount: null } })
+    expect(result).toMatchObject({
+      supervision: { freshness: { status: "unknown" } }, custody: { state: "missing", totalCount: null },
+      automation: { mode: "legacy_unqualified", mandatesEnforcedForAllTriggers: false, unattendedKeysPossible: true },
+    })
     expect(deps.host).not.toHaveBeenCalled()
     expect(fs.existsSync(path.join(root, "state"))).toBe(false)
   })

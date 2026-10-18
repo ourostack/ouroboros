@@ -73,7 +73,18 @@ function reconciliationRows(db: Database.Database, claim: DispatchClaim): { rece
   return { receipts, count: count.count, receipt }
 }
 
-export function readCheckInSnapshot(file: string, options: { limit: number; cursor?: string; id?: string }): ShepherdCustodySnapshot {
+type InspectionOptions = { limit: number; cursor?: string; id?: string }
+export function readCheckInSnapshot(file: string, options: InspectionOptions): ShepherdCustodySnapshot {
+  return readCustodySnapshot(file, options, "read")
+}
+
+/** Recovery may inspect a held marker only after trusted daemon quiescence; this never opens a writer. */
+export function readMaintenanceCheckInSnapshot(file: string, options: InspectionOptions, sense: ShepherdMaintenanceRequest["sense"]): ShepherdCustodySnapshot {
+  requireStoppedSense({ sense })
+  return readCustodySnapshot(file, options, "maintenance-read")
+}
+
+function readCustodySnapshot(file: string, options: InspectionOptions, mode: "read" | "maintenance-read"): ShepherdCustodySnapshot {
   if (!Number.isSafeInteger(options.limit) || options.limit < 1 || options.limit > 200) refuse("inspection limit must be 1..200")
   if (options.id !== undefined && (!/^[a-f0-9]{64}$/.test(options.id) || options.cursor !== undefined)) refuse("invalid inspection ID or conflicting cursor")
   let cursor: { after: string; revision: number } | null = null
@@ -84,7 +95,7 @@ export function readCheckInSnapshot(file: string, options: { limit: number; curs
       || typeof parsed.revision !== "number" || !Number.isSafeInteger(parsed.revision) || parsed.revision < 0) refuse("invalid inspection cursor")
     cursor = { after: parsed.after, revision: parsed.revision }
   }
-  const db = openCustodyDatabase(file, "read")
+  const db = openCustodyDatabase(file, mode)
   if (!db) return {
     state: "missing", schemaVersion: null, revision: null, bytes: null, capacity: "unknown",
     totalCount: null, noticeCount: null, counts: null, entries: [], nextCursor: null,
@@ -313,7 +324,7 @@ function verifyPrepared(intent: MaintenanceIntent): void {
   if (!object(value) || value.archiveDigest !== intent.archiveDigest || value.requestHash !== intent.hash
     || canonical(value.receipt) !== canonical(intent.receipt)) refuse("archive manifest mismatch")
 }
-function requireStoppedSense(request: ShepherdMaintenanceRequest): void {
+function requireStoppedSense(request: Pick<ShepherdMaintenanceRequest, "sense">): void {
   if (!object(request.sense) || request.sense.kind !== "daemon_lifecycle" || request.sense.enabled !== false || request.sense.processState !== "stopped" || !fresh(request.sense.checkedAt)) {
     refuse("maintenance requires a fresh disabled and stopped sense proof")
   }

@@ -2,12 +2,13 @@ export const SHEPHERD_SUPERVISION_LIMIT = 200
 export const SHEPHERD_SUPERVISION_STALE_MS = 30_000
 export const SHEPHERD_OBSERVATION_FILE = "supervision-observation.json"
 export const SHEPHERD_OBSERVATION_MAX_BYTES = 2 * 1024 * 1024
+export const SHEPHERD_ALPHA_AUTOMATION_WARNING = "This alpha retains unqualified legacy automation. Legacy immediate/network automation may still type or press keys without mandate enforcement. Absent or revoked mandates do not disable those paths. Disable Shepherd to stop legacy automation."
 export const SHEPHERD_SUPERVISION_SOURCES = ["host", "guidance", "mandates", "returns", "custody", "notices"] as const
 export type ShepherdSupervisionSource = typeof SHEPHERD_SUPERVISION_SOURCES[number]
 export type ShepherdSourceHealth = "ok" | "missing" | "error"
 export type ShepherdActivity = "working" | "idle" | "shell" | "unknown"
 export type ShepherdAuthority = "active" | "absent" | "paused" | "ambiguous" | "unknown"
-export type ShepherdTimelineKind = "observation" | "judgment" | "input_admitted" | "input_unknown"
+export type ShepherdTimelineKind = "observation" | "judgment" | "input_admitted" | "legacy_input_reported" | "input_unknown"
   | "notification_queued" | "notification_delivered" | "notification_unknown" | "recovery"
 
 export interface ShepherdSupervisionError {
@@ -29,6 +30,7 @@ export interface ShepherdSupervisionSession {
   lastReason: string | null
   lastActionAt: string | null
   withheldReason: string | null
+  /** Stored policy evaluation, not effective enforcement of legacy automatic-input paths. */
   authority: ShepherdAuthority
   capability: "supported" | "unsupported" | "unknown"
 }
@@ -161,7 +163,7 @@ function validSession(value: unknown): value is ShepherdSupervisionSession {
 function validEvent(value: unknown): value is ShepherdSupervisionEvent {
   return object(value) && exact(value, ["id", "host", "session", "instance", "at", "kind", "summary"])
     && text(value.id) && text(value.host) && text(value.session) && nullableText(value.instance) && date(value.at) && text(value.summary)
-    && oneOf(value.kind, ["observation", "judgment", "input_admitted", "input_unknown", "notification_queued",
+    && oneOf(value.kind, ["observation", "judgment", "input_admitted", "legacy_input_reported", "input_unknown", "notification_queued",
       "notification_delivered", "notification_unknown", "recovery"])
 }
 function validClaim(value: unknown): value is ShepherdSupervisionClaim {

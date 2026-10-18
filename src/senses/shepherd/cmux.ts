@@ -113,10 +113,19 @@ export function createCmuxHost(client: CmuxClient, options: CmuxHostOptions = {}
     })
   }
 
-  async function surfaceEntries(): Promise<Surface[]> {
+  async function surfaceEntries(strict = false): Promise<Surface[]> {
     const tree = await client.call("system.tree", { all_windows: true })
-    return list(tree.windows).flatMap((window) => list(window.workspaces).map((workspace) => ({ window, workspace }))).flatMap(({ window, workspace }) =>
-      list(workspace.panes).flatMap((pane) => list(pane.surfaces)).map((surface) => ({
+    const records = (value: unknown): Record<string, unknown>[] => {
+      if (strict && (!Array.isArray(value) || !value.every(isRecord))) throw new Error("invalid cmux terminal inventory")
+      return list(value)
+    }
+    const seen = new Set<string>()
+    return records(tree.windows).flatMap((window) => records(window.workspaces).map((workspace) => ({ window, workspace }))).flatMap(({ window, workspace }) =>
+      records(workspace.panes).flatMap((pane) => records(pane.surfaces)).map((surface) => {
+        if (strict && (typeof surface.id !== "string" || !surface.id.trim() || typeof surface.type !== "string"
+          || !["terminal", "browser"].includes(surface.type) || seen.has(surface.id))) throw new Error("invalid cmux terminal inventory identity")
+        seen.add(str(surface.id) ?? "")
+        return {
         id: str(surface.id) ?? "",
         ref: str(surface.ref) ?? "",
         workspace: str(workspace.ref),
@@ -131,34 +140,20 @@ export function createCmuxHost(client: CmuxClient, options: CmuxHostOptions = {}
         focused: surface.focused === true && workspace.selected === true && window.visible !== false,
         ...(surface.focused === true && workspace.selected === true && window.visible !== false && window.key === true
           ? { selected: true } : {}),
-      })))
+        }
+      }))
   }
 
   async function retirementInventory(): Promise<string[]> {
-    const tree = await client.call("system.tree", { all_windows: true })
-    const records = (value: unknown): Record<string, unknown>[] => {
-      if (!Array.isArray(value) || !value.every(isRecord)) throw new Error("invalid cmux retirement inventory")
-      return value
-    }
-    const ids: string[] = []
-    const seen = new Set<string>()
-    for (const window of records(tree.windows)) for (const workspace of records(window.workspaces)) {
-      for (const pane of records(workspace.panes)) for (const surface of records(pane.surfaces)) {
-        if (typeof surface.id !== "string" || !surface.id.trim() || typeof surface.type !== "string"
-          || !["terminal", "browser"].includes(surface.type) || seen.has(surface.id)) throw new Error("invalid cmux retirement inventory identity")
-        seen.add(surface.id)
-        if (surface.type === "terminal") ids.push(surface.id)
-      }
-    }
-    return ids
+    return (await surfaceEntries(true)).filter(surface => surface.type === "terminal").map(surface => surface.id)
   }
 
-  async function surfaces(freshFocus = false): Promise<Surface[]> {
-    const entries = await surfaceEntries()
+  async function surfaces(freshFocus = false, strictInventory = false): Promise<Surface[]> {
+    const entries = await surfaceEntries(strictInventory)
     const identities = await (options.identifyTerminals ?? identifyTerminalProcesses)(entries.filter((entry) => entry.type === "terminal" && entry.tty).map((entry) => entry.tty!))
     // Process lookup is awaited. On inspection paths, do not return focus from
     // the tree sampled before that await. A moved/rebound TTY loses authority.
-    const current = freshFocus ? await surfaceEntries() : entries
+    const current = freshFocus ? await surfaceEntries(strictInventory) : entries
     return current.map((entry) => {
       const bound = entries.some(before => before.id === entry.id && before.tty === entry.tty && before.workspaceId === entry.workspaceId && before.type === entry.type)
       const identity = entry.tty && bound ? identities.get(entry.tty.replace(/^\/dev\//, "")) : undefined
@@ -388,7 +383,7 @@ export function createCmuxHost(client: CmuxClient, options: CmuxHostOptions = {}
       /** Inventory reads stay outside the judge queue; idle-hook terminals are observed but never rejudged here. */
       const poll = async (): Promise<void> => {
         try {
-          const terminals = (await surfaces()).filter((surface) => surface.type === "terminal")
+          const terminals = (await surfaces(false, !!handlers.observed)).filter((surface) => surface.type === "terminal")
           if (closed) return
           const seen = new Set(terminals.map((surface) => surface.id))
           for (const id of screens.keys()) if (!seen.has(id)) screens.delete(id)

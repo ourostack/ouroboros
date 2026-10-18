@@ -26,6 +26,36 @@ afterEach(() => {
 })
 
 describe("Mailbox current identity and connection", () => {
+  it("does not replay a launch deep link after explicitly selecting that owner again", async () => {
+    window.history.replaceState(null, "", "#/agent/alpha/sessions")
+    vi.stubGlobal("fetch", vi.fn(async (url: string) => url.endsWith("/sessions")
+      ? jsonResponse({ items: [], totalCount: 0, activeCount: 0, staleCount: 0 }) : defaultResponse(url)))
+    render(<App />)
+    await screen.findByRole("heading", { name: "alpha" })
+    fireEvent.click(screen.getByRole("button", { name: /^beta/ }))
+    await screen.findByText("Owned by beta")
+    fireEvent.click(screen.getByRole("button", { name: /^alpha/ }))
+    expect(await screen.findByText("Owned by alpha")).toBeTruthy()
+    expect(window.location.hash).toBe("#/agent/alpha")
+  })
+
+  it("restores the current tab when navigating back from Supervision, not the launch-only route", async () => {
+    render(<App />)
+    await screen.findByText("Owned by alpha")
+    fireEvent.click(screen.getByRole("button", { name: "Work" }))
+    const current = window.location.hash
+    expect(current).toBe("#/agent/alpha/work")
+    fireEvent.click(screen.getByRole("button", { name: "Supervision" }))
+    await screen.findByRole("heading", { name: "Supervision" })
+    act(() => {
+      window.history.replaceState(null, "", current)
+      window.dispatchEvent(new HashChangeEvent("hashchange"))
+    })
+    await screen.findByRole("heading", { name: "alpha" })
+    expect(screen.getByRole("button", { name: "Work" }).className).toContain("bg-ouro-moss/20")
+    expect(screen.queryByText("Owned by alpha")).toBeNull()
+  })
+
   it("opens machine-level Supervision without fetching an arbitrary agent inspector", async () => {
     window.history.replaceState(null, "", "#/supervision")
     render(<App />)
