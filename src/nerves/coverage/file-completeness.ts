@@ -100,6 +100,10 @@ const DISPATCH_EXEMPT_PATTERNS = [
   // consumed by server readers and the UI. Mailbox read/render modules own
   // the observability for these projections.
   "heart/mailbox/mailbox-types",
+  // Pure Shepherd command/parser/projection seams; IO callers own observability.
+  "heart/shepherd/operation-commands.ts",
+  "heart/shepherd/operations.ts",
+  "heart/shepherd/supervision.ts",
   // Mail search relevance scorer: pure heuristic function (regex + counter
   // arithmetic). The caller (search-cache.ts searchMailSearchCache) owns
   // observability via senses.mail_search_cache_upserted and friends.

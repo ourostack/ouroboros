@@ -17,6 +17,7 @@ import type { DnsWorkflowAction, OuroCliCommand, RsvpCliMode, RsvpCutoverAction,
 import type { VaultItemTemplate } from "./vault-items"
 import { suggestCommand } from "./cli-help"
 import { SHEPHERD_UUID } from "../../senses/shepherd/surface"
+import { parseShepherdOperation } from "../shepherd/operations"
 import { parseNotifySession } from "../../senses/voice/local-audio-control"
 import type { LocalAudioJoinRequest } from "../../senses/voice/local-audio-transport"
 import { parseDeskCommand, parseTaskAliasCommand } from "./cli-desk"
@@ -2820,7 +2821,7 @@ export function parseOuroCommand(args: string[]): OuroCliCommand {
   if (head === "mcp") return parseMcpCommand(args.slice(1))
   if (head === "shepherd") {
     const usage = "Usage: ouro shepherd chat --agent <name> [--session <UUID>] [--web]"
-    if (args[1] !== "chat") throw new Error(usage)
+    if (args[1] !== "chat") return parseShepherdOperation(args.slice(1))
     const values = new Map<string, string>()
     for (let i = 2; i < args.length; i += 1) {
       const flag = args[i]!

@@ -75,7 +75,7 @@ function gitFixture(tmp: string) {
       return clone(bundleRoot)
     },
     remoteHome(): unknown {
-      return (JSON.parse(git(remote, "show", "main:agent.json")) as { home?: unknown }).home
+      return (JSON.parse(git(remote, "--git-dir", remote, "show", "main:agent.json")) as { home?: unknown }).home
     },
   }
 }

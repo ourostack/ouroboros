@@ -21,6 +21,7 @@ import { readAgentPresentation } from "./agent-presentation"
 import { startFeedbackWorker, type FeedbackWorker, type FeedbackWorkerOptions } from "./feedback-worker"
 import { readShepherdCheckInMinutes } from "./checkin-config"
 import { checkInStorePath, openCheckInStore, type CheckInStore } from "./checkin-store"
+import { createShepherdObservationPublisher } from "./observation-publisher"
 
 /** Keeps the judgment's guidance revision in telemetry without changing the shared returns-store contract. */
 export interface ShepherdJudgedReturnRecord extends ReturnRecord { guidanceRevision?: number }
@@ -191,6 +192,8 @@ export async function startShepherdSenseApp(options: ShepherdSenseOptions): Prom
   const notifier = options.notifyOwner ? null : createOwnerNotifier({ agent, agentRoot, policy: noticePolicy(agent, agentRoot), schedule, listSessions: () => host.list() })
   const notifyOwner = options.notifyOwner ?? ((record: ReturnRecord) => notifier!.notify(record))
   const custody = (options.openCheckInStore ?? openCheckInStore)(checkInStorePath(agentRoot))
+  const observations = createShepherdObservationPublisher({ agentRoot, agentName: agent, host: host.name, now })
+  observations.refresh()
   const dispatchOwner = randomUUID()
   const feedback = (options.feedbackWorker ?? startFeedbackWorker)({ agent, agentRoot, now, schedule })
   /**
@@ -605,10 +608,12 @@ export async function startShepherdSenseApp(options: ShepherdSenseOptions): Prom
     } catch (error) {
       emitNervesEvent({ level: "warn", component: "senses", event: "senses.shepherd_log_error", message: "could not log a Shepherd judgment", meta: { agent, error: (error as Error).message } })
     }
+    if (!stopped) observations.refresh()
     emitNervesEvent({ component: "senses", event: "senses.shepherd_return", message: "handled a returned control", meta: { agent, host: host.name, kind: record.kind, action: record.action } })
   }
 
   const watcher = host.watch({
+    observed: observation => { if (!stopped) observations.observe(observation) },
     returned: (event) => {
       if (stopped) return
       invalidate(event.sessionId)
@@ -630,6 +635,7 @@ export async function startShepherdSenseApp(options: ShepherdSenseOptions): Prom
     stop() {
       if (stopped) return
       stopped = true
+      observations.stop()
       networkWaiting.clear()
       watcher.close()
       cancelWake?.()

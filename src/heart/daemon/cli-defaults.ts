@@ -787,6 +787,12 @@ export async function defaultRunSerpentGuide(): Promise<string | null> {
 export function createDefaultOuroCliDeps(socketPath = DEFAULT_DAEMON_SOCKET_PATH): OuroCliDeps {
   return {
     socketPath,
+    runShepherdOperation: async command => {
+      const { runShepherdOperation } = await import("../../senses/shepherd/operations")
+      const { createDefaultShepherdOperationDeps } = await import("../../senses/shepherd/operations-defaults")
+      return runShepherdOperation(command, createDefaultShepherdOperationDeps(async agent =>
+        sendDaemonCommand(socketPath, { kind: "daemon.shepherd_quiesce", agent }, { timeoutMs: DEFAULT_DAEMON_COMMAND_TIMEOUT_MS })))
+    },
     sendCommand: (commandSocketPath, command) => sendDaemonCommand(commandSocketPath, command, {
       timeoutMs: command.kind === "daemon.status"
         ? DEFAULT_DAEMON_STATUS_TIMEOUT_MS

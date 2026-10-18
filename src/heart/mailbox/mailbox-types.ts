@@ -28,6 +28,12 @@ import type { SenseContextPacketSummaryList, SenseContextPacketView } from "../.
 // Re-export domain types through the observation layer
 export type { UsageData } from "../../nerves/observation"
 export type { SessionEvent } from "../session-events"
+export type {
+  ShepherdSupervisionView,
+  ShepherdSupervisionSession,
+  ShepherdSupervisionEvent,
+  ShepherdSupervisionError,
+} from "../shepherd/supervision"
 export type MailboxContextPacketListView = SenseContextPacketSummaryList
 export type MailboxContextPacketDetailView = SenseContextPacketView
 

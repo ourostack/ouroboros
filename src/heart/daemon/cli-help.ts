@@ -137,10 +137,10 @@ export const COMMAND_REGISTRY: Record<string, CommandHelp & { category: CommandC
   },
   shepherd: {
     category: "Agents",
-    description: "Open an independent Ouro composer for one coding terminal. --web opens the compact graphical view in cmux; the managed cmux Shepherd sense also installs a native Talk to Ouro button. Without --web, /cancel cancels only Ouro's turn and /quit exits. Not an input hook in the coding agent.",
+    description: "Open an independent Ouro composer or administer Shepherd as the existing local owner. Administration is same-UID authority, not proof of human presence. status/inspect are read-only; mutations require --expected-revision and --request-id. pause/resume require --host and --session; resume never releases held custody. mandate grant requires --project, --task, --expires-at; revoke requires --id. reconcile --id --resolution retired derives host evidence; delivered is unsupported until native receipt lookup is qualified. maintenance --destination requires fresh disabled-and-stopped daemon proof and retired terminals. --web opens the compact graphical view in cmux. Not an input hook in the coding agent.",
     usage: "ouro shepherd chat --agent <name> [--session <UUID>] [--web]",
     example: "ouro shepherd chat --agent ouroboros",
-    subcommands: ["chat"],
+    subcommands: ["chat", "status", "inspect", "pause", "resume", "mandate", "reconcile", "maintenance"],
   },
   config: {
     category: "Agents",

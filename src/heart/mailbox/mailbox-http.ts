@@ -37,9 +37,11 @@ import type {
   MailboxNotesView,
   MailboxSessionInventory,
   MailboxSessionTranscript,
+  ShepherdSupervisionView,
 } from "./mailbox-types"
 
 export interface StartMailboxHttpServerOptions {
+  readAgentSupervision?: (agentName: string) => ShepherdSupervisionView
   host?: string
   port?: number
   bundlesRoot?: string

@@ -69,6 +69,16 @@ const verdict = (overrides: Partial<JudgeResult> = {}): JudgeResult => ({ kind: 
 const idleFeedbackWorker = () => ({ drain: async () => {}, stop() {} })
 
 describe("owner notice producer custody", () => {
+  it("ignores late host observation callbacks after the sense has stopped", async () => {
+    const { host } = await start(vi.fn(async () => verdict()))
+    host.handlers!.observed!({ at: clock, sessions: [] })
+    const file = path.join(agentRoot, "state/senses/shepherd/supervision-observation.json")
+    stop!()
+    const stopped = fs.readFileSync(file, "utf8")
+    host.handlers!.observed!({ at: clock + 1000, sessions: [] })
+    expect(fs.readFileSync(file, "utf8")).toBe(stopped)
+  })
+
   it("audits an accepted action and keeps later returns running after a one-time signature-read failure", async () => {
     const judge = vi.fn(async () => verdict())
     const { host, notices } = await start(judge, fakeHost(), {

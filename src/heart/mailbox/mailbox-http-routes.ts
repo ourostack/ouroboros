@@ -194,6 +194,15 @@ interface AgentRouteContext {
 async function handleAgentRoute(request: http.IncomingMessage, response: http.ServerResponse, context: AgentRouteContext): Promise<void> {
   const { agent, surface, options } = context
 
+  if (surface === "supervision") {
+    if (request.method !== "GET") {
+      writeJson(response, 405, { ok: false, error: "Supervision is read-only; use the local owner CLI for administration" })
+      return
+    }
+    writeJson(response, 200, options.hooks.readAgentSupervision(agent))
+    return
+  }
+
   if (!surface) {
     const view = options.readAgentView?.(agent)
     if (view) {

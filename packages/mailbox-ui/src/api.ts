@@ -1,28 +1,48 @@
 const BASE = "/api"
 
-export async function fetchJson<T>(path: string): Promise<T> {
-  const response = await fetch(`${BASE}${path}`, { headers: { accept: "application/json" } })
+export async function fetchJson<T>(path: string, options?: { signal?: AbortSignal }): Promise<T> {
+  const response = await fetch(`${BASE}${path}`, { headers: { accept: "application/json" }, signal: options?.signal })
   if (!response.ok) throw new Error(`${response.status} ${response.statusText}`)
   return response.json() as Promise<T>
 }
 
-export function subscribeToEvents(onEvent: (event: string, data: unknown) => void): () => void {
-  const source = new EventSource(`${BASE}/events`)
+export type ConnectionState = "connecting" | "connected" | "reconnecting"
 
-  source.addEventListener("state-changed", (e) => {
+export function subscribeToEvents(
+  onEvent: (event: string, data: unknown) => void,
+  onConnectionState?: (state: ConnectionState) => void,
+): () => void {
+  const source = new EventSource(`${BASE}/events`)
+  let closed = false
+  onConnectionState?.("connecting")
+
+  const changed = (e: Event) => {
+    if (closed || !(e instanceof MessageEvent)) return
     try {
       const data: unknown = JSON.parse(e.data)
       onEvent("state-changed", data)
     } catch {
       onEvent("state-changed", {})
     }
-  })
+  }
+  source.addEventListener("state-changed", changed)
 
+  source.onopen = () => {
+    if (closed) return
+    onConnectionState?.("connected")
+    onEvent("connected", {})
+  }
   source.onerror = () => {
-    // EventSource auto-reconnects
+    if (!closed) onConnectionState?.("reconnecting")
   }
 
-  return () => source.close()
+  return () => {
+    closed = true
+    source.removeEventListener("state-changed", changed)
+    source.onopen = null
+    source.onerror = null
+    source.close()
+  }
 }
 
 export function relTime(iso: string | null | undefined): string {

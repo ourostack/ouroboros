@@ -4,6 +4,59 @@ Shepherd keeps the coding agents in this Mac's terminals working. Every time one
 
 The judge is agent-agnostic: Claude Code, Codex, Copilot CLI, Agency and other agents are judged by the same rubric from their screen. A terminal host is an adapter (`src/senses/shepherd/host.ts`): cmux and Herdr. Periodic automatic input has a narrower, default-deny rendered-UI allowlist described below.
 
+## Intermediate alpha boundary and Supervision
+
+This is **not Shepherd v1**. The new mandate store does not yet govern every
+automatic path. Legacy immediate-return and connectivity-recovery behavior can
+still type or press menu keys without a mandate. An absent, expired, or revoked
+mandate is not a kill switch for those paths. Native guarded input and the shared
+all-trigger admission path remain unqualified. Disable Shepherd to stop legacy
+automation; do not infer safety from a stored mandate or an unsupported-capability
+badge.
+
+Ouro Mailbox's machine-level **Supervision** view (`#/supervision`) shows one
+explicitly selected owner's terminal observations, source failures, historical
+judgments, custody barriers, and transport outcomes. It ages observations locally
+and retains history when a source fails. "Agent reports finished" is not proof of
+merge, publication, or deployment. Stored mandate/pause assessments are not
+enforced dispatch decisions. Receipt-less `sent` records are explicitly legacy
+reports, not qualified host-admission evidence. The page only reads; its command
+buttons copy local commands and never resolve or retry an input from the browser.
+
+Local administration requires this OS user's existing, non-revoked local-family
+identity. It never creates or promotes an owner. Same-UID administration is a
+trusted boundary, not proof that a human is present. Start with:
+
+```sh
+ouro shepherd status --agent ouroboros --json
+ouro shepherd inspect --agent ouroboros --limit 50 --json
+```
+
+`inspect --id <SHA256>` retrieves one exact claim, including claims beyond the
+first page. `--cursor` is revision-bound and cannot be combined with `--id`.
+Mutations require an explicit `--expected-revision` and unique `--request-id`:
+pause/resume also require the configured `--host` and stable `--session`;
+mandate grant requires an exact canonical `--project`, `--task`, and ISO
+`--expires-at` within seven days; mandate revoke requires `--id`. Guidance,
+mandates, and custody have independent revisions, all shown by `status`.
+Resume only clears a pause and never clears an unknown input.
+
+`reconcile --id <SHA256> --resolution retired` independently checks a strict
+whole-terminal inventory. A different foreground process is not proof that the
+previous process exited. `--resolution delivered` explicitly refuses until
+qualified native receipt lookup exists; caller assertions or evidence files
+cannot confirm delivery. Reconciliation retains the original uncertain outcome.
+
+`maintenance --destination <absolute-private-directory>` requires Shepherd
+explicitly disabled in fresh `agent.json`. The daemon quiesces the managed sense,
+waits for actual worker termination, and prevents automatic revival until daemon
+restart. A missing daemon or an uncertain worker state cannot prove stoppage.
+Only reconciled, retired input can be archived; replay tombstones survive.
+After an interrupted archive, retry the **exact original maintenance command**:
+different request IDs, revisions, or destinations do not take over its marker.
+Disable and verify the sense stopped before rolling back to an older executable;
+a schema refusal alone is not executable rollback safety.
+
 ## What a return is
 
 A return is the host's own "agent stopped" signal.

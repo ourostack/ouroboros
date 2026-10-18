@@ -64,6 +64,19 @@ export interface HostWatchHandlers {
   returned: (event: ReturnedControl) => void
   /** The human focused this session. */
   focused: (sessionId: string) => void
+  /** Read-only inventory from the existing watcher, independent of the judgment queue. No screen payloads. */
+  observed?: (observation: ShepherdHostObservation) => void
+}
+
+export interface ShepherdHostObservation {
+  at: number
+  sessions: Array<{
+    session: HostSession
+    activity: "working" | "idle" | "shell" | "unknown"
+    observedAt: number | null
+    error?: "read_failed"
+  }>
+  error?: "host_unavailable" | "sense_stopped"
 }
 
 /**
@@ -75,6 +88,8 @@ export type ShepherdKey = "enter" | "escape" | "up" | "down" | "tab" | "ctrl-c" 
 export interface ShepherdHost {
   name: string
   list(): Promise<HostSession[]>
+  /** Strict complete stable-terminal inventory. Sparse/malformed replies throw, never mean absence. */
+  retirementInventory?(): Promise<string[]>
   /** The screen tail with scrollback, plain text. */
   read(sessionId: string, lines: number): Promise<string>
   inspect?(sessionId: string): Promise<ShepherdInspection>

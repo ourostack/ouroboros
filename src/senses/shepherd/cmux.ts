@@ -4,7 +4,7 @@ import * as os from "node:os"
 import * as path from "node:path"
 import { emitNervesEvent } from "../../nerves/runtime"
 import type { CmuxClient, CmuxSocketError } from "./client"
-import type { HostSession, HostWatchHandlers, ShepherdHost, ShepherdInspection, ShepherdKey } from "./host"
+import type { HostSession, HostWatchHandlers, ShepherdHost, ShepherdHostObservation, ShepherdInspection, ShepherdKey } from "./host"
 import { identifyTerminalProcesses } from "./terminal-process"
 import { inspectCodingPrompt } from "./prompt-state"
 import { redactSecrets } from "./redact"
@@ -113,10 +113,19 @@ export function createCmuxHost(client: CmuxClient, options: CmuxHostOptions = {}
     })
   }
 
-  async function surfaceEntries(): Promise<Surface[]> {
+  async function surfaceEntries(strict = false): Promise<Surface[]> {
     const tree = await client.call("system.tree", { all_windows: true })
-    return list(tree.windows).flatMap((window) => list(window.workspaces).map((workspace) => ({ window, workspace }))).flatMap(({ window, workspace }) =>
-      list(workspace.panes).flatMap((pane) => list(pane.surfaces)).map((surface) => ({
+    const records = (value: unknown): Record<string, unknown>[] => {
+      if (strict && (!Array.isArray(value) || !value.every(isRecord))) throw new Error("invalid cmux terminal inventory")
+      return list(value)
+    }
+    const seen = new Set<string>()
+    return records(tree.windows).flatMap((window) => records(window.workspaces).map((workspace) => ({ window, workspace }))).flatMap(({ window, workspace }) =>
+      records(workspace.panes).flatMap((pane) => records(pane.surfaces)).map((surface) => {
+        if (strict && (typeof surface.id !== "string" || !surface.id.trim() || typeof surface.type !== "string"
+          || !["terminal", "browser"].includes(surface.type) || seen.has(surface.id))) throw new Error("invalid cmux terminal inventory identity")
+        seen.add(str(surface.id) ?? "")
+        return {
         id: str(surface.id) ?? "",
         ref: str(surface.ref) ?? "",
         workspace: str(workspace.ref),
@@ -131,15 +140,20 @@ export function createCmuxHost(client: CmuxClient, options: CmuxHostOptions = {}
         focused: surface.focused === true && workspace.selected === true && window.visible !== false,
         ...(surface.focused === true && workspace.selected === true && window.visible !== false && window.key === true
           ? { selected: true } : {}),
-      })))
+        }
+      }))
   }
 
-  async function surfaces(freshFocus = false): Promise<Surface[]> {
-    const entries = await surfaceEntries()
+  async function retirementInventory(): Promise<string[]> {
+    return (await surfaceEntries(true)).filter(surface => surface.type === "terminal").map(surface => surface.id)
+  }
+
+  async function surfaces(freshFocus = false, strictInventory = false): Promise<Surface[]> {
+    const entries = await surfaceEntries(strictInventory)
     const identities = await (options.identifyTerminals ?? identifyTerminalProcesses)(entries.filter((entry) => entry.type === "terminal" && entry.tty).map((entry) => entry.tty!))
     // Process lookup is awaited. On inspection paths, do not return focus from
     // the tree sampled before that await. A moved/rebound TTY loses authority.
-    const current = freshFocus ? await surfaceEntries() : entries
+    const current = freshFocus ? await surfaceEntries(strictInventory) : entries
     return current.map((entry) => {
       const bound = entries.some(before => before.id === entry.id && before.tty === entry.tty && before.workspaceId === entry.workspaceId && before.type === entry.type)
       const identity = entry.tty && bound ? identities.get(entry.tty.replace(/^\/dev\//, "")) : undefined
@@ -203,6 +217,7 @@ export function createCmuxHost(client: CmuxClient, options: CmuxHostOptions = {}
     async list() {
       return (await surfaces()).filter((surface) => surface.type === "terminal").map(({ workspaceId: _workspaceId, type: _type, ...session }) => session)
     },
+    retirementInventory,
     read,
     inspect,
     async promptIfUnchanged(sessionId, line, expected, canSend?: () => boolean) {
@@ -364,14 +379,30 @@ export function createCmuxHost(client: CmuxClient, options: CmuxHostOptions = {}
         })
       }
 
-      /** Terminals whose agent is not idle: output that changed and then held still for the quiet window is a return. */
+      let lastObserved: ShepherdHostObservation["sessions"] = []
+      /** Inventory reads stay outside the judge queue; idle-hook terminals are observed but never rejudged here. */
       const poll = async (): Promise<void> => {
         try {
-          const terminals = (await surfaces()).filter((surface) => surface.type === "terminal" && hooked.get(surface.id)?.idle !== true)
+          const terminals = (await surfaces(false, !!handlers.observed)).filter((surface) => surface.type === "terminal")
+          if (closed) return
           const seen = new Set(terminals.map((surface) => surface.id))
           for (const id of screens.keys()) if (!seen.has(id)) screens.delete(id)
+          const rows: ShepherdHostObservation["sessions"] = []
           for (const surface of terminals) {
-            const hash = createHash("sha256").update(await read(surface.id, POLL_LINES)).digest("hex")
+            const idle = hooked.get(surface.id)?.idle === true
+            if (idle) screens.delete(surface.id)
+            if (idle && !handlers.observed) continue
+            let text: string
+            try { text = await read(surface.id, POLL_LINES) } catch (error) {
+              rows.push({ session: surface, activity: "unknown", observedAt: null, error: "read_failed" })
+              emitNervesEvent({ level: "warn", component: "senses", event: "senses.shepherd_cmux_poll_error",
+                message: "could not read one cmux terminal; other terminals remain observable", meta: { error: redactSecrets(String(error)) } })
+              continue
+            }
+            if (closed) return
+            rows.push({ session: surface, activity: surface.agent ? inspectCodingPrompt(surface.agent, text).activity : "unknown", observedAt: now() })
+            if (idle) continue
+            const hash = createHash("sha256").update(text).digest("hex")
             const last = screens.get(surface.id)
             const at = now()
             if (!last) screens.set(surface.id, { hash, changedAt: at, active: false })
@@ -383,8 +414,12 @@ export function createCmuxHost(client: CmuxClient, options: CmuxHostOptions = {}
               handlers.returned({ sessionId: surface.id, transitionId: `cmux:quiet:${surface.id}:${last.changedAt}`, agent: surface.agent, cwd: surface.cwd ?? null, title: surface.title, workspaceTitle: surface.workspaceTitle, lastBody: null, backgroundWork: null })
             }
           }
+          if (closed) return
+          lastObserved = rows
+          handlers.observed?.({ at: now(), sessions: rows })
         } catch (error) {
           emitNervesEvent({ level: "warn", component: "senses", event: "senses.shepherd_cmux_poll_error", message: "could not poll cmux terminals; the next poll retries", meta: { error: (error as Error).message } })
+          if (!closed) handlers.observed?.({ at: now(), sessions: lastObserved, error: "host_unavailable" })
         }
         if (!closed) cancelPoll = schedule(() => void poll(), POLL_MS)
       }

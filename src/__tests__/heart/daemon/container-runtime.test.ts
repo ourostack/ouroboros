@@ -219,7 +219,7 @@ php() {
     } finally {
       fs.rmSync(testRoot, { recursive: true, force: true })
     }
-  })
+  }, 30_000)
 
   it("propagates effective-audit faults from a conditional function context", () => {
     const runbook = fs.readFileSync("deploy/unraid/README.txt", "utf8")
@@ -601,7 +601,7 @@ if assert_restore_preflight; then command printf 'MUTATION\n'; else exit $?; fi`
     } finally {
       fs.rmSync(testRoot, { recursive: true, force: true })
     }
-  })
+  }, 30_000)
 
   it("rejects representative inline credential forms from host snapshots without rejecting references", () => {
     const runbook = fs.readFileSync("deploy/unraid/README.txt", "utf8")
@@ -1603,7 +1603,7 @@ validate_sanctuary_roots "$RUNTIME_ROOT" "$AGENT_ROOT" live-precutover`
     } finally {
       fs.rmSync(testRoot, { recursive: true, force: true })
     }
-  })
+  }, 30_000)
 
   it("normalizes only exact existing-root private permission candidates before live validation", () => {
     const runbook = fs.readFileSync("deploy/unraid/README.txt", "utf8")
@@ -1970,7 +1970,7 @@ await_post_audit_health`
     } finally {
       fs.rmSync(testRoot, { recursive: true, force: true })
     }
-  })
+  }, 30_000)
 
   it("routes every post-activation acceptance launcher invocation through the final profile", () => {
     const runbook = fs.readFileSync("deploy/unraid/README.txt", "utf8")

@@ -45,6 +45,15 @@ describe("daemon runtime logging", () => {
     tmpRoot = ""
   })
 
+  it("keeps local administration logs machine-scoped without materializing an unverified bundle", async () => {
+    tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), "daemon-admin-logging-"))
+    configureDaemonRuntimeLogger("ouro", { homeDir: tmpRoot, agentName: "unverified", machine: true })
+    emitNervesEvent({ component: "daemon", event: "daemon.admin_denied_test", message: "expected refusal", meta: {} })
+    const file = path.join(tmpRoot, ".ouro-cli", "daemon", "logs", "ouro.ndjson")
+    expect(await waitForLogContent(file, "daemon.admin_denied_test")).toContain("daemon.admin_denied_test")
+    expect(fs.existsSync(path.join(tmpRoot, "AgentBundles"))).toBe(false)
+  })
+
   it("uses daemon logging config to disable terminal sink", async () => {
     tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), "daemon-logging-"))
     const configPath = path.join(tmpRoot, ".ouro-cli", "daemon", "logging.json")
