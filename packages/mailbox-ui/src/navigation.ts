@@ -58,8 +58,28 @@ export function buildHash(state: RouteState): string {
   if (state.tab !== "overview" || state.focus) {
     hash += `/${state.tab}`
   }
+
   if (state.focus) {
     hash += `/${state.focus.split("/").map(encodeURIComponent).join("/")}`
   }
   return hash
+}
+
+export interface SupervisionRoute {
+  agent: string | null
+  focus?: string
+}
+
+export function parseSupervisionHash(hash: string): SupervisionRoute | null {
+  const parts = hash.replace(/^#\/?/, "").split("/")
+  if (parts[0] !== "supervision" || parts.length > 3) return null
+  try {
+    const agent = parts[1] ? decodeURIComponent(parts[1]) : null
+    if (agent && !/^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(agent)) return null
+    return { agent, ...(parts[2] ? { focus: decodeURIComponent(parts[2]) } : {}) }
+  } catch { return null }
+}
+
+export function buildSupervisionHash(agent: string | null, focus?: string): string {
+  return `#/supervision${agent ? `/${encodeURIComponent(agent)}${focus ? `/${encodeURIComponent(focus)}` : ""}` : ""}`
 }

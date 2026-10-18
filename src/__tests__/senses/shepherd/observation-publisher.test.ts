@@ -34,6 +34,7 @@ describe("sense-owned observation publisher", () => {
     expect(view.sessions.items[0]).toMatchObject({
       session: "SF-1", instance: "process:1:2", label: "token=[redacted]",
       lastDecisionLabel: "Agent reports finished", authority: "absent", capability: "unsupported",
+      lastAction: "let_through", lastReason: "token=[redacted]", lastActionAt: record.at,
     })
     expect(view.timeline.items).toContainEqual(expect.objectContaining({ kind: "judgment", summary: "Agent reports finished" }))
     const file = path.join(root, "state/senses/shepherd/supervision-observation.json")

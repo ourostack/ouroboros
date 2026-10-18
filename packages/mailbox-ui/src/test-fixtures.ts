@@ -1,4 +1,4 @@
-import type { MailboxAgentView, MailboxDeskPrefs, MailboxMachineView } from "./contracts"
+import type { MailboxAgentView, MailboxDeskPrefs, MailboxMachineView, ShepherdSupervisionView } from "./contracts"
 
 export class TestEventSource extends EventTarget {
   static instances: TestEventSource[] = []
@@ -80,6 +80,30 @@ export function deskPrefs(agentName: string): MailboxDeskPrefs {
   }
 }
 
+export function supervisionView(agentName: string): ShepherdSupervisionView {
+  const at = new Date().toISOString()
+  return {
+    schemaVersion: 1, agentName, freshness: { status: "fresh", observedAt: at, ageMs: 0 }, health: "ok",
+    sourceHealth: { host: "ok", guidance: "ok", mandates: "ok", returns: "ok", custody: "ok", notices: "ok" },
+    counts: { working: 0, idle: 1, shell: 0, unknown: 0 },
+    sessions: { totalCount: 1, truncated: false, items: [{
+      host: "cmux", session: "SF-1", instance: "process:123:456", label: `${agentName} terminal`, harness: "Copilot",
+      project: "/test/project", activity: "idle", observedAt: at, freshness: { status: "fresh", observedAt: at, ageMs: 0 },
+      lastDecision: "done", lastDecisionLabel: "Agent reports finished", withheldReason: "No applicable current mandate",
+      lastAction: "let_through", lastReason: "No further work reported", lastActionAt: at,
+      authority: "absent", capability: "unsupported",
+    }] },
+    timeline: { totalCount: 1, truncated: false, items: [{
+      id: "return:1", host: "cmux", session: "SF-1", instance: null, at, kind: "judgment", summary: "Agent reports finished",
+    }] },
+    custody: { revision: 3, bytes: 4096, capacity: "normal", claims: { totalCount: 1, truncated: false, items: [{
+      id: "a".repeat(64), host: "cmux", session: "SF-1", instance: "process:123:456", state: "unknown",
+      claimedAt: at, reason: "Transport result was lost", retired: false,
+    }] } },
+    sourceErrors: [],
+  }
+}
+
 export function jsonResponse(payload: unknown, status = 200): Response {
   return new Response(JSON.stringify(payload), { status, headers: { "content-type": "application/json" } })
 }
@@ -90,6 +114,8 @@ export function defaultResponse(url: string): Response {
   if (name) return jsonResponse(agentView(name))
   const owner = /^\/api\/agents\/([^/]+)\/desk-prefs$/.exec(url)?.[1]
   if (owner) return jsonResponse(deskPrefs(owner))
+  const supervisedOwner = /^\/api\/agents\/([^/]+)\/supervision$/.exec(url)?.[1]
+  if (supervisedOwner) return jsonResponse(supervisionView(supervisedOwner))
   if (url.endsWith("/needs-me")) return jsonResponse({ items: [] })
   if (url.endsWith("/coding")) return jsonResponse({ totalCount: 0, activeCount: 0, blockedCount: 0, items: [] })
   return jsonResponse({ error: "not available in this fixture" }, 503)

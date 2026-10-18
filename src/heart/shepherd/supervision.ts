@@ -25,6 +25,9 @@ export interface ShepherdSupervisionSession {
   activity: ShepherdActivity
   observedAt: string | null
   lastDecision: string | null
+  lastAction: "respond" | "let_through" | null
+  lastReason: string | null
+  lastActionAt: string | null
   withheldReason: string | null
   authority: ShepherdAuthority
   capability: "supported" | "unsupported" | "unknown"
@@ -146,9 +149,11 @@ function validPage<T>(value: unknown, validItem: (item: unknown) => item is T): 
 }
 function validSession(value: unknown): value is ShepherdSupervisionSession {
   return object(value) && exact(value, ["host", "session", "instance", "label", "harness", "project", "activity",
-    "observedAt", "lastDecision", "withheldReason", "authority", "capability"])
+    "observedAt", "lastDecision", "lastAction", "lastReason", "lastActionAt", "withheldReason", "authority", "capability"])
     && text(value.host) && text(value.session) && nullableText(value.instance) && text(value.label)
     && nullableText(value.harness) && nullableText(value.project) && nullableText(value.lastDecision) && nullableText(value.withheldReason)
+    && (value.lastAction === null || oneOf(value.lastAction, ["respond", "let_through"])) && nullableText(value.lastReason)
+    && (value.lastActionAt === null || date(value.lastActionAt))
     && (value.observedAt === null || date(value.observedAt)) && oneOf(value.activity, ["working", "idle", "shell", "unknown"])
     && oneOf(value.authority, ["active", "absent", "paused", "ambiguous", "unknown"])
     && oneOf(value.capability, ["supported", "unsupported", "unknown"])

@@ -23,7 +23,8 @@ function snapshot(): ShepherdSupervisionSnapshot {
       items: [{
         host: "cmux", session: "pane:1", instance: "process:123:456", label: "test terminal",
         harness: "copilot", project: "/project", activity: "idle", observedAt: new Date(now).toISOString(),
-        lastDecision: "done", withheldReason: "No current mandate", authority: "absent", capability: "unsupported",
+        lastDecision: "done", lastAction: "let_through", lastReason: "Reported finished", lastActionAt: new Date(now).toISOString(),
+        withheldReason: "No current mandate", authority: "absent", capability: "unsupported",
       }],
     },
     timeline: {

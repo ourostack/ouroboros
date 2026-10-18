@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react"
 import { fetchJson, subscribeToEvents, type ConnectionState } from "./api"
-import { buildHash, parseHash, type RouteState } from "./navigation"
+import { buildHash, parseHash, buildSupervisionHash, parseSupervisionHash, type RouteState } from "./navigation"
 import { SidebarLayout } from "./catalyst/sidebar-layout"
 import {
   Sidebar,
@@ -15,6 +15,7 @@ import {
 import { Navbar, NavbarItem, NavbarSection, NavbarSpacer } from "./catalyst/navbar"
 import { Badge } from "./catalyst/badge"
 import { AgentInspector } from "./components/agent-inspector"
+import { Supervision } from "./components/supervision"
 import type { MailboxAgentInnerView, MailboxAgentView, MailboxDeskPrefs, MailboxMachineView } from "./contracts"
 
 function getInitialRoute(): RouteState | null {
@@ -29,6 +30,8 @@ function attentionBadgeColor(level: string): "red" | "yellow" | "lime" | "zinc" 
 }
 
 export function App() {
+  const [supervisionRoute, setSupervisionRoute] = useState(() => parseSupervisionHash(window.location.hash))
+  const machineMode = useRef(supervisionRoute !== null)
   const [machine, setMachine] = useState<MailboxMachineView | null>(null)
   const [selectedAgent, setSelectedAgent] = useState<string>(getInitialRoute()?.agent ?? "")
   const [agentView, setAgentView] = useState<MailboxAgentView | null>(null)
@@ -72,7 +75,7 @@ export function App() {
       setMachine(data)
       setMachineError(null)
       setMachineReceivedAt(new Date().toISOString())
-      if (!selectedRef.current && data.agents.length > 0) {
+      if (!machineMode.current && !selectedRef.current && data.agents.length > 0) {
         const agent = initialRoute.current?.agent ?? data.agents[0]!.agentName
         selectAgent(agent)
       }
@@ -123,7 +126,7 @@ export function App() {
 
   const refresh = useCallback(async () => {
     const id = ++refreshRef.current
-    const name = selectedRef.current
+    const name = machineMode.current ? "" : selectedRef.current
     await Promise.all([loadMachine(), name ? loadAgent(name) : Promise.resolve()])
     if (mounted.current && refreshRef.current === id) setRefreshGeneration((current) => current + 1)
   }, [loadMachine, loadAgent])
@@ -135,17 +138,35 @@ export function App() {
   // Browser back/forward
   useEffect(() => {
     const onHash = () => {
+      const supervision = parseSupervisionHash(window.location.hash)
+      if (supervision) {
+        machineMode.current = true
+        setSupervisionRoute(supervision)
+        return
+      }
       const route = parseHash(window.location.hash)
-      if (route) selectAgent(route.agent)
+      if (route) {
+        machineMode.current = false
+        setSupervisionRoute(null)
+        selectAgent(route.agent)
+      }
     }
     window.addEventListener("hashchange", onHash)
     return () => window.removeEventListener("hashchange", onHash)
   }, [selectAgent])
 
   const handleSelectAgent = useCallback((name: string) => {
+    machineMode.current = false
+    setSupervisionRoute(null)
     selectAgent(name)
     window.history.pushState(null, "", buildHash({ agent: name, tab: "overview", focus: undefined }))
   }, [selectAgent])
+
+  const handleSupervision = useCallback((agent: string | null) => {
+    machineMode.current = true
+    setSupervisionRoute({ agent })
+    window.history.pushState(null, "", buildSupervisionHash(agent))
+  }, [])
 
   if (!machine) {
     return (
@@ -202,6 +223,9 @@ export function App() {
             {/* Machine stats — compact row */}
             <SidebarSection>
               <SidebarHeading className="text-ouro-mist/60">Machine</SidebarHeading>
+              <SidebarItem current={supervisionRoute !== null} onClick={() => handleSupervision(null)}>
+                <SidebarLabel className="text-ouro-bone">Supervision</SidebarLabel>
+              </SidebarItem>
               <div className="grid grid-cols-3 gap-1.5 px-2">
                 {[
                   { v: t.liveTasks ?? 0, l: "Tasks", alert: (t.blockedTasks ?? 0) > 0 },
@@ -224,7 +248,7 @@ export function App() {
               {machine.agents.map((agent) => (
                 <SidebarItem
                   key={agent.agentName}
-                  current={agent.agentName === selectedAgent}
+                  current={supervisionRoute === null && agent.agentName === selectedAgent}
                   onClick={() => handleSelectAgent(agent.agentName)}
                 >
                   <div className="flex min-w-0 flex-1 items-center justify-between gap-2">
@@ -249,7 +273,7 @@ export function App() {
             </div>
           </SidebarFooter>
           {/* Agent status line — manual override or auto-derived */}
-          {selectedAgent && currentView && (
+          {supervisionRoute === null && selectedAgent && currentView && (
             <div className="px-4 py-2 border-t border-ouro-moss/20">
               <p className="text-xs italic text-ouro-shadow/70">
                 {(() => {
@@ -281,14 +305,17 @@ export function App() {
           <button type="button" onClick={() => { void refresh() }} className="ml-2 underline">Retry</button>
         </div>
       )}
-      {agentError && (
+      {supervisionRoute === null && agentError && (
         <div role="alert" className="mb-4 text-sm text-ouro-gold">
           Could not load {selectedAgent}: {agentError}.
           {currentView && <> Showing the last successful snapshot for {selectedAgent}{agentReceivedAt && <> received <time dateTime={agentReceivedAt}>{new Date(agentReceivedAt).toLocaleTimeString()}</time></>}.</>}
           <button type="button" onClick={() => { void loadAgent(selectedAgent) }} className="ml-2 underline">Retry agent</button>
         </div>
       )}
-      {currentView || !selectedAgent ? (
+      {supervisionRoute ? (
+        <Supervision agents={machine.agents.map(agent => agent.agentName)} agentName={supervisionRoute.agent}
+          focus={supervisionRoute.focus} refreshGeneration={refreshGeneration} onSelectOwner={handleSupervision} />
+      ) : currentView || !selectedAgent ? (
         <AgentInspector
           key={selectedAgent}
           agentName={selectedAgent}

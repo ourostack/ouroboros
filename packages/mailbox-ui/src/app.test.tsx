@@ -26,6 +26,30 @@ afterEach(() => {
 })
 
 describe("Mailbox current identity and connection", () => {
+  it("opens machine-level Supervision without fetching an arbitrary agent inspector", async () => {
+    window.history.replaceState(null, "", "#/supervision")
+    render(<App />)
+    expect(await screen.findByRole("heading", { name: "Supervision" })).toBeTruthy()
+    expect(screen.getByText(/choose an owning Ouro agent/i)).toBeTruthy()
+    expect(vi.mocked(fetch).mock.calls.every(([url]) => url === "/api/machine")).toBe(true)
+    fireEvent.change(screen.getByLabelText("Owning Ouro agent"), { target: { value: "beta" } })
+    expect(await screen.findByText("beta terminal")).toBeTruthy()
+    expect(window.location.hash).toBe("#/supervision/beta")
+    expect(vi.mocked(fetch).mock.calls.some(([url]) => url === "/api/agents/beta")).toBe(false)
+  })
+
+  it("preserves agent navigation while opening Supervision directly and by sidebar", async () => {
+    window.history.replaceState(null, "", "#/supervision/alpha/cmux%3ASF-1")
+    render(<App />)
+    expect(await screen.findByText("alpha terminal")).toBeTruthy()
+    expect(screen.getByText("Timeline for alpha terminal").parentElement?.hasAttribute("open")).toBe(true)
+    fireEvent.click(screen.getByRole("button", { name: /^beta/ }))
+    expect(await screen.findByText("Owned by beta")).toBeTruthy()
+    fireEvent.click(screen.getByRole("button", { name: "Supervision" }))
+    expect(screen.getByRole("heading", { name: "Supervision" })).toBeTruthy()
+    expect(screen.queryByText("Owned by beta")).toBeNull()
+  })
+
   it("renders an actionable initial machine failure instead of an endless spinner", async () => {
     let failed = false
     vi.stubGlobal("fetch", vi.fn(async (url: string) => {

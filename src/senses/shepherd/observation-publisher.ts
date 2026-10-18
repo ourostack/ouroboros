@@ -17,7 +17,10 @@ import { redactSecrets } from "./redact"
 import type { ShepherdHostObservation } from "./host"
 
 type EventPage = ShepherdSupervisionPage<ShepherdSupervisionEvent>
-interface ReturnSummary { at: string; host: string; session: string; transition: string; kind: string }
+interface ReturnSummary {
+  at: string; host: string; session: string; transition: string; kind: string
+  action: "respond" | "let_through"; reason: string
+}
 const object = (value: unknown): value is Record<string, unknown> => value !== null && typeof value === "object" && !Array.isArray(value)
 const kinds = new Set(["premature", "gate", "done", "working", "waiting", "unclear", "error", "loop_guard"])
 const safe = (value: string): string => redactSecrets(value).replace(/[\x00-\x1f\x7f-\x9f\u2028\u2029]+/g, " ").trim().slice(0, 2000) || "(unnamed)"
@@ -62,8 +65,10 @@ function readReturnSummaries(root: string): ReturnSummary[] | null {
     const value: unknown = JSON.parse(line)
     if (!object(value) || typeof value.at !== "string" || typeof value.host !== "string" || typeof value.session !== "string"
       || typeof value.transition !== "string" || typeof value.kind !== "string" || !kinds.has(value.kind)
-      || !value.host || !value.session || !value.transition) throw new Error("Invalid returns source schema")
-    return { at: iso(value.at), host: safe(value.host), session: safe(value.session), transition: value.transition, kind: value.kind }
+      || !value.host || !value.session || !value.transition || (value.action !== "respond" && value.action !== "let_through")
+      || typeof value.reason !== "string") throw new Error("Invalid returns source schema")
+    return { at: iso(value.at), host: safe(value.host), session: safe(value.session), transition: value.transition, kind: value.kind,
+      action: value.action, reason: safe(value.reason) }
   })
 }
 
@@ -177,7 +182,8 @@ export function createShepherdObservationPublisher(options: {
         label: safe(session.title || session.ref || session.id), harness: session.agent ? safe(session.agent) : null,
         project: session.cwd ? safe(session.cwd) : null, activity: row.activity,
         observedAt: row.observedAt === null ? null : new Date(row.observedAt).toISOString(),
-        lastDecision: last?.kind ?? null, withheldReason, authority, capability: "unsupported" as const,
+        lastDecision: last?.kind ?? null, lastAction: last?.action ?? null, lastReason: last?.reason ?? null,
+        lastActionAt: last?.at ?? null, withheldReason, authority, capability: "unsupported" as const,
       }
     })
     const allEvents = [...Object.values(events), observations]
