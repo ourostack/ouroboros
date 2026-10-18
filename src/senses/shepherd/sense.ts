@@ -29,7 +29,7 @@ export interface ShepherdJudgedReturnRecord extends ReturnRecord { guidanceRevis
 /**
  * Ouro Shepherd: every time a coding agent in a terminal hands control back, a cheap judge decides
  * whether it should have. A premature return is answered in the terminal, visibly, as
- * `[Ouro for <human>] ...` (or one menu key), with the status line saying so. A gate or a finished
+ * `[Ouro for <human>] ...`, with the status line saying so. A gate or a finished
  * delivery is let through and brought to the Ouro agent, as is a session the loop guard stopped.
  * Every judgment is one line in `state/senses/shepherd/returns.jsonl`, and the owner hears about it in a plain message
  * on their own channel as `senses.shepherd.notify` says (see `owner-notice.ts`).
@@ -327,10 +327,10 @@ export async function startShepherdSenseApp(options: ShepherdSenseOptions): Prom
     }, WAKE_DELAY_MS)
   }
 
-  async function dispatch(record: ShepherdJudgedReturnRecord, reply: NonNullable<JudgeResult["reply"]>,
+  async function dispatch(record: ShepherdJudgedReturnRecord, reply: { text: string },
     instance: string | null, screenFingerprint: string, expected?: ShepherdInspection, canSend?: () => boolean): Promise<boolean> {
     const claim = custody.claimDispatch({ host: host.name, session: record.session, instance, screenFingerprint,
-      guidanceRevision: String(record.guidanceRevision), reply: "key" in reply ? `key:${reply.key}` : reply.text,
+      guidanceRevision: String(record.guidanceRevision), reply: reply.text,
       trigger: record.trigger!, transition: record.transition, at: record.at }, dispatchOwner)
     if (!claim) {
       record.actionBlockReason = "custody"
@@ -342,8 +342,7 @@ export async function startShepherdSenseApp(options: ShepherdSenseOptions): Prom
     try {
       if (expected) result = await host.promptIfUnchanged!(record.session, `[${presentation.name} for ${human}] ${PERIODIC_RESUME}`, expected, canSend)
       else {
-        if ("key" in reply) await host.key(record.session, reply.key)
-        else await host.prompt(record.session, `[${presentation.name} for ${human}] ${reply.text}`)
+        await host.prompt(record.session, `[${presentation.name} for ${human}] ${reply.text}`)
         result = { state: "sent" }
       }
     } catch (error) {
@@ -477,9 +476,9 @@ export async function startShepherdSenseApp(options: ShepherdSenseOptions): Prom
       const actionableReply = verdict.reply ?? (periodic && verdict.replyIssue === "too_long" ? { text: PERIODIC_RESUME } : null)
       if (kind === "premature" && !actionableReply) record.actionBlockReason = "reply_invalid"
       if (kind === "premature" && actionableReply) {
-        if ((recovery || periodic) && "key" in actionableReply) {
+        if ("key" in actionableReply) {
           record.actionBlockReason = "menu_disallowed"
-          record.reason = `${periodic ? "periodic check-in" : "connectivity recovery"} never presses approval or menu keys: ${verdict.reason}`
+          record.reason = `${periodic ? "periodic check-in" : recovery ? "connectivity recovery" : "automatic continuation"} never presses approval or menu keys: ${verdict.reason}`
         } else if (periodic && (!current!.instance || current!.activity !== "idle" || current!.composer !== "empty" ||
           current!.backgroundWork !== false || !current!.session.agent || !host.promptIfUnchanged)) {
           record.actionBlockReason = "host_unverified"
@@ -529,7 +528,7 @@ export async function startShepherdSenseApp(options: ShepherdSenseOptions): Prom
                 return !live.paused && live.revision === guidance.revision
               } : undefined
               if (await dispatch(record, reply, current?.instance ?? session?.instance ?? null, fingerprint(screen), periodic ? current : undefined, canSend)) {
-                Object.assign(record, { action: "respond", reply: "key" in reply ? `key:${reply.key}` : reply.text })
+                Object.assign(record, { action: "respond", reply: reply.text })
                 state.streak += 1
                 state.answers.push(now())
                 status = `answered for ${human}: ${verdict.reason}`

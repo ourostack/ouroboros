@@ -30,7 +30,7 @@ export async function runShepherdOperation(command: ShepherdOperation, deps: She
     const file = checkInStorePath(root)
     if (command.kind === "shepherd.status") return {
       boundary: "same_uid_local_owner_administration_not_human_presence",
-      automation: { mode: "legacy_unqualified", mandatesEnforcedForAllTriggers: false, unattendedKeysPossible: true, warning: SHEPHERD_ALPHA_AUTOMATION_WARNING },
+      automation: { mode: "legacy_unqualified", mandatesEnforcedForAllTriggers: false, unattendedKeysPossible: false, warning: SHEPHERD_ALPHA_AUTOMATION_WARNING },
       supervision: readMailboxSupervision(command.agent, { agentRoot: root }),
       guidance: readGuidance(root), mandates: readShepherdMandates(root),
       custody: readCheckInSnapshot(file, { limit: 50 }),

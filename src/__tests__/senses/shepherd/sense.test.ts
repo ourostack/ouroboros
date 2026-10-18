@@ -355,23 +355,33 @@ describe("Shepherd sense: answering premature returns", () => {
     expect(fs.statSync(returnsLogPath(agentRoot)).mode & 0o777).toBe(0o600)
   })
 
-  it("presses a menu key instead of typing text", async () => {
-    const { host, returned, last } = await start(async () => verdict({ reply: { key: "2" }, reason: "Mocking the clock is the recommended fix." }))
+  it.each(["enter", "escape", "up", "down", "tab", "ctrl-c", "1", "2", "3", "4", "5", "6", "7", "8", "9", "y", "n"] as const)(
+    "refuses a malicious immediate key %s before custody or host input", async key => {
+    let claims = 0
+    const { host, returned, last } = await start(async () => verdict({ reply: { key }, reason: "Model asks to approve." }), fakeHost(), {
+      openCheckInStore: (file: string) => {
+        const store = openCheckInStore(file), claim = store.claimDispatch
+        store.claimDispatch = (...args) => { claims++; return claim(...args) }
+        return store
+      },
+    })
     host.screens.S2 = [SCREENS.codexMenu]
     await returned({ sessionId: "S2", agent: "codex" })
-    expect(host.actions.filter((action) => !action.startsWith("pace"))).toEqual(["key S2 2", "status S2 answered for Ari: Mocking the clock is the recommended fix."])
-    expect(last()).toMatchObject({ action: "respond", reply: "key:2" })
+    expect(host.actions.some(action => /^(prompt|key) /.test(action))).toBe(false)
+    expect(claims).toBe(0)
+    expect(last()).toMatchObject({ action: "let_through", actionBlockReason: "menu_disallowed", reply: null })
+    expect(last()).not.toHaveProperty("dispatch")
   })
 
   it("still answers when only a timer or counter ticked on the screen while judging", async () => {
-    const { host, returned, last } = await start(async () => verdict({ reply: { key: "1" } }))
-    host.screens.S2 = ["Shell Run startup    59s |\nDo you want to run this command?\n> 1. Yes\n  2. No", "Shell Run startup  1m 0s |\nDo you want to run this command?\n> 1. Yes\n  2. No"]
-    await returned({ sessionId: "S2", agent: null })
-    expect(last()).toMatchObject({ action: "respond", reply: "key:1" })
+    const { host, returned, last } = await start(async () => verdict())
+    host.screens.S2 = ["Copilot task elapsed    59s |\nAuthorized implementation remains. Want me to continue?\n>", "Copilot task elapsed  1m 0s |\nAuthorized implementation remains. Want me to continue?\n>"]
+    await returned({ sessionId: "S2", agent: "copilot" })
+    expect(last()).toMatchObject({ action: "respond", reply: "Go ahead and implement it." })
     // The timer can also be missing from one redraw.
-    host.screens.S2 = ["Shell Run startup  40s\nDo you want to run this command?\n> 1. Yes", "Shell Run startup       \nDo you want to run this command?\n> 1. Yes"]
-    await returned({ sessionId: "S2", agent: null, transitionId: "timer-gone" })
-    expect(last()).toMatchObject({ action: "respond", reply: "key:1" })
+    host.screens.S2 = ["Copilot task elapsed  40s\nAuthorized implementation remains. Want me to continue?\n>", "Copilot task elapsed       \nAuthorized implementation remains. Want me to continue?\n>"]
+    await returned({ sessionId: "S2", agent: "copilot", transitionId: "timer-gone" })
+    expect(last()).toMatchObject({ action: "respond", reply: "Go ahead and implement it." })
   })
 
   it("sends nothing when the screen changed while judging or the human focused the session", async () => {
@@ -501,6 +511,11 @@ describe("Shepherd sense: connectivity recovery", () => {
     online = true
     await poll()
     expect(host.actions.some(action => /^(prompt|key) /.test(action))).toBe(false)
+    if (kind === "key") {
+      const record = readReturns(agentRoot).at(-1)!
+      expect(record).toMatchObject({ action: "let_through", actionBlockReason: "menu_disallowed", reply: null })
+      expect(record).not.toHaveProperty("dispatch")
+    }
   })
 
   it("rechecks a return whose judge failed on the network but never retries an uncertain prompt send", async () => {

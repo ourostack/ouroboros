@@ -6,7 +6,9 @@
       "changes": [
         "Add an explicit tool-free Shepherd judge evaluation command with a frozen 160-case corpus, three repetitions, unique-case metrics and private progress reports.",
         "Reject malformed judge answers from classification credit, require safe text for continuation recall, and report output failures without claiming successful persistence.",
-        "Keep classification evidence separate from guarded native input, uniform admission and Shepherd v1 qualification; no automatic-input or production judge rubric changes."
+        "Refuse model-selected menu, navigation and control keys before custody on every automatic trigger; keep explicit owner-requested keys separate and use a text-only judge rubric.",
+        "Keep remaining legacy text automation visibly unqualified: stored mandates do not yet govern every trigger, and native guarded input and full Shepherd v1 remain open gates.",
+        "Preserve meaningful sanitized error context for evaluation argument, output and entry failures."
       ]
     },
     {

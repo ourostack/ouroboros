@@ -8,7 +8,8 @@ The judge is agent-agnostic: Claude Code, Codex, Copilot CLI, Agency and other a
 
 This is **not Shepherd v1**. The new mandate store does not yet govern every
 automatic path. Legacy immediate-return and connectivity-recovery behavior can
-still type or press menu keys without a mandate. An absent, expired, or revoked
+still type text without a mandate. Automatic menu, navigation and control keys
+are refused on every trigger. An absent, expired, or revoked
 mandate is not a kill switch for those paths. Native guarded input and the shared
 all-trigger admission path remain unqualified. Disable Shepherd to stop legacy
 automation; do not infer safety from a stored mandate or an unsupported-capability
@@ -168,7 +169,22 @@ license to send test prompts to real work.
 
 The judge reads a packet (the human's name, the agent, folder, the `Desk-Task:` line if the screen has one, the agent's last message and the last 80 screen lines, all redacted) and answers with JSON: `premature` with a reply, `gate`, `done`, `waiting`, `working` (with a `news` flag) or `unclear`. The screen is untrusted data. It runs on the agent's own `agent` provider lane with no tools, low reasoning effort and a 20-second timeout, and its latency and input tokens are logged.
 
-A reply is either one key from a fixed set (enter, escape, up, down, tab, 1-9, y, n) or one line of at most 240 characters. Whitespace is flattened and code-formatting backticks are removed before validation. The resulting line has no backslashes, `@`, control characters, invisible formatting or bidirectional-override characters, or leading `/`, `!` or `#`, so an input box never reads it as a command, a file mention or more than one line. Because the terminal might turn out to be a plain shell, it also has none of these shell characters: semicolon, dollar sign, backtick, pipe, `<`, `>` and `&`.
+A proposed continuation is one line of at most 240 characters, never a menu,
+navigation or control key. The judge leaves approval and selection menus untouched,
+even for routine work. Whitespace is flattened and code-formatting backticks are
+removed before validation. The resulting line has no backslashes, `@`, control
+characters, invisible formatting or bidirectional-override characters, or leading
+`/`, `!` or `#`, so an input box never reads it as a command, a file mention or more
+than one line. Because the terminal might turn out to be a plain shell, it also
+has none of these shell characters: semicolon, dollar sign, backtick, pipe, `<`,
+`>` and `&`.
+
+The parser can retain a model-selected key for diagnosis, but immediate,
+connectivity-recovery and periodic handling all refuse it before claiming input
+custody or calling the host. The record says `menu_disallowed`, with no text
+fallback. This is deterministic even if the model ignores the rubric. An allowed
+plain-text prompt still includes its normal submit action; this prohibition is
+on independent menu/control/navigation key replies, not that submit.
 
 A structured, valid `premature` classification is retained even if its proposed
 reply is invalid: `replyIssue` reports `too_long`, `unsafe` or `missing` separately.
@@ -224,7 +240,7 @@ selected successes.
 
 | Verdict | Action |
 | --- | --- |
-| `premature` | Answers in the terminal, unless a check below stops it. A line is typed as `[<configured agent name> for <human>] <reply>`; a menu gets its key. The status line says `answered for <human>: <reason>`. |
+| `premature` | Answers with a plain-text line unless a check below stops it. A line is typed as `[<configured agent name> for <human>] <reply>`. Model-selected keys are refused without fallback. The status line says `answered for <human>: <reason>` only after a response. |
 | `gate` | Lets it through, sets the status line to `needs <human>`, and escalates to the Ouro agent. |
 | `done` | Lets it through, sets the status line to `done`, and escalates. |
 | `waiting` | Leaves it untouched, records an outside dependency rather than claiming delivery, sets status and escalates. |
@@ -237,7 +253,7 @@ Before it answers, Shepherd checks, in order:
 2. **The human.** Shepherd never types into the terminal the human is in: on cmux, the focused surface of the selected workspace in a visible window, read from `system.tree` just before sending (cmux reports focus only when it changes, so a human who stays in one terminal sends no further events). A terminal the human left in the last 60 seconds is also theirs.
 3. **The screen.** It reads the terminal again; if the last lines changed since the judge saw them, it lets the return through.
 
-Shepherd's status is one entry per terminal (cmux key `ouro_<surface>`, attached to that surface's panel), because a cmux workspace can hold several agents. It is cleared as soon as the agent resumes or the terminal's screen moves again. On cmux, a line is sent with `terminal.paste` (so no character of it is read as a keystroke) followed by a separate Enter. On Herdr it is sent with `agent.prompt`, which pastes it and presses Enter, and refuses a blocked agent; keys go through `agent.send_keys`, and the status line is the pane's state label (source `ouro.shepherd`, also token `$ouro`). `<human>` is the name on the family friend record whose local id is this OS user, else the first family friend.
+Shepherd's status is one entry per terminal (cmux key `ouro_<surface>`, attached to that surface's panel), because a cmux workspace can hold several agents. It is cleared as soon as the agent resumes or the terminal's screen moves again. On cmux, a line is sent with `terminal.paste` (so no character of it is read as a keystroke) followed by a separate Enter. On Herdr it is sent with `agent.prompt`, which pastes it and presses Enter, and refuses a blocked agent; explicit owner-requested keys separately use `agent.send_keys`, and the status line is the pane's state label (source `ouro.shepherd`, also token `$ouro`). `<human>` is the name on the family friend record whose local id is this OS user, else the first family friend.
 
 Escalation queues one pending message in the agent's private runtime (from `shepherd`, dropped unread after 30 minutes) and asks the daemon for a private turn (trigger `shepherd`, which the daemon's policy allows only with a `shepherd-return` reference and the `sense: shepherd` reference). Escalations in a burst share one wake. The message names the agent, folder, task and why, and ends with the usual untrusted-input line. If the daemon refuses the wake, the message waits for the next private turn.
 
@@ -272,7 +288,12 @@ The private escalation to the Ouro agent above is unchanged, so it can still act
 
 Every judgment is one JSON line in `state/senses/shepherd/returns.jsonl` in the agent bundle (directory `0700`, file `0600`, rotated once at 2 MB, never synced): time, host, terminal, transition id, agent, folder, task, kind, action, reason, reply, latency and input tokens.
 
-**Immediate-return menu keys can approve permission prompts.** An agent that asks for permission before doing work inside its task has stopped too early under TTFA (time to first action), so the immediate judge may answer it with a key, which can approve the prompt. That is deliberate: the human's standing authority covers routine work, and gates (credentials, money, irreversible acts, decisions that are the human's) are never answered. Every such answer is logged and shown on the status line. Periodic and connectivity-recovery paths never press those keys.
+**Automatic judgments never press menu, navigation or control keys.** This applies
+to immediate returns as well as periodic and connectivity-recovery checks.
+An explicit owner request through `shepherd_send` remains a separate authority
+surface and retains its fresh-screen requirements. Refusing automatic keys does
+not qualify the remaining legacy text path or make stored mandates effective on
+every trigger.
 
 ## Talking to your agent about one session
 

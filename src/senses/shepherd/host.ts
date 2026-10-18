@@ -80,8 +80,8 @@ export interface ShepherdHostObservation {
 }
 
 /**
- * A key Shepherd may press in a menu. Text never goes into a menu, and keys never go anywhere else. Shepherd's own
- * judge never presses `ctrl-c`; only the human can, through `shepherd_send`.
+ * A key an explicit owner request may press through `shepherd_send`.
+ * Automatic judgments never dispatch menu, navigation or control keys.
  */
 export type ShepherdKey = "enter" | "escape" | "up" | "down" | "tab" | "ctrl-c" | "1" | "2" | "3" | "4" | "5" | "6" | "7" | "8" | "9" | "y" | "n"
 

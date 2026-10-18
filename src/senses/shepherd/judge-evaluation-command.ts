@@ -121,14 +121,16 @@ export async function runShepherdJudgeEvaluationCommand(
       catch (writeError) { dependencies.print(JSON.stringify({ error: `Could not persist evaluation error: ${redactSecrets(String(writeError)).slice(0, 2000)}` })) }
     }
     emitNervesEvent({ component: "senses", level: "error", event: "senses.shepherd_judge_evaluation_command_error",
-      message: "classification command failed; no v1 qualification", meta: {} })
+      message: "classification command failed; no v1 qualification",
+      meta: { phase: "judge-classification-only", outputReserved: output !== null, error: detail } })
   } finally {
     try { output?.close(); outputClosed = output !== null }
     catch (error) {
       exitCode = 1
-      dependencies.print(JSON.stringify({ error: `Could not close evaluation output: ${redactSecrets(String(error)).slice(0, 2000)}`, v1Qualified: false }))
+      const detail = redactSecrets(String(error)).slice(0, 2000)
+      dependencies.print(JSON.stringify({ error: `Could not close evaluation output: ${detail}`, v1Qualified: false }))
       emitNervesEvent({ component: "senses", level: "error", event: "senses.shepherd_judge_evaluation_output_close_error",
-        message: "evaluation output close failed", meta: {} })
+        message: "evaluation output close failed", meta: { phase: "judge-classification-only", error: detail } })
     }
   }
   if (summary && outputClosed) {
