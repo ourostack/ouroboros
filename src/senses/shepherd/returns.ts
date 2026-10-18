@@ -10,7 +10,7 @@ export type ReturnAction = "respond" | "let_through"
 export type ShepherdActionBlockReason =
   | "reply_invalid" | "menu_disallowed" | "host_unverified"
   | "guidance" | "loop_guard" | "focus" | "state_changed"
-  | "custody" | "stopped"
+  | "custody" | "stopped" | "mandate"
 
 export interface ReturnRecord {
   at: string

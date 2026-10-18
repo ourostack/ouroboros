@@ -38,6 +38,23 @@ export interface ShepherdInspection {
   activity: "idle" | "working" | "unknown"
   composer: "empty" | "draft" | "unknown"
   backgroundWork: boolean | null
+  /** Native evidence is optional on observation-only and older hosts, never inferred. */
+  guarded?: ShepherdGuardedObservation
+}
+
+export type ShepherdHostCapabilities =
+  | { state: "unsupported"; reason: string }
+  | { state: "unqualified" | "qualified"; protocolVersion: 1; agents: string[] }
+
+/** Native UTC projection is advisory; the host enforces its own monotonic deadline. */
+export interface ShepherdGuardedObservation {
+  workspaceId: string
+  hostInstance: string
+  surfaceGeneration: number
+  inputRevision: number
+  focusRevision: number
+  token: string | null
+  expiresAtUnixMs: number | null
 }
 
 /** Ambiguous input throws; not_sent guarantees zero attempted terminal input. */
