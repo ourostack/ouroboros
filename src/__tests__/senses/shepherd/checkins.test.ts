@@ -340,6 +340,9 @@ describe("fresh all-returned-session periodic check-ins", () => {
     await advance(8000)
     expect(prompts()).toEqual([])
     expect(actions.some(action => action.startsWith("key "))).toBe(false)
+    const record = readReturns(root).at(-1)!
+    expect(record).toMatchObject({ action: "let_through", actionBlockReason: "menu_disallowed", reply: null })
+    expect(record).not.toHaveProperty("dispatch")
   })
 
   it("keeps an uncertain immediate send blocked after restart, changed screen and periodic trigger", async () => {
