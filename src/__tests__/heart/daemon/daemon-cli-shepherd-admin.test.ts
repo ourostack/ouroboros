@@ -2,11 +2,36 @@ import { describe, expect, it, vi } from "vitest"
 import { parseOuroCommand } from "../../../heart/daemon/cli-parse"
 import { runOuroCli } from "../../../heart/daemon/cli-exec"
 import type { OuroCliDeps } from "../../../heart/daemon/cli-types"
+import { parseShepherdOperation } from "../../../heart/shepherd/operations"
 
 const id = "a".repeat(64)
 const admin = ["--agent", "ouro", "--expected-revision", "0", "--request-id", "request-1"]
 
 describe("local-owner Shepherd administration CLI", () => {
+  it("accepts fully scoped grants, qualified hosts and prefixed mandate ids", () => {
+    expect(parseShepherdOperation(["mandate", "grant", ...admin, "--host", "herdr", "--session", "terminal", "--instance", "process",
+      "--project", "/project", "--task", "finish", "--expires-at", "2026-10-18T23:00:00.000Z"]))
+      .toMatchObject({ host: "herdr", session: "terminal", instance: "process" })
+    expect(parseShepherdOperation(["mandate", "revoke", ...admin, "--id", `mandate:${id}`])).toMatchObject({ id: `mandate:${id}` })
+    expect(parseShepherdOperation(["reconcile", ...admin, "--id", id, "--resolution", "delivered"])).toMatchObject({ resolution: "delivered" })
+    expect(parseShepherdOperation(["inspect", "--agent", "ouro"])).toMatchObject({ limit: 50 })
+  })
+
+  it.each([
+    [], ["unknown"], ["status"], ["status", "--agent"], ["status", "--agent", " ouro"],
+    ["status", "--agent", "ouro", "extra"], ["inspect", "--agent", "ouro", "--limit", "0"],
+    ["inspect", "--agent", "ouro", "--id", "invalid"], ["inspect", "--agent", "ouro", "--limit", "9007199254740992"],
+    ["pause", ...admin.slice(0, 4), "--request-id", "x".repeat(201), "--host", "cmux", "--session", "x"],
+    ["reconcile", ...admin, "--id", id, "--resolution", "guess"],
+    ["maintenance", ...admin, "--destination", "relative"],
+    ["mandate", "grant", ...admin, "--project", "/project", "--task", "finish", "--expires-at", "bad"],
+    ["mandate", "grant", ...admin, "--project", "/project", "--task", "finish", "--expires-at", "2026-10-18T23:00:00Z"],
+    ["mandate", "grant", ...admin, "--project", "/project", "--task", "finish", "--expires-at", "2026-10-18T23:00:00.000Z", "--session", "x"],
+    ["mandate", "grant", ...admin, "--project", "/project", "--task", "finish", "--expires-at", "2026-10-18T23:00:00.000Z", "--instance", "x"],
+  ])("rejects malformed direct parser input %j", (...args) => {
+    expect(() => parseShepherdOperation(args)).toThrow(/Usage:/)
+  })
+
   it("parses bounded readonly status and inspection without authority arguments", () => {
     expect(parseOuroCommand(["shepherd", "status", "--agent", "ouro", "--json"]))
       .toEqual({ kind: "shepherd.status", agent: "ouro", json: true })

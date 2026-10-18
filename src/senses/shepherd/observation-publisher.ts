@@ -237,7 +237,7 @@ export function createShepherdObservationPublisher(options: {
           summary: row.error ? "Terminal observation failed" : `Observed terminal activity: ${row.activity}`,
         }))
         const unique = new Map([...current, ...observations.items].map(event => [event.id, event]))
-        observations = page([...unique.values()], (observations.totalCount ?? 0)
+        observations = page([...unique.values()], observations.totalCount!
           + current.filter(event => !observations.items.some(previous => previous.id === event.id)).length)
       }
       return publish()

@@ -1,12 +1,24 @@
 import * as fs from "node:fs"
 import * as os from "node:os"
 import * as path from "node:path"
-import { afterEach, describe, expect, it } from "vitest"
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import {
   buildShepherdSupervisionView,
   type ShepherdSupervisionSnapshot,
 } from "../../../heart/shepherd/supervision"
 import { readMailboxSupervision } from "../../../heart/mailbox/mailbox-supervision"
+import { registerGlobalLogSink, type LogEvent } from "../../../nerves"
+
+vi.mock("node:fs", async importOriginal => {
+  const actual = await importOriginal<typeof import("node:fs")>()
+  return { ...actual, fstatSync: vi.fn(actual.fstatSync), readSync: vi.fn(actual.readSync) }
+})
+
+beforeEach(async () => {
+  const actual = await vi.importActual<typeof import("node:fs")>("node:fs")
+  vi.mocked(fs.fstatSync).mockReset().mockImplementation(actual.fstatSync)
+  vi.mocked(fs.readSync).mockReset().mockImplementation(actual.readSync)
+})
 
 const now = Date.parse("2026-10-17T20:00:00.000Z")
 const roots: string[] = []
@@ -49,10 +61,25 @@ function fixture(value: unknown = snapshot()): { root: string; file: string } {
 }
 
 afterEach(() => {
+  vi.restoreAllMocks()
   for (const root of roots.splice(0)) fs.rmSync(root, { recursive: true, force: true })
 })
 
 describe("Shepherd supervision projection", () => {
+  it("traces an unavailable observation without leaking source content, paths or raw errors", () => {
+    const { root } = fixture({ private: "PRIVATE_OBSERVATION_SENTINEL" })
+    const events: LogEvent[] = []
+    const unregister = registerGlobalLogSink(event => events.push(event))
+    try {
+      expect(readMailboxSupervision("slugger", { agentRoot: root, nowMs: now }).freshness.status).toBe("unknown")
+      expect(events).toContainEqual(expect.objectContaining({
+        event: "heart.shepherd_observation_unavailable", meta: { code: "observation_invalid" },
+      }))
+      expect(JSON.stringify(events)).not.toContain("PRIVATE_OBSERVATION_SENTINEL")
+      expect(JSON.stringify(events)).not.toContain(root)
+    } finally { unregister() }
+  })
+
   it("derives disjoint counts from returned rows and never certifies a done judgment", () => {
     const input = snapshot()
     const view = buildShepherdSupervisionView(input, now)
@@ -106,6 +133,37 @@ describe("Shepherd supervision projection", () => {
 })
 
 describe("Mailbox supervision replica reader", () => {
+  it("keeps a missing bundle or ancestor unavailable without creating it", () => {
+    const { root } = fixture()
+    expect(readMailboxSupervision("slugger", { agentRoot: path.join(root, "absent") }).freshness.status).toBe("unknown")
+    fs.renameSync(path.join(root, "state"), path.join(root, "saved-state"))
+    expect(readMailboxSupervision("slugger", { agentRoot: root, nowMs: now }).sourceErrors[0].code).toBe("observation_missing")
+    expect(fs.readdirSync(root)).toEqual(["saved-state"])
+  })
+
+  it("rejects a replica not owned by the current user", () => {
+    const { root } = fixture()
+    vi.spyOn(process, "getuid").mockReturnValue(fs.statSync(root).uid + 1)
+    expect(readMailboxSupervision("slugger", { agentRoot: root, nowMs: now }).sourceErrors[0].code).toBe("observation_invalid")
+  })
+
+  it.each(["identity", "growth", "mutation"] as const)("rejects %s during a bounded read", async fault => {
+    const { root } = fixture()
+    const actual = await vi.importActual<typeof import("node:fs")>("node:fs")
+    let calls = 0
+    if (fault === "growth") vi.mocked(fs.readSync).mockImplementation(() => 2 * 1024 * 1024 + 1)
+    else vi.mocked(fs.fstatSync).mockImplementation(fd => {
+      const metadata = actual.fstatSync(fd)
+      calls++
+      if (fault === "identity") metadata.ino++
+      else if (calls === 2) metadata.mtimeMs++
+      return metadata
+    })
+    const view = readMailboxSupervision("slugger", { agentRoot: root, nowMs: now })
+    expect(view.counts).toBeNull()
+    expect(view.sourceErrors[0].code).toBe("observation_invalid")
+  })
+
   it("reads a valid private snapshot without changing its timestamp or bytes", () => {
     const { root, file } = fixture()
     const before = fs.readFileSync(file)

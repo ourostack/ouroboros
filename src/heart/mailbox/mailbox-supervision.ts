@@ -1,5 +1,6 @@
 import * as fs from "node:fs"
 import * as path from "node:path"
+import { emitNervesEvent } from "../../nerves/runtime"
 import {
   buildShepherdSupervisionView,
   isShepherdSupervisionSnapshot,
@@ -26,6 +27,10 @@ function regular(metadata: fs.Stats): void {
     || metadata.size > SHEPHERD_OBSERVATION_MAX_BYTES) throw new Error("Observation requires a bounded private regular file")
 }
 function unavailable(agentName: string, nowMs: number, code: string): ShepherdSupervisionView {
+  emitNervesEvent({
+    component: "heart", level: "warn", event: "heart.shepherd_observation_unavailable",
+    message: "Supervision observation is unavailable; no current terminal counts can be established", meta: { code },
+  })
   const view = buildShepherdSupervisionView({
     schemaVersion: 1, agentName, observedAt: new Date(nowMs).toISOString(),
     sourceHealth: { host: "missing", guidance: "missing", mandates: "missing", returns: "missing", custody: "missing", notices: "missing" },

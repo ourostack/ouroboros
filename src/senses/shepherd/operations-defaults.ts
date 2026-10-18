@@ -7,6 +7,7 @@ import type { DaemonResponse } from "../../heart/daemon/daemon"
 import type { ShepherdOperationDeps } from "./operations"
 import { createShepherdHost } from "./host"
 import { localShepherdFriendStore, resolveExistingLocalOwner } from "./surface"
+import { emitNervesEvent } from "../../nerves/runtime"
 
 export function createDefaultShepherdOperationDeps(lifecycle: (agent: string) => Promise<DaemonResponse>): ShepherdOperationDeps {
   return {
@@ -37,6 +38,11 @@ export function createDefaultShepherdOperationDeps(lifecycle: (agent: string) =>
         || Date.parse(value.checkedAt) > Date.now() || Date.now() - Date.parse(value.checkedAt) > 30_000) {
         throw new Error("fresh disabled and stopped daemon lifecycle proof is unavailable")
       }
+      emitNervesEvent({
+        component: "senses", event: "senses.shepherd_maintenance_quiescence_confirmed",
+        message: "validated fresh daemon proof that Shepherd is disabled and stopped",
+        meta: { agent, processState: "stopped" },
+      })
       return { kind: "daemon_lifecycle", enabled: false, processState: "stopped", checkedAt: value.checkedAt }
     },
   }

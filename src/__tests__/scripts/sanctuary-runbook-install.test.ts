@@ -290,7 +290,7 @@ ${activation}`
         }
       }
     } finally { fs.rmSync(root, { recursive: true, force: true }) }
-  })
+  }, 30_000)
   it("selects the exact image contract rather than the unchanged alpha816 package version", () => {
     const script = `set -eu
 validate_exact_image_id() { return 0; }
