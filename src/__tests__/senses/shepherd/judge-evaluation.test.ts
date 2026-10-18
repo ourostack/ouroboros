@@ -6,7 +6,7 @@ import type { JudgeResult, ReturnPacket, ShepherdJudge } from "../../../senses/s
 const provenance = { provider: "synthetic-test", model: "not-a-real-model", runtimeVersion: "test",
   judgeSha256: "a".repeat(64), evaluatorSha256: "b".repeat(64) }
 const result = (kind: JudgeResult["kind"]): JudgeResult => ({
-  kind, reply: kind === "premature" ? { text: "Continue the existing authorized work." } : null,
+  kind, reply: kind === "premature" ? { text: "Continue the existing authorized task." } : null,
   reason: "Synthetic mechanics test only.", inputTokens: 10, latencyMs: 5,
 })
 const ideal: ShepherdJudge = async (packet: ReturnPacket) => {

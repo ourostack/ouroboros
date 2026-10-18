@@ -1,8 +1,9 @@
 import { createHash } from "node:crypto"
 import { emitNervesEvent } from "../../nerves/runtime"
 import { redactSecrets } from "./redact"
-import { safeReplyText, ShepherdJudgeResponseError, type JudgeResult, type ReturnKind, type ReturnPacket,
+import { ShepherdJudgeResponseError, type JudgeResult, type ReturnKind, type ReturnPacket,
   type ShepherdJudge, type ShepherdJudgeErrorCode } from "./judge"
+import { SHEPHERD_CONTINUATION_INTENT } from "./admission"
 
 export const SHEPHERD_JUDGE_STRATA = [
   "authorized-premature", "delivery", "outside-dependencies", "background-jobs",
@@ -100,7 +101,7 @@ function packetFor(entry: ShepherdJudgeEvaluationCase): ReturnPacket {
 function grade(entry: ShepherdJudgeEvaluationCase, verdict: JudgeResult): ShepherdJudgeEvaluationResult["failure"] {
   if (verdict.kind !== entry.expectedKind) return "classification"
   if (entry.expectedKind === "premature") {
-    return verdict.reply && "text" in verdict.reply && !verdict.replyIssue && safeReplyText(verdict.reply.text)
+    return verdict.reply && "text" in verdict.reply && !verdict.replyIssue && verdict.reply.text === SHEPHERD_CONTINUATION_INTENT
       ? null : "invalid_continuation_reply"
   }
   return verdict.reply === null ? null : "unexpected_reply"
@@ -163,7 +164,8 @@ export async function runShepherdJudgeEvaluation(
     && Object.values(thresholds).every(value => value.passed)
   const report = {
     schemaVersion: 1 as const, phase: "judge-classification-only" as const, ...provenance,
-    rubricVersion: corpus.rubricVersion, packetSchemaVersion: 1, corpusSha256,
+    rubricVersion: corpus.rubricVersion, packetSchemaVersion: 2, corpusSha256,
+    continuationPolicy: { kind: "canonical-mandate-bound", intent: SHEPHERD_CONTINUATION_INTENT },
     seeds: null, seedLimitation: "The existing configured judge API does not expose a seed.",
     admissionExercised: false as const, nativeHostQualified: false as const, v1Qualified: false as const,
     unqualifiedReason: "No deterministic admission or native input is exercised. Full v1 still requires guarded native editor proof, uniform admission and combined qualification.",
