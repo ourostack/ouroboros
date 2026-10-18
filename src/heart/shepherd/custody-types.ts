@@ -43,6 +43,7 @@ export interface ShepherdRecoveryReceipt {
 
 export interface ShepherdCustodyEntry {
   id: string
+  nativeRequestId?: string
   host: string
   session: string
   instance: string | null

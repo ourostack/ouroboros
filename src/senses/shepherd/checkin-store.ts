@@ -1,4 +1,4 @@
-import { createHash } from "node:crypto"
+import { createHash, randomUUID } from "node:crypto"
 import * as fs from "node:fs"
 import * as path from "node:path"
 import Database from "better-sqlite3"
@@ -20,6 +20,8 @@ export interface DispatchInput {
 }
 export interface DispatchClaim extends DispatchInput {
   id: string
+  /** Absent on legacy custody; never synthesized while reopening an existing attempt. */
+  nativeRequestId?: string
   owner: string
   state: "claimed" | "sent" | "not_sent" | "unknown"
   reason?: string
@@ -65,6 +67,8 @@ function dispatchId(input: DispatchInput): string {
 }
 function validClaim(value: unknown): value is DispatchClaim {
   return object(value) && validInput(value) && text(value.owner) && bytes(value.owner) <= 256 &&
+    (value.nativeRequestId === undefined || typeof value.nativeRequestId === "string"
+      && /^[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/.test(value.nativeRequestId)) &&
     ["claimed", "sent", "not_sent", "unknown"].includes(String(value.state)) &&
     (value.reason === undefined || text(value.reason) && bytes(value.reason) <= 1024)
     && (value.receipt === undefined || validCustodyInputReceipt(value.receipt)
@@ -271,7 +275,7 @@ export function openCheckInStore(file: string): CheckInStore {
     claimDispatch(input, owner) {
       if (!validInput(input)) refuse("invalid dispatch input schema")
       bounded(owner, 256, "owner")
-      const record: DispatchClaim = { ...input, id: dispatchId(input), owner, state: "claimed" }
+      const record: DispatchClaim = { ...input, id: dispatchId(input), nativeRequestId: randomUUID(), owner, state: "claimed" }
       if (bytes(record) + COMPLETION_HEADROOM > MAX_ROW) refuse("reserved record byte limit")
       return transact(() => {
         if (hasRetiredCustodyInstance(database, input)) return null
@@ -280,7 +284,8 @@ export function openCheckInStore(file: string): CheckInStore {
           .all(record.id, input.host, input.session, input.instance, input.instance) as DispatchRow[]
         for (const row of rows) {
           const prior = parseDispatch(row)
-          if (prior.state === "claimed" || prior.state === "unknown" || prior.id === record.id && prior.state === "sent") return null
+          if (prior.state === "claimed" || prior.state === "unknown"
+            || prior.id === record.id && (prior.state === "sent" || prior.nativeRequestId === undefined)) return null
         }
         write(record)
         return record

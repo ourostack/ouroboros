@@ -124,6 +124,7 @@ function readCustodySnapshot(file: string, options: InspectionOptions, mode: "re
         const retired = schemaVersion === 2 && hasRetiredCustodyInstance(db, claim)
         const entry: ShepherdCustodyEntry = {
           id: claim.id, host: claim.host, session: claim.session, instance: claim.instance, state: claim.state, trigger: claim.trigger,
+          ...(claim.nativeRequestId === undefined ? {} : { nativeRequestId: claim.nativeRequestId }),
           claimedAt: claim.at, reason: claim.reason === undefined ? null : redactSecrets(claim.reason), retired,
           receipt: claim.receipt ? copyCustodyInputReceipt(claim.receipt) : audit.receipt, reconciliations: audit.receipts, reconciliationCount: audit.count,
         }
