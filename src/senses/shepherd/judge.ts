@@ -101,6 +101,14 @@ function answerJson(content: string): { ok: true; value: unknown; inProse: boole
   return { ok: false, text }
 }
 
+/** Evaluation must not score malformed answers as genuine safe-fallback classifications. */
+export function isShepherdJudgeAnswerValid(content: string): boolean {
+  const parsed = answerJson(content)
+  if (!parsed.ok || parsed.inProse || !parsed.value || typeof parsed.value !== "object") return false
+  return "kind" in parsed.value && typeof parsed.value.kind === "string" && KINDS.has(parsed.value.kind)
+    && "reason" in parsed.value && typeof parsed.value.reason === "string" && Boolean(parsed.value.reason.trim())
+}
+
 export function parseVerdict(content: string): Verdict {
   const parsed = answerJson(content)
   if (!parsed.ok) {
