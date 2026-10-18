@@ -44,11 +44,15 @@ interface StreamDelta {
   tool_calls?: Array<{ index: number; id?: string; function?: { name?: string; arguments?: string } }>;
 }
 
+export type ProviderFinishReason = "stop" | "length" | "content_filter" | "tool_calls" | "function_call" | "unknown";
+
 export interface TurnResult {
   content: string;
   toolCalls: { id: string; name: string; arguments: string }[];
   outputItems: ResponseItem[];
   usage?: UsageData;
+  /** Provider control metadata only; refusal text is not retained. */
+  termination?: { finishReason: ProviderFinishReason | null; refused: boolean };
   settleStreamed?: boolean;
   settleFinalization?: SettleParserFinishResult;
 }
@@ -689,6 +693,8 @@ export async function streamChatCompletion(
   > = {};
   let streamStarted = false;
   let usage: UsageData | undefined;
+  let finishReason: ProviderFinishReason | null = null;
+  let refused = false;
   const answerStreamer = new SettleStreamer(callbacks, eagerSettleStreaming);
   const textOutput = new ProviderTextOutput(callbacks);
 
@@ -767,7 +773,20 @@ export async function streamChatCompletion(
         total_tokens: u.total_tokens,
       };
     }
-      const d = chunk.choices[0]?.delta as StreamDelta | undefined;
+      const choice = chunk.choices[0];
+      if (choice?.finish_reason != null) {
+        let reason: ProviderFinishReason;
+        switch (choice.finish_reason) {
+          case "stop": case "length": case "content_filter": case "tool_calls": case "function_call":
+            reason = choice.finish_reason;
+            break;
+          default:
+            reason = "unknown";
+        }
+        if (finishReason === null || finishReason === "stop" || reason === "content_filter") finishReason = reason;
+      }
+      if (choice?.delta?.refusal) refused = true;
+      const d = choice?.delta as StreamDelta | undefined;
       if (!d) continue;
 
     // Handle reasoning_content (Azure AI models like DeepSeek-R1)
@@ -850,6 +869,7 @@ export async function streamChatCompletion(
     toolCalls: completedToolCalls,
     outputItems: [],
     usage,
+    ...(finishReason !== null || refused ? { termination: { finishReason, refused } } : {}),
     settleStreamed: answerStreamer.streamed,
     ...(settleFinalization ? { settleFinalization } : {}),
   };

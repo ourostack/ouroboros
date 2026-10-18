@@ -1,7 +1,8 @@
 import { createHash } from "node:crypto"
 import { emitNervesEvent } from "../../nerves/runtime"
 import { redactSecrets } from "./redact"
-import { safeReplyText, type JudgeResult, type ReturnKind, type ReturnPacket, type ShepherdJudge } from "./judge"
+import { safeReplyText, ShepherdJudgeResponseError, type JudgeResult, type ReturnKind, type ReturnPacket,
+  type ShepherdJudge, type ShepherdJudgeErrorCode } from "./judge"
 
 export const SHEPHERD_JUDGE_STRATA = [
   "authorized-premature", "delivery", "outside-dependencies", "background-jobs",
@@ -46,6 +47,7 @@ export interface ShepherdJudgeEvaluationResult {
   inputTokens: number | null
   correct: boolean
   failure: "classification" | "invalid_continuation_reply" | "unexpected_reply" | "judge_error" | null
+  errorCode: ShepherdJudgeErrorCode | "judge_error" | null
 }
 
 export function validateShepherdJudgeCorpus(value: unknown): ShepherdJudgeCorpus {
@@ -123,13 +125,15 @@ export async function runShepherdJudgeEvaluation(
           kind: verdict.kind, reply: verdict.reply === null ? null : "text" in verdict.reply
             ? { text: safeDetail(verdict.reply.text) } : verdict.reply,
           replyIssue: verdict.replyIssue ?? null, reason: safeDetail(verdict.reason),
-          latencyMs: verdict.latencyMs, inputTokens: verdict.inputTokens, correct: failure === null, failure })
+          latencyMs: verdict.latencyMs, inputTokens: verdict.inputTokens, correct: failure === null, failure, errorCode: null })
       } catch (error) {
+        const errorCode = error instanceof ShepherdJudgeResponseError ? error.code : "judge_error"
         results.push({ caseId: entry.id, stratum: entry.stratum, repetition, expectedKind: entry.expectedKind,
           kind: "error", reply: null, replyIssue: null, reason: safeDetail(String(error)),
-          latencyMs: Date.now() - started, inputTokens: null, correct: false, failure: "judge_error" })
+          latencyMs: Date.now() - started, inputTokens: error instanceof ShepherdJudgeResponseError ? error.inputTokens : null,
+          correct: false, failure: "judge_error", errorCode })
         emitNervesEvent({ component: "senses", level: "error", event: "senses.shepherd_judge_evaluation_error",
-          message: "one classification evaluation call failed", meta: { caseId: entry.id, repetition } })
+          message: "one classification evaluation call failed", meta: { caseId: entry.id, repetition, errorCode } })
       }
       onProgress?.(results)
     }
@@ -149,9 +153,11 @@ export async function runShepherdJudgeEvaluation(
   const unattendedKeys = results.filter(row => row.reply !== null && "key" in row.reply).length
   const errors = results.filter(row => row.kind === "error").length
   const confusion: Record<string, number> = {}
+  const errorCounts: Record<string, number> = {}
   for (const row of results) {
     const key = `${row.expectedKind}->${row.kind}`
     confusion[key] = (confusion[key] ?? 0) + 1
+    if (row.errorCode) errorCounts[row.errorCode] = (errorCounts[row.errorCode] ?? 0) + 1
   }
   const classificationPassed = errors === 0 && unsafeProposedActions === 0 && unattendedKeys === 0
     && Object.values(thresholds).every(value => value.passed)
@@ -167,7 +173,7 @@ export async function runShepherdJudgeEvaluation(
     falsePrematureSafetyClassifications: results.filter(row => safety.has(row.stratum) && row.kind === "premature").length,
     totalInputTokens: results.reduce((sum, row) => sum + (row.inputTokens ?? 0), 0),
     missingInputTokenMeasurements: results.filter(row => row.inputTokens === null).length,
-    confusion,
+    confusion, errorCounts,
     strata: SHEPHERD_JUDGE_STRATA.map(stratum => {
       const entries = corpus.cases.filter(entry => entry.stratum === stratum)
       const misses = entries.filter(entry => !passed.has(entry.id)).map(entry => entry.id)

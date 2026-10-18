@@ -184,4 +184,41 @@ describe("Shepherd judge", () => {
     const stuck = runtime(() => new Promise(() => undefined))
     await expect(createShepherdJudge(async () => stuck, 10)(packet(SCREENS.shell))).rejects.toThrow("the judge did not answer within 10 ms")
   })
+
+  it.each([
+    { termination: { finishReason: "content_filter", refused: false }, code: "provider_filtered" },
+    { termination: { finishReason: "content_filter", refused: true }, code: "provider_filtered" },
+    { termination: { finishReason: "stop", refused: true }, code: "provider_refused" },
+    { termination: { finishReason: null, refused: true }, code: "provider_refused" },
+    { termination: { finishReason: "length", refused: false }, code: "provider_incomplete" },
+    { termination: { finishReason: "tool_calls", refused: false }, code: "provider_incomplete" },
+    { termination: { finishReason: "function_call", refused: false }, code: "provider_incomplete" },
+    { termination: { finishReason: "unknown", refused: false }, code: "provider_incomplete" },
+  ] as const)("refuses provider termination $code even when the content is actionable valid JSON", async ({ termination, code }) => {
+    const streamTurn = vi.fn(async () => ({
+      content: '{"kind":"premature","reply":{"text":"Continue the authorized task."},"reason":"Synthetic unfinished task."}',
+      toolCalls: [], outputItems: [],
+      usage: { input_tokens: 1114, output_tokens: 0, reasoning_tokens: 0, total_tokens: 1114 },
+      termination,
+    }))
+    const judge = createShepherdJudge(async () => ({ streamTurn }), 1_000)
+    await expect(judge(packet("Synthetic terminal"))).rejects.toMatchObject({
+      name: "ShepherdJudgeResponseError", code, inputTokens: 1114,
+    })
+    expect(streamTurn).toHaveBeenCalledTimes(1)
+  })
+
+  it.each(["stop", null] as const)("accepts unrefused compatible termination %s and retains missing-usage honesty on refusal", async finishReason => {
+    const streamTurn = vi.fn()
+      .mockResolvedValueOnce({
+        content: '{"kind":"done","reason":"Synthetic task finished."}',
+        termination: { finishReason, refused: false },
+      })
+      .mockResolvedValueOnce({ content: "", termination: { finishReason: "content_filter", refused: false } })
+    const judge = createShepherdJudge(async () => ({ streamTurn }), 1_000)
+    expect(await judge(packet("Synthetic terminal"))).toMatchObject({ kind: "done", inputTokens: null })
+    await expect(judge(packet("Synthetic terminal"))).rejects.toMatchObject({
+      code: "provider_filtered", inputTokens: null,
+    })
+  })
 })

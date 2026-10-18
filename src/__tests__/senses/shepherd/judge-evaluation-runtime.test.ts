@@ -91,6 +91,46 @@ describe("classification runtime binding", () => {
     await expect(loaded.judge(packet)).rejects.toThrow(/no classification credit/)
   })
 
+  it("preserves provider refusal evidence and known usage without granting classification credit or retrying", async () => {
+    bundle()
+    let call = 0
+    const streamTurn = vi.fn(async () => {
+      const item = corpus.cases[call++ % corpus.cases.length]!
+      return {
+        content: JSON.stringify({ kind: item.expectedKind,
+          reply: item.expectedKind === "premature" ? { text: "Continue the authorized task." } : null,
+          reason: "Synthetic response that must not override provider filtering." }),
+        termination: { finishReason: call === 1 ? "content_filter" : "stop", refused: false },
+        usage: { input_tokens: call === 1 ? 1114 : 7 },
+      }
+    })
+    mocks.getProviderRuntime.mockResolvedValue({ id: "synthetic-provider", model: "synthetic-model", streamTurn })
+    const loaded = await loadConfiguredShepherdEvaluationJudge("synthetic")
+    const report = await runShepherdJudgeEvaluation(corpus, loaded.judge, loaded.provenance)
+    expect(report.classificationPassed).toBe(false)
+    expect(report.v1Qualified).toBe(false)
+    expect(report.errors).toBe(1)
+    expect(report.results[0]).toMatchObject({
+      kind: "error", errorCode: "provider_filtered", inputTokens: 1114, correct: false, failure: "judge_error",
+    })
+    expect(report.totalInputTokens).toBe(1114 + (corpus.cases.length * 3 - 1) * 7)
+    expect(report.missingInputTokenMeasurements).toBe(0)
+    expect(report.errorCounts).toEqual({ provider_filtered: 1 })
+    expect(streamTurn).toHaveBeenCalledTimes(corpus.cases.length * 3)
+  })
+
+  it("preserves known malformed-answer usage without conflating it with a provider refusal", async () => {
+    bundle()
+    mocks.getProviderRuntime.mockResolvedValue({
+      id: "synthetic-provider", model: "synthetic-model",
+      streamTurn: async () => ({ content: "not JSON", usage: { input_tokens: 17 } }),
+    })
+    const loaded = await loadConfiguredShepherdEvaluationJudge("synthetic")
+    await expect(loaded.judge(packet)).rejects.toMatchObject({
+      name: "ShepherdJudgeResponseError", code: "invalid_answer", inputTokens: 17,
+    })
+  })
+
   it.each([null, {}, { version: 4 }])("refuses unidentified package provenance: %j", async metadata => {
     bundle()
     mocks.getProviderRuntime.mockResolvedValue({ id: "fixture", model: "fixture" })

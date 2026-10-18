@@ -1,5 +1,6 @@
 import type OpenAI from "openai"
 import type { ChannelCallbacks, ProviderRuntime } from "../../heart/core"
+import type { TurnResult } from "../../heart/streaming"
 import { emitNervesEvent } from "../../nerves/runtime"
 import type { ShepherdKey } from "./host"
 import { redactSecrets } from "./redact"
@@ -51,6 +52,33 @@ export interface JudgeResult extends Verdict {
 export type ShepherdJudge = (packet: ReturnPacket) => Promise<JudgeResult>
 
 export type JudgeRuntime = Pick<ProviderRuntime, "streamTurn"> & Partial<Pick<ProviderRuntime, "resetTurnState">>
+
+export type ShepherdJudgeErrorCode = "provider_filtered" | "provider_refused" | "provider_incomplete" | "invalid_answer"
+const JUDGE_ERRORS: Record<ShepherdJudgeErrorCode, string> = {
+  provider_filtered: "The provider filtered the judge response; no classification or continuation",
+  provider_refused: "The provider refused the judge response; no classification or continuation",
+  provider_incomplete: "The provider did not complete a normal judge response; no classification or continuation",
+  invalid_answer: "Judge returned malformed or nonconforming JSON; no classification credit",
+}
+export class ShepherdJudgeResponseError extends Error {
+  constructor(readonly code: ShepherdJudgeErrorCode, readonly inputTokens: number | null) {
+    super(JUDGE_ERRORS[code])
+    this.name = "ShepherdJudgeResponseError"
+  }
+}
+
+export function assertShepherdJudgeCompletion(result: Pick<TurnResult, "termination" | "usage">): void {
+  const end = result.termination
+  if (!end) return
+  const code = end.finishReason === "content_filter" ? "provider_filtered"
+    : end.refused ? "provider_refused"
+      : end.finishReason !== null && end.finishReason !== "stop" ? "provider_incomplete" : null
+  if (!code) return
+  const inputTokens = result.usage?.input_tokens ?? null
+  emitNervesEvent({ component: "senses", level: "error", event: "senses.shepherd_judge_provider_refused",
+    message: "provider termination forbids a judge decision", meta: { code, inputTokens } })
+  throw new ShepherdJudgeResponseError(code, inputTokens)
+}
 
 export const REPLY_MAX_CHARS = 240
 const KEYS = new Set<string>(["enter", "escape", "up", "down", "tab", "1", "2", "3", "4", "5", "6", "7", "8", "9", "y", "n"])
@@ -199,6 +227,7 @@ export function createShepherdJudge(runtime: () => Promise<JudgeRuntime>, timeou
       const messages = judgeMessages(packet)
       provider.resetTurnState?.(messages)
       const result = await Promise.race([provider.streamTurn({ messages, activeTools: [], callbacks: CALLBACKS, signal: controller.signal, toolChoiceRequired: false, reasoningEffort: "low" }), timedOut])
+      assertShepherdJudgeCompletion(result)
       const verdict = parseVerdict(result.content ?? "")
       emitNervesEvent({ component: "senses", event: "senses.shepherd_judged", message: "judged a returned control", meta: { kind: verdict.kind } })
       return { ...verdict, latencyMs: now() - started, inputTokens: result.usage?.input_tokens ?? null }
