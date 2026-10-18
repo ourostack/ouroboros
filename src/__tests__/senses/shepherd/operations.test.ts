@@ -45,6 +45,15 @@ beforeEach(async () => {
 })
 
 describe("trusted local-owner operation composition", () => {
+  it("reports mandatory all-trigger mandate and native admission without promising host qualification", async () => {
+    const result = await runShepherdOperation({ kind: "shepherd.status", agent: "ouro" }, deps)
+    expect(result).toMatchObject({ automation: {
+      mode: "guarded_native_required", mandatesEnforcedForAllTriggers: true,
+      nativeHostQualificationRequired: true, unattendedKeysPossible: false,
+      warning: expect.stringMatching(/unsupported or unqualified hosts are observation-only/i),
+    } })
+  })
+
   it("inspects without host access and grants fully scoped mandates with unprefixed revocation", async () => {
     const id = claim()
     expect(await runShepherdOperation({ kind: "shepherd.inspect", agent: "ouro", limit: 1, id }, deps))
