@@ -51,10 +51,12 @@ describe("local-owner Shepherd administration CLI", () => {
   it("dispatches administration through its injected local service, never daemon input or chat", async () => {
     const runShepherdOperation = vi.fn(async () => ({ state: "ready", revision: 3 }))
     const sendCommand = vi.fn()
-    const deps = { runShepherdOperation, sendCommand } as unknown as OuroCliDeps
+    const writeStdout = vi.fn()
+    const deps = { runShepherdOperation, sendCommand, writeStdout } as unknown as OuroCliDeps
     expect(await runOuroCli(["shepherd", "status", "--agent", "ouro", "--json"], deps))
       .toBe(JSON.stringify({ state: "ready", revision: 3 }, null, 2))
     expect(runShepherdOperation).toHaveBeenCalledWith({ kind: "shepherd.status", agent: "ouro", json: true })
     expect(sendCommand).not.toHaveBeenCalled()
+    expect(writeStdout).toHaveBeenCalledWith(JSON.stringify({ state: "ready", revision: 3 }, null, 2))
   })
 })

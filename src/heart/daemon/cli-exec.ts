@@ -9002,7 +9002,9 @@ export async function runOuroCli(args: string[], deps: OuroCliDeps = createDefau
     || command.kind === "shepherd.resume" || command.kind === "shepherd.mandate.grant" || command.kind === "shepherd.mandate.revoke"
     || command.kind === "shepherd.reconcile" || command.kind === "shepherd.maintenance") {
     if (!deps.runShepherdOperation) throw new Error("Shepherd local administration service is unavailable")
-    return JSON.stringify(await deps.runShepherdOperation(command), null, 2)
+    const text = JSON.stringify(await deps.runShepherdOperation(command), null, 2)
+    deps.writeStdout(text)
+    return text
   }
 
   if (command.kind === "shepherd.chat") {
