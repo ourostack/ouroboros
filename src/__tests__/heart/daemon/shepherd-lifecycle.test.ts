@@ -5,6 +5,21 @@ import { describe, expect, it } from "vitest"
 import { DaemonSenseManager } from "../../../heart/daemon/sense-manager"
 
 describe("maintenance lifecycle proof", () => {
+  it("requires a stop service for live workers and accepts only a truly stopped null-PID census", async () => {
+    const bundlesRoot = fs.mkdtempSync(path.join(os.tmpdir(), "shepherd-no-stop-service-"))
+    const root = path.join(bundlesRoot, "ouro.ouro")
+    fs.mkdirSync(root)
+    fs.writeFileSync(path.join(root, "agent.json"), JSON.stringify({ senses: { shepherd: { enabled: false } } }))
+    const snapshot = { name: "ouro:shepherd", status: "stopped", pid: 42 as number | null }
+    const manager = new DaemonSenseManager({
+      agents: ["ouro"], bundlesRoot,
+      processManager: { startAutoStartAgents: async () => {}, stopAll: async () => {}, listAgentSnapshots: () => [snapshot] },
+    })
+    await expect(manager.quiesceShepherd("ouro")).rejects.toThrow("managed Shepherd stop is unavailable")
+    snapshot.pid = null
+    expect(await manager.quiesceShepherd("ouro")).toMatchObject({ processState: "stopped" })
+  })
+
   it("quiesces only after explicit disabling and waits for actual worker termination", async () => {
     const bundlesRoot = fs.mkdtempSync(path.join(os.tmpdir(), "shepherd-quiesce-"))
     const root = path.join(bundlesRoot, "ouro.ouro")

@@ -204,6 +204,109 @@ describe("Herdr host: panes", () => {
 })
 
 describe("Herdr host: returned control", () => {
+  it("ignores buffered status frames and transition timers after a streamed observer closes the watcher", async () => {
+    let armed = false
+    const observed = vi.fn(() => { if (armed) watcher.close() })
+    const returned = vi.fn()
+    const watcher = host().watch({ returned, focused: vi.fn(), observed })
+    try {
+      await vi.waitFor(() => expect(server.streamCount()).toBe(1))
+      const count = observed.mock.calls.length
+      const inspections = server.requests.filter(request => request.method === "agent.get").length
+      armed = true
+      server.pushRaw([statusEvent("w1:p1", "idle"), statusEvent("w1:p2", "idle")].map(frame => JSON.stringify(frame)).join("\n") + "\n")
+      await vi.waitFor(() => expect(observed).toHaveBeenCalledTimes(count + 1))
+      expect(scheduler.due(GRACE_MS)).toBe(0)
+      await scheduler.run(GRACE_MS)
+      expect(server.requests.filter(request => request.method === "agent.get")).toHaveLength(inspections)
+      expect(returned).not.toHaveBeenCalled()
+    } finally { watcher.close() }
+  })
+
+  it("does not subscribe or schedule after the initial observation callback closes the watcher", async () => {
+    const observed = vi.fn(() => watcher.close())
+    const watcher = host().watch({ returned: vi.fn(), focused: vi.fn(), observed })
+    await vi.waitFor(() => expect(observed).toHaveBeenCalledOnce())
+    expect(scheduler.due(5_000)).toBe(0)
+    expect(subscriptions()).toHaveLength(0)
+  })
+
+  it("does not schedule reconnection after an unavailable-observation callback closes the watcher", async () => {
+    const observed = vi.fn((observation: { error?: string }) => {
+      if (observation.error) watcher.close()
+    })
+    const watcher = host().watch({ returned: vi.fn(), focused: vi.fn(), observed })
+    await vi.waitFor(() => expect(server.streamCount()).toBe(1))
+    server.endStreams()
+    await vi.waitFor(() => expect(observed.mock.calls.some(([value]) => value.error === "host_unavailable")).toBe(true))
+    expect(scheduler.due(1_000)).toBe(0)
+    expect(scheduler.due(5_000)).toBe(0)
+  })
+
+  it.each(["success", "failure"] as const)("drops an in-flight refresh %s after shutdown", async outcome => {
+    const observed = vi.fn()
+    const watcher = host().watch({ returned: vi.fn(), focused: vi.fn(), observed })
+    await vi.waitFor(() => expect(server.streamCount()).toBe(1))
+    let resolve!: (value: unknown) => void
+    let reject!: (error: Error) => void
+    const held = new Promise((yes, no) => { resolve = yes; reject = no })
+    server.respond("pane.list", () => held)
+    await scheduler.run(5_000)
+    watcher.close()
+    const count = observed.mock.calls.length
+    if (outcome === "success") resolve({ panes })
+    else reject(new Error("late inventory failure"))
+    await new Promise(yes => setTimeout(yes, 30))
+    expect(observed).toHaveBeenCalledTimes(count)
+    expect(scheduler.due(5_000)).toBe(0)
+  })
+
+  it.each(["success", "failure"] as const)("does not let an older refresh %s replace a newer subscription or duplicate its timer", async outcome => {
+    const observed = vi.fn()
+    const watcher = host().watch({ returned: vi.fn(), focused: vi.fn(), observed })
+    try {
+      await vi.waitFor(() => expect(server.streamCount()).toBe(1))
+      let resolve!: (value: unknown) => void
+      let reject!: (error: Error) => void
+      const held = new Promise((yes, no) => { resolve = yes; reject = no })
+      server.respond("pane.list", () => held)
+      await scheduler.run(5_000)
+      server.respond("pane.list", () => ({ panes: [paneInfo("fresh", { agent_status: "idle" })] }))
+      server.push(paneEvent("pane_created", "fresh"))
+      await vi.waitFor(() => expect(observed.mock.calls.at(-1)![0].sessions[0].session.id).toBe("fresh"))
+      const count = observed.mock.calls.length
+      if (outcome === "success") resolve({ panes })
+      else reject(new Error("obsolete inventory failure"))
+      await new Promise(yes => setTimeout(yes, 30))
+      expect(observed).toHaveBeenCalledTimes(count)
+      expect(scheduler.due(5_000)).toBe(1)
+    } finally { watcher.close() }
+  })
+
+  it("keeps one refresh timer when a newer refresh overtakes an in-flight resubscription", async () => {
+    const observed = vi.fn()
+    const watcher = host().watch({ returned: vi.fn(), focused: vi.fn(), observed })
+    try {
+      await vi.waitFor(() => expect(server.streamCount()).toBe(1))
+      let resolve!: (value: unknown) => void
+      const held = new Promise(yes => { resolve = yes })
+      server.respond("pane.list", () => held)
+      server.push(paneEvent("pane_created", "fresh"))
+      await vi.waitFor(() => expect(server.requests.filter(request => request.method === "pane.list")).toHaveLength(2))
+      server.respond("pane.list", () => ({ panes: [paneInfo("fresh")] }))
+      await scheduler.run(5_000)
+      await vi.waitFor(() => expect(observed.mock.calls.at(-1)![0].sessions[0].session.id).toBe("fresh"))
+      const count = observed.mock.calls.length
+      resolve({ panes })
+      await new Promise(yes => setTimeout(yes, 30))
+      expect(observed).toHaveBeenCalledTimes(count)
+      expect(scheduler.due(5_000)).toBe(1)
+      server.push(statusEvent("not-in-inventory", "idle"))
+      await new Promise(yes => setTimeout(yes, 30))
+      expect(observed).toHaveBeenCalledTimes(count)
+    } finally { watcher.close() }
+  })
+
   it("publishes initial and changed pane observations without reading screens or inventing process identity", async () => {
     const observed = vi.fn()
     const returned = vi.fn()

@@ -178,7 +178,7 @@ export function createHerdrHost(connection: HerdrConnection, options: HerdrHostO
       let cancelObservation: (() => void) | null = null
       let inventoryGeneration = 0
       const publishObservation = (error?: "host_unavailable"): void => {
-        if (!closed) handlers.observed?.({ at: Date.now(), sessions: [...inventory.values()], ...(error ? { error } : {}) })
+        handlers.observed?.({ at: Date.now(), sessions: [...inventory.values()], ...(error ? { error } : {}) })
       }
       const inventoryRow = (pane: Record<string, unknown>): void => {
         const id = str(pane.pane_id)
@@ -208,7 +208,7 @@ export function createHerdrHost(connection: HerdrConnection, options: HerdrHostO
         } catch {
           if (!closed && generation === inventoryGeneration) publishObservation("host_unavailable")
         }
-        if (!closed) cancelObservation = schedule(() => void refreshObservation(), 5_000)
+        if (!closed && generation === inventoryGeneration && !cancelObservation) cancelObservation = schedule(() => void refreshObservation(), 5_000)
       }
 
       const cancelPending = (paneId: string): void => {
@@ -295,6 +295,7 @@ export function createHerdrHost(connection: HerdrConnection, options: HerdrHostO
           row.activity = next === "working" ? "working" : RETURN_STATES.has(next ?? "") ? "idle" : "unknown"
           row.observedAt = Date.now()
           publishObservation()
+          if (closed) return
         }
         observed(paneId, str(data.agent_status) ?? "unknown")
       }
@@ -310,6 +311,7 @@ export function createHerdrHost(connection: HerdrConnection, options: HerdrHostO
         attempt += 1
         emitNervesEvent({ level: "warn", component: "senses", event: "senses.shepherd_herdr_closed", message: "Herdr event subscription closed; resubscribing", meta: { delay, error: error?.message ?? null } })
         publishObservation("host_unavailable")
+        if (closed) return
         cancelReconnect = schedule(() => void subscribe(), delay)
       }
 
@@ -339,12 +341,14 @@ export function createHerdrHost(connection: HerdrConnection, options: HerdrHostO
           else if (next !== "unknown") status.set(id, next)
         }
         if (generation === inventoryGeneration) replaceInventory(current)
+        if (closed) return
         if (handlers.observed && !cancelObservation) cancelObservation = schedule(() => void refreshObservation(), 5_000)
         const subscriptions = [
           { type: "pane.created" }, { type: "pane.closed" }, { type: "pane.focused" }, { type: "pane.moved" },
           ...current.flatMap((pane) => str(pane.pane_id) ? [{ type: "pane.agent_status_changed", pane_id: pane.pane_id }] : []),
         ]
         stream = connectLines(connection.socketPath, (line) => {
+          if (closed) return
           if (isRecord(line.result) && line.result.type === "subscription_started") {
             attempt = 0
             emitNervesEvent({ component: "senses", event: "senses.shepherd_herdr_connected", message: "Herdr event subscription started", meta: { panes: subscriptions.length - 4 } })

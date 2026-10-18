@@ -8,6 +8,7 @@
         "Add existing-owner local commands for mandate revisions, session pauses, exact custody inspection, evidence-derived retirement and recoverable offline archives.",
         "Preserve original uncertain outcomes and replay barriers through reconciliation, migration, archive interruption and retry.",
         "Trace unavailable supervision observations and verified maintenance quiescence without leaking source contents, and preserve CLI startup telemetry when command parsing fails.",
+        "Keep Herdr observation watchers stopped during callback-driven shutdown and prevent obsolete inventory refreshes from creating duplicate polling timers.",
         "Explicitly label retained legacy automation and receipt-less sends as unqualified; stored mandates do not yet govern every trigger, and Shepherd v1 remains unqualified."
       ]
     },

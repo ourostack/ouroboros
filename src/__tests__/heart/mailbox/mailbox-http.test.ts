@@ -83,6 +83,21 @@ function createRouteOptions(overrides: Record<string, unknown> = {}) {
 }
 
 describe("mailbox http", () => {
+  it("wires default Supervision reads to the selected bundle and preserves explicit reader injection", async () => {
+    const { createMailboxHttpReadHooks } = await import("../../../heart/mailbox/mailbox-http-hooks")
+    const bundlesRoot = fs.mkdtempSync(path.join(os.tmpdir(), "mailbox-supervision-hooks-"))
+    const before = fs.readdirSync(bundlesRoot)
+    const hooks = createMailboxHttpReadHooks({ bundlesRoot })
+    expect(hooks.readAgentSupervision("missing")).toMatchObject({
+      agentName: "missing", freshness: { status: "unknown" }, counts: null,
+    })
+    expect(fs.readdirSync(bundlesRoot)).toEqual(before)
+    const readAgentSupervision = vi.fn(() => hooks.readAgentSupervision("missing"))
+    const overridden = createMailboxHttpReadHooks({ bundlesRoot, readAgentSupervision })
+    expect(overridden.readAgentSupervision("selected").agentName).toBe("missing")
+    expect(readAgentSupervision).toHaveBeenCalledWith("selected")
+  })
+
   it("exposes Supervision reads through both aliases and refuses browser mutations", async () => {
     const { createMailboxHttpRequestHandler } = await import("../../../heart/mailbox/mailbox-http-routes")
     const readAgentSupervision = vi.fn(() => ({ agentName: "slugger", counts: null }))

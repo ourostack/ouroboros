@@ -441,6 +441,59 @@ describe("cmux host: terminals", () => {
 })
 
 describe("cmux host: returned control", () => {
+  it("continues observing an idle hooked terminal without rejudging it", async () => {
+    const observed = vi.fn()
+    const returned = vi.fn()
+    const watcher = host().watch({ returned, focused: vi.fn(), observed })
+    try {
+      await vi.waitFor(() => expect(observed).toHaveBeenCalled())
+      await vi.waitFor(() => expect(server.streamCount()).toBe(1))
+      server.push(hookEvent(101, "SessionStart"))
+      await new Promise(resolve => setTimeout(resolve, 20))
+      const reads = server.methods.filter(call => call.method === "surface.read_text").length
+      await scheduler.run(POLL_MS)
+      expect(server.methods.filter(call => call.method === "surface.read_text").length).toBe(reads + 2)
+      expect(observed.mock.calls.at(-1)![0].sessions[0].session.agent).not.toBeNull()
+      expect(returned).not.toHaveBeenCalled()
+    } finally { watcher.close() }
+  })
+
+  it.each(["read", "inventory-error"] as const)("drops in-flight %s observations when the watcher closes", async stage => {
+    const observed = vi.fn()
+    let watcher: ReturnType<ReturnType<typeof host>["watch"]>
+    if (stage === "read") server.respond("surface.read_text", () => {
+      watcher.close()
+      return { text: "late terminal text" }
+    })
+    else server.respond("system.tree", () => {
+      watcher.close()
+      throw new Error("closed inventory")
+    })
+    watcher = host().watch({ returned: vi.fn(), focused: vi.fn(), observed })
+    await vi.waitFor(() => expect(server.methods.some(call => call.method === (stage === "read" ? "surface.read_text" : "system.tree"))).toBe(true))
+    await new Promise(resolve => setTimeout(resolve, 20))
+    expect(observed).not.toHaveBeenCalled()
+    expect(scheduler.due(POLL_MS)).toBe(0)
+  })
+
+  it("does not publish or reschedule after return handling synchronously closes the last terminal watcher", async () => {
+    server.respond("system.tree", () => tree([{ id: "SF-1", ref: "surface:1" }]))
+    const observed = vi.fn()
+    const returned = vi.fn(() => watcher.close())
+    const watcher = host().watch({ returned, focused: vi.fn(), observed })
+    await vi.waitFor(() => expect(observed).toHaveBeenCalledOnce())
+    screens["SF-1"] = "changed terminal"
+    clock += POLL_MS
+    await scheduler.run(POLL_MS)
+    expect(observed).toHaveBeenCalledTimes(2)
+    clock += QUIET_MS
+    await scheduler.run(POLL_MS)
+    expect(returned).toHaveBeenCalledOnce()
+    expect(returned.mock.calls[0]).toEqual([expect.objectContaining({ cwd: null })])
+    expect(observed).toHaveBeenCalledTimes(2)
+    expect(scheduler.due(POLL_MS)).toBe(0)
+  })
+
   it("observes all terminal rows, including a failed read, independently of return handling", async () => {
     const observed = vi.fn()
     server.respond("surface.read_text", params => {

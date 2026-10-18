@@ -33,6 +33,61 @@ async function cacheProviderCredentials(agent: string): Promise<void> {
 }
 
 describe("daemon sense manager", () => {
+  it.each(["during-refresh", "before-autostart", "retry-pending"] as const)("never revives a quiesced Shepherd %s", async stage => {
+    vi.useFakeTimers()
+    const bundlesRoot = fs.mkdtempSync(path.join(os.tmpdir(), "shepherd-quiescence-race-"))
+    const config = (enabled: boolean) => writeAgentJson(bundlesRoot, "slugger", {
+      version: 1, enabled: true, provider: "anthropic", senses: { shepherd: { enabled } },
+      phrases: { thinking: ["t"], tool: ["t"], followup: ["f"] },
+    })
+    config(true)
+    const missing = { ok: false as const, reason: "unavailable", itemPath: "fixture", error: "locked" }
+    const ready = { ok: true as const, config: {} }
+    const machineReady = { ok: true as const, config: { cmux: { socketCapability: "v1.a.b" } } }
+    let resolve!: (value: typeof ready | typeof missing) => void
+    const held = new Promise<typeof ready | typeof missing>(yes => { resolve = yes })
+    const refresh = vi.fn(() => held)
+    const startAgent = vi.fn(async () => {})
+    const snapshot = { name: "slugger:shepherd", status: "running", pid: 42 as number | null }
+    const stopAgent = vi.fn(async () => { snapshot.status = "stopped"; snapshot.pid = null })
+    let check!: (name: string) => Promise<{ ok: boolean; skip?: boolean; error?: string }>
+    vi.doMock("../../../heart/runtime-credentials", () => ({
+      readRuntimeCredentialConfig: () => missing,
+      readMachineRuntimeCredentialConfig: () => missing,
+      refreshRuntimeCredentialConfig: refresh,
+      refreshMachineRuntimeCredentialConfig: async () => stage === "retry-pending" ? missing : machineReady,
+    }))
+    vi.doMock("../../../heart/daemon/process-manager", () => ({
+      DaemonProcessManager: class {
+        constructor(options: { configCheck: typeof check }) { check = options.configCheck }
+        startAgent = startAgent
+        stopAgent = stopAgent
+        startAutoStartAgents = vi.fn(async () => {})
+        stopAll = vi.fn(async () => {})
+        listAgentSnapshots = () => [snapshot]
+      },
+    }))
+    try {
+      const { DaemonSenseManager } = await import("../../../heart/daemon/sense-manager")
+      const manager = new DaemonSenseManager({ agents: ["slugger"], bundlesRoot })
+      expect(await check("slugger:shepherd")).toMatchObject({ ok: false, skip: true })
+      if (stage !== "during-refresh") {
+        resolve(stage === "retry-pending" ? missing : ready)
+        for (let turn = 0; turn < 6; turn++) await Promise.resolve()
+        expect(vi.getTimerCount()).toBeGreaterThan(0)
+      }
+      config(false)
+      expect(await manager.quiesceShepherd("slugger")).toMatchObject({ processState: "stopped" })
+      expect(stopAgent).toHaveBeenCalledWith("slugger:shepherd")
+      if (stage === "during-refresh") resolve(ready)
+      await vi.advanceTimersByTimeAsync(60_000)
+      expect(startAgent).not.toHaveBeenCalled()
+      expect(refresh).toHaveBeenCalledOnce()
+      expect(await check("slugger:shepherd")).toMatchObject({ ok: false, skip: true, error: expect.stringContaining("quiesced") })
+      await manager.stopAll()
+    } finally { vi.useRealTimers() }
+  })
+
   it("refreshes Sanctuary Telegram machine inventory on cold startup, retry and revival", async () => {
     vi.useFakeTimers()
     const bundlesRoot = fs.mkdtempSync(path.join(os.tmpdir(), "gateway-sense-refresh-"))

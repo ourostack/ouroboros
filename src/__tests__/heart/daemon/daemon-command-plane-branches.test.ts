@@ -150,6 +150,20 @@ describe("daemon command plane branches", () => {
     await expect(daemon.handleCommand({ kind: "daemon.shepherd_quiesce", agent: "ouro" })).rejects.toThrow("worker failed to stop")
   })
 
+  it("refuses lifecycle commands with malformed owners or unavailable lifecycle services", async () => {
+    const { daemon, senseManager } = make(tmpSocketPath("shepherd-unavailable"))
+    for (const kind of ["daemon.shepherd_stopped", "daemon.shepherd_quiesce"] as const) {
+      expect(await daemon.handleCommand({ kind, agent: undefined } as never)).toMatchObject({ ok: false, error: expect.stringContaining("unavailable") })
+    }
+    expect(senseManager.shepherdStoppedProof).not.toHaveBeenCalled()
+    expect(senseManager.quiesceShepherd).not.toHaveBeenCalled()
+    Reflect.deleteProperty(senseManager, "shepherdStoppedProof")
+    Reflect.deleteProperty(senseManager, "quiesceShepherd")
+    for (const kind of ["daemon.shepherd_stopped", "daemon.shepherd_quiesce"] as const) {
+      expect(await daemon.handleCommand({ kind, agent: "ouro" })).toMatchObject({ ok: false, error: expect.stringContaining("unavailable") })
+    }
+  })
+
   it("delegates default external-event readiness to the Sanctuary runtime owner", async () => {
     const socketPath = tmpSocketPath("daemon-default-external-event-readiness")
     const readiness = vi.spyOn(sanctuaryRuntime, "ensureSanctuarySourceRuntimeReady").mockResolvedValueOnce(undefined)

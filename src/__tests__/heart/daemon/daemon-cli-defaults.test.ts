@@ -48,6 +48,37 @@ function withSecretPromptTTY(): () => void {
 }
 
 describe("daemon CLI default dependency branches", () => {
+  it("constructs the Shepherd service lazily and requests quiescence on the configured daemon socket", async () => {
+    vi.resetModules()
+    const proof = { kind: "daemon_lifecycle", checkedAt: new Date().toISOString(), enabled: false, processState: "stopped" }
+    const sendDaemonCommand = vi.fn(async () => ({ ok: true, data: proof }))
+    const runShepherdOperation = vi.fn(async (
+      command: import("../../../heart/shepherd/operations").ShepherdOperation,
+      deps: import("../../../senses/shepherd/operations").ShepherdOperationDeps,
+    ) => deps.senseStopped(command.agent))
+    vi.doMock("../../../heart/daemon/socket-client", async () => ({
+      ...await vi.importActual<typeof import("../../../heart/daemon/socket-client")>("../../../heart/daemon/socket-client"),
+      sendDaemonCommand,
+    }))
+    vi.doMock("../../../senses/shepherd/operations", () => ({ runShepherdOperation }))
+    try {
+      const { createDefaultOuroCliDeps } = await import("../../../heart/daemon/cli-defaults")
+      const { DEFAULT_DAEMON_COMMAND_TIMEOUT_MS } = await import("../../../heart/daemon/socket-client")
+      const deps = createDefaultOuroCliDeps("/fixture/owner-daemon.sock")
+      expect(runShepherdOperation).not.toHaveBeenCalled()
+      const command = { kind: "shepherd.status" as const, agent: "ouro" }
+      expect(await deps.runShepherdOperation!(command)).toEqual(proof)
+      expect(runShepherdOperation).toHaveBeenCalledWith(command, expect.objectContaining({ senseStopped: expect.any(Function) }))
+      expect(sendDaemonCommand).toHaveBeenCalledWith("/fixture/owner-daemon.sock", {
+        kind: "daemon.shepherd_quiesce", agent: "ouro",
+      }, { timeoutMs: DEFAULT_DAEMON_COMMAND_TIMEOUT_MS })
+    } finally {
+      vi.doUnmock("../../../heart/daemon/socket-client")
+      vi.doUnmock("../../../senses/shepherd/operations")
+      vi.resetModules()
+    }
+  })
+
   it("passes removable launchd deps and falls back to uid 0 when getuid is unavailable", async () => {
     vi.resetModules()
 
