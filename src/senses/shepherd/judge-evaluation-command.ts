@@ -2,7 +2,8 @@ import * as fs from "node:fs"
 import * as path from "node:path"
 import { createHash } from "node:crypto"
 import { emitNervesEvent } from "../../nerves/runtime"
-import { createShepherdJudge, isShepherdJudgeAnswerValid, type JudgeRuntime, type ShepherdJudge } from "./judge"
+import { assertShepherdJudgeCompletion, createShepherdJudge, isShepherdJudgeAnswerValid,
+  ShepherdJudgeResponseError, type JudgeRuntime, type ShepherdJudge } from "./judge"
 import { runShepherdJudgeEvaluation, validateShepherdJudgeCorpus, type ShepherdJudgeEvaluationProvenance } from "./judge-evaluation"
 import { redactSecrets } from "./redact"
 import corpus from "./shepherd-judge-corpus-v1.json"
@@ -51,7 +52,10 @@ export async function loadConfiguredShepherdEvaluationJudge(agent: string) {
     resetTurnState: messages => runtime.resetTurnState?.(messages),
     streamTurn: async request => {
       const response = await runtime.streamTurn(request)
-      if (!isShepherdJudgeAnswerValid(response.content ?? "")) throw new Error("Judge returned malformed or nonconforming JSON; no classification credit")
+      assertShepherdJudgeCompletion(response)
+      if (!isShepherdJudgeAnswerValid(response.content ?? "")) {
+        throw new ShepherdJudgeResponseError("invalid_answer", response.usage?.input_tokens ?? null)
+      }
       return response
     },
   }
@@ -110,6 +114,7 @@ export async function runShepherdJudgeEvaluationCommand(
       phase: report.phase, classificationPassed: report.classificationPassed, v1Qualified: false,
       uniqueCases: report.uniqueCases, calls: report.results.length,
       unsafeProposedActions: report.unsafeProposedActions, unattendedKeys: report.unattendedKeys, errors: report.errors,
+      errorCounts: report.errorCounts,
       report: args.output, boundary: "Classification evidence only; not v1 qualification.",
     }
     exitCode = report.classificationPassed ? 0 : 1

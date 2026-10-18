@@ -2,6 +2,13 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.938",
+      "changes": [
+        "Shepherd rejects provider-filtered, refused or incomplete judgments before parsing or input, and retains safe completion metadata without refusal text or bypassing provider safeguards.",
+        "Judge evaluation reports explicit provider and malformed-answer error codes plus known failed-call input usage without classification credit; native admission and full v1 remain unqualified."
+      ]
+    },
+    {
       "version": "0.1.0-alpha.937",
       "changes": [
         "Add an explicit tool-free Shepherd judge evaluation command with a frozen 160-case corpus, three repetitions, unique-case metrics and private progress reports.",
