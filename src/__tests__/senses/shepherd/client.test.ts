@@ -1,13 +1,45 @@
 import { afterEach, describe, expect, it, vi } from "vitest"
+import { randomUUID } from "node:crypto"
+import * as net from "node:net"
 
 import { CmuxSocketError, createCmuxClient } from "../../../senses/shepherd/client"
 import { startFakeCmux, type FakeCmux } from "./fake-cmux"
 
-const fakes: FakeCmux[] = []
+const fakes: Array<Pick<FakeCmux, "close">> = []
 async function fake(options?: Parameters<typeof startFakeCmux>[0]): Promise<FakeCmux> {
   const server = await startFakeCmux(options)
   fakes.push(server)
   return server
+}
+
+async function delayedAuthentication(onAuth?: () => void) {
+  const socketPath = `/tmp/cmx-guard-${randomUUID()}.sock`
+  const lines: string[] = []
+  let peer: net.Socket | undefined
+  const server = net.createServer(socket => {
+    peer = socket
+    socket.on("error", () => undefined)
+    let buffer = ""
+    socket.on("data", data => {
+      buffer += data.toString()
+      let newline: number
+      while ((newline = buffer.indexOf("\n")) >= 0) {
+        const line = buffer.slice(0, newline)
+        buffer = buffer.slice(newline + 1)
+        lines.push(line)
+        if (line.startsWith("auth ")) onAuth?.()
+        else socket.write(`${JSON.stringify({ ok: true, result: { unexpected_input: true } })}\n`)
+      }
+    })
+  })
+  await new Promise<void>(resolve => server.listen(socketPath, resolve))
+  fakes.push({
+    close: async () => {
+      peer?.destroy()
+      await new Promise<void>(resolve => server.close(() => resolve()))
+    },
+  })
+  return { socketPath, lines, peer: () => peer }
 }
 
 afterEach(async () => {
@@ -31,6 +63,61 @@ describe("cmux socket client", () => {
 
     await expect(client.call("system.ping")).resolves.toEqual({ pong: true })
     expect(server.lines[0]).toBe("auth pw")
+  })
+
+  it("checks the parent dispatch guard after authentication and before writing native input", async () => {
+    let allowed = true
+    const server = await delayedAuthentication(() => { allowed = false })
+    const client = createCmuxClient({ socketPath: server.socketPath, auth: { kind: "password", password: "pw" } })
+    const result = client.call("surface.shepherd.continue", { text: "Continue." }, () => allowed)
+      .catch((error: unknown) => error)
+    await vi.waitFor(() => expect(server.lines).toEqual(["auth pw"]))
+    server.peer()!.write("OK: authenticated\n")
+    expect(await result).toMatchObject({ code: "not_sent" })
+    expect(server.lines).toEqual(["auth pw"])
+  })
+
+  it("never dispatches a timed-out native request when a delayed handshake eventually answers", async () => {
+    const server = await delayedAuthentication()
+    const client = createCmuxClient({ socketPath: server.socketPath, auth: { kind: "password", password: "pw" } }, { timeoutMs: 100 })
+    const result = client.call("surface.shepherd.continue", { text: "Continue." }).catch((error: unknown) => error)
+    await vi.waitFor(() => expect(server.lines).toEqual(["auth pw"]))
+    expect(await result).toMatchObject({ code: "timeout" })
+    server.peer()!.write("OK: authenticated\n")
+    await new Promise(resolve => setTimeout(resolve, 30))
+    expect(server.lines).toEqual(["auth pw"])
+    expect(server.peer()!.destroyed).toBe(true)
+  })
+
+  it("does not write after a peer refuses in the same frame as its authentication answer", async () => {
+    const server = await delayedAuthentication()
+    const client = createCmuxClient({ socketPath: server.socketPath, auth: { kind: "password", password: "pw" } })
+    const result = client.call("surface.shepherd.continue", {}).catch((error: unknown) => error)
+    await vi.waitFor(() => expect(server.lines).toEqual(["auth pw"]))
+    server.peer()!.write("OK: authenticated\nERROR: Access denied\n")
+    expect(await result).toMatchObject({ code: "auth" })
+    await new Promise(resolve => setTimeout(resolve, 20))
+    expect(server.lines).toEqual(["auth pw"])
+  })
+
+  it.each(["refused", "throws"])("a %s final guard admits zero request bytes", async mode => {
+    const server = await fake()
+    server.respond("surface.shepherd.continue", () => ({ unexpected_input: true }))
+    const client = createCmuxClient({ socketPath: server.socketPath, auth: { kind: "none" } })
+    await expect(client.call("surface.shepherd.continue", {}, () => {
+      if (mode === "throws") throw new Error("guard failed")
+      return false
+    })).rejects.toMatchObject({ code: "not_sent" })
+    expect(server.methods).toEqual([])
+  })
+
+  it("a still-valid final guard sends one native request through the normal authenticated client", async () => {
+    const server = await fake({ capability: "v1.tok.sig" })
+    server.respond("surface.shepherd.continue", params => ({ request_id: params.request_id }))
+    const client = createCmuxClient({ socketPath: server.socketPath, auth: { kind: "capability", token: "v1.tok.sig" } })
+    await expect(client.call("surface.shepherd.continue", { request_id: "native-request" }, () => true))
+      .resolves.toEqual({ request_id: "native-request" })
+    expect(server.methods).toEqual([{ method: "surface.shepherd.continue", params: { request_id: "native-request" } }])
   })
 
   it("sends plain lines in automation mode and v1 commands as text", async () => {

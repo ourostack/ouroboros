@@ -25,7 +25,8 @@ export interface CmuxStreamHandlers {
 }
 
 export interface CmuxClient {
-  call: (method: string, params?: Record<string, unknown>) => Promise<Record<string, unknown>>
+  /** The optional parent guard runs after authentication, synchronously before any RPC bytes. */
+  call: (method: string, params?: Record<string, unknown>, canSend?: () => boolean) => Promise<Record<string, unknown>>
   command: (line: string) => Promise<string>
   stream: (params: Record<string, unknown>, handlers: CmuxStreamHandlers) => { close: () => void }
 }
@@ -66,9 +67,14 @@ export function createCmuxClient(
   )
 
   /** Opens a connection, runs the password handshake when needed, and hands back a line reader. */
-  function open(onLine: (line: string) => void, onEnd: (error?: CmuxSocketError) => void): Promise<net.Socket> {
+  function open(
+    onLine: (line: string) => void,
+    onEnd: (error?: CmuxSocketError) => void,
+    onSocket?: (socket: net.Socket) => void,
+  ): Promise<net.Socket> {
     return new Promise((resolve) => {
       const socket = net.createConnection(connection.socketPath)
+      onSocket?.(socket)
       let buffer = ""
       let handshake = connection.auth.kind === "password"
       socket.setEncoding("utf-8")
@@ -102,7 +108,7 @@ export function createCmuxClient(
     })
   }
 
-  function request(line: string): Promise<string> {
+  function request(line: string, canSend?: () => boolean): Promise<string> {
     return new Promise((resolve, reject) => {
       let settled = false
       let socket: net.Socket | null = null
@@ -118,8 +124,21 @@ export function createCmuxClient(
       void open(
         (response) => finish(refusal(response), response),
         (error) => finish(error ?? new CmuxSocketError("unavailable", "cmux closed the socket before answering")),
+        (opened) => { socket = opened },
       ).then((opened) => {
-        socket = opened
+        if (settled) {
+          opened.destroy()
+          return
+        }
+        try {
+          if (canSend && canSend() !== true) {
+            finish(new CmuxSocketError("not_sent", "parent dispatch guard invalidated before request input"))
+            return
+          }
+        } catch {
+          finish(new CmuxSocketError("not_sent", "parent dispatch guard failed before request input"))
+          return
+        }
         opened.write(`${wrap(line)}\n`)
       })
     })
@@ -139,8 +158,8 @@ export function createCmuxClient(
   }
 
   return {
-    async call(method, params = {}) {
-      const text = await request(v2Line(method, params))
+    async call(method, params = {}, canSend) {
+      const text = await request(v2Line(method, params), canSend)
       const result = parseV2(text)
       emitNervesEvent({ component: "senses", event: "senses.shepherd_call", message: "cmux socket call answered", meta: { method } })
       return result
