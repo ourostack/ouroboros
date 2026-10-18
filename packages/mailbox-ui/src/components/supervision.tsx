@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from "react"
 import { fetchJson } from "../api"
 import { Badge } from "../catalyst/badge"
 import type { ShepherdSupervisionEvent, ShepherdSupervisionView } from "../contracts"
+import { shepherdInspectionCommand, shepherdRetirementCommand } from "../contracts"
 
 interface SupervisionProps {
   agents: string[]
@@ -28,6 +29,23 @@ function fresh(at: string | null, now: number): boolean {
   return ms !== null && ms <= 30_000
 }
 const panel = "rounded-xl bg-ouro-void/50 p-4 ring-1 ring-ouro-moss/25"
+
+function LocalCommand({ command, label }: { command: string | null; label: string }) {
+  const [result, setResult] = useState<"copied" | "failed" | null>(null)
+  if (!command) return null
+  const copy = async () => {
+    try {
+      await navigator.clipboard.writeText(command)
+      setResult("copied")
+    } catch { setResult("failed") }
+  }
+  return <div className="min-w-0 space-y-1">
+    <code className="block select-text break-all rounded-md bg-ouro-void p-2 text-xs">{command}</code>
+    <button type="button" onClick={() => { void copy() }} className="text-xs text-ouro-glow underline">Copy {label} command</button>
+    {result === "copied" && <span role="status" className="ml-2 text-xs text-ouro-mist">Copied for local execution; nothing was run.</span>}
+    {result === "failed" && <p role="alert" className="text-xs text-ouro-gold">Copy failed. Select the command text and copy it manually.</p>}
+  </div>
+}
 
 export function Supervision({ agents, agentName, focus, refreshGeneration, onSelectOwner }: SupervisionProps) {
   const [data, setData] = useState<ShepherdSupervisionView | null>(null)
@@ -202,6 +220,11 @@ export function Supervision({ agents, agentName, focus, refreshGeneration, onSel
             <section className={panel} aria-label="Custody and held inputs">
               <h2 className="text-lg font-semibold">Replay barriers and unknown inputs</h2>
               <p className="mt-2 text-sm text-ouro-gold">Unknown effects remain held: do not retry blindly. Owner administration is local-only; this browser cannot resolve or retry claims.</p>
+              <div className="mt-3">
+                <LocalCommand key={agentName} command={shepherdInspectionCommand(agentName)} label="status" />
+              </div>
+              <p className="mt-2 text-xs text-ouro-mist">Run commands locally as the existing owner. Local administration is same-UID authority, not proof of human presence.
+                {" "}Read current status and inspect the exact claim before changing anything. A stale revision will be rejected.</p>
               <p className="mt-2 text-xs text-ouro-mist">Custody revision: {view.custody.revision ?? "unknown"}.
                 {" "}Storage: {view.custody.bytes === null ? "unknown" : `${view.custody.bytes.toLocaleString()} bytes`} ({view.custody.capacity}).
                 {" "}Showing {view.custody.claims.items.length} of {view.custody.claims.totalCount ?? "unknown"} retained barriers.
@@ -210,6 +233,15 @@ export function Supervision({ agents, agentName, focus, refreshGeneration, onSel
                 <p>Original state: {claim.state} | {claim.host} / {claim.session}</p>
                 <p className="break-all font-mono text-xs">{claim.id}</p>
                 <p className="text-ouro-mist">{claim.reason ?? "No outcome evidence is recorded."} Acknowledgments in the timeline do not rewrite the original state.</p>
+                <LocalCommand command={shepherdInspectionCommand(agentName, claim.id)} label="inspection" />
+                <details className="pt-2">
+                  <summary className="cursor-pointer text-xs text-ouro-glow">Local recovery after terminal retirement</summary>
+                  <p className="my-2 text-xs text-ouro-mist">The entire terminal must be absent from a strict host inventory.
+                    {" "}A different foreground process is not proof of retirement. This command never confirms delivery or retries input.
+                    {" "}Confirmed-delivery recovery remains unsupported until native receipt lookup is qualified.</p>
+                  <LocalCommand key={`${claim.id}:${view.custody.revision}`} command={shepherdRetirementCommand(agentName, claim.id, view.custody.revision)} label="retirement" />
+                  {view.custody.revision === null && <p className="text-xs text-ouro-gold">No retirement command is available until a custody revision is known.</p>}
+                </details>
               </div>)}
               {view.custody.claims.totalCount === null && <p className="mt-3 text-sm">Custody availability is unknown; zero held inputs cannot be established.</p>}
             </section>

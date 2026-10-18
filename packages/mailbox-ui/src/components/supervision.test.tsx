@@ -15,6 +15,39 @@ beforeEach(() => {
 afterEach(() => { cleanup(); vi.useRealTimers(); vi.unstubAllGlobals() })
 
 describe("Supervision", () => {
+  it("copies exact local inspection and evidence-checked retirement commands without sending browser mutations", async () => {
+    const writeText = vi.fn(async () => {})
+    Object.defineProperty(navigator, "clipboard", { configurable: true, value: { writeText } })
+    render(<Supervision {...props} />)
+    await screen.findByText("alpha terminal")
+    fireEvent.click(screen.getByRole("button", { name: "Copy inspection command" }))
+    await waitFor(() => expect(writeText).toHaveBeenCalledWith(`ouro shepherd inspect --agent 'alpha' --id '${"a".repeat(64)}' --json`))
+    fireEvent.click(screen.getByText("Local recovery after terminal retirement"))
+    fireEvent.click(screen.getByRole("button", { name: "Copy retirement command" }))
+    await waitFor(() => expect(writeText).toHaveBeenCalledWith(expect.stringContaining("--resolution retired --expected-revision 3")))
+    expect(screen.getByText(/entire terminal must be absent/i)).toBeTruthy()
+    expect(vi.mocked(fetch).mock.calls.every(([, options]) => !options?.method || options.method === "GET")).toBe(true)
+  })
+
+  it("makes clipboard failure explicit and keeps selectable command text", async () => {
+    Object.defineProperty(navigator, "clipboard", { configurable: true, value: { writeText: vi.fn(async () => { throw new Error("denied") }) } })
+    render(<Supervision {...props} />)
+    await screen.findByText("alpha terminal")
+    fireEvent.click(screen.getByRole("button", { name: "Copy status command" }))
+    expect((await screen.findByRole("alert")).textContent).toMatch(/copy failed.*select.*command/i)
+    expect(screen.getByText("ouro shepherd status --agent 'alpha' --json")).toBeTruthy()
+  })
+
+  it("does not manufacture a mutation command from an unknown custody revision", async () => {
+    const view = supervisionView("alpha")
+    view.custody.revision = null
+    vi.stubGlobal("fetch", vi.fn(async () => jsonResponse(view)))
+    render(<Supervision {...props} />)
+    await screen.findByText("alpha terminal")
+    expect(screen.queryByRole("button", { name: "Copy retirement command" })).toBeNull()
+    expect(screen.getByRole("button", { name: "Copy inspection command" })).toBeTruthy()
+  })
+
   it("opens at machine level without choosing an arbitrary owning agent", () => {
     render(<Supervision {...props} agentName={null} />)
     expect(screen.getByRole("heading", { name: "Supervision" })).toBeTruthy()
