@@ -30,7 +30,9 @@ function seed(state: "claimed" | "sent" | "not_sent" | "unknown" = "unknown", ov
   const store = openCheckInStore(file)
   try {
     const claim = store.claimDispatch(input(overrides), "worker-1")!
-    if (state !== "claimed") store.completeDispatch(claim.id, "worker-1", { state, reason: "original outcome" })
+    if (state !== "claimed") store.completeDispatch(claim.id, "worker-1", {
+      state, reason: "original outcome", ...(claim.nativeTarget ? { nativeRequestId: claim.nativeRequestId } : {}),
+    })
     return claim
   } finally { store.close() }
 }
@@ -237,6 +239,44 @@ describe("bounded readonly custody inspection", () => {
 })
 
 describe("append-only owner reconciliation", () => {
+  it.each([
+    { omitBinding: true }, { nativeRequestId: "other-attempt" },
+    { hostInstance: "other-boot" }, { workspaceId: "other-workspace" },
+  ])("does not reconcile native custody with an incomplete or mismatched binding: %j", async change => {
+    const nativeTarget = { hostInstance: "native-boot", workspaceId: "native-workspace" }
+    const claim = seed("unknown", { nativeTarget })
+    const evidence = {
+      kind: "guarded_host_receipt_v1" as const, host: claim.host, checkedAt: at(),
+      native: change.omitBinding ? undefined : {
+        requestId: change.nativeRequestId ?? claim.nativeRequestId!, hostInstance: change.hostInstance ?? nativeTarget.hostInstance,
+      },
+      receipt: { requestId: claim.id, surfaceId: claim.session, processInstance: claim.instance!,
+        workspaceId: change.workspaceId ?? nativeTarget.workspaceId, pasteAdmitted: true, submitAdmitted: true },
+    }
+    await expect(reconcileShepherdDispatch(root, { ...retire(claim.id), evidence })).rejects.toThrow(/matching confirmed host receipt/)
+    expect(readCheckInSnapshot(file, { limit: 1 }).entries[0]).toMatchObject({ state: "unknown", reconciliationCount: 0 })
+  })
+
+  it("retains only verified native boot and request provenance when acknowledging delivery", async () => {
+    const nativeTarget = { hostInstance: "native-boot", workspaceId: "native-workspace" }
+    const claim = seed("unknown", { nativeTarget })
+    const native = { requestId: claim.nativeRequestId!, hostInstance: nativeTarget.hostInstance }
+    await reconcileShepherdDispatch(root, { ...retire(claim.id), evidence: {
+      kind: "guarded_host_receipt_v1", host: claim.host, checkedAt: at(),
+      ...{ native: { ...native, unexpected: "PRIVATE_NATIVE_EXTRA" } },
+      receipt: { requestId: claim.id, surfaceId: claim.session, processInstance: claim.instance!,
+        workspaceId: nativeTarget.workspaceId, pasteAdmitted: true, submitAdmitted: true },
+    } })
+    mutate(db => {
+      const raw = (db.prepare("SELECT data FROM reconciliations WHERE dispatch_id=?").get(claim.id) as { data: string }).data
+      expect(JSON.parse(raw).evidence.native).toEqual(native)
+      expect(raw).not.toContain("PRIVATE_NATIVE_EXTRA")
+    })
+    expect(readCheckInSnapshot(file, { limit: 1 }).entries[0]).toMatchObject({
+      state: "unknown", reconciliationCount: 1, reconciliations: [{ resolution: "acknowledged_delivery" }],
+    })
+  })
+
   it("acknowledges a matching accepted host receipt without rewriting uncertainty or opening the barrier", async () => {
     const claim = seed()
     const request: ShepherdRecoveryRequest = {
