@@ -9,6 +9,11 @@ export interface ShepherdInputReceipt {
   submitAdmitted: boolean
 }
 
+export interface ShepherdNativeTarget {
+  hostInstance: string
+  workspaceId: string
+}
+
 export interface ShepherdRetirementProof {
   kind: "host_process_inventory"
   host: string
@@ -20,7 +25,8 @@ export interface ShepherdRetirementProof {
 }
 
 export type ShepherdRecoveryEvidence =
-  | { kind: "guarded_host_receipt_v1"; host: string; checkedAt: string; receipt: ShepherdInputReceipt }
+  | { kind: "guarded_host_receipt_v1"; host: string; checkedAt: string; receipt: ShepherdInputReceipt
+    native?: { requestId: string; hostInstance: string } }
   | ShepherdRetirementProof
 
 export interface ShepherdRecoveryRequest {
@@ -44,6 +50,7 @@ export interface ShepherdRecoveryReceipt {
 export interface ShepherdCustodyEntry {
   id: string
   nativeRequestId?: string
+  nativeTarget?: ShepherdNativeTarget
   host: string
   session: string
   instance: string | null

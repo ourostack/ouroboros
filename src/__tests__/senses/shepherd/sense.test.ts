@@ -1,6 +1,7 @@
 import * as fs from "node:fs"
 import * as os from "node:os"
 import * as path from "node:path"
+import { createHash } from "node:crypto"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 
 import { resetIdentity } from "../../../heart/identity"
@@ -15,6 +16,8 @@ import { recordShepherdCorrection, setShepherdSessionPause } from "../../../sens
 import { hookEvent, SCREENS, tree } from "./fixtures"
 import type { FeedbackWorkerOptions } from "../../../senses/shepherd/feedback-worker"
 import { openCheckInStore } from "../../../senses/shepherd/checkin-store"
+import { updateShepherdMandate } from "../../../heart/shepherd/mandates"
+import type { ShepherdInspection } from "../../../senses/shepherd/host"
 
 const mockRequestPrivateWake = vi.fn()
 vi.mock("../../../heart/daemon/socket-client", async (importOriginal) => ({
@@ -34,6 +37,7 @@ const AGENT = "ouroboros"
 const originalHome = process.env.HOME
 let home = ""
 let agentRoot = ""
+let project = ""
 let clock = 0
 let stop: (() => void) | null = null
 
@@ -45,6 +49,7 @@ interface FakeHost extends ShepherdHost {
 }
 
 function fakeHost(): FakeHost {
+  const events = new Map<string, ReturnedControl>()
   const host: FakeHost = {
     name: "fake",
     handlers: null,
@@ -57,18 +62,41 @@ function fakeHost(): FakeHost {
       const queue = host.screens[id] ?? [""]
       return queue.length > 1 ? queue.shift()! : queue[0]!
     },
+    inspect: async id => {
+      const event = events.get(id)
+      const screen = await host.read(id, 80)
+      return {
+        session: { id, ref: id, workspace: null, title: "", agent: event ? event.agent : "claude",
+          cwd: event ? event.cwd : project, tty: "/dev/fixture", instance: "native-pid:start", focused: id === host.focusedSession },
+        instance: "native-pid:start", screen, screenFingerprint: createHash("sha256").update(screen).digest("hex"),
+        activity: "idle", composer: "empty", backgroundWork: event?.backgroundWork === true,
+        guarded: { hostInstance: "native-boot", workspaceId: "workspace-1", surfaceGeneration: 1, inputRevision: 0,
+          focusRevision: 0, token: "native-token", expiresAtUnixMs: clock + 1500 },
+      } satisfies ShepherdInspection
+    },
+    capabilities: async () => ({ state: "qualified", protocolVersion: 1, agents: ["claude", "codex", "copilot", "Copilot"] }),
+    continueInput: async (request, canSend) => {
+      if (!canSend()) return { state: "not_sent", reason: "parent guard invalidated" }
+      host.actions.push(`prompt ${request.expected.session.id} ${request.text}`)
+      return { state: "sent", receipt: {
+        requestId: request.requestId, surfaceId: request.expected.session.id, workspaceId: "workspace-1",
+        processInstance: request.expected.instance!, hostInstance: "native-boot", state: "accepted", reason: "fixture",
+        pasteAdmitted: true, submitAdmitted: true,
+      } }
+    },
     prompt: async (id, line) => { host.actions.push(`prompt ${id} ${line}`) },
     key: async (id, key) => { host.actions.push(`key ${id} ${key}`) },
     signal: async (id, status) => { host.actions.push(`status ${id} ${status}`) },
     watch: (handlers) => {
-      host.handlers = handlers
+      host.handlers = { ...handlers, returned: event => { events.set(event.sessionId, event); handlers.returned(event) } }
       return { close: () => { host.actions.push("closed") } }
     },
   }
   return host
 }
 
-const verdict = (overrides: Partial<JudgeResult> = {}): JudgeResult => ({ kind: "premature", reply: { text: "Go ahead and implement it." }, reason: "It stopped after a plan.", latencyMs: 900, inputTokens: 1200, ...overrides })
+const CONTINUATION = "Continue only this authorized task: Complete the existing authorized task. Respect human decisions and reconcile uncertain effects before retrying."
+const verdict = (overrides: Partial<JudgeResult> = {}): JudgeResult => ({ kind: "premature", reply: { text: "Continue the existing authorized task." }, reason: "It stopped after a plan.", latencyMs: 900, inputTokens: 1200, ...overrides })
 const idleFeedbackWorker = () => ({ drain: async () => {}, stop() {} })
 
 describe("owner notice producer custody", () => {
@@ -98,7 +126,7 @@ describe("owner notice producer custody", () => {
     })
     host.screens.S1 = [SCREENS.claudePremature]
     for (const transitionId of ["first", "next"]) host.handlers!.returned({
-      sessionId: "S1", transitionId, agent: "Copilot", cwd: "/project", lastBody: null, backgroundWork: false,
+      sessionId: "S1", transitionId, agent: "Copilot", cwd: project, lastBody: null, backgroundWork: false,
     })
     await vi.waitFor(() => expect(readReturns(agentRoot)).toHaveLength(2))
     expect(judge).toHaveBeenCalledTimes(2)
@@ -125,7 +153,7 @@ describe("owner notice producer custody", () => {
     })
     stop = app.stop
     const event = (transitionId: string): ReturnedControl => ({
-      sessionId: "S", transitionId, agent: "Copilot", cwd: "/project", lastBody: null, backgroundWork: null,
+      sessionId: "S", transitionId, agent: "Copilot", cwd: project, lastBody: null, backgroundWork: null,
     })
     host.handlers!.returned(event("first"))
     await vi.waitFor(() => expect(notifyOwner).toHaveBeenCalledTimes(1))
@@ -148,7 +176,7 @@ describe("owner notice producer custody", () => {
     })
     stop = app.stop
     for (const transitionId of ["first", "second"]) host.handlers!.returned({
-      sessionId: "S", transitionId, agent: "Copilot", cwd: "/project", lastBody: null, backgroundWork: null,
+      sessionId: "S", transitionId, agent: "Copilot", cwd: project, lastBody: null, backgroundWork: null,
     })
     await vi.waitFor(() => expect(judge).toHaveBeenCalledTimes(2))
     expect(readReturns(agentRoot).filter(record => record.noticeEligible)).toHaveLength(2)
@@ -181,7 +209,7 @@ async function start(judge: (packet: ReturnPacket) => Promise<JudgeResult>, host
   })
   stop = app.stop
   const returned = async (event: Partial<ReturnedControl> & { sessionId: string }) => {
-    host.handlers!.returned({ transitionId: `t-${clock}`, agent: "claude", cwd: "/Users/a/code/app", lastBody: null, backgroundWork: null, ...event })
+    host.handlers!.returned({ transitionId: `t-${clock}`, agent: "claude", cwd: project, lastBody: null, backgroundWork: null, ...event })
     await vi.waitFor(() => expect(readReturns(agentRoot).some((record) => record.transition === `t-${clock}` || record.transition === event.transitionId)).toBe(true))
   }
   return { host, escalations, wakes, notices, returned, last: () => readReturns(agentRoot).at(-1)! }
@@ -192,16 +220,23 @@ function writeFriend(name: string, record: Record<string, unknown>): void {
   fs.writeFileSync(path.join(agentRoot, "friends", name), typeof record.raw === "string" ? record.raw : JSON.stringify(record))
 }
 
-beforeEach(() => {
-  home = fs.mkdtempSync(path.join(os.tmpdir(), "shepherd-sense-"))
+beforeEach(async () => {
+  home = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "shepherd-sense-")))
   process.env.HOME = home
   resetIdentity()
   agentRoot = path.join(home, "AgentBundles", `${AGENT}.ouro`)
+  project = path.join(home, "app")
+  fs.mkdirSync(project)
   writeFriend("ari.json", { name: "Ari", trustLevel: "family", externalIds: [{ provider: "local", externalId: os.userInfo().username }] })
-  fs.writeFileSync(path.join(agentRoot, "agent.json"), JSON.stringify({ displayName: "Ouro" }))
+  fs.writeFileSync(path.join(agentRoot, "agent.json"), JSON.stringify({ displayName: "Ouro", senses: { shepherd: { checkInMinutes: 0 } } }))
   cacheMachineRuntimeCredentialConfig(AGENT, { cmux: { socketCapability: "v1.t.s", socketPath: "/nowhere.sock" } })
   mockRequestPrivateWake.mockReset().mockResolvedValue({ ok: true })
-  clock = Date.parse("2026-10-10T20:00:00.000Z")
+  await updateShepherdMandate(agentRoot, {
+    operation: "grant", expectedRevision: 0, target: { project, host: "fake" }, task: "Complete the existing authorized task.",
+    expiresAt: new Date(Date.now() + 6 * 24 * 3_600_000).toISOString(),
+    context: { kind: "local_owner_administration", actorId: "fixture-owner", requestId: "fixture-grant" },
+  })
+  clock = Date.now()
   tasks.length = 0
 })
 
@@ -263,10 +298,11 @@ describe("Shepherd sense: answering premature returns", () => {
     const { host, returned } = await start(async () => verdict())
     host.screens.S1 = [SCREENS.claudePremature]
     await returned({ sessionId: "S1" })
-    expect(host.actions).toContain("prompt S1 [Orchid One for Ari] Go ahead and implement it.")
+    expect(host.actions).toContain(`prompt S1 [Orchid One for Ari] ${CONTINUATION}`)
   })
 
   const target = { host: "fake", session: "S1", cwd: "/Users/a/code/app", task: null }
+  beforeEach(() => { target.cwd = project })
   const establish = () => appendReturn(agentRoot, { at: "earlier", host: "fake", session: "S1", transition: "earlier", agent: "claude", cwd: target.cwd, task: null, kind: "gate", action: "let_through", reason: "review", reply: null, latencyMs: 1, inputTokens: 1 })
 
   it("includes persisted applicable principles in the next judgment but excludes other sessions", async () => {
@@ -334,20 +370,20 @@ describe("Shepherd sense: answering premature returns", () => {
     expect(notices[0]!.kind).toBe("waiting")
     expect(host.actions.some(action => /^(prompt|key) /.test(action))).toBe(false)
   })
-  it("types the judge's line visibly as the human's Ouro, sets the status, and logs it", async () => {
+  it("types protected mandate scope visibly as the human's Ouro, sets the status, and logs it", async () => {
     const packets: ReturnPacket[] = []
     const { host, escalations, last } = await start(async (packet) => { packets.push(packet); return verdict() })
     host.screens.S1 = [`Desk-Task: old/one\nwork\nDesk-Task: ouro-md/toolbar-polish\nsk-${"a".repeat(30)}\n${SCREENS.claudePremature}`]
     await vi.waitFor(() => expect(host.handlers).not.toBeNull())
-    host.handlers!.returned({ sessionId: "S1", transitionId: "cmux:B:101", agent: "claude", cwd: "/Users/a/code/app", lastBody: "token=abc123secret Want me to go ahead?", backgroundWork: false })
+    host.handlers!.returned({ sessionId: "S1", transitionId: "cmux:B:101", agent: "claude", cwd: project, lastBody: "token=abc123secret Want me to go ahead?", backgroundWork: false })
     await vi.waitFor(() => expect(readReturns(agentRoot)).toHaveLength(1))
-    expect(packets[0]).toMatchObject({ human: "Ari", agent: "claude", cwd: "/Users/a/code/app", task: "ouro-md/toolbar-polish", lastBody: "token=[redacted] Want me to go ahead?", backgroundWork: false })
+    expect(packets[0]).toMatchObject({ human: "Ari", agent: "claude", cwd: project, task: "ouro-md/toolbar-polish", lastBody: "token=[redacted] Want me to go ahead?", backgroundWork: false })
     expect(packets[0]!.screen).not.toContain("sk-aaaa")
     expect(packets[0]!.screen.split("\n")).toHaveLength(SCREENS.claudePremature.split("\n").length + 4)
-    expect(host.actions.filter((action) => !action.startsWith("pace"))).toEqual(["prompt S1 [Ouro for Ari] Go ahead and implement it.", "status S1 answered for Ari: It stopped after a plan."])
+    expect(host.actions.filter((action) => !action.startsWith("pace"))).toEqual([`prompt S1 [Ouro for Ari] ${CONTINUATION}`, "status S1 answered for Ari: It stopped after a plan."])
     expect(last()).toEqual({
-      at: "2026-10-10T20:00:00.000Z", host: "fake", session: "S1", transition: "cmux:B:101", agent: "claude", cwd: "/Users/a/code/app", task: "ouro-md/toolbar-polish",
-      kind: "premature", judgeKind: "premature", action: "respond", reason: "It stopped after a plan.", reply: "Go ahead and implement it.", latencyMs: 900, inputTokens: 1200,
+      at: new Date(clock).toISOString(), host: "fake", session: "S1", transition: "cmux:B:101", agent: "claude", cwd: project, task: "ouro-md/toolbar-polish",
+      kind: "premature", judgeKind: "premature", action: "respond", reason: "It stopped after a plan.", reply: `[Ouro for Ari] ${CONTINUATION}`, latencyMs: 900, inputTokens: 1200,
       guidanceRevision: 0,
       noticeEligible: true,
       noticeState: "queued", noticeId: "fixture-notice",
@@ -376,31 +412,31 @@ describe("Shepherd sense: answering premature returns", () => {
     expect(last()).not.toHaveProperty("dispatch")
   })
 
-  it("still answers when only a timer or counter ticked on the screen while judging", async () => {
+  it("withholds input when a timer or counter changes the exact raw screen while judging", async () => {
     const { host, returned, last } = await start(async () => verdict())
     host.screens.S2 = ["Copilot task elapsed    59s |\nAuthorized implementation remains. Want me to continue?\n>", "Copilot task elapsed  1m 0s |\nAuthorized implementation remains. Want me to continue?\n>"]
     await returned({ sessionId: "S2", agent: "copilot" })
-    expect(last()).toMatchObject({ action: "respond", reply: "Go ahead and implement it." })
+    expect(last()).toMatchObject({ action: "let_through", reply: null, actionBlockReason: "state_changed" })
     // The timer can also be missing from one redraw.
     host.screens.S2 = ["Copilot task elapsed  40s\nAuthorized implementation remains. Want me to continue?\n>", "Copilot task elapsed       \nAuthorized implementation remains. Want me to continue?\n>"]
     await returned({ sessionId: "S2", agent: "copilot", transitionId: "timer-gone" })
-    expect(last()).toMatchObject({ action: "respond", reply: "Go ahead and implement it." })
+    expect(last()).toMatchObject({ action: "let_through", reply: null, actionBlockReason: "state_changed" })
   })
 
   it("sends nothing when the screen changed while judging or the human focused the session", async () => {
     const { host, returned, last } = await start(async () => verdict())
     host.screens.S1 = [SCREENS.claudePremature, `${SCREENS.claudePremature}\nAri typed something`]
     await returned({ sessionId: "S1", transitionId: "a" })
-    expect(last()).toMatchObject({ action: "let_through", reason: "the screen changed while judging, so nothing was sent: It stopped after a plan." })
+    expect(last()).toMatchObject({ action: "let_through", actionBlockReason: "state_changed" })
     host.handlers!.focused("S1")
     clock += 30_000
     await returned({ sessionId: "S1", transitionId: "b" })
-    expect(last()).toMatchObject({ action: "let_through", reason: "Ari is in this session or just left it, so it is theirs: It stopped after a plan." })
+    expect(last()).toMatchObject({ action: "let_through", actionBlockReason: "focus" })
     // Long after the focus event, the human is still in the session: cmux only reports focus when it changes.
     host.focusedSession = "S1"
     clock += 600_000
     await returned({ sessionId: "S1", transitionId: "c" })
-    expect(last()).toMatchObject({ action: "let_through", reason: "Ari is in this session or just left it, so it is theirs: It stopped after a plan." })
+    expect(last()).toMatchObject({ action: "let_through", actionBlockReason: "focus" })
     expect(host.actions.filter((action) => !action.startsWith("pace"))).toEqual([])
   })
 
@@ -486,7 +522,7 @@ describe("Shepherd sense: connectivity recovery", () => {
       expect.objectContaining({ networkRecovered: true }),
       expect.objectContaining({ networkRecovered: true }),
     ])
-    expect(host.actions.filter(action => action.startsWith("prompt")).every(action => action.includes("Check uncertain writes before retrying"))).toBe(true)
+    expect(host.actions.filter(action => action.startsWith("prompt")).every(action => action.includes("Reconcile uncertain effects, then continue only this authorized task"))).toBe(true)
     expect(readReturns(agentRoot).filter(record => record.action === "respond").map(record => record.transition)).toEqual(["network:1:a", "network:1:b"])
     expect(tasks.filter(task => task.ms === 15_000)).toHaveLength(0)
   })
@@ -525,7 +561,7 @@ describe("Shepherd sense: connectivity recovery", () => {
     let judged = 0
     let online = false
     const host = fakeHost()
-    host.prompt = async (id, line) => { host.actions.push(`prompt ${id} ${line}`); throw new Error("fetch failed") }
+    host.continueInput = async request => { host.actions.push(`prompt ${request.expected.session.id} ${request.text}`); throw new Error("fetch failed") }
     const { returned } = await start(async () => {
       if (++judged === 1) throw new Error("fetch failed")
       return verdict()
@@ -547,7 +583,7 @@ describe("Shepherd sense: connectivity recovery", () => {
     await returned({ sessionId: "S", transitionId: "s" })
     await poll()
     if (protection === "focus") host.handlers!.focused("S")
-    if (protection === "paused") await setShepherdSessionPause(agentRoot, { actorId: "ari", requestId: "pause", target: { host: "fake", session: "S", cwd: "/Users/a/code/app", task: null }, paused: true })
+    if (protection === "paused") await setShepherdSessionPause(agentRoot, { actorId: "ari", requestId: "pause", target: { host: "fake", session: "S", cwd: project, task: null }, paused: true })
     if (protection === "new-return") await returned({ sessionId: "S", transitionId: "background", backgroundWork: true })
     if (protection === "screen") host.screens.S = ["Work resumed without Shepherd."]
     if (protection === "removed") delete host.screens.S
@@ -711,7 +747,7 @@ describe("Shepherd sense: letting returns through", () => {
     await returned({ sessionId: "C", transitionId: "c3", agent: "claude", backgroundWork: true, lastBody: "Waiting for 2 background agents." })
     await returned({ sessionId: "X", transitionId: "x1", agent: null, backgroundWork: true })
     await returned({ sessionId: "X", transitionId: "x2", agent: "codex", backgroundWork: true, lastBody: "The suite failed." })
-    expect(packets.map((packet) => packet.backgroundWork)).toEqual([null, true, true, true])
+    expect(packets.map((packet) => packet.backgroundWork)).toEqual([false, true, true, true])
     expect(host.actions.filter((action) => action.startsWith("status"))).toEqual([
       "status C claude waiting on its background work: Waiting on two background agents; both PRs are open.",
       "status C claude waiting on its background work: It reported partial progress.",
@@ -740,7 +776,7 @@ describe("Shepherd sense: letting returns through", () => {
   it("logs a judge failure and a failed send, and keeps going", async () => {
     const results: Array<() => Promise<JudgeResult>> = [async () => { throw new Error("provider down") }, async () => verdict()]
     const host = fakeHost()
-    host.prompt = async () => { throw new Error("terminal gone") }
+    host.continueInput = async () => { throw new Error("terminal gone") }
     const { returned, last, notices } = await start(() => results.shift()!(), host)
     await returned({ sessionId: "S1", transitionId: "e1" })
     expect(last()).toMatchObject({ kind: "error", action: "let_through", reason: "provider down" })

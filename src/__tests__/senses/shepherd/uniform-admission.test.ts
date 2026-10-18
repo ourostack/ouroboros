@@ -6,12 +6,12 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest"
 import { resetIdentity } from "../../../heart/identity"
 import { cacheMachineRuntimeCredentialConfig, resetRuntimeCredentialConfigCache } from "../../../heart/runtime-credentials"
 import { readShepherdMandates, updateShepherdMandate } from "../../../heart/shepherd/mandates"
-import { checkInStorePath } from "../../../senses/shepherd/checkin-store"
+import { checkInStorePath, openCheckInStore } from "../../../senses/shepherd/checkin-store"
 import type { HostWatchHandlers, ShepherdHost, ShepherdHostCapabilities, ShepherdInspection } from "../../../senses/shepherd/host"
 import type { JudgeResult, ReturnPacket } from "../../../senses/shepherd/judge"
 import { readCheckInSnapshot } from "../../../senses/shepherd/recovery"
 import { readReturns } from "../../../senses/shepherd/returns"
-import { startShepherdSenseApp } from "../../../senses/shepherd/sense"
+import { startShepherdSenseApp, type ShepherdSenseOptions } from "../../../senses/shepherd/sense"
 
 type Trigger = "immediate" | "network" | "periodic"
 interface Request { requestId: string; text: string; expected: ShepherdInspection }
@@ -29,6 +29,7 @@ let capabilities: ShepherdHostCapabilities
 let current: ShepherdInspection
 let judgeHook: (() => Promise<void> | void) | undefined
 let transportHook: (() => Promise<void> | void) | undefined
+let setupHook: (() => void) | undefined
 let outcome: "accepted" | "not_sent" | "unknown" | "lost"
 let receiptChange: Record<string, unknown>
 let judgeCalls: number
@@ -62,11 +63,12 @@ async function grant() {
   })
   clock = Date.now()
 }
-async function run(trigger: Trigger, authorized = true) {
+async function run(trigger: Trigger, authorized = true, extra: Partial<ShepherdSenseOptions> = {}) {
   fs.writeFileSync(path.join(root, "agent.json"), JSON.stringify({
     displayName: "Test Shepherd", senses: { shepherd: { checkInMinutes: trigger === "periodic" ? 60 : 0 } },
   }))
   if (authorized) await grant()
+  setupHook?.()
   let connectivity = 0
   const app = await startShepherdSenseApp({
     agentName: agent, now: () => clock, schedule, createHost: () => host,
@@ -74,15 +76,16 @@ async function run(trigger: Trigger, authorized = true) {
     judge: async packet => {
       packets.push(packet)
       judgeCalls++
-      await judgeHook?.()
       if (trigger === "network" && judgeCalls === 1) return {
         kind: "waiting", waitingOnNetwork: true, reply: null, reason: "Network offline.", inputTokens: 1, latencyMs: 1,
       }
+      await judgeHook?.()
       return { kind: "premature", reply: { text: "Continue the existing authorized task." },
         reason: "Unfinished authorized work.", latencyMs: 1, inputTokens: 1 } satisfies JudgeResult
     },
     notifyOwner: () => ({ state: "queued", noticeId: "fixture-notice" }),
     escalate: () => {}, wake: async () => {}, feedbackWorker: () => ({ drain: async () => {}, stop() {} }),
+    ...extra,
   })
   stop = app.stop
   await flush()
@@ -106,7 +109,7 @@ beforeEach(() => {
   cacheMachineRuntimeCredentialConfig(agent, { cmux: { socketCapability: "v1.fixture", socketPath: "/unused" } })
   clock = Date.now()
   jobs = []; effects = []; requests = []; packets = []; judgeCalls = 0
-  judgeHook = undefined; transportHook = undefined; outcome = "accepted"; receiptChange = {}
+  judgeHook = undefined; transportHook = undefined; setupHook = undefined; outcome = "accepted"; receiptChange = {}
   capabilities = { state: "qualified", protocolVersion: 1, agents: ["Copilot"] }
   const screen = "Desk-Task: terminal-task-is-not-authority\nThe cache repair remains unfinished.\n> "
   current = { session: { id: sessionId, ref: "surface:1", workspace: "workspace:1", title: "Cache",
@@ -164,6 +167,21 @@ describe.each(["immediate", "network", "periodic"] as const)("uniform %s continu
       receipt: { requestId: entry.id, surfaceId: sessionId, workspaceId, pasteAdmitted: true, submitAdmitted: true } })
   })
 
+  it("refuses an initial native inspection for another surface before judging or claiming input", async () => {
+    host.inspect = async () => {
+      const captured = inspect()
+      captured.session.id = "wrong-surface"
+      return captured
+    }
+    await run("immediate")
+    expect(packets).toEqual([])
+    expect(requests).toEqual([])
+    expect(effects).toEqual([])
+    expect(readReturns(root).at(-1)).toMatchObject({
+      kind: "error", action: "let_through", reason: "Shepherd inspection target identity mismatch",
+    })
+  })
+
   it("withholds every writer when there is no protected mandate", async () => {
     await run(trigger, false)
     expect(effects).toEqual([])
@@ -203,6 +221,78 @@ describe.each(["immediate", "network", "periodic"] as const)("uniform %s continu
     expect(readCheckInSnapshot(checkInStorePath(root), { limit: 1 }).entries[0]).toMatchObject({ state: "not_sent" })
   })
 
+  it.each(["before-judge", "after-judge", "transport"] as const)("withholds input when protected mandate storage is corrupt at %s", async phase => {
+    const corrupt = () => fs.writeFileSync(path.join(root, "state/senses/shepherd", "mandates.json"), "corrupt")
+    if (phase === "before-judge") setupHook = corrupt
+    if (phase === "after-judge") judgeHook = corrupt
+    if (phase === "transport") transportHook = corrupt
+    await run(trigger)
+    expect(effects).toEqual([])
+    expect(readReturns(root).at(-1)).toMatchObject({ action: "let_through" })
+    if (phase === "transport") expect(readCheckInSnapshot(checkInStorePath(root), { limit: 1 }).entries[0]).toMatchObject({ state: "unknown" })
+    else expect(readReturns(root).at(-1)).toMatchObject({ actionBlockReason: "mandate" })
+  })
+
+  it("honors a focus invalidation synchronously after acquiring custody and before starting native transport", async () => {
+    await run(trigger, true, { openCheckInStore: file => {
+      const store = openCheckInStore(file), claim = store.claimDispatch
+      store.claimDispatch = (...args) => {
+        const record = claim(...args)
+        handlers.focused(sessionId)
+        return record
+      }
+      return store
+    } })
+    expect(requests).toEqual([])
+    expect(effects).toEqual([])
+    expect(readCheckInSnapshot(checkInStorePath(root), { limit: 1 }).entries[0]).toMatchObject({ state: "not_sent" })
+  })
+
+  it("never turns a broken custody adapter's absent native identity into a new request", async () => {
+    await run(trigger, true, { openCheckInStore: file => {
+      const store = openCheckInStore(file), claim = store.claimDispatch
+      store.claimDispatch = (...args) => {
+        const record = claim(...args)
+        if (record) Reflect.deleteProperty(record, "nativeRequestId")
+        return record
+      }
+      return store
+    } })
+    expect(requests).toEqual([])
+    expect(effects).toEqual([])
+    expect(readCheckInSnapshot(checkInStorePath(root), { limit: 1 }).entries[0]).toMatchObject({ state: "claimed" })
+    expect(readReturns(root).at(-1)).toMatchObject({ action: "let_through" })
+  })
+
+  it("retains a native proof of zero admission as not-sent rather than sent or unknown", async () => {
+    outcome = "not_sent"
+    await run(trigger)
+    expect(requests).toHaveLength(1)
+    expect(effects).toEqual([])
+    expect(readCheckInSnapshot(checkInStorePath(root), { limit: 1 }).entries[0]).toMatchObject({
+      state: "not_sent", receipt: { pasteAdmitted: false, submitAdmitted: false },
+    })
+  })
+
+  it("holds a contradictory native zero-input claim as unknown rather than allowing a retry", async () => {
+    outcome = "not_sent"
+    receiptChange = { pasteAdmitted: true }
+    await run(trigger)
+    expect(effects).toEqual([])
+    expect(readCheckInSnapshot(checkInStorePath(root), { limit: 1 }).entries[0]).toMatchObject({ state: "unknown" })
+  })
+
+  it("holds a reply without a native receipt as unknown instead of inventing success", async () => {
+    host.continueInput = async () => {
+      effects.push("attempted")
+      return JSON.parse('{"state":"sent"}')
+    }
+    await run(trigger)
+    expect(effects).toEqual(["attempted"])
+    expect(readCheckInSnapshot(checkInStorePath(root), { limit: 1 }).entries[0]).toMatchObject({ state: "unknown" })
+    expect(readReturns(root).at(-1)).toMatchObject({ action: "let_through", dispatch: { state: "unknown" } })
+  })
+
   it.each(["lost", "unknown"] as const)("holds %s input effects durably instead of automatically replaying", async state => {
     outcome = state
     await run(trigger)
@@ -218,6 +308,7 @@ describe.each(["immediate", "network", "periodic"] as const)("uniform %s continu
   it.each([
     { hostInstance: "different-boot" }, { requestId: "different-request" }, { surfaceId: "different-surface" },
     { workspaceId: "different-workspace" }, { processInstance: "different-process" }, { submitAdmitted: false },
+    { pasteAdmitted: false }, { state: "not_sent" }, { reason: null }, { reason: "" }, { reason: "x".repeat(1025) },
   ])("refuses mismatched or partial native receipt %j without claiming delivery", async change => {
     receiptChange = change
     await run(trigger)

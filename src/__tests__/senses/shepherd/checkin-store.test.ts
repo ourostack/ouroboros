@@ -183,6 +183,7 @@ describe("private cross-trigger check-in custody", () => {
 
   it("refuses fabricated completions, owners, timestamps and oversized encoded rows", () => {
     const { store } = open()
+    expect(() => store.claimDispatch(null as never, "one")).toThrow("schema")
     expect(() => store.claimDispatch(input(), "")).toThrow("owner")
     expect(() => store.claimDispatch(input(), "x".repeat(257))).toThrow("owner")
     expect(() => store.claimDispatch(input({ at: "not a time" }), "one")).toThrow("schema")

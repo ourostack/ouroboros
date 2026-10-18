@@ -125,6 +125,7 @@ function readCustodySnapshot(file: string, options: InspectionOptions, mode: "re
         const entry: ShepherdCustodyEntry = {
           id: claim.id, host: claim.host, session: claim.session, instance: claim.instance, state: claim.state, trigger: claim.trigger,
           ...(claim.nativeRequestId === undefined ? {} : { nativeRequestId: claim.nativeRequestId }),
+          ...(claim.nativeTarget === undefined ? {} : { nativeTarget: { ...claim.nativeTarget } }),
           claimedAt: claim.at, reason: claim.reason === undefined ? null : redactSecrets(claim.reason), retired,
           receipt: claim.receipt ? copyCustodyInputReceipt(claim.receipt) : audit.receipt, reconciliations: audit.receipts, reconciliationCount: audit.count,
         }
@@ -160,11 +161,15 @@ function retireInstance(db: Database.Database, proof: ShepherdRetirementProof, p
   db.prepare(`INSERT INTO retired_instances(key,host,session,instance,data) VALUES(?,?,?,?,?)
     ON CONFLICT(key) DO UPDATE SET data=excluded.data`).run(retiredCustodyKey(proof), proof.host, proof.session, proof.instance, data)
 }
-function matchesReceipt(claim: DispatchClaim, evidence: unknown, requireFresh = true): evidence is { kind: "guarded_host_receipt_v1"; host: string; checkedAt: string; receipt: ShepherdInputReceipt } {
+function matchesReceipt(claim: DispatchClaim, evidence: unknown, requireFresh = true): evidence is Extract<ShepherdRecoveryEvidence, { kind: "guarded_host_receipt_v1" }> {
   return object(evidence) && evidence.kind === "guarded_host_receipt_v1" && timestamp(evidence.checkedAt) && (!requireFresh || fresh(evidence.checkedAt))
     && evidence.host === claim.host && validCustodyInputReceipt(evidence.receipt)
     && evidence.receipt.requestId === claim.id && evidence.receipt.surfaceId === claim.session
     && evidence.receipt.processInstance === claim.instance && evidence.receipt.pasteAdmitted && evidence.receipt.submitAdmitted
+    && (claim.nativeTarget === undefined ? evidence.native === undefined
+      : object(evidence.native) && evidence.native.requestId === claim.nativeRequestId
+        && evidence.native.hostInstance === claim.nativeTarget.hostInstance
+        && evidence.receipt.workspaceId === claim.nativeTarget.workspaceId)
 }
 
 export async function reconcileShepherdDispatch(root: string, request: ShepherdRecoveryRequest): Promise<ShepherdRecoveryReceipt> {
@@ -196,6 +201,9 @@ export async function reconcileShepherdDispatch(root: string, request: ShepherdR
           verifiedEvidence = {
             kind: request.evidence.kind, host: request.evidence.host, checkedAt: request.evidence.checkedAt,
             receipt: copyCustodyInputReceipt(request.evidence.receipt),
+            ...(request.evidence.native === undefined ? {} : { native: {
+              requestId: request.evidence.native.requestId, hostInstance: request.evidence.native.hostInstance,
+            } }),
           }
         } else if (validRetirement(request.evidence) && request.evidence.host === claim.host
           && request.evidence.session === claim.session && request.evidence.instance === claim.instance) {

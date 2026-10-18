@@ -3,6 +3,7 @@ import { emitNervesEvent } from "../../nerves/runtime"
 import { createCmuxClient } from "./client"
 import { createCmuxHost } from "./cmux"
 import { createHerdrHost } from "./herdr"
+import type { ShepherdInputReceipt } from "../../heart/shepherd/custody-types"
 
 /**
  * The seam between Shepherd and a terminal host (cmux, Herdr). A host lists and reads terminal
@@ -63,6 +64,22 @@ export interface GuardedPromptResult {
   reason?: string
 }
 
+export interface ShepherdNativeInputReceipt extends ShepherdInputReceipt {
+  hostInstance: string
+  state: "accepted" | "not_sent" | "unknown"
+  reason: string
+}
+
+export interface ShepherdContinuationRequest {
+  requestId: string
+  text: string
+  expected: ShepherdInspection
+}
+
+export type ShepherdContinuationResult =
+  | { state: "not_sent"; reason: string; receipt?: never }
+  | { state: "sent" | "not_sent" | "unknown"; receipt: ShepherdNativeInputReceipt; reason?: string }
+
 /** A coding agent stopped and is waiting for the human. `transitionId` is the host's own id for that stop. */
 export interface ReturnedControl {
   sessionId: string
@@ -110,6 +127,9 @@ export interface ShepherdHost {
   /** The screen tail with scrollback, plain text. */
   read(sessionId: string, lines: number): Promise<string>
   inspect?(sessionId: string): Promise<ShepherdInspection>
+  capabilities?(): Promise<ShepherdHostCapabilities>
+  /** Native guarded operation only; no paste/key fallback. canSend runs after adapter awaits. */
+  continueInput?(request: ShepherdContinuationRequest, canSend: () => boolean): Promise<ShepherdContinuationResult>
   /** canSend is checked synchronously after adapter I/O, immediately before attempting input. */
   promptIfUnchanged?(sessionId: string, line: string, expected: ShepherdInspection, canSend?: () => boolean): Promise<GuardedPromptResult>
   /** Types one line and submits it, so it cannot be mistaken for a paste or a keystroke. */

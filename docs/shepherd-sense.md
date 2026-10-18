@@ -237,6 +237,8 @@ and unique-case misses. Failed calls retain known input-token usage and an expli
 `provider_incomplete`, `invalid_answer` and other `judge_error` failures. Refusals
 receive no classification credit. Reports from before this metadata was preserved
 cannot retroactively identify the cause of a generic malformed-answer error.
+`corpusSha256` hashes the validated, normalized corpus object, not raw file bytes:
+validation explicitly fills omitted `backgroundWork` fields with `false`.
 A unique case passes only if all three repetitions pass;
 480 calls are not 480 independent examples. Wilson intervals describe those
 unique cases, not a population guarantee.

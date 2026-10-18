@@ -302,6 +302,8 @@ describe("append-only owner reconciliation", () => {
       { kind: "operator_assertion", sent: true },
       { kind: "guarded_host_receipt_v1", host: "cmux", checkedAt: at(), receipt: null },
       { kind: "guarded_host_receipt_v1", host: "cmux", checkedAt: at(), receipt: { requestId: claim.id, surfaceId: claim.session, workspaceId: "workspace-1", processInstance: claim.instance, pasteAdmitted: true, submitAdmitted: false } },
+      { kind: "guarded_host_receipt_v1", host: "cmux", checkedAt: at(), native: { requestId: claim.nativeRequestId, hostInstance: "unbound-boot" },
+        receipt: { requestId: claim.id, surfaceId: claim.session, workspaceId: "workspace-1", processInstance: claim.instance, pasteAdmitted: true, submitAdmitted: true } },
       { ...gone(), instance: "different" }, { ...gone(), gone: false }, { ...gone(), checkedAt: new Date(NOW - 30_001).toISOString() },
     ]) {
       const before = revision()

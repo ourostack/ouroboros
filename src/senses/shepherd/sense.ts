@@ -13,15 +13,18 @@ import { QUIET_MS, realSchedule } from "./cmux"
 import { createShepherdHost, type ReturnedControl, type ShepherdHost, type ShepherdInspection } from "./host"
 import { createShepherdJudge, type JudgeResult, type ShepherdJudge } from "./judge"
 import { getShepherdJudgeRuntime } from "./judge-runtime"
-import { redactSecrets, screenTail as tail, withoutNumbers } from "./redact"
+import { redactSecrets, screenTail as tail } from "./redact"
 import { createOwnerNotifier, type NoticeIntentAcceptance } from "./owner-notice"
 import { appendReturn, readReturns, type ReturnRecord } from "./returns"
 import { applicableGuidance, readGuidance, type ShepherdGuidanceTarget } from "./guidance"
 import { readAgentPresentation } from "./agent-presentation"
 import { startFeedbackWorker, type FeedbackWorker, type FeedbackWorkerOptions } from "./feedback-worker"
 import { readShepherdCheckInMinutes } from "./checkin-config"
-import { checkInStorePath, openCheckInStore, type CheckInStore } from "./checkin-store"
+import { checkInStorePath, openCheckInStore, validCustodyInputReceipt, type CheckInStore } from "./checkin-store"
 import { createShepherdObservationPublisher } from "./observation-publisher"
+import { admitShepherdContinuation } from "./admission"
+import { readShepherdMandates, resolveShepherdMandate } from "../../heart/shepherd/mandates"
+import type { ShepherdInputReceipt } from "../../heart/shepherd/custody-types"
 
 /** Keeps the judgment's guidance revision in telemetry without changing the shared returns-store contract. */
 export interface ShepherdJudgedReturnRecord extends ReturnRecord { guidanceRevision?: number }
@@ -47,8 +50,6 @@ const ESCALATION_TTL_MS = 30 * 60_000
 const WAKE_DELAY_MS = 2_000
 const FIELD_MAX = 200
 const CONNECTIVITY_POLL_MS = 15_000
-const NETWORK_RESUME = "Connectivity has recovered. Continue the existing task only if safe. Check uncertain writes before retrying. Do not bypass approvals or deliberate pauses."
-export const PERIODIC_RESUME = "Reassess your existing task and continue only already-authorized remaining work. Respect human decisions and pauses. Reconcile uncertain effects before retrying; do not wait for a scheduled tick when you can work now."
 
 type PeriodicTrigger = { kind: "periodic"; first: ShepherdInspection; observedAt: number; generation: number; pass: number }
 type HandleTrigger = { kind: "immediate" } | { kind: "network"; screen: string; generation: number } | PeriodicTrigger
@@ -327,10 +328,11 @@ export async function startShepherdSenseApp(options: ShepherdSenseOptions): Prom
     }, WAKE_DELAY_MS)
   }
 
-  async function dispatch(record: ShepherdJudgedReturnRecord, reply: { text: string },
-    instance: string | null, screenFingerprint: string, expected?: ShepherdInspection, canSend?: () => boolean): Promise<boolean> {
-    const claim = custody.claimDispatch({ host: host.name, session: record.session, instance, screenFingerprint,
-      guidanceRevision: String(record.guidanceRevision), reply: reply.text,
+  async function dispatch(record: ShepherdJudgedReturnRecord, text: string, screenFingerprint: string,
+    expected: ShepherdInspection, canSend: () => boolean): Promise<boolean> {
+    const nativeTarget = { hostInstance: expected.guarded!.hostInstance, workspaceId: expected.guarded!.workspaceId }
+    const claim = custody.claimDispatch({ host: host.name, session: record.session, instance: expected.instance, screenFingerprint,
+      guidanceRevision: String(record.guidanceRevision), reply: text, nativeTarget,
       trigger: record.trigger!, transition: record.transition, at: record.at }, dispatchOwner)
     if (!claim) {
       record.actionBlockReason = "custody"
@@ -338,26 +340,50 @@ export async function startShepherdSenseApp(options: ShepherdSenseOptions): Prom
       return false
     }
     record.dispatch = { id: claim.id, state: "claimed" }
-    let result: { state: "sent" | "not_sent"; reason?: string }
+    let result: Awaited<ReturnType<NonNullable<ShepherdHost["continueInput"]>>>
+    let receipt: ShepherdInputReceipt | undefined
     try {
-      if (expected) result = await host.promptIfUnchanged!(record.session, `[${presentation.name} for ${human}] ${PERIODIC_RESUME}`, expected, canSend)
-      else {
-        await host.prompt(record.session, `[${presentation.name} for ${human}] ${reply.text}`)
-        result = { state: "sent" }
+      if (!claim.nativeRequestId || !canSend()) {
+        result = { state: "not_sent", reason: "parent dispatch guard invalidated before native request" }
+      } else {
+        result = await host.continueInput!({ requestId: claim.nativeRequestId, text, expected }, canSend)
+      }
+      if (result.receipt) {
+        const native = result.receipt
+        if (!validCustodyInputReceipt(native) || native.requestId !== claim.nativeRequestId
+          || native.hostInstance !== nativeTarget.hostInstance || native.workspaceId !== nativeTarget.workspaceId
+          || native.surfaceId !== claim.session || native.processInstance !== claim.instance
+          || native.state !== (result.state === "sent" ? "accepted" : result.state)
+          || typeof native.reason !== "string" || native.reason.length === 0 || native.reason.length > 1024
+          || result.state === "sent" && (!native.pasteAdmitted || !native.submitAdmitted)
+          || result.state === "not_sent" && (native.pasteAdmitted || native.submitAdmitted)) {
+          throw new Error("native receipt identity or admitted outcome mismatch")
+        }
+        receipt = { requestId: claim.id, surfaceId: native.surfaceId, workspaceId: native.workspaceId,
+          processInstance: native.processInstance, pasteAdmitted: native.pasteAdmitted, submitAdmitted: native.submitAdmitted }
+      } else if (result.state !== "not_sent") {
+        throw new Error("native input outcome has no receipt")
       }
     } catch (error) {
       record.actionBlockReason = "custody"
       record.dispatch.state = "unknown"
-      try { custody.completeDispatch(claim.id, dispatchOwner, { state: "unknown", reason: field(redactSecrets(String(error)), 200) }) }
+      try { custody.completeDispatch(claim.id, dispatchOwner, { state: "unknown", nativeRequestId: claim.nativeRequestId,
+        reason: field(redactSecrets(String(error)), 200) }) }
       catch (custodyError) {
         emitNervesEvent({ level: "error", component: "senses", event: "senses.shepherd_dispatch_completion_error",
           message: "uncertain input remains durably claimed; never automatically replay", meta: { agent, id: claim.id, error: redactSecrets(String(custodyError)) } })
       }
       throw error
     }
-    custody.completeDispatch(claim.id, dispatchOwner, { state: result.state,
+    custody.completeDispatch(claim.id, dispatchOwner, { state: result.state, nativeRequestId: claim.nativeRequestId,
+      ...(receipt ? { receipt } : {}),
       ...(result.reason ? { reason: field(redactSecrets(result.reason), 200) } : {}) })
     record.dispatch.state = result.state
+    if (result.state === "unknown") {
+      record.actionBlockReason = "custody"
+      record.reason = `native input effects are partial or uncertain; no automatic replay: ${record.reason}`
+      return false
+    }
     if (result.state === "not_sent") {
       record.actionBlockReason = "state_changed"
       record.reason = `guarded host refused before input: ${result.reason ?? "target changed"}; ${record.reason}`
@@ -369,6 +395,7 @@ export async function startShepherdSenseApp(options: ShepherdSenseOptions): Prom
   /** Judges one return and acts on it. Every outcome, including a failure, is one log line. */
   async function handle(event: ReturnedControl, trigger: HandleTrigger = { kind: "immediate" }): Promise<void> {
     if (stopped) return
+    const eventGeneration = generationFor(event.sessionId)
     const recovery = trigger.kind === "network" ? trigger : null
     const periodic = trigger.kind === "periodic" ? trigger : null
     const record: ShepherdJudgedReturnRecord = {
@@ -405,6 +432,10 @@ export async function startShepherdSenseApp(options: ShepherdSenseOptions): Prom
           return
         }
         Object.assign(record, { agent: current.session.agent, cwd: current.session.cwd ?? null })
+      } else if (host.inspect && host.capabilities && host.continueInput) {
+        current = await host.inspect(event.sessionId)
+        if (current.session.id !== event.sessionId) throw new Error("Shepherd inspection target identity mismatch")
+        Object.assign(record, { agent: current.session.agent, cwd: current.session.cwd ?? null })
       }
       if (state.tripped) {
         // Tripped: no judge call and no new escalation until the human looks at the session.
@@ -424,6 +455,7 @@ export async function startShepherdSenseApp(options: ShepherdSenseOptions): Prom
       const text = redactSecrets(rawScreen)
       record.task = [...text.matchAll(/Desk-Task:\s*(\S+)/g)].pop()?.[1] ?? null
       const screen = tail(text, SCREEN_LINES)
+      const observedAt = now()
       if (recovery && screen !== recovery.screen) {
         record.actionBlockReason = "state_changed"
         record.reason = "the screen changed since the network stop, so recovery was not sent"
@@ -436,12 +468,20 @@ export async function startShepherdSenseApp(options: ShepherdSenseOptions): Prom
       }
       const guidance = checkedGuidance()
       record.guidanceRevision = guidance.revision
+      const checkedMandates = () => {
+        try { return readShepherdMandates(agentRoot) }
+        catch (error) { record.actionBlockReason = "mandate"; throw error }
+      }
+      const mandateTarget = { project: record.cwd ?? "", host: host.name, session: event.sessionId,
+        ...(current?.instance ? { instance: current.instance } : {}) }
+      const mandates = checkedMandates()
+      const mandate = resolveShepherdMandate(mandates, mandateTarget, now())
       let verdict: JudgeResult
       try {
         const prior = history.get(event.sessionId)
         verdict = await judge({ human, agent: record.agent, cwd: record.cwd, task: record.task,
           lastBody: periodic ? null : event.lastBody ? redactSecrets(event.lastBody) : null,
-          backgroundWork: current ? current.backgroundWork : event.backgroundWork, screen, guidance,
+          backgroundWork: current ? current.backgroundWork : event.backgroundWork, screen, guidance, mandate,
           ...(recovery ? { networkRecovered: true as const } : {}),
           ...(periodic ? { periodicCheckIn: { priorJudgment: prior ? { kind: prior.kind, reason: prior.reason, at: prior.at } : null } } : {}) })
       } catch (error) {
@@ -473,16 +513,15 @@ export async function startShepherdSenseApp(options: ShepherdSenseOptions): Prom
         quietWorkingStatus = !periodic && !news
         status = `${record.agent ?? "agent"} waiting on its background work: ${verdict.reason}`
       }
-      const actionableReply = verdict.reply ?? (periodic && verdict.replyIssue === "too_long" ? { text: PERIODIC_RESUME } : null)
+      const actionableReply = verdict.reply
       if (kind === "premature" && !actionableReply) record.actionBlockReason = "reply_invalid"
       if (kind === "premature" && actionableReply) {
         if ("key" in actionableReply) {
           record.actionBlockReason = "menu_disallowed"
           record.reason = `${periodic ? "periodic check-in" : recovery ? "connectivity recovery" : "automatic continuation"} never presses approval or menu keys: ${verdict.reason}`
-        } else if (periodic && (!current!.instance || current!.activity !== "idle" || current!.composer !== "empty" ||
-          current!.backgroundWork !== false || !current!.session.agent || !host.promptIfUnchanged)) {
+        } else if (!current || !host.continueInput || !host.capabilities) {
           record.actionBlockReason = "host_unverified"
-          record.reason = `the host cannot verify an idle, empty, supported agent process for guarded input: ${verdict.reason}`
+          record.reason = `the host has no qualified native continuation boundary: ${verdict.reason}`
         } else if (guidance.paused) {
           record.actionBlockReason = "guidance"
           record.reason = `Shepherd guidance has this session paused, so nothing was sent: ${verdict.reason}`
@@ -491,49 +530,33 @@ export async function startShepherdSenseApp(options: ShepherdSenseOptions): Prom
           record.actionBlockReason = "loop_guard"
           state.tripped = true
         } else {
-          const sessions = await host.list()
-          const session = sessions.find(session => session.id === event.sessionId)
-          if (now() - state.focusedAt < FOCUS_HOLD_MS || session?.focused) {
-            record.actionBlockReason = "focus"
-            // Never type into the session the human is in, or one they just left.
-            record.reason = `${human} is in this session or just left it, so it is theirs: ${verdict.reason}`
-          } else if (periodic && (!session || session.agent !== current!.session.agent || session.cwd !== current!.session.cwd)) {
-            record.actionBlockReason = "state_changed"
-            record.reason = `the check-in target changed while judging, so nothing was sent: ${verdict.reason}`
-          } else if (!periodic && withoutNumbers(tail(redactSecrets(await host.read(event.sessionId, READ_LINES)), SCREEN_LINES)) !== withoutNumbers(screen)) {
-            record.actionBlockReason = "state_changed"
-            record.reason = `the screen changed while judging, so nothing was sent: ${verdict.reason}`
-          } else {
-            const finalInspection = periodic ? await host.inspect!(event.sessionId) : undefined
-            if (periodic && (stopped || periodic.generation !== generationFor(event.sessionId) ||
-              finalInspection!.session.focused || inspectionFingerprint(finalInspection!) !== inspectionFingerprint(current!))) {
-              record.actionBlockReason = stopped ? "stopped" : finalInspection!.session.focused ? "focus" : "state_changed"
-              record.reason = `the check-in changed while judging, so nothing was sent: ${verdict.reason}`
-              return
-            }
-            // No awaited host reads between this final check and initiating the send.
+          const capabilities = await host.capabilities()
+          const finalInspection = await host.inspect!(event.sessionId)
+          const expectedInspection = current
+          const decide = () => {
             const latest = checkedGuidance()
-            if (stopped || (recovery && (latestReturns.get(event.sessionId) !== event || now() - state.focusedAt < FOCUS_HOLD_MS)) ||
-              periodic && (periodic.generation !== generationFor(event.sessionId) || now() - state.focusedAt < FOCUS_HOLD_MS)) {
-              record.actionBlockReason = stopped ? "stopped" : now() - state.focusedAt < FOCUS_HOLD_MS ? "focus" : "state_changed"
-              record.reason = `Shepherd stopped, the human focused this session, or it returned again while judging, so nothing was sent: ${verdict.reason}`
-            } else if (latest.paused || latest.revision !== guidance.revision) {
-              record.actionBlockReason = "guidance"
-              record.reason = `Shepherd guidance paused or changed while judging (revision ${guidance.revision} to ${latest.revision}), so nothing was sent: ${verdict.reason}`
-            } else {
-              const reply = periodic ? { text: PERIODIC_RESUME } : recovery ? { text: NETWORK_RESUME } : actionableReply
-              const canSend = periodic ? () => {
-                if (stopped || periodic.generation !== generationFor(event.sessionId) || now() - state.focusedAt < FOCUS_HOLD_MS) return false
-                const live = checkedGuidance()
-                return !live.paused && live.revision === guidance.revision
-              } : undefined
-              if (await dispatch(record, reply, current?.instance ?? session?.instance ?? null, fingerprint(screen), periodic ? current : undefined, canSend)) {
-                Object.assign(record, { action: "respond", reply: reply.text })
-                state.streak += 1
-                state.answers.push(now())
-                status = `answered for ${human}: ${verdict.reason}`
-              }
-            }
+            const liveMandates = checkedMandates()
+            return admitShepherdContinuation({
+              host: host.name, capabilities, expected: expectedInspection, current: finalInspection,
+              nowMs: now(), observationAgeMs: now() - observedAt, verdict,
+              mandate: resolveShepherdMandate(liveMandates, mandateTarget, now()),
+              mandateRevisions: { expected: mandates.revision, current: liveMandates.revision },
+              guidance: { expected: String(guidance.revision), current: String(latest.revision), paused: latest.paused },
+              active: !stopped, sameGeneration: eventGeneration === generationFor(event.sessionId),
+              focusHeld: now() - state.focusedAt < FOCUS_HOLD_MS,
+              withinLimits: state.streak < STREAK_MAX && state.answers.length < HOURLY_MAX, custodyAvailable: true,
+              attribution: { sender: presentation.name, human }, trigger: trigger.kind,
+            })
+          }
+          const decision = decide()
+          if (!decision.allowed) {
+            record.actionBlockReason = decision.reason
+            record.reason = `automatic continuation withheld (${decision.detail}): ${verdict.reason}`
+          } else if (await dispatch(record, decision.text, fingerprint(screen), finalInspection, () => decide().allowed)) {
+            Object.assign(record, { action: "respond", reply: decision.text })
+            state.streak += 1
+            state.answers.push(now())
+            status = `answered for ${human}: ${verdict.reason}`
           }
         }
       }

@@ -4,7 +4,7 @@ import * as path from "node:path"
 import Database from "better-sqlite3"
 import { emitNervesEvent } from "../../nerves/runtime"
 import { shepherdStateDir } from "./returns"
-import type { ShepherdInputReceipt } from "../../heart/shepherd/custody-types"
+import type { ShepherdInputReceipt, ShepherdNativeTarget } from "../../heart/shepherd/custody-types"
 
 export interface DispatchInput {
   host: string
@@ -17,6 +17,7 @@ export interface DispatchInput {
   trigger: "immediate" | "network" | "periodic"
   transition: string
   at: string
+  nativeTarget?: ShepherdNativeTarget
 }
 export interface DispatchClaim extends DispatchInput {
   id: string
@@ -27,7 +28,12 @@ export interface DispatchClaim extends DispatchInput {
   reason?: string
   receipt?: ShepherdInputReceipt
 }
-export interface DispatchResult { state: "sent" | "not_sent" | "unknown"; reason?: string; receipt?: ShepherdInputReceipt }
+export interface DispatchResult {
+  state: "sent" | "not_sent" | "unknown"
+  reason?: string
+  receipt?: ShepherdInputReceipt
+  nativeRequestId?: string
+}
 export interface CheckInStore {
   claimDispatch(input: DispatchInput, owner: string): DispatchClaim | null
   completeDispatch(id: string, owner: string, result: DispatchResult): void
@@ -57,8 +63,11 @@ function bounded(value: unknown, limit: number, field: string): asserts value is
   if (!text(value) || bytes(value) > limit) refuse(`${field} byte limit or type`)
 }
 function validInput(value: unknown): value is DispatchInput {
+  const nativeTarget = object(value) ? value.nativeTarget : undefined
   return object(value) && ["host", "session", "screenFingerprint", "guidanceRevision", "reply", "transition"].every(key => text(value[key])) &&
     (value.instance === null || text(value.instance)) && ["immediate", "network", "periodic"].includes(String(value.trigger)) && timestamp(value.at)
+    && (nativeTarget === undefined || object(nativeTarget) && Object.keys(nativeTarget).length === 2
+      && ["hostInstance", "workspaceId"].every(key => text(nativeTarget[key]) && bytes(nativeTarget[key]) <= 256))
 }
 function dispatchId(input: DispatchInput): string {
   return createHash("sha256").update(JSON.stringify([
@@ -69,10 +78,12 @@ function validClaim(value: unknown): value is DispatchClaim {
   return object(value) && validInput(value) && text(value.owner) && bytes(value.owner) <= 256 &&
     (value.nativeRequestId === undefined || typeof value.nativeRequestId === "string"
       && /^[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/.test(value.nativeRequestId)) &&
+    (value.nativeTarget === undefined || value.nativeRequestId !== undefined) &&
     ["claimed", "sent", "not_sent", "unknown"].includes(String(value.state)) &&
     (value.reason === undefined || text(value.reason) && bytes(value.reason) <= 1024)
     && (value.receipt === undefined || validCustodyInputReceipt(value.receipt)
       && value.receipt.requestId === value.id && value.receipt.surfaceId === value.session && value.receipt.processInstance === value.instance
+      && (value.nativeTarget === undefined || value.receipt.workspaceId === value.nativeTarget.workspaceId)
       && receiptMatchesOutcome(value.state, value.receipt))
 }
 export function validCustodyInputReceipt(value: unknown): value is ShepherdInputReceipt {
@@ -302,8 +313,11 @@ export function openCheckInStore(file: string): CheckInStore {
         if (!row) refuse("unknown dispatch owner")
         const prior = parseDispatch(row)
         if (prior.owner !== owner || prior.state !== "claimed") refuse("dispatch owner or phase mismatch")
+        if ((prior.nativeTarget !== undefined || result.nativeRequestId !== undefined)
+          && result.nativeRequestId !== prior.nativeRequestId) refuse("native attempt identity mismatch")
         if (result.receipt && (result.receipt.requestId !== id || result.receipt.surfaceId !== prior.session
-          || result.receipt.processInstance !== prior.instance)) refuse("host receipt identity mismatch")
+          || result.receipt.processInstance !== prior.instance
+          || prior.nativeTarget !== undefined && result.receipt.workspaceId !== prior.nativeTarget.workspaceId)) refuse("host receipt identity mismatch")
         write({ ...prior, state: result.state, ...(result.reason === undefined ? {} : { reason: result.reason }),
           ...(result.receipt === undefined ? {} : { receipt: copyCustodyInputReceipt(result.receipt) }) })
       })

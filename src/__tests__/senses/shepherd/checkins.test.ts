@@ -12,11 +12,14 @@ import { appendReturn, readReturns, type ReturnRecord } from "../../../senses/sh
 import { startShepherdSenseApp, type ShepherdSenseOptions } from "../../../senses/shepherd/sense"
 import { recordShepherdCorrection, setShepherdSessionPause } from "../../../senses/shepherd/guidance"
 import { openCheckInStore, type CheckInStore } from "../../../senses/shepherd/checkin-store"
+import { updateShepherdMandate } from "../../../heart/shepherd/mandates"
 
 const originalHome = process.env.HOME
 const AGENT = "checkins-test"
-const FIXED = "Reassess your existing task and continue only already-authorized remaining work. Respect human decisions and pauses. Reconcile uncertain effects before retrying; do not wait for a scheduled tick when you can work now."
+const FIXED = "Reassess and continue only this authorized task: Complete the existing authorized task. Respect human decisions and reconcile uncertain effects before retrying."
 let root: string
+let project: string
+let startedAt: number
 let clock: number
 let handlers: HostWatchHandlers
 let stop: (() => void) | null
@@ -41,13 +44,21 @@ async function advance(ms: number) {
   await flush()
 }
 function inspection(id = "S"): ShepherdInspection {
-  return { session: { id, ref: id, workspace: null, title: "task", agent: "Copilot", cwd: "/project",
+  return { session: { id, ref: id, workspace: null, title: "task", agent: "Copilot", cwd: project,
     tty: "/dev/ttys001", focused: false, instance: "pid:start" },
   instance: "pid:start", screen: "Retries exhausted. Existing implementation remains unfinished.\n> ",
-  screenFingerprint: "raw-a", activity: "idle", composer: "empty", backgroundWork: false }
+  screenFingerprint: "raw-a", activity: "idle", composer: "empty", backgroundWork: false,
+  guarded: { hostInstance: "native-boot", workspaceId: "workspace-1", surfaceGeneration: 1, inputRevision: 0, focusRevision: 0,
+    token: "native-token", expiresAtUnixMs: clock + 1500 } }
+}
+function captureInspection(id: string): ShepherdInspection {
+  const current = structuredClone(inspections[id]!)
+  current.screenFingerprint = createHash("sha256").update(current.screen + current.screenFingerprint).digest("hex")
+  current.guarded!.expiresAtUnixMs = clock + 1500
+  return current
 }
 const verdict = (kind: JudgeResult["kind"] = "premature"): JudgeResult => ({
-  kind, reply: kind === "premature" ? { text: "A model-selected reply must not be sent." } : null,
+  kind, reply: kind === "premature" ? { text: "Continue the existing authorized task." } : null,
   reason: "Current evidence", latencyMs: 2, inputTokens: 10,
 })
 function configure(checkInMinutes?: number) {
@@ -68,29 +79,43 @@ function history(kind: ReturnRecord["kind"], session = "S") {
     reason: "Historical reason, never authority", reply: null, latencyMs: null, inputTokens: null })
 }
 function returned(id = "S", transitionId = "immediate") {
-  handlers.returned({ sessionId: id, transitionId, agent: "Copilot", cwd: "/project",
+  handlers.returned({ sessionId: id, transitionId, agent: "Copilot", cwd: project,
     lastBody: "obsolete summary", backgroundWork: false })
 }
 const prompts = () => actions.filter(action => action.startsWith("prompt "))
 
-beforeEach(() => {
-  const home = fs.mkdtempSync(path.join(os.tmpdir(), "shepherd-checkin-sense-"))
+beforeEach(async () => {
+  const home = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "shepherd-checkin-sense-")))
   process.env.HOME = home
   resetIdentity()
   root = path.join(home, "AgentBundles", `${AGENT}.ouro`)
+  project = path.join(home, "project")
   fs.mkdirSync(root, { recursive: true })
+  fs.mkdirSync(project)
   configure()
   cacheMachineRuntimeCredentialConfig(AGENT, { cmux: { socketCapability: "v1.test", socketPath: "/unused" } })
-  clock = Date.parse("2026-10-16T04:00:00Z")
+  await updateShepherdMandate(root, {
+    operation: "grant", expectedRevision: 0, target: { project, host: "fake" }, task: "Complete the existing authorized task.",
+    expiresAt: new Date(Date.now() + 6 * 24 * 3_600_000).toISOString(),
+    context: { kind: "local_owner_administration", actorId: "fixture-owner", requestId: "fixture-grant" },
+  })
+  clock = Date.now()
+  startedAt = clock
   jobs = []; actions = []; notices = []; escalations = []; wakes = []
   inspections = { S: inspection() }
   host = { name: "fake",
     list: async () => Object.values(inspections).map(current => structuredClone(current.session)),
     read: async id => inspections[id]!.screen,
-    inspect: vi.fn(async id => {
-      const current = structuredClone(inspections[id]!)
-      current.screenFingerprint = createHash("sha256").update(current.screen + current.screenFingerprint).digest("hex")
-      return current
+    inspect: vi.fn(async id => captureInspection(id)),
+    capabilities: async () => ({ state: "qualified", protocolVersion: 1, agents: ["Copilot"] }),
+    continueInput: vi.fn(async (request, canSend) => {
+      if (!canSend()) return { state: "not_sent", reason: "parent guard invalidated" }
+      actions.push(`prompt ${request.expected.session.id} ${request.text}`)
+      return { state: "sent", receipt: {
+        requestId: request.requestId, surfaceId: request.expected.session.id, workspaceId: "workspace-1",
+        processInstance: request.expected.instance!, hostInstance: "native-boot", state: "accepted", reason: "fixture",
+        pasteAdmitted: true, submitAdmitted: true,
+      } }
     }),
     promptIfUnchanged: vi.fn(async (id, line) => { actions.push(`prompt ${id} ${line}`); return { state: "sent" } }),
     prompt: async (id, line) => { actions.push(`prompt ${id} ${line}`) },
@@ -139,13 +164,12 @@ describe("fresh all-returned-session periodic check-ins", () => {
     expect(readReturns(root).at(-1)).toMatchObject({ noticeState: "queued", noticeId: "fixture-notice" })
   })
 
-  it("uses only fixed periodic text after a structured length-only rejection", async () => {
+  it("withholds periodic input after a length-only rejection instead of substituting an intent", async () => {
     const parsed = parseVerdict(JSON.stringify({ kind: "premature", reply: { text: "Continue authorized work. ".repeat(15) }, reason: "Unfinished work." }))
     await start(vi.fn(async () => ({ ...parsed, latencyMs: 2, inputTokens: 10 })))
     await advance(8000)
-    expect(prompts()).toEqual([`prompt S [Test Shepherd for the human] ${FIXED}`])
-    expect(readReturns(root).at(-1)).toMatchObject({ kind: "premature", judgeKind: "premature", replyIssue: "too_long", action: "respond" })
-    expect(readReturns(root).at(-1)).not.toHaveProperty("actionBlockReason")
+    expect(prompts()).toEqual([])
+    expect(readReturns(root).at(-1)).toMatchObject({ kind: "premature", judgeKind: "premature", replyIssue: "too_long", action: "let_through", actionBlockReason: "reply_invalid" })
   })
 
   it.each(["unsafe", "unsafe-and-long", "missing", "menu", "malformed", "prose-key"] as const)(
@@ -169,8 +193,8 @@ describe("fresh all-returned-session periodic check-ins", () => {
       if (guard === "background") inspections.S!.backgroundWork = true
       if (guard === "instance") inspections.S!.instance = null
       if (guard === "paused") await setShepherdSessionPause(root, { actorId: "owner", requestId: "pause",
-        target: { host: "fake", session: "S", cwd: "/project", task: null }, paused: true },
-      [{ host: "fake", session: "S", cwd: "/project", task: null }])
+        target: { host: "fake", session: "S", cwd: project, task: null }, paused: true },
+      [{ host: "fake", session: "S", cwd: project, task: null }])
       await start(vi.fn(async () => {
         if (guard === "changed") inspections.S!.screen += " changed"
         if (guard === "stopped") { stop!(); stop = null }
@@ -211,7 +235,7 @@ describe("fresh all-returned-session periodic check-ins", () => {
       await advance(8000)
       expect(judge).toHaveBeenCalledTimes(1)
       const packet = judge.mock.calls[0]![0]
-      expect(packet).toMatchObject({ agent: "Copilot", cwd: "/project", lastBody: null, backgroundWork: false,
+      expect(packet).toMatchObject({ agent: "Copilot", cwd: project, lastBody: null, backgroundWork: false,
         periodicCheckIn: { priorJudgment: kind ? { kind, reason: "Historical reason, never authority" } : null } })
       expect(packet).not.toHaveProperty("networkRecovered")
       expect(prompts()).toEqual([`prompt S [Test Shepherd for the human] ${FIXED}`])
@@ -279,8 +303,8 @@ describe("fresh all-returned-session periodic check-ins", () => {
       if (change === "cwd") inspections.S!.session.cwd = "/changed"
       if (change === "draft") inspections.S!.composer = "draft"
       if (change === "pause") await setShepherdSessionPause(root, { actorId: "owner", requestId: "pause",
-        target: { host: "fake", session: "S", cwd: "/project", task: null }, paused: true }, [
-        { host: "fake", session: "S", cwd: "/project", task: null },
+        target: { host: "fake", session: "S", cwd: project, task: null }, paused: true }, [
+        { host: "fake", session: "S", cwd: project, task: null },
       ])
       if (change === "stop") { stop!(); stop = null }
       release(verdict())
@@ -309,7 +333,7 @@ describe("fresh all-returned-session periodic check-ins", () => {
       return
     }
     await advance(8000)
-    expect(jobs.some(job => job.at === Date.parse("2026-10-16T04:00:00Z") + minutes * 60_000)).toBe(true)
+    expect(jobs.some(job => job.at === startedAt + minutes * 60_000)).toBe(true)
     await advance(minutes * 60_000 * 10)
     expect(judge).toHaveBeenCalledTimes(1)
     await advance(8000)
@@ -321,7 +345,7 @@ describe("fresh all-returned-session periodic check-ins", () => {
     inspections.T = inspection("T")
     vi.mocked(host.inspect!).mockImplementation(async id => {
       if (id === "S") throw new Error("one terminal unavailable")
-      return structuredClone(inspections[id]!)
+      return captureInspection(id)
     })
     const judge = await start()
     await advance(8000)
@@ -346,7 +370,7 @@ describe("fresh all-returned-session periodic check-ins", () => {
   })
 
   it("keeps an uncertain immediate send blocked after restart, changed screen and periodic trigger", async () => {
-    host.prompt = async () => { actions.push("prompt attempted"); throw new Error("acceptance uncertain") }
+    host.continueInput = async () => { actions.push("prompt attempted"); throw new Error("acceptance uncertain") }
     await start()
     returned()
     await flush()
@@ -361,30 +385,30 @@ describe("fresh all-returned-session periodic check-ins", () => {
   })
 
   it("never claims guarded not-sent as success and never retries it within the same pass", async () => {
-    host.promptIfUnchanged = vi.fn(async () => ({ state: "not_sent", reason: "draft appeared" }))
+    host.continueInput = vi.fn(async () => ({ state: "not_sent", reason: "draft appeared" }))
     await start()
     await advance(8000)
-    expect(host.promptIfUnchanged).toHaveBeenCalledTimes(1)
+    expect(host.continueInput).toHaveBeenCalledTimes(1)
     expect(readReturns(root).at(-1)).toMatchObject({ action: "let_through", reply: null })
     await advance(3_600_000)
     await advance(8000)
-    expect(host.promptIfUnchanged).toHaveBeenCalledTimes(2)
+    expect(host.continueInput).toHaveBeenCalledTimes(2)
   })
 
   it.each(["focus", "return", "stop", "revision", "corrupt"] as const)(
     "revokes dispatch on %s during the guarded adapter's awaited lookup", async change => {
-      host.promptIfUnchanged = vi.fn(async (id, line, _expected, canSend) => {
+      host.continueInput = vi.fn(async (request, canSend) => {
+        const id = request.expected.session.id
         await Promise.resolve()
         if (change === "focus") handlers.focused(id)
         if (change === "return") returned(id)
         if (change === "stop") { stop!(); stop = null }
         if (change === "revision") await recordShepherdCorrection(root, { actorId: "owner", requestId: "learn",
-          target: { host: "fake", session: id, cwd: "/project", task: null }, feedback: "Wait.",
-          principle: "Wait for review." }, [{ host: "fake", session: id, cwd: "/project", task: null }])
+          target: { host: "fake", session: id, cwd: project, task: null }, feedback: "Wait.",
+          principle: "Wait for review." }, [{ host: "fake", session: id, cwd: project, task: null }])
         if (change === "corrupt") fs.writeFileSync(path.join(root, "state/senses/shepherd/guidance.json"), "corrupt")
-        if (!canSend!()) return { state: "not_sent" }
-        actions.push(`prompt ${id} ${line}`)
-        return { state: "sent" }
+        if (!canSend()) return { state: "not_sent", reason: "parent guard invalidated" }
+        throw new Error("test input guard unexpectedly admitted")
       })
       await start(vi.fn(async packet => verdict(packet.periodicCheckIn ? "premature" : "working")))
       await advance(8000)
@@ -392,19 +416,16 @@ describe("fresh all-returned-session periodic check-ins", () => {
     })
 
   it.each(["focus", "return", "cwd", "missing", "stop"] as const)(
-    "revalidates %s after the final awaited session list", async change => {
-      const original = host.list
-      let lists = 0
-      host.list = async () => {
-        const sessions = await original()
-        if (++lists === 2) {
-          if (change === "focus") handlers.focused("S")
-          if (change === "return") returned()
-          if (change === "cwd") sessions[0]!.cwd = "/different"
-          if (change === "missing") return []
-          if (change === "stop") { stop!(); stop = null }
-        }
-        return sessions
+    "revalidates %s after awaited native capability discovery", async change => {
+      const original = host.capabilities!
+      host.capabilities = async () => {
+        const capabilities = await original()
+        if (change === "focus") handlers.focused("S")
+        if (change === "return") returned()
+        if (change === "cwd") inspections.S!.session.cwd = "/different"
+        if (change === "missing") delete inspections.S
+        if (change === "stop") { stop!(); stop = null }
+        return capabilities
       }
       await start(vi.fn(async packet => verdict(packet.periodicCheckIn ? "premature" : "working")))
       await advance(8000)
@@ -425,7 +446,7 @@ describe("fresh all-returned-session periodic check-ins", () => {
           if (change === "background") inspections[id]!.backgroundWork = true
           if (change === "stop") { stop!(); stop = null }
         }
-        return structuredClone(inspections[id]!)
+        return captureInspection(id)
       })
       await start(vi.fn(async packet => verdict(packet.periodicCheckIn ? "premature" : "working")))
       await advance(8000)
@@ -497,7 +518,7 @@ describe("fresh all-returned-session periodic check-ins", () => {
   })
 
   it("keeps an uncertain guarded send blocked even if its completion record also fails", async () => {
-    host.promptIfUnchanged = async () => { actions.push("prompt attempted"); throw new Error("input uncertain") }
+    host.continueInput = async () => { actions.push("prompt attempted"); throw new Error("input uncertain") }
     await start(undefined, { openCheckInStore: file => {
       const store = openCheckInStore(file)
       vi.spyOn(store, "completeDispatch").mockImplementation(() => { throw new Error("disk unavailable") })
@@ -548,7 +569,7 @@ describe("fresh all-returned-session periodic check-ins", () => {
     "rejects %s changing during the first inspection without scheduling stale input", async change => {
       inspections.T = inspection("T")
       vi.mocked(host.inspect!).mockImplementation(async id => {
-        const current = structuredClone(inspections[id]!)
+        const current = captureInspection(id)
         if (id === "S") {
           if (change === "stop") { stop!(); stop = null }
           if (change === "identity") current.session.id = "wrong-target"
@@ -599,18 +620,19 @@ describe("fresh all-returned-session periodic check-ins", () => {
 
   it("uses current null cwd and still diagnoses an unsupported guarded-input adapter", async () => {
     inspections.S!.session.cwd = null
-    delete host.promptIfUnchanged
+    delete host.continueInput
     const judge = await start()
     await advance(8000)
     expect(judge.mock.calls[0]![0].cwd).toBeNull()
     expect(prompts()).toEqual([])
-    expect(readReturns(root).at(-1)?.reason).toContain("cannot verify")
+    expect(readReturns(root).at(-1)?.reason).toContain("native continuation boundary")
   })
 
   it("reports the changed outcome when a previously refused attempt is safely sent at a future cadence", async () => {
-    host.promptIfUnchanged = vi.fn()
+    const continuation = host.continueInput!
+    host.continueInput = vi.fn()
       .mockResolvedValueOnce({ state: "not_sent", reason: "pre-input guard" })
-      .mockImplementation(async (id, line) => { actions.push(`prompt ${id} ${line}`); return { state: "sent" } })
+      .mockImplementation(continuation)
     await start()
     await advance(8000)
     const statuses = actions.filter(action => action.startsWith("status ")).length
