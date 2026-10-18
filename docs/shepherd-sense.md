@@ -1,26 +1,25 @@
 # Shepherd Sense
 
-Shepherd keeps the coding agents in this Mac's terminals working. Every time one of them hands control back, a cheap judge decides whether it should have. When the agent stopped too early (it asked "want me to go ahead?", offered a menu with a clear recommendation, or stopped after a plan), Shepherd answers in the terminal, visibly, and the agent carries on. When the agent needs the human (a sign-in, a decision that is theirs, money, an irreversible step) or says the work is done, Shepherd lets the return through and brings it to the supervising agent.
+Shepherd keeps the coding agents in this Mac's terminals working. Every time one of them hands control back, a cheap judge decides whether it should have. When the agent stopped too early (it asked "want me to go ahead?" or stopped after a plan), Shepherd can answer visibly within a protected mandate, but only after qualified native admission checks pass. Approval and selection menus are never automatic continuation targets. When the agent needs the human (a sign-in, a decision that is theirs, money, an irreversible step) or says the work is done, Shepherd lets the return through and brings it to the supervising agent.
 
-The judge is agent-agnostic: Claude Code, Codex, Copilot CLI, Agency and other agents are judged by the same rubric from their screen. A terminal host is an adapter (`src/senses/shepherd/host.ts`): cmux and Herdr. Periodic automatic input has a narrower, default-deny rendered-UI allowlist described below.
+The judge is agent-agnostic: Claude Code, Codex, Copilot CLI, Agency and other agents are judged by the same rubric from their screen. A terminal host is an adapter (`src/senses/shepherd/host.ts`): cmux and Herdr. Every automatic trigger uses the same default-deny native admission contract described below.
 
 ## Intermediate alpha boundary and Supervision
 
-This is **not Shepherd v1**. The new mandate store does not yet govern every
-automatic path. Legacy immediate-return and connectivity-recovery behavior can
-still type text without a mandate. Automatic menu, navigation and control keys
-are refused on every trigger. An absent, expired, or revoked
-mandate is not a kill switch for those paths. Native guarded input and the shared
-all-trigger admission path remain unqualified. Disable Shepherd to stop legacy
-automation; do not infer safety from a stored mandate or an unsupported-capability
-badge.
+This is **not qualified Shepherd v1**. Immediate-return, connectivity-recovery and
+periodic automatic input all require a current protected mandate and qualified
+native guarded input. Absent, expired, revoked, ambiguous or changed mandates
+withhold automatic input. Unsupported or unqualified hosts are observation-only;
+there is no automatic legacy paste/key fallback. Automatic menu, navigation and
+control keys are refused on every trigger. Source implementation and unit tests
+do not prove native runtime/editor qualification or full V1 readiness.
 
 Ouro Mailbox's machine-level **Supervision** view (`#/supervision`) shows one
 explicitly selected owner's terminal observations, source failures, historical
 judgments, custody barriers, and transport outcomes. It ages observations locally
 and retains history when a source fails. "Agent reports finished" is not proof of
 merge, publication, or deployment. Stored mandate/pause assessments are not
-enforced dispatch decisions. Receipt-less `sent` records are explicitly legacy
+proof that the fresh native dispatch checks pass. Receipt-less `sent` records are explicitly legacy
 reports, not qualified host-admission evidence. The page only reads; its command
 buttons copy local commands and never resolve or retry an input from the browser.
 
@@ -107,29 +106,33 @@ sign-in, credential, account, money, scope or outside-dependency blocker. An
 exhausted network/provider retry can be reconsidered without claiming connectivity
 recovered. Uncertain effects require reconciliation before retrying.
 
-Scheduled input additionally requires a recognized coding process with a verified
+Every automatic trigger requires a recognized coding process with a verified
 PID-plus-start instance, positively idle state, no running background work and a
-positively empty composer. cmux supports tested Copilot, Claude Code and Codex
-rendered shapes; unknown/clipped layouts, ambiguous placeholders, menus and drafts
+positively empty composer. Rendered-shape parser tests for Copilot, Claude Code and
+Codex do not establish native host qualification. Unknown/clipped layouts,
+ambiguous placeholders, menus and drafts
 are default-deny. The model name in a footer does not establish harness identity.
 Copilot's block-framed composer recognizes its current `╻` top border as well as
 the already supported `╭` variant, with matching border widths; neither variant relaxes
 the empty-composer, background-work or approval/menu checks.
-Herdr currently lacks verified process-start/empty-composer evidence, so periodic
-checks there are read/judge-only. Its ordinary immediate-return policy is unchanged.
+Herdr lacks the required qualified native admission contract, so every automatic
+trigger there is read/judge-only until it supplies equivalent evidence and dispatch.
 
 Focus/recent-focus, current scoped guidance and the existing three-answer streak
 and ten-per-hour guards still apply; time does not reset a streak. A final
-inspection must agree with the judged inspection. The guarded adapter revalidates
-the explicit target after its lookups, and synchronously rechecks parent event
-generation, guidance, focus hold and shutdown immediately before paste. This is
-bounded client-side protection, **not an atomic cmux server compare-and-swap**.
-It never clears or replaces a draft.
+inspection must agree with the judged native capture, including its exact raw
+digest; numeric-only changes also withhold input. The adapter synchronously
+rechecks parent event generation, mandate/guidance revisions, focus hold and
+shutdown after its lookups. The native owner must independently enforce its token,
+target, revisions, immediate writer reservation and delayed submit checks.
+Client-side observations never substitute for that qualified native boundary.
+No path clears or replaces a draft.
 
 ### Shared automatic-input custody and quiet notices
 
 Immediate returns, connectivity recovery and periodic checks reserve input in
-the same private SQLite ledger before any automatic text or key. Its key binds
+the same private SQLite ledger before any automatic text. Automatic keys are
+always refused. Its key binds
 host, stable session, process instance, judged-screen fingerprint and guidance
 revision; trigger and transition are metadata, not separate retry routes.
 Successful acceptance deduplicates that attempt. An exception, crash after claim
@@ -137,7 +140,12 @@ or ambiguous acceptance remains claimed/unknown and blocks all automatic input
 for that host/session-instance, even with a changed screen or trigger. When the
 instance was unavailable, the uncertainty barrier covers the stable host/session.
 Only a definite **pre-input not-sent** result permits a later safe claim; there
-is no same-pass retry loop. Human-requested `shepherd_send` is unchanged.
+is no same-pass retry loop. Each new native attempt also persists a fresh UUID
+and its native host-boot/workspace binding before input. Only an exact native
+receipt can be projected to the original SHA-keyed custody record; a stale,
+lost, malformed or partial receipt never releases uncertainty. Legacy rows
+without native identity are not upgraded into retryable native attempts.
+Human-requested `shepherd_send` is unchanged and remains separately guarded.
 
 The ledger is `state/senses/shepherd/checkins/custody.sqlite` in the owning bundle,
 with `0700` directories and a `0600` file. Each record is bounded to 4096 encoded
@@ -203,11 +211,10 @@ on independent menu/control/navigation key replies, not that submit.
 A structured, valid `premature` classification is retained even if its proposed
 reply is invalid: `replyIssue` reports `too_long`, `unsafe` or `missing` separately.
 Syntax is checked before length, so unsafe-and-long is never a length-only failure.
-Immediate handling still requires a valid reply. Periodic handling alone may use
-its existing fixed plain continuation after a length-only failure, and only after
-all existing host/process, draft, focus, guidance, loop, fresh-screen and input-custody
-guards pass. Keys, unsafe/missing replies and untrusted prose extraction never gain
-that fallback. Malformed or uncertain judgments remain `unclear`.
+Every trigger requires the canonical intent with no reply issue. A length-only
+failure no longer gains a periodic canned-text fallback. Keys, unsafe/missing
+replies and untrusted prose extraction never gain substitute input. Malformed or
+uncertain judgments remain `unclear`.
 
 Audit records retain `judgeKind`, `replyIssue` and an explicit `actionBlockReason`
 when applicable. A machine-format, changed-state or verification refusal is
@@ -263,20 +270,21 @@ selected successes.
 
 | Verdict | Action |
 | --- | --- |
-| `premature` | Answers with a plain-text line unless a check below stops it. A line is typed as `[<configured agent name> for <human>] <reply>`. Model-selected keys are refused without fallback. The status line says `answered for <human>: <reason>` only after a response. |
+| `premature` | Requires the canonical intent, a protected current mandate and qualified native admission. The actual `[<configured agent name> for <human>] ...` line uses the mandate's task, not model prose. Keys and invalid replies are refused without fallback. The status line says `answered for <human>: <reason>` only after a matching accepted native receipt. |
 | `gate` | Lets it through, sets the status line to `needs <human>`, and escalates to the Ouro agent. |
 | `done` | Lets it through, sets the status line to `done`, and escalates. |
 | `waiting` | Leaves it untouched, records an outside dependency rather than claiming delivery, sets status and escalates. |
 | `working` | Never answers. Sets the status line to `<agent> waiting on its background work: <reason>` and logs it. Queues a `[Shepherd update]` for the Ouro agent, with no wake, only when the judge flags news. |
 | `unclear`, or an error | Lets it through and logs it. No escalation. |
 
-Before it answers, Shepherd checks, in order:
+Before automatic input, the shared admission path requires all of these:
 
 1. **The loop guard.** Three automatic answers in a row in one terminal, with no human focus in between, or ten in an hour, stop answering. The return that trips it is logged as `loop_guard` and escalated once, and the status line says `stopped answering`. Until the human focuses that terminal, its later returns are logged as `loop_guard` with no judge call and no new escalation.
-2. **The human.** Shepherd never types into the terminal the human is in: on cmux, the focused surface of the selected workspace in a visible window, read from `system.tree` just before sending (cmux reports focus only when it changes, so a human who stays in one terminal sends no further events). A terminal the human left in the last 60 seconds is also theirs.
-3. **The screen.** It reads the terminal again; if the last lines changed since the judge saw them, it lets the return through.
+2. **The human.** Shepherd never types into a focused terminal. Both native inspections and the native writer must refuse current focus; the parent also holds a terminal the human left in the last 60 seconds.
+3. **The screen and process.** Fresh native evidence must match the judged capture's exact raw digest, process, host boot, workspace, generation and input/focus revisions. Idle, empty-composer and no-background-work facts must all be positively known.
+4. **Authority and custody.** A current unambiguous mandate must cover this exact project and any narrower target, with unchanged guidance and mandate revisions. The canonical intent and full attributed mandate text must pass their separate checks. Durable custody must be acquired before input; the native token and reservation remain independently authoritative.
 
-Shepherd's status is one entry per terminal (cmux key `ouro_<surface>`, attached to that surface's panel), because a cmux workspace can hold several agents. It is cleared as soon as the agent resumes or the terminal's screen moves again. On cmux, a line is sent with `terminal.paste` (so no character of it is read as a keystroke) followed by a separate Enter. On Herdr it is sent with `agent.prompt`, which pastes it and presses Enter, and refuses a blocked agent; explicit owner-requested keys separately use `agent.send_keys`, and the status line is the pane's state label (source `ouro.shepherd`, also token `$ouro`). `<human>` is the name on the family friend record whose local id is this OS user, else the first family friend.
+Shepherd's status is one entry per terminal (cmux key `ouro_<surface>`, attached to that surface's panel), because a cmux workspace can hold several agents. It is cleared as soon as the agent resumes or the terminal's screen moves again. Automatic text goes only through a conditional native operation that owns the literal paste, reservation, minimum delay and guarded submit; two independent legacy paste/key RPCs do not satisfy that contract. Explicit owner-requested input remains separate, including Herdr's `agent.prompt` and `agent.send_keys`. Herdr status uses the pane's state label (source `ouro.shepherd`, also token `$ouro`). `<human>` is the name on the family friend record whose local id is this OS user, else the first family friend.
 
 Escalation queues one pending message in the agent's private runtime (from `shepherd`, dropped unread after 30 minutes) and asks the daemon for a private turn (trigger `shepherd`, which the daemon's policy allows only with a `shepherd-return` reference and the `sense: shepherd` reference). Escalations in a burst share one wake. The message names the agent, folder, task and why, and ends with the usual untrusted-input line. If the daemon refuses the wake, the message waits for the next private turn.
 

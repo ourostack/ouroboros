@@ -165,7 +165,8 @@ describe("trusted local-owner operation composition", () => {
     const result = await runShepherdOperation({ kind: "shepherd.status", agent: "ouro" }, deps)
     expect(result).toMatchObject({
       supervision: { freshness: { status: "unknown" } }, custody: { state: "missing", totalCount: null },
-      automation: { mode: "legacy_unqualified", mandatesEnforcedForAllTriggers: false, unattendedKeysPossible: false },
+      automation: { mode: "guarded_native_required", mandatesEnforcedForAllTriggers: true,
+        nativeHostQualificationRequired: true, unattendedKeysPossible: false },
     })
     expect(deps.host).not.toHaveBeenCalled()
     expect(fs.existsSync(path.join(root, "state"))).toBe(false)

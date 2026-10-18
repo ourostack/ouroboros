@@ -2,7 +2,7 @@ export const SHEPHERD_SUPERVISION_LIMIT = 200
 export const SHEPHERD_SUPERVISION_STALE_MS = 30_000
 export const SHEPHERD_OBSERVATION_FILE = "supervision-observation.json"
 export const SHEPHERD_OBSERVATION_MAX_BYTES = 2 * 1024 * 1024
-export const SHEPHERD_ALPHA_AUTOMATION_WARNING = "This alpha retains unqualified legacy automation. Legacy immediate/network automation may still type text without mandate enforcement. Automatic keys are refused. Absent or revoked mandates do not disable those text paths. Disable Shepherd to stop legacy automation."
+export const SHEPHERD_ALPHA_AUTOMATION_WARNING = "Automatic input is fail-closed: every trigger requires a current protected mandate and qualified native guarded input. Unsupported or unqualified hosts are observation-only. Automatic menu, navigation and control keys are refused. Stored policy and source tests are not proof of native runtime or editor qualification."
 export const SHEPHERD_SUPERVISION_SOURCES = ["host", "guidance", "mandates", "returns", "custody", "notices"] as const
 export type ShepherdSupervisionSource = typeof SHEPHERD_SUPERVISION_SOURCES[number]
 export type ShepherdSourceHealth = "ok" | "missing" | "error"
@@ -30,7 +30,7 @@ export interface ShepherdSupervisionSession {
   lastReason: string | null
   lastActionAt: string | null
   withheldReason: string | null
-  /** Stored policy evaluation, not effective enforcement of legacy automatic-input paths. */
+  /** Stored policy evaluation, not proof of current input eligibility or native qualification. */
   authority: ShepherdAuthority
   capability: "supported" | "unsupported" | "unknown"
 }
