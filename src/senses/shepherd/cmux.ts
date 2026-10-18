@@ -8,6 +8,7 @@ import type { HostSession, HostWatchHandlers, ShepherdHost, ShepherdHostObservat
 import { identifyTerminalProcesses } from "./terminal-process"
 import { inspectCodingPrompt } from "./prompt-state"
 import { redactSecrets } from "./redact"
+import { createCmuxNativeInput } from "./cmux-native"
 
 /**
  * The cmux host (0.64.22 or later). A return is cmux's own "agent stopped" signal: an
@@ -90,6 +91,7 @@ export function createCmuxHost(client: CmuxClient, options: CmuxHostOptions = {}
   const homeDir = options.homeDir ?? os.homedir()
   const now = options.now ?? Date.now
   const schedule = options.schedule ?? realSchedule
+  const native = createCmuxNativeInput(client, now)
   /** What hook events taught: which surface a session runs in, and which agent and folder it has. */
   const hooked = new Map<string, { agent: string; cwd: string | null; sessionId: string | null; idle: boolean }>()
   const sessionSurface = new Map<string, string>()
@@ -194,6 +196,14 @@ export function createCmuxHost(client: CmuxClient, options: CmuxHostOptions = {}
   }
 
   async function inspect(sessionId: string): Promise<ShepherdInspection> {
+    const capabilities = await native.capabilities()
+    if (capabilities.state !== "unsupported") {
+      if (!/^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/i.test(sessionId)) throw new Error("cmux inspection requires a surface UUID")
+      const target = (await surfaceEntries()).find(entry => entry.id.toLowerCase() === sessionId.toLowerCase() && entry.type === "terminal")
+      if (!target) throw new Error("cmux inspection target disappeared")
+      const { workspaceId, type: _type, ...session } = target
+      return native.inspect(session, workspaceId)
+    }
     const before = await explicitTarget(sessionId)
     const first = await boundRead(before)
     const current = await explicitTarget(sessionId)
@@ -220,6 +230,8 @@ export function createCmuxHost(client: CmuxClient, options: CmuxHostOptions = {}
     retirementInventory,
     read,
     inspect,
+    capabilities: native.capabilities,
+    continueInput: native.continueInput,
     async promptIfUnchanged(sessionId, line, expected, canSend?: () => boolean) {
       // Resolve first, then re-inspect. No server-side atomic CAS exists in cmux
       // 0.64: these are fresh client-side observations, not a lock on a human's UI.
