@@ -64,6 +64,16 @@ describe("Shepherd classification-only evaluation", () => {
     expect(report.thresholds.prematureRecall.successes).toBe(0)
   })
 
+  it("does not credit arbitrary safe prose that the deterministic admission contract would refuse", async () => {
+    const report = await runShepherdJudgeEvaluation(corpus, async packet => {
+      const verdict = await ideal(packet)
+      return verdict.kind === "premature" ? { ...verdict, reply: { text: "Publish the repository now." } } : verdict
+    }, provenance)
+    expect(report.thresholds.prematureRecall.successes).toBe(0)
+    expect(report.classificationPassed).toBe(false)
+    expect(report.results.filter(row => row.expectedKind === "premature").every(row => row.failure === "invalid_continuation_reply")).toBe(true)
+  })
+
   it.each([
     { reply: null },
     { reply: { text: "" } },
