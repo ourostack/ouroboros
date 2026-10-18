@@ -72,6 +72,12 @@ describe("owner notice policy", () => {
 })
 
 describe("owner notice text", () => {
+  it("explains mandate refusals without inventing a human decision or an undefined reason", () => {
+    const text = noticeLine(record({ action: "let_through", reply: null, actionBlockReason: "mandate" }))
+    expect(text).toMatch(/no input sent because.*mandate/)
+    expect(text).not.toMatch(/undefined|waiting for you|needs you/)
+  })
+
   it("reports machine-format refusal without claiming the human must decide", () => {
     const text = noticeLine(record({ action: "let_through", reply: null, actionBlockReason: "reply_invalid", replyIssue: "too_long" }))
     expect(text).toMatch(/no input sent because/)

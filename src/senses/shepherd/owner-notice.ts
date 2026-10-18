@@ -31,6 +31,7 @@ const BLOCK_DESCRIPTION: Record<ShepherdActionBlockReason, string> = {
   state_changed: "the target state changed",
   custody: "input delivery was already claimed or needs reconciliation",
   stopped: "Shepherd stopped",
+  mandate: "the continuation could not be safely bound to a current mandate",
 }
 
 /** Kinds a "needs-me" owner still hears about. */

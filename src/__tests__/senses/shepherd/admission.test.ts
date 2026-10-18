@@ -28,7 +28,9 @@ function fixture(): ShepherdAdmissionInput {
   return {
     host: "cmux",
     capabilities: { state: "qualified", protocolVersion: 1, agents: ["codex"] },
-    expected: structuredClone(observation),
+    expected: { ...structuredClone(observation), guarded: {
+      ...observation.guarded, token: "55555555-5555-4555-8555-555555555555",
+    } },
     current: structuredClone(observation),
     nowMs: 100_000, observationAgeMs: 1_000,
     verdict: { kind: "premature", reply: { text: SHEPHERD_CONTINUATION_INTENT }, reason: "Authorized work remains." },
@@ -113,7 +115,9 @@ describe("deterministic Shepherd continuation admission", () => {
   ])("refuses %s without constructing an actionable message", (_name, mutate, reason) => {
     const input = fixture()
     mutate(input)
-    expect(admitShepherdContinuation(input)).toMatchObject({ allowed: false, reason })
+    const result = admitShepherdContinuation(input)
+    expect(result).toMatchObject({ allowed: false, reason })
+    expect(result).not.toHaveProperty("text")
   })
 
   it.each(["id", "agent", "cwd", "instance"] as const)("refuses a changed session %s", key => {
@@ -154,8 +158,25 @@ describe("deterministic Shepherd continuation admission", () => {
 
   it("uses the fresh token, not the expired pre-judgment token", () => {
     const input = fixture()
+    input.observationAgeMs = 4_000
     input.expected.guarded!.expiresAtUnixMs = 99_000
     expect(admitShepherdContinuation(input).allowed).toBe(true)
+  })
+
+  it("accepts the exact thirty-second observation and two-second token boundaries", () => {
+    const input = fixture()
+    input.observationAgeMs = 30_000
+    input.current.guarded!.expiresAtUnixMs = input.nowMs + 2_000
+    expect(admitShepherdContinuation(input).allowed).toBe(true)
+  })
+
+  it.each(["surfaceGeneration", "inputRevision", "focusRevision"] as const)("refuses invalid paired %s counters", key => {
+    for (const value of [-1, Number.MAX_SAFE_INTEGER + 1, Number.NaN]) {
+      const input = fixture()
+      input.expected.guarded![key] = value
+      input.current.guarded![key] = value
+      expect(admitShepherdContinuation(input)).toMatchObject({ allowed: false, reason: "state_changed" })
+    }
   })
 
   it.each(["`", "\\", "@", ";", "$", "|", "<", ">", "&", "\n", "\r", "\u0007", "\u200b", "\u202e", "\u2028", "\u2029"])(
@@ -181,5 +202,24 @@ describe("deterministic Shepherd continuation admission", () => {
     authorizedTask(input).task = task
     expect(admitShepherdContinuation(input)).toMatchObject({ allowed: false, reason: "mandate" })
     expect(authorizedTask(input).task).toBe(task)
+  })
+
+  it("measures the complete attributed message at the exact character and UTF8 limits", () => {
+    const input = fixture()
+    const overhead = "[Ouro for Synthetic operator] Continue only this authorized task: "
+      + " Respect human decisions and reconcile uncertain effects before retrying."
+    authorizedTask(input).task = "x".repeat(2000 - overhead.length)
+    const atCharacterLimit = admitShepherdContinuation(input)
+    expect(atCharacterLimit.allowed).toBe(true)
+    if (atCharacterLimit.allowed) expect(atCharacterLimit.text.length).toBe(2000)
+    authorizedTask(input).task += "x"
+    expect(admitShepherdContinuation(input).allowed).toBe(false)
+    const remaining = 4096 - Buffer.byteLength(overhead)
+    authorizedTask(input).task = "\u754c".repeat(Math.floor(remaining / 3)) + "x".repeat(remaining % 3)
+    const atByteLimit = admitShepherdContinuation(input)
+    expect(atByteLimit.allowed).toBe(true)
+    if (atByteLimit.allowed) expect(Buffer.byteLength(atByteLimit.text)).toBe(4096)
+    authorizedTask(input).task += "x"
+    expect(admitShepherdContinuation(input).allowed).toBe(false)
   })
 })
