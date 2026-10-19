@@ -1,0 +1,175 @@
+{
+  "title": "Shepherd V1: explicitly managed coding sessions",
+  "status": "design-approved-not-implementation-or-runtime-approval",
+  "designReview": {
+    "reviewer": "6f236a19-2888-4edb-8475-15dc0b67ac2d",
+    "turn": 4,
+    "verdict": "APPROVE: no blocking defects in the written amendment.",
+    "planRequirements": [
+      "Operationalize Claude's positive host-owned callback/request/work ledger; missing events are not a proof of emptiness.",
+      "Keep the Codex closed-domain and queued-ingress proof as an explicit engineering gate, not parity presumed from the other providers."
+    ],
+    "subsequentPinReadback": "The public SDK APIs referenced by the review were also verified in published @github/copilot-sdk 1.0.22 declarations, not only public main. Its official stable release is pinned below; implementation-plan review must consume this exact pair."
+  },
+  "amends": "2026-10-17-shepherd-v1-design.md",
+  "authority": {
+    "product": "The operator delegated product choices on October 17, 2026 and requested continued agent-owned V1 work on October 19.",
+    "review": "The operator delegated human review gates to adversarial agents. Conceptual feasibility review permits writing this amendment only; this document and the implementation plan still require independent approval.",
+    "workItem": "ouro-workbench/shepherd-v1-operator-control",
+    "progress": ".superpowers/sdd/shepherd-v1-authorized-continuation-plan.json/progress.json",
+    "programLedger": ".superpowers/sdd/shepherd-v1-execution-plan.json/progress.json"
+  },
+  "decision": {
+    "change": "Make explicitly opted-in, qualified cmux Agent Session panels the initial automatic-continuation surface for Copilot, Claude Code and Codex. These are structured-protocol coding sessions owned by the native host, not terminal-emulator sessions.",
+    "why": "Ordinary interactive CLI input lacks the trusted host-input correlation required by the original design. No combination of prompt text, input timestamps, hook arrival order or stable screen reads repairs that causal gap.",
+    "notEquivalent": "This changes the supported product surface. It does not qualify an ordinary Copilot, Claude Code or Codex TUI, reproduce terminal paste/Enter semantics, or claim that print mode is an interactive TUI.",
+    "unchanged": [
+      "Shepherd remains a separate, tool-free observer and judge. The coding process owns its work; no second supervisor or new hosted service is introduced.",
+      "Existing ordinary terminals, Herdr and existing manual Agent Session panels retain their supported behavior and remain observation-only for automatic input unless their own exact capability is separately qualified.",
+      "Mandates, canonical continuation intent, immutable task text, guidance, pause/focus holds, limits, all three automatic triggers, custody, owner CLI, notices and read-only Mailbox authorization remain mandatory.",
+      "The original real-model corpus, safety/recall thresholds, fairness, rendered dashboard, installed-product, release and rollback gates remain required. No successful source stage is V1 completion.",
+      "The trusted local OS-account boundary is unchanged. We do not claim to sandbox arbitrary same-account administrator code or prove that arbitrary shell programs cannot detach themselves."
+    ]
+  },
+  "supportedProfile": {
+    "initialScope": "A fresh, exclusively owned, foreground-work coding profile. Delegation, autonomous schedules, plugins, discovered MCP servers, remote participants, resume/fork and unaccounted asynchronous work are not supported in the first qualified profile.",
+    "usefulness": "The profile must support an actual bounded coding task, including reading, editing and executing its validation commands. A no-tools chat session or synthetic echo cannot qualify it.",
+    "existingSessions": "Do not adopt, restart, convert or inject into an operator's running session. Existing panels are not silently upgraded. Starting a managed panel is an explicit user action; qualification uses only an authorized disposable instance.",
+    "profileAuthority": "An immutable source-owned descriptor fixes executable/version/hash, protocol adapter, launch arguments, effective configuration, tool schemas and work-coverage rules. A caller, model, browser, environment variable or ordinary configuration field cannot assert qualification or loosen the descriptor.",
+    "qualificationTable": "Start empty. A descriptor is effective only after exact native host, provider build, renderer and profile qualification. Unknown versions, unsupported options, missing inventory methods, unexpected tools or configuration drift mean unqualified, not best effort.",
+    "ownership": "Own the backend process birth and private stdio transport from launch. No interactive TTY, TCP attach endpoint or second SDK participant. Detect backend exit, replacement, transport loss and native restart as generation changes.",
+    "commandBoundary": "The managed wrapper permits only the versioned initialization, root input, required read-only inventories and exact responses needed by the profile. Do not expose arbitrary RPC, fork/resume, fleet/task creation, foreground promotion, backgrounding, cancellation, steering or post-admission option mutation. A requested unsupported operation invalidates readiness before any backend write.",
+    "foregroundEscape": "The host-owned registry tracks admitted work from before launch/invocation until actual termination and stream drain, not until a synchronous wait returns. An unexpected foreground-to-background transition, foreign task or unsupported provider task type invalidates the proof and holds input. Never poll a promotability flag as a substitute for enforcing the command boundary."
+  },
+  "identityAndProtocol": {
+    "kind": "agent_session",
+    "discovery": "Add a separate shepherd_managed_input capability with its own protocol version and per-provider/profile qualification. Preserve existing shepherd_guarded_input and its classic-terminal qualification blocker unchanged.",
+    "methods": [
+      "surface.shepherd.managed.inspect",
+      "surface.shepherd.managed.continue",
+      "surface.shepherd.managed.receipt"
+    ],
+    "binding": [
+      "native host instance",
+      "workspace and panel UUID",
+      "owned backend process birth and executable identity",
+      "provider session/thread identity",
+      "profile digest and protocol version",
+      "surface/backend generation",
+      "native input, editor edit and focus revisions",
+      "current rendered-content and outside-composer fingerprints"
+    ],
+    "tty": "Managed surfaces have no TTY. Introduce an explicit discriminated identity; never synthesize a TTY or relax the classic path's TTY requirement.",
+    "inputs": "Allocate and persist an opaque host input UUID before writing. Manual and automatic submissions use distinct provenance but share process identity and invalidation. Bind SDK request/server/turn IDs to this UUID through the exact outstanding operation, never the latest input.",
+    "correlation": "Early, duplicated, merged, delayed or out-of-order replies must resolve only their exact operation. Unmapped events, a mixed input-ID set, missing acknowledgements and replies from another process/session/generation cannot establish idle or acceptance.",
+    "screen": "Hash native-bound canonical text from the actual rendered view before redaction. Label all rendered coding-agent content untrusted. Do not substitute cached transcript state, a model completion counter or a stale renderer acknowledgement.",
+    "visibility": "A detached, unpainted or hidden renderer cannot borrow a previous visible generation. Initially qualify visible but unfocused panels only unless a separately reviewed and exercised rendering mechanism establishes current offscreen evidence without focusing the panel."
+  },
+  "providerContracts": {
+    "claude": {
+      "candidate": "Claude Code 2.1.300 raw stream-json; exact published @anthropic-ai/claude-agent-sdk 0.3.300 declarations describe the candidate wire contract. This is a source reference, not runtime qualification.",
+      "transport": "Use print-mode raw NDJSON with --input-format stream-json, --output-format stream-json, --replay-user-messages and a caller-supplied user-message UUID. Do not route authority through the Python SDK's parsed message model: it drops isReplay and input-correlation fields.",
+      "consumption": "A root user replay with isReplay:true, exact supplied UUID and exact session identity acknowledges that input. Later readiness additionally requires the corresponding root terminal result to identify exactly that owned input in user_message_uuid/user_message_uuids. Reject mixed/coalesced unrelated inputs. An error, abort or cancellation cannot establish successful turn completion.",
+      "workCoverage": "Require the corresponding root Stop hook to contain well-formed background_tasks and session_crons arrays, both empty, plus no outstanding host callbacks, requests or owned work. Both fields are optional in the vendor schema: absence is unknown. A live capability test must establish that the exact build actually emits them.",
+      "notCoverage": "The Python SDK's local-agent/workflow ledger and the background_tasks_changed background-only level are not complete foreground/job/wakeup inventories. A result or session idle alone is not coverage.",
+      "profile": "Use explicit supported tool and settings-source restrictions, a private pinned configuration and no discovered plugins/MCP/skills or restored session. Mandatory synchronous tool gating refuses unknown/delegation/scheduling tools. A built-in shell that is automatically backgrounded keeps the session held until complete positive coverage exists.",
+      "backgroundControl": "The documented background_tasks control request can background a live foreground call. It is unreachable through the managed wrapper's fixed private command set and no-TTY surface. Test rejection before write; do not assume the CLI lacks this feature."
+    },
+    "codex": {
+      "candidate": "Codex 0.154.0, exact source commit 6b9826e3aa83b1a5947db50f4332cb9c65f1b340, using its app-server stdio protocol. Newer public main schemas are not baseline proof.",
+      "consumption": "Bind the owned turn/start JSON-RPC request to its exact returned thread and turn IDs as the submission acknowledgement. Later readiness requires that same turn's successful terminal event. An assistant item completion, permissive legacy event alias or unrelated thread idle cannot complete it.",
+      "workCoverage": "This provider has no identified complete public all-jobs/all-wakeups snapshot. Qualification must therefore prove a closed supported execution domain: exact source-audited effective features/model tools, a positive host-owned request/work registry and exact root-turn completion. Its paginated thread/backgroundTerminals/list is an additional complete shell inventory only, never an all-jobs claim.",
+      "delegation": "Set agents.enabled:false and features.multi_agent_v2:false and verify their effective source-defined behavior. Disabling features.multi_agent alone is insufficient because model metadata can select a multi-agent version.",
+      "features": "Exclude code-mode/JS executor sources, plugins/apps/MCP, external callbacks, background memory/sidecars, remote/restore paths and async user-input facilities unless individually accounted for. Refuse a model/tool catalog that reintroduces an unaccounted tool or wake source.",
+      "compaction": "The 0.154.0 baseline does not define async_compaction. Do not invent that option. Source-audit its inline awaited compaction under the owned active turn and test actual completion ordering. A later version with asynchronous compaction needs its own descriptor and proof.",
+      "pendingWork": "The source can emit a completed turn and then start queued work. Prove that no unaccounted ingress can enqueue such work in the supported profile; do not infer an empty queue from turn completion or from two matching reads. If this cannot be demonstrated, this provider stays unqualified.",
+      "unresolved": "Complete the precise baseline feature/tool/ingress audit and runtime qualification before populating the provider's qualification entry. No custom tool callback or unavailable internal API is presumed to exist."
+    },
+    "copilot": {
+      "integration": "This is a new native provider, not an existing cmux Agent Session integration.",
+      "candidate": "Published @github/copilot-sdk 1.0.22, official stable tag v1.0.22 at ffd25c775742f73e13a492093be0287d7885123f, declares compatible Copilot CLI 1.0.98. Exact published declarations include the required public inventory APIs. This pins the implementation candidate, not runtime qualification or permission to install/start it.",
+      "consumption": "The exact send RPC response returns a server messageId as a submission acknowledgement; it does not accept an arbitrary caller-supplied message ID. Persist that outstanding RPC-to-host-UUID binding. Later readiness requires the matching root assistant originatingMessageId, session identity and corresponding terminal state. Never assign an early event to the latest pending send.",
+      "configuration": "Assert an exact host-owned empty-mode configuration, not SDK defaults alone. Disable infiniteSessions background compaction, config/skill/file-hook/plugin/MCP discovery, remote sessions and custom-agent selection. Explicit options must not override these restrictions. No caller-provided spread or arbitrary configuration merge enters the managed descriptor.",
+      "effectiveReadback": [
+        "After fresh creation, require public agent.list including built-ins plus agent.getCurrent to match the expected default-only profile.",
+        "Require public mcp.listConfigured to show no configured servers, without starting/authenticating any server.",
+        "Require public plugins.list to show no enabled or enterprise-desired-enabled plugin; missing or ambiguous state refuses admission.",
+        "Call public tools.initializeAndValidate and then tools.getCurrentMetadata. Its tools:null is unknown, not an empty initialized catalog. Require the exact expected names and schemas with no deferred or unaccounted tools."
+      ],
+      "workCoverage": "Require public tasks.refresh followed by tasks.list, schedule.list and tools.listPendingRequests, alongside the positive host-owned callback ledger and the exact root turn. Missing/malformed/unavailable inventories, active jobs, queued callbacks, any scheduled wakeup, a foreign participant task or unsupported task kind hold input. Recheck the unchanged native activity generation across all awaited reads and at dispatch.",
+      "notCoverage": "tasks.waitForPending returns an empty result after either full drain or timeout and cannot prove completion. manageScheduleEnabled:false hides a tool but does not empty the runtime's schedule registry. Neither root idle nor an empty default-agent excludedTools list is sufficient.",
+      "promotion": "Reject tasks.promoteToBackground, promoteCurrentToBackground, startAgent and fleet/control mutation paths in the native wrapper before write. Do not rely on an initial synchronous-wait state or canPromoteToBackground value.",
+      "apiBoundary": "Use only the verified public session RPC surface. Internal settings.snapshot and queue.snapshot are in-process-only implementation surfaces and are not a supported substitute for public evidence.",
+      "stability": "The registry and inspection APIs are experimental. Accept this dependency only with exact runtime/SDK pins, negative compatibility checks and contract tests on every upgrade. Unsupported drift disables automatic input rather than falling back."
+    }
+  },
+  "guardedInput": {
+    "admission": "Use the same deterministic mandate/guidance/custody admission for immediate, connectivity and periodic triggers. A positive managed profile, complete work coverage and exact bound renderer are additional requirements, not alternatives to existing guards.",
+    "lease": "Issue a one-use native token expiring in at most two monotonic seconds. Bind it to the judged rendered fingerprint, provider/backend/profile identity and current input/editor/focus/activity generations. Preserve local monotonic deadlines and deduct request latency in the parent transport.",
+    "insert": "On the trusted renderer's actual current mutation path, validate empty composer, current edit identity and focus state, then insert exactly the attributed literal continuation. Never replace a draft, trigger a command/menu, or clear unrelated input.",
+    "separation": "Retain at least 150 ms between owned editor insertion and conditional backend submission. Require actual render acknowledgement and exactly the inserted text with no intervening input, focus, activity or outside-composer change.",
+    "physicalInput": "Physical input proceeds normally and cancels the lease. Native focus/responder/input invalidation must occur before forwarding events to the renderer. Every supported programmatic edit path participates in the same lease; unknown IME/autofill/accessibility/edit paths remain unqualified until exercised.",
+    "finalWrite": "Perform final live validation and input-byte admission on the same serialized native path with no intervening await. The existing queued blocking InputWriter alone does not satisfy this. Use a bounded nonblocking managed write path; revalidate before each resumed chunk. Do not block physical events while waiting for a full pipe.",
+    "partialWire": "JSON encoding can exceed a platform's atomic pipe-write bound. A partial frame, EAGAIN/timeout after any bytes, process exit, disconnect or lost acknowledgement is unknown and taints the operation/session; do not append a newline, resume the frame or blindly retry after invalidation.",
+    "accepted": "A managed accepted receipt requires identity-bound editor insertion, complete guarded backend submission and the exact provider submission acknowledgement described above. It is not turn or task completion. The two-second reservation bounds insertion and byte admission, not a model response. Never extend it while awaiting acknowledgement; any wait after submission admits no additional input. A lost or missing acknowledgement remains unknown, and an eventual exact native receipt may be read back under the existing reconciliation rules without another write.",
+    "notSent": "Return not_sent only when neither editor insertion nor backend input occurred. An inserted composer with withheld submission is partial unknown even when no backend bytes were sent.",
+    "receipts": "Version managed receipts separately with editor_inserted, backend_write_admitted and provider_acknowledged stages. Never describe these as a terminal paste or Enter key. Map to existing held/sent custody semantics without reinterpreting old rows.",
+    "idempotency": "Persist the native request UUID under the existing custody claim before admission. Lost replies use only exact identity-bound receipt lookup, never a second write. Conflicting duplicate arguments refuse; all partial and unknown barriers survive restart/downgrade."
+  },
+  "visibility": {
+    "reuse": "Extend the existing Ouro Mailbox Supervision projection and CLI reads. Do not add a second operations database or supervisor loop.",
+    "fields": [
+      "surface kind",
+      "provider and exact managed profile",
+      "qualified versus unqualified state",
+      "job/wakeup coverage state and precise blocker",
+      "observation/render age",
+      "exact held custody and managed input stages"
+    ],
+    "honesty": "Classic terminals explicitly show the causal-attribution blocker. A managed panel without complete proof is also unsupported for automatic input, not implicitly safer. A finished root turn means agent reports finished, never delivered or artifact-certified.",
+    "security": "Browser views remain read-only. They cannot start a profile, change tool restrictions, issue a mandate, mark qualification or reconcile an unknown write."
+  },
+  "verificationAndDelivery": {
+    "sourceStage": "Independent design and implementation-plan approvals precede product code. Fail-closed source plumbing and pure protocol/renderer tests may proceed without the operator's native development profile; all effective qualification tables remain empty.",
+    "liveStage": "The original bounded native feasibility probe remains mandatory before activating an automatic-input integration. An authorized disposable host/profile must demonstrate the actual editor/backend boundary, every invalidation before/after insertion, bounded nonblocking writes, provider correlation, complete work coverage and exact idempotent receipt reconciliation.",
+    "perProvider": "Exercise the actual pinned provider build with foreground command execution, automatic backgrounding, delayed completion, scheduled wakeups, unsupported/foreign jobs, missing optional fields, inherited configuration, stale callbacks and backend replacement. A feature claimed disabled must be demonstrated unavailable, not merely absent from one trace.",
+    "ui": "Exercise React and Solid real editor paths, actual packaged assets and native rendering with physical input, focus, identical-text edit ABA, delayed paints/ACKs, detach/reattach, hidden views and process exit. Do not count a reducer-only test as native editor consumption proof.",
+    "endToEnd": "Measure the original real-model, 20-session fairness, notice, built/published Mailbox and installed/update/rollback gates through the declared managed surface. Preserve exact publication/installation boundaries and all failed attempts.",
+    "operatorOnly": "Only acquisition/configuration of the authorized cmux development profile is assigned to Ari. Protocol work, implementation, qualification engineering and failure remediation remain ours.",
+    "stop": "No push, release, install, activation or V1-complete claim follows from this amendment or a source-only approval. Continue the existing authorized work item through its remaining gates; report any external prerequisite accurately."
+  },
+  "sourceReferences": [
+    {
+      "repository": "anthropics/claude-agent-sdk-typescript",
+      "commit": "53464f259015a7f42a04b3d0be04063dfabebd9a",
+      "path": "CHANGELOG.md",
+      "facts": "UUID replay fix, exact input-ID correlation, background-level limitations and protocol evolution."
+    },
+    {
+      "package": "@anthropic-ai/claude-agent-sdk",
+      "version": "0.3.300",
+      "paths": ["sdk.d.ts", "sdk-tools.d.ts"],
+      "facts": "Raw replay/result input identities, root Stop job/cron fields and documented foreground-background control request."
+    },
+    {
+      "repository": "anthropics/claude-agent-sdk-python",
+      "commit": "498e063489d08a36210dbfc5fa5f5b72b401ea62",
+      "paths": ["src/claude_agent_sdk/_internal/query.py", "src/claude_agent_sdk/_internal/message_parser.py", "src/claude_agent_sdk/types.py"],
+      "facts": "Caller JSON UUID preservation; parsed replay/correlation information loss; explicitly incomplete local work tracker."
+    },
+    {
+      "repository": "openai/codex",
+      "commit": "6b9826e3aa83b1a5947db50f4332cb9c65f1b340",
+      "paths": ["codex-rs/features/src/lib.rs", "codex-rs/core/src/config/mod.rs", "codex-rs/core/src/tools/spec_plan.rs", "codex-rs/core/src/tasks/mod.rs", "codex-rs/app-server-protocol/src/protocol/v2/thread.rs"],
+      "facts": "Actual 0.154.0 feature controls, agents.enabled override, shell-only inventory, async tool exposure and completion-before-pending-work ordering."
+    },
+    {
+      "repository": "github/copilot-sdk",
+      "commit": "ffd25c775742f73e13a492093be0287d7885123f",
+      "release": "v1.0.22",
+      "runtime": "1.0.98",
+      "paths": ["nodejs/src/client.ts", "nodejs/src/session.ts", "nodejs/src/types.ts", "nodejs/src/generated/rpc.ts"],
+      "facts": "Server-assigned input identity, exact empty-mode behavior, public effective inventories and job/schedule readbacks; internal-only surfaces explicitly excluded."
+    }
+  ]
+}
