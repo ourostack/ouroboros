@@ -43,9 +43,12 @@ export interface ShepherdInspection {
   guarded?: ShepherdGuardedObservation
 }
 
+export const SHEPHERD_NATIVE_CAUSALITY_BLOCKER = "claude_native_input_attribution_unavailable"
+
 export type ShepherdHostCapabilities =
   | { state: "unsupported"; reason: string }
-  | { state: "unqualified" | "qualified"; protocolVersion: 1; agents: string[] }
+  | { state: "unqualified"; protocolVersion: 1; agents: string[]; reason?: string }
+  | { state: "qualified"; protocolVersion: 1; agents: string[] }
 
 /** Native UTC projection is advisory; the host enforces its own monotonic deadline. */
 export interface ShepherdGuardedObservation {

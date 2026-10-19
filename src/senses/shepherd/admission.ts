@@ -1,5 +1,5 @@
 import type { ShepherdMandateResolution } from "../../heart/shepherd/types"
-import type { ShepherdHostCapabilities, ShepherdInspection } from "./host"
+import { SHEPHERD_NATIVE_CAUSALITY_BLOCKER, type ShepherdHostCapabilities, type ShepherdInspection } from "./host"
 import type { Verdict } from "./judge"
 import type { ShepherdActionBlockReason } from "./returns"
 
@@ -54,7 +54,10 @@ export function admitShepherdContinuation(input: ShepherdAdmissionInput): Shephe
   if (input.verdict.replyIssue || !input.verdict.reply || !("text" in input.verdict.reply)
     || input.verdict.reply.text !== SHEPHERD_CONTINUATION_INTENT) return blocked("reply_invalid", "reply_scope_unverified")
   if (input.capabilities.state !== "qualified" || input.capabilities.protocolVersion !== 1) {
-    return blocked("host_unverified", "guarded_input_not_qualified")
+    const detail = input.capabilities.state === "unqualified"
+      && input.capabilities.reason === SHEPHERD_NATIVE_CAUSALITY_BLOCKER
+      ? SHEPHERD_NATIVE_CAUSALITY_BLOCKER : "guarded_input_not_qualified"
+    return blocked("host_unverified", detail)
   }
   const before = input.expected, current = input.current
   const first = before.guarded, fresh = current.guarded

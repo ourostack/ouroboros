@@ -197,6 +197,18 @@ describe.each(["immediate", "network", "periodic"] as const)("uniform %s continu
     expect(readReturns(root).at(-1)).toMatchObject({ actionBlockReason: "host_unverified" })
   })
 
+  it("shows the causal qualification blocker in the held operator return", async () => {
+    capabilities = { state: "unqualified", protocolVersion: 1, agents: [],
+      reason: "claude_native_input_attribution_unavailable" }
+    await run(trigger)
+    expect(effects).toEqual([])
+    expect(requests).toEqual([])
+    expect(readReturns(root).at(-1)).toMatchObject({
+      actionBlockReason: "host_unverified",
+      reason: expect.stringContaining("claude_native_input_attribution_unavailable"),
+    })
+  })
+
   it("refuses a changed raw-screen digest even when only numeric text changed", async () => {
     judgeHook = () => {
       current.screen = current.screen.replace("unfinished", "unfinished 2")

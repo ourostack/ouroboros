@@ -92,6 +92,28 @@ describe("cmux native guarded transport", () => {
     expect(await cmux.capabilities!()).toEqual({ state: "unqualified", protocolVersion: 1, agents: [] })
   })
 
+  it("preserves the recognized native causality blocker without granting input", async () => {
+    capabilities = { shepherd_guarded_input: { protocol_version: 1, state: "unqualified", agents: [],
+      qualification_reason: "claude_native_input_attribution_unavailable" } }
+    expect(await host().capabilities!()).toEqual({ state: "unqualified", protocolVersion: 1, agents: [],
+      reason: "claude_native_input_attribution_unavailable" })
+    expect(server.methods.some(call => call.method === "surface.shepherd.continue")).toBe(false)
+  })
+
+  it("refuses contradictory qualification with a known native blocker", async () => {
+    capabilities = { shepherd_guarded_input: { protocol_version: 1, state: "qualified", agents: ["claude"],
+      qualification_reason: "claude_native_input_attribution_unavailable" } }
+    await expect(host().capabilities!()).rejects.toThrow(/native Shepherd/i)
+    expect(server.methods.some(call => call.method === "surface.shepherd.continue")).toBe(false)
+  })
+
+  it.each(["unknown-provider-note", 42, { arbitrary: "text" }])(
+    "does not project unrecognized qualification metadata as an operator reason: %j", async reason => {
+      capabilities = { shepherd_guarded_input: { protocol_version: 1, state: "unqualified", agents: [],
+        qualification_reason: reason } }
+      expect(await host().capabilities!()).toEqual({ state: "unqualified", protocolVersion: 1, agents: [] })
+    })
+
   it("uses only the canonical native capture and native-scoped identity, hashing before redaction", async () => {
     const expected = await host().inspect!(surface)
     expect(expected).toMatchObject({

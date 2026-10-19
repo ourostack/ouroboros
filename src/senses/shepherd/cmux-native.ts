@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto"
 import { performance } from "node:perf_hooks"
 import { CmuxSocketError, type CmuxClient } from "./client"
-import type { HostSession, ShepherdContinuationRequest, ShepherdContinuationResult, ShepherdHostCapabilities, ShepherdInspection, ShepherdNativeInputReceipt } from "./host"
+import { SHEPHERD_NATIVE_CAUSALITY_BLOCKER, type HostSession, type ShepherdContinuationRequest, type ShepherdContinuationResult, type ShepherdHostCapabilities, type ShepherdInspection, type ShepherdNativeInputReceipt } from "./host"
 import { redactSecrets } from "./redact"
 
 const UUID = /^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/i
@@ -45,7 +45,13 @@ export function createCmuxNativeInput(client: CmuxClient, now: () => number) {
     if (!record(native) || native.protocol_version !== 1 ||
       native.state !== "unqualified" && native.state !== "qualified" ||
       !Array.isArray(native.agents) || !native.agents.every(agent => typeof agent === "string" && agent.trim().length > 0)) invalid()
-    return { state: native.state, protocolVersion: 1, agents: [...native.agents] }
+    if (native.state === "unqualified") {
+      return { state: "unqualified", protocolVersion: 1, agents: [...native.agents],
+        ...(native.qualification_reason === SHEPHERD_NATIVE_CAUSALITY_BLOCKER
+          ? { reason: SHEPHERD_NATIVE_CAUSALITY_BLOCKER } : {}) }
+    }
+    if (native.qualification_reason === SHEPHERD_NATIVE_CAUSALITY_BLOCKER) invalid()
+    return { state: "qualified", protocolVersion: 1, agents: [...native.agents] }
   }
 
   async function inspect(session: HostSession, workspaceId: string): Promise<ShepherdInspection> {

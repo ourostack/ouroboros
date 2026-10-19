@@ -58,6 +58,19 @@ function authorizedTask(input: ShepherdAdmissionInput) {
 }
 
 describe("deterministic Shepherd continuation admission", () => {
+  it("exposes the recognized causal blocker while withholding the continuation", () => {
+    const input = fixture()
+    input.capabilities = { state: "unqualified", protocolVersion: 1, agents: [],
+      reason: "claude_native_input_attribution_unavailable" }
+    expect(admitShepherdContinuation(input)).toEqual({
+      allowed: false, reason: "host_unverified", detail: "claude_native_input_attribution_unavailable",
+    })
+    input.capabilities.reason = "unrecognized-host-text"
+    expect(admitShepherdContinuation(input)).toEqual({
+      allowed: false, reason: "host_unverified", detail: "guarded_input_not_qualified",
+    })
+  })
+
   it("admits only fixed text bound to the protected task, not model prose", () => {
     const input = fixture()
     expect(admitShepherdContinuation(input)).toEqual({
