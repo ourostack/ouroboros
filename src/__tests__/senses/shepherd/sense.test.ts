@@ -7,7 +7,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { resetIdentity } from "../../../heart/identity"
 import { cacheMachineRuntimeCredentialConfig, resetRuntimeCredentialConfigCache } from "../../../heart/runtime-credentials"
 import type { HostWatchHandlers, ReturnedControl, ShepherdHost } from "../../../senses/shepherd/host"
-import type { JudgeResult, ReturnPacket } from "../../../senses/shepherd/judge"
+import type { JudgeResult, JudgeRuntime, ReturnPacket } from "../../../senses/shepherd/judge"
 import { parseVerdict } from "../../../senses/shepherd/judge"
 import { appendReturn, readReturns, returnsLogPath, type ReturnRecord } from "../../../senses/shepherd/returns"
 import { escalationContent, field, humanName, noticePolicy, queueEscalation, startShepherdSenseApp, wakeForEscalations } from "../../../senses/shepherd/sense"
@@ -803,20 +803,50 @@ describe("Shepherd sense: wiring", () => {
 
   it("defaults to the cmux host and the agent-lane judge", async () => {
     const server = await startFakeCmux({ capability: "v1.t.s" })
+    const surfaceId = "11111111-1111-4111-8111-111111111111"
+    const workspaceId = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
+    const screen = SCREENS.copilotGate
+    const streamTurn = vi.fn<JudgeRuntime["streamTurn"]>(async () => ({ content: `{"kind":"gate","reply":null,"reason":"Needs Ari's sign-in."}` }))
     try {
       cacheMachineRuntimeCredentialConfig(AGENT, { cmux: { socketCapability: "v1.t.s", socketPath: server.socketPath } })
-      server.respond("system.tree", () => tree([{ id: "SF-1", ref: "surface:1" }]))
-      server.respond("surface.read_text", () => ({ text: SCREENS.copilotGate }))
+      server.respond("system.tree", () => ({
+        windows: [{ id: "window-1", workspaces: [{ id: workspaceId, ref: "workspace:1", title: "app", selected: true,
+          panes: [{ id: "pane-1", surfaces: [{ id: surfaceId, ref: "surface:1", type: "terminal", title: "" }] }],
+        }] }],
+      }))
+      server.respond("system.capabilities", () => ({
+        shepherd_guarded_input: { protocol_version: 1, state: "unqualified", agents: [] },
+      }))
+      server.respond("surface.shepherd.inspect", () => ({
+        protocol_version: 1, host_instance: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb", screen,
+        observed_at_uptime_seconds: 123, observed_at_unix_ms: Date.now(), token: null,
+        snapshot: { workspace_id: workspaceId, surface_id: surfaceId, process_instance: "42:123456789",
+          agent: "copilot", cwd: project, tty: "/dev/fixture", surface_generation: 1,
+          screen_fingerprint: createHash("sha256").update(screen).digest("hex"), outside_composer_fingerprint: "",
+          input_revision: 0, focus_revision: 0, focused: false, idle: null,
+          composer: { state: "unknown", draft_length: null }, background_work: null, accepts_immediate_input: true },
+      }))
+      server.respond("surface.read_text", () => ({ text: "PASSIVE LEGACY SCREEN: not the canonical judge capture" }))
       server.respond("events.stream", () => ackFrame({ resume: { gap: false, latest_seq: 1 } }))
       server.respond("notification.create", () => ({}))
       server.v1(() => "OK")
-      mockGetProviderRuntime.mockResolvedValue({ streamTurn: async () => ({ content: `{"kind":"gate","reply":null,"reason":"Needs Ari's sign-in."}` }) })
+      mockGetProviderRuntime.mockResolvedValue({ streamTurn })
       const app = await startShepherdSenseApp({ agentName: AGENT, schedule: (fn, ms) => { const timer = setTimeout(fn, ms === 3_000 || ms === 2_000 ? 0 : ms); return () => clearTimeout(timer) } })
       stop = app.stop
       await vi.waitFor(() => expect(server.streamCount()).toBe(1))
-      server.push(hookEvent(2, "Stop", { source: "copilot" }))
-      await vi.waitFor(() => expect(readReturns(agentRoot).at(-1)).toMatchObject({ host: "cmux", kind: "gate", agent: "copilot" }), { timeout: 2_000 })
+      server.push(hookEvent(2, "Stop", { source: "copilot", surface: surfaceId, workspace: workspaceId, cwd: project }))
+      await vi.waitFor(() => expect(readReturns(agentRoot).at(-1)).toMatchObject({
+        host: "cmux", kind: "gate", agent: "copilot", reason: "Needs Ari's sign-in.",
+      }), { timeout: 2_000 })
       expect(mockGetProviderRuntime).toHaveBeenCalledWith("agent", { agentName: AGENT, agentRoot })
+      expect(streamTurn).toHaveBeenCalledTimes(1)
+      expect(streamTurn.mock.calls[0]![0].messages.find(message => message.role === "user"))
+        .toMatchObject({ content: expect.stringContaining("The deploy needs a production token.") })
+      expect(JSON.stringify(streamTurn.mock.calls[0]![0].messages)).not.toContain("PASSIVE LEGACY SCREEN")
+      expect(server.methods.filter(call => call.method === "surface.shepherd.inspect").map(call => call.params))
+        .toEqual([{ workspace_id: workspaceId, surface_id: surfaceId }])
+      expect(server.methods.some(call => ["surface.shepherd.continue",
+        "surface.send_key", "surface.send_text", "terminal.paste"].includes(call.method))).toBe(false)
       expect(fs.readdirSync(path.join(agentRoot, "state", "pending", "self", "inner", "dialog")).length).toBe(1)
       await vi.waitFor(() => expect(mockRequestPrivateWake).toHaveBeenCalledWith(AGENT, undefined, expect.objectContaining({ triggerSource: "shepherd" })))
     } finally {
