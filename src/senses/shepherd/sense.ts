@@ -47,11 +47,14 @@ const ESCALATION_TTL_MS = 30 * 60_000
 const WAKE_DELAY_MS = 2_000
 const FIELD_MAX = 200
 const CONNECTIVITY_POLL_MS = 15_000
+const RECOVERY_JUDGE_ATTEMPTS = 3
+const CONCURRENT_OBSERVATIONS = 4
 const NETWORK_RESUME = "Connectivity has recovered. Continue the existing task only if safe. Check uncertain writes before retrying. Do not bypass approvals or deliberate pauses."
 export const PERIODIC_RESUME = "Reassess your existing task and continue only already-authorized remaining work. Respect human decisions and pauses. Reconcile uncertain effects before retrying; do not wait for a scheduled tick when you can work now."
 
-type PeriodicTrigger = { kind: "periodic"; first: ShepherdInspection; observedAt: number; generation: number; pass: number }
-type HandleTrigger = { kind: "immediate" } | { kind: "network"; screen: string; generation: number } | PeriodicTrigger
+type PeriodicTrigger = { kind: "periodic"; first: ShepherdInspection; observedAt: number; generation: number; pass: number; attempt?: number }
+type HandleTrigger = { kind: "immediate"; retry?: { screen: string; attempt: number } } |
+  { kind: "network"; screen: string; generation: number; attempt: number } | PeriodicTrigger
 const fingerprint = (value: unknown) => createHash("sha256").update(JSON.stringify(value)).digest("hex")
 const inspectionFingerprint = (value: ShepherdInspection) => fingerprint([
   value.session.id, value.instance, value.session.agent, value.session.cwd, value.session.tty,
@@ -204,10 +207,16 @@ export async function startShepherdSenseApp(options: ShepherdSenseOptions): Prom
   const wakeIds: string[] = []
   let cancelWake: (() => void) | null = null
   let chain: Promise<void> = Promise.resolve()
-  const networkWaiting = new Map<string, { event: ReturnedControl; screen: string; offlineConfirmed: boolean }>()
+  const pending: Array<{ event: ReturnedControl; trigger: HandleTrigger; generation: number }> = []
+  const active = new Set<Promise<void>>()
+  const activeSessions = new Set<string>()
+  const networkWaiting = new Map<string, {
+    event: ReturnedControl; screen: string; offlineConfirmed: boolean; eventGeneration: number; attempts: number; recheck?: HandleTrigger
+  }>()
   const latestReturns = new Map<string, ReturnedControl>()
   const checkConnectivity = options.checkConnectivity ?? checkShepherdConnectivity
   let cancelConnectivity: (() => void) | null = null
+  let connectivityImmediate = false
   let recoveryGeneration = 0
   let stopped = false
   let cancelCheckIn: (() => void) | null = null
@@ -217,6 +226,35 @@ export async function startShepherdSenseApp(options: ShepherdSenseOptions): Prom
   const history = new Map(readReturns(agentRoot).filter(record => record.host === host.name).map(record => [record.session, record]))
   const generationFor = (session: string) => generations.get(session) ?? 0
   const invalidate = (session: string) => generations.set(session, generationFor(session) + 1)
+
+  function enqueue(event: ReturnedControl, trigger: HandleTrigger = { kind: "immediate" }, generation = generationFor(event.sessionId)): void {
+    const index = pending.findIndex(job => job.event.sessionId === event.sessionId)
+    const previous = pending[index]
+    if (previous && (previous.generation > generation ||
+        (previous.generation === generation && previous.trigger.kind !== "periodic" && trigger.kind === "periodic"))) return
+    const job = { event, trigger, generation }
+    if (previous) pending[index] = job
+    else pending.push(job)
+    drain()
+  }
+
+  function drain(): void {
+    while (!stopped && active.size < CONCURRENT_OBSERVATIONS) {
+      const index = pending.findIndex(job => !activeSessions.has(job.event.sessionId))
+      if (index === -1) return
+      const job = pending.splice(index, 1)[0]!
+      activeSessions.add(job.event.sessionId)
+      const task = Promise.resolve().then(() => handle(job.event, job.trigger, job.generation)).catch(error => {
+        emitNervesEvent({ level: "error", component: "senses", event: "senses.shepherd_chain_error",
+          message: "Shepherd observation failed; other sessions remain scheduled", meta: { agent, session: job.event.sessionId, error: redactSecrets(String(error)) } })
+      }).finally(() => {
+        active.delete(task)
+        activeSessions.delete(job.event.sessionId)
+        drain()
+      })
+      active.add(task)
+    }
+  }
 
   function scheduleCheckIn(): void {
     if (stopped || checkInMs === 0 || !host.inspect || cancelCheckIn) return
@@ -252,13 +290,13 @@ export async function startShepherdSenseApp(options: ShepherdSenseOptions): Prom
       if (stopped || candidates.length === 0) return
       cancelQuietBatch = schedule(() => {
         cancelQuietBatch = null
-        chain = chain.then(async () => {
+        chain = chain.then(() => {
           for (const candidate of candidates) {
             if (stopped) break
             const current = candidate.trigger.first
-            await handle({ sessionId: candidate.sessionId, transitionId: `periodic:${candidate.trigger.pass}:${candidate.sessionId}`,
+            enqueue({ sessionId: candidate.sessionId, transitionId: `periodic:${candidate.trigger.pass}:${candidate.sessionId}`,
               agent: current.session.agent, cwd: current.session.cwd ?? null, lastBody: null, backgroundWork: current.backgroundWork,
-              title: current.session.title, workspaceTitle: current.session.workspaceTitle }, candidate.trigger)
+              title: current.session.title, workspaceTitle: current.session.workspaceTitle }, candidate.trigger, candidate.trigger.generation)
           }
         })
       }, QUIET_MS)
@@ -270,12 +308,18 @@ export async function startShepherdSenseApp(options: ShepherdSenseOptions): Prom
     }
   }
 
-  function scheduleConnectivity(): void {
-    if (stopped || networkWaiting.size === 0 || cancelConnectivity) return
+  function scheduleConnectivity(delay = CONNECTIVITY_POLL_MS): void {
+    if (stopped || networkWaiting.size === 0) return
+    if (cancelConnectivity) {
+      if (delay !== 0 || connectivityImmediate) return
+      cancelConnectivity()
+    }
+    connectivityImmediate = delay === 0
     cancelConnectivity = schedule(() => {
       cancelConnectivity = null
+      connectivityImmediate = false
       chain = chain.then(checkRecovery)
-    }, CONNECTIVITY_POLL_MS)
+    }, delay)
   }
 
   async function checkRecovery(): Promise<void> {
@@ -287,7 +331,7 @@ export async function startShepherdSenseApp(options: ShepherdSenseOptions): Prom
       if (connectivity === "offline") {
         for (const candidate of networkWaiting.values()) candidate.offlineConfirmed = true
       } else if (connectivity === "online") {
-        const candidates = [...networkWaiting.values()].filter(candidate => candidate.offlineConfirmed)
+        const candidates = [...networkWaiting.values()].filter(candidate => candidate.offlineConfirmed || candidate.recheck)
         if (candidates.length === 0) return
         recoveryGeneration += 1
         // Consume before any send: a failed send may already have reached the terminal.
@@ -295,9 +339,13 @@ export async function startShepherdSenseApp(options: ShepherdSenseOptions): Prom
         const sessions = await host.list()
         for (const candidate of candidates) {
           if (stopped) break
-          if (latestReturns.get(candidate.event.sessionId) !== candidate.event ||
+          if ((!candidate.recheck || candidate.recheck.kind !== "periodic") && latestReturns.get(candidate.event.sessionId) !== candidate.event ||
+              candidate.eventGeneration !== generationFor(candidate.event.sessionId) ||
               !sessions.some(session => session.id === candidate.event.sessionId)) continue
-          await handle(candidate.event, { kind: "network", screen: candidate.screen, generation: recoveryGeneration })
+          const recheck = candidate.recheck?.kind === "immediate" && candidate.offlineConfirmed ? undefined : candidate.recheck
+          enqueue(candidate.event, recheck ?? {
+            kind: "network", screen: candidate.screen, generation: recoveryGeneration, attempt: candidate.attempts + 1,
+          }, candidate.eventGeneration)
         }
       }
     } catch (error) {
@@ -307,10 +355,15 @@ export async function startShepherdSenseApp(options: ShepherdSenseOptions): Prom
     }
   }
 
-  function rememberNetworkWait(event: ReturnedControl, screen: string): void {
-    if (stopped || event.backgroundWork || latestReturns.get(event.sessionId) !== event) return
-    networkWaiting.set(event.sessionId, { event, screen, offlineConfirmed: false })
-    scheduleConnectivity()
+  function rememberNetworkWait(event: ReturnedControl, screen: string, eventGeneration: number, recoveryAttempt = 0,
+    recheck?: HandleTrigger): boolean {
+    if (stopped || event.backgroundWork || (recheck?.kind !== "periodic" && latestReturns.get(event.sessionId) !== event) ||
+        eventGeneration !== generationFor(event.sessionId)) return false
+    networkWaiting.set(event.sessionId, {
+      event, screen, offlineConfirmed: !recheck && recoveryAttempt > 0, eventGeneration, attempts: recoveryAttempt, recheck,
+    })
+    scheduleConnectivity(recoveryAttempt === 0 || (recheck && recoveryAttempt === 1) ? 0 : CONNECTIVITY_POLL_MS)
+    return true
   }
 
   const guardFor = (session: string) => {
@@ -367,10 +420,11 @@ export async function startShepherdSenseApp(options: ShepherdSenseOptions): Prom
   }
 
   /** Judges one return and acts on it. Every outcome, including a failure, is one log line. */
-  async function handle(event: ReturnedControl, trigger: HandleTrigger = { kind: "immediate" }): Promise<void> {
+  async function handle(event: ReturnedControl, trigger: HandleTrigger, eventGeneration: number): Promise<void> {
     if (stopped) return
     const recovery = trigger.kind === "network" ? trigger : null
     const periodic = trigger.kind === "periodic" ? trigger : null
+    const observationRetry = trigger.kind === "immediate" ? trigger.retry : undefined
     const record: ShepherdJudgedReturnRecord = {
       at: new Date(now()).toISOString(), host: host.name, session: event.sessionId, transition: recovery ? `network:${recovery.generation}:${event.transitionId}` : event.transitionId,
       agent: event.agent, cwd: event.cwd, task: null, kind: "unclear", action: "let_through", reason: "", reply: null, latencyMs: null, inputTokens: null,
@@ -424,7 +478,7 @@ export async function startShepherdSenseApp(options: ShepherdSenseOptions): Prom
       const text = redactSecrets(rawScreen)
       record.task = [...text.matchAll(/Desk-Task:\s*(\S+)/g)].pop()?.[1] ?? null
       const screen = tail(text, SCREEN_LINES)
-      if (recovery && screen !== recovery.screen) {
+      if ((recovery || observationRetry) && screen !== (recovery?.screen ?? observationRetry!.screen)) {
         record.actionBlockReason = "state_changed"
         record.reason = "the screen changed since the network stop, so recovery was not sent"
         return
@@ -436,6 +490,19 @@ export async function startShepherdSenseApp(options: ShepherdSenseOptions): Prom
       }
       const guidance = checkedGuidance()
       record.guidanceRevision = guidance.revision
+      if (stopped) {
+        notice = false
+        record.actionBlockReason = "stopped"
+        record.reason = "Shepherd stopped before judgment; no input or notice sent"
+        return
+      }
+      if ((observationRetry || periodic?.attempt) &&
+          (guidance.paused || current?.session.focused || current?.backgroundWork || now() - state.focusedAt < FOCUS_HOLD_MS)) {
+        notice = false
+        record.actionBlockReason = guidance.paused ? "guidance" : "state_changed"
+        record.reason = "the failed observation retry is now protected; no judgment or input sent"
+        return
+      }
       let verdict: JudgeResult
       try {
         const prior = history.get(event.sessionId)
@@ -445,7 +512,18 @@ export async function startShepherdSenseApp(options: ShepherdSenseOptions): Prom
           ...(recovery ? { networkRecovered: true as const } : {}),
           ...(periodic ? { periodicCheckIn: { priorJudgment: prior ? { kind: prior.kind, reason: prior.reason, at: prior.at } : null } } : {}) })
       } catch (error) {
-        if (!recovery && !periodic && error instanceof Error && isNetworkError(error)) rememberNetworkWait(event, screen)
+        if (periodic) notice = !stopped && eventGeneration === generationFor(event.sessionId) && !guidance.paused &&
+          current?.session.focused !== true && current?.backgroundWork !== true && now() - state.focusedAt >= FOCUS_HOLD_MS
+        if (error instanceof Error && isNetworkError(error)) {
+          const attempt = recovery?.attempt ?? periodic?.attempt ?? observationRetry?.attempt ?? 1
+          if (attempt < RECOVERY_JUDGE_ATTEMPTS && !guidance.paused &&
+              current?.session.focused !== true && current?.backgroundWork !== true &&
+              now() - state.focusedAt >= FOCUS_HOLD_MS &&
+              rememberNetworkWait(event, screen, eventGeneration, attempt, recovery ? undefined :
+                periodic ? { ...periodic, attempt: attempt + 1 } : { kind: "immediate", retry: { screen, attempt: attempt + 1 } })) {
+            notice = false
+          }
+        }
         throw error
       }
       judged = true
@@ -459,7 +537,7 @@ export async function startShepherdSenseApp(options: ShepherdSenseOptions): Prom
       const news = verdict.news === true || (kind === "working" && verdict.kind === "gate")
       Object.assign(record, { kind, judgeKind: verdict.kind, reason: verdict.reason, latencyMs: verdict.latencyMs, inputTokens: verdict.inputTokens,
         ...(verdict.replyIssue ? { replyIssue: verdict.replyIssue } : {}) })
-      if (!recovery && !periodic && kind === "waiting" && verdict.waitingOnNetwork) rememberNetworkWait(event, screen)
+      if (!recovery && !periodic && kind === "waiting" && verdict.waitingOnNetwork) rememberNetworkWait(event, screen, eventGeneration)
       const noticeScreen = screen.replace(/\b\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})\b/g, "<observation-time>")
       noticeBasis = [host.name, event.sessionId, record.agent, record.cwd, record.task, noticeScreen, guidance.revision]
       notice = true
@@ -513,7 +591,8 @@ export async function startShepherdSenseApp(options: ShepherdSenseOptions): Prom
             }
             // No awaited host reads between this final check and initiating the send.
             const latest = checkedGuidance()
-            if (stopped || (recovery && (latestReturns.get(event.sessionId) !== event || now() - state.focusedAt < FOCUS_HOLD_MS)) ||
+            if (stopped || eventGeneration !== generationFor(event.sessionId) ||
+              (recovery && (latestReturns.get(event.sessionId) !== event || now() - state.focusedAt < FOCUS_HOLD_MS)) ||
               periodic && (periodic.generation !== generationFor(event.sessionId) || now() - state.focusedAt < FOCUS_HOLD_MS)) {
               record.actionBlockReason = stopped ? "stopped" : now() - state.focusedAt < FOCUS_HOLD_MS ? "focus" : "state_changed"
               record.reason = `Shepherd stopped, the human focused this session, or it returned again while judging, so nothing was sent: ${verdict.reason}`
@@ -618,7 +697,7 @@ export async function startShepherdSenseApp(options: ShepherdSenseOptions): Prom
       invalidate(event.sessionId)
       networkWaiting.delete(event.sessionId)
       latestReturns.set(event.sessionId, event)
-      chain = chain.then(() => handle(event))
+      enqueue(event)
     },
     focused: (session) => {
       if (stopped) return
@@ -636,13 +715,13 @@ export async function startShepherdSenseApp(options: ShepherdSenseOptions): Prom
       stopped = true
       observations.stop()
       networkWaiting.clear()
+      pending.length = 0
       watcher.close()
       cancelWake?.()
       cancelConnectivity?.()
       cancelCheckIn?.()
       cancelQuietBatch?.()
-      void chain.then(() => custody.close(), error => {
-        custody.close()
+      void chain.finally(() => Promise.all(active)).finally(() => custody.close()).catch(error => {
         emitNervesEvent({ level: "error", component: "senses", event: "senses.shepherd_chain_error",
           message: "Shepherd chain failed during shutdown", meta: { agent, error: redactSecrets(String(error)) } })
       })
