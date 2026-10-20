@@ -174,10 +174,11 @@ describe("compiled periodic check-in pipeline on owned PTYs", () => {
     const paste = writes().find(entry => entry.method === "terminal.paste")!
     expect(JSON.stringify(paste.params)).toContain("Reassess your existing task and continue only already-authorized remaining work.")
     expect(JSON.stringify(paste.params)).not.toContain("provider-selected")
-    expect(notices.map(record => [record.session, record.kind, record.action])).toEqual([
+    expect(notices).toHaveLength(2)
+    expect(notices.map(record => [record.session, record.kind, record.action])).toEqual(expect.arrayContaining([
       [ids[0], "premature", "respond"], [ids[1], "gate", "let_through"],
-    ])
-    expect(notices[0]).toMatchObject({ judgeKind: "premature", replyIssue: "too_long" })
+    ]))
+    expect(notices.find(record => record.session === ids[0])).toMatchObject({ judgeKind: "premature", replyIssue: "too_long" })
     expect(providerRequests.every(request => request.includes("history only"))).toBe(true)
     const statusCount = cmux.lines.filter(line => line.includes("set_status")).length
     const wake = jobs.find(job => job.ms === 2000)!
