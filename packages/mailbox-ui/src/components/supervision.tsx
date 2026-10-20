@@ -1,8 +1,11 @@
 import { useEffect, useRef, useState } from "react"
 import { fetchJson } from "../api"
 import { Badge } from "../catalyst/badge"
-import type { ShepherdSupervisionEvent, ShepherdSupervisionView } from "../contracts"
-import { shepherdInspectionCommand, shepherdRetirementCommand, SHEPHERD_ALPHA_AUTOMATION_WARNING } from "../contracts"
+import type { ShepherdSupervisionEvent, ShepherdSupervisionView, ShepherdObservationClock } from "../contracts"
+import {
+  shepherdInspectionCommand, shepherdRetirementCommand, SHEPHERD_ALPHA_AUTOMATION_WARNING,
+  shepherdManagedCaptureFresh, advanceShepherdObservationClock, shepherdObservationClockBarrier,
+} from "../contracts"
 
 interface SupervisionProps {
   agents: string[]
@@ -52,6 +55,8 @@ export function Supervision({ agents, agentName, focus, refreshGeneration, onSel
   const [data, setData] = useState<ShepherdSupervisionView | null>(null)
   const [error, setError] = useState<{ agent: string; message: string } | null>(null)
   const [now, setNow] = useState(Date.now)
+  const clock = useRef<ShepherdObservationClock | null>(null)
+  const invalidClockObservations = useRef(new Map<string, number>())
   const reload = useRef<(() => void) | null>(null)
   const lastGeneration = useRef(refreshGeneration)
 
@@ -62,6 +67,11 @@ export function Supervision({ agents, agentName, focus, refreshGeneration, onSel
     let inFlight = false
     let queued = false
     let controller: AbortController | null = null
+    const sampleNow = () => {
+      clock.current = advanceShepherdObservationClock(clock.current, Date.now(), performance.now())
+      setNow(clock.current.nowMs)
+      return clock.current.nowMs
+    }
     const load = async (): Promise<void> => {
       if (!active) return
       if (inFlight) { queued = true; return }
@@ -72,9 +82,13 @@ export function Supervision({ agents, agentName, focus, refreshGeneration, onSel
         if (!active) return
         if (snapshot.agentName !== owner) throw new Error("the observation belongs to another agent")
         if (snapshot.schemaVersion !== 1) throw new Error("unsupported observation schema")
+        const barrier = shepherdObservationClockBarrier(
+          invalidClockObservations.current.get(owner) ?? null, snapshot.freshness.observedAt, sampleNow(),
+        )
+        if (barrier === null) invalidClockObservations.current.delete(owner)
+        else invalidClockObservations.current.set(owner, barrier)
         setData(snapshot)
         setError(null)
-        setNow(Date.now())
       } catch (failure) {
         if (active && !controller.signal.aborted) setError({ agent: owner, message: failure instanceof Error ? failure.message : String(failure) })
       } finally {
@@ -86,9 +100,9 @@ export function Supervision({ agents, agentName, focus, refreshGeneration, onSel
     reload.current = request
     request()
     const poll = window.setInterval(() => { if (document.visibilityState !== "hidden") request() }, 5_000)
-    const clock = window.setInterval(() => setNow(Date.now()), 1_000)
+    const clockTimer = window.setInterval(sampleNow, 1_000)
     const visible = () => {
-      setNow(Date.now())
+      sampleNow()
       if (document.visibilityState !== "hidden") request()
     }
     document.addEventListener("visibilitychange", visible)
@@ -96,7 +110,7 @@ export function Supervision({ agents, agentName, focus, refreshGeneration, onSel
       active = false
       controller?.abort()
       window.clearInterval(poll)
-      window.clearInterval(clock)
+      window.clearInterval(clockTimer)
       document.removeEventListener("visibilitychange", visible)
       if (reload.current === request) reload.current = null
     }
@@ -110,15 +124,25 @@ export function Supervision({ agents, agentName, focus, refreshGeneration, onSel
 
   const view = data?.agentName === agentName ? data : null
   const currentError = error?.agent === agentName ? error.message : null
-  const current = view?.freshness.status === "fresh" && fresh(view.freshness.observedAt, now)
-  const status = !view || view.freshness.status === "unknown" || age(view.freshness.observedAt, now) === null
+  const barrier = agentName ? invalidClockObservations.current.get(agentName) : undefined
+  const clockInvalid = !!view && barrier !== undefined && view.freshness.observedAt !== null
+    && Date.parse(view.freshness.observedAt) <= barrier
+  const current = !clockInvalid && view?.freshness.status === "fresh" && fresh(view.freshness.observedAt, now)
+  const status = !view || clockInvalid || view.freshness.status === "unknown" || age(view.freshness.observedAt, now) === null
     ? "unknown" : current ? "fresh" : "stale"
-  const rows = view?.sessions.items.map(row => ({
-    ...row,
-    activity: current && row.freshness.status === "fresh" && fresh(row.observedAt, now) ? row.activity : "unknown" as const,
-    authority: current && fresh(row.observedAt, now) ? row.authority : "unknown" as const,
-    capability: current && fresh(row.observedAt, now) ? row.capability : "unknown" as const,
-  })) ?? []
+  const rows = view?.sessions.items.map(row => {
+    const rowCurrent = current && row.freshness.status === "fresh" && fresh(row.observedAt, now)
+      && (!row.managed || shepherdManagedCaptureFresh(row.managed, now))
+    return {
+      ...row,
+      activity: rowCurrent ? row.activity : "unknown" as const,
+      authority: rowCurrent ? row.authority : "unknown" as const,
+      capability: rowCurrent ? row.capability : "unknown" as const,
+      ...(row.managed ? { managed: { ...row.managed, ...(!rowCurrent ? {
+        qualification: "unknown" as const, qualificationReason: "observation_not_current", workCoverage: "unknown" as const,
+      } : {}), ...(clockInvalid ? { renderCaptureStartedAt: null } : {}) } } : {}),
+    }
+  }) ?? []
   const counts = view?.counts ? { working: 0, idle: 0, shell: 0, unknown: 0 } : null
   if (counts) for (const row of rows) counts[row.activity] += 1
   const held = view?.custody.claims.items.filter(claim => (claim.state === "unknown" || claim.state === "claimed") && !claim.retired) ?? []
@@ -161,9 +185,12 @@ export function Supervision({ agents, agentName, focus, refreshGeneration, onSel
               <div className="flex flex-wrap items-center gap-3">
                 <Badge color={status === "fresh" ? "lime" : "yellow"}><span data-testid="supervision-freshness">{status} observation</span></Badge>
                 <Badge color={view.health === "ok" ? "zinc" : "yellow"}>{view.health === "ok" ? "Sources readable" : "Sources degraded"}</Badge>
-                <p className="text-sm">Observation age: {ageLabel(view.freshness.observedAt, now)}</p>
+                <p className="text-sm">Observation age: {status === "unknown" ? "unknown" : ageLabel(view.freshness.observedAt, now)}</p>
                 <button type="button" onClick={() => reload.current?.()} className="text-sm text-ouro-glow underline">Refresh observation</button>
               </div>
+              {clockInvalid && <p className="mt-2 text-sm text-ouro-gold">
+                Clock-skewed observation is held; a new current host observation is required.
+              </p>}
               {view.freshness.observedAt && <p className="mt-2 break-words font-mono text-xs text-ouro-mist">
                 Observed at <time dateTime={view.freshness.observedAt}>{view.freshness.observedAt}</time>. Reading this page does not refresh the observation.
               </p>}
@@ -199,6 +226,17 @@ export function Supervision({ agents, agentName, focus, refreshGeneration, onSel
                     <div><dt className="inline">Last observed: </dt><dd className="inline">{ageLabel(row.observedAt, now)} ago</dd></div>
                   </dl>
                   <p className="text-sm">Stored mandate / pause state: {row.authority}. Guarded input: {row.capability}.</p>
+                  {row.kind === "agent_session" && !row.managed && <p className="text-sm text-ouro-gold">
+                    Session kind: agent_session. Native identity, qualification, work coverage and render capture age are unavailable.
+                  </p>}
+                  {row.managed && <div className="break-words text-sm text-ouro-mist">
+                    <p>Session kind: {row.managed.kind}</p>
+                    <p>Provider: {row.managed.provider}</p>
+                    <p>Profile SHA-256: <span className="break-all font-mono">{row.managed.profileSha256}</span></p>
+                    <p>Native qualification: {row.managed.qualification}{row.managed.qualificationReason && ` (${row.managed.qualificationReason})`}</p>
+                    <p>Native work coverage: {row.managed.workCoverage}</p>
+                    <p>Render capture age upper bound: {ageLabel(row.managed.renderCaptureStartedAt, now)}. Request start is not a paint timestamp.</p>
+                  </div>}
                   <p className="break-words text-sm text-ouro-gold">Stored policy assessment, not an enforced dispatch decision: {row.withheldReason ?? "Unknown."}</p>
                   <p className="text-sm">Last recorded judgment: <span>{row.lastDecisionLabel ?? "None recorded"}</span></p>
                   <p className="break-words text-sm text-ouro-mist">
@@ -234,19 +272,31 @@ export function Supervision({ agents, agentName, focus, refreshGeneration, onSel
                 {" "}Storage: {view.custody.bytes === null ? "unknown" : `${view.custody.bytes.toLocaleString()} bytes`} ({view.custody.capacity}).
                 {" "}Showing {view.custody.claims.items.length} of {view.custody.claims.totalCount ?? "unknown"} retained barriers.
                 {view.custody.claims.truncated && " Custody inventory is truncated."}</p>
-              {held.map(claim => <div key={claim.id} className="mt-3 space-y-1 break-words border-t border-ouro-moss/25 pt-3 text-sm">
+              {view.custody.claims.items.filter(claim => claim.managed || held.includes(claim)).map(claim => <div key={claim.id} className="mt-3 space-y-1 break-words border-t border-ouro-moss/25 pt-3 text-sm">
                 <p>Original state: {claim.state} | {claim.host} / {claim.session}</p>
                 <p className="break-all font-mono text-xs">{claim.id}</p>
                 <p className="text-ouro-mist">{claim.reason ?? "No outcome evidence is recorded."} Acknowledgments in the timeline do not rewrite the original state.</p>
+                {claim.managed && <div className="text-xs text-ouro-mist">
+                  <p>Native request: <span className="font-mono">{claim.managed.nativeRequestId}</span></p>
+                  <p>Receipt version: {claim.managed.receiptVersion ?? "no receipt"}</p>
+                  <p>Receipt profile SHA-256: <span className="break-all font-mono">{claim.managed.profileSha256}</span> ({claim.managed.provider})</p>
+                  <p>Editor insertion: {claim.managed.editorInserted === null ? "unknown" : claim.managed.editorInserted ? "proven" : "unproven"}</p>
+                  <p>Backend write: {claim.managed.backendWriteAdmitted === null ? "unknown" : claim.managed.backendWriteAdmitted ? "proven" : "unproven"}</p>
+                  <p>Provider acknowledgement: {claim.managed.providerAcknowledged === null ? "unknown" : claim.managed.providerAcknowledged ? "proven" : "unproven"}</p>
+                  {claim.managed.providerInputId && <p>Provider input: {claim.managed.providerInputId}</p>}
+                  <p>Historical receipt evidence is not current readiness or task completion. Unproven does not establish zero effects.</p>
+                  <p>Exact managed receipt lookup is read-only at the host; local delivered reconciliation records owner acknowledgement without retrying input.
+                    {" "}Local inspection reads stored custody only. Source support does not qualify a native runtime.</p>
+                </div>}
                 <LocalCommand command={shepherdInspectionCommand(agentName, claim.id)} label="inspection" />
-                <details className="pt-2">
+                {held.includes(claim) && <details className="pt-2">
                   <summary className="cursor-pointer text-xs text-ouro-glow">Local recovery after terminal retirement</summary>
                   <p className="my-2 text-xs text-ouro-mist">The entire terminal must be absent from a strict host inventory.
                     {" "}A different foreground process is not proof of retirement. This command never confirms delivery or retries input.
-                    {" "}Confirmed-delivery recovery remains unsupported until native receipt lookup is qualified.</p>
+                    {!claim.managed && " Classic confirmed-delivery recovery remains unsupported until native receipt lookup is qualified."}</p>
                   <LocalCommand key={`${claim.id}:${view.custody.revision}`} command={shepherdRetirementCommand(agentName, claim.id, view.custody.revision)} label="retirement" />
                   {view.custody.revision === null && <p className="text-xs text-ouro-gold">No retirement command is available until a custody revision is known.</p>}
-                </details>
+                </details>}
               </div>)}
               {view.custody.claims.totalCount === null && <p className="mt-3 text-sm">Custody availability is unknown; zero held inputs cannot be established.</p>}
             </section>

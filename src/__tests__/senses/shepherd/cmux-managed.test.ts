@@ -355,6 +355,9 @@ describe("cmux managed native observation", () => {
       expect(observations[0]!.sessions).toMatchObject([{
         session: { id: surface, kind: "agent_session", agent: "copilot", cwd: "/native/project", tty: null },
         activity: "idle", observedAt: clock,
+        managed: { kind: "agent_session", provider: "copilot", profileSha256: profile,
+          qualification: "unqualified", qualificationReason: "managed_native_runtime_unqualified",
+          workCoverage: "complete", renderCaptureStartedAt: new Date(clock).toISOString() },
       }])
       expect(returned).toHaveLength(1)
       expect(returned[0]).toMatchObject({ sessionId: surface, agent: "copilot", cwd: "/native/project", backgroundWork: false })
@@ -366,6 +369,7 @@ describe("cmux managed native observation", () => {
       jobs.shift()!()
       await vi.waitFor(() => expect(observations).toHaveLength(3))
       expect(observations[2]!.sessions[0]!.activity).toBe("working")
+      expect(observations[2]!.sessions[0]).toMatchObject({ managed: { workCoverage: "unknown" } })
       expect(returned).toHaveLength(1)
       capture.idle = true
       capture.activity_revision = boot
@@ -397,11 +401,12 @@ describe("cmux managed native observation", () => {
 
   it("does not publish or judge managed evidence that resolves after watcher shutdown", async () => {
     let watcher: { close(): void } | undefined
-    server.respond("surface.shepherd.managed.inspect", () => { watcher!.close(); return capture })
+    let closed = false
+    server.respond("surface.shepherd.managed.inspect", () => { watcher!.close(); closed = true; return capture })
     const observations: ShepherdHostObservation[] = []
     const returned: ReturnedControl[] = []
     let decoded = 0
-    const cmux = host({ schedule: () => () => {}, now: () => { decoded++; return clock } })
+    const cmux = host({ schedule: () => () => {}, now: () => { if (closed) decoded++; return clock } })
     watcher = cmux.watch({ returned: event => returned.push(event), focused() {},
       observed: observation => observations.push(observation) })
     try {
@@ -411,4 +416,32 @@ describe("cmux managed native observation", () => {
       expect(returned).toEqual([])
     } finally { watcher.close() }
   })
+
+  it.each(["qualified", "wrong-profile", "wrong-provider", "backwards-clock"] as const)(
+    "projects actual discovery membership and a conservative local capture bound: %s", async mode => {
+      qualify()
+      if (mode === "wrong-profile") capabilities.shepherd_managed_input = {
+        protocol_version: 1, state: "qualified", providers: ["copilot"], profiles: ["c".repeat(64)],
+      }
+      if (mode === "wrong-provider") capabilities.shepherd_managed_input = {
+        protocol_version: 1, state: "qualified", providers: ["claude"], profiles: [profile],
+      }
+      server.respond("surface.shepherd.managed.inspect", () => {
+        clock += mode === "backwards-clock" ? -1_000 : 1_000
+        return capture
+      })
+      const observations: ShepherdHostObservation[] = []
+      const watcher = host({ schedule: () => () => {} }).watch({
+        returned() {}, focused() {}, observed: observation => observations.push(observation),
+      })
+      try {
+        await vi.waitFor(() => expect(observations).toHaveLength(1))
+        expect(observations[0]!.sessions[0]).toMatchObject({ observedAt: clock, managed: {
+          qualification: mode === "wrong-profile" || mode === "wrong-provider" ? "unqualified" : "qualified",
+          qualificationReason: mode === "wrong-profile" || mode === "wrong-provider" ? "managed_provider_or_profile_unqualified" : null,
+          renderCaptureStartedAt: mode === "backwards-clock" ? null : "1970-01-01T00:01:40.000Z",
+        } })
+      } finally { watcher.close() }
+    },
+  )
 })

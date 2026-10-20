@@ -3,7 +3,10 @@ export {
   getMailboxTranscriptTimestamp,
 } from "../../../src/heart/mailbox/mailbox-types"
 export { shepherdInspectionCommand, shepherdRetirementCommand } from "../../../src/heart/shepherd/operation-commands"
-export { SHEPHERD_ALPHA_AUTOMATION_WARNING } from "../../../src/heart/shepherd/supervision"
+export {
+  SHEPHERD_ALPHA_AUTOMATION_WARNING, shepherdManagedCaptureFresh, advanceShepherdObservationClock, shepherdObservationClockBarrier,
+} from "../../../src/heart/shepherd/supervision"
+export type { ShepherdObservationClock } from "../../../src/heart/shepherd/supervision"
 
 export type {
   ShepherdSupervisionView,

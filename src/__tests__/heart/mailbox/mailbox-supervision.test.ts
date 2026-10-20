@@ -4,6 +4,7 @@ import * as path from "node:path"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import {
   buildShepherdSupervisionView,
+  shepherdObservationClockBarrier,
   type ShepherdSupervisionSnapshot,
 } from "../../../heart/shepherd/supervision"
 import { readMailboxSupervision } from "../../../heart/mailbox/mailbox-supervision"
@@ -66,6 +67,51 @@ afterEach(() => {
 })
 
 describe("Shepherd supervision projection", () => {
+  const managed = {
+    kind: "agent_session", provider: "copilot", profileSha256: "a".repeat(64), qualification: "qualified",
+    qualificationReason: null, workCoverage: "complete", renderCaptureStartedAt: new Date(now - 100).toISOString(),
+  }
+
+  it.each([null, "invalid"])("does not discharge a future-clock barrier when a read has no usable timestamp: %j", at => {
+    expect(shepherdObservationClockBarrier(now + 60_000, at, now + 61_000)).toBe(now + 60_000)
+  })
+
+  it("reads managed replicas and weakens stale qualification and work coverage without mutating stored evidence", () => {
+    const input = snapshot()
+    Object.assign(input.sessions.items[0], { managed: { ...managed } })
+    const { root, file } = fixture(input)
+    const before = fs.readFileSync(file)
+    const fresh = readMailboxSupervision("slugger", { agentRoot: root, nowMs: now })
+    expect(fresh.sessions.items[0]).toMatchObject({ managed })
+    const stale = readMailboxSupervision("slugger", { agentRoot: root, nowMs: now + 30_001 })
+    expect(stale.sessions.items[0]).toMatchObject({ managed: {
+      qualification: "unknown", qualificationReason: "observation_not_current", workCoverage: "unknown",
+      renderCaptureStartedAt: "2026-10-17T19:59:59.900Z",
+    } })
+    expect(fs.readFileSync(file)).toEqual(before)
+  })
+
+  it("weakens managed readiness when the capture bound is stale even if inventory was just refreshed", () => {
+    const input = snapshot()
+    Object.assign(input.sessions.items[0], { managed: { ...managed, renderCaptureStartedAt: new Date(now - 30_001).toISOString() } })
+    expect(buildShepherdSupervisionView(input, now).sessions.items[0]).toMatchObject({
+      activity: "unknown", capability: "unknown", managed: { qualification: "unknown", workCoverage: "unknown" },
+    })
+  })
+
+  it.each([
+    { provider: "invented" }, { profileSha256: "not-a-digest" }, { qualification: "qualified", qualificationReason: "blocker" },
+    { qualification: "unqualified", qualificationReason: null }, { workCoverage: "empty" },
+    { renderCaptureStartedAt: "invalid" }, { renderCaptureStartedAt: new Date(now + 1).toISOString() },
+    { token: "must-not-leak" },
+  ])("rejects malformed managed replica metadata %j", patch => {
+    const input = snapshot()
+    Object.assign(input.sessions.items[0], { managed: { ...managed, ...patch } })
+    const { root } = fixture(input)
+    expect(readMailboxSupervision("slugger", { agentRoot: root, nowMs: now }).sourceErrors)
+      .toContainEqual(expect.objectContaining({ code: "observation_invalid" }))
+  })
+
   it("traces an unavailable observation without leaking source content, paths or raw errors", () => {
     const { root } = fixture({ private: "PRIVATE_OBSERVATION_SENTINEL" })
     const events: LogEvent[] = []
@@ -133,6 +179,128 @@ describe("Shepherd supervision projection", () => {
 })
 
 describe("Mailbox supervision replica reader", () => {
+  it.each(["managed", "classic"] as const)("keeps initially future-dated %s evidence invalid after catch-up until a new current observation arrives", async mode => {
+    vi.resetModules()
+    const { readMailboxSupervision: read } = await import("../../../heart/mailbox/mailbox-supervision")
+    let wall = now
+    let monotonic = 100
+    vi.spyOn(Date, "now").mockImplementation(() => wall)
+    vi.spyOn(performance, "now").mockImplementation(() => monotonic)
+    const input = withManagedClaim({ backendWriteAdmitted: true, providerAcknowledged: true, providerInputId: "historical-ack" })
+    input.observedAt = new Date(now + 60_000).toISOString()
+    Object.assign(input.sessions.items[0]!, { observedAt: input.observedAt, capability: "supported", managed: {
+      kind: "agent_session", provider: "copilot", profileSha256: "a".repeat(64), qualification: "qualified",
+      qualificationReason: null, workCoverage: "complete", renderCaptureStartedAt: input.observedAt,
+    } })
+    if (mode === "classic") delete input.sessions.items[0]!.managed
+    const { root, file } = fixture(input)
+    const before = fs.readFileSync(file)
+    expect(read("slugger", { agentRoot: root }).sessions.items[0]).toMatchObject({ activity: "unknown", capability: "unknown" })
+    wall += 31_000
+    monotonic += 31_000
+    expect(read("slugger", { agentRoot: root }).freshness.status).toBe("unknown")
+    wall += 30_000
+    monotonic += 30_000
+    const retained = read("slugger", { agentRoot: root })
+    expect(retained.sessions.items[0]).toMatchObject({
+      activity: "unknown", capability: "unknown",
+      ...(mode === "managed" ? { managed: { qualification: "unknown", workCoverage: "unknown", renderCaptureStartedAt: null } } : {}),
+    })
+    expect(retained.freshness.status).toBe("unknown")
+    expect(retained.custody.claims.items[0]).toMatchObject({
+      state: "unknown", managed: { providerAcknowledged: true, providerInputId: "historical-ack" },
+    })
+    expect(fs.readFileSync(file)).toEqual(before)
+    wall += 1_000
+    monotonic += 1_000
+    input.observedAt = new Date(wall).toISOString()
+    Object.assign(input.sessions.items[0]!, { observedAt: input.observedAt, managed: {
+      kind: "agent_session", provider: "copilot", profileSha256: "a".repeat(64), qualification: "qualified",
+      qualificationReason: null, workCoverage: "complete", renderCaptureStartedAt: input.observedAt,
+    } })
+    if (mode === "classic") delete input.sessions.items[0]!.managed
+    fs.writeFileSync(file, JSON.stringify(input))
+    expect(read("slugger", { agentRoot: root }).sessions.items[0]).toMatchObject({
+      activity: "idle", ...(mode === "managed" ? { managed: { qualification: "qualified", workCoverage: "complete" } } : {}),
+    })
+  })
+
+  it("does not revive stale managed evidence after the reader clock rolls back", () => {
+    const at = Date.now()
+    let wall = at
+    let monotonic = 100
+    vi.spyOn(Date, "now").mockImplementation(() => wall)
+    vi.spyOn(performance, "now").mockImplementation(() => monotonic)
+    const input = snapshot()
+    input.observedAt = new Date(at).toISOString()
+    Object.assign(input.sessions.items[0]!, { observedAt: input.observedAt, capability: "supported", managed: {
+      kind: "agent_session", provider: "copilot", profileSha256: "a".repeat(64), qualification: "qualified",
+      qualificationReason: null, workCoverage: "complete", renderCaptureStartedAt: input.observedAt,
+    } })
+    const { root, file } = fixture(input)
+    const before = fs.readFileSync(file)
+    expect(readMailboxSupervision("slugger", { agentRoot: root }).sessions.items[0]).toMatchObject({
+      activity: "idle", managed: { qualification: "qualified", workCoverage: "complete" },
+    })
+    wall += 31_000
+    monotonic += 31_000
+    expect(readMailboxSupervision("slugger", { agentRoot: root }).sessions.items[0]).toMatchObject({
+      activity: "unknown", managed: { qualification: "unknown", workCoverage: "unknown" },
+    })
+    wall = at + 10_000
+    monotonic += 1_000
+    expect(readMailboxSupervision("slugger", { agentRoot: root }).sessions.items[0]).toMatchObject({
+      activity: "unknown", capability: "unknown", managed: { qualification: "unknown", workCoverage: "unknown" },
+    })
+    expect(fs.readFileSync(file)).toEqual(before)
+  })
+
+  const managedClaim = {
+    nativeRequestId: "ffffffff-ffff-4fff-8fff-ffffffffffff", provider: "copilot", profileSha256: "a".repeat(64),
+    receiptVersion: 1, editorInserted: true, backendWriteAdmitted: false, providerAcknowledged: false, providerInputId: null,
+  }
+  function withManagedClaim(patch: Record<string, unknown> = {}, state: "claimed" | "sent" | "not_sent" | "unknown" = "unknown") {
+    const input = snapshot()
+    input.custody.claims = { totalCount: 1, truncated: false, items: [Object.assign({
+      id: "a".repeat(64), host: "cmux", session: "pane:1", instance: "agent_session:owned",
+      state, claimedAt: new Date(now).toISOString(), reason: null, retired: false,
+    }, { managed: { ...managedClaim, ...patch } })] }
+    return input
+  }
+
+  it("retains partial managed receipt evidence in a stale replica without turning an unproven write into no effects", () => {
+    const { root } = fixture(withManagedClaim())
+    const view = readMailboxSupervision("slugger", { agentRoot: root, nowMs: now + 60_000 })
+    expect(view.custody.claims.items[0]).toMatchObject({
+      state: "unknown", managed: { editorInserted: true, backendWriteAdmitted: false, providerAcknowledged: false },
+    })
+    Object.assign(view.custody.claims.items[0]!.managed!, { editorInserted: false })
+    expect(readMailboxSupervision("slugger", { agentRoot: root, nowMs: now }).custody.claims.items[0]).toMatchObject({
+      managed: { editorInserted: true },
+    })
+  })
+
+  it.each([
+    { nativeRequestId: "not-a-uuid" }, { nativeRequestId: null }, { provider: "invented" }, { profileSha256: "bad" },
+    { receiptVersion: 2 }, { receiptVersion: null }, { editorInserted: null }, { backendWriteAdmitted: null },
+    { providerAcknowledged: null }, { editorInserted: false, backendWriteAdmitted: true },
+    { providerAcknowledged: true }, { providerInputId: "invented-ack" }, { providerInputId: "\n" },
+    { screen: "private" }, { receiptVersion: null, editorInserted: null, backendWriteAdmitted: null, providerAcknowledged: false },
+  ])("rejects corrupt or contradictory managed claim evidence %j", patch => {
+    const { root } = fixture(withManagedClaim(patch))
+    expect(readMailboxSupervision("slugger", { agentRoot: root, nowMs: now }).sourceErrors)
+      .toContainEqual(expect.objectContaining({ code: "observation_invalid" }))
+  })
+
+  it.each([
+    ["sent", {}], ["not_sent", {}],
+    ["not_sent", { backendWriteAdmitted: true, providerAcknowledged: true, providerInputId: "ack" }],
+  ] as const)("rejects managed stages that contradict original state %s", (state, patch) => {
+    const { root } = fixture(withManagedClaim(patch, state))
+    expect(readMailboxSupervision("slugger", { agentRoot: root, nowMs: now }).sourceErrors)
+      .toContainEqual(expect.objectContaining({ code: "observation_invalid" }))
+  })
+
   it("keeps a missing bundle or ancestor unavailable without creating it", () => {
     const { root } = fixture()
     expect(readMailboxSupervision("slugger", { agentRoot: path.join(root, "absent") }).freshness.status).toBe("unknown")

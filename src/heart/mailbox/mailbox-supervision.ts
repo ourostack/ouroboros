@@ -3,11 +3,17 @@ import * as path from "node:path"
 import { emitNervesEvent } from "../../nerves/runtime"
 import {
   buildShepherdSupervisionView,
+  advanceShepherdObservationClock,
+  shepherdObservationClockBarrier,
   isShepherdSupervisionSnapshot,
   SHEPHERD_OBSERVATION_FILE,
   SHEPHERD_OBSERVATION_MAX_BYTES,
   type ShepherdSupervisionView,
+  type ShepherdObservationClock,
 } from "../shepherd/supervision"
+
+let observationClock: ShepherdObservationClock | null = null
+const invalidClockObservations = new Map<string, number>()
 
 function owned(metadata: fs.Stats): void {
   if (!process.getuid || metadata.uid !== process.getuid()) throw new Error("Observation requires current-user ownership")
@@ -47,7 +53,11 @@ function unavailable(agentName: string, nowMs: number, code: string): ShepherdSu
 
 /** A bounded read-only replica, never an authority file or a live terminal access path. */
 export function readMailboxSupervision(agentName: string, options: { agentRoot: string; nowMs?: number }): ShepherdSupervisionView {
-  const nowMs = options.nowMs ?? Date.now()
+  let nowMs = options.nowMs
+  if (nowMs === undefined) {
+    observationClock = advanceShepherdObservationClock(observationClock, Date.now(), performance.now())
+    nowMs = observationClock.nowMs
+  }
   try {
     let current = path.resolve(options.agentRoot)
     if (!directory(current, false)) return unavailable(agentName, nowMs, "observation_missing")
@@ -81,7 +91,26 @@ export function readMailboxSupervision(agentName: string, options: { agentRoot: 
     } finally { fs.closeSync(fd) }
     const snapshot: unknown = JSON.parse(raw)
     if (!isShepherdSupervisionSnapshot(snapshot) || snapshot.agentName !== agentName) throw new Error("Invalid observation identity or schema")
-    return buildShepherdSupervisionView(snapshot, nowMs)
+    const key = JSON.stringify([agentName, path.resolve(options.agentRoot)])
+    const barrier = shepherdObservationClockBarrier(invalidClockObservations.get(key) ?? null, snapshot.observedAt, nowMs)
+    if (barrier === null) {
+      invalidClockObservations.delete(key)
+      return buildShepherdSupervisionView(snapshot, nowMs)
+    }
+    invalidClockObservations.set(key, barrier)
+    const view = buildShepherdSupervisionView({
+      ...snapshot, sourceHealth: { ...snapshot.sourceHealth, host: "error" },
+    }, nowMs)
+    view.freshness = { status: "unknown", observedAt: snapshot.observedAt, ageMs: null }
+    view.sourceErrors.push({ source: "replica", code: "observation_clock_skew",
+      detail: "A future-dated observation remains held until a new current host observation arrives." })
+    for (const row of view.sessions.items) {
+      row.freshness = { status: "unknown", observedAt: row.observedAt, ageMs: null }
+      if (row.managed) row.managed.renderCaptureStartedAt = null
+    }
+    emitNervesEvent({ component: "heart", level: "warn", event: "heart.shepherd_observation_unavailable",
+      message: "Supervision observation clock is untrusted; historical custody is retained", meta: { code: "observation_clock_skew" } })
+    return view
   } catch {
     // Do not echo untrusted file contents, paths or operating-system errors into the browser.
     return unavailable(agentName, nowMs, "observation_invalid")

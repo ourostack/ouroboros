@@ -15,6 +15,161 @@ beforeEach(() => {
 afterEach(() => { cleanup(); vi.useRealTimers(); vi.unstubAllGlobals() })
 
 describe("Supervision", () => {
+  it("does not promote an initially future-dated payload when the clock catches up or the same payload is repolled", async () => {
+    vi.useFakeTimers()
+    const view = supervisionView("alpha")
+    const future = new Date(Date.now() + 60_000).toISOString()
+    view.freshness.observedAt = future
+    Object.assign(view.sessions.items[0]!, { observedAt: future, capability: "supported", managed: {
+      kind: "agent_session", provider: "copilot", profileSha256: "b".repeat(64), qualification: "qualified",
+      qualificationReason: null, workCoverage: "complete", renderCaptureStartedAt: future,
+    } })
+    Object.assign(view.custody.claims.items[0]!, { managed: {
+      receiptVersion: 1, nativeRequestId: "ffffffff-ffff-4fff-8fff-ffffffffffff",
+      provider: "copilot", profileSha256: "b".repeat(64), editorInserted: true,
+      backendWriteAdmitted: true, providerAcknowledged: true, providerInputId: "historical-ack",
+    } })
+    vi.stubGlobal("fetch", vi.fn(async () => jsonResponse(view)))
+    const app = render(<Supervision {...props} />)
+    await act(async () => { await Promise.resolve(); await Promise.resolve() })
+    expect(screen.getByText(/Native qualification: unknown/)).toBeTruthy()
+    await act(async () => { await vi.advanceTimersByTimeAsync(61_000) })
+    expect(screen.getByText(/Native qualification: unknown/)).toBeTruthy()
+    expect(screen.getByText(/Native work coverage: unknown/)).toBeTruthy()
+    expect(screen.getByTestId("supervision-freshness").textContent).toContain("unknown")
+    expect(screen.getByText(/Render capture age upper bound:/).textContent).toContain("unknown")
+    expect(screen.getByText("Provider acknowledgement: proven")).toBeTruthy()
+    const fresh = new Date().toISOString()
+    view.freshness.observedAt = fresh
+    view.sessions.items[0]!.observedAt = fresh
+    Object.assign(view.sessions.items[0]!.managed!, { renderCaptureStartedAt: fresh })
+    app.rerender(<Supervision {...props} refreshGeneration={1} />)
+    await act(async () => { await Promise.resolve(); await Promise.resolve() })
+    expect(screen.getByText(/Native qualification: qualified/)).toBeTruthy()
+    expect(screen.getByText("Provider acknowledgement: proven")).toBeTruthy()
+  })
+
+  it("never revives aged managed currentness on clock rollback or an identical successful repoll", async () => {
+    vi.useFakeTimers()
+    const at = Date.now()
+    const view = supervisionView("alpha")
+    Object.assign(view.sessions.items[0]!, { capability: "supported", managed: {
+      kind: "agent_session", provider: "copilot", profileSha256: "b".repeat(64), qualification: "qualified",
+      qualificationReason: null, workCoverage: "complete", renderCaptureStartedAt: new Date(at).toISOString(),
+    } })
+    Object.assign(view.custody.claims.items[0]!, { managed: {
+      receiptVersion: 1, nativeRequestId: "ffffffff-ffff-4fff-8fff-ffffffffffff",
+      provider: "copilot", profileSha256: "b".repeat(64), editorInserted: true,
+      backendWriteAdmitted: true, providerAcknowledged: true, providerInputId: "historical-ack",
+    } })
+    let unavailable = false
+    vi.stubGlobal("fetch", vi.fn(async () => jsonResponse(unavailable ? {} : view, unavailable ? 503 : 200)))
+    const app = render(<Supervision {...props} />)
+    await act(async () => { await Promise.resolve(); await Promise.resolve() })
+    expect(screen.getByText(/Native qualification: qualified/)).toBeTruthy()
+    unavailable = true
+    await act(async () => { await vi.advanceTimersByTimeAsync(31_000) })
+    expect(screen.getByText(/Native qualification: unknown/)).toBeTruthy()
+    vi.setSystemTime(at + 10_000)
+    await act(async () => { await vi.advanceTimersByTimeAsync(1_000) })
+    expect(screen.getByText(/Native qualification: unknown/)).toBeTruthy()
+    expect(screen.getByText(/Native work coverage: unknown/)).toBeTruthy()
+    expect(screen.getByText("Provider acknowledgement: proven")).toBeTruthy()
+    unavailable = false
+    app.rerender(<Supervision {...props} refreshGeneration={1} />)
+    await act(async () => { await Promise.resolve(); await Promise.resolve() })
+    expect(screen.getByText(/Native qualification: unknown/)).toBeTruthy()
+    expect(screen.getByTestId("supervision-count-unknown").textContent).toBe("1")
+    expect(screen.getByText("Provider acknowledgement: proven")).toBeTruthy()
+  })
+
+  it.each([false, true, null])("renders managed custody evidence %s separately from current qualification without inventing no effects", async stage => {
+    const view = supervisionView("alpha")
+    Object.assign(view.sessions.items[0]!, { managed: {
+      kind: "agent_session", provider: "copilot", profileSha256: "b".repeat(64), qualification: "unqualified",
+      qualificationReason: "managed_native_runtime_unqualified", workCoverage: "complete",
+      renderCaptureStartedAt: view.freshness.observedAt,
+    } })
+    Object.assign(view.custody.claims.items[0]!, { managed: {
+      receiptVersion: stage === null ? null : 1, nativeRequestId: "ffffffff-ffff-4fff-8fff-ffffffffffff",
+      provider: "copilot", profileSha256: "b".repeat(64),
+      editorInserted: stage, backendWriteAdmitted: stage, providerAcknowledged: stage,
+      providerInputId: stage ? "exact-provider-ack" : null,
+    } })
+    if (stage) view.custody.claims.items[0]!.state = "sent"
+    vi.stubGlobal("fetch", vi.fn(async () => jsonResponse(view)))
+    render(<Supervision {...props} />)
+    await screen.findByText("alpha terminal")
+    expect(screen.getByText(/Session kind: agent_session/)).toBeTruthy()
+    expect(screen.getByText(/Provider: copilot/)).toBeTruthy()
+    expect(screen.getAllByText("b".repeat(64)).length).toBeGreaterThan(0)
+    expect(screen.getByText(/Native qualification: unqualified/).textContent).toContain("managed_native_runtime_unqualified")
+    expect(screen.getByText(/Native work coverage: complete/)).toBeTruthy()
+    expect(screen.getByText(/Render capture age upper bound:/)).toBeTruthy()
+    const expected = stage === null ? "unknown" : stage ? "proven" : "unproven"
+    expect(screen.getByText(`Editor insertion: ${expected}`)).toBeTruthy()
+    expect(screen.getByText(`Backend write: ${expected}`)).toBeTruthy()
+    expect(screen.getByText(`Provider acknowledgement: ${expected}`)).toBeTruthy()
+    expect(screen.getByText(/Native request:/).textContent).toContain("ffffffff-ffff-4fff-8fff-ffffffffffff")
+    expect(screen.getByText(/Exact managed receipt lookup is read-only/)).toBeTruthy()
+    expect(screen.queryByText(/not inserted|not written|delivery confirmed|task completed/i)).toBeNull()
+    if (stage) expect(screen.getByText(/exact-provider-ack/)).toBeTruthy()
+    expect(vi.mocked(fetch).mock.calls.every(([, options]) => !options?.method || options.method === "GET")).toBe(true)
+  })
+
+  it("ages managed qualification and work coverage in the rendered browser without aging historical ACK evidence", async () => {
+    vi.useFakeTimers()
+    const view = supervisionView("alpha")
+    Object.assign(view.sessions.items[0]!, { managed: {
+      kind: "agent_session", provider: "copilot", profileSha256: "b".repeat(64), qualification: "qualified",
+      qualificationReason: null, workCoverage: "complete", renderCaptureStartedAt: new Date().toISOString(),
+    } })
+    Object.assign(view.custody.claims.items[0]!, { managed: {
+      receiptVersion: 1, nativeRequestId: "ffffffff-ffff-4fff-8fff-ffffffffffff",
+      provider: "copilot", profileSha256: "b".repeat(64), editorInserted: true,
+      backendWriteAdmitted: true, providerAcknowledged: true, providerInputId: "historical-ack",
+    } })
+    view.custody.claims.items[0]!.state = "sent"
+    vi.stubGlobal("fetch", vi.fn(async () => jsonResponse(view)))
+    render(<Supervision {...props} />)
+    await act(async () => { await Promise.resolve(); await Promise.resolve() })
+    expect(screen.getByText(/Native qualification: qualified/)).toBeTruthy()
+    await act(async () => { await vi.advanceTimersByTimeAsync(31_000) })
+    expect(screen.getByText(/Native qualification: unknown/)).toBeTruthy()
+    expect(screen.getByText(/Native work coverage: unknown/)).toBeTruthy()
+    expect(screen.getByText("Provider acknowledgement: proven")).toBeTruthy()
+    expect(screen.getByText(/Render capture age upper bound:/).textContent).toContain("31s")
+  })
+
+  it.each(["absent", "stale", "future"] as const)("does not promote current inventory into managed readiness with %s capture timing", async mode => {
+    const view = supervisionView("alpha")
+    const at = Date.now()
+    Object.assign(view.sessions.items[0]!, { managed: {
+      kind: "agent_session", provider: "copilot", profileSha256: "b".repeat(64), qualification: "qualified",
+      qualificationReason: null, workCoverage: "complete",
+      renderCaptureStartedAt: mode === "absent" ? null : new Date(at + (mode === "stale" ? -31_000 : 60_000)).toISOString(),
+    } })
+    vi.stubGlobal("fetch", vi.fn(async () => jsonResponse(view)))
+    render(<Supervision {...props} />)
+    await screen.findByText("alpha terminal")
+    expect(screen.getByText(/Native qualification: unknown/)).toBeTruthy()
+    expect(screen.getByText(/Native work coverage: unknown/)).toBeTruthy()
+    expect(screen.getByText(/Guarded input: unknown/)).toBeTruthy()
+    expect(screen.getByTestId("supervision-count-idle").textContent).toBe("0")
+    expect(screen.getByTestId("supervision-count-unknown").textContent).toBe("1")
+    expect(screen.getByText(/Render capture age upper bound:/).textContent).toContain(mode === "stale" ? "31s" : "unknown")
+  })
+
+  it("keeps a managed terminal visible when its native identity could not be read", async () => {
+    const view = supervisionView("alpha")
+    Object.assign(view.sessions.items[0]!, { kind: "agent_session", capability: "unknown" })
+    vi.stubGlobal("fetch", vi.fn(async () => jsonResponse(view)))
+    render(<Supervision {...props} />)
+    await screen.findByText("alpha terminal")
+    expect(screen.getByText(/Session kind: agent_session.*Native identity, qualification/)).toBeTruthy()
+    expect(screen.queryByText(/Process instance:.*314/)).toBeNull()
+  })
+
   it("copies exact local inspection and evidence-checked retirement commands without sending browser mutations", async () => {
     const writeText = vi.fn(async () => {})
     Object.defineProperty(navigator, "clipboard", { configurable: true, value: { writeText } })

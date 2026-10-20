@@ -125,6 +125,16 @@ export function createShepherdObservationPublisher(options: {
           claims: { totalCount: current.totalCount, truncated: current.nextCursor !== null, items: current.entries.map(entry => ({
             id: entry.id, host: safe(entry.host), session: safe(entry.session), instance: entry.instance === null ? null : safe(entry.instance),
             state: entry.state, claimedAt: iso(entry.claimedAt), reason: entry.reason === null ? null : safe(entry.reason), retired: entry.retired,
+            ...(entry.nativeTarget?.kind === "agent_session" ? { managed: {
+              nativeRequestId: entry.nativeRequestId!, provider: entry.nativeTarget.identity.provider,
+              profileSha256: entry.nativeTarget.identity.profileSha256,
+              receiptVersion: entry.receipt?.kind === "agent_session" ? entry.receipt.receiptVersion : null,
+              editorInserted: entry.receipt?.kind === "agent_session" ? entry.receipt.editorInserted : null,
+              backendWriteAdmitted: entry.receipt?.kind === "agent_session" ? entry.receipt.backendWriteAdmitted : null,
+              providerAcknowledged: entry.receipt?.kind === "agent_session" ? entry.receipt.providerAcknowledged : null,
+              providerInputId: entry.receipt?.kind === "agent_session" && entry.receipt.providerInputId !== null
+                ? safe(entry.receipt.providerInputId) : null,
+            } } : {}),
           })) },
         }
         events.custody = page(current.entries.flatMap(entry => {
@@ -168,7 +178,9 @@ export function createShepherdObservationPublisher(options: {
     const sessions = (observed?.sessions ?? []).slice(0, SHEPHERD_SUPERVISION_LIMIT).map(row => {
       const session = row.session
       let authority: "active" | "absent" | "paused" | "ambiguous" | "unknown" = "unknown"
-      let withheldReason = row.error ? "Terminal could not be read; no current policy assessment" : "Guarded automatic input is not qualified for this host"
+      let withheldReason = row.error ? "Terminal could not be read; no current policy assessment"
+        : row.managed?.qualification === "qualified" ? "Native qualification observed; current dispatch eligibility is not established"
+          : "Guarded automatic input is not qualified for this host"
       if (row.error && errors.length < 50) errors.push({ source: "host", code: "row_read_failed", detail: `Terminal ${safe(session.id)} could not be read` })
       if (guidance && mandates) {
         if (applicableGuidance(guidance, { host: options.host, session: session.id, cwd: session.cwd ?? null, task: null }).paused) authority = "paused"
@@ -179,17 +191,23 @@ export function createShepherdObservationPublisher(options: {
           authority = resolution.state === "authorized" ? "active" : resolution.reason === "ambiguous_mandates" ? "ambiguous" : "absent"
         } else authority = "absent"
         if (authority === "paused") withheldReason = "Stored terminal pause is set"
-        else if (authority === "absent") withheldReason = "No applicable stored mandate; legacy automatic paths are not uniformly mandate-enforced"
+        else if (authority === "absent") withheldReason = "No applicable stored mandate"
         else if (authority === "ambiguous") withheldReason = "Multiple stored mandates apply; policy scope is ambiguous"
       }
       const last = returns.filter(record => record.host === options.host && record.session === safe(session.id)).sort((a, b) => b.at.localeCompare(a.at))[0]
       return {
         host: safe(options.host), session: safe(session.id), instance: session.instance ? safe(session.instance) : null,
+        ...(session.kind === "agent_session" ? { kind: "agent_session" as const } : {}),
         label: safe(session.title || session.ref || session.id), harness: session.agent ? safe(session.agent) : null,
         project: session.cwd ? safe(session.cwd) : null, activity: row.activity,
         observedAt: row.observedAt === null ? null : new Date(row.observedAt).toISOString(),
         lastDecision: last?.kind ?? null, lastAction: last?.action ?? null, lastReason: last?.reason ?? null,
-        lastActionAt: last?.at ?? null, withheldReason, authority, capability: "unsupported" as const,
+        lastActionAt: last?.at ?? null, withheldReason, authority,
+        capability: row.error || row.managed?.qualification === "unknown" ? "unknown" as const
+          : row.managed?.qualification === "qualified" ? "supported" as const : "unsupported" as const,
+        ...(row.managed ? { managed: { ...row.managed,
+          qualificationReason: row.managed.qualificationReason === null ? null : safe(row.managed.qualificationReason),
+        } } : {}),
       }
     })
     const allEvents = [...Object.values(events), observations]

@@ -4,6 +4,7 @@ import { createCmuxClient } from "./client"
 import { createCmuxHost } from "./cmux"
 import { createHerdrHost } from "./herdr"
 import type { ShepherdInputReceipt, ShepherdManagedIdentity, ShepherdManagedInputReceipt } from "../../heart/shepherd/custody-types"
+import type { ShepherdSupervisionManagedSession } from "../../heart/shepherd/supervision"
 
 /**
  * The seam between Shepherd and a terminal host (cmux, Herdr). A host lists and reads terminal
@@ -138,6 +139,7 @@ export interface ShepherdHostObservation {
     session: HostSession
     activity: "working" | "idle" | "shell" | "unknown"
     observedAt: number | null
+    managed?: ShepherdSupervisionManagedSession
     error?: "read_failed"
   }>
   error?: "host_unavailable" | "sense_stopped"

@@ -16,7 +16,29 @@ export interface ShepherdSupervisionError {
   code: string
   detail: string
 }
+export interface ShepherdSupervisionManagedSession {
+  kind: "agent_session"
+  provider: "copilot" | "claude" | "codex"
+  profileSha256: string
+  qualification: "qualified" | "unqualified" | "unknown"
+  qualificationReason: string | null
+  workCoverage: "complete" | "unknown"
+  /** Local request start, not a paint timestamp. Its age bounds capture age from above. */
+  renderCaptureStartedAt: string | null
+}
+export interface ShepherdSupervisionManagedClaim {
+  nativeRequestId: string
+  provider: ShepherdSupervisionManagedSession["provider"]
+  profileSha256: string
+  receiptVersion: 1 | null
+  /** False means unproven, not proof that no effects occurred. Null means no receipt. */
+  editorInserted: boolean | null
+  backendWriteAdmitted: boolean | null
+  providerAcknowledged: boolean | null
+  providerInputId: string | null
+}
 export interface ShepherdSupervisionSession {
+  kind?: "agent_session"
   host: string
   session: string
   instance: string | null
@@ -33,6 +55,7 @@ export interface ShepherdSupervisionSession {
   /** Stored policy evaluation, not proof of current input eligibility or native qualification. */
   authority: ShepherdAuthority
   capability: "supported" | "unsupported" | "unknown"
+  managed?: ShepherdSupervisionManagedSession
 }
 export interface ShepherdSupervisionEvent {
   id: string
@@ -57,6 +80,7 @@ export interface ShepherdSupervisionClaim {
   claimedAt: string
   reason: string | null
   retired: boolean
+  managed?: ShepherdSupervisionManagedClaim
 }
 export interface ShepherdSupervisionCustody {
   revision: number | null
@@ -79,6 +103,24 @@ export interface ShepherdObservationFreshness {
   observedAt: string | null
   ageMs: number | null
 }
+export interface ShepherdObservationClock {
+  nowMs: number
+  monotonicMs: number
+}
+/** IO callers retain this floor across reads; a wall-clock rollback cannot rejuvenate evidence. */
+export function advanceShepherdObservationClock(
+  previous: ShepherdObservationClock | null, wallMs: number, monotonicMs: number,
+): ShepherdObservationClock {
+  return { nowMs: previous === null ? wallMs
+    : Math.max(wallMs, previous.nowMs + Math.max(0, monotonicMs - previous.monotonicMs)), monotonicMs }
+}
+/** A future stamp stays invalid until a newer, independently current observation replaces it. */
+export function shepherdObservationClockBarrier(previous: number | null, observedAt: string | null, nowMs: number): number | null {
+  const stampedAt = observedAt === null ? NaN : Date.parse(observedAt)
+  if (!Number.isFinite(stampedAt)) return previous
+  if (stampedAt > nowMs) return Math.max(previous ?? stampedAt, stampedAt)
+  return previous !== null && stampedAt <= previous ? previous : null
+}
 export interface ShepherdSupervisionView extends Omit<ShepherdSupervisionSnapshot, "sessions" | "observedAt"> {
   freshness: ShepherdObservationFreshness
   health: "ok" | "degraded"
@@ -96,6 +138,10 @@ function freshness(at: string | null, nowMs: number): ShepherdObservationFreshne
     : { status: ageMs > SHEPHERD_SUPERVISION_STALE_MS ? "stale" : "fresh", observedAt: at, ageMs }
 }
 
+export function shepherdManagedCaptureFresh(managed: ShepherdSupervisionManagedSession, nowMs: number): boolean {
+  return freshness(managed.renderCaptureStartedAt, nowMs).status === "fresh"
+}
+
 /** Observation is not authority; aging may only weaken current claims, never promote them. */
 export function buildShepherdSupervisionView(snapshot: ShepherdSupervisionSnapshot, nowMs: number): ShepherdSupervisionView {
   const current = freshness(snapshot.observedAt, nowMs)
@@ -103,6 +149,7 @@ export function buildShepherdSupervisionView(snapshot: ShepherdSupervisionSnapsh
   const sessions = snapshot.sessions.items.map(row => {
     const observed = freshness(row.observedAt, nowMs)
     const fresh = hostAvailable && current.status === "fresh" && observed.status === "fresh"
+      && (!row.managed || shepherdManagedCaptureFresh(row.managed, nowMs))
     return {
       ...row,
       freshness: observed,
@@ -110,6 +157,9 @@ export function buildShepherdSupervisionView(snapshot: ShepherdSupervisionSnapsh
       authority: fresh && snapshot.sourceHealth.mandates === "ok" && snapshot.sourceHealth.guidance === "ok"
         ? row.authority : "unknown" as const,
       capability: fresh ? row.capability : "unknown" as const,
+      ...(row.managed ? { managed: { ...row.managed, ...(!fresh ? {
+        qualification: "unknown" as const, qualificationReason: "observation_not_current", workCoverage: "unknown" as const,
+      } : {}) } } : {}),
       lastDecisionLabel: row.lastDecision === "done" ? "Agent reports finished" : row.lastDecision,
     }
   })
@@ -126,7 +176,9 @@ export function buildShepherdSupervisionView(snapshot: ShepherdSupervisionSnapsh
     timeline: { ...snapshot.timeline, items: snapshot.timeline.items.map(event => ({
       ...event, summary: event.kind === "judgment" && event.summary === "done" ? "Agent reports finished" : event.summary,
     })) },
-    custody: { ...snapshot.custody, claims: { ...snapshot.custody.claims, items: snapshot.custody.claims.items.map(claim => ({ ...claim })) } },
+    custody: { ...snapshot.custody, claims: { ...snapshot.custody.claims, items: snapshot.custody.claims.items.map(claim => ({
+      ...claim, ...(claim.managed ? { managed: { ...claim.managed } } : {}),
+    })) } },
     sourceErrors: snapshot.sourceErrors.map(error => ({ ...error })),
   }
 }
@@ -141,6 +193,33 @@ const date = (value: unknown): value is string =>
   typeof value === "string" && Number.isFinite(Date.parse(value)) && new Date(value).toISOString() === value
 const oneOf = (value: unknown, values: readonly string[]): boolean => typeof value === "string" && values.includes(value)
 const count = (value: unknown): value is number => typeof value === "number" && Number.isSafeInteger(value) && value >= 0
+const digest = (value: unknown): boolean => typeof value === "string" && /^[a-f0-9]{64}$/.test(value)
+const provider = (value: unknown): boolean => oneOf(value, ["copilot", "claude", "codex"])
+
+function validManagedSession(value: unknown): value is ShepherdSupervisionManagedSession {
+  return object(value) && exact(value, ["kind", "provider", "profileSha256", "qualification", "qualificationReason", "workCoverage", "renderCaptureStartedAt"])
+    && value.kind === "agent_session" && provider(value.provider) && digest(value.profileSha256)
+    && oneOf(value.qualification, ["qualified", "unqualified", "unknown"])
+    && (value.qualification === "qualified" ? value.qualificationReason === null : text(value.qualificationReason))
+    && oneOf(value.workCoverage, ["complete", "unknown"])
+    && (value.renderCaptureStartedAt === null || date(value.renderCaptureStartedAt))
+}
+function validManagedClaim(value: unknown, state: unknown): value is ShepherdSupervisionManagedClaim {
+  if (!object(value) || !exact(value, ["nativeRequestId", "provider", "profileSha256", "receiptVersion", "editorInserted",
+    "backendWriteAdmitted", "providerAcknowledged", "providerInputId"])
+    || typeof value.nativeRequestId !== "string" || !/^[a-f0-9]{8}-(?:[a-f0-9]{4}-){3}[a-f0-9]{12}$/.test(value.nativeRequestId)
+    || !provider(value.provider) || !digest(value.profileSha256)) return false
+  if (value.receiptVersion === null) return value.editorInserted === null && value.backendWriteAdmitted === null
+    && value.providerAcknowledged === null && value.providerInputId === null && state !== "sent"
+  return value.receiptVersion === 1
+    && typeof value.editorInserted === "boolean" && typeof value.backendWriteAdmitted === "boolean"
+    && typeof value.providerAcknowledged === "boolean" && nullableText(value.providerInputId)
+    && (!value.backendWriteAdmitted || value.editorInserted) && (!value.providerAcknowledged || value.backendWriteAdmitted)
+    && value.providerAcknowledged === (value.providerInputId !== null)
+    && (state === "sent" ? value.editorInserted && value.backendWriteAdmitted && value.providerAcknowledged
+      : state === "not_sent" ? !value.editorInserted && !value.backendWriteAdmitted && !value.providerAcknowledged
+        : true)
+}
 
 function validPage<T>(value: unknown, validItem: (item: unknown) => item is T): value is ShepherdSupervisionPage<T> {
   return object(value) && exact(value, ["totalCount", "truncated", "items"])
@@ -151,7 +230,8 @@ function validPage<T>(value: unknown, validItem: (item: unknown) => item is T): 
 }
 function validSession(value: unknown): value is ShepherdSupervisionSession {
   return object(value) && exact(value, ["host", "session", "instance", "label", "harness", "project", "activity",
-    "observedAt", "lastDecision", "lastAction", "lastReason", "lastActionAt", "withheldReason", "authority", "capability"])
+    "observedAt", "lastDecision", "lastAction", "lastReason", "lastActionAt", "withheldReason", "authority", "capability",
+    ...(Object.hasOwn(value, "managed") ? ["managed"] : []), ...(Object.hasOwn(value, "kind") ? ["kind"] : [])])
     && text(value.host) && text(value.session) && nullableText(value.instance) && text(value.label)
     && nullableText(value.harness) && nullableText(value.project) && nullableText(value.lastDecision) && nullableText(value.withheldReason)
     && (value.lastAction === null || oneOf(value.lastAction, ["respond", "let_through"])) && nullableText(value.lastReason)
@@ -159,6 +239,10 @@ function validSession(value: unknown): value is ShepherdSupervisionSession {
     && (value.observedAt === null || date(value.observedAt)) && oneOf(value.activity, ["working", "idle", "shell", "unknown"])
     && oneOf(value.authority, ["active", "absent", "paused", "ambiguous", "unknown"])
     && oneOf(value.capability, ["supported", "unsupported", "unknown"])
+    && (!Object.hasOwn(value, "kind") || value.kind === "agent_session")
+    && (!Object.hasOwn(value, "managed") || validManagedSession(value.managed)
+      && (value.managed.renderCaptureStartedAt === null || typeof value.observedAt === "string"
+        && Date.parse(value.managed.renderCaptureStartedAt) <= Date.parse(value.observedAt)))
 }
 function validEvent(value: unknown): value is ShepherdSupervisionEvent {
   return object(value) && exact(value, ["id", "host", "session", "instance", "at", "kind", "summary"])
@@ -167,10 +251,12 @@ function validEvent(value: unknown): value is ShepherdSupervisionEvent {
       "notification_delivered", "notification_unknown", "recovery"])
 }
 function validClaim(value: unknown): value is ShepherdSupervisionClaim {
-  return object(value) && exact(value, ["id", "host", "session", "instance", "state", "claimedAt", "reason", "retired"])
+  return object(value) && exact(value, ["id", "host", "session", "instance", "state", "claimedAt", "reason", "retired",
+    ...(Object.hasOwn(value, "managed") ? ["managed"] : [])])
     && typeof value.id === "string" && /^[a-f0-9]{64}$/.test(value.id)
     && text(value.host) && text(value.session) && nullableText(value.instance) && date(value.claimedAt)
     && nullableText(value.reason) && typeof value.retired === "boolean" && oneOf(value.state, ["claimed", "sent", "not_sent", "unknown"])
+    && (!Object.hasOwn(value, "managed") || validManagedClaim(value.managed, value.state))
 }
 export function isShepherdSupervisionSnapshot(value: unknown): value is ShepherdSupervisionSnapshot {
   if (!object(value) || !exact(value, ["schemaVersion", "agentName", "observedAt", "sourceHealth", "sessions", "timeline", "custody", "sourceErrors"])

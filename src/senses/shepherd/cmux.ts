@@ -411,8 +411,13 @@ export function createCmuxHost(client: CmuxClient, options: CmuxHostOptions = {}
           for (const surface of terminals) {
             if (surface.type === "agentSession") {
               let observation: Awaited<ReturnType<typeof native.inspectManaged>>
+              let discovery: NonNullable<Awaited<ReturnType<typeof native.capabilities>>["managed"]>
+              let captureStartedAt: number
               try {
-                if (!(await native.capabilities()).managed) throw new Error("managed Shepherd discovery unavailable")
+                const capabilities = (await native.capabilities()).managed
+                if (!capabilities) throw new Error("managed Shepherd discovery unavailable")
+                discovery = capabilities
+                captureStartedAt = now()
                 observation = await native.inspectManaged(surface, surface.workspaceId)
               } catch (error) {
                 rows.push({ session: surface, activity: "unknown", observedAt: null, error: "read_failed" })
@@ -421,8 +426,18 @@ export function createCmuxHost(client: CmuxClient, options: CmuxHostOptions = {}
                 continue
               }
               if (closed) return
-              rows.push({ session: observation.session, activity: observation.activity, observedAt: now() })
               const managed = observation.managed
+              const observedAt = now()
+              const qualified = discovery.state === "qualified" && discovery.providers.includes(managed.identity.provider)
+                && discovery.profiles.includes(managed.identity.profileSha256)
+              rows.push({ session: observation.session, activity: observation.activity, observedAt, managed: {
+                kind: "agent_session", provider: managed.identity.provider, profileSha256: managed.identity.profileSha256,
+                qualification: qualified ? "qualified" : "unqualified",
+                qualificationReason: qualified ? null : discovery.reason ?? "managed_provider_or_profile_unqualified",
+                workCoverage: observation.backgroundWork === false ? "complete" : "unknown",
+                renderCaptureStartedAt: Number.isFinite(captureStartedAt) && captureStartedAt >= 0 && captureStartedAt <= observedAt
+                  ? new Date(captureStartedAt).toISOString() : null,
+              } })
               const hash = createHash("sha256").update(JSON.stringify([
                 managed.identity, managed.eventRevision, managed.activityRevision, managed.renderFingerprint, observation.screenFingerprint,
               ])).digest("hex")

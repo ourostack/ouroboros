@@ -43,6 +43,117 @@ beforeEach(async () => {
 afterEach(() => { fs.rmSync(root, { recursive: true, force: true }) })
 
 describe("sense-owned observation publisher", () => {
+  it.each(["claimed", "unknown"] as const)("publishes exact reconciled ACK history without rewriting original %s custody", async state => {
+    const identity: ShepherdManagedIdentity = {
+      kind: "agent_session", hostInstance: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+      workspaceId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", surfaceId: "11111111-1111-4111-8111-111111111111",
+      provider: "copilot", providerSessionId: "provider-session", backendPid: 314, backendStartSeconds: 12345,
+      backendStartMicroseconds: 6789, surfaceGeneration: 7, executableSha256: "b".repeat(64), profileSha256: "a".repeat(64),
+    }
+    const store = openCheckInStore(checkInStorePath(root))
+    let id: string, nativeRequestId: string
+    try {
+      const claim = store.claimDispatch({
+        host: "cmux", session: identity.surfaceId,
+        instance: `agent_session:${createHash("sha256").update(JSON.stringify(identity)).digest("hex")}`,
+        screenFingerprint: "screen", guidanceRevision: "guidance", reply: "Continue.", trigger: "immediate",
+        transition: "return", at: new Date(now).toISOString(), nativeTarget: { kind: "agent_session", identity },
+      }, "worker")!
+      id = claim.id
+      nativeRequestId = claim.nativeRequestId!
+      if (state === "unknown") store.completeDispatch(id, "worker", { state, nativeRequestId })
+    } finally { store.close() }
+    await reconcileShepherdDispatch(root, {
+      id, expectedRevision: readCheckInSnapshot(checkInStorePath(root), { limit: 1 }).revision!,
+      requestId: "exact-late-ack", actor: { kind: "local_owner_administration", actorId: "owner" },
+      evidence: { kind: "managed_host_receipt_v1", host: "cmux", checkedAt: new Date(now).toISOString(), receipt: {
+        kind: "agent_session", receiptVersion: 1, requestId: id, nativeRequestId, identity,
+        editorInserted: true, backendWriteAdmitted: true, providerAcknowledged: true, providerInputId: "late-exact-ack",
+      } },
+    })
+    const publisher = createShepherdObservationPublisher({ agentRoot: root, agentName: "slugger", host: "cmux" })
+    expect(publisher.refresh()).toBe(true)
+    const view = readMailboxSupervision("slugger", { agentRoot: root, nowMs: now + 60_000 })
+    expect(view.custody.claims.items[0]).toMatchObject({ state, managed: {
+      nativeRequestId, editorInserted: true, backendWriteAdmitted: true, providerAcknowledged: true, providerInputId: "late-exact-ack",
+    } })
+    expect(view.timeline.items).toContainEqual(expect.objectContaining({
+      kind: "recovery", summary: `Owner acknowledged recovery: acknowledged_delivery; original state ${state}`,
+    }))
+    expect(view.timeline.items.some(event => event.kind === "input_admitted")).toBe(false)
+    expect(view.counts).toBeNull()
+  })
+
+  it.each([
+    { qualification: "unqualified", qualificationReason: "managed_native_runtime_unqualified", capability: "unsupported" },
+    { qualification: "qualified", qualificationReason: null, capability: "supported" },
+    { qualification: "unknown", qualificationReason: "observation_not_current", capability: "unknown" },
+  ] as const)("publishes actual managed $qualification and capture bounds without screen, token or process impersonation", ({
+    qualification, qualificationReason, capability,
+  }) => {
+    const publisher = createShepherdObservationPublisher({ agentRoot: root, agentName: "slugger", host: "cmux" })
+    expect(publisher.observe({ at: now, sessions: [Object.assign({
+      session: { ...session, kind: "agent_session" as const, tty: null, instance: "agent_session:owned" },
+      activity: "idle" as const, observedAt: now,
+    }, { managed: {
+      kind: "agent_session", provider: "copilot", profileSha256: "a".repeat(64),
+      qualification, qualificationReason,
+      workCoverage: "complete", renderCaptureStartedAt: new Date(now - 250).toISOString(),
+    } })] })).toBe(true)
+    const view = readMailboxSupervision("slugger", { agentRoot: root, nowMs: now })
+    expect(view.sessions.items[0]).toMatchObject({ instance: "agent_session:owned", capability, managed: {
+      kind: "agent_session", provider: "copilot", profileSha256: "a".repeat(64),
+      qualification, qualificationReason,
+      workCoverage: "complete", renderCaptureStartedAt: "2026-10-17T19:59:59.750Z",
+    } })
+    expect(JSON.stringify(view)).not.toMatch(/screenFingerprint|expiresAtUnixMs|renderFingerprint|synthetic-secret/)
+  })
+
+  it("preserves managed kind with unknown qualification when the native read fails", () => {
+    const publisher = createShepherdObservationPublisher({ agentRoot: root, agentName: "slugger", host: "cmux" })
+    expect(publisher.observe({ at: now, sessions: [{
+      session: { ...session, kind: "agent_session" }, activity: "unknown", observedAt: null, error: "read_failed",
+    }] })).toBe(true)
+    expect(readMailboxSupervision("slugger", { agentRoot: root }).sessions.items[0]).toMatchObject({
+      kind: "agent_session", capability: "unknown",
+    })
+  })
+
+  it.each(["claimed", "unknown", "sent", "not_sent"] as const)("projects actual managed %s custody stages and native request identity", state => {
+    const identity: ShepherdManagedIdentity = {
+      kind: "agent_session", hostInstance: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+      workspaceId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", surfaceId: "11111111-1111-4111-8111-111111111111",
+      provider: "copilot", providerSessionId: "provider-session", backendPid: 314, backendStartSeconds: 12345,
+      backendStartMicroseconds: 6789, surfaceGeneration: 7, executableSha256: "b".repeat(64), profileSha256: "a".repeat(64),
+    }
+    const store = openCheckInStore(checkInStorePath(root))
+    let nativeRequestId: string | undefined
+    try {
+      const claim = store.claimDispatch({
+        host: "cmux", session: identity.surfaceId, instance: `agent_session:${createHash("sha256").update(JSON.stringify(identity)).digest("hex")}`,
+        screenFingerprint: "screen", guidanceRevision: "guidance", reply: "Continue.", trigger: "immediate",
+        transition: "return", at: new Date(now).toISOString(), nativeTarget: { kind: "agent_session", identity },
+      }, "worker")!
+      nativeRequestId = claim.nativeRequestId
+      if (state !== "claimed") store.completeDispatch(claim.id, "worker", {
+        state, nativeRequestId, receipt: {
+          kind: "agent_session", receiptVersion: 1, requestId: claim.id, nativeRequestId: nativeRequestId!, identity,
+          editorInserted: state === "sent", backendWriteAdmitted: state === "sent",
+          providerAcknowledged: state === "sent", providerInputId: state === "sent" ? "server-ack" : null,
+        },
+      })
+    } finally { store.close() }
+    expect(createShepherdObservationPublisher({ agentRoot: root, agentName: "slugger", host: "cmux" }).refresh()).toBe(true)
+    const view = readMailboxSupervision("slugger", { agentRoot: root, nowMs: now + 60_000 })
+    expect(view.custody.claims.items[0]).toMatchObject({ state, managed: {
+      nativeRequestId, receiptVersion: state === "claimed" ? null : 1, provider: "copilot", profileSha256: "a".repeat(64),
+      editorInserted: state === "claimed" ? null : state === "sent",
+      backendWriteAdmitted: state === "claimed" ? null : state === "sent",
+      providerAcknowledged: state === "claimed" ? null : state === "sent",
+      providerInputId: state === "sent" ? "server-ack" : null,
+    } })
+  })
+
   it.each(["sent", "not_sent"] as const)("reports actual managed %s stages without calling them paste, Enter or task completion", state => {
     const identity: ShepherdManagedIdentity = {
       kind: "agent_session", hostInstance: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
