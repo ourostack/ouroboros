@@ -484,7 +484,7 @@ export function createCmuxHost(client: CmuxClient, options: CmuxHostOptions = {}
           emitNervesEvent({ level: "warn", component: "senses", event: "senses.shepherd_cmux_poll_error", message: "could not poll cmux terminals; the next poll retries", meta: { error: (error as Error).message } })
           if (!closed) handlers.observed?.({ at: now(), sessions: lastObserved, error: "host_unavailable" })
         }
-        if (!closed) cancelPoll = schedule(() => void poll(), POLL_MS)
+        if (!closed) cancelPoll = schedule(() => poll(), POLL_MS)
       }
 
       connect()

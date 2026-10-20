@@ -10,11 +10,11 @@ import { identifyTerminalProcesses } from "../../../senses/shepherd/terminal-pro
 import { ackFrame, startFakeCmux, type FakeCmux } from "./fake-cmux"
 import { hookEvent, SCREENS, surfaceEvent, tree } from "./fixtures"
 
-interface Task { fn: () => void; ms: number; cancelled: boolean }
+interface Task { fn: () => void | Promise<void>; ms: number; cancelled: boolean }
 function manualScheduler() {
   const tasks: Task[] = []
   return {
-    schedule: (fn: () => void, ms: number) => {
+    schedule: (fn: () => void | Promise<void>, ms: number) => {
       const task = { fn, ms, cancelled: false }
       // The submit delay inside prompt() runs on its own; the rest wait for the test.
       if (ms === 300) setTimeout(fn, 0)
@@ -25,7 +25,7 @@ function manualScheduler() {
     run: async (ms: number) => {
       for (const task of tasks.filter((entry) => !entry.cancelled && entry.ms === ms)) {
         task.cancelled = true
-        task.fn()
+        await task.fn()
       }
       await new Promise((resolve) => setTimeout(resolve, 20))
     },
@@ -539,9 +539,46 @@ describe("cmux host: returned control", () => {
     const cmux = host()
     const watcher = cmux.watch({ returned: (event) => returned.push(event), focused: (id) => focused.push(id) })
     await vi.waitFor(() => expect(server.streamCount()).toBe(1))
-    await new Promise((resolve) => setTimeout(resolve, 20))
+    await vi.waitFor(() => expect(scheduler.due(POLL_MS)).toBe(1))
     return { cmux, watcher, returned, focused }
   }
+
+  it("does not advance the manual poll clock while a real socket read is still pending", async () => {
+    let release!: () => void
+    const blocked = new Promise<void>((resolve) => { release = resolve })
+    let pause = false
+    let reading = false
+    let finished = false
+    const client = createCmuxClient({ socketPath: server.socketPath, auth: { kind: "capability", token: "v1.t.s" } })
+    const cmux = createCmuxHost({
+      ...client,
+      async call(method, params, canSend) {
+        if (pause && method === "surface.read_text") {
+          reading = true
+          await blocked
+        }
+        return client.call(method, params, canSend)
+      },
+    }, { homeDir: home, now: () => clock, schedule: scheduler.schedule })
+    const watcher = cmux.watch({ returned: vi.fn(), focused: vi.fn() })
+    let poll: Promise<void> | undefined
+    try {
+      await vi.waitFor(() => expect(scheduler.due(POLL_MS)).toBe(1))
+      pause = true
+      poll = scheduler.run(POLL_MS).then(() => { finished = true })
+      await vi.waitFor(() => expect(reading).toBe(true))
+      await new Promise((resolve) => setTimeout(resolve, 40))
+      expect(finished).toBe(false)
+      expect(scheduler.due(POLL_MS)).toBe(0)
+      release()
+      await poll
+      expect(scheduler.due(POLL_MS)).toBe(1)
+    } finally {
+      release()
+      await poll
+      watcher.close()
+    }
+  })
 
   it("turns any hooked agent's Stop into a return after the grace period, with cmux's summary of its last message", async () => {
     writeSessions("codex", { "codex-s1": { lastBody: "Which should I do?", cwd: "/Users/a/code/flaky", agentLifecycle: "idle" } })
