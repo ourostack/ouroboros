@@ -4,7 +4,8 @@ import * as path from "node:path"
 import Database from "better-sqlite3"
 import { emitNervesEvent } from "../../nerves/runtime"
 import { shepherdStateDir } from "./returns"
-import type { ShepherdInputReceipt, ShepherdNativeTarget } from "../../heart/shepherd/custody-types"
+import type { ShepherdDispatchReceipt, ShepherdInputReceipt, ShepherdManagedInputReceipt, ShepherdNativeTarget } from "../../heart/shepherd/custody-types"
+import { copyManagedIdentity, copyManagedReceipt, managedInstanceKey, sameManagedIdentity, validManagedIdentity, validManagedReceipt } from "./managed-evidence"
 
 export interface DispatchInput {
   host: string
@@ -26,12 +27,12 @@ export interface DispatchClaim extends DispatchInput {
   owner: string
   state: "claimed" | "sent" | "not_sent" | "unknown"
   reason?: string
-  receipt?: ShepherdInputReceipt
+  receipt?: ShepherdDispatchReceipt
 }
 export interface DispatchResult {
   state: "sent" | "not_sent" | "unknown"
   reason?: string
-  receipt?: ShepherdInputReceipt
+  receipt?: ShepherdDispatchReceipt
   nativeRequestId?: string
 }
 export interface CheckInStore {
@@ -67,7 +68,10 @@ function validInput(value: unknown): value is DispatchInput {
   return object(value) && ["host", "session", "screenFingerprint", "guidanceRevision", "reply", "transition"].every(key => text(value[key])) &&
     (value.instance === null || text(value.instance)) && ["immediate", "network", "periodic"].includes(String(value.trigger)) && timestamp(value.at)
     && (nativeTarget === undefined || object(nativeTarget) && Object.keys(nativeTarget).length === 2
-      && ["hostInstance", "workspaceId"].every(key => text(nativeTarget[key]) && bytes(nativeTarget[key]) <= 256))
+      && (nativeTarget.kind === "agent_session"
+        ? validManagedIdentity(nativeTarget.identity) && typeof value.session === "string" && nativeTarget.identity.surfaceId === value.session.toLowerCase() &&
+          managedInstanceKey(nativeTarget.identity) === value.instance
+        : ["hostInstance", "workspaceId"].every(key => text(nativeTarget[key]) && bytes(nativeTarget[key]) <= 256)))
 }
 function dispatchId(input: DispatchInput): string {
   return createHash("sha256").update(JSON.stringify([
@@ -75,37 +79,57 @@ function dispatchId(input: DispatchInput): string {
   ])).digest("hex")
 }
 function validClaim(value: unknown): value is DispatchClaim {
-  return object(value) && validInput(value) && text(value.owner) && bytes(value.owner) <= 256 &&
+  return object(value) && validInput(value) && text(value.id) && text(value.owner) && bytes(value.owner) <= 256 &&
     (value.nativeRequestId === undefined || typeof value.nativeRequestId === "string"
       && /^[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/.test(value.nativeRequestId)) &&
     (value.nativeTarget === undefined || value.nativeRequestId !== undefined) &&
     ["claimed", "sent", "not_sent", "unknown"].includes(String(value.state)) &&
     (value.reason === undefined || text(value.reason) && bytes(value.reason) <= 1024)
     && (value.receipt === undefined || validCustodyInputReceipt(value.receipt)
-      && value.receipt.requestId === value.id && value.receipt.surfaceId === value.session && value.receipt.processInstance === value.instance
-      && (value.nativeTarget === undefined || value.receipt.workspaceId === value.nativeTarget.workspaceId)
+      && receiptMatchesClaim({ id: value.id, session: value.session, instance: value.instance,
+        nativeTarget: value.nativeTarget, nativeRequestId: value.nativeRequestId }, value.receipt)
       && receiptMatchesOutcome(value.state, value.receipt))
 }
-export function validCustodyInputReceipt(value: unknown): value is ShepherdInputReceipt {
-  return object(value) && ["requestId", "surfaceId", "workspaceId", "processInstance"].every(key => text(value[key]) && bytes(value[key]) <= 256)
+export function validCustodyInputReceipt(value: unknown): value is ShepherdDispatchReceipt {
+  if (object(value) && value.kind === "agent_session") return validManagedReceipt(value)
+  return object(value) && value.kind === undefined && ["requestId", "surfaceId", "workspaceId", "processInstance"].every(key => text(value[key]) && bytes(value[key]) <= 256)
     && typeof value.pasteAdmitted === "boolean" && typeof value.submitAdmitted === "boolean"
     && (!value.submitAdmitted || value.pasteAdmitted)
 }
-export function copyCustodyInputReceipt(receipt: ShepherdInputReceipt): ShepherdInputReceipt {
+export function copyCustodyInputReceipt(receipt: ShepherdManagedInputReceipt): ShepherdManagedInputReceipt
+export function copyCustodyInputReceipt(receipt: ShepherdInputReceipt): ShepherdInputReceipt
+export function copyCustodyInputReceipt(receipt: ShepherdDispatchReceipt): ShepherdDispatchReceipt
+export function copyCustodyInputReceipt(receipt: ShepherdDispatchReceipt): ShepherdDispatchReceipt {
+  if (receipt.kind === "agent_session") return copyManagedReceipt(receipt)
   const { requestId, surfaceId, workspaceId, processInstance, pasteAdmitted, submitAdmitted } = receipt
   return { requestId, surfaceId, workspaceId, processInstance, pasteAdmitted, submitAdmitted }
 }
-function receiptMatchesOutcome(state: unknown, receipt: ShepherdInputReceipt): boolean {
+export function receiptMatchesClaim(claim: Pick<DispatchClaim, "id" | "session" | "instance" | "nativeTarget" | "nativeRequestId">,
+  receipt: ShepherdDispatchReceipt): boolean {
+  if (receipt.requestId !== claim.id) return false
+  if (receipt.kind === "agent_session") {
+    return claim.nativeTarget?.kind === "agent_session" && receipt.nativeRequestId === claim.nativeRequestId &&
+      receipt.identity.surfaceId === claim.session.toLowerCase() && managedInstanceKey(receipt.identity) === claim.instance &&
+      sameManagedIdentity(receipt.identity, claim.nativeTarget.identity)
+  }
+  return claim.nativeTarget?.kind !== "agent_session" && receipt.surfaceId === claim.session &&
+    receipt.processInstance === claim.instance && (claim.nativeTarget === undefined || receipt.workspaceId === claim.nativeTarget.workspaceId)
+}
+export function receiptMatchesOutcome(state: unknown, receipt: ShepherdDispatchReceipt): boolean {
+  if (receipt.kind === "agent_session") return state === "sent"
+    ? receipt.editorInserted && receipt.backendWriteAdmitted && receipt.providerAcknowledged
+    : state === "not_sent" ? !receipt.editorInserted && !receipt.backendWriteAdmitted && !receipt.providerAcknowledged
+      : !(receipt.editorInserted && receipt.backendWriteAdmitted && receipt.providerAcknowledged)
   return state === "sent" ? receipt.pasteAdmitted && receipt.submitAdmitted : state !== "not_sent" || !receipt.pasteAdmitted && !receipt.submitAdmitted
 }
-export function parseCustodyDispatch(row: DispatchRow): DispatchClaim {
+export function parseCustodyDispatch(row: DispatchRow, schemaVersion = 2): DispatchClaim {
   if (Buffer.byteLength(row.data) > MAX_ROW) refuse("record byte limit")
   const value: unknown = JSON.parse(row.data)
   if (!validClaim(value) || value.id !== row.id || dispatchId(value) !== row.id || value.host !== row.host ||
-    value.session !== row.session || value.instance !== row.instance) refuse("invalid dispatch schema")
+    value.session !== row.session || value.instance !== row.instance ||
+    schemaVersion < 3 && (value.nativeTarget?.kind === "agent_session" || value.receipt?.kind === "agent_session")) refuse("invalid dispatch schema")
   return value
 }
-const parseDispatch = parseCustodyDispatch
 export function validateCustodyDirectory(directory: string, create: boolean): boolean {
   const uid = process.getuid!()
   for (let candidate = directory; candidate !== path.dirname(candidate); candidate = path.dirname(candidate)) {
@@ -206,7 +230,7 @@ export function openCustodyDatabase(file: string, mode: "read" | "maintenance-re
   const database = new Database(file, { fileMustExist: true, readonly })
   try {
     const version = database.pragma("user_version", { simple: true })
-    if (![0, 1, 2].includes(Number(version)) || version === 0 && readonly) refuse("unsupported database schema")
+    if (![0, 1, 2, 3].includes(Number(version)) || version === 0 && readonly) refuse("unsupported database schema")
     custodyCapacity(database)
     database.pragma("busy_timeout = 1000")
     if (version !== 0) {
@@ -214,14 +238,14 @@ export function openCustodyDatabase(file: string, mode: "read" | "maintenance-re
       database.prepare("SELECT signature,data FROM notices LIMIT 0").all()
     }
     if (readonly) {
-      if (version === 2) validateCustodyV2(database)
+      if (version === 2 || version === 3) validateCustodyV2(database)
       return database
     }
     database.pragma("journal_mode = DELETE")
     database.pragma("synchronous = FULL")
     database.pragma(`max_page_count = ${Math.floor(MAX_DB / Number(database.pragma("page_size", { simple: true })))}`)
-    if (version !== 2) database.transaction(() => {
-      if (database.pragma("user_version", { simple: true }) === 2) return
+    if (version !== 2 && version !== 3) database.transaction(() => {
+      if ([2, 3].includes(Number(database.pragma("user_version", { simple: true })))) return
       database.exec(`CREATE TABLE IF NOT EXISTS dispatches (
         id TEXT PRIMARY KEY NOT NULL, host TEXT NOT NULL, session TEXT NOT NULL, instance TEXT, data TEXT NOT NULL
       );
@@ -235,13 +259,14 @@ export function openCustodyDatabase(file: string, mode: "read" | "maintenance-re
       CREATE TABLE retired_instances (key TEXT PRIMARY KEY,host TEXT NOT NULL,session TEXT NOT NULL,instance TEXT,data TEXT NOT NULL);
       CREATE INDEX retired_scope ON retired_instances(host,session,instance);
       CREATE TABLE custody_migrations (version INTEGER PRIMARY KEY,data TEXT NOT NULL);`)
-      for (const row of database.prepare("SELECT id,host,session,instance,data FROM dispatches").iterate() as Iterable<DispatchRow>) parseDispatch(row)
+      for (const row of database.prepare("SELECT id,host,session,instance,data FROM dispatches").iterate() as Iterable<DispatchRow>) parseCustodyDispatch(row)
       const counts = database.prepare("SELECT COUNT(*) AS count FROM dispatches").get() as { count: number }
       database.prepare("INSERT INTO custody_migrations VALUES(2,?)").run(JSON.stringify({ fromVersion: version, at: new Date().toISOString(), preservedDispatches: counts.count }))
       database.pragma("user_version = 2")
     }).immediate()
     validateCustodyV2(database)
-    for (const row of database.prepare("SELECT id,host,session,instance,data FROM dispatches").iterate() as Iterable<DispatchRow>) parseDispatch(row)
+    const schemaVersion = Number(database.pragma("user_version", { simple: true }))
+    for (const row of database.prepare("SELECT id,host,session,instance,data FROM dispatches").iterate() as Iterable<DispatchRow>) parseCustodyDispatch(row, schemaVersion)
   } catch (error) { database.close(); throw error }
   return database
 }
@@ -259,6 +284,7 @@ function validateCustodyV2(database: Database.Database): void {
 
 export function openCheckInStore(file: string): CheckInStore {
   const database = openCustodyDatabase(file, "write")
+  const parseDispatch = (row: DispatchRow) => parseCustodyDispatch(row, Number(database.pragma("user_version", { simple: true })))
   const transact = <T>(work: () => T): T => database.transaction(() => {
     assertNoCustodyMaintenance(file)
     custodyCapacity(database, true)
@@ -286,9 +312,16 @@ export function openCheckInStore(file: string): CheckInStore {
     claimDispatch(input, owner) {
       if (!validInput(input)) refuse("invalid dispatch input schema")
       bounded(owner, 256, "owner")
-      const record: DispatchClaim = { ...input, id: dispatchId(input), nativeRequestId: randomUUID(), owner, state: "claimed" }
+      const record: DispatchClaim = { ...input,
+        ...(input.nativeTarget?.kind === "agent_session" ? { nativeTarget: {
+          kind: "agent_session", identity: copyManagedIdentity(input.nativeTarget.identity),
+        } } : {}), id: dispatchId(input), nativeRequestId: randomUUID(), owner, state: "claimed" }
       if (bytes(record) + COMPLETION_HEADROOM > MAX_ROW) refuse("reserved record byte limit")
       return transact(() => {
+        if (record.nativeTarget?.kind === "agent_session" && database.pragma("user_version", { simple: true }) === 2) {
+          database.prepare("INSERT INTO custody_migrations VALUES(3,?)").run(JSON.stringify({ fromVersion: 2, at: input.at }))
+          database.pragma("user_version = 3")
+        }
         if (hasRetiredCustodyInstance(database, input)) return null
         const rows = database.prepare(`SELECT id,host,session,instance,data FROM dispatches
           WHERE id=? OR (host=? AND session=? AND (instance IS NULL OR ? IS NULL OR instance=?))`)
@@ -315,9 +348,7 @@ export function openCheckInStore(file: string): CheckInStore {
         if (prior.owner !== owner || prior.state !== "claimed") refuse("dispatch owner or phase mismatch")
         if ((prior.nativeTarget !== undefined || result.nativeRequestId !== undefined)
           && result.nativeRequestId !== prior.nativeRequestId) refuse("native attempt identity mismatch")
-        if (result.receipt && (result.receipt.requestId !== id || result.receipt.surfaceId !== prior.session
-          || result.receipt.processInstance !== prior.instance
-          || prior.nativeTarget !== undefined && result.receipt.workspaceId !== prior.nativeTarget.workspaceId)) refuse("host receipt identity mismatch")
+        if (result.receipt && !receiptMatchesClaim(prior, result.receipt)) refuse("host receipt identity mismatch")
         write({ ...prior, state: result.state, ...(result.reason === undefined ? {} : { reason: result.reason }),
           ...(result.receipt === undefined ? {} : { receipt: copyCustodyInputReceipt(result.receipt) }) })
       })

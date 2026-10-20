@@ -1,6 +1,22 @@
 import type { ShepherdAdministrationContext } from "./types"
 
+export interface ShepherdManagedIdentity {
+  kind: "agent_session"
+  hostInstance: string
+  workspaceId: string
+  surfaceId: string
+  provider: "copilot" | "claude" | "codex"
+  providerSessionId: string
+  backendPid: number
+  backendStartSeconds: number
+  backendStartMicroseconds: number
+  surfaceGeneration: number
+  executableSha256: string
+  profileSha256: string
+}
+
 export interface ShepherdInputReceipt {
+  kind?: never
   requestId: string
   surfaceId: string
   workspaceId: string
@@ -9,10 +25,23 @@ export interface ShepherdInputReceipt {
   submitAdmitted: boolean
 }
 
-export interface ShepherdNativeTarget {
-  hostInstance: string
-  workspaceId: string
+export interface ShepherdManagedInputReceipt {
+  kind: "agent_session"
+  receiptVersion: 1
+  requestId: string
+  nativeRequestId: string
+  identity: ShepherdManagedIdentity
+  editorInserted: boolean
+  backendWriteAdmitted: boolean
+  providerAcknowledged: boolean
+  providerInputId: string | null
 }
+
+export type ShepherdDispatchReceipt = ShepherdInputReceipt | ShepherdManagedInputReceipt
+
+export type ShepherdNativeTarget =
+  | { kind?: never; hostInstance: string; workspaceId: string }
+  | { kind: "agent_session"; identity: ShepherdManagedIdentity }
 
 export interface ShepherdRetirementProof {
   kind: "host_process_inventory"
@@ -27,6 +56,7 @@ export interface ShepherdRetirementProof {
 export type ShepherdRecoveryEvidence =
   | { kind: "guarded_host_receipt_v1"; host: string; checkedAt: string; receipt: ShepherdInputReceipt
     native?: { requestId: string; hostInstance: string } }
+  | { kind: "managed_host_receipt_v1"; host: string; checkedAt: string; receipt: ShepherdManagedInputReceipt }
   | ShepherdRetirementProof
 
 export interface ShepherdRecoveryRequest {
@@ -59,14 +89,14 @@ export interface ShepherdCustodyEntry {
   claimedAt: string
   reason: string | null
   retired: boolean
-  receipt: ShepherdInputReceipt | null
+  receipt: ShepherdDispatchReceipt | null
   reconciliations: ShepherdRecoveryReceipt[]
   reconciliationCount: number
 }
 
 export interface ShepherdCustodySnapshot {
   state: "ready" | "missing"
-  schemaVersion: 1 | 2 | null
+  schemaVersion: 1 | 2 | 3 | null
   revision: number | null
   bytes: number | null
   capacity: "normal" | "warning" | "refused" | "unknown"

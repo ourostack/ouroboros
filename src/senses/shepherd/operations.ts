@@ -6,14 +6,17 @@ import { readShepherdMandates, updateShepherdMandate } from "../../heart/shepher
 import { readMailboxSupervision } from "../../heart/mailbox/mailbox-supervision"
 import { SHEPHERD_ALPHA_AUTOMATION_WARNING } from "../../heart/shepherd/supervision"
 import { readGuidance, setShepherdSessionPause } from "./guidance"
-import { checkInStorePath } from "./checkin-store"
+import { checkInStorePath, copyCustodyInputReceipt, receiptMatchesClaim, receiptMatchesOutcome, validCustodyInputReceipt } from "./checkin-store"
 import { maintainShepherdCustody, readCheckInSnapshot, readMaintenanceCheckInSnapshot, reconcileShepherdDispatch } from "./recovery"
 import { emitNervesEvent } from "../../nerves/runtime"
+import type { ShepherdHost } from "./host"
+import { copyManagedIdentity } from "./managed-evidence"
 
 export interface ShepherdOperationDeps {
   agentRoot(agent: string): string
   resolveOwner(agent: string): Promise<{ actorId: string }>
-  host(agent: string): Promise<{ name: string; list(): Promise<Array<{ id: string; cwd?: string | null; instance?: string | null }>>; retirementInventory?(): Promise<string[]> }>
+  host(agent: string): Promise<{ name: string; list(): Promise<Array<{ id: string; cwd?: string | null; instance?: string | null }>>;
+    retirementInventory?(): Promise<string[]>; managedReceipt?: ShepherdHost["managedReceipt"] }>
   senseStopped(agent: string): Promise<ShepherdSenseStoppedProof>
 }
 
@@ -61,12 +64,25 @@ export async function runShepherdOperation(command: ShepherdOperation, deps: She
       }, [target])
     }
     if (command.kind === "shepherd.reconcile") {
-      if (command.resolution === "delivered") throw new Error("confirmed delivery is unsupported: no qualified guarded host receipt lookup is available")
       const snapshot = readCheckInSnapshot(file, { limit: 1, id: command.id })
       const entry = snapshot.entries[0]
       if (!entry) throw new Error("dispatch not found")
       const host = await deps.host(command.agent)
       if (host.name !== entry.host) throw new Error("custody host does not match the configured host")
+      if (command.resolution === "delivered") {
+        if (entry.nativeTarget?.kind !== "agent_session" || !entry.nativeRequestId || !host.managedReceipt) {
+          throw new Error("confirmed delivery is unsupported: no exact managed host receipt lookup is available")
+        }
+        const native = await host.managedReceipt(entry.nativeRequestId, copyManagedIdentity(entry.nativeTarget.identity))
+        if (!validCustodyInputReceipt(native) || native.kind !== "agent_session" || native.requestId !== entry.nativeRequestId ||
+          native.state !== "accepted" || !receiptMatchesOutcome("sent", native)) throw new Error("matching confirmed managed host receipt required")
+        const receipt = copyCustodyInputReceipt({ ...native, requestId: entry.id })
+        if (!receiptMatchesClaim(entry, receipt)) throw new Error("matching confirmed managed host receipt required")
+        return await reconcileShepherdDispatch(root, { id: command.id, expectedRevision: command.expectedRevision,
+          requestId: command.requestId, actor, evidence: {
+            kind: "managed_host_receipt_v1", host: host.name, checkedAt: new Date().toISOString(), receipt,
+          } })
+      }
       // Foreground inventories cannot prove that an older process in a surviving terminal exited.
       if (!host.retirementInventory) throw new Error("qualified complete retirement inventory is unavailable")
       if ((await host.retirementInventory()).includes(entry.session)) throw new Error("terminal still exists; foreground inventory cannot prove process retirement")

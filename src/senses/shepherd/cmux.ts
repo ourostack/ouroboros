@@ -125,7 +125,7 @@ export function createCmuxHost(client: CmuxClient, options: CmuxHostOptions = {}
     return records(tree.windows).flatMap((window) => records(window.workspaces).map((workspace) => ({ window, workspace }))).flatMap(({ window, workspace }) =>
       records(workspace.panes).flatMap((pane) => records(pane.surfaces)).map((surface) => {
         if (strict && (typeof surface.id !== "string" || !surface.id.trim() || typeof surface.type !== "string"
-          || !["terminal", "browser"].includes(surface.type) || seen.has(surface.id))) throw new Error("invalid cmux terminal inventory identity")
+          || !["terminal", "browser", "agentSession"].includes(surface.type) || seen.has(surface.id))) throw new Error("invalid cmux terminal inventory identity")
         seen.add(str(surface.id) ?? "")
         return {
         id: str(surface.id) ?? "",
@@ -134,10 +134,11 @@ export function createCmuxHost(client: CmuxClient, options: CmuxHostOptions = {}
         workspaceTitle: str(workspace.title),
         workspaceId: str(workspace.id) ?? "",
         title: str(surface.title) ?? "",
-        tty: str(surface.tty),
+        ...(surface.type === "agentSession" ? { kind: "agent_session" as const } : {}),
+        tty: surface.type === "agentSession" ? null : str(surface.tty),
         type: str(surface.type) ?? "",
-        agent: hooked.get(str(surface.id) ?? "")?.agent ?? null,
-        cwd: hooked.get(str(surface.id) ?? "")?.cwd ?? null,
+        agent: surface.type === "agentSession" ? null : hooked.get(str(surface.id) ?? "")?.agent ?? null,
+        cwd: surface.type === "agentSession" ? null : hooked.get(str(surface.id) ?? "")?.cwd ?? null,
         // The human's terminal: the focused surface of the selected workspace in a visible window.
         focused: surface.focused === true && workspace.selected === true && window.visible !== false,
         ...(surface.focused === true && workspace.selected === true && window.visible !== false && window.key === true
@@ -147,7 +148,7 @@ export function createCmuxHost(client: CmuxClient, options: CmuxHostOptions = {}
   }
 
   async function retirementInventory(): Promise<string[]> {
-    return (await surfaceEntries(true)).filter(surface => surface.type === "terminal").map(surface => surface.id)
+    return (await surfaceEntries(true)).filter(surface => surface.type === "terminal" || surface.type === "agentSession").map(surface => surface.id)
   }
 
   async function surfaces(freshFocus = false, strictInventory = false): Promise<Surface[]> {
@@ -197,10 +198,16 @@ export function createCmuxHost(client: CmuxClient, options: CmuxHostOptions = {}
 
   async function inspect(sessionId: string): Promise<ShepherdInspection> {
     const capabilities = await native.capabilities()
+    if (!/^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/i.test(sessionId)) throw new Error("cmux inspection requires a surface UUID")
+    const target = (await surfaceEntries()).find(entry => entry.id.toLowerCase() === sessionId.toLowerCase() &&
+      (entry.type === "terminal" || entry.type === "agentSession"))
+    if (!target) throw new Error("cmux inspection target disappeared")
+    if (target.type === "agentSession") {
+      if (!capabilities.managed) throw new Error("managed Shepherd discovery unavailable")
+      const { workspaceId, type: _type, ...session } = target
+      return native.inspectManaged(session, workspaceId)
+    }
     if (capabilities.state !== "unsupported") {
-      if (!/^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/i.test(sessionId)) throw new Error("cmux inspection requires a surface UUID")
-      const target = (await surfaceEntries()).find(entry => entry.id.toLowerCase() === sessionId.toLowerCase() && entry.type === "terminal")
-      if (!target) throw new Error("cmux inspection target disappeared")
       const { workspaceId, type: _type, ...session } = target
       return native.inspect(session, workspaceId)
     }
@@ -225,13 +232,14 @@ export function createCmuxHost(client: CmuxClient, options: CmuxHostOptions = {}
   return {
     name: "cmux",
     async list() {
-      return (await surfaces()).filter((surface) => surface.type === "terminal").map(({ workspaceId: _workspaceId, type: _type, ...session }) => session)
+      return (await surfaces()).filter((surface) => surface.type === "terminal" || surface.type === "agentSession").map(({ workspaceId: _workspaceId, type: _type, ...session }) => session)
     },
     retirementInventory,
     read,
     inspect,
     capabilities: native.capabilities,
     continueInput: native.continueInput,
+    managedReceipt: native.lookupManagedReceipt,
     async promptIfUnchanged(sessionId, line, expected, canSend?: () => boolean) {
       // Resolve first, then re-inspect. No server-side atomic CAS exists in cmux
       // 0.64: these are fresh client-side observations, not a lock on a human's UI.
@@ -395,12 +403,40 @@ export function createCmuxHost(client: CmuxClient, options: CmuxHostOptions = {}
       /** Inventory reads stay outside the judge queue; idle-hook terminals are observed but never rejudged here. */
       const poll = async (): Promise<void> => {
         try {
-          const terminals = (await surfaces(false, !!handlers.observed)).filter((surface) => surface.type === "terminal")
+          const terminals = (await surfaces(false, !!handlers.observed)).filter((surface) => surface.type === "terminal" || surface.type === "agentSession")
           if (closed) return
           const seen = new Set(terminals.map((surface) => surface.id))
           for (const id of screens.keys()) if (!seen.has(id)) screens.delete(id)
           const rows: ShepherdHostObservation["sessions"] = []
           for (const surface of terminals) {
+            if (surface.type === "agentSession") {
+              let observation: Awaited<ReturnType<typeof native.inspectManaged>>
+              try {
+                if (!(await native.capabilities()).managed) throw new Error("managed Shepherd discovery unavailable")
+                observation = await native.inspectManaged(surface, surface.workspaceId)
+              } catch (error) {
+                rows.push({ session: surface, activity: "unknown", observedAt: null, error: "read_failed" })
+                emitNervesEvent({ level: "warn", component: "senses", event: "senses.shepherd_cmux_poll_error",
+                  message: "could not read a managed native observation; no terminal fallback", meta: { error: redactSecrets(String(error)) } })
+                continue
+              }
+              if (closed) return
+              rows.push({ session: observation.session, activity: observation.activity, observedAt: now() })
+              const managed = observation.managed
+              const hash = createHash("sha256").update(JSON.stringify([
+                managed.identity, managed.eventRevision, managed.activityRevision, managed.renderFingerprint, observation.screenFingerprint,
+              ])).digest("hex")
+              const previous = screens.get(surface.id)
+              screens.set(surface.id, { hash, changedAt: now(), active: observation.activity === "working" })
+              if (previous && previous.hash !== hash) clearStatus(surface.id)
+              if (observation.activity === "idle" && observation.composer === "empty" && observation.backgroundWork === false &&
+                !observation.session.focused && (!previous || previous.hash !== hash)) {
+                handlers.returned({ sessionId: surface.id, transitionId: `cmux:managed:${surface.id}:${hash}`,
+                  agent: observation.session.agent, cwd: observation.session.cwd, title: surface.title,
+                  workspaceTitle: surface.workspaceTitle, lastBody: null, backgroundWork: false })
+              }
+              continue
+            }
             const idle = hooked.get(surface.id)?.idle === true
             if (idle) screens.delete(surface.id)
             if (idle && !handlers.observed) continue

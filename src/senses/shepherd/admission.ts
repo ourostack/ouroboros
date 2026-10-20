@@ -2,6 +2,7 @@ import type { ShepherdMandateResolution } from "../../heart/shepherd/types"
 import { SHEPHERD_NATIVE_CAUSALITY_BLOCKER, type ShepherdHostCapabilities, type ShepherdInspection } from "./host"
 import type { Verdict } from "./judge"
 import type { ShepherdActionBlockReason } from "./returns"
+import { managedInstanceKey, sameManagedIdentity, validManagedIdentity } from "./managed-evidence"
 
 export const SHEPHERD_CONTINUATION_INTENT = "Continue the existing authorized task."
 
@@ -53,18 +54,52 @@ export function admitShepherdContinuation(input: ShepherdAdmissionInput): Shephe
   if (input.verdict.reply && "key" in input.verdict.reply) return blocked("menu_disallowed", "automatic_keys_forbidden")
   if (input.verdict.replyIssue || !input.verdict.reply || !("text" in input.verdict.reply)
     || input.verdict.reply.text !== SHEPHERD_CONTINUATION_INTENT) return blocked("reply_invalid", "reply_scope_unverified")
-  if (input.capabilities.state !== "qualified" || input.capabilities.protocolVersion !== 1) {
+  const before = input.expected, current = input.current
+  const managed = before.session.kind === "agent_session" || current.session.kind === "agent_session" || !!before.managed || !!current.managed
+  if (!managed && (input.capabilities.state !== "qualified" || input.capabilities.protocolVersion !== 1)) {
     const detail = input.capabilities.state === "unqualified"
       && input.capabilities.reason === SHEPHERD_NATIVE_CAUSALITY_BLOCKER
       ? SHEPHERD_NATIVE_CAUSALITY_BLOCKER : "guarded_input_not_qualified"
     return blocked("host_unverified", detail)
   }
-  const before = input.expected, current = input.current
   const first = before.guarded, fresh = current.guarded
-  if (!first || !fresh || !first.token || !fresh.token || !before.instance || !current.instance
+  let bindingChanged: boolean
+  let expiresAt: number | null
+  if (managed) {
+    const capability = input.capabilities.managed
+    if (!capability || capability.state !== "qualified" || capability.protocolVersion !== 1) {
+      return blocked("host_unverified", capability?.reason === "managed_native_runtime_unqualified"
+        ? "managed_native_runtime_unqualified" : "managed_input_not_qualified")
+    }
+    const previous = before.managed, latest = current.managed
+    const ready = (value: ShepherdInspection) => value.session.kind === "agent_session" && !value.guarded &&
+      !value.session.tty && !!value.managed && validManagedIdentity(value.managed.identity) &&
+      value.managed.identity.surfaceId === value.session.id.toLowerCase() &&
+      managedInstanceKey(value.managed.identity) === value.instance && value.session.agent === value.managed.identity.provider &&
+      capability.providers.includes(value.managed.identity.provider) && capability.profiles.includes(value.managed.identity.profileSha256) &&
+      !!value.managed.token && /^[a-f0-9]{64}$/.test(value.managed.renderFingerprint) &&
+      [value.managed.eventRevision, value.managed.activityRevision].every(revision => /^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/.test(revision))
+    if (!previous || !latest || !ready(before) || !ready(current)) return blocked("host_unverified", "managed_observation_not_ready")
+    bindingChanged = !sameManagedIdentity(previous.identity, latest.identity) ||
+      previous.eventRevision !== latest.eventRevision || previous.activityRevision !== latest.activityRevision ||
+      previous.renderFingerprint !== latest.renderFingerprint
+    expiresAt = latest.expiresAtUnixMs
+  } else {
+    if (!first || !fresh || !first.token || !fresh.token ||
+      input.capabilities.state !== "qualified" || !before.session.agent || !current.session.agent ||
+      !input.capabilities.agents.includes(before.session.agent) || !input.capabilities.agents.includes(current.session.agent)) {
+      return blocked("host_unverified", "native_observation_not_ready")
+    }
+    bindingChanged = first.workspaceId !== fresh.workspaceId || first.hostInstance !== fresh.hostInstance ||
+      first.surfaceGeneration !== fresh.surfaceGeneration || first.inputRevision !== fresh.inputRevision ||
+      first.focusRevision !== fresh.focusRevision || !first.workspaceId || !first.hostInstance ||
+      ![first.surfaceGeneration, first.inputRevision, first.focusRevision,
+        fresh.surfaceGeneration, fresh.inputRevision, fresh.focusRevision].every(counter)
+    expiresAt = fresh.expiresAtUnixMs
+  }
+  if (!before.instance || !current.instance
     || before.session.instance !== before.instance || current.session.instance !== current.instance
     || !before.session.agent || !current.session.agent
-    || !input.capabilities.agents.includes(before.session.agent) || !input.capabilities.agents.includes(current.session.agent)
     || before.activity !== "idle" || current.activity !== "idle"
     || before.composer !== "empty" || current.composer !== "empty"
     || before.backgroundWork !== false || current.backgroundWork !== false
@@ -91,16 +126,11 @@ export function admitShepherdContinuation(input: ShepherdAdmissionInput): Shephe
   if (before.session.id !== current.session.id || before.instance !== current.instance
     || before.session.agent !== current.session.agent || before.session.cwd !== current.session.cwd
     || before.screenFingerprint !== current.screenFingerprint
-    || first.workspaceId !== fresh.workspaceId || first.hostInstance !== fresh.hostInstance
-    || first.surfaceGeneration !== fresh.surfaceGeneration || first.inputRevision !== fresh.inputRevision
-    || first.focusRevision !== fresh.focusRevision
-    || !first.workspaceId || !first.hostInstance
-    || ![first.surfaceGeneration, first.inputRevision, first.focusRevision,
-      fresh.surfaceGeneration, fresh.inputRevision, fresh.focusRevision].every(counter)) {
+    || bindingChanged) {
     return blocked("state_changed", "native_binding_changed")
   }
-  if (fresh.expiresAtUnixMs === null || !Number.isFinite(fresh.expiresAtUnixMs)
-    || fresh.expiresAtUnixMs <= input.nowMs || fresh.expiresAtUnixMs - input.nowMs > 2_000) {
+  if (expiresAt === null || !Number.isFinite(expiresAt)
+    || expiresAt <= input.nowMs || expiresAt - input.nowMs > 2_000) {
     return blocked("state_changed", "native_token_expired_or_invalid")
   }
   const text = `[${input.attribution.sender} for ${input.attribution.human}] ${cues[input.trigger]} ${mandate.task} Respect human decisions and reconcile uncertain effects before retrying.`

@@ -11,7 +11,7 @@ import { emitNervesEvent } from "../../nerves/runtime"
 import { applicableGuidance, readGuidance } from "./guidance"
 import { readNoticeOutbox } from "./notice-outbox"
 import { readCheckInSnapshot } from "./recovery"
-import { checkInStorePath, validateCustodyDirectory } from "./checkin-store"
+import { checkInStorePath, receiptMatchesClaim, receiptMatchesOutcome, validateCustodyDirectory } from "./checkin-store"
 import { returnsLogPath, shepherdStateDir } from "./returns"
 import { redactSecrets } from "./redact"
 import type { ShepherdHostObservation } from "./host"
@@ -129,15 +129,17 @@ export function createShepherdObservationPublisher(options: {
         }
         events.custody = page(current.entries.flatMap(entry => {
           const base = { host: safe(entry.host), session: safe(entry.session), instance: entry.instance === null ? null : safe(entry.instance) }
-          const boundAdmission = entry.receipt?.requestId === entry.id && entry.receipt.surfaceId === entry.session
-            && entry.receipt.processInstance === entry.instance && entry.receipt.pasteAdmitted && entry.receipt.submitAdmitted
+          const managed = entry.nativeTarget?.kind === "agent_session"
+          const boundAdmission = !!entry.receipt && receiptMatchesClaim(entry, entry.receipt) && receiptMatchesOutcome("sent", entry.receipt)
           return [{
             ...base, id: `input:${entry.id}`, at: iso(entry.claimedAt),
             kind: entry.state === "sent" ? boundAdmission ? "input_admitted" as const : "legacy_input_reported" as const
               : entry.state === "not_sent" ? "observation" as const : "input_unknown" as const,
-            summary: entry.state === "sent" ? boundAdmission ? "Bound host receipt reports paste and submit admission; not proof of task completion"
+            summary: entry.state === "sent" ? boundAdmission ? managed
+              ? "Managed editor insertion, complete backend write and exact provider acknowledgement; not proof of task completion"
+              : "Bound host receipt reports paste and submit admission; not proof of task completion"
               : "Legacy dispatcher reported sent; no qualified bound paste-and-submit receipt. Not proof of input admission or task completion."
-              : entry.state === "not_sent" ? "Input refused; no terminal input"
+              : entry.state === "not_sent" ? managed ? "Input refused; no managed editor insertion or backend input" : "Input refused; no terminal input"
                 : "Claim held; input outcome is unknown. Reconcile evidence, do not retry blindly.",
           }, ...entry.reconciliations.map(receipt => ({
             ...base, id: `recovery:${entry.id}:${receipt.revision}`, at: iso(receipt.at),

@@ -12,6 +12,8 @@ import type { JudgeResult, ReturnPacket } from "../../../senses/shepherd/judge"
 import { readCheckInSnapshot } from "../../../senses/shepherd/recovery"
 import { readReturns } from "../../../senses/shepherd/returns"
 import { startShepherdSenseApp, type ShepherdSenseOptions } from "../../../senses/shepherd/sense"
+import type { ShepherdManagedIdentity } from "../../../heart/shepherd/custody-types"
+import { noticeLine } from "../../../senses/shepherd/owner-notice"
 
 type Trigger = "immediate" | "network" | "periodic"
 interface Request { requestId: string; text: string; expected: ShepherdInspection }
@@ -48,6 +50,9 @@ async function advance(ms: number) {
   await flush()
 }
 function inspect(): ShepherdInspection {
+  if (current.managed) return { ...structuredClone(current), managed: {
+    ...structuredClone(current.managed), expiresAtUnixMs: clock + 1500,
+  } }
   return { ...structuredClone(current), guarded: {
     workspaceId, hostInstance, surfaceGeneration: 1, inputRevision: 0, focusRevision: 0,
     token: "fefefefe-0000-4000-8000-000000000004", expiresAtUnixMs: clock + 1500,
@@ -58,7 +63,7 @@ async function grant() {
   await updateShepherdMandate(root, {
     operation: "grant", expectedRevision: 0,
     context: { kind: "local_owner_administration", actorId: "fixture-owner", requestId: "fixture-grant" },
-    target: { project, host: "cmux", session: sessionId, instance: "native-pid:start" },
+    target: { project, host: "cmux", session: sessionId, instance: current.instance! },
     task: "Repair the cache and verify the tests.", expiresAt: new Date(Date.now() + 3_600_000).toISOString(),
   })
   clock = Date.now()
@@ -130,6 +135,13 @@ beforeEach(() => {
       if (!canSend()) return { state: "not_sent" as const, reason: "parent guard invalidated" }
       if (outcome !== "not_sent") effects.push(request.text)
       if (outcome === "lost") throw new Error("Lost native reply")
+      if (current.managed) return { state: outcome === "accepted" ? "sent" as const : outcome, receipt: {
+        kind: "agent_session" as const, receiptVersion: 1 as const, requestId: request.requestId, nativeRequestId: request.requestId,
+        identity: { ...current.managed.identity }, state: outcome, reason: "fixture",
+        editorInserted: outcome !== "not_sent", backendWriteAdmitted: outcome === "accepted",
+        providerAcknowledged: outcome === "accepted", providerInputId: outcome === "accepted" ? "provider-ack-42" : null,
+        ...receiptChange,
+      } }
       return { state: outcome === "accepted" ? "sent" as const : outcome, receipt: {
         hostInstance, requestId: request.requestId, surfaceId: sessionId, workspaceId,
         processInstance: "native-pid:start", state: outcome, reason: "fixture",
@@ -151,6 +163,69 @@ afterEach(async () => {
   if (originalHome === undefined) delete process.env.HOME
   else process.env.HOME = originalHome
   resetIdentity()
+})
+
+function useManaged() {
+  const identity: ShepherdManagedIdentity = {
+    kind: "agent_session", hostInstance, workspaceId, surfaceId: sessionId, provider: "copilot",
+    providerSessionId: "owned-provider-session", backendPid: 314, backendStartSeconds: 12345, backendStartMicroseconds: 6789,
+    surfaceGeneration: 7, executableSha256: "b".repeat(64), profileSha256: "a".repeat(64),
+  }
+  const instance = `agent_session:${createHash("sha256").update(JSON.stringify(identity)).digest("hex")}`
+  current.session = { ...current.session, kind: "agent_session", agent: "copilot", tty: null, instance }
+  current.instance = instance
+  current.managed = { identity, eventRevision: sessionId, activityRevision: workspaceId,
+    renderFingerprint: "c".repeat(64), token: hostInstance, expiresAtUnixMs: clock + 1500 }
+  delete current.guarded
+  capabilities = { state: "unqualified", protocolVersion: 1, agents: [],
+    reason: "claude_native_input_attribution_unavailable",
+    managed: { state: "qualified", protocolVersion: 1, providers: ["copilot"], profiles: ["a".repeat(64)] } }
+}
+
+describe.each(["immediate", "network", "periodic"] as const)("managed %s common dispatch", trigger => {
+  it("persists an identity-bound managed claim before the write and projects only actual input stages", async () => {
+    useManaged()
+    await run(trigger)
+    expect(effects).toHaveLength(1)
+    expect(effects[0]).toContain("Repair the cache and verify the tests.")
+    expect(requests).toHaveLength(1)
+    const entry = readCheckInSnapshot(checkInStorePath(root), { limit: 1 }).entries[0]!
+    expect(entry).toMatchObject({
+      state: "sent", nativeRequestId: requests[0]!.requestId,
+      nativeTarget: { kind: "agent_session", identity: current.managed!.identity },
+      receipt: { kind: "agent_session", receiptVersion: 1, requestId: entry.id,
+        nativeRequestId: requests[0]!.requestId, identity: current.managed!.identity,
+        editorInserted: true, backendWriteAdmitted: true, providerAcknowledged: true, providerInputId: "provider-ack-42" },
+    })
+    expect(entry.receipt).not.toHaveProperty("pasteAdmitted")
+    expect(entry.receipt).not.toHaveProperty("submitAdmitted")
+    expect(effects.some(text => text.includes("LEGACY"))).toBe(false)
+  })
+
+  it("holds a partial editor insertion as unknown without automatic resubmission", async () => {
+    useManaged()
+    outcome = "unknown"
+    await run(trigger)
+    expect(effects).toHaveLength(1)
+    expect(readCheckInSnapshot(checkInStorePath(root), { limit: 1 }).entries[0]).toMatchObject({
+      state: "unknown", receipt: { kind: "agent_session", editorInserted: true, backendWriteAdmitted: false,
+        providerAcknowledged: false, providerInputId: null },
+    })
+    expect(readReturns(root).at(-1)).toMatchObject({ actionBlockReason: "custody", dispatch: { state: "unknown" } })
+    const notice = noticeLine(readReturns(root).at(-1)!)
+    expect(notice).toMatch(/input.*uncertain/i)
+    expect(notice).toMatch(/reconcile.*before retrying/i)
+    expect(notice).not.toMatch(/no input sent/i)
+  })
+
+  it("withholds managed input when only the classic capability is qualified", async () => {
+    useManaged()
+    capabilities = { state: "qualified", protocolVersion: 1, agents: ["copilot"] }
+    await run(trigger)
+    expect(effects).toEqual([])
+    expect(requests).toEqual([])
+    expect(readReturns(root).at(-1)).toMatchObject({ actionBlockReason: "host_unverified" })
+  })
 })
 
 describe.each(["immediate", "network", "periodic"] as const)("uniform %s continuation admission", trigger => {

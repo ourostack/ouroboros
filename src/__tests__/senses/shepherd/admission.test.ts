@@ -4,6 +4,7 @@ import {
   admitShepherdContinuation, SHEPHERD_CONTINUATION_INTENT,
   type ShepherdAdmissionInput,
 } from "../../../senses/shepherd/admission"
+import type { ShepherdManagedIdentity } from "../../../heart/shepherd/custody-types"
 
 const surface = "11111111-1111-4111-8111-111111111111"
 const workspace = "22222222-2222-4222-8222-222222222222"
@@ -56,6 +57,88 @@ function authorizedTask(input: ShepherdAdmissionInput) {
   if (input.mandate.state !== "authorized") throw new Error("Fixture needs an authorized mandate")
   return input.mandate.mandate
 }
+
+function managedFixture(): ShepherdAdmissionInput {
+  const input = fixture()
+  const identity: ShepherdManagedIdentity = {
+    kind: "agent_session", hostInstance, workspaceId: workspace, surfaceId: surface, provider: "copilot",
+    providerSessionId: "native-owned-provider", backendPid: 314, backendStartSeconds: 12345, backendStartMicroseconds: 6789,
+    surfaceGeneration: 7, executableSha256: "b".repeat(64), profileSha256: "a".repeat(64),
+  }
+  const instance = `agent_session:${digest(JSON.stringify(identity))}`
+  for (const observation of [input.expected, input.current]) {
+    delete observation.guarded
+    observation.session = { ...observation.session, kind: "agent_session", agent: "copilot", tty: null, instance }
+    observation.instance = instance
+    observation.managed = {
+      identity: { ...identity }, eventRevision: token, activityRevision: hostInstance,
+      renderFingerprint: "c".repeat(64), token, expiresAtUnixMs: input.nowMs + 1_900,
+    }
+  }
+  authorizedTask(input).target.instance = instance
+  input.capabilities = { state: "unqualified", protocolVersion: 1, agents: [],
+    reason: "claude_native_input_attribution_unavailable",
+    managed: { state: "qualified", protocolVersion: 1, providers: ["copilot"], profiles: ["a".repeat(64)] } }
+  return input
+}
+
+describe("discriminated managed continuation admission", () => {
+  it.each(["immediate", "network", "periodic"] as const)("admits %s from managed proof without borrowing classic qualification or TTY", trigger => {
+    const input = managedFixture()
+    input.trigger = trigger
+    expect(admitShepherdContinuation(input)).toMatchObject({ allowed: true, text: expect.stringContaining("Finish the approved project change.") })
+    input.mandate = { state: "withheld", reason: "no_applicable_mandate" }
+    expect(admitShepherdContinuation(input)).toMatchObject({ allowed: false, reason: "mandate" })
+  })
+
+  it.each<[string, (input: ShepherdAdmissionInput) => void]>([
+    ["managed unqualified", input => { input.capabilities.managed!.state = "unqualified" }],
+    ["managed absent", input => { delete input.capabilities.managed }],
+    ["provider unqualified", input => { input.capabilities.managed!.providers = ["claude"] }],
+    ["profile unqualified", input => { input.capabilities.managed!.profiles = ["f".repeat(64)] }],
+    ["invented TTY", input => { input.current.session.tty = "/dev/fake" }],
+    ["classic kind", input => { delete input.current.session.kind }],
+    ["missing managed observation", input => { delete input.current.managed }],
+    ["classic observation mixed in", input => { input.current.guarded = fixture().current.guarded }],
+    ["working", input => { input.current.activity = "working" }],
+    ["draft", input => { input.current.composer = "draft" }],
+    ["unknown work", input => { input.current.backgroundWork = null }],
+    ["native identity rebound", input => { input.current.managed!.identity.backendStartMicroseconds++ }],
+    ["provider session changed", input => { input.current.managed!.identity.providerSessionId = "foreign" }],
+    ["render changed", input => { input.current.managed!.renderFingerprint = "e".repeat(64) }],
+    ["event changed", input => { input.current.managed!.eventRevision = workspace }],
+    ["activity changed", input => { input.current.managed!.activityRevision = workspace }],
+    ["raw screen changed", input => { input.current.screenFingerprint = "d".repeat(64) }],
+    ["expired token", input => { input.current.managed!.expiresAtUnixMs = input.nowMs }],
+    ["focused", input => { input.current.session.focused = true }],
+    ["recent focus", input => { input.focusHeld = true }],
+    ["paused", input => { input.guidance.paused = true }],
+    ["guidance changed", input => { input.guidance.current = "changed" }],
+    ["limit", input => { input.withinLimits = false }],
+    ["stopped", input => { input.active = false }],
+    ["custody unavailable", input => { input.custodyAvailable = false }],
+    ["noncanonical intent", input => { input.verdict.reply = { text: "Do something else." } }],
+  ])("withholds input for %s without a classic escape hatch", (_label, mutate) => {
+    const input = managedFixture()
+    mutate(input)
+    expect(admitShepherdContinuation(input)).toMatchObject({ allowed: false })
+  })
+
+  it("uses a fresh token after judging without extending or requiring the old expired token", () => {
+    const input = managedFixture()
+    input.expected.managed!.expiresAtUnixMs = input.nowMs - 1
+    expect(admitShepherdContinuation(input).allowed).toBe(true)
+  })
+
+  it("exposes the native managed runtime blocker without granting input", () => {
+    const input = managedFixture()
+    input.capabilities.managed = { state: "unqualified", protocolVersion: 1, providers: [], profiles: [],
+      reason: "managed_native_runtime_unqualified" }
+    expect(admitShepherdContinuation(input)).toEqual({
+      allowed: false, reason: "host_unverified", detail: "managed_native_runtime_unqualified",
+    })
+  })
+})
 
 describe("deterministic Shepherd continuation admission", () => {
   it("exposes the recognized causal blocker while withholding the continuation", () => {

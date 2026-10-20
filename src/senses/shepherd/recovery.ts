@@ -1,5 +1,5 @@
 import type {
-  ShepherdCustodyEntry, ShepherdCustodySnapshot, ShepherdInputReceipt, ShepherdMaintenanceReceipt, ShepherdMaintenanceRequest,
+  ShepherdCustodyEntry, ShepherdCustodySnapshot, ShepherdDispatchReceipt, ShepherdMaintenanceReceipt, ShepherdMaintenanceRequest,
   ShepherdRecoveryEvidence, ShepherdRecoveryReceipt, ShepherdRecoveryRequest, ShepherdRetirementProof,
 } from "../../heart/shepherd/custody-types"
 import { createHash, randomUUID } from "node:crypto"
@@ -11,7 +11,7 @@ import { emitNervesEvent } from "../../nerves/runtime"
 import {
   advanceCustodyRevision, checkInStorePath, copyCustodyInputReceipt, custodyCapacity, custodyRevision, openCustodyDatabase,
   hasRetiredCustodyInstance, parseCustodyDispatch, readRetiredCustodyRecord, refuseCustody, retiredCustodyKey,
-  validCustodyInputReceipt, validateCustodyDirectory, type DispatchClaim, type DispatchRow,
+  receiptMatchesClaim, receiptMatchesOutcome, validCustodyInputReceipt, validateCustodyDirectory, type DispatchClaim, type DispatchRow,
 } from "./checkin-store"
 import { redactSecrets } from "./redact"
 
@@ -53,11 +53,11 @@ function auditRow(data: string): { receipt: ShepherdRecoveryReceipt; evidence: u
   if (!object(parsed) || !validRecoveryReceipt(parsed.receipt)) refuse("invalid recovery audit schema")
   return { receipt: parsed.receipt, evidence: parsed.evidence }
 }
-function reconciliationRows(db: Database.Database, claim: DispatchClaim): { receipts: ShepherdRecoveryReceipt[]; count: number; receipt: ShepherdInputReceipt | null } {
+function reconciliationRows(db: Database.Database, claim: DispatchClaim): { receipts: ShepherdRecoveryReceipt[]; count: number; receipt: ShepherdDispatchReceipt | null } {
   const dispatchId = claim.id
   const count = db.prepare("SELECT COUNT(*) AS count FROM reconciliations WHERE dispatch_id=?").get(dispatchId) as { count: number }
   const rows = db.prepare("SELECT data FROM reconciliations WHERE dispatch_id=? ORDER BY rowid DESC LIMIT 20").all(dispatchId) as Array<{ data: string }>
-  let receipt: ShepherdInputReceipt | null = null
+  let receipt: ShepherdDispatchReceipt | null = null
   const receipts = rows.map(row => {
     const audit = auditRow(row.data)
     if (audit.receipt.dispatchId !== dispatchId) refuse("recovery dispatch identity mismatch")
@@ -102,8 +102,8 @@ function readCustodySnapshot(file: string, options: InspectionOptions, mode: "re
   }
   try {
     return db.transaction((): ShepherdCustodySnapshot => {
-      const schemaVersion = Number(db.pragma("user_version", { simple: true })) as 1 | 2
-      const revision = schemaVersion === 2 ? custodyRevision(db) : 0
+      const schemaVersion = Number(db.pragma("user_version", { simple: true })) as 1 | 2 | 3
+      const revision = schemaVersion >= 2 ? custodyRevision(db) : 0
       if (cursor && cursor.revision !== revision) refuse("inspection cursor revision conflict")
       const capacity = custodyCapacity(db)
       const total = db.prepare("SELECT COUNT(*) AS count FROM dispatches").get() as { count: number }
@@ -119,9 +119,9 @@ function readCustodySnapshot(file: string, options: InspectionOptions, mode: "re
         : db.prepare("SELECT id,host,session,instance,data FROM dispatches WHERE id>? ORDER BY id LIMIT ?").all(cursor?.after ?? "", options.limit + 1)) as DispatchRow[]
       const page = rows.slice(0, options.limit)
       const entries = page.map(row => {
-        const claim = parseCustodyDispatch(row)
-        const audit = schemaVersion === 2 ? reconciliationRows(db, claim) : { receipts: [], count: 0, receipt: null }
-        const retired = schemaVersion === 2 && hasRetiredCustodyInstance(db, claim)
+        const claim = parseCustodyDispatch(row, schemaVersion)
+        const audit = schemaVersion >= 2 ? reconciliationRows(db, claim) : { receipts: [], count: 0, receipt: null }
+        const retired = schemaVersion >= 2 && hasRetiredCustodyInstance(db, claim)
         const entry: ShepherdCustodyEntry = {
           id: claim.id, host: claim.host, session: claim.session, instance: claim.instance, state: claim.state, trigger: claim.trigger,
           ...(claim.nativeRequestId === undefined ? {} : { nativeRequestId: claim.nativeRequestId }),
@@ -161,11 +161,13 @@ function retireInstance(db: Database.Database, proof: ShepherdRetirementProof, p
   db.prepare(`INSERT INTO retired_instances(key,host,session,instance,data) VALUES(?,?,?,?,?)
     ON CONFLICT(key) DO UPDATE SET data=excluded.data`).run(retiredCustodyKey(proof), proof.host, proof.session, proof.instance, data)
 }
-function matchesReceipt(claim: DispatchClaim, evidence: unknown, requireFresh = true): evidence is Extract<ShepherdRecoveryEvidence, { kind: "guarded_host_receipt_v1" }> {
-  return object(evidence) && evidence.kind === "guarded_host_receipt_v1" && timestamp(evidence.checkedAt) && (!requireFresh || fresh(evidence.checkedAt))
-    && evidence.host === claim.host && validCustodyInputReceipt(evidence.receipt)
-    && evidence.receipt.requestId === claim.id && evidence.receipt.surfaceId === claim.session
-    && evidence.receipt.processInstance === claim.instance && evidence.receipt.pasteAdmitted && evidence.receipt.submitAdmitted
+type HostReceiptEvidence = Extract<ShepherdRecoveryEvidence, { kind: "guarded_host_receipt_v1" | "managed_host_receipt_v1" }>
+function matchesReceipt(claim: DispatchClaim, evidence: unknown, requireFresh = true): evidence is HostReceiptEvidence {
+  if (!object(evidence) || !timestamp(evidence.checkedAt) || requireFresh && !fresh(evidence.checkedAt) ||
+    evidence.host !== claim.host || !validCustodyInputReceipt(evidence.receipt) ||
+    !receiptMatchesClaim(claim, evidence.receipt) || !receiptMatchesOutcome("sent", evidence.receipt)) return false
+  if (evidence.receipt.kind === "agent_session") return evidence.kind === "managed_host_receipt_v1" && evidence.native === undefined
+  return evidence.kind === "guarded_host_receipt_v1" && claim.nativeTarget?.kind !== "agent_session"
     && (claim.nativeTarget === undefined ? evidence.native === undefined
       : object(evidence.native) && evidence.native.requestId === claim.nativeRequestId
         && evidence.native.hostInstance === claim.nativeTarget.hostInstance
@@ -191,19 +193,23 @@ export async function reconcileShepherdDispatch(root: string, request: ShepherdR
         if (custodyRevision(db) !== request.expectedRevision) refuse("reconciliation revision conflict")
         const row = db.prepare("SELECT id,host,session,instance,data FROM dispatches WHERE id=?").get(request.id) as DispatchRow | undefined
         if (!row) refuse("dispatch not found")
-        const claim = parseCustodyDispatch(row)
+        const claim = parseCustodyDispatch(row, Number(db.pragma("user_version", { simple: true })))
         if (claim.state === "not_sent") refuse("definite not-sent dispatch requires no reconciliation")
         let resolution: ShepherdRecoveryReceipt["resolution"]
         let retirement: ShepherdRetirementProof | null = null
         let verifiedEvidence: ShepherdRecoveryEvidence
         if (matchesReceipt(claim, request.evidence)) {
           resolution = "acknowledged_delivery"
-          verifiedEvidence = {
-            kind: request.evidence.kind, host: request.evidence.host, checkedAt: request.evidence.checkedAt,
-            receipt: copyCustodyInputReceipt(request.evidence.receipt),
-            ...(request.evidence.native === undefined ? {} : { native: {
-              requestId: request.evidence.native.requestId, hostInstance: request.evidence.native.hostInstance,
-            } }),
+          const evidence = request.evidence
+          if (evidence.kind === "managed_host_receipt_v1") {
+            verifiedEvidence = { kind: evidence.kind, host: evidence.host, checkedAt: evidence.checkedAt,
+              receipt: copyCustodyInputReceipt(evidence.receipt) }
+          } else {
+            verifiedEvidence = { kind: evidence.kind, host: evidence.host, checkedAt: evidence.checkedAt,
+              receipt: copyCustodyInputReceipt(evidence.receipt),
+              ...(evidence.native === undefined ? {} : { native: {
+                requestId: evidence.native.requestId, hostInstance: evidence.native.hostInstance,
+              } }) }
           }
         } else if (validRetirement(request.evidence) && request.evidence.host === claim.host
           && request.evidence.session === claim.session && request.evidence.instance === claim.instance) {
@@ -306,8 +312,9 @@ function targetsClaim(proof: ShepherdRetirementProof, claim: DispatchClaim): boo
 }
 function archiveCandidates(db: Database.Database, proofs: ShepherdRetirementProof[]): string[] {
   const ids: string[] = []
+  const schemaVersion = Number(db.pragma("user_version", { simple: true }))
   for (const row of db.prepare("SELECT id,host,session,instance,data FROM dispatches").iterate() as Iterable<DispatchRow>) {
-    const claim = parseCustodyDispatch(row)
+    const claim = parseCustodyDispatch(row, schemaVersion)
     if (!proofs.some(proof => targetsClaim(proof, claim))) continue
     const retired = hasRetiredCustodyInstance(db, claim)
     if ((claim.state === "claimed" || claim.state === "unknown") && !retired) refuse("unresolved attempt must be reconciled before archive")
@@ -321,7 +328,8 @@ function validateArchive(file: string, expectedCount: number): void {
     if (db.pragma("integrity_check", { simple: true }) !== "ok") refuse("archive integrity check failed")
     const count = db.prepare("SELECT COUNT(*) AS count FROM dispatches").get() as { count: number }
     if (count.count !== expectedCount) refuse("archive dispatch count mismatch")
-    for (const row of db.prepare("SELECT id,host,session,instance,data FROM dispatches").iterate() as Iterable<DispatchRow>) parseCustodyDispatch(row)
+    const schemaVersion = Number(db.pragma("user_version", { simple: true }))
+    for (const row of db.prepare("SELECT id,host,session,instance,data FROM dispatches").iterate() as Iterable<DispatchRow>) parseCustodyDispatch(row, schemaVersion)
   } finally { db.close() }
 }
 function verifyPrepared(intent: MaintenanceIntent): void {

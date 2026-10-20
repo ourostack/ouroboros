@@ -20,11 +20,12 @@ import { applicableGuidance, readGuidance, type ShepherdGuidanceTarget } from ".
 import { readAgentPresentation } from "./agent-presentation"
 import { startFeedbackWorker, type FeedbackWorker, type FeedbackWorkerOptions } from "./feedback-worker"
 import { readShepherdCheckInMinutes } from "./checkin-config"
-import { checkInStorePath, openCheckInStore, validCustodyInputReceipt, type CheckInStore } from "./checkin-store"
+import { checkInStorePath, copyCustodyInputReceipt, openCheckInStore, receiptMatchesClaim, receiptMatchesOutcome, validCustodyInputReceipt, type CheckInStore } from "./checkin-store"
 import { createShepherdObservationPublisher } from "./observation-publisher"
 import { admitShepherdContinuation } from "./admission"
 import { readShepherdMandates, resolveShepherdMandate } from "../../heart/shepherd/mandates"
-import type { ShepherdInputReceipt } from "../../heart/shepherd/custody-types"
+import type { ShepherdDispatchReceipt, ShepherdNativeTarget } from "../../heart/shepherd/custody-types"
+import { copyManagedIdentity } from "./managed-evidence"
 
 /** Keeps the judgment's guidance revision in telemetry without changing the shared returns-store contract. */
 export interface ShepherdJudgedReturnRecord extends ReturnRecord { guidanceRevision?: number }
@@ -50,13 +51,18 @@ const ESCALATION_TTL_MS = 30 * 60_000
 const WAKE_DELAY_MS = 2_000
 const FIELD_MAX = 200
 const CONNECTIVITY_POLL_MS = 15_000
+const RECOVERY_JUDGE_ATTEMPTS = 3
+const CONCURRENT_OBSERVATIONS = 4
 
-type PeriodicTrigger = { kind: "periodic"; first: ShepherdInspection; observedAt: number; generation: number; pass: number }
-type HandleTrigger = { kind: "immediate" } | { kind: "network"; screen: string; generation: number } | PeriodicTrigger
+type PeriodicTrigger = { kind: "periodic"; first: ShepherdInspection; observedAt: number; generation: number; pass: number; attempt?: number }
+type HandleTrigger = { kind: "immediate"; retry?: { screen: string; attempt: number } } |
+  { kind: "network"; screen: string; generation: number; attempt: number } | PeriodicTrigger
 const fingerprint = (value: unknown) => createHash("sha256").update(JSON.stringify(value)).digest("hex")
 const inspectionFingerprint = (value: ShepherdInspection) => fingerprint([
   value.session.id, value.instance, value.session.agent, value.session.cwd, value.session.tty,
   value.screen, value.screenFingerprint, value.activity, value.composer, value.backgroundWork,
+  value.session.kind, value.managed && [value.managed.identity, value.managed.eventRevision,
+    value.managed.activityRevision, value.managed.renderFingerprint],
 ])
 
 export type ShepherdConnectivity = "online" | "offline" | "unknown"
@@ -205,10 +211,16 @@ export async function startShepherdSenseApp(options: ShepherdSenseOptions): Prom
   const wakeIds: string[] = []
   let cancelWake: (() => void) | null = null
   let chain: Promise<void> = Promise.resolve()
-  const networkWaiting = new Map<string, { event: ReturnedControl; screen: string; offlineConfirmed: boolean }>()
+  const pending: Array<{ event: ReturnedControl; trigger: HandleTrigger; generation: number }> = []
+  const active = new Set<Promise<void>>()
+  const activeSessions = new Set<string>()
+  const networkWaiting = new Map<string, {
+    event: ReturnedControl; screen: string; offlineConfirmed: boolean; eventGeneration: number; attempts: number; recheck?: HandleTrigger
+  }>()
   const latestReturns = new Map<string, ReturnedControl>()
   const checkConnectivity = options.checkConnectivity ?? checkShepherdConnectivity
   let cancelConnectivity: (() => void) | null = null
+  let connectivityImmediate = false
   let recoveryGeneration = 0
   let stopped = false
   let cancelCheckIn: (() => void) | null = null
@@ -218,6 +230,35 @@ export async function startShepherdSenseApp(options: ShepherdSenseOptions): Prom
   const history = new Map(readReturns(agentRoot).filter(record => record.host === host.name).map(record => [record.session, record]))
   const generationFor = (session: string) => generations.get(session) ?? 0
   const invalidate = (session: string) => generations.set(session, generationFor(session) + 1)
+
+  function enqueue(event: ReturnedControl, trigger: HandleTrigger = { kind: "immediate" }, generation = generationFor(event.sessionId)): void {
+    const index = pending.findIndex(job => job.event.sessionId === event.sessionId)
+    const previous = pending[index]
+    if (previous && (previous.generation > generation ||
+        (previous.generation === generation && previous.trigger.kind !== "periodic" && trigger.kind === "periodic"))) return
+    const job = { event, trigger, generation }
+    if (previous) pending[index] = job
+    else pending.push(job)
+    drain()
+  }
+
+  function drain(): void {
+    while (!stopped && active.size < CONCURRENT_OBSERVATIONS) {
+      const index = pending.findIndex(job => !activeSessions.has(job.event.sessionId))
+      if (index === -1) return
+      const job = pending.splice(index, 1)[0]!
+      activeSessions.add(job.event.sessionId)
+      const task = Promise.resolve().then(() => handle(job.event, job.trigger, job.generation)).catch(error => {
+        emitNervesEvent({ level: "error", component: "senses", event: "senses.shepherd_chain_error",
+          message: "Shepherd observation failed; other sessions remain scheduled", meta: { agent, session: job.event.sessionId, error: redactSecrets(String(error)) } })
+      }).finally(() => {
+        active.delete(task)
+        activeSessions.delete(job.event.sessionId)
+        drain()
+      })
+      active.add(task)
+    }
+  }
 
   function scheduleCheckIn(): void {
     if (stopped || checkInMs === 0 || !host.inspect || cancelCheckIn) return
@@ -238,7 +279,7 @@ export async function startShepherdSenseApp(options: ShepherdSenseOptions): Prom
       const pass = ++checkInPass
       for (const session of sessions) {
         if (stopped) break
-        if (!session.agent || session.focused) continue
+        if ((!session.agent && session.kind !== "agent_session") || session.focused) continue
         const generation = generationFor(session.id)
         try {
           const first = await host.inspect!(session.id)
@@ -253,13 +294,13 @@ export async function startShepherdSenseApp(options: ShepherdSenseOptions): Prom
       if (stopped || candidates.length === 0) return
       cancelQuietBatch = schedule(() => {
         cancelQuietBatch = null
-        chain = chain.then(async () => {
+        chain = chain.then(() => {
           for (const candidate of candidates) {
             if (stopped) break
             const current = candidate.trigger.first
-            await handle({ sessionId: candidate.sessionId, transitionId: `periodic:${candidate.trigger.pass}:${candidate.sessionId}`,
+            enqueue({ sessionId: candidate.sessionId, transitionId: `periodic:${candidate.trigger.pass}:${candidate.sessionId}`,
               agent: current.session.agent, cwd: current.session.cwd ?? null, lastBody: null, backgroundWork: current.backgroundWork,
-              title: current.session.title, workspaceTitle: current.session.workspaceTitle }, candidate.trigger)
+              title: current.session.title, workspaceTitle: current.session.workspaceTitle }, candidate.trigger, candidate.trigger.generation)
           }
         })
       }, QUIET_MS)
@@ -271,12 +312,18 @@ export async function startShepherdSenseApp(options: ShepherdSenseOptions): Prom
     }
   }
 
-  function scheduleConnectivity(): void {
-    if (stopped || networkWaiting.size === 0 || cancelConnectivity) return
+  function scheduleConnectivity(delay = CONNECTIVITY_POLL_MS): void {
+    if (stopped || networkWaiting.size === 0) return
+    if (cancelConnectivity) {
+      if (delay !== 0 || connectivityImmediate) return
+      cancelConnectivity()
+    }
+    connectivityImmediate = delay === 0
     cancelConnectivity = schedule(() => {
       cancelConnectivity = null
+      connectivityImmediate = false
       chain = chain.then(checkRecovery)
-    }, CONNECTIVITY_POLL_MS)
+    }, delay)
   }
 
   async function checkRecovery(): Promise<void> {
@@ -288,7 +335,7 @@ export async function startShepherdSenseApp(options: ShepherdSenseOptions): Prom
       if (connectivity === "offline") {
         for (const candidate of networkWaiting.values()) candidate.offlineConfirmed = true
       } else if (connectivity === "online") {
-        const candidates = [...networkWaiting.values()].filter(candidate => candidate.offlineConfirmed)
+        const candidates = [...networkWaiting.values()].filter(candidate => candidate.offlineConfirmed || candidate.recheck)
         if (candidates.length === 0) return
         recoveryGeneration += 1
         // Consume before any send: a failed send may already have reached the terminal.
@@ -296,9 +343,13 @@ export async function startShepherdSenseApp(options: ShepherdSenseOptions): Prom
         const sessions = await host.list()
         for (const candidate of candidates) {
           if (stopped) break
-          if (latestReturns.get(candidate.event.sessionId) !== candidate.event ||
+          if ((!candidate.recheck || candidate.recheck.kind !== "periodic") && latestReturns.get(candidate.event.sessionId) !== candidate.event ||
+              candidate.eventGeneration !== generationFor(candidate.event.sessionId) ||
               !sessions.some(session => session.id === candidate.event.sessionId)) continue
-          await handle(candidate.event, { kind: "network", screen: candidate.screen, generation: recoveryGeneration })
+          const recheck = candidate.recheck?.kind === "immediate" && candidate.offlineConfirmed ? undefined : candidate.recheck
+          enqueue(candidate.event, recheck ?? {
+            kind: "network", screen: candidate.screen, generation: recoveryGeneration, attempt: candidate.attempts + 1,
+          }, candidate.eventGeneration)
         }
       }
     } catch (error) {
@@ -308,10 +359,15 @@ export async function startShepherdSenseApp(options: ShepherdSenseOptions): Prom
     }
   }
 
-  function rememberNetworkWait(event: ReturnedControl, screen: string): void {
-    if (stopped || event.backgroundWork || latestReturns.get(event.sessionId) !== event) return
-    networkWaiting.set(event.sessionId, { event, screen, offlineConfirmed: false })
-    scheduleConnectivity()
+  function rememberNetworkWait(event: ReturnedControl, screen: string, eventGeneration: number, recoveryAttempt = 0,
+    recheck?: HandleTrigger): boolean {
+    if (stopped || event.backgroundWork || (recheck?.kind !== "periodic" && latestReturns.get(event.sessionId) !== event) ||
+        eventGeneration !== generationFor(event.sessionId)) return false
+    networkWaiting.set(event.sessionId, {
+      event, screen, offlineConfirmed: !recheck && recoveryAttempt > 0, eventGeneration, attempts: recoveryAttempt, recheck,
+    })
+    scheduleConnectivity(recoveryAttempt === 0 || (recheck && recoveryAttempt === 1) ? 0 : CONNECTIVITY_POLL_MS)
+    return true
   }
 
   const guardFor = (session: string) => {
@@ -330,7 +386,9 @@ export async function startShepherdSenseApp(options: ShepherdSenseOptions): Prom
 
   async function dispatch(record: ShepherdJudgedReturnRecord, text: string, screenFingerprint: string,
     expected: ShepherdInspection, canSend: () => boolean): Promise<boolean> {
-    const nativeTarget = { hostInstance: expected.guarded!.hostInstance, workspaceId: expected.guarded!.workspaceId }
+    const nativeTarget: ShepherdNativeTarget = expected.managed
+      ? { kind: "agent_session", identity: copyManagedIdentity(expected.managed.identity) }
+      : { hostInstance: expected.guarded!.hostInstance, workspaceId: expected.guarded!.workspaceId }
     const claim = custody.claimDispatch({ host: host.name, session: record.session, instance: expected.instance, screenFingerprint,
       guidanceRevision: String(record.guidanceRevision), reply: text, nativeTarget,
       trigger: record.trigger!, transition: record.transition, at: record.at }, dispatchOwner)
@@ -341,7 +399,7 @@ export async function startShepherdSenseApp(options: ShepherdSenseOptions): Prom
     }
     record.dispatch = { id: claim.id, state: "claimed" }
     let result: Awaited<ReturnType<NonNullable<ShepherdHost["continueInput"]>>>
-    let receipt: ShepherdInputReceipt | undefined
+    let receipt: ShepherdDispatchReceipt | undefined
     try {
       if (!claim.nativeRequestId || !canSend()) {
         result = { state: "not_sent", reason: "parent dispatch guard invalidated before native request" }
@@ -351,16 +409,14 @@ export async function startShepherdSenseApp(options: ShepherdSenseOptions): Prom
       if (result.receipt) {
         const native = result.receipt
         if (!validCustodyInputReceipt(native) || native.requestId !== claim.nativeRequestId
-          || native.hostInstance !== nativeTarget.hostInstance || native.workspaceId !== nativeTarget.workspaceId
-          || native.surfaceId !== claim.session || native.processInstance !== claim.instance
           || native.state !== (result.state === "sent" ? "accepted" : result.state)
           || typeof native.reason !== "string" || native.reason.length === 0 || native.reason.length > 1024
-          || result.state === "sent" && (!native.pasteAdmitted || !native.submitAdmitted)
-          || result.state === "not_sent" && (native.pasteAdmitted || native.submitAdmitted)) {
+          || !receiptMatchesOutcome(result.state, native)
+          || native.kind !== "agent_session" && (nativeTarget.kind === "agent_session" || native.hostInstance !== nativeTarget.hostInstance)) {
           throw new Error("native receipt identity or admitted outcome mismatch")
         }
-        receipt = { requestId: claim.id, surfaceId: native.surfaceId, workspaceId: native.workspaceId,
-          processInstance: native.processInstance, pasteAdmitted: native.pasteAdmitted, submitAdmitted: native.submitAdmitted }
+        receipt = copyCustodyInputReceipt({ ...native, requestId: claim.id })
+        if (!receiptMatchesClaim(claim, receipt)) throw new Error("native receipt identity or admitted outcome mismatch")
       } else if (result.state !== "not_sent") {
         throw new Error("native input outcome has no receipt")
       }
@@ -393,11 +449,11 @@ export async function startShepherdSenseApp(options: ShepherdSenseOptions): Prom
   }
 
   /** Judges one return and acts on it. Every outcome, including a failure, is one log line. */
-  async function handle(event: ReturnedControl, trigger: HandleTrigger = { kind: "immediate" }): Promise<void> {
+  async function handle(event: ReturnedControl, trigger: HandleTrigger, eventGeneration: number): Promise<void> {
     if (stopped) return
-    const eventGeneration = generationFor(event.sessionId)
     const recovery = trigger.kind === "network" ? trigger : null
     const periodic = trigger.kind === "periodic" ? trigger : null
+    const observationRetry = trigger.kind === "immediate" ? trigger.retry : undefined
     const record: ShepherdJudgedReturnRecord = {
       at: new Date(now()).toISOString(), host: host.name, session: event.sessionId, transition: recovery ? `network:${recovery.generation}:${event.transitionId}` : event.transitionId,
       agent: event.agent, cwd: event.cwd, task: null, kind: "unclear", action: "let_through", reason: "", reply: null, latencyMs: null, inputTokens: null,
@@ -456,7 +512,7 @@ export async function startShepherdSenseApp(options: ShepherdSenseOptions): Prom
       record.task = [...text.matchAll(/Desk-Task:\s*(\S+)/g)].pop()?.[1] ?? null
       const screen = tail(text, SCREEN_LINES)
       const observedAt = now()
-      if (recovery && screen !== recovery.screen) {
+      if ((recovery || observationRetry) && screen !== (recovery?.screen ?? observationRetry!.screen)) {
         record.actionBlockReason = "state_changed"
         record.reason = "the screen changed since the network stop, so recovery was not sent"
         return
@@ -468,6 +524,19 @@ export async function startShepherdSenseApp(options: ShepherdSenseOptions): Prom
       }
       const guidance = checkedGuidance()
       record.guidanceRevision = guidance.revision
+      if (stopped) {
+        notice = false
+        record.actionBlockReason = "stopped"
+        record.reason = "Shepherd stopped before judgment; no input or notice sent"
+        return
+      }
+      if ((observationRetry || periodic?.attempt) &&
+          (guidance.paused || current?.session.focused || current?.backgroundWork || now() - state.focusedAt < FOCUS_HOLD_MS)) {
+        notice = false
+        record.actionBlockReason = guidance.paused ? "guidance" : "state_changed"
+        record.reason = "the failed observation retry is now protected; no judgment or input sent"
+        return
+      }
       const checkedMandates = () => {
         try { return readShepherdMandates(agentRoot) }
         catch (error) { record.actionBlockReason = "mandate"; throw error }
@@ -485,7 +554,18 @@ export async function startShepherdSenseApp(options: ShepherdSenseOptions): Prom
           ...(recovery ? { networkRecovered: true as const } : {}),
           ...(periodic ? { periodicCheckIn: { priorJudgment: prior ? { kind: prior.kind, reason: prior.reason, at: prior.at } : null } } : {}) })
       } catch (error) {
-        if (!recovery && !periodic && error instanceof Error && isNetworkError(error)) rememberNetworkWait(event, screen)
+        if (periodic) notice = !stopped && eventGeneration === generationFor(event.sessionId) && !guidance.paused &&
+          current?.session.focused !== true && current?.backgroundWork !== true && now() - state.focusedAt >= FOCUS_HOLD_MS
+        if (error instanceof Error && isNetworkError(error)) {
+          const attempt = recovery?.attempt ?? periodic?.attempt ?? observationRetry?.attempt ?? 1
+          if (attempt < RECOVERY_JUDGE_ATTEMPTS && !guidance.paused &&
+              current?.session.focused !== true && current?.backgroundWork !== true &&
+              now() - state.focusedAt >= FOCUS_HOLD_MS &&
+              rememberNetworkWait(event, screen, eventGeneration, attempt, recovery ? undefined :
+                periodic ? { ...periodic, attempt: attempt + 1 } : { kind: "immediate", retry: { screen, attempt: attempt + 1 } })) {
+            notice = false
+          }
+        }
         throw error
       }
       judged = true
@@ -499,7 +579,7 @@ export async function startShepherdSenseApp(options: ShepherdSenseOptions): Prom
       const news = verdict.news === true || (kind === "working" && verdict.kind === "gate")
       Object.assign(record, { kind, judgeKind: verdict.kind, reason: verdict.reason, latencyMs: verdict.latencyMs, inputTokens: verdict.inputTokens,
         ...(verdict.replyIssue ? { replyIssue: verdict.replyIssue } : {}) })
-      if (!recovery && !periodic && kind === "waiting" && verdict.waitingOnNetwork) rememberNetworkWait(event, screen)
+      if (!recovery && !periodic && kind === "waiting" && verdict.waitingOnNetwork) rememberNetworkWait(event, screen, eventGeneration)
       const noticeScreen = screen.replace(/\b\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})\b/g, "<observation-time>")
       noticeBasis = [host.name, event.sessionId, record.agent, record.cwd, record.task, noticeScreen, guidance.revision]
       notice = true
@@ -641,7 +721,7 @@ export async function startShepherdSenseApp(options: ShepherdSenseOptions): Prom
       invalidate(event.sessionId)
       networkWaiting.delete(event.sessionId)
       latestReturns.set(event.sessionId, event)
-      chain = chain.then(() => handle(event))
+      enqueue(event)
     },
     focused: (session) => {
       if (stopped) return
@@ -659,13 +739,13 @@ export async function startShepherdSenseApp(options: ShepherdSenseOptions): Prom
       stopped = true
       observations.stop()
       networkWaiting.clear()
+      pending.length = 0
       watcher.close()
       cancelWake?.()
       cancelConnectivity?.()
       cancelCheckIn?.()
       cancelQuietBatch?.()
-      void chain.then(() => custody.close(), error => {
-        custody.close()
+      void chain.finally(() => Promise.all(active)).finally(() => custody.close()).catch(error => {
         emitNervesEvent({ level: "error", component: "senses", event: "senses.shepherd_chain_error",
           message: "Shepherd chain failed during shutdown", meta: { agent, error: redactSecrets(String(error)) } })
       })

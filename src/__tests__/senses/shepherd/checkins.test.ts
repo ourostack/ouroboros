@@ -134,6 +134,107 @@ afterEach(async () => {
 })
 
 describe("fresh all-returned-session periodic check-ins", () => {
+  it("P0: drops an already-fired quiet batch when stop wins before its queued discovery callback", async () => {
+    const judge = await start()
+    const quiet = jobs.find(job => job.at === clock + 8000)!
+    jobs = jobs.filter(job => job !== quiet)
+    quiet.fn()
+    stop!()
+    stop = null
+    await flush()
+    expect(judge).not.toHaveBeenCalled()
+    expect(readReturns(root)).toEqual([])
+    expect(prompts()).toEqual([])
+  })
+
+  it.each(["older", "same"] as const)("P0: a %s-generation periodic batch cannot replace queued immediate work", async generation => {
+    let release!: () => void
+    const held = new Promise<void>(resolve => { release = resolve })
+    for (let index = 0; index < 4; index += 1) inspections[`H${index}`] = inspection(`H${index}`)
+    const packets: ReturnPacket[] = []
+    const judge = vi.fn(async (packet: ReturnPacket) => {
+      packets.push(packet)
+      if (packet.screen === "Held observation.") await held
+      return verdict("done")
+    })
+    for (let index = 0; index < 4; index += 1) inspections[`H${index}`]!.screen = "Held observation."
+    await start(judge)
+    for (let index = 0; index < 4; index += 1) returned(`H${index}`, `held-${index}`)
+    await flush()
+    expect(judge).toHaveBeenCalledTimes(4)
+    returned("S", "queued-immediate")
+    await advance(8000)
+    if (generation === "same") {
+      await advance(3_600_000)
+      await advance(8000)
+    }
+    release()
+    await flush()
+    expect(packets.filter(packet => packet.screen !== "Held observation.")).toHaveLength(1)
+    expect(packets.find(packet => packet.screen !== "Held observation.")).not.toHaveProperty("periodicCheckIn")
+    expect(readReturns(root).find(record => record.session === "S")).toMatchObject({ transition: "queued-immediate", trigger: "immediate" })
+    expect(prompts()).toEqual([])
+  })
+
+  it("P0: retries its own failed periodic observation without claiming network recovery or changing trigger", async () => {
+    const judge = vi.fn(async (_packet: ReturnPacket) => {
+      if (judge.mock.calls.length === 1) throw new Error("fetch failed")
+      return verdict("gate")
+    })
+    await start(judge, { checkConnectivity: async () => "online" })
+    await advance(8000)
+    expect(judge).toHaveBeenCalledTimes(1)
+    expect(notices).toHaveLength(0)
+    await advance(0)
+    expect(judge).toHaveBeenCalledTimes(2)
+    expect(judge.mock.calls[1]![0]).toMatchObject({ periodicCheckIn: { priorJudgment: null } })
+    expect(judge.mock.calls[1]![0]).not.toHaveProperty("networkRecovered")
+    expect(readReturns(root).map(record => record.trigger)).toEqual(["periodic", "periodic"])
+    expect(notices).toHaveLength(1)
+    expect(prompts()).toEqual([])
+  })
+
+  it("P0: bounds failed periodic observations and reports exhaustion once", async () => {
+    const judge = vi.fn(async (_packet: ReturnPacket) => { throw new Error("fetch failed") })
+    await start(judge, { checkConnectivity: async () => "online" })
+    await advance(8000)
+    await advance(0)
+    await advance(15_000)
+    expect(judge).toHaveBeenCalledTimes(3)
+    expect(notices).toHaveLength(1)
+    expect(notices[0]).toMatchObject({ kind: "error", trigger: "periodic" })
+    expect(prompts()).toEqual([])
+  })
+
+  it("P0: reports its failed HTTP observation without retrying or claiming target network failure", async () => {
+    const judge = vi.fn(async (_packet: ReturnPacket) => { throw Object.assign(new Error("request too large"), { status: 413 }) })
+    await start(judge, { checkConnectivity: async () => "online" })
+    await advance(8000)
+    await advance(0)
+    expect(judge).toHaveBeenCalledTimes(1)
+    expect(notices).toHaveLength(1)
+    expect(notices[0]).toMatchObject({ kind: "error", trigger: "periodic", reason: "request too large" })
+    expect(prompts()).toEqual([])
+  })
+
+  it("P0: a failed periodic observation cannot overwrite a newer immediate return", async () => {
+    let release!: () => void
+    const held = new Promise<void>(resolve => { release = resolve })
+    const judge = vi.fn(async (packet: ReturnPacket) => {
+      if (packet.periodicCheckIn) { await held; throw new Error("fetch failed") }
+      return verdict("gate")
+    })
+    await start(judge, { checkConnectivity: async () => "online" })
+    await advance(8000)
+    returned("S", "human-resumed")
+    release()
+    await flush()
+    await advance(0)
+    expect(judge).toHaveBeenCalledTimes(2)
+    expect(readReturns(root).at(-1)).toMatchObject({ transition: "human-resumed", kind: "gate" })
+    expect(prompts()).toEqual([])
+  })
+
   it.each(["quiet-stop", "quiet-focus", "final-stop", "final-focus"] as const)(
     "records the %s boundary without sending input", async boundary => {
       const inspect = host.inspect!

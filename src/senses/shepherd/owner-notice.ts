@@ -73,6 +73,9 @@ function who(record: ReturnRecord, location: string | HostSession | undefined): 
 export function noticeLine(record: ReturnRecord, location?: string | HostSession): string {
   const subject = who(record, location)
   const why = `Why: ${plain(record.reason, REASON_MAX) || "no reason given"}`
+  if (record.dispatch?.state === "claimed" || record.dispatch?.state === "unknown") {
+    return `Shepherd could not confirm input delivery to ${subject}; input effects are uncertain and remain held. Reconcile the exact receipt before retrying. ${why}`
+  }
   switch (record.kind) {
     case "premature":
       if (record.action === "respond" && record.reply) {
@@ -92,9 +95,9 @@ export function noticeLine(record: ReturnRecord, location?: string | HostSession
     case "working":
       return `${subject} is still working in the background and has news. ${why}`
     case "unclear":
-      return `${subject} stopped and I could not tell what it needs, so I left it. ${why}`
+      return `Shepherd could not determine the current state of ${subject}. ${why}`
     default:
-      return `${subject} stopped but I could not judge it, so I left it. ${why}`
+      return `Shepherd could not complete its observation of ${subject}; the agent's state was not determined. ${why}`
   }
 }
 

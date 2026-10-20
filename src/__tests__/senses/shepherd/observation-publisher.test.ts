@@ -1,6 +1,7 @@
 import * as fs from "node:fs"
 import * as os from "node:os"
 import * as path from "node:path"
+import { createHash } from "node:crypto"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { readMailboxSupervision } from "../../../heart/mailbox/mailbox-supervision"
 import { createShepherdObservationPublisher } from "../../../senses/shepherd/observation-publisher"
@@ -11,6 +12,7 @@ import { updateShepherdMandate } from "../../../heart/shepherd/mandates"
 import { setShepherdSessionPause } from "../../../senses/shepherd/guidance"
 import { readCheckInSnapshot, reconcileShepherdDispatch } from "../../../senses/shepherd/recovery"
 import { emitNervesEvent } from "../../../nerves/runtime"
+import type { ShepherdManagedIdentity } from "../../../heart/shepherd/custody-types"
 
 vi.mock("../../../nerves/runtime", () => ({ emitNervesEvent: vi.fn() }))
 vi.mock("node:fs", async importOriginal => {
@@ -41,6 +43,35 @@ beforeEach(async () => {
 afterEach(() => { fs.rmSync(root, { recursive: true, force: true }) })
 
 describe("sense-owned observation publisher", () => {
+  it.each(["sent", "not_sent"] as const)("reports actual managed %s stages without calling them paste, Enter or task completion", state => {
+    const identity: ShepherdManagedIdentity = {
+      kind: "agent_session", hostInstance: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+      workspaceId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", surfaceId: "11111111-1111-4111-8111-111111111111",
+      provider: "copilot", providerSessionId: "provider-session", backendPid: 314, backendStartSeconds: 12345,
+      backendStartMicroseconds: 6789, surfaceGeneration: 7, executableSha256: "b".repeat(64), profileSha256: "a".repeat(64),
+    }
+    const instance = `agent_session:${createHash("sha256").update(JSON.stringify(identity)).digest("hex")}`
+    const store = openCheckInStore(checkInStorePath(root))
+    try {
+      const claim = store.claimDispatch({
+        host: "cmux", session: identity.surfaceId, instance, screenFingerprint: "screen", guidanceRevision: "guidance",
+        reply: "Continue authorized work.", trigger: "immediate", transition: "return", at: new Date(now).toISOString(),
+        nativeTarget: { kind: "agent_session", identity },
+      }, "worker")!
+      store.completeDispatch(claim.id, "worker", { state, nativeRequestId: claim.nativeRequestId,
+        receipt: { kind: "agent_session", receiptVersion: 1, requestId: claim.id, nativeRequestId: claim.nativeRequestId!,
+          identity, editorInserted: state === "sent", backendWriteAdmitted: state === "sent",
+          providerAcknowledged: state === "sent", providerInputId: state === "sent" ? "server-ack" : null } })
+    } finally { store.close() }
+    const publisher = createShepherdObservationPublisher({ agentRoot: root, agentName: "slugger", host: "cmux" })
+    expect(publisher.refresh()).toBe(true)
+    const event = readMailboxSupervision("slugger", { agentRoot: root }).timeline.items.find(item => item.kind === (state === "sent" ? "input_admitted" : "observation"))
+    expect(event?.summary).toBe(state === "sent"
+      ? "Managed editor insertion, complete backend write and exact provider acknowledgement; not proof of task completion"
+      : "Input refused; no managed editor insertion or backend input")
+    expect(event?.summary).not.toMatch(/paste|Enter|submit key/i)
+  })
+
   it("distinguishes absent host state, unavailable host state, and an idempotently stopped empty publisher", () => {
     const publisher = createShepherdObservationPublisher({ agentRoot: root, agentName: "slugger", host: "cmux" })
     expect(publisher.refresh()).toBe(true)

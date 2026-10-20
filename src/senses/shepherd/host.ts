@@ -3,7 +3,7 @@ import { emitNervesEvent } from "../../nerves/runtime"
 import { createCmuxClient } from "./client"
 import { createCmuxHost } from "./cmux"
 import { createHerdrHost } from "./herdr"
-import type { ShepherdInputReceipt } from "../../heart/shepherd/custody-types"
+import type { ShepherdInputReceipt, ShepherdManagedIdentity, ShepherdManagedInputReceipt } from "../../heart/shepherd/custody-types"
 
 /**
  * The seam between Shepherd and a terminal host (cmux, Herdr). A host lists and reads terminal
@@ -12,6 +12,7 @@ import type { ShepherdInputReceipt } from "../../heart/shepherd/custody-types"
  * quiet screen); judging the return is Shepherd's.
  */
 export interface HostSession {
+  kind?: "terminal" | "agent_session"
   /** The host's stable id for the terminal (cmux surface UUID, Herdr pane id). */
   id: string
   /** A short handle the agent can pass back (cmux `surface:12`, Herdr `w1:p2`). */
@@ -41,14 +42,35 @@ export interface ShepherdInspection {
   backgroundWork: boolean | null
   /** Native evidence is optional on observation-only and older hosts, never inferred. */
   guarded?: ShepherdGuardedObservation
+  managed?: ShepherdManagedObservation
 }
 
 export const SHEPHERD_NATIVE_CAUSALITY_BLOCKER = "claude_native_input_attribution_unavailable"
 
-export type ShepherdHostCapabilities =
+export type ShepherdManagedCapabilities =
+  | { state: "unqualified" | "qualified"; protocolVersion: 1; providers: ShepherdManagedIdentity["provider"][]; profiles: string[]; reason?: string }
+
+export type ShepherdHostCapabilities = (
   | { state: "unsupported"; reason: string }
   | { state: "unqualified"; protocolVersion: 1; agents: string[]; reason?: string }
   | { state: "qualified"; protocolVersion: 1; agents: string[] }
+) & { managed?: ShepherdManagedCapabilities }
+
+export interface ShepherdManagedObservation {
+  identity: ShepherdManagedIdentity
+  eventRevision: string
+  activityRevision: string
+  renderFingerprint: string
+  token: string | null
+  expiresAtUnixMs: number | null
+}
+
+export interface ShepherdManagedInspection extends ShepherdInspection {
+  session: HostSession & { kind: "agent_session"; cwd: string; tty: null }
+  instance: string
+  managed: ShepherdManagedObservation
+  guarded?: never
+}
 
 /** Native UTC projection is advisory; the host enforces its own monotonic deadline. */
 export interface ShepherdGuardedObservation {
@@ -73,6 +95,11 @@ export interface ShepherdNativeInputReceipt extends ShepherdInputReceipt {
   reason: string
 }
 
+export interface ShepherdManagedNativeInputReceipt extends ShepherdManagedInputReceipt {
+  state: "accepted" | "not_sent" | "unknown"
+  reason: string
+}
+
 export interface ShepherdContinuationRequest {
   requestId: string
   text: string
@@ -81,7 +108,7 @@ export interface ShepherdContinuationRequest {
 
 export type ShepherdContinuationResult =
   | { state: "not_sent"; reason: string; receipt?: never }
-  | { state: "sent" | "not_sent" | "unknown"; receipt: ShepherdNativeInputReceipt; reason?: string }
+  | { state: "sent" | "not_sent" | "unknown"; receipt: ShepherdNativeInputReceipt | ShepherdManagedNativeInputReceipt; reason?: string }
 
 /** A coding agent stopped and is waiting for the human. `transitionId` is the host's own id for that stop. */
 export interface ReturnedControl {
@@ -133,6 +160,8 @@ export interface ShepherdHost {
   capabilities?(): Promise<ShepherdHostCapabilities>
   /** Native guarded operation only; no paste/key fallback. canSend runs after adapter awaits. */
   continueInput?(request: ShepherdContinuationRequest, canSend: () => boolean): Promise<ShepherdContinuationResult>
+  /** Read-only retained receipt lookup; uses persisted identity, never a fresh input or inspection. */
+  managedReceipt?(requestId: string, identity: ShepherdManagedIdentity): Promise<ShepherdManagedNativeInputReceipt>
   /** canSend is checked synchronously after adapter I/O, immediately before attempting input. */
   promptIfUnchanged?(sessionId: string, line: string, expected: ShepherdInspection, canSend?: () => boolean): Promise<GuardedPromptResult>
   /** Types one line and submits it, so it cannot be mistaken for a paste or a keystroke. */
