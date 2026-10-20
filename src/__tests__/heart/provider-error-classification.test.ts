@@ -305,6 +305,14 @@ describe("classifyHttpError (shared)", () => {
 })
 
 describe("isNetworkError (shared)", () => {
+  it.each([400, 401, 403, 408, 413, 429, 500, 503])("P0: HTTP %i is not a transport outage even when its text or code mentions the network", async status => {
+    const { isNetworkError } = await import("../../heart/providers/error-classification")
+    const error = Object.assign(new Error("fetch failed while uploading request body; try a smaller request size"), {
+      status, code: "ECONNRESET",
+    })
+    expect(isNetworkError(error), `HTTP ${status} must not arm connectivity recovery`).toBe(false)
+  })
+
   it("matches Node.js socket/DNS error codes", async () => {
     const { isNetworkError } = await import("../../heart/providers/error-classification")
     for (const code of [
@@ -344,6 +352,13 @@ describe("isNetworkError (shared)", () => {
 })
 
 describe("extractProviderErrorDetails", () => {
+  it("does not invent provider details when the error contains only whitespace", async () => {
+    const { extractProviderErrorDetails, summarizeProviderError } = await import("../../heart/providers/error-classification")
+    const error = new Error(" \t\n ")
+    expect(extractProviderErrorDetails(error)).toEqual({})
+    expect(summarizeProviderError(error, "unknown", "fixture", "fixture")).toBe("provider fixture/fixture: unknown")
+  })
+
   it("captures HTTP status when present", async () => {
     const { extractProviderErrorDetails } = await import("../../heart/providers/error-classification")
     const err = makeHttpError("rate limited", 429)

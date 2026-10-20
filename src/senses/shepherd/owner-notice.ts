@@ -91,9 +91,9 @@ export function noticeLine(record: ReturnRecord, location?: string | HostSession
     case "working":
       return `${subject} is still working in the background and has news. ${why}`
     case "unclear":
-      return `${subject} stopped and I could not tell what it needs, so I left it. ${why}`
+      return `Shepherd could not determine the current state of ${subject}. ${why}`
     default:
-      return `${subject} stopped but I could not judge it, so I left it. ${why}`
+      return `Shepherd could not complete its observation of ${subject}; the agent's state was not determined. ${why}`
   }
 }
 

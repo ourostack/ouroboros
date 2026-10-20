@@ -2,6 +2,15 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.939",
+      "changes": [
+        "Shepherd attributes failed observations to itself without inventing an agent stop or a human decision, and keeps explicit HTTP responses separate from pure transport failures.",
+        "Retain bounded pre-dispatch judgment retries and real offline-to-online evidence, advance new outage probes, and prevent a stalled judge from blocking unrelated sessions with bounded per-session scheduling.",
+        "Capture queued generations, coalesce stale per-session work, preserve uncertain-send replay barriers and existing focus/pause/menu guards, and wait for active observations before closing custody.",
+        "This P0-only release preserves existing legacy automation warnings; native guarded admission and full Shepherd v1 remain unqualified."
+      ]
+    },
+    {
       "version": "0.1.0-alpha.938",
       "changes": [
         "Shepherd rejects provider-filtered, refused or incomplete judgments before parsing or input, and retains safe completion metadata without refusal text or bypassing provider safeguards.",
