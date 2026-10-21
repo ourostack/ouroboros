@@ -1,0 +1,81 @@
+name: Shepherd policy GREEN source test
+
+on:
+  push:
+    branches:
+      - worker/shepherd-v1-policy-green-source-20261021
+
+permissions:
+  contents: read
+
+jobs:
+  policy-green-source:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    steps:
+      - name: Verify only49 account-free derived-policy source tests
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 -B - <<'PY'
+          import hashlib
+          import json
+          import os
+          from pathlib import Path
+          import re
+          import sys
+          import urllib.request
+
+          expected = "8122383a3955754b681e4f8fe707f517004ed6814504c054c887b2faecc7721a"
+          commit, run_id = os.environ["GITHUB_SHA"], os.environ["GITHUB_RUN_ID"]
+          if (os.environ.get("GITHUB_REPOSITORY") != "ourostack/ouroboros"
+                  or os.environ.get("GITHUB_REPOSITORY_ID") != "1169669354"
+                  or not re.fullmatch(r"[0-9a-f]{40}", commit) or not run_id.isdecimal()):
+              raise RuntimeError("Exact primary project CI identity not established")
+          base = Path(os.environ["RUNNER_TEMP"]).resolve(strict=True)
+          root = base / f"shepherd-policy-green-source-{run_id}"
+          root.mkdir()
+          payload = root / "payload"
+          payload.mkdir()
+          with (root / "owner.json").open("x") as out:
+              json.dump({"repository": "ourostack/ouroboros", "repository_id": 1169669354,
+                         "run": run_id, "commit": commit}, out)
+
+          class NoRedirect(urllib.request.HTTPRedirectHandler):
+              def redirect_request(self, req, fp, code, msg, headers, newurl):
+                  raise RuntimeError("Source payload redirect refused")
+
+          opener = urllib.request.build_opener(NoRedirect())
+
+          def fetch(name, limit):
+              url = f"https://raw.githubusercontent.com/ourostack/ouroboros/{commit}/.ci/shepherd-policy-green/{name}"
+              with opener.open(url, timeout=60) as response:
+                  data = response.read(limit + 1)
+              if len(data) > limit:
+                  raise RuntimeError("CI payload download exceeds bound")
+              return data
+
+          raw = fetch("snapshot.json", 65536)
+          if hashlib.sha256(raw).hexdigest() != expected:
+              raise RuntimeError("Exact CI snapshot manifest mismatch")
+          manifest = json.loads(raw)
+          if (manifest["repository"] != "ourostack/ouroboros" or manifest["repositoryID"] != 1169669354
+                  or manifest["upstream_commit"] != "6b9826e3aa83b1a5947db50f4332cb9c65f1b340"
+                  or manifest["upstream_tree"] != "74ba48a4b6b086beb9226a79ffe0f3d9f6d40f52"
+                  or manifest["qualification"] is not False):
+              raise RuntimeError("Foreign CI snapshot")
+          if set(manifest["files"]) != {
+                  "LICENSE.codex", "NOTICE.codex", "build-managed-codex-host.py",
+                  "managed-codex-frozen-host.patch", "provenance.json", "runner.py", 'member-Cargo.toml', 'member-src-lib.rs', 'member-src-main.rs', 'member-src-profile.rs', 'member-src-policy.rs', 'member-tests-policy.rs'}:
+              raise RuntimeError("Unexpected CI payload file")
+          with (payload / "snapshot.json").open("xb") as out:
+              out.write(raw)
+          for name, record in manifest["files"].items():
+              data = fetch(name, 262144 if name == "managed-codex-frozen-host.patch" else 131072)
+              if len(data) != record["bytes"] or hashlib.sha256(data).hexdigest() != record["sha256"]:
+                  raise RuntimeError(f"Exact CI blob mismatch: {name}")
+              with (payload / name).open("xb") as out:
+                  out.write(data)
+          os.execv(sys.executable, [sys.executable, "-B", str(payload / "runner.py"),
+                                   "--root", str(root)])
+          PY
