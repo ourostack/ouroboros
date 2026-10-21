@@ -83,7 +83,78 @@
       "features": "Exclude code-mode/JS executor sources, plugins/apps/MCP, external callbacks, background memory/sidecars, remote/restore paths and async user-input facilities unless individually accounted for. Refuse a model/tool catalog that reintroduces an unaccounted tool or wake source.",
       "compaction": "The 0.154.0 baseline does not define async_compaction. Do not invent that option. Source-audit its inline awaited compaction under the owned active turn and test actual completion ordering. A later version with asynchronous compaction needs its own descriptor and proof.",
       "pendingWork": "The source can emit a completed turn and then start queued work. Prove that no unaccounted ingress can enqueue such work in the supported profile; do not infer an empty queue from turn completion or from two matching reads. If this cannot be demonstrated, this provider stays unqualified.",
-      "unresolved": "Complete the precise baseline feature/tool/ingress audit and runtime qualification before populating the provider's qualification entry. No custom tool callback or unavailable internal API is presumed to exist."
+      "unresolved": "Complete the precise baseline feature/tool/ingress audit and runtime qualification before populating the provider's qualification entry. No custom tool callback or unavailable internal API is presumed to exist.",
+      "ownedFrozenHost": {
+        "status": "written-spec-pending-independent-approval-not-implementation-or-runtime-authority",
+        "classification": "Architectural extension of this managed-session implementation, not a new task or a qualification waiver.",
+        "approachApproval": {
+          "reviewer": "1d36047a-ee76-4a33-9b05-2d69e8e49654",
+          "review": 106,
+          "turn": 71,
+          "scope": "APPROVE APPROACH TO WRITE SPEC only: owned frozen Arc<Config> integration, superseding loader/table/MDM replay."
+        },
+        "intent": "Make the actual derived configuration that satisfies the finite producer argument the configuration used before every owned thread is created and throughout its lifetime. Preserve existing v2 request/event translations instead of inventing configuration ACKs or rewriting the coding engine.",
+        "alternatives": {
+          "shippingCliReadbacks": "Rejected: separate config/read, feature/list and thread/start loads do not commit one effective configuration. Empty MCP tables merge rather than clear, and managed requirements can override a CLI catalog path.",
+          "publicLoaderReplay": "Rejected in favor of direct sealing: recreating layer trust, managed requirements, file indirections and catalog presence is more complex than retaining the actual already-derived Config.",
+          "directCoreProtocolRewrite": "Rejected: constructing ThreadManager directly would require a second implementation of the app-server event/request translations already covered by the conditional native ledger.",
+          "selected": "Our pinned Rust coding-backend host embeds the existing in-process app-server with an explicit owned frozen-configuration and lossless-delivery integration patch. It is not the unmodified Codex CLI."
+        },
+        "identity": {
+          "profileId": "codex-0.154-frozen-native-foreground-v1",
+          "privateBridgeVersion": 1,
+          "upstreamCommit": "6b9826e3aa83b1a5947db50f4332cb9c65f1b340",
+          "codingModel": "gpt-5.5",
+          "catalog": "Exactly one complete ModelInfo selected from the pinned SDK's compiled models-manager/models.json, with experimental_supported_tools empty, multi-agent metadata Disabled and explicit ToolMode::Direct. The model must remain exactly gpt-5.5; provider-model fallback and model overrides are unavailable.",
+          "artifactBinding": "Bind the actual helper executable digest, upstream source commit, owned integration-patch digest, static profile/command-schema/catalog digests and renderer qualification. Per-launch nonce, canonical project CWD and unique InMemory store ID are separately verified runtime bindings, not caller-settable qualification.",
+          "backend": "The owned Rust process contains the coding engine and is the actual backend PID, not a substituted supervisor PID or a second SDK participant."
+        },
+        "configurationCapture": {
+          "normalPolicyFirst": "Resolve system, user, project, cloud and managed requirements through the ordinary pinned ConfigBuilder and supported native-profile overrides. Do not bypass or re-label host constraints. Reject incompatible requirements or values instead of coercing them after derivation.",
+          "catalogCapture": "Use the source-owned catalog for normal construction and validate the resulting actual complete Config.model_catalog against the expected catalog. A managed path or catalog override is not ignored: if it changes the required effective catalog, startup refuses. The sealed in-memory catalog and StaticModelsManager, not the continued contents or permissions of a JSON file, establish lifetime stability.",
+          "validateBeforeEffects": "Validate every independently reviewed finite-domain premise against the actual derived Config before constructing MessageProcessor, model/runtime managers or a thread. This includes agents and multi-agent metadata, all excluded features, Never approval, ephemeral state, unique InMemory store, actual empty effective MCP map, disabled legacy notify/hooks/prewarm and fixed provider/model/tool mode. Environment and capability selections are explicitly empty at every thread/turn dispatch.",
+          "derivedMode": "The owned SDK patch exports a pure native-profile check that calls the pinned Core tool-mode derivation and verifies Direct for both code-mode availability outcomes. Do not implement a second mode formula or report a guessed runtime default.",
+          "seal": "After validation and exact runtime-path binding, seal the resulting Arc<Config>. Keep the original layer stack, requirements, provenance, loaded strings and full model catalog intact. No TOML replay, missing-file/device trick, watcher or repeated hash substitutes for this snapshot.",
+          "readback": "The private descriptor is computed from the actual sealed derived values and actual fixed thread/turn options. It includes only safe policy values and digests, never raw private configuration, credentials or model input. Public config/read is not treated as complete derived readback."
+        },
+        "ownedSdkExtension": {
+          "newApiToImplement": "in_process::start_frozen(FrozenInProcessStartArgs), an explicit new owned SDK API. Its arguments contain the sealed Config and necessary runtime services, not reloadable CLI/config-loader inputs. Ordinary start/stdIO/default behavior remains unchanged.",
+          "manager": "A private ConfigManager::new_frozen retains that exact Arc. Every load/read path returns the sealed Config/layer stack or an explicit error without calling ConfigBuilder, layer loaders, default fallback or thread-config rebuilding. Loaded-thread refresh paths not required by the private protocol reject rather than rebuild.",
+          "overrides": "The private bridge supplies no thread-start config/model/provider/CWD/permission/ephemeral overrides because those values are already sealed. Frozen manager handling accounts exhaustively for ConfigOverrides fields: no request or semantic override is accepted. The two execution-path fields synthesized by build_thread_config_overrides may only equal their exact sealed runtime values; there is no general trusted-overrides exemption. Alternate CWDs reject before effects.",
+          "mutations": "Configuration persistence and setters reject before disk or runtime mutation. Void mutators set a shared terminal violation latch instead of silently ignoring requests. The frozen dispatcher, outgoing path and owned bridge observe that latch before admitting further dispatch; already admitted work remains tracked. It cannot be cleared or converted into completion.",
+          "requestBoundary": "Frozen mode and the private bridge both enforce their fixed request/notification subset before dispatch. Initialize/initialized, one fresh fixed thread creation, exact text-only turns, complete current-thread shell inventory and exact registered native-tool responses are the only coding routes. Auth, settings/config mutation, steering, recovery, resume/fork/review, extra threads, participant/goal/queue/plugin/MCP mutation and arbitrary RPC reject and quarantine the generation.",
+          "compatibility": "The extension is a modified owned build with its own identity. Existing source arguments require explicit carryover review for this composition; the shipping CLI remains unsupported by the configuration-commitment finding."
+        },
+        "losslessTransport": {
+          "mode": "Frozen mode alone uses bounded lossless event delivery. Preserve normal in-process/stdIO behavior outside this explicit mode.",
+          "reason": "The pinned in-process writer can silently drop non-required notifications. Its declared Lagged variant is not evidence that every drop is reported.",
+          "pumps": "Keep request dispatch, event draining and stdout writing independently progressing through bounded queues. Preserve exact IDs and event order. A full output pipe must apply backpressure, not discard events or return a success-shaped fallback; closed, failed or expired transport quarantines the generation.",
+          "completion": "In-process enqueue, local send completion and shutdown Ok are not provider consumption, work completion or verified physical teardown. Retain the native full-write/ACK, exact callback-result witness, terminal root and complete unchanged-revision shell proof.",
+          "testSeam": "After test-first API failure, a behavior-preserving extraction may expose the existing forwarding path. Observe its actual queue-full drop failure before changing frozen-mode behavior. Tests must prove bounded backpressure, preserved order, request delivery and terminal failure propagation without starting a model."
+        },
+        "nativeComposition": {
+          "ownership": "Introduce provider-bound common native owner/progress/adapter boundaries only where the second provider requires them. Preserve current Copilot behavior and source tests. Qualification membership and lifetime binding include the provider; cross-provider capabilities, progress, receipts and owner substitution fail before effects.",
+          "adapter": "Reuse the strict Codex decoder, conditional turn/callback ledger, result nonce and paginated shell inventory. Register all startup/root/native-command operations before dispatch. Connect actual callbacks to the existing kept NativeCodingAuthority/foreground command service; fixture command facts are not this integration.",
+          "surface": "Starting the owned Codex profile is an explicit fresh native-panel opt-in. It never converts, restores, restarts or upgrades an existing manual Codex panel. An unavailable or failed managed start cannot fall back to manual Codex. Both actual renderer paths preserve literal custody and readonly managed-state projection.",
+          "sharedPolicy": "Keep the accepted OS-account command disclosure, native user/project authority, revocation, renderer/focus controls, common automatic-trigger admission and durable custody unchanged. No SDK/Node sidecar, external hosted service or environment-variable qualification override is introduced."
+        },
+        "buildAndDependencies": {
+          "source": "Keep our small helper crate and the explicit integration patch in cmux. Build in a separately owned stage of the exact upstream workspace, adding only our member/integration changes and preserving upstream Cargo.lock and workspace patches rather than resolving the SDK as an unrelated git dependency root.",
+          "toolchain": "Use the pinned Rust1.95.0 toolchain and existing workspace dependencies. New product dependency/build integration is subject to this written spec and plan approval; no installation or heavy build is authorized merely by approach approval.",
+          "capacity": "Coordinate the shared disk reserve before heavy compilation; use bounded jobs, explicit protected source/target/proof paths and the capacity guard. Preserve failed attempts and dependency/source caches. Never execute legacy cleanup scripts or delete another generation to manufacture headroom.",
+          "packaging": "A side-effect-free describe-profile mode may generate the static native manifest from the same compiled policy/catalog functions. Include applicable upstream license/notice material. No default app startup/build activation, installation or qualified table row appears while the profile is unqualified."
+        },
+        "acceptance": [
+          "Actual ConfigBuilder and frozen-manager tests preserve host constraints, layer provenance, complete catalog and every critical derived invariant after source files change; no model, account, app or provider launch is used.",
+          "Frozen configuration reads never enter reload/default paths; semantic or foreign execution-path overrides, persistence and void mutations fail before effects and latch terminal failure. Ordinary source behavior remains unchanged.",
+          "Actual bounded forwarding tests reproduce the old loss, then prove frozen losslessness, independent progress and failure propagation. No capacity or fast-drain assumption substitutes.",
+          "Private typed bridge tests reject unsupported/extra/duplicate/foreign/oversized/truncated input before dispatch and preserve exact literal text, identities, full writes and callback witnesses over controlled pipes.",
+          "Actual native owner/service/adapter/Store/socket/renderer tests prove provider isolation and real kept-command/result composition; unchanged Copilot/manual behavior and all three parent triggers remain covered.",
+          "Compile the actual helper and native app source, regenerate directly dependent resources, verify source/output hashes and review the complete changes. All qualification tables remain empty.",
+          "Only the separately authorized disposable native/runtime stage may establish actual account/build compatibility, real model/coding usefulness, GUI/input evidence and provider qualification. Original model/corpus/outcome/fairness/full-project/standard-bundle/install/release/rollback gates remain mandatory."
+        ],
+        "notCompletion": "An approved spec, implemented frozen host or passing source suite is not V1 delivery. Claude producer coverage, actual provider/native qualification and all original gates remain engineering work, not an operator-only profile claim."
+      }
     },
     "copilot": {
       "integration": "This is a new native provider, not an existing cmux Agent Session integration.",
