@@ -1,0 +1,97 @@
+{
+  "repository": "ourostack/ouroboros",
+  "repositoryID": 1169669354,
+  "upstream_commit": "6b9826e3aa83b1a5947db50f4332cb9c65f1b340",
+  "upstream_tree": "74ba48a4b6b086beb9226a79ffe0f3d9f6d40f52",
+  "qualification": false,
+  "expectedCaptureTestResults": {
+    "capture::tests::capture_fixture_actual_builder_positive_control": "ok",
+    "capture::tests::capture_preserves_actual_config_and_all_runtime_bindings": "FAILED",
+    "capture::tests::capture_preserves_compatible_cloud_requirements_and_provenance": "FAILED",
+    "capture::tests::capture_rejects_actual_cloud_goals_requirement_without_fallback": "FAILED",
+    "capture::tests::capture_rejects_actual_cloud_approval_requirement_without_fallback": "FAILED",
+    "capture::tests::capture_rejects_actual_cloud_catalog_requirement_without_fallback": "FAILED",
+    "capture::tests::capture_propagates_cloud_error_instead_of_sealing_local_config": "FAILED",
+    "capture::tests::capture_propagates_factory_construction_error": "FAILED",
+    "capture::tests::capture_preliminary_build_failure_never_calls_cloud_factory": "ok",
+    "capture::tests::capture_rejects_nil_nonce_before_cloud": "ok",
+    "capture::tests::capture_rejects_relative_cwd_before_cloud": "ok",
+    "capture::tests::capture_rejects_noncanonical_cwd_before_cloud": "ok",
+    "capture::tests::capture_rejects_runtime_path_drift_before_sealing": "ok",
+    "capture::tests::capture_rejects_store_not_bound_to_nonce": "ok",
+    "capture::tests::capture_discards_reload_inputs_and_retains_same_snapshot": "FAILED"
+  },
+  "expectedCaptureFailureMessages": {
+    "capture::tests::capture_preserves_actual_config_and_all_runtime_bindings": "capture must seal valid actual config",
+    "capture::tests::capture_preserves_compatible_cloud_requirements_and_provenance": "capture must preserve compatible cloud requirements",
+    "capture::tests::capture_rejects_actual_cloud_goals_requirement_without_fallback": "capture did not reach actual final build",
+    "capture::tests::capture_rejects_actual_cloud_approval_requirement_without_fallback": "capture did not reach actual final build",
+    "capture::tests::capture_rejects_actual_cloud_catalog_requirement_without_fallback": "capture did not reach actual final build",
+    "capture::tests::capture_propagates_cloud_error_instead_of_sealing_local_config": "cloud error lost: normal-policy capture is not implemented",
+    "capture::tests::capture_propagates_factory_construction_error": "cloud factory must be invoked once",
+    "capture::tests::capture_discards_reload_inputs_and_retains_same_snapshot": "capture must freeze a valid snapshot"
+  },
+  "memberFiles": {
+    "member-Cargo.toml": "Cargo.toml",
+    "member-src-lib.rs": "src/lib.rs",
+    "member-src-main.rs": "src/main.rs",
+    "member-src-profile.rs": "src/profile.rs",
+    "member-src-policy.rs": "src/policy.rs",
+    "member-tests-policy.rs": "tests/policy.rs",
+    "member-src-capture.rs": "src/capture.rs"
+  },
+  "files": {
+    "LICENSE.codex": {
+      "bytes": 10926,
+      "sha256": "d17f227e4df5da1600391338865ce0f3055211760a36688f816941d58232d8dc"
+    },
+    "NOTICE.codex": {
+      "bytes": 242,
+      "sha256": "9d71575ecfd9a843fc1677b0efb08053c6ba9fd686a0de1a6f5382fd3c220915"
+    },
+    "build-managed-codex-host.py": {
+      "bytes": 36242,
+      "sha256": "5191d6714ac5ae4eefee3b2f46ae7e6cd74a2074f6bb6c4ea3064343e143d6df"
+    },
+    "managed-codex-frozen-host.patch": {
+      "bytes": 178014,
+      "sha256": "04b2c9dd58d09fa4859b8b74e49fad570c7b19a4dd50a797d5953eb77cb9639a"
+    },
+    "member-Cargo.toml": {
+      "bytes": 705,
+      "sha256": "889221320d615345ae84cb3e36a9a16e774a6fa23afdf0be6059b3c6ad289228"
+    },
+    "member-src-capture.rs": {
+      "bytes": 17950,
+      "sha256": "a02ca531394f8cb82810743cbe291dfbd7970a890dbf4b862382a846ee6a18e4"
+    },
+    "member-src-lib.rs": {
+      "bytes": 50,
+      "sha256": "4a483e68dfae310ed7d2867b94e085c5042541083433047add4c16ca6a4279fb"
+    },
+    "member-src-main.rs": {
+      "bytes": 177,
+      "sha256": "86d58bda61f24823235b43c519b7ba400fecc0306ea44361a41efc55ed1a79a6"
+    },
+    "member-src-policy.rs": {
+      "bytes": 3567,
+      "sha256": "20014af8ffe4dcd4955332721e36a39301b30ad1c1cf6bcf8c90a2a3a7c6a328"
+    },
+    "member-src-profile.rs": {
+      "bytes": 851,
+      "sha256": "1a7e5991cb48793d6bdc7f06478cf079bdd1aae7631e8463bf7a28b0c8d6041d"
+    },
+    "member-tests-policy.rs": {
+      "bytes": 15695,
+      "sha256": "4217fdbe22a481934d81becc631a4a962336d13a88f59ab76f73b0e1433a270a"
+    },
+    "provenance.json": {
+      "bytes": 2133,
+      "sha256": "cd5c99914edde0703b05a7bc257dbbde4db508b62c389049eb8a71ff1080985c"
+    },
+    "runner.py": {
+      "bytes": 19516,
+      "sha256": "24a6c8ef6d99b9471e57b67b02dbc0c168376e9d8139516d5fe5ef28cebbae42"
+    }
+  }
+}

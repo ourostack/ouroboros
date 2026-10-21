@@ -1,0 +1,4121 @@
+diff --git a/codex-rs/app-server/src/config_manager.rs b/codex-rs/app-server/src/config_manager.rs
+--- a/codex-rs/app-server/src/config_manager.rs
++++ b/codex-rs/app-server/src/config_manager.rs
+@@ -21,9 +21,99 @@
+ use std::path::PathBuf;
+ use std::sync::Arc;
+ use std::sync::RwLock;
++use std::sync::atomic::AtomicBool;
++use std::sync::atomic::Ordering;
+ use toml::Value as TomlValue;
+ use tracing::instrument;
+ use tracing::warn;
++
++/// Read-only terminal state shared by the owned frozen configuration generation.
++#[derive(Clone)]
++pub struct FrozenConfigViolation {
++    violated: Arc<AtomicBool>,
++    changed: tokio::sync::watch::Sender<bool>,
++}
++
++impl FrozenConfigViolation {
++    #[cfg(test)]
++    pub(crate) fn new_for_tests() -> Self {
++        Self::new()
++    }
++
++    fn new() -> Self {
++        let (changed, _) = tokio::sync::watch::channel(false);
++        Self {
++            violated: Arc::new(AtomicBool::new(false)),
++            changed,
++        }
++    }
++
++    pub fn is_violated(&self) -> bool {
++        self.violated.load(Ordering::Acquire)
++    }
++
++    pub(crate) async fn wait_for_violation(&self) {
++        let mut changes = self.changed.subscribe();
++        loop {
++            if self.is_violated() || *changes.borrow_and_update() {
++                return;
++            }
++            if changes.changed().await.is_err() {
++                let _ = self.violate("terminal notification channel closed");
++                return;
++            }
++        }
++    }
++
++    pub(crate) async fn until_violation<T>(
++        &self,
++        operation: &'static str,
++        future: impl std::future::Future<Output = std::io::Result<T>>,
++    ) -> std::io::Result<T> {
++        self.check()?;
++        tokio::select! {
++            biased;
++            _ = self.wait_for_violation() => Err(self.violate(operation)),
++            result = future => {
++                self.check()?;
++                match result {
++                    Ok(value) => Ok(value),
++                    Err(error) => {
++                        let _ = self.violate(operation);
++                        Err(error)
++                    }
++                }
++            }
++        }
++    }
++
++    pub(crate) fn check(&self) -> std::io::Result<()> {
++        if self.is_violated() {
++            Err(std::io::Error::new(
++                std::io::ErrorKind::PermissionDenied,
++                "frozen configuration generation has a terminal violation",
++            ))
++        } else {
++            Ok(())
++        }
++    }
++
++    pub(crate) fn violate(&self, operation: &'static str) -> std::io::Error {
++        if !self.violated.swap(true, Ordering::AcqRel) {
++            warn!(operation, "frozen configuration operation refused; generation held");
++        }
++        self.changed.send_replace(true);
++        std::io::Error::new(
++            std::io::ErrorKind::PermissionDenied,
++            "frozen configuration operation refused; generation held",
++        )
++    }
++}
++
++struct FrozenConfigState {
++    config: Arc<Config>,
++    violation: FrozenConfigViolation,
++}
+ 
+ /// Shared app-server entry point for loading effective Codex configuration.
+ #[derive(Clone)]
+@@ -36,6 +126,7 @@
+     cloud_config_bundle: Arc<RwLock<CloudConfigBundleLoader>>,
+     arg0_paths: Arg0DispatchPaths,
+     thread_config_loader: Arc<dyn ThreadConfigLoader>,
++    frozen: Option<Arc<FrozenConfigState>>,
+ }
+ 
+ impl ConfigManager {
+@@ -57,6 +148,48 @@
+             cloud_config_bundle: Arc::new(RwLock::new(cloud_config_bundle)),
+             arg0_paths,
+             thread_config_loader,
++            frozen: None,
++        }
++    }
++
++    pub(crate) fn new_frozen(
++        config: Arc<Config>,
++        arg0_paths: Arg0DispatchPaths,
++    ) -> std::io::Result<Self> {
++        if config.codex_self_exe.as_ref() != arg0_paths.codex_self_exe.as_ref()
++            || config.codex_linux_sandbox_exe.as_ref() != arg0_paths.codex_linux_sandbox_exe.as_ref()
++            || config.main_execve_wrapper_exe.as_ref() != arg0_paths.main_execve_wrapper_exe.as_ref()
++        {
++            warn!("frozen configuration runtime-path binding refused");
++            return Err(std::io::Error::new(
++                std::io::ErrorKind::InvalidInput,
++                "frozen configuration and owned runtime paths differ",
++            ));
++        }
++        let mut manager = Self::new(
++            config.codex_home.to_path_buf(),
++            Vec::new(),
++            LoaderOverrides::default(),
++            false,
++            CloudConfigBundleLoader::default(),
++            arg0_paths,
++            Arc::new(codex_config::NoopThreadConfigLoader),
++        );
++        manager.frozen = Some(Arc::new(FrozenConfigState {
++            config,
++            violation: FrozenConfigViolation::new(),
++        }));
++        Ok(manager)
++    }
++
++    pub(crate) fn frozen_violation_guard(&self) -> Option<FrozenConfigViolation> {
++        self.frozen.as_ref().map(|state| state.violation.clone())
++    }
++
++    pub(crate) fn ensure_config_mutable(&self, operation: &'static str) -> std::io::Result<()> {
++        match self.frozen.as_ref() {
++            Some(state) => Err(state.violation.violate(operation)),
++            None => Ok(()),
+         }
+     }
+ 
+@@ -86,6 +219,7 @@
+     where
+         I: IntoIterator<Item = (String, bool)>,
+     {
++        self.ensure_config_mutable("runtime feature mutation").map_err(|_| ())?;
+         let mut runtime_feature_enablement =
+             self.runtime_feature_enablement.write().map_err(|_| ())?;
+         runtime_feature_enablement.extend(enablement);
+@@ -98,6 +232,9 @@
+         chatgpt_base_url: String,
+         http_client_factory: codex_http_client::HttpClientFactory,
+     ) {
++        if self.ensure_config_mutable("cloud loader replacement").is_err() {
++            return;
++        }
+         let loader = cloud_config_bundle_loader(
+             auth_manager,
+             chatgpt_base_url,
+@@ -112,6 +249,9 @@
+     }
+ 
+     pub(crate) fn clear_cloud_config_bundle_loader(&self) {
++        if self.ensure_config_mutable("cloud loader clearing").is_err() {
++            return;
++        }
+         if let Ok(mut guard) = self.cloud_config_bundle.write() {
+             *guard = CloudConfigBundleLoader::default();
+         } else {
+@@ -120,6 +260,9 @@
+     }
+ 
+     pub(crate) async fn sync_default_client_residency_requirement(&self) {
++        if self.ensure_config_mutable("default client residency mutation").is_err() {
++            return;
++        }
+         match self.load_latest_config(/*fallback_cwd*/ None).await {
+             Ok(config) => {
+                 set_default_client_residency_requirement(config.enforce_residency.value());
+@@ -147,6 +290,9 @@
+     /// Loads system, user, and runtime settings without discovering a project
+     /// from the app-server process's working directory.
+     pub(crate) async fn load_non_project_config(&self) -> std::io::Result<Config> {
++        if self.frozen.is_some() {
++            return self.load_latest_config(None).await;
++        }
+         let mut manager = self.clone();
+         manager.loader_overrides.ignore_project_config = true;
+         manager.load_latest_config(/*fallback_cwd*/ None).await
+@@ -156,6 +302,13 @@
+         &self,
+         thread_config: &Config,
+     ) -> std::io::Result<Config> {
++        if let Some(state) = self.frozen.as_ref() {
++            state.violation.check()?;
++            if thread_config != state.config.as_ref() {
++                return Err(state.violation.violate("foreign thread configuration refresh"));
++            }
++            return Ok(state.config.as_ref().clone());
++        }
+         let refreshed_config = self
+             .load_latest_config(Some(thread_config.cwd.to_path_buf()))
+             .await?;
+@@ -168,6 +321,9 @@
+     }
+ 
+     pub(crate) async fn load_default_config(&self) -> std::io::Result<Config> {
++        if self.frozen.is_some() {
++            return self.load_latest_config(None).await;
++        }
+         let mut loader_overrides = self.loader_overrides.clone();
+         loader_overrides.ignore_user_config = true;
+         let mut config = ConfigBuilder::default()
+@@ -220,6 +376,17 @@
+         mut typesafe_overrides: ConfigOverrides,
+         fallback_cwd: Option<PathBuf>,
+     ) -> std::io::Result<Config> {
++        if let Some(state) = self.frozen.as_ref() {
++            state.violation.check()?;
++            if !cli_overrides.is_empty()
++                || request_overrides.is_some()
++                || !Self::frozen_overrides_match(&state.config, &typesafe_overrides)
++                || fallback_cwd.as_ref().is_some_and(|cwd| *cwd != state.config.cwd.to_path_buf())
++            {
++                return Err(state.violation.violate("configuration override or foreign cwd"));
++            }
++            return Ok(state.config.as_ref().clone());
++        }
+         let mut request_overrides = request_overrides.unwrap_or_default();
+         if let Some(value) = request_overrides.remove("bypass_hook_trust") {
+             typesafe_overrides.bypass_hook_trust = Some(value.as_bool().ok_or_else(|| {
+@@ -265,6 +432,13 @@
+         &self,
+         cwd: Option<AbsolutePathBuf>,
+     ) -> std::io::Result<ConfigLayerStack> {
++        if let Some(state) = self.frozen.as_ref() {
++            state.violation.check()?;
++            if cwd.as_ref().is_some_and(|cwd| cwd != &state.config.cwd) {
++                return Err(state.violation.violate("foreign configuration-layer cwd"));
++            }
++            return Ok(state.config.config_layer_stack.clone());
++        }
+         load_config_layers_state(
+             LOCAL_FS.as_ref(),
+             &self.codex_home,
+@@ -278,6 +452,63 @@
+             self.thread_config_loader.as_ref(),
+         )
+         .await
++    }
++
++    fn frozen_overrides_match(config: &Config, overrides: &ConfigOverrides) -> bool {
++        let ConfigOverrides {
++            model,
++            review_model,
++            cwd,
++            approval_policy,
++            approvals_reviewer,
++            sandbox_mode,
++            permission_profile,
++            default_permissions,
++            persisted_permission_profile_id,
++            model_provider,
++            service_tier,
++            codex_self_exe,
++            codex_linux_sandbox_exe,
++            main_execve_wrapper_exe,
++            default_zsh_path,
++            base_instructions,
++            developer_instructions,
++            personality,
++            compact_prompt,
++            show_raw_agent_reasoning,
++            tools_web_search_request,
++            ephemeral,
++            bypass_hook_trust,
++            additional_writable_roots,
++            workspace_roots,
++        } = overrides;
++        model.is_none()
++            && review_model.is_none()
++            && cwd.is_none()
++            && approval_policy.is_none()
++            && approvals_reviewer.is_none()
++            && sandbox_mode.is_none()
++            && permission_profile.is_none()
++            && default_permissions.is_none()
++            && persisted_permission_profile_id.is_none()
++            && model_provider.is_none()
++            && service_tier.is_none()
++            && codex_self_exe.is_none()
++            && (codex_linux_sandbox_exe.is_none()
++                || codex_linux_sandbox_exe == &config.codex_linux_sandbox_exe)
++            && (main_execve_wrapper_exe.is_none()
++                || main_execve_wrapper_exe == &config.main_execve_wrapper_exe)
++            && default_zsh_path.is_none()
++            && base_instructions.is_none()
++            && developer_instructions.is_none()
++            && personality.is_none()
++            && compact_prompt.is_none()
++            && show_raw_agent_reasoning.is_none()
++            && tools_web_search_request.is_none()
++            && ephemeral.is_none()
++            && bypass_hook_trust.is_none()
++            && additional_writable_roots.is_empty()
++            && workspace_roots.is_none()
+     }
+ 
+     fn apply_runtime_feature_enablement(&self, config: &mut Config) {
+@@ -366,3 +597,414 @@
+         }
+     }
+ }
++
++// Modified by Ouro: select only our account-free SDK component tests.
++#[cfg(test)]
++mod cmux_sdk_contract {
++    use super::*;
++// Modified by Ouro: derived-config snapshot tests, without account or server startup.
++#[cfg(test)]
++mod cmux_config_contract {
++    use super::*;
++    use codex_app_server_protocol::ConfigBatchWriteParams;
++    use codex_app_server_protocol::ConfigEdit;
++    use codex_app_server_protocol::ConfigValueWriteParams;
++    use codex_app_server_protocol::MergeStrategy;
++    use codex_protocol::config_types::Personality;
++    use codex_protocol::config_types::SandboxMode;
++    use codex_protocol::models::PermissionProfile;
++    use codex_protocol::protocol::AskForApproval;
++    use tempfile::TempDir;
++
++    struct Fixture {
++        home: TempDir,
++        loader: LoaderOverrides,
++        config: Arc<Config>,
++        paths: Arg0DispatchPaths,
++    }
++
++    impl Fixture {
++        async fn new() -> std::io::Result<Self> {
++            let home = TempDir::new()?;
++            let catalog = home.path().join("models.json");
++            std::fs::write(
++                &catalog,
++                include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/../models-manager/models.json")),
++            )?;
++            std::fs::write(
++                home.path().join("config.toml"),
++                format!(
++                    "model = \"gpt-5.5\"\napproval_policy = \"never\"\nmodel_catalog_json = {catalog:?}\n"
++                ),
++            )?;
++            std::fs::write(
++                home.path().join("requirements.toml"),
++                "allowed_approval_policies = [\"never\"]\n",
++            )?;
++            let loader = LoaderOverrides {
++                managed_config_path: Some(home.path().join("managed.toml")),
++                system_config_path: Some(home.path().join("system.toml")),
++                system_requirements_path: Some(home.path().join("requirements.toml")),
++                ignore_project_config: true,
++                ..LoaderOverrides::without_managed_config_for_tests()
++            };
++            let mut config = ConfigBuilder::default()
++                .codex_home(home.path().to_path_buf())
++                .loader_overrides(loader.clone())
++                .harness_overrides(ConfigOverrides {
++                    cwd: Some(home.path().to_path_buf()),
++                    ..ConfigOverrides::default()
++                })
++                .cloud_config_bundle(CloudConfigBundleLoader::default())
++                .thread_config_loader(Arc::new(codex_config::NoopThreadConfigLoader))
++                .build()
++                .await?;
++            config.codex_self_exe = Some(home.path().join("owned-host"));
++            config.codex_linux_sandbox_exe = Some(home.path().join("owned-sandbox"));
++            config.main_execve_wrapper_exe = Some(home.path().join("owned-wrapper"));
++            let mut paths = Arg0DispatchPaths::default();
++            paths.codex_self_exe = config.codex_self_exe.clone();
++            paths.codex_linux_sandbox_exe = config.codex_linux_sandbox_exe.clone();
++            paths.main_execve_wrapper_exe = config.main_execve_wrapper_exe.clone();
++            Ok(Self {
++                home,
++                loader,
++                config: Arc::new(config),
++                paths,
++            })
++        }
++
++        fn frozen(&self) -> std::io::Result<ConfigManager> {
++            ConfigManager::new_frozen(Arc::clone(&self.config), self.paths.clone())
++        }
++    }
++
++    #[tokio::test]
++    async fn cmux_frozen_snapshot_survives_file_changes() -> std::io::Result<()> {
++        let fixture = Fixture::new().await?;
++        let manager = fixture.frozen()?;
++        std::fs::write(fixture.home.path().join("config.toml"), "invalid = [\n")?;
++        std::fs::write(fixture.home.path().join("requirements.toml"), "invalid = [\n")?;
++        std::fs::write(fixture.home.path().join("models.json"), "not JSON")?;
++        assert!(!fixture.config.model_catalog.as_ref().unwrap().models.is_empty());
++        assert_eq!(manager.load_latest_config(None).await?, *fixture.config);
++        assert_eq!(manager.load_non_project_config().await?, *fixture.config);
++        assert_eq!(manager.load_default_config().await?, *fixture.config);
++        assert_eq!(
++            manager
++                .load_with_overrides(None, ConfigOverrides::default())
++                .await?,
++            *fixture.config
++        );
++        assert_eq!(
++            manager
++                .load_with_cli_overrides(&[], None, ConfigOverrides::default(), None)
++                .await?,
++            *fixture.config
++        );
++        assert_eq!(
++            manager
++                .load_for_cwd(
++                    None,
++                    ConfigOverrides::default(),
++                    Some(fixture.config.cwd.to_path_buf()),
++                )
++                .await?,
++            *fixture.config
++        );
++        assert_eq!(
++            manager
++                .load_latest_config_for_thread(fixture.config.as_ref())
++                .await?,
++            *fixture.config
++        );
++        assert_eq!(
++            manager.load_config_layers(None).await?,
++            fixture.config.config_layer_stack
++        );
++        assert!(!manager.frozen_violation_guard().unwrap().is_violated());
++        Ok(())
++    }
++
++    #[tokio::test]
++    async fn cmux_frozen_requirements_are_preserved() -> std::io::Result<()> {
++        let fixture = Fixture::new().await?;
++        let expected = fixture.config.config_layer_stack.requirements_toml().clone();
++        assert_eq!(expected.allowed_approval_policies, Some(vec![AskForApproval::Never]));
++        let manager = fixture.frozen()?;
++        std::fs::write(
++            fixture.home.path().join("requirements.toml"),
++            "allowed_approval_policies = [\"untrusted\"]\n",
++        )?;
++        assert_eq!(
++            manager.load_config_layers(None).await?.requirements_toml(),
++            &expected
++        );
++        assert_eq!(manager.read_requirements().await.unwrap(), Some(expected));
++        assert_eq!(manager.load_default_config().await?, *fixture.config);
++        Ok(())
++    }
++
++    #[tokio::test]
++    async fn cmux_normal_config_reload_is_unchanged() -> std::io::Result<()> {
++        let fixture = Fixture::new().await?;
++        let manager = ConfigManager::new_for_tests(
++            fixture.home.path().to_path_buf(),
++            Vec::new(),
++            fixture.loader.clone(),
++            CloudConfigBundleLoader::default(),
++        );
++        assert!(manager.frozen_violation_guard().is_none());
++        let first = manager
++            .load_latest_config(Some(fixture.config.cwd.to_path_buf()))
++            .await?;
++        assert_eq!(first.model.as_deref(), Some("gpt-5.5"));
++        std::fs::write(
++            fixture.home.path().join("config.toml"),
++            "model = \"changed-model\"\napproval_policy = \"never\"\n",
++        )?;
++        let second = manager
++            .load_latest_config(Some(fixture.config.cwd.to_path_buf()))
++            .await?;
++        assert_eq!(second.model.as_deref(), Some("changed-model"));
++        assert_ne!(first.config_layer_stack, second.config_layer_stack);
++        Ok(())
++    }
++
++    #[tokio::test]
++    async fn cmux_frozen_overrides_are_exhaustive() -> std::io::Result<()> {
++        let fixture = Fixture::new().await?;
++        let path = fixture.home.path().join("foreign");
++        let absolute = AbsolutePathBuf::from_absolute_path(path.clone())?;
++        macro_rules! change {
++            ($name:literal, $field:ident, $value:expr) => {
++                ($name, ConfigOverrides {
++                    $field: $value,
++                    ..ConfigOverrides::default()
++                })
++            };
++        }
++        let cases = vec![
++            change!("model", model, Some("foreign".to_string())),
++            change!("review_model", review_model, Some("foreign".to_string())),
++            change!("cwd", cwd, Some(fixture.config.cwd.to_path_buf())),
++            change!("approval_policy", approval_policy, Some(AskForApproval::Never)),
++            change!("approvals_reviewer", approvals_reviewer, Some(codex_config::types::ApprovalsReviewer::User)),
++            change!("sandbox_mode", sandbox_mode, Some(SandboxMode::ReadOnly)),
++            change!("permission_profile", permission_profile, Some(PermissionProfile::Disabled)),
++            change!("default_permissions", default_permissions, Some("foreign".to_string())),
++            change!("persisted_permission_profile_id", persisted_permission_profile_id, Some("foreign".to_string())),
++            change!("model_provider", model_provider, Some("openai".to_string())),
++            change!("service_tier_nested_null", service_tier, Some(None)),
++            change!("service_tier_value", service_tier, Some(Some("default".to_string()))),
++            change!("codex_self_exe", codex_self_exe, fixture.config.codex_self_exe.clone()),
++            change!("codex_linux_sandbox_exe", codex_linux_sandbox_exe, Some(path.clone())),
++            change!("main_execve_wrapper_exe", main_execve_wrapper_exe, Some(path.clone())),
++            change!("default_zsh_path", default_zsh_path, Some(absolute.clone())),
++            change!("base_instructions", base_instructions, Some(String::new())),
++            change!("developer_instructions", developer_instructions, Some(String::new())),
++            change!("personality", personality, Some(Personality::None)),
++            change!("compact_prompt", compact_prompt, Some(String::new())),
++            change!("show_raw_agent_reasoning", show_raw_agent_reasoning, Some(false)),
++            change!("tools_web_search_request", tools_web_search_request, Some(false)),
++            change!("ephemeral", ephemeral, Some(false)),
++            change!("bypass_hook_trust", bypass_hook_trust, Some(false)),
++            change!("additional_writable_roots", additional_writable_roots, vec![path]),
++            change!("workspace_roots_empty", workspace_roots, Some(Vec::new())),
++            change!("workspace_roots", workspace_roots, Some(vec![absolute])),
++        ];
++        for (name, overrides) in cases {
++            let manager = fixture.frozen()?;
++            assert!(
++                manager.load_with_overrides(None, overrides).await.is_err(),
++                "frozen manager accepted semantic override {name}"
++            );
++            assert!(manager.frozen_violation_guard().unwrap().is_violated(), "{name}");
++            assert!(manager.load_latest_config(None).await.is_err(), "{name}");
++        }
++        Ok(())
++    }
++
++    #[tokio::test]
++    async fn cmux_frozen_only_exact_synthesized_paths_are_allowed() -> std::io::Result<()> {
++        let fixture = Fixture::new().await?;
++        let manager = fixture.frozen()?;
++        let overrides = ConfigOverrides {
++            codex_linux_sandbox_exe: fixture.config.codex_linux_sandbox_exe.clone(),
++            main_execve_wrapper_exe: fixture.config.main_execve_wrapper_exe.clone(),
++            ..ConfigOverrides::default()
++        };
++        assert_eq!(manager.load_with_overrides(None, overrides).await?, *fixture.config);
++        assert!(!manager.frozen_violation_guard().unwrap().is_violated());
++        let mut foreign = fixture.paths.clone();
++        foreign.codex_self_exe = Some(fixture.home.path().join("foreign-host"));
++        assert!(ConfigManager::new_frozen(Arc::clone(&fixture.config), foreign).is_err());
++        Ok(())
++    }
++
++    #[tokio::test]
++    async fn cmux_frozen_other_loader_inputs_are_rejected() -> std::io::Result<()> {
++        let fixture = Fixture::new().await?;
++        let manager = fixture.frozen()?;
++        assert!(manager
++            .load_with_overrides(Some(HashMap::new()), ConfigOverrides::default())
++            .await
++            .is_err());
++        let manager = fixture.frozen()?;
++        let cli = vec![("model".to_string(), TomlValue::String("foreign".to_string()))];
++        assert!(manager
++            .load_with_cli_overrides(&cli, None, ConfigOverrides::default(), None)
++            .await
++            .is_err());
++        let manager = fixture.frozen()?;
++        assert!(manager
++            .load_latest_config(Some(fixture.home.path().join("foreign")))
++            .await
++            .is_err());
++        let manager = fixture.frozen()?;
++        let mut foreign_thread = fixture.config.as_ref().clone();
++        foreign_thread.model = Some("foreign".to_string());
++        assert!(manager.load_latest_config_for_thread(&foreign_thread).await.is_err());
++        Ok(())
++    }
++
++    #[tokio::test]
++    async fn cmux_frozen_mutation_is_terminal() -> std::io::Result<()> {
++        let fixture = Fixture::new().await?;
++        let manager = fixture.frozen()?;
++        let clone = manager.clone();
++        assert!(manager
++            .extend_runtime_feature_enablement([("code_mode".to_string(), false)])
++            .is_err());
++        assert!(clone.frozen_violation_guard().unwrap().is_violated());
++        assert!(clone.load_latest_config(None).await.is_err());
++        let manager = fixture.frozen()?;
++        manager.clear_cloud_config_bundle_loader();
++        assert!(manager.frozen_violation_guard().unwrap().is_violated());
++        assert!(manager.load_default_config().await.is_err());
++        let manager = fixture.frozen()?;
++        manager.sync_default_client_residency_requirement().await;
++        assert!(manager.frozen_violation_guard().unwrap().is_violated());
++        assert!(manager.load_latest_config(None).await.is_err());
++        Ok(())
++    }
++
++    #[tokio::test]
++    async fn cmux_frozen_persistence_rejects_before_disk_effects() -> std::io::Result<()> {
++        let fixture = Fixture::new().await?;
++        let path = fixture.home.path().join("config.toml");
++        let original = std::fs::read(&path)?;
++        let manager = fixture.frozen()?;
++        assert!(manager
++            .write_value(ConfigValueWriteParams {
++                key_path: "model".to_string(),
++                value: serde_json::json!("foreign"),
++                merge_strategy: MergeStrategy::Replace,
++                file_path: None,
++                expected_version: None,
++            })
++            .await
++            .is_err());
++        assert_eq!(std::fs::read(&path)?, original);
++        assert!(manager.frozen_violation_guard().unwrap().is_violated());
++        let manager = fixture.frozen()?;
++        assert!(manager
++            .batch_write(ConfigBatchWriteParams {
++                edits: vec![ConfigEdit {
++                    key_path: "model".to_string(),
++                    value: serde_json::json!("foreign"),
++                    merge_strategy: MergeStrategy::Replace,
++                }],
++                file_path: None,
++                expected_version: None,
++                reload_user_config: true,
++            })
++            .await
++            .is_err());
++        assert_eq!(std::fs::read(&path)?, original);
++        assert!(manager.frozen_violation_guard().unwrap().is_violated());
++        Ok(())
++    }
++}
++
++// Modified by Ouro: terminal wakeups must not depend on receiver registration order.
++#[cfg(test)]
++mod cmux_terminal_contract {
++    use super::*;
++    use std::future::Future;
++    use std::task::Poll;
++    use std::time::Duration;
++    use tokio::sync::mpsc;
++    use tokio::time::timeout;
++
++    #[tokio::test]
++    async fn cmux_terminal_trip_before_registration_is_observed() -> std::io::Result<()> {
++        let guard = FrozenConfigViolation::new();
++        let _ = guard.violate("test before registration");
++        timeout(Duration::from_secs(1), guard.wait_for_violation())
++            .await
++            .expect("terminal state was lost before subscription");
++        let (sender, mut receiver) = mpsc::channel(1);
++        assert!(guard
++            .until_violation("post-terminal send", async {
++                sender.send(1).await.map_err(std::io::Error::other)
++            })
++            .await
++            .is_err());
++        assert!(receiver.try_recv().is_err());
++        Ok(())
++    }
++
++    #[tokio::test]
++    async fn cmux_terminal_trip_wakes_all_blocked_sends() -> std::io::Result<()> {
++        let guard = FrozenConfigViolation::new();
++        let (sender, mut receiver) = mpsc::channel(1);
++        sender.send(0).await.map_err(std::io::Error::other)?;
++        let first = guard.until_violation("first blocked send", async {
++            sender.send(1).await.map_err(std::io::Error::other)
++        });
++        let second = guard.until_violation("second blocked send", async {
++            sender.send(2).await.map_err(std::io::Error::other)
++        });
++        tokio::pin!(first);
++        tokio::pin!(second);
++        assert!(std::future::poll_fn(|context| Poll::Ready(first.as_mut().poll(context)))
++            .await
++            .is_pending());
++        assert!(std::future::poll_fn(|context| Poll::Ready(second.as_mut().poll(context)))
++            .await
++            .is_pending());
++        let _ = guard.violate("test while both sends are pending");
++        let (first_result, second_result) = timeout(Duration::from_secs(1), async {
++            tokio::join!(first, second)
++        })
++        .await
++        .expect("one blocked sender did not wake");
++        for result in [first_result, second_result] {
++            assert_eq!(result.unwrap_err().kind(), std::io::ErrorKind::PermissionDenied);
++        }
++        assert_eq!(receiver.recv().await, Some(0));
++        assert!(receiver.try_recv().is_err());
++        Ok(())
++    }
++
++    #[tokio::test]
++    async fn cmux_terminal_closed_send_never_becomes_success() {
++        let guard = FrozenConfigViolation::new();
++        let (sender, receiver) = mpsc::channel::<u8>(1);
++        drop(receiver);
++        assert!(guard
++            .until_violation("closed send", async {
++                sender.send(1).await.map_err(std::io::Error::other)
++            })
++            .await
++            .is_err());
++        assert!(guard.is_violated());
++        timeout(Duration::from_secs(1), guard.wait_for_violation())
++            .await
++            .expect("terminal state after closure was lost");
++        assert!(guard.is_violated());
++    }
++}
++
++}
+diff --git a/codex-rs/app-server/src/config_manager_service.rs b/codex-rs/app-server/src/config_manager_service.rs
+--- a/codex-rs/app-server/src/config_manager_service.rs
++++ b/codex-rs/app-server/src/config_manager_service.rs
+@@ -1,3 +1,4 @@
++// Modified by Ouro: refuse frozen persistence before resolving or writing a file.
+ use crate::config_layer::config_layer_metadata_to_api;
+ use crate::config_layer::config_layer_to_api;
+ use crate::config_manager::ConfigManager;
+@@ -219,6 +220,8 @@
+         expected_version: Option<String>,
+         edits: Vec<(String, JsonValue, MergeStrategy)>,
+     ) -> Result<ConfigWriteResponse, ConfigManagerError> {
++        self.ensure_config_mutable("configuration persistence")
++            .map_err(|err| ConfigManagerError::io("frozen configuration persistence refused", err))?;
+         let allowed_path = self
+             .user_config_path()
+             .map_err(|err| ConfigManagerError::io("failed to resolve user config path", err))?;
+diff --git a/codex-rs/app-server/src/in_process.rs b/codex-rs/app-server/src/in_process.rs
+--- a/codex-rs/app-server/src/in_process.rs
++++ b/codex-rs/app-server/src/in_process.rs
+@@ -123,6 +123,48 @@
+                 ..
+             })
+     )
++}
++
++// Modified by Ouro: preserve ordinary forwarding through a channel-only test seam.
++enum InProcessNotificationMode {
++    Ordinary,
++    Frozen,
++}
++
++#[derive(Debug, PartialEq, Eq)]
++enum InProcessNotificationDelivery {
++    Forwarded,
++    Dropped,
++    Closed,
++}
++
++async fn forward_in_process_notification(
++    mode: InProcessNotificationMode,
++    event_tx: &mpsc::Sender<InProcessServerEvent>,
++    notification: ServerNotification,
++) -> InProcessNotificationDelivery {
++    if matches!(mode, InProcessNotificationMode::Frozen)
++        || server_notification_requires_delivery(&notification)
++    {
++        if event_tx
++            .send(InProcessServerEvent::ServerNotification(Box::new(notification)))
++            .await
++            .is_err()
++        {
++            InProcessNotificationDelivery::Closed
++        } else {
++            InProcessNotificationDelivery::Forwarded
++        }
++    } else {
++        match event_tx.try_send(InProcessServerEvent::ServerNotification(Box::new(notification))) {
++            Ok(()) => InProcessNotificationDelivery::Forwarded,
++            Err(mpsc::error::TrySendError::Full(_)) => {
++                warn!("dropping in-process server notification (queue full)");
++                InProcessNotificationDelivery::Dropped
++            }
++            Err(mpsc::error::TrySendError::Closed(_)) => InProcessNotificationDelivery::Closed,
++        }
++    }
+ }
+ 
+ /// Input needed to start an in-process app-server runtime.
+@@ -710,30 +752,14 @@
+                         }
+                         OutgoingMessage::AppServerNotification(envelope) => {
+                             let notification = envelope.notification;
+-                            if server_notification_requires_delivery(&notification) {
+-                                if event_tx
+-                                    .send(InProcessServerEvent::ServerNotification(Box::new(
+-                                        notification,
+-                                    )))
+-                                    .await
+-                                    .is_err()
+-                                {
+-                                    break;
+-                                }
+-                            } else if let Err(send_error) =
+-                                event_tx.try_send(InProcessServerEvent::ServerNotification(
+-                                    Box::new(notification),
+-                                ))
+-                            {
+-                                match send_error {
+-                                    mpsc::error::TrySendError::Full(_) => {
+-                                        warn!("dropping in-process server notification (queue full)");
+-                                        continue;
+-                                    }
+-                                    mpsc::error::TrySendError::Closed(_) => {
+-                                        break;
+-                                    }
+-                                }
++                            match forward_in_process_notification(
++                                InProcessNotificationMode::Ordinary,
++                                &event_tx,
++                                notification,
++                            ).await {
++                                InProcessNotificationDelivery::Forwarded => {}
++                                InProcessNotificationDelivery::Dropped => continue,
++                                InProcessNotificationDelivery::Closed => break,
+                             }
+                         }
+                     }
+@@ -1040,3 +1066,2686 @@
+         ));
+     }
+ }
++
++// Modified by Ouro: only fixed text turns and current-thread inventory are public work.
++fn validate_frozen_work_request(
++    guard: &crate::config_manager::FrozenConfigViolation,
++    request: &ClientRequest,
++    owned_thread_id: &str,
++) -> IoResult<()> {
++    guard.check()?;
++    let admitted = match request {
++        ClientRequest::TurnStart { params, .. } => {
++            let codex_app_server_protocol::TurnStartParams {
++                thread_id,
++                client_user_message_id,
++                input,
++                turn_trigger,
++                tool_output,
++                responsesapi_client_metadata,
++                additional_context,
++                environments,
++                cwd,
++                runtime_workspace_roots,
++                approval_policy,
++                approvals_reviewer,
++                sandbox_policy,
++                permissions,
++                model,
++                service_tier,
++                service_tier_for_turn,
++                effort,
++                summary,
++                personality,
++                output_schema,
++                collaboration_mode,
++                multi_agent_mode,
++                cyber_access_program,
++            } = params;
++            thread_id == owned_thread_id
++                && client_user_message_id.is_none()
++                && matches!(
++                    input.as_slice(),
++                    [codex_app_server_protocol::UserInput::Text { text, text_elements }]
++                        if text.len() <= 65536 && text_elements.is_empty()
++                )
++                && turn_trigger.is_none()
++                && tool_output.is_none()
++                && responsesapi_client_metadata.is_none()
++                && additional_context.is_none()
++                && environments.as_ref().is_some_and(Vec::is_empty)
++                && cwd.is_none()
++                && runtime_workspace_roots.is_none()
++                && approval_policy.is_none()
++                && approvals_reviewer.is_none()
++                && sandbox_policy.is_none()
++                && permissions.is_none()
++                && model.is_none()
++                && service_tier.is_none()
++                && service_tier_for_turn.is_none()
++                && effort.is_none()
++                && summary.is_none()
++                && personality.is_none()
++                && output_schema.is_none()
++                && collaboration_mode.is_none()
++                && multi_agent_mode.is_none()
++                && cyber_access_program.is_none()
++        }
++        ClientRequest::ThreadBackgroundTerminalsList { params, .. } => {
++            let codex_app_server_protocol::ThreadBackgroundTerminalsListParams {
++                thread_id,
++                cursor: _,
++                limit,
++            } = params;
++            thread_id == owned_thread_id && limit.is_none_or(|value| value > 0)
++        }
++        _ => false,
++    };
++    if !admitted || owned_thread_id.is_empty() {
++        return Err(guard.violate("unsupported frozen work request"));
++    }
++    let frame = serde_json::to_vec(request).map_err(|error| {
++        let _ = guard.violate("frozen work request serialization failed");
++        IoError::new(ErrorKind::InvalidData, error)
++    })?;
++    if frame.len() > 2 * 1024 * 1024 {
++        return Err(guard.violate("frozen work request exceeds frame bound"));
++    }
++    Ok(())
++}
++
++// Modified by Ouro: the owned frozen host has no unrestricted client sender.
++pub use crate::config_manager::FrozenConfigViolation;
++
++const FROZEN_RETAINED_REQUEST_LIMIT: usize = 1024;
++const FROZEN_RETAINED_CALLBACK_LIMIT: usize = 4096;
++const FROZEN_ID_BYTES: usize = 128;
++
++fn frozen_id_is_bounded(value: &str) -> bool {
++    !value.is_empty() && value.len() <= FROZEN_ID_BYTES
++}
++
++fn frozen_request_id_is_bounded(value: &RequestId) -> bool {
++    match value {
++        RequestId::Integer(_) => true,
++        RequestId::String(value) => value.len() <= FROZEN_ID_BYTES,
++    }
++}
++
++pub struct FrozenInProcessStartArgs {
++    pub config: Arc<Config>,
++    pub arg0_paths: Arg0DispatchPaths,
++    pub initialize: InitializeParams,
++    pub native_tools: Vec<codex_app_server_protocol::DynamicToolSpec>,
++    pub session_source: SessionSource,
++    pub enable_codex_api_key_env: bool,
++    pub channel_capacity: usize,
++}
++
++pub struct FrozenNativeToolResponse {
++    pub request_id: RequestId,
++    pub thread_id: String,
++    pub turn_id: String,
++    pub call_id: String,
++    pub result: codex_app_server_protocol::DynamicToolCallResponse,
++}
++
++#[derive(Clone)]
++enum FrozenReady {
++    Pending,
++    Ready(Arc<codex_app_server_protocol::ThreadStartResponse>),
++    Failed(ErrorKind, String),
++}
++
++struct FrozenBootstrap {
++    args: FrozenInProcessStartArgs,
++    manager: ConfigManager,
++    requests: mpsc::Receiver<ProcessorCommand>,
++    events: mpsc::Sender<InProcessServerEvent>,
++}
++
++#[derive(Clone, Copy, PartialEq, Eq)]
++enum FrozenRequestKind {
++    Initialize,
++    ThreadStart,
++    TurnStart,
++    ShellPage,
++}
++
++struct FrozenPendingRequest {
++    kind: FrozenRequestKind,
++    response: Option<oneshot::Sender<PendingClientRequestResponse>>,
++}
++
++#[derive(Default)]
++struct FrozenTurnRoot {
++    turn_id: Option<String>,
++    early_turn_id: Option<String>,
++    successful_terminal: Option<bool>,
++}
++
++#[derive(Clone, Copy, PartialEq, Eq)]
++enum FrozenCallbackPhase {
++    Registered,
++    Claimed,
++    Delivered,
++}
++
++struct FrozenPendingCallback {
++    root_id: RequestId,
++    thread_id: String,
++    turn_id: String,
++    call_id: String,
++    phase: FrozenCallbackPhase,
++}
++
++#[derive(Default)]
++struct FrozenRegistry {
++    requests: HashMap<RequestId, FrozenPendingRequest>,
++    roots: HashMap<RequestId, FrozenTurnRoot>,
++    callbacks: HashMap<RequestId, FrozenPendingCallback>,
++    active_turn: Option<RequestId>,
++    outstanding_requests: usize,
++}
++
++struct FrozenState {
++    config: Arc<Config>,
++    guard: crate::config_manager::FrozenConfigViolation,
++    bootstrap: std::sync::Mutex<Option<FrozenBootstrap>>,
++    supervisor: std::sync::Mutex<Option<tokio::task::JoinHandle<IoResult<()>>>>,
++    ready: tokio::sync::watch::Sender<FrozenReady>,
++    attached: tokio::sync::watch::Sender<Option<String>>,
++    outgoing: std::sync::OnceLock<Arc<OutgoingMessageSender>>,
++    requests: mpsc::Sender<ProcessorCommand>,
++    registry: std::sync::Mutex<FrozenRegistry>,
++    native_tools: Vec<codex_app_server_protocol::DynamicToolSpec>,
++    outstanding_limit: usize,
++}
++
++struct FrozenAdmissionClaim {
++    guard: crate::config_manager::FrozenConfigViolation,
++    operation: &'static str,
++    completed: bool,
++}
++
++impl FrozenAdmissionClaim {
++    fn new(
++        guard: &crate::config_manager::FrozenConfigViolation,
++        operation: &'static str,
++    ) -> Self {
++        Self {
++            guard: guard.clone(),
++            operation,
++            completed: false,
++        }
++    }
++
++    fn complete(mut self) {
++        self.completed = true;
++    }
++}
++
++impl Drop for FrozenAdmissionClaim {
++    fn drop(&mut self) {
++        if !self.completed {
++            let _ = self.guard.violate(self.operation);
++        }
++    }
++}
++
++impl FrozenState {
++    fn registry(&self) -> IoResult<std::sync::MutexGuard<'_, FrozenRegistry>> {
++        self.registry
++            .lock()
++            .map_err(|_| self.guard.violate("frozen work registry poisoned"))
++    }
++
++    fn owned_thread(&self) -> IoResult<String> {
++        self.guard.check()?;
++        match &*self.ready.borrow() {
++            FrozenReady::Ready(response) => Ok(response.thread.id.clone()),
++            FrozenReady::Failed(kind, message) => Err(IoError::new(*kind, message.clone())),
++            FrozenReady::Pending => Err(IoError::new(
++                ErrorKind::WouldBlock,
++                "frozen app-server has not completed its authorized bootstrap",
++            )),
++        }
++    }
++
++    fn trigger_bootstrap(self: &Arc<Self>) -> IoResult<()> {
++        self.guard.check()?;
++        let mut supervisor = self
++            .supervisor
++            .lock()
++            .map_err(|_| self.guard.violate("frozen supervisor lock poisoned"))?;
++        let bootstrap = self
++            .bootstrap
++            .lock()
++            .map_err(|_| self.guard.violate("frozen bootstrap lock poisoned"))?
++            .take();
++        if let Some(bootstrap) = bootstrap {
++            let state = Arc::clone(self);
++            let owner = FrozenAdmissionClaim::new(
++                &self.guard, "frozen supervisor abandoned or panicked",
++            );
++            *supervisor = Some(tokio::spawn(async move {
++                let _owner = owner;
++                run_frozen_generation(state, bootstrap).await
++            }));
++        }
++        Ok(())
++    }
++}
++
++#[derive(Clone)]
++pub struct FrozenSender {
++    state: Arc<FrozenState>,
++}
++
++impl FrozenSender {
++    /// The first call explicitly authorizes the one captured bootstrap.
++    pub async fn wait_ready(&self) -> IoResult<Arc<codex_app_server_protocol::ThreadStartResponse>> {
++        self.state.trigger_bootstrap()?;
++        let mut ready = self.state.ready.subscribe();
++        loop {
++            self.state.guard.check()?;
++            match ready.borrow_and_update().clone() {
++                FrozenReady::Ready(response) => return Ok(response),
++                FrozenReady::Failed(kind, message) => return Err(IoError::new(kind, message)),
++                FrozenReady::Pending => {}
++            }
++            self.state
++                .guard
++                .until_violation("waiting for frozen readiness", async {
++                    ready.changed().await.map_err(IoError::other)
++                })
++                .await?;
++        }
++    }
++
++    pub async fn request(&self, request: ClientRequest) -> IoResult<PendingClientRequestResponse> {
++        let thread_id = self.state.owned_thread()?;
++        validate_frozen_work_request(&self.state.guard, &request, &thread_id)?;
++        let kind = match &request {
++            ClientRequest::TurnStart { .. } => FrozenRequestKind::TurnStart,
++            ClientRequest::ThreadBackgroundTerminalsList { .. } => FrozenRequestKind::ShellPage,
++            _ => return Err(self.state.guard.violate("unsupported frozen public request")),
++        };
++        self.request_captured(request, kind).await
++    }
++
++    async fn request_captured(
++        &self,
++        request: ClientRequest,
++        kind: FrozenRequestKind,
++    ) -> IoResult<PendingClientRequestResponse> {
++        self.state.guard.check()?;
++        let id = request.id().clone();
++        let (response, receive) = oneshot::channel();
++        {
++            let mut registry = self.state.registry()?;
++            self.state.guard.check()?;
++            if !frozen_request_id_is_bounded(&id)
++                || registry.requests.contains_key(&id)
++                || registry.requests.len() >= FROZEN_RETAINED_REQUEST_LIMIT
++                || registry.outstanding_requests >= self.state.outstanding_limit
++                || (kind == FrozenRequestKind::TurnStart && registry.active_turn.is_some())
++            {
++                return Err(self.state.guard.violate("frozen request admission or identity budget exhausted"));
++            }
++            registry.requests.insert(id.clone(), FrozenPendingRequest {
++                kind,
++                response: Some(response),
++            });
++            if kind == FrozenRequestKind::TurnStart {
++                registry.active_turn = Some(id.clone());
++                registry.roots.insert(id, FrozenTurnRoot::default());
++            }
++            registry.outstanding_requests += 1;
++        }
++        let claim = FrozenAdmissionClaim::new(
++            &self.state.guard,
++            "admitted frozen request cancelled before response",
++        );
++        self.state.guard.until_violation("frozen request queue", async {
++            self.state.requests.send(ProcessorCommand::Request(Box::new(request)))
++                .await.map_err(IoError::other)
++        }).await?;
++        let response = self.state.guard.until_violation("frozen response waiter", async {
++            receive.await.map_err(IoError::other)
++        }).await?;
++        if response.is_err() {
++            return Err(self.state.guard.violate("frozen request returned a protocol error"));
++        }
++        claim.complete();
++        Ok(response)
++    }
++
++    /// CONTROL never traverses the request, processor, router or event queues.
++    pub async fn respond_to_server_request(&self, response: FrozenNativeToolResponse) -> IoResult<()> {
++        self.state.guard.check()?;
++        let thread_id = self.state.owned_thread()?;
++        {
++            let mut registry = self.state.registry()?;
++            let pending = registry.callbacks.get_mut(&response.request_id)
++                .ok_or_else(|| self.state.guard.violate("unregistered frozen CONTROL response"))?;
++            if pending.phase != FrozenCallbackPhase::Registered
++                || pending.thread_id != thread_id
++                || pending.thread_id != response.thread_id
++                || pending.turn_id != response.turn_id
++                || pending.call_id != response.call_id
++            {
++                return Err(self.state.guard.violate("frozen CONTROL identity or phase mismatch"));
++            }
++            pending.phase = FrozenCallbackPhase::Claimed;
++        }
++        let claim = FrozenAdmissionClaim::new(
++            &self.state.guard,
++            "claimed frozen CONTROL cancelled before checked delivery",
++        );
++        let value = serde_json::to_value(response.result)
++            .map_err(|_| self.state.guard.violate("frozen CONTROL serialization failed"))?;
++        let outgoing = self.state.outgoing.get()
++            .ok_or_else(|| self.state.guard.violate("frozen CONTROL runtime unavailable"))?;
++        self.state.guard.until_violation("frozen checked CONTROL delivery", async {
++            outgoing.notify_frozen_client_response(
++                IN_PROCESS_CONNECTION_ID, response.request_id.clone(), value,
++            ).await
++        }).await?;
++        {
++            let mut registry = self.state.registry()?;
++            self.state.guard.check()?;
++            registry.callbacks.get_mut(&response.request_id)
++                .ok_or_else(|| self.state.guard.violate("frozen CONTROL accounting disappeared"))?
++                .phase = FrozenCallbackPhase::Delivered;
++            self.state.release_finished_turn_slot(&mut registry)?;
++        }
++        claim.complete();
++        Ok(())
++    }
++}
++
++pub struct FrozenInProcessHandle {
++    sender: FrozenSender,
++    events: mpsc::Receiver<InProcessServerEvent>,
++}
++
++impl FrozenInProcessHandle {
++    pub fn sender(&self) -> FrozenSender {
++        self.sender.clone()
++    }
++
++    pub fn violation_guard(&self) -> crate::config_manager::FrozenConfigViolation {
++        self.sender.state.guard.clone()
++    }
++
++    pub async fn wait_ready(&self) -> IoResult<Arc<codex_app_server_protocol::ThreadStartResponse>> {
++        self.sender.wait_ready().await
++    }
++
++    pub async fn next_event(&mut self) -> IoResult<InProcessServerEvent> {
++        self.sender.state.guard.until_violation("frozen event receiver", async {
++            self.events.recv().await.ok_or_else(|| {
++                IoError::new(ErrorKind::BrokenPipe, "frozen event stream closed")
++            })
++        }).await
++    }
++
++    pub async fn shutdown(self) -> IoResult<()> {
++        let _ = self.sender.state.guard.violate("frozen host shutdown requested");
++        let supervisor = self.sender.state.supervisor.lock()
++            .map_err(|_| self.sender.state.guard.violate("frozen supervisor lock poisoned"))?
++            .take();
++        if let Some(mut supervisor) = supervisor {
++            match timeout(SHUTDOWN_ACK_TIMEOUT, &mut supervisor).await {
++                Ok(result) => result.map_err(IoError::other)?,
++                Err(error) => {
++                    // The supervisor remains owned and continues cleanup after this timeout.
++                    *self.sender.state.supervisor.lock()
++                        .map_err(|_| self.sender.state.guard.violate("frozen supervisor lock poisoned"))?
++                        = Some(supervisor);
++                    Err(IoError::new(ErrorKind::TimedOut, error))
++                }
++            }
++        } else {
++            Ok(())
++        }
++    }
++}
++
++impl Drop for FrozenInProcessHandle {
++    fn drop(&mut self) {
++        let _ = self.sender.state.guard.violate("frozen host owner dropped");
++    }
++}
++
++pub async fn start_frozen(args: FrozenInProcessStartArgs) -> IoResult<FrozenInProcessHandle> {
++    use codex_app_server_protocol::DynamicToolSpec;
++    use codex_app_server_protocol::InitializeCapabilities;
++    use codex_core::config::ThreadStoreConfig;
++
++    let invalid = |message| IoError::new(ErrorKind::InvalidInput, message);
++    let InitializeParams { client_info: _, capabilities } = &args.initialize;
++    let Some(InitializeCapabilities {
++        experimental_api,
++        request_attestation,
++        mcp_server_openai_form_elicitation,
++        opt_out_notification_methods,
++        extensions,
++    }) = capabilities else {
++        return Err(invalid("frozen initialize capabilities must be explicit"));
++    };
++    if !experimental_api || *request_attestation || *mcp_server_openai_form_elicitation
++        || opt_out_notification_methods.is_some() || extensions.is_some()
++    {
++        return Err(invalid("frozen initialize cannot disable evidence or enable extra ingress"));
++    }
++    let [DynamicToolSpec::Function(tool)] = args.native_tools.as_slice() else {
++        return Err(invalid("frozen native registry must contain exactly one fixed function"));
++    };
++    if tool.name.is_empty() || tool.defer_loading || !tool.input_schema.is_object() {
++        return Err(invalid("frozen native registry is not an immediate fixed function"));
++    }
++    if args.channel_capacity == 0
++        || args.channel_capacity > DEFAULT_IN_PROCESS_CHANNEL_CAPACITY
++        || serde_json::to_vec(&args.native_tools).map_err(IoError::other)?.len() > 2 * 1024 * 1024
++    {
++        return Err(invalid("frozen queue capacity or immutable registry exceeds its bound"));
++    }
++    let outstanding_limit = args.channel_capacity.checked_mul(4)
++        .ok_or_else(|| invalid("frozen outstanding request capacity overflow"))?
++        .min(4096);
++    args.config.auth_config().validate()?;
++    let manager = ConfigManager::new_frozen(Arc::clone(&args.config), args.arg0_paths.clone())?;
++    let guard = manager.frozen_violation_guard()
++        .ok_or_else(|| invalid("frozen manager did not retain its violation guard"))?;
++    let ThreadStoreConfig::InMemory { id } = &args.config.experimental_thread_store else {
++        return Err(invalid("frozen runtime requires an actual in-memory thread store"));
++    };
++    if id.is_empty() || id.len() > 256 || !id.is_ascii() {
++        return Err(invalid("frozen in-memory store identity is not bounded and explicit"));
++    }
++    static RESERVED: std::sync::OnceLock<std::sync::Mutex<HashSet<String>>> =
++        std::sync::OnceLock::new();
++    if !RESERVED.get_or_init(Default::default).lock()
++        .map_err(|_| invalid("frozen store identity registry poisoned"))?
++        .insert(id.clone())
++    {
++        return Err(invalid("frozen in-memory store identity was already reserved"));
++    }
++    let native_tools = args.native_tools.clone();
++    let (requests, receive) = mpsc::channel(args.channel_capacity);
++    let (events, event_rx) = mpsc::channel(args.channel_capacity);
++    let (ready, _) = tokio::sync::watch::channel(FrozenReady::Pending);
++    let (attached, _) = tokio::sync::watch::channel(None);
++    let state = Arc::new(FrozenState {
++        config: Arc::clone(&args.config),
++        guard,
++        bootstrap: std::sync::Mutex::new(Some(FrozenBootstrap {
++            args, manager, requests: receive, events,
++        })),
++        supervisor: std::sync::Mutex::new(None),
++        ready,
++        attached,
++        outgoing: std::sync::OnceLock::new(),
++        requests,
++        registry: std::sync::Mutex::new(FrozenRegistry::default()),
++        native_tools,
++        outstanding_limit,
++    });
++    Ok(FrozenInProcessHandle {
++        sender: FrozenSender { state },
++        events: event_rx,
++    })
++}
++
++impl FrozenState {
++    fn deliver_response(&self, id: &RequestId, result: PendingClientRequestResponse) -> IoResult<()> {
++        self.guard.check()?;
++        let mut registry = self.registry()?;
++        self.guard.check()?;
++        let pending = registry.requests.get(id)
++            .ok_or_else(|| self.guard.violate("unmatched frozen response"))?;
++        if pending.response.is_none() {
++            return Err(self.guard.violate("duplicate frozen response delivery"));
++        }
++        let kind = pending.kind;
++        if let Ok(value) = &result {
++            if serde_json::to_vec(value).map_err(IoError::other)?.len() > 2 * 1024 * 1024 {
++                return Err(self.guard.violate("frozen response exceeds frame bound"));
++            }
++            if kind == FrozenRequestKind::TurnStart {
++                let response: codex_app_server_protocol::TurnStartResponse =
++                    serde_json::from_value(value.clone()).map_err(IoError::other)?;
++                if !frozen_id_is_bounded(&response.turn.id)
++                    || registry.roots.iter().any(|(other_id, root)| {
++                        other_id != id && root.turn_id.as_ref() == Some(&response.turn.id)
++                    })
++                {
++                    return Err(self.guard.violate("frozen turn response identity is not fresh"));
++                }
++                let root = registry.roots.get_mut(id)
++                    .ok_or_else(|| self.guard.violate("frozen turn root disappeared"))?;
++                if root.turn_id.is_some()
++                    || root.early_turn_id.as_ref().is_some_and(|early| early != &response.turn.id)
++                {
++                    return Err(self.guard.violate("frozen early-event turn identity mismatch"));
++                }
++                root.turn_id = Some(response.turn.id);
++            }
++        }
++        let failed = result.is_err();
++        let response = registry.requests.get_mut(id)
++            .and_then(|pending| pending.response.take())
++            .ok_or_else(|| self.guard.violate("duplicate frozen response delivery"))?;
++        response.send(result)
++            .map_err(|_| self.guard.violate("frozen response consumer dropped after admission"))?;
++        if failed {
++            return Err(self.guard.violate("frozen processor reported a protocol failure"));
++        }
++        registry.outstanding_requests = registry.outstanding_requests.checked_sub(1)
++            .ok_or_else(|| self.guard.violate("frozen outstanding request accounting underflow"))?;
++        self.release_finished_turn_slot(&mut registry)?;
++        Ok(())
++    }
++
++    fn register_native_request(&self, request: &ServerRequest) -> IoResult<()> {
++        use codex_app_server_protocol::DynamicToolSpec;
++
++        self.guard.check()?;
++        let owned_thread = self.owned_thread()?;
++        let ServerRequest::DynamicToolCall { request_id, params } = request else {
++            return Err(self.guard.violate("unsupported frozen server request"));
++        };
++        let [DynamicToolSpec::Function(tool)] = self.native_tools.as_slice() else {
++            return Err(self.guard.violate("frozen native registry changed"));
++        };
++        if params.thread_id != owned_thread || params.namespace.is_some()
++            || params.tool != tool.name
++            || !frozen_request_id_is_bounded(request_id)
++            || !frozen_id_is_bounded(&params.thread_id)
++            || !frozen_id_is_bounded(&params.turn_id)
++            || !frozen_id_is_bounded(&params.call_id)
++            || serde_json::to_vec(request).map_err(IoError::other)?.len() > 2 * 1024 * 1024
++        {
++            return Err(self.guard.violate("frozen native request is outside the captured domain"));
++        }
++        let mut registry = self.registry()?;
++        self.guard.check()?;
++        if registry.callbacks.len() >= FROZEN_RETAINED_CALLBACK_LIMIT
++            || registry.callbacks.contains_key(request_id)
++            || registry.callbacks.values().any(|pending| {
++                pending.turn_id == params.turn_id && pending.call_id == params.call_id
++            })
++        {
++            return Err(self.guard.violate("frozen native callback identity reused"));
++        }
++        let root_id = self.match_turn_root(&mut registry, &params.turn_id)?;
++        if registry.roots[&root_id].successful_terminal.is_some() {
++            return Err(self.guard.violate("native callback arrived after its turn terminal"));
++        }
++        registry.callbacks.insert(request_id.clone(), FrozenPendingCallback {
++            root_id,
++            thread_id: params.thread_id.clone(),
++            turn_id: params.turn_id.clone(),
++            call_id: params.call_id.clone(),
++            phase: FrozenCallbackPhase::Registered,
++        });
++        Ok(())
++    }
++
++    fn match_turn_root(&self, registry: &mut FrozenRegistry, turn_id: &str) -> IoResult<RequestId> {
++        if !frozen_id_is_bounded(turn_id) {
++            return Err(self.guard.violate("frozen actual turn identity exceeds its bound"));
++        }
++        if let Some((id, _)) = registry.roots.iter().find(|(_, root)| {
++            root.turn_id.as_deref() == Some(turn_id)
++                || root.early_turn_id.as_deref() == Some(turn_id)
++        }) {
++            return Ok(id.clone());
++        }
++        let id = registry.active_turn.as_ref()
++            .ok_or_else(|| self.guard.violate("frozen event has no admitted turn root"))?
++            .clone();
++        let root = registry.roots.get_mut(&id)
++            .ok_or_else(|| self.guard.violate("frozen active turn root disappeared"))?;
++        if root.turn_id.is_some() || root.early_turn_id.is_some() {
++            return Err(self.guard.violate("frozen event refers to a foreign actual turn"));
++        }
++        root.early_turn_id = Some(turn_id.to_string());
++        Ok(id)
++    }
++
++    fn terminal_root(
++        &self,
++        registry: &mut FrozenRegistry,
++        terminal: &codex_app_server_protocol::TurnCompletedNotification,
++    ) -> IoResult<RequestId> {
++        self.guard.check()?;
++        if terminal.thread_id != self.owned_thread()?
++            || !frozen_id_is_bounded(&terminal.thread_id)
++        {
++            return Err(self.guard.violate("frozen terminal refers to a foreign thread"));
++        }
++        let id = self.match_turn_root(registry, &terminal.turn.id)?;
++        if registry.active_turn.as_ref() != Some(&id)
++            || registry.roots[&id].successful_terminal.is_some()
++        {
++            return Err(self.guard.violate("frozen terminal is stale or duplicated"));
++        }
++        Ok(id)
++    }
++
++    #[cfg(test)]
++    fn record_delivered_terminal(
++        &self,
++        terminal: &codex_app_server_protocol::TurnCompletedNotification,
++    ) -> IoResult<()> {
++        let mut registry = self.registry()?;
++        self.record_delivered_terminal_locked(&mut registry, terminal)
++    }
++
++    fn record_delivered_terminal_locked(
++        &self,
++        registry: &mut FrozenRegistry,
++        terminal: &codex_app_server_protocol::TurnCompletedNotification,
++    ) -> IoResult<()> {
++        let id = self.terminal_root(registry, terminal)?;
++        let successful = terminal.turn.status == codex_app_server_protocol::TurnStatus::Completed
++            && terminal.turn.error.is_none();
++        registry.roots.get_mut(&id)
++            .ok_or_else(|| self.guard.violate("frozen terminal root disappeared"))?
++            .successful_terminal = Some(successful);
++        if !successful {
++            return Err(self.guard.violate("frozen backend turn did not complete successfully"));
++        }
++        self.release_finished_turn_slot(registry)
++    }
++
++    fn release_finished_turn_slot(&self, registry: &mut FrozenRegistry) -> IoResult<()> {
++        self.guard.check()?;
++        let Some(id) = registry.active_turn.as_ref() else {
++            return Ok(());
++        };
++        let root = registry.roots.get(id)
++            .ok_or_else(|| self.guard.violate("frozen active turn root disappeared"))?;
++        if root.turn_id.is_some() && root.successful_terminal == Some(true)
++            && registry.callbacks.values().filter(|callback| &callback.root_id == id)
++                .all(|callback| callback.phase == FrozenCallbackPhase::Delivered)
++        {
++            // This is only an SDK no-steering slot, never native result/receipt/ACK settlement.
++            registry.active_turn = None;
++        }
++        Ok(())
++    }
++}
++
++struct FrozenRuntime {
++    state: Arc<FrozenState>,
++    processor: Arc<MessageProcessor>,
++    session: Arc<ConnectionSessionState>,
++    tasks: tokio::task::JoinSet<IoResult<()>>,
++    analytics: codex_analytics::AnalyticsEventsClient,
++    _store: Arc<codex_thread_store::InMemoryThreadStore>,
++}
++
++fn spawn_frozen_pump(
++    tasks: &mut tokio::task::JoinSet<IoResult<()>>,
++    guard: &crate::config_manager::FrozenConfigViolation,
++    future: impl std::future::Future<Output = IoResult<()>> + Send + 'static,
++) {
++    let claim = FrozenAdmissionClaim::new(guard, "frozen pump exited or panicked");
++    tasks.spawn(async move {
++        let _claim = claim;
++        future.await
++    });
++}
++
++impl FrozenRuntime {
++    async fn construct(state: Arc<FrozenState>, bootstrap: FrozenBootstrap) -> IoResult<Self> {
++        use codex_core::config::ThreadStoreConfig;
++        use codex_thread_store::InMemoryThreadStore;
++        use codex_thread_store::InMemoryThreadStoreCalls;
++
++        let FrozenBootstrap { args, manager, requests, events } = bootstrap;
++        state.guard.check()?;
++        let ThreadStoreConfig::InMemory { id } = &args.config.experimental_thread_store else {
++            return Err(state.guard.violate("actual frozen store binding changed"));
++        };
++        let store = InMemoryThreadStore::for_id(id.clone());
++        let calls = state.guard.until_violation("checking actual frozen store", async {
++            Ok(store.calls().await)
++        }).await?;
++        if Arc::strong_count(&store) != 2 || calls != InMemoryThreadStoreCalls::default() {
++            return Err(state.guard.violate("actual frozen in-memory store is shared or previously used"));
++        }
++        let environment_manager = Arc::new(EnvironmentManager::without_environments(
++            args.config.http_client_factory(),
++        ));
++        let feedback = CodexFeedback::new();
++        let installation_id = state.guard.until_violation("resolving frozen installation", async {
++            resolve_installation_id(&args.config.codex_home).await
++        }).await?;
++        let auth_manager = state.guard.until_violation("loading frozen auth", async {
++            AuthManager::shared_from_config(args.config.as_ref(), args.enable_codex_api_key_env)
++                .await.map_err(IoError::other)
++        }).await?;
++        let capacity = args.channel_capacity;
++        let (outgoing_tx, outgoing_rx) = mpsc::channel(capacity);
++        let analytics = analytics_events_client_from_config(
++            Arc::clone(&auth_manager), args.config.as_ref(),
++        );
++        let outgoing = Arc::new(OutgoingMessageSender::new(outgoing_tx, analytics.clone()));
++        state.outgoing.set(Arc::clone(&outgoing))
++            .map_err(|_| state.guard.violate("frozen outgoing runtime already constructed"))?;
++        let (writer_tx, writer_rx) = mpsc::channel(capacity);
++        let initialized = Arc::new(AtomicBool::new(false));
++        let experimental = Arc::new(AtomicBool::new(false));
++        let mut connections = HashMap::new();
++        connections.insert(
++            IN_PROCESS_CONNECTION_ID,
++            OutboundConnectionState::new(
++                writer_tx,
++                Arc::clone(&initialized),
++                Arc::clone(&experimental),
++                Arc::new(RwLock::new(HashSet::new())),
++                None,
++            ),
++        );
++        let config_warnings = args.config.startup_warnings.iter().map(|warning| {
++            ConfigWarningNotification {
++                summary: warning.clone(),
++                details: None,
++                path: None,
++                range: None,
++            }
++        }).collect();
++        state.guard.check()?;
++        let processor = Arc::new(MessageProcessor::new(MessageProcessorArgs {
++            outgoing,
++            analytics_events_client: analytics.clone(),
++            arg0_paths: args.arg0_paths,
++            config: args.config,
++            config_manager: manager,
++            environment_manager,
++            feedback,
++            log_db: None,
++            state_db: None,
++            config_warnings,
++            session_source: args.session_source,
++            auth_manager,
++            installation_id,
++            code_mode_session_provider: None,
++            rpc_transport: AppServerRpcTransport::InProcess,
++            remote_control_handle: None,
++            plugin_startup_tasks: None,
++        }));
++        let session = Arc::new(ConnectionSessionState::new());
++        let (processor_tx, processor_rx) = mpsc::channel(capacity);
++        let mut tasks = tokio::task::JoinSet::new();
++        let request_state = Arc::clone(&state);
++        spawn_frozen_pump(&mut tasks, &state.guard, async move {
++            run_frozen_request_pump(request_state, requests, processor_tx).await
++        });
++        let writer_state = Arc::clone(&state);
++        spawn_frozen_pump(&mut tasks, &state.guard, async move {
++            run_frozen_writer_pump(writer_state, writer_rx, events).await
++        });
++        let processor_state = Arc::clone(&state);
++        let processor_task = Arc::clone(&processor);
++        let session_task = Arc::clone(&session);
++        spawn_frozen_pump(&mut tasks, &state.guard, async move {
++            run_frozen_processor_pump(
++                processor_state, processor_task, session_task,
++                processor_rx, initialized, experimental,
++            ).await
++        });
++        let router_state = Arc::clone(&state);
++        spawn_frozen_pump(&mut tasks, &state.guard, async move {
++            let (_shutdown, receive) = oneshot::channel();
++            router_state.guard.until_violation("frozen outbound router", async {
++                run_outbound_router(outgoing_rx, connections, receive).await;
++                Err(IoError::new(ErrorKind::BrokenPipe, "frozen outbound router exited"))
++            }).await
++        });
++        Ok(Self { state, processor, session, tasks, analytics, _store: store })
++    }
++
++    async fn initialize(
++        &self,
++        initialize: InitializeParams,
++        native_tools: Vec<codex_app_server_protocol::DynamicToolSpec>,
++    ) -> IoResult<Arc<codex_app_server_protocol::ThreadStartResponse>> {
++        let sender = FrozenSender { state: Arc::clone(&self.state) };
++        let response = sender.request_captured(
++            ClientRequest::Initialize { request_id: RequestId::Integer(-1), params: initialize },
++            FrozenRequestKind::Initialize,
++        ).await?.map_err(|error| IoError::new(ErrorKind::InvalidData, error.message))?;
++        let _: codex_app_server_protocol::InitializeResponse =
++            serde_json::from_value(response).map_err(IoError::other)?;
++        self.state.guard.until_violation("frozen initialized notification", async {
++            self.state.requests.send(ProcessorCommand::Notification(ClientNotification::Initialized))
++                .await.map_err(IoError::other)
++        }).await?;
++        let response = sender.request_captured(
++            ClientRequest::ThreadStart {
++                request_id: RequestId::Integer(-2),
++                params: codex_app_server_protocol::ThreadStartParams {
++                    model: None,
++                    model_provider: None,
++                    allow_provider_model_fallback: false,
++                    service_tier: None,
++                    cwd: None,
++                    runtime_workspace_roots: None,
++                    approval_policy: None,
++                    approvals_reviewer: None,
++                    sandbox: None,
++                    permissions: None,
++                    config: None,
++                    service_name: None,
++                    base_instructions: None,
++                    developer_instructions: None,
++                    personality: None,
++                    multi_agent_mode: None,
++                    ephemeral: None,
++                    history_mode: None,
++                    session_start_source: None,
++                    thread_source: None,
++                    project_id: None,
++                    environments: Some(Vec::new()),
++                    dynamic_tools: Some(native_tools),
++                    selected_capability_roots: Some(Vec::new()),
++                    mock_experimental_field: None,
++                    experimental_raw_events: false,
++                },
++            },
++            FrozenRequestKind::ThreadStart,
++        ).await?.map_err(|error| IoError::new(ErrorKind::InvalidData, error.message))?;
++        let response: codex_app_server_protocol::ThreadStartResponse =
++            serde_json::from_value(response).map_err(IoError::other)?;
++        if !frozen_id_is_bounded(&response.thread.id)
++            || self.state.config.model.as_deref() != Some(response.model.as_str())
++            || response.model_provider != self.state.config.model_provider_id
++            || response.cwd != self.state.config.cwd
++            || response.approval_policy.clone().to_core() != self.state.config.permissions.approval_policy.value()
++            || response.approvals_reviewer.clone().to_core() != self.state.config.approvals_reviewer
++            || response.sandbox.to_core() != self.state.config.legacy_sandbox_policy()
++            || response.thread.ephemeral != self.state.config.ephemeral
++            || response.thread.cwd != self.state.config.cwd
++            || response.thread.model_provider != self.state.config.model_provider_id
++        {
++            return Err(self.state.guard.violate("actual frozen thread/start differs from sealed configuration"));
++        }
++        let mut attached = self.state.attached.subscribe();
++        loop {
++            let current = attached.borrow_and_update().clone();
++            if let Some(thread) = current {
++                if thread != response.thread.id {
++                    return Err(self.state.guard.violate("frozen attached thread differs from readiness"));
++                }
++                break;
++            }
++            self.state.guard.until_violation("waiting for actual frozen thread listener", async {
++                attached.changed().await.map_err(IoError::other)
++            }).await?;
++        }
++        self.state.guard.check()?;
++        Ok(Arc::new(response))
++    }
++
++    async fn shutdown(mut self) -> IoResult<()> {
++        // These are SDK task/drain results, never native command completion or OS teardown proof.
++        let _ = self.state.guard.violate("frozen runtime cleanup");
++        let mut task_failure = None;
++        match self.state.registry() {
++            Ok(mut registry) => {
++                for pending in registry.requests.values_mut() {
++                    if let Some(response) = pending.response.take()
++                        && response.send(Err(internal_error("frozen runtime held during shutdown"))).is_err()
++                    {
++                        warn!("frozen response waiter already closed; admitted work remains held");
++                    }
++                }
++            }
++            Err(error) => {
++                warn!(%error, "frozen work accounting unavailable during cleanup");
++                task_failure = Some(error);
++            }
++        }
++        if let Some(outgoing) = self.state.outgoing.get() {
++            outgoing.cancel_all_requests(Some(internal_error(
++                "frozen runtime held; native work remains unresolved",
++            ))).await;
++        }
++        while let Some(result) = self.tasks.join_next().await {
++            if let Err(error) = result {
++                warn!(%error, "frozen pump panicked; generation remains held");
++                if task_failure.is_none() {
++                    task_failure = Some(IoError::other(error));
++                }
++            }
++        }
++        self.processor.clear_runtime_references();
++        self.processor.cancel_active_login().await;
++        self.processor.connection_closed(IN_PROCESS_CONNECTION_ID, &self.session).await;
++        self.processor.clear_all_thread_listeners().await;
++        self.processor.drain_background_tasks().await;
++        self.processor.shutdown_threads().await;
++        self.analytics.flush().await;
++        match task_failure {
++            Some(error) => Err(error),
++            None => Ok(()),
++        }
++    }
++}
++
++async fn run_frozen_generation(state: Arc<FrozenState>, bootstrap: FrozenBootstrap) -> IoResult<()> {
++    let initialize = bootstrap.args.initialize.clone();
++    let native_tools = bootstrap.args.native_tools.clone();
++    let runtime = match FrozenRuntime::construct(Arc::clone(&state), bootstrap).await {
++        Ok(runtime) => runtime,
++        Err(error) => {
++            state.ready.send_replace(FrozenReady::Failed(error.kind(), error.to_string()));
++            let _ = state.guard.violate("frozen runtime construction failed");
++            return Err(error);
++        }
++    };
++    let mut bootstrap_failure = None;
++    match runtime.initialize(initialize, native_tools).await {
++        Ok(response) => {
++            match state.guard.check() {
++                Ok(()) => {
++                    state.ready.send_replace(FrozenReady::Ready(response));
++                    state.guard.wait_for_violation().await;
++                }
++                Err(error) => {
++                    state.ready.send_replace(FrozenReady::Failed(error.kind(), error.to_string()));
++                    bootstrap_failure = Some(error);
++                }
++            }
++        }
++        Err(error) => {
++            state.ready.send_replace(FrozenReady::Failed(error.kind(), error.to_string()));
++            let _ = state.guard.violate("frozen bootstrap failed");
++            bootstrap_failure = Some(error);
++        }
++    }
++    let cleanup = runtime.shutdown().await;
++    match bootstrap_failure {
++        Some(error) => {
++            if let Err(cleanup_error) = cleanup {
++                warn!(%cleanup_error, "frozen bootstrap cleanup also failed");
++            }
++            Err(error)
++        }
++        None => cleanup,
++    }
++}
++
++async fn run_frozen_request_pump(
++    state: Arc<FrozenState>,
++    mut requests: mpsc::Receiver<ProcessorCommand>,
++    processor: mpsc::Sender<ProcessorCommand>,
++) -> IoResult<()> {
++    state.guard.until_violation("frozen request pump", async {
++        loop {
++            let request = requests.recv().await.ok_or_else(|| {
++                IoError::new(ErrorKind::BrokenPipe, "frozen request input closed")
++            })?;
++            state.guard.check()?;
++            processor.send(request).await.map_err(IoError::other)?;
++        }
++    }).await
++}
++
++async fn run_frozen_writer_pump(
++    state: Arc<FrozenState>,
++    mut writer: mpsc::Receiver<QueuedOutgoingMessage>,
++    events: mpsc::Sender<InProcessServerEvent>,
++) -> IoResult<()> {
++    state.guard.until_violation("frozen outgoing pump", async {
++        loop {
++            let queued = writer.recv().await.ok_or_else(|| {
++                IoError::new(ErrorKind::BrokenPipe, "frozen outgoing writer closed")
++            })?;
++            state.guard.check()?;
++            match queued.message {
++                OutgoingMessage::Response(response) => {
++                    state.deliver_response(
++                        &response.id,
++                        serde_json::to_value(response.result).map_err(|error| {
++                            internal_error(format!("failed to serialize frozen response: {error}"))
++                        }),
++                    )?;
++                }
++                OutgoingMessage::Error(error) => {
++                    state.deliver_response(&error.id, Err(error.error))?;
++                }
++                OutgoingMessage::Request(request) => {
++                    state.register_native_request(&request)?;
++                    events.send(InProcessServerEvent::ServerRequest(Box::new(request)))
++                        .await.map_err(IoError::other)?;
++                }
++                OutgoingMessage::AppServerNotification(envelope) => {
++                    if serde_json::to_vec(&envelope.notification).map_err(IoError::other)?.len()
++                        > 2 * 1024 * 1024
++                    {
++                        return Err(state.guard.violate("frozen notification exceeds frame bound"));
++                    }
++                    let terminal = match &envelope.notification {
++                        ServerNotification::TurnCompleted(terminal) => Some(terminal.clone()),
++                        _ => None,
++                    };
++                    if let Some(terminal) = terminal {
++                        let permit = events.reserve().await
++                            .map_err(|_| state.guard.violate("frozen terminal consumer closed"))?;
++                        let mut registry = state.registry()?;
++                        state.terminal_root(&mut registry, &terminal)?;
++                        // Publication and accounting share the admission lock; no await under it.
++                        permit.send(InProcessServerEvent::ServerNotification(Box::new(
++                            envelope.notification,
++                        )));
++                        state.record_delivered_terminal_locked(&mut registry, &terminal)?;
++                    } else {
++                        match forward_in_process_notification(
++                            InProcessNotificationMode::Frozen, &events, envelope.notification,
++                        ).await {
++                            InProcessNotificationDelivery::Forwarded => {}
++                            InProcessNotificationDelivery::Dropped | InProcessNotificationDelivery::Closed => {
++                                return Err(state.guard.violate("frozen notification was not delivered"));
++                            }
++                        }
++                    }
++                }
++            }
++            state.guard.check()?;
++            if let Some(complete) = queued.write_complete_tx {
++                complete.send(())
++                    .map_err(|_| state.guard.violate("frozen outgoing receipt consumer closed"))?;
++            }
++        }
++    }).await
++}
++
++async fn run_frozen_processor_pump(
++    state: Arc<FrozenState>,
++    processor: Arc<MessageProcessor>,
++    session: Arc<ConnectionSessionState>,
++    mut commands: mpsc::Receiver<ProcessorCommand>,
++    initialized: Arc<AtomicBool>,
++    experimental: Arc<AtomicBool>,
++) -> IoResult<()> {
++    let mut created = processor.thread_created_receiver();
++    state.guard.until_violation("frozen processor pump", async {
++        loop {
++            tokio::select! {
++                command = commands.recv() => {
++                    state.guard.check()?;
++                    match command {
++                        Some(ProcessorCommand::Request(request)) => {
++                            let was_initialized = session.initialized();
++                            processor.process_client_request(
++                                IN_PROCESS_CONNECTION_ID, *request, Arc::clone(&session), &initialized,
++                            ).await;
++                            state.guard.check()?;
++                            if !session.opted_out_notification_methods().is_empty() {
++                                return Err(state.guard.violate("frozen session opted out of evidence"));
++                            }
++                            experimental.store(session.experimental_api_enabled(), Ordering::Release);
++                            if !was_initialized && session.initialized() {
++                                processor.send_initialize_notifications().await;
++                            }
++                        }
++                        Some(ProcessorCommand::Notification(ClientNotification::Initialized)) => {
++                            processor.process_client_notification(ClientNotification::Initialized).await;
++                        }
++                        Some(ProcessorCommand::Notification(_)) => {
++                            return Err(state.guard.violate("unsupported frozen client notification"));
++                        }
++                        None => return Err(IoError::new(ErrorKind::BrokenPipe, "frozen processor input closed")),
++                    }
++                }
++                thread = created.recv() => {
++                    state.guard.check()?;
++                    let thread = thread.map_err(IoError::other)?;
++                    if state.attached.borrow().is_some() {
++                        return Err(state.guard.violate("frozen runtime created an additional thread"));
++                    }
++                    if !frozen_id_is_bounded(&thread.to_string()) {
++                        return Err(state.guard.violate("frozen attached thread identity exceeds its bound"));
++                    }
++                    if let Err(error) = processor.attach_frozen_thread_listener(
++                        thread, IN_PROCESS_CONNECTION_ID,
++                    ).await {
++                        let _ = state.guard.violate("frozen checked thread listener failed");
++                        return Err(error);
++                    }
++                    state.guard.check()?;
++                    state.attached.send_replace(Some(thread.to_string()));
++                }
++            }
++        }
++    }).await
++}
++
++// Modified by Ouro: select only our account-free SDK component tests.
++#[cfg(test)]
++mod cmux_sdk_contract {
++    use super::*;
++// Modified by Ouro: controlled channel-only forwarding probes; no backend startup.
++#[cfg(test)]
++mod cmux_forward_contract {
++    use super::*;
++    use codex_app_server_protocol::ThreadNameUpdatedNotification;
++    use codex_app_server_protocol::ThreadQueueChangedNotification;
++    use std::future::Future;
++    use std::task::Poll;
++
++    fn ordinary(label: &str) -> ServerNotification {
++        ServerNotification::ThreadNameUpdated(ThreadNameUpdatedNotification {
++            thread_id: "owned-thread".to_string(),
++            thread_name: Some(label.to_string()),
++        })
++    }
++
++    fn label(event: InProcessServerEvent) -> String {
++        match event {
++            InProcessServerEvent::ServerNotification(notification) => match *notification {
++                ServerNotification::ThreadNameUpdated(update) => update.thread_name.unwrap(),
++                _ => panic!("expected exact ordinary notification"),
++            },
++            _ => panic!("expected exact server notification"),
++        }
++    }
++
++    async fn poll_once<F: Future>(future: std::pin::Pin<&mut F>) -> Poll<F::Output> {
++        let mut future = future;
++        std::future::poll_fn(|context| Poll::Ready(future.as_mut().poll(context))).await
++    }
++
++    #[tokio::test]
++    async fn cmux_normal_event_forwarding_compatibility() {
++        timeout(Duration::from_secs(2), async {
++            let (sender, mut receiver) = mpsc::channel(1);
++            assert_eq!(
++                forward_in_process_notification(
++                    InProcessNotificationMode::Ordinary,
++                    &sender,
++                    ordinary("empty"),
++                )
++                .await,
++                InProcessNotificationDelivery::Forwarded
++            );
++            assert_eq!(label(receiver.recv().await.unwrap()), "empty");
++            assert_eq!(
++                forward_in_process_notification(
++                    InProcessNotificationMode::Ordinary,
++                    &sender,
++                    ordinary("first"),
++                )
++                .await,
++                InProcessNotificationDelivery::Forwarded
++            );
++            assert_eq!(
++                forward_in_process_notification(
++                    InProcessNotificationMode::Ordinary,
++                    &sender,
++                    ordinary("dropped"),
++                )
++                .await,
++                InProcessNotificationDelivery::Dropped
++            );
++            assert_eq!(label(receiver.recv().await.unwrap()), "first");
++            assert!(matches!(receiver.try_recv(), Err(mpsc::error::TryRecvError::Empty)));
++
++            assert_eq!(
++                forward_in_process_notification(
++                    InProcessNotificationMode::Ordinary,
++                    &sender,
++                    ordinary("before-required"),
++                )
++                .await,
++                InProcessNotificationDelivery::Forwarded
++            );
++            let required = ServerNotification::ThreadQueueChanged(ThreadQueueChangedNotification {
++                thread_id: "owned-thread".to_string(),
++            });
++            let mut pending = Box::pin(forward_in_process_notification(
++                InProcessNotificationMode::Ordinary,
++                &sender,
++                required,
++            ));
++            assert!(poll_once(pending.as_mut()).await.is_pending());
++            assert_eq!(label(receiver.recv().await.unwrap()), "before-required");
++            assert_eq!(pending.await, InProcessNotificationDelivery::Forwarded);
++            assert!(matches!(
++                receiver.recv().await.unwrap(),
++                InProcessServerEvent::ServerNotification(notification)
++                    if matches!(*notification, ServerNotification::ThreadQueueChanged(_))
++            ));
++            drop(receiver);
++            assert_eq!(
++                forward_in_process_notification(
++                    InProcessNotificationMode::Ordinary,
++                    &sender,
++                    ordinary("closed"),
++                )
++                .await,
++                InProcessNotificationDelivery::Closed
++            );
++            assert_eq!(
++                forward_in_process_notification(
++                    InProcessNotificationMode::Ordinary,
++                    &sender,
++                    ServerNotification::ThreadQueueChanged(ThreadQueueChangedNotification {
++                        thread_id: "owned-thread".to_string(),
++                    }),
++                )
++                .await,
++                InProcessNotificationDelivery::Closed
++            );
++        })
++        .await
++        .expect("ordinary forwarding compatibility fixture exceeded its bound");
++    }
++
++    #[tokio::test]
++    async fn cmux_frozen_delivery_applies_backpressure() {
++        timeout(Duration::from_secs(2), async {
++            let (sender, mut receiver) = mpsc::channel(1);
++            assert_eq!(
++                forward_in_process_notification(
++                    InProcessNotificationMode::Frozen,
++                    &sender,
++                    ordinary("first"),
++                )
++                .await,
++                InProcessNotificationDelivery::Forwarded
++            );
++            let mut pending = Box::pin(forward_in_process_notification(
++                InProcessNotificationMode::Frozen,
++                &sender,
++                ordinary("second"),
++            ));
++            let observed = poll_once(pending.as_mut()).await;
++            assert!(
++                observed.is_pending(),
++                "CMUX_FROZEN_FORWARDING_BACKPRESSURE_REQUIRED: actual forwarding returned {observed:?} while capacity1 was full"
++            );
++            assert_eq!(label(receiver.recv().await.unwrap()), "first");
++            assert_eq!(pending.await, InProcessNotificationDelivery::Forwarded);
++            assert_eq!(label(receiver.recv().await.unwrap()), "second");
++        })
++        .await
++        .expect("forwarding backpressure fixture exceeded its bound");
++    }
++
++    #[tokio::test]
++    async fn cmux_frozen_delivery_reports_closed_consumer() {
++        timeout(Duration::from_secs(2), async {
++            let (sender, receiver) = mpsc::channel(1);
++            assert_eq!(
++                forward_in_process_notification(
++                    InProcessNotificationMode::Frozen,
++                    &sender,
++                    ordinary("first"),
++                )
++                .await,
++                InProcessNotificationDelivery::Forwarded
++            );
++            let mut pending = Box::pin(forward_in_process_notification(
++                InProcessNotificationMode::Frozen,
++                &sender,
++                ordinary("unconsumed"),
++            ));
++            assert!(poll_once(pending.as_mut()).await.is_pending());
++            drop(receiver);
++            assert_eq!(pending.await, InProcessNotificationDelivery::Closed);
++        })
++        .await
++        .expect("closed-consumer forwarding fixture exceeded its bound");
++    }
++}
++
++// Modified by Ouro: typed frozen work admission, without constructing a backend.
++#[cfg(test)]
++mod cmux_frozen_request_contract {
++    use super::*;
++    use codex_app_server_protocol::ThreadBackgroundTerminalsListParams;
++    use codex_app_server_protocol::ThreadStartParams;
++    use codex_app_server_protocol::TurnStartParams;
++    use codex_app_server_protocol::UserInput;
++
++    fn turn(text: String) -> ClientRequest {
++        ClientRequest::TurnStart {
++            request_id: RequestId::Integer(7),
++            params: TurnStartParams {
++                thread_id: "owned-thread".to_string(),
++                input: vec![UserInput::Text {
++                    text,
++                    text_elements: Vec::new(),
++                }],
++                environments: Some(Vec::new()),
++                ..TurnStartParams::default()
++            },
++        }
++    }
++
++    #[test]
++    fn cmux_frozen_work_preserves_literal_and_utf8_byte_boundary() {
++        for text in [
++            " literal\n\"quoted\"\\path\t\u{00e9} ".to_string(),
++            "\u{00e9}".repeat(32768),
++        ] {
++            let guard = crate::config_manager::FrozenConfigViolation::new_for_tests();
++            let request = turn(text.clone());
++            assert!(validate_frozen_work_request(&guard, &request, "owned-thread").is_ok());
++            let ClientRequest::TurnStart { params, .. } = request else {
++                unreachable!();
++            };
++            assert_eq!(
++                params.input,
++                vec![UserInput::Text {
++                    text,
++                    text_elements: Vec::new(),
++                }]
++            );
++            assert!(!guard.is_violated());
++        }
++        let guard = crate::config_manager::FrozenConfigViolation::new_for_tests();
++        assert!(validate_frozen_work_request(
++            &guard,
++            &turn("x".repeat(65537)),
++            "owned-thread",
++        )
++        .is_err());
++        assert!(guard.is_violated());
++    }
++
++    #[test]
++    fn cmux_frozen_work_rejects_presence_of_turn_overrides() {
++        let ClientRequest::TurnStart { params, .. } = turn("literal".to_string()) else {
++            unreachable!();
++        };
++        let base = serde_json::to_value(&params).unwrap();
++        let changes = [
++            ("clientUserMessageId", serde_json::json!("extra")),
++            ("turnTrigger", serde_json::json!("extra")),
++            ("responsesapiClientMetadata", serde_json::json!({})),
++            ("additionalContext", serde_json::json!({})),
++            ("cwd", serde_json::json!("/foreign")),
++            ("runtimeWorkspaceRoots", serde_json::json!([])),
++            ("approvalPolicy", serde_json::json!("never")),
++            ("approvalsReviewer", serde_json::json!("user")),
++            ("permissions", serde_json::json!("read-only")),
++            ("model", serde_json::json!("gpt-5.5")),
++            ("serviceTierForTurn", serde_json::json!("default")),
++            ("personality", serde_json::json!("none")),
++            ("outputSchema", serde_json::json!({})),
++        ];
++        for (field, value) in changes {
++            let guard = crate::config_manager::FrozenConfigViolation::new_for_tests();
++            let mut changed = base.clone();
++            changed[field] = value;
++            let params: TurnStartParams = serde_json::from_value(changed).unwrap();
++            let request = ClientRequest::TurnStart {
++                request_id: RequestId::Integer(7),
++                params,
++            };
++            assert!(
++                validate_frozen_work_request(&guard, &request, "owned-thread").is_err(),
++                "accepted turn override {field}"
++            );
++            assert!(guard.is_violated(), "{field}");
++        }
++        let guard = crate::config_manager::FrozenConfigViolation::new_for_tests();
++        let mut nested_null = params;
++        nested_null.service_tier = Some(None);
++        assert!(validate_frozen_work_request(
++            &guard,
++            &ClientRequest::TurnStart {
++                request_id: RequestId::Integer(7),
++                params: nested_null,
++            },
++            "owned-thread",
++        )
++        .is_err());
++    }
++
++    #[test]
++    fn cmux_frozen_work_requires_explicit_empty_environments_and_one_text_item() {
++        for mutation in 0..4 {
++            let guard = crate::config_manager::FrozenConfigViolation::new_for_tests();
++            let ClientRequest::TurnStart { mut params, .. } = turn("literal".to_string()) else {
++                unreachable!();
++            };
++            match mutation {
++                0 => params.environments = None,
++                1 => params.input.clear(),
++                2 => params.input.push(params.input[0].clone()),
++                3 => {
++                    params.input = vec![UserInput::Image {
++                        detail: None,
++                        url: "https://example.invalid/image".to_string(),
++                    }]
++                }
++                _ => unreachable!(),
++            }
++            assert!(validate_frozen_work_request(
++                &guard,
++                &ClientRequest::TurnStart {
++                    request_id: RequestId::Integer(7),
++                    params,
++                },
++                "owned-thread",
++            )
++            .is_err());
++            assert!(guard.is_violated());
++        }
++    }
++
++    #[test]
++    fn cmux_frozen_work_rejects_foreign_threads_and_public_thread_creation() {
++        let guard = crate::config_manager::FrozenConfigViolation::new_for_tests();
++        assert!(validate_frozen_work_request(
++            &guard,
++            &turn("literal".to_string()),
++            "foreign-thread",
++        )
++        .is_err());
++        let guard = crate::config_manager::FrozenConfigViolation::new_for_tests();
++        assert!(validate_frozen_work_request(
++            &guard,
++            &ClientRequest::ThreadStart {
++                request_id: RequestId::Integer(8),
++                params: ThreadStartParams::default(),
++            },
++            "owned-thread",
++        )
++        .is_err());
++    }
++
++    #[test]
++    fn cmux_frozen_shell_pages_are_current_thread_only() {
++        for thread_id in ["owned-thread", "foreign-thread"] {
++            let guard = crate::config_manager::FrozenConfigViolation::new_for_tests();
++            let request = ClientRequest::ThreadBackgroundTerminalsList {
++                request_id: RequestId::String("page-7".to_string()),
++                params: ThreadBackgroundTerminalsListParams {
++                    thread_id: thread_id.to_string(),
++                    cursor: Some("literal-cursor".to_string()),
++                    limit: Some(64),
++                },
++            };
++            assert_eq!(
++                validate_frozen_work_request(&guard, &request, "owned-thread").is_ok(),
++                thread_id == "owned-thread"
++            );
++        }
++    }
++}
++
++// Modified by Ouro: deferred startup must be inspectable without starting a backend.
++#[cfg(test)]
++mod cmux_frozen_startup_contract {
++    use super::*;
++    use codex_app_server_protocol::ClientInfo;
++    use codex_app_server_protocol::DynamicToolFunctionSpec;
++    use codex_app_server_protocol::DynamicToolSpec;
++    use codex_app_server_protocol::InitializeCapabilities;
++    use codex_core::config::ConfigBuilder;
++    use codex_core::config::ConfigOverrides;
++    use codex_core::config::ThreadStoreConfig;
++    use tempfile::TempDir;
++
++    pub(super) struct Fixture {
++        _home: TempDir,
++        pub(super) config: Arc<Config>,
++        paths: Arg0DispatchPaths,
++    }
++
++    impl Fixture {
++        pub(super) async fn new() -> IoResult<Self> {
++            let home = TempDir::new()?;
++            let catalog = home.path().join("models.json");
++            std::fs::write(
++                &catalog,
++                include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/../models-manager/models.json")),
++            )?;
++            std::fs::write(
++                home.path().join("config.toml"),
++                format!(
++                    "model = \"gpt-5.5\"\napproval_policy = \"never\"\nmodel_catalog_json = {catalog:?}\n"
++                ),
++            )?;
++            let mut config = ConfigBuilder::default()
++                .codex_home(home.path().to_path_buf())
++                .loader_overrides(LoaderOverrides {
++                    managed_config_path: Some(home.path().join("managed.toml")),
++                    system_config_path: Some(home.path().join("system.toml")),
++                    system_requirements_path: Some(home.path().join("requirements.toml")),
++                    ignore_project_config: true,
++                    ..LoaderOverrides::without_managed_config_for_tests()
++                })
++                .harness_overrides(ConfigOverrides {
++                    cwd: Some(home.path().to_path_buf()),
++                    ..ConfigOverrides::default()
++                })
++                .cloud_config_bundle(CloudConfigBundleLoader::default())
++                .thread_config_loader(Arc::new(codex_config::NoopThreadConfigLoader))
++                .build()
++                .await?;
++            config.codex_self_exe = Some(home.path().join("owned-host"));
++            config.codex_linux_sandbox_exe = Some(home.path().join("owned-sandbox"));
++            config.main_execve_wrapper_exe = Some(home.path().join("owned-wrapper"));
++            config.experimental_thread_store = ThreadStoreConfig::InMemory {
++                id: format!("cmux-frozen-contract-{}", home.path().display()),
++            };
++            let mut paths = Arg0DispatchPaths::default();
++            paths.codex_self_exe = config.codex_self_exe.clone();
++            paths.codex_linux_sandbox_exe = config.codex_linux_sandbox_exe.clone();
++            paths.main_execve_wrapper_exe = config.main_execve_wrapper_exe.clone();
++            Ok(Self {
++                _home: home,
++                config: Arc::new(config),
++                paths,
++            })
++        }
++
++        pub(super) fn args(&self) -> FrozenInProcessStartArgs {
++            FrozenInProcessStartArgs {
++                config: Arc::clone(&self.config),
++                arg0_paths: self.paths.clone(),
++                initialize: InitializeParams {
++                    client_info: ClientInfo {
++                        name: "cmux-frozen-contract".to_string(),
++                        title: None,
++                        version: "source-test".to_string(),
++                    },
++                    capabilities: Some(InitializeCapabilities {
++                        experimental_api: true,
++                        ..InitializeCapabilities::default()
++                    }),
++                },
++                native_tools: vec![DynamicToolSpec::Function(DynamicToolFunctionSpec {
++                    name: "native_command".to_string(),
++                    description: "Source-owned test registry, never wire-supplied.".to_string(),
++                    input_schema: serde_json::json!({
++                        "type": "object",
++                        "properties": {
++                            "program": {"type": "string"},
++                            "arguments": {"type": "array", "items": {"type": "string"}}
++                        },
++                        "required": ["program", "arguments"],
++                        "additionalProperties": false
++                    }),
++                    defer_loading: false,
++                })],
++                session_source: SessionSource::Cli,
++                enable_codex_api_key_env: false,
++                channel_capacity: 1,
++            }
++        }
++    }
++
++    #[tokio::test]
++    async fn cmux_frozen_start_returns_not_ready_without_constructing_runtime() -> IoResult<()> {
++        let fixture = Fixture::new().await?;
++        let handle = start_frozen(fixture.args()).await?;
++        let sender = handle.sender();
++        assert!(sender.state.outgoing.get().is_none());
++        assert!(sender.state.bootstrap.lock().unwrap().is_some());
++        assert!(sender.state.supervisor.lock().unwrap().is_none());
++        assert!(matches!(*sender.state.ready.borrow(), FrozenReady::Pending));
++        assert!(!handle.violation_guard().is_violated());
++        handle.shutdown().await?;
++        Ok(())
++    }
++
++    #[tokio::test]
++    async fn cmux_frozen_start_rejects_foreign_paths_before_bootstrap() -> IoResult<()> {
++        let fixture = Fixture::new().await?;
++        let mut args = fixture.args();
++        args.arg0_paths.codex_self_exe = Some(fixture._home.path().join("foreign"));
++        assert!(start_frozen(args).await.is_err());
++        assert_eq!(
++            fixture.config.codex_self_exe,
++            Some(fixture._home.path().join("owned-host"))
++        );
++        Ok(())
++    }
++
++    #[tokio::test]
++    async fn cmux_frozen_start_rejects_initialize_evidence_opt_out() -> IoResult<()> {
++        let fixture = Fixture::new().await?;
++        for change in 0..5 {
++            let mut args = fixture.args();
++            let capabilities = args.initialize.capabilities.as_mut().unwrap();
++            match change {
++                0 => capabilities.experimental_api = false,
++                1 => capabilities.request_attestation = true,
++                2 => capabilities.mcp_server_openai_form_elicitation = true,
++                3 => capabilities.opt_out_notification_methods = Some(Vec::new()),
++                4 => capabilities.extensions = Some(HashMap::new()),
++                _ => unreachable!(),
++            }
++            assert!(start_frozen(args).await.is_err(), "accepted initialize change {change}");
++        }
++        Ok(())
++    }
++
++    #[tokio::test]
++    async fn cmux_frozen_start_rejects_reused_actual_in_memory_binding() -> IoResult<()> {
++        let fixture = Fixture::new().await?;
++        let first = start_frozen(fixture.args()).await?;
++        assert!(start_frozen(fixture.args()).await.is_err());
++        assert!(!first.violation_guard().is_violated());
++        assert!(first.sender().state.outgoing.get().is_none());
++        first.shutdown().await?;
++        assert!(start_frozen(fixture.args()).await.is_err());
++        Ok(())
++    }
++
++    #[tokio::test]
++    async fn cmux_frozen_shutdown_before_ready_never_constructs_runtime() -> IoResult<()> {
++        let fixture = Fixture::new().await?;
++        let handle = start_frozen(fixture.args()).await?;
++        let sender = handle.sender();
++        handle.shutdown().await?;
++        assert!(sender.state.guard.is_violated());
++        assert!(sender.state.outgoing.get().is_none());
++        assert!(sender.state.supervisor.lock().unwrap().is_none());
++        Ok(())
++    }
++}
++
++// Modified by Ouro: real SDK channel pumps and callbacks, never a backend or model.
++#[cfg(test)]
++mod cmux_frozen_pump_contract {
++    use super::*;
++    use super::cmux_frozen_startup_contract::Fixture;
++    use codex_app_server_protocol::DynamicToolCallOutputContentItem;
++    use codex_app_server_protocol::DynamicToolCallParams;
++    use codex_app_server_protocol::DynamicToolCallResponse;
++    use codex_app_server_protocol::ServerRequestPayload;
++    use codex_app_server_protocol::ThreadBackgroundTerminalsListParams;
++    use codex_app_server_protocol::ThreadNameUpdatedNotification;
++    use codex_app_server_protocol::ThreadStartResponse;
++    use codex_app_server_protocol::Turn;
++    use codex_app_server_protocol::TurnCompletedNotification;
++    use codex_app_server_protocol::TurnStartParams;
++    use codex_app_server_protocol::TurnStartResponse;
++    use codex_app_server_protocol::TurnStatus;
++    use codex_app_server_protocol::UserInput;
++    use std::future::Future;
++    use std::task::Poll;
++
++    struct Harness {
++        _fixture: Fixture,
++        owner: FrozenInProcessHandle,
++        bootstrap: Option<FrozenBootstrap>,
++        outgoing: Arc<OutgoingMessageSender>,
++        outgoing_rx: Option<mpsc::Receiver<OutgoingEnvelope>>,
++    }
++
++    impl Harness {
++        async fn new() -> IoResult<Self> {
++            let fixture = Fixture::new().await?;
++            let owner = start_frozen(fixture.args()).await?;
++            let state = &owner.sender.state;
++            let bootstrap = state.bootstrap.lock().unwrap().take();
++            let config = &fixture.config;
++            let response = ThreadStartResponse {
++                thread: serde_json::from_value(serde_json::json!({
++                    "id": "owned-thread",
++                    "sessionId": "owned-session",
++                    "preview": "",
++                    "ephemeral": true,
++                    "modelProvider": config.model_provider_id,
++                    "createdAt": 0,
++                    "updatedAt": 0,
++                    "status": {"type": "idle"},
++                    "cwd": config.cwd,
++                    "cliVersion": "source-test",
++                    "source": "cli",
++                    "turns": []
++                })).unwrap(),
++                model: config.model.clone().unwrap(),
++                model_provider: config.model_provider_id.clone(),
++                service_tier: None,
++                cwd: config.cwd.clone(),
++                runtime_workspace_roots: Vec::new(),
++                instruction_sources: Vec::new(),
++                approval_policy: config.permissions.approval_policy.value().into(),
++                approvals_reviewer: config.approvals_reviewer.into(),
++                sandbox: config.legacy_sandbox_policy().into(),
++                active_permission_profile: None,
++                reasoning_effort: None,
++                multi_agent_mode: Default::default(),
++            };
++            state.ready.send_replace(FrozenReady::Ready(Arc::new(response)));
++            let (outgoing_tx, outgoing_rx) = mpsc::channel(1);
++            let outgoing = Arc::new(OutgoingMessageSender::new(
++                outgoing_tx,
++                codex_analytics::AnalyticsEventsClient::disabled(),
++            ));
++            assert!(state.outgoing.set(Arc::clone(&outgoing)).is_ok());
++            Ok(Self {
++                _fixture: fixture,
++                owner,
++                bootstrap,
++                outgoing,
++                outgoing_rx: Some(outgoing_rx),
++            })
++        }
++    }
++
++    async fn poll_once<F: Future>(future: std::pin::Pin<&mut F>) -> Poll<F::Output> {
++        let mut future = future;
++        std::future::poll_fn(|context| Poll::Ready(future.as_mut().poll(context))).await
++    }
++
++    fn turn_request() -> ClientRequest {
++        ClientRequest::TurnStart {
++            request_id: RequestId::Integer(7),
++            params: TurnStartParams {
++                thread_id: "owned-thread".to_string(),
++                input: vec![UserInput::Text {
++                    text: " literal\ntext ".to_string(),
++                    text_elements: Vec::new(),
++                }],
++                environments: Some(Vec::new()),
++                ..TurnStartParams::default()
++            },
++        }
++    }
++
++    fn page_request(id: i64) -> ClientRequest {
++        ClientRequest::ThreadBackgroundTerminalsList {
++            request_id: RequestId::Integer(id),
++            params: ThreadBackgroundTerminalsListParams {
++                thread_id: "owned-thread".to_string(),
++                cursor: None,
++                limit: Some(64),
++            },
++        }
++    }
++
++    fn payload() -> ServerRequestPayload {
++        ServerRequestPayload::DynamicToolCall(DynamicToolCallParams {
++            thread_id: "owned-thread".to_string(),
++            turn_id: "actual-turn".to_string(),
++            call_id: "actual-call".to_string(),
++            namespace: None,
++            tool: "native_command".to_string(),
++            arguments: serde_json::json!({"program": "owned", "arguments": []}),
++        })
++    }
++
++    fn response(id: RequestId) -> FrozenNativeToolResponse {
++        FrozenNativeToolResponse {
++            request_id: id,
++            thread_id: "owned-thread".to_string(),
++            turn_id: "actual-turn".to_string(),
++            call_id: "actual-call".to_string(),
++            result: DynamicToolCallResponse {
++                content_items: vec![DynamicToolCallOutputContentItem::InputText {
++                    text: "exact native result\n".to_string(),
++                }],
++                success: true,
++            },
++        }
++    }
++
++    fn actual_turn(id: &str) -> Turn {
++        Turn {
++            id: id.to_string(),
++            items: Vec::new(),
++            items_view: Default::default(),
++            status: TurnStatus::Completed,
++            error: None,
++            started_at: None,
++            completed_at: None,
++            duration_ms: None,
++        }
++    }
++
++    #[tokio::test]
++    async fn cmux_frozen_control_bypasses_blocked_request_processor_and_event_pumps() -> IoResult<()> {
++        timeout(Duration::from_secs(3), async {
++            let mut harness = Harness::new().await?;
++            let sender = harness.owner.sender();
++            let state = Arc::clone(&sender.state);
++            let bootstrap = harness.bootstrap.take().unwrap();
++            let (processor_tx, _processor_rx) = mpsc::channel(1);
++            processor_tx.send(ProcessorCommand::Notification(ClientNotification::Initialized))
++                .await.map_err(IoError::other)?;
++            let mut intake = Box::pin(run_frozen_request_pump(
++                Arc::clone(&state), bootstrap.requests, processor_tx,
++            ));
++            let mut turn = Box::pin(sender.request(turn_request()));
++            assert!(poll_once(turn.as_mut()).await.is_pending());
++            assert!(poll_once(intake.as_mut()).await.is_pending());
++            let mut first_page = Box::pin(sender.request(page_request(8)));
++            let mut second_page = Box::pin(sender.request(page_request(9)));
++            assert!(poll_once(first_page.as_mut()).await.is_pending());
++            assert!(poll_once(second_page.as_mut()).await.is_pending());
++            assert_eq!(state.requests.capacity(), 0);
++
++            let (writer_tx, writer_rx) = mpsc::channel(1);
++            let mut connections = HashMap::new();
++            connections.insert(IN_PROCESS_CONNECTION_ID, OutboundConnectionState::new(
++                writer_tx,
++                Arc::new(AtomicBool::new(true)),
++                Arc::new(AtomicBool::new(true)),
++                Arc::new(RwLock::new(HashSet::new())),
++                None,
++            ));
++            let (_shutdown, shutdown_rx) = oneshot::channel();
++            let outgoing_rx = harness.outgoing_rx.take().unwrap();
++            let mut router = Box::pin(state.guard.until_violation("controlled router", async {
++                run_outbound_router(outgoing_rx, connections, shutdown_rx).await;
++                Err::<(), _>(IoError::new(ErrorKind::BrokenPipe, "controlled router ended"))
++            }));
++            let mut writer = Box::pin(run_frozen_writer_pump(
++                Arc::clone(&state), writer_rx, bootstrap.events,
++            ));
++            let (id, waiter) = harness.outgoing.send_request_to_connections(
++                Some(&[IN_PROCESS_CONNECTION_ID]), payload(), None,
++            ).await;
++            assert!(poll_once(router.as_mut()).await.is_pending());
++            assert!(poll_once(writer.as_mut()).await.is_pending());
++            assert_eq!(state.registry()?.callbacks.len(), 1);
++            harness.outgoing.send_server_notification(
++                ServerNotification::ThreadNameUpdated(ThreadNameUpdatedNotification {
++                    thread_id: "owned-thread".to_string(),
++                    thread_name: Some("after callback".to_string()),
++                }),
++            ).await;
++            assert!(poll_once(router.as_mut()).await.is_pending());
++            assert!(poll_once(writer.as_mut()).await.is_pending());
++            assert!(harness.owner.events.capacity() == 0);
++
++            let expected = serde_json::to_value(&response(id.clone()).result).unwrap();
++            sender.respond_to_server_request(response(id.clone())).await?;
++            assert_eq!(waiter.await.unwrap(), Ok(expected));
++            assert!(poll_once(writer.as_mut()).await.is_pending());
++            assert!(poll_once(intake.as_mut()).await.is_pending());
++            assert!(poll_once(second_page.as_mut()).await.is_pending());
++            assert!(!state.guard.is_violated());
++            state.deliver_response(
++                &RequestId::Integer(7),
++                Ok(serde_json::to_value(TurnStartResponse { turn: actual_turn("actual-turn") }).unwrap()),
++            )?;
++            assert!(turn.await?.is_ok());
++            assert!(matches!(
++                harness.owner.next_event().await?,
++                InProcessServerEvent::ServerRequest(request) if request.id() == &id
++            ));
++            assert!(poll_once(writer.as_mut()).await.is_pending());
++            assert!(matches!(
++                harness.owner.next_event().await?,
++                InProcessServerEvent::ServerNotification(_)
++            ));
++            harness.outgoing.send_server_notification(ServerNotification::TurnCompleted(
++                TurnCompletedNotification {
++                    thread_id: "owned-thread".to_string(),
++                    turn: actual_turn("actual-turn"),
++                },
++            )).await;
++            assert!(poll_once(router.as_mut()).await.is_pending());
++            assert!(poll_once(writer.as_mut()).await.is_pending());
++            assert!(matches!(
++                harness.owner.next_event().await?,
++                InProcessServerEvent::ServerNotification(notification)
++                    if matches!(*notification, ServerNotification::TurnCompleted(_))
++            ));
++            assert_eq!(state.registry()?.roots.len(), 1);
++            assert_eq!(state.registry()?.callbacks.len(), 1);
++            assert!(state.registry()?.callbacks[&id].phase == FrozenCallbackPhase::Delivered);
++            let _ = state.guard.violate("controlled test shutdown");
++            assert!(intake.await.is_err());
++            assert!(writer.await.is_err());
++            assert!(router.await.is_err());
++            assert!(first_page.await.is_err());
++            assert!(second_page.await.is_err());
++            harness.owner.shutdown().await?;
++            Ok(())
++        }).await.expect("controlled pump fixture exceeded its bound")
++    }
++
++    #[tokio::test]
++    async fn cmux_frozen_cancelled_admitted_request_retains_root_and_holds_generation() -> IoResult<()> {
++        let harness = Harness::new().await?;
++        let sender = harness.owner.sender();
++        let mut request = Box::pin(sender.request(turn_request()));
++        assert!(poll_once(request.as_mut()).await.is_pending());
++        assert_eq!(sender.state.registry()?.roots.len(), 1);
++        drop(request);
++        assert!(sender.state.guard.is_violated());
++        assert_eq!(sender.state.registry()?.roots.len(), 1);
++        assert!(sender.state.registry()?.requests[&RequestId::Integer(7)].response.is_some());
++        harness.owner.shutdown().await?;
++        Ok(())
++    }
++
++    #[tokio::test]
++    async fn cmux_frozen_cancelled_claimed_control_retains_real_pending_callback() -> IoResult<()> {
++        timeout(Duration::from_secs(3), async {
++            let mut harness = Harness::new().await?;
++            let sender = harness.owner.sender();
++            let mut turn = Box::pin(sender.request(turn_request()));
++            assert!(poll_once(turn.as_mut()).await.is_pending());
++            let (id, mut waiter) = harness.outgoing.send_request_to_connections(
++                Some(&[IN_PROCESS_CONNECTION_ID]), payload(), None,
++            ).await;
++            assert!(harness.outgoing_rx.as_mut().unwrap().recv().await.is_some());
++            sender.state.register_native_request(&payload().request_with_id(id.clone()))?;
++            let (acquired, acquired_rx) = oneshot::channel();
++            let (release, release_rx) = oneshot::channel();
++            let mut held = Box::pin(harness.outgoing.cmux_hold_callback_registry_for_tests(
++                acquired, release_rx,
++            ));
++            assert!(poll_once(held.as_mut()).await.is_pending());
++            acquired_rx.await.unwrap();
++            let mut control = Box::pin(sender.respond_to_server_request(response(id.clone())));
++            assert!(poll_once(control.as_mut()).await.is_pending());
++            assert!(sender.state.registry()?.callbacks[&id].phase == FrozenCallbackPhase::Claimed);
++            drop(control);
++            assert!(sender.state.guard.is_violated());
++            assert_eq!(sender.state.registry()?.roots.len(), 1);
++            assert!(sender.state.registry()?.callbacks[&id].phase == FrozenCallbackPhase::Claimed);
++            assert!(matches!(waiter.try_recv(), Err(oneshot::error::TryRecvError::Empty)));
++            release.send(()).unwrap();
++            held.await;
++            assert!(turn.await.is_err());
++            harness.owner.shutdown().await?;
++            Ok(())
++        }).await.expect("controlled cancellation fixture exceeded its bound")
++    }
++
++    #[tokio::test]
++    async fn cmux_frozen_early_callback_reconciles_only_the_actual_turn_response() -> IoResult<()> {
++        for actual in ["actual-turn", "foreign-turn"] {
++            let mut harness = Harness::new().await?;
++            let sender = harness.owner.sender();
++            let mut turn = Box::pin(sender.request(turn_request()));
++            assert!(poll_once(turn.as_mut()).await.is_pending());
++            let (id, _waiter) = harness.outgoing.send_request_to_connections(
++                Some(&[IN_PROCESS_CONNECTION_ID]), payload(), None,
++            ).await;
++            assert!(harness.outgoing_rx.as_mut().unwrap().recv().await.is_some());
++            sender.state.register_native_request(&payload().request_with_id(id.clone()))?;
++            let result = sender.state.deliver_response(
++                &RequestId::Integer(7),
++                Ok(serde_json::to_value(TurnStartResponse { turn: actual_turn(actual) }).unwrap()),
++            );
++            assert_eq!(result.is_ok(), actual == "actual-turn");
++            if result.is_ok() {
++                assert!(turn.await?.is_ok());
++                assert!(!sender.state.guard.is_violated());
++            } else {
++                assert!(sender.state.guard.is_violated());
++                assert!(turn.await.is_err());
++            }
++            assert_eq!(sender.state.registry()?.roots.len(), 1);
++            assert!(sender.state.registry()?.callbacks.contains_key(&id));
++            harness.owner.shutdown().await?;
++        }
++        Ok(())
++    }
++
++    #[tokio::test]
++    async fn cmux_frozen_control_rejects_foreign_echoes_without_resolving_pending_work() -> IoResult<()> {
++        for changed in 0..4 {
++            let mut harness = Harness::new().await?;
++            let sender = harness.owner.sender();
++            let mut turn = Box::pin(sender.request(turn_request()));
++            assert!(poll_once(turn.as_mut()).await.is_pending());
++            let (id, mut waiter) = harness.outgoing.send_request_to_connections(
++                Some(&[IN_PROCESS_CONNECTION_ID]), payload(), None,
++            ).await;
++            assert!(harness.outgoing_rx.as_mut().unwrap().recv().await.is_some());
++            sender.state.register_native_request(&payload().request_with_id(id.clone()))?;
++            let mut result = response(id.clone());
++            match changed {
++                0 => result.thread_id = "foreign-thread".to_string(),
++                1 => result.turn_id = "foreign-turn".to_string(),
++                2 => result.call_id = "foreign-call".to_string(),
++                3 => result.request_id = RequestId::String("0".to_string()),
++                _ => unreachable!(),
++            }
++            assert!(sender.respond_to_server_request(result).await.is_err());
++            assert!(sender.state.guard.is_violated());
++            assert_eq!(sender.state.registry()?.roots.len(), 1);
++            assert!(sender.state.registry()?.callbacks[&id].phase == FrozenCallbackPhase::Registered);
++            assert!(matches!(waiter.try_recv(), Err(oneshot::error::TryRecvError::Empty)));
++            assert!(turn.await.is_err());
++            harness.owner.shutdown().await?;
++        }
++        Ok(())
++    }
++
++    #[tokio::test]
++    async fn cmux_frozen_second_turn_is_refused_before_queue_or_root_insertion() -> IoResult<()> {
++        let harness = Harness::new().await?;
++        let sender = harness.owner.sender();
++        let mut first = Box::pin(sender.request(turn_request()));
++        assert!(poll_once(first.as_mut()).await.is_pending());
++        let mut next = turn_request();
++        let ClientRequest::TurnStart { request_id, .. } = &mut next else {
++            unreachable!();
++        };
++        *request_id = RequestId::Integer(10);
++        let mut second = Box::pin(sender.request(next));
++        let observed = poll_once(second.as_mut()).await;
++        assert!(
++            matches!(observed, Poll::Ready(Err(_))),
++            "CMUX_FROZEN_OVERLAPPING_TURN_MUST_FAIL_BEFORE_DISPATCH: second turn was admitted while the first root remained active"
++        );
++        assert!(sender.state.guard.is_violated());
++        assert_eq!(sender.state.registry()?.roots.len(), 1);
++        assert!(!sender.state.registry()?.requests.contains_key(&RequestId::Integer(10)));
++        assert!(first.await.is_err());
++        harness.owner.shutdown().await?;
++        Ok(())
++    }
++
++    #[tokio::test]
++    async fn cmux_frozen_sequential_inventory_stops_at_retained_id_budget() -> IoResult<()> {
++        timeout(Duration::from_secs(5), async {
++            let mut harness = Harness::new().await?;
++            let sender = harness.owner.sender();
++            let mut bootstrap = harness.bootstrap.take().unwrap();
++            for id in 0..1024 {
++                let (response, delivery) = tokio::join!(
++                    sender.request(page_request(id)),
++                    async {
++                        let Some(ProcessorCommand::Request(actual)) = bootstrap.requests.recv().await else {
++                            panic!("controlled inventory request did not reach the owned queue");
++                        };
++                        assert_eq!(actual.id(), &RequestId::Integer(id));
++                        sender.state.deliver_response(
++                            &RequestId::Integer(id),
++                            Ok(serde_json::json!({"data": [], "nextCursor": null})),
++                        )
++                    },
++                );
++                delivery?;
++                assert!(response?.is_ok());
++            }
++            assert_eq!(sender.state.registry()?.requests.len(), 1024);
++            let mut exhausted = Box::pin(sender.request(page_request(1024)));
++            let observed = poll_once(exhausted.as_mut()).await;
++            assert!(
++                matches!(observed, Poll::Ready(Err(_))),
++                "CMUX_FROZEN_REQUEST_BUDGET_MUST_FAIL_BEFORE_INSERTION: completed inventory IDs grew beyond the per-launch budget"
++            );
++            assert!(sender.state.guard.is_violated());
++            assert_eq!(sender.state.registry()?.requests.len(), 1024);
++            assert!(!sender.state.registry()?.requests.contains_key(&RequestId::Integer(1024)));
++            harness.owner.shutdown().await?;
++            Ok(())
++        }).await.expect("controlled request-budget fixture exceeded its bound")
++    }
++
++    fn turn_request_id(id: i64) -> ClientRequest {
++        let mut request = turn_request();
++        let ClientRequest::TurnStart { request_id, .. } = &mut request else {
++            unreachable!();
++        };
++        *request_id = RequestId::Integer(id);
++        request
++    }
++
++    fn terminal_for(turn_id: &str) -> TurnCompletedNotification {
++        TurnCompletedNotification {
++            thread_id: "owned-thread".to_string(),
++            turn: actual_turn(turn_id),
++        }
++    }
++
++    async fn resolve_controlled_turn(
++        harness: &mut Harness,
++        request_id: i64,
++        turn_id: &str,
++    ) -> IoResult<()> {
++        let sender = harness.owner.sender();
++        let requests = &mut harness.bootstrap.as_mut().unwrap().requests;
++        let (response, delivery) = tokio::join!(
++            sender.request(turn_request_id(request_id)),
++            async {
++                let Some(ProcessorCommand::Request(actual)) = requests.recv().await else {
++                    panic!("controlled turn request queue closed");
++                };
++                assert_eq!(actual.id(), &RequestId::Integer(request_id));
++                sender.state.deliver_response(
++                    actual.id(),
++                    Ok(serde_json::to_value(TurnStartResponse {
++                        turn: actual_turn(turn_id),
++                    }).unwrap()),
++                )
++            },
++        );
++        delivery?;
++        assert!(response?.is_ok());
++        Ok(())
++    }
++
++    #[tokio::test]
++    async fn cmux_frozen_turn_slot_requires_terminal_and_all_checked_callback_deliveries() -> IoResult<()> {
++        let mut harness = Harness::new().await?;
++        resolve_controlled_turn(&mut harness, 7, "actual-turn").await?;
++        let sender = harness.owner.sender();
++        assert_eq!(sender.state.registry()?.active_turn, Some(RequestId::Integer(7)));
++        let mut pending = Vec::new();
++        for call in ["actual-call", "other-call"] {
++            let mut call_payload = payload();
++            let ServerRequestPayload::DynamicToolCall(params) = &mut call_payload else {
++                unreachable!();
++            };
++            params.call_id = call.to_string();
++            let (id, waiter) = harness.outgoing.send_request_to_connections(
++                Some(&[IN_PROCESS_CONNECTION_ID]), call_payload, None,
++            ).await;
++            assert!(harness.outgoing_rx.as_mut().unwrap().recv().await.is_some());
++            let mut request = payload().request_with_id(id.clone());
++            let ServerRequest::DynamicToolCall { params, .. } = &mut request else {
++                unreachable!();
++            };
++            params.call_id = call.to_string();
++            sender.state.register_native_request(&request)?;
++            pending.push((id, waiter, call));
++        }
++        sender.state.record_delivered_terminal(&terminal_for("actual-turn"))?;
++        assert_eq!(sender.state.registry()?.active_turn, Some(RequestId::Integer(7)));
++        for (index, (id, waiter, call)) in pending.into_iter().enumerate() {
++            let mut actual = response(id);
++            actual.call_id = call.to_string();
++            sender.respond_to_server_request(actual).await?;
++            assert!(waiter.await.unwrap().is_ok());
++            assert_eq!(sender.state.registry()?.active_turn.is_none(), index == 1);
++        }
++        assert_eq!(sender.state.registry()?.roots.len(), 1);
++        assert_eq!(sender.state.registry()?.callbacks.len(), 2);
++        resolve_controlled_turn(&mut harness, 10, "next-turn").await?;
++        assert_eq!(sender.state.registry()?.roots.len(), 2);
++        assert_eq!(sender.state.registry()?.active_turn, Some(RequestId::Integer(10)));
++        harness.owner.shutdown().await?;
++        Ok(())
++    }
++
++    #[tokio::test]
++    async fn cmux_frozen_checked_delivery_without_terminal_keeps_turn_slot() -> IoResult<()> {
++        let mut harness = Harness::new().await?;
++        resolve_controlled_turn(&mut harness, 7, "actual-turn").await?;
++        let sender = harness.owner.sender();
++        let (id, waiter) = harness.outgoing.send_request_to_connections(
++            Some(&[IN_PROCESS_CONNECTION_ID]), payload(), None,
++        ).await;
++        assert!(harness.outgoing_rx.as_mut().unwrap().recv().await.is_some());
++        sender.state.register_native_request(&payload().request_with_id(id.clone()))?;
++        sender.respond_to_server_request(response(id)).await?;
++        assert!(waiter.await.unwrap().is_ok());
++        assert_eq!(sender.state.registry()?.active_turn, Some(RequestId::Integer(7)));
++        sender.state.record_delivered_terminal(&terminal_for("actual-turn"))?;
++        assert!(sender.state.registry()?.active_turn.is_none());
++        harness.owner.shutdown().await?;
++        Ok(())
++    }
++
++    #[tokio::test]
++    async fn cmux_frozen_early_terminal_waits_for_actual_turn_response_binding() -> IoResult<()> {
++        let mut harness = Harness::new().await?;
++        let sender = harness.owner.sender();
++        let (response, delivery) = tokio::join!(
++            sender.request(turn_request()),
++            async {
++                let Some(ProcessorCommand::Request(actual)) =
++                    harness.bootstrap.as_mut().unwrap().requests.recv().await else {
++                        panic!("controlled early-terminal queue closed");
++                    };
++                sender.state.record_delivered_terminal(&terminal_for("actual-turn"))?;
++                assert_eq!(sender.state.registry()?.active_turn, Some(RequestId::Integer(7)));
++                sender.state.deliver_response(
++                    actual.id(),
++                    Ok(serde_json::to_value(TurnStartResponse {
++                        turn: actual_turn("actual-turn"),
++                    }).unwrap()),
++                )
++            },
++        );
++        delivery?;
++        assert!(response?.is_ok());
++        assert!(sender.state.registry()?.active_turn.is_none());
++        assert_eq!(sender.state.registry()?.roots.len(), 1);
++        harness.owner.shutdown().await?;
++        Ok(())
++    }
++
++    #[tokio::test]
++    async fn cmux_frozen_early_terminal_foreign_response_never_releases_slot() -> IoResult<()> {
++        let mut harness = Harness::new().await?;
++        let sender = harness.owner.sender();
++        let (response, delivery) = tokio::join!(
++            sender.request(turn_request()),
++            async {
++                let Some(ProcessorCommand::Request(actual)) =
++                    harness.bootstrap.as_mut().unwrap().requests.recv().await else {
++                        panic!("controlled early-terminal queue closed");
++                    };
++                sender.state.record_delivered_terminal(&terminal_for("early-turn"))?;
++                sender.state.deliver_response(
++                    actual.id(),
++                    Ok(serde_json::to_value(TurnStartResponse {
++                        turn: actual_turn("different-turn"),
++                    }).unwrap()),
++                )
++            },
++        );
++        assert!(delivery.is_err());
++        assert!(response.is_err());
++        assert_eq!(sender.state.registry()?.active_turn, Some(RequestId::Integer(7)));
++        assert!(sender.state.guard.is_violated());
++        harness.owner.shutdown().await?;
++        Ok(())
++    }
++
++    #[tokio::test]
++    async fn cmux_frozen_failed_or_interrupted_terminal_keeps_owned_root() -> IoResult<()> {
++        for status in [TurnStatus::Failed, TurnStatus::Interrupted] {
++            let mut harness = Harness::new().await?;
++            resolve_controlled_turn(&mut harness, 7, "actual-turn").await?;
++            let sender = harness.owner.sender();
++            let mut terminal = terminal_for("actual-turn");
++            terminal.turn.status = status;
++            assert!(sender.state.record_delivered_terminal(&terminal).is_err());
++            assert_eq!(sender.state.registry()?.active_turn, Some(RequestId::Integer(7)));
++            assert_eq!(sender.state.registry()?.roots.len(), 1);
++            assert!(sender.state.guard.is_violated());
++            harness.owner.shutdown().await?;
++        }
++        Ok(())
++    }
++
++    #[tokio::test]
++    async fn cmux_frozen_stale_terminal_cannot_release_a_new_active_root() -> IoResult<()> {
++        let mut harness = Harness::new().await?;
++        resolve_controlled_turn(&mut harness, 7, "actual-turn").await?;
++        let sender = harness.owner.sender();
++        sender.state.record_delivered_terminal(&terminal_for("actual-turn"))?;
++        resolve_controlled_turn(&mut harness, 10, "next-turn").await?;
++        assert!(sender.state.record_delivered_terminal(&terminal_for("actual-turn")).is_err());
++        assert_eq!(sender.state.registry()?.active_turn, Some(RequestId::Integer(10)));
++        assert_eq!(sender.state.registry()?.roots.len(), 2);
++        assert!(sender.state.guard.is_violated());
++        harness.owner.shutdown().await?;
++        Ok(())
++    }
++
++    #[tokio::test]
++    async fn cmux_frozen_foreign_thread_or_turn_terminal_cannot_release_slot() -> IoResult<()> {
++        for foreign_thread in [true, false] {
++            let mut harness = Harness::new().await?;
++            resolve_controlled_turn(&mut harness, 7, "actual-turn").await?;
++            let sender = harness.owner.sender();
++            let mut terminal = terminal_for("actual-turn");
++            if foreign_thread {
++                terminal.thread_id = "foreign-thread".to_string();
++            } else {
++                terminal.turn.id = "foreign-turn".to_string();
++            }
++            assert!(sender.state.record_delivered_terminal(&terminal).is_err());
++            assert_eq!(sender.state.registry()?.active_turn, Some(RequestId::Integer(7)));
++            assert!(sender.state.guard.is_violated());
++            harness.owner.shutdown().await?;
++        }
++        Ok(())
++    }
++
++    #[tokio::test]
++    async fn cmux_frozen_late_callback_is_not_reattributed_to_next_unbound_root() -> IoResult<()> {
++        let mut harness = Harness::new().await?;
++        resolve_controlled_turn(&mut harness, 7, "actual-turn").await?;
++        let sender = harness.owner.sender();
++        sender.state.record_delivered_terminal(&terminal_for("actual-turn"))?;
++        let mut next = Box::pin(sender.request(turn_request_id(10)));
++        assert!(poll_once(next.as_mut()).await.is_pending());
++        assert!(sender.state.register_native_request(
++            &payload().request_with_id(RequestId::Integer(91)),
++        ).is_err());
++        assert_eq!(sender.state.registry()?.active_turn, Some(RequestId::Integer(10)));
++        assert!(sender.state.registry()?.roots[&RequestId::Integer(10)].early_turn_id.is_none());
++        assert!(sender.state.registry()?.callbacks.is_empty());
++        assert!(next.await.is_err());
++        harness.owner.shutdown().await?;
++        Ok(())
++    }
++
++    #[tokio::test]
++    async fn cmux_frozen_outstanding_budget_fails_before_insertion_and_retains_pending() -> IoResult<()> {
++        let harness = Harness::new().await?;
++        let sender = harness.owner.sender();
++        assert_eq!(sender.state.outstanding_limit, 4);
++        let mut admitted = Vec::new();
++        for id in 0..4 {
++            let mut future = Box::pin(sender.request(page_request(id)));
++            assert!(poll_once(future.as_mut()).await.is_pending());
++            admitted.push(future);
++        }
++        assert_eq!(sender.state.registry()?.outstanding_requests, 4);
++        assert!(sender.request(page_request(4)).await.is_err());
++        assert_eq!(sender.state.registry()?.requests.len(), 4);
++        assert!(!sender.state.registry()?.requests.contains_key(&RequestId::Integer(4)));
++        for future in admitted {
++            assert!(future.await.is_err());
++        }
++        assert_eq!(sender.state.registry()?.outstanding_requests, 4);
++        harness.owner.shutdown().await?;
++        Ok(())
++    }
++
++    #[tokio::test]
++    async fn cmux_frozen_request_ids_preserve_types_and_utf8_byte_bound() -> IoResult<()> {
++        let mut harness = Harness::new().await?;
++        let sender = harness.owner.sender();
++        for id in [
++            RequestId::Integer(i64::MAX),
++            RequestId::Integer(7),
++            RequestId::String("7".to_string()),
++            RequestId::String("é".repeat(64)),
++        ] {
++            let mut request = page_request(0);
++            let ClientRequest::ThreadBackgroundTerminalsList { request_id, .. } = &mut request else {
++                unreachable!();
++            };
++            *request_id = id.clone();
++            let (response, delivery) = tokio::join!(
++                sender.request(request),
++                async {
++                    let Some(ProcessorCommand::Request(actual)) =
++                        harness.bootstrap.as_mut().unwrap().requests.recv().await else {
++                            panic!("controlled typed-ID queue closed");
++                        };
++                    assert_eq!(actual.id(), &id);
++                    sender.state.deliver_response(actual.id(), Ok(serde_json::json!({})))
++                },
++            );
++            delivery?;
++            assert!(response?.is_ok());
++            assert_eq!(sender.state.registry()?.outstanding_requests, 0);
++        }
++        assert_eq!(sender.state.registry()?.requests.len(), 4);
++        let mut request = page_request(0);
++        let ClientRequest::ThreadBackgroundTerminalsList { request_id, .. } = &mut request else {
++            unreachable!();
++        };
++        *request_id = RequestId::String(format!("{}x", "é".repeat(64)));
++        assert!(sender.request(request).await.is_err());
++        assert_eq!(sender.state.registry()?.requests.len(), 4);
++        harness.owner.shutdown().await?;
++        Ok(())
++    }
++
++    #[tokio::test]
++    async fn cmux_frozen_completed_request_tombstones_cannot_be_reused() -> IoResult<()> {
++        let mut harness = Harness::new().await?;
++        resolve_controlled_turn(&mut harness, 7, "actual-turn").await?;
++        let sender = harness.owner.sender();
++        sender.state.record_delivered_terminal(&terminal_for("actual-turn"))?;
++        assert!(sender.request(turn_request()).await.is_err());
++        assert_eq!(sender.state.registry()?.requests.len(), 1);
++        assert_eq!(sender.state.registry()?.roots.len(), 1);
++        assert!(sender.state.registry()?.active_turn.is_none());
++        harness.owner.shutdown().await?;
++        Ok(())
++    }
++
++    #[tokio::test]
++    async fn cmux_frozen_callback_budget_exhaustion_preserves_all_owned_callbacks() -> IoResult<()> {
++        let mut harness = Harness::new().await?;
++        resolve_controlled_turn(&mut harness, 7, "actual-turn").await?;
++        let sender = harness.owner.sender();
++        for id in 0..4096 {
++            let mut payload = payload();
++            let ServerRequestPayload::DynamicToolCall(params) = &mut payload else {
++                unreachable!();
++            };
++            params.call_id = format!("call-{id}");
++            sender.state.register_native_request(&payload.request_with_id(RequestId::Integer(id)))?;
++        }
++        let mut next = payload();
++        let ServerRequestPayload::DynamicToolCall(params) = &mut next else {
++            unreachable!();
++        };
++        params.call_id = "over-budget".to_string();
++        assert!(sender.state.register_native_request(
++            &next.request_with_id(RequestId::Integer(4096)),
++        ).is_err());
++        assert_eq!(sender.state.registry()?.callbacks.len(), 4096);
++        assert_eq!(sender.state.registry()?.roots.len(), 1);
++        assert_eq!(sender.state.registry()?.active_turn, Some(RequestId::Integer(7)));
++        harness.owner.shutdown().await?;
++        Ok(())
++    }
++
++    #[tokio::test]
++    async fn cmux_frozen_control_stays_live_at_full_retained_request_budget() -> IoResult<()> {
++        let mut harness = Harness::new().await?;
++        resolve_controlled_turn(&mut harness, 7, "actual-turn").await?;
++        let sender = harness.owner.sender();
++        let (id, waiter) = harness.outgoing.send_request_to_connections(
++            Some(&[IN_PROCESS_CONNECTION_ID]), payload(), None,
++        ).await;
++        assert!(harness.outgoing_rx.as_mut().unwrap().recv().await.is_some());
++        sender.state.register_native_request(&payload().request_with_id(id.clone()))?;
++        for inventory_id in 100..1123 {
++            let (result, delivery) = tokio::join!(
++                sender.request(page_request(inventory_id)),
++                async {
++                    let Some(ProcessorCommand::Request(actual)) =
++                        harness.bootstrap.as_mut().unwrap().requests.recv().await else {
++                            panic!("controlled full-budget queue closed");
++                        };
++                    assert_eq!(actual.id(), &RequestId::Integer(inventory_id));
++                    sender.state.deliver_response(actual.id(), Ok(serde_json::json!({})))
++                },
++            );
++            delivery?;
++            assert!(result?.is_ok());
++        }
++        assert_eq!(sender.state.registry()?.requests.len(), 1024);
++        assert_eq!(sender.state.registry()?.outstanding_requests, 0);
++        sender.respond_to_server_request(response(id.clone())).await?;
++        assert!(waiter.await.unwrap().is_ok());
++        assert!(sender.state.registry()?.callbacks[&id].phase == FrozenCallbackPhase::Delivered);
++        assert_eq!(sender.state.registry()?.requests.len(), 1024);
++        assert_eq!(sender.state.registry()?.active_turn, Some(RequestId::Integer(7)));
++        assert!(!sender.state.guard.is_violated());
++        harness.owner.shutdown().await?;
++        Ok(())
++    }
++
++    #[tokio::test]
++    async fn cmux_frozen_callback_ids_and_actual_call_ids_obey_utf8_byte_bounds() -> IoResult<()> {
++        for field in ["request", "thread", "turn", "call"] {
++            let mut harness = Harness::new().await?;
++            resolve_controlled_turn(&mut harness, 7, "actual-turn").await?;
++            let sender = harness.owner.sender();
++            let mut payload = payload();
++            let ServerRequestPayload::DynamicToolCall(params) = &mut payload else {
++                unreachable!();
++            };
++            match field {
++                "thread" => params.thread_id = "é".repeat(65),
++                "turn" => params.turn_id = "é".repeat(65),
++                "call" => params.call_id = "é".repeat(65),
++                "request" => {}
++                _ => unreachable!(),
++            }
++            let id = if field == "request" {
++                RequestId::String("é".repeat(65))
++            } else {
++                RequestId::Integer(91)
++            };
++            assert!(sender.state.register_native_request(&payload.request_with_id(id)).is_err());
++            assert!(sender.state.registry()?.callbacks.is_empty());
++            assert_eq!(sender.state.registry()?.roots.len(), 1);
++            harness.owner.shutdown().await?;
++        }
++        Ok(())
++    }
++
++    #[tokio::test]
++    async fn cmux_frozen_oversize_actual_turn_response_cannot_bind_or_release() -> IoResult<()> {
++        let mut harness = Harness::new().await?;
++        let sender = harness.owner.sender();
++        let (response, delivery) = tokio::join!(
++            sender.request(turn_request()),
++            async {
++                let Some(ProcessorCommand::Request(actual)) =
++                    harness.bootstrap.as_mut().unwrap().requests.recv().await else {
++                        panic!("controlled actual-turn-ID queue closed");
++                    };
++                sender.state.deliver_response(
++                    actual.id(),
++                    Ok(serde_json::to_value(TurnStartResponse {
++                        turn: actual_turn(&"é".repeat(65)),
++                    }).unwrap()),
++                )
++            },
++        );
++        assert!(delivery.is_err());
++        assert!(response.is_err());
++        assert_eq!(sender.state.registry()?.active_turn, Some(RequestId::Integer(7)));
++        assert!(sender.state.registry()?.roots[&RequestId::Integer(7)].turn_id.is_none());
++        harness.owner.shutdown().await?;
++        Ok(())
++    }
++
++    #[test]
++    fn cmux_frozen_actual_identity_limits_are_utf8_bytes_not_characters() {
++        assert!(frozen_id_is_bounded(&"é".repeat(64)));
++        assert!(!frozen_id_is_bounded(&format!("{}x", "é".repeat(64))));
++        assert!(!frozen_id_is_bounded(""));
++    }
++
++    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
++    async fn cmux_frozen_terminal_publication_is_linearizable_with_turn_admission() -> IoResult<()> {
++        timeout(Duration::from_secs(10), async {
++            let mut harness = Harness::new().await?;
++            resolve_controlled_turn(&mut harness, 7, "actual-turn").await?;
++            let state = Arc::clone(&harness.owner.sender().state);
++            let bootstrap = harness.bootstrap.take().unwrap();
++            bootstrap.events.send(InProcessServerEvent::ServerNotification(Box::new(
++                ServerNotification::ThreadNameUpdated(ThreadNameUpdatedNotification {
++                    thread_id: "owned-thread".to_string(),
++                    thread_name: Some("controlled occupied event capacity".to_string()),
++                }),
++            ))).await.map_err(IoError::other)?;
++
++            let (writer_tx, writer_rx) = mpsc::channel(1);
++            let writer_capacity = writer_tx.clone();
++            let mut connections = HashMap::new();
++            connections.insert(IN_PROCESS_CONNECTION_ID, OutboundConnectionState::new(
++                writer_tx,
++                Arc::new(AtomicBool::new(true)),
++                Arc::new(AtomicBool::new(true)),
++                Arc::new(RwLock::new(HashSet::new())),
++                None,
++            ));
++            let (_shutdown, shutdown_rx) = oneshot::channel();
++            let outgoing_rx = harness.outgoing_rx.take().unwrap();
++            let mut router = Box::pin(state.guard.until_violation("controlled terminal router", async {
++                run_outbound_router(outgoing_rx, connections, shutdown_rx).await;
++                Err::<(), _>(IoError::new(ErrorKind::BrokenPipe, "controlled terminal router ended"))
++            }));
++            harness.outgoing.send_server_notification(
++                ServerNotification::TurnCompleted(terminal_for("actual-turn")),
++            ).await;
++            for _ in 0..4 {
++                assert!(poll_once(router.as_mut()).await.is_pending());
++                if writer_capacity.capacity() == 0 {
++                    break;
++                }
++                tokio::task::yield_now().await;
++            }
++            assert_eq!(writer_capacity.capacity(), 0, "terminal fixture did not route its event");
++            let mut writer = Box::pin(run_frozen_writer_pump(
++                Arc::clone(&state), writer_rx, bootstrap.events,
++            ));
++            for _ in 0..4 {
++                assert!(poll_once(writer.as_mut()).await.is_pending());
++                if writer_capacity.capacity() == 1 {
++                    break;
++                }
++                tokio::task::yield_now().await;
++            }
++            assert_eq!(writer_capacity.capacity(), 1, "terminal fixture did not reach its blocked publication");
++            assert_eq!(state.registry()?.active_turn, Some(RequestId::Integer(7)));
++
++            let (held_tx, held_rx) = std::sync::mpsc::channel();
++            let (release_tx, release_rx) = std::sync::mpsc::channel();
++            let held_state = Arc::clone(&state);
++            let holder = std::thread::spawn(move || {
++                let registry = held_state.registry().unwrap();
++                held_tx.send(()).unwrap();
++                let released = release_rx.recv_timeout(Duration::from_secs(5));
++                drop(registry);
++                released
++            });
++            held_rx.recv_timeout(Duration::from_secs(2)).map_err(IoError::other)?;
++            assert!(matches!(
++                harness.owner.next_event().await?,
++                InProcessServerEvent::ServerNotification(notification)
++                    if matches!(*notification, ServerNotification::ThreadNameUpdated(_))
++            ));
++            let writer_task = tokio::spawn(writer);
++            let observable_while_admission_locked =
++                timeout(Duration::from_secs(2), harness.owner.next_event()).await;
++            release_tx.send(()).map_err(IoError::other)?;
++            holder.join().expect("controlled registry holder panicked")
++                .map_err(IoError::other)?;
++            if let Ok(event) = &observable_while_admission_locked {
++                assert!(matches!(
++                    event,
++                    Ok(InProcessServerEvent::ServerNotification(notification))
++                        if matches!(notification.as_ref(), ServerNotification::TurnCompleted(terminal)
++                            if terminal.thread_id == "owned-thread" && terminal.turn.id == "actual-turn")
++                ), "controlled fixture observed something other than its actual terminal");
++            }
++            if observable_while_admission_locked.is_err() {
++                assert!(matches!(
++                    timeout(Duration::from_secs(2), harness.owner.next_event()).await
++                        .expect("terminal was not published after registry release")?,
++                    InProcessServerEvent::ServerNotification(notification)
++                        if matches!(*notification, ServerNotification::TurnCompleted(_))
++                ));
++            }
++            let _ = state.guard.violate("controlled publication regression shutdown");
++            assert!(writer_task.await.map_err(IoError::other)?.is_err());
++            assert!(router.await.is_err());
++            harness.owner.shutdown().await?;
++            assert!(
++                observable_while_admission_locked.is_err(),
++                "CMUX_FROZEN_TERMINAL_PUBLICATION_MUST_SHARE_ADMISSION_COMMIT: terminal escaped while its admission registry was locked before accounting commit"
++            );
++            Ok(())
++        }).await.expect("controlled terminal-publication fixture exceeded its bound")
++    }
++
++    #[tokio::test]
++    async fn cmux_frozen_pump_panic_wakes_the_terminal_generation() {
++        let guard = crate::config_manager::FrozenConfigViolation::new_for_tests();
++        let mut tasks = tokio::task::JoinSet::new();
++        spawn_frozen_pump(&mut tasks, &guard, async {
++            panic!("controlled pump panic");
++        });
++        timeout(Duration::from_secs(1), guard.wait_for_violation())
++            .await.expect("pump panic did not wake the frozen generation");
++        assert!(guard.is_violated());
++        assert!(tasks.join_next().await.unwrap().is_err());
++    }
++}
++
++}
+diff --git a/codex-rs/app-server/src/outgoing_message.rs b/codex-rs/app-server/src/outgoing_message.rs
+--- a/codex-rs/app-server/src/outgoing_message.rs
++++ b/codex-rs/app-server/src/outgoing_message.rs
+@@ -450,27 +450,83 @@
+         result: Result,
+     ) {
+         let entry = self.take_connection_callback(connection_id, &id).await;
+-
+         match entry {
+             Some((id, entry)) => {
+-                let completed_at_ms = now_unix_timestamp_ms();
+-                if entry.verification_owner.is_none()
+-                    && let Ok(response) = entry.request.response_from_result(result.clone())
+-                {
+-                    tracing::info!("<- response: {response:?}");
+-                    if !matches!(response, ServerResponse::PermissionsRequestApproval { .. }) {
+-                        self.analytics_events_client
+-                            .track_server_response(completed_at_ms, response);
+-                    }
+-                }
+-                if entry.callback.send(Ok(result)).is_err() {
+-                    warn!("could not notify callback for {id:?}: receiver dropped");
++                if let Err(error) = self.deliver_client_response(id, entry, result) {
++                    warn!("{error}");
+                 }
+             }
+             None => {
+                 warn!("could not find callback for {id:?}");
+             }
+         }
++    }
++
++    pub(crate) async fn notify_frozen_client_response(
++        &self,
++        connection_id: ConnectionId,
++        id: RequestId,
++        result: Result,
++    ) -> std::io::Result<()> {
++        let entry = self
++            .take_connection_callback_validated(connection_id, &id, |request| {
++                if !matches!(request, ServerRequest::DynamicToolCall { .. }) {
++                    return Err(std::io::Error::new(
++                        std::io::ErrorKind::PermissionDenied,
++                        "frozen CONTROL only responds to registered native dynamic tools",
++                    ));
++                }
++                let parsed: codex_app_server_protocol::DynamicToolCallResponse =
++                    serde_json::from_value(result.clone()).map_err(|error| {
++                        std::io::Error::new(std::io::ErrorKind::InvalidData, error)
++                    })?;
++                if !matches!(
++                    parsed.content_items.as_slice(),
++                    [codex_app_server_protocol::DynamicToolCallOutputContentItem::InputText { text }]
++                        if text.len() <= 262144
++                ) || serde_json::to_value(&parsed).map_err(|error| {
++                    std::io::Error::new(std::io::ErrorKind::InvalidData, error)
++                })? != result
++                {
++                    return Err(std::io::Error::new(
++                        std::io::ErrorKind::InvalidData,
++                        "frozen native-tool response is not exact bounded text",
++                    ));
++                }
++                Ok(())
++            })
++            .await?;
++        let (id, entry) = entry.ok_or_else(|| {
++            std::io::Error::new(
++                std::io::ErrorKind::NotFound,
++                format!("could not find callback for {id:?}"),
++            )
++        })?;
++        self.deliver_client_response(id, entry, result)
++    }
++
++    fn deliver_client_response(
++        &self,
++        id: RequestId,
++        entry: PendingCallbackEntry,
++        result: Result,
++    ) -> std::io::Result<()> {
++        let completed_at_ms = now_unix_timestamp_ms();
++        if entry.verification_owner.is_none()
++            && let Ok(response) = entry.request.response_from_result(result.clone())
++        {
++            tracing::info!("<- response: {response:?}");
++            if !matches!(response, ServerResponse::PermissionsRequestApproval { .. }) {
++                self.analytics_events_client
++                    .track_server_response(completed_at_ms, response);
++            }
++        }
++        entry.callback.send(Ok(result)).map_err(|_| {
++            std::io::Error::new(
++                std::io::ErrorKind::BrokenPipe,
++                format!("could not notify callback for {id:?}: receiver dropped"),
++            )
++        })
+     }
+ 
+     pub(crate) async fn notify_client_error(
+@@ -542,20 +598,40 @@
+         connection_id: ConnectionId,
+         id: &RequestId,
+     ) -> Option<(RequestId, PendingCallbackEntry)> {
++        match self
++            .take_connection_callback_validated(connection_id, id, |_| {
++                Ok::<(), std::convert::Infallible>(())
++            })
++            .await
++        {
++            Ok(entry) => entry,
++            Err(impossible) => match impossible {},
++        }
++    }
++
++    async fn take_connection_callback_validated<E>(
++        &self,
++        connection_id: ConnectionId,
++        id: &RequestId,
++        validate: impl FnOnce(&ServerRequest) -> std::result::Result<(), E>,
++    ) -> std::result::Result<Option<(RequestId, PendingCallbackEntry)>, E> {
+         let mut callbacks = self.request_id_to_callback.lock().await;
+-        let entry = callbacks.get(id)?;
++        let Some(entry) = callbacks.get(id) else {
++            return Ok(None);
++        };
++        validate(&entry.request)?;
+         if let Some(owner) = entry.verification_owner {
+             if owner != connection_id {
+-                return None;
++                return Ok(None);
+             }
+             if entry.verification_identity != self.verification_identity()
+                 || entry.verification_auth_revision != self.verification_auth_revision()
+             {
+                 callbacks.remove(id);
+-                return None;
+-            }
+-        }
+-        callbacks.remove_entry(id)
++                return Ok(None);
++            }
++        }
++        Ok(callbacks.remove_entry(id))
+     }
+ 
+     pub(crate) async fn pending_requests_for_thread(
+@@ -1553,3 +1629,173 @@
+         );
+     }
+ }
++
++// Modified by Ouro: a controlled lock seam proves cancellation after real registry claim.
++#[cfg(test)]
++impl OutgoingMessageSender {
++    pub(crate) async fn cmux_hold_callback_registry_for_tests(
++        &self,
++        acquired: oneshot::Sender<()>,
++        release: oneshot::Receiver<()>,
++    ) {
++        let guard = self.request_id_to_callback.lock().await;
++        acquired.send(()).expect("controlled callback-lock observer closed");
++        release.await.expect("controlled callback-lock release closed");
++        drop(guard);
++    }
++}
++
++// Modified by Ouro: select only our account-free SDK component tests.
++#[cfg(test)]
++mod cmux_sdk_contract {
++    use super::*;
++// Modified by Ouro: frozen CONTROL needs observable callback delivery failures.
++#[cfg(test)]
++mod cmux_frozen_callback_contract {
++    use super::*;
++    use codex_app_server_protocol::DynamicToolCallOutputContentItem;
++    use codex_app_server_protocol::DynamicToolCallParams;
++    use codex_app_server_protocol::DynamicToolCallResponse;
++    use std::io;
++
++    fn outgoing() -> (OutgoingMessageSender, mpsc::Receiver<OutgoingEnvelope>) {
++        let (sender, receiver) = mpsc::channel(1);
++        (
++            OutgoingMessageSender::new(
++                sender,
++                codex_analytics::AnalyticsEventsClient::disabled(),
++            ),
++            receiver,
++        )
++    }
++
++    fn payload() -> ServerRequestPayload {
++        ServerRequestPayload::DynamicToolCall(DynamicToolCallParams {
++            thread_id: "thread".to_string(),
++            turn_id: "turn".to_string(),
++            call_id: "call".to_string(),
++            namespace: None,
++            tool: "native_command".to_string(),
++            arguments: serde_json::json!({}),
++        })
++    }
++
++    fn response() -> Result {
++        serde_json::to_value(DynamicToolCallResponse {
++            content_items: vec![DynamicToolCallOutputContentItem::InputText {
++                text: "literal command result\n".to_string(),
++            }],
++            success: true,
++        })
++        .unwrap()
++    }
++
++    #[tokio::test]
++    async fn cmux_frozen_checked_callback_delivers_exact_registered_response() -> io::Result<()> {
++        let (outgoing, mut messages) = outgoing();
++        let (id, waiter) = outgoing
++            .send_request_to_connections(Some(&[ConnectionId(1)]), payload(), None)
++            .await;
++        assert!(messages.recv().await.is_some());
++        let value = response();
++        outgoing
++            .notify_frozen_client_response(ConnectionId(1), id.clone(), value.clone())
++            .await?;
++        assert_eq!(waiter.await.unwrap(), Ok(value.clone()));
++        assert_eq!(
++            outgoing
++                .notify_frozen_client_response(ConnectionId(1), id, value)
++                .await
++                .unwrap_err()
++                .kind(),
++            io::ErrorKind::NotFound
++        );
++        Ok(())
++    }
++
++    #[tokio::test]
++    async fn cmux_frozen_checked_callback_preserves_typed_id_and_pending_work() -> io::Result<()> {
++        let (outgoing, mut messages) = outgoing();
++        let (id, mut waiter) = outgoing
++            .send_request_to_connections(Some(&[ConnectionId(1)]), payload(), None)
++            .await;
++        assert!(messages.recv().await.is_some());
++        let RequestId::Integer(integer) = id.clone() else {
++            panic!("actual server request generator did not issue an integer ID");
++        };
++        assert_eq!(
++            outgoing
++                .notify_frozen_client_response(
++                    ConnectionId(1),
++                    RequestId::String(integer.to_string()),
++                    response(),
++                )
++                .await
++                .unwrap_err()
++                .kind(),
++            io::ErrorKind::NotFound
++        );
++        assert!(matches!(
++            waiter.try_recv(),
++            Err(oneshot::error::TryRecvError::Empty)
++        ));
++        outgoing
++            .notify_frozen_client_response(ConnectionId(1), id, response())
++            .await?;
++        assert_eq!(waiter.await.unwrap(), Ok(response()));
++        Ok(())
++    }
++
++    #[tokio::test]
++    async fn cmux_frozen_checked_callback_validates_before_removing_pending_work() -> io::Result<()> {
++        let (outgoing, mut messages) = outgoing();
++        let (id, mut waiter) = outgoing
++            .send_request_to_connections(Some(&[ConnectionId(1)]), payload(), None)
++            .await;
++        assert!(messages.recv().await.is_some());
++        let mut extra = response();
++        extra["foreign"] = serde_json::json!(true);
++        for invalid in [serde_json::json!({"contentItems": []}), extra] {
++            assert_eq!(
++                outgoing
++                    .notify_frozen_client_response(ConnectionId(1), id.clone(), invalid)
++                    .await
++                    .unwrap_err()
++                    .kind(),
++                io::ErrorKind::InvalidData
++            );
++            assert!(matches!(
++                waiter.try_recv(),
++                Err(oneshot::error::TryRecvError::Empty)
++            ));
++        }
++        outgoing
++            .notify_frozen_client_response(ConnectionId(1), id, response())
++            .await?;
++        assert_eq!(waiter.await.unwrap(), Ok(response()));
++        Ok(())
++    }
++
++    #[tokio::test]
++    async fn cmux_frozen_checked_callback_reports_closed_receiver() {
++        let (outgoing, mut messages) = outgoing();
++        let (id, waiter) = outgoing
++            .send_request_to_connections(Some(&[ConnectionId(1)]), payload(), None)
++            .await;
++        assert!(messages.recv().await.is_some());
++        drop(waiter);
++        assert_eq!(
++            outgoing
++                .notify_frozen_client_response(ConnectionId(1), id.clone(), response())
++                .await
++                .unwrap_err()
++                .kind(),
++            io::ErrorKind::BrokenPipe
++        );
++        let (): () = outgoing
++            .notify_client_response(ConnectionId(1), id, response())
++            .await;
++    }
++}
++
++}
+diff --git a/codex-rs/core/src/tools/mod.rs b/codex-rs/core/src/tools/mod.rs
+--- a/codex-rs/core/src/tools/mod.rs
++++ b/codex-rs/core/src/tools/mod.rs
+@@ -65,28 +65,48 @@
+     }
+ }
+ 
+-pub(crate) fn requested_tool_mode(turn_context: &TurnContext, model_info: &ModelInfo) -> ToolMode {
+-    model_info.tool_mode.unwrap_or_else(|| {
+-        if turn_context.config.features.enabled(Feature::CodeModeOnly) {
++/// Returns requested and effective modes using the runtime's own derivation.
++pub fn cmux_native_profile_tool_modes(
++    config: &crate::config::Config,
++    model_info: &ModelInfo,
++    code_mode_available: bool,
++) -> (ToolMode, ToolMode) {
++    let requested = model_info.tool_mode.unwrap_or_else(|| {
++        if config.features.enabled(Feature::CodeModeOnly) {
+             ToolMode::CodeModeOnly
+-        } else if turn_context.config.features.enabled(Feature::CodeMode) {
++        } else if config.features.enabled(Feature::CodeMode) {
+             ToolMode::CodeMode
+         } else {
+             ToolMode::Direct
+         }
+-    })
+-}
+-
+-pub(crate) fn effective_tool_mode(turn_context: &TurnContext, model_info: &ModelInfo) -> ToolMode {
+-    let requested_tool_mode = requested_tool_mode(turn_context, model_info);
+-    if !turn_context.code_mode_available
+-        && requested_tool_mode == ToolMode::CodeMode
+-        && !turn_context.config.code_mode.disable_in_process_fallback
++    });
++    let effective = if !code_mode_available
++        && requested == ToolMode::CodeMode
++        && !config.code_mode.disable_in_process_fallback
+     {
+         ToolMode::Direct
+     } else {
+-        requested_tool_mode
+-    }
++        requested
++    };
++    (requested, effective)
++}
++
++pub(crate) fn requested_tool_mode(turn_context: &TurnContext, model_info: &ModelInfo) -> ToolMode {
++    cmux_native_profile_tool_modes(
++        &turn_context.config,
++        model_info,
++        turn_context.code_mode_available,
++    )
++    .0
++}
++
++pub(crate) fn effective_tool_mode(turn_context: &TurnContext, model_info: &ModelInfo) -> ToolMode {
++    cmux_native_profile_tool_modes(
++        &turn_context.config,
++        model_info,
++        turn_context.code_mode_available,
++    )
++    .1
+ }
+ 
+ /// Format the combined exec output for sending back to the model.
+@@ -140,3 +160,87 @@
+         exec_output.aggregated_output.text.clone()
+     }
+ }
++
++// Modified by Ouro: exercise the same pure tool-mode derivation used at runtime.
++#[cfg(test)]
++mod cmux_direct_mode_contract {
++    use super::*;
++    use codex_models_manager::model_info::model_info_from_slug;
++
++    #[tokio::test]
++    async fn cmux_direct_mode_explicit_direct_survives_both_availability_outcomes() {
++        let mut config = crate::config::test_config().await;
++        let model = ModelInfo {
++            tool_mode: Some(ToolMode::Direct),
++            ..model_info_from_slug("gpt-5.5")
++        };
++        for code_mode_only in [false, true] {
++            config
++                .features
++                .set_enabled(Feature::CodeModeOnly, code_mode_only)
++                .unwrap();
++            for code_mode in [false, true] {
++                config
++                    .features
++                    .set_enabled(Feature::CodeMode, code_mode)
++                    .unwrap();
++                for available in [false, true] {
++                    for no_fallback in [false, true] {
++                        config.code_mode.disable_in_process_fallback = no_fallback;
++                        assert_eq!(
++                            cmux_native_profile_tool_modes(&config, &model, available),
++                            (ToolMode::Direct, ToolMode::Direct)
++                        );
++                    }
++                }
++            }
++        }
++    }
++
++    #[tokio::test]
++    async fn cmux_direct_mode_uses_actual_precedence_and_fallback_rules() {
++        let mut config = crate::config::test_config().await;
++        for selector in [
++            None,
++            Some(ToolMode::Direct),
++            Some(ToolMode::CodeMode),
++            Some(ToolMode::CodeModeOnly),
++        ] {
++            let model = ModelInfo {
++                tool_mode: selector,
++                ..model_info_from_slug("gpt-5.5")
++            };
++            for code_mode_only in [false, true] {
++                config
++                    .features
++                    .set_enabled(Feature::CodeModeOnly, code_mode_only)
++                    .unwrap();
++                for code_mode in [false, true] {
++                    config
++                        .features
++                        .set_enabled(Feature::CodeMode, code_mode)
++                        .unwrap();
++                    let requested = match selector {
++                        Some(mode) => mode,
++                        None if code_mode_only => ToolMode::CodeModeOnly,
++                        None if code_mode => ToolMode::CodeMode,
++                        None => ToolMode::Direct,
++                    };
++                    for available in [false, true] {
++                        for no_fallback in [false, true] {
++                            config.code_mode.disable_in_process_fallback = no_fallback;
++                            let expected = match (requested, available, no_fallback) {
++                                (ToolMode::CodeMode, false, false) => ToolMode::Direct,
++                                _ => requested,
++                            };
++                            assert_eq!(
++                                cmux_native_profile_tool_modes(&config, &model, available),
++                                (requested, expected)
++                            );
++                        }
++                    }
++                }
++            }
++        }
++    }
++}
+diff --git a/codex-rs/core/src/lib.rs b/codex-rs/core/src/lib.rs
+--- a/codex-rs/core/src/lib.rs
++++ b/codex-rs/core/src/lib.rs
+@@ -128,6 +128,7 @@
+ pub use thread_manager::local_agent_graph_store_from_state_db;
+ pub use thread_manager::passthrough_image_store;
+ pub use thread_manager::thread_store_from_config;
++pub use tools::cmux_native_profile_tool_modes;
+ pub use tools::handlers::WaitForEnvironmentToolConfig;
+ pub use web_search::web_search_action_detail;
+ pub use windows_sandbox_read_grants::grant_read_root_non_elevated;
+diff --git a/codex-rs/app-server/src/request_processors/thread_processor.rs b/codex-rs/app-server/src/request_processors/thread_processor.rs
+--- a/codex-rs/app-server/src/request_processors/thread_processor.rs
++++ b/codex-rs/app-server/src/request_processors/thread_processor.rs
+@@ -3567,6 +3567,26 @@
+ 
+     pub(crate) fn subscribe_running_assistant_turn_count(&self) -> watch::Receiver<usize> {
+         self.thread_watch_manager.subscribe_running_turn_count()
++    }
++
++    pub(crate) async fn attach_frozen_thread_listener(
++        &self,
++        thread_id: ThreadId,
++        connection_id: ConnectionId,
++    ) -> std::io::Result<()> {
++        let thread = self.thread_manager.get_thread(thread_id).await
++            .map_err(std::io::Error::other)?;
++        if thread.config_snapshot().await.parent_thread_id.is_some() {
++            return Err(std::io::Error::new(
++                std::io::ErrorKind::InvalidData,
++                "frozen thread unexpectedly has a parent",
++            ));
++        }
++        require_frozen_listener_attached(
++            self.ensure_conversation_listener(thread_id, connection_id, false).await,
++        )?;
++        self.thread_watch_manager.upsert_thread(&thread_id.to_string()).await;
++        Ok(())
+     }
+ 
+     /// Best-effort: ensure initialized connections are subscribed to this thread.
+@@ -6260,3 +6280,48 @@
+ #[cfg(test)]
+ #[path = "thread_processor_tests.rs"]
+ mod thread_processor_tests;
++
++// Modified by Ouro: frozen readiness requires a positive actual listener-attachment result.
++fn require_frozen_listener_attached(
++    result: Result<EnsureConversationListenerResult, JSONRPCErrorError>,
++) -> std::io::Result<()> {
++    match result {
++        Ok(EnsureConversationListenerResult::Attached) => Ok(()),
++        Ok(EnsureConversationListenerResult::ConnectionClosed) => Err(std::io::Error::new(
++            std::io::ErrorKind::BrokenPipe,
++            "frozen thread listener connection closed before attachment",
++        )),
++        Err(error) => Err(std::io::Error::other(format!(
++            "frozen thread listener failed ({}): {}", error.code, error.message,
++        ))),
++    }
++}
++
++#[cfg(test)]
++mod cmux_sdk_contract {
++    use super::*;
++
++    #[test]
++    fn cmux_frozen_listener_requires_actual_attached_result() {
++        assert!(require_frozen_listener_attached(Ok(
++            EnsureConversationListenerResult::Attached,
++        )).is_ok());
++    }
++
++    #[test]
++    fn cmux_frozen_listener_closed_connection_is_not_readiness() {
++        let error = require_frozen_listener_attached(Ok(
++            EnsureConversationListenerResult::ConnectionClosed,
++        )).unwrap_err();
++        assert_eq!(error.kind(), std::io::ErrorKind::BrokenPipe);
++    }
++
++    #[test]
++    fn cmux_frozen_listener_propagates_actual_protocol_failure() {
++        let original = invalid_request("actual listener fixture failure");
++        let code = original.code.to_string();
++        let error = require_frozen_listener_attached(Err(original)).unwrap_err();
++        assert!(error.to_string().contains(&code));
++        assert!(error.to_string().contains("actual listener fixture failure"));
++    }
++}
+diff --git a/codex-rs/app-server/src/message_processor.rs b/codex-rs/app-server/src/message_processor.rs
+--- a/codex-rs/app-server/src/message_processor.rs
++++ b/codex-rs/app-server/src/message_processor.rs
+@@ -769,6 +769,14 @@
+             .await;
+     }
+ 
++    pub(crate) async fn attach_frozen_thread_listener(
++        &self,
++        thread_id: ThreadId,
++        connection_id: ConnectionId,
++    ) -> std::io::Result<()> {
++        self.thread_processor.attach_frozen_thread_listener(thread_id, connection_id).await
++    }
++
+     pub(crate) async fn try_attach_thread_listener(
+         &self,
+         thread_id: ThreadId,
