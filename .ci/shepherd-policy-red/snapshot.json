@@ -1,0 +1,116 @@
+{
+  "repository": "ourostack/ouroboros",
+  "repositoryID": 1169669354,
+  "upstream_commit": "6b9826e3aa83b1a5947db50f4332cb9c65f1b340",
+  "upstream_tree": "74ba48a4b6b086beb9226a79ffe0f3d9f6d40f52",
+  "qualification": false,
+  "expectedPolicyTestResults": {
+    "policy_accepts_actual_builder_positive_control_without_mutation": "ok",
+    "policy_catalog_is_one_complete_compiled_entry_with_exact_direct_mode": "ok",
+    "policy_preserves_requirements_and_full_catalog_after_files_change": "ok",
+    "policy_rejects_actual_managed_approval_requirements": "FAILED",
+    "policy_rejects_actual_managed_catalog_override": "FAILED",
+    "policy_rejects_actual_managed_feature_conflict_before_start": "FAILED",
+    "policy_rejects_agents": "FAILED",
+    "policy_rejects_approval_policy": "FAILED",
+    "policy_rejects_apps": "FAILED",
+    "policy_rejects_async_catalog_tool": "FAILED",
+    "policy_rejects_cached_web_feature": "FAILED",
+    "policy_rejects_changed_full_metadata": "FAILED",
+    "policy_rejects_code_mode": "FAILED",
+    "policy_rejects_code_mode_metadata": "FAILED",
+    "policy_rejects_code_mode_only": "FAILED",
+    "policy_rejects_code_mode_prewarm": "FAILED",
+    "policy_rejects_effective_mcp_map_even_with_empty_cli_override": "FAILED",
+    "policy_rejects_empty_catalog": "FAILED",
+    "policy_rejects_extra_catalog_entry": "FAILED",
+    "policy_rejects_foreign_cwd": "FAILED",
+    "policy_rejects_foreign_store": "FAILED",
+    "policy_rejects_goals": "FAILED",
+    "policy_rejects_guardian_approval": "FAILED",
+    "policy_rejects_history_notes": "FAILED",
+    "policy_rejects_hooks": "FAILED",
+    "policy_rejects_image_generation": "FAILED",
+    "policy_rejects_implicit_tool_mode": "FAILED",
+    "policy_rejects_legacy_notify": "FAILED",
+    "policy_rejects_live_web_feature": "FAILED",
+    "policy_rejects_live_web_mode": "FAILED",
+    "policy_rejects_local_store": "FAILED",
+    "policy_rejects_memories": "FAILED",
+    "policy_rejects_memory_generation": "FAILED",
+    "policy_rejects_memory_tools": "FAILED",
+    "policy_rejects_memory_use": "FAILED",
+    "policy_rejects_missing_catalog": "FAILED",
+    "policy_rejects_missing_model": "FAILED",
+    "policy_rejects_model_delegation": "FAILED",
+    "policy_rejects_multi_agent_v2": "FAILED",
+    "policy_rejects_orchestrator_mcp": "FAILED",
+    "policy_rejects_orchestrator_skills": "FAILED",
+    "policy_rejects_persistent_state": "FAILED",
+    "policy_rejects_plugins": "FAILED",
+    "policy_rejects_provider_redefinition": "FAILED",
+    "policy_rejects_skill_mcp_install": "FAILED",
+    "policy_rejects_skill_search": "FAILED",
+    "policy_rejects_sleep": "FAILED",
+    "policy_rejects_wrong_model": "FAILED",
+    "policy_rejects_wrong_provider": "FAILED"
+  },
+  "memberFiles": {
+    "member-Cargo.toml": "Cargo.toml",
+    "member-src-lib.rs": "src/lib.rs",
+    "member-src-main.rs": "src/main.rs",
+    "member-src-profile.rs": "src/profile.rs",
+    "member-src-policy.rs": "src/policy.rs",
+    "member-tests-policy.rs": "tests/policy.rs"
+  },
+  "files": {
+    "LICENSE.codex": {
+      "bytes": 10926,
+      "sha256": "d17f227e4df5da1600391338865ce0f3055211760a36688f816941d58232d8dc"
+    },
+    "NOTICE.codex": {
+      "bytes": 242,
+      "sha256": "9d71575ecfd9a843fc1677b0efb08053c6ba9fd686a0de1a6f5382fd3c220915"
+    },
+    "build-managed-codex-host.py": {
+      "bytes": 35932,
+      "sha256": "2bbef622ca436226cf5f6b7432d5a81159cf7a2148afae49c80832604d9e9f2a"
+    },
+    "managed-codex-frozen-host.patch": {
+      "bytes": 178014,
+      "sha256": "04b2c9dd58d09fa4859b8b74e49fad570c7b19a4dd50a797d5953eb77cb9639a"
+    },
+    "member-Cargo.toml": {
+      "bytes": 566,
+      "sha256": "2d1d1cb1f2ea46a0a54a284644157127092589f109d65272666c3554a20f4cd5"
+    },
+    "member-src-lib.rs": {
+      "bytes": 33,
+      "sha256": "9f9184593cb3595f430ad978a86e7528560b1081ccc49a1c212838a8d14b875c"
+    },
+    "member-src-main.rs": {
+      "bytes": 173,
+      "sha256": "896b417df7541ece7125f7d268a3b196359f388503713ea832d9cd2f9d5252f7"
+    },
+    "member-src-policy.rs": {
+      "bytes": 264,
+      "sha256": "7a3e13806ad8f3d4702015afb6feab9a71553b1380c5932d3e4522b8ac55a1d2"
+    },
+    "member-src-profile.rs": {
+      "bytes": 851,
+      "sha256": "1a7e5991cb48793d6bdc7f06478cf079bdd1aae7631e8463bf7a28b0c8d6041d"
+    },
+    "member-tests-policy.rs": {
+      "bytes": 15695,
+      "sha256": "4217fdbe22a481934d81becc631a4a962336d13a88f59ab76f73b0e1433a270a"
+    },
+    "provenance.json": {
+      "bytes": 2133,
+      "sha256": "cd5c99914edde0703b05a7bc257dbbde4db508b62c389049eb8a71ff1080985c"
+    },
+    "runner.py": {
+      "bytes": 19666,
+      "sha256": "e52c115b2a0425c62d3d25de37a6f9676c82e60d5d6ba58de1e9b8fdb07125ed"
+    }
+  }
+}
