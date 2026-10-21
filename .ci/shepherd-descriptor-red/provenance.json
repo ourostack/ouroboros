@@ -1,0 +1,29 @@
+{
+  "upstream": "openai/codex",
+  "commit": "6b9826e3aa83b1a5947db50f4332cb9c65f1b340",
+  "tree": "74ba48a4b6b086beb9226a79ffe0f3d9f6d40f52",
+  "licenses": {
+    "LICENSE": {
+      "gitBlob": "4606e72e042564097e8780d66c1d4dcb611869bd",
+      "sha256": "d17f227e4df5da1600391338865ce0f3055211760a36688f816941d58232d8dc"
+    },
+    "NOTICE": {
+      "gitBlob": "2805899d56d0332d175cfc613c67d45d6f006db7",
+      "sha256": "9d71575ecfd9a843fc1677b0efb08053c6ba9fd686a0de1a6f5382fd3c220915"
+    }
+  },
+  "modifiedFiles": {
+    "codex-rs/app-server/src/config_manager.rs": "8eeb880e38dc88d6946b330e3481e40b50b7173ada2139e8dc310e20c9e477a4",
+    "codex-rs/app-server/src/config_manager_service.rs": "239eac692e3d1839105345708f61f8dc4b7056fcd41c2de1ee25f568210921dc",
+    "codex-rs/app-server/src/in_process.rs": "7abb2569238e738caff88235a6f884a1f2b60a8dd7074c56dbb2e2fc2ee0d1b5",
+    "codex-rs/app-server/src/outgoing_message.rs": "033eb1b47d0a21a6001d8e865458e27681120a9cb05768193e86c9306b39d595",
+    "codex-rs/core/src/tools/mod.rs": "0c8ec9324f67053cf7c14dac5d53504c9e8c370b84cb2323fdb0239e674572d7",
+    "codex-rs/core/src/lib.rs": "62987028ca8db5485abd38bc4b6d576d933003197ec3e1d356c99b3285e5b7c5",
+    "codex-rs/app-server/src/request_processors/thread_processor.rs": "37a4451e58673b3577c432207a510a7322fd10af5e1e535bb2be8317d5fcb1d9",
+    "codex-rs/app-server/src/message_processor.rs": "2186e5e1ec407c66ff8627008c7f319d22aa76f68bccb6c04ed454b0b8f22fa8"
+  },
+  "modifications": "Primary V1 project CI source proof under recorded146 scope, not borrowed factory. All8 SDK/patch/utility/notices unchanged138 source56GREEN. Exactly2 existing Core mode-query component tests selected; no full Core suite or SDK56 rerun. Already-enabled project settings untouched; disjoint qualification branch/name, no coverage/container/real-smoke dispatch/default-ref update. Organization hook visibility remains unknown within inherited project integrations, not absent. No backend/account/model/profile/app/native/bootstrap/runtime qualification.",
+  "qualification": false,
+  "ciRepository": "ourostack/ouroboros",
+  "ciRepositoryID": 1169669354
+}

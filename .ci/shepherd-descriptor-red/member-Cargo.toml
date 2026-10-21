@@ -1,0 +1,26 @@
+[package]
+name = "cmux-managed-codex-host"
+version = "0.1.0"
+edition.workspace = true
+rust-version = "1.95.0"
+license.workspace = true
+publish = false
+description = "Owned frozen native Codex host"
+
+[dependencies]
+codex-app-server-protocol = { workspace = true }
+codex-arg0 = { workspace = true }
+codex-cloud-config = { workspace = true }
+codex-config = { workspace = true }
+codex-core = { workspace = true }
+codex-features = { workspace = true }
+codex-login = { workspace = true }
+codex-model-provider-info = { workspace = true }
+codex-protocol = { workspace = true }
+serde_json = { workspace = true }
+sha2 = { workspace = true }
+tempfile = { workspace = true }
+uuid = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
