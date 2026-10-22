@@ -1,0 +1,19 @@
+{
+  "repository": "ourostack/ouroboros",
+  "repositoryID": 1169669354,
+  "qualification": false,
+  "files": {
+    "sources.json.gz": {
+      "bytes": 28339,
+      "sha256": "5b0d3fb42224368fe078a5ef3164491641ee8cd3bed8345798037c1f2a644c5f"
+    },
+    "runner.py": {
+      "bytes": 16653,
+      "sha256": "6d64c5b16a8e7518f8be893923110ee336e1e846e5c0ed175e52794c13fe421d"
+    },
+    "provenance.json": {
+      "bytes": 9204,
+      "sha256": "21612bdad944bb0aafd727f3bc4ea17cc25d1ad06c9f15ba7a90a295e4c8376d"
+    }
+  }
+}
