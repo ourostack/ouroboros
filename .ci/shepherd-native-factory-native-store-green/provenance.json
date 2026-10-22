@@ -1,0 +1,492 @@
+{
+  "kind": "selected-gpl-native-source-tests-not-app-build-or-qualification",
+  "sources": {
+    "CLI/CodexTeamsPOSIXSupport.swift": {
+      "bytes": 1738,
+      "sha256": "45b6854c8c98d2f861c87d5538b910b130b5821dd2110f00927b33c2d02dce5a",
+      "mode": "100644"
+    },
+    "CLI/OwnedProcessSupervisor.swift": {
+      "bytes": 22271,
+      "sha256": "c8aef7cd4b5a1181df394912f7ac9342682a9ccc759a3c241df01bc5c8c02fd7",
+      "mode": "100644"
+    },
+    "LICENSE": {
+      "bytes": 36576,
+      "sha256": "ad00ebb34f48e86a71b087584ffa6540d58f6468eeccf85c113d7b6d580a7bb9",
+      "mode": "100644"
+    },
+    "Packages/macOS/CmuxControlSocket/Sources/CmuxControlSocket/Shepherd/ShepherdHookExecutableIdentity.swift": {
+      "bytes": 5404,
+      "sha256": "5ad3978a377de1cf03835735bdea6a798f3e04962aea19455ed395430891702e",
+      "mode": "100644"
+    },
+    "Packages/macOS/CmuxControlSocket/Sources/CmuxControlSocket/Shepherd/ShepherdManagedBackendLaunchReceipt.swift": {
+      "bytes": 7452,
+      "sha256": "2e83b2e9243631a95b4270c772787acf38d49adc15ba5e1b6d6b634089ff4a15",
+      "mode": "100644"
+    },
+    "Packages/macOS/CmuxControlSocket/Sources/CmuxControlSocket/Shepherd/ShepherdManagedBootstrapReader.swift": {
+      "bytes": 3289,
+      "sha256": "d6d64d2f4b2bd7488544114ce9c0fe88a18eb59256eafd310e1f8f044711725c",
+      "mode": "100644"
+    },
+    "Packages/macOS/CmuxControlSocket/Sources/CmuxControlSocket/Shepherd/ShepherdManagedPipeWriter.swift": {
+      "bytes": 5610,
+      "sha256": "0c3a937022ef15c7d6f9f28af1cd540d35babb54157dcc72b9c01c3d4f44ff48",
+      "mode": "100644"
+    },
+    "Packages/macOS/CmuxControlSocket/Sources/CmuxControlSocket/Shepherd/ShepherdManagedRPCFramer.swift": {
+      "bytes": 5130,
+      "sha256": "52e71d51d3f01be8003a8b78facab0b2f90e80227f2bcdd8623fbb53fc482ac1",
+      "mode": "100644"
+    },
+    "Packages/macOS/CmuxControlSocket/Sources/CmuxControlSocket/Shepherd/ShepherdManagedSessionIdentity.swift": {
+      "bytes": 2389,
+      "sha256": "ec58fdd7f8f0e87a896137415a7898edc815b835b4226f2abe416a78f6e384c5",
+      "mode": "100644"
+    },
+    "Packages/macOS/CmuxControlSocket/Sources/CmuxControlSocket/Shepherd/ShepherdManagedSessionState.swift": {
+      "bytes": 8996,
+      "sha256": "86450c90f3c5dc50317478568d0e65176e1aebfaa4f2f9b1f7f384f86e32852e",
+      "mode": "100644"
+    },
+    "Packages/macOS/CmuxFoundation/Sources/CmuxFoundation/Process/AgentPIDProcessIdentity.swift": {
+      "bytes": 3770,
+      "sha256": "10d5e3cb8bcf73098e4394507aa2bfee88b9d0e25a5b8a2676f99c81548b7ada",
+      "mode": "100644"
+    },
+    "Packages/macOS/CmuxFoundation/Sources/CmuxFoundation/Process/DarwinProcessEnumerator.swift": {
+      "bytes": 3599,
+      "sha256": "a857314c99accdf8c30aa62ef26773cd90063deacf31b044ee93a5a336e4774b",
+      "mode": "100644"
+    },
+    "Packages/macOS/CmuxFoundation/Sources/CmuxFoundation/Process/DarwinProcessInfoReader.swift": {
+      "bytes": 2332,
+      "sha256": "3cb30b88310eaf5aaa105c8fe96e6e46d3044e8b212254d19d00980ac0a2608b",
+      "mode": "100644"
+    },
+    "Packages/macOS/CmuxFoundation/Sources/CmuxFoundation/Process/DarwinProcessListing.swift": {
+      "bytes": 1653,
+      "sha256": "f9fdb47485e84fc1cd7206360ba0d92f848062c90ccaa139093b4cea74a6e043",
+      "mode": "100644"
+    },
+    "Packages/macOS/CmuxSettings/Sources/CmuxSettings/SocketControl/CmuxStateDirectory.swift": {
+      "bytes": 3808,
+      "sha256": "d5422c9d40a43cb887d8de845bf2099cfa0b3292e93beeabca116559f93af0ac",
+      "mode": "100644"
+    },
+    "Sources/AgentSessionLaunchPlan.swift": {
+      "bytes": 2089,
+      "sha256": "4675155a63d80dfb7be38e75eefff6fcdb607e8bb1243e4b57748e14d9979d3e",
+      "mode": "100644"
+    },
+    "Sources/AgentSessionProvider.swift": {
+      "bytes": 2155,
+      "sha256": "efe475655526552d50f8f7e886b25574d5fb6b730e9e31324405fed9606234e9",
+      "mode": "100644"
+    },
+    "Sources/Panels/AgentSessionBridge.swift": {
+      "bytes": 292,
+      "sha256": "6569a7c615513312de0756cc8726c6dca7202a454de403b816bbf6430a5d35c1",
+      "mode": "100644"
+    },
+    "Sources/Panels/AgentSessionBridgeError.swift": {
+      "bytes": 2928,
+      "sha256": "d79968511ec37d9419112f654af7ca871bb8f8e5bf4e3361bb4757287fa0a48e",
+      "mode": "100644"
+    },
+    "Sources/Panels/AgentSessionInputWriter.swift": {
+      "bytes": 2397,
+      "sha256": "1de65c3bb43f82a275231b77ce9acff33b384844ba750ca97a58430b6b64f18b",
+      "mode": "100644"
+    },
+    "Sources/Panels/AgentSessionManagedCodexLaunch.swift": {
+      "bytes": 8940,
+      "sha256": "a4d03570160a4629f47622879bf478b9253f0dd5004200786aa7d82808375028",
+      "mode": "100644"
+    },
+    "Sources/Panels/AgentSessionManagedCommand.swift": {
+      "bytes": 996,
+      "sha256": "c8715c0f3fd8d0a289c8f1c85cf58f6e558464aa8763e941da3f257f58c59ae2",
+      "mode": "100644"
+    },
+    "Sources/Panels/AgentSessionManagedCommandService.swift": {
+      "bytes": 16191,
+      "sha256": "bf586b27b59ccae9d73fae50fd916edba8dc9bd21199c507858d4005a2ab1738",
+      "mode": "100644"
+    },
+    "Sources/Panels/AgentSessionManagedCopilotLaunch.swift": {
+      "bytes": 11788,
+      "sha256": "757a6af94785d29c17f14b6dfb54e7e1bf322837fa01ea34390911db5218cd23",
+      "mode": "100644"
+    },
+    "Sources/Panels/AgentSessionManagedJSON.swift": {
+      "bytes": 1893,
+      "sha256": "29799408b46f8f456acb0c0be7426c7588bf998c10dcf530ecf8849eae1756d3",
+      "mode": "100644"
+    },
+    "Sources/Panels/AgentSessionManagedNativeOwner.swift": {
+      "bytes": 6673,
+      "sha256": "80a0bb1efe9cc5dfe87e61517b9217199945411ce86fda8de0fdb06669706669",
+      "mode": "100644"
+    },
+    "Sources/Panels/AgentSessionManagedProviderAdapter.swift": {
+      "bytes": 1466,
+      "sha256": "1b115637ff0e94d201db14cb5c2d1e80b6ca0b6682e1b79809cafafb3162a2da",
+      "mode": "100644"
+    },
+    "Sources/Panels/AgentSessionManagedRendererController.swift": {
+      "bytes": 15204,
+      "sha256": "7287666d0fa0fd2486f3328bd217fc22a9d89b2d49c730206f261e00f0a516a4",
+      "mode": "100644"
+    },
+    "Sources/Panels/AgentSessionManagedRendererReservation.swift": {
+      "bytes": 3995,
+      "sha256": "c2def7c76e9545a2cedb17d083332c79a85279adf1edda1e99393df7b360ec41",
+      "mode": "100644"
+    },
+    "Sources/Panels/AgentSessionManagedSession.swift": {
+      "bytes": 12781,
+      "sha256": "39db2a620d2f381883708721d3f5e5c8d2b8abdf9f9333ea592fed11b5e6812b",
+      "mode": "100644"
+    },
+    "Sources/Panels/AgentSessionOutputLineBuffer.swift": {
+      "bytes": 1847,
+      "sha256": "03adc6ce45fb0224212579af6585161d2a6e7e5fe6b8dd036231f6e57ffeec65",
+      "mode": "100644"
+    },
+    "Sources/Panels/AgentSessionOwnedProcessLauncher.swift": {
+      "bytes": 3541,
+      "sha256": "280ca1a44e29c4c20bfb84ea563033c266ceffac3b5f72cf1134b2fb9d4a969b",
+      "mode": "100644"
+    },
+    "Sources/Panels/AgentSessionPermissionMode.swift": {
+      "bytes": 914,
+      "sha256": "bf8c921e9f8f55bd2400908bd6d267c01b059359d92f3460bdd545822b1502d2",
+      "mode": "100644"
+    },
+    "Sources/Panels/AgentSessionProcessStore.swift": {
+      "bytes": 46228,
+      "sha256": "1ce24002949460e02a7f08c97ceeb62dceae5e5edf6d82b99ff531069e8fa549",
+      "mode": "100644"
+    },
+    "Sources/Panels/AgentSessionRunningSession.swift": {
+      "bytes": 2936,
+      "sha256": "92b4f99572012689346a8c919869b9aae8902ffb2b47f773b34725df9057f8b3",
+      "mode": "100644"
+    },
+    "Sources/Panels/AgentSessionStartedSession.swift": {
+      "bytes": 83,
+      "sha256": "49934b4c37acfa61d8281672939b15fba5d0d63fa65a039eab92b0fea1c35ce2",
+      "mode": "100644"
+    },
+    "Sources/Panels/AgentSessionStreamAccumulators.swift": {
+      "bytes": 571,
+      "sha256": "9fc4fe937714e31a0143804675ebb0263dfe5304dad720975adbd628f3c7179a",
+      "mode": "100644"
+    },
+    "Sources/Panels/ClaudeStreamJSONAccumulator.swift": {
+      "bytes": 5546,
+      "sha256": "2563ccda119bd8cc65646a36e043b445fc22665b066d25b999181e812656e0b7",
+      "mode": "100644"
+    },
+    "Sources/Panels/CodexAppServerQueuedInput.swift": {
+      "bytes": 333,
+      "sha256": "04f93f8c0472259f82c5b75e646d4c7205eb1686df7a8008bc466259affe15b7",
+      "mode": "100644"
+    },
+    "Sources/Panels/CodexAppServerSession.swift": {
+      "bytes": 25103,
+      "sha256": "e90e03b286fb5f0908a333c8c1dd56bd3d885c0275752e99411cb7368f2e83b8",
+      "mode": "100644"
+    },
+    "Sources/Panels/CodexManagedSession.swift": {
+      "bytes": 17660,
+      "sha256": "a1ca602e1fc2c0fa6cb92c2ef265828bc3abb3ffa483a6c904966393185dd047",
+      "mode": "100644"
+    },
+    "Sources/Panels/CodexManagedShellInventory.swift": {
+      "bytes": 5977,
+      "sha256": "47abd769196aaab12f55f2c07bcdd755d2d258c58bed894e698a992b9ed31ff9",
+      "mode": "100644"
+    },
+    "Sources/Panels/CodexManagedStartup.swift": {
+      "bytes": 14819,
+      "sha256": "f514e8a83909b3b0b159312e4d6c18bd2c5eec6c23b0485e14eda11d1c8509ed",
+      "mode": "100644"
+    },
+    "Sources/Panels/CodexManagedStreamDecoder.swift": {
+      "bytes": 5156,
+      "sha256": "aefdd698e441a184fdb895eac91e96d53dcd49f982892d70a294c1019f184d4c",
+      "mode": "100644"
+    },
+    "Sources/Panels/CodexManagedTurnLedger.swift": {
+      "bytes": 29796,
+      "sha256": "c86297b92e7c4dd2aabd704cec1c442cf57c32da82d870278a89e149b9eb71e8",
+      "mode": "100644"
+    },
+    "Sources/Panels/CopilotManagedConfiguration.swift": {
+      "bytes": 5966,
+      "sha256": "18da0bb2ae0fa1f32dbffd847c6a6d2efe2323ddf7aa07d0e993ba3d0535bac4",
+      "mode": "100644"
+    },
+    "Sources/Panels/CopilotManagedEventMetadata.swift": {
+      "bytes": 2213,
+      "sha256": "43acd785e9e06b7eede1774122ce44e50b6e6619666588027a5cd98831c5c92a",
+      "mode": "100644"
+    },
+    "Sources/Panels/CopilotManagedSession.swift": {
+      "bytes": 32326,
+      "sha256": "7ad5933cac8f016962cb31acc7a6b4c9cd7be9ccb63fa6824fb81be818983b3c",
+      "mode": "100644"
+    },
+    "Sources/Panels/CopilotManagedTurnLedger.swift": {
+      "bytes": 24271,
+      "sha256": "c7d5095c058887bc00de2ec4e83a85ff039f0f28e5a947169125fabe89ddcfd3",
+      "mode": "100644"
+    },
+    "Sources/Panels/OpenCodeEventStreamParser.swift": {
+      "bytes": 1403,
+      "sha256": "6ba5c3fb8be4d30e9962e88253b939506122c0993d44309d6e29f05bad81dfa6",
+      "mode": "100644"
+    },
+    "Sources/Panels/OpenCodeEventTextAccumulator.swift": {
+      "bytes": 11881,
+      "sha256": "471875ddaccb458e4f7d13da57dcf150ec163aecee39da27c8c6d9cf6deb0d23",
+      "mode": "100644"
+    },
+    "Sources/Panels/OpenCodeProcessOutputDisposition.swift": {
+      "bytes": 128,
+      "sha256": "f11db641d2ffae6ef34206194b8484e0895ad181086ae29cc13588db17c196d6",
+      "mode": "100644"
+    },
+    "scripts/tests/fixtures/managed_codex_profile.json": {
+      "bytes": 3422,
+      "sha256": "042b2e1b3f74816706ba8eb3fe60a6872d7357aa32bb70c28fa5a19df4c95d41",
+      "mode": "100644"
+    },
+    "scripts/tests/fixtures/managed_codex_session.swift": {
+      "bytes": 24482,
+      "sha256": "375f58bcd2f63f08169be93ab15e7621e8216788521327debcbb7dfda3817e5c",
+      "mode": "100644"
+    },
+    "scripts/tests/fixtures/managed_codex_shell_inventory_main.swift": {
+      "bytes": 2731,
+      "sha256": "1976fc62ee448b87b84244dac769ee305e0e09755331b10cbf85cb4c1f9775a8",
+      "mode": "100644"
+    },
+    "scripts/tests/fixtures/managed_codex_startup.swift": {
+      "bytes": 6287,
+      "sha256": "494ea268637bd282a5cc9b47fc58a2fb717147cc77b944b523907c2c41954057",
+      "mode": "100644"
+    },
+    "scripts/tests/fixtures/managed_codex_store.swift": {
+      "bytes": 8926,
+      "sha256": "dae3d41ad251fbbe8bcdb6cbe123d0f9347919e9993fe0e2f5565b54ca870467",
+      "mode": "100644"
+    },
+    "scripts/tests/fixtures/managed_codex_stream_main.swift": {
+      "bytes": 3270,
+      "sha256": "27cf2ea761e71167e8fa271416c94dc9288457d450bc7544ab0196cfef05f786",
+      "mode": "100644"
+    },
+    "scripts/tests/fixtures/managed_codex_turn_ledger_main.swift": {
+      "bytes": 9368,
+      "sha256": "239d40670ef7c60591f2fc68284ea5681f34b5ae87fed0b587d24e551e03d425",
+      "mode": "100644"
+    },
+    "scripts/tests/fixtures/managed_copilot_startup.swift": {
+      "bytes": 56119,
+      "sha256": "2341c4a5f61a4bafe1bc65a24452776cba7fd84dea902d251dc244dc0b77ea10",
+      "mode": "100644"
+    },
+    "scripts/tests/fixtures/managed_process_listing.swift": {
+      "bytes": 1253,
+      "sha256": "d9d3a8a213903d121dffd7d8dd0ac7886a141b63cf0db94a06fab145a08f9838",
+      "mode": "100644"
+    },
+    "scripts/tests/fixtures/managed_session_lifetime.swift": {
+      "bytes": 10161,
+      "sha256": "600ecce437fcdc617a9a2e7d70869aa96d670ebdbe1e4c274afd6d7131e51c79",
+      "mode": "100644"
+    },
+    "scripts/tests/fixtures/managed_store_settings.swift": {
+      "bytes": 455,
+      "sha256": "14bf1a37e8a90946ded027db77d2c9e2949e3a88b175ae2efbdcebb09d537fcc",
+      "mode": "100644"
+    },
+    "scripts/tests/test_managed_codex_session.py": {
+      "bytes": 13038,
+      "sha256": "27aecb6997d98374192aec2c4db0d19de3aa7d320b2173b1f397954f40a7643b",
+      "mode": "100644"
+    },
+    "scripts/tests/test_managed_codex_shell_inventory.py": {
+      "bytes": 13512,
+      "sha256": "0f82f27766b42bd83c61ccf227d75d519fdf78cc08604537c34d9827bb145e14",
+      "mode": "100644"
+    },
+    "scripts/tests/test_managed_codex_startup.py": {
+      "bytes": 14446,
+      "sha256": "cc4a86acd238bd594791fd3e605eb775c816c92b614b4b4e26a8bd9a66b05945",
+      "mode": "100644"
+    },
+    "scripts/tests/test_managed_codex_store.py": {
+      "bytes": 7781,
+      "sha256": "4c675ef1e302e64a0304038e23a167a0d96572c66b400f83f82043b363d9f08f",
+      "mode": "100644"
+    },
+    "scripts/tests/test_managed_codex_stream.py": {
+      "bytes": 12042,
+      "sha256": "a1a3617de579835ea51b8bdb420d2235285cacf6735fa432306440a88db1ed55",
+      "mode": "100644"
+    },
+    "scripts/tests/test_managed_codex_turn_ledger.py": {
+      "bytes": 34715,
+      "sha256": "76d466d78643df70b45eeb7d3e22be73432aa173bb1d7251f3cb54cbec82e2cf",
+      "mode": "100644"
+    }
+  },
+  "suites": {
+    "scripts/tests/test_managed_codex_startup.py": {
+      "names": [
+        "ManagedCodexStartupTests.test_exact_descriptor_initializes_only_the_bound_birth_and_real_thread",
+        "ManagedCodexStartupTests.test_early_ready_waits_for_the_actual_initialize_write_witness",
+        "ManagedCodexStartupTests.test_source_catalog_schema_and_profile_changes_never_initialize",
+        "ManagedCodexStartupTests.test_every_effective_policy_field_is_checked_before_initialization",
+        "ManagedCodexStartupTests.test_every_closed_feature_and_missing_or_extra_policy_value_refuses",
+        "ManagedCodexStartupTests.test_nonce_cwd_store_and_envelope_drift_cannot_bind",
+        "ManagedCodexStartupTests.test_boolean_number_and_nested_policy_coercions_refuse",
+        "ManagedCodexStartupTests.test_duplicate_keys_invalid_utf8_and_truncated_descriptors_hold",
+        "ManagedCodexStartupTests.test_coalesced_duplicate_descriptor_or_preinitialize_work_writes_nothing",
+        "ManagedCodexStartupTests.test_refused_initialize_write_cannot_create_readiness",
+        "ManagedCodexStartupTests.test_ready_identity_or_policy_drift_and_foreign_ack_hold",
+        "ManagedCodexStartupTests.test_fragmented_bytes_preserve_the_same_exact_descriptor_binding"
+      ],
+      "failures": {}
+    },
+    "scripts/tests/test_managed_codex_stream.py": {
+      "names": [
+        "ManagedCodexStreamTests.test_exact_request_notification_response_and_error_envelopes_stay_distinct",
+        "ManagedCodexStreamTests.test_raw_fields_and_multibyte_text_survive_every_pipe_boundary",
+        "ManagedCodexStreamTests.test_string_and_integer_request_ids_never_alias_or_lose_64_bit_precision",
+        "ManagedCodexStreamTests.test_incomplete_json_at_real_eof_cannot_be_forced_out_or_resumed",
+        "ManagedCodexStreamTests.test_invalid_utf8_latches_instead_of_decoding_replacement_text",
+        "ManagedCodexStreamTests.test_byte_limit_is_inclusive_and_overflow_never_recovers",
+        "ManagedCodexStreamTests.test_finish_is_idempotent_but_any_append_after_eof_is_closed",
+        "ManagedCodexStreamTests.test_malformed_or_ambiguous_envelopes_are_terminal_not_best_effort",
+        "ManagedCodexStreamTests.test_invalid_request_id_types_do_not_become_notifications_or_integer_aliases",
+        "ManagedCodexStreamTests.test_invalid_json_and_nonobjects_cannot_be_silently_skipped",
+        "ManagedCodexStreamTests.test_a_valid_message_with_a_partial_next_frame_is_never_a_drained_stream",
+        "ManagedCodexStreamTests.test_duplicate_json_members_at_any_depth_cannot_change_wire_identity",
+        "ManagedCodexStreamTests.test_keys_in_distinct_objects_and_json_looking_literal_strings_are_not_duplicates",
+        "ManagedCodexStreamTests.test_wire_size_preserves_actual_utf8_whitespace_and_crlf_not_reserialized_size"
+      ],
+      "failures": {}
+    },
+    "scripts/tests/test_managed_codex_shell_inventory.py": {
+      "names": [
+        "ManagedCodexShellInventoryTests.test_empty_page_is_not_positive_until_exact_full_request_write_and_response",
+        "ManagedCodexShellInventoryTests.test_written_request_is_not_a_readback_and_no_page_is_not_an_empty_inventory",
+        "ManagedCodexShellInventoryTests.test_every_cursor_is_visited_before_a_multi_page_empty_inventory_completes",
+        "ManagedCodexShellInventoryTests.test_nonempty_inventory_is_complete_but_never_reports_empty_work",
+        "ManagedCodexShellInventoryTests.test_foreign_error_request_notification_and_duplicate_responses_are_not_pages",
+        "ManagedCodexShellInventoryTests.test_revision_change_before_request_write_reply_or_next_page_is_terminal",
+        "ManagedCodexShellInventoryTests.test_cursor_cycles_empty_malformed_and_oversized_cursors_are_terminal",
+        "ManagedCodexShellInventoryTests.test_missing_null_partial_or_unknown_page_shapes_are_not_empty",
+        "ManagedCodexShellInventoryTests.test_duplicate_item_or_process_identity_in_one_or_later_pages_is_terminal",
+        "ManagedCodexShellInventoryTests.test_partial_malformed_terminal_records_cannot_be_dropped_to_get_empty_success",
+        "ManagedCodexShellInventoryTests.test_duplicate_requests_writes_and_request_id_reuse_are_terminal",
+        "ManagedCodexShellInventoryTests.test_numeric_request_ids_do_not_alias_strings",
+        "ManagedCodexShellInventoryTests.test_page_limit_cannot_return_more_entries_than_requested",
+        "ManagedCodexShellInventoryTests.test_paginated_empty_responses_are_bounded_not_an_unending_positive_probe",
+        "ManagedCodexShellInventoryTests.test_a_completed_inventory_cannot_be_reopened_or_reused_for_new_work",
+        "ManagedCodexShellInventoryTests.test_native_enum_construction_cannot_bypass_bounded_request_identity",
+        "ManagedCodexShellInventoryTests.test_exact_page_and_terminal_count_limits_are_accepted_before_overflow_is_held",
+        "ManagedCodexShellInventoryTests.test_exact_retained_byte_limit_is_accepted_and_the_next_record_is_held"
+      ],
+      "failures": {}
+    },
+    "scripts/tests/test_managed_codex_turn_ledger.py": {
+      "names": [
+        "ManagedCodexTurnLedgerTests.test_exact_root_and_complete_empty_shell_snapshot_are_all_required",
+        "ManagedCodexTurnLedgerTests.test_outgoing_native_frame_is_literal_text_without_runtime_override_fields",
+        "ManagedCodexTurnLedgerTests.test_real_pipe_write_and_matching_rpc_reply_are_separate_facts",
+        "ManagedCodexTurnLedgerTests.test_provider_turn_id_is_returned_and_mapped_not_assumed_equal_to_host_uuid",
+        "ManagedCodexTurnLedgerTests.test_foreign_rpc_thread_turn_duplicate_reply_and_item_alias_never_complete_root",
+        "ManagedCodexTurnLedgerTests.test_failed_interrupted_or_error_bearing_root_is_never_success",
+        "ManagedCodexTurnLedgerTests.test_root_done_does_not_close_unknown_or_later_autonomous_work",
+        "ManagedCodexTurnLedgerTests.test_partial_ingress_immediately_revokes_work_evidence_and_native_revision",
+        "ManagedCodexTurnLedgerTests.test_second_input_requires_complete_prior_evidence_and_cannot_reuse_turn_ids",
+        "ManagedCodexTurnLedgerTests.test_exact_foreground_callback_requires_native_work_and_consumed_result",
+        "ManagedCodexTurnLedgerTests.test_callback_write_is_not_consumption_and_exact_early_consumption_waits_for_full_write",
+        "ManagedCodexTurnLedgerTests.test_wrong_call_arguments_content_success_or_foreign_callback_cannot_discharge_work",
+        "ManagedCodexTurnLedgerTests.test_a_known_complete_failed_command_is_consumed_but_not_confused_with_unknown_work",
+        "ManagedCodexTurnLedgerTests.test_unmatched_or_disabled_tool_requests_are_held_before_native_dispatch",
+        "ManagedCodexTurnLedgerTests.test_partial_shell_pages_or_empty_reply_without_write_never_establish_coverage",
+        "ManagedCodexTurnLedgerTests.test_background_shell_or_activity_during_inspection_is_not_a_clean_snapshot",
+        "ManagedCodexTurnLedgerTests.test_passive_message_lifecycles_are_bound_and_do_not_replace_root_completion",
+        "ManagedCodexTurnLedgerTests.test_eof_and_unexpected_permission_requests_are_sticky_barriers",
+        "ManagedCodexTurnLedgerTests.test_malformed_passive_metadata_cannot_still_produce_positive_work_evidence",
+        "ManagedCodexTurnLedgerTests.test_valid_final_answer_phase_and_citations_remain_passive_not_root_completion",
+        "ManagedCodexTurnLedgerTests.test_backend_fallback_cannot_impersonate_consumption_of_an_identical_failed_command",
+        "ManagedCodexTurnLedgerTests.test_callback_result_witness_is_unique_and_cannot_be_replayed_between_identical_commands",
+        "ManagedCodexTurnLedgerTests.test_pinned_reasoning_progress_is_passive_and_bound_to_its_live_root_item",
+        "ManagedCodexTurnLedgerTests.test_reasoning_progress_rejects_foreign_closed_or_malformed_indices",
+        "ManagedCodexTurnLedgerTests.test_known_queued_callbacks_do_not_overlap_the_kept_native_command_service",
+        "ManagedCodexTurnLedgerTests.test_owner_prompt_limit_counts_exact_utf8_bytes_without_clipping_or_rewriting",
+        "ManagedCodexTurnLedgerTests.test_early_event_buffer_accepts_64_messages_and_holds_before_the_65th",
+        "ManagedCodexTurnLedgerTests.test_live_item_limit_is_inclusive_and_does_not_evict_work_to_make_room",
+        "ManagedCodexTurnLedgerTests.test_result_text_limit_is_inclusive_and_overflow_remains_outstanding",
+        "ManagedCodexTurnLedgerTests.test_early_byte_limit_uses_actual_wire_bytes_and_is_inclusive",
+        "ManagedCodexTurnLedgerTests.test_root_ingress_limit_is_exact_and_overflow_is_not_just_incomplete_json",
+        "ManagedCodexTurnLedgerTests.test_canonical_terminal_summary_matches_the_completed_final_item_and_is_not_new_work",
+        "ManagedCodexTurnLedgerTests.test_terminal_summary_never_creates_an_unseen_item_or_discharges_outstanding_work",
+        "ManagedCodexTurnLedgerTests.test_terminal_summary_selects_the_last_eligible_final_or_legacy_message_not_commentary",
+        "ManagedCodexTurnLedgerTests.test_terminal_summary_view_and_cardinality_are_not_a_history_or_work_inventory"
+      ],
+      "failures": {}
+    },
+    "scripts/tests/test_managed_codex_session.py": {
+      "names": [
+        "ManagedCodexSessionTests.test_actual_descriptor_binds_helper_lifetime_and_returned_thread_without_qualification",
+        "ManagedCodexSessionTests.test_foreign_unconsumed_revoked_or_wrong_scope_owner_never_starts_a_peer",
+        "ManagedCodexSessionTests.test_owner_input_joins_actual_full_write_and_returned_turn_before_empty_inventory",
+        "ManagedCodexSessionTests.test_foreground_commands_use_kept_service_exact_result_nonce_and_known_exit_status",
+        "ManagedCodexSessionTests.test_backend_fallback_or_wrong_result_echo_never_clears_callback_work",
+        "ManagedCodexSessionTests.test_overlapping_callbacks_are_serialized_through_the_same_kept_command_service",
+        "ManagedCodexSessionTests.test_revocation_preserves_unknown_physical_work_and_refuses_completion",
+        "ManagedCodexSessionTests.test_late_old_ack_or_descriptor_drift_cannot_create_positive_evidence",
+        "ManagedCodexSessionTests.test_supervisor_custody_joins_literal_input_full_write_and_actual_returned_turn",
+        "ManagedCodexSessionTests.test_foreign_or_cancelled_supervisor_custody_never_emits_another_input",
+        "ManagedCodexSessionTests.test_activity_during_real_partial_supervisor_write_cannot_publish_full_write_or_ack"
+      ],
+      "failures": {}
+    },
+    "scripts/tests/test_managed_codex_store.py": {
+      "names": [
+        "ManagedCodexStoreTests.test_store_projects_codex_identity_owner_work_and_verified_close_without_copilot_labels",
+        "ManagedCodexStoreTests.test_store_refuses_foreign_owner_store_or_unqualified_production_before_peer_start",
+        "ManagedCodexStoreTests.test_codex_reserves_the_same_store_slot_against_both_managed_and_manual_starts",
+        "ManagedCodexStoreTests.test_store_keeps_native_command_projection_and_revocation_bound_to_codex",
+        "ManagedCodexStoreTests.test_shared_store_preserves_actual_copilot_start_commands_projection_and_close"
+      ],
+      "failures": {}
+    }
+  },
+  "sourceIndexSHA256": "94aa8139581ca00e871fc341df2053525bf5afaa32daad56cae2bde9ff9c6d21",
+  "producerRustSourceIndexSHA256": "1f92baaab0df192397f4777601b50156b1e9aa2effe77c7bfd86a9d78a3b2338",
+  "producerProfileManifestSHA256": "449baa5bef813d4210055f0655e31259630120b106d0afdbd2b113b39169781c",
+  "producerProfileSHA256": "5dd7978748e6bee503ee1ccf593181fc46c058843fc0943daee191898885ca8f",
+  "sourceLicense": "GPL-3.0-or-later; exact native LICENSE retained in the source bundle",
+  "maximumExpandedSourceBytes": 1048576,
+  "maximumCompressedSourceBytes": 131072,
+  "qualification": false,
+  "actualProviderModelAppOrProfileLaunched": false,
+  "actualBehavioralREDIndexSHA256": "a61f65d3443f06fb53f33c6e066985f7e0f8c1654ee215a72c1038cca9c38a55",
+  "preservedFailedAttemptSHA256": "78c82a563213b25b76de523c2c75788a845fd27b994e51bdee37fce18957627e",
+  "sourceRecordEncoding": "utf8",
+  "testDependencyDoubles": {
+    "scripts/tests/fixtures/managed_store_settings.swift": "The unrelated manual-launch canonical scratch setting traps if read. Manual duplicate start must be refused before any settings access. No settings behavior is qualified."
+  }
+}
