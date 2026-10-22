@@ -143,6 +143,9 @@ export type OuroCliCommand =
   | { kind: "habit.poke"; agent: string; habitName: string; trigger: HabitRunTrigger }
   | { kind: "await.poke"; agent: string; awaitName: string }
   | { kind: "desk"; agent?: string; tool: string; toolArgs: Record<string, unknown> }
+  | { kind: "desk.admin"; action: "invite"; displayName?: string; accountId?: string; out?: string; gateway?: string; trustGateway?: true }
+  | { kind: "desk.admin"; action: "access"; accountId: string; on: boolean; gateway?: string; trustGateway?: true }
+  | { kind: "desk.admin"; action: "delete-account"; accountId: string; gateway?: string; trustGateway?: true }
   | { kind: "migrate-to-desk"; agent: string; root?: string; force?: boolean; dryRun?: boolean }
   | { kind: "doctor"; json?: boolean; category?: string; strict?: boolean }
   | { kind: "bluebubbles.replay"; agent?: string; messageGuid: string; eventType: "new-message" | "updated-message"; json?: boolean }
@@ -195,6 +198,8 @@ export interface OuroCliDeps {
   prepareDaemonRuntimeReplacement?: () => Promise<void> | void
   ensureDaemonBootPersistence?: (socketPath: string) => Promise<void> | void
   startChat?: (agentName: string) => Promise<void>
+  /** Opens a URL in the person's browser; `ouro desk` admin sign-in uses it. */
+  openUrl?: (url: string) => Promise<void> | void
   startShepherdChat?: (options: { agent: string; session?: string; socketPath: string; web?: boolean }) => Promise<void>
   runShepherdOperation?: (command: import("../shepherd/operations").ShepherdOperation) => Promise<unknown>
   tailLogs?: (options?: { follow?: boolean; lines?: number; agentFilter?: string }) => () => void
@@ -375,6 +380,7 @@ export type SetupCliCommand = Extract<OuroCliCommand, { kind: "setup" }>
 export type HookCliCommand = Extract<OuroCliCommand, { kind: "hook" }>
 export type HabitLocalCliCommand = Extract<OuroCliCommand, { kind: "habit.list" } | { kind: "habit.create" } | { kind: "habit.runs" } | { kind: "habit.inspect" } | { kind: "habit.summary" } | { kind: "habit.cancel" }>
 export type DeskCliCommand = Extract<OuroCliCommand, { kind: "desk" }>
+export type DeskAdminCliCommand = Extract<OuroCliCommand, { kind: "desk.admin" }>
 export type MigrateToDeskCliCommand = Extract<OuroCliCommand, { kind: "migrate-to-desk" }>
 export type McpListCliCommand = Extract<OuroCliCommand, { kind: "mcp.list" }>
 export type McpCallCliCommand = Extract<OuroCliCommand, { kind: "mcp.call" }>

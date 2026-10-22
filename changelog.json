@@ -2,6 +2,12 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.940",
+      "changes": [
+        "Ouro admins can run Hosted Desk from the terminal. `ouro desk invite --name <name>` creates an account and issues a single-use, seven-day invite, and `--account <id>` re-invites an account whose invite went unused; `--out <file>` writes the link to a new 0600 file instead of the screen. `ouro desk access <account> on|off` turns an account's Desk access on or off and prints the state the gateway recorded, and `ouro desk delete-account <account> --yes` deletes one and says if its desk could not be removed. Each command signs in to Ouro identity in the browser (authorization code with PKCE on a 127.0.0.1 loopback redirect), reads the sign-in settings the gateway publishes at /.well-known/ouro-desk-admin, checks the tenant's issuer and then calls the gateway's admin route, which enforces the ouro.admin role. desk.ouro.bot must name Ouro's production tenant, and any other gateway needs --trust-gateway because it receives an admin token. Nothing is cached, and the token is never printed or logged."
+      ]
+    },
+    {
       "version": "0.1.0-alpha.939",
       "changes": [
         "Shepherd attributes failed observations to itself without inventing an agent stop or a human decision, and keeps explicit HTTP responses separate from pure transport failures.",
