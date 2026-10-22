@@ -1,0 +1,68 @@
+{
+  "upstream": "openai/codex",
+  "commit": "6b9826e3aa83b1a5947db50f4332cb9c65f1b340",
+  "tree": "74ba48a4b6b086beb9226a79ffe0f3d9f6d40f52",
+  "licenses": {
+    "LICENSE": {
+      "gitBlob": "4606e72e042564097e8780d66c1d4dcb611869bd",
+      "sha256": "d17f227e4df5da1600391338865ce0f3055211760a36688f816941d58232d8dc"
+    },
+    "NOTICE": {
+      "gitBlob": "2805899d56d0332d175cfc613c67d45d6f006db7",
+      "sha256": "9d71575ecfd9a843fc1677b0efb08053c6ba9fd686a0de1a6f5382fd3c220915"
+    }
+  },
+  "modifiedFiles": {
+    "codex-rs/app-server/src/config_manager.rs": "8eeb880e38dc88d6946b330e3481e40b50b7173ada2139e8dc310e20c9e477a4",
+    "codex-rs/app-server/src/config_manager_service.rs": "239eac692e3d1839105345708f61f8dc4b7056fcd41c2de1ee25f568210921dc",
+    "codex-rs/app-server/src/in_process.rs": "7abb2569238e738caff88235a6f884a1f2b60a8dd7074c56dbb2e2fc2ee0d1b5",
+    "codex-rs/app-server/src/outgoing_message.rs": "033eb1b47d0a21a6001d8e865458e27681120a9cb05768193e86c9306b39d595",
+    "codex-rs/core/src/tools/mod.rs": "0c8ec9324f67053cf7c14dac5d53504c9e8c370b84cb2323fdb0239e674572d7",
+    "codex-rs/core/src/lib.rs": "62987028ca8db5485abd38bc4b6d576d933003197ec3e1d356c99b3285e5b7c5",
+    "codex-rs/app-server/src/request_processors/thread_processor.rs": "37a4451e58673b3577c432207a510a7322fd10af5e1e535bb2be8317d5fcb1d9",
+    "codex-rs/app-server/src/message_processor.rs": "2186e5e1ec407c66ff8627008c7f319d22aa76f68bccb6c04ed454b0b8f22fa8"
+  },
+  "modifications": "Pure-profile main unchanged from actual passing executable case. Output failure fixture now positively establishes real BrokenPipe using the same anonymous pipe whose reader was closed, then requires explicit child failure. TempDir.keep path return explicitly discarded to resolve the owned warning. No dependency/SDK/private coding entry change.",
+  "qualification": false,
+  "ciRepository": "ourostack/ouroboros",
+  "ciRepositoryID": 1169669354,
+  "patch": {
+    "path": "managed-codex-frozen-host.patch",
+    "sha256": "fe327838f4e4c909d41eb36ec9d34b702ab87bec7ff7cb8c488064cc84ab8922",
+    "bytes": 182392
+  },
+  "resultingSourcesSHA256": {
+    "codex-rs/app-server/src/config_manager.rs": "93c493f1d65f4ef79b721ad270eb7c1330249c606284ae95e942007001424d5b",
+    "codex-rs/app-server/src/config_manager_service.rs": "aec30e9703c9be51798851f5d9e725fc1b2ec4dd4dc8d3a6f1e011fb9d53b2e4",
+    "codex-rs/app-server/src/in_process.rs": "9cbd3312141e27bba0e2f200570a6a528826d7d188ddfac2d7a2e8e78324993a",
+    "codex-rs/app-server/src/message_processor.rs": "d787c99070d18ba5f4b77c3d871dc26bd697018d5482ceec6c7cb8e89c94d550",
+    "codex-rs/app-server/src/outgoing_message.rs": "bd17b53c026a8ddcddce76359b7ab213d324406468a17dd39a7dc05c32d47dab",
+    "codex-rs/app-server/src/request_processors/thread_processor.rs": "770e4ae53e9baee74174f301bc85ba3dcadcc75aff9ccf6464c32d63691bd036",
+    "codex-rs/core/src/lib.rs": "55108611fcf69f3f2e907abefdd77c0b3cabeaeb95dfee0be3f9e92bde2761c0",
+    "codex-rs/core/src/tools/mod.rs": "7288b89cebec9e428a9e4af51ff0ca1b92ee8c46ad0b2475bed71aeacb56b655"
+  },
+  "sourceValidation": {
+    "sourceIndexSHA256": "a39ca876c09fc69a7376d8dadd4c75532403257c79c8f1c85c291fa5b64ed7d6",
+    "actualEntryBehavioralREDRun": 39822365201,
+    "previousFailedWorkflowRun": 39826760172,
+    "sourceFormatProofSHA256": "8b0c7c36cbe1e037cf525f011409cccdbf2cc0702cbaa128bd896243f171db68",
+    "actualModelOrProviderBootstrapExecuted": false,
+    "qualification": false
+  },
+  "memberSourceSHA256": {
+    "Cargo.toml": "e720e22a82e9949761cf97d7b14e8e49e407edbf2059530963f7708093ea4015",
+    "src/bridge.rs": "261e1961672dcd7276fe761bda77e8f2fc90f025ac2d7a81cdec3b6cd3ceab64",
+    "src/bridge_tests.rs": "d08fcc4feacba57e500a2495546dd38124072c8201ed9f09dd35b733584cb529",
+    "src/capture.rs": "35504000ce3390d31a104fa4ebbeabbba525ce930cb29cf84c462c84699d003a",
+    "src/descriptor.rs": "94cfc0250bf3b7e906409a8420931ce4ca58b78168468d01eb3755c29cc634fb",
+    "src/descriptor_tests.rs": "2fae21146bda16e0b0793f7d6b87ab60271a3a59a72778bfb1862c993edc228d",
+    "src/lib.rs": "7e76136bae68bd68293544e9d5b44d872aaa01dec290a2f0c0323e3e4522ed55",
+    "src/main.rs": "f30600d6599c3bb796b7b0bb8cb5c2eb73909eec73d5c4aca17806b581546934",
+    "src/policy.rs": "8813c73ed2a7944a9ed6daba8365f40387b5c4842a13b42a08fcd6d6cd991a20",
+    "src/preparation_tests.rs": "99b393bf5fd877a938767d4f2bff00dc14e7c33b935e8d918096c7d48378b594",
+    "src/profile.rs": "904ead0b65ae75c9172deb0b3b289209e063f6a5b37939a934b2ab792bfb53c5",
+    "src/wire.rs": "9f10293640bcf2a6eac780752cb424542a8b30703149628dfed858a934f2e4f8",
+    "tests/policy.rs": "d0e1e16ced1ce326c5668f4b409e990aac74246105b29482445572edd27c19fb",
+    "tests/wire.rs": "27358a530d29efdea422fc165ebcb73a27c3f0660ddae9d1e08789168befdbef"
+  }
+}
