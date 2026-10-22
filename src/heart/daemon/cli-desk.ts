@@ -40,6 +40,7 @@
 import { emitNervesEvent } from "../../nerves/runtime"
 import type { OuroCliCommand, OuroCliDeps, DeskCliCommand } from "./cli-types"
 import type { DaemonResponse } from "./daemon"
+import { parseDeskAdminCommand } from "./desk-admin"
 
 // ── Public usage hint ──
 
@@ -60,6 +61,12 @@ export function deskUsage(): string {
     "  ouro desk recall <topic>",
     "  ouro desk reindex",
     "  ouro desk thread <path>",
+    "",
+    "Hosted Desk admin (needs the ouro.admin role; signs in through the browser):",
+    "  ouro desk invite --name <name> [--out <file>]       (--account <id> re-invites an unused account)",
+    "  ouro desk access <account> on|off",
+    "  ouro desk delete-account <account> --yes",
+    "  (each takes --gateway <url> --trust-gateway to manage a Hosted Desk other than desk.ouro.bot)",
     "",
     "Alias:",
     "  ouro task ...    (routes through ouro desk task ...)",
@@ -220,6 +227,7 @@ export function parseDeskCommand(args: string[]): OuroCliCommand {
   if (head === "track") return parseTrackSubverb(rest)
   if (head === "friction") return parseFrictionSubverb(rest)
   if (head === "lesson") return parseLessonSubverb(rest)
+  if (head === "invite" || head === "access" || head === "delete-account") return parseDeskAdminCommand(head, rest)
 
   if (head === "search") {
     const query = rest.join(" ").trim()
