@@ -1,0 +1,60 @@
+name: Shepherd actual native provider app action API source diagnostic
+on:
+  push:
+    branches:
+      - worker/shepherd-v1-native-factory-native-action-api-source-20261022
+permissions:
+  contents: read
+jobs:
+  preparation-source:
+    runs-on: macos-15
+    timeout-minutes: 15
+    steps:
+      - name: Verify actual native source cases and publish compact proof
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 -B - <<'PY'
+          import hashlib, json, os, re, sys, urllib.request
+          from pathlib import Path
+          run_id, commit = os.environ["GITHUB_RUN_ID"], os.environ["GITHUB_SHA"]
+          if (os.environ.get("GITHUB_REPOSITORY") != "ourostack/ouroboros"
+                  or os.environ.get("GITHUB_REPOSITORY_ID") != "1169669354"
+                  or not run_id.isdecimal() or not re.fullmatch(r"[a-f0-9]{40}", commit)):
+              raise RuntimeError("Exact owned CI identity required")
+          root = Path(os.environ["RUNNER_TEMP"]).resolve(strict=True) / f"shepherd-native-factory-native-action-api-source-{run_id}"
+          root.mkdir()
+          payload = root / "payload"
+          payload.mkdir()
+          with (root / "owner.json").open("x") as out:
+              json.dump({"repository": "ourostack/ouroboros", "repository_id": 1169669354,
+                         "run": run_id, "commit": commit}, out)
+          class NoRedirect(urllib.request.HTTPRedirectHandler):
+              def redirect_request(self, *args, **kwargs):
+                  raise RuntimeError("Source payload redirect refused")
+          opener = urllib.request.build_opener(NoRedirect())
+          def fetch(name, limit):
+              url = f"https://raw.githubusercontent.com/ourostack/ouroboros/{commit}/.ci/shepherd-native-factory-native-action-api/{name}"
+              with opener.open(url, timeout=60) as response:
+                  data = response.read(limit + 1)
+              if len(data) > limit:
+                  raise RuntimeError("Native source payload exceeds bound")
+              return data
+          raw = fetch("snapshot.json", 65536)
+          if hashlib.sha256(raw).hexdigest() != "29545a9984c9df9a1a66c155641e52ad1c39938dfd49087e0834435d1837c3cf":
+              raise RuntimeError("Exact native source snapshot differs")
+          snapshot = json.loads(raw)
+          if (snapshot["repository"] != "ourostack/ouroboros" or snapshot["repositoryID"] != 1169669354
+                  or snapshot["qualification"] is not False
+                  or set(snapshot["files"]) != {"runner.py", "sources.json.gz", "provenance.json"}):
+              raise RuntimeError("Native source payload identity differs")
+          with (payload / "snapshot.json").open("xb") as out:
+              out.write(raw)
+          for name, row in snapshot["files"].items():
+              data = fetch(name, 196608 if name == "sources.json.gz" else 131072)
+              if len(data) != row["bytes"] or hashlib.sha256(data).hexdigest() != row["sha256"]:
+                  raise RuntimeError("Native source payload bytes differ")
+              with (payload / name).open("xb") as out:
+                  out.write(data)
+          os.execv(sys.executable, [sys.executable, "-B", str(payload / "runner.py"), "--root", str(root)])
+          PY
