@@ -1,0 +1,234 @@
+{
+  "kind": "selected-gpl-native-source-tests-not-app-build-or-qualification",
+  "sources": {
+    "CLI/CodexTeamsPOSIXSupport.swift": {
+      "bytes": 1738,
+      "sha256": "45b6854c8c98d2f861c87d5538b910b130b5821dd2110f00927b33c2d02dce5a",
+      "mode": "100644"
+    },
+    "CLI/OwnedProcessSupervisor.swift": {
+      "bytes": 22271,
+      "sha256": "c8aef7cd4b5a1181df394912f7ac9342682a9ccc759a3c241df01bc5c8c02fd7",
+      "mode": "100644"
+    },
+    "LICENSE": {
+      "bytes": 36576,
+      "sha256": "ad00ebb34f48e86a71b087584ffa6540d58f6468eeccf85c113d7b6d580a7bb9",
+      "mode": "100644"
+    },
+    "Packages/macOS/CmuxControlSocket/Sources/CmuxControlSocket/Shepherd/ShepherdHookExecutableIdentity.swift": {
+      "bytes": 5404,
+      "sha256": "5ad3978a377de1cf03835735bdea6a798f3e04962aea19455ed395430891702e",
+      "mode": "100644"
+    },
+    "Packages/macOS/CmuxControlSocket/Sources/CmuxControlSocket/Shepherd/ShepherdManagedBackendLaunchReceipt.swift": {
+      "bytes": 7452,
+      "sha256": "2e83b2e9243631a95b4270c772787acf38d49adc15ba5e1b6d6b634089ff4a15",
+      "mode": "100644"
+    },
+    "Packages/macOS/CmuxControlSocket/Sources/CmuxControlSocket/Shepherd/ShepherdManagedBootstrapReader.swift": {
+      "bytes": 3289,
+      "sha256": "d6d64d2f4b2bd7488544114ce9c0fe88a18eb59256eafd310e1f8f044711725c",
+      "mode": "100644"
+    },
+    "Packages/macOS/CmuxControlSocket/Sources/CmuxControlSocket/Shepherd/ShepherdManagedPipeWriter.swift": {
+      "bytes": 5610,
+      "sha256": "0c3a937022ef15c7d6f9f28af1cd540d35babb54157dcc72b9c01c3d4f44ff48",
+      "mode": "100644"
+    },
+    "Packages/macOS/CmuxControlSocket/Sources/CmuxControlSocket/Shepherd/ShepherdManagedRPCFramer.swift": {
+      "bytes": 5130,
+      "sha256": "52e71d51d3f01be8003a8b78facab0b2f90e80227f2bcdd8623fbb53fc482ac1",
+      "mode": "100644"
+    },
+    "Packages/macOS/CmuxControlSocket/Sources/CmuxControlSocket/Shepherd/ShepherdManagedSessionIdentity.swift": {
+      "bytes": 2389,
+      "sha256": "ec58fdd7f8f0e87a896137415a7898edc815b835b4226f2abe416a78f6e384c5",
+      "mode": "100644"
+    },
+    "Packages/macOS/CmuxControlSocket/Sources/CmuxControlSocket/Shepherd/ShepherdManagedSessionState.swift": {
+      "bytes": 8996,
+      "sha256": "86450c90f3c5dc50317478568d0e65176e1aebfaa4f2f9b1f7f384f86e32852e",
+      "mode": "100644"
+    },
+    "Packages/macOS/CmuxFoundation/Sources/CmuxFoundation/Process/AgentPIDProcessIdentity.swift": {
+      "bytes": 3770,
+      "sha256": "10d5e3cb8bcf73098e4394507aa2bfee88b9d0e25a5b8a2676f99c81548b7ada",
+      "mode": "100644"
+    },
+    "Packages/macOS/CmuxFoundation/Sources/CmuxFoundation/Process/DarwinProcessEnumerator.swift": {
+      "bytes": 3599,
+      "sha256": "a857314c99accdf8c30aa62ef26773cd90063deacf31b044ee93a5a336e4774b",
+      "mode": "100644"
+    },
+    "Packages/macOS/CmuxFoundation/Sources/CmuxFoundation/Process/DarwinProcessInfoReader.swift": {
+      "bytes": 2332,
+      "sha256": "3cb30b88310eaf5aaa105c8fe96e6e46d3044e8b212254d19d00980ac0a2608b",
+      "mode": "100644"
+    },
+    "Packages/macOS/CmuxFoundation/Sources/CmuxFoundation/Process/DarwinProcessListing.swift": {
+      "bytes": 1653,
+      "sha256": "f9fdb47485e84fc1cd7206360ba0d92f848062c90ccaa139093b4cea74a6e043",
+      "mode": "100644"
+    },
+    "Sources/Panels/AgentSessionManagedCodexLaunch.swift": {
+      "bytes": 1360,
+      "sha256": "ca4a6353302b64ae5faa77c4852e8ebee93fc9db79b8e3e49dbef4a634078e8b",
+      "mode": "100644"
+    },
+    "Sources/Panels/AgentSessionManagedCommand.swift": {
+      "bytes": 996,
+      "sha256": "c8715c0f3fd8d0a289c8f1c85cf58f6e558464aa8763e941da3f257f58c59ae2",
+      "mode": "100644"
+    },
+    "Sources/Panels/AgentSessionManagedCommandService.swift": {
+      "bytes": 16191,
+      "sha256": "bf586b27b59ccae9d73fae50fd916edba8dc9bd21199c507858d4005a2ab1738",
+      "mode": "100644"
+    },
+    "Sources/Panels/AgentSessionManagedCopilotLaunch.swift": {
+      "bytes": 11788,
+      "sha256": "757a6af94785d29c17f14b6dfb54e7e1bf322837fa01ea34390911db5218cd23",
+      "mode": "100644"
+    },
+    "Sources/Panels/AgentSessionManagedJSON.swift": {
+      "bytes": 1893,
+      "sha256": "29799408b46f8f456acb0c0be7426c7588bf998c10dcf530ecf8849eae1756d3",
+      "mode": "100644"
+    },
+    "Sources/Panels/AgentSessionManagedNativeOwner.swift": {
+      "bytes": 6673,
+      "sha256": "80a0bb1efe9cc5dfe87e61517b9217199945411ce86fda8de0fdb06669706669",
+      "mode": "100644"
+    },
+    "Sources/Panels/AgentSessionManagedProviderAdapter.swift": {
+      "bytes": 1466,
+      "sha256": "1b115637ff0e94d201db14cb5c2d1e80b6ca0b6682e1b79809cafafb3162a2da",
+      "mode": "100644"
+    },
+    "Sources/Panels/AgentSessionManagedRendererController.swift": {
+      "bytes": 15204,
+      "sha256": "7287666d0fa0fd2486f3328bd217fc22a9d89b2d49c730206f261e00f0a516a4",
+      "mode": "100644"
+    },
+    "Sources/Panels/AgentSessionManagedRendererReservation.swift": {
+      "bytes": 3995,
+      "sha256": "c2def7c76e9545a2cedb17d083332c79a85279adf1edda1e99393df7b360ec41",
+      "mode": "100644"
+    },
+    "Sources/Panels/AgentSessionManagedSession.swift": {
+      "bytes": 12781,
+      "sha256": "39db2a620d2f381883708721d3f5e5c8d2b8abdf9f9333ea592fed11b5e6812b",
+      "mode": "100644"
+    },
+    "Sources/Panels/AgentSessionOwnedProcessLauncher.swift": {
+      "bytes": 3541,
+      "sha256": "280ca1a44e29c4c20bfb84ea563033c266ceffac3b5f72cf1134b2fb9d4a969b",
+      "mode": "100644"
+    },
+    "Sources/Panels/CodexManagedSession.swift": {
+      "bytes": 947,
+      "sha256": "bd257604dfae3a233205799e4473e453d60b6cfeccd02bba836559f0fe3d1c2c",
+      "mode": "100644"
+    },
+    "Sources/Panels/CodexManagedShellInventory.swift": {
+      "bytes": 5977,
+      "sha256": "47abd769196aaab12f55f2c07bcdd755d2d258c58bed894e698a992b9ed31ff9",
+      "mode": "100644"
+    },
+    "Sources/Panels/CodexManagedStartup.swift": {
+      "bytes": 11517,
+      "sha256": "7b1f090329c9f107e57d2424b03b7032f3984b9372619e65f82a27e519f982b1",
+      "mode": "100644"
+    },
+    "Sources/Panels/CodexManagedStreamDecoder.swift": {
+      "bytes": 5156,
+      "sha256": "aefdd698e441a184fdb895eac91e96d53dcd49f982892d70a294c1019f184d4c",
+      "mode": "100644"
+    },
+    "Sources/Panels/CodexManagedTurnLedger.swift": {
+      "bytes": 28911,
+      "sha256": "a5f561492cf93b161248ac394eb471b106b391844545a4e605074fb2966f0817",
+      "mode": "100644"
+    },
+    "Sources/Panels/CopilotManagedConfiguration.swift": {
+      "bytes": 5966,
+      "sha256": "18da0bb2ae0fa1f32dbffd847c6a6d2efe2323ddf7aa07d0e993ba3d0535bac4",
+      "mode": "100644"
+    },
+    "Sources/Panels/CopilotManagedEventMetadata.swift": {
+      "bytes": 2213,
+      "sha256": "43acd785e9e06b7eede1774122ce44e50b6e6619666588027a5cd98831c5c92a",
+      "mode": "100644"
+    },
+    "Sources/Panels/CopilotManagedSession.swift": {
+      "bytes": 32326,
+      "sha256": "7ad5933cac8f016962cb31acc7a6b4c9cd7be9ccb63fa6824fb81be818983b3c",
+      "mode": "100644"
+    },
+    "Sources/Panels/CopilotManagedTurnLedger.swift": {
+      "bytes": 24271,
+      "sha256": "c7d5095c058887bc00de2ec4e83a85ff039f0f28e5a947169125fabe89ddcfd3",
+      "mode": "100644"
+    },
+    "scripts/tests/fixtures/managed_codex_profile.json": {
+      "bytes": 3422,
+      "sha256": "042b2e1b3f74816706ba8eb3fe60a6872d7357aa32bb70c28fa5a19df4c95d41",
+      "mode": "100644"
+    },
+    "scripts/tests/fixtures/managed_codex_session.swift": {
+      "bytes": 17829,
+      "sha256": "a41c966cfe506a1f93f7cd580e06bd2230a7f53a059e20cd0eacecd7492ae8bf",
+      "mode": "100644"
+    },
+    "scripts/tests/fixtures/managed_process_listing.swift": {
+      "bytes": 1253,
+      "sha256": "d9d3a8a213903d121dffd7d8dd0ac7886a141b63cf0db94a06fab145a08f9838",
+      "mode": "100644"
+    },
+    "scripts/tests/test_managed_codex_session.py": {
+      "bytes": 10035,
+      "sha256": "2c79d88150342a6c497cd921eb88aee1420f8ebe1db2cd6d125e535353521db8",
+      "mode": "100644"
+    },
+    "scripts/tests/test_managed_codex_startup.py": {
+      "bytes": 14446,
+      "sha256": "cc4a86acd238bd594791fd3e605eb775c816c92b614b4b4e26a8bd9a66b05945",
+      "mode": "100644"
+    }
+  },
+  "suites": {
+    "scripts/tests/test_managed_codex_session.py": {
+      "names": [
+        "ManagedCodexSessionTests.test_actual_descriptor_binds_helper_lifetime_and_returned_thread_without_qualification",
+        "ManagedCodexSessionTests.test_foreign_unconsumed_revoked_or_wrong_scope_owner_never_starts_a_peer",
+        "ManagedCodexSessionTests.test_owner_input_joins_actual_full_write_and_returned_turn_before_empty_inventory",
+        "ManagedCodexSessionTests.test_foreground_commands_use_kept_service_exact_result_nonce_and_known_exit_status",
+        "ManagedCodexSessionTests.test_backend_fallback_or_wrong_result_echo_never_clears_callback_work",
+        "ManagedCodexSessionTests.test_overlapping_callbacks_are_serialized_through_the_same_kept_command_service",
+        "ManagedCodexSessionTests.test_revocation_preserves_unknown_physical_work_and_refuses_completion",
+        "ManagedCodexSessionTests.test_late_old_ack_or_descriptor_drift_cannot_create_positive_evidence"
+      ],
+      "failures": {
+        "ManagedCodexSessionTests.test_actual_descriptor_binds_helper_lifetime_and_returned_thread_without_qualification": "CMUX_NATIVE_CODEX_ADAPTER_UNAVAILABLE",
+        "ManagedCodexSessionTests.test_owner_input_joins_actual_full_write_and_returned_turn_before_empty_inventory": "CMUX_NATIVE_CODEX_ADAPTER_UNAVAILABLE",
+        "ManagedCodexSessionTests.test_foreground_commands_use_kept_service_exact_result_nonce_and_known_exit_status": "CMUX_NATIVE_CODEX_ADAPTER_UNAVAILABLE",
+        "ManagedCodexSessionTests.test_backend_fallback_or_wrong_result_echo_never_clears_callback_work": "CMUX_NATIVE_CODEX_ADAPTER_UNAVAILABLE",
+        "ManagedCodexSessionTests.test_overlapping_callbacks_are_serialized_through_the_same_kept_command_service": "CMUX_NATIVE_CODEX_ADAPTER_UNAVAILABLE",
+        "ManagedCodexSessionTests.test_revocation_preserves_unknown_physical_work_and_refuses_completion": "CMUX_NATIVE_CODEX_ADAPTER_UNAVAILABLE",
+        "ManagedCodexSessionTests.test_late_old_ack_or_descriptor_drift_cannot_create_positive_evidence": "CMUX_NATIVE_CODEX_ADAPTER_UNAVAILABLE"
+      }
+    }
+  },
+  "sourceIndexSHA256": "34418d103347b7b1834dd8cf4cf1623a0dee60fd6fcc81363a346f96655f82cc",
+  "producerRustSourceIndexSHA256": "1f92baaab0df192397f4777601b50156b1e9aa2effe77c7bfd86a9d78a3b2338",
+  "producerProfileManifestSHA256": "449baa5bef813d4210055f0655e31259630120b106d0afdbd2b113b39169781c",
+  "producerProfileSHA256": "5dd7978748e6bee503ee1ccf593181fc46c058843fc0943daee191898885ca8f",
+  "sourceLicense": "GPL-3.0-or-later; exact native LICENSE retained in the source bundle",
+  "maximumExpandedSourceBytes": 1048576,
+  "maximumCompressedSourceBytes": 131072,
+  "qualification": false,
+  "actualProviderModelAppOrProfileLaunched": false,
+  "actualBehavioralREDIndexSHA256": "a61f65d3443f06fb53f33c6e066985f7e0f8c1654ee215a72c1038cca9c38a55",
+  "preservedFailedAttemptSHA256": "78c82a563213b25b76de523c2c75788a845fd27b994e51bdee37fce18957627e"
+}
