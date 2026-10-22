@@ -1,0 +1,77 @@
+{
+  "upstream": "openai/codex",
+  "commit": "6b9826e3aa83b1a5947db50f4332cb9c65f1b340",
+  "tree": "74ba48a4b6b086beb9226a79ffe0f3d9f6d40f52",
+  "licenses": {
+    "LICENSE": {
+      "gitBlob": "4606e72e042564097e8780d66c1d4dcb611869bd",
+      "sha256": "d17f227e4df5da1600391338865ce0f3055211760a36688f816941d58232d8dc"
+    },
+    "NOTICE": {
+      "gitBlob": "2805899d56d0332d175cfc613c67d45d6f006db7",
+      "sha256": "9d71575ecfd9a843fc1677b0efb08053c6ba9fd686a0de1a6f5382fd3c220915"
+    }
+  },
+  "modifiedFiles": {
+    "codex-rs/app-server/src/config_manager.rs": "8eeb880e38dc88d6946b330e3481e40b50b7173ada2139e8dc310e20c9e477a4",
+    "codex-rs/app-server/src/config_manager_service.rs": "239eac692e3d1839105345708f61f8dc4b7056fcd41c2de1ee25f568210921dc",
+    "codex-rs/app-server/src/in_process.rs": "7abb2569238e738caff88235a6f884a1f2b60a8dd7074c56dbb2e2fc2ee0d1b5",
+    "codex-rs/app-server/src/outgoing_message.rs": "033eb1b47d0a21a6001d8e865458e27681120a9cb05768193e86c9306b39d595",
+    "codex-rs/core/src/tools/mod.rs": "0c8ec9324f67053cf7c14dac5d53504c9e8c370b84cb2323fdb0239e674572d7",
+    "codex-rs/core/src/lib.rs": "62987028ca8db5485abd38bc4b6d576d933003197ec3e1d356c99b3285e5b7c5",
+    "codex-rs/app-server/src/request_processors/thread_processor.rs": "37a4451e58673b3577c432207a510a7322fd10af5e1e535bb2be8317d5fcb1d9",
+    "codex-rs/app-server/src/message_processor.rs": "2186e5e1ec407c66ff8627008c7f319d22aa76f68bccb6c04ed454b0b8f22fa8"
+  },
+  "modifications": "Reviewed142A tests/private read-only observations ONLY after actual141B29GREEN run39707064939. Original29 test prefix/non-test bridge source unchanged,18appended controlled lifecycle/saturation/budget/identity/cancel tests. Callback writer-commit and actual Pending bounded-output-send observations are private cfg(test), not gates. Expected47ALLPASS/Cargo0 only; no SDK patch/helper/lock/factory/backend/bootstrap/native/account/model/GUI/profile/testhost/qualification activity.",
+  "qualification": false,
+  "ciRepository": "ourostack/ouroboros",
+  "ciRepositoryID": 1169669354,
+  "patch": {
+    "path": "managed-codex-frozen-host.patch",
+    "sha256": "65358970299e3b3cb32890cd7bca1c1962c4f3bfcbaa2a31dcc69fcab8bce6a6",
+    "bytes": 180230
+  },
+  "resultingSourcesSHA256": {
+    "codex-rs/app-server/src/config_manager.rs": "588b3eacd89de221610498c819fda45da46615974319aaaae83965d9a00864f3",
+    "codex-rs/app-server/src/config_manager_service.rs": "aec30e9703c9be51798851f5d9e725fc1b2ec4dd4dc8d3a6f1e011fb9d53b2e4",
+    "codex-rs/app-server/src/in_process.rs": "9cbd3312141e27bba0e2f200570a6a528826d7d188ddfac2d7a2e8e78324993a",
+    "codex-rs/app-server/src/message_processor.rs": "d787c99070d18ba5f4b77c3d871dc26bd697018d5482ceec6c7cb8e89c94d550",
+    "codex-rs/app-server/src/outgoing_message.rs": "bd17b53c026a8ddcddce76359b7ab213d324406468a17dd39a7dc05c32d47dab",
+    "codex-rs/app-server/src/request_processors/thread_processor.rs": "770e4ae53e9baee74174f301bc85ba3dcadcc75aff9ccf6464c32d63691bd036",
+    "codex-rs/core/src/lib.rs": "55108611fcf69f3f2e907abefdd77c0b3cabeaeb95dfee0be3f9e92bde2761c0",
+    "codex-rs/core/src/tools/mod.rs": "7288b89cebec9e428a9e4af51ff0ca1b92ee8c46ad0b2475bed71aeacb56b655"
+  },
+  "sourceValidation": {
+    "currentCandidateExecuted": false,
+    "effectfulBootstrapExecuted": false,
+    "nativeIntegrationQualified": false,
+    "runtimeQualified": false,
+    "priorMissingEntryREDRun": 39694887043,
+    "priorMissingEntryREDVerified": true,
+    "sourceReview": "142A",
+    "partialRunnerOnly": true,
+    "completeBridge": false,
+    "diagnosticTestsOnly": true,
+    "priorPartialRunnerGREEN": 39697974199,
+    "privateReadOnlyProbeFieldsOnly": true,
+    "priorSettlementDiagnosticRED": 39700619494,
+    "priorFrontierDiagnosticRED": 39703734335,
+    "priorSettlement29GREEN": 39707064939
+  },
+  "memberSourceSHA256": {
+    "Cargo.toml": "e720e22a82e9949761cf97d7b14e8e49e407edbf2059530963f7708093ea4015",
+    "src/bridge.rs": "b78c60ec84f59a530221c6a69388342c6d8c33a1fd6d797f03c53bf6590d618a",
+    "src/bridge_tests.rs": "599a985b02b4b8d1e534a2cf3112c186803df8ad728277b04982e7f8a8385eff",
+    "src/capture.rs": "4455f5d498727009ce6f0975b2289c291997c03005aae735b484be9d31c61b52",
+    "src/descriptor.rs": "62440a64ed9a3369e085908e91a0a16d2f848a956fa9e559d544592e9b9e1f30",
+    "src/descriptor_tests.rs": "6ac7713470782f17ae6aa3a5da7d3513c6acc0151e77e6af225eac53e1f452e2",
+    "src/lib.rs": "7e76136bae68bd68293544e9d5b44d872aaa01dec290a2f0c0323e3e4522ed55",
+    "src/main.rs": "86d58bda61f24823235b43c519b7ba400fecc0306ea44361a41efc55ed1a79a6",
+    "src/policy.rs": "a8a965b3697bff1a888d272635ec5bf3011dc07d180b874143da0efada698115",
+    "src/preparation_tests.rs": "9060b7d53b8c19334c9fec6daa0e3cb4a88f3fdc962f1fb229935b214585e2c0",
+    "src/profile.rs": "1a7e5991cb48793d6bdc7f06478cf079bdd1aae7631e8463bf7a28b0c8d6041d",
+    "src/wire.rs": "e28bb90c32778a50304b316029d8b3342f996a250902ea3bdd838721f02a1cb2",
+    "tests/policy.rs": "4217fdbe22a481934d81becc631a4a962336d13a88f59ab76f73b0e1433a270a",
+    "tests/wire.rs": "b7bfe6710a252db6f990b3b6fe662777742c4f1b6a7def9245bbfb12b3db43db"
+  }
+}
