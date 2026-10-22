@@ -1,0 +1,211 @@
+{
+  "kind": "selected-gpl-native-source-tests-not-app-build-or-qualification",
+  "sources": {
+    "LICENSE": {
+      "bytes": 36576,
+      "sha256": "ad00ebb34f48e86a71b087584ffa6540d58f6468eeccf85c113d7b6d580a7bb9",
+      "mode": "100644"
+    },
+    "Packages/macOS/CmuxControlSocket/Sources/CmuxControlSocket/Shepherd/ShepherdManagedPipeWriter.swift": {
+      "bytes": 5610,
+      "sha256": "0c3a937022ef15c7d6f9f28af1cd540d35babb54157dcc72b9c01c3d4f44ff48",
+      "mode": "100644"
+    },
+    "Packages/macOS/CmuxControlSocket/Sources/CmuxControlSocket/Shepherd/ShepherdManagedSessionIdentity.swift": {
+      "bytes": 2389,
+      "sha256": "ec58fdd7f8f0e87a896137415a7898edc815b835b4226f2abe416a78f6e384c5",
+      "mode": "100644"
+    },
+    "Packages/macOS/CmuxControlSocket/Sources/CmuxControlSocket/Shepherd/ShepherdManagedSessionState.swift": {
+      "bytes": 8996,
+      "sha256": "86450c90f3c5dc50317478568d0e65176e1aebfaa4f2f9b1f7f384f86e32852e",
+      "mode": "100644"
+    },
+    "Sources/Panels/AgentSessionManagedJSON.swift": {
+      "bytes": 1893,
+      "sha256": "29799408b46f8f456acb0c0be7426c7588bf998c10dcf530ecf8849eae1756d3",
+      "mode": "100644"
+    },
+    "Sources/Panels/AgentSessionManagedCommand.swift": {
+      "bytes": 996,
+      "sha256": "c8715c0f3fd8d0a289c8f1c85cf58f6e558464aa8763e941da3f257f58c59ae2",
+      "mode": "100644"
+    },
+    "Sources/Panels/CodexManagedSession.swift": {
+      "bytes": 11517,
+      "sha256": "7b1f090329c9f107e57d2424b03b7032f3984b9372619e65f82a27e519f982b1",
+      "mode": "100644"
+    },
+    "Sources/Panels/CodexManagedStreamDecoder.swift": {
+      "bytes": 5156,
+      "sha256": "aefdd698e441a184fdb895eac91e96d53dcd49f982892d70a294c1019f184d4c",
+      "mode": "100644"
+    },
+    "Sources/Panels/CodexManagedShellInventory.swift": {
+      "bytes": 5977,
+      "sha256": "47abd769196aaab12f55f2c07bcdd755d2d258c58bed894e698a992b9ed31ff9",
+      "mode": "100644"
+    },
+    "Sources/Panels/CodexManagedTurnLedger.swift": {
+      "bytes": 28911,
+      "sha256": "a5f561492cf93b161248ac394eb471b106b391844545a4e605074fb2966f0817",
+      "mode": "100644"
+    },
+    "scripts/tests/test_managed_codex_startup.py": {
+      "bytes": 13962,
+      "sha256": "b660a91f3c05ced943694ceb0b552f5a6f4dc25917b32627c7f1ac3194ade778",
+      "mode": "100644"
+    },
+    "scripts/tests/test_managed_codex_stream.py": {
+      "bytes": 12042,
+      "sha256": "a1a3617de579835ea51b8bdb420d2235285cacf6735fa432306440a88db1ed55",
+      "mode": "100644"
+    },
+    "scripts/tests/test_managed_codex_shell_inventory.py": {
+      "bytes": 13512,
+      "sha256": "0f82f27766b42bd83c61ccf227d75d519fdf78cc08604537c34d9827bb145e14",
+      "mode": "100644"
+    },
+    "scripts/tests/test_managed_codex_turn_ledger.py": {
+      "bytes": 34715,
+      "sha256": "76d466d78643df70b45eeb7d3e22be73432aa173bb1d7251f3cb54cbec82e2cf",
+      "mode": "100644"
+    },
+    "scripts/tests/fixtures/managed_codex_startup.swift": {
+      "bytes": 4998,
+      "sha256": "def16e3e1b52d222422d97bf0da41e2fece72b02322fcf2f8773efb83ad85bac",
+      "mode": "100644"
+    },
+    "scripts/tests/fixtures/managed_codex_profile.json": {
+      "bytes": 3422,
+      "sha256": "042b2e1b3f74816706ba8eb3fe60a6872d7357aa32bb70c28fa5a19df4c95d41",
+      "mode": "100644"
+    },
+    "scripts/tests/fixtures/managed_codex_stream_main.swift": {
+      "bytes": 3270,
+      "sha256": "27cf2ea761e71167e8fa271416c94dc9288457d450bc7544ab0196cfef05f786",
+      "mode": "100644"
+    },
+    "scripts/tests/fixtures/managed_codex_shell_inventory_main.swift": {
+      "bytes": 2731,
+      "sha256": "1976fc62ee448b87b84244dac769ee305e0e09755331b10cbf85cb4c1f9775a8",
+      "mode": "100644"
+    },
+    "scripts/tests/fixtures/managed_codex_turn_ledger_main.swift": {
+      "bytes": 9368,
+      "sha256": "239d40670ef7c60591f2fc68284ea5681f34b5ae87fed0b587d24e551e03d425",
+      "mode": "100644"
+    }
+  },
+  "suites": {
+    "scripts/tests/test_managed_codex_startup.py": {
+      "names": [
+        "ManagedCodexStartupTests.test_exact_descriptor_initializes_only_the_bound_birth_and_real_thread",
+        "ManagedCodexStartupTests.test_early_ready_waits_for_the_actual_initialize_write_witness",
+        "ManagedCodexStartupTests.test_source_catalog_schema_and_profile_changes_never_initialize",
+        "ManagedCodexStartupTests.test_every_effective_policy_field_is_checked_before_initialization",
+        "ManagedCodexStartupTests.test_every_closed_feature_and_missing_or_extra_policy_value_refuses",
+        "ManagedCodexStartupTests.test_nonce_cwd_store_and_envelope_drift_cannot_bind",
+        "ManagedCodexStartupTests.test_boolean_number_and_nested_policy_coercions_refuse",
+        "ManagedCodexStartupTests.test_duplicate_keys_invalid_utf8_and_truncated_descriptors_hold",
+        "ManagedCodexStartupTests.test_coalesced_duplicate_descriptor_or_preinitialize_work_writes_nothing",
+        "ManagedCodexStartupTests.test_refused_initialize_write_cannot_create_readiness",
+        "ManagedCodexStartupTests.test_ready_identity_or_policy_drift_and_foreign_ack_hold",
+        "ManagedCodexStartupTests.test_fragmented_bytes_preserve_the_same_exact_descriptor_binding"
+      ],
+      "failures": {}
+    },
+    "scripts/tests/test_managed_codex_stream.py": {
+      "names": [
+        "ManagedCodexStreamTests.test_exact_request_notification_response_and_error_envelopes_stay_distinct",
+        "ManagedCodexStreamTests.test_raw_fields_and_multibyte_text_survive_every_pipe_boundary",
+        "ManagedCodexStreamTests.test_string_and_integer_request_ids_never_alias_or_lose_64_bit_precision",
+        "ManagedCodexStreamTests.test_incomplete_json_at_real_eof_cannot_be_forced_out_or_resumed",
+        "ManagedCodexStreamTests.test_invalid_utf8_latches_instead_of_decoding_replacement_text",
+        "ManagedCodexStreamTests.test_byte_limit_is_inclusive_and_overflow_never_recovers",
+        "ManagedCodexStreamTests.test_finish_is_idempotent_but_any_append_after_eof_is_closed",
+        "ManagedCodexStreamTests.test_malformed_or_ambiguous_envelopes_are_terminal_not_best_effort",
+        "ManagedCodexStreamTests.test_invalid_request_id_types_do_not_become_notifications_or_integer_aliases",
+        "ManagedCodexStreamTests.test_invalid_json_and_nonobjects_cannot_be_silently_skipped",
+        "ManagedCodexStreamTests.test_a_valid_message_with_a_partial_next_frame_is_never_a_drained_stream",
+        "ManagedCodexStreamTests.test_duplicate_json_members_at_any_depth_cannot_change_wire_identity",
+        "ManagedCodexStreamTests.test_keys_in_distinct_objects_and_json_looking_literal_strings_are_not_duplicates",
+        "ManagedCodexStreamTests.test_wire_size_preserves_actual_utf8_whitespace_and_crlf_not_reserialized_size"
+      ],
+      "failures": {}
+    },
+    "scripts/tests/test_managed_codex_shell_inventory.py": {
+      "names": [
+        "ManagedCodexShellInventoryTests.test_empty_page_is_not_positive_until_exact_full_request_write_and_response",
+        "ManagedCodexShellInventoryTests.test_written_request_is_not_a_readback_and_no_page_is_not_an_empty_inventory",
+        "ManagedCodexShellInventoryTests.test_every_cursor_is_visited_before_a_multi_page_empty_inventory_completes",
+        "ManagedCodexShellInventoryTests.test_nonempty_inventory_is_complete_but_never_reports_empty_work",
+        "ManagedCodexShellInventoryTests.test_foreign_error_request_notification_and_duplicate_responses_are_not_pages",
+        "ManagedCodexShellInventoryTests.test_revision_change_before_request_write_reply_or_next_page_is_terminal",
+        "ManagedCodexShellInventoryTests.test_cursor_cycles_empty_malformed_and_oversized_cursors_are_terminal",
+        "ManagedCodexShellInventoryTests.test_missing_null_partial_or_unknown_page_shapes_are_not_empty",
+        "ManagedCodexShellInventoryTests.test_duplicate_item_or_process_identity_in_one_or_later_pages_is_terminal",
+        "ManagedCodexShellInventoryTests.test_partial_malformed_terminal_records_cannot_be_dropped_to_get_empty_success",
+        "ManagedCodexShellInventoryTests.test_duplicate_requests_writes_and_request_id_reuse_are_terminal",
+        "ManagedCodexShellInventoryTests.test_numeric_request_ids_do_not_alias_strings",
+        "ManagedCodexShellInventoryTests.test_page_limit_cannot_return_more_entries_than_requested",
+        "ManagedCodexShellInventoryTests.test_paginated_empty_responses_are_bounded_not_an_unending_positive_probe",
+        "ManagedCodexShellInventoryTests.test_a_completed_inventory_cannot_be_reopened_or_reused_for_new_work",
+        "ManagedCodexShellInventoryTests.test_native_enum_construction_cannot_bypass_bounded_request_identity",
+        "ManagedCodexShellInventoryTests.test_exact_page_and_terminal_count_limits_are_accepted_before_overflow_is_held",
+        "ManagedCodexShellInventoryTests.test_exact_retained_byte_limit_is_accepted_and_the_next_record_is_held"
+      ],
+      "failures": {}
+    },
+    "scripts/tests/test_managed_codex_turn_ledger.py": {
+      "names": [
+        "ManagedCodexTurnLedgerTests.test_exact_root_and_complete_empty_shell_snapshot_are_all_required",
+        "ManagedCodexTurnLedgerTests.test_outgoing_native_frame_is_literal_text_without_runtime_override_fields",
+        "ManagedCodexTurnLedgerTests.test_real_pipe_write_and_matching_rpc_reply_are_separate_facts",
+        "ManagedCodexTurnLedgerTests.test_provider_turn_id_is_returned_and_mapped_not_assumed_equal_to_host_uuid",
+        "ManagedCodexTurnLedgerTests.test_foreign_rpc_thread_turn_duplicate_reply_and_item_alias_never_complete_root",
+        "ManagedCodexTurnLedgerTests.test_failed_interrupted_or_error_bearing_root_is_never_success",
+        "ManagedCodexTurnLedgerTests.test_root_done_does_not_close_unknown_or_later_autonomous_work",
+        "ManagedCodexTurnLedgerTests.test_partial_ingress_immediately_revokes_work_evidence_and_native_revision",
+        "ManagedCodexTurnLedgerTests.test_second_input_requires_complete_prior_evidence_and_cannot_reuse_turn_ids",
+        "ManagedCodexTurnLedgerTests.test_exact_foreground_callback_requires_native_work_and_consumed_result",
+        "ManagedCodexTurnLedgerTests.test_callback_write_is_not_consumption_and_exact_early_consumption_waits_for_full_write",
+        "ManagedCodexTurnLedgerTests.test_wrong_call_arguments_content_success_or_foreign_callback_cannot_discharge_work",
+        "ManagedCodexTurnLedgerTests.test_a_known_complete_failed_command_is_consumed_but_not_confused_with_unknown_work",
+        "ManagedCodexTurnLedgerTests.test_unmatched_or_disabled_tool_requests_are_held_before_native_dispatch",
+        "ManagedCodexTurnLedgerTests.test_partial_shell_pages_or_empty_reply_without_write_never_establish_coverage",
+        "ManagedCodexTurnLedgerTests.test_background_shell_or_activity_during_inspection_is_not_a_clean_snapshot",
+        "ManagedCodexTurnLedgerTests.test_passive_message_lifecycles_are_bound_and_do_not_replace_root_completion",
+        "ManagedCodexTurnLedgerTests.test_eof_and_unexpected_permission_requests_are_sticky_barriers",
+        "ManagedCodexTurnLedgerTests.test_malformed_passive_metadata_cannot_still_produce_positive_work_evidence",
+        "ManagedCodexTurnLedgerTests.test_valid_final_answer_phase_and_citations_remain_passive_not_root_completion",
+        "ManagedCodexTurnLedgerTests.test_backend_fallback_cannot_impersonate_consumption_of_an_identical_failed_command",
+        "ManagedCodexTurnLedgerTests.test_callback_result_witness_is_unique_and_cannot_be_replayed_between_identical_commands",
+        "ManagedCodexTurnLedgerTests.test_pinned_reasoning_progress_is_passive_and_bound_to_its_live_root_item",
+        "ManagedCodexTurnLedgerTests.test_reasoning_progress_rejects_foreign_closed_or_malformed_indices",
+        "ManagedCodexTurnLedgerTests.test_known_queued_callbacks_do_not_overlap_the_kept_native_command_service",
+        "ManagedCodexTurnLedgerTests.test_owner_prompt_limit_counts_exact_utf8_bytes_without_clipping_or_rewriting",
+        "ManagedCodexTurnLedgerTests.test_early_event_buffer_accepts_64_messages_and_holds_before_the_65th",
+        "ManagedCodexTurnLedgerTests.test_live_item_limit_is_inclusive_and_does_not_evict_work_to_make_room",
+        "ManagedCodexTurnLedgerTests.test_result_text_limit_is_inclusive_and_overflow_remains_outstanding",
+        "ManagedCodexTurnLedgerTests.test_early_byte_limit_uses_actual_wire_bytes_and_is_inclusive",
+        "ManagedCodexTurnLedgerTests.test_root_ingress_limit_is_exact_and_overflow_is_not_just_incomplete_json",
+        "ManagedCodexTurnLedgerTests.test_canonical_terminal_summary_matches_the_completed_final_item_and_is_not_new_work",
+        "ManagedCodexTurnLedgerTests.test_terminal_summary_never_creates_an_unseen_item_or_discharges_outstanding_work",
+        "ManagedCodexTurnLedgerTests.test_terminal_summary_selects_the_last_eligible_final_or_legacy_message_not_commentary",
+        "ManagedCodexTurnLedgerTests.test_terminal_summary_view_and_cardinality_are_not_a_history_or_work_inventory"
+      ],
+      "failures": {}
+    }
+  },
+  "sourceIndexSHA256": "bf3b5e457d1e44ba1acc8f4fc9efefc5e3938564104a1eba95885f4f89e09530",
+  "producerRustSourceIndexSHA256": "1f92baaab0df192397f4777601b50156b1e9aa2effe77c7bfd86a9d78a3b2338",
+  "producerProfileManifestSHA256": "449baa5bef813d4210055f0655e31259630120b106d0afdbd2b113b39169781c",
+  "producerProfileSHA256": "5dd7978748e6bee503ee1ccf593181fc46c058843fc0943daee191898885ca8f",
+  "sourceLicense": "GPL-3.0-or-later; exact native LICENSE retained in the source bundle",
+  "maximumExpandedSourceBytes": 1048576,
+  "maximumCompressedSourceBytes": 131072,
+  "qualification": false,
+  "actualProviderModelAppOrProfileLaunched": false,
+  "actualBehavioralREDIndexSHA256": "a61f65d3443f06fb53f33c6e066985f7e0f8c1654ee215a72c1038cca9c38a55"
+}
