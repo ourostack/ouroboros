@@ -1,0 +1,187 @@
+{
+  "repository": "ourostack/ouroboros",
+  "repositoryID": 1169669354,
+  "upstream_commit": "6b9826e3aa83b1a5947db50f4332cb9c65f1b340",
+  "upstream_tree": "74ba48a4b6b086beb9226a79ffe0f3d9f6d40f52",
+  "qualification": false,
+  "memberFiles": {
+    "member-Cargo.toml": "Cargo.toml",
+    "member-src-lib.rs": "src/lib.rs",
+    "member-src-main.rs": "src/main.rs",
+    "member-src-profile.rs": "src/profile.rs",
+    "member-src-policy.rs": "src/policy.rs",
+    "member-tests-policy.rs": "tests/policy.rs",
+    "member-src-preparation-tests.rs": "src/preparation_tests.rs",
+    "member-src-capture.rs": "src/capture.rs",
+    "member-src-descriptor.rs": "src/descriptor.rs",
+    "member-src-descriptor-tests.rs": "src/descriptor_tests.rs",
+    "member-src-wire.rs": "src/wire.rs",
+    "member-tests-wire.rs": "tests/wire.rs",
+    "member-src-bridge.rs": "src/bridge.rs",
+    "member-src-bridge-tests.rs": "src/bridge_tests.rs"
+  },
+  "files": {
+    "LICENSE.codex": {
+      "sha256": "d17f227e4df5da1600391338865ce0f3055211760a36688f816941d58232d8dc",
+      "bytes": 10926
+    },
+    "NOTICE.codex": {
+      "sha256": "9d71575ecfd9a843fc1677b0efb08053c6ba9fd686a0de1a6f5382fd3c220915",
+      "bytes": 242
+    },
+    "build-managed-codex-host.py": {
+      "sha256": "5191d6714ac5ae4eefee3b2f46ae7e6cd74a2074f6bb6c4ea3064343e143d6df",
+      "bytes": 36242
+    },
+    "managed-codex-frozen-host.patch": {
+      "sha256": "65358970299e3b3cb32890cd7bca1c1962c4f3bfcbaa2a31dcc69fcab8bce6a6",
+      "bytes": 180230
+    },
+    "member-Cargo.toml": {
+      "sha256": "e720e22a82e9949761cf97d7b14e8e49e407edbf2059530963f7708093ea4015",
+      "bytes": 934
+    },
+    "member-src-bridge-tests.rs": {
+      "sha256": "b8ddf4e0bcff8fc8e3c96ab409a050f00d3fc0e2e9fd8b904b20c6233a350c06",
+      "bytes": 35022
+    },
+    "member-src-bridge.rs": {
+      "sha256": "5c320a96297c68b042ab7e59800fdbce17b831a602198b94c4811e688c8ed1d0",
+      "bytes": 26717
+    },
+    "member-src-capture.rs": {
+      "sha256": "4455f5d498727009ce6f0975b2289c291997c03005aae735b484be9d31c61b52",
+      "bytes": 23686
+    },
+    "member-src-descriptor-tests.rs": {
+      "sha256": "6ac7713470782f17ae6aa3a5da7d3513c6acc0151e77e6af225eac53e1f452e2",
+      "bytes": 12079
+    },
+    "member-src-descriptor.rs": {
+      "sha256": "62440a64ed9a3369e085908e91a0a16d2f848a956fa9e559d544592e9b9e1f30",
+      "bytes": 6044
+    },
+    "member-src-lib.rs": {
+      "sha256": "7e76136bae68bd68293544e9d5b44d872aaa01dec290a2f0c0323e3e4522ed55",
+      "bytes": 100
+    },
+    "member-src-main.rs": {
+      "sha256": "86d58bda61f24823235b43c519b7ba400fecc0306ea44361a41efc55ed1a79a6",
+      "bytes": 177
+    },
+    "member-src-policy.rs": {
+      "sha256": "a8a965b3697bff1a888d272635ec5bf3011dc07d180b874143da0efada698115",
+      "bytes": 3578
+    },
+    "member-src-preparation-tests.rs": {
+      "sha256": "9060b7d53b8c19334c9fec6daa0e3cb4a88f3fdc962f1fb229935b214585e2c0",
+      "bytes": 7590
+    },
+    "member-src-profile.rs": {
+      "sha256": "1a7e5991cb48793d6bdc7f06478cf079bdd1aae7631e8463bf7a28b0c8d6041d",
+      "bytes": 851
+    },
+    "member-src-wire.rs": {
+      "sha256": "e28bb90c32778a50304b316029d8b3342f996a250902ea3bdd838721f02a1cb2",
+      "bytes": 10685
+    },
+    "member-tests-policy.rs": {
+      "sha256": "4217fdbe22a481934d81becc631a4a962336d13a88f59ab76f73b0e1433a270a",
+      "bytes": 15695
+    },
+    "member-tests-wire.rs": {
+      "sha256": "b7bfe6710a252db6f990b3b6fe662777742c4f1b6a7def9245bbfb12b3db43db",
+      "bytes": 13293
+    },
+    "provenance.json": {
+      "sha256": "454118591054da042615992e80ef91c632ca0a3e44fe53c9a9d0641d50bd8304",
+      "bytes": 5007
+    },
+    "runner.py": {
+      "sha256": "ae7d6378df5f378af64916e273a36d87fc9e86c2a63316f478f01bc871d58c2d",
+      "bytes": 21870
+    }
+  },
+  "expectedSDKTests": [],
+  "expectedHostTests": [],
+  "expectedMemberLockSHA256": "60095780144a87f46c44809993ce374e3a591a1dcaa6806d23b3fa9087de6697",
+  "notCompletion": "Twelve missing bridge-entry cases only; no implementation or qualification.",
+  "expectedSDKBaseTests": [
+    "config_manager::cmux_sdk_contract::cmux_config_contract::cmux_frozen_mutation_is_terminal",
+    "config_manager::cmux_sdk_contract::cmux_config_contract::cmux_frozen_only_exact_synthesized_paths_are_allowed",
+    "config_manager::cmux_sdk_contract::cmux_config_contract::cmux_frozen_other_loader_inputs_are_rejected",
+    "config_manager::cmux_sdk_contract::cmux_config_contract::cmux_frozen_overrides_are_exhaustive",
+    "config_manager::cmux_sdk_contract::cmux_config_contract::cmux_frozen_persistence_rejects_before_disk_effects",
+    "config_manager::cmux_sdk_contract::cmux_config_contract::cmux_frozen_requirements_are_preserved",
+    "config_manager::cmux_sdk_contract::cmux_config_contract::cmux_frozen_snapshot_survives_file_changes",
+    "config_manager::cmux_sdk_contract::cmux_config_contract::cmux_normal_config_reload_is_unchanged",
+    "config_manager::cmux_sdk_contract::cmux_terminal_contract::cmux_terminal_closed_send_never_becomes_success",
+    "config_manager::cmux_sdk_contract::cmux_terminal_contract::cmux_terminal_trip_before_registration_is_observed",
+    "config_manager::cmux_sdk_contract::cmux_terminal_contract::cmux_terminal_trip_wakes_all_blocked_sends",
+    "in_process::cmux_sdk_contract::cmux_forward_contract::cmux_frozen_delivery_applies_backpressure",
+    "in_process::cmux_sdk_contract::cmux_forward_contract::cmux_frozen_delivery_reports_closed_consumer",
+    "in_process::cmux_sdk_contract::cmux_forward_contract::cmux_normal_event_forwarding_compatibility",
+    "in_process::cmux_sdk_contract::cmux_frozen_pump_contract::cmux_frozen_actual_identity_limits_are_utf8_bytes_not_characters",
+    "in_process::cmux_sdk_contract::cmux_frozen_pump_contract::cmux_frozen_callback_budget_exhaustion_preserves_all_owned_callbacks",
+    "in_process::cmux_sdk_contract::cmux_frozen_pump_contract::cmux_frozen_callback_ids_and_actual_call_ids_obey_utf8_byte_bounds",
+    "in_process::cmux_sdk_contract::cmux_frozen_pump_contract::cmux_frozen_cancelled_admitted_request_retains_root_and_holds_generation",
+    "in_process::cmux_sdk_contract::cmux_frozen_pump_contract::cmux_frozen_cancelled_claimed_control_retains_real_pending_callback",
+    "in_process::cmux_sdk_contract::cmux_frozen_pump_contract::cmux_frozen_checked_delivery_without_terminal_keeps_turn_slot",
+    "in_process::cmux_sdk_contract::cmux_frozen_pump_contract::cmux_frozen_completed_request_tombstones_cannot_be_reused",
+    "in_process::cmux_sdk_contract::cmux_frozen_pump_contract::cmux_frozen_control_bypasses_blocked_request_processor_and_event_pumps",
+    "in_process::cmux_sdk_contract::cmux_frozen_pump_contract::cmux_frozen_control_rejects_foreign_echoes_without_resolving_pending_work",
+    "in_process::cmux_sdk_contract::cmux_frozen_pump_contract::cmux_frozen_control_stays_live_at_full_retained_request_budget",
+    "in_process::cmux_sdk_contract::cmux_frozen_pump_contract::cmux_frozen_early_callback_reconciles_only_the_actual_turn_response",
+    "in_process::cmux_sdk_contract::cmux_frozen_pump_contract::cmux_frozen_early_terminal_foreign_response_never_releases_slot",
+    "in_process::cmux_sdk_contract::cmux_frozen_pump_contract::cmux_frozen_early_terminal_waits_for_actual_turn_response_binding",
+    "in_process::cmux_sdk_contract::cmux_frozen_pump_contract::cmux_frozen_failed_or_interrupted_terminal_keeps_owned_root",
+    "in_process::cmux_sdk_contract::cmux_frozen_pump_contract::cmux_frozen_foreign_thread_or_turn_terminal_cannot_release_slot",
+    "in_process::cmux_sdk_contract::cmux_frozen_pump_contract::cmux_frozen_late_callback_is_not_reattributed_to_next_unbound_root",
+    "in_process::cmux_sdk_contract::cmux_frozen_pump_contract::cmux_frozen_outstanding_budget_fails_before_insertion_and_retains_pending",
+    "in_process::cmux_sdk_contract::cmux_frozen_pump_contract::cmux_frozen_oversize_actual_turn_response_cannot_bind_or_release",
+    "in_process::cmux_sdk_contract::cmux_frozen_pump_contract::cmux_frozen_pump_panic_wakes_the_terminal_generation",
+    "in_process::cmux_sdk_contract::cmux_frozen_pump_contract::cmux_frozen_request_ids_preserve_types_and_utf8_byte_bound",
+    "in_process::cmux_sdk_contract::cmux_frozen_pump_contract::cmux_frozen_second_turn_is_refused_before_queue_or_root_insertion",
+    "in_process::cmux_sdk_contract::cmux_frozen_pump_contract::cmux_frozen_sequential_inventory_stops_at_retained_id_budget",
+    "in_process::cmux_sdk_contract::cmux_frozen_pump_contract::cmux_frozen_stale_terminal_cannot_release_a_new_active_root",
+    "in_process::cmux_sdk_contract::cmux_frozen_pump_contract::cmux_frozen_terminal_publication_is_linearizable_with_turn_admission",
+    "in_process::cmux_sdk_contract::cmux_frozen_pump_contract::cmux_frozen_turn_slot_requires_terminal_and_all_checked_callback_deliveries",
+    "in_process::cmux_sdk_contract::cmux_frozen_request_contract::cmux_frozen_shell_pages_are_current_thread_only",
+    "in_process::cmux_sdk_contract::cmux_frozen_request_contract::cmux_frozen_work_preserves_literal_and_utf8_byte_boundary",
+    "in_process::cmux_sdk_contract::cmux_frozen_request_contract::cmux_frozen_work_rejects_foreign_threads_and_public_thread_creation",
+    "in_process::cmux_sdk_contract::cmux_frozen_request_contract::cmux_frozen_work_rejects_presence_of_turn_overrides",
+    "in_process::cmux_sdk_contract::cmux_frozen_request_contract::cmux_frozen_work_requires_explicit_empty_environments_and_one_text_item",
+    "in_process::cmux_sdk_contract::cmux_frozen_startup_contract::cmux_frozen_shutdown_before_ready_never_constructs_runtime",
+    "in_process::cmux_sdk_contract::cmux_frozen_startup_contract::cmux_frozen_start_rejects_foreign_paths_before_bootstrap",
+    "in_process::cmux_sdk_contract::cmux_frozen_startup_contract::cmux_frozen_start_rejects_initialize_evidence_opt_out",
+    "in_process::cmux_sdk_contract::cmux_frozen_startup_contract::cmux_frozen_start_rejects_reused_actual_in_memory_binding",
+    "in_process::cmux_sdk_contract::cmux_frozen_startup_contract::cmux_frozen_start_returns_not_ready_without_constructing_runtime",
+    "outgoing_message::cmux_sdk_contract::cmux_frozen_callback_contract::cmux_frozen_checked_callback_delivers_exact_registered_response",
+    "outgoing_message::cmux_sdk_contract::cmux_frozen_callback_contract::cmux_frozen_checked_callback_preserves_typed_id_and_pending_work",
+    "outgoing_message::cmux_sdk_contract::cmux_frozen_callback_contract::cmux_frozen_checked_callback_reports_closed_receiver",
+    "outgoing_message::cmux_sdk_contract::cmux_frozen_callback_contract::cmux_frozen_checked_callback_validates_before_removing_pending_work",
+    "request_processors::thread_processor::cmux_sdk_contract::cmux_frozen_listener_closed_connection_is_not_readiness",
+    "request_processors::thread_processor::cmux_sdk_contract::cmux_frozen_listener_propagates_actual_protocol_failure",
+    "request_processors::thread_processor::cmux_sdk_contract::cmux_frozen_listener_requires_actual_attached_result"
+  ],
+  "expectedSDKFactoryTests": [
+    "in_process::cmux_frozen_thread_profile_contract::cmux_frozen_thread_profile_has_exact_empty_selections_without_overrides",
+    "in_process::cmux_frozen_thread_profile_contract::cmux_frozen_thread_profile_has_no_cross_call_mutable_state",
+    "in_process::cmux_frozen_thread_profile_contract::cmux_frozen_thread_profile_preserves_captured_registry_without_rewriting"
+  ],
+  "correctedEnvelopeOnly": "Exact unchanged130 sources; valid56/3 selectors, no guard relaxation or prior-job replay.",
+  "expectedBridgeTests": [
+    "bridge::tests::cmux_bridge_actual_os_pipes_preserve_typed_request_and_literal",
+    "bridge::tests::cmux_bridge_backend_terminal_wakes_blocked_publication",
+    "bridge::tests::cmux_bridge_blocked_work_and_queued_page_do_not_block_registered_control",
+    "bridge::tests::cmux_bridge_descriptor_precedes_factory_and_input",
+    "bridge::tests::cmux_bridge_duplicate_initialize_and_foreign_thread_fail_before_dispatch",
+    "bridge::tests::cmux_bridge_matching_initialize_returns_actual_typed_readiness_once",
+    "bridge::tests::cmux_bridge_nonce_or_digest_mismatch_never_constructs_backend",
+    "bridge::tests::cmux_bridge_publication_failure_never_delivers_retained_response",
+    "bridge::tests::cmux_bridge_publication_pending_retains_response_until_success",
+    "bridge::tests::cmux_bridge_registered_control_preserves_exact_tuple_nonce_and_result",
+    "bridge::tests::cmux_bridge_reserved_integer_ids_fail_but_string_ids_preserve_literal",
+    "bridge::tests::cmux_bridge_unregistered_or_typed_foreign_control_never_delivers"
+  ]
+}
