@@ -1,0 +1,166 @@
+{
+  "kind": "selected-gpl-native-source-tests-not-app-build-or-qualification",
+  "sources": {
+    "LICENSE": {
+      "bytes": 36576,
+      "sha256": "ad00ebb34f48e86a71b087584ffa6540d58f6468eeccf85c113d7b6d580a7bb9",
+      "mode": "100644"
+    },
+    "Sources/Panels/AgentSessionManagedCopilotLaunch.swift": {
+      "bytes": 11788,
+      "sha256": "757a6af94785d29c17f14b6dfb54e7e1bf322837fa01ea34390911db5218cd23",
+      "mode": "100644"
+    },
+    "Sources/Panels/AgentSessionPanel.swift": {
+      "bytes": 3605,
+      "sha256": "e36b99ba77de84d8da6bf36df35c982e91508d1ca59249df457dc685e1374a99",
+      "mode": "100644"
+    },
+    "Sources/Panels/AgentSessionWebRendererCoordinator.swift": {
+      "bytes": 6758,
+      "sha256": "8bd02d3968e0b6db44327e42aeb8e0b25fc4cfdbbb07a25d4856d70d726b75f0",
+      "mode": "100644"
+    },
+    "Sources/Panels/AgentSessionWebRendererSession.swift": {
+      "bytes": 2223,
+      "sha256": "83027b3930223540ef828534ebad3c862bfb3988fb84690535bd38480cff4056",
+      "mode": "100644"
+    },
+    "Sources/Workspace.swift": {
+      "bytes": 3529,
+      "sha256": "45bc351758b18ff5945370dede837a95970fcedf1bc4842acb06c868349dde06",
+      "mode": "100644"
+    },
+    "scripts/tests/fixtures/managed_native_entry.swift": {
+      "bytes": 19017,
+      "sha256": "05e6005cdd99c3cbbd4692713d865e38119f6ddb48754dcaf34ea4e52ba00327",
+      "mode": "100644"
+    },
+    "scripts/tests/fixtures/managed_native_panel.swift": {
+      "bytes": 3509,
+      "sha256": "2f55fee0a653b2979b8dae7d988bb7441ca18b5a6041e49d7db80aab14c2df1a",
+      "mode": "100644"
+    },
+    "scripts/tests/test_managed_native_entry.py": {
+      "bytes": 9131,
+      "sha256": "a56432aaa2b6d7ff883366b6147a2ea32519c07c8b2d12783b30442305a1cd19",
+      "mode": "100644"
+    },
+    "scripts/tests/test_managed_native_panel.py": {
+      "bytes": 2371,
+      "sha256": "a1431a41059b510633d7578cd75d97c0a0c12321617fcb70c4e3086b3af0a700",
+      "mode": "100644"
+    }
+  },
+  "suites": {
+    "scripts/tests/test_managed_native_entry.py": {
+      "names": [
+        "ManagedNativeEntryTests.test_only_a_fresh_native_action_can_schedule_either_renderer",
+        "ManagedNativeEntryTests.test_native_start_waits_for_both_context_and_navigation_without_replay",
+        "ManagedNativeEntryTests.test_current_native_object_and_scope_changes_revoke_pending_authority",
+        "ManagedNativeEntryTests.test_nonlocal_or_noncurrent_projects_are_rejected_before_panel_creation",
+        "ManagedNativeEntryTests.test_canonical_native_project_is_shared_by_panel_owner_and_launch",
+        "ManagedNativeEntryTests.test_late_native_completion_cannot_clear_a_new_manual_start_reservation",
+        "ManagedNativeEntryTests.test_native_revocation_does_not_clear_an_ordinary_manual_start_reservation",
+        "ManagedNativeEntryTests.test_native_failure_revokes_without_a_context_retry_or_false_success",
+        "ManagedNativeEntryTests.test_untrusted_shell_context_cannot_consume_the_pending_native_start",
+        "ManagedNativeEntryTests.test_owner_loss_during_fresh_panel_creation_closes_only_that_new_panel",
+        "ManagedNativeEntryTests.test_remote_provenance_aba_permanently_revokes_an_issued_native_owner",
+        "ManagedNativeEntryTests.test_codex_native_entry_binds_the_requested_provider_and_both_renderers",
+        "ManagedNativeEntryTests.test_codex_context_navigation_order_and_failed_start_are_not_replayed",
+        "ManagedNativeEntryTests.test_codex_owner_invalidation_cannot_launch_or_bind_a_renderer",
+        "ManagedNativeEntryTests.test_codex_nonlocal_projects_are_refused_before_creation"
+      ],
+      "failures": {
+        "ManagedNativeEntryTests.test_codex_native_entry_binds_the_requested_provider_and_both_renderers": "CMUX_NATIVE_CODEX_ENTRY_UNAVAILABLE",
+        "ManagedNativeEntryTests.test_codex_context_navigation_order_and_failed_start_are_not_replayed": "CMUX_NATIVE_CODEX_ENTRY_UNAVAILABLE",
+        "ManagedNativeEntryTests.test_codex_owner_invalidation_cannot_launch_or_bind_a_renderer": "CMUX_NATIVE_CODEX_ENTRY_UNAVAILABLE"
+      }
+    },
+    "scripts/tests/test_managed_native_panel.py": {
+      "names": [
+        "ManagedNativePanelTests.test_workspace_changes_revoke_before_mutating_native_panel_scope",
+        "ManagedNativePanelTests.test_directory_changes_revoke_before_clearing_native_project_scope",
+        "ManagedNativePanelTests.test_provider_changes_revoke_before_changing_native_provider_scope",
+        "ManagedNativePanelTests.test_close_revokes_native_authority_before_closing_the_renderer",
+        "ManagedNativePanelTests.test_noop_native_scope_updates_do_not_close_an_unchanged_panel"
+      ],
+      "failures": {}
+    }
+  },
+  "sourceIndexSHA256": "e08b93d76e7d5417fb48075f7c04066c5eabeaec2e1e06feb3c14520c750d8c7",
+  "producerRustSourceIndexSHA256": "1f92baaab0df192397f4777601b50156b1e9aa2effe77c7bfd86a9d78a3b2338",
+  "producerProfileManifestSHA256": "449baa5bef813d4210055f0655e31259630120b106d0afdbd2b113b39169781c",
+  "producerProfileSHA256": "5dd7978748e6bee503ee1ccf593181fc46c058843fc0943daee191898885ca8f",
+  "sourceLicense": "GPL-3.0-or-later; exact native LICENSE retained in the source bundle",
+  "maximumExpandedSourceBytes": 1048576,
+  "maximumCompressedSourceBytes": 131072,
+  "qualification": false,
+  "actualProviderModelAppOrProfileLaunched": false,
+  "actualBehavioralREDIndexSHA256": "a61f65d3443f06fb53f33c6e066985f7e0f8c1654ee215a72c1038cca9c38a55",
+  "preservedFailedAttemptSHA256": "78c82a563213b25b76de523c2c75788a845fd27b994e51bdee37fce18957627e",
+  "sourceRecordEncoding": "utf8",
+  "testDependencyDoubles": {
+    "scripts/tests/fixtures/managed_native_entry.swift": "Controlled non-GUI owner and Store seams. Actual Workspace/coordinator native-entry bodies and full Panel/Session sources execute; actual Store/owner/lifetime qualified only by separate source proof. Neither AppKit/WebKit nor any provider/profile is qualified.",
+    "scripts/tests/fixtures/managed_native_panel.swift": "Non-GUI coordinator seam; actual Panel/Session mutation bodies."
+  },
+  "selectedBodyOrigins": {
+    "Sources/Panels/AgentSessionWebRendererCoordinator.swift": {
+      "fullSourceBytes": 47794,
+      "fullSourceSHA256": "7ab2e9e737a627395f2824aa5909cd996c083de0e35a7a9814e98a59f863a144",
+      "spans": [
+        {
+          "offset": 2368,
+          "bytes": 2428,
+          "sha256": "0af720b1aed9fc55d05495940adcdfbb4b3d629f3e9be84b8a2c1f8da55718e5"
+        },
+        {
+          "offset": 16152,
+          "bytes": 3645,
+          "sha256": "db11c3850cb308508e1b50a199ab5bd68d2c403b50d23a7fe1dfe589b2a69540"
+        },
+        {
+          "offset": 26961,
+          "bytes": 140,
+          "sha256": "41f2a41a03f8fa63891fa8b6349cada3f119afad562274095246b0319c158065"
+        },
+        {
+          "offset": 11203,
+          "bytes": 337,
+          "sha256": "82032e640243288a2d0fcf6f944846f919c993141692c3342d8a45e0c6081957"
+        },
+        {
+          "offset": 11495,
+          "bytes": 200,
+          "sha256": "447640a5394354e75b492887f27bea7b12a37b44c371e93b01d42d862172f630"
+        }
+      ]
+    },
+    "Sources/Workspace.swift": {
+      "fullSourceBytes": 746078,
+      "fullSourceSHA256": "29365ec877ca8139ef52ffcc29413ce435c411123c2ca9e49efcbd7fe0f2d6d8",
+      "spans": [
+        {
+          "offset": 529379,
+          "bytes": 2962,
+          "sha256": "5716510c06e8605d4a1158466427d88ffe142d720e281fe7025172e7ff899a69"
+        },
+        {
+          "offset": 142907,
+          "bytes": 172,
+          "sha256": "c546a05405e49b8aaefe421041cc91ab02af10f93aa05e3885be6150eb7f20b5"
+        },
+        {
+          "offset": 164614,
+          "bytes": 142,
+          "sha256": "2a54b0b351b1260749cd031446cbd55aa4a3d83e9e641630c68a99e74f101e16"
+        },
+        {
+          "offset": 170024,
+          "bytes": 247,
+          "sha256": "da2a2e119e19c7995da55b773da4c6688d2f5940cd8968092b8912f0f1ed738a"
+        }
+      ]
+    }
+  }
+}
