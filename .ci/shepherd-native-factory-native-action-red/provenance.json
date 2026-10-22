@@ -1,0 +1,73 @@
+{
+  "kind": "selected-gpl-native-source-tests-not-app-build-or-qualification",
+  "sources": {
+    "LICENSE": {
+      "bytes": 36576,
+      "sha256": "ad00ebb34f48e86a71b087584ffa6540d58f6468eeccf85c113d7b6d580a7bb9",
+      "mode": "100644"
+    },
+    "Sources/AppDelegate.swift": {
+      "bytes": 2639,
+      "sha256": "97beb39cd957ac78b876bdc3b8ce6581e2df56672ac06adf68666b67baa28c8d",
+      "mode": "100644"
+    },
+    "scripts/tests/fixtures/managed_native_action.swift": {
+      "bytes": 8270,
+      "sha256": "4a3b2da30895ac99000abb150310c2b282a8f89647b5d32f70c7976055ff2833",
+      "mode": "100644"
+    },
+    "scripts/tests/test_managed_native_action.py": {
+      "bytes": 3950,
+      "sha256": "6d5638e72b2516262cfa5dd91931052a1f1afbbf4e18ea6e591ca0d17ea68f9a",
+      "mode": "100644"
+    }
+  },
+  "suites": {
+    "scripts/tests/test_managed_native_action.py": {
+      "names": [
+        "ManagedNativeActionTests.test_unqualified_provider_and_renderer_never_prompt_resolve_or_create",
+        "ManagedNativeActionTests.test_codex_action_uses_only_the_owned_bundled_backend_for_both_renderers",
+        "ManagedNativeActionTests.test_copilot_action_preserves_its_existing_resolver_and_renderer",
+        "ManagedNativeActionTests.test_disclosure_cancel_never_resolves_or_creates_a_session",
+        "ManagedNativeActionTests.test_native_owner_changes_during_disclosure_fail_before_executable_resolution",
+        "ManagedNativeActionTests.test_missing_owned_codex_backend_is_reported_without_manual_or_path_fallback",
+        "ManagedNativeActionTests.test_created_entry_keeps_the_current_native_object_getter"
+      ],
+      "failures": {
+        "ManagedNativeActionTests.test_codex_action_uses_only_the_owned_bundled_backend_for_both_renderers": "CMUX_NATIVE_CODEX_ACTION_UNAVAILABLE",
+        "ManagedNativeActionTests.test_disclosure_cancel_never_resolves_or_creates_a_session": "CMUX_NATIVE_CODEX_ACTION_UNAVAILABLE",
+        "ManagedNativeActionTests.test_native_owner_changes_during_disclosure_fail_before_executable_resolution": "CMUX_NATIVE_CODEX_ACTION_UNAVAILABLE",
+        "ManagedNativeActionTests.test_missing_owned_codex_backend_is_reported_without_manual_or_path_fallback": "CMUX_NATIVE_CODEX_ACTION_UNAVAILABLE",
+        "ManagedNativeActionTests.test_created_entry_keeps_the_current_native_object_getter": "CMUX_NATIVE_CODEX_ACTION_UNAVAILABLE"
+      }
+    }
+  },
+  "sourceIndexSHA256": "8f6a7be29f161b7ab81708de96786a7787c1a5349ad23489cc189d5ec8d0ae88",
+  "producerRustSourceIndexSHA256": "1f92baaab0df192397f4777601b50156b1e9aa2effe77c7bfd86a9d78a3b2338",
+  "producerProfileManifestSHA256": "449baa5bef813d4210055f0655e31259630120b106d0afdbd2b113b39169781c",
+  "producerProfileSHA256": "5dd7978748e6bee503ee1ccf593181fc46c058843fc0943daee191898885ca8f",
+  "sourceLicense": "GPL-3.0-or-later; exact native LICENSE retained in the source bundle",
+  "maximumExpandedSourceBytes": 1048576,
+  "maximumCompressedSourceBytes": 131072,
+  "qualification": false,
+  "actualProviderModelAppOrProfileLaunched": false,
+  "actualBehavioralREDIndexSHA256": "a61f65d3443f06fb53f33c6e066985f7e0f8c1654ee215a72c1038cca9c38a55",
+  "preservedFailedAttemptSHA256": "78c82a563213b25b76de523c2c75788a845fd27b994e51bdee37fce18957627e",
+  "sourceRecordEncoding": "utf8",
+  "testDependencyDoubles": {
+    "scripts/tests/fixtures/managed_native_action.swift": "Actual AppDelegate action bodies execute against controlled no-GUI qualification, alert, Bundle, resolver, current-manager and Workspace composition seams. No native application, actual bundle packaging, renderer, provider or profile qualification is claimed."
+  },
+  "selectedBodyOrigins": {
+    "Sources/AppDelegate.swift": {
+      "fullSourceBytes": 928680,
+      "fullSourceSHA256": "1d6e8f3431d365ac4ec9783f8dae87eeb277483a2f087f6efccf4884fe0b0c08",
+      "spans": [
+        {
+          "offset": 534507,
+          "bytes": 2639,
+          "sha256": "97beb39cd957ac78b876bdc3b8ce6581e2df56672ac06adf68666b67baa28c8d"
+        }
+      ]
+    }
+  }
+}
