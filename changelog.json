@@ -4,7 +4,7 @@
     {
       "version": "0.1.0-alpha.940",
       "changes": [
-        "Report missing Bitwarden CLI modules as a blocked local installation failure without exposing subprocess details or suggesting vault replacement or provider reauthentication."
+        "Report missing Bitwarden CLI modules as a blocked local installation failure without exposing subprocess details or suggesting vault replacement or provider reauthentication; distinguish Ouro's selected bundled CLI from a working global bw."
       ]
     },
     {

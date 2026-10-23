@@ -440,12 +440,14 @@ describe("checkAgentConfigWithProviderHealth", () => {
       kind: "generic",
       severity: "blocked",
       summary: "myagent: local Bitwarden CLI installation is incomplete (missing Node.js module)",
-      actions: [expect.objectContaining({ actor: "agent-runnable", command: "bw --version" })],
+      actions: [expect.objectContaining({ actor: "agent-runnable", command: "ouro doctor" })],
     })
     expect(result.fix).not.toMatch(/ouro vault (unlock|replace|recover)|ouro auth/)
     const failure = createProviderReadinessPreparationFailure([result.issue!])
     expect(failure.message).toContain("local Bitwarden CLI installation is incomplete")
-    expect(failure.message).toContain("agent-runnable: bw --version")
+    expect(failure.message).toContain("agent-runnable: ouro doctor")
+    expect(result.fix).toContain("bundled")
+    expect(result.fix).toContain("does not validate")
     expect(failure.message).not.toMatch(/private-diagnostic-value|hidden-keys|private\/local-install/)
     expect(providerPingMock).not.toHaveBeenCalled()
   })
