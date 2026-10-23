@@ -51,7 +51,7 @@ describe("Shepherd tools", () => {
     const result = await call(shepherdSendToolDefinition, { session: "SF-1", text: "Continue the requested tests." }, ctx({
       context: { friend: { id: "owner", name: "Ari", trustLevel: "family" } } as ToolContext["context"],
     }))
-    expect(result.sent).toEqual({ text: "[Orchid One for Ari] Continue the requested tests." })
+    expect(result.submitted).toEqual({ text: "[Orchid One for Ari] Continue the requested tests." })
   })
 
   it("are offered only when agent.json turns Shepherd on", async () => {
@@ -254,6 +254,80 @@ describe("Shepherd tools", () => {
     })
     afterEach(() => unregister())
 
+    it("reports only host submission while a credential gate delays receiver delivery", async () => {
+      const pending: string[] = []
+      server.respond("terminal.paste", params => { pending.push(params.text as string); return {} })
+      server.respond("surface.read_text", () => ({ text: "Waiting for credential access approval." }))
+      const result = await call(shepherdSendToolDefinition, { session: "surface:1", text: "Run the requested checks." }, family())
+      expect(result).not.toHaveProperty("sent")
+      expect(result).toMatchObject({
+        submitted: { text: "[Ouro for Ari] Run the requested checks." },
+        submission: {
+          state: "accepted",
+          attemptId: expect.any(String),
+          attemptedAt: expect.any(String),
+          target: { host: "cmux", id: "SF-1", ref: "surface:1", instance: null },
+        },
+        verification: { received: "unverified", execution: "unverified", capability: "unverified", progress: "unverified" },
+      })
+      const original = JSON.stringify(result)
+      expect((await call(shepherdReadToolDefinition, { session: "SF-1" })).text).toContain("credential access approval")
+      // The isolated receiver releases its queued input later, then reports useful progress.
+      server.respond("surface.read_text", () => ({ text: `${pending[0]}\nReceived. Tests passed.` }))
+      expect((await call(shepherdReadToolDefinition, { session: "SF-1" })).text).toContain("Tests passed.")
+      expect(JSON.stringify(result)).toBe(original)
+      server.respond("system.tree", () => tree([{ id: "SF-foreign", ref: "surface:1", title: "replacement" }]))
+      expect((await call(shepherdOverviewToolDefinition, {})).sessions).toEqual([
+        expect.objectContaining({ id: "SF-foreign", currentScreen: expect.objectContaining({ text: expect.stringContaining("Tests passed.") }) }),
+      ])
+      expect(result.verification).toEqual({ received: "unverified", execution: "unverified", capability: "unverified", progress: "unverified" })
+      expect((result.submission as { target: unknown }).target).toEqual({ host: "cmux", id: "SF-1", ref: "surface:1", instance: null })
+      expect(sends()).toHaveLength(2)
+      expect(server.lines.some(line => line.includes("submitted for Ari; receipt unverified"))).toBe(true)
+    })
+
+    it.each(["terminal.paste", "surface.send_key"])("keeps an uncertain %s attempt instead of claiming non-delivery or retrying", async method => {
+      server.respond(method, () => { throw new Error("credential approval timed out") })
+      const result = await call(shepherdSendToolDefinition, { session: "surface:1", text: "Run the checks once." }, family())
+      expect(result).toMatchObject({
+        error: "credential approval timed out",
+        attempted: { text: "[Ouro for Ari] Run the checks once." },
+        submission: {
+          state: "unknown", attemptId: expect.any(String),
+          target: { host: "cmux", id: "SF-1", ref: "surface:1", instance: null },
+        },
+        verification: { received: "unverified", execution: "unverified", capability: "unverified", progress: "unverified" },
+        retry: "Do not resend blindly; reconcile this attempt with the exact receiver first.",
+      })
+      expect(result).not.toHaveProperty("submitted")
+      expect(sends().filter(send => send.method === method)).toHaveLength(1)
+      expect(events).toContainEqual(expect.objectContaining({
+        event: "repertoire.shepherd_send_unknown",
+        meta: expect.objectContaining({ attemptId: (result.submission as { attemptId: string }).attemptId, session: "SF-1" }),
+      }))
+    })
+
+    it("preserves the observed instance and redacts a non-Error key failure without retrying", async () => {
+      const createHost = shepherdHost.createShepherdHost
+      const spy = vi.spyOn(shepherdHost, "createShepherdHost").mockImplementation((...args) => {
+        const host = createHost(...args)
+        const list = host.list
+        host.list = async () => (await list()).map(session => ({ ...session, instance: "fixture-process:started-before-attempt" }))
+        host.key = async () => { throw `timeout ghp_${"a".repeat(36)}` }
+        return host
+      })
+      try {
+        const result = await call(shepherdSendToolDefinition, { session: "SF-1", key: "escape" }, family())
+        expect(result).toMatchObject({
+          error: "timeout [redacted]", attempted: { key: "escape" },
+          submission: { state: "unknown", target: { id: "SF-1", instance: "fixture-process:started-before-attempt" } },
+        })
+        expect(JSON.stringify(result)).not.toContain("ghp_")
+        expect(JSON.stringify(events)).not.toContain("ghp_")
+        expect(sends()).toEqual([])
+      } finally { spy.mockRestore() }
+    })
+
     it("types only for a family member who asked in this conversation", async () => {
       const refusal = { error: "shepherd_send types only for a family member who asked for it in this conversation" }
       expect(await call(shepherdSendToolDefinition, { session: "surface:1", text: "go" }, "none")).toEqual(refusal)
@@ -289,13 +363,13 @@ describe("Shepherd tools", () => {
     })
 
     it("types the human's line with Shepherd's prefix, and audits it without the text", async () => {
-      expect(await call(shepherdSendToolDefinition, { session: "surface:1", text: "  Run the tests, then open a PR. token=abc123  " }, family())).toEqual({ session: "surface:1", sent: { text: "[Ouro for Ari] Run the tests, then open a PR. token=abc123" }, focused: false })
+      expect(await call(shepherdSendToolDefinition, { session: "surface:1", text: "  Run the tests, then open a PR. token=abc123  " }, family())).toMatchObject({ session: "surface:1", submitted: { text: "[Ouro for Ari] Run the tests, then open a PR. token=abc123" }, focused: false })
       expect(sends()).toEqual([
         { method: "terminal.paste", key: undefined, text: "[Ouro for Ari] Run the tests, then open a PR. token=abc123" },
         { method: "surface.send_key", key: "enter", text: undefined },
       ])
       expect(server.methods.filter((entry) => entry.method === "surface.read_text").at(-1)?.params).toMatchObject({ surface_id: "SF-1", lines: 40 })
-      expect(server.lines.some((line) => line.includes("set_status ouro_surface_1 \"sent for Ari\""))).toBe(true)
+      expect(server.lines.some((line) => line.includes("set_status ouro_surface_1 \"submitted for Ari; receipt unverified\""))).toBe(true)
       expect(events).toHaveLength(1)
       expect(events[0]).toMatchObject({ event: "repertoire.shepherd_send", meta: { session: "SF-1", ref: "surface:1", chars: 43, key: null, friendId: "friend-ari", focused: false, screenChecked: false } })
       expect(JSON.stringify(events[0])).not.toContain("abc123")
@@ -303,10 +377,10 @@ describe("Shepherd tools", () => {
 
     it("presses one key, mapping ctrl-c and checking the screen for keys that choose", async () => {
       const seen = screenFingerprint(screen.replace("12s", "13s"))
-      expect(await call(shepherdSendToolDefinition, { session: "SF-1", key: "escape" }, family())).toEqual({ session: "surface:1", sent: { key: "escape" }, focused: false })
-      expect(await call(shepherdSendToolDefinition, { session: "surface:1", key: "ctrl-c" }, family())).toMatchObject({ sent: { key: "ctrl-c" } })
-      expect(await call(shepherdSendToolDefinition, { session: "surface:1", key: "1", screen: seen }, family())).toMatchObject({ sent: { key: "1" } })
-      expect(await call(shepherdSendToolDefinition, { session: "surface:1", key: "Enter", screen: seen }, family())).toMatchObject({ sent: { key: "enter" } })
+      expect(await call(shepherdSendToolDefinition, { session: "SF-1", key: "escape" }, family())).toMatchObject({ session: "surface:1", submitted: { key: "escape" }, focused: false })
+      expect(await call(shepherdSendToolDefinition, { session: "surface:1", key: "ctrl-c" }, family())).toMatchObject({ submitted: { key: "ctrl-c" } })
+      expect(await call(shepherdSendToolDefinition, { session: "surface:1", key: "1", screen: seen }, family())).toMatchObject({ submitted: { key: "1" } })
+      expect(await call(shepherdSendToolDefinition, { session: "surface:1", key: "Enter", screen: seen }, family())).toMatchObject({ submitted: { key: "enter" } })
       expect(sends()).toEqual([
         { method: "surface.send_key", key: "escape", text: undefined },
         { method: "surface.send_key", key: "ctrl+c", text: undefined },
@@ -328,12 +402,12 @@ describe("Shepherd tools", () => {
 
     it("reports a failed send, and a status line that fails does not undo a send", async () => {
       server.respond("terminal.paste", () => { throw new Error("paste refused") })
-      expect(await call(shepherdSendToolDefinition, { session: "surface:1", text: "go" }, family())).toEqual({ error: "paste refused" })
-      expect(events).toEqual([])
+      expect(await call(shepherdSendToolDefinition, { session: "surface:1", text: "go" }, family())).toMatchObject({ error: "paste refused", submission: { state: "unknown" } })
+      expect(events.map(entry => entry.event)).toEqual(["repertoire.shepherd_send_unknown"])
       server.respond("terminal.paste", () => ({}))
       server.v1(() => "ERROR: status refused")
-      expect(await call(shepherdSendToolDefinition, { session: "surface:1", text: "go" }, family())).toMatchObject({ sent: { text: "[Ouro for Ari] go" } })
-      expect(events.map((entry) => entry.event)).toEqual(["repertoire.shepherd_send"])
+      expect(await call(shepherdSendToolDefinition, { session: "surface:1", text: "go" }, family())).toMatchObject({ submitted: { text: "[Ouro for Ari] go" }, submission: { state: "accepted" } })
+      expect(events.map((entry) => entry.event)).toEqual(["repertoire.shepherd_send_unknown", "repertoire.shepherd_send"])
     })
   })
 })

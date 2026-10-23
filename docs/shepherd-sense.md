@@ -306,6 +306,32 @@ surface and retains its fresh-screen requirements. Refusing automatic keys does
 not qualify the remaining legacy text path or make stored mandates effective on
 every trigger.
 
+### Owner-requested input is not proof of recovery
+
+`shepherd_send` returns `submitted` input with a `submission` receipt, not `sent`.
+`submission.state: accepted` means the terminal host accepted the paste and
+Enter, or the requested key. The coding agent may still have that instruction
+queued behind credential approval or other work. The status line says
+“submitted for …; receipt unverified”.
+
+The receipt keeps an attempt ID, timestamps, and the observed host, stable
+terminal ID, short ref and process instance (or `null` if unavailable). The same
+attempt ID is in the existing audit event. Input failures return the original
+`attempted` input and `submission.state: unknown`: even a timeout or rejected
+paste can follow partially accepted input. There is no automatic resend.
+Reconcile the original attempt with the exact receiver before trying again;
+changing the request or repeating it is not deduplication.
+
+`verification` separately leaves receipt, execution, capability and useful
+progress **unverified**. A successful request, a stale screen, or a later
+working indicator does not clear any of these boundaries. A fresh receiver
+acknowledgement must match this instruction and target instance after the
+attempt; it establishes receipt, not restored credentials or useful progress.
+Those need their own current evidence from the affected work. This tool does
+not collect receiver acknowledgements or certify recovery, and its receipt is
+not updated by subsequent screen reads. Do not report an agent, or all agents,
+as unblocked from terminal submission alone.
+
 ## Talking to your agent about one session
 
 The independent graphical composer is a short **About** selector, a message box,
