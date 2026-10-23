@@ -4,6 +4,7 @@
     {
       "version": "0.1.0-alpha.939",
       "changes": [
+        "Report missing Bitwarden CLI modules as a blocked local installation failure without exposing subprocess details or suggesting vault replacement or provider reauthentication.",
         "Shepherd attributes failed observations to itself without inventing an agent stop or a human decision, and keeps explicit HTTP responses separate from pure transport failures.",
         "Retain bounded pre-dispatch judgment retries and real offline-to-online evidence, advance new outage probes, and prevent a stalled judge from blocking unrelated sessions with bounded per-session scheduling.",
         "Capture queued generations, coalesce stale per-session work, preserve uncertain-send replay barriers and existing focus/pause/menu guards, and wait for active observations before closing custody.",

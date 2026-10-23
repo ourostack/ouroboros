@@ -513,6 +513,8 @@ Use this checklist for any existing agent that predates the vault-backed credent
 
 4. Unlock the vault on this machine.
 
+   If readiness instead reports that the local Bitwarden CLI installation is incomplete, first run the read-only `bw --version` check. A missing Node.js module is a local installation failure, not evidence that the vault is locked or provider credentials are invalid. Repair the local CLI installation before retrying `ouro up`; do not replace the vault or reauthenticate providers to repair missing CLI files. Startup remains blocked until the normal credential and provider checks pass.
+
    ```bash
    ouro vault unlock --agent <agent>
    ```

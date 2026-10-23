@@ -16,6 +16,7 @@ vi.mock("../../../heart/provider-credentials", () => ({
 }))
 
 import { checkAgentConfig, checkAgentConfigWithProviderHealth } from "../../../heart/daemon/agent-config-check"
+import { createProviderReadinessPreparationFailure } from "../../../heart/daemon/daemon-bootstrap-startup"
 
 const mockReadFileSync = vi.mocked(fs.readFileSync)
 const mockExistsSync = vi.mocked(fs.existsSync)
@@ -424,6 +425,58 @@ describe("checkAgentConfigWithProviderHealth", () => {
     expect(result.fix).not.toContain("ouro vault recover")
   })
 
+  it("reports a broken local vault CLI without proposing vault replacement or exposing subprocess output", async () => {
+    refreshProviderCredentialPoolMock.mockResolvedValue({
+      ok: false,
+      reason: "unavailable",
+      poolPath: "vault:myagent:providers/*",
+      error: "bw CLI error: Error: Cannot find module '../internals/hidden-keys'\nRequire stack:\n/private/local-install/core-js/internal-state.js\nprivate-diagnostic-value",
+    })
+
+    const result = await checkAgentConfigWithProviderHealth("myagent", BUNDLES)
+
+    expect(result.ok).toBe(false)
+    expect(result.issue).toMatchObject({
+      kind: "generic",
+      severity: "blocked",
+      summary: "myagent: local Bitwarden CLI installation is incomplete (missing Node.js module)",
+      actions: [expect.objectContaining({ actor: "agent-runnable", command: "bw --version" })],
+    })
+    expect(result.fix).not.toMatch(/ouro vault (unlock|replace|recover)|ouro auth/)
+    const failure = createProviderReadinessPreparationFailure([result.issue!])
+    expect(failure.message).toContain("local Bitwarden CLI installation is incomplete")
+    expect(failure.message).toContain("agent-runnable: bw --version")
+    expect(failure.message).not.toMatch(/private-diagnostic-value|hidden-keys|private\/local-install/)
+    expect(providerPingMock).not.toHaveBeenCalled()
+  })
+
+  it("does not classify a remote missing-module message as a broken local vault CLI", async () => {
+    refreshProviderCredentialPoolMock.mockResolvedValue({
+      ok: false,
+      reason: "unavailable",
+      poolPath: "vault:myagent:providers/*",
+      error: "vault service: Cannot find module 'handler'",
+    })
+
+    const result = await checkAgentConfigWithProviderHealth("myagent", BUNDLES)
+
+    expect(result.issue).toBeUndefined()
+  })
+
+  it("keeps an unconfigured vault distinct from a broken CLI installation", async () => {
+    refreshProviderCredentialPoolMock.mockResolvedValue({
+      ok: false,
+      reason: "unavailable",
+      poolPath: "vault:myagent:providers/*",
+      error: "credential vault is not configured in /bundles/myagent.ouro/agent.json",
+    })
+
+    const result = await checkAgentConfigWithProviderHealth("myagent", BUNDLES)
+
+    expect(result.issue?.kind).toBe("vault-unconfigured")
+    expect(result.fix).toContain("ouro vault create --agent myagent")
+  })
+
   it("classifies timeout errors as transient and suggests retry instead of unlock/replace/recover", async () => {
     refreshProviderCredentialPoolMock.mockResolvedValue({
       ok: false,
@@ -560,6 +613,13 @@ describe("checkAgentConfigWithProviderHealth", () => {
     expect(mockWriteFileSync).not.toHaveBeenCalled()
   })
 
+  it("does not write readiness for a successful orientation-only probe", async () => {
+    const result = await checkAgentConfigWithProviderHealth("myagent", BUNDLES, { recordReadiness: false })
+
+    expect(result.ok).toBe(true)
+    expect(mockWriteFileSync).not.toHaveBeenCalled()
+  })
+
   it("records successful readiness when ping results omit attempt records", async () => {
     const pingProvider = vi.fn(async () => ({ ok: true }) as const)
 
@@ -623,10 +683,12 @@ describe("checkAgentConfigWithProviderHealth", () => {
     refreshProgress?.("reading vault items for myagent...")
     refreshProgress?.("reading anthropic credentials...")
     refreshProgress?.("parsing provider credentials...")
+    refreshProgress?.("unrecognized private vault diagnostic")
 
     expect(onProgress).toHaveBeenCalledWith("myagent: opening saved provider credentials in the vault")
     expect(onProgress).toHaveBeenCalledWith("myagent: reading saved anthropic credentials")
     expect(onProgress).toHaveBeenCalledWith("myagent: organizing saved provider credentials")
+    expect(onProgress).not.toHaveBeenCalledWith(expect.stringContaining("private vault diagnostic"))
   })
 
   it("does not pass onProgress when not provided in deps (backward compat)", async () => {
