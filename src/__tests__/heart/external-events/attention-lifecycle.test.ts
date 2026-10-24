@@ -927,6 +927,17 @@ describe("external event attention lifecycle", () => {
     })).toThrow("steward policy is invalid")
   })
 
+  it("keeps a valid owner-message record on the disposition and rejects a malformed one", () => {
+    const eventRoot = root()
+    const first = recordExternalEvent({ agent: "sanctuary", source: "guard", eventType: "health.observed", eventId: "owner-message" }, { root: eventRoot })
+    const claim = claimExternalEvent(first.recordPath, { owner: "worker", expectedVersion: first.version, expectedGeneration: 1 })
+    const disposition = { classifiedRevision: first.observationRevision, classification: "needs_attention" as const, stewardPolicy: { kind: "none" as const }, decision: "report" as const, reason: "Covered by the batch warning.", nextWake: { kind: "on_change" as const }, careId: null, awaitId: null, actionRefs: [], verificationRefs: [] }
+    const commit = (ownerMessage: unknown) => commitExternalEventDisposition(first.recordPath, { owner: "worker", expectedVersion: claim.version, expectedGeneration: 1, disposition: { ...disposition, ownerMessage: ownerMessage as never } })
+    expect(() => commit({ status: "lost", effectKey: "external-event:other" })).toThrow("owner message status is invalid")
+    expect(() => commit({ status: "covered", effectKey: "" })).toThrow("owner message key is missing")
+    expect(commit({ status: "covered", effectKey: "external-event:other" }).disposition?.ownerMessage).toEqual({ status: "covered", effectKey: "external-event:other" })
+  })
+
   it("rejects invalid claims, owners, retry policies, and await combinations", () => {
     const eventRoot = root()
     const first = recordExternalEvent({ agent: "sanctuary", source: "guard", eventType: "health.observed", eventId: "validation" }, { root: eventRoot })

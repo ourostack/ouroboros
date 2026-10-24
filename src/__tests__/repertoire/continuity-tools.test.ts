@@ -597,6 +597,33 @@ describe("continuity tools", () => {
       expect(mockCommitExternalEventDisposition).not.toHaveBeenCalled()
     })
 
+    // 2026-10-24: a four-address batch produced two near-identical warnings; the batch now shares one owner message.
+    it("hands every report in a batch the rest of its batch and records the later ones as covered by the first", async () => {
+      const members = [batchMember(0), batchMember(1), batchMember(2)]
+      mockReadExternalEventRecord.mockImplementation((recordPath) => {
+        const member = members.find((candidate) => candidate.recordPath === recordPath)!
+        return { ...member, transition: "opened", version: member.generation + 10, executionState: "running" }
+      })
+      mockCommitExternalEventDisposition.mockImplementation((recordPath) => ({ recordPath, executionState: "handled" }))
+      const deliverOwnerDecision = vi.fn()
+        .mockResolvedValueOnce({ status: "sent", effectKey: "external-event:first" })
+        .mockResolvedValueOnce({ status: "covered", effectKey: "external-event:first" })
+      const context = { ...batchContext(members), externalEventEffects: { deliverOwnerDecision } }
+      const report = (member: ReturnType<typeof batchMember>) => ({ ...batchDisposition(member), classification: "needs_attention", decision: "report", reason: `${member.eventId} is down.` })
+
+      const result = JSON.parse(await findTool("external_event_disposition").handler({ batch: [report(members[0]!), batchDisposition(members[1]!), report(members[2]!)] } as any, context as any))
+
+      expect(result.results.every((entry: { ok: boolean }) => entry.ok)).toBe(true)
+      const identity = (member: ReturnType<typeof batchMember>) => ({ source: member.source, eventId: member.eventId, generation: member.generation })
+      expect(deliverOwnerDecision).toHaveBeenNthCalledWith(1, expect.objectContaining({ eventId: "service-0", relatedEvents: [identity(members[1]!), identity(members[2]!)] }))
+      expect(deliverOwnerDecision).toHaveBeenNthCalledWith(2, expect.objectContaining({ eventId: "service-2", relatedEvents: [identity(members[0]!), identity(members[1]!)] }))
+      const ownerMessageFor = (member: ReturnType<typeof batchMember>) => mockCommitExternalEventDisposition.mock.calls.find(([recordPath]) => recordPath === member.recordPath)![1].disposition.ownerMessage
+      expect(ownerMessageFor(members[0]!)).toEqual({ status: "sent", effectKey: "external-event:first" })
+      expect(ownerMessageFor(members[1]!)).toBeUndefined()
+      expect(ownerMessageFor(members[2]!)).toEqual({ status: "covered", effectKey: "external-event:first" })
+      expect(context.externalEventAuthority.recordCommittedDisposition).toHaveBeenCalledTimes(3)
+    })
+
     it("returns explicit independent results when one prevalidated member conflicts during commit", async () => {
       const members = [batchMember(0), batchMember(1), batchMember(2)]
       mockReadExternalEventRecord.mockImplementation((recordPath) => {
@@ -624,7 +651,7 @@ describe("continuity tools", () => {
       mockReadStewardPolicy.mockReturnValue({ schemaVersion: 1, version: 4, desiredStates: { "service:books": { value: "on", provenance: "stated", version: 4, source: "ari" } }, routineActionGrants: {}, updatedAt: "2026-08-29T00:00:00.000Z" })
       mockReadExternalEventRecord.mockReturnValue({ agent: "ouroboros", source: "sanctuary-health", eventId: "books", transition: "opened", version: 4, generation: 2, observationRevision: "rev-2", executionState: "running", claimOwner: "lease-2" })
       mockCommitExternalEventDisposition.mockReturnValue({ executionState: "handled" })
-      const deliverOwnerDecision = vi.fn(async () => undefined)
+      const deliverOwnerDecision = vi.fn(async () => ({ status: "sent" as const, effectKey: "external-event:books" }))
       const recordCommittedDisposition = vi.fn()
 
       await findTool("external_event_disposition").handler({
@@ -637,9 +664,9 @@ describe("continuity tools", () => {
         externalEventEffects: { deliverOwnerDecision },
       } as any)
 
-      expect(deliverOwnerDecision).toHaveBeenCalledWith({ source: "sanctuary-health", eventId: "books", generation: 2, text: "Books is down. I’m checking it now." })
+      expect(deliverOwnerDecision).toHaveBeenCalledWith({ source: "sanctuary-health", eventId: "books", generation: 2, text: "Books is down. I’m checking it now.", relatedEvents: [] })
       expect(deliverOwnerDecision.mock.invocationCallOrder[0]).toBeLessThan(mockCommitExternalEventDisposition.mock.invocationCallOrder[0]!)
-      expect(mockCommitExternalEventDisposition).toHaveBeenCalledWith(expect.any(String), expect.objectContaining({ disposition: expect.objectContaining({ stewardPolicy: { kind: "current", key: "service:books", version: 4 } }) }))
+      expect(mockCommitExternalEventDisposition).toHaveBeenCalledWith(expect.any(String), expect.objectContaining({ disposition: expect.objectContaining({ stewardPolicy: { kind: "current", key: "service:books", version: 4 }, ownerMessage: { status: "sent", effectKey: "external-event:books" } }) }))
       expect(recordCommittedDisposition).toHaveBeenCalledWith(expect.objectContaining({ recordPath: "/events/ouroboros/sanctuary-health/books.json", generation: 2, claimOwner: "lease-2" }))
       expect(mockCommitExternalEventDisposition.mock.invocationCallOrder[0]).toBeLessThan(recordCommittedDisposition.mock.invocationCallOrder[0]!)
     })
@@ -895,7 +922,7 @@ describe("continuity tools", () => {
       mockReadStewardPolicy.mockReturnValue({ schemaVersion: 1, version: 2, desiredStates: { "service:books": { value: "on", provenance: "stated", version: 2, source: "ari" } }, routineActionGrants: {}, updatedAt: "2026-08-29T00:00:00.000Z" })
       vi.mocked(fs.readFileSync).mockImplementation((filePath: any) => String(filePath).endsWith("await-top-up.md") ? "---\nstatus: pending\nwake_at: 2026-08-30T17:00:00.000Z\nfiled_from: external-event\nfiled_from_key: /events/ouroboros/sanctuary-health/books.json\n---\n\nWaiting.\n" : "")
       const authorizeDisposition = vi.fn(() => ({ allowed: true, reason: "approved" }))
-      const deliverOwnerDecision = vi.fn(async () => undefined)
+      const deliverOwnerDecision = vi.fn(async () => ({ status: "sent" as const, effectKey: "external-event:books" }))
       const tool = findTool("external_event_disposition")
       await tool.handler({
         recordPath: "/events/ouroboros/sanctuary-health/books.json",

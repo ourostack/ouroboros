@@ -158,7 +158,11 @@ export interface ToolContext {
     recordCommittedDisposition?(event: import("../heart/external-events/router").ExternalEventLeaseContext): void;
   }>;
   readonly externalEventEffects?: Readonly<{
-    deliverOwnerDecision(input: { source: string; eventId: string; generation: number; text: string }): Promise<void>;
+    /** relatedEvents are the rest of the dispatched batch; one owner message speaks for the whole batch. */
+    deliverOwnerDecision(input: {
+      source: string; eventId: string; generation: number; text: string;
+      relatedEvents: Array<{ source: string; eventId: string; generation: number }>;
+    }): Promise<import("../heart/external-events/router").ExternalEventOwnerMessage>;
   }>;
   /** Irrevocable per-turn capability reduction used by transport-safe probes. */
   readonly noSend?: true;
