@@ -24,6 +24,12 @@
       "package": "@vitest/mocker",
       "reason": "Reached only through vitest 4.1.x, a devDependency that runs during local and CI test runs and is not shipped in @ouro.bot/cli or ouro.bot. The advisory concerns a Windows backslash traversal past the mock redirect allowlist in the test runner; the only patched line is vitest 5.x, a major upgrade across the whole suite. Re-decide with the vitest 5 migration.",
       "due": "2026-11-15"
+    },
+    {
+      "advisory": "https://github.com/advisories/GHSA-xcx6-jx8p-x3h5",
+      "package": "@azure/msal-node",
+      "reason": "Reached only through @azure/identity 4.x (DefaultAzureCredential in the mailroom, which never runs the authorization code flow) and @microsoft/teams.apps 2.x (pinned to msal-node ^5, bot client-credential tokens only). The advisory affects only the auth_code flow (acquireTokenByCode), which neither path calls; the patched line is msal-node 7.1, two majors past what those SDKs accept. Re-decide when @azure/identity and teams.apps accept msal-node 7.",
+      "due": "2026-11-15"
     }
   ]
 }

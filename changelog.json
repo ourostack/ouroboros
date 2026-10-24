@@ -2,6 +2,12 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.942",
+      "changes": [
+        "Patch multer to 2.5.0 and accept the MSAL Node auth-code advisory, which no Ouro path reaches, so release checks pass again."
+      ]
+    },
+    {
       "version": "0.1.0-alpha.941",
       "changes": [
         "Shepherd owner-requested terminal input now reports submission separately from unverified receiver receipt, execution, capability and progress; uncertain attempts retain identity and are not blindly retried."
