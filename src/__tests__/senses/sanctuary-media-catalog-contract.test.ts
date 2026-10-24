@@ -173,6 +173,28 @@ describe("Sanctuary media catalog contract", () => {
     expect(contract.validateTerminalAnswer("Yes—Moonstruck is on the shelf.")).toBeUndefined()
   })
 
+  // 2026-10-24, Telegram: "do you have any idea when…" was read as a title lookup for the whole sentence, so every
+  // media_search was rejected before dispatch and the turn ran out of steps without answering.
+  it.each([
+    "do you have any idea when that Elizabeth Holmes documentary that we have requested will be available? question",
+    "Do you have an idea when Hope will be ready?",
+    "do you have any update on the Chef Show episodes?",
+    "Do you have a clue when the new Dune movie lands?",
+  ])("does not read a question about a request as a title lookup (%s)", (request) => {
+    const contract = sanctuaryMediaCatalogRequiredToolCalls(request, ["settle", ...requiredTools, "media_search"])
+    expect(contract?.validateToolCallBeforeDispatch("media_search", { query: "Elizabeth Holmes" })).toBeUndefined()
+  })
+
+  it("accepts a search for the title named inside a longer captured phrase", () => {
+    const contract = sanctuaryMediaCatalogRequiredToolCalls("Do we have Moonstruck on blu-ray?", requiredTools)!
+    expect(contract.validateToolCallBeforeDispatch?.("sanctuary_search_media_catalog", { query: "Moonstruck" })).toBeUndefined()
+    expect(contract.validateToolCallBeforeDispatch?.("sanctuary_search_media_catalog", { query: "Alien" })).toMatch(/moonstruck/iu)
+    expect(contract.validateToolCallBeforeDispatch?.("sanctuary_search_media_catalog", { query: "on" })).toMatch(/moonstruck/iu)
+    expect(contract.validateRequiredToolResult?.("sanctuary_search_media_catalog", catalogResult(11_870, ["Moonstruck"]), { query: "Moonstruck" })).toBe(true)
+    expect(contract.validateTerminalAnswer("Yes—Moonstruck is on the shelf.")).toBeUndefined()
+    expect(contract.validateTerminalAnswer("No—Moonstruck is not on the shelf.")).toContain("Lead with yes")
+  })
+
   it("matches short titles only as complete normalized phrases", () => {
     const lookup = sanctuaryMediaCatalogRequiredToolCalls("Do we have Up?", requiredTools)!
     expect(lookup.validateRequiredToolResult?.("sanctuary_search_media_catalog", catalogResult(11_870, ["Up"]), { query: "Up" })).toBe(true)

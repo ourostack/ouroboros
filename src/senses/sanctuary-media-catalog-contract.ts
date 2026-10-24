@@ -34,10 +34,13 @@ function requestedListCount(request: string): number | null {
   return words[match[1]!] ?? Number(match[1])
 }
 
+// "do you have any idea when…" asks about something, it does not name a title (2026-10-24 Telegram step-limit loop).
+const NOT_A_TITLE = /^(?:any|an|a|no|some)\s+(?:idea|clue|eta|update|updates|news|word|sense|guess|info|information|time|way|chance)\b/u
+
 function requestedTitle(request: string): string {
   const conversationalSuffixRemoved = request.replace(/\s+(?:please|(?:right\s+)?now|currently)$/u, "")
   const haveMatch = conversationalSuffixRemoved.match(/\b(?:do|did|can|could)\s+(?:we|you)\s+(?:have|got|stock)\s+(.+)$/u)
-  if (haveMatch) return haveMatch[1]!.replace(/^(?:the\s+)?(?:movie|film|show)\s+/u, "").trim()
+  if (haveMatch) return NOT_A_TITLE.test(haveMatch[1]!) ? "" : haveMatch[1]!.replace(/^(?:the\s+)?(?:movie|film|show)\s+/u, "").trim()
   const locationMatch = conversationalSuffixRemoved.match(/\b(?:is|are)\s+(.+?)\s+(?:in|on)\s+(?:(?:the|our)\s+)?(?:jellyfin|library|lib|catalog|shelf)$/u)
   return locationMatch?.[1]?.replace(/^(?:the\s+)?(?:movie|film|show)\s+/u, "").trim() ?? ""
 }
@@ -123,6 +126,12 @@ function parseMediaSearchEvidence(result: string, args: Record<string, string>):
   }
 }
 
+/** A search names the requested title when it is that title or a complete, non-glue phrase inside it ("Moonstruck" for "moonstruck on blu ray"). */
+function searchNamesRequestedTitle(query: string, requested: string): boolean {
+  if (query === requested) return true
+  return includesNormalizedPhrase(requested, query) && query.split(" ").some((word) => !TITLE_LIST_GLUE.has(word))
+}
+
 function sentenceCount(answer: string): number {
   return answer.split(/[.!?]+(?:\s+|$)/u).filter((part) => part.trim()).length
 }
@@ -206,7 +215,7 @@ export function sanctuaryMediaCatalogRequiredToolCalls(
       if (name !== catalogTool) return undefined
       const query = normalizeSanctuaryMediaText(args.query ?? "")
       if (kind === "title_lookup" && !query) return "Search for the requested title by name before answering whether it is on the shelf."
-      if (kind === "title_lookup" && query !== requestedTitleQuery) return `Search for the requested title ${requestedTitleQuery} before answering whether it is on the shelf.`
+      if (kind === "title_lookup" && !searchNamesRequestedTitle(query, requestedTitleQuery)) return `Search for the requested title ${requestedTitleQuery} before answering whether it is on the shelf.`
       if (listCount && Number(args.limit) !== listCount && catalogTool !== MEDIA_SEARCH_TOOL) return `Set the catalog limit to ${listCount} so the answer is grounded in exactly the requested number of titles.`
       return undefined
     },
@@ -229,10 +238,11 @@ export function sanctuaryMediaCatalogRequiredToolCalls(
       }
 
       if (kind === "title_lookup" && latest?.query) {
-        const exactMatch = latest.titles.some((title) => normalizeSanctuaryMediaText(title) === requestedTitleQuery)
+        // The dispatch guard admitted latest.query as the requested title (or the title inside it), so ground the answer in that search.
+        const exactMatch = latest.titles.some((title) => normalizeSanctuaryMediaText(title) === latest.query)
         const expectedLead = exactMatch ? /^yes\b/iu : /^no\b/iu
         if (!expectedLead.test(answer.trim())) return `Lead with ${exactMatch ? "yes" : "no"} based on the current title search.`
-        if (!includesNormalizedPhrase(answer, requestedTitleQuery)) return "Name the requested title in the direct answer."
+        if (!includesNormalizedPhrase(answer, latest.query)) return "Name the requested title in the direct answer."
       }
 
       if (kind === "other" && latest) {
