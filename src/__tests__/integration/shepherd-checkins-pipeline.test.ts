@@ -2,7 +2,7 @@ import * as fs from "node:fs"
 import * as os from "node:os"
 import * as path from "node:path"
 import { spawn, type ChildProcess } from "node:child_process"
-import { randomUUID } from "node:crypto"
+import { createHash, randomUUID } from "node:crypto"
 import { afterEach, describe, expect, it } from "vitest"
 import { ackFrame, startFakeCmux, type FakeCmux } from "../senses/shepherd/fake-cmux"
 import type { HostSession } from "../../senses/shepherd/host"
@@ -17,6 +17,9 @@ const { getAgentRoot, resetIdentity } = require(path.join(dist, "heart/identity.
 const { cacheMachineRuntimeCredentialConfig, resetRuntimeCredentialConfigCache } =
   require(path.join(dist, "heart/runtime-credentials.js")) as typeof import("../../heart/runtime-credentials")
 const { readReturns } = require(path.join(dist, "senses/shepherd/returns.js")) as typeof import("../../senses/shepherd/returns")
+const { updateShepherdMandate } = require(path.join(dist, "heart/shepherd/mandates.js")) as typeof import("../../heart/shepherd/mandates")
+const { checkInStorePath } = require(path.join(dist, "senses/shepherd/checkin-store.js")) as typeof import("../../senses/shepherd/checkin-store")
+const { readCheckInSnapshot } = require(path.join(dist, "senses/shepherd/recovery.js")) as typeof import("../../senses/shepherd/recovery")
 const previousHome = process.env.HOME
 const children: ChildProcess[] = []
 const sockets: FakeCmux[] = []
@@ -46,19 +49,30 @@ async function codingProcess(home: string, name: string) {
   const cwd = path.join(home, name)
   const entry = path.join(cwd, "copilot", "pkg", "fixture", "bin", "cli-main.js")
   fs.mkdirSync(path.dirname(entry), { recursive: true })
-  fs.writeFileSync(entry, "process.stdin.resume();process.stdin.on('end',()=>process.exit(0));")
+  fs.writeFileSync(entry, [
+    'process.stdin.setEncoding("utf8");',
+    'let pending = "";',
+    'process.stdin.on("data", chunk => { pending += chunk; let newline; while ((newline = pending.indexOf("\\n")) >= 0) { process.stdout.write(JSON.stringify(pending.slice(0, newline)) + "\\n"); pending = pending.slice(newline + 1); } });',
+    'process.stdin.on("end", () => process.exit(0));',
+  ].join("\n"))
   const child = spawn("python3", ["-c", NATIVE, process.execPath, entry], {
     cwd, env: { ...process.env, HOME: home }, stdio: ["pipe", "pipe", "pipe", "pipe"],
   })
   children.push(child)
-  let metadata = "", errors = ""
+  let metadata = "", errors = "", output = ""
   child.stdio[3]!.on("data", (chunk: Buffer) => { metadata += chunk.toString() })
   child.stderr!.on("data", (chunk: Buffer) => { errors += chunk.toString() })
+  child.stdout!.on("data", (chunk: Buffer) => { output += chunk.toString() })
   await waitFor(() => {
     if (child.exitCode !== null) throw new Error(`Owned coding fixture exited: ${errors}`)
     return metadata.includes("\n")
   }, "controlling PTY")
-  return { cwd, tty: (JSON.parse(metadata.trim()) as { tty: string }).tty }
+  return { cwd, child, tty: (JSON.parse(metadata.trim()) as { tty: string }).tty,
+    received: () => output.split("\n").slice(0, -1).map(line => {
+      const value: unknown = JSON.parse(line)
+      if (typeof value !== "string") throw new Error("Owned receiver returned an invalid input acknowledgment")
+      return value
+    }) }
 }
 
 afterEach(async () => {
@@ -78,8 +92,13 @@ afterEach(async () => {
 })
 
 describe("compiled periodic check-in pipeline on owned PTYs", () => {
-  it("continues a provider-stalled terminal, protects a drafted blocker, and stays quiet after restart", async () => {
-    const home = fs.mkdtempSync(path.join(os.tmpdir(), "checkins-pipeline-"))
+  it.each([
+    { scenario: "authorized", qualified: true, mandated: true, validReply: true, block: null },
+    { scenario: "legacy host", qualified: false, mandated: true, validReply: true, block: "host_unverified" },
+    { scenario: "missing mandate", qualified: true, mandated: false, validReply: true, block: "mandate" },
+    { scenario: "invalid reply", qualified: true, mandated: true, validReply: false, block: "reply_invalid" },
+  ])("$scenario: protects the blocker and never repeats input after restart", async ({ qualified, mandated, validReply, block }) => {
+    const home = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "checkins-pipeline-")))
     process.env.HOME = home
     resetIdentity()
     const agent = "periodic-fixture"
@@ -107,6 +126,12 @@ describe("compiled periodic check-in pipeline on owned PTYs", () => {
     ])
     const cmux = await startFakeCmux({ capability: "v1.owned.fixture" })
     sockets.push(cmux)
+    let clock = Date.now()
+    const boot = randomUUID()
+    const tokens = new Map<string, HostSession & { tty: string }>()
+    const receipts = new Map<string, Record<string, unknown>>()
+    const delivered: Array<{ session: string; text: string }> = []
+    const hash = (text: string) => createHash("sha256").update(text).digest("hex")
     cmux.respond("events.stream", () => ackFrame())
     cmux.respond("system.tree", () => ({ windows: [{ id: "WIN-1", workspaces: [{
       id: workspace, ref: "workspace:1", title: "Owned fixtures", selected: false,
@@ -121,20 +146,91 @@ describe("compiled periodic check-in pipeline on owned PTYs", () => {
     })
     cmux.respond("terminal.paste", () => ({}))
     cmux.respond("surface.send_key", () => ({}))
+    cmux.respond("system.capabilities", () => qualified
+      ? { shepherd_guarded_input: { protocol_version: 1, state: "qualified", agents: ["Copilot"] } }
+      : {})
+    cmux.respond("surface.shepherd.inspect", params => {
+      const session = sessions.find(candidate => candidate.id === params.surface_id)
+      if (!session?.instance || params.workspace_id !== workspace) throw new Error("Fixture refused an unbound native inspection")
+      const screen = screens.get(session.id)!
+      const drafted = session.id === ids[1]
+      const token = drafted ? null : randomUUID()
+      if (token) tokens.set(token, session)
+      return {
+        protocol_version: 1, host_instance: boot, screen,
+        observed_at_uptime_seconds: 100, observed_at_unix_ms: clock,
+        token: token ? { id: token, expires_at_uptime_seconds: 101.5 } : null,
+        snapshot: {
+          workspace_id: workspace, surface_id: session.id, process_instance: session.instance,
+          agent: session.agent, cwd: session.cwd, tty: session.tty,
+          surface_generation: 1, input_revision: 0, focus_revision: 0, focused: false,
+          idle: true, background_work: false, accepts_immediate_input: !drafted,
+          composer: drafted ? { state: "draft", draft_length: 33 } : { state: "empty", draft_length: 0 },
+          screen_fingerprint: hash(screen), outside_composer_fingerprint: hash(frame),
+        },
+      }
+    })
+    cmux.respond("surface.shepherd.continue", params => {
+      if (typeof params.token !== "string" || typeof params.request_id !== "string" || typeof params.text !== "string") {
+        throw new Error("Fixture refused malformed conditional input")
+      }
+      const session = tokens.get(params.token)
+      if (!session?.instance || session.id !== ids[0]) throw new Error("Fixture refused an unknown or blocked token")
+      tokens.delete(params.token)
+      const claim = readCheckInSnapshot(checkInStorePath(root), { limit: 20 }).entries
+        .find(entry => entry.nativeRequestId === params.request_id)
+      expect(claim).toMatchObject({ state: "claimed", nativeTarget: { hostInstance: boot, workspaceId: workspace } })
+      expect(params.text).toBe("[Fixture Shepherd for the human] Reassess and continue only this authorized task: Repair the cache and verify the tests. Respect human decisions and reconcile uncertain effects before retrying.")
+      first.child.stdin!.write(`${params.text}\n`)
+      delivered.push({ session: session.id, text: params.text })
+      const receipt = {
+        protocol_version: 1, host_instance: boot, request_id: params.request_id,
+        surface_id: session.id, workspace_id: workspace, process_instance: session.instance,
+        state: "accepted", reason: "fixture submitted", paste_admitted: true, submit_admitted: true,
+      }
+      receipts.set(params.request_id, receipt)
+      return receipt
+    })
+    cmux.respond("surface.shepherd.receipt", params => {
+      const receipt = typeof params.request_id === "string" ? receipts.get(params.request_id) : undefined
+      if (!receipt) throw new Error("Fixture has no matching receipt")
+      return receipt
+    })
     cacheMachineRuntimeCredentialConfig(agent, { cmux: { socketPath: cmux.socketPath, socketCapability: "v1.owned.fixture" } })
-    let clock = Date.parse("2026-10-16T04:00:00Z")
+    const host = createShepherdHost({ host: "cmux", socketPath: cmux.socketPath,
+      auth: { kind: "capability", token: "v1.owned.fixture" } }, { agentName: agent, now: () => clock })
+    for (const session of sessions) {
+      const identified = (await host.list()).find(candidate => candidate.id === session.id)
+      if (!identified?.instance || identified.agent !== "Copilot" || identified.cwd !== session.cwd) {
+        throw new Error("Owned PTY coding process was not identified")
+      }
+      session.instance = identified.instance
+    }
+    if (mandated) {
+      await updateShepherdMandate(root, {
+        operation: "grant", expectedRevision: 0,
+        context: { kind: "local_owner_administration", actorId: "fixture-owner", requestId: "fixture-grant" },
+        target: { project: first.cwd, host: "cmux", session: ids[0]!, instance: sessions[0]!.instance! },
+        task: "Repair the cache and verify the tests.", expiresAt: new Date(Date.now() + 6 * 3_600_000).toISOString(),
+      })
+      clock = Date.now()
+    }
     let jobs: Array<{ fn: () => void; at: number; ms: number }> = []
     const notices: ReturnRecord[] = []
     const escalations: string[] = []
     const wakes: string[][] = []
-    const providerRequests: string[] = []
+    const providerRequests: Array<{ terminal: { screen: string }; priorJudgment: { kind: string } | null }> = []
     const provider: JudgeRuntime = { streamTurn: async request => {
-      const current = String(request.messages[1]!.content)
+      const current: { terminal: { screen: string }; priorJudgment: { kind: string } | null } =
+        JSON.parse(String(request.messages[1]!.content))
       providerRequests.push(current)
       expect(request.messages[0]!.content).toContain("periodic check-in")
+      expect(request.messages[0]!.content).toContain("The prior judgment is history only")
       expect(request.activeTools).toEqual([])
-      return { content: JSON.stringify({ kind: current.includes("AUTH:") ? "gate" : "premature",
-        reply: { text: "Never send this provider-selected text. ".repeat(10) }, reason: current.includes("AUTH:") ? "Human sign-in required." : "Existing work can continue safely." }) }
+      const gate = current.terminal.screen.includes("AUTH:")
+      return { content: JSON.stringify({ kind: gate ? "gate" : "premature",
+        reply: { text: validReply ? "Continue the existing authorized task." : "Never send this provider-selected text. ".repeat(10) },
+        reason: gate ? "Human sign-in required." : "Existing work can continue safely." }) }
     } }
     const start = async () => {
       const app = await startShepherdSenseApp({ agentName: agent, now: () => clock,
@@ -143,8 +239,8 @@ describe("compiled periodic check-in pipeline on owned PTYs", () => {
           jobs.push(job)
           return () => { jobs = jobs.filter(candidate => candidate !== job) }
         },
-        createHost: connection => ({
-          ...createShepherdHost(connection, { agentName: agent, now: () => clock }),
+        createHost: () => ({
+          ...host,
           // This fixture drives the periodic path, not unrelated hook/quiet return detection.
           watch: () => ({ close() {} }),
         }),
@@ -168,18 +264,21 @@ describe("compiled periodic check-in pipeline on owned PTYs", () => {
     }
     await start()
     await quiet(2)
-    const writes = () => cmux.methods.filter(entry => ["terminal.paste", "surface.send_key"].includes(entry.method))
-    expect(writes()).toHaveLength(2)
-    expect(writes().every(entry => entry.params.surface_id === ids[0] && entry.params.workspace_id === workspace)).toBe(true)
-    const paste = writes().find(entry => entry.method === "terminal.paste")!
-    expect(JSON.stringify(paste.params)).toContain("Reassess your existing task and continue only already-authorized remaining work.")
-    expect(JSON.stringify(paste.params)).not.toContain("provider-selected")
+    const writes = () => cmux.methods.filter(entry => entry.method === "surface.shepherd.continue")
+    const legacyWrites = () => cmux.methods.filter(entry => ["terminal.paste", "surface.send_key"].includes(entry.method))
+    expect(writes()).toHaveLength(block ? 0 : 1)
+    expect(legacyWrites()).toEqual([])
+    if (!block) await waitFor(() => first.received().length === 1, "actual owned receiver acknowledgment")
+    expect(delivered).toHaveLength(block ? 0 : 1)
+    expect(first.received()).toEqual(block ? [] : [delivered[0]!.text])
+    expect(second.received()).toEqual([])
     expect(notices).toHaveLength(2)
     expect(notices.map(record => [record.session, record.kind, record.action])).toEqual(expect.arrayContaining([
-      [ids[0], "premature", "respond"], [ids[1], "gate", "let_through"],
+      [ids[0], "premature", block ? "let_through" : "respond"], [ids[1], "gate", "let_through"],
     ]))
-    expect(notices.find(record => record.session === ids[0])).toMatchObject({ judgeKind: "premature", replyIssue: "too_long" })
-    expect(providerRequests.every(request => request.includes("history only"))).toBe(true)
+    if (block) expect(notices.find(record => record.session === ids[0])).toMatchObject({ actionBlockReason: block })
+    if (!validReply) expect(notices.find(record => record.session === ids[0])).toMatchObject({ judgeKind: "premature", replyIssue: "too_long" })
+    expect(providerRequests.every(request => request.priorJudgment === null)).toBe(true)
     const statusCount = cmux.lines.filter(line => line.includes("set_status")).length
     const wake = jobs.find(job => job.ms === 2000)!
     jobs = jobs.filter(job => job !== wake)
@@ -191,11 +290,15 @@ describe("compiled periodic check-in pipeline on owned PTYs", () => {
     clock += 3_600_000
     await start()
     await quiet(4)
-    expect(writes()).toHaveLength(2)
+    expect(writes()).toHaveLength(block ? 0 : 1)
+    expect(legacyWrites()).toEqual([])
+    expect(first.received()).toEqual(block ? [] : [delivered[0]!.text])
+    expect(second.received()).toEqual([])
     expect(notices).toHaveLength(2)
     expect(escalations).toHaveLength(1)
     expect(wakes).toHaveLength(1)
     expect(cmux.lines.filter(line => line.includes("set_status"))).toHaveLength(statusCount)
+    expect(providerRequests.slice(2).every(request => request.priorJudgment !== null)).toBe(true)
     expect(cmux.methods.some(entry => /focus|select|split|create|close/.test(entry.method))).toBe(false)
   })
 })
