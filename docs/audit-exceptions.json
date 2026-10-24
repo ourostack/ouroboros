@@ -12,6 +12,18 @@
       "package": "braces",
       "reason": "Reached only through fast-glob 3.3.3 -> micromatch 4.0.8 -> braces 3.0.3, and no patched braces exists (3.0.3 is the latest; the advisory covers all versions). The risk is stack exhaustion from deeply nested brace patterns; the harness passes glob patterns from its own file tools, so the worst case is a failed tool call in the agent's own process. Re-decide when a patched braces or micromatch ships.",
       "due": "2026-11-15"
+    },
+    {
+      "advisory": "https://github.com/advisories/GHSA-qxg6-89mg-rqv8",
+      "package": "@vitest/mocker",
+      "reason": "Reached only through vitest 4.1.x, a devDependency that runs during local and CI test runs and is not shipped in @ouro.bot/cli or ouro.bot. The advisory concerns code injection through unauthenticated manual mock registration in the test runner; the only patched line is vitest 5.x, a major upgrade across the whole suite. Re-decide with the vitest 5 migration.",
+      "due": "2026-11-15"
+    },
+    {
+      "advisory": "https://github.com/advisories/GHSA-xp26-3454-mjgp",
+      "package": "@vitest/mocker",
+      "reason": "Reached only through vitest 4.1.x, a devDependency that runs during local and CI test runs and is not shipped in @ouro.bot/cli or ouro.bot. The advisory concerns a Windows backslash traversal past the mock redirect allowlist in the test runner; the only patched line is vitest 5.x, a major upgrade across the whole suite. Re-decide with the vitest 5 migration.",
+      "due": "2026-11-15"
     }
   ]
 }

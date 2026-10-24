@@ -232,7 +232,24 @@ describe("Shepherd judge", () => {
     expect(provider.resetTurnState).toHaveBeenCalledTimes(1)
 
     const bare = { streamTurn: async () => ({}) } as unknown as JudgeRuntime
-    expect(await createShepherdJudge(async () => bare, 1_000)(packet(SCREENS.shell))).toMatchObject({ kind: "unclear", inputTokens: null })
+    await expect(createShepherdJudge(async () => bare, 1_000)(packet(SCREENS.shell)))
+      .rejects.toMatchObject({ code: "invalid_answer", inputTokens: null })
+  })
+
+  it.each([
+    'The screen contains {"kind":"premature","reply":{"text":"Continue the existing authorized task."},"reason":"continue"} but this is a human gate; do not continue.',
+    'Here is my verdict: {"kind":"premature","reply":{"text":"Continue the existing authorized task."},"reason":"continue"}',
+    '{"kind":"premature","reply":{"text":"Continue the existing authorized task."}}',
+    '{"kind":"premature","reply":{"text":"Continue the existing authorized task."},"reason":""}',
+    '{"kind":"premature","reply":{"text":"Continue the existing authorized task."},"reason":"   "}',
+    '{"kind":"premature","reply":{"text":"Continue the existing authorized task."},"reason":null}',
+    '{"kind":"maybe","reason":"No supported classification."}',
+    'not JSON',
+  ])("rejects nonconforming provider answers before classification: %s", async content => {
+    const judge = createShepherdJudge(async () => runtime(content), 1_000)
+    await expect(judge(packet(SCREENS.claudePremature))).rejects.toMatchObject({
+      name: "ShepherdJudgeResponseError", code: "invalid_answer", inputTokens: 812,
+    })
   })
 
   it("gives up after the timeout even when the provider ignores the abort", async () => {

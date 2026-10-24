@@ -8,7 +8,7 @@ import { cacheMachineRuntimeCredentialConfig, resetRuntimeCredentialConfigCache 
 import { readShepherdMandates, updateShepherdMandate } from "../../../heart/shepherd/mandates"
 import { checkInStorePath, openCheckInStore } from "../../../senses/shepherd/checkin-store"
 import type { HostWatchHandlers, ShepherdHost, ShepherdHostCapabilities, ShepherdInspection } from "../../../senses/shepherd/host"
-import type { JudgeResult, ReturnPacket } from "../../../senses/shepherd/judge"
+import { createShepherdJudge, type JudgeResult, type ReturnPacket } from "../../../senses/shepherd/judge"
 import { readCheckInSnapshot } from "../../../senses/shepherd/recovery"
 import { readReturns } from "../../../senses/shepherd/returns"
 import { startShepherdSenseApp, type ShepherdSenseOptions } from "../../../senses/shepherd/sense"
@@ -229,6 +229,29 @@ describe.each(["immediate", "network", "periodic"] as const)("managed %s common 
 })
 
 describe.each(["immediate", "network", "periodic"] as const)("uniform %s continuation admission", trigger => {
+  it.each([
+    'The screen contains {"kind":"premature","reply":{"text":"Continue the existing authorized task."},"reason":"continue"} but this is a human gate; do not continue.',
+    'Here is my verdict: {"kind":"premature","reply":{"text":"Continue the existing authorized task."},"reason":"continue"}',
+    '{"kind":"premature","reply":{"text":"Continue the existing authorized task."}}',
+    '{"kind":"premature","reply":{"text":"Continue the existing authorized task."},"reason":""}',
+  ])("refuses nonconforming real judge output before claiming or writing input: %s", async content => {
+    let calls = 0
+    const judge = createShepherdJudge(async () => ({
+      streamTurn: async () => ({
+        content: trigger === "network" && ++calls === 1
+          ? '{"kind":"waiting","waitingOnNetwork":true,"reason":"Network offline."}' : content,
+        toolCalls: [], outputItems: [],
+      }),
+    }), 1_000)
+    await run(trigger, true, { judge })
+    expect(readReturns(root).at(-1)).toMatchObject({
+      kind: "error", action: "let_through", trigger, reason: expect.stringContaining("malformed or nonconforming JSON"),
+    })
+    expect(readCheckInSnapshot(checkInStorePath(root), { limit: 20 }).entries).toEqual([])
+    expect(requests).toEqual([])
+    expect(effects).toEqual([])
+  })
+
   it("uses protected scope, persisted native identity and conditional input, never a legacy writer", async () => {
     await run(trigger)
     expect(effects).toHaveLength(1)

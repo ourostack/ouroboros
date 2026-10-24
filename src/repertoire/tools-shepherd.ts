@@ -1,5 +1,6 @@
 import * as fs from "node:fs"
 import * as path from "node:path"
+import { randomUUID } from "node:crypto"
 import { readMachineRuntimeCredentialConfig } from "../heart/runtime-credentials"
 import { resolveShepherdConnection } from "../heart/shepherd-config"
 import { emitNervesEvent } from "../nerves/runtime"
@@ -192,7 +193,7 @@ export const shepherdSendToolDefinition: ToolDefinition = {
     type: "function",
     function: {
       name: "shepherd_send",
-      description: `Type into one coding agent's terminal on this machine for the human you are talking with, because they asked you to. Use it only to deliver that human's own instruction or keypress ("tell it to run the tests", "approve that", "stop it"): never on your own initiative, and never for anyone else. Give exactly one of text or key. text is one line (at most ${SEND_TEXT_MAX_CHARS} characters, no control characters), typed as "[<your configured name> for <their name>] <text>" and submitted with Enter. key is pressed alone: one of ${SEND_KEYS.join(", ")} (a menu or permission prompt, escape to interrupt, ctrl-c to cancel). enter, tab, a digit, y and n can approve or choose on a prompt, so they need screen from a shepherd_read made just before, and nothing is sent if the terminal changed since; tell the human what a prompt asks before approving it unless they have seen it. Pass screen with text too when the text answers what is on screen. To interrupt and then instruct, send escape, read again, then send the text. It also types into the terminal the human has focused on this machine.`,
+      description: `Type into one coding agent's terminal on this machine for the human you are talking with, because they asked you to. Use it only to submit that human's own instruction or keypress ("tell it to run the tests", "approve that", "stop it"): never on your own initiative, and never for anyone else. Give exactly one of text or key. text is one line (at most ${SEND_TEXT_MAX_CHARS} characters, no control characters), typed as "[<your configured name> for <their name>] <text>" and submitted with Enter. key is pressed alone: one of ${SEND_KEYS.join(", ")} (a menu or permission prompt, escape to interrupt, ctrl-c to cancel). enter, tab, a digit, y and n can approve or choose on a prompt, so they need screen from a shepherd_read made just before, and nothing is sent if the terminal changed since; tell the human what a prompt asks before approving it unless they have seen it. Pass screen with text too when the text answers what is on screen. To interrupt and then instruct, send escape, read again, then send the text. It also types into the terminal the human has focused on this machine. submission.state accepted means only that the terminal host accepted input; it may still be queued behind credential approval or a busy agent. It does not prove receiver receipt, resumed execution, restored capability or useful progress. Report those as unverified, never "unblocked" or "all unblocked" from this result or an unchanged screen. Each stronger claim needs fresh evidence from the exact target instance after this attempt, tied to this instruction; receipt alone is not progress or restored credentials. unknown may already have arrived: preserve the attempt and do not blindly resend.`,
       parameters: {
         type: "object",
         properties: {
@@ -230,17 +231,42 @@ export const shepherdSendToolDefinition: ToolDefinition = {
       const now = screenFingerprint(await host.read(target.id, FINGERPRINT_READ_LINES))
       if (seen && seen !== now) return refused("the terminal changed since it was read, so nothing was sent; read it again", meta)
       const typed = key ? null : `[${readAgentPresentation(ctx!.agentName!, ctx!.agentRoot!).name} for ${friend.name}] ${line}`
-      if (key) await host.key(target.id, key as ShepherdKey)
-      else await host.prompt(target.id, typed!)
+      const input = key ? { key } : { text: typed }
+      const attemptId = randomUUID()
+      const attemptedAt = new Date().toISOString()
+      const receiptTarget = { host: host.name, id: target.id, ref: target.ref, instance: target.instance ?? null }
+      const verification = { received: "unverified", execution: "unverified", capability: "unverified", progress: "unverified" }
+      const retry = "Do not resend blindly; reconcile this attempt with the exact receiver first."
+      // A rejected/expired call can follow a partial paste or an accepted key.
+      // Neither host provides an agent-receipt or progress acknowledgement here.
+      try {
+        if (key) await host.key(target.id, key as ShepherdKey)
+        else await host.prompt(target.id, typed!)
+      } catch (error) {
+        const message = redactSecrets(error instanceof Error ? error.message : String(error))
+        emitNervesEvent({
+          level: "warn", component: "repertoire", event: "repertoire.shepherd_send_unknown",
+          message: "terminal input outcome is unknown; do not blindly resend",
+          meta: { ...meta, session: target.id, ref: target.ref, instance: target.instance ?? null, attemptId, attemptedAt, error: message },
+        })
+        return {
+          error: message, session: target.ref, attempted: input,
+          submission: { state: "unknown", attemptId, attemptedAt, reportedAt: new Date().toISOString(), target: receiptTarget },
+          verification, retry,
+        }
+      }
       emitNervesEvent({
         component: "repertoire",
         event: "repertoire.shepherd_send",
-        message: "typed into a terminal for a family member",
-        meta: { ...meta, session: target.id, ref: target.ref, agent: target.agent, focused: target.focused, screenChecked: !!seen },
+        message: "terminal host accepted input; receiver receipt and progress unverified",
+        meta: { ...meta, session: target.id, ref: target.ref, instance: target.instance ?? null, attemptId, attemptedAt, agent: target.agent, focused: target.focused, screenChecked: !!seen },
       })
-      // The status line shows the human at the machine who typed; it is best effort, the send already happened.
-      await host.signal(target.id, `sent for ${friend.name}`.slice(0, STATUS_MAX_CHARS)).catch(() => undefined)
-      return { session: target.ref, sent: key ? { key } : { text: typed }, focused: target.focused }
+      await host.signal(target.id, `submitted for ${friend.name}; receipt unverified`.slice(0, STATUS_MAX_CHARS)).catch(() => undefined)
+      return {
+        session: target.ref, submitted: input, focused: target.focused,
+        submission: { state: "accepted", attemptId, attemptedAt, reportedAt: new Date().toISOString(), target: receiptTarget },
+        verification, retry,
+      }
     })
   },
   summaryKeys: ["session", "key"],

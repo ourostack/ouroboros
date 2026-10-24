@@ -133,7 +133,7 @@ function answerJson(content: string): { ok: true; value: unknown; inProse: boole
   return { ok: false, text }
 }
 
-/** Evaluation must not score malformed answers as genuine safe-fallback classifications. */
+/** Only a complete structured answer is eligible for production judgment or evaluation. */
 export function isShepherdJudgeAnswerValid(content: string): boolean {
   const parsed = answerJson(content)
   if (!parsed.ok || parsed.inProse || !parsed.value || typeof parsed.value !== "object") return false
@@ -236,6 +236,9 @@ export function createShepherdJudge(runtime: () => Promise<JudgeRuntime>, timeou
       provider.resetTurnState?.(messages)
       const result = await Promise.race([provider.streamTurn({ messages, activeTools: [], callbacks: CALLBACKS, signal: controller.signal, toolChoiceRequired: false, reasoningEffort: "low" }), timedOut])
       assertShepherdJudgeCompletion(result)
+      if (!isShepherdJudgeAnswerValid(result.content ?? "")) {
+        throw new ShepherdJudgeResponseError("invalid_answer", result.usage?.input_tokens ?? null)
+      }
       const verdict = parseVerdict(result.content ?? "")
       emitNervesEvent({ component: "senses", event: "senses.shepherd_judged", message: "judged a returned control", meta: { kind: verdict.kind } })
       return { ...verdict, latencyMs: now() - started, inputTokens: result.usage?.input_tokens ?? null }
