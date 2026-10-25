@@ -2,6 +2,12 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.944",
+      "changes": [
+        "The Butler sends at most one Telegram warning for a batch of health events from one sweep, records the rest as covered by it, and settles a retry of an already-sent warning without sending it again."
+      ]
+    },
+    {
       "version": "0.1.0-alpha.943",
       "changes": [
         "Butler: a question like \"do you have any idea when that movie will be available?\" no longer gets treated as a title lookup that blocks every search until the step limit; the replay gate now checks this case."
