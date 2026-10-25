@@ -880,6 +880,34 @@ describe("fixed root installation effects", () => {
       expect(kill.mock.calls).toEqual([[45678, "SIGUSR2"], [45678, "SIGTERM"]])
       await expect(f.lifecycle.effect("verify-token-rotation").readback()).rejects.toThrow(/retired/u)
     })
+    it.each(["before-open", "after-open", "before-realpath"])("treats a lock the exiting gateway unlinks mid-read (%s) as stopped, but keeps refusing an unsafe lock", async (moment) => {
+      const f = await preparedFixture()
+      f.publish()
+      f.write(`${f.epochRoot}/retirement.json`, { schemaVersion: 1, keyId: f.epoch.epochId, publicKeyDigest: f.epoch.publicKeyDigest, quiescent: true, cursor: 91 })
+      const lock = f.p(`${f.epochRoot}/authority.lock`)
+      let exiting = false
+      const exit = () => { exiting = false; fs.unlinkSync(lock); fs.rmSync(f.p("/proc/45678"), { recursive: true }) }
+      const open = fs.openSync, realpath = fs.realpathSync
+      // The gateway deletes its lock between #pid's existence check and the end of its private read, as on Sanctuary on 2026-10-25 (ENOENT from lstat).
+      vi.spyOn(fs, "openSync").mockImplementation(((file, flags, mode) => {
+        if (!exiting || file !== lock || moment === "before-realpath") return open(file, flags, mode)
+        if (moment === "before-open") { exit(); return open(file, flags, mode) }
+        const fd = open(file, flags, mode)
+        exit()
+        return fd
+      }) as typeof fs.openSync)
+      vi.spyOn(fs, "realpathSync").mockImplementation(((file, options) => {
+        if (exiting && file === lock && moment === "before-realpath") exit()
+        return realpath(file, options)
+      }) as typeof fs.realpathSync)
+      const kill = vi.spyOn(process, "kill").mockImplementation((_pid, signal) => { if (signal === "SIGTERM") exiting = true; return true })
+      await f.lifecycle.effect("rollback:stop-gateway").apply()
+      expect(kill.mock.calls).toEqual([[45678, "SIGTERM"]])
+      expect(fs.existsSync(f.p(`${f.epochRoot}/readiness.json`))).toBe(false)
+      f.publish()
+      fs.chmodSync(lock, 0o644)
+      await expect(f.lifecycle.effect("rollback:stop-gateway").apply()).rejects.toThrow(/private file is unsafe/u)
+    })
     it("refuses incomplete or changed retirement and offline reconciliation failure", async () => {
       const f = await preparedFixture()
       await expect(f.lifecycle.effect("rollback:end-epoch").apply()).rejects.toThrow(/retire/u)
@@ -1435,6 +1463,22 @@ describe("in-place authority upgrade", () => {
     expect(readEpoch(f).packageDigest).toBe(f.nextRequest.packageDigest)
   })
 
+  it("gives a rolled-back predecessor 15 minutes to become healthy, but the forward start only 5 (the 945 rollback to 911)", async () => {
+    const f = await upgradeFixture()
+    vi.useFakeTimers()
+    let healthyAt = Number.POSITIVE_INFINITY
+    Object.defineProperty(f.resident, "healthy", { get: () => Date.now() >= healthyAt ? "healthy" : "starting" })
+    const forward = f.lifecycle.upgrade({ targetImageId: digest("next-image"), imageReference: nextReference })
+    const forwardFailed = expect(forward).rejects.toThrow(/readback timed out/u)
+    await vi.advanceTimersByTimeAsync(300_500)
+    await forwardFailed
+    healthyAt = Date.now() + 8 * 60_000
+    const rollback = f.lifecycleFor().rollbackUpgrade()
+    await vi.advanceTimersByTimeAsync(8 * 60_000 + 1_000)
+    await expect(rollback).resolves.toBe(true)
+    expect(f.resident.reference).toBe(currentReference)
+  })
+
   it("lets only a rollback continue a rollback that stopped partway", async () => {
     const f = await upgradeFixture()
     const before = f.snapshot()
@@ -1656,7 +1700,7 @@ describe("in-place authority upgrade", () => {
     await runSanctuaryAuthorityRootCli(["upgrade-rollback"], write)
     expect(rollback).toHaveBeenCalledOnce()
     expect(write.mock.calls).toEqual([[`{"upgraded":"${nextReference}"}\n`], [`{"upgraded":"${nextReference}"}\n`], [`{"upgraded":"${nextReference}","held":true}\n`], ['{"rolledBack":true}\n']])
-    expect(sessions.withSessionTurnLease).toHaveBeenLastCalledWith("/boot/config/custom/ouro-butler/docker-man-template-transaction.json", expect.any(Function), { timeoutMs: 600_000, confinementRoot: "/boot/config/custom/ouro-butler" })
+    expect(sessions.withSessionTurnLease).toHaveBeenLastCalledWith("/boot/config/custom/ouro-butler/docker-man-template-transaction.json", expect.any(Function), { timeoutMs: 1_800_000, confinementRoot: "/boot/config/custom/ouro-butler" })
   })
 })
 

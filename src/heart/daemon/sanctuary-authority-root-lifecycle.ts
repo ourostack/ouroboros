@@ -38,6 +38,11 @@ const DIGEST = /^sha256:[a-f0-9]{64}$/u
 // page cache on Unraid's array that takes minutes, so readiness gets a generous budget
 // (a 120 s budget failed a real rollback on 2026-09-24).
 const GATEWAY_READY_TIMEOUT_MS = 900_000
+const RESIDENT_READY_TIMEOUT_MS = 300_000
+// A rolled-back predecessor older than 0.1.0-alpha.947 starts its senses behind a startup external-event turn and took about 8 minutes to become ready on 2026-10-25.
+const PREDECESSOR_READY_TIMEOUT_MS = 900_000
+// How long an operator upgrade or rollback waits for the deployment lease while a keeper boot holds it. A boot can be running the whole rollback: halt, bundle finalize, gateway readiness and the predecessor's 15 minutes.
+const OPERATOR_LEASE_WAIT_MS = 1_800_000
 const GATEWAY_START_BACKOFF_MS = [2_000, 10_000, 30_000]
 const GATEWAY_LOG_TAIL_CHARS = 2_000
 // Read more than is shown, so masking sees whole tokens before the tail is cut.
@@ -439,7 +444,13 @@ export class SanctuaryAuthorityRootLifecycle {
   #pid(): number | null {
     const lock = `${this.#epochRoot()}/authority.lock`
     if (!fs.existsSync(this.#p(lock))) return null
-    const pid = Number(this.#private(lock))
+    let text: string
+    try { text = this.#private(lock) } catch (error) {
+      // An exiting gateway unlinks its lock, which can land mid-read (ENOENT, or nlink 0). A lock that is gone means no gateway; one still present stays strict.
+      if (!fs.existsSync(this.#p(lock))) return null
+      throw error
+    }
+    const pid = Number(text)
     if (!Number.isSafeInteger(pid) || pid <= 0) throw new Error("Sanctuary gateway process lock is invalid")
     if (!fs.existsSync(this.#p(`/proc/${pid}`))) return null
     const status = fs.readFileSync(this.#p(`/proc/${pid}/status`), "utf8")
@@ -739,7 +750,7 @@ export class SanctuaryAuthorityRootLifecycle {
     if (this.#containers().find((container) => container.Name === "/ouro-butler")?.Image !== journal.from.imageId) {
       predecessor.#recreateResident(journal.from.imageReference, journal.from.imageId)
     }
-    await predecessor.#startUpgraded()
+    await predecessor.#startUpgraded(PREDECESSOR_READY_TIMEOUT_MS)
     this.#remove(UPGRADE)
     this.#removeTree(PREVIOUS)
     emitNervesEvent({ level: "warn", component: "daemon", event: "daemon.sanctuary_upgrade_rolled_back", message: "Sanctuary upgrade rolled back to its predecessor", meta: { from: journal.to.imageReference, to: journal.from.imageReference } })
@@ -899,11 +910,11 @@ export class SanctuaryAuthorityRootLifecycle {
   }
 
   /** Start the gateway, then the resident, and prove both. */
-  async #startUpgraded(): Promise<void> {
+  async #startUpgraded(readyTimeoutMs = RESIDENT_READY_TIMEOUT_MS): Promise<void> {
     this.#runtimeDirectories()
     await this.#startGateway()
     this.#docker(["start", "ouro-butler"])
-    await this.#wait(async () => this.#target().State.Running && this.#target().State.Health?.Status === "healthy" && await this.#ready(), 300_000)
+    await this.#wait(async () => this.#target().State.Running && this.#target().State.Health?.Status === "healthy" && await this.#ready(), readyTimeoutMs)
   }
 
   #removeTree(absolute: string): void {
@@ -1082,7 +1093,7 @@ export async function runSanctuaryAuthorityRootCli(argv: string[], write = (text
     } else if (rollback) {
       write(`${JSON.stringify({ rolledBack: await lifecycle.rollbackUpgrade() })}\n`)
     } else await lifecycle.boot()
-  }, { timeoutMs: upgrade || rollback ? 600_000 : 0, confinementRoot: "/boot/config/custom/ouro-butler" })
+  }, { timeoutMs: upgrade || rollback ? OPERATOR_LEASE_WAIT_MS : 0, confinementRoot: "/boot/config/custom/ouro-butler" })
 }
 
 if (process.argv[1] && fs.existsSync(process.argv[1]) && fs.realpathSync(process.argv[1]) === __filename) {

@@ -2,6 +2,8 @@
 // and a source contract that pins the order the live host depends on (hold, preserve, gate, commit, pin, prune).
 import * as fs from "node:fs"
 import * as path from "node:path"
+import { spawn } from "node:child_process"
+import * as os from "node:os"
 import { beforeAll, describe, expect, it, vi } from "vitest"
 
 const SCRIPT = path.resolve(__dirname, "../../../deploy/unraid/sanctuary-butler-upgrade.mjs")
@@ -124,7 +126,7 @@ describe("upgrade script contract", () => {
   it("holds the commit, preserves, then gates, and only the gate or --no-gate path pins and prunes", () => {
     const body = source.slice(at("function upgrade(version, rehearse"), at("// ---- verify"))
     expect(body).toContain('rehearse ? ["--fail-after", rehearse] : gated ? ["--hold-commit"] : []')
-    const order = [body.indexOf('"--hold-commit"'), body.indexOf("resumeSupervision()\n  say(\"preservation\")"), body.indexOf("completeGatedUpgrade({")]
+    const order = [body.indexOf('"--hold-commit"'), body.indexOf("if (!gated || failure) resumeSupervision()\n  say(\"preservation\")"), body.indexOf("completeGatedUpgrade({")]
     expect(order.every((n) => n >= 0)).toBe(true)
     expect([...order].sort((a, b) => a - b)).toEqual(order)
     expect(body.match(/pinTemplate\(version\)/g)).toHaveLength(2)
@@ -264,6 +266,85 @@ describe("escalation holders the upgrade would drop", () => {
     expect(preflight).toMatch(/escalationGrantProblems\(\)[\s\S]*dropped\.forEach\(\(line\) => bad\(line\)\)/)
     const verify = source.slice(source.indexOf("function verify("), source.indexOf("function verify(") + 4000)
     expect(verify).toMatch(/escalationGrantProblems\(\)[\s\S]*droppedHolders\.forEach\(\(line\) => bad\(line\)\)/)
+  })
+})
+
+describe("host supervision stays paused for the whole upgrade (the 945 rollback, 2026-10-25)", () => {
+  const until = async (check: () => boolean, ms = 20_000) => {
+    for (const end = Date.now() + ms; !check(); await new Promise((resolve) => setTimeout(resolve, 50))) if (Date.now() > end) throw new Error("timed out")
+  }
+  const mtime = (file: string) => fs.statSync(file).mtimeMs
+
+  it("refreshes the maintenance flag while the upgrade lives, then drops the shutdown flag and stops once it is gone", async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "supervision-hold-"))
+    const flag = path.join(dir, "maintenance"), shutdownFlag = path.join(dir, "shutdown")
+    fs.writeFileSync(flag, "x"); fs.writeFileSync(shutdownFlag, "x")
+    const old = new Date(Date.now() - 20 * 60_000)
+    fs.utimesSync(flag, old, old)
+    const parent = spawn("/bin/sleep", ["30"], { stdio: "ignore" })
+    const hold = upgrade.holdSupervision({ parentPid: parent.pid, flag, shutdownFlag, intervalSec: 0.2 })
+    try {
+      await until(() => mtime(flag) > Date.now() - 60_000)
+      expect(fs.existsSync(shutdownFlag)).toBe(true)
+      parent.kill("SIGKILL")
+      await until(() => !fs.existsSync(shutdownFlag))
+      await until(() => hold.exitCode !== null)
+      fs.utimesSync(flag, old, old)
+      await new Promise((resolve) => setTimeout(resolve, 500))
+      expect(mtime(flag)).toBe(old.getTime())
+    } finally { parent.kill("SIGKILL"); hold.kill("SIGKILL") }
+  })
+
+  it("never recreates a flag that a resume has already released", async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "supervision-hold-"))
+    const flag = path.join(dir, "maintenance")
+    const hold = upgrade.holdSupervision({ parentPid: process.pid, flag, shutdownFlag: path.join(dir, "shutdown"), intervalSec: 0.1 })
+    try {
+      await new Promise((resolve) => setTimeout(resolve, 500))
+      expect(fs.existsSync(flag)).toBe(false)
+    } finally { hold.kill("SIGKILL") }
+  })
+
+  it("runs the hold detached and unreferenced, so it neither blocks the upgrade's exit nor dies with its terminal", () => {
+    const child = { unref: vi.fn() }
+    const spawnImpl = vi.fn(() => child)
+    expect(upgrade.holdSupervision({ spawnImpl })).toBe(child)
+    expect(spawnImpl).toHaveBeenCalledWith("/bin/sh", ["-c", upgrade.SUPERVISION_HOLD_SH, "ouro-supervision-hold", String(process.pid), "/run/ouro-authority-maintenance", "/run/ouro-authority-shutdown", "60"], { detached: true, stdio: "ignore" })
+    expect(child.unref).toHaveBeenCalled()
+  })
+
+  it("keeps the 30-minute expiry in both keeper scripts", () => {
+    expect(source.match(/find \/run\/ouro-authority-maintenance -mmin -30/g)).toHaveLength(2)
+  })
+
+  it("starts the hold on pause and stops it before releasing the flag on resume", () => {
+    const pause = source.slice(source.indexOf("function pauseSupervision()"), source.indexOf("function resumeSupervision()"))
+    expect(pause).toContain("HOLD ??= holdSupervision()")
+    expect(pause.indexOf("writeFileSync(MAINTENANCE")).toBeLessThan(pause.indexOf("HOLD ??= holdSupervision()"))
+    const resume = source.slice(source.indexOf("function resumeSupervision()"), source.indexOf("// Keep Unraid's DockerMan template"))
+    expect(resume.indexOf("process.kill(-HOLD.pid")).toBeGreaterThanOrEqual(0)
+    expect(resume.indexOf("process.kill(-HOLD.pid")).toBeLessThan(resume.indexOf("rmSync(MAINTENANCE"))
+  })
+
+  it("does not resume before a held upgrade's gate, and refreshes the flag right before commit and rollback", () => {
+    const body = source.slice(source.indexOf("async function upgrade(version, rehearse"), source.indexOf("// ---- verify"))
+    const gateStart = body.indexOf("completeGatedUpgrade({")
+    const beforeGate = body.slice(body.indexOf("pauseSupervision()"), gateStart)
+    expect(beforeGate.match(/resumeSupervision\(\)/g)).toEqual(["resumeSupervision()"])
+    expect(beforeGate).toContain("if (!gated || failure) resumeSupervision()")
+    for (const [from, to] of [["commit: () => {", "rollback: () => {"], ["rollback: () => {", "confirmRollback: () => {"]]) {
+      const step = body.slice(body.indexOf(from), body.indexOf(to))
+      expect(step.trimStart().split("\n")[1]!.trim()).toBe("pauseSupervision()")
+      expect(step).toContain("resumeSupervision()")
+    }
+  })
+
+  it("leaves supervision paused after a failed rollback, so the keeper's boot does not race a manual retry", () => {
+    const body = source.slice(source.indexOf("async function upgrade(version, rehearse"), source.indexOf("// ---- verify"))
+    for (const failure of body.split("fail(ROLLBACK_FAILED(e, lifecycle))").slice(0, -1)) expect(failure.slice(-200)).not.toContain("resumeSupervision()")
+    expect(body.match(/fail\(ROLLBACK_FAILED\(e, lifecycle\)\)/g)).toHaveLength(2)
+    expect(body.slice(body.indexOf("rollback: () => {"), body.indexOf("confirmRollback: () => {"))).not.toContain("finally")
+    expect(source).toContain("touch ${MAINTENANCE}; node ${lifecycle} upgrade-rollback")
   })
 })
 
