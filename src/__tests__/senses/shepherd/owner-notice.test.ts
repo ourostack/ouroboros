@@ -233,6 +233,18 @@ describe("owner notice targets", () => {
     ])
   })
 
+  it("sends one notice per person even when their iMessage and Teams ids sit on separate records", async () => {
+    const store = { listAll: async () => [
+      friend("f1", { name: "Ari", externalIds: [{ provider: "imessage-handle", externalId: "+15555550123", linkedAt: "" }, { provider: "aad", externalId: "AAD-1", linkedAt: "" }] }),
+      friend("f2", { name: "Ari on Teams", externalIds: [null as never, { provider: "aad", externalId: "aad-1", linkedAt: "" }, { provider: "local", externalId: "", linkedAt: "" }] }),
+      friend("f3", { name: "Sam", externalIds: [{ provider: "aad", externalId: "aad-3", linkedAt: "" }, { provider: "aad", externalId: "group:x", linkedAt: "" }] }),
+    ] }
+    expect(await resolveNoticeTargets(root, store, new Set(["bluebubbles", "teams"]))).toEqual([
+      { friendId: "f1", name: "Ari", channel: "bluebubbles", key: "shepherd" },
+      { friendId: "f3", name: "Sam", channel: "teams", key: "shepherd" },
+    ])
+  })
+
   it("uses only a DM alert key as the BlueBubbles fallback", async () => {
     const write = (id: string, key: string) => {
       fs.mkdirSync(path.join(root, "state", "sessions", id, "bluebubbles"), { recursive: true })
@@ -253,10 +265,20 @@ describe("owner notice targets", () => {
 
 describe("enabled reach channels", () => {
   it("reads the enabled BlueBubbles and Teams senses from agent.json", () => {
+    const attached = () => ({ serverUrl: "http://bb", password: "x" })
     fs.writeFileSync(path.join(root, "agent.json"), JSON.stringify({ senses: { bluebubbles: { enabled: true }, teams: { enabled: false } } }))
-    expect([...readEnabledReachChannels("notice-test", root)]).toEqual(["bluebubbles"])
+    expect([...readEnabledReachChannels("notice-test", root, attached)]).toEqual(["bluebubbles"])
     fs.writeFileSync(path.join(root, "agent.json"), JSON.stringify({ senses: { bluebubbles: { enabled: true }, teams: { enabled: true } } }))
-    expect([...readEnabledReachChannels("notice-test", root)]).toEqual(["bluebubbles", "teams"])
+    expect([...readEnabledReachChannels("notice-test", root, attached)]).toEqual(["bluebubbles", "teams"])
+  })
+
+  it("leaves BlueBubbles out when this machine has no BlueBubbles connection, so Teams carries the notice", () => {
+    fs.writeFileSync(path.join(root, "agent.json"), JSON.stringify({ senses: { bluebubbles: { enabled: true }, teams: { enabled: true } } }))
+    const detached = () => { throw new Error("bluebubbles.serverUrl is required in this machine's agent-vault runtime config") }
+    expect([...readEnabledReachChannels("notice-test", root, detached)]).toEqual(["teams"])
+    expect(events).toContainEqual(expect.objectContaining({ level: "warn", event: "senses.shepherd_notice_bluebubbles_not_attached" }))
+    // The default reads this machine's runtime config, which a test machine does not have.
+    expect([...readEnabledReachChannels("notice-test", root)]).toEqual(["teams"])
   })
 
   it("reaches no channel and logs when the config cannot be read", () => {
@@ -783,14 +805,14 @@ describe("owner notifier", () => {
   })
 
   it("reads enabled channels from agent.json for the default targets", async () => {
-    fs.writeFileSync(path.join(root, "agent.json"), JSON.stringify({ senses: { bluebubbles: { enabled: true } } }))
+    fs.writeFileSync(path.join(root, "agent.json"), JSON.stringify({ senses: { teams: { enabled: true } } }))
     fs.mkdirSync(path.join(root, "friends"), { recursive: true })
-    fs.writeFileSync(path.join(root, "friends", "f1.json"), JSON.stringify(friend("f1", { name: "Ari", externalIds: [{ provider: "imessage-handle", externalId: "+15555550123", linkedAt: "" }] })))
+    fs.writeFileSync(path.join(root, "friends", "f1.json"), JSON.stringify(friend("f1", { name: "Ari", externalIds: [{ provider: "aad", externalId: "aad-1", linkedAt: "" }] })))
     const targets: NoticeTarget[] = []
     const { instance } = notifier({ resolveTargets: undefined, send: async target => { targets.push(target); return { delivered: true } } })
     await instance.notify(record())
     await instance.flush()
-    expect(targets).toEqual([{ friendId: "f1", name: "Ari", channel: "bluebubbles", key: "shepherd" }])
+    expect(targets).toEqual([{ friendId: "f1", name: "Ari", channel: "teams", key: "shepherd" }])
   })
 
   it("defaults to the bundle's family friends and the Teams sender", async () => {

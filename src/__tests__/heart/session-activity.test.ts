@@ -80,6 +80,10 @@ describe("session activity", () => {
     const result = listSessionActivity({ sessionsDir, friendsDir, agentName: "slugger" })
 
     expect(result.map((entry) => entry.friendId)).toEqual(["friend-1", "friend-2"])
+    // Asked for one friend, it never reads another friend's sessions.
+    vi.mocked(fs.readdirSync).mockClear()
+    expect(listSessionActivity({ sessionsDir, friendsDir, agentName: "slugger", friendId: "friend-2" }).map((entry) => entry.friendId)).toEqual(["friend-2"])
+    expect(vi.mocked(fs.readdirSync).mock.calls.map(([dir]) => String(dir))).not.toContain(path.join(sessionsDir, "friend-1"))
     expect(result[0]).toMatchObject({
       friendId: "friend-1",
       friendName: "Ari",

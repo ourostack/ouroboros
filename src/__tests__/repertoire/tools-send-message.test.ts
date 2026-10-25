@@ -623,6 +623,23 @@ describe("send_message tool", () => {
     expect(fs.writeFileSync).not.toHaveBeenCalled()
   })
 
+  it("reports a failed result, not a queued one, when the BlueBubbles server is on another account", async () => {
+    const { baseToolDefinitions } = await import("../../repertoire/tools-base")
+    const tool = baseToolDefinitions.find(d => d.tool.function.name === "send_message")!
+    mockSendProactiveBlueBubblesMessageToSession.mockResolvedValue({ delivered: false, reason: "host_account_refused" })
+
+    const result = await tool.handler({
+      friendId: "group-uuid",
+      channel: "bluebubbles",
+      key: "chat:any;+;project-group-123",
+      content: "this live send is refused",
+    }, makeTrustedBlueBubblesTurnContext())
+
+    expect(result.toLowerCase()).toContain("failed")
+    expect(result).toContain("not signed in to this agent's account")
+    expect(fs.writeFileSync).not.toHaveBeenCalled()
+  })
+
   it("reports a failed result when bluebubbles live send errors", async () => {
     const { baseToolDefinitions } = await import("../../repertoire/tools-base")
     const tool = baseToolDefinitions.find(d => d.tool.function.name === "send_message")!

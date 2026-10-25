@@ -110,6 +110,11 @@ describe("resolveReachTarget", () => {
     expect(resolve(friend())).toEqual({ channel: "teams", key: TEAMS_KEY, friendId: "ari", handle: "aad-ari", tenantId: "tenant-1" })
   })
 
+  it("a preference with no reachable channel at all logs that the notice goes nowhere", () => {
+    expect(resolve(friend({}, { value: "bluebubbles" }), new Set())).toEqual({ unreachable: expect.stringContaining("no reachable channel"), friendId: "ari" })
+    expect(fallbackEvents()).toEqual([expect.objectContaining({ meta: { friendId: "ari", preferred: "bluebubbles", chosen: null } })])
+  })
+
   it("group chats are excluded", () => {
     session("bluebubbles", "chat_any;+;family-group", [event(1, "user", 1)])
     session("teams", "19_meeting-thread", [event(1, "user", 2)])

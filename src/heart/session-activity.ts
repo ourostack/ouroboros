@@ -25,6 +25,8 @@ export interface SessionActivityQuery {
   activeThresholdMs?: number
   nowMs?: number
   currentSession?: { friendId: string; channel: string; key: string } | null
+  /** Only this friend's sessions; the others are not read at all. */
+  friendId?: string
 }
 
 const DEFAULT_ACTIVE_THRESHOLD_MS = 24 * 60 * 60 * 1000
@@ -147,6 +149,7 @@ export function listSessionActivity(query: SessionActivityQuery): SessionActivit
   }
 
   for (const friendId of friendDirs) {
+    if (query.friendId !== undefined && friendId !== query.friendId) continue
     const friendPath = path.join(sessionsDir, friendId)
     let channels: string[]
     try {

@@ -2,7 +2,7 @@ import { createHash } from "node:crypto"
 import * as path from "node:path"
 import { FileFriendStore, type FriendRecord } from "@ouro.bot/friends"
 import { resolveAlertKey } from "../../heart/awaiting/await-alert"
-import { getTeamsConfig, getTeamsSecondaryConfig, type TeamsConfig } from "../../heart/config"
+import { getBlueBubblesConfig, getTeamsConfig, getTeamsSecondaryConfig, type TeamsConfig } from "../../heart/config"
 import { loadAgentConfig, type ShepherdNoticePolicy } from "../../heart/identity"
 import { resolveReachTarget, type ReachChannel } from "../../heart/reach-channel"
 import { emitNervesEvent } from "../../nerves/runtime"
@@ -135,17 +135,39 @@ export interface NoticeTarget {
   tenantId?: string
 }
 
-/** The channels this agent can reach people on right now: its enabled BlueBubbles and Teams senses. */
-export function readEnabledReachChannels(agent: string, agentRoot: string): Set<ReachChannel> {
+/**
+ * The channels this agent can reach people on from this machine: its enabled Teams sense, and its enabled BlueBubbles
+ * sense when this machine has a BlueBubbles connection (credentials live per machine, so another machine may own it).
+ */
+export function readEnabledReachChannels(agent: string, agentRoot: string, blueBubblesConfig: () => unknown = getBlueBubblesConfig): Set<ReachChannel> {
   const enabled = new Set<ReachChannel>()
   try {
     const senses = loadAgentConfig({ agentName: agent, agentRoot }).senses
-    if (senses?.bluebubbles?.enabled) enabled.add("bluebubbles")
+    if (senses?.bluebubbles?.enabled) {
+      try {
+        blueBubblesConfig()
+        enabled.add("bluebubbles")
+      } catch (error) {
+        emitNervesEvent({ level: "warn", component: "senses", event: "senses.shepherd_notice_bluebubbles_not_attached", message: "BlueBubbles is enabled but not connected on this machine, so owner notices use another channel", meta: { agent, error: (error as Error).message } })
+      }
+    }
     if (senses?.teams?.enabled) enabled.add("teams")
   } catch (error) {
     emitNervesEvent({ level: "warn", component: "senses", event: "senses.shepherd_notice_channels_unreadable", message: "could not read which channels are enabled, so no owner notice channel is reachable", meta: { agent, error: (error as Error).message } })
   }
   return enabled
+}
+
+/** Every channel id a friend record holds, in the same `channel:handle` form `resolveReachTarget` returns. */
+function personIdentities(friend: FriendRecord): Set<string> {
+  const identities = new Set<string>()
+  // Only called for a reachable friend, whose externalIds is therefore a list.
+  for (const entry of friend.externalIds) {
+    if (typeof entry?.externalId !== "string" || entry.externalId.trim() === "") continue
+    if (entry.provider === "imessage-handle") identities.add(`bluebubbles:${entry.externalId.toLowerCase()}`)
+    if (entry.provider === "aad" && !entry.externalId.startsWith("group:")) identities.add(`teams:${entry.externalId.toLowerCase()}`)
+  }
+  return identities
 }
 
 /**
@@ -167,9 +189,11 @@ export async function resolveNoticeTargets(
       agentName: path.basename(agentRoot, ".ouro"),
     })
     if ("unreachable" in reach) continue
-    const identity = `${reach.channel}:${reach.handle}`
-    if (seen.has(identity)) continue
-    seen.add(identity)
+    // One notice per person: a friend whose iMessage handle or Teams id another target already has is that person.
+    const identities = personIdentities(friend)
+    identities.add(`${reach.channel}:${reach.handle}`)
+    if ([...identities].some(identity => seen.has(identity))) continue
+    for (const identity of identities) seen.add(identity)
     const alertKey = resolveAlertKey(agentRoot, friend.id, reach.channel)
     // A BlueBubbles fallback key must be a DM: a group key would be refused, and "shepherd" sends to the handle.
     const fallback = reach.channel === "bluebubbles" ? (alertKey?.includes(";-;") ? alertKey : null) : alertKey

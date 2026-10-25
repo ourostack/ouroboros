@@ -1062,6 +1062,12 @@ export const sessionToolDefinitions: ToolDefinition[] = [
                 detail: "bluebubbles send failed",
               } as const
             }
+            if (result.reason === "host_account_refused") {
+              return {
+                status: "failed",
+                detail: "the BlueBubbles server is not signed in to this agent's account, so nothing was sent",
+              } as const
+            }
             return {
               status: "unavailable",
               detail: "live delivery unavailable right now; queued for the next active turn",

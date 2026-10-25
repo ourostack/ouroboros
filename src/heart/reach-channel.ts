@@ -48,7 +48,7 @@ function isOneToOne(channel: ReachChannel, key: string, friend: FriendRecord): b
 /** The friend's own 1:1 sessions, newest inbound first. Messages the agent recorded never rank a session. */
 function friendSessions(input: { friend: FriendRecord; sessionsDir: string; friendsDir: string; agentName: string; nowMs: number }): Array<SessionActivityRecord & { channel: ReachChannel }> {
   return listSessionActivity({ sessionsDir: input.sessionsDir, friendsDir: input.friendsDir, agentName: input.agentName,
-    activeThresholdMs: Number.POSITIVE_INFINITY, nowMs: input.nowMs })
+    activeThresholdMs: Number.POSITIVE_INFINITY, nowMs: input.nowMs, friendId: input.friend.id })
     .filter((record): record is SessionActivityRecord & { channel: ReachChannel } =>
       record.friendId === input.friend.id && record.activitySource === "friend-facing" && record.lastInboundAt !== null &&
       isReachChannel(record.channel) && isOneToOne(record.channel, record.key, input.friend))
