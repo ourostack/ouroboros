@@ -4,7 +4,8 @@
     {
       "version": "0.1.0-alpha.946",
       "changes": [
-        "Shepherd's notices about your coding agents now reach you on the channel you use, such as iMessage, and every message the agent sends on its own is saved into that conversation, so your reply arrives with context."
+        "Shepherd's notices about your coding agents now reach you on the channel you use, such as iMessage, and every message the agent sends on its own is saved into that conversation, so your reply arrives with context.",
+        "On a machine linked to its owner, Shepherd's notices go only to that owner and never to other family members."
       ]
     },
     {
