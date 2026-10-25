@@ -613,7 +613,7 @@ describe("actual Teams feedback adapter and leased pipeline", () => {
       await recovered.flush()
       expect(proactive).toHaveBeenCalledTimes(policy === "every" ? 1 : 0)
       if (policy === "every") expect(proactive.mock.calls[0]).toEqual([
-        expect.objectContaining({ friendId: "owner" }), expect.stringContaining("historical observations"),
+        expect.objectContaining({ friendId: "owner" }), expect.stringContaining("historical observations"), expect.any(Array),
       ])
       const request = "Give me a short, funny summary of current coding work that fits on my phone."
       const answer = "Seven sessions: progress, tests, and one heroic argument with a semicolon."

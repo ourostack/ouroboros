@@ -24,6 +24,8 @@ export interface BlueBubblesSendTextParams {
 
 export interface BlueBubblesSendTextResult {
   messageGuid?: string
+  /** The chat the message went to, as the server names it (`iMessage;-;<handle>`, say). */
+  chatGuid?: string
 }
 
 export class BlueBubblesSendError extends Error {
@@ -410,7 +412,11 @@ export function createBlueBubblesClient(
       await assertHostAccount({ fresh: true })
       const resolvedChatGuid = await resolveChatGuid(params.chat, config, channelConfig)
       if (!resolvedChatGuid) {
-        throw new Error("BlueBubbles send currently requires chat.chatGuid from the inbound event.")
+        // Nothing reached the server, so a caller may safely send again once the chat exists.
+        throw new BlueBubblesSendError({
+          message: "BlueBubbles send currently requires chat.chatGuid from the inbound event.",
+          httpStatus: null, errorCode: "chat_unresolved", transportInvoked: false,
+        })
       }
 
       const url = buildBlueBubblesApiUrl(config.serverUrl, "/api/v1/message/text", config.password)
@@ -511,7 +517,7 @@ export function createBlueBubblesClient(
         },
       })
 
-      return { messageGuid }
+      return { messageGuid, chatGuid: resolvedChatGuid }
     },
 
     async editMessage(params: BlueBubblesEditMessageParams): Promise<void> {

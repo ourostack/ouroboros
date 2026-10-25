@@ -8,7 +8,7 @@ import type { RunSenseTurnOptions, RunSenseTurnResult } from "../shared-turn"
 import { readAgentPresentation } from "./agent-presentation"
 import { feedbackStorePath, openFeedbackStore, type FeedbackRecord, type FeedbackStore } from "./feedback-store"
 import { feedbackRecipient } from "./feedback-submit"
-import { createTeamsNoticeSender, type NoticeSender } from "./owner-notice"
+import { createNoticeSender, type NoticeSender } from "./owner-notice"
 
 export interface FeedbackWorker { drain(): Promise<void>; stop(): void }
 export interface FeedbackWorkerOptions {
@@ -58,7 +58,7 @@ export function feedbackReviewOptions(record: FeedbackRecord, signal: AbortSigna
 export function startFeedbackWorker(options: FeedbackWorkerOptions): FeedbackWorker {
   const file = feedbackStorePath(options.agentRoot)
   const friendStore = options.friendStore ?? new FileFriendStore(path.join(options.agentRoot, "friends"))
-  const send = options.send ?? createTeamsNoticeSender(options.agentRoot)
+  const send = options.send ?? createNoticeSender(options.agentRoot)
   const run = options.run ?? (async (input) => (await import("../shared-turn")).runSenseTurn(input))
   const owner = randomUUID()
   const controller = new AbortController()
@@ -108,8 +108,9 @@ export function startFeedbackWorker(options: FeedbackWorkerOptions): FeedbackWor
       const name = readAgentPresentation(options.agent, options.agentRoot).name
       const text = `${name} — session feedback\n${record.source.label}\n${record.id}\n\n${record.review.response}`
       attempted = true
-      const result = await send({ friendId: recipient.friendId, name: record.actorId, key: record.id,
-        ...(recipient.tenantId ? { tenantId: recipient.tenantId } : {}) }, text)
+      // Feedback answers the Teams chat it came from, so it stays on Teams.
+      const result = await send({ friendId: recipient.friendId, name: record.actorId, channel: "teams", key: record.id,
+        ...(recipient.tenantId ? { tenantId: recipient.tenantId } : {}) }, text, [record.id])
       if (result.delivered && result.delivery?.state === "accepted" && result.delivery.conversationId && result.delivery.messageId) {
         store.completeDelivery(record.id, record.actorId, owner, { state: "sent",
           conversationId: result.delivery.conversationId, messageId: result.delivery.messageId })

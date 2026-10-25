@@ -131,6 +131,12 @@ vi.mock("../../nerves/runtime", () => ({
 }))
 
 // Pipeline mock -- Teams now delegates to handleInboundTurn
+const mockDrainOutbound = vi.fn((..._args: unknown[]) => 0)
+vi.mock("../../mind/outbound-record", async (original) => ({
+  ...await original<typeof import("../../mind/outbound-record")>(),
+  drainOutboundRecords: (...args: unknown[]) => mockDrainOutbound(...args),
+}))
+
 vi.mock("../../senses/pipeline", () => ({
   handleInboundTurn: (...args: any[]) => mockHandleInboundTurn(...args),
 }))
@@ -270,6 +276,25 @@ describe("teams stranger gate integration (pipeline-based)", () => {
     expect(order.indexOf("session:persist")).toBeGreaterThan(order.indexOf("provider:run"))
     expect(order.indexOf("lease:released")).toBeGreaterThan(order.indexOf("session:persist"))
     expect(order.indexOf("lease:released")).toBeGreaterThan(order.lastIndexOf("outward:delivered"))
+  })
+
+  it("a deferred record is in the session before the friend's next message", async () => {
+    const order: string[] = []
+    const lease = { sessionPath: "/tmp/mock-session.json", ownerId: "owner-a", ownerToken: "token-a" }
+    mockDrainOutbound.mockReset().mockImplementation(() => { order.push("outbound:drain"); return 1 })
+    mockLoadSession.mockImplementation(() => { order.push("session:load"); return null })
+    const { handleTeamsMessage } = await import("../../senses/teams")
+    await handleTeamsMessage(
+      "hello",
+      { update: vi.fn(), emit: vi.fn(), close: vi.fn() } as any,
+      "conv-drain",
+      { signin: vi.fn(async () => undefined), aadObjectId: "aad-user-1", tenantId: "tenant-1", displayName: "Unknown" },
+      undefined,
+      undefined,
+      { _withSessionTurnLease: async (_path: string, work: (held: any) => Promise<any>) => work(lease) } as any,
+    )
+    expect(mockDrainOutbound).toHaveBeenCalledWith(expect.any(String), expect.any(String), "teams", "conv-drain", lease)
+    expect(order).toEqual(["outbound:drain", "session:load"])
   })
 
   it("emits no thinking activity before a busy lease decision and returns a retryable notice", async () => {

@@ -26,7 +26,9 @@ import { createToolActivityCallbacks } from "../heart/tool-activity-callbacks"
 import { getDebugMode } from "./commands"
 import * as http from "http"
 import * as path from "path"
-import { createHash } from "node:crypto"
+import { createHash, randomUUID } from "node:crypto"
+import { drainOutboundRecords, OUTBOUND_ORIGIN_LABELS, recordOutboundInSession } from "../mind/outbound-record"
+import type { OutboundOrigin } from "../heart/session-events"
 import { enforceTrustGate } from "./trust-gate"
 import { handleInboundTurn, type FailoverState } from "./pipeline"
 import { admitSessionActivity, SessionTransactionError, SessionTurnBusyError, withSessionTurnLease, type SessionTurnLease } from "../mind/session-transaction"
@@ -848,6 +850,8 @@ export async function handleTeamsMessage(text: string, stream: TeamsStream, conv
   try {
   await runWithLease(sessPath, async (sessionTurnLease) => {
   reportTeamsRequest("running", conversationId, teamsContext, { traceId, friendId })
+  // Messages sent into this conversation while another turn held it wait outside the session; they go in first.
+  drainOutboundRecords(owner.agentRoot, friendId, "teams", conversationId, sessionTurnLease)
   // Proactive feedback acknowledgements are not magically in this model session's
   // history. Recover their frozen packet only after identity and lease ownership.
   let feedbackReply
@@ -1479,6 +1483,10 @@ export interface ProactiveTeamsSessionSendParams {
     key: string
     trustLevel?: string
   }
+  /** Identifies this delivery when it is saved into the conversation's session; one is generated per send when absent. */
+  deliveryId?: string
+  /** Who is sending, for the `[sent by ...]` prefix the saved message carries. Defaults to `proactive`. */
+  origin?: OutboundOrigin
 }
 
 export interface ProactiveTeamsSessionSendResult {
@@ -1614,6 +1622,19 @@ export async function sendProactiveTeamsMessageToSession(
       meta: { friendId: params.friendId, aadObjectId: aadInfo.aadObjectId, sessionKey: params.sessionKey },
     })
     const messageId = activity && typeof activity === "object" && "id" in activity && typeof activity.id === "string" ? activity.id : undefined
+    // Saved into the conversation it was sent into, so the friend's reply there carries it.
+    const origin = params.origin ?? "proactive"
+    // Recording never changes the result of a send that already went out.
+    try {
+      recordOutboundInSession({
+        agentRoot: getAgentRoot(), friendId: friend.id, channel: "teams", key: conversation.id, content: params.text, origin,
+        deliveryId: params.deliveryId ?? `proactive:${randomUUID()}`, originLabel: OUTBOUND_ORIGIN_LABELS[origin],
+      })
+    } catch (error) {
+      emitNervesEvent({ level: "warn", component: "senses", event: "senses.teams_proactive_record_error",
+        message: "the Teams message was sent, but could not be saved into its conversation",
+        meta: { friendId: friend.id, error: error instanceof Error ? error.message : String(error) } })
+    }
     return {
       delivered: true,
       ...(params.captureReceipt ? { delivery: { state: "accepted" as const, conversationId, ...(messageId ? { messageId } : {}) } } : {}),

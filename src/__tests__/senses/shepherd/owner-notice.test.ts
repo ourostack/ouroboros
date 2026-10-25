@@ -13,7 +13,9 @@ import {
   NOTICE_RETRY_MS,
   chooseTeamsBot,
   createOwnerNotifier,
-  createTeamsNoticeSender,
+  createNoticeSender,
+  noticeDeliveryId,
+  readEnabledReachChannels,
   noticeLine,
   noticeMessage,
   noticeWanted,
@@ -195,9 +197,9 @@ describe("owner notice targets", () => {
         friend("f6", { name: "Sam", externalIds: [{ provider: "aad", externalId: "aad-6", linkedAt: "" }] }),
       ],
     }
-    expect(await resolveNoticeTargets(root, store)).toEqual([
-      { friendId: "f1", name: "Ari", key: "conv-1", tenantId: "t1" },
-      { friendId: "f6", name: "Sam", key: "shepherd" },
+    expect(await resolveNoticeTargets(root, store, new Set(["teams"]), "not-a-linked-user")).toEqual([
+      { friendId: "f1", name: "Ari", channel: "teams", key: "conv-1", tenantId: "t1" },
+      { friendId: "f6", name: "Sam", channel: "teams", key: "shepherd" },
     ])
     expect(events).toContainEqual(expect.objectContaining({ event: "senses.shepherd_notice_targets", meta: { count: 2 } }))
   })
@@ -205,7 +207,130 @@ describe("owner notice targets", () => {
   it("reads the bundle's friend records by default", async () => {
     fs.mkdirSync(path.join(root, "friends"), { recursive: true })
     fs.writeFileSync(path.join(root, "friends", "f1.json"), JSON.stringify(friend("f1", { name: "Ari", externalIds: [{ provider: "aad", externalId: "aad-1", linkedAt: "" }] })))
-    expect(await resolveNoticeTargets(root)).toEqual([{ friendId: "f1", name: "Ari", key: "shepherd" }])
+    expect(await resolveNoticeTargets(root, undefined, new Set(["teams"]))).toEqual([{ friendId: "f1", name: "Ari", channel: "teams", key: "shepherd" }])
+    expect(await resolveNoticeTargets(root)).toEqual([])
+  })
+
+  it("targets a family friend on BlueBubbles when reachChannel is bluebubbles", async () => {
+    const ari = friend("f1", { name: "Ari", externalIds: [
+      { provider: "imessage-handle", externalId: "+15555550123", linkedAt: "" },
+      { provider: "aad", externalId: "aad-1", tenantId: "t1", linkedAt: "" },
+    ], relationshipPolicy: { schemaVersion: 1, version: 1, preferences: {
+      reachChannel: { value: "bluebubbles", provenance: "stated", version: 1, source: "test" },
+    } } } as Partial<FriendRecord>)
+    expect(await resolveNoticeTargets(root, { listAll: async () => [ari] }, new Set(["bluebubbles", "teams"]))).toEqual([
+      { friendId: "f1", name: "Ari", channel: "bluebubbles", key: "shepherd" },
+    ])
+  })
+
+  it("dedupes two friend records sharing one iMessage handle", async () => {
+    const store = { listAll: async () => [
+      friend("f1", { name: "Ari", externalIds: [{ provider: "imessage-handle", externalId: "ari@example.com", linkedAt: "" }] }),
+      friend("f2", { name: "Ari again", externalIds: [{ provider: "imessage-handle", externalId: "ARI@example.com", linkedAt: "" }] }),
+    ] }
+    expect(await resolveNoticeTargets(root, store, new Set(["bluebubbles"]))).toEqual([
+      { friendId: "f1", name: "Ari", channel: "bluebubbles", key: "shepherd" },
+    ])
+  })
+
+  it("sends one notice per person even when their iMessage and Teams ids sit on separate records", async () => {
+    const store = { listAll: async () => [
+      friend("f1", { name: "Ari", externalIds: [{ provider: "imessage-handle", externalId: "+15555550123", linkedAt: "" }, { provider: "aad", externalId: "AAD-1", linkedAt: "" }] }),
+      friend("f2", { name: "Ari on Teams", externalIds: [null as never, { provider: "aad", externalId: "aad-1", linkedAt: "" }, { provider: "local", externalId: "", linkedAt: "" }] }),
+      friend("f3", { name: "Sam", externalIds: [{ provider: "aad", externalId: "aad-3", linkedAt: "" }, { provider: "aad", externalId: "group:x", linkedAt: "" }] }),
+    ] }
+    expect(await resolveNoticeTargets(root, store, new Set(["bluebubbles", "teams"]))).toEqual([
+      { friendId: "f1", name: "Ari", channel: "bluebubbles", key: "shepherd" },
+      { friendId: "f3", name: "Sam", channel: "teams", key: "shepherd" },
+    ])
+  })
+
+  it("two family members in one iMessage group each get their own notice", async () => {
+    const group = { provider: "imessage-handle" as const, externalId: "group:any;+;family-group", linkedAt: "" }
+    const store = { listAll: async () => [
+      friend("f1", { name: "Ari", externalIds: [group, { provider: "imessage-handle", externalId: "+15555550123", linkedAt: "" }] }),
+      friend("f2", { name: "Sam", externalIds: [group, { provider: "imessage-handle", externalId: "+15555550199", linkedAt: "" }] }),
+    ] }
+    expect(await resolveNoticeTargets(root, store, new Set(["bluebubbles"]))).toEqual([
+      { friendId: "f1", name: "Ari", channel: "bluebubbles", key: "shepherd" },
+      { friendId: "f2", name: "Sam", channel: "bluebubbles", key: "shepherd" },
+    ])
+  })
+
+  it("only this machine's own user hears it, not their relatives, when one is linked", async () => {
+    const store = { listAll: async () => [
+      friend("f1", { name: "Relative", externalIds: [{ provider: "imessage-handle", externalId: "+15555550199", linkedAt: "" }] }),
+      friend("f2", { name: "Ari", externalIds: [{ provider: "local", externalId: "ari", linkedAt: "" }, { provider: "imessage-handle", externalId: "+15555550123", linkedAt: "" }] }),
+      friend("f3", { name: "Not family", trustLevel: "friend", externalIds: [{ provider: "local", externalId: "ari", linkedAt: "" }, { provider: "imessage-handle", externalId: "+15555550100", linkedAt: "" }] }),
+      friend("f4", { name: "No ids", externalIds: undefined as never }),
+      friend("f5", { name: "Odd ids", externalIds: [null as never, { provider: "local", externalId: 7 as never, linkedAt: "" }] }),
+    ] }
+    expect(await resolveNoticeTargets(root, store, new Set(["bluebubbles"]), "ari")).toEqual([
+      { friendId: "f2", name: "Ari", channel: "bluebubbles", key: "shepherd" },
+    ])
+    // With no family friend for this machine's user (a server, say), every family friend hears it.
+    expect((await resolveNoticeTargets(root, store, new Set(["bluebubbles"]), "someone-else")).map(target => target.friendId)).toEqual(["f1", "f2"])
+    // A user with no account entry, as in some containers, is the same as no linked owner.
+    expect((await resolveNoticeTargets(root, store, new Set(["bluebubbles"]), null)).map(target => target.friendId)).toEqual(["f1", "f2"])
+  })
+
+  it("recognizes an older user@host owner id, so relatives still do not hear it", async () => {
+    const store = { listAll: async () => [
+      friend("f1", { name: "Relative", externalIds: [{ provider: "imessage-handle", externalId: "+15555550199", linkedAt: "" }] }),
+      friend("f2", { name: "Ari", externalIds: [{ provider: "local", externalId: "ari@macbook", linkedAt: "" }, { provider: "imessage-handle", externalId: "+15555550123", linkedAt: "" }] }),
+    ] }
+    expect((await resolveNoticeTargets(root, store, new Set(["bluebubbles"]), "ari")).map(target => target.friendId)).toEqual(["f2"])
+  })
+
+  it("reaches the owner record that has a channel, and never falls back to relatives when none does", async () => {
+    const stray = friend("f0", { name: "Ari (cli)", externalIds: [{ provider: "local", externalId: "ari", linkedAt: "" }] })
+    const owner = friend("f2", { name: "Ari", externalIds: [{ provider: "local", externalId: "ari", linkedAt: "" }, { provider: "imessage-handle", externalId: "+15555550123", linkedAt: "" }] })
+    const relative = friend("f1", { name: "Relative", externalIds: [{ provider: "imessage-handle", externalId: "+15555550199", linkedAt: "" }] })
+    expect((await resolveNoticeTargets(root, { listAll: async () => [stray, relative, owner] }, new Set(["bluebubbles"]), "ari")).map(target => target.friendId)).toEqual(["f2"])
+    expect(await resolveNoticeTargets(root, { listAll: async () => [stray, relative] }, new Set(["bluebubbles"]), "ari")).toEqual([])
+    expect(events).toContainEqual(expect.objectContaining({ level: "warn", event: "senses.shepherd_notice_owner_unreachable", meta: { owners: 1 } }))
+  })
+
+  it("uses only a DM alert key as the BlueBubbles fallback", async () => {
+    const write = (id: string, key: string) => {
+      fs.mkdirSync(path.join(root, "state", "sessions", id, "bluebubbles"), { recursive: true })
+      fs.writeFileSync(path.join(root, "state", "sessions", id, "bluebubbles", `${key}.json`), "{}")
+    }
+    write("f1", "chat_any;-;+15555550123")
+    write("f2", "chat_any;+;group-1")
+    const store = { listAll: async () => [
+      friend("f1", { name: "Ari", externalIds: [{ provider: "imessage-handle", externalId: "+15555550123", linkedAt: "" }] }),
+      friend("f2", { name: "Sam", externalIds: [{ provider: "imessage-handle", externalId: "sam@example.com", linkedAt: "" }] }),
+    ] }
+    expect(await resolveNoticeTargets(root, store, new Set(["bluebubbles"]))).toEqual([
+      { friendId: "f1", name: "Ari", channel: "bluebubbles", key: "chat_any;-;+15555550123" },
+      { friendId: "f2", name: "Sam", channel: "bluebubbles", key: "shepherd" },
+    ])
+  })
+})
+
+describe("enabled reach channels", () => {
+  it("reads the enabled BlueBubbles and Teams senses from agent.json", () => {
+    const attached = () => ({ serverUrl: "http://bb", password: "x" })
+    fs.writeFileSync(path.join(root, "agent.json"), JSON.stringify({ senses: { bluebubbles: { enabled: true }, teams: { enabled: false } } }))
+    expect([...readEnabledReachChannels("notice-test", root, attached)]).toEqual(["bluebubbles"])
+    fs.writeFileSync(path.join(root, "agent.json"), JSON.stringify({ senses: { bluebubbles: { enabled: true }, teams: { enabled: true } } }))
+    expect([...readEnabledReachChannels("notice-test", root, attached)]).toEqual(["bluebubbles", "teams"])
+  })
+
+  it("leaves BlueBubbles out when this machine has no BlueBubbles connection, so Teams carries the notice", () => {
+    fs.writeFileSync(path.join(root, "agent.json"), JSON.stringify({ senses: { bluebubbles: { enabled: true }, teams: { enabled: true } } }))
+    const detached = () => { throw new Error("bluebubbles.serverUrl is required in this machine's agent-vault runtime config") }
+    expect([...readEnabledReachChannels("notice-test", root, detached)]).toEqual(["teams"])
+    expect(events).toContainEqual(expect.objectContaining({ level: "warn", event: "senses.shepherd_notice_bluebubbles_not_attached" }))
+    // The default reads this machine's runtime config, which a test machine does not have.
+    expect([...readEnabledReachChannels("notice-test", root)]).toEqual(["teams"])
+  })
+
+  it("reaches no channel and logs when the config cannot be read", () => {
+    fs.writeFileSync(path.join(root, "agent.json"), "{not json")
+    expect([...readEnabledReachChannels("notice-test", root)]).toEqual([])
+    expect(events).toContainEqual(expect.objectContaining({ level: "warn", event: "senses.shepherd_notice_channels_unreadable" }))
   })
 })
 
@@ -222,28 +347,28 @@ describe("owner notice over Teams", () => {
 
   it("sends plain text through the Teams proactive path and reuses its bot client", async () => {
     const botApi = vi.fn(async (config: TeamsConfig) => ({ id: config.clientId, conversations: {} }))
-    const send = createTeamsNoticeSender(root, { primary: () => bot("p", "t1"), secondary: () => bot("", ""), botApi })
-    const target: NoticeTarget = { friendId: "f1", name: "Ari", key: "conv-1", tenantId: "t1" }
-    expect(await send(target, "hello")).toEqual({ delivered: true })
-    await send(target, "again")
+    const send = createNoticeSender(root, { primary: () => bot("p", "t1"), secondary: () => bot("", ""), botApi })
+    const target: NoticeTarget = { friendId: "f1", name: "Ari", channel: "teams", key: "conv-1", tenantId: "t1" }
+    expect(await send(target, "hello", ["n1"])).toEqual({ delivered: true })
+    await send(target, "again", ["n2"])
     expect(botApi).toHaveBeenCalledTimes(1)
     expect(mockSend).toHaveBeenCalledWith(
-      { friendId: "f1", sessionKey: "conv-1", text: "hello", textFormat: "plain", intent: "generic_outreach", captureReceipt: true },
+      { friendId: "f1", sessionKey: "conv-1", text: "hello", textFormat: "plain", intent: "generic_outreach", captureReceipt: true, deliveryId: noticeDeliveryId("f1", ["n1"]), origin: "shepherd" },
       expect.objectContaining({ botApi: { id: "p", conversations: {} } }),
     )
   })
 
   it("builds a bot client again after one could not be built", async () => {
     const botApi = vi.fn().mockRejectedValueOnce(new Error("no token")).mockResolvedValue({ id: "p", conversations: {} })
-    const send = createTeamsNoticeSender(root, { primary: () => bot("p", "t1"), secondary: () => bot("", ""), botApi })
-    await expect(send({ friendId: "f1", name: "Ari", key: "k" }, "hi")).rejects.toThrow("no token")
-    expect(await send({ friendId: "f1", name: "Ari", key: "k" }, "hi")).toEqual({ delivered: true })
+    const send = createNoticeSender(root, { primary: () => bot("p", "t1"), secondary: () => bot("", ""), botApi })
+    await expect(send({ friendId: "f1", name: "Ari", channel: "teams", key: "k" }, "hi", ["n1"])).rejects.toThrow("no token")
+    expect(await send({ friendId: "f1", name: "Ari", channel: "teams", key: "k" }, "hi", ["n1"])).toEqual({ delivered: true })
     expect(botApi).toHaveBeenCalledTimes(2)
   })
 
   it("reports a missing Teams bot without trying to send", async () => {
-    const send = createTeamsNoticeSender(root, { primary: () => bot("", ""), secondary: () => bot("", "") })
-    expect(await send({ friendId: "f1", name: "Ari", key: "k" }, "hi")).toEqual({ delivered: false, reason: "no_teams_bot" })
+    const send = createNoticeSender(root, { primary: () => bot("", ""), secondary: () => bot("", "") })
+    expect(await send({ friendId: "f1", name: "Ari", channel: "teams", key: "k" }, "hi", ["n1"])).toEqual({ delivered: false, reason: "no_teams_bot" })
     expect(mockSend).not.toHaveBeenCalled()
   })
 
@@ -252,13 +377,54 @@ describe("owner notice over Teams", () => {
     process.env.HOME = root
     setAgentName("notice-test")
     try {
-      const send = createTeamsNoticeSender(root)
+      const send = createNoticeSender(root)
       // No runtime credentials in this test: no bot is configured.
-      expect(await send({ friendId: "f1", name: "Ari", key: "k" }, "hi")).toEqual({ delivered: false, reason: "no_teams_bot" })
+      expect(await send({ friendId: "f1", name: "Ari", channel: "teams", key: "k" }, "hi", ["n1"])).toEqual({ delivered: false, reason: "no_teams_bot" })
     } finally {
       process.env.HOME = home
       resetIdentity()
     }
+  })
+})
+
+describe("owner notice over BlueBubbles", () => {
+  const target: NoticeTarget = { friendId: "f1", name: "Ari", channel: "bluebubbles", key: "chat:any;-;+15555550123" }
+
+  it("sends through the BlueBubbles proactive path with the batch's delivery id and origin shepherd", async () => {
+    const client = { marker: "client" }
+    const sendBlueBubbles = vi.fn(async () => ({ delivered: true }))
+    const send = createNoticeSender(root, { createBlueBubblesClient: () => client as never, sendBlueBubbles: sendBlueBubbles as never })
+    expect(await send(target, "hello", ["n2", "n1"])).toEqual({ delivered: true })
+    expect(sendBlueBubbles).toHaveBeenCalledWith(
+      { friendId: "f1", sessionKey: "chat:any;-;+15555550123", text: "hello", intent: "generic_outreach", deliveryId: noticeDeliveryId("f1", ["n1", "n2"]), origin: "shepherd" },
+      expect.objectContaining({ createClient: expect.any(Function), createFriendStore: expect.any(Function) }),
+    )
+    const deps = (sendBlueBubbles.mock.calls[0] as unknown[])[1] as { createClient: () => unknown; createFriendStore: () => unknown }
+    expect(deps.createClient()).toBe(client)
+    expect(deps.createFriendStore()).toBeDefined()
+    expect(mockSend).not.toHaveBeenCalled()
+  })
+
+  it("a BlueBubbles setup throw returns the notice to pending", async () => {
+    const sendBlueBubbles = vi.fn()
+    const send = createNoticeSender(root, { createBlueBubblesClient: () => { throw new Error("missing bluebubbles credentials") }, sendBlueBubbles })
+    expect(await send(target, "hello", ["n1"])).toEqual({ delivered: false, reason: "bluebubbles_unavailable" })
+    expect(sendBlueBubbles).not.toHaveBeenCalled()
+    expect(events).toContainEqual(expect.objectContaining({ level: "warn", event: "senses.shepherd_notice_bluebubbles_unavailable", meta: { friendId: "f1", error: "missing bluebubbles credentials" } }))
+  })
+
+  it("uses the BlueBubbles sense's own proactive sender by default", async () => {
+    const sendText = vi.fn()
+    const send = createNoticeSender(root, { createBlueBubblesClient: () => ({ sendText }) as never })
+    // No friend record in this bundle: the sense refuses before it sends anything.
+    expect(await send(target, "hello", ["n1"])).toMatchObject({ delivered: false })
+    expect(sendText).not.toHaveBeenCalled()
+  })
+
+  it("names one delivery id per person and batch, whatever order the ids arrive in", () => {
+    expect(noticeDeliveryId("f1", ["b", "a"])).toBe(noticeDeliveryId("f1", ["a", "b"]))
+    expect(noticeDeliveryId("f1", ["a"])).not.toBe(noticeDeliveryId("f2", ["a"]))
+    expect(noticeDeliveryId("f1", ["a"])).toMatch(/^shepherd:[0-9a-f]{64}$/)
   })
 })
 
@@ -270,7 +436,7 @@ describe("owner notifier", () => {
     tasks.push(task)
     return () => { tasks = tasks.filter((entry) => entry !== task) }
   }
-  const ari: NoticeTarget = { friendId: "f1", name: "Ari", key: "conv-1" }
+  const ari: NoticeTarget = { friendId: "f1", name: "Ari", channel: "teams", key: "conv-1" }
   beforeEach(() => { tasks = [] })
 
   function notifier(overrides: Partial<Parameters<typeof createOwnerNotifier>[0]> = {}) {
@@ -442,8 +608,9 @@ describe("owner notifier", () => {
     const recovered = notifier({ send })
     await recovered.instance.flush()
     expect(send).toHaveBeenCalledTimes(1)
-    expect(send.mock.calls[0]).toEqual([ari, expect.stringContaining("Updates from 7 coding sessions:")])
-    expect(send.mock.calls[0]).toEqual([ari, expect.stringMatching(/historical/i)])
+    expect(send.mock.calls[0]).toEqual([ari, expect.stringContaining("Updates from 7 coding sessions:"), expect.any(Array)])
+    expect(send.mock.calls[0]).toEqual([ari, expect.stringMatching(/historical/i), expect.any(Array)])
+    expect((send.mock.calls[0] as unknown[])[2]).toHaveLength(207)
     const entries = readNoticeOutbox(root)
     expect(entries).toHaveLength(207)
     expect(entries.every(entry => entry.deliveries[ari.friendId]?.messageId === "digest-accepted")).toBe(true)
@@ -514,7 +681,7 @@ describe("owner notifier", () => {
   })
 
   it("keeps retrying a pending owner absent from the current target list without replaying accepted owners", async () => {
-    const sam: NoticeTarget = { friendId: "f2", name: "Sam", key: "conv-2" }
+    const sam: NoticeTarget = { friendId: "f2", name: "Sam", channel: "teams", key: "conv-2" }
     const first = notifier({
       resolveTargets: async () => [ari, sam],
       send: async target => target.friendId === sam.friendId
@@ -608,8 +775,8 @@ describe("owner notifier", () => {
   })
 
   it("logs a send that fails or is refused and still tries the next owner, without throwing", async () => {
-    const sam: NoticeTarget = { friendId: "f2", name: "Sam", key: "k" }
-    const kim: NoticeTarget = { friendId: "f3", name: "Kim", key: "k" }
+    const sam: NoticeTarget = { friendId: "f2", name: "Sam", channel: "teams", key: "k" }
+    const kim: NoticeTarget = { friendId: "f3", name: "Kim", channel: "bluebubbles", key: "k" }
     const send = vi.fn()
       .mockRejectedValueOnce(new Error("Bot Framework 503"))
       .mockResolvedValueOnce({ delivered: false, reason: "internal_content_blocked" })
@@ -636,6 +803,62 @@ describe("owner notifier", () => {
     instance.stop()
     expect(tasks).toEqual([])
     instance.stop()
+  })
+
+  it("host_account_refused keeps the notice pending and schedules a retry", async () => {
+    const send = vi.fn().mockResolvedValue({ delivered: false, reason: "host_account_refused" })
+    const { instance } = notifier({ send })
+    await instance.notify(record())
+    tasks = []
+    await instance.flush()
+    expect(noticeDeliveryState(readNoticeOutbox(root)[0]!, ari.friendId)).toBe("pending")
+    expect(tasks.map(task => task.ms)).toEqual([NOTICE_RETRY_MS])
+    instance.stop()
+  })
+
+  it("the same batch retried uses the same deliveryId", async () => {
+    const ids: string[] = []
+    const send = vi.fn(async (target: NoticeTarget, _text: string, noticeIds: string[]) => {
+      ids.push(noticeDeliveryId(target.friendId, noticeIds))
+      return ids.length === 1 ? { delivered: false, reason: "bluebubbles_unavailable" } : { delivered: true }
+    })
+    const { instance } = notifier({ send })
+    await instance.notify(record())
+    await instance.flush()
+    await instance.flush()
+    expect(send).toHaveBeenCalledTimes(2)
+    expect(ids[1]).toBe(ids[0])
+    expect(noticeDeliveryState(readNoticeOutbox(root)[0]!, ari.friendId)).toBe("sent")
+    instance.stop()
+  })
+
+  it("Teams target still receives the messageId receipt", async () => {
+    const send = vi.fn(async () => ({ delivered: true, delivery: { state: "accepted" as const, messageId: "teams-activity-1" } }))
+    const { instance } = notifier({ send })
+    await instance.notify(record())
+    await instance.flush()
+    expect((send.mock.calls[0] as unknown[])[0]).toMatchObject({ channel: "teams" })
+    expect(readNoticeOutbox(root)[0]!.deliveries[ari.friendId]).toMatchObject({ state: "sent", messageId: "teams-activity-1" })
+  })
+
+  it("a not-delivered result writes nothing to state/pending", async () => {
+    const { instance } = notifier({ send: async () => ({ delivered: false, reason: "bluebubbles_unavailable" }) })
+    await instance.notify(record())
+    await instance.flush()
+    expect(fs.existsSync(path.join(root, "state", "pending"))).toBe(false)
+    expect(noticeDeliveryState(readNoticeOutbox(root)[0]!, ari.friendId)).toBe("pending")
+    instance.stop()
+  })
+
+  it("reads enabled channels from agent.json for the default targets", async () => {
+    fs.writeFileSync(path.join(root, "agent.json"), JSON.stringify({ senses: { teams: { enabled: true } } }))
+    fs.mkdirSync(path.join(root, "friends"), { recursive: true })
+    fs.writeFileSync(path.join(root, "friends", "f1.json"), JSON.stringify(friend("f1", { name: "Ari", externalIds: [{ provider: "aad", externalId: "aad-1", linkedAt: "" }] })))
+    const targets: NoticeTarget[] = []
+    const { instance } = notifier({ resolveTargets: undefined, send: async target => { targets.push(target); return { delivered: true } } })
+    await instance.notify(record())
+    await instance.flush()
+    expect(targets).toEqual([{ friendId: "f1", name: "Ari", channel: "teams", key: "shepherd" }])
   })
 
   it("defaults to the bundle's family friends and the Teams sender", async () => {

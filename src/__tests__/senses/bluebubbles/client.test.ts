@@ -79,7 +79,7 @@ describe("BlueBubbles client", () => {
       replyToMessageGuid: "incoming-guid",
     })
 
-    expect(result).toEqual({ messageGuid: "sent-guid" })
+    expect(result).toEqual({ messageGuid: "sent-guid", chatGuid: expect.any(String) })
     expect(global.fetch).toHaveBeenCalledWith(
       "http://bluebubbles.local/api/v1/message/text?password=secret-token",
       expect.objectContaining({
@@ -178,7 +178,7 @@ describe("BlueBubbles client", () => {
       onTransportInvocation: () => order.push("boundary"),
     })
 
-    expect(result).toEqual({ messageGuid: "sent-guid" })
+    expect(result).toEqual({ messageGuid: "sent-guid", chatGuid: expect.any(String) })
     expect(order).toEqual(["admission", "boundary", "fetch"])
   })
 
@@ -324,7 +324,7 @@ describe("BlueBubbles client", () => {
       text: "plain send",
     })
 
-    expect(result).toEqual({ messageGuid: "root-guid" })
+    expect(result).toEqual({ messageGuid: "root-guid", chatGuid: expect.any(String) })
     const request = JSON.parse((global.fetch as any).mock.calls[0][1].body)
     expect(request).not.toHaveProperty("method")
     expect(request).not.toHaveProperty("selectedMessageGuid")
@@ -698,6 +698,16 @@ describe("BlueBubbles client", () => {
         text: "hello",
       }),
     ).rejects.toThrow("requires chat.chatGuid")
+    await expect(
+      client.sendText({
+        chat: {
+          isGroup: false,
+          sessionKey: "chat_identifier:unknown",
+          sendTarget: { kind: "chat_identifier", value: "unknown" },
+        },
+        text: "hello",
+      }),
+    ).rejects.toMatchObject({ name: "BlueBubblesSendError", errorCode: "chat_unresolved", transportInvoked: false })
 
     expect(global.fetch).not.toHaveBeenCalled()
   })
@@ -746,7 +756,7 @@ describe("BlueBubbles client", () => {
       text: "hello from identifier",
     })
 
-    expect(result).toEqual({ messageGuid: "resolved-guid" })
+    expect(result).toEqual({ messageGuid: "resolved-guid", chatGuid: "any;-;ari@mendelow.me" })
     expect(global.fetch).toHaveBeenNthCalledWith(
       1,
       "http://bluebubbles.local/api/v1/chat/query?password=secret-token",
@@ -813,7 +823,7 @@ describe("BlueBubbles client", () => {
       text: "guid fallback",
     })
 
-    expect(result).toEqual({ messageGuid: "guid-only-result" })
+    expect(result).toEqual({ messageGuid: "guid-only-result", chatGuid: expect.any(String) })
   })
 
   it("treats malformed guid-only chat query rows as unresolved routing", async () => {
@@ -1053,14 +1063,14 @@ describe("BlueBubbles client", () => {
       },
     )
 
-    await expect(client.sendText({ chat: dmChat, text: "hello once" })).resolves.toEqual({ messageGuid: undefined })
+    await expect(client.sendText({ chat: dmChat, text: "hello once" })).resolves.toEqual({ messageGuid: undefined, chatGuid: expect.any(String) })
     await expect(client.sendText({ chat: dmChat, text: "hello twice" })).rejects.toMatchObject({
       name: "BlueBubblesSendError",
       httpStatus: 200,
       errorCode: "malformed_response",
       transportInvoked: true,
     })
-    await expect(client.sendText({ chat: dmChat, text: "hello thrice" })).resolves.toEqual({ messageGuid: undefined })
+    await expect(client.sendText({ chat: dmChat, text: "hello thrice" })).resolves.toEqual({ messageGuid: undefined, chatGuid: expect.any(String) })
 
     const event = {
       kind: "message" as const,

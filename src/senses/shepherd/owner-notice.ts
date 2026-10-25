@@ -1,10 +1,14 @@
+import { createHash } from "node:crypto"
 import * as path from "node:path"
-import { FileFriendStore, type FriendRecord } from "@ouro.bot/friends"
+import { FileFriendStore, isLocalMachineOwnerIdentity, machineOwnerUsername, type FriendRecord } from "@ouro.bot/friends"
 import { resolveAlertKey } from "../../heart/awaiting/await-alert"
-import { getTeamsConfig, getTeamsSecondaryConfig, type TeamsConfig } from "../../heart/config"
-import type { ShepherdNoticePolicy } from "../../heart/identity"
+import { getBlueBubblesConfig, getTeamsConfig, getTeamsSecondaryConfig, type TeamsConfig } from "../../heart/config"
+import { loadAgentConfig, type ShepherdNoticePolicy } from "../../heart/identity"
+import { resolveReachTarget, type ReachChannel } from "../../heart/reach-channel"
 import { emitNervesEvent } from "../../nerves/runtime"
 import type { TeamsBotApi } from "../teams"
+import type { BlueBubblesClient } from "../bluebubbles/client"
+import type { ProactiveBlueBubblesSessionSendParams, ProactiveBlueBubblesSessionSendResult } from "../bluebubbles"
 import type { HostSession } from "./host"
 import type { ReturnRecord, ShepherdActionBlockReason } from "./returns"
 import { claimPendingNotices, declareNoticeTargets, enqueueNotice, noticeDeliveryState, readNoticeOutbox, recordNoticeDelivery } from "./notice-outbox"
@@ -124,35 +128,97 @@ export function noticeMessage(records: ReturnRecord[], refs: ReadonlyMap<string,
 export interface NoticeTarget {
   friendId: string
   name: string
-  /** The session key the send is logged under: the friend's Teams session when there is one. */
+  /** The channel the notice goes out on: the friend's stated choice, else their most recent, else any reachable one. */
+  channel: ReachChannel
+  /** The session key the send uses: the friend's 1:1 session on that channel when there is one. */
   key: string
   tenantId?: string
 }
 
-function teamsAadId(friend: FriendRecord): { id: string; tenantId?: string } | null {
-  const ext = friend.externalIds.find((entry) => entry.provider === "aad" && !entry.externalId.startsWith("group:"))
-  return ext ? { id: ext.externalId.toLowerCase(), tenantId: ext.tenantId } : null
+/**
+ * The channels this agent can reach people on from this machine: its enabled Teams sense, and its enabled BlueBubbles
+ * sense when this machine has a BlueBubbles connection (credentials live per machine, so another machine may own it).
+ */
+export function readEnabledReachChannels(agent: string, agentRoot: string, blueBubblesConfig: () => unknown = getBlueBubblesConfig): Set<ReachChannel> {
+  const enabled = new Set<ReachChannel>()
+  try {
+    const senses = loadAgentConfig({ agentName: agent, agentRoot }).senses
+    if (senses?.bluebubbles?.enabled) {
+      try {
+        blueBubblesConfig()
+        enabled.add("bluebubbles")
+      } catch (error) {
+        emitNervesEvent({ level: "warn", component: "senses", event: "senses.shepherd_notice_bluebubbles_not_attached", message: "BlueBubbles is enabled but not connected on this machine, so owner notices use another channel", meta: { agent, error: (error as Error).message } })
+      }
+    }
+    if (senses?.teams?.enabled) enabled.add("teams")
+  } catch (error) {
+    emitNervesEvent({ level: "warn", component: "senses", event: "senses.shepherd_notice_channels_unreadable", message: "could not read which channels are enabled, so no owner notice channel is reachable", meta: { agent, error: (error as Error).message } })
+  }
+  return enabled
+}
+
+/** Every channel id a friend record holds, in the same `channel:handle` form `resolveReachTarget` returns. */
+function personIdentities(friend: FriendRecord): Set<string> {
+  const identities = new Set<string>()
+  // Only called for a reachable friend, whose externalIds is therefore a list.
+  for (const entry of friend.externalIds) {
+    // A `group:` id names a group chat the friend is in, which other people share; it never identifies the person.
+    if (typeof entry?.externalId !== "string" || entry.externalId.trim() === "" || entry.externalId.startsWith("group:")) continue
+    if (entry.provider === "imessage-handle") identities.add(`bluebubbles:${entry.externalId.toLowerCase()}`)
+    if (entry.provider === "aad") identities.add(`teams:${entry.externalId.toLowerCase()}`)
+  }
+  return identities
 }
 
 /**
- * Who hears the notice: every family friend reachable on Teams (a Teams user id the bot can open a chat with), once per
- * Teams user even when several friend records share one. Teams is the only proactive channel wired today.
+ * Who hears the notice, and where: the family friend who is this machine's own user (`local` id), else every family
+ * friend, on the channel `resolveReachTarget` chooses for them, once per
+ * person on that channel even when several friend records share one id. With no 1:1 session yet, the send opens one:
+ * BlueBubbles by the friend's handle, Teams by a new 1:1 conversation.
  */
-export async function resolveNoticeTargets(agentRoot: string, store: { listAll(): Promise<FriendRecord[]> } = new FileFriendStore(path.join(agentRoot, "friends"))): Promise<NoticeTarget[]> {
+export async function resolveNoticeTargets(
+  agentRoot: string,
+  store: { listAll(): Promise<FriendRecord[]> } = new FileFriendStore(path.join(agentRoot, "friends")),
+  enabledChannels: ReadonlySet<ReachChannel> = new Set(),
+  username: string | null = machineOwnerUsername(),
+): Promise<NoticeTarget[]> {
   const seen = new Set<string>()
   const targets: NoticeTarget[] = []
-  for (const friend of await store.listAll()) {
-    if (friend.trustLevel !== "family") continue
-    const aad = teamsAadId(friend)
-    if (!aad || seen.has(aad.id)) continue
-    seen.add(aad.id)
-    targets.push({ friendId: friend.id, name: friend.name, key: resolveAlertKey(agentRoot, friend.id, "teams") ?? "shepherd", ...(aad.tenantId ? { tenantId: aad.tenantId } : {}) })
+  const family = (await store.listAll()).filter(friend => friend.trustLevel === "family")
+  // The notice is the owner's: when family friends are linked to this machine's own user, only they hear it, never
+  // their relatives, even when none of them is reachable yet.
+  const owners = family.filter(friend => (Array.isArray(friend.externalIds) ? friend.externalIds : [])
+    .some(entry => typeof entry?.provider === "string" && typeof entry.externalId === "string" && isLocalMachineOwnerIdentity(entry.provider, entry.externalId, username)))
+  for (const friend of owners.length > 0 ? owners : family) {
+    const reach = resolveReachTarget({
+      friend, enabledChannels, sessionsDir: path.join(agentRoot, "state", "sessions"), friendsDir: path.join(agentRoot, "friends"),
+      agentName: path.basename(agentRoot, ".ouro"),
+    })
+    if ("unreachable" in reach) continue
+    // One notice per person: a friend whose iMessage handle or Teams id another target already has is that person.
+    const identities = personIdentities(friend)
+    identities.add(`${reach.channel}:${reach.handle}`)
+    if ([...identities].some(identity => seen.has(identity))) continue
+    for (const identity of identities) seen.add(identity)
+    const alertKey = resolveAlertKey(agentRoot, friend.id, reach.channel)
+    // A BlueBubbles fallback key must be a DM: a group key would be refused, and "shepherd" sends to the handle.
+    const fallback = reach.channel === "bluebubbles" ? (alertKey?.includes(";-;") ? alertKey : null) : alertKey
+    targets.push({ friendId: friend.id, name: friend.name, channel: reach.channel, key: reach.key ?? fallback ?? "shepherd", ...(reach.tenantId ? { tenantId: reach.tenantId } : {}) })
+  }
+  if (owners.length > 0 && targets.length === 0) {
+    emitNervesEvent({ level: "warn", component: "senses", event: "senses.shepherd_notice_owner_unreachable", message: "this machine's owner has no reachable channel, so the Shepherd owner notice waits; link their iMessage handle or Teams id", meta: { owners: owners.length } })
   }
   emitNervesEvent({ component: "senses", event: "senses.shepherd_notice_targets", message: "resolved Shepherd owner notice targets", meta: { count: targets.length } })
   return targets
 }
 
-export type NoticeSender = (target: NoticeTarget, text: string) => Promise<{
+/** One id per batch and person, so a retried batch is saved into the conversation once. */
+export function noticeDeliveryId(friendId: string, noticeIds: readonly string[]): string {
+  return `shepherd:${createHash("sha256").update(`${friendId}\0${[...noticeIds].sort().join(",")}`).digest("hex")}`
+}
+
+export type NoticeSender = (target: NoticeTarget, text: string, noticeIds: string[]) => Promise<{
   delivered: boolean
   reason?: string
   delivery?: { state: "accepted" | "not_sent" | "unknown"; messageId?: string; conversationId?: string }
@@ -178,17 +244,41 @@ async function liveBotApi(config: TeamsConfig): Promise<TeamsBotApi> {
 /* v8 ignore stop */
 
 /**
- * Sends through the Teams sense's own proactive path (`sendProactiveTeamsMessageToSession`: trust check, internal-content
- * guard, 1:1 chat with the friend's Teams id) with a bot client of this process's own, built from the agent's Teams
- * credentials. Nothing listens on a port: the client only acquires a bot token and calls the Bot Framework.
+ * Sends on the target's channel through that sense's own proactive path, which applies its trust check, internal-content
+ * guard and 1:1 rule, and saves the notice into the friend's conversation.
+ *
+ * - Teams: `sendProactiveTeamsMessageToSession` with a bot client of this process's own, built from the agent's Teams
+ *   credentials. Nothing listens on a port: the client only acquires a bot token and calls the Bot Framework.
+ * - BlueBubbles: `sendProactiveBlueBubblesMessageToSession` over the BlueBubbles REST API, which checks the server's
+ *   account before sending. When the client cannot be set up (no credentials, say), the notice stays pending.
  */
-export function createTeamsNoticeSender(agentRoot: string, deps: {
+export function createNoticeSender(agentRoot: string, deps: {
   primary?: () => TeamsConfig
   secondary?: () => TeamsConfig
   botApi?: (config: TeamsConfig) => Promise<TeamsBotApi>
+  createBlueBubblesClient?: () => BlueBubblesClient
+  sendBlueBubbles?: (params: ProactiveBlueBubblesSessionSendParams, deps: { createClient: () => BlueBubblesClient; createFriendStore: () => FileFriendStore }) => Promise<ProactiveBlueBubblesSessionSendResult>
 } = {}): NoticeSender {
   const bots = new Map<string, Promise<TeamsBotApi>>()
-  return async (target, text) => {
+  return async (target, text, noticeIds) => {
+    const deliveryId = noticeDeliveryId(target.friendId, noticeIds)
+    if (target.channel === "bluebubbles") {
+      let client: BlueBubblesClient
+      let send: NonNullable<typeof deps.sendBlueBubbles>
+      try {
+        /* v8 ignore next 2 -- tests inject the client and sender; the live ones need BlueBubbles credentials @preserve */
+        client = deps.createBlueBubblesClient ? deps.createBlueBubblesClient() : (await import("../bluebubbles/client")).createBlueBubblesClient()
+        send = deps.sendBlueBubbles ?? (await import("../bluebubbles")).sendProactiveBlueBubblesMessageToSession
+      } catch (error) {
+        emitNervesEvent({ level: "warn", component: "senses", event: "senses.shepherd_notice_bluebubbles_unavailable", message: "BlueBubbles could not be set up for the Shepherd owner notice; it stays waiting", meta: { friendId: target.friendId, error: (error as Error).message } })
+        return { delivered: false, reason: "bluebubbles_unavailable" }
+      }
+      const store = new FileFriendStore(path.join(agentRoot, "friends"))
+      return send(
+        { friendId: target.friendId, sessionKey: target.key, text, intent: "generic_outreach", deliveryId, origin: "shepherd" },
+        { createClient: () => client, createFriendStore: () => store },
+      )
+    }
     const config = chooseTeamsBot(target.tenantId, (deps.primary ?? getTeamsConfig)(), (deps.secondary ?? getTeamsSecondaryConfig)())
     if (!config) return { delivered: false, reason: "no_teams_bot" }
     let bot = bots.get(config.clientId)
@@ -201,7 +291,7 @@ export function createTeamsNoticeSender(agentRoot: string, deps: {
     }
     const { sendProactiveTeamsMessageToSession } = await import("../teams")
     return sendProactiveTeamsMessageToSession(
-      { friendId: target.friendId, sessionKey: target.key, text, textFormat: "plain", intent: "generic_outreach", captureReceipt: true },
+      { friendId: target.friendId, sessionKey: target.key, text, textFormat: "plain", intent: "generic_outreach", captureReceipt: true, deliveryId, origin: "shepherd" },
       { botApi: await bot, store: new FileFriendStore(path.join(agentRoot, "friends")) },
     )
   }
@@ -215,6 +305,8 @@ export interface OwnerNotifierOptions {
   /** The host's sessions, for the short handle (`surface:12`) each notice names. */
   listSessions: () => Promise<HostSession[]>
   resolveTargets?: () => Promise<NoticeTarget[]>
+  /** The channels notices may use; read from agent.json on every flush by default. */
+  enabledChannels?: () => ReadonlySet<ReachChannel>
   send?: NoticeSender
 }
 
@@ -232,8 +324,9 @@ export interface OwnerNotifier {
 /** Collects durable notice intents; acceptance is distinct from transport delivery. */
 export function createOwnerNotifier(options: OwnerNotifierOptions): OwnerNotifier {
   const { agent, policy } = options
-  const resolveTargets = options.resolveTargets ?? (() => resolveNoticeTargets(options.agentRoot))
-  const send = options.send ?? createTeamsNoticeSender(options.agentRoot)
+  const enabledChannels = options.enabledChannels ?? (() => readEnabledReachChannels(agent, options.agentRoot))
+  const resolveTargets = options.resolveTargets ?? (() => resolveNoticeTargets(options.agentRoot, undefined, enabledChannels()))
+  const send = options.send ?? createNoticeSender(options.agentRoot)
   const retryWrites = new Map<string, ReturnRecord>()
   const recoveredNoticeIds = new Set<string>()
   const writes = new Set<Promise<string>>()
@@ -289,7 +382,7 @@ export function createOwnerNotifier(options: OwnerNotifierOptions): OwnerNotifie
       const targets = await resolveTargets()
       if (stopped) return
       if (targets.length === 0) {
-        emitNervesEvent({ level: "warn", component: "senses", event: "senses.shepherd_notice_no_target", message: "no family friend is reachable on Teams, so the Shepherd owner notice was not sent", meta: { agent, returns: entries.length } })
+        emitNervesEvent({ level: "warn", component: "senses", event: "senses.shepherd_notice_no_target", message: "no family friend is reachable on any enabled channel, so the Shepherd owner notice was not sent", meta: { agent, returns: entries.length } })
         schedule(NOTICE_RETRY_MS)
         return
       }
@@ -311,7 +404,7 @@ export function createOwnerNotifier(options: OwnerNotifierOptions): OwnerNotifie
             break
           }
           try {
-            const result = await send(target, noticeMessage(batch.map(entry => entry.record), refs, { recovered: ids.some(id => recoveredNoticeIds.has(id)) }))
+            const result = await send(target, noticeMessage(batch.map(entry => entry.record), refs, { recovered: ids.some(id => recoveredNoticeIds.has(id)) }), ids)
             const state = result.delivered ? "sent"
               : result.delivery ? result.delivery.state === "not_sent" ? "pending" : "unknown"
                 : result.reason && result.reason !== "send_error" ? "pending" : "unknown"
