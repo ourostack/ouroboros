@@ -5418,9 +5418,12 @@ describe("private runtime", () => {
 
     const runOptions = mockHandleInboundTurn.mock.calls[0][0].runAgentOptions
     expect(runOptions.tools.map((tool: any) => tool.function.name)).toEqual(["external_event_disposition"])
-    await runOptions.toolContext.externalEventEffects.deliverOwnerDecision({ source: "guard", eventId: "books", generation: 2, text: "Books needs attention." })
+    mockSendTelegramExternalEventDecision.mockResolvedValueOnce({ status: "covered", effectKey: "external-event:media" })
+    const related = [{ source: "guard", eventId: "media", generation: 1 }]
+    await expect(runOptions.toolContext.externalEventEffects.deliverOwnerDecision({ source: "guard", eventId: "books", generation: 2, text: "Books needs attention.", relatedEvents: related }))
+      .resolves.toEqual({ status: "covered", effectKey: "external-event:media" })
     expect(mockSendTelegramExternalEventDecision).toHaveBeenCalledOnce()
-    expect(mockSendTelegramExternalEventDecision).toHaveBeenCalledWith("test-agent", { source: "guard", eventId: "books", generation: 2, text: "Books needs attention." })
+    expect(mockSendTelegramExternalEventDecision).toHaveBeenCalledWith("test-agent", { source: "guard", eventId: "books", generation: 2, text: "Books needs attention.", relatedEvents: related })
   })
 
   describe("private-turn boundary cases", () => {

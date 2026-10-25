@@ -171,10 +171,25 @@ export interface TelegramContactManager {
   unblock(input: { actorFriendId: string; admissionId: string }): Promise<{ unblocked: true; admissionId: string }>
 }
 
+export interface ExternalEventIdentity { source: string; eventId: string; generation: number }
+export interface ExternalEventDecisionInput extends ExternalEventIdentity {
+  text: string
+  /** The other events dispatched in the same batch, whose single owner message may already speak for this one. */
+  relatedEvents?: readonly ExternalEventIdentity[]
+  signal?: AbortSignal
+}
+/** `sent`: this call delivered the message. `already_sent`: a retry; the earlier message stands. `covered`: another batch member's message stands. */
+export interface ExternalEventOwnerDelivery { status: "sent" | "already_sent" | "covered"; effectKey: string }
+
 export interface TelegramSenseApp {
   run(signal?: AbortSignal): Promise<void>
   sendProactive(text: string, signal?: AbortSignal): Promise<void>
-  sendExternalEventDecision(input: { source: string; eventId: string; generation: number; text: string; signal?: AbortSignal }): Promise<void>
+  /**
+   * Sends at most one owner message per external-event generation, and at most one per batch: when another event in
+   * `relatedEvents` (the rest of the same dispatched batch) already has an owner message, this one is covered by it and
+   * nothing is sent. A retry of a generation whose message already exists never sends a second, reworded one.
+   */
+  sendExternalEventDecision(input: ExternalEventDecisionInput): Promise<ExternalEventOwnerDelivery>
   sendAwaitFollowUp(request: CrossChatDeliveryRequest): Promise<CrossChatDirectDeliveryResult>
   /** Posts a Butler-authored notice to the owner's chat and records it in the owner session. */
   sendOwnerNotice(input: { noticeId: string; text: string; signal?: AbortSignal }): Promise<void>
@@ -2040,17 +2055,47 @@ export function createTelegramSenseApp(options: CreateTelegramSenseAppOptions): 
       })
     },
     async sendExternalEventDecision(input) {
-      const source = requiredText(input.source, "external event source")
-      const eventId = requiredText(input.eventId, "external event id")
-      if (Buffer.byteLength(source) > 512 || Buffer.byteLength(eventId) > 512 || !Number.isSafeInteger(input.generation) || input.generation < 1) throw new Error("Telegram external event identity is invalid")
-      await runWithAcceptanceAuditOwner(async () => {
-        const receiptIdentity = JSON.stringify([source, eventId, input.generation])
+      const identities = [input, ...(input.relatedEvents ?? [])].map((event) => ({
+        source: requiredText(event.source, "external event source"),
+        eventId: requiredText(event.eventId, "external event id"),
+        generation: event.generation,
+      }))
+      if (identities.some(({ source, eventId, generation }) => Buffer.byteLength(source) > 512 || Buffer.byteLength(eventId) > 512
+        || !Number.isSafeInteger(generation) || generation < 1)) throw new Error("Telegram external event identity is invalid")
+      const [key, ...relatedKeys] = identities.map(({ source, eventId, generation }) => `external-event:${JSON.stringify([source, eventId, generation])}`) as [string, ...string[]]
+      return runWithAcceptanceAuditOwner(async (): Promise<ExternalEventOwnerDelivery> => {
         const text = requiredText(input.text, "external event decision")
-        if (holdNoticeDuringHandoff(text, `external-event:${receiptIdentity}`)) return
-        await releaseHeldNotices(input.signal)
-        const effect = await deliverButlerEffect(text, `external-event:${receiptIdentity}`, input.signal)
         const sessionPath = getSenseSessionPath(options.agentName, configuredOwnerFriendId, "telegram", configuredOwnerSessionKey, agentRoot)
+        const held = readHeldNotices(heldNoticesPath)
+        const ownerMessageExists = (candidate: string): boolean => held.some((notice) => notice.key === candidate)
+          || getEffectJournal().readByIdempotencyKey(candidate) !== null
+        if (ownerMessageExists(key)) {
+          // A retry after the message went out (or was held): finish the original send, never send a reworded second one.
+          const existing = getEffectJournal().readByIdempotencyKey(key)
+          if (existing) {
+            await releaseHeldNotices(input.signal)
+            await recordAcceptedEffects(sessionPath, [await executeAuthorizedEffect({
+              idempotencyKey: key, target: existing.target, authorClass: existing.authorClass, effect: existing.effect,
+              ...(input.signal ? { signal: input.signal } : {}),
+            })])
+          }
+          return { status: "already_sent", effectKey: key }
+        }
+        const coveredBy = relatedKeys.find(ownerMessageExists)
+        if (coveredBy) {
+          emitNervesEvent({
+            component: "senses",
+            event: "senses.telegram_external_event_decision_covered",
+            message: "settled an external-event decision under the owner message already sent for its batch",
+            meta: { agentName: options.agentName, effectKey: key, coveredBy },
+          })
+          return { status: "covered", effectKey: coveredBy }
+        }
+        if (holdNoticeDuringHandoff(text, key)) return { status: "sent", effectKey: key }
+        await releaseHeldNotices(input.signal)
+        const effect = await deliverButlerEffect(text, key, input.signal)
         await recordAcceptedEffects(sessionPath, [effect])
+        return { status: "sent", effectKey: key }
       })
     },
     async sendAwaitFollowUp(request) {
@@ -2353,11 +2398,11 @@ export async function startTelegramSenseApp(agentName: string, waitForAuthority 
 
 export async function sendTelegramExternalEventDecision(
   agentName: string,
-  input: { source: string; eventId: string; generation: number; text: string; signal?: AbortSignal },
-): Promise<void> {
+  input: ExternalEventDecisionInput,
+): Promise<ExternalEventOwnerDelivery> {
   const app = await startTelegramSenseApp(agentName)
   try {
-    await app.sendExternalEventDecision(input)
+    return await app.sendExternalEventDecision(input)
   } finally {
     await app.stop()
   }

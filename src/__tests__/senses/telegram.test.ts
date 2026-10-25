@@ -1953,6 +1953,56 @@ describe("Telegram sense", () => {
     expect(session.events.filter((event: any) => event.content === "Books is still down. I’m looking into it.")).toHaveLength(1)
   })
 
+  // 2026-10-24: one health sweep failed four addresses at once and Ari got two near-identical warnings two minutes apart,
+  // one keyed to readarr generation 13 and one to requests generation 15, from the same batched turn.
+  it("sends one owner message for a batch: a later decision for another event in the batch is covered by the first", async () => {
+    const events: Array<{ event: string; meta: Record<string, unknown> }> = []
+    setRuntimeLogger(createLogger({ sinks: [(entry) => { events.push({ event: entry.event, meta: entry.meta as Record<string, unknown> }) }] }))
+    try {
+      const f = fixture()
+      const member = (host: string, generation: number) => ({ source: "sanctuary-health", eventId: `endpoint:https://${host}.mendelow.cloud/`, generation })
+      const batch = [member("books", 11), member("media", 12), member("readarr", 13), member("requests", 15)]
+      const relatedTo = (index: number) => batch.filter((_, other) => other !== index)
+      const first = await f.app.sendExternalEventDecision({ ...batch[2]!, relatedEvents: relatedTo(2), text: "Every public address is down at once; the house looks offline." })
+      const second = await f.app.sendExternalEventDecision({ ...batch[3]!, relatedEvents: relatedTo(3), text: "This is the requests address, the same observation as readarr, inside the whole-house blackout." })
+
+      const readarrKey = 'external-event:["sanctuary-health","endpoint:https://readarr.mendelow.cloud/",13]'
+      expect(first).toEqual({ status: "sent", effectKey: readarrKey })
+      expect(second).toEqual({ status: "covered", effectKey: readarrKey })
+      const sends = f.api.request.mock.calls.filter(([method]: [string]) => method === "sendMessage")
+      expect(sends).toHaveLength(1)
+      expect(events.find((entry) => entry.event === "senses.telegram_external_event_decision_covered")?.meta).toMatchObject({ coveredBy: readarrKey })
+    } finally {
+      setRuntimeLogger(null)
+    }
+  })
+
+  // The same incident's readarr receipt was retried three more times after its warning had gone out.
+  it("settles a retry of an already-delivered decision without sending again, even when reworded", async () => {
+    const f = fixture()
+    const event = { source: "sanctuary-health", eventId: "endpoint:https://readarr.mendelow.cloud/", generation: 13 }
+    await expect(f.app.sendExternalEventDecision({ ...event, text: "Every public address is down at once." })).resolves.toEqual({ status: "sent", effectKey: expect.any(String) })
+    await expect(f.app.sendExternalEventDecision({ ...event, text: "Re-checked: every public address is still down.", signal: new AbortController().signal })).resolves.toEqual({ status: "already_sent", effectKey: 'external-event:["sanctuary-health","endpoint:https://readarr.mendelow.cloud/",13]' })
+    expect(f.api.request.mock.calls.filter(([method]: [string]) => method === "sendMessage").map(([, body]: [string, any]) => body.text)).toEqual(["Every public address is down at once."])
+  })
+
+  it("hands a retried decision whose first send is in doubt back to the effect journal instead of sending a reworded copy", async () => {
+    let failing = true
+    const api = { request: vi.fn(async (method: string) => { if (failing && method === "sendMessage") throw new Error("telegram down"); return { message_id: 73 } }), stop: vi.fn() }
+    const f = fixture({ api: api as any })
+    const event = { source: "sanctuary-health", eventId: "endpoint:books", generation: 2 }
+    await expect(f.app.sendExternalEventDecision({ ...event, text: "Books is down." })).rejects.toThrow("telegram down")
+    failing = false
+    await expect(f.app.sendExternalEventDecision({ ...event, text: "Books is still down." })).rejects.toThrow("indeterminate")
+    expect(api.request.mock.calls.filter(([method]) => method === "sendMessage").map(([, body]: any) => body.text)).toEqual(["Books is down."])
+  })
+
+  it("rejects a malformed related event identity before any Telegram effect", async () => {
+    const f = fixture()
+    await expect(f.app.sendExternalEventDecision({ source: "source", eventId: "event", generation: 1, relatedEvents: [{ source: "source", eventId: "other", generation: 0 }], text: "report" })).rejects.toThrow("identity is invalid")
+    expect(f.api.request).not.toHaveBeenCalled()
+  })
+
   // 2026-10-11: Ari handed his chat to Rachel, and two Jellyfin outage notes landed in her movie chat.
   it("holds house notices while Ari's chat is handed to someone else, then sends them after the window", async () => {
     const handedAt = Date.parse("2026-10-11T04:27:28.812Z")
@@ -1978,8 +2028,11 @@ describe("Telegram sense", () => {
       const sends = () => f.api.request.mock.calls.filter(([method]: [string]) => method === "sendMessage").map(([, body]: [string, any]) => body.text)
 
       await f.app.sendExternalEventDecision({ source: "sanctuary-health", eventId: "endpoint:media", generation: 23, text: "The shelf is down." })
-      await f.app.sendExternalEventDecision({ source: "sanctuary-health", eventId: "endpoint:media", generation: 23, text: "The shelf is down." })
+      await expect(f.app.sendExternalEventDecision({ source: "sanctuary-health", eventId: "endpoint:media", generation: 23, text: "The shelf is down." })).resolves.toMatchObject({ status: "already_sent" })
+      // A held notice already speaks for the rest of its batch.
+      await expect(f.app.sendExternalEventDecision({ source: "sanctuary-health", eventId: "endpoint:books", generation: 9, relatedEvents: [{ source: "sanctuary-health", eventId: "endpoint:media", generation: 23 }], text: "Books is down too." })).resolves.toMatchObject({ status: "covered" })
       await f.app.sendProactive("Self-recovered; the shelf was down for about 15 minutes.")
+      await f.app.sendOwnerNotice({ noticeId: "delegated:task-9", text: "Delegated command ran." })
       await f.app.sendOwnerNotice({ noticeId: "delegated:task-9", text: "Delegated command ran." })
       expect(sends()).toEqual([])
       // Rachel's next message gets its reply, and the notices keep waiting.

@@ -74,7 +74,7 @@ describe("D-007 real one-shot disposal caller", () => {
     try {
       const delivery = sendTelegramExternalEventDecision("sanctuary", { source: "fixture", eventId: "owned", generation: 1, text: "Fixture receipt." })
       if (outcome === "failed") await expect(delivery).rejects.toThrow("isolated transport failure")
-      else await expect(delivery).resolves.toBeUndefined()
+      else await expect(delivery).resolves.toEqual({ status: "sent", effectKey: 'external-event:["fixture","owned",1]' })
       expect(mocks.request).toHaveBeenCalledTimes(1)
       expect(mocks.request.mock.calls[0]![0]).toBe("sendMessage")
       expect(mocks.request.mock.calls[0]![1]).toMatchObject({ chat_id: "42", text: "Fixture receipt.", parse_mode: "HTML" })

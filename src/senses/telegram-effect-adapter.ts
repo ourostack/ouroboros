@@ -302,6 +302,11 @@ export class FileTelegramEffectJournal {
     return fs.existsSync(filePath) ? this.read(id) : null
   }
 
+  /** The artifact an idempotency key already owns, if any; its existence means the journal owns that delivery. */
+  readByIdempotencyKey(idempotencyKey: string): TelegramEffectArtifact | null {
+    return this.readIfExists(artifactId(idempotencyKey))
+  }
+
   quarantineInvalid(id: string, reason: string): void {
     this.assertRootIdentity()
     const filePath = this.artifactPath(id)

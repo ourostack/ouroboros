@@ -136,10 +136,16 @@ function prepareExternalEventDisposition(a: Record<string, unknown>, ctx?: ToolC
   return {
     recordPath,
     finish: async () => {
+      let ownerMessage: import("../heart/external-events/router").ExternalEventOwnerMessage | undefined;
       if (decision === "ask" || decision === "report") {
         if (Buffer.byteLength(reason, "utf8") > 1_200) throw new Error("External event owner message must be phone-sized");
         if (!ctx?.externalEventEffects) throw new Error("External event owner delivery is unavailable");
-        await ctx.externalEventEffects.deliverOwnerDecision({ source: record.source, eventId: record.eventId, generation: record.generation, text: reason });
+        // The whole dispatched batch shares one owner message; the delivery port settles later decisions as covered by it.
+        const relatedEvents = [turnContext!, ...(turnContext!.relatedEvents ?? [])]
+          .filter((event) => path.resolve(event.recordPath) !== recordPath)
+          .map((event) => ({ source: event.source, eventId: event.eventId, generation: event.generation }));
+        const delivered = await ctx.externalEventEffects.deliverOwnerDecision({ source: record.source, eventId: record.eventId, generation: record.generation, text: reason, relatedEvents });
+        ownerMessage = { status: delivered.status, effectKey: delivered.effectKey };
       }
       const handled = commitExternalEventDisposition(recordPath, {
         owner: turnEvent.claimOwner,
@@ -156,10 +162,11 @@ function prepareExternalEventDisposition(a: Record<string, unknown>, ctx?: ToolC
           awaitId: typeof a.awaitId === "string" && a.awaitId ? a.awaitId : null,
           actionRefs,
           verificationRefs,
+          ...(ownerMessage ? { ownerMessage } : {}),
         },
       });
       ctx?.externalEventAuthority?.recordCommittedDisposition?.(turnEvent);
-      emitNervesEvent({ component: "repertoire", event: "repertoire.external_event_disposition", message: "external event disposition recorded", meta: { agentName, eventId: record.eventId, generation: record.generation, classification, decision } });
+      emitNervesEvent({ component: "repertoire", event: "repertoire.external_event_disposition", message: "external event disposition recorded", meta: { agentName, eventId: record.eventId, generation: record.generation, classification, decision, ...(ownerMessage ? { ownerMessage: ownerMessage.status } : {}) } });
       return handled;
     },
   };
@@ -172,7 +179,7 @@ export const continuityToolDefinitions: ToolDefinition[] = [
       type: "function",
       function: {
         name: "external_event_disposition",
-        description: "Classify the exact external-event generation I just investigated. An ask or report is the sole owner-delivery path and sends reason once for this receipt; silent and act only record the disposition.",
+        description: "Classify the exact external-event generation I just investigated. An ask or report is the sole owner-delivery path and sends reason once for this receipt; silent and act only record the disposition. In a batch, only the first ask or report sends a message and the later ones are recorded as covered by it, so write that first reason to cover every listed lease.",
         parameters: {
           type: "object",
           properties: {
