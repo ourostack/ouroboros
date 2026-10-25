@@ -1,3 +1,5 @@
+import { emitNervesEvent } from "../../nerves/runtime"
+
 /**
  * Phrases an agent uses when it hands a decision to the human by name: approving a design, signing off a delivery,
  * or answering personally. A judge may read such a stop as premature ("offers options instead of choosing"), but
@@ -16,5 +18,9 @@ export const HUMAN_DECISION_PHRASES: readonly RegExp[] = [
 
 /** Whether the agent's last words ask the human to decide or answer personally. */
 export function asksHumanToDecide(text: string): boolean {
-  return HUMAN_DECISION_PHRASES.some((phrase) => phrase.test(text))
+  const index = HUMAN_DECISION_PHRASES.findIndex((phrase) => phrase.test(text))
+  if (index === -1) return false
+  emitNervesEvent({ component: "senses", event: "senses.shepherd_human_decision_detected",
+    message: "the agent asked its human to decide", meta: { phrase: index } })
+  return true
 }
