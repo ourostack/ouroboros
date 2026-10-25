@@ -2033,6 +2033,7 @@ describe("Telegram sense", () => {
       await expect(f.app.sendExternalEventDecision({ source: "sanctuary-health", eventId: "endpoint:books", generation: 9, relatedEvents: [{ source: "sanctuary-health", eventId: "endpoint:media", generation: 23 }], text: "Books is down too." })).resolves.toMatchObject({ status: "covered" })
       await f.app.sendProactive("Self-recovered; the shelf was down for about 15 minutes.")
       await f.app.sendOwnerNotice({ noticeId: "delegated:task-9", text: "Delegated command ran." })
+      await f.app.sendOwnerNotice({ noticeId: "delegated:task-9", text: "Delegated command ran." })
       expect(sends()).toEqual([])
       // Rachel's next message gets its reply, and the notices keep waiting.
       await f.getOnMessage()({ updateId: 90, messageId: "91", userId: "42", chatId: "42", text: "something silly please" })
