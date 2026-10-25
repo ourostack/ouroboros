@@ -74,8 +74,9 @@ describe("managed feedback review and owner acknowledgement", () => {
       expect(options.shepherdSession?.id).toBe(fixture.record.source.id)
       return result("I saved the scoped feedback.")
     })
-    vi.spyOn(notices, "createTeamsNoticeSender").mockReturnValue(async (target, text) => {
-      expect(target.friendId).toBe("owner")
+    vi.spyOn(notices, "createNoticeSender").mockReturnValue(async (target, text, noticeIds) => {
+      expect(target).toMatchObject({ friendId: "owner", channel: "teams" })
+      expect(noticeIds).toEqual([fixture.record.id])
       expect(text).toContain("I saved the scoped feedback.")
       return { delivered: true, delivery: { state: "accepted", conversationId: "default-chat", messageId: "default-activity" } }
     })
