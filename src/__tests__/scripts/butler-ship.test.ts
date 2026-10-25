@@ -15,10 +15,11 @@ const nok = (stderr = "boom", code = 1): Res => ({ code, stdout: "", stderr })
 describe("butler-ship pure logic", () => {
   it("parses args with defaults, env host and flags", async () => {
     const { parseShipArgs } = await lib()
-    expect(parseShipArgs(["0.1.0-alpha.873"], {})).toEqual({ version: "0.1.0-alpha.873", host: "sanctuary", noGate: false, plant: undefined, dryRun: false })
+    expect(parseShipArgs(["0.1.0-alpha.873"], {})).toEqual({ version: "0.1.0-alpha.873", host: "sanctuary", noGate: false, noBaseline: false, plant: undefined, dryRun: false })
     expect(parseShipArgs(["0.1.0-alpha.873"], { BUTLER_HOST: "tower" }).host).toBe("tower")
     expect(parseShipArgs(["--host", "h", "1.2.3", "--plant", "books-up", "--dry-run"], { BUTLER_HOST: "x" })).toMatchObject({ host: "h", plant: "books-up", dryRun: true })
     expect(parseShipArgs(["1.2.3", "--no-gate"]).noGate).toBe(true)
+    expect(parseShipArgs(["1.2.3", "--no-baseline"]).noBaseline).toBe(true)
   })
 
   it("rejects bad args", async () => {
@@ -159,7 +160,7 @@ describe("butler-ship orchestrator", () => {
     expect(h.scp).toEqual(["sanctuary-butler-upgrade.mjs->sanctuary:/tmp/butler-upgrade.mjs", "sanctuary-replay-gate.mjs->sanctuary:/tmp/sanctuary-replay-gate.mjs"])
     expect(h.calls.some((c) => c.includes(".bak-0.1.0-alpha.868"))).toBe(true)
     expect(h.calls.some((c) => c.includes("contents/deploy/unraid/sanctuary-butler-upgrade.mjs?ref=abc123"))).toBe(true)
-    const start = h.calls.find((c) => c.includes("setsid nohup"))!
+    const start = h.calls.find((c) => c.includes("butler-upgrade.mjs upgrade"))!
     expect(start).toContain(`upgrade ${V} > /var/log/ouro-upgrade-${V}.log`)
     expect(start).not.toContain("--no-gate")
     expect(h.calls.some((c) => c.includes("pgrep -f '[b]utler-upgrade.mjs upgrade'"))).toBe(true)
@@ -173,7 +174,7 @@ describe("butler-ship orchestrator", () => {
     expect(a.calls.find((c) => c.includes("setsid nohup"))).toContain("upgrade 0.1.0-alpha.870 --no-gate >")
     const b = await harness({}, { plant: "books-up" })
     await b.run()
-    expect(b.calls.find((c) => c.includes("setsid nohup"))).toContain("--plant books-up")
+    expect(b.calls.find((c) => c.includes("butler-upgrade.mjs upgrade"))).toContain("--plant books-up")
   })
 
   it("reports a rollback with exit 1", async () => {
@@ -381,6 +382,108 @@ describe("butler-ship orchestrator", () => {
   it("reports the stderr tail when a failure has no stdout", async () => {
     const h = await harness({ gh: (a) => (a[0] === "api" ? { code: 2, stdout: "out text", stderr: "" } : (undefined as unknown as Res)) })
     await expect(h.run()).rejects.toThrow(/out text/)
+  })
+})
+
+describe("butler-ship live baseline (2026-10-25: live 911 failed its own gate)", () => {
+  const line = (id: string, status: string) => JSON.stringify({ id, status, checks: [] })
+  const liveLog = ["replay window open", line("chef-question", "pass"), line("failure-report", "fail"), line("stall-kept", "skipped"), JSON.stringify({ summary: { ok: false, passed: 1, skipped: 1, failed: ["failure-report"] } }), "replay window closed"].join("\n")
+  const upgradeLog = (rows: string[], terminal: string) => ["== replay gate", ...rows, terminal].join("\n")
+  const kept = upgradeLog([line("chef-question", "pass"), line("failure-report", "failing-on-live-too"), line("stall-kept", "pass"), line("request-status", "pass"), "FAILING ON LIVE TOO (does not block; the live version fails these as well): failure-report"], "GATE PASS")
+  const rolled = upgradeLog([line("chef-question", "fail"), line("failure-report", "failing-on-live-too")], "GATE FAIL — ROLLED BACK to ghcr.io/ourostack/ouroboros-butler:0.1.0-alpha.911")
+  const withBaseline = (upgrade: string, live = liveLog, polls = { n: 0 }) => ({ ssh: (cmd: string) => {
+    if (cmd.includes("sanctuary-replay-gate.mjs run")) return ok("@@PID:4242\n")
+    if (cmd.includes("cat /var/log/ouro-baseline-")) { polls.n += 1; return ok(`${live}\n@@RUNNING:${polls.n < 2 ? 1 : 0}\n`) }
+    if (cmd.includes("cat /var/log/ouro-upgrade-")) return ok(`${upgrade}\n@@RUNNING:0\n`)
+    return undefined as unknown as Res
+  } })
+
+  it("compares each case on live and on the candidate", async () => {
+    const { compareCases, formatComparison } = await lib()
+    const rows = compareCases([{ id: "a", status: "pass" }, { id: "b", status: "fail" }, { id: "gone", status: "pass" }, { raw: "x" }], [{ id: "a", status: "fail" }, { id: "b", status: "failing-on-live-too" }, { id: "c", status: "warn" }, { id: "d", status: "pass" }])
+    expect(rows).toEqual([
+      { id: "a", live: "pass", candidate: "fail", verdict: "blocks" },
+      { id: "b", live: "fail", candidate: "failing-on-live-too", verdict: "failing on live too" },
+      { id: "c", live: "not run", candidate: "warn", verdict: "warn" },
+      { id: "d", live: "not run", candidate: "pass", verdict: "pass" },
+      { id: "gone", live: "pass", candidate: "not run", verdict: "not run" },
+    ])
+    expect(compareCases(undefined, null)).toEqual([])
+    const table = formatComparison(rows)
+    expect(table[0]).toMatch(/^ {2}case\s+live\s+candidate\s+verdict$/)
+    expect(table[1]).toMatch(/^ {2}a\s+pass\s+fail\s+BLOCKS$/)
+    expect(table[2]).toContain("FAILING ON LIVE TOO (does not block)")
+  })
+
+  it("runs the release's gate against the live version before upgrading and hands its log to the upgrade", async () => {
+    const h = await harness(withBaseline(kept))
+    const r = await h.run()
+    expect(r.exitCode).toBe(0)
+    const live = h.calls.find((c) => c.includes("sanctuary-replay-gate.mjs run"))!
+    expect(live).toBe(`ssh : > /var/log/ouro-baseline-${V}.log; setsid nohup timeout -s KILL 5700 /usr/local/bin/node /tmp/sanctuary-replay-gate.mjs run > /var/log/ouro-baseline-${V}.log 2>&1 < /dev/null & echo "@@PID:$!"`)
+    expect(h.calls.some((c) => c.includes("kill -0 4242"))).toBe(true)
+    const upgrade = h.calls.findIndex((c) => c.includes("butler-upgrade.mjs upgrade"))
+    expect(h.calls[upgrade]).toContain(`OURO_REPLAY_BASELINE=/var/log/ouro-baseline-${V}.log setsid nohup /usr/local/bin/node /tmp/butler-upgrade.mjs upgrade ${V} >`)
+    expect(upgrade).toBeGreaterThan(h.calls.map((c, i) => (c.includes("cat /var/log/ouro-baseline-") ? i : -1)).pop()!)
+    expect(h.out.filter((l) => l.startsWith('  live {"id":"failure-report"'))).toHaveLength(1)
+    expect(h.out.some((l) => l.includes("1 of 3 cases fail on the live version too"))).toBe(true)
+    expect(h.out.some((l) => l.startsWith("FAILING ON LIVE TOO"))).toBe(true)
+    expect(h.out.some((l) => /^ {2}failure-report\s+fail\s+failing-on-live-too\s+FAILING ON LIVE TOO \(does not block\)$/.test(l))).toBe(true)
+    expect(r.result.baseline).toEqual({ log: `/var/log/ouro-baseline-${V}.log`, summary: { ok: false, passed: 1, skipped: 1, failed: ["failure-report"] }, cases: [{ id: "chef-question", status: "pass" }, { id: "failure-report", status: "fail" }, { id: "stall-kept", status: "skipped" }] })
+    expect(r.result.comparison).toEqual([
+      { id: "chef-question", live: "pass", candidate: "pass", verdict: "pass" },
+      { id: "failure-report", live: "fail", candidate: "failing-on-live-too", verdict: "failing on live too" },
+      { id: "stall-kept", live: "skipped", candidate: "pass", verdict: "pass" },
+      { id: "request-status", live: "not run", candidate: "pass", verdict: "pass" },
+    ])
+    expect(JSON.parse(h.out.at(-1)!).comparison).toHaveLength(4)
+  })
+
+  it("still rolls back on a case that passed on live and fails on the candidate, and shows why", async () => {
+    const h = await harness(withBaseline(rolled))
+    const r = await h.run()
+    expect(r.exitCode).toBe(1)
+    expect(r.result.result).toBe("rolled_back")
+    expect(r.result.comparison[0]).toEqual({ id: "chef-question", live: "pass", candidate: "fail", verdict: "blocks" })
+    expect(h.out.some((l) => /^ {2}chef-question\s+pass\s+fail\s+BLOCKS$/.test(l))).toBe(true)
+  })
+
+  it("keeps the gate strict when the live run gives no usable results", async () => {
+    const empty = await harness(withBaseline(kept, "replay gate could not run: the Butler's A2A card did not answer"))
+    const r = await empty.run()
+    expect(empty.calls.find((c) => c.includes("butler-upgrade.mjs upgrade"))).not.toContain("OURO_REPLAY_BASELINE")
+    expect(empty.out.some((l) => l.includes("WARN no live baseline (the live run wrote no case results") && l.includes("every gate failure will block"))).toBe(true)
+    expect(r.result.baseline).toEqual({ skipped: `the live run wrote no case results to /var/log/ouro-baseline-${V}.log` })
+    expect(r.result).not.toHaveProperty("comparison")
+    const unstarted = await harness({ ssh: (cmd) => (cmd.includes("sanctuary-replay-gate.mjs run") ? nok("no timeout binary", 127) : (undefined as unknown as Res)) })
+    expect((await unstarted.run()).result.baseline).toEqual({ skipped: "the live run did not start (exit 127)" })
+  })
+
+  it("never starts the upgrade beside a live run it cannot see the end of", async () => {
+    const blind = await harness({ ssh: (cmd) => (cmd.includes("sanctuary-replay-gate.mjs run") ? ok("@@PID:7\n") : cmd.includes("cat /var/log/ouro-baseline-") ? nok("ssh down", 255) : (undefined as unknown as Res)) })
+    await expect(blind.run()).rejects.toThrow(/could not read the live baseline log .* nothing was upgraded/)
+    expect(blind.calls.some((c) => c.includes("butler-upgrade.mjs upgrade"))).toBe(false)
+    const slow = await harness({ ssh: (cmd) => (cmd.includes("sanctuary-replay-gate.mjs run") ? ok("@@PID:7\n") : cmd.includes("cat /var/log/ouro-baseline-") ? ok("@@RUNNING:1\n") : (undefined as unknown as Res)) }, {}, { poll: 10, baseline: 25 })
+    await expect(slow.run()).rejects.toThrow(/timed out following the live baseline .*\(pid 7\)/)
+    expect(slow.calls.some((c) => c.includes("butler-upgrade.mjs upgrade"))).toBe(false)
+  })
+
+  it("skips the live run with --no-baseline, with --no-gate and in a dry run", async () => {
+    for (const [opts, skipped] of [[{ noBaseline: true }, "--no-baseline"], [{ noGate: true }, "--no-gate"]] as const) {
+      const h = await harness(withBaseline(kept), opts)
+      const r = await h.run()
+      expect(h.calls.some((c) => c.includes("sanctuary-replay-gate.mjs run"))).toBe(false)
+      expect(h.calls.find((c) => c.includes("butler-upgrade.mjs upgrade"))).not.toContain("OURO_REPLAY_BASELINE")
+      expect(r.result.baseline).toEqual({ skipped })
+    }
+    const dry = await harness(withBaseline(kept), { dryRun: true })
+    await dry.run()
+    expect(dry.calls.some((c) => c.includes("sanctuary-replay-gate.mjs run"))).toBe(false)
+  })
+
+  it("reports a missing baseline in the result built without one", async () => {
+    const { buildResult } = await lib()
+    expect(buildResult({ version: "v", terminal: "failed", log: "/l", logText: "", verifyText: "", verifyCode: 1 }).result.baseline).toEqual({ skipped: "not run" })
   })
 })
 

@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 // One command ships a Butler release through the replay gate. Runbook: deploy/unraid/README.txt.
-// Usage: npm run butler:ship -- <version> [--host sanctuary] [--no-gate] [--plant <case>] [--dry-run]
+// Usage: npm run butler:ship -- <version> [--host sanctuary] [--no-gate] [--no-baseline] [--plant <case>] [--dry-run]
 import { spawnSync } from "node:child_process"
 import { mkdtempSync, writeFileSync, realpathSync } from "node:fs"
 import { tmpdir } from "node:os"
