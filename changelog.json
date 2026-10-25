@@ -2,6 +2,12 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.947",
+      "changes": [
+        "The daemon now starts its senses, such as Telegram, before it handles startup external events, so a slow or failing private turn at boot can no longer keep Telegram offline."
+      ]
+    },
+    {
       "version": "0.1.0-alpha.946",
       "changes": [
         "Shepherd's notices about your coding agents now reach you on the channel you use, such as iMessage, and every message the agent sends on its own is saved into that conversation, so your reply arrives with context.",
