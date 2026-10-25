@@ -49,7 +49,7 @@ describe("BlueBubbles client host account gate", () => {
     const server = fakeServer("clawdbot")
     global.fetch = server.fetch
     const client = createBlueBubblesClient(config, channel)
-    await expect(client.sendText({ chat, text: "hi" })).resolves.toEqual({ messageGuid: "sent-guid" })
+    await expect(client.sendText({ chat, text: "hi" })).resolves.toEqual({ messageGuid: "sent-guid", chatGuid: expect.any(String) })
     expect(server.actions).toEqual(["/api/v1/message/text"])
   })
 
@@ -109,7 +109,7 @@ describe("BlueBubbles client host account gate", () => {
     global.fetch = server.fetch
     loadAgentConfig.mockImplementation(() => { throw new Error("no ambient agent") })
     const client = createBlueBubblesClient(config, channel, { agent: "slugger", hostUsername: "clawdbot" })
-    await expect(client.sendText({ chat, text: "hi" })).resolves.toEqual({ messageGuid: "sent-guid" })
+    await expect(client.sendText({ chat, text: "hi" })).resolves.toEqual({ messageGuid: "sent-guid", chatGuid: expect.any(String) })
     await expect(createBlueBubblesClient(config, channel, { agent: "slugger", hostUsername: undefined }).sendText({ chat, text: "hi" }))
       .rejects.toThrow('BlueBubbles refused for agent "slugger": no host account is declared')
   })

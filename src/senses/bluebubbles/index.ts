@@ -4082,16 +4082,20 @@ function buildChatRefForSessionKey(friend: FriendRecord, sessionKey: string): Bl
  * The session a proactive send is saved into: the chat key it was sent on, else the friend's existing DM session, else
  * the DM key an inbound message from their handle would use (`chat:any;-;<handle>`), so their reply loads it.
  */
-function proactiveRecordKey(friend: FriendRecord, sessionKey: string, chat: BlueBubblesChatRef): string | null {
+function proactiveRecordKey(friend: FriendRecord, sessionKey: string, chat: BlueBubblesChatRef, sentChatGuid?: string): string | null {
   if (normalizeBlueBubblesSessionKey(sessionKey).startsWith("chat:")) return sessionKey
+  // The DM the server actually sent into is where the friend's reply will be keyed.
+  if (sentChatGuid?.includes(";-;")) return `chat:${sentChatGuid}`
   const existing = resolveAlertKey(getAgentRoot(), friend.id, "bluebubbles")
   if (existing?.includes(";-;")) return existing
+  /* v8 ignore start -- a non-chat key is routed by the friend's handle, so a delivered send always had one @preserve */
   const handle = findImessageHandle(friend) ?? chat.chatIdentifier
   return handle ? `chat:any;-;${handle}` : null
+  /* v8 ignore stop */
 }
 
-function recordBlueBubblesProactiveSend(friend: FriendRecord, params: ProactiveBlueBubblesSessionSendParams, chat: BlueBubblesChatRef): void {
-  const key = proactiveRecordKey(friend, params.sessionKey, chat)
+function recordBlueBubblesProactiveSend(friend: FriendRecord, params: ProactiveBlueBubblesSessionSendParams, chat: BlueBubblesChatRef, sentChatGuid?: string): void {
+  const key = proactiveRecordKey(friend, params.sessionKey, chat, sentChatGuid)
   /* v8 ignore next -- a delivered send always had a chat GUID or identifier to send to @preserve */
   if (!key) return
   const origin = params.origin ?? "proactive"
@@ -4231,7 +4235,7 @@ export async function sendProactiveBlueBubblesMessageToSession(
   }
 
   try {
-    await client.sendText({ chat, text: params.text })
+    const sent = await client.sendText({ chat, text: params.text })
     emitNervesEvent({
       component: "senses",
       event: "senses.bluebubbles_proactive_sent",
@@ -4243,9 +4247,19 @@ export async function sendProactiveBlueBubblesMessageToSession(
         chatIdentifier: chat.chatIdentifier ?? null,
       },
     })
-    recordBlueBubblesProactiveSend(friend, params, chat)
+    recordBlueBubblesProactiveSend(friend, params, chat, sent?.chatGuid)
     return { delivered: true }
   } catch (error) {
+    if (error instanceof BlueBubblesSendError && error.errorCode === "chat_unresolved") {
+      emitNervesEvent({
+        level: "warn",
+        component: "senses",
+        event: "senses.bluebubbles_proactive_no_chat",
+        message: "no BlueBubbles chat matched this friend, so nothing was sent",
+        meta: { friendId: params.friendId, sessionKey: params.sessionKey },
+      })
+      return { delivered: false, reason: "missing_target" }
+    }
     if (error instanceof BlueBubblesHostAccountError) {
       emitNervesEvent({
         level: "warn",

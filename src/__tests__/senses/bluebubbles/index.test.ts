@@ -1355,10 +1355,14 @@ describe("BlueBubbles sense runtime", () => {
 
   it("a deferred record is in the session before the friend's next message", async () => {
     outbound.drain.mockClear()
+    const loadsBefore = mocks.loadSession.mock.invocationCallOrder.length
     const bluebubbles = await import("../../../senses/bluebubbles")
     await bluebubbles.handleBlueBubblesEvent(dmThreadPayload)
     expect(outbound.drain).toHaveBeenCalledWith(mocks.getAgentRoot(), expect.any(String), "bluebubbles", expect.stringMatching(/^chat:/), expect.objectContaining({ ownerId: "bluebubbles-test-owner" }))
-    expect(outbound.drain.mock.invocationCallOrder[0]!).toBeLessThan(mocks.loadSession.mock.invocationCallOrder.at(-1)!)
+    // Every session load in this turn comes after the drain.
+    const loads = mocks.loadSession.mock.invocationCallOrder.slice(loadsBefore)
+    expect(loads.length).toBeGreaterThan(0)
+    expect(outbound.drain.mock.invocationCallOrder[0]!).toBeLessThan(Math.min(...loads))
   })
 
   it("detects obsolete sibling thread lanes without deleting them before loading the shared chat trunk", async () => {
@@ -13181,6 +13185,38 @@ describe("sendProactiveBlueBubblesMessageToSession", () => {
       friendId: "friend-uuid-1", sessionKey: "chat:any;-;alice@icloud.com", text: "hello",
     }, proactiveDeps(makeFriend({ trustLevel: "family" })))
     expect(result).toEqual({ delivered: false, reason: "host_account_refused" })
+    expect(outbound.record).not.toHaveBeenCalled()
+  })
+
+  it("records under the DM the server actually sent into", async () => {
+    outbound.record.mockClear()
+    mocks.sendText.mockResolvedValueOnce({ messageGuid: "m1", chatGuid: "iMessage;-;alice@icloud.com" })
+    const bluebubbles = await import("../../../senses/bluebubbles")
+    const friend = makeFriend({ trustLevel: "family", externalIds: [{ provider: "imessage-handle", externalId: "alice@icloud.com", linkedAt: "2026-01-01" }] })
+    await bluebubbles.sendProactiveBlueBubblesMessageToSession({ friendId: "friend-uuid-1", sessionKey: "shepherd", text: "hello" }, proactiveDeps(friend))
+    expect(outbound.record).toHaveBeenLastCalledWith(expect.objectContaining({ key: "chat:iMessage;-;alice@icloud.com" }))
+    mocks.sendText.mockResolvedValueOnce({ messageGuid: "m2", chatGuid: "iMessage;+;group-1" })
+    await bluebubbles.sendProactiveBlueBubblesMessageToSession({ friendId: "friend-uuid-1", sessionKey: "shepherd", text: "again" }, proactiveDeps(friend))
+    expect(outbound.record).toHaveBeenLastCalledWith(expect.objectContaining({ key: "chat:any;-;alice@icloud.com" }))
+  })
+
+  it("a chat identifier key records under that same key", async () => {
+    outbound.record.mockClear()
+    const bluebubbles = await import("../../../senses/bluebubbles")
+    await bluebubbles.sendProactiveBlueBubblesMessageToSession({ friendId: "friend-uuid-1", sessionKey: "chat_identifier:bob@icloud.com", text: "hello" },
+      proactiveDeps(makeFriend({ trustLevel: "family", externalIds: [] })))
+    expect(outbound.record).toHaveBeenLastCalledWith(expect.objectContaining({ key: "chat_identifier:bob@icloud.com" }))
+  })
+
+  it("a chat it cannot find returns missing_target, so the caller may send again", async () => {
+    outbound.record.mockClear()
+    const { BlueBubblesSendError } = await import("../../../senses/bluebubbles/client")
+    mocks.sendText.mockRejectedValueOnce(new BlueBubblesSendError({ message: "no chat", httpStatus: null, errorCode: "chat_unresolved", transportInvoked: false }))
+    const bluebubbles = await import("../../../senses/bluebubbles")
+    const result = await bluebubbles.sendProactiveBlueBubblesMessageToSession({
+      friendId: "friend-uuid-1", sessionKey: "shepherd", text: "hello",
+    }, proactiveDeps(makeFriend({ trustLevel: "family", externalIds: [{ provider: "imessage-handle", externalId: "alice@icloud.com", linkedAt: "2026-01-01" }] })))
+    expect(result).toEqual({ delivered: false, reason: "missing_target" })
     expect(outbound.record).not.toHaveBeenCalled()
   })
 
