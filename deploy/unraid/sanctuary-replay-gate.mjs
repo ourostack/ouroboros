@@ -326,6 +326,23 @@ export const CASES = [
     },
   },
   {
+    // 2026-10-24: "do you have any idea when that Elizabeth Holmes documentary that we have requested will be available?"
+    // was read as a shelf lookup for the whole sentence; every search was refused and the turn ended at the step limit.
+    id: "request-status",
+    words: "do you have any idea when that Hope movie we requested will be available?",
+    sender: "principal",
+    delegated: false,
+    readback: ({ trace, reply, said }) => {
+      const lookups = callsNamed(trace, /^media_/).filter((call) => String(call.result ?? "").trim())
+      const text = said || reply
+      return [
+        check("a media tool ran and returned a result", lookups.length > 0, `${trace.length} tool calls`),
+        check("the reply answers instead of reporting the step limit", Boolean(text.trim()) && !/step limit/i.test(text)),
+        check("no new request was filed", callsNamed(trace, /^media_request$/).length === 0),
+      ]
+    },
+  },
+  {
     id: "await-self-resolve",
     // A name unique to the run: an earlier run leaves an archived await of the same name behind, and the Butler's
     // shared inner session remembers it.
@@ -740,6 +757,11 @@ export function selfTestFixtures() {
     "stall-kept": {
       pass: { trace: [call("1", "media_queue", {})], reply: "it is stuck", before: emptyObservation({ queue: [stalled] }), after: emptyObservation({ queue: [stalled] }) },
       fail: { trace: [call("1", "media_blocklist_stalled", {})], reply: "removed it", before: emptyObservation({ queue: [stalled] }), after: emptyObservation({ queue: [] }) },
+    },
+    "request-status": {
+      pass: { trace: [call("1", "media_request_status", { query: "Hope" }, '{"status":"downloading"}')], reply: "It's downloading now." },
+      failStepLimit: { trace: [], reply: "I hit my step limit in the middle of that job and couldn't finish it." },
+      failNewRequest: { trace: [call("1", "media_search", { query: "Hope" }, '{"matched":1}'), call("2", "media_request", { query: "Hope" }, '{"ok":true}')], reply: "Requested it." },
     },
     "failure-report": {
       pass: { trace: [call("1", "report_failure", { ari_words: "set the thermostat" }, '{"filed":true,"reportId":"r1"}')], reply: "I've filed this for a fix", before: emptyObservation(), after: emptyObservation({ outbox: { e: ["a"] }, outboxBodies: { e: "Ari asked: please set the living room thermostat" } }) },
