@@ -12,6 +12,7 @@ import { classifyProvenanceTrust } from "../mind/provenance-trust";
 import type { ToolContext, ToolDefinition } from "./tools-base";
 import { withRelationshipPreference } from "./relationship-authorization";
 import type { RelationshipPolicyProvenance } from "@ouro.bot/friends";
+import { REACH_CHANNELS } from "../heart/reach-channel";
 
 const CLAUDE_READ_ONLY_TOOLS = "Read,Grep,Glob,LS";
 
@@ -366,13 +367,13 @@ export const notesToolDefinitions: ToolDefinition[] = [
       function: {
         name: "save_friend_note",
         description:
-          "save something i learned about my friend. use type 'name' to update their display name, 'tool_preference' for presentation preferences, or 'note' for general context. For Sanctuary relationships, preference source is stated (the person said or confirmed it), observed (a revisable pattern i inferred), or default (a fallback until better evidence), and only communication or timing are accepted. Other agents retain their existing integration-preference behavior and do not persist this provenance field. desired state and action authority belong in steward policy. notes and preferences improve orientation but never grant authority. set override=true when replacing an existing value.",
+          "save something i learned about my friend. use type 'name' to update their display name, 'tool_preference' for presentation preferences, or 'note' for general context. For Sanctuary relationships, preference source is stated (the person said or confirmed it), observed (a revisable pattern i inferred), or default (a fallback until better evidence), and only communication or timing are accepted. Any friend may save key reachChannel (with source) to say which channel to reach them on outside a conversation: bluebubbles or teams; iMessage means bluebubbles. Other agents retain their existing integration-preference behavior and do not persist this provenance field. desired state and action authority belong in steward policy. notes and preferences improve orientation but never grant authority. set override=true when replacing an existing value.",
         parameters: {
           type: "object",
           properties: {
             type: { type: "string", enum: ["name", "tool_preference", "note"], description: "what kind of information to save" },
-            key: { type: "string", description: "category key (required for tool_preference and note; Sanctuary relationship preferences use communication or timing)" },
-            source: { type: "string", enum: ["stated", "observed", "default"], description: "preference provenance; required for Sanctuary relationship preferences" },
+            key: { type: "string", description: "category key (required for tool_preference and note; Sanctuary relationship preferences use communication or timing; reachChannel names the channel to reach this person on: bluebubbles or teams)" },
+            source: { type: "string", enum: ["stated", "observed", "default"], description: "preference provenance; required for Sanctuary relationship preferences and for reachChannel" },
             content: { type: "string", description: "the value to save" },
             override: { type: "string", enum: ["true", "false"], description: "set to 'true' to overwrite an existing value" },
           },
@@ -401,13 +402,17 @@ export const notesToolDefinitions: ToolDefinition[] = [
       const actor = ctx.relationshipAuthorization?.actor;
       const isSanctuaryRelationship = ctx.context.friend?.capabilityProfileId?.startsWith("sanctuary-") === true;
       const preferenceSource = a.source as RelationshipPolicyProvenance | undefined;
-      if (isSanctuaryRelationship && a.type === "tool_preference" && !["stated", "observed", "default"].includes(String(preferenceSource))) {
+      const isReachChannel = a.type === "tool_preference" && a.key === "reachChannel";
+      if ((isSanctuaryRelationship || isReachChannel) && a.type === "tool_preference" && !["stated", "observed", "default"].includes(String(preferenceSource))) {
         return "i need exact preference provenance: source must be stated, observed, or default";
       }
-      if (isSanctuaryRelationship && a.type === "tool_preference" && !["communication", "timing"].includes(a.key ?? "")) {
+      if (isReachChannel && !(REACH_CHANNELS as readonly string[]).includes(a.content ?? "")) {
+        return "i can only reach people on bluebubbles or teams";
+      }
+      if (isSanctuaryRelationship && a.type === "tool_preference" && !isReachChannel && !["communication", "timing"].includes(a.key ?? "")) {
         return "Sanctuary relationship preferences are limited to communication or timing; desired state and action authority belong in steward policy";
       }
-      if (actor?.trustLevel === "friend" && (actor.friendId !== friendId || a.type !== "tool_preference" || !["communication", "timing"].includes(a.key ?? ""))) {
+      if (actor?.trustLevel === "friend" && (actor.friendId !== friendId || a.type !== "tool_preference" || !["communication", "timing", "reachChannel"].includes(a.key ?? ""))) {
         return "household members may only save their own communication or timing preferences; preferences never grant authority";
       }
 
@@ -420,7 +425,7 @@ export const notesToolDefinitions: ToolDefinition[] = [
 
       // Record-domain logic lives in @ouro.bot/friends; this wrapper maps the
       // structured FriendOpResult back to the tool's first-person strings.
-      if (isSanctuaryRelationship && a.type === "tool_preference" && preferenceSource) {
+      if ((isSanctuaryRelationship || isReachChannel) && a.type === "tool_preference" && preferenceSource) {
         const current = await ctx.friendStore.get(friendId);
         if (!current) return "i can't find the friend record on disk";
         if (current.relationshipPolicy?.preferences[a.key!] && a.override !== "true") return `relationship preference '${a.key}' already exists; call again with override: true to replace it`;

@@ -543,4 +543,104 @@ describe("notes/friend tools", () => {
       expect(isOwnPersonaNote("personal", "x")).toBe(false)
     })
   })
+
+  describe("reachChannel preference", () => {
+    const channel = { channel: "bluebubbles" as const, availableIntegrations: [], supportsMarkdown: false, supportsStreaming: false, supportsRichCards: false, maxMessageLength: 4096 }
+    function storeFor(friend: FriendRecord) {
+      return { get: vi.fn(async () => friend), put: vi.fn(), delete: vi.fn(), findByExternalId: vi.fn() }
+    }
+    function actor(friend: FriendRecord, trustLevel: "family" | "friend") {
+      return {
+        actor: { friendId: friend.id, trustLevel, sessionEventId: "evt-reach" },
+        authorizedContextScopes: [],
+        advertisedToolNames: ["save_friend_note"],
+        authorizeTool: async () => ({ allowed: true as const, receiptId: "reach" }),
+      }
+    }
+
+    it("saves reachChannel for a non-Sanctuary family friend into relationshipPolicy.preferences", async () => {
+      const { execTool } = await import("../../repertoire/tools")
+      const friend = makeFriend({ trustLevel: "family" })
+      const friendStore = storeFor(friend)
+      const result = await execTool("save_friend_note", { type: "tool_preference", key: "reachChannel", source: "stated", content: "bluebubbles" }, {
+        signin: async () => undefined,
+        context: { friend, channel },
+        currentSession: { friendId: friend.id, channel: "bluebubbles", key: "chat_any;-;ari" },
+        agentName: "testagent", agentRoot,
+        relationshipAuthorization: actor(friend, "family"),
+        friendStore,
+      })
+      expect(result).toContain("category=reachChannel; value=bluebubbles")
+      expect(friendStore.put).toHaveBeenCalledOnce()
+      const stored = friendStore.put.mock.calls[0][1] as FriendRecord
+      expect(stored.relationshipPolicy?.preferences.reachChannel).toMatchObject({ value: "bluebubbles", provenance: "stated", source: "bluebubbles explicit turn evt-reach" })
+      expect(stored.toolPreferences).toEqual({})
+    })
+
+    it("refuses an unknown reachChannel value", async () => {
+      const { execTool } = await import("../../repertoire/tools")
+      const friend = makeFriend({ trustLevel: "family" })
+      const friendStore = storeFor(friend)
+      const result = await execTool("save_friend_note", { type: "tool_preference", key: "reachChannel", source: "stated", content: "carrier pigeon" }, {
+        signin: async () => undefined, context: { friend, channel }, friendStore,
+      })
+      expect(result).toBe("i can only reach people on bluebubbles or teams")
+      expect(friendStore.put).not.toHaveBeenCalled()
+    })
+
+    it("requires source for reachChannel", async () => {
+      const { execTool } = await import("../../repertoire/tools")
+      const friend = makeFriend({ trustLevel: "family" })
+      const friendStore = storeFor(friend)
+      const result = await execTool("save_friend_note", { type: "tool_preference", key: "reachChannel", content: "teams" }, {
+        signin: async () => undefined, context: { friend, channel }, friendStore,
+      })
+      expect(result).toBe("i need exact preference provenance: source must be stated, observed, or default")
+      expect(friendStore.put).not.toHaveBeenCalled()
+    })
+
+    it("a friend-trust speaker may save their own reachChannel", async () => {
+      const { execTool } = await import("../../repertoire/tools")
+      const friend = makeFriend()
+      const friendStore = storeFor(friend)
+      const result = await execTool("save_friend_note", { type: "tool_preference", key: "reachChannel", source: "stated", content: "teams" }, {
+        signin: async () => undefined, context: { friend, channel }, agentName: "testagent", agentRoot, relationshipAuthorization: actor(friend, "friend"), friendStore,
+      })
+      expect(result).toContain("category=reachChannel; value=teams")
+      expect(friendStore.put).toHaveBeenCalledOnce()
+    })
+
+    it("a Sanctuary friend may save reachChannel", async () => {
+      const { execTool } = await import("../../repertoire/tools")
+      const friend = makeFriend({ capabilityProfileId: "sanctuary-household" } as Partial<FriendRecord>)
+      const friendStore = storeFor(friend)
+      const result = await execTool("save_friend_note", { type: "tool_preference", key: "reachChannel", source: "stated", content: "bluebubbles" }, {
+        signin: async () => undefined, context: { friend, channel }, friendStore,
+      })
+      expect(result).toContain("category=reachChannel; value=bluebubbles")
+      expect((friendStore.put.mock.calls[0][1] as FriendRecord).relationshipPolicy?.preferences.reachChannel?.value).toBe("bluebubbles")
+    })
+
+    it("asks for override before replacing an existing reachChannel", async () => {
+      const { execTool } = await import("../../repertoire/tools")
+      const { withRelationshipPreference } = await import("../../repertoire/relationship-authorization")
+      const friend = withRelationshipPreference(makeFriend({ trustLevel: "family" }), { category: "reachChannel", value: "teams", provenance: "stated", source: "earlier" })
+      const friendStore = storeFor(friend)
+      const result = await execTool("save_friend_note", { type: "tool_preference", key: "reachChannel", source: "stated", content: "bluebubbles" }, {
+        signin: async () => undefined, context: { friend, channel }, friendStore,
+      })
+      expect(result).toBe("relationship preference 'reachChannel' already exists; call again with override: true to replace it")
+      expect(friendStore.put).not.toHaveBeenCalled()
+    })
+
+    it("names reachChannel and its values in the tool description", async () => {
+      const { REACH_CHANNELS } = await import("../../heart/reach-channel")
+      const { notesToolDefinitions } = await import("../../repertoire/tools-notes")
+      expect(REACH_CHANNELS).toEqual(["bluebubbles", "teams"])
+      const fn = notesToolDefinitions.find((def) => def.tool.function.name === "save_friend_note")!.tool.function
+      expect(fn.description).toContain("reachChannel")
+      expect(fn.description).toContain("iMessage means bluebubbles")
+      expect(JSON.stringify(fn.parameters)).toContain("reachChannel")
+    })
+  })
 })
