@@ -41,6 +41,7 @@ export function defaultOwnerNoticeDeliverers(agentName: string): Partial<Record<
         text: request.content,
         intent: request.intent,
         authorizingSession: request.authorizingSession,
+        origin: "voice",
       } as Parameters<typeof sendProactiveBlueBubblesMessageToSession>[0])
       if (result.delivered) return { status: "delivered_now", detail: "sent to the bluebubbles chat now" }
       if (result.reason === "missing_target") return { status: "blocked", detail: "bluebubbles could not resolve a routable target for that session" }

@@ -1036,6 +1036,7 @@ export const sessionToolDefinitions: ToolDefinition[] = [
               text: request.content,
               intent: request.intent,
               authorizingSession: request.authorizingSession,
+              origin: "send_message",
             } as any)
             if (result.delivered) {
               return {
@@ -1080,6 +1081,7 @@ export const sessionToolDefinitions: ToolDefinition[] = [
               text: request.content,
               intent: request.intent,
               authorizingSession: request.authorizingSession,
+              origin: "send_message",
             } as any, {
               botApi: ctx.botApi,
             })

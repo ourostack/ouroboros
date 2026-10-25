@@ -7,6 +7,13 @@ vi.mock("../../nerves/runtime", () => ({
   emitNervesEvent: vi.fn(),
 }))
 
+const outbound = vi.hoisted(() => ({ record: vi.fn(() => "recorded"), drain: vi.fn(() => 0) }))
+vi.mock("../../mind/outbound-record", async (original) => ({
+  ...await original<typeof import("../../mind/outbound-record")>(),
+  recordOutboundInSession: outbound.record,
+  drainOutboundRecords: outbound.drain,
+}))
+
 // Hard-mock the daemon socket client. The runtime guard in socket-client.ts
 // already prevents real socket calls under vitest (by detecting process.argv),
 // but the explicit mock lets tests that care assert on call counts and avoids
@@ -942,6 +949,32 @@ describe("sendProactiveTeamsMessageToSession", () => {
         text: "carry this into the other chat now",
       }),
     )
+  })
+
+  it("records into the conversation it created, even without captureReceipt", async () => {
+    outbound.record.mockClear()
+    const store = new FileFriendStore("/mock")
+    vi.mocked(store.get).mockResolvedValue(makeFriend({ trustLevel: "family" }))
+    const teams = await loadTeams()
+    expect(await teams.sendProactiveTeamsMessageToSession({
+      friendId: "friend-uuid-1", sessionKey: "shepherd", text: "Coding agent returned.", deliveryId: "shepherd:d1", origin: "shepherd",
+    }, { botApi: makeBotApi(), store })).toEqual({ delivered: true })
+    expect(outbound.record).toHaveBeenCalledWith({
+      agentRoot: "/mock/agent/root", friendId: "friend-uuid-1", channel: "teams", key: "conv-123",
+      content: "Coding agent returned.", origin: "shepherd", deliveryId: "shepherd:d1", originLabel: "Shepherd",
+    })
+  })
+
+  it("labels an unnamed proactive send and records nothing when the send fails", async () => {
+    outbound.record.mockClear()
+    const store = new FileFriendStore("/mock")
+    vi.mocked(store.get).mockResolvedValue(makeFriend({ trustLevel: "family" }))
+    const teams = await loadTeams()
+    await teams.sendProactiveTeamsMessageToSession({ friendId: "friend-uuid-1", sessionKey: "s", text: "hello" }, { botApi: makeBotApi(), store })
+    expect(outbound.record).toHaveBeenCalledWith(expect.objectContaining({ origin: "proactive", originLabel: "a proactive message", deliveryId: expect.stringMatching(/^proactive:[0-9a-f-]{36}$/) }))
+    outbound.record.mockClear()
+    await teams.sendProactiveTeamsMessageToSession({ friendId: "friend-uuid-1", sessionKey: "s", text: "hello" }, { botApi: makeBotApi({ sendError: new Error("lost") }), store })
+    expect(outbound.record).not.toHaveBeenCalled()
   })
 
   it("asks Teams for plain text when the caller says so", async () => {

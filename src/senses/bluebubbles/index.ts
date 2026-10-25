@@ -1,7 +1,7 @@
 import * as fs from "node:fs"
 import * as http from "node:http"
 import * as path from "node:path"
-import { createHash } from "node:crypto"
+import { createHash, randomUUID } from "node:crypto"
 import OpenAI from "openai"
 import { runAgent, type ChannelCallbacks, createSummarize } from "../../heart/core"
 import { getBlueBubblesChannelConfig, getBlueBubblesConfig, sessionPath } from "../../heart/config"
@@ -24,6 +24,9 @@ import { buildSystem, flattenSystemPrompt } from "../../mind/prompt"
 import { getSharedMcpManager } from "../../repertoire/mcp-manager"
 import { emitNervesEvent } from "../../nerves/runtime"
 import { withSessionTurnLease, type SessionTurnLease } from "../../mind/session-transaction"
+import { drainOutboundRecords, OUTBOUND_ORIGIN_LABELS, recordOutboundInSession } from "../../mind/outbound-record"
+import { resolveAlertKey } from "../../heart/awaiting/await-alert"
+import type { OutboundOrigin } from "../../heart/session-events"
 import {
   buildOrientationFrame,
   type OrientationConversationKind,
@@ -42,7 +45,7 @@ import {
   type BlueBubblesNormalizedMessage,
 } from "./model"
 import { BlueBubblesSendError, createBlueBubblesClient, type BlueBubblesClient } from "./client"
-import { verifyBlueBubblesServerAccount } from "./host-account-verifier"
+import { BlueBubblesHostAccountError, verifyBlueBubblesServerAccount } from "./host-account-verifier"
 import { createBlueBubblesWebhookReconciler } from "./webhook-registration"
 import {
   listRecordedBlueBubblesInbound,
@@ -418,11 +421,15 @@ export interface ProactiveBlueBubblesSessionSendParams {
     key: string
     trustLevel?: string
   }
+  /** Identifies this delivery when it is saved into the chat's session; one is generated per send when absent. */
+  deliveryId?: string
+  /** Who is sending, for the `[sent by ...]` prefix the saved message carries. Defaults to `proactive`. */
+  origin?: OutboundOrigin
 }
 
 export interface ProactiveBlueBubblesSessionSendResult {
   delivered: boolean
-  reason?: "friend_not_found" | "trust_skip" | "missing_target" | "send_error" | "group_blocked" | "internal_content_blocked" | "blocked_meta_content"
+  reason?: "friend_not_found" | "trust_skip" | "missing_target" | "send_error" | "group_blocked" | "internal_content_blocked" | "blocked_meta_content" | "host_account_refused"
 }
 
 const defaultDeps: RuntimeDeps = {
@@ -1864,6 +1871,8 @@ async function handleBlueBubblesNormalizedEvent(
       const friendId = context.friend.id
       const sessPath = resolvedDeps.sessionPath(friendId, "bluebubbles", event.chat.sessionKey)
       return await resolvedDeps.withSessionTurnLease(sessPath, async (sessionTurnLease) => {
+      // Messages sent into this chat while another turn held it wait outside the session; they go in first.
+      drainOutboundRecords(getAgentRoot(), friendId, "bluebubbles", event.chat.sessionKey, sessionTurnLease)
       try {
         findObsoleteBlueBubblesThreadSessions(sessPath)
       } catch (error) {
@@ -4069,6 +4078,29 @@ function buildChatRefForSessionKey(friend: FriendRecord, sessionKey: string): Bl
   }
 }
 
+/**
+ * The session a proactive send is saved into: the chat key it was sent on, else the friend's existing DM session, else
+ * the DM key an inbound message from their handle would use (`chat:any;-;<handle>`), so their reply loads it.
+ */
+function proactiveRecordKey(friend: FriendRecord, sessionKey: string, chat: BlueBubblesChatRef): string | null {
+  if (normalizeBlueBubblesSessionKey(sessionKey).startsWith("chat:")) return sessionKey
+  const existing = resolveAlertKey(getAgentRoot(), friend.id, "bluebubbles")
+  if (existing?.includes(";-;")) return existing
+  const handle = findImessageHandle(friend) ?? chat.chatIdentifier
+  return handle ? `chat:any;-;${handle}` : null
+}
+
+function recordBlueBubblesProactiveSend(friend: FriendRecord, params: ProactiveBlueBubblesSessionSendParams, chat: BlueBubblesChatRef): void {
+  const key = proactiveRecordKey(friend, params.sessionKey, chat)
+  /* v8 ignore next -- a delivered send always had a chat GUID or identifier to send to @preserve */
+  if (!key) return
+  const origin = params.origin ?? "proactive"
+  recordOutboundInSession({
+    agentRoot: getAgentRoot(), friendId: friend.id, channel: "bluebubbles", key, content: params.text, origin,
+    deliveryId: params.deliveryId ?? `proactive:${randomUUID()}`, originLabel: OUTBOUND_ORIGIN_LABELS[origin],
+  })
+}
+
 export async function sendProactiveBlueBubblesMessageToSession(
   params: ProactiveBlueBubblesSessionSendParams,
   deps: Partial<RuntimeDeps> = {},
@@ -4211,8 +4243,19 @@ export async function sendProactiveBlueBubblesMessageToSession(
         chatIdentifier: chat.chatIdentifier ?? null,
       },
     })
+    recordBlueBubblesProactiveSend(friend, params, chat)
     return { delivered: true }
   } catch (error) {
+    if (error instanceof BlueBubblesHostAccountError) {
+      emitNervesEvent({
+        level: "warn",
+        component: "senses",
+        event: "senses.bluebubbles_proactive_host_account_refused",
+        message: "proactive bluebubbles send refused: the server is signed in to another account",
+        meta: { friendId: params.friendId, sessionKey: params.sessionKey, reason: error.message },
+      })
+      return { delivered: false, reason: "host_account_refused" }
+    }
     emitNervesEvent({
       level: "error",
       component: "senses",
