@@ -263,12 +263,32 @@ describe("owner notice targets", () => {
       friend("f2", { name: "Ari", externalIds: [{ provider: "local", externalId: "ari", linkedAt: "" }, { provider: "imessage-handle", externalId: "+15555550123", linkedAt: "" }] }),
       friend("f3", { name: "Not family", trustLevel: "friend", externalIds: [{ provider: "local", externalId: "ari", linkedAt: "" }, { provider: "imessage-handle", externalId: "+15555550100", linkedAt: "" }] }),
       friend("f4", { name: "No ids", externalIds: undefined as never }),
+      friend("f5", { name: "Odd ids", externalIds: [null as never, { provider: "local", externalId: 7 as never, linkedAt: "" }] }),
     ] }
     expect(await resolveNoticeTargets(root, store, new Set(["bluebubbles"]), "ari")).toEqual([
       { friendId: "f2", name: "Ari", channel: "bluebubbles", key: "shepherd" },
     ])
     // With no family friend for this machine's user (a server, say), every family friend hears it.
     expect((await resolveNoticeTargets(root, store, new Set(["bluebubbles"]), "someone-else")).map(target => target.friendId)).toEqual(["f1", "f2"])
+    // A user with no account entry, as in some containers, is the same as no linked owner.
+    expect((await resolveNoticeTargets(root, store, new Set(["bluebubbles"]), null)).map(target => target.friendId)).toEqual(["f1", "f2"])
+  })
+
+  it("recognizes an older user@host owner id, so relatives still do not hear it", async () => {
+    const store = { listAll: async () => [
+      friend("f1", { name: "Relative", externalIds: [{ provider: "imessage-handle", externalId: "+15555550199", linkedAt: "" }] }),
+      friend("f2", { name: "Ari", externalIds: [{ provider: "local", externalId: "ari@macbook", linkedAt: "" }, { provider: "imessage-handle", externalId: "+15555550123", linkedAt: "" }] }),
+    ] }
+    expect((await resolveNoticeTargets(root, store, new Set(["bluebubbles"]), "ari")).map(target => target.friendId)).toEqual(["f2"])
+  })
+
+  it("reaches the owner record that has a channel, and never falls back to relatives when none does", async () => {
+    const stray = friend("f0", { name: "Ari (cli)", externalIds: [{ provider: "local", externalId: "ari", linkedAt: "" }] })
+    const owner = friend("f2", { name: "Ari", externalIds: [{ provider: "local", externalId: "ari", linkedAt: "" }, { provider: "imessage-handle", externalId: "+15555550123", linkedAt: "" }] })
+    const relative = friend("f1", { name: "Relative", externalIds: [{ provider: "imessage-handle", externalId: "+15555550199", linkedAt: "" }] })
+    expect((await resolveNoticeTargets(root, { listAll: async () => [stray, relative, owner] }, new Set(["bluebubbles"]), "ari")).map(target => target.friendId)).toEqual(["f2"])
+    expect(await resolveNoticeTargets(root, { listAll: async () => [stray, relative] }, new Set(["bluebubbles"]), "ari")).toEqual([])
+    expect(events).toContainEqual(expect.objectContaining({ level: "warn", event: "senses.shepherd_notice_owner_unreachable", meta: { owners: 1 } }))
   })
 
   it("uses only a DM alert key as the BlueBubbles fallback", async () => {

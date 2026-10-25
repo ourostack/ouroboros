@@ -1,7 +1,6 @@
 import { createHash } from "node:crypto"
-import * as os from "node:os"
 import * as path from "node:path"
-import { FileFriendStore, type FriendRecord } from "@ouro.bot/friends"
+import { FileFriendStore, isLocalMachineOwnerIdentity, machineOwnerUsername, type FriendRecord } from "@ouro.bot/friends"
 import { resolveAlertKey } from "../../heart/awaiting/await-alert"
 import { getBlueBubblesConfig, getTeamsConfig, getTeamsSecondaryConfig, type TeamsConfig } from "../../heart/config"
 import { loadAgentConfig, type ShepherdNoticePolicy } from "../../heart/identity"
@@ -182,14 +181,15 @@ export async function resolveNoticeTargets(
   agentRoot: string,
   store: { listAll(): Promise<FriendRecord[]> } = new FileFriendStore(path.join(agentRoot, "friends")),
   enabledChannels: ReadonlySet<ReachChannel> = new Set(),
-  username: string = os.userInfo().username,
+  username: string | null = machineOwnerUsername(),
 ): Promise<NoticeTarget[]> {
   const seen = new Set<string>()
   const targets: NoticeTarget[] = []
   const family = (await store.listAll()).filter(friend => friend.trustLevel === "family")
-  // The notice is the owner's: when a family friend is this machine's own user, only they hear it, not their relatives.
+  // The notice is the owner's: when family friends are linked to this machine's own user, only they hear it, never
+  // their relatives, even when none of them is reachable yet.
   const owners = family.filter(friend => (Array.isArray(friend.externalIds) ? friend.externalIds : [])
-    .some(entry => entry?.provider === "local" && entry.externalId === username))
+    .some(entry => typeof entry?.provider === "string" && typeof entry.externalId === "string" && isLocalMachineOwnerIdentity(entry.provider, entry.externalId, username)))
   for (const friend of owners.length > 0 ? owners : family) {
     const reach = resolveReachTarget({
       friend, enabledChannels, sessionsDir: path.join(agentRoot, "state", "sessions"), friendsDir: path.join(agentRoot, "friends"),
@@ -205,6 +205,9 @@ export async function resolveNoticeTargets(
     // A BlueBubbles fallback key must be a DM: a group key would be refused, and "shepherd" sends to the handle.
     const fallback = reach.channel === "bluebubbles" ? (alertKey?.includes(";-;") ? alertKey : null) : alertKey
     targets.push({ friendId: friend.id, name: friend.name, channel: reach.channel, key: reach.key ?? fallback ?? "shepherd", ...(reach.tenantId ? { tenantId: reach.tenantId } : {}) })
+  }
+  if (owners.length > 0 && targets.length === 0) {
+    emitNervesEvent({ level: "warn", component: "senses", event: "senses.shepherd_notice_owner_unreachable", message: "this machine's owner has no reachable channel, so the Shepherd owner notice waits; link their iMessage handle or Teams id", meta: { owners: owners.length } })
   }
   emitNervesEvent({ component: "senses", event: "senses.shepherd_notice_targets", message: "resolved Shepherd owner notice targets", meta: { count: targets.length } })
   return targets

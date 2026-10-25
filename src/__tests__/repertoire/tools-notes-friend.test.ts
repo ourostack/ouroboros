@@ -586,6 +586,11 @@ describe("notes/friend tools", () => {
       })
       expect(result).toBe("i can only reach people on bluebubbles or teams")
       expect(friendStore.put).not.toHaveBeenCalled()
+      const empty = await execTool("save_friend_note", { type: "tool_preference", key: "reachChannel", source: "stated" }, {
+        signin: async () => undefined, context: { friend, channel }, friendStore,
+      })
+      expect(empty).toBe("i can only reach people on bluebubbles or teams")
+      expect(friendStore.put).not.toHaveBeenCalled()
     })
 
     it("requires source for reachChannel", async () => {

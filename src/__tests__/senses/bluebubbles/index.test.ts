@@ -13217,6 +13217,12 @@ describe("sendProactiveBlueBubblesMessageToSession", () => {
     }, proactiveDeps(makeFriend({ trustLevel: "family", externalIds: [{ provider: "imessage-handle", externalId: "alice@icloud.com", linkedAt: "2026-01-01" }] })))
     expect(result).toEqual({ delivered: true })
     expect(outbound.record).not.toHaveBeenCalled()
+    expect(mocks.emitNervesEvent).toHaveBeenCalledWith(expect.objectContaining({ level: "warn", event: "senses.bluebubbles_proactive_record_error" }))
+    mocks.getAgentRoot.mockImplementationOnce(() => { throw "no agent name" })
+    expect(await bluebubbles.sendProactiveBlueBubblesMessageToSession({
+      friendId: "friend-uuid-1", sessionKey: "shepherd", text: "again",
+    }, proactiveDeps(makeFriend({ trustLevel: "family", externalIds: [{ provider: "imessage-handle", externalId: "alice@icloud.com", linkedAt: "2026-01-01" }] })))).toEqual({ delivered: true })
+    expect(mocks.emitNervesEvent).toHaveBeenCalledWith(expect.objectContaining({ event: "senses.bluebubbles_proactive_record_error", meta: expect.objectContaining({ error: "no agent name" }) }))
   })
 
   it("a chat it cannot find returns missing_target, so the caller may send again", async () => {

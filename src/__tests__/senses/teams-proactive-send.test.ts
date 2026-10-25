@@ -3,9 +3,11 @@ import * as fs from "node:fs"
 import * as os from "node:os"
 import * as path from "node:path"
 
-vi.mock("../../nerves/runtime", () => ({
-  emitNervesEvent: vi.fn(),
-}))
+// Events still reach the real emitter, so the nerves audit observes them.
+vi.mock("../../nerves/runtime", async () => {
+  const actual = await vi.importActual<typeof import("../../nerves/runtime")>("../../nerves/runtime")
+  return { ...actual, emitNervesEvent: vi.fn((event: Parameters<typeof actual.emitNervesEvent>[0]) => actual.emitNervesEvent(event)) }
+})
 
 const outbound = vi.hoisted(() => ({ record: vi.fn(() => "recorded"), drain: vi.fn(() => 0) }))
 vi.mock("../../mind/outbound-record", async (original) => ({
@@ -974,6 +976,13 @@ describe("sendProactiveTeamsMessageToSession", () => {
     expect(await teams.sendProactiveTeamsMessageToSession({
       friendId: "friend-uuid-1", sessionKey: "shepherd", text: "Coding agent returned.", captureReceipt: true,
     }, { botApi: makeBotApi(), store })).toMatchObject({ delivered: true, delivery: { state: "accepted" } })
+    const { emitNervesEvent } = await import("../../nerves/runtime")
+    expect(vi.mocked(emitNervesEvent)).toHaveBeenCalledWith(expect.objectContaining({ level: "warn", event: "senses.teams_proactive_record_error" }))
+    vi.mocked(identity.getAgentRoot).mockImplementationOnce(() => { throw "no agent name" })
+    expect(await teams.sendProactiveTeamsMessageToSession({
+      friendId: "friend-uuid-1", sessionKey: "shepherd", text: "Again.",
+    }, { botApi: makeBotApi(), store })).toEqual({ delivered: true })
+    expect(vi.mocked(emitNervesEvent)).toHaveBeenCalledWith(expect.objectContaining({ event: "senses.teams_proactive_record_error", meta: expect.objectContaining({ error: "no agent name" }) }))
   })
 
   it("labels an unnamed proactive send and records nothing when the send fails", async () => {
