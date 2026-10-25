@@ -272,13 +272,19 @@ Escalation queues one pending message in the agent's private runtime (from `shep
 
 ## Telling the owner
 
-After every judged return, the owner hears what happened in one short plain-text message on Teams, written by Shepherd itself with no model turn, so it costs no premium request and does not depend on the Ouro agent deciding the return matters. It names the agent, folder and terminal, what Shepherd did and the judge's reason, for example:
+After every judged return, the owner hears what happened in one short plain-text message on the channel they use (iMessage through BlueBubbles, or Teams), written by Shepherd itself with no model turn, so it costs no premium request and does not depend on the Ouro agent deciding the return matters. It names the agent, folder and terminal, what Shepherd did and the judge's reason, for example:
 
 > Claude Code in ouroboros (surface:12) stopped early, so I sent it back: "keep going, run the tests". Why: it asked whether to continue a task it was told to finish.
 
 > Copilot in desk (surface:3) needs you. Why: it wants to push to main.
 
-- **Who hears it.** Every family friend with a Teams user id the agent's bot can open a chat with, once per Teams user. The message goes through the Teams sense's proactive path (trust check and internal-content guard) using a bot client of Shepherd's own, built from the agent's Teams credentials (the secondary bot when it serves the friend's tenant). When no family friend is reachable on Teams, Shepherd logs `senses.shepherd_notice_no_target` and does nothing else.
+- **Who hears it.** Every family friend, once per person on each channel, even when several friend records share one iMessage handle or Teams user. The channel is chosen per person by `resolveReachTarget` (`src/heart/reach-channel.ts`) from the senses enabled in `agent.json`, re-read on every send:
+  1. The friend's `reachChannel` preference (`bluebubbles` or `teams`), when it is current and that channel is enabled and the friend has an id on it.
+  2. Otherwise, the channel of the friend's most recent 1:1 conversation, ranked by when the friend last wrote, never by messages the agent sent.
+  3. Otherwise, any reachable channel, BlueBubbles first.
+
+  An ignored preference logs `senses.reach_channel_fallback`. The notice goes to the friend's existing 1:1 chat on that channel, never a group; with none yet, BlueBubbles sends to the friend's handle and Teams opens a 1:1 conversation. Each channel's own proactive path applies its trust check and internal-content guard. Teams uses a bot client of Shepherd's own (the secondary bot when it serves the friend's tenant). BlueBubbles checks the server's signed-in account before sending; a refused account (`host_account_refused`) or a client that cannot be set up (`bluebubbles_unavailable`) keeps the notice pending and retries it. When no family friend is reachable on any enabled channel, Shepherd logs `senses.shepherd_notice_no_target` and retries later.
+- **The conversation remembers it.** A delivered notice is saved into the friend's conversation on that channel as an assistant message beginning `[sent by Shepherd]`, so a reply to it arrives with context. When that conversation is mid-turn, the record waits in `state/outbound-records/` and is added before the friend's next message. A retried batch has the same delivery id and is saved once. The same applies to `send_message`, voice and other proactive sends, labelled by origin.
 - **Custody.** The outbox, not the returns log, owns accepted delivery intent.
   Enqueue returns explicit `queued` acceptance or `suppressed` with a policy/shutdown
   reason; persistence failures reject and are logged. The observation audit is
@@ -476,7 +482,7 @@ ouro vault config set --agent <agent> --scope machine --key herdr.socketPath --v
 - `src/senses/shepherd/herdr.ts`: the Herdr adapter and its socket client.
 - `src/senses/shepherd/judge.ts`: the judge and the reply safety rules.
 - `src/senses/shepherd/sense.ts`: the sense process (checks, answers, escalation); `src/senses/shepherd-entry.ts` is its daemon entry point.
-- `src/senses/shepherd/owner-notice.ts`: the owner notice (policy, wording, targets, coalescing, Teams send).
+- `src/senses/shepherd/owner-notice.ts`: the owner notice (policy, wording, targets, coalescing, and the BlueBubbles and Teams sends).
 - `src/senses/shepherd/returns.ts`: the returns log.
 - `src/senses/shepherd/checkin-config.ts` and `checkin-store.ts`: cadence validation, private automatic-input custody and periodic notice signatures.
 - `src/senses/shepherd/prompt-state.ts` and `terminal-process.ts`: default-deny rendered input-state classification and current coding-process identity.
