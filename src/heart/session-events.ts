@@ -55,10 +55,28 @@ export interface SessionEventRelations {
 
 export type SessionIngressRelations = Pick<SessionEventRelations, "replyToEventId" | "threadRootEventId" | "references">
 
+/** Who sent a message the agent delivered outside a live turn, such as a Shepherd notice. */
+export type OutboundOrigin = "shepherd" | "send_message" | "voice" | "reminder" | "proactive"
+export const OUTBOUND_ORIGINS: readonly OutboundOrigin[] = ["shepherd", "send_message", "voice", "reminder", "proactive"]
+
+export interface SessionEventOutbound {
+  origin: OutboundOrigin
+  deliveryId: string
+}
+
 export interface SessionEventProvenance {
   captureKind: SessionEventCaptureKind
   legacyVersion: number | null
   sourceMessageIndex: number | null
+  /** Present on a message recorded after the agent sent it from outside this conversation's turn. */
+  outbound?: SessionEventOutbound
+}
+
+function isSessionEventOutbound(value: unknown): value is SessionEventOutbound {
+  if (value === null || typeof value !== "object" || Array.isArray(value)) return false
+  const record = value as Record<string, unknown>
+  return Reflect.ownKeys(record).length === 2 && OUTBOUND_ORIGINS.includes(record.origin as OutboundOrigin)
+    && typeof record.deliveryId === "string" && record.deliveryId.length > 0
 }
 
 export type SessionEventContentPart = Record<string, unknown>
@@ -1401,6 +1419,9 @@ function normalizeSessionEvent(event: Record<string, unknown>, index: number, re
       captureKind: typeof provenance?.captureKind === "string" ? provenance.captureKind as SessionEventCaptureKind : "live",
       legacyVersion: typeof provenance?.legacyVersion === "number" ? provenance.legacyVersion : null,
       sourceMessageIndex: typeof provenance?.sourceMessageIndex === "number" ? provenance.sourceMessageIndex : null,
+      ...(isSessionEventOutbound(provenance?.outbound)
+        ? { outbound: { origin: provenance.outbound.origin, deliveryId: provenance.outbound.deliveryId } }
+        : {}),
     },
   }
 }
@@ -1445,7 +1466,11 @@ function exactRawEvent(value: unknown, index: number): value is SessionEvent {
     if (relations[key] !== null && typeof relations[key] !== "string") return false
   }
   const provenance = value.provenance
-  if (!exactKeys(provenance, ["captureKind", "legacyVersion", "sourceMessageIndex"])
+  const provenanceKeys = provenance !== null && typeof provenance === "object" && Object.hasOwn(provenance, "outbound")
+    ? ["captureKind", "legacyVersion", "sourceMessageIndex", "outbound"]
+    : ["captureKind", "legacyVersion", "sourceMessageIndex"]
+  if (!exactKeys(provenance, provenanceKeys)
+    || (provenanceKeys.length === 4 && !isSessionEventOutbound(provenance.outbound))
     || typeof provenance.captureKind !== "string" || !["live", "synthetic", "migration"].includes(provenance.captureKind)
     || !(provenance.legacyVersion === null || Number.isSafeInteger(provenance.legacyVersion) && Number(provenance.legacyVersion) > 0)
     || !(provenance.sourceMessageIndex === null || Number.isSafeInteger(provenance.sourceMessageIndex) && Number(provenance.sourceMessageIndex) >= 0)) return false
@@ -1767,6 +1792,7 @@ export function appendSyntheticAssistantEvent(
   envelope: SessionEnvelope,
   content: string,
   recordedAt: string,
+  outbound?: SessionEventOutbound,
 ): SessionEnvelope {
   // Use nextEventSequence(events) instead of `events.length + 1` so any gap
   // (from pruning, archive replay, or self-heal dedup) cannot collide with
@@ -1780,6 +1806,7 @@ export function appendSyntheticAssistantEvent(
     null,
     null,
   )
+  if (outbound) event.provenance = { ...event.provenance, outbound: { origin: outbound.origin, deliveryId: outbound.deliveryId } }
   const priorIds = projectedSessionEventIds(envelope)
   const updated: SessionEnvelope = {
     ...envelope,
