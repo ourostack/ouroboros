@@ -2,6 +2,12 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.945",
+      "changes": [
+        "Slugger's private follow-up turns now end cleanly instead of failing, and Shepherd never answers an approval request that is addressed to the human."
+      ]
+    },
+    {
       "version": "0.1.0-alpha.944",
       "changes": [
         "The Butler sends at most one Telegram warning for a batch of health events from one sweep, records the rest as covered by it, and settles a retry of an already-sent warning without sending it again."
