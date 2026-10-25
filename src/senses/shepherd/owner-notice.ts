@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto"
+import * as os from "node:os"
 import * as path from "node:path"
 import { FileFriendStore, type FriendRecord } from "@ouro.bot/friends"
 import { resolveAlertKey } from "../../heart/awaiting/await-alert"
@@ -172,7 +173,8 @@ function personIdentities(friend: FriendRecord): Set<string> {
 }
 
 /**
- * Who hears the notice, and where: every family friend, on the channel `resolveReachTarget` chooses for them, once per
+ * Who hears the notice, and where: the family friend who is this machine's own user (`local` id), else every family
+ * friend, on the channel `resolveReachTarget` chooses for them, once per
  * person on that channel even when several friend records share one id. With no 1:1 session yet, the send opens one:
  * BlueBubbles by the friend's handle, Teams by a new 1:1 conversation.
  */
@@ -180,11 +182,15 @@ export async function resolveNoticeTargets(
   agentRoot: string,
   store: { listAll(): Promise<FriendRecord[]> } = new FileFriendStore(path.join(agentRoot, "friends")),
   enabledChannels: ReadonlySet<ReachChannel> = new Set(),
+  username: string = os.userInfo().username,
 ): Promise<NoticeTarget[]> {
   const seen = new Set<string>()
   const targets: NoticeTarget[] = []
-  for (const friend of await store.listAll()) {
-    if (friend.trustLevel !== "family") continue
+  const family = (await store.listAll()).filter(friend => friend.trustLevel === "family")
+  // The notice is the owner's: when a family friend is this machine's own user, only they hear it, not their relatives.
+  const owners = family.filter(friend => (Array.isArray(friend.externalIds) ? friend.externalIds : [])
+    .some(entry => entry?.provider === "local" && entry.externalId === username))
+  for (const friend of owners.length > 0 ? owners : family) {
     const reach = resolveReachTarget({
       friend, enabledChannels, sessionsDir: path.join(agentRoot, "state", "sessions"), friendsDir: path.join(agentRoot, "friends"),
       agentName: path.basename(agentRoot, ".ouro"),

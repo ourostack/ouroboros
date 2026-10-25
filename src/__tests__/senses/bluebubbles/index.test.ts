@@ -13208,6 +13208,17 @@ describe("sendProactiveBlueBubblesMessageToSession", () => {
     expect(outbound.record).toHaveBeenLastCalledWith(expect.objectContaining({ key: "chat_identifier:bob@icloud.com" }))
   })
 
+  it("a delivered send stays delivered when it cannot be saved into the chat", async () => {
+    outbound.record.mockClear()
+    mocks.getAgentRoot.mockImplementationOnce(() => { throw new Error("no agent name") })
+    const bluebubbles = await import("../../../senses/bluebubbles")
+    const result = await bluebubbles.sendProactiveBlueBubblesMessageToSession({
+      friendId: "friend-uuid-1", sessionKey: "shepherd", text: "hello",
+    }, proactiveDeps(makeFriend({ trustLevel: "family", externalIds: [{ provider: "imessage-handle", externalId: "alice@icloud.com", linkedAt: "2026-01-01" }] })))
+    expect(result).toEqual({ delivered: true })
+    expect(outbound.record).not.toHaveBeenCalled()
+  })
+
   it("a chat it cannot find returns missing_target, so the caller may send again", async () => {
     outbound.record.mockClear()
     const { BlueBubblesSendError } = await import("../../../senses/bluebubbles/client")

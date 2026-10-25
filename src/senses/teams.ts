@@ -1624,10 +1624,17 @@ export async function sendProactiveTeamsMessageToSession(
     const messageId = activity && typeof activity === "object" && "id" in activity && typeof activity.id === "string" ? activity.id : undefined
     // Saved into the conversation it was sent into, so the friend's reply there carries it.
     const origin = params.origin ?? "proactive"
-    recordOutboundInSession({
-      agentRoot: getAgentRoot(), friendId: friend.id, channel: "teams", key: conversation.id, content: params.text, origin,
-      deliveryId: params.deliveryId ?? `proactive:${randomUUID()}`, originLabel: OUTBOUND_ORIGIN_LABELS[origin],
-    })
+    // Recording never changes the result of a send that already went out.
+    try {
+      recordOutboundInSession({
+        agentRoot: getAgentRoot(), friendId: friend.id, channel: "teams", key: conversation.id, content: params.text, origin,
+        deliveryId: params.deliveryId ?? `proactive:${randomUUID()}`, originLabel: OUTBOUND_ORIGIN_LABELS[origin],
+      })
+    } catch (error) {
+      emitNervesEvent({ level: "warn", component: "senses", event: "senses.teams_proactive_record_error",
+        message: "the Teams message was sent, but could not be saved into its conversation",
+        meta: { friendId: friend.id, error: error instanceof Error ? error.message : String(error) } })
+    }
     return {
       delivered: true,
       ...(params.captureReceipt ? { delivery: { state: "accepted" as const, conversationId, ...(messageId ? { messageId } : {}) } } : {}),

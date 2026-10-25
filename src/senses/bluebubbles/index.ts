@@ -4094,15 +4094,22 @@ function proactiveRecordKey(friend: FriendRecord, sessionKey: string, chat: Blue
   /* v8 ignore stop */
 }
 
+/** Saves a delivered message into its chat. Never throws: recording never changes the result of a send that went out. */
 function recordBlueBubblesProactiveSend(friend: FriendRecord, params: ProactiveBlueBubblesSessionSendParams, chat: BlueBubblesChatRef, sentChatGuid?: string): void {
-  const key = proactiveRecordKey(friend, params.sessionKey, chat, sentChatGuid)
-  /* v8 ignore next -- a delivered send always had a chat GUID or identifier to send to @preserve */
-  if (!key) return
-  const origin = params.origin ?? "proactive"
-  recordOutboundInSession({
-    agentRoot: getAgentRoot(), friendId: friend.id, channel: "bluebubbles", key, content: params.text, origin,
-    deliveryId: params.deliveryId ?? `proactive:${randomUUID()}`, originLabel: OUTBOUND_ORIGIN_LABELS[origin],
-  })
+  try {
+    const key = proactiveRecordKey(friend, params.sessionKey, chat, sentChatGuid)
+    /* v8 ignore next -- a delivered send always had a chat GUID or identifier to send to @preserve */
+    if (!key) return
+    const origin = params.origin ?? "proactive"
+    recordOutboundInSession({
+      agentRoot: getAgentRoot(), friendId: friend.id, channel: "bluebubbles", key, content: params.text, origin,
+      deliveryId: params.deliveryId ?? `proactive:${randomUUID()}`, originLabel: OUTBOUND_ORIGIN_LABELS[origin],
+    })
+  } catch (error) {
+    emitNervesEvent({ level: "warn", component: "senses", event: "senses.bluebubbles_proactive_record_error",
+      message: "the BlueBubbles message was sent, but could not be saved into its chat",
+      meta: { friendId: friend.id, error: error instanceof Error ? error.message : String(error) } })
+  }
 }
 
 export async function sendProactiveBlueBubblesMessageToSession(

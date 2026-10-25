@@ -197,7 +197,7 @@ describe("owner notice targets", () => {
         friend("f6", { name: "Sam", externalIds: [{ provider: "aad", externalId: "aad-6", linkedAt: "" }] }),
       ],
     }
-    expect(await resolveNoticeTargets(root, store, new Set(["teams"]))).toEqual([
+    expect(await resolveNoticeTargets(root, store, new Set(["teams"]), "not-a-linked-user")).toEqual([
       { friendId: "f1", name: "Ari", channel: "teams", key: "conv-1", tenantId: "t1" },
       { friendId: "f6", name: "Sam", channel: "teams", key: "shepherd" },
     ])
@@ -255,6 +255,20 @@ describe("owner notice targets", () => {
       { friendId: "f1", name: "Ari", channel: "bluebubbles", key: "shepherd" },
       { friendId: "f2", name: "Sam", channel: "bluebubbles", key: "shepherd" },
     ])
+  })
+
+  it("only this machine's own user hears it, not their relatives, when one is linked", async () => {
+    const store = { listAll: async () => [
+      friend("f1", { name: "Relative", externalIds: [{ provider: "imessage-handle", externalId: "+15555550199", linkedAt: "" }] }),
+      friend("f2", { name: "Ari", externalIds: [{ provider: "local", externalId: "ari", linkedAt: "" }, { provider: "imessage-handle", externalId: "+15555550123", linkedAt: "" }] }),
+      friend("f3", { name: "Not family", trustLevel: "friend", externalIds: [{ provider: "local", externalId: "ari", linkedAt: "" }, { provider: "imessage-handle", externalId: "+15555550100", linkedAt: "" }] }),
+      friend("f4", { name: "No ids", externalIds: undefined as never }),
+    ] }
+    expect(await resolveNoticeTargets(root, store, new Set(["bluebubbles"]), "ari")).toEqual([
+      { friendId: "f2", name: "Ari", channel: "bluebubbles", key: "shepherd" },
+    ])
+    // With no family friend for this machine's user (a server, say), every family friend hears it.
+    expect((await resolveNoticeTargets(root, store, new Set(["bluebubbles"]), "someone-else")).map(target => target.friendId)).toEqual(["f1", "f2"])
   })
 
   it("uses only a DM alert key as the BlueBubbles fallback", async () => {

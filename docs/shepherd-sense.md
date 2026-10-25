@@ -278,7 +278,7 @@ After every judged return, the owner hears what happened in one short plain-text
 
 > Copilot in desk (surface:3) needs you. Why: it wants to push to main.
 
-- **Who hears it.** Every family friend, once per person on each channel, even when several friend records share one iMessage handle or Teams user. The channel is chosen per person by `resolveReachTarget` (`src/heart/reach-channel.ts`) from the senses enabled in `agent.json`, re-read on every send:
+- **Who hears it.** The owner: the family friend linked to this machine's own user account (a `local` id), the same person Shepherd names as its human. Their relatives do not hear it. On a machine with no such link, such as a server, every family friend hears it. Each person hears it once, even when several friend records share one iMessage handle or Teams user, and a shared group chat never merges two people. The channel is chosen per person by `resolveReachTarget` (`src/heart/reach-channel.ts`) from the senses enabled in `agent.json`, re-read on every send:
   1. The friend's `reachChannel` preference (`bluebubbles` or `teams`), when it is current and that channel is enabled and the friend has an id on it.
   2. Otherwise, the channel of the friend's most recent 1:1 conversation, ranked by when the friend last wrote, never by messages the agent sent.
   3. Otherwise, any reachable channel, BlueBubbles first.

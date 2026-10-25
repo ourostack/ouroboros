@@ -965,6 +965,17 @@ describe("sendProactiveTeamsMessageToSession", () => {
     })
   })
 
+  it("a delivered send stays delivered when it cannot be saved into the conversation", async () => {
+    const identity = await import("../../heart/identity")
+    vi.mocked(identity.getAgentRoot).mockImplementationOnce(() => { throw new Error("no agent name") })
+    const store = new FileFriendStore("/mock")
+    vi.mocked(store.get).mockResolvedValue(makeFriend({ trustLevel: "family" }))
+    const teams = await loadTeams()
+    expect(await teams.sendProactiveTeamsMessageToSession({
+      friendId: "friend-uuid-1", sessionKey: "shepherd", text: "Coding agent returned.", captureReceipt: true,
+    }, { botApi: makeBotApi(), store })).toMatchObject({ delivered: true, delivery: { state: "accepted" } })
+  })
+
   it("labels an unnamed proactive send and records nothing when the send fails", async () => {
     outbound.record.mockClear()
     const store = new FileFriendStore("/mock")

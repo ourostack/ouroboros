@@ -11,7 +11,7 @@ import { cacheMachineRuntimeCredentialConfig, resetRuntimeCredentialConfigCache 
 import { executeFeedbackCommand, type FeedbackCommand } from "../../senses/shepherd/feedback-submit"
 import { feedbackStorePath, openFeedbackStore } from "../../senses/shepherd/feedback-store"
 import { startFeedbackWorker, type FeedbackWorker } from "../../senses/shepherd/feedback-worker"
-import { createTeamsNoticeSender } from "../../senses/shepherd/owner-notice"
+import { createNoticeSender } from "../../senses/shepherd/owner-notice"
 import { shepherdGuidanceToolDefinitions } from "../../repertoire/tools-shepherd-guidance"
 import { readGuidance } from "../../senses/shepherd/guidance"
 import { startFakeCmux, type FakeCmux } from "../senses/shepherd/fake-cmux"
@@ -169,7 +169,7 @@ describe("owned native session feedback pipeline", () => {
     const delivered: Array<{ agent: string; recipient: string; text: string }> = []
     for (const profile of callers) {
       const config: TeamsConfig = { clientId: `fixture-bot-${profile.agent}`, clientSecret: "", tenantId: "fixture-tenant", managedIdentityClientId: "" }
-      const sender = createTeamsNoticeSender(profile.root, {
+      const sender = createNoticeSender(profile.root, {
         primary: () => config, secondary: () => ({ ...config, clientId: "" }),
         botApi: async () => ({
           id: config.clientId,
