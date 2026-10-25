@@ -668,6 +668,21 @@ describe("a fair gate (2026-10-25: live 911 failed its own gate)", () => {
     expect(result.checks.at(-1)).toMatchObject({ name: "the turn finished before the gate read it back", ok: false })
   })
 
+  it("stops waiting for a cut turn when the run's budget is spent", async () => {
+    const clock = { t: 0 }
+    const { host } = fakeHost({ clock, replies: () => ({ error: "fetch failed", timedOut: true }) })
+    host.readSession = async () => null
+    const result = await gate.runCase(host, byId("chef-question"), { deadline: 30_000 })
+    expect(result.turn).toMatchObject({ settled: false, settleSeconds: 30 })
+    const spent = await gate.runCase(host, byId("chef-question"), { deadline: 0 })
+    expect(spent.turn).toMatchObject({ settled: false, settleSeconds: 0 })
+    const suite = { t: 0 }
+    const run = fakeHost({ clock: suite, replies: () => ({ error: "fetch failed", timedOut: true }) })
+    run.host.readSession = async () => null
+    await gate.runSuite(run.host, { cases: ["chef-question"], windowMinutes: 7 })
+    expect(suite.t).toBe(2 * 60_000)
+  })
+
   it("takes the after-reading only once the cut turn has settled", async () => {
     const clock = { t: 0 }
     const stalled = { id: 21223434, trackedDownloadStatus: "warning" }

@@ -37,6 +37,7 @@ export const BUTLER_USER = "10001:10001"
 export const CLI_ENTRY = "/opt/ouro/dist/heart/daemon/ouro-entry.js"
 // Long enough for every case at its slowest (nine chat messages at up to 5.5 minutes each, plus the await case's 8 minute wait),
 // and well inside the 2 hour cap: an await that has not resolved when the window closes is cancelled by the Butler.
+// Waits for cut turns come out of the same budget and stop five minutes before the window closes (runSuite).
 export const DEFAULT_WINDOW_MINUTES = 85
 export const AWAIT_TIMEOUT_MS = 8 * 60 * 1000
 export const AWAIT_POLL_MS = 15 * 1000
@@ -662,7 +663,7 @@ export async function waitForTurnToSettle(host, context, eventsBefore, { timeout
   }
 }
 
-export async function runCase(host, testCase, { plant } = {}) {
+export async function runCase(host, testCase, { plant, deadline = Infinity } = {}) {
   const startedAt = host.now()
   const before = await host.observe()
   const skipReason = testCase.applicable ? testCase.applicable(before) : null
@@ -688,7 +689,8 @@ export async function runCase(host, testCase, { plant } = {}) {
       if (sent.error && (sent.timedOut === true || cutAfterMs >= TURN_CUT_MS)) {
         // The turn is still running on the Butler: reading state now would judge a half-finished turn (2026-10-25: stall-kept read
         // Sonarr's queue while the turn was still searching it; chef-question saw "0 tool calls" from a turn that made 25).
-        const settle = await waitForTurnToSettle(host, context, eventsBefore)
+        // Never wait past the run's budget: the window, and the upgrade's own cap on the whole gate, must hold.
+        const settle = await waitForTurnToSettle(host, context, eventsBefore, { timeoutMs: Math.max(0, Math.min(SETTLE_TIMEOUT_MS, deadline - host.now())) })
         turn = { timedOut: true, cutAfterSeconds: Math.round(cutAfterMs / 1000), settled: settle.settled, settleSeconds: Math.round(settle.waitedMs / 1000) }
         if (!settle.settled) break
         // The send was cut, not refused: the turn ran to its end, so judge what it did.
@@ -793,7 +795,9 @@ export async function runSuite(host, { cases = CASES.map((entry) => entry.id), p
       const entry = { id: "window-trusted", status: "fail", checks: [check("the Butler sees the replay window as trusted", false, trusted.detail)] }
       return { results: [entry], summary: { ok: false, passed: 0, skipped: 0, failed: ["window-trusted"] } }
     }
-    for (const testCase of selected) results.push(await runCase(host, testCase, { plant }))
+    // Waits for cut turns stop five minutes before the window closes, so a slow night cannot run the gate past its window.
+    const deadline = runStart + (windowMinutes - 5) * 60_000
+    for (const testCase of selected) results.push(await runCase(host, testCase, { plant, deadline }))
   } finally {
     host.closeWindow()
   }
