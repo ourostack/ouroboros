@@ -40,7 +40,7 @@
 // Usage: sanctuary-butler-upgrade.mjs <preflight|prepare|install|verify|upgrade> <version> [--rehearse <step>] [--no-gate] [--plant <case>]
 //        sanctuary-butler-upgrade.mjs verify [--gate]
 
-import { execFileSync, spawnSync } from "node:child_process"
+import { execFileSync, spawn, spawnSync } from "node:child_process"
 import { createHash } from "node:crypto"
 import { mkdtempSync, rmSync, writeFileSync, readFileSync, existsSync, statSync, lstatSync, chmodSync, realpathSync, readdirSync } from "node:fs"
 import { fileURLToPath } from "node:url"
@@ -67,7 +67,8 @@ const INCOMING_MANIFEST = `${ROOT}/incoming-package-manifest.json`
 const INCOMING_REQUEST = `${ROOT}/incoming-request.json`
 const UPGRADE_JOURNAL = `${ROOT}/upgrade.json`
 // Host supervision skips its work while this flag is fresh (< 30 min), so a crashed
-// upgrade can never leave self-heal off for longer than that.
+// upgrade can never leave self-heal off for longer than that. A paused upgrade keeps it
+// fresh with a heartbeat (holdSupervision), because the replay gate alone takes about an hour.
 const MAINTENANCE = "/run/ouro-authority-maintenance"
 // The stop hook's flag: every keeper watchdog version stands down while it exists.
 const SHUTDOWN_FLAG = "/run/ouro-authority-shutdown"
@@ -958,6 +959,20 @@ function buildFinalProof(version, out) {
 
 // ---- upgrade (in place, installed authority) --------------------------------
 
+/**
+ * Keeps host supervision paused for as long as this upgrade process lives, gate and rollback included: a detached
+ * shell touches the maintenance flag every interval while the parent is alive. It never recreates a released flag
+ * (touch -c). Once the parent is gone, however it ended, the shell drops the shutdown flag (which never expires) and
+ * stops, so the maintenance flag ages out and self-heal returns within about 30 minutes of a crash.
+ */
+export const SUPERVISION_HOLD_SH = 'while kill -0 "$1" 2>/dev/null; do touch -c "$2"; sleep "$4"; done; rm -f "$3"'
+export function holdSupervision({ spawnImpl = spawn, parentPid = process.pid, flag = MAINTENANCE, shutdownFlag = SHUTDOWN_FLAG, intervalSec = 60 } = {}) {
+  const child = spawnImpl("/bin/sh", ["-c", SUPERVISION_HOLD_SH, "ouro-supervision-hold", String(parentPid), flag, shutdownFlag, String(intervalSec)], { detached: true, stdio: "ignore" })
+  child.unref()
+  return child
+}
+let HOLD = null
+
 // A host still running an older keeper has a cron watchdog that ignores the maintenance
 // flag: it resurrected the paused supervisor, which restarted the resident mid-upgrade
 // (the first 830 -> 835 rehearsal). So put this version's keeper scripts in place first
@@ -966,6 +981,7 @@ function buildFinalProof(version, out) {
 function pauseSupervision() {
   writeFileSync(MAINTENANCE, `${new Date().toISOString()} ${process.pid}\n`)
   writeFileSync(SHUTDOWN_FLAG, `upgrade ${process.pid}\n`)
+  HOLD ??= holdSupervision()
   for (const [path, body] of [[GATEWAY_SUPERVISOR, GATEWAY_SUPERVISOR_SH], [GATEWAY_WATCHDOG, GATEWAY_WATCHDOG_SH]]) {
     writeFileSync(path, body)
     sh("/bin/chown", ["0:0", path]); chmodSync(path, 0o700)
@@ -975,6 +991,7 @@ function pauseSupervision() {
   ok("host supervision paused (keeper scripts current; flags expire on their own)")
 }
 function resumeSupervision() {
+  if (HOLD) { try { process.kill(-HOLD.pid, "SIGTERM") } catch { /* already gone; touch -c cannot recreate the flag */ } HOLD = null }
   rmSync(MAINTENANCE, { force: true })
   rmSync(SHUTDOWN_FLAG, { force: true })
   installGatewaySupervisor()
@@ -1004,6 +1021,10 @@ function pruneButlerImages() {
   }
   ok(`pruned ${removed} old Butler image(s); kept the live and rollback images`)
 }
+
+// A failed rollback exits with supervision still paused: the keeper's boot would retry the rollback alongside a manual
+// retry (the 945 rollback on 2026-10-25). The flag then ages out and the keeper's boot retries it on its own.
+const ROLLBACK_FAILED = (e, lifecycle) => `ROLLBACK FAILED: ${lifecycleFailure(e)}\nThe journal is kept. Host supervision stays paused for about 30 minutes; after that the keeper's authority boot retries the rollback. To retry by hand sooner, keep it paused while you do: \`touch ${MAINTENANCE}; node ${lifecycle} upgrade-rollback\` (repeat the touch if the retry is slow).`
 
 function lifecycleFailure(e) {
   const detail = [e.stderr, e.stdout].map((x) => (x ? String(x).trim() : "")).filter(Boolean).join(" | ")
@@ -1131,12 +1152,10 @@ async function upgrade(version, rehearse, { noGate = false, plant } = {}) {
   if (failure) {
     console.log(`\n!! ${planned ? "rehearsal stopped as planned" : "upgrade FAILED"}: ${reason}\n!! rolling back to the predecessor`)
     try { ok(`rollback: ${sh("/usr/local/bin/node", [lifecycle, "upgrade-rollback"], { stdio: ["ignore", "pipe", "pipe"] }).trim()}`) }
-    catch (e) {
-      resumeSupervision()
-      fail(`ROLLBACK FAILED: ${lifecycleFailure(e)}\nThe journal is kept; the next authority boot (or \`upgrade-rollback\`) retries it.`)
-    }
+    catch (e) { fail(ROLLBACK_FAILED(e, lifecycle)) }
   } else if (!gated) { pinTemplate(version); pruneButlerImages() }
-  resumeSupervision()
+  // A held upgrade stays paused through the gate; commit or rollback resumes it.
+  if (!gated || failure) resumeSupervision()
   say("preservation")
   const preserved = []
   const jellyfinNow = docker(["inspect", "jellyfin", "--format", "{{.Id}}|{{.Image}}|{{.RestartCount}}|{{.State.StartedAt}}"]).trim()
@@ -1158,17 +1177,18 @@ async function upgrade(version, rehearse, { noGate = false, plant } = {}) {
         return problem ? { ok: false, detail: problem } : result
       },
       commit: () => {
-        const problem = stillHeld()
-        if (problem) throw new Error(`refusing to commit: ${problem}`)
         pauseSupervision()
-        try { ok(`commit: ${sh("/usr/local/bin/node", [lifecycle, "upgrade", id, image(version)], { stdio: ["ignore", "pipe", "pipe"] }).trim()}`) }
-        finally { resumeSupervision() }
+        try {
+          const problem = stillHeld()
+          if (problem) throw new Error(`refusing to commit: ${problem}`)
+          ok(`commit: ${sh("/usr/local/bin/node", [lifecycle, "upgrade", id, image(version)], { stdio: ["ignore", "pipe", "pipe"] }).trim()}`)
+        } finally { resumeSupervision() }
       },
       rollback: () => {
         pauseSupervision()
         try { ok(`rollback: ${sh("/usr/local/bin/node", [lifecycle, "upgrade-rollback"], { stdio: ["ignore", "pipe", "pipe"] }).trim()}`) }
-        catch (e) { fail(`ROLLBACK FAILED: ${lifecycleFailure(e)}\nThe journal is kept; the next authority boot (or \`upgrade-rollback\`) retries it.`) }
-        finally { resumeSupervision() }
+        catch (e) { fail(ROLLBACK_FAILED(e, lifecycle)) }
+        resumeSupervision()
       },
       confirmRollback: () => {
         if (!waitForButler(priorImage, 300)) fail(`rolled back, but ${priorImage} is not running healthy; inspect \`docker logs ${CONTAINER}\``)
