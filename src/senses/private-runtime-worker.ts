@@ -249,23 +249,7 @@ function reserveHabitAutonomyBudget(habitRun: PreparedHabitRun, nowIso: string):
 }
 
 /**
- * Cap on consecutive `instinct` follow-on turns triggered by `hasPendingWork()`
- * with no externally-queued work in between. Without this cap, a turn that
- * writes anything back into the private-runtime pending dir as a side effect of
- * processing (e.g. a surface tool routing a response) puts the worker into
- * a self-sustaining loop where the next turn's drain produces another write,
- * and so on. Real workflows rarely chain more than 2–3 instinct turns; an
- * external trigger (habit, poke, chat) resets the counter so legitimate
- * follow-on work is unaffected.
- *
- * Three feels right: legitimate cascading follow-ups (e.g. processing a
- * batch of delegated returns) get through; a true self-loop caps fast.
- */
-export const MAX_CONSECUTIVE_INSTINCT_TURNS = 3
-
-/**
- * Habit recursion detector thresholds. The instinct cap above protects
- * against pending-dir self-loops; this protects against the *external*
+ * Habit recursion detector thresholds. This protects against the *external*
  * IPC self-loop where heartbeat-shaped messages get re-issued faster
  * than their cadence — e.g. a hook misconfigured to repost on every
  * heartbeat, a daemon retry storm, or a stuck timer firing back-to-back.
@@ -630,8 +614,6 @@ export function createPrivateRuntimeWorker(
       let nextExternalEventHeartbeat = externalEvent ? startExternalEventHeartbeat(externalEvent) : undefined
       let nextCompletion: QueueEntry["completion"] | undefined = completion
       let nextNoSend = reason === "habit" ? noSend : undefined
-      let nextHabitRun: PreparedHabitRun | null = null
-      let consecutiveInstinctTurns = reason === "instinct" ? 1 : 0
 
       runLoop: do {
         const currentReason = nextReason
@@ -645,11 +627,8 @@ export function createPrivateRuntimeWorker(
         nextExternalEventHeartbeat = undefined
         nextCompletion = undefined
         const currentHabitRun: PreparedHabitRun | null = currentReason === "habit" && currentHabitName
-          ? nextHabitRun && nextHabitRun.habit.name === currentHabitName
-            ? nextHabitRun
-            : await prepareHabitRun(currentHabitName, currentTrigger, new Date(nowSource()).toISOString())
+          ? await prepareHabitRun(currentHabitName, currentTrigger, new Date(nowSource()).toISOString())
           : null
-        nextHabitRun = null
         let currentHabitRunFinalized = false
         const finalizeCurrentHabitRun = (): void => {
           if (!currentHabitRun || currentHabitRunFinalized) return
@@ -772,8 +751,7 @@ export function createPrivateRuntimeWorker(
           if (activeCompletion === currentCompletion) activeCompletion = undefined
         }
 
-        // Drain queue first. Externally-queued work resets the instinct cap
-        // because a real outside trigger arrived between turns.
+        // Drain queue first: queued entries carry their own decisions.
         if (queue.length > 0) settleCurrentCompletion()
         while (queue.length > 0) {
           const next = queue.shift()!
@@ -800,7 +778,6 @@ export function createPrivateRuntimeWorker(
           nextExternalEventHeartbeat = next.stopExternalEventHeartbeat
           nextCompletion = next.completion
           nextNoSend = next.reason === "habit" ? next.noSend : undefined
-          consecutiveInstinctTurns = nextReason === "instinct" ? consecutiveInstinctTurns + 1 : 0
           continue runLoop
         }
 
@@ -822,49 +799,19 @@ export function createPrivateRuntimeWorker(
             break
           }
           clearHeartbeatRestShield()
-          if (consecutiveInstinctTurns >= MAX_CONSECUTIVE_INSTINCT_TURNS) {
-            emitNervesEvent({
-              level: "warn",
-              component: "senses",
-              event: "senses.private_runtime_worker_instinct_loop_capped",
-              message: "private-runtime worker stopped chaining instinct turns; pending work remains for next external trigger",
-              meta: {
-                consecutiveInstinctTurns,
-                cap: MAX_CONSECUTIVE_INSTINCT_TURNS,
-                lastReason: nextReason,
-              },
-            })
-            finalizeCurrentHabitRun()
-            settleCurrentCompletion()
-            break
-          }
-          if (currentReason === "habit" && currentHabitName && currentHabitRun) {
-            consecutiveInstinctTurns += 1
-            nextReason = "habit"
-            nextTaskId = undefined
-            nextHabitName = currentHabitName
-            nextAwaitName = undefined
-            nextTrigger = currentTrigger
-            nextPrivateTurnDecision = undefined
-            nextExternalEvent = undefined
-            nextExternalEventHeartbeat = undefined
-            nextNoSend = currentNoSend
-            nextHabitRun = currentHabitRun
-          } else {
-            finalizeCurrentHabitRun()
-            consecutiveInstinctTurns += 1
-            nextReason = "instinct"
-            nextTaskId = undefined
-            nextHabitName = undefined
-            nextAwaitName = undefined
-            nextTrigger = undefined
-            nextPrivateTurnDecision = undefined
-            nextExternalEvent = undefined
-            nextExternalEventHeartbeat = undefined
-            nextNoSend = undefined
-          }
-          nextCompletion = currentCompletion
-          continue
+          // Pending work remains and the queue is empty. A chained turn would
+          // carry no daemon-issued decision, and the provider boundary refuses
+          // decisionless turns, so end the run; the next daemon trigger resumes.
+          emitNervesEvent({
+            level: "info",
+            component: "senses",
+            event: "senses.private_runtime_worker_chain_needs_decision",
+            message: "private-runtime worker stopped: pending work remains but a chained turn has no approved decision",
+            meta: { reason: currentReason, habitName: currentHabitName ?? null },
+          })
+          finalizeCurrentHabitRun()
+          settleCurrentCompletion()
+          break
         }
 
         finalizeCurrentHabitRun()
