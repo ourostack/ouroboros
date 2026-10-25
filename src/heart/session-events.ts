@@ -72,10 +72,14 @@ export interface SessionEventProvenance {
   outbound?: SessionEventOutbound
 }
 
+/**
+ * A readable outbound marker. Any non-empty origin is kept, so a marker written by a newer harness with an origin this
+ * one does not know still dedupes by its deliveryId; extra fields are dropped on normalization.
+ */
 function isSessionEventOutbound(value: unknown): value is SessionEventOutbound {
   if (value === null || typeof value !== "object" || Array.isArray(value)) return false
   const record = value as Record<string, unknown>
-  return Reflect.ownKeys(record).length === 2 && OUTBOUND_ORIGINS.includes(record.origin as OutboundOrigin)
+  return typeof record.origin === "string" && record.origin.length > 0
     && typeof record.deliveryId === "string" && record.deliveryId.length > 0
 }
 
@@ -1466,11 +1470,7 @@ function exactRawEvent(value: unknown, index: number): value is SessionEvent {
     if (relations[key] !== null && typeof relations[key] !== "string") return false
   }
   const provenance = value.provenance
-  const provenanceKeys = provenance !== null && typeof provenance === "object" && Object.hasOwn(provenance, "outbound")
-    ? ["captureKind", "legacyVersion", "sourceMessageIndex", "outbound"]
-    : ["captureKind", "legacyVersion", "sourceMessageIndex"]
-  if (!exactKeys(provenance, provenanceKeys)
-    || (provenanceKeys.length === 4 && !isSessionEventOutbound(provenance.outbound))
+  if (!exactKeys(provenance, ["captureKind", "legacyVersion", "sourceMessageIndex"])
     || typeof provenance.captureKind !== "string" || !["live", "synthetic", "migration"].includes(provenance.captureKind)
     || !(provenance.legacyVersion === null || Number.isSafeInteger(provenance.legacyVersion) && Number(provenance.legacyVersion) > 0)
     || !(provenance.sourceMessageIndex === null || Number.isSafeInteger(provenance.sourceMessageIndex) && Number(provenance.sourceMessageIndex) >= 0)) return false

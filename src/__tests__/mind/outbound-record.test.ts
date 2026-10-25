@@ -3,6 +3,7 @@ import * as os from "os"
 import * as path from "path"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 
+vi.mock("fs", async (original) => ({ ...await original<typeof import("fs")>() }))
 vi.mock("../../nerves/runtime", () => ({ emitNervesEvent: vi.fn() }))
 vi.mock("../../mind/prompt", () => ({
   buildSystem: vi.fn(async () => "SYSTEM PROMPT"),
@@ -59,6 +60,7 @@ beforeEach(() => {
 })
 
 afterEach(() => {
+  vi.restoreAllMocks()
   fs.rmSync(agentRoot, { recursive: true, force: true })
 })
 
@@ -91,8 +93,9 @@ describe("recordOutboundInSession", () => {
     } finally {
       await held.release()
     }
-    expect(fs.readdirSync(deferredDir())).toEqual(["shepherd_abc.json"])
-    expect(JSON.parse(fs.readFileSync(path.join(deferredDir(), "shepherd_abc.json"), "utf8"))).toMatchObject({
+    const [name] = fs.readdirSync(deferredDir())
+    expect(name).toMatch(/^[a-f0-9]{32}\.json$/)
+    expect(JSON.parse(fs.readFileSync(path.join(deferredDir(), name!), "utf8"))).toMatchObject({
       content: "Your agent needs you.", origin: "shepherd", deliveryId: "shepherd:abc", originLabel: "Shepherd", recordedAt: expect.any(String),
     })
     expect(outboundEvents(file)).toHaveLength(0)
@@ -121,6 +124,46 @@ describe("recordOutboundInSession", () => {
   it("refuses coordinates that would leave the sessions folder", () => {
     expect(record({ friendId: "../escape" })).toBe("failed")
     expect(errorEvents()).toHaveLength(1)
+  })
+
+  it("a session file it cannot read returns failed and logs the error", () => {
+    const file = sessionFile()
+    fs.mkdirSync(path.dirname(file), { recursive: true })
+    fs.writeFileSync(file, "{not a session")
+    expect(record()).toBe("failed")
+    expect(errorEvents()).toEqual([expect.objectContaining({ message: "could not append an outbound record to its session" })])
+  })
+
+  it("refuses a key that names no session folder", () => {
+    expect(record({ key: ".." })).toBe("failed")
+    expect(fs.existsSync(path.join(agentRoot, "state", "outbound-records"))).toBe(false)
+  })
+
+  it("a deferral that cannot be written returns failed", async () => {
+    const file = seedSession()
+    const held = await acquireSessionTurnLease(file)
+    vi.spyOn(fs, "writeFileSync").mockImplementationOnce(() => { throw "disk full" })
+    try {
+      expect(record()).toBe("failed")
+    } finally {
+      await held.release()
+    }
+    expect(errorEvents()).toEqual([expect.objectContaining({ meta: expect.objectContaining({ error: "disk full" }) })])
+  })
+
+  it("keeps a readable outbound marker, including an origin this version does not know, and drops a malformed one", () => {
+    record()
+    const raw = JSON.parse(fs.readFileSync(sessionFile(), "utf8"))
+    const index = raw.events.findIndex((event: any) => event.provenance.outbound)
+    const parsedWith = (outbound: unknown) => {
+      const copy = structuredClone(raw)
+      copy.events[index].provenance.outbound = outbound
+      return parseSessionEnvelope(copy)!.events[index]!.provenance.outbound
+    }
+    expect(parsedWith({ origin: "future", deliveryId: "d-1", extra: true })).toEqual({ origin: "future", deliveryId: "d-1" })
+    for (const malformed of [null, [], "x", { origin: "", deliveryId: "d" }, { origin: "shepherd", deliveryId: 5 }, { origin: "shepherd", deliveryId: "" }]) {
+      expect(parsedWith(malformed)).toBeUndefined()
+    }
   })
 
   it("the provenance survives parseSessionEnvelope round-trip", () => {
@@ -177,6 +220,38 @@ describe("drainOutboundRecords", () => {
     expect(outboundEvents(file).map((event) => event.content)).toEqual(["[sent by reminder] kept"])
     expect(fs.readdirSync(deferredDir()).sort()).toEqual(["applied", "half.json.tmp"])
     expect(errorEvents()).toHaveLength(2)
+  })
+
+  it("a drain that cannot move its files logs the error and lets the turn go on", () => {
+    const file = seedSession()
+    writeDeferred("a.json", { content: "first", origin: "voice", deliveryId: "d-1", originLabel: "voice", recordedAt: "2026-10-24T10:00:00.000Z" })
+    fs.writeFileSync(path.join(deferredDir(), "applied"), "not a directory")
+    expect(withImmediateSessionTurnLease(file, (lease) => drainOutboundRecords(agentRoot, "ari", "bluebubbles", KEY, lease))).toBe(0)
+    expect(errorEvents()).toEqual([expect.objectContaining({ message: "could not drain deferred outbound records" })])
+  })
+
+  it("a deferred record whose session cannot be read is kept in applied/ with an error", () => {
+    const file = sessionFile()
+    fs.mkdirSync(path.dirname(file), { recursive: true })
+    fs.writeFileSync(file, "{not a session")
+    writeDeferred("a.json", { content: "first", origin: "voice", deliveryId: "d-1", originLabel: "voice", recordedAt: "2026-10-24T10:00:00.000Z" })
+    writeDeferred("null.json", "null")
+    const count = withImmediateSessionTurnLease(file, (lease) => drainOutboundRecords(agentRoot, "ari", "bluebubbles", KEY, lease))
+    expect(count).toBe(0)
+    expect(fs.readdirSync(path.join(deferredDir(), "applied")).sort()).toEqual(["a.json", "null.json"])
+    expect(errorEvents().map((entry) => entry.message).sort()).toEqual(["could not append a deferred outbound record", "skipped an unreadable deferred outbound record"])
+  })
+
+  it("a drain failure that is not an Error is still logged", () => {
+    const file = seedSession()
+    writeDeferred("a.json", { content: "first", origin: "voice", deliveryId: "d-1", originLabel: "voice", recordedAt: "2026-10-24T10:00:00.000Z" })
+    const mkdir = fs.mkdirSync
+    vi.spyOn(fs, "mkdirSync").mockImplementation(((target: fs.PathLike, options?: fs.MakeDirectoryOptions) => {
+      if (String(target).endsWith("applied")) throw "no space"
+      return mkdir(target, options)
+    }) as typeof fs.mkdirSync)
+    expect(withImmediateSessionTurnLease(file, (lease) => drainOutboundRecords(agentRoot, "ari", "bluebubbles", KEY, lease))).toBe(0)
+    expect(errorEvents()).toEqual([expect.objectContaining({ meta: expect.objectContaining({ error: "no space" }) })])
   })
 
   it("returns 0 when nothing is deferred", () => {

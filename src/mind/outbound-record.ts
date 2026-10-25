@@ -1,6 +1,7 @@
+import { createHash } from "crypto"
 import * as fs from "fs"
 import * as path from "path"
-import { resolveSessionPath, sanitizeKey } from "../heart/config"
+import { isValidSessionCoordinate, resolveSessionPath, sanitizeKey } from "../heart/config"
 import type { OutboundOrigin } from "../heart/session-events"
 import { emitNervesEvent } from "../nerves/runtime"
 import { appendSyntheticAssistantMessage } from "./context"
@@ -26,8 +27,18 @@ interface DeferredOutboundRecord {
   recordedAt: string
 }
 
+/** The folder deferred records for one session wait in; coordinates that would leave or alias it are refused. */
 function deferredDir(agentRoot: string, friendId: string, channel: string, key: string): string {
-  return path.join(agentRoot, "state", "outbound-records", friendId, channel, sanitizeKey(key))
+  const folder = sanitizeKey(key)
+  if (!isValidSessionCoordinate(friendId) || !isValidSessionCoordinate(channel) || !isValidSessionCoordinate(folder)) {
+    throw new Error("invalid outbound record coordinates")
+  }
+  return path.join(agentRoot, "state", "outbound-records", friendId, channel, folder)
+}
+
+/** A fixed-length file name per delivery, so long or similar ids neither fail nor collide. */
+function deferredFileName(deliveryId: string): string {
+  return `${createHash("sha256").update(deliveryId).digest("hex").slice(0, 32)}.json`
 }
 
 function recordedText(record: Pick<DeferredOutboundRecord, "content" | "originLabel">): string {
@@ -45,11 +56,30 @@ function parseDeferred(raw: string): DeferredOutboundRecord | null {
   return value as DeferredOutboundRecord
 }
 
+/** How a recorded message names who sent it: `[sent by <label>]`. */
+export const OUTBOUND_ORIGIN_LABELS: Record<OutboundOrigin, string> = {
+  shepherd: "Shepherd",
+  send_message: "send_message",
+  voice: "voice",
+  reminder: "a reminder",
+  proactive: "a proactive message",
+}
+
 /**
  * Appends every deferred record for this session in `recordedAt` order under the caller's lease, moving each file to
  * `applied/` beside it. Unreadable files are moved too, with an error event. Returns how many records were appended.
+ * It never throws, so a turn that drains first is never stopped by it.
  */
 export function drainOutboundRecords(agentRoot: string, friendId: string, channel: string, key: string, lease: SessionTurnLease): number {
+  try {
+    return drainUnderLease(agentRoot, friendId, channel, key, lease)
+  } catch (error) {
+    recordError("could not drain deferred outbound records", { friendId, channel, error: error instanceof Error ? error.message : String(error) })
+    return 0
+  }
+}
+
+function drainUnderLease(agentRoot: string, friendId: string, channel: string, key: string, lease: SessionTurnLease): number {
   const dir = deferredDir(agentRoot, friendId, channel, key)
   let names: string[]
   try {
@@ -96,6 +126,7 @@ export function recordOutboundInSession(input: {
 }): OutboundRecordResult {
   const { agentRoot, friendId, channel, key, origin, deliveryId } = input
   try {
+    const dir = deferredDir(agentRoot, friendId, channel, key)
     const sessionPath = resolveSessionPath(friendId, channel, key, { agentRoot, confined: true })
     if (currentSessionTurnLease(sessionPath)) return "skipped_current_session"
     try {
@@ -109,9 +140,8 @@ export function recordOutboundInSession(input: {
       })
     } catch (error) {
       if (!(error instanceof SessionTurnBusyError)) throw error
-      const dir = deferredDir(agentRoot, friendId, channel, key)
       fs.mkdirSync(dir, { recursive: true })
-      const file = path.join(dir, `${sanitizeKey(deliveryId)}.json`)
+      const file = path.join(dir, deferredFileName(deliveryId))
       const record: DeferredOutboundRecord = { content: input.content, origin, deliveryId, originLabel: input.originLabel, recordedAt: new Date().toISOString() }
       fs.writeFileSync(`${file}.tmp`, JSON.stringify(record), { mode: 0o600 })
       fs.renameSync(`${file}.tmp`, file)
