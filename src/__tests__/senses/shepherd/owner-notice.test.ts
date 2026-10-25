@@ -245,6 +245,18 @@ describe("owner notice targets", () => {
     ])
   })
 
+  it("two family members in one iMessage group each get their own notice", async () => {
+    const group = { provider: "imessage-handle" as const, externalId: "group:any;+;family-group", linkedAt: "" }
+    const store = { listAll: async () => [
+      friend("f1", { name: "Ari", externalIds: [group, { provider: "imessage-handle", externalId: "+15555550123", linkedAt: "" }] }),
+      friend("f2", { name: "Sam", externalIds: [group, { provider: "imessage-handle", externalId: "+15555550199", linkedAt: "" }] }),
+    ] }
+    expect(await resolveNoticeTargets(root, store, new Set(["bluebubbles"]))).toEqual([
+      { friendId: "f1", name: "Ari", channel: "bluebubbles", key: "shepherd" },
+      { friendId: "f2", name: "Sam", channel: "bluebubbles", key: "shepherd" },
+    ])
+  })
+
   it("uses only a DM alert key as the BlueBubbles fallback", async () => {
     const write = (id: string, key: string) => {
       fs.mkdirSync(path.join(root, "state", "sessions", id, "bluebubbles"), { recursive: true })

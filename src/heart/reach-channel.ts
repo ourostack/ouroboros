@@ -26,8 +26,9 @@ function reachableOn(friend: FriendRecord, channel: ReachChannel, enabled: Reado
   if (!enabled.has(channel)) return null
   const provider = channel === "bluebubbles" ? "imessage-handle" : "aad"
   const ids = Array.isArray(friend.externalIds) ? friend.externalIds : []
+  // A `group:` id is a group chat the friend is in, never a way to reach them alone.
   const id = ids.find(entry => entry?.provider === provider && typeof entry.externalId === "string" && entry.externalId.trim() !== "" &&
-    !(channel === "teams" && entry.externalId.startsWith("group:")))
+    !entry.externalId.startsWith("group:"))
   if (!id) return null
   return { channel, handle: id.externalId.toLowerCase(), ...(channel === "teams" && id.tenantId ? { tenantId: id.tenantId } : {}) }
 }

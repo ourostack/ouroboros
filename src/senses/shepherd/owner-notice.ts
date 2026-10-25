@@ -163,9 +163,10 @@ function personIdentities(friend: FriendRecord): Set<string> {
   const identities = new Set<string>()
   // Only called for a reachable friend, whose externalIds is therefore a list.
   for (const entry of friend.externalIds) {
-    if (typeof entry?.externalId !== "string" || entry.externalId.trim() === "") continue
+    // A `group:` id names a group chat the friend is in, which other people share; it never identifies the person.
+    if (typeof entry?.externalId !== "string" || entry.externalId.trim() === "" || entry.externalId.startsWith("group:")) continue
     if (entry.provider === "imessage-handle") identities.add(`bluebubbles:${entry.externalId.toLowerCase()}`)
-    if (entry.provider === "aad" && !entry.externalId.startsWith("group:")) identities.add(`teams:${entry.externalId.toLowerCase()}`)
+    if (entry.provider === "aad") identities.add(`teams:${entry.externalId.toLowerCase()}`)
   }
   return identities
 }

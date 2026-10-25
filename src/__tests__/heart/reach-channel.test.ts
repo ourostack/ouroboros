@@ -115,6 +115,16 @@ describe("resolveReachTarget", () => {
     expect(fallbackEvents()).toEqual([expect.objectContaining({ meta: { friendId: "ari", preferred: "bluebubbles", chosen: null } })])
   })
 
+  it("an iMessage group id never stands in for the friend's own handle", () => {
+    const record = friend({ externalIds: [
+      { provider: "imessage-handle", externalId: "group:any;+;family-group", linkedAt: iso(9999) },
+      { provider: "imessage-handle", externalId: "+15555550123", linkedAt: iso(9999) },
+    ] } as Partial<FriendRecord>)
+    expect(resolve(record, new Set(["bluebubbles"]))).toMatchObject({ channel: "bluebubbles", handle: "+15555550123" })
+    const groupOnly = friend({ externalIds: [{ provider: "imessage-handle", externalId: "group:any;+;family-group", linkedAt: iso(9999) }] } as Partial<FriendRecord>)
+    expect(resolve(groupOnly, new Set(["bluebubbles"]))).toMatchObject({ unreachable: expect.any(String) })
+  })
+
   it("group chats are excluded", () => {
     session("bluebubbles", "chat_any;+;family-group", [event(1, "user", 1)])
     session("teams", "19_meeting-thread", [event(1, "user", 2)])
