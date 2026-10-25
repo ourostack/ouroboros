@@ -1,5 +1,6 @@
 import type { FriendRecord } from "@ouro.bot/friends"
 import { emitNervesEvent } from "../nerves/runtime"
+import { sanitizeKey } from "./config"
 import { listSessionActivity, type SessionActivityRecord } from "./session-activity"
 
 /** Channels an agent can reach a person on outside a live conversation. */
@@ -24,15 +25,24 @@ function isReachChannel(value: unknown): value is ReachChannel {
 function reachableOn(friend: FriendRecord, channel: ReachChannel, enabled: ReadonlySet<ReachChannel>): Reachable | null {
   if (!enabled.has(channel)) return null
   const provider = channel === "bluebubbles" ? "imessage-handle" : "aad"
-  const id = friend.externalIds.find(entry => entry.provider === provider && entry.externalId.trim() !== "" &&
+  const ids = Array.isArray(friend.externalIds) ? friend.externalIds : []
+  const id = ids.find(entry => entry?.provider === provider && typeof entry.externalId === "string" && entry.externalId.trim() !== "" &&
     !(channel === "teams" && entry.externalId.startsWith("group:")))
   if (!id) return null
   return { channel, handle: id.externalId.toLowerCase(), ...(channel === "teams" && id.tenantId ? { tenantId: id.tenantId } : {}) }
 }
 
-/** A 1:1 session key, read back from its sanitized filename. */
-function isOneToOne(channel: ReachChannel, key: string): boolean {
-  return channel === "bluebubbles" ? !key.includes(";+;") : key.startsWith("a_")
+/**
+ * A 1:1 session key, read back from its sanitized filename. A BlueBubbles key is 1:1 when it is a DM chat GUID
+ * (`chat_<service>;-;<handle>`) or the chat-identifier fallback naming this friend's own handle; a group never is.
+ * A Teams key is 1:1 when it is a personal conversation id (`a:` sanitized to `a_`).
+ */
+function isOneToOne(channel: ReachChannel, key: string, friend: FriendRecord): boolean {
+  if (channel === "teams") return key.startsWith("a_")
+  if (key.includes(";+;")) return false
+  if (key.startsWith("chat_") && key.includes(";-;")) return true
+  const handle = reachableOn(friend, "bluebubbles", new Set(["bluebubbles"]))?.handle
+  return handle !== undefined && key.toLowerCase() === `chat_identifier_${sanitizeKey(handle)}`
 }
 
 /** The friend's own 1:1 sessions, newest inbound first. Messages the agent recorded never rank a session. */
@@ -41,7 +51,7 @@ function friendSessions(input: { friend: FriendRecord; sessionsDir: string; frie
     activeThresholdMs: Number.POSITIVE_INFINITY, nowMs: input.nowMs })
     .filter((record): record is SessionActivityRecord & { channel: ReachChannel } =>
       record.friendId === input.friend.id && record.activitySource === "friend-facing" && record.lastInboundAt !== null &&
-      isReachChannel(record.channel) && isOneToOne(record.channel, record.key))
+      isReachChannel(record.channel) && isOneToOne(record.channel, record.key, input.friend))
     .sort((a, b) => Date.parse(b.lastInboundAt!) - Date.parse(a.lastInboundAt!))
 }
 
@@ -67,7 +77,7 @@ export function resolveReachTarget(input: {
 
   const stated = friend.relationshipPolicy?.preferences.reachChannel
   const current = stated && (stated.provenance === "stated" || stated.provenance === "default") && isReachChannel(stated.value) &&
-    (stated.expiresAt === undefined || Date.parse(stated.expiresAt) > nowMs)
+    (!stated.expiresAt || Date.parse(stated.expiresAt) > nowMs)
   const preferred = current ? stated.value as ReachChannel : null
   const preferredReach = preferred ? reachableOn(friend, preferred, enabledChannels) : null
   if (preferredReach) return target(preferredReach)

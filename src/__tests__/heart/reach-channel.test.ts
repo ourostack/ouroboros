@@ -71,7 +71,7 @@ beforeEach(() => {
 })
 
 afterEach(() => {
-  fs.renameSync(root, `${root}-done`)
+  fs.rmSync(root, { recursive: true, force: true })
 })
 
 describe("resolveReachTarget", () => {
@@ -115,6 +115,20 @@ describe("resolveReachTarget", () => {
     session("teams", "19_meeting-thread", [event(1, "user", 2)])
     session("teams", TEAMS_KEY, [event(1, "user", 300)])
     expect(resolve(friend())).toMatchObject({ channel: "teams", key: TEAMS_KEY })
+  })
+
+  it("a chat-identifier session counts only when it names the friend's own handle", () => {
+    session("bluebubbles", "chat_identifier_chat123456", [event(1, "user", 1)])
+    session("bluebubbles", "chat_identifier_+15555550123", [event(1, "user", 50)])
+    session("teams", TEAMS_KEY, [event(1, "user", 20)])
+    expect(resolve(friend())).toMatchObject({ channel: "teams", key: TEAMS_KEY })
+    session("bluebubbles", "chat_identifier_+15555550123", [event(1, "user", 5)])
+    expect(resolve(friend())).toMatchObject({ channel: "bluebubbles", key: "chat_identifier_+15555550123" })
+  })
+
+  it("an empty expiry means the preference has none, and a record without ids is unreachable", () => {
+    expect(resolve(friend({}, { value: "teams", expiresAt: "" }))).toMatchObject({ channel: "teams" })
+    expect(resolve(friend({ externalIds: undefined } as unknown as Partial<FriendRecord>))).toEqual({ unreachable: expect.any(String), friendId: "ari" })
   })
 
   it("ignores other friends' sessions and channels that are not enabled", () => {
