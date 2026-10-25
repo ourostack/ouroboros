@@ -787,10 +787,9 @@ export function createPrivateRuntimeWorker(
           break
         }
 
-        // Then check hasPendingWork fallback. This is the loop site: any
-        // tool that writes to the private-runtime pending dir during a turn
-        // would cause hasPendingWork() to be true here, producing a
-        // self-sustaining "instinct" loop with no external input. Cap it.
+        // Then check hasPendingWork. A follow-up turn would need its own
+        // approved private-turn decision, which only the daemon issues, so the
+        // run ends here and the pending work waits for the next authorized turn.
         if (hasPendingWork(currentHabitRun?.paths.pendingDir)) {
           if (currentExternalEvent && (turnErrors.length > 0
             || (turnResult && typeof turnResult === "object" && "turnOutcome" in turnResult && turnResult.turnOutcome === "errored"))) {

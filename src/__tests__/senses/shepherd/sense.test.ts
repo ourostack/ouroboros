@@ -498,6 +498,24 @@ describe("Shepherd sense: answering premature returns", () => {
     expect(fs.statSync(returnsLogPath(agentRoot)).mode & 0o777).toBe(0o600)
   })
 
+  it("never answers an approval request addressed to the human, even when the judge calls it premature", async () => {
+    const { host, returned, last, escalations } = await start(async () => verdict({ reason: "It offered options instead of choosing." }))
+    host.screens.S1 = [SCREENS.claudePremature]
+    await returned({ sessionId: "S1", transitionId: "approve-design", lastBody: "The spec is written. Ari, please approve the design or send it back." })
+    expect(host.actions.some(action => /^(prompt|key) /.test(action))).toBe(false)
+    expect(last()).toMatchObject({ kind: "gate", judgeKind: "premature", action: "let_through", reply: null,
+      reason: "the agent asked Ari to decide: It offered options instead of choosing." })
+    expect(escalations).toHaveLength(1)
+  })
+
+  it("reads an approval request from the screen when the last message carries none", async () => {
+    const { host, returned, last } = await start(async () => verdict())
+    host.screens.S1 = [`${SCREENS.claudePremature}\nOnly you can sign off the release.`]
+    await returned({ sessionId: "S1", transitionId: "approve-screen" })
+    expect(host.actions.some(action => /^(prompt|key) /.test(action))).toBe(false)
+    expect(last()).toMatchObject({ kind: "gate", judgeKind: "premature", reply: null })
+  })
+
   it.each(["enter", "escape", "up", "down", "tab", "ctrl-c", "1", "2", "3", "4", "5", "6", "7", "8", "9", "y", "n"] as const)(
     "refuses a malicious immediate key %s before custody or host input", async key => {
     let claims = 0
