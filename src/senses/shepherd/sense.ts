@@ -13,6 +13,7 @@ import { emitNervesEvent } from "../../nerves/runtime"
 import { QUIET_MS, realSchedule } from "./cmux"
 import { createShepherdHost, type ReturnedControl, type ShepherdHost, type ShepherdInspection } from "./host"
 import { createShepherdJudge, type JudgeResult, type ShepherdJudge } from "./judge"
+import { asksHumanToDecide } from "./human-decision-guard"
 import { redactSecrets, screenTail as tail, withoutNumbers } from "./redact"
 import { createOwnerNotifier, type NoticeIntentAcceptance } from "./owner-notice"
 import { appendReturn, readReturns, type ReturnRecord } from "./returns"
@@ -532,10 +533,16 @@ export async function startShepherdSenseApp(options: ShepherdSenseOptions): Prom
         record.reason = "the check-in was invalidated during judgment; no input or notice sent"
         return
       }
+      // An agent that asks the human to approve, sign off or answer personally is handing over their decision. The judge
+      // may read that as premature; Shepherd still never answers for them. The judge's own kind stays in judgeKind.
+      const judgeKind = verdict.kind
+      if (verdict.kind === "premature" && asksHumanToDecide([event.lastBody ?? "", ...screen.split("\n").slice(-12)].join("\n"))) {
+        verdict = { ...verdict, kind: "gate", reply: null, reason: `the agent asked ${human} to decide: ${verdict.reason}` }
+      }
       // The host's own word that background work is running outranks a reading of the screen: such a stop is never a return.
       const kind = (current ? current.backgroundWork : event.backgroundWork) ? "working" : verdict.kind
       const news = verdict.news === true || (kind === "working" && verdict.kind === "gate")
-      Object.assign(record, { kind, judgeKind: verdict.kind, reason: verdict.reason, latencyMs: verdict.latencyMs, inputTokens: verdict.inputTokens,
+      Object.assign(record, { kind, judgeKind, reason: verdict.reason, latencyMs: verdict.latencyMs, inputTokens: verdict.inputTokens,
         ...(verdict.replyIssue ? { replyIssue: verdict.replyIssue } : {}) })
       if (!recovery && !periodic && kind === "waiting" && verdict.waitingOnNetwork) rememberNetworkWait(event, screen, eventGeneration)
       const noticeScreen = screen.replace(/\b\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})\b/g, "<observation-time>")

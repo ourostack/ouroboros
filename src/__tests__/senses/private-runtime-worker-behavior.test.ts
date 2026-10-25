@@ -211,16 +211,16 @@ describe("private-runtime-worker", () => {
     expect(runTurn).toHaveBeenNthCalledWith(2, expect.not.objectContaining({ noSend: true }))
   })
 
-  it("scopes an external-event lease to its originating turn", async () => {
+  it("does not chain a decisionless turn after an external-event turn leaves pending work", async () => {
     const runTurn = vi.fn().mockResolvedValue(undefined)
-    const hasPendingWork = vi.fn().mockReturnValueOnce(true).mockReturnValue(false)
+    const hasPendingWork = vi.fn().mockReturnValue(true)
     const worker = createPrivateRuntimeWorker(runTurn, hasPendingWork)
     const externalEvent = { schemaVersion: 1 as const, recordPath: "/events/slugger/health/sweep.json", agent: "slugger", source: "health", eventId: "sweep", generation: 1, observationRevision: "rev-1", claimOwner: "lease-1" }
 
     await worker.handleMessage({ type: "message", externalEvent })
 
-    expect(runTurn).toHaveBeenNthCalledWith(1, expect.objectContaining({ externalEvent }))
-    expect(runTurn).toHaveBeenNthCalledWith(2, expect.not.objectContaining({ externalEvent: expect.anything() }))
+    expect(runTurn).toHaveBeenCalledTimes(1)
+    expect(runTurn).toHaveBeenCalledWith(expect.objectContaining({ externalEvent }))
   })
 
   it("does not turn pending residue into an unauthorized fallback after an external-event turn fails", async () => {
@@ -762,19 +762,15 @@ describe("private-runtime-worker", () => {
     }
   })
 
-  it("hasPendingWork fallback still works after queue is empty", async () => {
+  it("hasPendingWork fallback ends the run when the queue is empty", async () => {
     const runTurn = vi.fn().mockResolvedValue(undefined)
-    const hasPendingWork = vi.fn()
-      .mockReturnValueOnce(true) // checked after first turn, queue empty
-      .mockReturnValueOnce(false) // checked after second turn
+    const hasPendingWork = vi.fn().mockReturnValue(true)
     const worker = createPrivateRuntimeWorker(runTurn, hasPendingWork as any)
 
     await worker.run("instinct")
 
-    // Two turns: the original + one hasPendingWork-triggered follow-up
-    expect(runTurn).toHaveBeenCalledTimes(2)
+    expect(runTurn).toHaveBeenCalledTimes(1)
     expect(runTurn).toHaveBeenNthCalledWith(1, { reason: "instinct", taskId: undefined, habitName: undefined })
-    expect(runTurn).toHaveBeenNthCalledWith(2, { reason: "instinct", taskId: undefined, habitName: undefined })
   })
 
   it("mixes habit + poke + chat messages in queue correctly", async () => {
@@ -874,20 +870,6 @@ describe("private-runtime-worker", () => {
     expect(runTurn).toHaveBeenCalledTimes(2)
     expect(runTurn).toHaveBeenNthCalledWith(1, expect.objectContaining({ reason: "habit", taskId: undefined, habitName: "heartbeat" }))
     expect(runTurn).toHaveBeenNthCalledWith(2, { reason: "instinct", taskId: "daily-standup", habitName: undefined })
-  })
-
-  it("runs a follow-up turn when durable pending work remains after a turn completes (legacy test)", async () => {
-    const runTurn = vi.fn().mockResolvedValue(undefined)
-    const hasPendingWork = vi.fn()
-      .mockReturnValueOnce(true)
-      .mockReturnValueOnce(false)
-    const worker = createPrivateRuntimeWorker(runTurn, hasPendingWork as any)
-
-    await worker.run("instinct")
-
-    expect(runTurn).toHaveBeenCalledTimes(2)
-    expect(runTurn).toHaveBeenNthCalledWith(1, { reason: "instinct", taskId: undefined, habitName: undefined })
-    expect(runTurn).toHaveBeenNthCalledWith(2, { reason: "instinct", taskId: undefined, habitName: undefined })
   })
 
   it("creates a controller without a boot turn and handles event cycles", async () => {
@@ -1717,90 +1699,50 @@ describe("private-runtime-worker", () => {
     })
   })
 
-  describe("instinct-loop cap (rest-detection backstop)", () => {
-    // Real harness friction: a tool that writes to the private-runtime pending
-    // dir during a turn (e.g. a surface tool routing a response) puts the
-    // worker into a self-sustaining loop where the next turn's drain produces
-    // another write, ad infinitum. The cap breaks the loop after a small
-    // number of consecutive instinct turns without external input.
-    it("caps consecutive instinct chaining when hasPendingWork keeps returning true", async () => {
-      // Always say "fresh work arrived" — simulates the self-sustaining write.
+  describe("pending work after a turn (no decisionless chaining)", () => {
+    // The provider boundary refuses any private turn without a daemon-issued
+    // decision, so the worker must end the run instead of chaining one.
+    const chainEvents = () => mockEmitNervesEvent.mock.calls
+      .map(([event]) => event as any)
+      .filter((event) => event.event === "senses.private_runtime_worker_chain_needs_decision")
+
+    it("stops after a turn that leaves pending work, without starting a decisionless turn", async () => {
       const runTurn = vi.fn().mockResolvedValue(undefined)
       const hasPendingWork = vi.fn().mockReturnValue(true)
       const worker = createPrivateRuntimeWorker(runTurn, hasPendingWork)
 
-      await worker.run("habit", undefined, "heartbeat")
+      await expect(worker.run("habit", undefined, "heartbeat")).resolves.toBeUndefined()
 
-      // Heartbeat turn (1) + 3 same-run habit follow-ups + cap = 4 total turns
-      expect(runTurn).toHaveBeenCalledTimes(4)
-      expect(runTurn.mock.calls[0]?.[0]).toEqual(expect.objectContaining({ reason: "habit", habitName: "heartbeat" }))
-      for (let i = 1; i <= 3; i++) {
-        expect(runTurn.mock.calls[i]?.[0]).toEqual(expect.objectContaining({ reason: "habit", habitName: "heartbeat" }))
-      }
-      // Cap event was emitted exactly once
-      const capEvents = mockEmitNervesEvent.mock.calls.filter(([event]) => (event as any).event === "senses.private_runtime_worker_instinct_loop_capped")
-      expect(capEvents).toHaveLength(1)
-      expect(capEvents[0]?.[0]).toEqual(expect.objectContaining({
-        level: "warn",
-        meta: expect.objectContaining({
-          consecutiveInstinctTurns: 3,
-          cap: 3,
-          lastReason: "habit",
-        }),
+      expect(runTurn).toHaveBeenCalledTimes(1)
+      expect(chainEvents()).toHaveLength(1)
+      expect(chainEvents()[0]).toEqual(expect.objectContaining({
+        level: "info",
+        component: "senses",
+        meta: { reason: "habit", habitName: "heartbeat" },
       }))
+      const errorEvents = mockEmitNervesEvent.mock.calls
+        .map(([event]) => event as any)
+        .filter((event) => JSON.stringify(event).includes("requires an approved private-turn decision"))
+      expect(errorEvents).toHaveLength(0)
     })
 
-    it("keeps habit-created follow-on pending work in the same habit run instead of generic instinct", async () => {
-      mockCreateHabitRunId
-        .mockReturnValueOnce("habit-run-1")
-        .mockReturnValueOnce("habit-run-2")
+    it("reports a null habitName when a non-habit turn leaves pending work", async () => {
       const runTurn = vi.fn().mockResolvedValue(undefined)
-      const hasPendingWork = vi.fn()
-        .mockReturnValueOnce(true)
-        .mockReturnValueOnce(false)
-      const worker = createPrivateRuntimeWorker(runTurn, hasPendingWork)
-
-      await worker.run("habit", undefined, "heartbeat", undefined, "poke")
-
-      expect(runTurn).toHaveBeenCalledTimes(2)
-      expect(runTurn.mock.calls[0]?.[0]).toEqual(expect.objectContaining({
-        reason: "habit",
-        habitName: "heartbeat",
-      }))
-      expect(runTurn.mock.calls[1]?.[0]).toEqual(expect.objectContaining({
-        reason: "habit",
-        habitName: "heartbeat",
-      }))
-      expect(mockCreateHabitRunId).toHaveBeenCalledTimes(1)
-      expect(runTurn.mock.calls[0]?.[0].habitSession).toEqual(expect.objectContaining({
-        runId: "habit-run-1",
-        sessionPath: "/bundles/slugger.ouro/state/habit-sessions/habit-run-1/session.json",
-        pendingDir: "/bundles/slugger.ouro/state/habit-sessions/habit-run-1/pending",
-      }))
-      expect(runTurn.mock.calls[1]?.[0].habitSession).toEqual(expect.objectContaining({
-        runId: "habit-run-1",
-        sessionPath: "/bundles/slugger.ouro/state/habit-sessions/habit-run-1/session.json",
-        pendingDir: "/bundles/slugger.ouro/state/habit-sessions/habit-run-1/pending",
-      }))
-    })
-
-    it("counts the initial instinct entry against the cap", async () => {
-      const runTurn = vi.fn().mockResolvedValue(undefined)
-      const hasPendingWork = vi.fn().mockReturnValue(true)
-      const worker = createPrivateRuntimeWorker(runTurn, hasPendingWork)
+      const worker = createPrivateRuntimeWorker(runTurn, vi.fn().mockReturnValue(true))
 
       await worker.run("instinct")
 
-      // Initial instinct counts as 1, plus 2 follow-ups, then cap fires
-      expect(runTurn).toHaveBeenCalledTimes(3)
+      expect(runTurn).toHaveBeenCalledTimes(1)
+      expect(chainEvents()).toHaveLength(1)
+      expect(chainEvents()[0]?.meta).toEqual({ reason: "instinct", habitName: null })
     })
 
-    it("resets the instinct counter when an externally-queued message arrives between turns", async () => {
+    it("still runs a queued entry with its own decision after a turn that left pending work", async () => {
+      const privateTurnDecision = { result: "allow", triggerSource: "poke" }
       let queued: Promise<void> | undefined
       const runTurn = vi.fn().mockImplementation(async () => {
-        // Simulate an external poke arriving during the first turn's runtime.
         if (runTurn.mock.calls.length === 1) {
-          queued = worker.handleMessage({ type: "poke", taskId: "external-poke" })
+          queued = worker.handleMessage({ type: "poke", taskId: "external-poke", privateTurnDecision })
         }
       })
       const hasPendingWork = vi.fn().mockReturnValue(true)
@@ -1809,24 +1751,23 @@ describe("private-runtime-worker", () => {
       await worker.run("habit", undefined, "heartbeat")
       await queued
 
-      // Sequence: heartbeat (1) → poke arrived (queued) → poke runs as instinct (counter resets to 1)
-      // → 2 more instinct via hasPendingWork → cap at 3 instinct chain
-      // Total turns: 1 (heartbeat) + 1 (poke) + 2 (chained instinct) = 4
-      expect(runTurn).toHaveBeenCalledTimes(4)
-      // The second turn was the externally-poked one
-      expect(runTurn.mock.calls[1]?.[0]).toEqual(expect.objectContaining({ reason: "instinct", taskId: "external-poke" }))
+      expect(runTurn).toHaveBeenCalledTimes(2)
+      expect(runTurn.mock.calls[1]?.[0]).toEqual(expect.objectContaining({
+        reason: "instinct",
+        taskId: "external-poke",
+        privateTurnDecision,
+      }))
+      expect(chainEvents()).toHaveLength(1)
     })
 
-    it("does not cap when no follow-on work is detected (single happy-path turn)", async () => {
+    it("does not emit the stop event when no pending work remains", async () => {
       const runTurn = vi.fn().mockResolvedValue(undefined)
-      const hasPendingWork = vi.fn().mockReturnValue(false)
-      const worker = createPrivateRuntimeWorker(runTurn, hasPendingWork)
+      const worker = createPrivateRuntimeWorker(runTurn, vi.fn().mockReturnValue(false))
 
       await worker.run("habit", undefined, "heartbeat")
 
       expect(runTurn).toHaveBeenCalledTimes(1)
-      const capEvents = mockEmitNervesEvent.mock.calls.filter(([event]) => (event as any).event === "senses.private_runtime_worker_instinct_loop_capped")
-      expect(capEvents).toHaveLength(0)
+      expect(chainEvents()).toHaveLength(0)
     })
   })
 
