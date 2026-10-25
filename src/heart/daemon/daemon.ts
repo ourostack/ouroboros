@@ -1110,13 +1110,23 @@ export class OuroDaemon {
 
     await this.orphanStartupDrain(this.socketPath)
     await this.openCommandSocket()
-    await this.reconcileExternalEvents()
+    this.triggerAutoStartAgents()
+    this.triggerAutoStartSensesWhenAgentsSettled()
+    // Not awaited: a startup external event can run a long private turn, and
+    // that turn must never hold senses such as Telegram down at boot.
+    void this.reconcileExternalEvents().catch((error) => {
+      emitNervesEvent({
+        level: "warn",
+        component: "daemon",
+        event: "daemon.external_event_startup_reconcile_error",
+        message: "startup external-event reconciliation failed",
+        meta: { error: error instanceof Error ? error.message : /* v8 ignore next -- reconciliation failures are Error objects @preserve */ String(error) },
+      })
+    })
     this.externalEventReconcileTimer = setInterval(() => {
       void this.reconcileExternalEvents()
     }, 1_000)
     this.externalEventReconcileTimer.unref?.()
-    this.triggerAutoStartAgents()
-    this.triggerAutoStartSensesWhenAgentsSettled()
 
     // Write all managed PIDs to disk so the next daemon can clean up
     /* v8 ignore start -- pidfile write: collects PIDs from process managers @preserve */
