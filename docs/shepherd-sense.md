@@ -258,6 +258,8 @@ selected successes.
 | `working` | Never answers. Sets the status line to `<agent> waiting on its background work: <reason>` and logs it. Queues a `[Shepherd update]` for the Ouro agent, with no wake, only when the judge flags news. |
 | `unclear`, or an error | Lets it through and logs it. No escalation. |
 
+Shepherd never answers a decision the agent hands to its human. When a `premature` verdict's last message or the bottom of the screen asks the human to approve a design, spec or plan, to sign off, to "accept or send back", or to answer personally ("your call", "only you can"), Shepherd treats it as a `gate` instead (`src/senses/shepherd/human-decision-guard.ts`) and logs `senses.shepherd_human_decision_detected`.
+
 Before it answers, Shepherd checks, in order:
 
 1. **The loop guard.** Three automatic answers in a row in one terminal, with no human focus in between, or ten in an hour, stop answering. The return that trips it is logged as `loop_guard` and escalated once, and the status line says `stopped answering`. Until the human focuses that terminal, its later returns are logged as `loop_guard` with no judge call and no new escalation.
