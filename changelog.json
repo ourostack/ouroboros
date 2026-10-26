@@ -2,6 +2,13 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.952",
+      "changes": [
+        "An iMessage held back by the recovery budget or storm breaker is no longer lost: it stays pending, and a later recovery pass handles it once the block lifts. Budget and breaker windows now run on the real clock instead of the message's own timestamp, so the block can actually lift.",
+        "`ouro friend dedupe` now finds records that share the same person identity, such as a stale stranger record holding an iMessage handle that a family record also owns, and proposes merging them into the higher-trust record. Group-chat handles are not treated as a shared identity."
+      ]
+    },
+    {
       "version": "0.1.0-alpha.951",
       "changes": [
         "Slugger's Anthropic turns work again: a tool schema with oneOf, allOf or anyOf at the top level made the API refuse every request, so Ouro now drops those keys when it sends tools to Anthropic, and each tool still enforces its own rules."

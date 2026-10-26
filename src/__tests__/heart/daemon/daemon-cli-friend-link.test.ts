@@ -139,4 +139,15 @@ describe("friend merge and dedupe CLI", () => {
 
     expect(await runOuroCli(["friend", "dedupe", "--agent", "slugger", "--apply"], deps(bundlesRoot))).toBe("no duplicate friend records found")
   })
+
+  it("proposes merging a stale stranger that shares an iMessage handle into the family record", async () => {
+    const handle = (externalId: string) => ({ provider: "imessage-handle" as const, externalId, linkedAt: "2026-01-01T00:00:00.000Z" })
+    const { bundlesRoot } = await bundle([
+      person("family-ari", { externalIds: [handle("+15551234567"), handle("ari@mendelow.me")] }),
+      person("stale-stranger", { name: "ari@mendelow.me", trustLevel: "stranger", role: "stranger", notes: {}, externalIds: [handle("ari@mendelow.me")] }),
+    ])
+    const preview = await runOuroCli(["friend", "dedupe", "--agent", "slugger"], deps(bundlesRoot))
+    expect(preview).toContain("would merge 1 record(s) into family-ari (Ari, family)")
+    expect(preview).toContain("would retire stale-stranger")
+  })
 })

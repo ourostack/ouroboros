@@ -824,12 +824,6 @@ function sha256Hex(input: string): string {
   return createHash("sha256").update(input).digest("hex")
 }
 
-function timestampIsoForAutonomy(event: BlueBubblesNormalizedEvent): string {
-  return Number.isFinite(event.timestamp)
-    ? new Date(event.timestamp).toISOString()
-    : new Date().toISOString()
-}
-
 function blueBubblesAutonomyTarget(event: BlueBubblesNormalizedEvent): Record<string, string | undefined> {
   return {
     messageGuid: event.messageGuid,
@@ -883,7 +877,6 @@ function recordBlueBubblesRecoveryFailureForBudget(
   try {
     recordAutonomyFailure(getAgentRoot(agentName), {
       ...blueBubblesRecoveryStormInput(agentName, event, source),
-      occurredAt: timestampIsoForAutonomy(event),
     })
   } catch {
     // Autonomy failure accounting must not turn a recovery error into a broader sense outage.
@@ -1828,7 +1821,6 @@ async function handleBlueBubblesNormalizedEvent(
       senseOrHabit: "bluebubbles",
       target: blueBubblesAutonomyTarget(event),
       idempotencyKey: `bluebubbles-recovery:${source}:${event.messageGuid}`,
-      now: timestampIsoForAutonomy(event),
       storm: blueBubblesRecoveryStormInput(agentName, event, source),
     })
     if (!decision.allowed) {
@@ -3143,6 +3135,9 @@ async function handleCapturedBlueBubblesSemanticEvent(
         publishAcceptedReceipt,
       }
       result = await handleBlueBubblesNormalizedEvent(canonicalEvent, resolvedDeps, source, capturedOptions)
+      // A budget or storm-breaker block defers the message; it was never seen.
+      // Leave it pending so a later recovery pass retries it once the block lifts.
+      if (result.reason === "autonomy_budget_blocked") return result
       handledOutcome = result.notifiedAgent ? "message_completed" : "message_observed"
     }
     if (result.notifiedAgent) {
