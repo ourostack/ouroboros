@@ -172,12 +172,19 @@ export function toAnthropicMessages(
   return { system: systemParts.length > 0 ? systemParts.join("\n\n") : undefined, messages: converted };
 }
 
-function toAnthropicTools(tools: OpenAI.ChatCompletionFunctionTool[]): Array<Record<string, unknown>> {
-  return tools.map((tool) => ({
-    name: tool.function.name,
-    description: tool.function.description ?? "",
-    input_schema: (tool.function.parameters as Record<string, unknown>) ?? { type: "object", properties: {} },
-  }));
+// The Anthropic API rejects the whole request when any tool's input_schema has
+// oneOf, allOf or anyOf at the top level, so those keys are dropped here. Each
+// tool's handler still enforces its own either/or rules.
+export function toAnthropicTools(tools: OpenAI.ChatCompletionFunctionTool[]): Array<Record<string, unknown>> {
+  return tools.map((tool) => {
+    const { oneOf: _oneOf, allOf: _allOf, anyOf: _anyOf, ...schema } =
+      (tool.function.parameters as Record<string, unknown>) ?? { type: "object", properties: {} };
+    return {
+      name: tool.function.name,
+      description: tool.function.description ?? "",
+      input_schema: schema,
+    };
+  });
 }
 
 function toAnthropicUsage(raw: Record<string, unknown>): UsageData {
