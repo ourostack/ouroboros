@@ -49,6 +49,7 @@ vi.mock("../../heart/identity", () => ({
 }))
 
 let capturedAnthropicParams: any = null
+let capturedClientHeaders: Record<string, string> | null = null
 const mockAnthropicMessagesCreate = vi.fn().mockImplementation((params: any) => {
   capturedAnthropicParams = params
   return {
@@ -69,7 +70,7 @@ vi.mock("openai", () => {
 vi.mock("@anthropic-ai/sdk", () => {
   class MockAnthropic {
     messages = { create: mockAnthropicMessagesCreate }
-    constructor() {}
+    constructor(options?: { defaultHeaders?: Record<string, string> }) { capturedClientHeaders = options?.defaultHeaders ?? null }
   }
   return { default: MockAnthropic }
 })
@@ -99,6 +100,24 @@ describe("Anthropic prompt caching", () => {
     vi.resetModules()
     capturedAnthropicParams = null
     mockAnthropicMessagesCreate.mockClear()
+  })
+
+  it("identifies as a Claude Code version the API accepts for current models", async () => {
+    emitTestEvent("anthropic client claude code version")
+    vi.mocked(identity.loadAgentConfig).mockReturnValue({
+      name: "testagent",
+      provider: "anthropic",
+      humanFacing: { provider: "anthropic", model: "claude-opus-4-6" },
+      agentFacing: { provider: "anthropic", model: "claude-opus-4-6" },
+    })
+    const config = await import("../../heart/config")
+    config.resetConfigCache()
+    config.patchRuntimeConfig({ providers: { anthropic: { setupToken: makeAnthropicSetupToken() } } })
+    const { createAnthropicProviderRuntime } = await import("../../heart/providers/anthropic")
+    createAnthropicProviderRuntime("claude-opus-4-6")
+    // The API refuses newer models to Claude Code versions older than 2.1.280.
+    expect(capturedClientHeaders?.["user-agent"]).toBe("claude-cli/2.1.310 (external, cli)")
+    expect(capturedClientHeaders?.["x-app"]).toBe("cli")
   })
 
   it("emits cache_control on stable prefix when systemPrompt is present", async () => {

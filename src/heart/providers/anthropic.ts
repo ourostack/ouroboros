@@ -18,6 +18,9 @@ const ANTHROPIC_SETUP_TOKEN_PREFIX = "sk-ant-oat01-";
 const ANTHROPIC_SETUP_TOKEN_MIN_LENGTH = 80;
 const ANTHROPIC_OAUTH_BETA_HEADER =
   "claude-code-20250219,oauth-2025-04-20,fine-grained-tool-streaming-2025-05-14,interleaved-thinking-2025-05-14";
+// The API refuses newer models to Claude Code versions it considers too old (claude-opus-5-5 needs 2.1.280 or newer),
+// so this names a current release. Raise it when the API asks for a newer one.
+const CLAUDE_CLI_USER_AGENT = "claude-cli/2.1.310 (external, cli)";
 
 interface AnthropicCredential {
   token: string;
@@ -476,7 +479,7 @@ export function createAnthropicProviderRuntime(model: string, anthropicConfig: A
       defaultHeaders: {
         "anthropic-beta": ANTHROPIC_OAUTH_BETA_HEADER,
         "anthropic-dangerous-direct-browser-access": "true",
-        "user-agent": "claude-cli/2.1.2 (external, cli)",
+        "user-agent": CLAUDE_CLI_USER_AGENT,
         "x-app": "cli",
       },
     });
