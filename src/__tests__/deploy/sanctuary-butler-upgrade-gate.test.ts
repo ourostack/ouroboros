@@ -291,7 +291,8 @@ describe("host supervision stays paused for the whole upgrade (the 945 rollback,
       await until(() => hold.exitCode !== null)
       fs.utimesSync(flag, old, old)
       await new Promise((resolve) => setTimeout(resolve, 500))
-      expect(mtime(flag)).toBe(old.getTime())
+      // utimes stores seconds as a float, so the read-back can land a fraction of a millisecond away.
+      expect(Math.round(mtime(flag))).toBe(old.getTime())
     } finally { parent.kill("SIGKILL"); hold.kill("SIGKILL") }
   })
 
