@@ -1,7 +1,7 @@
 import * as fs from "node:fs"
 import * as os from "node:os"
 import * as path from "node:path"
-import { beforeEach, describe, expect, it, vi } from "vitest"
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 
 const mockEmitNervesEvent = vi.hoisted(() => vi.fn())
 const mockGetAgentRoot = vi.hoisted(() => vi.fn())
@@ -74,11 +74,13 @@ vi.mock("../../../senses/trust-gate", () => ({
 import {
   AUTONOMY_BUDGET_DEFAULT_POLICY,
   autonomyReceiptsDir,
+  readAutonomyStormBreakers,
   reserveAutonomyBudget,
 } from "../../../heart/autonomy-budget"
 import {
   buildBlueBubblesSemanticCapture,
   initializeBlueBubblesSemanticCutover,
+  listPendingBlueBubblesSemanticCaptures,
   writeBlueBubblesSemanticCapture,
 } from "../../../senses/bluebubbles/semantic-receipts"
 import { recoverCapturedBlueBubblesInboundMessages } from "../../../senses/bluebubbles"
@@ -151,7 +153,13 @@ describe("BlueBubbles recovery autonomy budget", () => {
     mockEmitNervesEvent.mockReset()
   })
 
+  afterEach(() => {
+    vi.useRealTimers()
+  })
+
   it("skips over-budget recovery before the provider path and leaves a receipt", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] })
+    vi.setSystemTime(new Date("2026-07-09T17:00:00.000Z"))
     const agentRoot = tempAgentRoot()
     mockGetAgentRoot.mockReturnValue(agentRoot)
     for (let index = 0; index < AUTONOMY_BUDGET_DEFAULT_POLICY.senseRecoveryPaidTurnsPer15m; index++) {
@@ -182,7 +190,9 @@ describe("BlueBubbles recovery autonomy budget", () => {
     expect(JSON.stringify(result)).not.toContain("who is pending")
   })
 
-  it("releases the in-flight marker when over-budget recovery skips a repaired message", async () => {
+  it("keeps an over-budget message pending so a later recovery pass retries it", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] })
+    vi.setSystemTime(new Date("2026-07-09T17:00:00.000Z"))
     const agentRoot = tempAgentRoot()
     mockGetAgentRoot.mockReturnValue(agentRoot)
     for (let index = 0; index < AUTONOMY_BUDGET_DEFAULT_POLICY.senseRecoveryPaidTurnsPer15m; index++) {
@@ -211,11 +221,60 @@ describe("BlueBubbles recovery autonomy budget", () => {
     })
 
     expect(first).toEqual(expect.objectContaining({ recovered: 0, skipped: 1, failed: 0 }))
-    expect(second).toEqual(expect.objectContaining({ recovered: 0, skipped: 0, failed: 0 }))
-    expect(repairEvent).toHaveBeenCalledTimes(1)
+    expect(second).toEqual(expect.objectContaining({ recovered: 0, skipped: 1, failed: 0 }))
+    expect(repairEvent).toHaveBeenCalledTimes(2)
+    expect(listPendingBlueBubblesSemanticCaptures("testagent").map((capture) => capture.event.eventGuid))
+      .toContain("blocked-release-guid")
+  })
+
+  it("keeps a storm-breaker-blocked message pending and recovers it after the breaker lifts", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] })
+    vi.setSystemTime(new Date("2026-10-26T15:00:00.000Z"))
+    const agentRoot = tempAgentRoot()
+    mockGetAgentRoot.mockReturnValue(agentRoot)
+    recordSemanticMessage("storm-blocked-guid")
+    const failingRepair = vi.fn(async () => {
+      throw new Error("identity resolution failed")
+    })
+    for (let attempt = 0; attempt < AUTONOMY_BUDGET_DEFAULT_POLICY.stormFailureThreshold; attempt++) {
+      const failed = await recoverCapturedBlueBubblesInboundMessages({
+        getAgentName: () => "testagent",
+        createClient: () => ({ repairEvent: failingRepair } as any),
+        runAgent: vi.fn() as any,
+      })
+      expect(failed).toEqual(expect.objectContaining({ recovered: 0, failed: 1 }))
+    }
+    const [breaker] = readAutonomyStormBreakers(agentRoot)
+    expect(breaker).toBeDefined()
+    expect(Date.parse(breaker.blockedUntil)).toBeGreaterThan(Date.now())
+
+    const repairEvent = vi.fn(async () => repairedMessage("storm-blocked-guid"))
+    const blocked = await recoverCapturedBlueBubblesInboundMessages({
+      getAgentName: () => "testagent",
+      createClient: () => ({ repairEvent } as any),
+      runAgent: vi.fn() as any,
+    })
+    expect(blocked).toEqual(expect.objectContaining({ recovered: 0, skipped: 1, failed: 0 }))
+    expect(listPendingBlueBubblesSemanticCaptures("testagent").map((capture) => capture.event.eventGuid))
+      .toContain("storm-blocked-guid")
+
+    vi.setSystemTime(Date.parse(breaker.blockedUntil) + 1_000)
+    mockEmitNervesEvent.mockClear()
+    await recoverCapturedBlueBubblesInboundMessages({
+      getAgentName: () => "testagent",
+      createClient: () => ({ repairEvent } as any),
+      runAgent: vi.fn() as any,
+    })
+
+    expect(repairEvent).toHaveBeenCalledTimes(2)
+    expect(mockEmitNervesEvent).toHaveBeenCalledWith(expect.objectContaining({
+      event: "heart.autonomy_budget_allowed",
+    }))
   })
 
   it("fails an unresolved repaired route before starting over-budget recovery work", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] })
+    vi.setSystemTime(new Date("2026-07-09T17:00:00.000Z"))
     const agentRoot = tempAgentRoot()
     mockGetAgentRoot.mockReturnValue(agentRoot)
     for (let index = 0; index < AUTONOMY_BUDGET_DEFAULT_POLICY.senseRecoveryPaidTurnsPer15m; index++) {

@@ -212,6 +212,28 @@ describe("friend dedupe", () => {
     ])
   })
 
+  it("groups records of any name and trust that share a person identity, into the higher-trust record", () => {
+    const handle = (externalId: string) => ({ provider: "imessage-handle" as const, externalId, linkedAt: "t" })
+    const groupChat = handle("group:any;+;chat-1")
+    const groups = planFriendDedupe([
+      record({ id: "family-ari", externalIds: [handle("+15551234567"), handle("ari@mendelow.me"), groupChat] }),
+      record({
+        id: "stale-stranger",
+        name: "ari@mendelow.me",
+        trustLevel: "stranger",
+        createdAt: "2025-01-01T00:00:00.000Z",
+        notes: { a: { value: "1", savedAt: "t" }, b: { value: "2", savedAt: "t" } },
+        externalIds: [handle("ari@mendelow.me")],
+      }),
+      record({ id: "group-member", name: "Sam", trustLevel: "friend", externalIds: [handle("+15550000000"), groupChat] }),
+      record({ id: "teams-ari", externalIds: [{ ...AAD, linkedAt: "t" }] }),
+      record({ id: "teams-other-tenant", name: "Other", externalIds: [{ ...AAD, tenantId: "tenant-2", linkedAt: "t" }] }),
+    ])
+    expect(groups.map((group) => [group.canonical.id, group.duplicates.map((item) => item.id)])).toEqual([
+      ["family-ari", ["stale-stranger"]],
+    ])
+  })
+
   it("prefers the oldest record when note counts tie", () => {
     const groups = planFriendDedupe([
       record({ id: "z-old", createdAt: "2026-01-01T00:00:00.000Z" }),
