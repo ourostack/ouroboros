@@ -4,7 +4,8 @@
     {
       "version": "0.1.0-alpha.950",
       "changes": [
-        "Slugger's model calls work again: Ouro now identifies as a current Claude Code release, so the API stops refusing claude-opus-5-5, and Shepherd's check-ins and notices resume."
+        "Slugger's model calls work again: Ouro now identifies as a current Claude Code release, so the API stops refusing claude-opus-5-5, and Shepherd's check-ins and notices resume.",
+        "Saving an operator trust file twice in the same millisecond no longer fails: the second backup takes the next free name, and no backup is ever overwritten."
       ]
     },
     {
