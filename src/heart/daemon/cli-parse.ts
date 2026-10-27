@@ -212,6 +212,7 @@ export function usage(): string {
     "  ouro mailbox [--json]",
     "  ouro -v|--version",
     "  ouro auth [--agent <name>] [--provider <provider>]",
+    "  ouro auth --agent <name> --provider anthropic --api-key-file <path> [--base-url <url>]",
     "  ouro account ensure [--agent <name>] [--owner-email <email> --source <label>|--no-delegated-source] [--rotate-missing-mail-keys]",
     "  ouro connect [providers|perplexity|embeddings|teams|bluebubbles|mail|voice|a2a|telegram|workbench] [--agent <name>] [--owner-email <email> --source <label>|--no-delegated-source] [--rotate-missing-mail-keys]",
     "  ouro mail import-mbox --file <path> [--owner-email <email>] [--source <label>] [--agent <name>] [--foreground]",
@@ -261,6 +262,7 @@ export function usage(): string {
     "  ouro a2a card [--agent <name>] [--base-url <url>] [--json]",
     "  ouro a2a onboard [--agent <name>] (--card-url <url>|--did <did:key> --name <name>) [--trust <level>] [--name <name>]",
     "  ouro a2a serve [--agent <name>] [--host <host>] [--port <port>] [--base-url <url>] [--path <path>]",
+    "  ouro gateway serve --keys-dir <dir> [--host <host>] [--port <port>] [--state <path>] [--upstream <url>] [--cooldown-minutes <n>]",
     "  ouro a2a identity [--identity-file <path>] [--json]",
     "  ouro a2a message --to <card-url> --text <text> [--context <id>] [--delegated] [--identity-file <path>] [--json]",
     "  ouro a2a outbox list --to <card-url> [--since <cursor>] [--identity-file <path>] [--json]",
@@ -751,6 +753,8 @@ function parseAuthCommand(args: string[]): OuroCliCommand {
   }
   const { agent, rest } = extractAgentFlag(args)
   let provider: AgentProvider | undefined
+  let apiKeyFile: string | undefined
+  let baseUrl: string | undefined
   for (let i = 0; i < rest.length; i += 1) {
     if (rest[i] === "--provider") {
       const value = rest[i + 1]
@@ -759,11 +763,28 @@ function parseAuthCommand(args: string[]): OuroCliCommand {
       i += 1
       continue
     }
+    // The API key itself is read from a file (or /dev/stdin), never from argv, so it stays out of
+    // shell history and process listings.
+    if (rest[i] === "--api-key-file" || rest[i] === "--base-url") {
+      const value = rest[i + 1]
+      if (!value || value.startsWith("--")) throw new Error(`${rest[i]} requires a value.`)
+      if (rest[i] === "--api-key-file") apiKeyFile = value
+      else baseUrl = value
+      i += 1
+      continue
+    }
   }
+  if ((apiKeyFile || baseUrl) && provider !== "anthropic") {
+    throw new Error("--api-key-file and --base-url are only for --provider anthropic (API-key mode).")
+  }
+  if (baseUrl && !apiKeyFile) throw new Error("--base-url requires --api-key-file.")
+  if (baseUrl && !/^https?:\/\//.test(baseUrl)) throw new Error("--base-url must be an http(s) URL.")
   return {
     kind: "auth.run",
     ...(agent ? { agent } : {}),
     ...(provider ? { provider } : {}),
+    ...(apiKeyFile ? { apiKeyFile } : {}),
+    ...(baseUrl ? { baseUrl } : {}),
   }
 }
 
@@ -1817,6 +1838,50 @@ function parseA2ACommand(args: string[]): OuroCliCommand {
   throw new Error("Usage: ouro a2a card|onboard|serve|message|identity|outbox|escalation|delegated-commands ...")
 }
 
+const GATEWAY_SERVE_USAGE = "Usage: ouro gateway serve --keys-dir <dir> [--host <host>] [--port <port>] [--state <path>] [--upstream <url>] [--cooldown-minutes <n>]"
+
+function parseGatewayCommand(args: string[]): OuroCliCommand {
+  const [sub, ...rest] = args
+  if (sub !== "serve") throw new Error(GATEWAY_SERVE_USAGE)
+  let keysDir: string | undefined
+  let host: string | undefined
+  let port: number | undefined
+  let statePath: string | undefined
+  let upstream: string | undefined
+  let cooldownMinutes: number | undefined
+  for (let i = 0; i < rest.length; i += 1) {
+    const flag = rest[i]
+    const value = rest[i + 1]
+    if (!value || value.startsWith("--")) throw new Error(GATEWAY_SERVE_USAGE)
+    i += 1
+    if (flag === "--keys-dir") keysDir = value
+    else if (flag === "--host") host = value
+    else if (flag === "--state") statePath = value
+    else if (flag === "--upstream") {
+      if (!/^https?:\/\//.test(value)) throw new Error("--upstream must be an http(s) URL")
+      upstream = value
+    } else if (flag === "--port") {
+      const parsed = Number(value)
+      if (!Number.isInteger(parsed) || parsed < 0 || parsed > 65535) throw new Error("Gateway port must be 0-65535")
+      port = parsed
+    } else if (flag === "--cooldown-minutes") {
+      const parsed = Number(value)
+      if (!Number.isFinite(parsed) || parsed <= 0) throw new Error("--cooldown-minutes must be a positive number")
+      cooldownMinutes = parsed
+    } else throw new Error(GATEWAY_SERVE_USAGE)
+  }
+  if (!keysDir) throw new Error(GATEWAY_SERVE_USAGE)
+  return {
+    kind: "gateway.serve",
+    keysDir,
+    ...(host ? { host } : {}),
+    ...(port !== undefined ? { port } : {}),
+    ...(statePath ? { statePath } : {}),
+    ...(upstream ? { upstream } : {}),
+    ...(cooldownMinutes !== undefined ? { cooldownMinutes } : {}),
+  }
+}
+
 function parseConfigCommand(args: string[]): OuroCliCommand {
   const { agent, rest: afterAgent } = extractAgentFlag(args)
   const { facing, rest: cleaned } = extractFacingFlag(afterAgent)
@@ -2817,6 +2882,7 @@ export function parseOuroCommand(args: string[]): OuroCliCommand {
   if (head === "migrate-to-desk") return parseMigrateToDeskCommand(args.slice(1))
   if (head === "friend") return parseFriendCommand(args.slice(1))
   if (head === "a2a") return parseA2ACommand(args.slice(1))
+  if (head === "gateway") return parseGatewayCommand(args.slice(1))
   if (head === "config") return parseConfigCommand(args.slice(1))
   if (head === "mcp") return parseMcpCommand(args.slice(1))
   if (head === "shepherd") {

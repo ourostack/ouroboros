@@ -204,7 +204,8 @@ function hasEmptyCredentials(provider: AgentProvider, config: ProviderRuntimeCon
       typeof record.managedIdentityClientId === "string" && record.managedIdentityClientId.length > 0
     if (hasManagedIdentity) return false
   }
-  return PROVIDER_CREDENTIALS[provider].required.some((key) => !record[key])
+  const requirements = PROVIDER_CREDENTIALS[provider]
+  return ![requirements.required, ...(requirements.alternativeRequired ?? [])].some((fields) => fields.every((key) => !!record[key]))
 }
 
 export function createProviderRuntimeForConfig(
