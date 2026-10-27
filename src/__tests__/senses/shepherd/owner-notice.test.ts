@@ -9,6 +9,7 @@ import { resetIdentity, setAgentName } from "../../../heart/identity"
 import { appendReturn, type ReturnRecord } from "../../../senses/shepherd/returns"
 import { noticeDeliveryState, readNoticeOutbox } from "../../../senses/shepherd/notice-outbox"
 import {
+  NOTICE_REPLY_LINE,
   NOTICE_COALESCE_MS,
   NOTICE_RETRY_MS,
   chooseTeamsBot,
@@ -23,6 +24,8 @@ import {
   resolveNoticeTargets,
   type NoticeTarget,
 } from "../../../senses/shepherd/owner-notice"
+
+const replyable = (body: string): string => `${body}\n\n${NOTICE_REPLY_LINE}`
 
 const mockSend = vi.fn()
 vi.mock("node:fs", async original => {
@@ -78,7 +81,7 @@ describe("owner notice text", () => {
     const text = noticeLine(record({
       kind: "error", action: "let_through", reply: null, reason: "Connection error.",
     }))
-    expect(text).toContain("Shepherd")
+    expect(text).toMatch(/^I could not /)
     expect(text).toContain("Connection error.")
     expect(text).not.toMatch(/stopped|waiting for you|needs you/)
   })
@@ -88,7 +91,7 @@ describe("owner notice text", () => {
       kind: "unclear", action: "let_through", reply: null,
       reason: "The agent is still mid-task, running a shell inspection; it has not handed control back.",
     }))
-    expect(text).toContain("Shepherd")
+    expect(text).toMatch(/^I could not /)
     expect(text).not.toMatch(/\bstopped\b|waiting for you|needs you/)
     expect(text).toContain("has not handed control back")
   })
@@ -108,7 +111,7 @@ describe("owner notice text", () => {
     const session = { id: "0a1b2c3d-4e5f", ref: "surface:30", workspace: "workspace:3", workspaceTitle: "workflows",
       title: "Troubleshoot Outlook", agent: "Copilot", cwd: "/Users/a/personal-desk", focused: false }
     expect(noticeMessage([record({ agent: null, cwd: null, kind: "done", reason: "Fixed the error." })], new Map([[session.id, session]])))
-      .toBe("Copilot in personal-desk (workflows / Troubleshoot Outlook; surface:30) says it is done. Why: Fixed the error.")
+      .toBe(`Copilot in personal-desk (workflows / Troubleshoot Outlook; surface:30) says it is done. Why: Fixed the error.\n\n${NOTICE_REPLY_LINE}`)
     expect(noticeLine(record({ title: "Saved tab", workspaceTitle: "Saved workspace" }), session))
       .toContain("(Saved workspace / Saved tab; surface:30)")
   })
@@ -130,8 +133,8 @@ describe("owner notice text", () => {
     expect(noticeLine(record({ kind: "done", action: "let_through", agent: null, cwd: null, reason: "" }), "s")).toBe("A coding agent (s) says it is done. Why: no reason given")
     expect(noticeLine(record({ kind: "loop_guard", reason: "loop guard: x" }), "s")).toBe("Claude Code in ouroboros (s): I stopped answering it after too many replies, so it is waiting for you. Why: loop guard: x")
     expect(noticeLine(record({ kind: "working", reason: "tests pass" }), "s")).toBe("Claude Code in ouroboros (s) is still working in the background and has news. Why: tests pass")
-    expect(noticeLine(record({ kind: "unclear", reason: "a shell" }), "s")).toBe("Shepherd could not determine the current state of Claude Code in ouroboros (s). Why: a shell")
-    expect(noticeLine(record({ kind: "error", reason: "the judge timed out" }), "s")).toBe("Shepherd could not complete its observation of Claude Code in ouroboros (s); the agent's state was not determined. Why: the judge timed out")
+    expect(noticeLine(record({ kind: "unclear", reason: "a shell" }), "s")).toBe("I could not determine the current state of Claude Code in ouroboros (s). Why: a shell")
+    expect(noticeLine(record({ kind: "error", reason: "the judge timed out" }), "s")).toBe("I could not complete my observation of Claude Code in ouroboros (s); the agent's state was not determined. Why: the judge timed out")
   })
 
   it("never lets terminal fields carry markup or a mention", () => {
@@ -140,13 +143,19 @@ describe("owner notice text", () => {
     expect(line).not.toMatch(/[<>[\]*@\n]/)
   })
 
+  it("invites a reply in the same conversation, which the agent relays to the coding session", () => {
+    expect(NOTICE_REPLY_LINE).toBe("Reply here and I'll pass your answer on.")
+    expect(noticeMessage([record({ kind: "gate" })])).toBe(`${noticeLine(record({ kind: "gate" }))}\n\n${NOTICE_REPLY_LINE}`)
+  })
+
   it("puts a burst in one message and counts what does not fit", () => {
-    expect(noticeMessage([record()], new Map([["0a1b2c3d-4e5f", "surface:12"]]))).toBe(noticeLine(record(), "surface:12"))
+    expect(noticeMessage([record()], new Map([["0a1b2c3d-4e5f", "surface:12"]]))).toBe(replyable(noticeLine(record(), "surface:12")))
     const two = noticeMessage([record(), record({ session: "S2", kind: "gate", agent: "Codex" })], new Map([["S2", "surface:2"]]))
-    expect(two.split("\n")).toEqual(["Updates from 2 coding sessions:", `- ${noticeLine(record())}`, `- ${noticeLine(record({ session: "S2", kind: "gate", agent: "Codex" }), "surface:2")}`])
+    expect(two.split("\n")).toEqual(["Updates from 2 coding sessions:", `- ${noticeLine(record())}`, `- ${noticeLine(record({ session: "S2", kind: "gate", agent: "Codex" }), "surface:2")}`, "", NOTICE_REPLY_LINE])
     const many = noticeMessage(Array.from({ length: 9 }, (_, index) => record({ session: `S${index}` })))
-    expect(many.split("\n")).toHaveLength(1 + 6 + 1)
-    expect(many.split("\n").at(-1)).toBe("- and 3 more.")
+    expect(many.split("\n")).toHaveLength(1 + 6 + 1 + 2)
+    expect(many.split("\n").at(-3)).toBe("- and 3 more.")
+    expect(many.endsWith(`\n\n${NOTICE_REPLY_LINE}`)).toBe(true)
   })
 
   it("counts six observations of one stable target as one session and displays the latest", () => {
@@ -154,8 +163,8 @@ describe("owner notice text", () => {
       at: `2026-10-12T20:0${index}:00.000Z`, reason: `observation-${index}`,
     }))
     const original = structuredClone(records)
-    expect(noticeMessage(records)).toBe(noticeLine(records[5]!))
-    expect(noticeMessage([...records].reverse())).toBe(noticeLine(records[5]!))
+    expect(noticeMessage(records)).toBe(replyable(noticeLine(records[5]!)))
+    expect(noticeMessage([...records].reverse())).toBe(replyable(noticeLine(records[5]!)))
     expect(records).toEqual(original)
     expect(noticeMessage([records[0]!, { ...records[1]!, host: "other-host" }])).toContain("Updates from 2 coding sessions:")
   })
@@ -163,12 +172,12 @@ describe("owner notice text", () => {
   it("orders distinct targets and treats invalid timestamps conservatively with deterministic ties", () => {
     const valid = record({ transition: "z", reason: "valid", at: "2026-10-12T20:00:00.000Z" })
     const invalid = record({ transition: "a", reason: "unknown", at: "invalid" })
-    expect(noticeMessage([invalid, valid])).toBe(noticeLine(valid))
-    expect(noticeMessage([valid, invalid])).toBe(noticeLine(valid))
-    expect(noticeMessage([valid, { ...valid, transition: "a", reason: "older tie" }])).toBe(noticeLine(valid))
+    expect(noticeMessage([invalid, valid])).toBe(replyable(noticeLine(valid)))
+    expect(noticeMessage([valid, invalid])).toBe(replyable(noticeLine(valid)))
+    expect(noticeMessage([valid, { ...valid, transition: "a", reason: "older tie" }])).toBe(replyable(noticeLine(valid)))
     const lastInvalid = { ...invalid, transition: "z", reason: "later unknown" }
-    expect(noticeMessage([invalid, lastInvalid])).toBe(noticeLine(lastInvalid))
-    expect(noticeMessage([lastInvalid, invalid])).toBe(noticeLine(lastInvalid))
+    expect(noticeMessage([invalid, lastInvalid])).toBe(replyable(noticeLine(lastInvalid)))
+    expect(noticeMessage([lastInvalid, invalid])).toBe(replyable(noticeLine(lastInvalid)))
     const reversed = noticeMessage([record({ session: "Z" }), record({ session: "A" })])
     expect(reversed.indexOf("(A)")).toBeLessThan(reversed.indexOf("(Z)"))
   })
@@ -180,6 +189,7 @@ describe("owner notice text", () => {
     expect(message).not.toContain("invalid-time")
     const dated = noticeMessage([record()], new Map(), { recovered: true })
     expect(dated).toContain("2026-10-12T20:00:00.000Z")
+    expect(dated.endsWith(`\n\n${NOTICE_REPLY_LINE}`)).toBe(true)
   })
 })
 
@@ -751,7 +761,7 @@ describe("owner notifier", () => {
     expect(tasks).toEqual([])
     instance.notify(record({ kind: "gate" }))
     await instance.flush()
-    expect(sent.map((entry) => entry.text)).toEqual([noticeLine(record({ kind: "gate" }), "surface:12")])
+    expect(sent.map((entry) => entry.text)).toEqual([replyable(noticeLine(record({ kind: "gate" }), "surface:12"))])
     const off = notifier({ policy: "off" })
     off.instance.notify(record({ kind: "gate" }))
     await off.instance.flush()

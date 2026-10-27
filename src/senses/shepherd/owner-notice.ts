@@ -95,11 +95,14 @@ export function noticeLine(record: ReturnRecord, location?: string | HostSession
     case "working":
       return `${subject} is still working in the background and has news. ${why}`
     case "unclear":
-      return `Shepherd could not determine the current state of ${subject}. ${why}`
+      return `I could not determine the current state of ${subject}. ${why}`
     default:
-      return `Shepherd could not complete its observation of ${subject}; the agent's state was not determined. ${why}`
+      return `I could not complete my observation of ${subject}; the agent's state was not determined. ${why}`
   }
 }
+
+/** Closes every notice: the person answers in the same conversation, and the agent relays it with `shepherd_send`. */
+export const NOTICE_REPLY_LINE = "Reply here and I'll pass your answer on."
 
 /** A bounded display of latest observations; all input records retain delivery custody. */
 export function noticeMessage(records: ReturnRecord[], refs: ReadonlyMap<string, string | HostSession> = new Map(), context: { recovered?: boolean } = {}): string {
@@ -122,7 +125,7 @@ export function noticeMessage(records: ReturnRecord[], refs: ReadonlyMap<string,
   const more = sessions.length - lines.length
   const body = sessions.length === 1 ? lines[0]!
     : [`Updates from ${sessions.length} coding sessions:`, ...lines.map(line => `- ${line}`), ...(more > 0 ? [`- and ${more} more.`] : [])].join("\n")
-  return context.recovered ? `Includes recovered historical observations, not live status:\n${body}` : body
+  return `${context.recovered ? `Includes recovered historical observations, not live status:\n${body}` : body}\n\n${NOTICE_REPLY_LINE}`
 }
 
 export interface NoticeTarget {
