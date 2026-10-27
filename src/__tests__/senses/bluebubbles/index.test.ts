@@ -1933,6 +1933,32 @@ describe("BlueBubbles sense runtime", () => {
     }))
   })
 
+  it("delivers a reply that takes longer than two minutes instead of dropping it", async () => {
+    vi.useFakeTimers()
+    mocks.runAgent.mockImplementationOnce(async (_messages, callbacks) => {
+      callbacks.onModelStart()
+      await vi.advanceTimersByTimeAsync(125_000)
+      await flushAsyncWork()
+      callbacks.onTextChunk("worth the wait")
+      return {
+        content: "worth the wait",
+        toolCalls: [],
+        outputItems: [],
+        usage: { input_tokens: 1, output_tokens: 1, reasoning_tokens: 0, total_tokens: 2 },
+      }
+    })
+
+    const bluebubbles = await import("../../../senses/bluebubbles")
+    try {
+      await bluebubbles.handleBlueBubblesEvent(dmThreadPayload)
+    } finally {
+      vi.useRealTimers()
+    }
+
+    expect(mocks.sendText.mock.calls.map((call: any[]) => call[0]?.text)).toEqual(["worth the wait"])
+    expect(mocks.emitNervesEvent).not.toHaveBeenCalledWith(expect.objectContaining({ event: "senses.bluebubbles_turn_timeout" }))
+  })
+
   it("still attempts mark-read when typing-start transport fails and surfaces the activity warning", async () => {
     mocks.setTyping.mockRejectedValueOnce(new Error("typing transport down"))
 
@@ -1980,7 +2006,7 @@ describe("BlueBubbles sense runtime", () => {
     }
     expect(mocks.handleInboundTurn).toHaveBeenCalledTimes(1)
 
-    await vi.advanceTimersByTimeAsync(120_000)
+    await vi.advanceTimersByTimeAsync(600_000)
     await expect(handling).resolves.toEqual(expect.objectContaining({
       handled: true,
       notifiedAgent: false,
@@ -2020,7 +2046,7 @@ describe("BlueBubbles sense runtime", () => {
     }
     expect(mocks.handleInboundTurn).toHaveBeenCalledTimes(1)
 
-    await vi.advanceTimersByTimeAsync(120_000)
+    await vi.advanceTimersByTimeAsync(600_000)
     await vi.advanceTimersByTimeAsync(4_000)
     await expect(handling).resolves.toEqual(expect.objectContaining({
       handled: true,
@@ -2072,7 +2098,7 @@ describe("BlueBubbles sense runtime", () => {
       await flushAsyncWork()
     }
 
-    await vi.advanceTimersByTimeAsync(120_000)
+    await vi.advanceTimersByTimeAsync(600_000)
     await vi.advanceTimersByTimeAsync(4_000)
     await expect(handling).resolves.toEqual(expect.objectContaining({
       handled: true,
@@ -2109,7 +2135,7 @@ describe("BlueBubbles sense runtime", () => {
     const finalRequestSignal = mocks.sendText.mock.calls[0]?.[0]?.signal as AbortSignal | undefined
     expect(finalRequestSignal?.aborted).toBe(false)
 
-    await vi.advanceTimersByTimeAsync(120_000)
+    await vi.advanceTimersByTimeAsync(600_000)
     await flushAsyncWork()
     expect(settled).toBe(false)
     expect(finalRequestSignal?.aborted).toBe(false)
@@ -2152,7 +2178,7 @@ describe("BlueBubbles sense runtime", () => {
         reason: "mutation_state_only",
       }),
     )
-    await vi.advanceTimersByTimeAsync(120_000)
+    await vi.advanceTimersByTimeAsync(600_000)
     expect(mocks.handleInboundTurn).not.toHaveBeenCalled()
     expect(mocks.runAgent).not.toHaveBeenCalled()
     expect(mocks.sendText).not.toHaveBeenCalled()
@@ -2179,7 +2205,7 @@ describe("BlueBubbles sense runtime", () => {
     const finalRequestSignal = mocks.sendText.mock.calls[0]?.[0]?.signal as AbortSignal | undefined
     expect(finalRequestSignal?.aborted).toBe(false)
 
-    await vi.advanceTimersByTimeAsync(120_000)
+    await vi.advanceTimersByTimeAsync(600_000)
     await flushAsyncWork()
     expect(settled).toBe(false)
     expect(finalRequestSignal?.aborted).toBe(false)
@@ -2211,7 +2237,7 @@ describe("BlueBubbles sense runtime", () => {
       await flushAsyncWork()
     }
 
-    await vi.advanceTimersByTimeAsync(120_000)
+    await vi.advanceTimersByTimeAsync(600_000)
     await flushAsyncWork()
     expect(settled).toBe(false)
 
@@ -11985,7 +12011,7 @@ describe("BlueBubbles sense runtime", () => {
     }
     expect(mocks.handleInboundTurn).toHaveBeenCalledTimes(1)
 
-    await vi.advanceTimersByTimeAsync(120_000)
+    await vi.advanceTimersByTimeAsync(600_000)
     await flushAsyncWork()
     expect(handlingSettled).toBe(false)
     expect(leaseReleased).not.toHaveBeenCalled()

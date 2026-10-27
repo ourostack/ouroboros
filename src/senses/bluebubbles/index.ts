@@ -423,7 +423,7 @@ export interface ProactiveBlueBubblesSessionSendParams {
   }
   /** Identifies this delivery when it is saved into the chat's session; one is generated per send when absent. */
   deliveryId?: string
-  /** Who is sending, for the `[sent by ...]` prefix the saved message carries. Defaults to `proactive`. */
+  /** Who is sending, for the `[you sent this via ...]` prefix the saved message carries. Defaults to `proactive`. */
   origin?: OutboundOrigin
 }
 
@@ -468,8 +468,9 @@ const defaultDeps: RuntimeDeps = {
 const BLUEBUBBLES_RUNTIME_SYNC_INTERVAL_MS = 30_000
 const BLUEBUBBLES_RECOVERY_PASS_DELAY_MS = 1_000
 const BLUEBUBBLES_RECOVERY_PASS_INTERVAL_MS = 30_000
-const BLUEBUBBLES_LIVE_TURN_TIMEOUT_MS = 2 * 60_000
-const BLUEBUBBLES_RECOVERY_TURN_TIMEOUT_MS = 10 * 60_000
+// A turn that is still thinking after this long is treated as hung. It is generous on purpose: a slow reply that
+// arrives is worth far more than a dropped one, and a newer message from the person still supersedes an older turn.
+const BLUEBUBBLES_TURN_TIMEOUT_MS = 10 * 60_000
 const BLUEBUBBLES_LIVE_TURN_STALLED_MS = 90_000
 const BLUEBUBBLES_CALLBACK_CLEANUP_TIMEOUT_MS = 2_000
 const BLUEBUBBLES_ACTIVITY_OPERATION_TIMEOUT_MS = 20_000
@@ -2113,7 +2114,7 @@ async function handleBlueBubblesNormalizedEvent(
       lifecycleSignal?.throwIfAborted()
 
       // ── Call shared pipeline ────────────────────────────────────────
-      const timeoutMs = options.timeoutMs ?? BLUEBUBBLES_LIVE_TURN_TIMEOUT_MS
+      const timeoutMs = options.timeoutMs ?? BLUEBUBBLES_TURN_TIMEOUT_MS
       timeoutPromise = new Promise<BlueBubblesHandleResult>((resolve) => {
         resolveTimeout = resolve
       })
@@ -3622,7 +3623,7 @@ export async function catchUpMissedBlueBubblesMessages(
 
         semanticGenerationOwned = true
         const handled = await handleCapturedBlueBubblesSemanticEvent(captured, resolvedDeps, "upstream-catchup", {
-          timeoutMs: BLUEBUBBLES_RECOVERY_TURN_TIMEOUT_MS,
+          timeoutMs: BLUEBUBBLES_TURN_TIMEOUT_MS,
           autonomyBudgetTrigger: "recovery",
           observationReservation,
           lifecycleSignal: options.lifecycleSignal,
@@ -3762,7 +3763,7 @@ export async function recoverCapturedBlueBubblesInboundMessages(
           normalized,
           writeResult: "semantic_capture_duplicate",
         }, resolvedDeps, "webhook", {
-          timeoutMs: BLUEBUBBLES_RECOVERY_TURN_TIMEOUT_MS,
+          timeoutMs: BLUEBUBBLES_TURN_TIMEOUT_MS,
           autonomyBudgetTrigger: "recovery",
           semanticRecovery: true,
           observationReservation,

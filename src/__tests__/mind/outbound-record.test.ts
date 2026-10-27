@@ -69,7 +69,7 @@ describe("recordOutboundInSession", () => {
     const file = seedSession()
     expect(record()).toBe("recorded")
     const [event] = outboundEvents(file)
-    expect(event).toMatchObject({ role: "assistant", content: "[sent by Shepherd] Your agent needs you.",
+    expect(event).toMatchObject({ role: "assistant", content: "[you sent this via Shepherd] Your agent needs you.",
       provenance: { captureKind: "synthetic", outbound: { origin: "shepherd", deliveryId: "shepherd:abc" } } })
   })
 
@@ -111,7 +111,7 @@ describe("recordOutboundInSession", () => {
     const file = seedSession()
     writeDeferred("older.json", { content: "earlier", origin: "send_message", deliveryId: "d-older", originLabel: "send_message", recordedAt: "2026-10-24T10:00:00.000Z" })
     expect(record()).toBe("recorded")
-    expect(outboundEvents(file).map((event) => event.content)).toEqual(["[sent by send_message] earlier", "[sent by Shepherd] Your agent needs you."])
+    expect(outboundEvents(file).map((event) => event.content)).toEqual(["[you sent this via send_message] earlier", "[you sent this via Shepherd] Your agent needs you."])
   })
 
   it("a write failure returns failed and logs mind.outbound_record_error", () => {
@@ -173,12 +173,12 @@ describe("recordOutboundInSession", () => {
     expect(parsed.events.find((event) => event.provenance.outbound)?.provenance.outbound).toEqual({ origin: "shepherd", deliveryId: "shepherd:abc" })
   })
 
-  it("loadSession of the recorded session yields an assistant message beginning \"[sent by Shepherd]\"", () => {
+  it("loadSession of the recorded session yields an assistant message beginning \"[you sent this via Shepherd]\"", () => {
     seedSession()
     record()
     const messages = loadSession(sessionFile())!.messages
     expect(messages.at(-1)).toMatchObject({ role: "assistant" })
-    expect(String(messages.at(-1)!.content)).toMatch(/\[sent by Shepherd\] Your agent needs you\.$/)
+    expect(String(messages.at(-1)!.content)).toMatch(/\[you sent this via Shepherd\] Your agent needs you\.$/)
   })
 
   it("a turn on a session created by createIfMissing builds a valid provider request (system prompt added by prompt-refresh)", async () => {
@@ -202,7 +202,7 @@ describe("drainOutboundRecords", () => {
     writeDeferred("a.json", { content: "first", origin: "voice", deliveryId: "d-1", originLabel: "voice call", recordedAt: "2026-10-24T10:00:00.000Z" })
     const count = withImmediateSessionTurnLease(file, (lease) => drainOutboundRecords(agentRoot, "ari", "bluebubbles", KEY, lease))
     expect(count).toBe(2)
-    expect(outboundEvents(file).map((event) => event.content)).toEqual(["[sent by voice call] first", "[sent by Shepherd] second"])
+    expect(outboundEvents(file).map((event) => event.content)).toEqual(["[you sent this via voice call] first", "[you sent this via Shepherd] second"])
     expect(fs.readdirSync(deferredDir()).sort()).toEqual(["applied"])
     expect(fs.readdirSync(path.join(deferredDir(), "applied")).sort()).toEqual(["a.json", "b.json"])
   })
@@ -217,7 +217,7 @@ describe("drainOutboundRecords", () => {
     fs.writeFileSync(path.join(deferredDir(), "applied", "old.json"), JSON.stringify({ content: "old", origin: "shepherd", deliveryId: "d-old", originLabel: "Shepherd", recordedAt: "2026-10-23T10:00:00.000Z" }))
     const count = withImmediateSessionTurnLease(file, (lease) => drainOutboundRecords(agentRoot, "ari", "bluebubbles", KEY, lease))
     expect(count).toBe(1)
-    expect(outboundEvents(file).map((event) => event.content)).toEqual(["[sent by reminder] kept"])
+    expect(outboundEvents(file).map((event) => event.content)).toEqual(["[you sent this via reminder] kept"])
     expect(fs.readdirSync(deferredDir()).sort()).toEqual(["applied", "half.json.tmp"])
     expect(errorEvents()).toHaveLength(2)
   })

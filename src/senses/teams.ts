@@ -1485,7 +1485,7 @@ export interface ProactiveTeamsSessionSendParams {
   }
   /** Identifies this delivery when it is saved into the conversation's session; one is generated per send when absent. */
   deliveryId?: string
-  /** Who is sending, for the `[sent by ...]` prefix the saved message carries. Defaults to `proactive`. */
+  /** Who is sending, for the `[you sent this via ...]` prefix the saved message carries. Defaults to `proactive`. */
   origin?: OutboundOrigin
 }
 

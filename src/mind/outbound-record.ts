@@ -42,7 +42,7 @@ function deferredFileName(deliveryId: string): string {
 }
 
 function recordedText(record: Pick<DeferredOutboundRecord, "content" | "originLabel">): string {
-  return `[sent by ${record.originLabel}] ${record.content}`
+  return `[you sent this via ${record.originLabel}] ${record.content}`
 }
 
 function recordError(message: string, meta: Record<string, string | number | null>): void {
@@ -56,7 +56,10 @@ function parseDeferred(raw: string): DeferredOutboundRecord | null {
   return value as DeferredOutboundRecord
 }
 
-/** How a recorded message names who sent it: `[sent by <label>]`. */
+/**
+ * How a recorded message names the way it was sent: `[you sent this via <label>]`. Every record is the agent's own
+ * message, so a reply to it on any channel is a reply to the agent, which owns and can act on it.
+ */
 export const OUTBOUND_ORIGIN_LABELS: Record<OutboundOrigin, string> = {
   shepherd: "Shepherd",
   send_message: "send_message",

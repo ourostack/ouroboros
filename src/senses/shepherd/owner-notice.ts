@@ -101,6 +101,9 @@ export function noticeLine(record: ReturnRecord, location?: string | HostSession
   }
 }
 
+/** Closes every notice: the person answers in the same conversation, and the agent relays it with `shepherd_send`. */
+export const NOTICE_REPLY_LINE = "Reply here and I'll pass your answer on."
+
 /** A bounded display of latest observations; all input records retain delivery custody. */
 export function noticeMessage(records: ReturnRecord[], refs: ReadonlyMap<string, string | HostSession> = new Map(), context: { recovered?: boolean } = {}): string {
   const latest = new Map<string, ReturnRecord>()
@@ -122,7 +125,7 @@ export function noticeMessage(records: ReturnRecord[], refs: ReadonlyMap<string,
   const more = sessions.length - lines.length
   const body = sessions.length === 1 ? lines[0]!
     : [`Updates from ${sessions.length} coding sessions:`, ...lines.map(line => `- ${line}`), ...(more > 0 ? [`- and ${more} more.`] : [])].join("\n")
-  return context.recovered ? `Includes recovered historical observations, not live status:\n${body}` : body
+  return `${context.recovered ? `Includes recovered historical observations, not live status:\n${body}` : body}\n\n${NOTICE_REPLY_LINE}`
 }
 
 export interface NoticeTarget {
