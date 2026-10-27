@@ -1099,4 +1099,45 @@ describe("external event attention lifecycle", () => {
     const observed = recordExternalEvent({ agent: "sanctuary", source: "guard", eventType: "health.observed", eventId, observationRevision: "rev-2", transition }, { root: eventRoot })
     expect(observed.shouldWake).toBe(shouldWake)
   })
+
+  describe("recovery without a model turn", () => {
+    const base = { agent: "sanctuary", source: "sanctuary-health", eventType: "health.observed" }
+    const disposeSilently = (recordPath: string) => {
+      const current = readExternalEventRecord(recordPath)
+      const claim = claimExternalEvent(recordPath, { owner: "worker", expectedVersion: current.version, expectedGeneration: current.generation })
+      commitExternalEventDisposition(recordPath, {
+        owner: "worker", expectedVersion: claim.version, expectedGeneration: current.generation,
+        disposition: { classifiedRevision: current.observationRevision, classification: "needs_attention", stewardPolicy: { kind: "none" }, decision: "silent", reason: "seen", nextWake: { kind: "on_change" }, careId: null, awaitId: null, actionRefs: [], verificationRefs: [] },
+      })
+    }
+
+    it("settles the recovery of an incident the owner never heard about", () => {
+      const eventRoot = root()
+      const opened = recordExternalEvent({ ...base, eventId: "notification:1", observationRevision: "rev-1", transition: "opened" }, { root: eventRoot })
+      disposeSilently(opened.recordPath)
+      const recovered = recordExternalEvent({ ...base, eventId: "notification:1", observationRevision: "rev-2", transition: "recovered" }, { root: eventRoot })
+      expect(recovered).toMatchObject({ shouldWake: false, executionState: "handled", generation: 1 })
+    })
+
+    it("settles a recovery that arrives while the opening wake is still queued or dead-lettered", () => {
+      const eventRoot = root()
+      recordExternalEvent({ ...base, eventId: "endpoint:a", observationRevision: "rev-1", transition: "opened" }, { root: eventRoot })
+      const recovered = recordExternalEvent({ ...base, eventId: "endpoint:a", observationRevision: "rev-2", transition: "recovered" }, { root: eventRoot })
+      expect(recovered).toMatchObject({ shouldWake: false, executionState: "handled", claimOwner: null, attemptCount: 0, disposition: null })
+      const reopened = recordExternalEvent({ ...base, eventId: "endpoint:a", observationRevision: "rev-3", transition: "opened" }, { root: eventRoot })
+      expect(reopened).toMatchObject({ shouldWake: true, executionState: "received", generation: 2 })
+    })
+
+    it("still wakes once to tell the owner an incident they were told about is resolved", () => {
+      const eventRoot = root()
+      const opened = recordExternalEvent({ ...base, eventId: "disk:1", observationRevision: "rev-1", transition: "opened" }, { root: eventRoot })
+      const claim = claimExternalEvent(opened.recordPath, { owner: "worker", expectedVersion: opened.version, expectedGeneration: 1 })
+      commitExternalEventDisposition(opened.recordPath, {
+        owner: "worker", expectedVersion: claim.version, expectedGeneration: 1,
+        disposition: { classifiedRevision: "rev-1", classification: "needs_attention", stewardPolicy: { kind: "none" }, decision: "report", reason: "told the owner", nextWake: { kind: "on_change" }, careId: null, awaitId: null, actionRefs: [], verificationRefs: [], ownerMessage: { status: "sent", effectKey: "k" } },
+      })
+      const recovered = recordExternalEvent({ ...base, eventId: "disk:1", observationRevision: "rev-2", transition: "recovered" }, { root: eventRoot })
+      expect(recovered).toMatchObject({ shouldWake: true, executionState: "received", generation: 2 })
+    })
+  })
 })

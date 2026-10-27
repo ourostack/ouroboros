@@ -16,7 +16,7 @@ const externalEventDispositionProperties = {
   expectedGeneration: { type: "number", description: "Exact generation shown in the external-event turn" },
   classifiedRevision: { type: "string", description: "Exact observation revision investigated in this turn" },
   classification: { type: "string", enum: ["expected", "needs_attention", "adopted", "snoozed", "dismissed_until_change", "resolved"] },
-  stewardPolicyKind: { type: "string", enum: ["current", "none"], description: "Use current with the exact live policy key/version, or none only for a fresh observation with no applicable policy" },
+  stewardPolicyKind: { type: "string", enum: ["current", "none"], description: "Use current with the exact live policy key/version when one applies; otherwise use none. Any event may be closed with none." },
   stewardPolicyKey: { type: "string", description: "Exact current policy key used for this decision" },
   stewardPolicyVersion: { type: "number", description: "Exact current policy version used for this decision" },
   decision: { type: "string", enum: ["silent", "act", "ask", "report"] },
@@ -80,7 +80,6 @@ function prepareExternalEventDisposition(a: Record<string, unknown>, ctx?: ToolC
   const policy = readStewardPolicy(agentRoot);
   let stewardPolicy: import("../heart/external-events/router").ExternalEventDisposition["stewardPolicy"];
   if (policyKind === "none") {
-    if (record.transition !== "opened") throw new Error("External event no-policy disposition requires a fresh observation");
     stewardPolicy = { kind: "none" };
   } else {
     const key = String(a.stewardPolicyKey ?? "").trim();

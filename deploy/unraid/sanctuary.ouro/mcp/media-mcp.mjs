@@ -110,11 +110,25 @@ function genreNames(item) {
   return ids.map((id) => TMDB_GENRES[id]).filter(Boolean)
 }
 
-function shelfItem(item) {
+// Jellyseerr's media status 3 only means Sonarr/Radarr track the title; it says nothing about
+// a download or a request. Name what is actually known so nobody reads it as "processing".
+function shelfStateOf(kind, info) {
+  if (info.status === 3) return info.downloadStatus?.length ? "downloading" : `in_${kind === "series" ? "sonarr" : "radarr"}_not_downloading`
+  return MEDIA_STATUS[info.status] ?? "not_on_shelf"
+}
+
+// A request exists only if Jellyseerr lists one; the media status is not a request.
+function requestStateOf(info) {
+  if (!Array.isArray(info.requests)) return info.status ? "unknown_check_media_request_status" : "never_requested"
+  if (info.requests.length === 0) return "never_requested"
+  return REQUEST_STATUS[info.requests[info.requests.length - 1].status] ?? "requested"
+}
+
+export function shelfItem(item) {
   const kind = item.mediaType === "tv" ? "series" : item.mediaType === "movie" ? "movie" : (item.firstAirDate ? "series" : "movie")
   const date = item.releaseDate ?? item.firstAirDate ?? ""
   const info = item.mediaInfo ?? {}
-  const status = MEDIA_STATUS[info.status] ?? "not_on_shelf"
+  const status = shelfStateOf(kind, info)
   return {
     title: item.title ?? item.name ?? null,
     year: date ? Number(date.slice(0, 4)) : null,
@@ -126,8 +140,8 @@ function shelfItem(item) {
     // The two fields that stop a second call:
     on_shelf: status === "available" || status === "partially_available",
     shelf_state: status,
-    request_state: info.status ? (status === "available" ? "available" : status) : "never_requested",
-    sonarr_id: info.externalServiceId ?? null,
+    request_state: requestStateOf(info),
+    sonarr_id: kind === "series" ? (info.externalServiceId ?? null) : null,
     radarr_id: kind === "movie" ? (info.externalServiceId ?? null) : null,
     poster_path: item.posterPath ? `https://image.tmdb.org/t/p/w500${item.posterPath}` : null,
     vote_average: item.voteAverage ?? null,

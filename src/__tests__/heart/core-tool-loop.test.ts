@@ -2156,16 +2156,29 @@ describe("runAgent tool loop guard", () => {
       expect(callbacks.onError).toHaveBeenCalledWith(expect.objectContaining({ message: expect.stringContaining("iteration limit exhausted") }), "terminal")
     })
 
-    it("keeps the old error when settle is not available on the channel", async () => {
+    const restCall = (note: string) => makeStream([makeChunk(undefined, [{ index: 0, id: "call_rest", function: { name: "rest", arguments: JSON.stringify({ note }) } }])])
+
+    it("gives a private turn one rest-only wrap-up call instead of erroring when the budget is used up", async () => {
       const { runAgent } = await import("../../heart/core")
       let response = 0
       mockCreate.mockImplementation(() => probeCall(`call_${++response}`, `v${response}`))
       const callbacks = makeCallbacks()
       const result = await runAgent([{ role: "user", content: "keep probing" }], callbacks, "inner", undefined, {
-        tools: [probeTool] as any, execTool: vi.fn().mockResolvedValue("ok"), toolContext: { signin: async () => undefined },
+        tools: [probeTool] as any, execTool: vi.fn().mockResolvedValue("ok"), toolContext: { signin: async () => undefined, delegatedOrigins: [{ id: "held" }] },
+        pendingMessages: [{ from: "friend", content: "new" }],
       } as any)
       expect(result.outcome).toBe("errored")
-      expect(callbacks.onError).toHaveBeenCalledWith(expect.objectContaining({ message: "provider iteration limit exhausted at response 24 before tool execution" }), "terminal")
+      const wrapUpRequest = mockCreate.mock.calls.at(-1)![0]
+      expect((wrapUpRequest.tools ?? []).map((tool: any) => tool.function?.name ?? tool.name)).toEqual(["rest"])
+      expect(JSON.stringify(wrapUpRequest.messages)).toContain("call rest now with a short note")
+      mockCreate.mockReset()
+      response = 0
+      mockCreate.mockImplementation(() => response < 24 ? probeCall(`call_${++response}`, `v${response}`) : restCall("probed 23 values; pick up at v24"))
+      const rested = await runAgent([{ role: "user", content: "keep probing" }], makeCallbacks(), "inner", undefined, {
+        tools: [probeTool] as any, execTool: vi.fn().mockResolvedValue("ok"), toolContext: { signin: async () => undefined, delegatedOrigins: [{ id: "held" }] },
+        pendingMessages: [{ from: "friend", content: "new" }],
+      } as any)
+      expect(rested.outcome).not.toBe("errored")
     })
   })
 

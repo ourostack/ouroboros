@@ -503,6 +503,7 @@ export const STEP_BUDGET_EXTENSION = 4
 export const MAX_PROVIDER_ITERATIONS_CEILING = 24
 
 const STEP_BUDGET_REPORT_INSTRUCTION = "the step budget for this turn is used up. do not call any more work tools; none of the tool calls in your last message were executed. call settle now with a short progress report: what is done (with evidence from tool results above), what is still in flight, and what you will do next. say you can continue where you left off when the conversation resumes."
+const STEP_BUDGET_REST_INSTRUCTION = "the step budget for this turn is used up. do not call any more work tools; none of the tool calls in your last message were executed. call rest now with a short note: what is done, what is still open, and what to pick up next time."
 
 export interface ApprovalProposalRequest {
   toolCall: OpenAI.ChatCompletionMessageToolCall
@@ -1603,6 +1604,8 @@ export async function runAgent(
   let stepBudget = MAX_PROVIDER_ITERATIONS;
   let lastIterationMadeProgress = false;
   let stepReportIteration: number | null = null;
+  // The one tool a turn may call after its step budget is used up: settle for conversations, rest for private turns.
+  let stepReportTool: "settle" | "rest" = "settle";
   const budgetExhausted = (): boolean => {
     if (providerIterations < stepBudget) return false
     if (lastIterationMadeProgress && stepBudget < MAX_PROVIDER_ITERATIONS_CEILING) {
@@ -1854,7 +1857,7 @@ export async function runAgent(
     )
     const forcingHistoricalEffect = forcedHistoricalToolNames.size > 0
     const activeTools = stepReportIteration !== null
-      ? candidateActiveTools.filter((tool) => tool.function.name === "settle")
+      ? candidateActiveTools.filter((tool) => tool.function.name === stepReportTool)
       : forcingHistoricalEffect
       ? candidateActiveTools.filter((tool) => forcedHistoricalToolNames.has(tool.function.name))
       : candidateActiveTools
@@ -2013,8 +2016,8 @@ export async function runAgent(
       nextAttemptControls = [];
       providerIterations += 1
       if (stepReportIteration !== null) {
-        // The progress-report call is the last one: it must settle, or the turn errors.
-        const settledReport = result.toolCalls.length === 1 && result.toolCalls[0].name === "settle"
+        // The progress-report call is the last one: it must settle (or rest), or the turn errors.
+        const settledReport = result.toolCalls.length === 1 && result.toolCalls[0].name === stepReportTool
         if (providerIterations > stepReportIteration || (result.toolCalls.length > 0 && !settledReport)) {
           throw new Error(`provider iteration limit exhausted at response ${providerIterations} before the progress report settled`)
         }
@@ -2089,20 +2092,22 @@ export async function runAgent(
       if (thinkingItems.length > 0) {
         (msg as unknown as Record<string, unknown>)._thinking_blocks = thinkingItems;
       }
-      const settlingNow = result.toolCalls.length === 1 && result.toolCalls[0].name === "settle"
+      const settlingNow = result.toolCalls.length === 1 && (result.toolCalls[0].name === "settle" || result.toolCalls[0].name === "rest")
       if (stepReportIteration === null && result.toolCalls.length > 0 && !settlingNow && budgetExhausted()) {
-        if (!candidateToolNames.has("settle")) {
+        const wrapUpTool = candidateToolNames.has("settle") ? "settle" : candidateToolNames.has("rest") ? "rest" : null
+        if (!wrapUpTool) {
           throw new Error(`provider iteration limit exhausted at response ${stepBudget} before tool execution`)
         }
-        // Do not error into the reply: give the model one settle-only call to report progress.
+        // Do not error into the reply: give the model one settle-only (or rest-only) call to report progress.
         streamCallbackBuffer?.discard()
         stepReportIteration = providerIterations + 1
+        stepReportTool = wrapUpTool
         rejectAttempt(msg, [
           ...result.toolCalls.map((tc) => ({ role: "tool" as const, tool_call_id: tc.id, content: "not executed: the step budget for this turn is used up." })),
-          { role: "user", content: STEP_BUDGET_REPORT_INSTRUCTION },
+          { role: "user", content: wrapUpTool === "settle" ? STEP_BUDGET_REPORT_INSTRUCTION : STEP_BUDGET_REST_INSTRUCTION },
         ])
         callbacks.onClearText?.()
-        emitNervesEvent({ level: "warn", component: "engine", event: "engine.step_budget_exhausted", message: "step budget used up; requesting a settle-only progress report", meta: { stepBudget, providerIterations } })
+        emitNervesEvent({ level: "warn", component: "engine", event: "engine.step_budget_exhausted", message: `step budget used up; requesting a ${wrapUpTool}-only progress report`, meta: { stepBudget, providerIterations } })
         continue
       }
       if (result.toolCalls.length > 0) lastIterationMadeProgress = false;
@@ -2605,15 +2610,17 @@ export async function runAgent(
           callbacks.onToolStart("rest", restArgs);
 
           // Attention queue gate: reject rest if items remain
+          // A budget wrap-up rest is final: held work and fresh messages wait for the next turn.
+          const wrappingUp = stepReportIteration !== null;
           const attentionQueue = augmentedToolContext?.delegatedOrigins;
-          if (attentionQueue && attentionQueue.length > 0) {
+          if (!wrappingUp && attentionQueue && attentionQueue.length > 0) {
             callbacks.onToolEnd("rest", summarizeArgs("rest", restArgs, toolSelection), false);
             const gateMessage = "current held-work frame still has unsurfaced items — return each listed item with surface(delegationId=...) before you rest. Older transcript claims are historical; only the current held-work frame is the gate.";
             rejectToolBatch(msg, [gateMessage]);
             continue;
           }
 
-          if (hasFreshPendingWork(options) && !freshWorkGateFired) {
+          if (!wrappingUp && hasFreshPendingWork(options) && !freshWorkGateFired) {
             freshWorkGateFired = true;
             callbacks.onToolEnd("rest", summarizeArgs("rest", restArgs, toolSelection), false);
             const gateMessage = "fresh work arrived for me this turn — inspect the pending messages above and take the next concrete action before you rest.";
