@@ -5,7 +5,7 @@
       "version": "0.1.0-alpha.953",
       "changes": [
         "Shepherd works both ways on any channel: every notice ends with \"Reply here and I'll pass your answer on.\", and when you answer one in iMessage, Teams or any other conversation, your agent recognizes the notice as its own, reads that coding session in Herdr or cmux, passes your answer on, and tells you what it sent.",
-        "iMessage no longer drops a slow reply: a turn now has ten minutes instead of two before it is treated as hung, and a newer message from you still replaces an older turn."
+        "iMessage no longer drops a slow reply: a turn now has ten minutes instead of two before it is treated as hung, and a newer message from you still replaces an older turn. A turn that truly hangs can now mean up to ten minutes of silence, so send another message to move on. The health check calls a turn stalled only after five minutes."
       ]
     },
     {

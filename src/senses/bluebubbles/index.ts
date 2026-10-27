@@ -471,7 +471,7 @@ const BLUEBUBBLES_RECOVERY_PASS_INTERVAL_MS = 30_000
 // A turn that is still thinking after this long is treated as hung. It is generous on purpose: a slow reply that
 // arrives is worth far more than a dropped one, and a newer message from the person still supersedes an older turn.
 const BLUEBUBBLES_TURN_TIMEOUT_MS = 10 * 60_000
-const BLUEBUBBLES_LIVE_TURN_STALLED_MS = 90_000
+const BLUEBUBBLES_LIVE_TURN_STALLED_MS = 5 * 60_000
 const BLUEBUBBLES_CALLBACK_CLEANUP_TIMEOUT_MS = 2_000
 const BLUEBUBBLES_ACTIVITY_OPERATION_TIMEOUT_MS = 20_000
 const BLUEBUBBLES_CATCHUP_PAGE_SIZE = 50

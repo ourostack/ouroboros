@@ -81,7 +81,7 @@ describe("owner notice text", () => {
     const text = noticeLine(record({
       kind: "error", action: "let_through", reply: null, reason: "Connection error.",
     }))
-    expect(text).toContain("Shepherd")
+    expect(text).toMatch(/^I could not /)
     expect(text).toContain("Connection error.")
     expect(text).not.toMatch(/stopped|waiting for you|needs you/)
   })
@@ -91,7 +91,7 @@ describe("owner notice text", () => {
       kind: "unclear", action: "let_through", reply: null,
       reason: "The agent is still mid-task, running a shell inspection; it has not handed control back.",
     }))
-    expect(text).toContain("Shepherd")
+    expect(text).toMatch(/^I could not /)
     expect(text).not.toMatch(/\bstopped\b|waiting for you|needs you/)
     expect(text).toContain("has not handed control back")
   })
@@ -133,8 +133,8 @@ describe("owner notice text", () => {
     expect(noticeLine(record({ kind: "done", action: "let_through", agent: null, cwd: null, reason: "" }), "s")).toBe("A coding agent (s) says it is done. Why: no reason given")
     expect(noticeLine(record({ kind: "loop_guard", reason: "loop guard: x" }), "s")).toBe("Claude Code in ouroboros (s): I stopped answering it after too many replies, so it is waiting for you. Why: loop guard: x")
     expect(noticeLine(record({ kind: "working", reason: "tests pass" }), "s")).toBe("Claude Code in ouroboros (s) is still working in the background and has news. Why: tests pass")
-    expect(noticeLine(record({ kind: "unclear", reason: "a shell" }), "s")).toBe("Shepherd could not determine the current state of Claude Code in ouroboros (s). Why: a shell")
-    expect(noticeLine(record({ kind: "error", reason: "the judge timed out" }), "s")).toBe("Shepherd could not complete its observation of Claude Code in ouroboros (s); the agent's state was not determined. Why: the judge timed out")
+    expect(noticeLine(record({ kind: "unclear", reason: "a shell" }), "s")).toBe("I could not determine the current state of Claude Code in ouroboros (s). Why: a shell")
+    expect(noticeLine(record({ kind: "error", reason: "the judge timed out" }), "s")).toBe("I could not complete my observation of Claude Code in ouroboros (s); the agent's state was not determined. Why: the judge timed out")
   })
 
   it("never lets terminal fields carry markup or a mention", () => {

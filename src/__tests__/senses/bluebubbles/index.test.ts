@@ -6582,7 +6582,7 @@ describe("BlueBubbles sense runtime", () => {
     const entry = JSON.parse(fs.readFileSync(activeTurnPath, "utf-8"))
     fs.writeFileSync(
       activeTurnPath,
-      JSON.stringify({ ...entry, startedAt: new Date(Date.now() - 120_000).toISOString() }, null, 2) + "\n",
+      JSON.stringify({ ...entry, startedAt: new Date(Date.now() - 360_000).toISOString() }, null, 2) + "\n",
       "utf-8",
     )
 
@@ -6599,7 +6599,7 @@ describe("BlueBubbles sense runtime", () => {
     expect(JSON.parse(fs.readFileSync(runtimePath, "utf-8"))).toEqual(
       expect.objectContaining({
         upstreamStatus: "ok",
-        detail: "iMessage live turn appears stalled; 1 active turn(s) older than 90000ms",
+        detail: "iMessage live turn appears stalled; 1 active turn(s) older than 300000ms",
         activeTurnCount: 1,
         stalledTurnCount: 1,
       }),
