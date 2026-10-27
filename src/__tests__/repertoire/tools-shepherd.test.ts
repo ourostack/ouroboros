@@ -362,6 +362,10 @@ describe("Shepherd tools", () => {
       expect(events.every((entry) => entry.event === "repertoire.shepherd_send_refused" && !JSON.stringify(entry.meta).includes("rm -rf"))).toBe(true)
     })
 
+    it("does not double the prefix when the agent already wrote it", async () => {
+      expect(await call(shepherdSendToolDefinition, { session: "surface:1", text: "[ouro FOR ari] Ship it." }, family())).toMatchObject({ submitted: { text: "[Ouro for Ari] Ship it." } })
+    })
+
     it("types the human's line with Shepherd's prefix, and audits it without the text", async () => {
       expect(await call(shepherdSendToolDefinition, { session: "surface:1", text: "  Run the tests, then open a PR. token=abc123  " }, family())).toMatchObject({ session: "surface:1", submitted: { text: "[Ouro for Ari] Run the tests, then open a PR. token=abc123" }, focused: false })
       expect(sends()).toEqual([

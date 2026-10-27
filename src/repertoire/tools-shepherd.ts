@@ -230,7 +230,9 @@ export const shepherdSendToolDefinition: ToolDefinition = {
       // Read again right before typing, as Shepherd does before its own answers: a gone or changed screen gets nothing.
       const now = screenFingerprint(await host.read(target.id, FINGERPRINT_READ_LINES))
       if (seen && seen !== now) return refused("the terminal changed since it was read, so nothing was sent; read it again", meta)
-      const typed = key ? null : `[${readAgentPresentation(ctx!.agentName!, ctx!.agentRoot!).name} for ${friend.name}] ${line}`
+      const label = `[${readAgentPresentation(ctx!.agentName!, ctx!.agentRoot!).name} for ${friend.name}]`
+      // The agent sometimes writes the label itself; type it once.
+      const typed = key ? null : `${label} ${line.toLowerCase().startsWith(label.toLowerCase()) ? line.slice(label.length).trimStart() : line}`
       const input = key ? { key } : { text: typed }
       const attemptId = randomUUID()
       const attemptedAt = new Date().toISOString()
