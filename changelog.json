@@ -2,6 +2,12 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.955",
+      "changes": [
+        "iMessage no longer loses a reply that fails to send. When Slugger's reply times out or otherwise fails at BlueBubbles, your message stays pending; about ten minutes later a recovery pass checks the chat, and if the reply did not arrive after all, Slugger answers again. The message is marked handled only once a reply goes through. After three failed sends it is given up on with an error in the logs, so one stuck message cannot use up the day's recovery budget. If Slugger had already said something partway through that turn, the message is not retried, so you never see that part twice."
+      ]
+    },
+    {
       "version": "0.1.0-alpha.954",
       "changes": [
         "When an agent passes your answer into a coding session, the [agent for you] label is typed once, even if the agent already wrote it."

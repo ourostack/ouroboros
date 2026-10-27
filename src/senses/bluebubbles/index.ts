@@ -115,6 +115,8 @@ import {
 import {
   markBlueBubblesOutboundAccepted,
   markBlueBubblesOutboundFailed,
+  markBlueBubblesOutboundPendingManualVerification,
+  blueBubblesOutboundTextMatches,
   readBlueBubblesOutboundRecordByIdempotencyKey,
   reserveBlueBubblesOutbound,
   type BlueBubblesAttachmentIdentityInput,
@@ -152,6 +154,11 @@ const BLUEBUBBLES_VISIBLE_OUTBOUND_STATUSES = new Set<BlueBubblesOutboundRecord[
   "local-visible",
   "delivered",
 ])
+// A reply whose final send keeps failing stays pending for recovery this many
+// times, then gets a terminal receipt so one message cannot drain the budget.
+const BLUEBUBBLES_REPLY_DELIVERY_MAX_ATTEMPTS = 3
+// A timed-out send may still land, so wait before checking the chat and retrying.
+const BLUEBUBBLES_REPLY_RETRY_DELAY_MS = 10 * 60_000
 export const BLUEBUBBLES_SEMANTIC_GENERATION_RETENTION_MS = 15 * 60_000
 
 export function pruneBlueBubblesSemanticObservationGenerations(nowMs = Date.now()): number {
@@ -1987,13 +1994,17 @@ async function handleBlueBubblesNormalizedEvent(
 
     let finalTransportInvoked = false
     let finalTransportAccepted = false
+    let spokeBeforeFinalTransport = false
     const outboundRuntimeConfig = getBlueBubblesConfig()
     const callbacks = createBlueBubblesCallbacks(
       client,
       event.chat,
       replyTarget,
       event.chat.isGroup,
-      () => noteBlueBubblesActiveTurnVisibleActivity(agentName, liveTurnId),
+      () => {
+        spokeBeforeFinalTransport = true
+        noteBlueBubblesActiveTurnVisibleActivity(agentName, liveTurnId)
+      },
       {
         admitOutbound: async () => (
           !options.lifecycleSignal?.aborted
@@ -2365,6 +2376,21 @@ async function handleBlueBubblesNormalizedEvent(
               reason: error instanceof Error ? error.message : String(error),
             },
           })
+          if (spokeBeforeFinalTransport) {
+            // The friend already saw part of this turn; a retry would repeat it.
+            const failed = readBlueBubblesOutboundRecordByIdempotencyKey(
+              getAgentRoot(),
+              blueBubblesInboundReplyIdempotencyKey(options.currentIngressEvidence.captureKeyHash),
+            )
+            if (failed) {
+              markBlueBubblesOutboundPendingManualVerification({
+                agentRoot: getAgentRoot(),
+                recordId: failed.recordId,
+                decidedAt: new Date().toISOString(),
+                reason: "mid-turn speech was visible before the final send failed",
+              })
+            }
+          }
           return {
             handled: true,
             notifiedAgent: false,
@@ -2881,6 +2907,25 @@ function blueBubblesInboundReplyIdempotencyKey(captureKeyHash: string): string {
   return `bluebubbles-inbound-reply:${captureKeyHash}`
 }
 
+async function blueBubblesFailedReplyIsVisible(
+  deps: RuntimeDeps,
+  chat: BlueBubblesChatRef,
+  record: BlueBubblesOutboundRecord,
+): Promise<boolean> {
+  const since = Date.parse(record.createdAt)
+  const recent = await deps.createClient().listRecentMessages?.({
+    chatGuid: chat.chatGuid,
+    limit: 25,
+  }) ?? []
+  return recent.some((message) => (
+    message.kind === "message"
+    && message.fromMe
+    && message.timestamp >= since
+    && message.chat.chatGuid === chat.chatGuid
+    && blueBubblesOutboundTextMatches(record, message.text)
+  ))
+}
+
 function blueBubblesRecoveredOutboundOutcome(
   record: BlueBubblesOutboundRecord,
 ): BlueBubblesSemanticHandledOutcome {
@@ -3022,7 +3067,15 @@ async function handleCapturedBlueBubblesSemanticEvent(
       getAgentRoot(),
       blueBubblesInboundReplyIdempotencyKey(captured.capture.keyHash),
     )
-    if (durableOutbound) {
+    const retryFailedReply = durableOutbound?.status === "failed"
+      && (durableOutbound.failedAttempts ?? 0) < BLUEBUBBLES_REPLY_DELIVERY_MAX_ATTEMPTS
+    if (
+      retryFailedReply
+      && Date.now() < Date.parse(durableOutbound.failedAt ?? durableOutbound.updatedAt) + BLUEBUBBLES_REPLY_RETRY_DELAY_MS
+    ) {
+      return { handled: true, notifiedAgent: false, kind: captured.normalized.kind, reason: "delivery_failed" }
+    }
+    if (durableOutbound && !retryFailedReply) {
       const outcome = blueBubblesRecoveredOutboundOutcome(durableOutbound)
       emitNervesEvent({
         level: "warn",
@@ -3135,10 +3188,74 @@ async function handleCapturedBlueBubblesSemanticEvent(
         orientationConversationKind: canonicalEvent.chat.isGroup ? "group" : "one_to_one",
         publishAcceptedReceipt,
       }
+      let failedReplyVisible = false
+      if (retryFailedReply) {
+        try {
+          failedReplyVisible = await blueBubblesFailedReplyIsVisible(resolvedDeps, canonicalEvent.chat, durableOutbound)
+        } catch (error) {
+          // Without the chat history a retry could reply twice; try again later.
+          emitNervesEvent({
+            level: "warn",
+            component: "senses",
+            event: "senses.bluebubbles_reply_retry_deferred",
+            message: "deferred a bluebubbles reply retry because recent chat messages could not be read",
+            meta: {
+              messageGuid: captured.normalized.messageGuid,
+              reason: error instanceof Error ? error.message : String(error),
+            },
+          })
+          return { handled: true, notifiedAgent: false, kind: captured.normalized.kind, reason: "delivery_failed" }
+        }
+      }
+      if (failedReplyVisible) {
+        // The send that timed out reached the chat after all; do not reply twice.
+        emitNervesEvent({
+          level: "warn",
+          component: "senses",
+          event: "senses.bluebubbles_inbound_reply_recovery_suppressed",
+          message: "suppressed bluebubbles reply retry because a reply is already in the chat",
+          meta: { messageGuid: captured.normalized.messageGuid, recordId: durableOutbound!.recordId },
+        })
+        publishTerminalReceipt("message_completed", "reply_visible_after_failed_send")
+        semanticHandlingCompleted = true
+        return { handled: true, notifiedAgent: false, kind: captured.normalized.kind, reason: "already_processed" }
+      }
       result = await handleBlueBubblesNormalizedEvent(canonicalEvent, resolvedDeps, source, capturedOptions)
       // A budget or storm-breaker block defers the message; it was never seen.
       // Leave it pending so a later recovery pass retries it once the block lifts.
       if (result.reason === "autonomy_budget_blocked") return result
+      if (result.reason === "delivery_failed") {
+        // The reply never reached the chat. Leave the message pending so a later
+        // recovery pass sends it, until the per-message attempt cap is reached.
+        let failed = readBlueBubblesOutboundRecordByIdempotencyKey(
+          getAgentRoot(),
+          blueBubblesInboundReplyIdempotencyKey(captured.capture.keyHash),
+        )
+        if (failed?.status === "failed") {
+          if (retryFailedReply && failed.failedAttempts === durableOutbound.failedAttempts) {
+            // The retry failed before it reached the transport; count it anyway.
+            failed = markBlueBubblesOutboundFailed({
+              agentRoot: getAgentRoot(),
+              recordId: failed.recordId,
+              failedAt: new Date().toISOString(),
+              reason: "retry failed before the final transport",
+            })
+          }
+          /* v8 ignore next -- a failed record re-read after a send always carries its count @preserve */
+          const failedAttempts = failed.failedAttempts ?? 0
+          if (failedAttempts < BLUEBUBBLES_REPLY_DELIVERY_MAX_ATTEMPTS) return result
+          emitNervesEvent({
+            level: "error",
+            component: "senses",
+            event: "senses.bluebubbles_reply_delivery_abandoned",
+            message: "gave up sending a bluebubbles reply after repeated transport failures",
+            meta: { messageGuid: captured.normalized.messageGuid, failedAttempts },
+          })
+          publishTerminalReceipt("message_observed", "reply_delivery_retries_exhausted")
+          semanticHandlingCompleted = true
+          return result
+        }
+      }
       handledOutcome = result.notifiedAgent ? "message_completed" : "message_observed"
     }
     if (result.notifiedAgent) {
