@@ -60,6 +60,7 @@ export interface BlueBubblesOutboundRecord {
   deliveredAt?: string
   failedAt?: string
   failureReason?: string
+  failedAttempts?: number
   manualVerificationReason?: string
   contentStored: false
 }
@@ -183,6 +184,11 @@ function buildRecord(input: ReserveBlueBubblesOutboundInput): BlueBubblesOutboun
   }
 }
 
+/** True when `text` is the reply this record last tried to send. */
+export function blueBubblesOutboundTextMatches(record: BlueBubblesOutboundRecord, text: string): boolean {
+  return hash(normalizeText(text)) === record.textHash
+}
+
 function writeJsonAtomic(filePath: string, value: unknown): void {
   fs.mkdirSync(path.dirname(filePath), { recursive: true })
   const tmp = `${filePath}.tmp-${process.pid}-${Date.now()}`
@@ -295,6 +301,28 @@ export function reserveBlueBubblesOutbound(input: ReserveBlueBubblesOutboundInpu
     if (!isNodeFileExistsError(error)) throw error
     const existing = readBlueBubblesOutboundRecord(input.agentRoot, record.recordId)
     if (!existing) throw new Error(`bluebubbles outbound reservation is unreadable: ${record.recordId}`)
+    if (
+      existing.status === "failed"
+      && existing.routeProof.routeHash === record.routeProof.routeHash
+      && existing.attachmentProof.identityHash === record.attachmentProof.identityHash
+    ) {
+      // A failed send to the same chat is retryable, possibly with new text:
+      // reserve again, keeping the first attempt's time and the failure history.
+      const retry = writeBlueBubblesOutboundRecord(input.agentRoot, {
+        ...record,
+        createdAt: existing.createdAt,
+        ...(existing.failedAttempts ? { failedAttempts: existing.failedAttempts } : {}),
+        ...(existing.failedAt ? { failedAt: existing.failedAt } : {}),
+        ...(existing.failureReason ? { failureReason: existing.failureReason } : {}),
+      })
+      emitNervesEvent({
+        component: "senses",
+        event: "senses.bluebubbles_outbound_reserved",
+        message: "reserved bluebubbles outbound idempotency key again after a failed send",
+        meta: { recordId: retry.recordId, textLength: retry.textLength, failedAttempts: retry.failedAttempts ?? 0 },
+      })
+      return { status: "reserved", record: retry }
+    }
     if (identityMatches(existing, record)) {
       emitDuplicate(existing)
       return { status: "duplicate", record: existing }
@@ -393,9 +421,11 @@ export function markBlueBubblesOutboundFailed(input: {
   failedAt: string
   reason: string
 }): BlueBubblesOutboundRecord {
+  const failedAttempts = (readBlueBubblesOutboundRecord(input.agentRoot, input.recordId)?.failedAttempts ?? 0) + 1
   return updateStatus(input.agentRoot, input.recordId, "failed", input.failedAt, {
     failedAt: input.failedAt,
     failureReason: input.reason.slice(0, 500),
+    failedAttempts,
   })
 }
 

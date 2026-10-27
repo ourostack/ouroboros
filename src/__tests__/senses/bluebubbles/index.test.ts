@@ -59,6 +59,7 @@ const mocks = vi.hoisted(() => ({
   storeCtor: vi.fn(),
   emitNervesEvent: vi.fn(),
   sendText: vi.fn().mockResolvedValue({ messageGuid: "sent-guid" }),
+  sendTextBeforeTransport: vi.fn(),
   editMessage: vi.fn().mockResolvedValue(undefined),
   setTyping: vi.fn().mockResolvedValue(undefined),
   markChatRead: vi.fn().mockResolvedValue(undefined),
@@ -281,6 +282,8 @@ vi.mock("../../../senses/bluebubbles/client", async () => {
     ...actual,
     createBlueBubblesClient: vi.fn(() => ({
       sendText: (...args: any[]) => {
+        const beforeTransport = mocks.sendTextBeforeTransport(...args)
+        if (beforeTransport) return beforeTransport
         if (args[0]?.beforeTransportInvocation?.() === false) {
           return Promise.reject(new actual.BlueBubblesSendError({
             message: "BlueBubbles send was not admitted at the transport boundary.",
@@ -881,6 +884,7 @@ function resetMocks(): void {
   mocks.storeCtor.mockReset()
   mocks.emitNervesEvent.mockReset()
   mocks.sendText.mockReset().mockResolvedValue({ messageGuid: "sent-guid" })
+  mocks.sendTextBeforeTransport.mockReset()
   mocks.editMessage.mockReset().mockResolvedValue(undefined)
   mocks.setTyping.mockReset().mockResolvedValue(undefined)
   mocks.markChatRead.mockReset().mockResolvedValue(undefined)
@@ -2157,10 +2161,8 @@ describe("BlueBubbles sense runtime", () => {
     expect(hasProcessedBlueBubblesMessage("testagent", "chat:any;-;ari@mendelow.me", dmThreadPayload.data.guid)).toBe(false)
     expect(mocks.postTurnPersist).not.toHaveBeenCalled()
     expect(mocks.accumulateFriendTokens).not.toHaveBeenCalled()
-    expect(mocks.writeSemanticHandled).toHaveBeenCalledWith(
-      "testagent",
-      expect.objectContaining({ outcome: "message_observed" }),
-    )
+    // The reply never reached the chat, so the message stays pending for recovery.
+    expect(mocks.writeSemanticHandled).not.toHaveBeenCalled()
     expect(mocks.emitNervesEvent).toHaveBeenCalledWith(expect.objectContaining({
       event: "senses.bluebubbles_final_transport_failed",
       meta: expect.objectContaining({ reason: "delivery aborted after timeout" }),
@@ -14958,5 +14960,398 @@ describe("isAgentSelfHandle", () => {
   it("falls through to substring/case match for non-phone non-email handles", async () => {
     const bb = await import("../../../senses/bluebubbles")
     expect(bb.isAgentSelfHandle("UID-ABC123", ["uid-abc123"])).toBe(true)
+  })
+})
+
+describe("BlueBubbles failed reply retry", () => {
+  // Real failures from 2026-10-27 in chat:any;-;ari@mendelow.me: both replies
+  // timed out at the final transport and were wrongly marked handled.
+  const stuckGuid = "F53240B5-491C-4BA1-8707-4DC8E4D00727"
+  const retriedGuid = "E7080C7C-81EE-4C97-8369-6695349CDD12"
+  const otherChatGuid = "6C4F1D2E-8A1B-4F3C-9D5E-2B7A0C9E1F34"
+  const recoveryBackoffMs = 11 * 60_000
+
+  function dmPayload(guid: string, handle = "ari@mendelow.me") {
+    return {
+      ...dmTopLevelPayload,
+      data: {
+        ...dmTopLevelPayload.data,
+        guid,
+        handle: { address: handle, service: "iMessage" },
+        chats: [{ guid: `any;-;${handle}`, style: 45, chatIdentifier: handle, displayName: "" }],
+      },
+    }
+  }
+
+  async function sendTimeout(): Promise<never> {
+    const { BlueBubblesSendError } = await import("../../../senses/bluebubbles/client")
+    throw new BlueBubblesSendError({
+      message: "BlueBubbles send failed (timeout): The operation was aborted due to timeout",
+      httpStatus: null,
+      errorCode: "timeout",
+      transportInvoked: true,
+    })
+  }
+
+  function handledFor(capture: { keyHash: string }): any {
+    return mocks.semanticHandled.get(capture.keyHash)
+  }
+
+  function acceptedSends(): number {
+    return mocks.sendText.mock.settledResults.filter((result) => result.type === "fulfilled").length
+  }
+
+  beforeEach(() => {
+    vi.resetModules()
+    resetMocks()
+    vi.useFakeTimers({ toFake: ["Date"] })
+    vi.setSystemTime(new Date("2026-10-27T17:56:00.000Z"))
+  })
+
+  afterEach(() => {
+    vi.useRealTimers()
+    vi.restoreAllMocks()
+    for (const dir of tempDirs.splice(0)) {
+      fs.rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
+  it("keeps the capture pending without a terminal receipt after the reply send times out", async () => {
+    const payload = dmPayload(stuckGuid)
+    const capture = await makeStoredSemanticCapture(payload)
+    mocks.sendText.mockImplementationOnce(sendTimeout)
+
+    const bluebubbles = await import("../../../senses/bluebubbles")
+    const result = await bluebubbles.handleBlueBubblesEvent(payload)
+
+    expect(result).toEqual(expect.objectContaining({ notifiedAgent: false, reason: "delivery_failed" }))
+    expect(mocks.emitNervesEvent).toHaveBeenCalledWith(expect.objectContaining({
+      event: "senses.bluebubbles_final_transport_failed",
+      meta: expect.objectContaining({
+        messageGuid: stuckGuid,
+        reason: "BlueBubbles send failed (timeout): The operation was aborted due to timeout",
+      }),
+    }))
+    expect(handledFor(capture)).toBeUndefined()
+    expect(mocks.listPendingSemanticCaptures().map((pending: any) => pending.keyHash)).toContain(capture.keyHash)
+    expect(mocks.postTurnPersist).not.toHaveBeenCalled()
+  })
+
+  it("delivers the reply once on a later recovery pass and only then publishes the terminal receipt", async () => {
+    const payload = dmPayload(retriedGuid)
+    const capture = await makeStoredSemanticCapture(payload)
+    mocks.sendText.mockImplementationOnce(sendTimeout)
+
+    const bluebubbles = await import("../../../senses/bluebubbles")
+    await expect(bluebubbles.handleBlueBubblesEvent(payload)).resolves.toEqual(
+      expect.objectContaining({ reason: "delivery_failed" }),
+    )
+    expect(handledFor(capture)).toBeUndefined()
+
+    // A timed-out send may still land, so an immediate recovery pass waits.
+    await bluebubbles.recoverCapturedBlueBubblesInboundMessages()
+    expect(mocks.sendText).toHaveBeenCalledTimes(1)
+    expect(mocks.runAgent).toHaveBeenCalledTimes(1)
+
+    vi.setSystemTime(Date.now() + recoveryBackoffMs)
+    const recovery = await bluebubbles.recoverCapturedBlueBubblesInboundMessages()
+
+    expect(recovery).toEqual(expect.objectContaining({ recovered: 1, failed: 0 }))
+    expect(mocks.sendText).toHaveBeenCalledTimes(2)
+    expect(mocks.sendText.mock.calls[1]?.[0]).toEqual(expect.objectContaining({ text: "got it" }))
+    expect(acceptedSends()).toBe(1)
+    // The failed reply never reached session history, so exactly one reply is projected.
+    expect(mocks.postTurnPersist).toHaveBeenCalledTimes(1)
+    expect(handledFor(capture)).toEqual(expect.objectContaining({ outcome: "message_completed" }))
+
+    vi.setSystemTime(Date.now() + recoveryBackoffMs)
+    await bluebubbles.recoverCapturedBlueBubblesInboundMessages()
+    expect(mocks.sendText).toHaveBeenCalledTimes(2)
+  })
+
+  it("gives up with a terminal receipt and an error after three failed reply sends", async () => {
+    const payload = dmPayload(stuckGuid)
+    const capture = await makeStoredSemanticCapture(payload)
+    mocks.sendText.mockImplementation(sendTimeout)
+
+    const bluebubbles = await import("../../../senses/bluebubbles")
+    await bluebubbles.handleBlueBubblesEvent(payload)
+    vi.setSystemTime(Date.now() + recoveryBackoffMs)
+    await bluebubbles.recoverCapturedBlueBubblesInboundMessages()
+    expect(handledFor(capture)).toBeUndefined()
+
+    vi.setSystemTime(Date.now() + recoveryBackoffMs)
+    await bluebubbles.recoverCapturedBlueBubblesInboundMessages()
+
+    expect(mocks.sendText).toHaveBeenCalledTimes(3)
+    expect(handledFor(capture)).toEqual(expect.objectContaining({
+      outcome: "message_observed",
+      detailCode: "reply_delivery_retries_exhausted",
+    }))
+    expect(mocks.emitNervesEvent).toHaveBeenCalledWith(expect.objectContaining({
+      level: "error",
+      event: "senses.bluebubbles_reply_delivery_abandoned",
+      meta: expect.objectContaining({ messageGuid: stuckGuid.toLowerCase(), failedAttempts: 3 }),
+    }))
+
+    vi.setSystemTime(Date.now() + recoveryBackoffMs)
+    await bluebubbles.recoverCapturedBlueBubblesInboundMessages()
+    expect(mocks.sendText).toHaveBeenCalledTimes(3)
+  })
+
+  it("does not send again when a crash left a reply that already used every attempt", async () => {
+    const agentRoot = makeTempDir()
+    mocks.getAgentRoot.mockReturnValue(agentRoot)
+    const payload = dmPayload(stuckGuid)
+    const capture = await makeStoredSemanticCapture(payload)
+    const outbound = await import("../../../senses/bluebubbles/outbound-state")
+    const { record } = outbound.reserveBlueBubblesOutbound({
+      agentRoot,
+      idempotencyKey: `bluebubbles-inbound-reply:${capture.keyHash}`,
+      chat: {
+        chatGuid: "any;-;ari@mendelow.me",
+        chatIdentifier: "ari@mendelow.me",
+        isGroup: false,
+        sessionKey: "chat:any;-;ari@mendelow.me",
+        sendTarget: { kind: "chat_guid", value: "any;-;ari@mendelow.me" },
+        participantHandles: [],
+      },
+      attachment: { serverUrl: "http://bluebubbles.local", accountId: "default" },
+      text: "got it",
+      tempGuid: "temp-exhausted",
+    })
+    for (let attempt = 0; attempt < 3; attempt++) {
+      outbound.markBlueBubblesOutboundFailed({
+        agentRoot,
+        recordId: record.recordId,
+        failedAt: new Date().toISOString(),
+        reason: "BlueBubbles send failed (timeout): The operation was aborted due to timeout",
+      })
+    }
+
+    const bluebubbles = await import("../../../senses/bluebubbles")
+    const result = await bluebubbles.handleBlueBubblesEvent(payload)
+
+    expect(result).toEqual(expect.objectContaining({ reason: "already_processed" }))
+    expect(mocks.runAgent).not.toHaveBeenCalled()
+    expect(mocks.sendText).not.toHaveBeenCalled()
+    expect(handledFor(capture)).toEqual(expect.objectContaining({ outcome: "message_observed", detailCode: null }))
+  })
+
+  it("does not reply again when the timed-out reply reached the chat after all", async () => {
+    const payload = dmPayload(retriedGuid)
+    const capture = await makeStoredSemanticCapture(payload)
+    mocks.sendText.mockImplementationOnce(sendTimeout)
+
+    const bluebubbles = await import("../../../senses/bluebubbles")
+    await bluebubbles.handleBlueBubblesEvent(payload)
+    mocks.listRecentMessages.mockResolvedValue([
+      {
+        kind: "message",
+        messageGuid: "late-reply-guid",
+        fromMe: true,
+        timestamp: Date.now() + 30_000,
+        text: "got it",
+        chat: { chatGuid: "any;-;ari@mendelow.me" },
+      },
+    ])
+
+    vi.setSystemTime(Date.now() + recoveryBackoffMs)
+    await bluebubbles.recoverCapturedBlueBubblesInboundMessages()
+
+    expect(mocks.listRecentMessages).toHaveBeenCalledWith(expect.objectContaining({ chatGuid: "any;-;ari@mendelow.me" }))
+    expect(mocks.sendText).toHaveBeenCalledTimes(1)
+    expect(mocks.runAgent).toHaveBeenCalledTimes(1)
+    expect(handledFor(capture)).toEqual(expect.objectContaining({
+      outcome: "message_completed",
+      detailCode: "reply_visible_after_failed_send",
+    }))
+  })
+
+  it("still retries when the only later agent message answered something else", async () => {
+    const payload = dmPayload(retriedGuid)
+    const capture = await makeStoredSemanticCapture(payload)
+    mocks.sendText.mockImplementationOnce(sendTimeout)
+
+    const bluebubbles = await import("../../../senses/bluebubbles")
+    await bluebubbles.handleBlueBubblesEvent(payload)
+    mocks.listRecentMessages.mockResolvedValue([
+      { kind: "message", fromMe: true, timestamp: Date.now() + 30_000, text: "yes, I'm here", chat: { chatGuid: "any;-;ari@mendelow.me" } },
+      { kind: "message", fromMe: true, timestamp: Date.now() + 30_000, text: "got it", chat: { chatGuid: "any;-;someone-else" } },
+      { kind: "message", fromMe: true, timestamp: Date.now() - 60_000, text: "got it", chat: { chatGuid: "any;-;ari@mendelow.me" } },
+      { kind: "message", fromMe: false, timestamp: Date.now() + 30_000, text: "got it", chat: { chatGuid: "any;-;ari@mendelow.me" } },
+    ])
+
+    vi.setSystemTime(Date.now() + recoveryBackoffMs)
+    await bluebubbles.recoverCapturedBlueBubblesInboundMessages()
+
+    expect(mocks.sendText).toHaveBeenCalledTimes(2)
+    expect(handledFor(capture)).toEqual(expect.objectContaining({ outcome: "message_completed", detailCode: null }))
+  })
+
+  it("defers the retry without counting a failure when the chat history cannot be read", async () => {
+    const payload = dmPayload(retriedGuid)
+    const capture = await makeStoredSemanticCapture(payload)
+    mocks.sendText.mockImplementationOnce(sendTimeout)
+
+    const bluebubbles = await import("../../../senses/bluebubbles")
+    await bluebubbles.handleBlueBubblesEvent(payload)
+    mocks.listRecentMessages.mockRejectedValueOnce(new Error("BlueBubbles unreachable"))
+
+    vi.setSystemTime(Date.now() + recoveryBackoffMs)
+    const deferred = await bluebubbles.recoverCapturedBlueBubblesInboundMessages()
+
+    expect(deferred).toEqual(expect.objectContaining({ recovered: 0, failed: 0 }))
+    expect(mocks.sendText).toHaveBeenCalledTimes(1)
+    expect(handledFor(capture)).toBeUndefined()
+    expect(mocks.emitNervesEvent).toHaveBeenCalledWith(expect.objectContaining({
+      event: "senses.bluebubbles_reply_retry_deferred",
+      meta: expect.objectContaining({ reason: "BlueBubbles unreachable" }),
+    }))
+
+    mocks.listRecentMessages.mockRejectedValueOnce("history string failure")
+    await bluebubbles.recoverCapturedBlueBubblesInboundMessages()
+    expect(mocks.emitNervesEvent).toHaveBeenCalledWith(expect.objectContaining({
+      event: "senses.bluebubbles_reply_retry_deferred",
+      meta: expect.objectContaining({ reason: "history string failure" }),
+    }))
+    expect(mocks.sendText).toHaveBeenCalledTimes(1)
+
+    await bluebubbles.recoverCapturedBlueBubblesInboundMessages()
+    expect(mocks.sendText).toHaveBeenCalledTimes(2)
+    expect(handledFor(capture)).toEqual(expect.objectContaining({ outcome: "message_completed" }))
+  })
+
+  it("retries a reply that failed before attempts were counted, and without a chat history reader", async () => {
+    const agentRoot = mocks.getAgentRoot()
+    const payload = dmPayload(retriedGuid)
+    const capture = await queueStoredSemanticCapture(payload)
+    const outbound = await import("../../../senses/bluebubbles/outbound-state")
+    const { record } = outbound.reserveBlueBubblesOutbound({
+      agentRoot,
+      idempotencyKey: `bluebubbles-inbound-reply:${capture.keyHash}`,
+      chat: {
+        chatGuid: "any;-;ari@mendelow.me",
+        chatIdentifier: "ari@mendelow.me",
+        isGroup: false,
+        sessionKey: "chat:any;-;ari@mendelow.me",
+        sendTarget: { kind: "chat_guid", value: "any;-;ari@mendelow.me" },
+        participantHandles: [],
+      },
+      attachment: { serverUrl: "http://bluebubbles.local", accountId: "default" },
+      text: "got it",
+      tempGuid: "temp-legacy",
+      now: "2026-10-27T17:00:00.000Z",
+    })
+    fs.writeFileSync(
+      outbound.blueBubblesOutboundRecordPath(agentRoot, record.recordId),
+      JSON.stringify({ ...record, status: "failed", updatedAt: "2026-10-27T17:00:00.000Z" }),
+    )
+    const { createBlueBubblesClient } = await import("../../../senses/bluebubbles/client")
+    const client = createBlueBubblesClient({} as any, {} as any)
+
+    const bluebubbles = await import("../../../senses/bluebubbles")
+    const recovery = await bluebubbles.recoverCapturedBlueBubblesInboundMessages({
+      createClient: () => ({ ...client, listRecentMessages: undefined }) as any,
+    })
+
+    expect(recovery).toEqual(expect.objectContaining({ recovered: 1 }))
+    expect(mocks.sendText).toHaveBeenCalledTimes(1)
+    expect(handledFor(capture)).toEqual(expect.objectContaining({ outcome: "message_completed" }))
+  })
+
+  it("gives a terminal receipt when mid-turn speech was visible and the final send never reached the transport", async () => {
+    const payload = dmPayload(stuckGuid)
+    const capture = await makeStoredSemanticCapture(payload)
+    mocks.runAgent.mockImplementationOnce(async (_messages: any, callbacks: any) => {
+      callbacks.onModelStart()
+      callbacks.onTextChunk("checking on that now")
+      await callbacks.flushNow()
+      callbacks.onTextChunk("got it")
+      return {
+        outcome: "settled",
+        completion: { answer: "got it", intent: "complete" },
+        usage: { input_tokens: 10, output_tokens: 5, reasoning_tokens: 0, total_tokens: 15 },
+      }
+    })
+    mocks.sendTextBeforeTransport
+      .mockImplementationOnce(() => undefined)
+      .mockImplementationOnce(() => Promise.reject(new Error("chat_unresolved")))
+
+    const bluebubbles = await import("../../../senses/bluebubbles")
+    await bluebubbles.handleBlueBubblesEvent(payload)
+
+    expect(handledFor(capture)).toEqual(expect.objectContaining({ outcome: "message_observed" }))
+  })
+
+  it("counts a retry that fails before reaching the transport toward the cap", async () => {
+    const payload = dmPayload(stuckGuid)
+    const capture = await makeStoredSemanticCapture(payload)
+    mocks.sendText.mockImplementation(sendTimeout)
+    mocks.sendTextBeforeTransport.mockImplementation(() => Promise.reject(new Error("chat_unresolved")))
+    mocks.sendTextBeforeTransport.mockImplementationOnce(() => undefined)
+
+    const bluebubbles = await import("../../../senses/bluebubbles")
+    await bluebubbles.handleBlueBubblesEvent(payload)
+    for (let pass = 0; pass < 2; pass++) {
+      vi.setSystemTime(Date.now() + recoveryBackoffMs)
+      await bluebubbles.recoverCapturedBlueBubblesInboundMessages()
+    }
+
+    expect(mocks.sendText).toHaveBeenCalledTimes(1)
+    expect(mocks.runAgent).toHaveBeenCalledTimes(3)
+    expect(handledFor(capture)).toEqual(expect.objectContaining({
+      detailCode: "reply_delivery_retries_exhausted",
+    }))
+  })
+
+  it("does not retry a turn whose mid-turn speech already reached the friend", async () => {
+    const payload = dmPayload(stuckGuid)
+    const capture = await makeStoredSemanticCapture(payload)
+    mocks.runAgent.mockImplementationOnce(async (_messages: any, callbacks: any) => {
+      callbacks.onModelStart()
+      callbacks.onTextChunk("checking on that now")
+      await callbacks.flushNow()
+      callbacks.onTextChunk("got it")
+      return {
+        outcome: "settled",
+        completion: { answer: "got it", intent: "complete" },
+        usage: { input_tokens: 10, output_tokens: 5, reasoning_tokens: 0, total_tokens: 15 },
+      }
+    })
+    mocks.sendText.mockResolvedValueOnce({ messageGuid: "speech-guid" }).mockImplementationOnce(sendTimeout)
+
+    const bluebubbles = await import("../../../senses/bluebubbles")
+    await expect(bluebubbles.handleBlueBubblesEvent(payload)).resolves.toEqual(
+      expect.objectContaining({ reason: "delivery_failed" }),
+    )
+
+    expect(handledFor(capture)).toEqual(expect.objectContaining({ outcome: "message_observed" }))
+    const outbound = await import("../../../senses/bluebubbles/outbound-state")
+    expect(outbound.readBlueBubblesOutboundRecordByIdempotencyKey(
+      mocks.getAgentRoot(),
+      `bluebubbles-inbound-reply:${capture.keyHash}`,
+    )).toEqual(expect.objectContaining({ status: "pending-manual-verification" }))
+  })
+
+  it("still recovers a different message while one message keeps failing", async () => {
+    const stuckPayload = dmPayload(stuckGuid)
+    const stuckCapture = await makeStoredSemanticCapture(stuckPayload)
+    mocks.sendText.mockImplementation(async (input: any) => {
+      if (input.chat.chatGuid === "any;-;ari@mendelow.me") return sendTimeout()
+      return { messageGuid: "sent-guid" }
+    })
+
+    const bluebubbles = await import("../../../senses/bluebubbles")
+    await bluebubbles.handleBlueBubblesEvent(stuckPayload)
+    const otherCapture = await queueStoredSemanticCapture(dmPayload(otherChatGuid, "friend@example.com"))
+
+    vi.setSystemTime(Date.now() + recoveryBackoffMs)
+    const recovery = await bluebubbles.recoverCapturedBlueBubblesInboundMessages()
+
+    expect(recovery).toEqual(expect.objectContaining({ recovered: 1 }))
+    expect(handledFor(otherCapture)).toEqual(expect.objectContaining({ outcome: "message_completed" }))
+    expect(handledFor(stuckCapture)).toBeUndefined()
+    expect(mocks.listPendingSemanticCaptures().map((pending: any) => pending.keyHash)).toContain(stuckCapture.keyHash)
   })
 })

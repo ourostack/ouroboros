@@ -295,6 +295,86 @@ describe("BlueBubbles durable outbound state", () => {
     })
   })
 
+  it("reserves a failed send again with a new reply and counts each failure", async () => {
+    const { markBlueBubblesOutboundFailed, reserveBlueBubblesOutbound } = await import("../../../senses/bluebubbles/outbound-state")
+    const reserve = (text: string) => reserveBlueBubblesOutbound({
+      agentRoot,
+      idempotencyKey: "bluebubbles-inbound-reply:retry",
+      chat,
+      attachment,
+      text,
+      tempGuid: "temp-retry",
+      now: "2026-10-27T17:56:00.000Z",
+    })
+    const fail = (recordId: string) => markBlueBubblesOutboundFailed({
+      agentRoot,
+      recordId,
+      failedAt: "2026-10-27T17:56:42.729Z",
+      reason: "BlueBubbles send failed (timeout): The operation was aborted due to timeout",
+    })
+
+    const first = reserve("first reply")
+    expect(fail(first.record.recordId).failedAttempts).toBe(1)
+    const second = reserve("regenerated reply")
+    expect(second).toMatchObject({ status: "reserved", record: { status: "reserved", failedAttempts: 1 } })
+    expect(fail(second.record.recordId).failedAttempts).toBe(2)
+    expect(reserve("third reply")).toMatchObject({ status: "reserved", record: { failedAttempts: 2 } })
+    expect(reserve("third reply").status).toBe("duplicate")
+  })
+
+  it("keeps the first attempt's time and still flags a failed send whose chat changed", async () => {
+    const { markBlueBubblesOutboundFailed, reserveBlueBubblesOutbound } = await import("../../../senses/bluebubbles/outbound-state")
+    const base = {
+      agentRoot,
+      idempotencyKey: "bluebubbles-inbound-reply:route-change",
+      attachment,
+      text: "reply",
+      tempGuid: "temp-route-change",
+    }
+    const first = reserveBlueBubblesOutbound({ ...base, chat, now: "2026-10-27T17:56:00.000Z" })
+    markBlueBubblesOutboundFailed({
+      agentRoot,
+      recordId: first.record.recordId,
+      failedAt: "2026-10-27T17:56:42.729Z",
+      reason: "timeout",
+    })
+    expect(reserveBlueBubblesOutbound({ ...base, chat, now: "2026-10-27T18:07:00.000Z" }).record).toMatchObject({
+      status: "reserved",
+      createdAt: "2026-10-27T17:56:00.000Z",
+      failedAt: "2026-10-27T17:56:42.729Z",
+      failureReason: "timeout",
+    })
+    markBlueBubblesOutboundFailed({
+      agentRoot,
+      recordId: first.record.recordId,
+      failedAt: "2026-10-27T18:07:30.000Z",
+      reason: "timeout",
+    })
+
+    const moved = reserveBlueBubblesOutbound({ ...base, chat: { ...chat, chatGuid: "any;-;someone-else" } })
+    expect(moved.status).toBe("pending-manual-verification")
+  })
+
+  it("reserves again after a failure recorded before attempts were counted", async () => {
+    const { blueBubblesOutboundRecordPath, readBlueBubblesOutboundRecord, reserveBlueBubblesOutbound } = await import("../../../senses/bluebubbles/outbound-state")
+    const input = {
+      agentRoot,
+      idempotencyKey: "bluebubbles-inbound-reply:legacy-failed",
+      chat,
+      attachment,
+      text: "legacy reply",
+      tempGuid: "temp-legacy",
+    }
+    const { record } = reserveBlueBubblesOutbound(input)
+    fs.writeFileSync(
+      blueBubblesOutboundRecordPath(agentRoot, record.recordId),
+      JSON.stringify({ ...record, status: "failed" }),
+    )
+
+    expect(reserveBlueBubblesOutbound(input).status).toBe("reserved")
+    expect(readBlueBubblesOutboundRecord(agentRoot, record.recordId)).not.toHaveProperty("failedAttempts")
+  })
+
   it("allows local visibility and delivery reconciliation when tempGuid or messageGuid is absent", async () => {
     const {
       markBlueBubblesOutboundDelivered,
