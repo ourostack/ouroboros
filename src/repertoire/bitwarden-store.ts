@@ -1279,18 +1279,16 @@ export class BitwardenCredentialStore implements CredentialStore {
     return true
   }
 
+  /**
+   * When Ouro last synced this profile. Only Ouro's own marker counts: `bw unlock` and `bw status`
+   * rewrite data.json, so its mtime is always fresh right after unlock and a daemon would never sync.
+   */
   private latestLocalSyncTimestamp(): number | null {
-    const files = [BW_SYNC_MARKER_FILENAME, BW_DATA_FILENAME]
-    let latest: number | null = null
-    for (const name of files) {
-      try {
-        const mtimeMs = fs.statSync(path.join(this.appDataDir!, name)).mtimeMs
-        latest = latest === null ? mtimeMs : Math.max(latest, mtimeMs)
-      } catch {
-        // Missing freshness file is fine; use any other available timestamp.
-      }
+    try {
+      return fs.statSync(path.join(this.appDataDir!, BW_SYNC_MARKER_FILENAME)).mtimeMs
+    } catch {
+      return null
     }
-    return latest
   }
 
   private writeSyncMarker(): void {

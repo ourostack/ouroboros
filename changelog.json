@@ -2,6 +2,12 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.963",
+      "changes": [
+        "The vault now syncs after unlock unless Ouro itself synced in the last minute. Before, `bw status` and `bw unlock` rewrote the profile's data file, which made a stale cache look fresh, so a running daemon could keep reading an old copy of a vault item (for example a machine config changed from another Bitwarden client) indefinitely."
+      ]
+    },
+    {
       "version": "0.1.0-alpha.962",
       "changes": [
         "The upgrade check that asks the Butler to change his personality now asks for a change for everyone, so his saved per-person preference can no longer make the check pass or fail at random.",
