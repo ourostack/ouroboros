@@ -383,6 +383,21 @@ describe("one shared name finder (the 2026-10-11 work-sourced replays)", () => {
     expect(namesIn(NO_LOOKUP, { strict: true, reference: SOURCE })).toEqual(["Arelius", "Dross", "Eithan", "Little", "Blue"])
     expect(namesIn(NO_LOOKUP, { strict: true, prose: true })).toEqual([])
   })
+  it("does not count a reference word the reference itself also uses as an ordinary lowercase word (2026-10-28: \"Client, App\" went to the owner as unconfirmed)", () => {
+    const reference = "Deluge Client points at the old address. the download client is fine.\nthe Book App is up. the book app answers on its own port."
+    expect(namesIn("the download client is fine, and the book app is watching its folder.", { reference })).toEqual([])
+    expect(sourceGroundingFinding({
+      answer: "yes, it can close. the book app's own log shows the sync, and the download client is reachable.",
+      userText: `i kicked off a sync in the book app.\n${reference}`,
+      latestUserText: "i kicked off a sync in the book app. check its log.",
+      tools: [],
+    })).toBeNull()
+  })
+  it("clears a claim about a name the person gave when this turn's house tools read it", () => {
+    const tools = [{ name: "unraid_list_containers", args: {}, result: "{\"name\":\"Bookshelf\",\"state\":\"running\"}" }]
+    expect(sourceGroundingFinding({ answer: "Bookshelf is running and its books folder is mounted.", userText: "is Bookshelf up?", tools })).toBeNull()
+    expect(sourceGroundingFinding({ answer: "Bookshelf is running and its books folder is mounted.", userText: "is Bookshelf up?", tools: [] })).toMatchObject({ kind: "unsourced_claim", names: ["Bookshelf"] })
+  })
   it("passes the looked-up reply and flags a lowercase claim about a name the person gave", () => {
     expect(sourceGroundingFinding({ answer: LOOKED_UP, userText: ASK, tools: [{ name: "web_search", args: {}, result: SOURCE }] })).toBeNull()
     expect(sourceGroundingFinding({ answer: "lindon is the hero of the books, born unsouled.", userText: "tell me about Lindon from the Cradle books", tools: [] })).toMatchObject({ kind: "unsourced_claim", names: ["Lindon"] })

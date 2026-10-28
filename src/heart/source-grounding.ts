@@ -111,6 +111,11 @@ export function mentions(haystack: string, name: string): boolean {
   return new RegExp(`(?<![\\p{L}\\p{N}])${escapeRegExp(name)}(?![\\p{L}\\p{N}])`, "iu").test(haystack)
 }
 
+/** Case-sensitive whole word: the text uses this word in lowercase ("the download client"), so it is an ordinary word there, not a name. */
+function usesLowercase(text: string, name: string): boolean {
+  return new RegExp(`(?<![\\p{L}\\p{N}])${escapeRegExp(name.toLowerCase())}(?![\\p{L}\\p{N}])`, "u").test(text)
+}
+
 /** Ordinary sentence openers that strict mode still does not take for names. */
 export const STRICT_OPENERS = new Set("too mock very just same such quite rather really kind sort bit less fairly mostly almost simply much little big small high low hard pure plain cheap hmm hm well okay ok yes yeah sure right also great nice cool done sorry thanks thank perfect fine good alright first second third then now so short quick".split(" "))
 const STRICT_SIGN = /^(?:\s*[,:\u2014\u2013]|\s+(?:if|for)\s)/
@@ -154,11 +159,12 @@ export function candidateNames(text: string, strict = false): string[] {
  * The one name finder: the runtime check below and the replay gate (which runs this file from the shipped release) both call it.
  * Italic actions are blanked first. `strict` is set when the person asked for names. `prose` adds lowercase names in plain prose,
  * for a reply written before any lookup. `reference` is text whose names count in the reply in any case: a name it holds that the
- * reply typed in lowercase ("eithan" for "Eithan") is still a name.
+ * reply typed in lowercase ("eithan" for "Eithan") is still a name, unless the reference itself also uses it as a lowercase word.
  */
 export function namesIn(text: string, options: { strict?: boolean; prose?: boolean; reference?: string } = {}): string[] {
   const body = text.replace(ITALIC_ACTION, (action) => " ".repeat(action.length))
-  const referenced = options.reference ? candidateNames(options.reference).filter((name) => mentions(body, name)) : []
+  const reference = options.reference
+  const referenced = reference ? candidateNames(reference).filter((name) => mentions(body, name) && !usesLowercase(reference, name)) : []
   const found = [...candidateNames(body, options.strict), ...lowercaseListNames(body), ...(options.prose ? lowercaseProseNames(body) : []), ...referenced]
   return found.filter((name, index) => found.findIndex((other) => other.toLowerCase() === name.toLowerCase()) === index)
 }
@@ -272,7 +278,7 @@ export function sourceGroundingFinding(input: { answer: string; userText: string
         : `${named} do not appear in anything you looked up this turn, so they may be made up. check them against the source you read, drop the ones it does not support, or look them up, then settle again.`,
     }
   }
-  const unsourced = names.filter((name) => mentions(input.userText, name) && !mentions(lookedUp, name) && claimsSomethingAbout(input.answer, name))
+  const unsourced = names.filter((name) => mentions(input.userText, name) && !mentions(lookedUp, name) && !mentions(houseRead, name) && !mentions(otherRead, name) && claimsSomethingAbout(input.answer, name))
   if (answerCue && lookups.length === 0 && unsourced.length > 0) {
     return {
       kind: "unsourced_claim", names: unsourced, lookups: 0,
