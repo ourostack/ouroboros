@@ -2,6 +2,21 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.957",
+      "changes": [
+        "Butler no longer starts a model turn just to close a problem that fixed itself, unless he had told you about it.",
+        "Background turns that run out of steps now wrap up cleanly instead of failing.",
+        "Turns started by server events now count against Butler's daily allowance, and repeated failures pause them for 30 minutes.",
+        "Media lookups now say whether a title was actually requested and whether it is downloading, instead of claiming it is being processed.",
+        "Questions and reports Butler sends you are written in plain words, separate from his internal notes.",
+        "A web endpoint must fail two health checks in a row before Butler treats it as down, and informational Unraid notices are ignored.",
+        "The house digest stops repeating the same stuck items as new.",
+        "Butler sends at most three unprompted messages a day and none between 23:00 and 08:00, except disk, parity and array alerts.",
+        "Server events blocked by Butler's daily allowance or failure pause now wait and retry instead of being dropped, and disk, parity and array events are never held back.",
+        "The health acceptance probe keeps checking a web endpoint once per sweep, so its scripted scenarios still match what Butler does."
+      ]
+    },
+    {
       "version": "0.1.0-alpha.956",
       "changes": [
         "A new credit gateway (ouro gateway serve) lets agents use one master key while it spends several Anthropic API keys in a fixed order, moving to the next key only when one runs out of credits, with a health page and a runbook for running it next to the Butler on Unraid.",
