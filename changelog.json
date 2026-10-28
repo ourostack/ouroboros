@@ -5,7 +5,8 @@
       "version": "0.1.0-alpha.956",
       "changes": [
         "A new credit gateway (ouro gateway serve) lets agents use one master key while it spends several Anthropic API keys in a fixed order, moving to the next key only when one runs out of credits, with a health page and a runbook for running it next to the Butler on Unraid.",
-        "The Anthropic provider can now use a plain API key and a custom base URL (ouro auth --provider anthropic --api-key-file <path> --base-url <url>), so an agent can run on API credits through the credit gateway; the existing setup-token login works as before."
+        "The Anthropic provider can now use a plain API key and a custom base URL (ouro auth --provider anthropic --api-key-file <path> --base-url <url>), so an agent can run on API credits through the credit gateway; the existing setup-token login works as before.",
+        "The credit gateway refuses any request path that would send a key to a host other than the Anthropic API."
       ]
     },
     {
