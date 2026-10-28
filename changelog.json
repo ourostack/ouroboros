@@ -2,6 +2,12 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.960",
+      "changes": [
+        "Shepherd can watch sessions in the GitHub Copilot app. Add a `copilotApp` record to the machine config (`ouro vault config set --agent <agent> --scope machine --key copilotApp.stateDir --value \"$HOME/.copilot\"`) and Shepherd follows the app's sessions instead of cmux or Herdr: it notices when one stops or waits for a permission, judges it, and answers with a queued message. It leaves alone a session you messaged in the last five minutes while the app is in front, and a turn you stopped yourself."
+      ]
+    },
+    {
       "version": "0.1.0-alpha.959",
       "changes": [
         "Butler no longer tells you he \"couldn't verify\" ordinary words like Client or Service: a word only counts as a name when the conversation never uses it as a plain word, and anything his own server tools read this turn counts as checked."

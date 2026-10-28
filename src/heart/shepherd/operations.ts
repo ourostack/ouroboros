@@ -1,13 +1,15 @@
 import * as path from "node:path"
 
+/** The Shepherd host kinds a machine can be connected to. */
+export type ShepherdHostName = "cmux" | "herdr" | "copilot-app"
 type ReadOptions = { agent: string; json?: boolean }
 type Administration = ReadOptions & { expectedRevision: number; requestId: string }
 export type ShepherdOperation =
   | ({ kind: "shepherd.status" } & ReadOptions)
   | ({ kind: "shepherd.inspect"; limit: number; id?: string; cursor?: string } & ReadOptions)
-  | ({ kind: "shepherd.pause"; host: "cmux" | "herdr"; session: string } & Administration)
-  | ({ kind: "shepherd.resume"; host: "cmux" | "herdr"; session: string } & Administration)
-  | ({ kind: "shepherd.mandate.grant"; project: string; task: string; expiresAt: string; host?: "cmux" | "herdr"; session?: string; instance?: string } & Administration)
+  | ({ kind: "shepherd.pause"; host: ShepherdHostName; session: string } & Administration)
+  | ({ kind: "shepherd.resume"; host: ShepherdHostName; session: string } & Administration)
+  | ({ kind: "shepherd.mandate.grant"; project: string; task: string; expiresAt: string; host?: ShepherdHostName; session?: string; instance?: string } & Administration)
   | ({ kind: "shepherd.mandate.revoke"; id: string } & Administration)
   | ({ kind: "shepherd.reconcile"; id: string; resolution: "delivered" | "retired" } & Administration)
   | ({ kind: "shepherd.maintenance"; destination: string } & Administration)
@@ -50,9 +52,9 @@ export function parseShepherdOperation(args: string[]): ShepherdOperation {
   const agent = required("agent")
   if (!/^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(agent)) return fail()
   const common = { agent, ...(values.has("json") ? { json: true } : {}) }
-  const host = (): "cmux" | "herdr" => {
+  const host = (): ShepherdHostName => {
     const value = required("host")
-    return value === "cmux" || value === "herdr" ? value : fail()
+    return value === "cmux" || value === "herdr" || value === "copilot-app" ? value : fail()
   }
   if (operation === "status") return { kind: "shepherd.status", ...common }
   const id = (): string => {

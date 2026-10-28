@@ -5,6 +5,7 @@ import { createShepherdHost } from "../../../senses/shepherd/host"
 describe("Shepherd host factory", () => {
   it("opens the host this machine's connection names", () => {
     expect(createShepherdHost({ host: "herdr", socketPath: "/tmp/no-herdr.sock" }, { agentName: "ouroboros" }).name).toBe("herdr")
+    expect(createShepherdHost({ host: "copilot-app", stateDir: "/tmp/no-copilot" }, { agentName: "ouroboros" }).name).toBe("copilot-app")
     expect(createShepherdHost({ host: "cmux", socketPath: "/tmp/no-cmux.sock", auth: { kind: "none" } }, { agentName: "ouroboros" }).name).toBe("cmux")
   })
 })
