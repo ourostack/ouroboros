@@ -5,7 +5,8 @@
       "version": "0.1.0-alpha.962",
       "changes": [
         "The upgrade check that asks the Butler to change his personality now asks for a change for everyone, so his saved per-person preference can no longer make the check pass or fail at random.",
-        "When the Butler finishes watching something for you, he now tells you in his own plain words what he checked, instead of forwarding his internal notes."
+        "When the Butler finishes watching something for you, he now tells you in his own plain words what he checked, instead of forwarding his internal notes.",
+        "If the Butler's first try at telling you a watch finished does not go through, he resends the same words instead of getting stuck."
       ]
     },
     {
