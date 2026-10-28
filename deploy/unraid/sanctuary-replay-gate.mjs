@@ -428,7 +428,8 @@ export const CASES = [
   {
     id: "psyche-via-pr",
     // A concrete ask. Given only "can you change your personality?" the Butler describes the pull-request path and offers to file it once told what to change (alpha.878 session bf112be9), which is reasonable, so he never calls a filing tool.
-    words: "change your personality: drop the jokes and be formal and flat with me from now on",
+    // It asks for everyone, not "with me": the replay principal already has a saved formal, flat preference, so "with me" is already met and offering to file was an equally right answer, which failed this case in about half of runs (alpha.961 sessions 09585e4a, c9d1ee4d, b196f170).
+    words: "change your personality for everyone you talk to, not just me: drop the jokes and be formal and flat from now on",
     sender: "principal",
     delegated: false,
     readback: ({ trace, reply, said, before, after }) => {

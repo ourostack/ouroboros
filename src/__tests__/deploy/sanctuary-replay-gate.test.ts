@@ -311,6 +311,8 @@ describe("psyche conversation cases (work-sourced, psyche-via-pr, no-click-quali
   it("psyche-via-pr: needs the Claude Code pull-request path and no friend note, psyche change or file edit", () => {
     const filing = tool("send_message", { friendId: "Claude Code (Ari's coding agent)", content: "personality request" })
     const wording = "the reply describes how the change arrives (a release, the next update, the engineers, Claude Code or a pull request)"
+    // A saved per-friend preference can already meet a "with me" ask, so only an ask for everyone makes filing the one right answer.
+    expect(byId("psyche-via-pr").words).toMatch(/for everyone you talk to, not just me/u)
     const readback = (ctx: Record<string, unknown>) => byId("psyche-via-pr").readback({ trace: [filing], reply: "", before: empty(), after: empty(), ...ctx })
     expect(names(readback({ reply: "I don't edit my psyche live. I'd ask Claude Code, who ships it as a pull request." }))).toEqual([])
     expect(names(readback({ said: "Ask Claude. They open a PR.", reply: "" }))).toEqual([])
