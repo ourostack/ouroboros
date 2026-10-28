@@ -100,3 +100,23 @@ export function foldHeldNotices(held: readonly HeldNotice[]): HeldNotice {
   if (held.length === 1) return held[0]!
   return { key: `held-batch:${createHash("sha256").update(held.map((notice) => notice.key).join("\0")).digest("hex").slice(0, 32)}`, text: ["While you were away:", ...held.map((notice) => `- ${notice.text}`)].join("\n") }
 }
+
+const RELEASED_KEYS_LIMIT = 500
+
+/** Keys of held notices that went out inside a folded batch, so a retried decision sees its message already exists. */
+export function readReleasedHeldKeys(filePath: string): string[] {
+  try {
+    const parsed: unknown = JSON.parse(fs.readFileSync(filePath, "utf8"))
+    return Array.isArray(parsed) ? parsed.filter((entry): entry is string => typeof entry === "string") : []
+  } catch {
+    return []
+  }
+}
+
+export function recordReleasedHeldKeys(filePath: string, keys: readonly string[]): void {
+  fs.mkdirSync(path.dirname(filePath), { recursive: true })
+  const next = [...readReleasedHeldKeys(filePath).filter((key) => !keys.includes(key)), ...keys].slice(-RELEASED_KEYS_LIMIT)
+  const temporary = `${filePath}.${process.pid}.tmp`
+  fs.writeFileSync(temporary, JSON.stringify(next), { mode: 0o600 })
+  fs.renameSync(temporary, filePath)
+}

@@ -182,6 +182,35 @@ describe("external event router", () => {
     expect(readExternalEventRecord(claimed.recordPath)).toEqual(result.record)
   })
 
+  it("defers a turn that never ran without spending a retry attempt, even after many blocks", () => {
+    const root = tempDir("ouro-external-event-owned-defer-")
+    let record = recordExternalEvent({
+      agent: "sanctuary",
+      source: "sanctuary-health",
+      eventType: "health.observed",
+      eventId: "disk:sdb:smart",
+      observationRevision: "revision-1",
+    }, { root, now: () => "2026-09-02T03:00:00.000Z" })
+    for (let attempt = 0; attempt < 7; attempt++) {
+      const minute = String(10 + attempt).padStart(2, "0")
+      const claimed = claimExternalEvent(record.recordPath, {
+        owner: `turn-${attempt}`,
+        expectedVersion: record.version,
+        expectedGeneration: record.generation,
+        now: () => `2026-09-02T03:${minute}:00.000Z`,
+      })
+      const result = settleExternalEventFailureIfOwned(claimed.recordPath, {
+        owner: `turn-${attempt}`,
+        expectedGeneration: claimed.generation,
+        error: "external-event turn was blocked",
+        deferUntil: `2026-09-02T03:${minute}:30.000Z`,
+        now: () => `2026-09-02T03:${minute}:01.000Z`,
+      })
+      expect(result.record).toMatchObject({ executionState: "retry_wait", attemptCount: 0, nextAttemptAt: `2026-09-02T03:${minute}:30.000Z`, claimOwner: null })
+      record = result.record
+    }
+  })
+
   it("ignores records that are no longer running under the exact owner and generation", () => {
     const root = tempDir("ouro-external-event-owned-failure-ignore-")
     const received = recordExternalEvent({

@@ -4,6 +4,7 @@ import { runPrivateRuntimeTurn, type PreparedHabitContext } from "./private-runt
 import type { PriorHabitSessionSummaryInfo } from "./habit-turn-message"
 import type { PrivateTurnDecision } from "../heart/private-runtime"
 import { renewExternalEventClaim, settleExternalEventFailureIfOwned, type ExternalEventLeaseContext } from "../heart/external-events/router"
+import { isCriticalNoticeKey } from "./telegram-handoff"
 import { emitNervesEvent } from "../nerves/runtime"
 import { getAgentName, getAgentRoot } from "../heart/identity"
 import { getPrivateRuntimePendingDir, hasPendingMessages } from "../mind/pending"
@@ -271,7 +272,12 @@ function externalEventStorm(agentName: string): AutonomyStormInput {
   }
 }
 
-function reserveExternalEventAutonomyBudget(event: ExternalEventLeaseContext, nowIso: string): AutonomyBudgetDecision {
+/** A blocked event turn waits this long (the breaker's block length) and keeps its retry attempts. */
+const EXTERNAL_EVENT_BLOCKED_DEFER_MS = 30 * 60_000
+
+function reserveExternalEventAutonomyBudget(event: ExternalEventLeaseContext, nowIso: string): AutonomyBudgetDecision | null {
+  // Disk, parity and array failures always get a turn: the owner must hear about them even on a busy day.
+  if ([event, ...(event.relatedEvents ?? [])].some((member) => isCriticalNoticeKey(member.eventId))) return null
   const agentRoot = getAgentRoot()
   const agentName = getAgentName()
   return reserveAutonomyBudget(agentRoot, {
@@ -769,16 +775,19 @@ export function createPrivateRuntimeWorker(
             : blockedAutonomyTurn || turnOutcome === "blocked" || turnOutcome === "suspended"
               ? "external-event turn was blocked"
               : "external-event turn completed without a terminal disposition"
-          if (!blockedAutonomyTurn && (turnErrors.length > 0 || turnOutcome === "errored")) recordExternalEventTurnFailure(new Date(nowSource()).toISOString())
+          const settledAt = nowSource()
+          const deferUntil = blockedAutonomyTurn ? new Date(settledAt + EXTERNAL_EVENT_BLOCKED_DEFER_MS).toISOString() : undefined
           let settledIncomplete = false
           for (const member of [currentExternalEvent, ...(currentExternalEvent.relatedEvents ?? [])]) {
             const result = settleExternalEventFailureIfOwned(member.recordPath, {
               owner: member.claimOwner,
               expectedGeneration: member.generation,
               error: failureReason,
+              ...(deferUntil ? { deferUntil } : {}),
             })
             settledIncomplete = result.settled || settledIncomplete
           }
+          if (!blockedAutonomyTurn && (turnErrors.length > 0 || turnOutcome === "errored" || settledIncomplete)) recordExternalEventTurnFailure(new Date(settledAt).toISOString())
           if (settledIncomplete && turnErrors.length === 0) turnErrors.push(failureReason)
         }
         if (currentReason === "habit" && currentHabitName === "heartbeat") {

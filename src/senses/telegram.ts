@@ -62,7 +62,7 @@ import { createTelegramApprovalRuntime, type TelegramApprovalRuntime } from "./t
 import type { SanctuaryHealthSweepResult } from "./sanctuary-health"
 import { createTelegramAuditLedger, type TelegramAuditLedger } from "./telegram-audit-ledger"
 import { extractEventText, loadSessionEnvelopeFile, selectEffectiveSessionEvents } from "../heart/session-events"
-import { foldHeldNotices, isCriticalNoticeKey, isQuietHour, ownerChatHandedOff, proactiveHoldReason, readHeldNotices, recordProactiveSend, writeHeldNotices, type ProactivePacing } from "./telegram-handoff"
+import { foldHeldNotices, isCriticalNoticeKey, ownerChatHandedOff, proactiveHoldReason, readHeldNotices, readReleasedHeldKeys, recordProactiveSend, recordReleasedHeldKeys, writeHeldNotices, type ProactivePacing } from "./telegram-handoff"
 import type { ToolContext } from "../repertoire/tools-base"
 import { ExternalEventScanCache, getExternalEventRoot, type PrivilegedProtectiveAction } from "../heart/external-events/router"
 import { withSessionTurnLease } from "../mind/session-transaction"
@@ -1260,9 +1260,10 @@ export function createTelegramSenseApp(options: CreateTelegramSenseAppOptions): 
   }
   const proactiveLedgerPath = path.join(agentRoot, "state", "telegram", "proactive-sends.json")
   const countProactiveSend = (): void => { if (options.proactivePacing) recordProactiveSend(proactiveLedgerPath, new Date(), options.proactivePacing) }
-  const holdNoticeDuringHandoff = (text: string, key: string): boolean => {
+  const releasedHeldKeysPath = path.join(agentRoot, "state", "telegram", "released-held-keys.json")
+  const holdNoticeDuringHandoff = (text: string, key: string, critical = isCriticalNoticeKey(key)): boolean => {
     const handedOff = ownerChatIsHandedOff()
-    const pacingReason = !handedOff && options.proactivePacing && !isCriticalNoticeKey(key) ? proactiveHoldReason(proactiveLedgerPath, new Date(), options.proactivePacing) : null
+    const pacingReason = !handedOff && options.proactivePacing && !critical ? proactiveHoldReason(proactiveLedgerPath, new Date(), options.proactivePacing) : null
     if (!handedOff && !pacingReason) return false
     const held = readHeldNotices(heldNoticesPath)
     if (!held.some((notice) => notice.key === key)) writeHeldNotices(heldNoticesPath, [...held, { key, text }])
@@ -1279,10 +1280,12 @@ export function createTelegramSenseApp(options: CreateTelegramSenseAppOptions): 
       if (ownerChatIsHandedOff()) return
       const sessionPath = getSenseSessionPath(options.agentName, configuredOwnerFriendId, "telegram", configuredOwnerSessionKey, agentRoot)
       if (options.proactivePacing) {
-        if (isQuietHour(new Date(), options.proactivePacing)) return
+        // Held notices go out as one message, and only when an unprompted message is allowed now (quiet hours and the daily cap).
+        if (proactiveHoldReason(proactiveLedgerPath, new Date(), options.proactivePacing)) return
         /* v8 ignore next -- the caller already saw held notices; only a concurrent release can empty the file before this re-read @preserve */
         if (held.length === 0) return
         const folded = foldHeldNotices(held)
+        if (held.length > 1) recordReleasedHeldKeys(releasedHeldKeysPath, held.map((notice) => notice.key))
         writeHeldNotices(heldNoticesPath, readHeldNotices(heldNoticesPath).filter((entry) => !held.some((notice) => notice.key === entry.key)))
         await recordAcceptedEffects(sessionPath, [await deliverButlerEffect(folded.text, folded.key, signal)])
         countProactiveSend()
@@ -2085,7 +2088,9 @@ export function createTelegramSenseApp(options: CreateTelegramSenseAppOptions): 
         const text = requiredText(input.text, "external event decision")
         const sessionPath = getSenseSessionPath(options.agentName, configuredOwnerFriendId, "telegram", configuredOwnerSessionKey, agentRoot)
         const held = readHeldNotices(heldNoticesPath)
+        const releasedKeys = readReleasedHeldKeys(releasedHeldKeysPath)
         const ownerMessageExists = (candidate: string): boolean => held.some((notice) => notice.key === candidate)
+          || releasedKeys.includes(candidate)
           || getEffectJournal().readByIdempotencyKey(candidate) !== null
         if (ownerMessageExists(key)) {
           // A retry after the message went out (or was held): finish the original send, never send a reworded second one.
@@ -2109,7 +2114,7 @@ export function createTelegramSenseApp(options: CreateTelegramSenseAppOptions): 
           })
           return { status: "covered", effectKey: coveredBy }
         }
-        if (holdNoticeDuringHandoff(text, key)) return { status: "sent", effectKey: key }
+        if (holdNoticeDuringHandoff(text, key, [key, ...relatedKeys].some(isCriticalNoticeKey))) return { status: "sent", effectKey: key }
         await releaseHeldNotices(input.signal)
         const effect = await deliverButlerEffect(text, key, input.signal)
         countProactiveSend()

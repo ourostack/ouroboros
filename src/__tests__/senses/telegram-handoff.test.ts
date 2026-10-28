@@ -2,7 +2,7 @@ import * as fs from "node:fs"
 import * as os from "node:os"
 import * as path from "node:path"
 import { describe, expect, it } from "vitest"
-import { foldHeldNotices, isCriticalNoticeKey, isQuietHour, OWNER_CHAT_HANDOFF_MS, ownerChatHandedOff, proactiveHoldReason, readHeldNotices, recordProactiveSend, writeHeldNotices } from "../../senses/telegram-handoff"
+import { foldHeldNotices, isCriticalNoticeKey, isQuietHour, OWNER_CHAT_HANDOFF_MS, ownerChatHandedOff, proactiveHoldReason, readHeldNotices, readReleasedHeldKeys, recordProactiveSend, recordReleasedHeldKeys, writeHeldNotices } from "../../senses/telegram-handoff"
 
 const at = Date.parse("2026-10-11T04:27:28.812Z")
 const event = (role: string, content: string, observedAt: string | null = new Date(at).toISOString(), recordedAt = new Date(at).toISOString()) => ({
@@ -89,5 +89,23 @@ describe("proactive pacing", () => {
     const folded = foldHeldNotices([one, { key: "b", text: "B." }])
     expect(folded.text).toBe("While you were away:\n- A.\n- B.")
     expect(folded.key).toMatch(/^held-batch:[0-9a-f]{32}$/u)
+  })
+
+  it("remembers keys released inside a folded message, newest last, capped at 500, and reads a missing or corrupt file as empty", () => {
+    const file = path.join(fs.mkdtempSync(path.join(os.tmpdir(), "released-keys-")), "telegram", "released-held-keys.json")
+    expect(readReleasedHeldKeys(file)).toEqual([])
+    recordReleasedHeldKeys(file, ["a", "b"])
+    recordReleasedHeldKeys(file, ["a", "c"])
+    expect(readReleasedHeldKeys(file)).toEqual(["b", "a", "c"])
+    recordReleasedHeldKeys(file, Array.from({ length: 600 }, (_, index) => `k${index}`))
+    const kept = readReleasedHeldKeys(file)
+    expect(kept).toHaveLength(500)
+    expect(kept.at(-1)).toBe("k599")
+    fs.writeFileSync(file, JSON.stringify({ not: "a list" }))
+    expect(readReleasedHeldKeys(file)).toEqual([])
+    fs.writeFileSync(file, JSON.stringify(["ok", 7]))
+    expect(readReleasedHeldKeys(file)).toEqual(["ok"])
+    fs.writeFileSync(file, "{broken")
+    expect(readReleasedHeldKeys(file)).toEqual([])
   })
 })

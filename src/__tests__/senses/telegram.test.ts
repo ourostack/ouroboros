@@ -2069,6 +2069,21 @@ describe("Telegram sense", () => {
       await f.app.sendProactive("A fourth note.")
       expect(sends()).toHaveLength(3)
       expect(JSON.parse(fs.readFileSync(path.join(f.agentRoot, "state", "telegram", "held-owner-notices.json"), "utf8"))).toHaveLength(1)
+
+      // A retry of a decision that went out inside the folded message is already sent; nothing is reworded and resent.
+      await expect(f.app.sendExternalEventDecision({ source: "sanctuary-health", eventId: "endpoint:media", generation: 2, text: "The shelf is still down." }))
+        .resolves.toEqual({ status: "already_sent", effectKey: expect.stringContaining("endpoint:media") })
+      // A critical event anywhere in a batch goes out now, and sending it does not release what the cap is holding.
+      await f.app.sendExternalEventDecision({
+        source: "sanctuary-health", eventId: "endpoint:books", generation: 1, text: "Books is down and disk sdb is failing SMART.",
+        relatedEvents: [{ source: "sanctuary-health", eventId: "disk:sdb:smart", generation: 1 }],
+      })
+      expect(sends().slice(3)).toEqual(["Books is down and disk sdb is failing SMART."])
+      expect(JSON.parse(fs.readFileSync(path.join(f.agentRoot, "state", "telegram", "held-owner-notices.json"), "utf8"))).toHaveLength(1)
+
+      vi.setSystemTime(Date.parse("2026-10-21T16:00:00.000Z")) // 9am the next day
+      await f.app.sendOwnerNotice({ noticeId: "day-2", text: "Morning." })
+      expect(sends().slice(4)).toEqual(["A fourth note.", "Morning."])
     } finally {
       vi.useRealTimers()
     }

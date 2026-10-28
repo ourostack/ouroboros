@@ -1489,6 +1489,8 @@ export function settleExternalEventFailureIfOwned(recordPath: string, input: {
   expectedGeneration: number
   error: string
   failureClass?: ExternalEventFailureClass
+  /** The turn never ran (autonomy budget or breaker): wait until this time without spending a retry attempt. */
+  deferUntil?: string
   now?: () => string
 }): { settled: boolean; record: ExternalEventRecord } {
   return withRecordLock(recordPath, () => {
@@ -1499,7 +1501,10 @@ export function settleExternalEventFailureIfOwned(recordPath: string, input: {
       || record.generation !== input.expectedGeneration) {
       return { settled: false, record }
     }
-    const settled = commitMutation(recordPath, retryState(record, now, 5, 1_000, input.error, input.failureClass), now)
+    const next = input.deferUntil
+      ? { ...record, executionState: "retry_wait" as const, claimOwner: null, claimExpiresAt: null, nextAttemptAt: input.deferUntil, attemptCount: Math.max(0, record.attemptCount - 1), lastError: input.error.slice(0, 1_000), shouldWake: false }
+      : retryState(record, now, 5, 1_000, input.error, input.failureClass)
+    const settled = commitMutation(recordPath, next, now)
     return { settled: true, record: settled }
   })
 }
