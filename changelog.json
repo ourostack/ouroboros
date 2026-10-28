@@ -2,6 +2,14 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.958",
+      "changes": [
+        "The Butler release gate now judges a new release against the version that is actually running, not an older baseline.",
+        "Gate checks that wait on a reply now count only the replies their own case asked for.",
+        "Messages sent while a turn is cut short now wait their turn within the replay window instead of failing the gate."
+      ]
+    },
+    {
       "version": "0.1.0-alpha.957",
       "changes": [
         "Butler no longer starts a model turn just to close a problem that fixed itself, unless he had told you about it.",
