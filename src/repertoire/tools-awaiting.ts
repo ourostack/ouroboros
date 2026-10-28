@@ -10,9 +10,11 @@ import {
   type AwaitMode,
 } from "../heart/awaiting/await-parser"
 import {
+  buildAlertContent,
   deliverAwaitAlert,
   type AwaitAlertResult,
 } from "../heart/awaiting/await-alert"
+import { clearAwaitAlertContent, pinAwaitAlertContent } from "../heart/awaiting/await-runtime-state"
 import { FileFriendStore } from "@ouro.bot/friends"
 import { askedOwnerText, createA2AAwaitOwnerDeliverer, defaultNotifyOwner, type NotifyOwner } from "../heart/awaiting/a2a-await-delivery"
 import { getPrivateRuntimePendingDir, queuePendingMessageOnce } from "../mind/pending"
@@ -488,7 +490,9 @@ function fulfillAwaitObligation(agentRoot: string, awaitFile: AwaitFile): void {
 export const HOUSE_CARE_AWAIT = "house-care-sweep"
 const isHouseCareAwait = (name: unknown): boolean => String(name ?? "").replace(/\.md$/u, "") === HOUSE_CARE_AWAIT
 
-async function resolveAwaitTool(name: string, verdict: string, observation: string, agentRoot: string, agentName: string, ask?: { question: unknown; choices: unknown }): Promise<string> {
+async function resolveAwaitTool(name: string, verdict: string, observation: string, agentRoot: string, agentName: string, ask?: { question: unknown; choices: unknown }, message?: unknown): Promise<string> {
+  // The words for whoever asked; without them they get the condition and observation, which read as unsourced notes.
+  const content = typeof message === "string" && message.trim() ? message.trim() : undefined
   const nameError = validateName(name)
   if (nameError) return JSON.stringify({ error: nameError })
 
@@ -530,7 +534,7 @@ async function resolveAwaitTool(name: string, verdict: string, observation: stri
   let alert: AwaitAlertResult | null = null
   if (existing.request_id && existing.filed_from !== "external-event") {
     try {
-      alert = await deliverAwaitAlert({ awaitFile: existing, reason: "resolved", observation: observation.trim(), agentRoot, agentName, deliveryDeps: resolveDeliveryDeps(agentName) })
+      alert = await deliverAwaitAlert({ awaitFile: existing, reason: "resolved", observation: observation.trim(), content: pinAwaitAlertContent(agentRoot, name, content ?? buildAlertContent(existing, "resolved", observation.trim())), agentRoot, agentName, deliveryDeps: resolveDeliveryDeps(agentName) })
     } catch (error) {
       emitNervesEvent({ level: "error", component: "repertoire", event: "repertoire.await_alert_error", message: "await alert delivery threw", meta: { agent: agentName, name, error: error instanceof Error ? error.message : String(error) } })
     }
@@ -558,6 +562,7 @@ async function resolveAwaitTool(name: string, verdict: string, observation: stri
   /* v8 ignore next -- defensive: archiveAwait only fails on the file-disappears-mid-call race already covered by v8 ignore inside archiveAwait @preserve */
   if (!archive.ok) return JSON.stringify({ error: archive.error })
   fulfillAwaitObligation(agentRoot, archive.file)
+  if (existing.request_id) clearAwaitAlertContent(agentRoot, name)
 
   emitNervesEvent({
     component: "repertoire",
@@ -568,7 +573,7 @@ async function resolveAwaitTool(name: string, verdict: string, observation: stri
 
   if (!existing.request_id) {
     try {
-      alert = await deliverAwaitAlert({ awaitFile: archive.file, reason: "resolved", observation: observation.trim(), agentRoot, agentName, deliveryDeps: resolveDeliveryDeps(agentName) })
+      alert = await deliverAwaitAlert({ awaitFile: archive.file, reason: "resolved", observation: observation.trim(), content, agentRoot, agentName, deliveryDeps: resolveDeliveryDeps(agentName) })
     } catch (error) {
       emitNervesEvent({ level: "error", component: "repertoire", event: "repertoire.await_alert_error", message: "await alert delivery threw", meta: { agent: agentName, name, error: error instanceof Error ? error.message : String(error) } })
     }
@@ -819,6 +824,7 @@ export const awaitingToolDefinitions: ToolDefinition[] = [
             name: { type: "string", description: "Await name (filename stem)." },
             verdict: { type: "string", enum: ["yes", "no", "ask_owner"], description: "Exactly 'yes' if the condition is met. Exactly 'no' for anything else, including still pending, not yet, or unable to tell: send 'no' with an observation and polling continues. 'ask_owner' only when the condition cannot be met without the owner deciding; it needs question and choices." },
             observation: { type: "string", description: "One-line summary of what I saw this tick." },
+            message: { type: "string", description: "Only for 'yes': what I tell whoever asked, written to them in plain words and sent as is. Say what I just checked and what it means for them." },
             question: { type: "string", description: "Only for ask_owner: the decision I need from my owner, in plain words." },
             choices: { type: "array", items: { type: "string" }, minItems: 2, maxItems: 4, description: "Only for ask_owner: 2 to 4 short options the owner can pick from." },
           },
@@ -855,7 +861,7 @@ export const awaitingToolDefinitions: ToolDefinition[] = [
         }
         if (!binding?.active) return JSON.stringify({ error: "resolve_await is limited to the current relationship request or bound external event" })
       }
-      return resolveAwaitTool(a.name, a.verdict, a.observation, agentRoot, agentName, { question: a.question, choices: a.choices })
+      return resolveAwaitTool(a.name, a.verdict, a.observation, agentRoot, agentName, { question: a.question, choices: a.choices }, a.message)
     },
     riskProfile: {
       mutates: ["durable_state_write", "external_side_effect"] as const,

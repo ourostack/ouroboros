@@ -2,6 +2,14 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.962",
+      "changes": [
+        "The upgrade check that asks the Butler to change his personality now asks for a change for everyone, so his saved per-person preference can no longer make the check pass or fail at random.",
+        "When the Butler finishes watching something for you, he now tells you in his own plain words what he checked, instead of forwarding his internal notes.",
+        "If the Butler's first try at telling you a watch finished does not go through, he resends the same words instead of getting stuck."
+      ]
+    },
+    {
       "version": "0.1.0-alpha.961",
       "changes": [
         "When Butler finishes a watch you asked for in Telegram, he now actually tells you and closes it, instead of silently re-checking every few hours."
