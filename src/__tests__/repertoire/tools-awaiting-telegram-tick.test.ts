@@ -77,6 +77,19 @@ describe("a Telegram watch resolved on its own private tick (2026-10-28: the boo
     expect(telegram.sent).toHaveLength(1)
   })
 
+  it("tells the owner in the words the agent wrote for them, so the next turn does not disown the alert as unchecked (2026-10-28)", async () => {
+    const message = "I just checked the book app's log: the download and indexer errors are gone, so it's ready to use."
+    parse(await resolveAwaitDef.handler({ name: NAME, verdict: "yes", observation: "the log is clean", message: `  ${message}  ` }))
+
+    expect(telegram.sent.map((sent) => sent.content)).toEqual([message])
+  })
+
+  it("falls back to the condition and observation when the agent wrote no message", async () => {
+    parse(await resolveAwaitDef.handler({ name: NAME, verdict: "yes", observation: "the log is clean", message: "   " }))
+
+    expect(telegram.sent.map((sent) => sent.content)).toEqual(["the book app's log is clean — ready. the log is clean"])
+  })
+
   it("still queues the alert of a Telegram watch that no request is bound to, as before", async () => {
     const file = path.join(agentRoot, "awaiting", `${NAME}.md`)
     fs.writeFileSync(file, fs.readFileSync(file, "utf8").replace(/^request_id: .*$/mu, "request_id: null"))
