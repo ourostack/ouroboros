@@ -71,6 +71,7 @@ function fixture(input: {
   runWithToolReceiptCollection?: any
   afterAcceptanceLedgerPreReadStat?: (filePath: string) => void
   authorizeEffect?: any
+  proactivePacing?: any
   authorizeRelationshipEffect?: any
   privilegedFailsafe?: any
   admission?: any
@@ -113,6 +114,7 @@ function fixture(input: {
     credentials: { botToken: input.botToken ?? "test-token", authorizedUserId: "42", authorizedChatId: "42" },
     identityKey: "k".repeat(43),
     migrateIdentity: async () => undefined,
+    ...(input.proactivePacing ? { proactivePacing: input.proactivePacing } : {}),
     api,
     offsetStore: { load: () => 0, save: vi.fn() },
     createLongPoll,
@@ -2044,6 +2046,29 @@ describe("Telegram sense", () => {
       await f.app.sendExternalEventDecision({ source: "sanctuary-health", eventId: "endpoint:books", generation: 1, text: "Books is back." })
       expect(sends()).toEqual(["All systems nominal.", "The shelf is down.", "Self-recovered; the shelf was down for about 15 minutes.", "Delegated command ran.", "Books is back."])
       expect(JSON.parse(fs.readFileSync(path.join(f.agentRoot, "state", "telegram", "held-owner-notices.json"), "utf8"))).toEqual([])
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it("holds unprompted messages overnight and past three a day, folds them into one, and lets critical ones through", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] })
+    vi.setSystemTime(Date.parse("2026-10-20T07:00:00.000Z")) // midnight in Los Angeles
+    try {
+      const f = fixture({ proactivePacing: { timeZone: "America/Los_Angeles" } })
+      const sends = () => f.api.request.mock.calls.filter(([method]: [string]) => method === "sendMessage").map(([, body]: [string, any]) => body.text)
+      await f.app.sendOwnerNotice({ noticeId: "night-1", text: "Sonarr restarted itself." })
+      await f.app.sendExternalEventDecision({ source: "sanctuary-health", eventId: "endpoint:media", generation: 2, text: "The shelf is down." })
+      await f.app.sendExternalEventDecision({ source: "sanctuary-health", eventId: "parity:stale-or-failed", generation: 1, text: "The parity check failed." })
+      expect(sends()).toEqual(["The parity check failed."])
+
+      vi.setSystemTime(Date.parse("2026-10-20T16:00:00.000Z")) // 9am
+      await f.app.sendOwnerNotice({ noticeId: "day-1", text: "Downloads are flowing again." })
+      expect(sends()).toEqual(["The parity check failed.", "While you were away:\n- Sonarr restarted itself.\n- The shelf is down.", "Downloads are flowing again."])
+      // That was three today (the critical one counts too); the fourth waits.
+      await f.app.sendProactive("A fourth note.")
+      expect(sends()).toHaveLength(3)
+      expect(JSON.parse(fs.readFileSync(path.join(f.agentRoot, "state", "telegram", "held-owner-notices.json"), "utf8"))).toHaveLength(1)
     } finally {
       vi.useRealTimers()
     }

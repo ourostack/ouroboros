@@ -62,7 +62,7 @@ import { createTelegramApprovalRuntime, type TelegramApprovalRuntime } from "./t
 import type { SanctuaryHealthSweepResult } from "./sanctuary-health"
 import { createTelegramAuditLedger, type TelegramAuditLedger } from "./telegram-audit-ledger"
 import { extractEventText, loadSessionEnvelopeFile, selectEffectiveSessionEvents } from "../heart/session-events"
-import { ownerChatHandedOff, readHeldNotices, writeHeldNotices } from "./telegram-handoff"
+import { foldHeldNotices, isCriticalNoticeKey, isQuietHour, ownerChatHandedOff, proactiveHoldReason, readHeldNotices, recordProactiveSend, writeHeldNotices, type ProactivePacing } from "./telegram-handoff"
 import type { ToolContext } from "../repertoire/tools-base"
 import { ExternalEventScanCache, getExternalEventRoot, type PrivilegedProtectiveAction } from "../heart/external-events/router"
 import { withSessionTurnLease } from "../mind/session-transaction"
@@ -495,6 +495,8 @@ export interface CreateTelegramSenseAppOptions {
   subjectIndexHooks?: { afterCreateTemporary?: (temporaryPath: string) => void }
   acceptanceMarker?: () => { scenarioHandleDigest: string; label?: string } | null
   acceptanceReceiptRoot?: string
+  /** Daily cap and quiet hours for unprompted owner messages; production turns it on, tests opt in. */
+  proactivePacing?: ProactivePacing
   /** Test seam for observing receipt evidence across a rejected turn. */
   _runWithToolReceiptCollection?: typeof runWithSanctuaryToolReceiptCollection
   /** Test seam for simulating a ledger mutation after its pre-read metadata check. */
@@ -1256,11 +1258,16 @@ export function createTelegramSenseApp(options: CreateTelegramSenseAppOptions): 
     const sessionPath = getSenseSessionPath(options.agentName, configuredOwnerFriendId, "telegram", configuredOwnerSessionKey, agentRoot)
     return ownerChatHandedOff(loadSessionEnvelopeFile(sessionPath)?.events ?? [], Date.now())
   }
+  const proactiveLedgerPath = path.join(agentRoot, "state", "telegram", "proactive-sends.json")
+  const countProactiveSend = (): void => { if (options.proactivePacing) recordProactiveSend(proactiveLedgerPath, new Date(), options.proactivePacing) }
   const holdNoticeDuringHandoff = (text: string, key: string): boolean => {
-    if (!ownerChatIsHandedOff()) return false
+    const handedOff = ownerChatIsHandedOff()
+    const pacingReason = !handedOff && options.proactivePacing && !isCriticalNoticeKey(key) ? proactiveHoldReason(proactiveLedgerPath, new Date(), options.proactivePacing) : null
+    if (!handedOff && !pacingReason) return false
     const held = readHeldNotices(heldNoticesPath)
     if (!held.some((notice) => notice.key === key)) writeHeldNotices(heldNoticesPath, [...held, { key, text }])
-    emitNervesEvent({ component: "senses", event: "senses.telegram_notice_held_for_handoff", message: "held a house notice while the owner's chat is handed to someone else", meta: { agentName: options.agentName } })
+    if (handedOff) emitNervesEvent({ component: "senses", event: "senses.telegram_notice_held_for_handoff", message: "held a house notice while the owner's chat is handed to someone else", meta: { agentName: options.agentName } })
+    else emitNervesEvent({ component: "senses", event: "senses.telegram_notice_held_for_pacing", message: "held a house notice for quiet hours or the daily message cap", meta: { agentName: options.agentName, reason: pacingReason } })
     return true
   }
   let heldNoticeRelease: Promise<void> = Promise.resolve()
@@ -1271,6 +1278,16 @@ export function createTelegramSenseApp(options: CreateTelegramSenseAppOptions): 
       const held = readHeldNotices(heldNoticesPath)
       if (ownerChatIsHandedOff()) return
       const sessionPath = getSenseSessionPath(options.agentName, configuredOwnerFriendId, "telegram", configuredOwnerSessionKey, agentRoot)
+      if (options.proactivePacing) {
+        if (isQuietHour(new Date(), options.proactivePacing)) return
+        /* v8 ignore next -- the caller already saw held notices; only a concurrent release can empty the file before this re-read @preserve */
+        if (held.length === 0) return
+        const folded = foldHeldNotices(held)
+        writeHeldNotices(heldNoticesPath, readHeldNotices(heldNoticesPath).filter((entry) => !held.some((notice) => notice.key === entry.key)))
+        await recordAcceptedEffects(sessionPath, [await deliverButlerEffect(folded.text, folded.key, signal)])
+        countProactiveSend()
+        return
+      }
       for (const notice of held) {
         writeHeldNotices(heldNoticesPath, readHeldNotices(heldNoticesPath).filter((entry) => entry.key !== notice.key))
         await recordAcceptedEffects(sessionPath, [await deliverButlerEffect(notice.text, notice.key, signal)])
@@ -2050,6 +2067,7 @@ export function createTelegramSenseApp(options: CreateTelegramSenseAppOptions): 
         if (holdNoticeDuringHandoff(proactiveText, key)) return
         await releaseHeldNotices(signal)
         const effect = await deliverButlerEffect(proactiveText, key, signal)
+        countProactiveSend()
         const sessionPath = getSenseSessionPath(options.agentName, configuredOwnerFriendId, "telegram", configuredOwnerSessionKey, agentRoot)
         await recordAcceptedEffects(sessionPath, [effect])
       })
@@ -2094,6 +2112,7 @@ export function createTelegramSenseApp(options: CreateTelegramSenseAppOptions): 
         if (holdNoticeDuringHandoff(text, key)) return { status: "sent", effectKey: key }
         await releaseHeldNotices(input.signal)
         const effect = await deliverButlerEffect(text, key, input.signal)
+        countProactiveSend()
         await recordAcceptedEffects(sessionPath, [effect])
         return { status: "sent", effectKey: key }
       })
@@ -2109,6 +2128,7 @@ export function createTelegramSenseApp(options: CreateTelegramSenseAppOptions): 
         if (holdNoticeDuringHandoff(text, `owner-notice:${noticeId}`)) return
         await releaseHeldNotices(input.signal)
         const effect = await deliverButlerEffect(text, `owner-notice:${noticeId}`, input.signal)
+        countProactiveSend()
         const sessionPath = getSenseSessionPath(options.agentName, configuredOwnerFriendId, "telegram", configuredOwnerSessionKey, agentRoot)
         await recordAcceptedEffects(sessionPath, [effect])
       })
@@ -2377,6 +2397,8 @@ export async function startTelegramSenseApp(agentName: string, waitForAuthority 
       agentName,
       credentials,
       authorityTransport,
+      // The owner is in Los Angeles; a container without TZ would otherwise run quiet hours on UTC.
+      proactivePacing: { timeZone: process.env.TZ || "America/Los_Angeles" },
       ...(await createProductionTelegramRelationshipComposition(agentName, credentials, undefined, authorityTransport)),
       ...(agentName === "sanctuary" ? { privilegedFailsafe: {
         eventRoot: getExternalEventRoot(),
