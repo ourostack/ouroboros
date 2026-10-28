@@ -12,22 +12,28 @@ import type { HostSession, HostWatchHandlers, ShepherdHost, ShepherdHostObservat
  * rewrites under `<stateDir>/run/` on every launch, so each connection reads them fresh. Shepherd
  * connects as an observer (`observer=1`), so the app never binds a session's tool callbacks to it.
  *
- * Every connection receives every running session's events. A return is `session.idle` (not aborted), a
- * permission request no hook resolved, or a terminal `session.error`, still standing after the grace
- * period. `assistant.turn_end` is not a return: the app emits one after every model step. The
- * "screen" is the session's recent conversation, rendered from `session-state/<id>/events.jsonl`.
- * A reply is a queued `send_message`, so it never touches the human's draft.
+ * Every connection receives every running session's events. A return is `session.idle` (not a
+ * human stop), a permission or question the human must answer, or a terminal `session.error`, still
+ * standing after the grace period. `assistant.turn_end` is not a return: the app sends one after
+ * every model step. Sub-agent events (top-level `agentId`) are work, never a return. The "screen" is
+ * the session's recent conversation, rendered from `session-state/<id>/events.jsonl`. A reply is a
+ * queued `send_message`, so it never touches the human's draft.
  *
- * The app does not say which session is on screen. A session counts as the human's while the app
- * is frontmost and someone other than Shepherd (whose messages carry its label) sent it a message
- * in the last few minutes.
+ * The app does not say which session is on screen, so a session counts as the human's when the
+ * human messaged it in the last five minutes, or in the last half hour while they are at the Mac with
+ * the app in front. Only a message with no `source` and no `agentId` is the human's: agents,
+ * schedules and autopilot tag theirs, and Shepherd's carry its `[agent for human]` label.
  */
 export const COPILOT_APP_HOST = "copilot-app"
 const GRACE_MS = 3_000
 const TIMEOUT_MS = 10_000
 const HUMAN_HOLD_MS = 5 * 60_000
+const PRESENT_HOLD_MS = 30 * 60_000
+const PRESENT_IDLE_S = 120
 const INVENTORY_MS = 10_000
-const TAIL_BYTES = 512 * 1024
+const CHUNK_BYTES = 256 * 1024
+const SCAN_BYTES = 8 * 1024 * 1024
+const TAIL_EVENTS = 400
 const RECONNECT_DELAYS_MS = [1_000, 2_000, 5_000, 10_000, 30_000]
 /** Bookkeeping events that neither start nor end work. */
 const QUIET_EVENTS = new Set(["model.messages_snapshot", "session.usage_checkpoint", "session.usage_record", "session.background_tasks_changed", "session.title_changed"])
@@ -36,6 +42,8 @@ const RESOLVED_FRAMES = new Set(["user_input_resolved", "exit_plan_mode_resolved
 /** Every Shepherd message starts with its `[agent for human]` label, whichever process sent it. */
 const SHEPHERD_LABEL = /^\[[^\]\n]{1,80} for [^\]\n]{1,80}\] /
 const PERMISSION_KEYS: Partial<Record<ShepherdKey, string>> = { y: "approve-once", 1: "approve-once", 2: "approve-for-session", n: "reject", 3: "reject" }
+/** Asset lines can be megabytes and carry no conversation. */
+const BINARY_LINE = Buffer.from("\"session.binary_asset\"")
 
 export interface CopilotAppConnection {
   stateDir: string
@@ -44,12 +52,13 @@ export interface CopilotAppConnection {
 export interface CopilotAppHostOptions {
   schedule?: (fn: () => void, ms: number) => () => void
   now?: () => number
-  /** Whether the Copilot app is the frontmost application. */
-  appFrontmost?: () => Promise<boolean>
+  /** Whether the human is at the Mac with the Copilot app in front. */
+  humanPresent?: () => Promise<boolean>
   openSocket?: (url: string) => WebSocket
 }
 
 type Frame = Record<string, unknown>
+type Run = (file: string, args: string[], done: (error: Error | null, stdout: string) => void) => void
 
 function isRecord(value: unknown): value is Frame {
   return !!value && typeof value === "object" && !Array.isArray(value)
@@ -59,78 +68,126 @@ function str(value: unknown): string | null {
   return typeof value === "string" && value.length > 0 ? value : null
 }
 
-function firstLine(file: string): string {
-  return fs.readFileSync(file, "utf-8").split(/\r?\n/)[0]!.trim()
-}
-
-/** The app's current server address; the port file holds `<port>\n<pid>`. */
-export function copilotAppUrl(stateDir: string): string {
-  const run = path.join(stateDir, "run")
-  let port: string, token: string
+function processAlive(pid: number): boolean {
   try {
-    port = firstLine(path.join(run, "ws.port"))
-    token = firstLine(path.join(run, "ws.token"))
-  } catch {
-    throw new Error(`the GitHub Copilot app is not running (no server files in ${run})`)
+    process.kill(pid, 0)
+    return true
+  } catch (error) {
+    return (error as NodeJS.ErrnoException).code === "EPERM"
   }
-  if (!/^\d+$/.test(port) || !token) throw new Error(`the GitHub Copilot app's server files in ${run} are unreadable`)
-  return `ws://127.0.0.1:${port}?token=${encodeURIComponent(token)}&observer=1`
 }
 
-/** macOS: whether the frontmost app is the Copilot app. Anything unreadable counts as frontmost, so Shepherd holds back. */
-type Run = (file: string, args: string[], done: (error: Error | null, stdout: string) => void) => void
+/**
+ * The app's current server address. Every app build (release, dev, PR) writes `ws.port` and
+ * `ws.token`; the release app also writes `ws.release.*`, so those win. The port file holds
+ * `<port>\n<pid>`, and a file whose app has exited is skipped.
+ */
+export function copilotAppUrl(stateDir: string, alive: (pid: number) => boolean = processAlive): string {
+  const run = path.join(stateDir, "run")
+  for (const prefix of ["ws.release", "ws"]) {
+    let port: string, pid: string | undefined, token: string
+    try {
+      ;[port, pid] = fs.readFileSync(path.join(run, `${prefix}.port`), "utf-8").split(/\r?\n/).map(line => line.trim()) as [string, string | undefined]
+      token = fs.readFileSync(path.join(run, `${prefix}.token`), "utf-8").split(/\r?\n/)[0]!.trim()
+    } catch {
+      continue
+    }
+    if (!/^\d+$/.test(port) || !token) continue
+    if (pid && /^\d+$/.test(pid) && !alive(Number(pid))) continue
+    return `ws://127.0.0.1:${port}?token=${encodeURIComponent(token)}&observer=1`
+  }
+  throw new Error(`the GitHub Copilot app is not running (no live server files in ${run})`)
+}
+
 const runFile: Run = (file, args, done) => { execFile(file, args, { timeout: 2_000 }, (error, stdout) => done(error, String(stdout))) }
 
-export function copilotAppFrontmost(run: Run = runFile): Promise<boolean> {
-  return new Promise((resolve) => {
-    run("/usr/bin/lsappinfo", ["front"], (error, asn) => {
-      if (error || !asn.trim()) return resolve(true)
-      run("/usr/bin/lsappinfo", ["info", "-only", "name", asn.trim()], (infoError, info) => {
-        resolve(infoError ? true : /"GitHub Copilot"/.test(info))
-      })
-    })
-  })
+/** macOS: the Copilot app is frontmost and the keyboard or mouse moved recently. Anything unreadable counts as present, so Shepherd holds back. */
+export function copilotAppHumanPresent(run: Run = runFile): Promise<boolean> {
+  const output = (file: string, args: string[]) => new Promise<string | null>(resolve => run(file, args, (error, stdout) => resolve(error ? null : stdout)))
+  return (async () => {
+    const asn = (await output("/usr/bin/lsappinfo", ["front"]))?.trim()
+    if (!asn) return true
+    const info = await output("/usr/bin/lsappinfo", ["info", "-only", "name", asn])
+    if (info === null) return true
+    if (!/"GitHub Copilot"/.test(info)) return false
+    const hid = await output("/usr/sbin/ioreg", ["-c", "IOHIDSystem", "-d", "4"])
+    const idle = hid?.match(/"HIDIdleTime" = (\d+)/)
+    return !idle || Number(idle[1]) / 1e9 < PRESENT_IDLE_S
+  })()
 }
 
-interface Conversation {
-  lines: string[]
-  pendingPermission: string | null
+/** Whether a `user.message` is the human's own: agents, schedules and autopilot tag theirs. */
+function humanMessage(event: Frame, data: Frame): boolean {
+  return event.type === "user.message" && event.agentId === undefined && data.source === undefined && !SHEPHERD_LABEL.test(str(data.content) ?? "")
 }
 
-/** Reads the end of a session's events log into conversation lines, oldest first. */
-export function readConversation(stateDir: string, sessionId: string): Conversation {
-  if (!/^[A-Za-z0-9-]+$/.test(sessionId)) throw new Error("invalid Copilot app session id")
-  const file = path.join(stateDir, "session-state", sessionId, "events.jsonl")
+/** Up to `TAIL_EVENTS` event lines from the end of the log, oldest first, skipping asset lines. */
+function tailEvents(file: string): Buffer[] {
   const fd = fs.openSync(file, "r")
-  let text: string
+  const lines: Buffer[] = []
   try {
-    const size = fs.fstatSync(fd).size
-    const start = Math.max(0, size - TAIL_BYTES)
-    const buffer = Buffer.alloc(size - start)
-    fs.readSync(fd, buffer, 0, buffer.length, start)
-    text = buffer.toString("utf-8")
-    // A tail that starts mid-line drops the partial first line.
-    if (start > 0) text = text.slice(text.indexOf("\n") + 1)
+    let position = fs.fstatSync(fd).size
+    let carry = Buffer.alloc(0)
+    const keep = (line: Buffer): void => {
+      if (line.length > 0 && !line.subarray(0, 200).includes(BINARY_LINE)) lines.push(line)
+    }
+    while (position > 0 && lines.length < TAIL_EVENTS) {
+      const length = Math.min(CHUNK_BYTES, position)
+      position -= length
+      const chunk = Buffer.alloc(length)
+      fs.readSync(fd, chunk, 0, length, position)
+      const text = Buffer.concat([chunk, carry])
+      let end = text.length
+      for (let at = text.lastIndexOf(10, end - 1); at >= 0; at = text.lastIndexOf(10, end - 1)) {
+        keep(text.subarray(at + 1, end))
+        end = at
+        if (lines.length >= TAIL_EVENTS) break
+      }
+      carry = text.subarray(0, end)
+      // One huge line (an asset) is dropped once it outgrows the scan budget.
+      if (carry.length > SCAN_BYTES) carry = Buffer.alloc(0)
+    }
+    if (position === 0 && lines.length < TAIL_EVENTS) keep(carry)
   } finally {
     fs.closeSync(fd)
   }
+  return lines.reverse()
+}
+
+export interface Conversation {
+  lines: string[]
+  pendingPermission: string | null
+  /** When the human last messaged the session, in epoch ms. */
+  humanAt: number | null
+}
+
+/** The session's recent top-level conversation, oldest first, and what is still waiting on the human. */
+export function readConversation(stateDir: string, sessionId: string): Conversation {
+  if (!/^[A-Za-z0-9-]+$/.test(sessionId)) throw new Error("invalid Copilot app session id")
   const lines: string[] = []
   const permissions = new Map<string, string>()
+  let humanAt: number | null = null
   const push = (block: string): void => {
     for (const line of block.split(/\r?\n/)) lines.push(line)
   }
-  for (const raw of text.split("\n")) {
+  for (const raw of tailEvents(path.join(stateDir, "session-state", sessionId, "events.jsonl"))) {
     let event: unknown
     try {
-      event = JSON.parse(raw)
+      event = JSON.parse(raw.toString("utf-8"))
     } catch {
       continue
     }
     if (!isRecord(event)) continue
     const data = isRecord(event.data) ? event.data : {}
+    if (humanMessage(event, data)) {
+      const at = Date.parse(str(event.timestamp) ?? "")
+      if (!Number.isNaN(at)) humanAt = at
+    }
+    // Sub-agents talk among themselves; the conversation is the session's own.
+    if (event.agentId !== undefined) continue
     switch (event.type) {
       case "user.message":
-        if (str(data.content)) push(`› ${data.content as string}`)
+        if (str(data.content)) push(`› ${str(data.source) ? `(${data.source as string}) ` : ""}${data.content as string}`)
         break
       case "assistant.message":
         if (str(data.content)) push(data.content as string)
@@ -161,10 +218,10 @@ export function readConversation(stateDir: string, sessionId: string): Conversat
   }
   const pending = [...permissions.entries()].at(-1)
   if (pending) lines.push(`Waiting for permission: ${pending[1].replace(/\s+/g, " ").slice(0, 300)}`)
-  return { lines, pendingPermission: pending?.[0] ?? null }
+  return { lines, pendingPermission: pending?.[0] ?? null, humanAt }
 }
 
-/** One connection: frames go to `onFrame` until the socket closes. */
+/** One connection: frames go to `onFrame` until the socket closes. Throws if the socket cannot be created. */
 function openStream(url: string, openSocket: (url: string) => WebSocket, onFrame: (frame: Frame) => void, onClose: (error?: Error) => void): { send(frame: Frame): void; close(): void } {
   const socket = openSocket(url)
   const queue: string[] = []
@@ -199,6 +256,19 @@ export function copilotAppRequest<T>(
 ): Promise<T> {
   const openSocket = options.openSocket ?? ((url: string) => new WebSocket(url))
   return new Promise((resolve, reject) => {
+    let stream: ReturnType<typeof openStream>
+    try {
+      stream = openStream(copilotAppUrl(stateDir), openSocket, (reply) => {
+        try {
+          const value = match(reply)
+          if (value !== undefined) settle(() => resolve(value))
+        } catch (error) {
+          settle(() => reject(error))
+        }
+      }, (error) => settle(() => reject(new Error(`Copilot app ${String(frame.type)}: ${error?.message ?? "connection closed"}`))))
+    } catch (error) {
+      return reject(error)
+    }
     let settled = false
     const settle = (fn: () => void): void => {
       if (settled) return
@@ -208,22 +278,6 @@ export function copilotAppRequest<T>(
       fn()
     }
     const timer = setTimeout(() => settle(() => reject(new Error(`Copilot app ${String(frame.type)} timed out`))), options.timeoutMs ?? TIMEOUT_MS)
-    let url: string
-    try {
-      url = copilotAppUrl(stateDir)
-    } catch (error) {
-      clearTimeout(timer)
-      settled = true
-      return reject(error)
-    }
-    const stream = openStream(url, openSocket, (reply) => {
-      try {
-        const value = match(reply)
-        if (value !== undefined) settle(() => resolve(value))
-      } catch (error) {
-        settle(() => reject(error))
-      }
-    }, (error) => settle(() => reject(new Error(`Copilot app ${String(frame.type)}: ${error?.message ?? "connection closed"}`))))
     stream.send(frame)
   })
 }
@@ -243,8 +297,8 @@ function sessionsFrom(frame: Frame, focused: (id: string) => boolean): HostSessi
       workspaceTitle: str(workspace.projectName) ?? str(workspace.name),
       title: str(session.title) ?? str(workspace.name) ?? "",
       cwd: str(workspace.displayPath),
-      // Only a running session has an agent that can hand control back.
-      agent: session.isRunning === true ? "copilot" : null,
+      // `isRunning` means busy right now, not that an agent exists: every listed session has one.
+      agent: "copilot",
       focused: focused(id),
     })
   }
@@ -254,36 +308,61 @@ function sessionsFrom(frame: Frame, focused: (id: string) => boolean): HostSessi
 export function createCopilotAppHost(connection: CopilotAppConnection, options: CopilotAppHostOptions = {}): ShepherdHost {
   const schedule = options.schedule ?? realSchedule
   const now = options.now ?? Date.now
-  const appFrontmost = options.appFrontmost ?? copilotAppFrontmost
+  const humanPresent = options.humanPresent ?? copilotAppHumanPresent
   const openSocket = options.openSocket ?? ((url: string) => new WebSocket(url))
   const { stateDir } = connection
-  /** When someone other than Shepherd last messaged each session while the app was in front. */
+  /** Human messages this host saw live, newer than the log may show yet. */
   const humanAt = new Map<string, number>()
   const request = <T>(frame: Frame, match: (frame: Frame) => T | undefined): Promise<T> => copilotAppRequest(stateDir, frame, match, { openSocket })
 
   async function workspaceList(): Promise<Frame> {
     const requestId = `ouro-${randomUUID()}`
-    return request({ type: "list_workspaces", request_id: requestId }, (frame) => frame.type === "workspace_list" && frame.request_id === requestId ? frame : undefined)
+    return request({ type: "list_workspaces", request_id: requestId }, (frame) => {
+      if (frame.request_id !== requestId) return undefined
+      if (frame.type === "error") throw new Error(`Copilot app could not list sessions: ${str(frame.message) ?? "error"}`)
+      return frame.type === "workspace_list" ? frame : undefined
+    })
+  }
+
+  function lastHuman(sessionId: string): number {
+    let logged: number | null = null
+    try {
+      logged = readConversation(stateDir, sessionId).humanAt
+    } catch {
+      // A session with no log yet has no human message in it.
+    }
+    return Math.max(humanAt.get(sessionId) ?? -Infinity, logged ?? -Infinity)
   }
 
   async function list(): Promise<HostSession[]> {
     const frame = await workspaceList()
-    const front = humanAt.size > 0 && await appFrontmost()
-    return sessionsFrom(frame, (id) => front && now() - (humanAt.get(id) ?? -Infinity) < HUMAN_HOLD_MS)
+    let present: boolean | undefined
+    const ages = new Map<string, number>()
+    for (const session of sessionsFrom(frame, () => false)) ages.set(session.id, now() - lastHuman(session.id))
+    if ([...ages.values()].some(age => age >= HUMAN_HOLD_MS && age < PRESENT_HOLD_MS)) present = await humanPresent()
+    return sessionsFrom(frame, (id) => {
+      const age = ages.get(id)!
+      return age < HUMAN_HOLD_MS || (present === true && age < PRESENT_HOLD_MS)
+    })
   }
 
   return {
     name: COPILOT_APP_HOST,
     async retirementInventory() {
       const frame = await workspaceList()
-      if (!Array.isArray(frame.workspaces)) throw new Error("invalid Copilot app session inventory")
+      if (!Array.isArray(frame.workspaces) || (Array.isArray(frame.deferred_workspace_ids) && frame.deferred_workspace_ids.length > 0)) {
+        throw new Error("invalid Copilot app session inventory")
+      }
       const ids = sessionsFrom(frame, () => false).map(session => session.id)
       if (new Set(ids).size !== ids.length) throw new Error("invalid Copilot app session inventory identity")
       return ids
     },
     list,
     async read(sessionId, lines) {
-      return readConversation(stateDir, sessionId).lines.slice(-Math.max(1, lines)).join("\n")
+      const conversation = readConversation(stateDir, sessionId)
+      // An empty screen is no basis for a judgment; the sense records the error and sends nothing.
+      if (conversation.lines.length === 0) throw new Error("could not read this Copilot app session's conversation")
+      return conversation.lines.slice(-Math.max(1, lines)).join("\n")
     },
     async prompt(sessionId, line) {
       const requestId = `ouro-${randomUUID()}`
@@ -303,7 +382,8 @@ export function createCopilotAppHost(connection: CopilotAppConnection, options: 
         const requestId = `ouro-${randomUUID()}`
         await request({ type: "abort_session", session_id: sessionId, request_id: requestId }, (frame) => {
           if (frame.type === "error" && frame.request_id === requestId) throw new Error(`Copilot app refused to stop the session: ${str(frame.message) ?? "error"}`)
-          return frame.type === "session_event" && frame.session_id === sessionId && isRecord(frame.event) && frame.event.type === "abort" ? true : undefined
+          const event = isRecord(frame.event) ? frame.event : null
+          return frame.type === "session_event" && frame.session_id === sessionId && event?.type === "session.idle" ? true : undefined
         })
         return
       }
@@ -328,7 +408,7 @@ export function createCopilotAppHost(connection: CopilotAppConnection, options: 
       let cancelReconnect: (() => void) | null = null
       let cancelInventory: (() => void) | null = null
       const pending = new Map<string, () => void>()
-      /** Requests waiting on the human, per session (permission ids and blocking frames). */
+      /** What each session is waiting on the human for: permission ids and blocking frames. */
       const blocked = new Map<string, Set<string>>()
       const lastBody = new Map<string, string>()
       const activity = new Map<string, "working" | "idle">()
@@ -337,7 +417,7 @@ export function createCopilotAppHost(connection: CopilotAppConnection, options: 
       const publish = (error?: "host_unavailable"): void => {
         handlers.observed?.({
           at: now(),
-          sessions: inventory.map((session): ShepherdHostObservation["sessions"][number] => ({ session, activity: activity.get(session.id) ?? (session.agent ? "unknown" : "idle"), observedAt: now() })),
+          sessions: inventory.map((session): ShepherdHostObservation["sessions"][number] => ({ session, activity: activity.get(session.id) ?? "unknown", observedAt: now() })),
           ...(error ? { error } : {}),
         })
       }
@@ -351,11 +431,11 @@ export function createCopilotAppHost(connection: CopilotAppConnection, options: 
         activity.set(sessionId, "idle")
         pending.set(sessionId, schedule(() => {
           pending.delete(sessionId)
-          // Sub-agent and side-chat sessions are not in the workspace list; their parent session is what Shepherd judges.
+          // Only sessions in the workspace list are judged; a side chat's parent is.
           const session = inventory.find(candidate => candidate.id === sessionId)
-          if (!session?.agent) return
+          if (!session) return
           handlers.returned({
-            sessionId, transitionId, agent: "copilot", cwd: session.cwd ?? null,
+            sessionId, transitionId, agent: session.agent, cwd: session.cwd ?? null,
             workspaceTitle: session.workspaceTitle ?? null, title: session.title,
             lastBody: lastBody.get(sessionId) ?? null, backgroundWork,
           })
@@ -371,58 +451,65 @@ export function createCopilotAppHost(connection: CopilotAppConnection, options: 
         blocked.set(sessionId, set)
         settle(sessionId, `${COPILOT_APP_HOST}:${sessionId}:${transition}`, null)
       }
-      const unblock = (sessionId: string, requestId: string | null): void => {
-        if (requestId) blocked.get(sessionId)?.delete(requestId)
-        working(sessionId)
+      /** An answered request; the session is working again unless it still waits on another. */
+      const unblock = (sessionId: string, key: string): void => {
+        const set = blocked.get(sessionId)
+        set?.delete(key)
+        if (!set?.size) working(sessionId)
       }
 
-      const onEvent = async (sessionId: string, event: Frame): Promise<void> => {
+      const onEvent = (sessionId: string, event: Frame): void => {
         const type = str(event.type) ?? ""
         const data = isRecord(event.data) ? event.data : {}
-        const eventId = str(event.id) ?? `t${now()}`
         if (QUIET_EVENTS.has(type) || type.endsWith("_delta")) return
+        if (humanMessage(event, data)) {
+          humanAt.set(sessionId, now())
+          handlers.focused(sessionId)
+        }
+        // A sub-agent's events are its parent's work, never a stop.
+        if (event.agentId !== undefined) {
+          if (!blocked.get(sessionId)?.size) working(sessionId)
+          return
+        }
+        const transitionId = `${COPILOT_APP_HOST}:${sessionId}:${str(event.id) ?? `t${now()}`}`
         switch (type) {
           case "session.idle": {
+            blocked.delete(sessionId)
             // A stop the human asked for is theirs to follow up.
             if (data.aborted === true) {
-              activity.set(sessionId, "idle")
               cancel(sessionId)
+              activity.set(sessionId, "idle")
               return handlers.focused(sessionId)
             }
             // The app sends idle only with no background agents or shells in flight; older builds listed them.
             const tasks = isRecord(data.backgroundTasks) ? data.backgroundTasks : null
             const running = tasks ? [tasks.agents, tasks.shells].some(list => Array.isArray(list) && list.length > 0) : false
-            return settle(sessionId, `${COPILOT_APP_HOST}:${sessionId}:${eventId}`, running)
+            return settle(sessionId, transitionId, running)
           }
+          case "session.shutdown":
+            // The runtime ended: nothing is waiting and nothing can be answered.
+            blocked.delete(sessionId)
+            cancel(sessionId)
+            activity.set(sessionId, "idle")
+            return
           case "session.error":
-            if (data.eligibleForAutoSwitch === true) return working(sessionId)
+            if (data.eligibleForAutoSwitch === true) break
             lastBody.set(sessionId, `Error: ${str(data.message) ?? str(data.errorType) ?? "unknown"}`)
-            return settle(sessionId, `${COPILOT_APP_HOST}:${sessionId}:${eventId}`, null)
+            return settle(sessionId, transitionId, null)
           case "permission.requested":
-            if (data.resolvedByHook === true || !str(data.requestId)) return working(sessionId)
+            if (data.resolvedByHook === true || !str(data.requestId)) break
             return block(sessionId, data.requestId as string)
           case "permission.completed":
-            return unblock(sessionId, str(data.requestId))
+            return unblock(sessionId, str(data.requestId) ?? "")
           case "assistant.message":
             if (str(data.content)) lastBody.set(sessionId, data.content as string)
             break
           case "session.task_complete":
             if (str(data.summary)) lastBody.set(sessionId, data.summary as string)
             break
-          case "user.message": {
-            const content = str(data.content) ?? ""
-            if (SHEPHERD_LABEL.test(content)) break
-            if (await appFrontmost()) {
-              humanAt.set(sessionId, now())
-              handlers.focused(sessionId)
-            }
-            break
-          }
         }
-        // A permission still waiting keeps the session waiting on the human.
-        if ((blocked.get(sessionId)?.size ?? 0) > 0) return
-        // A turn end is one model step, not a stop; everything else is work.
-        if (type === "assistant.turn_end") return
+        // A turn end is one model step, not a stop, and a waiting request keeps the session waiting.
+        if (type === "assistant.turn_end" || blocked.get(sessionId)?.size) return
         working(sessionId)
       }
 
@@ -435,7 +522,7 @@ export function createCopilotAppHost(connection: CopilotAppConnection, options: 
           return
         }
         if (type === "workspace_list") {
-          // Advisory only: the send path re-checks focus through list(), which asks whether the app is in front.
+          // Advisory only: the send path re-checks focus through list().
           inventory = sessionsFrom(frame, (id) => now() - (humanAt.get(id) ?? -Infinity) < HUMAN_HOLD_MS)
           for (const id of [...activity.keys()]) if (!inventory.some(session => session.id === id)) activity.delete(id)
           return publish()
@@ -444,10 +531,7 @@ export function createCopilotAppHost(connection: CopilotAppConnection, options: 
         if (!sessionId) return
         if (type === "session_event" && isRecord(frame.event)) {
           // History replays describe the past, never a new stop.
-          if (frame.history_request_id) return
-          void onEvent(sessionId, frame.event).catch((error: Error) => {
-            emitNervesEvent({ level: "warn", component: "senses", event: "senses.shepherd_copilot_app_event_error", message: "could not handle a Copilot app session event", meta: { error: error.message } })
-          })
+          if (!frame.history_request_id) onEvent(sessionId, frame.event)
           return
         }
         // A request without an id is keyed by its kind, so its resolution can still clear it.
@@ -468,6 +552,8 @@ export function createCopilotAppHost(connection: CopilotAppConnection, options: 
         stream = null
         cancelInventory?.()
         cancelInventory = null
+        // Answers given while disconnected are not replayed, so nothing stays waiting across a gap.
+        blocked.clear()
         if (closed) return
         const delay = RECONNECT_DELAYS_MS[Math.min(attempt, RECONNECT_DELAYS_MS.length - 1)]!
         attempt += 1
@@ -478,14 +564,12 @@ export function createCopilotAppHost(connection: CopilotAppConnection, options: 
 
       const connect = (): void => {
         cancelReconnect = null
-        let url: string
         try {
-          url = copilotAppUrl(stateDir)
+          // Stops while disconnected are not replayed; the next idle or permission event is.
+          stream = openStream(copilotAppUrl(stateDir), openSocket, onFrame, reconnect)
         } catch (error) {
           return reconnect(error as Error)
         }
-        // Stops while disconnected are not replayed; the next idle or permission event is.
-        stream = openStream(url, openSocket, onFrame, reconnect)
         refreshInventory(stream)
       }
 
