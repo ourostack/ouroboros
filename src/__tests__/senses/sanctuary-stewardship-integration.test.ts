@@ -129,6 +129,8 @@ beforeEach(() => {
 })
 
 afterEach(async ({ task }) => {
+  vi.useRealTimers()
+  vi.unstubAllEnvs()
   if (task.result?.state === "fail") process.stderr.write(`${JSON.stringify({
     modelCalls: mocks.create.mock.calls.length,
     lastModelInput: mocks.create.mock.calls.at(-1)?.[0]?.messages?.slice(-2),
@@ -518,6 +520,9 @@ describe("A-006 real Sanctuary stewardship composition", () => {
   }, 30_000)
 
   it("keeps a missing grant non-approvable and sends one useful owner question through the real effect path", async () => {
+    // Owner messages are held 23:00-08:00 Los Angeles time (proactive pacing); pin midday there so this test passes at any hour and on any machine.
+    vi.stubEnv("TZ", "America/Los_Angeles")
+    vi.useFakeTimers({ toFake: ["Date"], shouldAdvanceTime: true, now: new Date("2026-10-20T19:00:00.000Z") })
     const f = await fixture("expected_on", false)
     const question = "Jellyfin is down. I checked its recent logs but do not have permission to restart it automatically. Would you like me to keep it running?"
     let policyVersion = 0
@@ -586,6 +591,9 @@ describe("A-006 real Sanctuary stewardship composition", () => {
   }, 30_000)
 
   it("diagnoses the third outage in the same turn, adopts one Care, and reports once after two real recoveries", async () => {
+    // Owner messages are held 23:00-08:00 Los Angeles time (proactive pacing); pin midday there so this test passes at any hour and on any machine.
+    vi.stubEnv("TZ", "America/Los_Angeles")
+    vi.useFakeTimers({ toFake: ["Date"], shouldAdvanceTime: true, now: new Date("2026-10-20T19:00:00.000Z") })
     const f = await fixture("expected_on")
     for (const attempt of [1, 2]) {
       f.state.running = false
