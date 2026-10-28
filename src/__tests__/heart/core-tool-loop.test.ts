@@ -2180,6 +2180,19 @@ describe("runAgent tool loop guard", () => {
       } as any)
       expect(rested.outcome).not.toBe("errored")
     })
+
+    it("keeps the iteration-limit error when the turn's tools offer neither settle nor rest", async () => {
+      const { runAgent } = await import("../../heart/core")
+      let response = 0
+      mockCreate.mockImplementation(() => probeCall(`call_${++response}`, `v${response}`))
+      const callbacks = makeCallbacks()
+      const result = await runAgent([{ role: "user", content: "keep probing" }], callbacks, "inner", undefined, {
+        tools: [probeTool] as any, execTool: vi.fn().mockResolvedValue("ok"), hardDisableTools: true,
+        toolContext: { signin: async () => undefined, delegatedOrigins: [{ id: "held" }] },
+      } as any)
+      expect(result.outcome).toBe("errored")
+      expect(callbacks.onError).toHaveBeenCalledWith(expect.objectContaining({ message: expect.stringContaining("before tool execution") }), "terminal")
+    })
   })
 
   describe("approval suspension boundary", () => {
