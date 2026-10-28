@@ -2,6 +2,15 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.942",
+      "changes": [
+        "Require a current owner-authored task mandate and qualified conditional input for automatic Shepherd continuation; older hosts remain observation-only.",
+        "Add experimental managed-session identity and input-stage receipts with durable protection against replaying uncertain input.",
+        "Reject nonconforming judge answers and verify scoped continuation and refusal through the compiled check-in pipeline.",
+        "Show supervision evidence in Mailbox without equating submission with completed work. Actual native/provider, installed, reboot and rendered v1 qualification remain separate."
+      ]
+    },
+    {
       "version": "0.1.0-alpha.941",
       "changes": [
         "Shepherd owner-requested terminal input now reports submission separately from unverified receiver receipt, execution, capability and progress; uncertain attempts retain identity and are not blindly retried."
