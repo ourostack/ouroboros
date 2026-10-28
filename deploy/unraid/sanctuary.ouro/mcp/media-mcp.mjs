@@ -94,7 +94,7 @@ const prowlarr = (path, opts = {}) => req(PROWLARR.url, `/api/v1${path}`, { key:
 // ------------------------------------------------------------------ mapping
 
 // Jellyseerr media status codes.
-const MEDIA_STATUS = { 1: "unknown", 2: "pending", 3: "processing", 4: "partially_available", 5: "available" }
+const MEDIA_STATUS = { 1: "unknown", 2: "pending", 4: "partially_available", 5: "available" }
 const REQUEST_STATUS = { 1: "pending_approval", 2: "approved", 3: "declined", 4: "failed" }
 
 const TMDB_GENRES = {
@@ -399,7 +399,7 @@ async function mediaRequest(a) {
 
   const existing = await findExistingRequest(tmdbId, kind)
   if (existing?.hasRequest) {
-    const shelf = MEDIA_STATUS[existing.media?.status] ?? "unknown"
+    const shelf = shelfStateOf(kind, existing.media ?? {})
     return {
       resolved: true, title: resolvedTitle ?? existing.media?.title ?? null, year: resolvedYear, kind, tmdb_id: tmdbId,
       request_id: `jellyseerr:${existing.id}`,
@@ -426,7 +426,7 @@ async function mediaRequest(a) {
     approval_state: REQUEST_STATUS[created.status] ?? "submitted",
     duplicate_of: null,
     jellyseerr_status: REQUEST_STATUS[created.status] ?? "submitted",
-    shelf_state: MEDIA_STATUS[created.media?.status] ?? "processing",
+    shelf_state: created.media?.status ? shelfStateOf(kind, created.media) : "not_on_shelf",
     submitted_at: created.createdAt,
     tvdb_id: created.media?.tvdbId ?? null,
     sonarr_id: kind === "series" ? (created.media?.externalServiceId ?? null) : null,
@@ -534,7 +534,7 @@ export async function mediaRequestStatus(a) {
 
   const kind = request.type === "tv" ? "series" : "movie"
   const media = request.media ?? {}
-  const shelf = MEDIA_STATUS[media.status] ?? "unknown"
+  const shelf = shelfStateOf(kind, media)
   const svcId = media.externalServiceId ?? null
 
   const result = {
