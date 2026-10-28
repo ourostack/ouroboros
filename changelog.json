@@ -13,7 +13,8 @@
         "The house digest stops repeating the same stuck items as new.",
         "Butler sends at most three unprompted messages a day and none between 23:00 and 08:00, except disk, parity and array alerts.",
         "Server events blocked by Butler's daily allowance or failure pause now wait and retry instead of being dropped, and disk, parity and array events are never held back.",
-        "The health acceptance probe keeps checking a web endpoint once per sweep, so its scripted scenarios still match what Butler does."
+        "The health acceptance probe keeps checking a web endpoint once per sweep, so its scripted scenarios still match what Butler does.",
+        "Media request and request-status answers use the same plain shelf states (downloading, in Radarr or Sonarr but not downloading, available) instead of \"processing\"."
       ]
     },
     {
