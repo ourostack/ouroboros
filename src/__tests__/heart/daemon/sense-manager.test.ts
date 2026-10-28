@@ -1646,7 +1646,7 @@ describe("daemon sense manager", () => {
     expect(processManagerOptions.agents.map((entry: { name: string; entry: string }) => [entry.name, entry.entry])).toEqual([["slugger:shepherd", "senses/shepherd-entry.js"]])
     const check = await processManagerOptions.configCheck("slugger:shepherd")
     expect(check).toMatchObject({ ok: false, skip: true })
-    expect(check.fix).toContain("human-required: in a cmux terminal run 'ouro vault config set --agent slugger --scope machine --key cmux.socketCapability")
+    expect(check.fix).toContain("in a cmux terminal run 'ouro vault config set --agent slugger --scope machine --key cmux.socketCapability")
     fs.rmSync(bundlesRoot, { recursive: true, force: true })
   })
 

@@ -2,10 +2,11 @@ import type { ShepherdConnection } from "../../heart/shepherd-config"
 import { emitNervesEvent } from "../../nerves/runtime"
 import { createCmuxClient } from "./client"
 import { createCmuxHost } from "./cmux"
+import { createCopilotAppHost } from "./copilot-app"
 import { createHerdrHost } from "./herdr"
 
 /**
- * The seam between Shepherd and a terminal host (cmux, Herdr). A host lists and reads terminal
+ * The seam between Shepherd and a terminal host (cmux, Herdr, the GitHub Copilot app). A host lists and reads terminal
  * sessions, types into them, shows a status line, and tells Shepherd when a coding agent handed
  * control back. Detection is the host's own knowledge (its hook events, its agent states, or a
  * quiet screen); judging the return is Shepherd's.
@@ -111,6 +112,7 @@ export interface ShepherdHost {
 /** The host for this machine's connection. */
 export function createShepherdHost(connection: ShepherdConnection, options: { agentName: string; now?: () => number; schedule?: (fn: () => void, ms: number) => () => void }): ShepherdHost {
   emitNervesEvent({ component: "senses", event: "senses.shepherd_host_created", message: "opened the Shepherd terminal host", meta: { host: connection.host } })
+  if (connection.host === "copilot-app") return createCopilotAppHost(connection, { schedule: options.schedule, now: options.now })
   return connection.host === "herdr"
     ? createHerdrHost(connection, { schedule: options.schedule })
     : createCmuxHost(createCmuxClient(connection, { agentName: options.agentName }), { now: options.now, schedule: options.schedule })

@@ -14,7 +14,12 @@ import { emitNervesEvent } from "../nerves/runtime"
  * fallback, and an explicit `socketMode: "automation"` (any same-user process) is the last resort.
  *
  * Herdr (`herdr` record): a same-user Unix socket with no credential; `socketPath` overrides
- * Herdr's default session socket. cmux wins when both are configured.
+ * Herdr's default session socket. cmux wins over Herdr when both are configured.
+ *
+ * GitHub Copilot app (`copilotApp` record): the app's local WebSocket server. Its port and token
+ * are rewritten on every app launch, so Shepherd reads them from `<stateDir>/run/` at connect time
+ * and stores no credential. `stateDir` overrides the default `~/.copilot`. A `copilotApp` record
+ * wins over cmux and Herdr: adding it moves this machine's Shepherd to the Copilot app.
  */
 export type CmuxSocketAuth =
   | { kind: "capability"; token: string }
@@ -26,7 +31,10 @@ export interface CmuxConnection {
   auth: CmuxSocketAuth
 }
 
-export type ShepherdConnection = ({ host: "cmux" } & CmuxConnection) | { host: "herdr"; socketPath: string }
+export type ShepherdConnection =
+  | ({ host: "cmux" } & CmuxConnection)
+  | { host: "herdr"; socketPath: string }
+  | { host: "copilot-app"; stateDir: string }
 
 export interface ShepherdConfigFacts {
   configured: boolean
@@ -36,7 +44,7 @@ export interface ShepherdConfigFacts {
 }
 
 export function shepherdRepairHint(agent: string): string {
-  return `human-required: in a cmux terminal run 'ouro vault config set --agent ${agent} --scope machine --key cmux.socketCapability --value "$CMUX_SOCKET_CAPABILITY"' (or set cmux.socketPassword when cmux is in password mode), then 'ouro up'. On Herdr instead: 'ouro vault config set --agent ${agent} --scope machine --key herdr.socketPath --value "$HOME/.config/herdr/herdr.sock"', then 'ouro up'.`
+  return `human-required: for the GitHub Copilot app run 'ouro vault config set --agent ${agent} --scope machine --key copilotApp.stateDir --value "$HOME/.copilot"', then 'ouro up'. Or in a cmux terminal run 'ouro vault config set --agent ${agent} --scope machine --key cmux.socketCapability --value "$CMUX_SOCKET_CAPABILITY"' (or set cmux.socketPassword when cmux is in password mode), then 'ouro up'. On Herdr instead: 'ouro vault config set --agent ${agent} --scope machine --key herdr.socketPath --value "$HOME/.config/herdr/herdr.sock"', then 'ouro up'.`
 }
 
 function text(record: Record<string, unknown> | undefined, key: string): string {
@@ -59,6 +67,7 @@ function cmuxAuth(cmux: Record<string, unknown> | undefined): CmuxSocketAuth | n
 }
 
 export function shepherdConfigFacts(machinePayload: Record<string, unknown>): ShepherdConfigFacts {
+  if (hostRecord(machinePayload, "copilotApp")) return { configured: true, detail: "GitHub Copilot app" }
   const cmux = hostRecord(machinePayload, "cmux")
   const auth = cmuxAuth(cmux)
   if (!auth && hostRecord(machinePayload, "herdr")) return { configured: true, detail: "herdr socket" }
@@ -77,6 +86,11 @@ export function shepherdSenseStatus(enabled: boolean, machinePayload: Record<str
 /** Herdr's default session socket. */
 export function defaultHerdrSocketPath(homeDir: string = os.homedir()): string {
   return path.join(homeDir, ".config", "herdr", "herdr.sock")
+}
+
+/** The Copilot app's state directory, where it writes `run/ws.port` and `run/ws.token`. */
+export function defaultCopilotAppStateDir(homeDir: string = os.homedir()): string {
+  return path.join(homeDir, ".copilot")
 }
 
 /** cmux's own default: `~/.local/state/cmux/cmux-<uid>.sock`, then the older unscoped `cmux.sock`. */
@@ -98,14 +112,16 @@ export function resolveShepherdConnection(
 ): { ok: true; connection: ShepherdConnection } | { ok: false; error: string } {
   const cmux = hostRecord(machinePayload, "cmux")
   const herdr = hostRecord(machinePayload, "herdr")
+  const copilotApp = hostRecord(machinePayload, "copilotApp")
   const auth = cmuxAuth(cmux)
-  const host = auth ? "cmux" : herdr ? "herdr" : "none"
+  const host = copilotApp ? "copilot-app" : auth ? "cmux" : herdr ? "herdr" : "none"
   emitNervesEvent({
     component: "senses",
     event: "senses.shepherd_connection_resolved",
     message: "resolved Shepherd terminal host connection settings",
-    meta: { agent, host, auth: auth?.kind ?? "missing" },
+    meta: { agent, host, auth: host === "copilot-app" ? "app-token-file" : auth?.kind ?? "missing" },
   })
+  if (copilotApp) return { ok: true, connection: { host: "copilot-app", stateDir: text(copilotApp, "stateDir") || defaultCopilotAppStateDir() } }
   if (auth) return { ok: true, connection: { host: "cmux", socketPath: text(cmux, "socketPath") || defaultSocketPath(), auth } }
   if (herdr) return { ok: true, connection: { host: "herdr", socketPath: text(herdr, "socketPath") || defaultHerdrSocketPath() } }
   return { ok: false, error: `no terminal host is attached on this machine; ${shepherdRepairHint(agent)}` }
