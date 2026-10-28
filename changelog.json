@@ -2,6 +2,12 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.959",
+      "changes": [
+        "Butler no longer tells you he \"couldn't verify\" ordinary words like Client or Service: a word only counts as a name when the conversation never uses it as a plain word, and anything his own server tools read this turn counts as checked."
+      ]
+    },
+    {
       "version": "0.1.0-alpha.958",
       "changes": [
         "The Butler release gate now judges a new release against the version that is actually running, not an older baseline.",
