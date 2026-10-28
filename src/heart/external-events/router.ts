@@ -998,7 +998,7 @@ function recordExternalEventInternal(input: ExternalEventInput, options: RecordE
     lastError: shouldWake || settles ? null : existing!.lastError,
     ...(!shouldWake && !settles && existing?.failureProvenance ? { failureProvenance: existing.failureProvenance } : {}),
     ...(!shouldWake && !settles && existing?.recoveryGrant ? { recoveryGrant: existing.recoveryGrant } : {}),
-    disposition: shouldWake || quietInitialReceipt ? null : existing!.disposition,
+    disposition: shouldWake || settles ? null : existing!.disposition,
     pendingObservation: shouldWake || settles ? null : existing!.pendingObservation,
     dispatchEnabled: options.dispatchEnabled ?? existing?.dispatchEnabled ?? true,
     shouldWake,

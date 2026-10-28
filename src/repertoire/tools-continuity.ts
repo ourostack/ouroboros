@@ -20,7 +20,8 @@ const externalEventDispositionProperties = {
   stewardPolicyKey: { type: "string", description: "Exact current policy key used for this decision" },
   stewardPolicyVersion: { type: "number", description: "Exact current policy version used for this decision" },
   decision: { type: "string", enum: ["silent", "act", "ask", "report"] },
-  reason: { type: "string", description: "Short plain-language reason for the decision" },
+  reason: { type: "string", description: "Internal audit note for the decision; never shown to the owner" },
+  owner_message: { type: "string", description: "Required for ask or report: the exact short plain message the owner reads, as you would text a friend. No ids, leases, generations, revisions or receipts." },
   nextWake: { type: "string", enum: ["on_change", "on_escalation", "on_recovery", "at"], description: "Use on_change unless you already called await_condition for this exact event and are supplying its awaitId" },
   wakeAt: { type: "string", description: "ISO time required only when nextWake=at" },
   awaitId: { type: "string", description: "Existing await_condition receipt required when nextWake=at; never invent one" },
@@ -37,6 +38,9 @@ const externalEventDispositionBatchSchema = {
   description: "All exact leases from one coalesced external-event turn",
   items: { type: "object", properties: externalEventDispositionProperties, required: externalEventDispositionRequired, additionalProperties: false },
 };
+
+// The owner reads owner_message verbatim, so internal bookkeeping words never reach them.
+const OWNER_MESSAGE_FORBIDDEN = /\b(generation|lease|revision|receipt|disposition|claimOwner|recordPath)s?\b|[\u200b-\u200f\u202a-\u202e\u2060-\u206f\ufeff]/iu;
 
 function prepareExternalEventDisposition(a: Record<string, unknown>, ctx?: ToolContext) {
   const agentName = getAgentName();
@@ -66,6 +70,7 @@ function prepareExternalEventDisposition(a: Record<string, unknown>, ctx?: ToolC
   const policyVersion = Number(a.stewardPolicyVersion);
   const policyKind = String(a.stewardPolicyKind ?? "");
   const reason = String(a.reason ?? "").trim();
+  const ownerText = String(a.owner_message ?? "").trim();
   if (!reason || (policyKind !== "none" && (!Number.isSafeInteger(policyVersion) || policyVersion < 1))
     || !["current", "none"].includes(policyKind)
     || !["expected", "needs_attention", "adopted", "snoozed", "dismissed_until_change", "resolved"].includes(classification)
@@ -137,13 +142,15 @@ function prepareExternalEventDisposition(a: Record<string, unknown>, ctx?: ToolC
     finish: async () => {
       let ownerMessage: import("../heart/external-events/router").ExternalEventOwnerMessage | undefined;
       if (decision === "ask" || decision === "report") {
-        if (Buffer.byteLength(reason, "utf8") > 1_200) throw new Error("External event owner message must be phone-sized");
+        if (!ownerText) throw new Error("ask and report need owner_message: the short plain text the owner will read");
+        if (Buffer.byteLength(ownerText, "utf8") > 1_200) throw new Error("External event owner message must be phone-sized");
+        if (OWNER_MESSAGE_FORBIDDEN.test(ownerText)) throw new Error("owner_message must be plain words for the owner, with no internal ids, leases, generations, revisions, receipts or hidden characters");
         if (!ctx?.externalEventEffects) throw new Error("External event owner delivery is unavailable");
         // The whole dispatched batch shares one owner message; the delivery port settles later decisions as covered by it.
         const relatedEvents = [turnContext!, ...(turnContext!.relatedEvents ?? [])]
           .filter((event) => path.resolve(event.recordPath) !== recordPath)
           .map((event) => ({ source: event.source, eventId: event.eventId, generation: event.generation }));
-        const delivered = await ctx.externalEventEffects.deliverOwnerDecision({ source: record.source, eventId: record.eventId, generation: record.generation, text: reason, relatedEvents });
+        const delivered = await ctx.externalEventEffects.deliverOwnerDecision({ source: record.source, eventId: record.eventId, generation: record.generation, text: ownerText, relatedEvents });
         ownerMessage = { status: delivered.status, effectKey: delivered.effectKey };
       }
       const handled = commitExternalEventDisposition(recordPath, {
@@ -178,7 +185,7 @@ export const continuityToolDefinitions: ToolDefinition[] = [
       type: "function",
       function: {
         name: "external_event_disposition",
-        description: "Classify the exact external-event generation I just investigated. An ask or report is the sole owner-delivery path and sends reason once for this receipt; silent and act only record the disposition. In a batch, only the first ask or report sends a message and the later ones are recorded as covered by it, so write that first reason to cover every listed lease.",
+        description: "Classify the exact external-event generation I just investigated. An ask or report is the sole owner-delivery path and sends owner_message once for this receipt; reason stays internal. silent and act only record the disposition. In a batch, only the first ask or report sends a message and the later ones are recorded as covered by it, so write that first owner_message to cover every listed incident.",
         parameters: {
           type: "object",
           properties: {
@@ -346,7 +353,7 @@ export const continuityToolDefinitions: ToolDefinition[] = [
             incidentKey: { type: "string", description: "Stable incident key within the source" },
             classifiedRevision: { type: "string", description: "Observation revision classified by the agent" },
             correlationKey: { type: "string", description: "Optional key relating several incidents to one concern" },
-            expectedUpdatedAt: { type: "string", description: "Optional Care updatedAt value for CAS fencing" },
+            expectedUpdatedAt: { type: "string", description: "The Care's current updatedAt, copied from the last care_manage result. Required for bind_incident and resolve_incident; optional for update." },
             currentRisk: { type: "string", description: "Current material risk for this Care, or an empty string to clear it" },
             nextCheckAt: { type: "string", description: "Exact ISO time of the next owned check" },
           },
@@ -383,7 +390,7 @@ export const continuityToolDefinitions: ToolDefinition[] = [
       } else if (a.action === "resolve") {
         result = resolveCare(agentRoot, a.id);
       } else if (a.action === "bind_incident") {
-        if (!a.expectedUpdatedAt) throw new Error("Care incident binding requires expectedUpdatedAt");
+        if (!a.expectedUpdatedAt) throw new Error("bind_incident requires expectedUpdatedAt: copy the Care's current updatedAt from the last care_manage result");
         result = bindCareIncident(agentRoot, a.id, {
           source: a.source,
           incidentKey: a.incidentKey,
@@ -391,7 +398,7 @@ export const continuityToolDefinitions: ToolDefinition[] = [
           ...(a.correlationKey ? { correlationKey: a.correlationKey } : {}),
         }, { expectedUpdatedAt: a.expectedUpdatedAt });
       } else if (a.action === "resolve_incident") {
-        if (!a.expectedUpdatedAt) throw new Error("Care incident resolution requires expectedUpdatedAt");
+        if (!a.expectedUpdatedAt) throw new Error("resolve_incident requires expectedUpdatedAt: copy the Care's current updatedAt from the last care_manage result");
         result = resolveCareIncident(agentRoot, a.id, {
           source: a.source,
           incidentKey: a.incidentKey,

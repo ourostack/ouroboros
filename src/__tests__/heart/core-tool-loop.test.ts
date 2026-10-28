@@ -2981,6 +2981,21 @@ describe("runAgent tool loop guard", () => {
       expect(boundaries).toContainEqual(expect.objectContaining({ name: "shell", reason: "dependency_rejected", invoked: false, sideEffect: false }))
     })
 
+    it("lets a call through after the same contract rejected it twice in one turn", async () => {
+      mockCreate
+        .mockReturnValueOnce(streamed("unraid_get_system", {}, "contract-1"))
+        .mockReturnValueOnce(streamed("unraid_get_system", {}, "contract-2"))
+        .mockReturnValueOnce(streamed("unraid_get_system", {}, "contract-3"))
+        .mockReturnValueOnce(streamed("settle", { answer: "done", intent: "complete" }, "contract-settle"))
+      const execTool = vi.fn().mockResolvedValue(JSON.stringify({ ok: true }))
+      const { runAgent } = await import("../../heart/core")
+      await runAgent([{ role: "user", content: "status" }], makeCallbacks(), "cli", undefined, {
+        tools: [readTool("unraid_get_system")], execTool, toolContext: { signin: async () => undefined },
+        requiredToolCalls: { names: [], retryMessage: "unused", validateToolCallBeforeDispatch: () => "Search for the requested title first." },
+      } as any)
+      expect(execTool).toHaveBeenCalledTimes(1)
+    })
+
     it("fails closed when an initially required tool is not advertised", async () => {
       const { runAgent } = await import("../../heart/core")
       await expect(runAgent([{ role: "user", content: "status" }], makeCallbacks(), "telegram", undefined, {

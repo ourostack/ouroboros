@@ -1606,6 +1606,8 @@ export async function runAgent(
   let stepReportIteration: number | null = null;
   // The one tool a turn may call after its step budget is used up: settle for conversations, rest for private turns.
   let stepReportTool: "settle" | "rest" = "settle";
+  // A pre-dispatch contract check may reject the same call twice in a turn; after that it is advisory, so a check no call can satisfy never traps the turn.
+  const requiredDispatchRejectionCounts = new Map<string, number>();
   const budgetExhausted = (): boolean => {
     if (providerIterations < stepBudget) return false
     if (lastIterationMadeProgress && stepBudget < MAX_PROVIDER_ITERATIONS_CEILING) {
@@ -2657,7 +2659,19 @@ export async function runAgent(
         for (const entry of validCalls) {
           const requiredArgs = entry.validated.arguments as Record<string, string>
           const rejection = options?.requiredToolCalls?.validateToolCallBeforeDispatch?.(entry.call.name, requiredArgs)
-          if (rejection) requiredDispatchRejections.set(entry.call.id, { name: entry.call.name, args: requiredArgs, message: rejection })
+          if (!rejection) continue
+          const rejectionKey = `${entry.call.name}\0${rejection}`
+          const priorRejections = requiredDispatchRejectionCounts.get(rejectionKey) ?? 0
+          if (priorRejections >= 2) {
+            emitNervesEvent({
+              level: "warn", component: "engine", event: "engine.required_tool_dispatch_advisory",
+              message: "required tool dependency rejected twice this turn; letting the call through",
+              meta: { toolName: entry.call.name },
+            })
+            continue
+          }
+          requiredDispatchRejectionCounts.set(rejectionKey, priorRejections + 1)
+          requiredDispatchRejections.set(entry.call.id, { name: entry.call.name, args: requiredArgs, message: rejection })
         }
         if (requiredDispatchRejections.size > 0) {
           streamCallbackBuffer?.discard()

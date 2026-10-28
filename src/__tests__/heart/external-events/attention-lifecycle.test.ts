@@ -1116,7 +1116,10 @@ describe("external event attention lifecycle", () => {
       const opened = recordExternalEvent({ ...base, eventId: "notification:1", observationRevision: "rev-1", transition: "opened" }, { root: eventRoot })
       disposeSilently(opened.recordPath)
       const recovered = recordExternalEvent({ ...base, eventId: "notification:1", observationRevision: "rev-2", transition: "recovered" }, { root: eventRoot })
-      expect(recovered).toMatchObject({ shouldWake: false, executionState: "handled", generation: 1 })
+      expect(recovered).toMatchObject({ shouldWake: false, executionState: "handled", generation: 1, disposition: null })
+      // The same outage text returning is a new outage and wakes again.
+      const reopened = recordExternalEvent({ ...base, eventId: "notification:1", observationRevision: "rev-1", transition: "opened" }, { root: eventRoot })
+      expect(reopened).toMatchObject({ shouldWake: true, generation: 2 })
     })
 
     it("settles a recovery that arrives while the opening wake is still queued or dead-lettered", () => {
