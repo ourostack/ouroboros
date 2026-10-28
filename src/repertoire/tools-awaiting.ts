@@ -18,7 +18,7 @@ import { askedOwnerText, createA2AAwaitOwnerDeliverer, defaultNotifyOwner, type 
 import { getPrivateRuntimePendingDir, queuePendingMessageOnce } from "../mind/pending"
 import type { PendingMessage } from "../mind/pending"
 import type { ToolContext, ToolDefinition } from "./tools-base"
-import type { CrossChatDeliveryDeps } from "../heart/cross-chat-delivery"
+import type { CrossChatDeliveryDeps, CrossChatDeliveryRequest, CrossChatDirectDeliveryResult } from "../heart/cross-chat-delivery"
 import { advanceExternalEventFromAwait, getExternalEventRoot, readExternalEventRecord } from "../heart/external-events/router"
 import { advanceObligation, createObligation, fulfillObligation, readVerifiedObligations, readVerifiedPendingObligations } from "../arc/obligations"
 import { parseCadenceToMs } from "../heart/daemon/cadence"
@@ -126,9 +126,28 @@ export function resetAwaitToolDeps(): void {
   injected = {}
 }
 
+/**
+ * A tick runs in the private runtime, where no resident Telegram sense registered a deliverer. Without this one-shot
+ * sender a Telegram-bound watch queued its alert in the inner pending folder, never reached the owner, and never closed.
+ * A resident sense's own deliverer still wins when one is registered.
+ */
+async function sendTelegramAwaitAlert(agentName: string, request: CrossChatDeliveryRequest): Promise<CrossChatDirectDeliveryResult> {
+  // Only a request-bound watch has an exact chat to answer; any other alert keeps queueing for the agent's next turn.
+  if (!request.requestId) return { status: "unavailable", detail: "no request-bound Telegram chat to answer" }
+  const { sendTelegramAwaitFollowUp } = await import("../senses/telegram")
+  return sendTelegramAwaitFollowUp(agentName, request)
+}
+
 function resolveDeliveryDeps(agentName: string): CrossChatDeliveryDeps {
   const deps = injected.buildDeliveryDeps ? injected.buildDeliveryDeps(agentName) : defaultDeliveryDeps(agentName)
-  return { ...deps, deliverers: { a2a: createA2AAwaitOwnerDeliverer(agentName), ...deps.deliverers } }
+  return {
+    ...deps,
+    deliverers: {
+      a2a: createA2AAwaitOwnerDeliverer(agentName),
+      telegram: (request) => sendTelegramAwaitAlert(agentName, request),
+      ...deps.deliverers,
+    },
+  }
 }
 
 const ASK_OWNER_MIN_CHOICES = 2
