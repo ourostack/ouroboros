@@ -5,6 +5,13 @@ function emitTestEvent(testName: string): void {
   emitNervesEvent({ component: "engine", event: "engine.test_run", message: testName, meta: { test: true } })
 }
 
+vi.mock("../../../heart/daemon/socket-client", () => ({
+  DEFAULT_DAEMON_SOCKET_PATH: "/tmp/ouroboros-test-mock.sock",
+  sendDaemonCommand: vi.fn().mockResolvedValue({ ok: true }),
+  checkDaemonSocketAlive: vi.fn().mockResolvedValue(false),
+  requestInnerWake: vi.fn().mockResolvedValue(null),
+}))
+
 vi.mock("../../../heart/identity", () => ({
   loadAgentConfig: vi.fn(() => ({ name: "testagent", provider: "anthropic" })),
   DEFAULT_AGENT_CONTEXT: { maxTokens: 80000, contextMargin: 20 },
