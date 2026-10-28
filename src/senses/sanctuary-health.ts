@@ -322,12 +322,19 @@ export function createSanctuaryHealthSweep(options: {
   lease?: SanctuaryHealthStateLease
   /** Pause before re-probing a failed endpoint within one sweep. */
   endpointRetryDelayMs?: number
+  /**
+   * Default true: retry a failed endpoint once per sweep and open its incident only after two failed sweeps in a row.
+   * The acceptance probe turns this off because its loopback fixture scripts exactly one response per sweep.
+   */
+  endpointDebounce?: boolean
 }): SanctuaryHealthSweep {
   const fetchImpl = options.fetch ?? fetch
   const endpointRetryDelayMs = options.endpointRetryDelayMs ?? 3_000
+  const endpointDebounce = options.endpointDebounce ?? true
+  const endpointFailuresToOpen = endpointDebounce ? 2 : 1
   const probeWithRetry = async (url: string) => {
     const first = await probeSanctuaryEndpoint(url, fetchImpl)
-    if (first.ok) return first
+    if (first.ok || !endpointDebounce) return first
     await new Promise((resolve) => setTimeout(resolve, endpointRetryDelayMs))
     return probeSanctuaryEndpoint(url, fetchImpl)
   }
@@ -390,7 +397,7 @@ export function createSanctuaryHealthSweep(options: {
     for (const endpoint of endpoints) {
       if (endpoint.ok) continue
       endpointFailures[endpoint.url] = (previous.endpointFailures?.[endpoint.url] ?? 0) + 1
-      if (endpointFailures[endpoint.url]! >= 2) add(`endpoint:${endpoint.url}`, `${endpoint.url} returned ${endpoint.status || "no response"}`)
+      if (endpointFailures[endpoint.url]! >= endpointFailuresToOpen) add(`endpoint:${endpoint.url}`, `${endpoint.url} returned ${endpoint.status || "no response"}`)
     }
 
     const current = Object.fromEntries([...incidents.entries()].sort(([a], [b]) => a.localeCompare(b)).map(([id, incident]) => {

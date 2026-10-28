@@ -607,7 +607,7 @@ export async function runSanctuaryHealthAcceptanceProbe(
       }
       const runPhase = async (name: string, trigger: "cron" | "acceptance", fixtureStatus: 200 | 503 | null, fetchImpl: typeof fetch, now: Date): Promise<void> => {
         const sweep = createSanctuaryHealthSweep({
-          toolContext: dependencies.toolContext, statePath, fetch: fetchImpl, now: () => now, lease,
+          toolContext: dependencies.toolContext, statePath, fetch: fetchImpl, now: () => now, lease, endpointDebounce: false,
           acceptanceEventMeta: () => ({ scenarioHandleDigest: input.scenarioHandleDigest }),
         })
         await runSanctuaryHealthHabit("sanctuary", {
