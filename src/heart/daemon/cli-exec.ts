@@ -6659,6 +6659,7 @@ function readApiKeyFile(filePath: string): string {
   try {
     raw = fs.readFileSync(filePath, "utf8")
   } catch (error) {
+    /* v8 ignore next -- fs.readFileSync only throws Error objects @preserve */
     throw new Error(`could not read --api-key-file ${filePath}: ${error instanceof Error ? error.message : String(error)}`)
   }
   const key = raw.trim()

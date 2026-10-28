@@ -64,6 +64,8 @@ docker run -d --name ouro-credit-gateway \
   /opt/ouro/dist/heart/daemon/ouro-entry.js gateway serve --keys-dir /keys --host 127.0.0.1 --port 8787
 ```
 
+Port 8787 is also the default port of Readarr and its forks (such as Bookshelf). If `ss -ltn | grep 8787` shows it in use, pick a free port (for example 8788) and use it in `--port`, the health check and the Butler's `--base-url`.
+
 Optional flags after `gateway serve`: `--cooldown-minutes <n>` (default 60), `--state <path>` (default `<keys-dir>/gateway-state.json`), `--upstream <url>` (default `https://api.anthropic.com`).
 
 ## Check it
