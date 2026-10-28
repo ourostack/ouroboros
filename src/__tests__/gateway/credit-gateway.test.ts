@@ -177,6 +177,22 @@ describe("credit gateway server", () => {
     expect((await post(gateway, { authorization: `Bearer ${MASTER}` })).status).toBe(200)
   })
 
+  it("refuses a request path that would resolve to another host, so an upstream key never leaves for it", async () => {
+    const stub = await startStub((_req, res) => { res.writeHead(200); res.end("{}") })
+    const { gateway, logs } = await startGateway({ keysDir: makeKeysDir(), upstream: stub.url })
+    const port = new URL(gateway.url).port
+    for (const rawPath of ["//evil.example/v1/messages", "/\\evil.example/v1/messages", "http://evil.example/v1/messages"]) {
+      const status = await new Promise<number>((resolve, reject) => {
+        const req = http.request({ host: "127.0.0.1", port, method: "POST", path: rawPath, headers: { "x-api-key": MASTER } }, (res) => { res.resume(); resolve(res.statusCode!) })
+        req.on("error", reject)
+        req.end("{}")
+      })
+      expect(status).toBe(400)
+    }
+    expect(stub.requests).toHaveLength(0)
+    expect(logs.every((line) => / 400 \d+ms$/.test(line))).toBe(true)
+  })
+
   it("forwards method, path, query, body and headers with the first upstream key, and strips the client's credentials", async () => {
     const stub = await startStub((_req, res) => { res.writeHead(201, { "content-type": "application/json", "x-upstream": "yes" }); res.end('{"id":"msg"}') })
     const { gateway, logs } = await startGateway({ keysDir: makeKeysDir(), upstream: `${stub.url}/prefix/` })

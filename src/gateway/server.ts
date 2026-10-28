@@ -291,6 +291,13 @@ export async function startCreditGateway(options: CreditGatewayOptions): Promise
       return
     }
 
+    const target = upstreamUrl(upstreamBase, requestUrl)
+    if (target.origin !== upstreamBase.origin) {
+      writeJsonError(res, 400, "invalid_request_error", "invalid request path")
+      logRequest("-", method, pathname, 400, startedAt)
+      return
+    }
+
     let body: Buffer
     try {
       body = await readRequestBody(req, maxRequestBytes)
@@ -313,7 +320,7 @@ export async function startCreditGateway(options: CreditGatewayOptions): Promise
       if (skipUntil(entry.label)) continue
       let upstream: { response: http.IncomingMessage; request: http.ClientRequest }
       try {
-        upstream = await sendUpstream(upstreamUrl(upstreamBase, requestUrl), method, forwardedRequestHeaders(req, entry.key, body.length), body)
+        upstream = await sendUpstream(target, method, forwardedRequestHeaders(req, entry.key, body.length), body)
       } catch (error) {
         emitNervesEvent({
           level: "error",
