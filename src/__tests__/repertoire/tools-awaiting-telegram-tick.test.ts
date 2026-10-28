@@ -84,6 +84,17 @@ describe("a Telegram watch resolved on its own private tick (2026-10-28: the boo
     expect(telegram.sent.map((sent) => sent.content)).toEqual([message])
   })
 
+  it("resends the first words after a refused send, because the Telegram effect key is the watch name and new words would be refused as a reused key", async () => {
+    telegram.status = "blocked"
+    parse(await resolveAwaitDef.handler({ name: NAME, verdict: "yes", observation: "the log is clean", message: "first words" }))
+    telegram.status = "delivered_now"
+    const result = parse(await resolveAwaitDef.handler({ name: NAME, verdict: "yes", observation: "still clean", message: "second words" }))
+
+    expect(result.archived).toEqual(expect.stringContaining(`${NAME}.md`))
+    expect(telegram.sent.map((sent) => sent.content)).toEqual(["first words"])
+    expect(fs.existsSync(path.join(agentRoot, "state", "await-alerts", `${NAME}.json`))).toBe(false)
+  })
+
   it("falls back to the condition and observation when the agent wrote no message", async () => {
     parse(await resolveAwaitDef.handler({ name: NAME, verdict: "yes", observation: "the log is clean", message: "   " }))
 

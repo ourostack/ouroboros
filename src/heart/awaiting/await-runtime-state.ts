@@ -1,3 +1,4 @@
+import * as fs from "fs"
 import * as path from "path"
 import { readJsonFile, writeJsonFile } from "../../arc/json-store"
 import { capStructuredRecordString } from "../session-events"
@@ -99,4 +100,22 @@ export function recordAwaitCheck(
     last_observation: observation,
     checked_count: nextCount,
   })
+}
+
+// A request-bound alert's Telegram effect is keyed by the await name alone, so a
+// retry with different words is refused as a reused key and the watch never
+// closes. The first text tried is pinned and every retry resends it.
+function awaitAlertDir(agentRoot: string): string {
+  return path.join(agentRoot, "state", "await-alerts")
+}
+
+export function pinAwaitAlertContent(agentRoot: string, name: string, content: string): string {
+  const pinned = readJsonFile<{ content?: unknown }>(awaitAlertDir(agentRoot), name)
+  if (typeof pinned?.content === "string") return pinned.content
+  writeJsonFile(awaitAlertDir(agentRoot), name, { schemaVersion: 1, name, content })
+  return content
+}
+
+export function clearAwaitAlertContent(agentRoot: string, name: string): void {
+  fs.rmSync(path.join(awaitAlertDir(agentRoot), `${name}.json`), { force: true })
 }

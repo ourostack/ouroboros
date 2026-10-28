@@ -10,9 +10,11 @@ import {
   type AwaitMode,
 } from "../heart/awaiting/await-parser"
 import {
+  buildAlertContent,
   deliverAwaitAlert,
   type AwaitAlertResult,
 } from "../heart/awaiting/await-alert"
+import { clearAwaitAlertContent, pinAwaitAlertContent } from "../heart/awaiting/await-runtime-state"
 import { FileFriendStore } from "@ouro.bot/friends"
 import { askedOwnerText, createA2AAwaitOwnerDeliverer, defaultNotifyOwner, type NotifyOwner } from "../heart/awaiting/a2a-await-delivery"
 import { getPrivateRuntimePendingDir, queuePendingMessageOnce } from "../mind/pending"
@@ -532,7 +534,7 @@ async function resolveAwaitTool(name: string, verdict: string, observation: stri
   let alert: AwaitAlertResult | null = null
   if (existing.request_id && existing.filed_from !== "external-event") {
     try {
-      alert = await deliverAwaitAlert({ awaitFile: existing, reason: "resolved", observation: observation.trim(), content, agentRoot, agentName, deliveryDeps: resolveDeliveryDeps(agentName) })
+      alert = await deliverAwaitAlert({ awaitFile: existing, reason: "resolved", observation: observation.trim(), content: pinAwaitAlertContent(agentRoot, name, content ?? buildAlertContent(existing, "resolved", observation.trim())), agentRoot, agentName, deliveryDeps: resolveDeliveryDeps(agentName) })
     } catch (error) {
       emitNervesEvent({ level: "error", component: "repertoire", event: "repertoire.await_alert_error", message: "await alert delivery threw", meta: { agent: agentName, name, error: error instanceof Error ? error.message : String(error) } })
     }
@@ -560,6 +562,7 @@ async function resolveAwaitTool(name: string, verdict: string, observation: stri
   /* v8 ignore next -- defensive: archiveAwait only fails on the file-disappears-mid-call race already covered by v8 ignore inside archiveAwait @preserve */
   if (!archive.ok) return JSON.stringify({ error: archive.error })
   fulfillAwaitObligation(agentRoot, archive.file)
+  if (existing.request_id) clearAwaitAlertContent(agentRoot, name)
 
   emitNervesEvent({
     component: "repertoire",
