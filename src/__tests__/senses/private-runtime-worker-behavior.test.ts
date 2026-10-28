@@ -104,6 +104,7 @@ vi.mock("../../arc/flight-recorder", () => ({
 
 vi.mock("../../heart/autonomy-budget", () => ({
   reserveAutonomyBudget: (...args: any[]) => mockReserveAutonomyBudget(...args),
+  recordAutonomyFailure: vi.fn(),
   resolveAutonomyBudgetPolicy: (...args: any[]) => mockResolveAutonomyBudgetPolicy(...args),
 }))
 

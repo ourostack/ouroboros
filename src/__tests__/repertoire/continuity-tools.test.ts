@@ -461,6 +461,7 @@ describe("continuity tools", () => {
       const tool = findTool("care_manage")
       expect(() => tool.handler({ action: "bind_incident", id: "c-1" })).toThrow(/requires expectedUpdatedAt/u)
       expect(() => tool.handler({ action: "resolve_incident", id: "c-1" })).toThrow(/requires expectedUpdatedAt/u)
+      expect((tool.tool.function.parameters as any).properties.expectedUpdatedAt.description).toMatch(/Required for bind_incident and resolve_incident/u)
     })
 
     it("uses incident-upsert defaults and preserves an optional correlation key", async () => {
@@ -609,7 +610,7 @@ describe("continuity tools", () => {
         .mockResolvedValueOnce({ status: "sent", effectKey: "external-event:first" })
         .mockResolvedValueOnce({ status: "covered", effectKey: "external-event:first" })
       const context = { ...batchContext(members), externalEventEffects: { deliverOwnerDecision } }
-      const report = (member: ReturnType<typeof batchMember>) => ({ ...batchDisposition(member), classification: "needs_attention", decision: "report", reason: `${member.eventId} is down.` })
+      const report = (member: ReturnType<typeof batchMember>) => ({ ...batchDisposition(member), classification: "needs_attention", decision: "report", reason: "internal", owner_message: `${member.eventId} is down.` })
 
       const result = JSON.parse(await findTool("external_event_disposition").handler({ batch: [report(members[0]!), batchDisposition(members[1]!), report(members[2]!)] } as any, context as any))
 
@@ -656,7 +657,7 @@ describe("continuity tools", () => {
 
       await findTool("external_event_disposition").handler({
         recordPath: "/events/ouroboros/sanctuary-health/books.json", expectedGeneration: 2, classifiedRevision: "rev-2", classification: "needs_attention",
-        stewardPolicyKind: "current", stewardPolicyKey: "service:books", stewardPolicyVersion: 4, decision: "report", reason: "Books is down. I’m checking it now.", nextWake: "on_change",
+        stewardPolicyKind: "current", stewardPolicyKey: "service:books", stewardPolicyVersion: 4, decision: "report", reason: "Books down, policy current.", owner_message: "Books is down. I’m checking it now.", nextWake: "on_change",
       }, {
         signin: async () => undefined,
         currentExternalEvent: { schemaVersion: 1, recordPath: "/events/ouroboros/sanctuary-health/books.json", agent: "ouroboros", source: "sanctuary-health", eventId: "books", generation: 2, observationRevision: "rev-2", claimOwner: "lease-2" },
@@ -671,12 +672,14 @@ describe("continuity tools", () => {
       expect(mockCommitExternalEventDisposition.mock.invocationCallOrder[0]).toBeLessThan(recordCommittedDisposition.mock.invocationCallOrder[0]!)
     })
 
-    it("rejects stale current policy and allows no-policy dispositions for fresh observations with no applicable key", async () => {
+    it("rejects stale current policy and allows no-policy dispositions for any transition, including unchanged and recovered", async () => {
       mockReadStewardPolicy.mockReturnValue({ schemaVersion: 1, version: 0, desiredStates: {}, routineActionGrants: {}, updatedAt: null })
       mockReadExternalEventRecord.mockReturnValue({ agent: "ouroboros", source: "sanctuary-health", eventId: "books", transition: "unchanged", version: 4, generation: 2, observationRevision: "rev-2", executionState: "running", claimOwner: "lease-2" })
       const context = { signin: async () => undefined, currentExternalEvent: { schemaVersion: 1 as const, recordPath: "/events/ouroboros/sanctuary-health/books.json", agent: "ouroboros", source: "sanctuary-health", eventId: "books", generation: 2, observationRevision: "rev-2", claimOwner: "lease-2" }, externalEventAuthority: { authorizeDisposition: () => ({ allowed: true, reason: "test" }) } }
       expect(() => findTool("external_event_disposition").handler({ recordPath: context.currentExternalEvent.recordPath, expectedGeneration: 2, classifiedRevision: "rev-2", classification: "expected", stewardPolicyKind: "current", stewardPolicyKey: "service:books", stewardPolicyVersion: 4, decision: "silent", reason: "Expected.", nextWake: "on_change" }, context)).toThrow(/exact current key\/version/u)
-      expect(() => findTool("external_event_disposition").handler({ recordPath: context.currentExternalEvent.recordPath, expectedGeneration: 2, classifiedRevision: "rev-2", classification: "expected", stewardPolicyKind: "none", decision: "silent", reason: "No policy yet.", nextWake: "on_change" }, context)).toThrow(/fresh observation/u)
+      await expect(findTool("external_event_disposition").handler({ recordPath: context.currentExternalEvent.recordPath, expectedGeneration: 2, classifiedRevision: "rev-2", classification: "expected", stewardPolicyKind: "none", decision: "silent", reason: "No policy yet.", nextWake: "on_change" }, context)).resolves.toContain("handled")
+      mockReadExternalEventRecord.mockReturnValue({ agent: "ouroboros", source: "sanctuary-health", eventId: "books", transition: "recovered", version: 4, generation: 2, observationRevision: "rev-2", executionState: "running", claimOwner: "lease-2" })
+      await expect(findTool("external_event_disposition").handler({ recordPath: context.currentExternalEvent.recordPath, expectedGeneration: 2, classifiedRevision: "rev-2", classification: "resolved", stewardPolicyKind: "none", decision: "silent", reason: "Recovered.", nextWake: "on_change" }, context)).resolves.toContain("handled")
       mockReadExternalEventRecord.mockReturnValue({ agent: "ouroboros", source: "sanctuary-health", eventId: "books", transition: "opened", version: 4, generation: 2, observationRevision: "rev-2", executionState: "running", claimOwner: "lease-2" })
       mockReadStewardPolicy.mockReturnValue({ schemaVersion: 1, version: 1, desiredStates: { "service:other": { value: "on", provenance: "stated", version: 1, source: "ari" } }, routineActionGrants: {}, updatedAt: "2026-08-29T00:00:00.000Z" })
       await expect(findTool("external_event_disposition").handler({ recordPath: context.currentExternalEvent.recordPath, expectedGeneration: 2, classifiedRevision: "rev-2", classification: "expected", stewardPolicyKind: "none", decision: "silent", reason: "No applicable policy yet.", nextWake: "on_change" }, context)).resolves.toContain("handled")
@@ -934,6 +937,7 @@ describe("continuity tools", () => {
         stewardPolicyVersion: 2,
         decision: "ask",
         reason: "Waiting for the top-up.",
+        owner_message: "Want me to wait for the top-up?",
         nextWake: "at",
         wakeAt: "2026-08-30T17:00:00.000Z",
         awaitId: "await-top-up",
@@ -980,8 +984,10 @@ describe("continuity tools", () => {
       expect(() => tool.handler({ ...base, nextWake: "at", wakeAt: "2026-08-30T17:00:00.000Z", awaitId: "resolved" }, { signin: async () => undefined, currentExternalEvent, externalEventAuthority: authority })).toThrow("does not match the exact wake time")
       vi.mocked(fs.lstatSync).mockReturnValueOnce({ isFile: () => false, isSymbolicLink: () => true } as any)
       expect(() => tool.handler({ ...base, nextWake: "at", wakeAt: "2026-08-30T17:00:00.000Z", awaitId: "unsafe" }, { signin: async () => undefined, currentExternalEvent, externalEventAuthority: authority })).toThrow("current pending Await")
-      await expect(tool.handler({ ...base, decision: "report", reason: "x".repeat(1_201) }, { signin: async () => undefined, currentExternalEvent, externalEventAuthority: authority } as any)).rejects.toThrow("phone-sized")
-      await expect(tool.handler({ ...base, decision: "report" }, { signin: async () => undefined, currentExternalEvent, externalEventAuthority: authority } as any)).rejects.toThrow("delivery is unavailable")
+      await expect(tool.handler({ ...base, decision: "report" }, { signin: async () => undefined, currentExternalEvent, externalEventAuthority: authority } as any)).rejects.toThrow("need owner_message")
+      await expect(tool.handler({ ...base, decision: "report", owner_message: "x".repeat(1_201) }, { signin: async () => undefined, currentExternalEvent, externalEventAuthority: authority } as any)).rejects.toThrow("phone-sized")
+      await expect(tool.handler({ ...base, decision: "report", owner_message: "Same observation as generation 14 on the same lease." }, { signin: async () => undefined, currentExternalEvent, externalEventAuthority: authority } as any)).rejects.toThrow("plain words for the owner")
+      await expect(tool.handler({ ...base, decision: "report", owner_message: "Books is down." }, { signin: async () => undefined, currentExternalEvent, externalEventAuthority: authority } as any)).rejects.toThrow("delivery is unavailable")
     })
 
     it("routes action and verification references through the injected authority", async () => {

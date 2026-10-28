@@ -4,6 +4,7 @@ import { runPrivateRuntimeTurn, type PreparedHabitContext } from "./private-runt
 import type { PriorHabitSessionSummaryInfo } from "./habit-turn-message"
 import type { PrivateTurnDecision } from "../heart/private-runtime"
 import { renewExternalEventClaim, settleExternalEventFailureIfOwned, type ExternalEventLeaseContext } from "../heart/external-events/router"
+import { isCriticalNoticeKey } from "./telegram-handoff"
 import { emitNervesEvent } from "../nerves/runtime"
 import { getAgentName, getAgentRoot } from "../heart/identity"
 import { getPrivateRuntimePendingDir, hasPendingMessages } from "../mind/pending"
@@ -40,7 +41,7 @@ import {
   usageMetadataFromUsageData,
   type RunLedgerLifecycle,
 } from "../heart/run-ledger"
-import { reserveAutonomyBudget, resolveAutonomyBudgetPolicy, type AutonomyBudgetDecision } from "../heart/autonomy-budget"
+import { recordAutonomyFailure, reserveAutonomyBudget, resolveAutonomyBudgetPolicy, type AutonomyBudgetDecision, type AutonomyStormInput } from "../heart/autonomy-budget"
 import { privateRuntimeHabitRejectionReason } from "./habit-lifecycle-guard"
 
 export type PrivateRuntimeWorkerReason = "boot" | "habit" | "instinct" | "await"
@@ -246,6 +247,54 @@ function reserveHabitAutonomyBudget(habitRun: PreparedHabitRun, nowIso: string):
     idempotencyKey: `habit:${habitRun.habit.name}:${habitRun.runId}`,
     now: nowIso,
   }, resolveAutonomyBudgetPolicy(habitRun.agentRoot, agentName))
+}
+
+/**
+ * External-event turns are paid model work, so they draw on their own daily allowance (the agent's
+ * habitPaidTurnsPerDay, counted under the "external-events" name so a busy event day cannot starve a
+ * habit) and share one storm breaker: three failed event turns within ten minutes pause event turns
+ * for thirty minutes.
+ */
+const EXTERNAL_EVENT_BUDGET_NAME = "external-events"
+
+function externalEventStorm(agentName: string): AutonomyStormInput {
+  return {
+    agent: agentName,
+    triggerType: "habit",
+    sourceKind: "private-runtime",
+    senseOrHabit: EXTERNAL_EVENT_BUDGET_NAME,
+    provider: "model",
+    target: { kind: EXTERNAL_EVENT_BUDGET_NAME },
+    normalizedErrorName: "external_event_turn_failed",
+    normalizedErrorCode: "turn_failed",
+    codeLocation: "private-runtime-worker",
+    idempotencyBucket: EXTERNAL_EVENT_BUDGET_NAME,
+  }
+}
+
+/** A blocked event turn waits this long (the breaker's block length) and keeps its retry attempts. */
+const EXTERNAL_EVENT_BLOCKED_DEFER_MS = 30 * 60_000
+
+function reserveExternalEventAutonomyBudget(event: ExternalEventLeaseContext, nowIso: string): AutonomyBudgetDecision | null {
+  // Disk, parity and array failures always get a turn: the owner must hear about them even on a busy day.
+  if ([event, ...(event.relatedEvents ?? [])].some((member) => isCriticalNoticeKey(member.eventId))) return null
+  const agentRoot = getAgentRoot()
+  const agentName = getAgentName()
+  return reserveAutonomyBudget(agentRoot, {
+    agent: agentName,
+    triggerType: "habit",
+    sourceKind: "private-runtime",
+    senseOrHabit: EXTERNAL_EVENT_BUDGET_NAME,
+    target: { kind: EXTERNAL_EVENT_BUDGET_NAME },
+    idempotencyKey: `event:${event.recordPath}:${event.generation}:${event.claimOwner}`,
+    now: nowIso,
+    storm: externalEventStorm(agentName),
+  }, resolveAutonomyBudgetPolicy(agentRoot, agentName))
+}
+
+function recordExternalEventTurnFailure(nowIso: string): void {
+  const agentRoot = getAgentRoot()
+  recordAutonomyFailure(agentRoot, { ...externalEventStorm(getAgentName()), occurredAt: nowIso }, resolveAutonomyBudgetPolicy(agentRoot, getAgentName()))
 }
 
 /**
@@ -645,6 +694,8 @@ export function createPrivateRuntimeWorker(
           const turnStartedAt = new Date(nowSource()).toISOString()
           const autonomyDecision = currentHabitRun && !currentHabitRun.blockedReason
             ? reserveHabitAutonomyBudget(currentHabitRun, turnStartedAt)
+            : currentExternalEvent
+            ? reserveExternalEventAutonomyBudget(currentExternalEvent, turnStartedAt)
             : null
           if (currentHabitRun) recordHabitStartIfNeeded(currentHabitRun)
           if (currentHabitRun?.blockedReason) {
@@ -724,15 +775,19 @@ export function createPrivateRuntimeWorker(
             : blockedAutonomyTurn || turnOutcome === "blocked" || turnOutcome === "suspended"
               ? "external-event turn was blocked"
               : "external-event turn completed without a terminal disposition"
+          const settledAt = nowSource()
+          const deferUntil = blockedAutonomyTurn ? new Date(settledAt + EXTERNAL_EVENT_BLOCKED_DEFER_MS).toISOString() : undefined
           let settledIncomplete = false
           for (const member of [currentExternalEvent, ...(currentExternalEvent.relatedEvents ?? [])]) {
             const result = settleExternalEventFailureIfOwned(member.recordPath, {
               owner: member.claimOwner,
               expectedGeneration: member.generation,
               error: failureReason,
+              ...(deferUntil ? { deferUntil } : {}),
             })
             settledIncomplete = result.settled || settledIncomplete
           }
+          if (!blockedAutonomyTurn && (turnErrors.length > 0 || turnOutcome === "errored" || settledIncomplete)) recordExternalEventTurnFailure(new Date(settledAt).toISOString())
           if (settledIncomplete && turnErrors.length === 0) turnErrors.push(failureReason)
         }
         if (currentReason === "habit" && currentHabitName === "heartbeat") {

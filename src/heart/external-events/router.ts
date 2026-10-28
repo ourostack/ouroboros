@@ -963,8 +963,13 @@ function recordExternalEventInternal(input: ExternalEventInput, options: RecordE
       && existing.recoveryGrant?.generation === existing.generation && existing.failureProvenance !== undefined
       && Date.parse(now) - Date.parse(existing.failureProvenance.failedAt) >= EXHAUSTED_RECOVERY_REOPEN_MS
       && Math.floor(Date.parse(now) / 3_600_000) % EXHAUSTED_RECOVERY_SLOTS === exhaustedRecoverySlot(existing)
-    const shouldWake = !quietInitialReceipt && (!existing || quietBaselineChanged
+    // A recovery is only news to an owner who was told about the incident, or to a turn that asked to watch for it; any other recovery settles here without a model turn.
+    const silentRecovery = input.transition === "recovered" && existing !== null
+      && existing.disposition?.decision !== "ask" && existing.disposition?.decision !== "report" && existing.disposition?.nextWake.kind !== "on_recovery"
+    const settledRecoveryReopened = existing?.executionState === "handled" && !existing.disposition && existing.transition === "recovered" && input.transition !== "recovered"
+    const shouldWake = !quietInitialReceipt && !silentRecovery && (!existing || quietBaselineChanged || settledRecoveryReopened
       || (existing.disposition ? predicateMatches(existing.disposition, input, revision) : existing.executionState === "dead_letter" && (revision !== existing.observationRevision || exhaustedRecoveryReopens)))
+    const settles = quietInitialReceipt || silentRecovery
     const generation = existing ? existing.generation + (shouldWake ? 1 : 0) : 1
     const record: ExternalEventRecord = {
     schemaVersion: 2,
@@ -984,17 +989,17 @@ function recordExternalEventInternal(input: ExternalEventInput, options: RecordE
     observationRevision: revision,
     observationDigest: digest,
     transition: input.transition ?? (existing ? "unchanged" : "opened"),
-    executionState: quietInitialReceipt ? "handled" : shouldWake ? "received" : existing!.executionState,
+    executionState: settles ? "handled" : shouldWake ? "received" : existing!.executionState,
     generation,
-    attemptCount: shouldWake || quietInitialReceipt ? 0 : existing!.attemptCount,
-    claimOwner: shouldWake || quietInitialReceipt ? null : existing!.claimOwner,
-    claimExpiresAt: shouldWake || quietInitialReceipt ? null : existing!.claimExpiresAt,
-    nextAttemptAt: shouldWake || quietInitialReceipt ? null : existing!.nextAttemptAt,
-    lastError: shouldWake || quietInitialReceipt ? null : existing!.lastError,
-    ...(!shouldWake && !quietInitialReceipt && existing?.failureProvenance ? { failureProvenance: existing.failureProvenance } : {}),
-    ...(!shouldWake && !quietInitialReceipt && existing?.recoveryGrant ? { recoveryGrant: existing.recoveryGrant } : {}),
-    disposition: shouldWake || quietInitialReceipt ? null : existing!.disposition,
-    pendingObservation: shouldWake || quietInitialReceipt ? null : existing!.pendingObservation,
+    attemptCount: shouldWake || settles ? 0 : existing!.attemptCount,
+    claimOwner: shouldWake || settles ? null : existing!.claimOwner,
+    claimExpiresAt: shouldWake || settles ? null : existing!.claimExpiresAt,
+    nextAttemptAt: shouldWake || settles ? null : existing!.nextAttemptAt,
+    lastError: shouldWake || settles ? null : existing!.lastError,
+    ...(!shouldWake && !settles && existing?.failureProvenance ? { failureProvenance: existing.failureProvenance } : {}),
+    ...(!shouldWake && !settles && existing?.recoveryGrant ? { recoveryGrant: existing.recoveryGrant } : {}),
+    disposition: shouldWake || settles ? null : existing!.disposition,
+    pendingObservation: shouldWake || settles ? null : existing!.pendingObservation,
     dispatchEnabled: options.dispatchEnabled ?? existing?.dispatchEnabled ?? true,
     shouldWake,
     ...(persistedRetention ? { retentionSummary: persistedRetention } : {}),
@@ -1484,6 +1489,8 @@ export function settleExternalEventFailureIfOwned(recordPath: string, input: {
   expectedGeneration: number
   error: string
   failureClass?: ExternalEventFailureClass
+  /** The turn never ran (autonomy budget or breaker): wait until this time without spending a retry attempt. */
+  deferUntil?: string
   now?: () => string
 }): { settled: boolean; record: ExternalEventRecord } {
   return withRecordLock(recordPath, () => {
@@ -1494,7 +1501,10 @@ export function settleExternalEventFailureIfOwned(recordPath: string, input: {
       || record.generation !== input.expectedGeneration) {
       return { settled: false, record }
     }
-    const settled = commitMutation(recordPath, retryState(record, now, 5, 1_000, input.error, input.failureClass), now)
+    const next = input.deferUntil
+      ? { ...record, executionState: "retry_wait" as const, claimOwner: null, claimExpiresAt: null, nextAttemptAt: input.deferUntil, attemptCount: Math.max(0, record.attemptCount - 1), lastError: input.error.slice(0, 1_000), shouldWake: false }
+      : retryState(record, now, 5, 1_000, input.error, input.failureClass)
+    const settled = commitMutation(recordPath, next, now)
     return { settled: true, record: settled }
   })
 }

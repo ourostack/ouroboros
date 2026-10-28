@@ -381,20 +381,27 @@ describe("Sanctuary deterministic health sweep", () => {
       parity: { result: "failed", ageHours: 1 },
     } })
     toolContext.sanctuary.getNotifications.mockResolvedValue({ ok: true, data: { unacknowledged: [
-      { id: "n1", title: "Disk warning" },
-      { id: "n2", title: "" },
+      { id: "n1", title: "Disk warning", severity: "warning" },
+      { id: "n2", title: "", severity: "unknown" },
+      { id: "n3", title: "Docker update available", severity: "info" },
     ] } })
-    const fetch = vi.fn()
-      .mockResolvedValueOnce(new Response(null, { status: 500 }))
-      .mockRejectedValueOnce(new Error("offline"))
-      .mockResolvedValue(new Response(null, { status: 204 }))
+    const fetch = vi.fn(async (url: string) => {
+      if (url.startsWith("https://media.")) return new Response(null, { status: 500 })
+      if (url.startsWith("https://books.")) throw new Error("offline")
+      return new Response(null, { status: 204 })
+    })
     const sweep = createSanctuaryHealthSweep({
       toolContext,
       statePath: statePath("sanctuary-health-degraded-"),
-      fetch,
+      fetch: fetch as unknown as typeof globalThis.fetch,
       now: () => new Date("2026-08-18T15:00:00.000Z"),
+      endpointRetryDelayMs: 0,
     })
 
+    const firstSweep = await sweep()
+    // One failed sweep (each endpoint retried once) is not yet an incident.
+    expect(firstSweep.incidents.map((incident) => incident.id).filter((id) => id.startsWith("endpoint:"))).toEqual([])
+    expect(fetch.mock.calls.filter(([url]) => String(url).startsWith("https://books."))).toHaveLength(2)
     const result = await sweep()
     const ids = result.incidents.map((incident) => incident.id)
     expect(ids).toEqual([...ids].sort())
@@ -416,6 +423,7 @@ describe("Sanctuary deterministic health sweep", () => {
       "endpoint:https://books.mendelow.cloud/",
     ]))
     expect(ids).not.toContain("container:Docker:optional:availability")
+    expect(ids).not.toContain("notification:n3")
     expect(result.message).toBeNull()
     expect(result.incidents.map((incident) => incident.summary)).toEqual(expect.arrayContaining(["unacknowledged notification: n2", "https://books.mendelow.cloud/ returned no response"]))
   })
@@ -613,5 +621,30 @@ describe("Sanctuary deterministic health sweep", () => {
     } finally {
       formatter.mockRestore()
     }
+  })
+
+  it("drops malformed endpoint failure counters instead of treating the state as corrupt", () => {
+    for (const endpointFailures of [[1], { "https://a/": 0 }, "x"]) {
+      const file = statePath()
+      fs.writeFileSync(file, JSON.stringify({ ...validState(), endpointFailures }))
+      expect(readSanctuaryHealthState(file)).not.toHaveProperty("endpointFailures")
+    }
+    const file = statePath()
+    fs.writeFileSync(file, JSON.stringify({ ...validState(), endpointFailures: { "https://a/": 2, "https://b/": -1 } }))
+    expect(readSanctuaryHealthState(file).endpointFailures).toEqual({ "https://a/": 2 })
+  })
+
+  it("forgets an endpoint's failure count once it answers again", async () => {
+    let down = true
+    const fetch = vi.fn(async (url: string) => new Response(null, { status: down && url.startsWith("https://books.") ? 502 : 204 }))
+    const file = statePath()
+    const sweep = createSanctuaryHealthSweep({ toolContext: context("running"), statePath: file, fetch: fetch as unknown as typeof globalThis.fetch, now: () => new Date("2026-08-18T15:00:00.000Z"), endpointRetryDelayMs: 0 })
+    await sweep()
+    expect(readSanctuaryHealthState(file).endpointFailures).toEqual({ "https://books.mendelow.cloud/": 1 })
+    down = false
+    await sweep()
+    expect(readSanctuaryHealthState(file)).not.toHaveProperty("endpointFailures")
+    down = true
+    expect((await sweep()).incidents.map((incident) => incident.id)).not.toContain("endpoint:https://books.mendelow.cloud/")
   })
 })

@@ -532,7 +532,7 @@ describe("A-006 real Sanctuary stewardship composition", () => {
         name: "external_event_disposition", args: {
           ...leaseArguments(request), classification: "needs_attention", decision: "ask",
           stewardPolicyKind: "current", stewardPolicyKey: "container:jellyfin", stewardPolicyVersion: policyVersion,
-          reason: question, nextWake: "on_change",
+          reason: "Restart not granted; asking.", owner_message: question, nextWake: "on_change",
         },
       }),
       () => ({ name: "rest", args: {} }),
@@ -544,7 +544,7 @@ describe("A-006 real Sanctuary stewardship composition", () => {
     expect(f.sent).toEqual([expect.objectContaining({ chat_id: "42", text: question })])
     expect(f.sent[0]).not.toHaveProperty("reply_markup")
     expect(f.event()).toMatchObject({
-      executionState: "handled", disposition: { classification: "needs_attention", decision: "ask", reason: question },
+      executionState: "handled", disposition: { classification: "needs_attention", decision: "ask", reason: "Restart not granted; asking." },
     })
     expect(calls.filter((call) => call.name !== "rest")).toHaveLength(4)
     await f.runHealth()
@@ -614,26 +614,12 @@ describe("A-006 real Sanctuary stewardship composition", () => {
       expect(f.receipts()).toHaveLength(attempt)
       expect(f.event()).toMatchObject({ executionState: "handled", disposition: { classification: "resolved", decision: "act" } })
 
-      const healthy = modelScript([
-        () => ({ name: "steward_policy_manage", args: { action: "read" } }),
-        (request) => {
-          policyVersion = JSON.parse(lastToolText(request)).version
-          return { name: "unraid_list_containers", args: {} }
-        },
-        (request) => {
-          expect(JSON.parse(lastToolText(request))).toMatchObject({ ok: true, data: { containers: [expect.objectContaining({ name: "jellyfin", state: "running" })] } })
-          return { name: "external_event_disposition", args: {
-            ...leaseArguments(request), classification: "resolved", decision: "silent",
-            stewardPolicyKind: "current", stewardPolicyKey: "container:jellyfin", stewardPolicyVersion: policyVersion,
-            reason: "Jellyfin is running, so no further action is needed.", nextWake: "on_change",
-          } }
-        },
-        () => ({ name: "rest", args: {} }),
-      ])
+      // The owner was never told about this outage and the turn did not ask to watch for recovery, so the recovery settles without a model turn.
+      const healthy = modelScript([])
       await f.runHealth()
-      expect(healthy.filter((call) => call.name !== "rest")).toHaveLength(3)
-      expect(f.dispatch).toHaveBeenCalledTimes(attempt * 2)
-      expect(f.event()).toMatchObject({ transition: "recovered", executionState: "handled", disposition: { decision: "silent" } })
+      expect(healthy).toHaveLength(0)
+      expect(f.dispatch).toHaveBeenCalledTimes(attempt)
+      expect(f.event()).toMatchObject({ transition: "recovered", executionState: "handled", disposition: null })
       expect(f.state.mutations).toBe(attempt)
       expect(f.sent).toEqual([])
     }
@@ -679,7 +665,7 @@ describe("A-006 real Sanctuary stewardship composition", () => {
         return { name: "external_event_disposition", args: {
           ...leaseArguments(request), classification: "adopted", decision: "report", careId,
           stewardPolicyKind: "current", stewardPolicyKey: "unraid.restart:jellyfin", stewardPolicyVersion: policyVersion,
-          reason: report, nextWake: "on_change",
+          reason: "Adopted a Care after the third outage.", owner_message: report, nextWake: "on_change",
         } }
       },
       () => ({ name: "rest", args: {} }),
@@ -688,7 +674,7 @@ describe("A-006 real Sanctuary stewardship composition", () => {
     expect(exhausted.filter((call) => call.name !== "rest").map((call) => call.name)).toEqual([
       "steward_policy_manage", "unraid_restart_container", "unraid_get_container_logs", "care_manage", "external_event_disposition",
     ])
-    expect(f.dispatch).toHaveBeenCalledTimes(5)
+    expect(f.dispatch).toHaveBeenCalledTimes(3)
     expect(f.state).toMatchObject({ running: false, mutations: 2, logReads: 1 })
     expect(f.receipts()).toEqual([
       expect.objectContaining({ state: "verified", verifiedAfterState: "running" }),
@@ -704,7 +690,7 @@ describe("A-006 real Sanctuary stewardship composition", () => {
     expect(f.sent[0]).not.toHaveProperty("reply_markup")
     const completedCalls = exhausted.length
     await f.runHealth()
-    expect(f.dispatch).toHaveBeenCalledTimes(5)
+    expect(f.dispatch).toHaveBeenCalledTimes(3)
     expect(exhausted).toHaveLength(completedCalls)
     expect(f.state.mutations).toBe(2)
     expect(f.receipts()).toHaveLength(2)

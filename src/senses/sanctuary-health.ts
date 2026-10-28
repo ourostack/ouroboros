@@ -49,6 +49,8 @@ export interface HealthState {
   updatedAt: string
   /** Recovered incidents whose recovery receipt has not been accepted yet; they are re-offered until acknowledged. */
   pendingRecovered?: Incident[]
+  /** Consecutive failed sweeps per public endpoint; an endpoint incident opens only at two, so one blip never pages anyone. */
+  endpointFailures?: Record<string, number>
   outbox: HealthDelivery | null
   indeterminateDeliveries: HealthDelivery[]
   deliveredReceipts: Array<{ deliveryId: string; kind: HealthDelivery["kind"]; messageIds: number[]; deliveredAt: string }>
@@ -241,6 +243,7 @@ function load(filePath: string): HealthState {
       lastDigestDay: value.lastDigestDay,
       updatedAt: value.updatedAt,
       ...(value.pendingRecovered?.length ? { pendingRecovered: value.pendingRecovered } : {}),
+      ...(endpointFailuresOf(value.endpointFailures) ? { endpointFailures: endpointFailuresOf(value.endpointFailures)! } : {}),
       outbox: value.outbox ? { ...value.outbox, kind: value.outbox.kind ?? "legacy_unknown" } : null,
       indeterminateDeliveries: (value.indeterminateDeliveries ?? []).map((delivery) => ({ ...delivery, kind: delivery.kind ?? "legacy_unknown" })),
       deliveredReceipts: (value.deliveredReceipts ?? []).map((receipt) => ({ ...receipt, kind: receipt.kind ?? "legacy_unknown" })),
@@ -256,6 +259,13 @@ function load(filePath: string): HealthState {
 /** Read-only projection for status/orientation surfaces; mutation remains lease-owned by the sweep. */
 export function readSanctuaryHealthState(filePath: string): HealthState {
   return load(filePath)
+}
+
+// A malformed failure counter only delays an endpoint incident by one sweep, so it is dropped rather than treated as corrupt state.
+function endpointFailuresOf(value: unknown): Record<string, number> | null {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null
+  const entries = Object.entries(value).filter(([, count]) => Number.isSafeInteger(count) && (count as number) > 0)
+  return entries.length > 0 ? Object.fromEntries(entries) as Record<string, number> : null
 }
 
 function save(filePath: string, state: HealthState): void {
@@ -310,8 +320,24 @@ export function createSanctuaryHealthSweep(options: {
   now?: () => Date
   acceptanceEventMeta?: () => Record<string, string>
   lease?: SanctuaryHealthStateLease
+  /** Pause before re-probing a failed endpoint within one sweep. */
+  endpointRetryDelayMs?: number
+  /**
+   * Default true: retry a failed endpoint once per sweep and open its incident only after two failed sweeps in a row.
+   * The acceptance probe turns this off because its loopback fixture scripts exactly one response per sweep.
+   */
+  endpointDebounce?: boolean
 }): SanctuaryHealthSweep {
   const fetchImpl = options.fetch ?? fetch
+  const endpointRetryDelayMs = options.endpointRetryDelayMs ?? 3_000
+  const endpointDebounce = options.endpointDebounce ?? true
+  const endpointFailuresToOpen = endpointDebounce ? 2 : 1
+  const probeWithRetry = async (url: string) => {
+    const first = await probeSanctuaryEndpoint(url, fetchImpl)
+    if (first.ok || !endpointDebounce) return first
+    await new Promise((resolve) => setTimeout(resolve, endpointRetryDelayMs))
+    return probeSanctuaryEndpoint(url, fetchImpl)
+  }
   const now = options.now ?? (() => new Date())
   const acceptanceEventMeta = options.acceptanceEventMeta ?? (() => sanctuaryAcceptanceEventMeta("sanctuary"))
   const runSweep = async (): Promise<SanctuaryHealthSweepResult> => {
@@ -329,7 +355,7 @@ export function createSanctuaryHealthSweep(options: {
     if (!runtime) throw new Error("Sanctuary health runtime is unavailable")
     const [containersResult, storageResult, disksResult, notificationsResult, endpoints] = await Promise.all([
       runtime.listContainers(), runtime.getStorage(), runtime.getDisks(), runtime.getNotifications(),
-      Promise.all(SANCTUARY_PUBLIC_ENDPOINTS.map((url) => probeSanctuaryEndpoint(url, fetchImpl))),
+      Promise.all(SANCTUARY_PUBLIC_ENDPOINTS.map((url) => probeWithRetry(url))),
     ])
     const incidents = new Map<string, Incident>()
     const add = (id: string, rawSummary: string) => {
@@ -364,10 +390,16 @@ export function createSanctuaryHealthSweep(options: {
     }
     const notifications = record(notificationsResult)?.ok ? record(record(notificationsResult)?.data)?.unacknowledged : null
     if (!Array.isArray(notifications)) add("notifications:unavailable", "notification status is unavailable")
-    else for (const item of notifications) add(`notification:${item.id}`, `unacknowledged notification: ${item.title || item.id}`)
-    for (const endpoint of endpoints) if (!endpoint.ok) add(`endpoint:${endpoint.url}`, `${endpoint.url} returned ${endpoint.status || "no response"}`)
-
+    // Informational (Unraid "normal") notifications are not incidents; warnings and alerts are.
+    else for (const item of notifications) if (item.severity !== "info") add(`notification:${item.id}`, `unacknowledged notification: ${item.title || item.id}`)
     const previous = load(options.statePath)
+    const endpointFailures: Record<string, number> = {}
+    for (const endpoint of endpoints) {
+      if (endpoint.ok) continue
+      endpointFailures[endpoint.url] = (previous.endpointFailures?.[endpoint.url] ?? 0) + 1
+      if (endpointFailures[endpoint.url]! >= endpointFailuresToOpen) add(`endpoint:${endpoint.url}`, `${endpoint.url} returned ${endpoint.status || "no response"}`)
+    }
+
     const current = Object.fromEntries([...incidents.entries()].sort(([a], [b]) => a.localeCompare(b)).map(([id, incident]) => {
       const prior = previous.incidents[id]
       const transition: NonNullable<Incident["transition"]> = !prior ? "opened" : prior.observationRevision === incident.observationRevision ? "unchanged" : "changed"
@@ -398,6 +430,7 @@ export function createSanctuaryHealthSweep(options: {
       lastDigestDay: null,
       updatedAt: now().toISOString(),
       ...(unacknowledgedRecovered.length > 0 ? { pendingRecovered: unacknowledgedRecovered } : {}),
+      ...(Object.keys(endpointFailures).length > 0 ? { endpointFailures } : {}),
       outbox: null,
       indeterminateDeliveries: [],
       deliveredReceipts: previous.deliveredReceipts,
