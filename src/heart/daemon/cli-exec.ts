@@ -140,6 +140,7 @@ import type {
   HelpCliCommand,
   RuntimeConfigScope,
   A2ACliCommand,
+  GatewayServeCliCommand,
   A2AClientCliCommand,
 } from "./cli-types"
 import { parseOuroCommand, inferAgentNameFromRemote } from "./cli-parse"
@@ -1962,7 +1963,7 @@ export async function checkManualCloneBundles(deps: ManualCloneCheckDeps): Promi
 // ── toDaemonCommand ──
 
 function toDaemonCommand(command: Exclude<OuroCliCommand, import("../shepherd/operations").ShepherdOperation | { kind: "shepherd.chat" }
- | { kind: "daemon.up" } | { kind: "daemon.dev" } | { kind: "daemon.logs.prune" } | { kind: "mailbox" } | { kind: "hatch.start" } | AuthCliCommand | AuthVerifyCliCommand | AuthSwitchCliCommand | ProviderCliCommand | RepairCliCommand | VaultCliCommand | DnsCliCommand | FriendCliCommand | A2ACliCommand | A2AClientCliCommand | WhoamiCliCommand | VoiceCliCommand | SessionCliCommand | ThoughtsCliCommand | ChangelogCliCommand | ConfigModelCliCommand | ConfigModelsCliCommand | RollbackCliCommand | VersionsCliCommand | SelfUpdateCliCommand | AttentionCliCommand | PrivateDecisionsCliCommand | PrivateStatusCliCommand | WorkCardCliCommand | WorkGauntletCliCommand | WorkSentinelCliCommand | NervesReviewCliCommand | McpServeCliCommand | AcpServeCliCommand | McpCanaryCliCommand | McpDoctorCliCommand | SetupCliCommand | HookCliCommand | HabitLocalCliCommand | DeskCliCommand | MigrateToDeskCliCommand | DoctorCliCommand | RsvpCliCommand | CloneCliCommand | HelpCliCommand | { kind: "bluebubbles.replay" } | { kind: "bluebubbles.context-smoke" } | { kind: "bluebubbles.host" } | { kind: "bluebubbles.host.collect" } | { kind: "connect" } | { kind: "account.ensure" } | { kind: "mail.import-mbox" } | { kind: "mail.backfill-indexes" } | { kind: "mail.sync-cache" } | { kind: "plugin.install" } | { kind: "plugin.list" } | { kind: "plugin.remove" } | { kind: "agent.move" }>): DaemonCommand {
+ | { kind: "daemon.up" } | { kind: "daemon.dev" } | { kind: "daemon.logs.prune" } | { kind: "mailbox" } | { kind: "hatch.start" } | AuthCliCommand | AuthVerifyCliCommand | AuthSwitchCliCommand | ProviderCliCommand | RepairCliCommand | VaultCliCommand | DnsCliCommand | FriendCliCommand | A2ACliCommand | GatewayServeCliCommand | A2AClientCliCommand | WhoamiCliCommand | VoiceCliCommand | SessionCliCommand | ThoughtsCliCommand | ChangelogCliCommand | ConfigModelCliCommand | ConfigModelsCliCommand | RollbackCliCommand | VersionsCliCommand | SelfUpdateCliCommand | AttentionCliCommand | PrivateDecisionsCliCommand | PrivateStatusCliCommand | WorkCardCliCommand | WorkGauntletCliCommand | WorkSentinelCliCommand | NervesReviewCliCommand | McpServeCliCommand | AcpServeCliCommand | McpCanaryCliCommand | McpDoctorCliCommand | SetupCliCommand | HookCliCommand | HabitLocalCliCommand | DeskCliCommand | MigrateToDeskCliCommand | DoctorCliCommand | RsvpCliCommand | CloneCliCommand | HelpCliCommand | { kind: "bluebubbles.replay" } | { kind: "bluebubbles.context-smoke" } | { kind: "bluebubbles.host" } | { kind: "bluebubbles.host.collect" } | { kind: "connect" } | { kind: "account.ensure" } | { kind: "mail.import-mbox" } | { kind: "mail.backfill-indexes" } | { kind: "mail.sync-cache" } | { kind: "plugin.install" } | { kind: "plugin.list" } | { kind: "plugin.remove" } | { kind: "agent.move" }>): DaemonCommand {
   if (command.kind === "habit.probe") {
     return {
       kind: "habit.probe",
@@ -6652,11 +6653,26 @@ async function executeProviderRefresh(
   return message
 }
 
+/** Reads an API key from a file (or /dev/stdin) so it never appears in argv. */
+function readApiKeyFile(filePath: string): string {
+  let raw: string
+  try {
+    raw = fs.readFileSync(filePath, "utf8")
+  } catch (error) {
+    /* v8 ignore next -- fs.readFileSync only throws Error objects @preserve */
+    throw new Error(`could not read --api-key-file ${filePath}: ${error instanceof Error ? error.message : String(error)}`)
+  }
+  const key = raw.trim()
+  if (!key) throw new Error(`--api-key-file ${filePath} is empty.`)
+  return key
+}
+
 async function executeAuthRun(
   command: Extract<ResolvedOuroCliCommand, { kind: "auth.run" }>,
   deps: OuroCliDeps,
 ): Promise<string> {
   const provider = command.provider ?? readAgentConfigForAgent(command.agent, deps.bundlesRoot).config.humanFacing.provider
+  const apiKey = command.apiKeyFile ? readApiKeyFile(command.apiKeyFile) : undefined
   /* v8 ignore next -- tests always inject runAuthFlow; default is for production @preserve */
   const authRunner = deps.runAuthFlow ?? (await import("../auth/auth-flow")).runRuntimeAuthFlow
   const progress = createHumanCommandProgress(deps, "auth")
@@ -6669,6 +6685,8 @@ async function executeAuthRun(
       promptInput: deps.promptInput,
       promptSecret: deps.promptSecret,
       onProgress: (message) => progress.updateDetail(message),
+      ...(apiKey ? { apiKey } : {}),
+      ...(command.baseUrl ? { baseUrl: command.baseUrl } : {}),
     })
   } catch (error) {
     progress.end()
@@ -9353,6 +9371,14 @@ export async function runOuroCli(args: string[], deps: OuroCliDeps = createDefau
 
   if (command.kind === "a2a.card" || command.kind === "a2a.onboard" || command.kind === "a2a.serve" || command.kind === "a2a.escalation" || command.kind === "a2a.delegatedCommands") {
     return executeA2ACommand(command, deps)
+  }
+
+  if (command.kind === "gateway.serve") {
+    const { runCreditGatewayCommand } = await import("../../gateway/server")
+    return runCreditGatewayCommand(command, {
+      writeStdout: deps.writeStdout,
+      ...(deps.waitForShutdownSignal ? { waitForStop: deps.waitForShutdownSignal } : {}),
+    })
   }
 
   // ── provider commands (local, no daemon socket needed) ──

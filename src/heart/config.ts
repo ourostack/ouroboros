@@ -38,6 +38,10 @@ export interface MinimaxProviderConfig {
 
 export interface AnthropicProviderConfig {
   setupToken: string
+  /** API-key mode: when set, the provider uses this key instead of the setup-token (OAuth) path. */
+  apiKey?: string
+  /** API-key mode only: a different API base URL, such as a credit gateway. Unset means the SDK default. */
+  baseUrl?: string
 }
 
 export interface OpenAICodexProviderConfig {
@@ -349,7 +353,11 @@ export function getMinimaxConfig(): MinimaxProviderConfig {
 
 export function getAnthropicConfig(): AnthropicProviderConfig {
   const raw = readProviderConfig("anthropic")
-  return { setupToken: typeof raw.setupToken === "string" ? raw.setupToken : "" }
+  return {
+    setupToken: typeof raw.setupToken === "string" ? raw.setupToken : "",
+    ...(typeof raw.apiKey === "string" && raw.apiKey ? { apiKey: raw.apiKey } : {}),
+    ...(typeof raw.baseUrl === "string" && raw.baseUrl ? { baseUrl: raw.baseUrl } : {}),
+  }
 }
 
 export function getOpenAICodexConfig(): OpenAICodexProviderConfig {

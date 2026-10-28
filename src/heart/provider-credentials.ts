@@ -91,8 +91,8 @@ export const PROVIDER_CREDENTIAL_POOL_NOT_LOADED_ERROR = "provider credentials h
 
 const PROVIDER_FIELD_SPLITS: Record<AgentProvider, { credentials: string[]; config: string[] }> = {
   anthropic: {
-    credentials: ["setupToken", "refreshToken", "expiresAt"],
-    config: [],
+    credentials: ["setupToken", "refreshToken", "expiresAt", "apiKey"],
+    config: ["baseUrl"],
   },
   "openai-codex": {
     credentials: ["oauthAccessToken", "refreshToken", "expiresAt"],

@@ -1224,6 +1224,17 @@ describe("provider configs are credentials-only (no model fields)", () => {
     })
   })
 
+  it("reads anthropic API-key mode fields (apiKey + baseUrl) and omits them when absent or empty", async () => {
+    const { getAnthropicConfig, patchRuntimeConfig, resetConfigCache } = await import("../../heart/config")
+    resetConfigCache()
+    patchRuntimeConfig({ providers: { anthropic: { apiKey: "ouro-gw-test", baseUrl: "http://127.0.0.1:8787" } } })
+    expect(getAnthropicConfig()).toEqual({ setupToken: "", apiKey: "ouro-gw-test", baseUrl: "http://127.0.0.1:8787" })
+
+    resetConfigCache()
+    patchRuntimeConfig({ providers: { anthropic: { setupToken: "sk-ant-oat01-x", apiKey: "", baseUrl: "" } } })
+    expect(getAnthropicConfig()).toEqual({ setupToken: "sk-ant-oat01-x" })
+  })
+
   it("fails closed on non-string openai-compatible credential fields", async () => {
     const { getOpenAICompatibleConfig, resetConfigCache } = await import("../../heart/config")
     const { cacheProviderCredentialRecords } = await import("../../heart/provider-credentials")

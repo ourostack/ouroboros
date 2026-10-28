@@ -276,8 +276,8 @@ export const COMMAND_REGISTRY: Record<string, CommandHelp & { category: CommandC
   },
   auth: {
     category: "Auth",
-    description: "Set up or verify agent credentials",
-    usage: "ouro auth [verify] [--agent <name>] [--provider <provider>]",
+    description: "Set up or verify agent credentials. For Anthropic API-key mode (for example through a credit gateway), pass --api-key-file <path> (use /dev/stdin to pipe it) and optionally --base-url <url>; the key is never taken from the command line.",
+    usage: "ouro auth [verify] [--agent <name>] [--provider <provider>] [--api-key-file <path> [--base-url <url>]]",
     example: "ouro auth",
     subcommands: ["verify"],
   },
@@ -374,6 +374,13 @@ export const COMMAND_REGISTRY: Record<string, CommandHelp & { category: CommandC
     usage: "ouro session list [--agent <name>]",
     example: "ouro session list",
     subcommands: ["list"],
+  },
+  gateway: {
+    category: "System",
+    description: "Run the credit gateway: one master key for agents, upstream Anthropic API keys spent in a fixed order",
+    usage: "ouro gateway serve --keys-dir <dir> [--host <host>] [--port <port>]",
+    example: "ouro gateway serve --keys-dir /mnt/user/appdata/credit-gateway/keys",
+    subcommands: ["serve"],
   },
   mcp: {
     category: "System",
@@ -514,6 +521,11 @@ const SUBCOMMAND_HELP: Record<string, CommandHelp> = {
     description: "Onboard an A2A peer into the existing friend model",
     usage: "ouro a2a onboard [--agent <name>] (--card-url <url>|--did <did:key> --name <name>) [--trust <level>] [--name <name>]",
     example: "ouro a2a onboard --agent <agent> --card-url https://peer.example/.well-known/agent-card.json --trust friend",
+  },
+  "gateway serve": {
+    description: "Run the credit gateway in the foreground. It accepts the master key from <keys-dir>/master.key and forwards each request to the Anthropic API with the first upstream *.key (by file name) whose credits are not exhausted; a key whose credit balance is too low is skipped for the cooldown (default 60 minutes). GET /health needs no key.",
+    usage: "ouro gateway serve --keys-dir <dir> [--host <host>] [--port <port>] [--state <path>] [--upstream <url>] [--cooldown-minutes <n>]",
+    example: "ouro gateway serve --keys-dir /mnt/user/appdata/credit-gateway/keys --port 8787",
   },
   "a2a serve": {
     description: "Run this agent's local A2A JSON-RPC sense server",

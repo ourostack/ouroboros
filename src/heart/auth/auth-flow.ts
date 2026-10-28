@@ -27,6 +27,10 @@ export interface RuntimeAuthInput {
   promptInput?: (question: string) => Promise<string>
   promptSecret?: (question: string) => Promise<string>
   onProgress?: (message: string) => void
+  /** Anthropic only: store this API key (API-key mode) instead of running the setup-token flow. */
+  apiKey?: string
+  /** Anthropic API-key mode only: the API base URL to store with the key, such as a credit gateway. */
+  baseUrl?: string
 }
 
 export interface RuntimeAuthDeps {
@@ -403,6 +407,17 @@ export async function collectRuntimeAuthCredentials(
     return credentials
   }
 
+  if (input.provider === "anthropic" && input.apiKey) {
+    emitNervesEvent({
+      component: "daemon",
+      event: "daemon.auth_anthropic_api_key",
+      message: "storing anthropic API key for runtime auth",
+      meta: { agentName: input.agentName, hasBaseUrl: !!input.baseUrl },
+    })
+    writeAuthProgress(input, "using the supplied anthropic API key...")
+    return { apiKey: input.apiKey.trim(), ...(input.baseUrl ? { baseUrl: input.baseUrl } : {}) }
+  }
+
   if (input.provider === "anthropic") {
     emitNervesEvent({
       component: "daemon",
@@ -457,6 +472,12 @@ export async function collectRuntimeAuthCredentials(
   return creds
 }
 
+/** True when the record holds `required` or one of the provider's alternative field sets in full. */
+function hasRequiredProviderCredentials(provider: AgentProvider, record: Record<string, unknown>): boolean {
+  const requirements = PROVIDER_CREDENTIALS[provider]
+  return [requirements.required, ...(requirements.alternativeRequired ?? [])].some((fields) => fields.every((key) => !!record[key]))
+}
+
 export async function resolveHatchCredentials(
   input: HatchCredentialResolutionInput,
 ): Promise<HatchCredentialsInput> {
@@ -464,8 +485,7 @@ export async function resolveHatchCredentials(
 
   // If all required fields are already provided, return as-is
   const cred = credentials as Record<string, unknown>
-  const missing = PROVIDER_CREDENTIALS[input.provider].required.some((key) => !cred[key])
-  if (!missing) return credentials
+  if (hasRequiredProviderCredentials(input.provider, cred)) return credentials
 
   // Try the full auth flow (wraps collectRuntimeAuthCredentials + writes secrets)
   if (input.runAuthFlow) {
@@ -477,7 +497,7 @@ export async function resolveHatchCredentials(
     })
     Object.assign(credentials, result.credentials)
     /* v8 ignore next 3 -- branch: auth flow always fills all required fields in production @preserve */
-    if (!PROVIDER_CREDENTIALS[input.provider].required.some((key) => !(credentials as Record<string, unknown>)[key])) {
+    if (hasRequiredProviderCredentials(input.provider, credentials as Record<string, unknown>)) {
       return credentials
     }
   }

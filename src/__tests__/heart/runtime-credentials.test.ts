@@ -236,6 +236,27 @@ describe("runtime credentials vault config", () => {
     expect(mockCredentialStore.store.getRawSecret).not.toHaveBeenCalled()
   })
 
+  it("accepts an anthropic provider record in API-key mode (apiKey instead of setupToken) and rejects one with neither", () => {
+    emitTestEvent("runtime credentials anthropic api-key mode bootstrap")
+    const apiKeyRecord = createProviderCredentialRecord({
+      provider: "anthropic",
+      credentials: { apiKey: "ouro-gw-test" },
+      config: { baseUrl: "http://127.0.0.1:8787" },
+      provenance: { source: "auth-flow" },
+      now: new Date("2026-04-14T12:00:00.000Z"),
+    })
+    expect(applyRuntimeCredentialBootstrapMessage({
+      type: "ouro.runtimeCredentialBootstrap",
+      agentName: "slugger",
+      providerCredentialRecords: [apiKeyRecord],
+    })).toBe(true)
+    expect(applyRuntimeCredentialBootstrapMessage({
+      type: "ouro.runtimeCredentialBootstrap",
+      agentName: "slugger",
+      providerCredentialRecords: [{ ...apiKeyRecord, credentials: { refreshToken: "r" } }],
+    })).toBe(false)
+  })
+
   it("durably imports every bootstrap credential class into canonical vault items", async () => {
     emitTestEvent("runtime credentials durable container bootstrap")
     const providerRecord = createProviderCredentialRecord({

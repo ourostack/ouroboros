@@ -14,10 +14,12 @@ export type AgentProvider = "azure" | "minimax" | "anthropic" | "openai-codex" |
 /** Single source of truth for per-provider credential field names, env var mappings, and prompt labels. */
 export const PROVIDER_CREDENTIALS: Record<AgentProvider, {
   required: string[]
+  /** Other complete field sets that satisfy the provider instead of `required` (anthropic: an API key instead of a setup-token). */
+  alternativeRequired?: string[][]
   envVars: Record<string, string>
   promptLabels: Record<string, string>
 }> = {
-  anthropic:        { required: ["setupToken"],                        envVars: { ANTHROPIC_API_KEY: "setupToken" },                                                                                        promptLabels: { setupToken: "Anthropic setup-token" } },
+  anthropic:        { required: ["setupToken"], alternativeRequired: [["apiKey"]], envVars: { ANTHROPIC_API_KEY: "setupToken" },                                                                                        promptLabels: { setupToken: "Anthropic setup-token" } },
   "openai-codex":   { required: ["oauthAccessToken"],                  envVars: { OPENAI_API_KEY: "oauthAccessToken" },                                                                                     promptLabels: { oauthAccessToken: "OpenAI Codex OAuth token" } },
   azure:            { required: ["apiKey", "endpoint", "deployment"],   envVars: { AZURE_OPENAI_API_KEY: "apiKey", AZURE_OPENAI_KEY: "apiKey", AZURE_OPENAI_ENDPOINT: "endpoint", AZURE_OPENAI_DEPLOYMENT: "deployment" }, promptLabels: { apiKey: "Azure API key", endpoint: "Azure endpoint", deployment: "Azure deployment" } },
   minimax:          { required: ["apiKey"],                             envVars: { MINIMAX_API_KEY: "apiKey" },                                                                                              promptLabels: { apiKey: "MiniMax API key" } },
