@@ -606,6 +606,45 @@ describe("buildSystem", () => {
     expect(result).toContain("improving the harness")
   })
 
+  it("fills house names into the psyche and adds the household's own notes", async () => {
+    vi.mocked(fs.readFileSync).mockImplementation((filePath: any) => {
+      const p = String(filePath)
+      if (p.endsWith("house.json")) return JSON.stringify({ ownerName: " Sam ", butlerName: "Hearth", householdName: 7 })
+      if (p.endsWith("HOUSE.md")) return "{{owner}} keeps the books at {{household}}."
+      if (p.endsWith("IDENTITY.md")) return "I am {{butler}}, working for {{owner}}."
+      if (p.endsWith("package.json")) return MOCK_PACKAGE_JSON
+      if (p.endsWith("secrets.json")) return JSON.stringify({})
+      return ""
+    })
+    const { patchRuntimeConfig, resetConfigCache } = await import("../../heart/config")
+    resetConfigCache()
+    patchRuntimeConfig({ providers: { minimax: { apiKey: "test-key" } } })
+    const { buildSystem, flattenSystemPrompt, resetPsycheCache } = await import("../../mind/prompt")
+    resetPsycheCache()
+    const result = flattenSystemPrompt(await buildSystem())
+    expect(result).toContain("I am Hearth, working for Sam.")
+    expect(result).toContain("## my house\nSam keeps the books at the household.")
+  })
+
+  it("uses generic names and no house section when the household has no house files", async () => {
+    vi.mocked(fs.readFileSync).mockImplementation((filePath: any) => {
+      const p = String(filePath)
+      if (p.endsWith("house.json") || p.endsWith("HOUSE.md")) throw Object.assign(new Error("missing"), { code: "ENOENT" })
+      if (p.endsWith("IDENTITY.md")) return "I am {{butler}}, working for {{owner}} at {{household}}."
+      if (p.endsWith("package.json")) return MOCK_PACKAGE_JSON
+      if (p.endsWith("secrets.json")) return JSON.stringify({})
+      return ""
+    })
+    const { patchRuntimeConfig, resetConfigCache } = await import("../../heart/config")
+    resetConfigCache()
+    patchRuntimeConfig({ providers: { minimax: { apiKey: "test-key" } } })
+    const { buildSystem, flattenSystemPrompt, resetPsycheCache } = await import("../../mind/prompt")
+    resetPsycheCache()
+    const result = flattenSystemPrompt(await buildSystem())
+    expect(result).toContain("I am the Butler, working for the owner at the household.")
+    expect(result).not.toContain("## my house")
+  })
+
   it("includes runtime info section for cli channel", async () => {
     setupReadFileSync()
     const { patchRuntimeConfig, resetConfigCache } = await import("../../heart/config")

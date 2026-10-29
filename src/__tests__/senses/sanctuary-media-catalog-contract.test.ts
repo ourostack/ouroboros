@@ -149,7 +149,7 @@ describe("Sanctuary media catalog contract", () => {
     expect(contract.validateTerminalAnswer("Yes—Moonstruck is on the shelf.")).toBeUndefined()
     expect(contract.validateTerminalAnswer("No—Moonstruck is not on the shelf.")).toContain("Lead with yes")
     expect(contract.validateTerminalAnswer("Yes—it is on the shelf.")).toContain("requested title")
-    expect(contract.validateTerminalAnswer("You need to check Jellyfin logs to be sure.")).toContain("Do not send Ari")
+    expect(contract.validateTerminalAnswer("You need to check Jellyfin logs to be sure.")).toContain("Do not send the owner")
   })
 
   it("grounds a natural-language absent-title answer in an exact search", () => {

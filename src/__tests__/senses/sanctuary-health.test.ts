@@ -4,6 +4,7 @@ import * as path from "node:path"
 import { describe, expect, it, vi } from "vitest"
 
 import { createSanctuaryHealthSweep, probeSanctuaryEndpoint, readSanctuaryHealthState } from "../../senses/sanctuary-health"
+import { TEST_HOUSE } from "../fixtures/sanctuary-house"
 
 function context(state: "running" | "exited", autostart = true) {
   return { sanctuary: {
@@ -206,7 +207,7 @@ describe("Sanctuary deterministic health sweep", () => {
   ])("fails closed for corrupt durable state: %s", async (_label, contents) => {
     const filePath = statePath("sanctuary-health-corrupt-")
     fs.writeFileSync(filePath, contents, "utf8")
-    const sweep = createSanctuaryHealthSweep({
+    const sweep = createSanctuaryHealthSweep({ house: TEST_HOUSE,
       toolContext: context("running"),
       statePath: filePath,
       fetch: vi.fn().mockResolvedValue(new Response(null, { status: 204 })),
@@ -240,7 +241,7 @@ describe("Sanctuary deterministic health sweep", () => {
   ])("fails closed for bounded receipt schema violation: %s", async (_label, state) => {
     const filePath = statePath("sanctuary-health-schema-bound-")
     writeState(filePath, state)
-    const sweep = createSanctuaryHealthSweep({
+    const sweep = createSanctuaryHealthSweep({ house: TEST_HOUSE,
       toolContext: context("running"),
       statePath: filePath,
       fetch: vi.fn().mockResolvedValue(new Response(null, { status: 204 })),
@@ -252,7 +253,7 @@ describe("Sanctuary deterministic health sweep", () => {
   it("rejects a durable health file above four MiB before parsing", async () => {
     const filePath = statePath("sanctuary-health-file-bound-")
     fs.writeFileSync(filePath, " ".repeat(4 * 1024 * 1024 + 1), "utf8")
-    const sweep = createSanctuaryHealthSweep({
+    const sweep = createSanctuaryHealthSweep({ house: TEST_HOUSE,
       toolContext: context("running"),
       statePath: filePath,
       fetch: vi.fn().mockResolvedValue(new Response(null, { status: 204 })),
@@ -267,7 +268,7 @@ describe("Sanctuary deterministic health sweep", () => {
       { id: "large", title: "é".repeat(30_000) },
     ] } })
     const filePath = statePath("sanctuary-health-utf8-bound-")
-    const sweep = createSanctuaryHealthSweep({
+    const sweep = createSanctuaryHealthSweep({ house: TEST_HOUSE,
       toolContext,
       statePath: filePath,
       fetch: vi.fn().mockResolvedValue(new Response(null, { status: 204 })),
@@ -285,18 +286,18 @@ describe("Sanctuary deterministic health sweep", () => {
     const fetch = vi.fn().mockResolvedValue(new Response("ok", { status: 200 }))
     let clock = new Date("2026-08-18T18:00:00.000Z")
     const now = () => clock
-    const broken = createSanctuaryHealthSweep({ toolContext: context("exited"), statePath, fetch, now, acceptanceEventMeta: () => ({ scenarioHandleDigest: "a".repeat(64) }) })
+    const broken = createSanctuaryHealthSweep({ house: TEST_HOUSE, toolContext: context("exited"), statePath, fetch, now, acceptanceEventMeta: () => ({ scenarioHandleDigest: "a".repeat(64) }) })
     const opened = await broken()
     expect(opened).toMatchObject({ message: null, transition: "opened", incidents: [expect.objectContaining({ id: "container:Docker:a:availability", summary: "calibre-web is exited" })] })
     expect(JSON.parse(fs.readFileSync(statePath, "utf8")).sweepReceipts[0]).toMatchObject({ opened: 1, recovered: 0, digestDue: false, scenarioHandleDigest: "a".repeat(64) })
     expect((await broken())).toMatchObject({ message: null, transition: "unchanged", recovered: [] })
-    const restarted = createSanctuaryHealthSweep({ toolContext: context("exited"), statePath, fetch, now })
+    const restarted = createSanctuaryHealthSweep({ house: TEST_HOUSE, toolContext: context("exited"), statePath, fetch, now })
     expect(await restarted()).toMatchObject({ message: null, transition: "unchanged" })
 
     clock = new Date("2026-08-19T18:00:00.000Z")
     expect(await restarted()).toMatchObject({ message: null, transition: "unchanged" })
 
-    const healthy = createSanctuaryHealthSweep({ toolContext: context("running"), statePath, fetch, now })
+    const healthy = createSanctuaryHealthSweep({ house: TEST_HOUSE, toolContext: context("running"), statePath, fetch, now })
     const recovered = await healthy()
     expect(recovered).toMatchObject({ message: null, transition: "recovered", incidents: [], recovered: [expect.objectContaining({ id: "container:Docker:a:availability" })] })
     // The recovery stays offered until the receipt is acknowledged, so a failed submit is retried.
@@ -319,7 +320,7 @@ describe("Sanctuary deterministic health sweep", () => {
       await gate
       return { ok: true, data: { containers: [{ id: "Docker:a", name: "calibre-web", autostart: true, state: "exited", exitCode: 1, degraded: false, status: "Exited" }], truncated: false } }
     })
-    const sweep = createSanctuaryHealthSweep({ toolContext, statePath, fetch: vi.fn().mockResolvedValue(new Response("ok", { status: 200 })), now: () => new Date("2026-08-18T18:00:00.000Z") })
+    const sweep = createSanctuaryHealthSweep({ house: TEST_HOUSE, toolContext, statePath, fetch: vi.fn().mockResolvedValue(new Response("ok", { status: 200 })), now: () => new Date("2026-08-18T18:00:00.000Z") })
     const first = sweep()
     const second = sweep()
     release()
@@ -332,7 +333,7 @@ describe("Sanctuary deterministic health sweep", () => {
   it("creates the health state directory before acquiring the first lease", async () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "sanctuary-health-first-"))
     const statePath = path.join(root, "missing", "health", "state.json")
-    const sweep = createSanctuaryHealthSweep({
+    const sweep = createSanctuaryHealthSweep({ house: TEST_HOUSE,
       toolContext: context("running"),
       statePath,
       fetch: vi.fn().mockResolvedValue(new Response("ok", { status: 200 })),
@@ -345,7 +346,7 @@ describe("Sanctuary deterministic health sweep", () => {
 
   it("reports a named mandate container down even when Unraid autostart is disabled", async () => {
     const statePath = path.join(fs.mkdtempSync(path.join(os.tmpdir(), "sanctuary-health-")), "state.json")
-    const sweep = createSanctuaryHealthSweep({
+    const sweep = createSanctuaryHealthSweep({ house: TEST_HOUSE,
       toolContext: context("exited", false),
       statePath,
       fetch: vi.fn().mockResolvedValue(new Response("ok", { status: 200 })),
@@ -390,7 +391,7 @@ describe("Sanctuary deterministic health sweep", () => {
       if (url.startsWith("https://books.")) throw new Error("offline")
       return new Response(null, { status: 204 })
     })
-    const sweep = createSanctuaryHealthSweep({
+    const sweep = createSanctuaryHealthSweep({ house: TEST_HOUSE,
       toolContext,
       statePath: statePath("sanctuary-health-degraded-"),
       fetch: fetch as unknown as typeof globalThis.fetch,
@@ -438,7 +439,7 @@ describe("Sanctuary deterministic health sweep", () => {
     for (const [method, result] of Object.entries(replacement)) {
       toolContext.sanctuary[method].mockResolvedValue(result)
     }
-    const sweep = createSanctuaryHealthSweep({
+    const sweep = createSanctuaryHealthSweep({ house: TEST_HOUSE,
       toolContext,
       statePath: statePath("sanctuary-health-unavailable-"),
       fetch: vi.fn().mockResolvedValue(new Response(null, { status: 204 })),
@@ -454,7 +455,7 @@ describe("Sanctuary deterministic health sweep", () => {
     toolContext.sanctuary.getStorage.mockResolvedValue({ ok: true, data: { array: [], shares: null } })
     toolContext.sanctuary.getDisks.mockResolvedValue({ ok: true, data: { disks: null, parity: [] } })
     toolContext.sanctuary.getNotifications.mockResolvedValue({ ok: true, data: { unacknowledged: null } })
-    const sweep = createSanctuaryHealthSweep({
+    const sweep = createSanctuaryHealthSweep({ house: TEST_HOUSE,
       toolContext,
       statePath: statePath("sanctuary-health-malformed-tools-"),
       fetch: vi.fn().mockResolvedValue(new Response(null, { status: 204 })),
@@ -473,7 +474,7 @@ describe("Sanctuary deterministic health sweep", () => {
     for (const parity of parityCases) {
       const nextContext = context("running")
       nextContext.sanctuary.getDisks.mockResolvedValue({ ok: true, data: { disks: [], parity } })
-      const next = createSanctuaryHealthSweep({
+      const next = createSanctuaryHealthSweep({ house: TEST_HOUSE,
         toolContext: nextContext,
         statePath: statePath("sanctuary-health-parity-"),
         fetch: vi.fn().mockResolvedValue(new Response(null, { status: 204 })),
@@ -486,7 +487,7 @@ describe("Sanctuary deterministic health sweep", () => {
   it("treats a recent completed parity check with no error count as healthy", async () => {
     const toolContext = context("running")
     toolContext.sanctuary.getDisks.mockResolvedValue({ ok: true, data: { disks: [], parity: { result: "completed", status: "completed", ageHours: 10, degraded: false } } })
-    const sweep = createSanctuaryHealthSweep({
+    const sweep = createSanctuaryHealthSweep({ house: TEST_HOUSE,
       toolContext,
       statePath: statePath("sanctuary-health-parity-completed-"),
       fetch: vi.fn().mockResolvedValue(new Response(null, { status: 204 })),
@@ -498,14 +499,14 @@ describe("Sanctuary deterministic health sweep", () => {
   it("does not alarm while a parity check is running", async () => {
     const toolContext = context("running")
     toolContext.sanctuary.getDisks.mockResolvedValue({ ok: true, data: { disks: [], parity: { result: "in_progress", status: "running", ageHours: null, degraded: false } } })
-    const sweep = createSanctuaryHealthSweep({ toolContext, statePath: statePath("sanctuary-health-parity-running-"), fetch: vi.fn().mockResolvedValue(new Response(null, { status: 204 })), now: () => new Date("2026-08-18T15:00:00.000Z") })
+    const sweep = createSanctuaryHealthSweep({ house: TEST_HOUSE, toolContext, statePath: statePath("sanctuary-health-parity-running-"), fetch: vi.fn().mockResolvedValue(new Response(null, { status: 204 })), now: () => new Date("2026-08-18T15:00:00.000Z") })
     expect((await sweep()).incidents.map((incident) => incident.id)).not.toContain("parity:stale-or-failed")
   })
 
   it("rejects a corrupt pending-recovery list", async () => {
     const filePath = statePath("sanctuary-health-pending-corrupt-")
     writeState(filePath, validState({ pendingRecovered: [{ id: "", summary: 1 }] } as never))
-    const sweep = createSanctuaryHealthSweep({ toolContext: context("running"), statePath: filePath, fetch: vi.fn().mockResolvedValue(new Response(null, { status: 204 })), now: () => new Date("2026-08-18T15:00:00.000Z") })
+    const sweep = createSanctuaryHealthSweep({ house: TEST_HOUSE, toolContext: context("running"), statePath: filePath, fetch: vi.fn().mockResolvedValue(new Response(null, { status: 204 })), now: () => new Date("2026-08-18T15:00:00.000Z") })
     await expect(sweep()).rejects.toThrow(/corrupt/u)
   })
 
@@ -516,7 +517,7 @@ describe("Sanctuary deterministic health sweep", () => {
       indeterminateDeliveries: [validDelivery({ id: "indeterminate", kind: undefined })],
       deliveredReceipts: [validDeliveredReceipt({ kind: undefined })],
     }))
-    const absent = createSanctuaryHealthSweep({
+    const absent = createSanctuaryHealthSweep({ house: TEST_HOUSE,
       toolContext: {} as any,
       statePath: filePath,
     })
@@ -541,7 +542,7 @@ describe("Sanctuary deterministic health sweep", () => {
       },
       lastDigestDay: null,
     }))
-    const sweep = createSanctuaryHealthSweep({
+    const sweep = createSanctuaryHealthSweep({ house: TEST_HOUSE,
       toolContext: context("running"),
       statePath: filePath,
       fetch: vi.fn().mockResolvedValue(new Response("ok", { status: 200 })),
@@ -566,7 +567,7 @@ describe("Sanctuary deterministic health sweep", () => {
         createdAt: "2026-08-17T18:00:00.000Z",
       }],
     }))
-    const sweep = createSanctuaryHealthSweep({
+    const sweep = createSanctuaryHealthSweep({ house: TEST_HOUSE,
       toolContext: context("running"),
       statePath: filePath,
       fetch: vi.fn().mockResolvedValue(new Response(null, { status: 204 })),
@@ -585,7 +586,7 @@ describe("Sanctuary deterministic health sweep", () => {
       lastDigestDay: null,
       updatedAt: "1970-01-01T00:00:00.000Z",
     })
-    const sweep = createSanctuaryHealthSweep({
+    const sweep = createSanctuaryHealthSweep({ house: TEST_HOUSE,
       toolContext: context("running"),
       statePath: filePath,
       fetch: vi.fn().mockResolvedValue(new Response(null, { status: 204 })),
@@ -610,7 +611,7 @@ describe("Sanctuary deterministic health sweep", () => {
       return { formatToParts: () => [] } as any
     })
     try {
-      const sweep = createSanctuaryHealthSweep({
+      const sweep = createSanctuaryHealthSweep({ house: TEST_HOUSE,
         toolContext: context("running"),
         statePath: statePath("sanctuary-health-locale-fallback-"),
         fetch: vi.fn().mockResolvedValue(new Response(null, { status: 204 })),
@@ -638,7 +639,7 @@ describe("Sanctuary deterministic health sweep", () => {
     let down = true
     const fetch = vi.fn(async (url: string) => new Response(null, { status: down && url.startsWith("https://books.") ? 502 : 204 }))
     const file = statePath()
-    const sweep = createSanctuaryHealthSweep({ toolContext: context("running"), statePath: file, fetch: fetch as unknown as typeof globalThis.fetch, now: () => new Date("2026-08-18T15:00:00.000Z"), endpointRetryDelayMs: 0 })
+    const sweep = createSanctuaryHealthSweep({ house: TEST_HOUSE, toolContext: context("running"), statePath: file, fetch: fetch as unknown as typeof globalThis.fetch, now: () => new Date("2026-08-18T15:00:00.000Z"), endpointRetryDelayMs: 0 })
     await sweep()
     expect(readSanctuaryHealthState(file).endpointFailures).toEqual({ "https://books.mendelow.cloud/": 1 })
     down = false
@@ -646,5 +647,13 @@ describe("Sanctuary deterministic health sweep", () => {
     expect(readSanctuaryHealthState(file)).not.toHaveProperty("endpointFailures")
     down = true
     expect((await sweep()).incidents.map((incident) => incident.id)).not.toContain("endpoint:https://books.mendelow.cloud/")
+  })
+
+  it("probes no endpoints and requires no containers for a household that names none", async () => {
+    const fetch = vi.fn(async () => new Response(null, { status: 204 }))
+    const sweep = createSanctuaryHealthSweep({ toolContext: context("running"), statePath: statePath(), fetch: fetch as unknown as typeof globalThis.fetch, now: () => new Date("2026-08-18T15:00:00.000Z") })
+    const result = await sweep()
+    expect(fetch).not.toHaveBeenCalled()
+    expect(result.incidents.filter((incident) => incident.id.startsWith("endpoint:") || incident.id.startsWith("container:"))).toEqual([])
   })
 })

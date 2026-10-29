@@ -62,7 +62,7 @@ describe("Sanctuary owner full-visibility activation", () => {
 
     expect(prepared.requiredToolCalls).toEqual({
       names: requiredNames,
-      retryMessage: "Before answering, read current active work, cares, system health, service state, storage, notifications, and the download queue. Current tool facts outrank care history; a stale care is a recheck item, not a present-tense fact. Then give Ari one compact household summary; do not ask him to choose a status slice.",
+      retryMessage: "Before answering, read current active work, cares, system health, service state, storage, notifications, and the download queue. Current tool facts outrank care history; a stale care is a recheck item, not a present-tense fact. Then give the owner one compact household summary; do not ask him to choose a status slice.",
       requireSuccessfulResults: true,
       validateRequiredToolResult: expect.any(Function),
       validateToolCallBeforeDispatch: expect.any(Function),

@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// Sanctuary media MCP server — the Mendelow Cloud Butler's media surface.
+// Sanctuary media MCP server — the Butler's media surface.
 //
 // Design authority: the Butler's own tool-surface spec (Telegram msgs 1700-1713, 2026-09-19).
 // Two hard constraints it set, enforced here:
@@ -31,7 +31,17 @@ const SEERR = cred?.jellyseerr ?? { url: "", apiKey: "" }
 const SONARR = cred?.sonarr ?? { url: "", apiKey: "" }
 const RADARR = cred?.radarr ?? { url: "", apiKey: "" }
 const PROWLARR = cred?.prowlarr ?? { url: "", apiKey: "" }
-const JELLYFIN_WEB = cred?.jellyfinWebUrl ?? "https://media.mendelow.cloud"
+// The household's Jellyfin web address: the credential file wins, then house/house.json.
+// With neither, search results carry no play link rather than a guessed one.
+function houseJellyfinWebUrl() {
+  try {
+    const house = JSON.parse(readFileSync(new URL("../house/house.json", pathToFileURL(CRED_PATH)), "utf8"))
+    return typeof house?.jellyfinWebUrl === "string" ? house.jellyfinWebUrl : ""
+  } catch {
+    return ""
+  }
+}
+const JELLYFIN_WEB = String(cred?.jellyfinWebUrl ?? houseJellyfinWebUrl()).replace(/\/+$/u, "")
 // Optional: when the credential file carries { jellyfin: { url, apiKey } } the library
 // is searched in Jellyfin too. Absent, title resolution uses Sonarr and Radarr only.
 const JELLYFIN = cred?.jellyfin ?? { url: "", apiKey: "" }
@@ -866,7 +876,7 @@ async function mediaPlayOrResolve(a) {
     episodes_total: status.file.episodes_total ?? null,
     path: status.file.path,
     size_bytes: status.file.size_bytes,
-    play_url: onShelf ? `${JELLYFIN_WEB}/web/index.html#!/search.html?query=${encodeURIComponent(status.request.title ?? "")}` : null,
+    play_url: onShelf && JELLYFIN_WEB ? `${JELLYFIN_WEB}/web/index.html#!/search.html?query=${encodeURIComponent(status.request.title ?? "")}` : null,
     diagnosis: status.diagnosis,
   }
 }

@@ -77,8 +77,13 @@ vi.mock("../../heart/steward-policy", () => ({
 }))
 vi.mock("../../nerves/runtime", () => ({ emitNervesEvent: runtimeMocks.emitNervesEvent }))
 vi.mock("../../senses/sanctuary-health", () => ({
-  SANCTUARY_PUBLIC_ENDPOINTS: ["https://media.mendelow.cloud/", "https://books.mendelow.cloud/"],
   probeSanctuaryEndpoint: runtimeMocks.probeSanctuaryEndpoint,
+}))
+vi.mock("../../senses/sanctuary-house", () => ({
+  readSanctuaryHouse: () => ({
+    ownerName: "Ari", butlerName: "Butler", householdName: "Home", requiredContainers: [], booksContainer: "calibre-web",
+    publicEndpoints: [{ name: "media", url: "https://media.mendelow.cloud/" }, { name: "books", url: "https://books.mendelow.cloud/" }],
+  }),
 }))
 vi.mock("../../senses/sanctuary-sab", () => ({
   sanctuarySabReadUnavailableCode: (error: unknown) => {

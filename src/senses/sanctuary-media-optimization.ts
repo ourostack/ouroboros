@@ -147,7 +147,7 @@ export function createSanctuaryMediaOptimizationClient(options: ClientOptions) {
   emitNervesEvent({ component: "senses", event: "sanctuary_media_optimization_client_created", message: "Sanctuary media optimization client created" })
 
   const fetchImpl = options.fetch ?? globalThis.fetch
-  const authorization = `MediaBrowser Client="Mendelow Cloud Butler", Device="Sanctuary", DeviceId="${JELLYFIN_DEVICE_ID}", Version="1.0.0", Token="${token}"`
+  const authorization = `MediaBrowser Client="Ouro Butler", Device="Sanctuary", DeviceId="${JELLYFIN_DEVICE_ID}", Version="1.0.0", Token="${token}"`
 
   async function request(url: URL | string, deadline: number, init: RequestInit = {}): Promise<unknown> {
     const controller = new AbortController()

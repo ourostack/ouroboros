@@ -113,7 +113,7 @@ describe("Sanctuary media optimization read", () => {
     for (const [input, init] of jellyfinCalls) {
       expect(String(input)).not.toContain(TOKEN)
       expect((init as RequestInit).method).toBe("GET")
-      expect((init as RequestInit).headers).toEqual({ Authorization: `MediaBrowser Client="Mendelow Cloud Butler", Device="Sanctuary", DeviceId="mendelow-cloud-butler-sanctuary", Version="1.0.0", Token="${TOKEN}"` })
+      expect((init as RequestInit).headers).toEqual({ Authorization: `MediaBrowser Client="Ouro Butler", Device="Sanctuary", DeviceId="mendelow-cloud-butler-sanctuary", Version="1.0.0", Token="${TOKEN}"` })
     }
     const itemsUrl = new URL(String(jellyfinCalls.find(([input]) => String(input).includes("/Items?"))?.[0]))
     expect(itemsUrl.searchParams.get("userId")).toBeNull()

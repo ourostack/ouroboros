@@ -5,14 +5,8 @@ import { createHash, randomUUID } from "node:crypto"
 import type { ToolContext } from "../repertoire/tools-base"
 import { emitNervesEvent } from "../nerves/runtime"
 import { sanctuaryAcceptanceEventMeta } from "../heart/daemon/sanctuary-acceptance-marker"
+import type { SanctuaryHouse } from "./sanctuary-house"
 
-export const SANCTUARY_PUBLIC_ENDPOINTS = [
-  "https://media.mendelow.cloud/",
-  "https://books.mendelow.cloud/",
-  "https://requests.mendelow.cloud/",
-  "https://readarr.mendelow.cloud/",
-]
-const REQUIRED_CONTAINERS = new Set(["calibre", "calibre-web", "Cloudflare-DDNS"])
 const UUID_V4 = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/u
 const MAX_HEALTH_STATE_BYTES = 4 * 1024 * 1024
 const MAX_HEALTH_TEXT_BYTES = 50_000
@@ -316,6 +310,8 @@ export async function probeSanctuaryEndpoint(url: string, fetchImpl: typeof fetc
 export function createSanctuaryHealthSweep(options: {
   toolContext: Pick<ToolContext, "sanctuary">
   statePath: string
+  /** The household's public endpoints and the containers it needs running; none when omitted. */
+  house?: Pick<SanctuaryHouse, "publicEndpoints" | "requiredContainers">
   fetch?: typeof fetch
   now?: () => Date
   acceptanceEventMeta?: () => Record<string, string>
@@ -338,6 +334,8 @@ export function createSanctuaryHealthSweep(options: {
     await new Promise((resolve) => setTimeout(resolve, endpointRetryDelayMs))
     return probeSanctuaryEndpoint(url, fetchImpl)
   }
+  const publicEndpoints = (options.house?.publicEndpoints ?? []).map((endpoint) => endpoint.url)
+  const requiredContainers = new Set(options.house?.requiredContainers ?? [])
   const now = options.now ?? (() => new Date())
   const acceptanceEventMeta = options.acceptanceEventMeta ?? (() => sanctuaryAcceptanceEventMeta("sanctuary"))
   const runSweep = async (): Promise<SanctuaryHealthSweepResult> => {
@@ -355,7 +353,7 @@ export function createSanctuaryHealthSweep(options: {
     if (!runtime) throw new Error("Sanctuary health runtime is unavailable")
     const [containersResult, storageResult, disksResult, notificationsResult, endpoints] = await Promise.all([
       runtime.listContainers(), runtime.getStorage(), runtime.getDisks(), runtime.getNotifications(),
-      Promise.all(SANCTUARY_PUBLIC_ENDPOINTS.map((url) => probeWithRetry(url))),
+      Promise.all(publicEndpoints.map((url) => probeWithRetry(url))),
     ])
     const incidents = new Map<string, Incident>()
     const add = (id: string, rawSummary: string) => {
@@ -369,7 +367,7 @@ export function createSanctuaryHealthSweep(options: {
     const containers = record(containersResult)?.ok ? record(record(containersResult)?.data)?.containers : null
     if (!Array.isArray(containers)) add("containers:unavailable", "container status is unavailable")
     else for (const container of containers) {
-      if ((container.autostart === true || REQUIRED_CONTAINERS.has(container.name)) && container.state !== "running") add(`container:${container.id}:availability`, `${container.name} is ${container.state}`)
+      if ((container.autostart === true || requiredContainers.has(container.name)) && container.state !== "running") add(`container:${container.id}:availability`, `${container.name} is ${container.state}`)
       if (container.state === "unknown" || container.degraded === true) add(`container:${container.id}:health`, `${container.name} status is degraded`)
     }
     const storage = record(storageResult)?.ok ? record(record(storageResult)?.data) : null

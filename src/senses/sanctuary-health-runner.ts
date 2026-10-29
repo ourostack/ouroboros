@@ -1,3 +1,4 @@
+import { readSanctuaryHouse } from "./sanctuary-house"
 import * as path from "node:path"
 
 import { recordExternalEvent, type ExternalEventInput, type ExternalEventRecord } from "../heart/external-events/router"
@@ -60,6 +61,7 @@ export async function runSanctuaryHealthHabit(agentName: string, options: Sanctu
   }
   const sweep = options.createSweep?.(agentName) ?? createSanctuaryHealthSweep({
     toolContext: createSanctuaryToolContext(agentName),
+    house: readSanctuaryHouse(getAgentRoot(agentName)),
     statePath: path.join(getAgentRoot(agentName), "state", "health", "sanctuary-health.json"),
   })
   const result = await sweep()

@@ -309,17 +309,17 @@ describe("Sanctuary package-management activation", () => {
         repair: { actor: "human-required" as const, action: "run_verified_update_recovery" as const },
       },
     }))
-    expect(() => prepareSanctuaryPackageManagedBundle(decision, { ensure: stale })).toThrow("human-required: resume the reviewed Mendelow Cloud Butler update recovery procedure")
+    expect(() => prepareSanctuaryPackageManagedBundle(decision, { ensure: stale })).toThrow("human-required: resume the reviewed Butler update recovery procedure")
 
     const broken = vi.fn(() => { throw new Error("secret path and raw filesystem failure") })
-    expect(() => prepareSanctuaryPackageManagedBundle(decision, { ensure: broken })).toThrow("human-required: resume the reviewed Mendelow Cloud Butler update recovery procedure")
+    expect(() => prepareSanctuaryPackageManagedBundle(decision, { ensure: broken })).toThrow("human-required: resume the reviewed Butler update recovery procedure")
     expect(() => prepareSanctuaryPackageManagedBundle(decision, { ensure: broken })).not.toThrow("secret path")
 
     const invalidInspection = vi.fn(() => ({ ok: false as const, error: { code: "invalid_package_source" as const, message: "verified release contents are invalid" as const, degraded: true as const, repair: { actor: "human-required" as const, action: "roll_back_or_install_verified_release" as const } } }))
     expect(() => prepareSanctuaryPackageManagedBundle(decision, { ensure: invalidInspection })).toThrow("human-required: roll back to a verified Mendelow Cloud Butler release or install that release again")
 
     const inconsistent = vi.fn(() => ({ ok: true as const, data: { runtimePackageVersion: VERSION, packagedBundleVersion: VERSION, liveBundleVersion: VERSION, parity: "exact" as const, mismatchCodes: [], journalState: "committing" as const, ready: false, repair: { actor: "none" as const, action: "none" as const } } }))
-    expect(() => prepareSanctuaryPackageManagedBundle(decision, { ensure: inconsistent })).toThrow("human-required: resume the reviewed Mendelow Cloud Butler update recovery procedure")
+    expect(() => prepareSanctuaryPackageManagedBundle(decision, { ensure: inconsistent })).toThrow("human-required: resume the reviewed Butler update recovery procedure")
 
     expect(() => prepareSanctuaryPackageManagedBundle(decision)).toThrow("human-required: roll back to a verified Mendelow Cloud Butler release or install that release again")
   })
@@ -327,7 +327,7 @@ describe("Sanctuary package-management activation", () => {
   it.each([
     ["mismatch", { ok: true, data: { runtimePackageVersion: VERSION, packagedBundleVersion: VERSION, liveBundleVersion: "old", parity: "mismatch", mismatchCodes: ["managed_file_content"], journalState: "absent", ready: false, repair: { actor: "human-required", action: "restart_from_verified_release" } } }, "restart Mendelow Cloud Butler from its verified release so the installed bundle can finish updating"],
     ["invalid package", { ok: false, error: { code: "invalid_package_source", message: "verified release contents are invalid", degraded: true, repair: { actor: "human-required", action: "roll_back_or_install_verified_release" } } }, "roll back to a verified Mendelow Cloud Butler release or install that release again"],
-    ["invalid journal", { ok: false, error: { code: "invalid_journal", message: "Sanctuary update recovery is required", degraded: true, repair: { actor: "human-required", action: "run_verified_update_recovery" } } }, "resume the reviewed Mendelow Cloud Butler update recovery procedure"],
+    ["invalid journal", { ok: false, error: { code: "invalid_journal", message: "Sanctuary update recovery is required", degraded: true, repair: { actor: "human-required", action: "run_verified_update_recovery" } } }, "resume the reviewed Butler update recovery procedure"],
   ] as const)("preserves the approved action from a known non-converged second inspection: %s", (_label, after, guidance) => {
     const { decision } = resolve()
     const before: SanctuaryPackageManagedBundleInspection = { ok: true, data: { runtimePackageVersion: VERSION, packagedBundleVersion: VERSION, liveBundleVersion: "old", parity: "mismatch", mismatchCodes: ["managed_file_content"], journalState: "absent", ready: false, repair: { actor: "human-required", action: "restart_from_verified_release" } } }
