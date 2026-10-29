@@ -51,6 +51,8 @@ describe("Unraid first-install script", () => {
     expect(source).toContain('create_unraid_key "Butler RO $STAMP" "$READ_PERMISSIONS" unraidReadApiKey')
     expect(source).toContain('create_unraid_key "Butler RW $STAMP" "$READ_PERMISSIONS,DOCKER:UPDATE_ANY" unraidWriteApiKey')
     expect(source).toContain("--key unraidGraphqlUrl --scope machine")
+    // Unraid 7.2.3's CLI rejects --permissions alone with "Invalid data structure" (checked on a live host 2026-10-29).
+    expect(source).toContain('unraid-api apikey --create --name "$1" --roles GUEST --permissions "$2"')
   })
 
   it("writes a generic house description from the owner's answers and names no particular household", () => {

@@ -211,7 +211,8 @@ GRAPHQL_URL="http://127.0.0.1${PORT:+$( [ "$PORT" = 80 ] || printf ':%s' "$PORT"
 READ_PERMISSIONS="ARRAY:READ_ANY,DASHBOARD:READ_ANY,DISK:READ_ANY,DOCKER:READ_ANY,INFO:READ_ANY,LOGS:READ_ANY,NOTIFICATIONS:READ_ANY,SHARE:READ_ANY,VARS:READ_ANY"
 STAMP=$(date +%Y%m%d%H%M%S)
 create_unraid_key() { # create_unraid_key <name> <permissions> <vault field>
-  unraid-api apikey --create --name "$1" --permissions "$2" --description "Ouro Butler ($3)" --json 2>/dev/null \
+  # Unraid 7.2's CLI refuses --permissions without a role ("Invalid data structure"); GUEST adds only own-profile access.
+  unraid-api apikey --create --name "$1" --roles GUEST --permissions "$2" --description "Ouro Butler $3" --json 2>/dev/null \
     | node -e '
         let text = ""; process.stdin.on("data", (c) => text += c).on("end", () => {
           const start = text.indexOf("{"); if (start < 0) process.exit(1)
