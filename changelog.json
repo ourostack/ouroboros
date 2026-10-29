@@ -2,6 +2,12 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.965",
+      "changes": [
+        "Ouro ships Bitwarden CLI 2026.9.1 instead of 2026.6.0. Its core-js 3.50.0 replaces 3.49.0, two of whose files Microsoft Defender's enterprise policy quarantines on managed Macs, which broke every vault command with \"Cannot find module '../internals/hidden-keys'\". A new bw version also gets a fresh vault profile, so the first vault use after updating signs in once."
+      ]
+    },
+    {
       "version": "0.1.0-alpha.963",
       "changes": [
         "The vault now syncs after unlock unless Ouro itself synced in the last minute. Before, `bw status` and `bw unlock` rewrote the profile's data file, which made a stale cache look fresh, so a running daemon could keep reading an old copy of a vault item (for example a machine config changed from another Bitwarden client) indefinitely."
