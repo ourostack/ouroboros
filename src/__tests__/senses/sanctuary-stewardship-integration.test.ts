@@ -180,6 +180,13 @@ async function fixture(desired = "intentionally_off", grant = true) {
   for (const name of ["agent.json", "tool-profiles.json"]) {
     fs.copyFileSync(path.join(getRepoRoot(), "deploy/unraid/sanctuary.ouro", name), path.join(agentRoot, name))
   }
+  // This composition scripts MiniMax model replies, so its copy of the bundle runs both lanes on MiniMax whatever the
+  // packaged default provider is.
+  const agentJsonPath = path.join(agentRoot, "agent.json")
+  const agentJson = JSON.parse(fs.readFileSync(agentJsonPath, "utf8"))
+  agentJson.humanFacing = { provider: "minimax", model: "MiniMax-M3" }
+  agentJson.agentFacing = { provider: "minimax", model: "MiniMax-M3" }
+  fs.writeFileSync(agentJsonPath, `${JSON.stringify(agentJson, null, 2)}\n`)
   readAgentConfigForAgent("sanctuary", getAgentBundlesRoot())
   setRuntimeLogger(createLogger({ sinks: [(event) => capturedEvents.push(event), createNdjsonFileSink(path.join(agentRoot, "fixture-audit.ndjson"))] }))
   cacheProviderCredentialRecords("sanctuary", [createProviderCredentialRecord({

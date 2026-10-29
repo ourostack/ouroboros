@@ -2,7 +2,7 @@
 import * as path from "node:path"
 import { pathToFileURL } from "node:url"
 
-const USAGE = "Usage: migrate-sanctuary-bundle.mjs --package-root <path> --agent-root <path> --operation <migrate|rollback|finalize-rollback|commit|status|inspect> [--rollback-image-id <sha256:id> --target-image-id <sha256:id>]"
+const USAGE = "Usage: migrate-sanctuary-bundle.mjs --package-root <path> --agent-root <path> --operation <migrate|seed|rollback|finalize-rollback|commit|status|inspect> [--rollback-image-id <sha256:id> --target-image-id <sha256:id>]"
 const BASE_KEYS = ["--package-root", "--agent-root", "--operation"]
 const MIGRATE_KEYS = [...BASE_KEYS, "--rollback-image-id", "--target-image-id"]
 
@@ -16,7 +16,7 @@ function parseArguments(args) {
     values.set(key, value)
   }
   const operation = values.get("--operation")
-  if (!["migrate", "rollback", "finalize-rollback", "commit", "status", "inspect"].includes(operation)) throw new Error(USAGE)
+  if (!["migrate", "seed", "rollback", "finalize-rollback", "commit", "status", "inspect"].includes(operation)) throw new Error(USAGE)
   const expectedKeys = operation === "migrate" ? MIGRATE_KEYS : BASE_KEYS
   if (values.size !== expectedKeys.length || expectedKeys.some((key) => !values.has(key)) || [...values.keys()].some((key) => !expectedKeys.includes(key))) throw new Error(USAGE)
   return values
@@ -29,6 +29,9 @@ export function runSanctuaryBundleOperation(args, dependencies) {
   const operation = values.get("--operation")
   const result = operation === "migrate"
     ? dependencies.migrate({ packageRoot, agentRoot, retainRollback: true, rollbackImageId: values.get("--rollback-image-id"), targetImageId: values.get("--target-image-id") })
+    // A fresh install has no earlier image to roll back to, so it writes the packaged files without a rollback record.
+    : operation === "seed"
+      ? dependencies.migrate({ packageRoot, agentRoot, retainRollback: false })
     : operation === "rollback"
       ? { rolledBack: dependencies.rollback(agentRoot, { retainRecord: true }) }
       // `rollback` keeps crash-retry evidence; the host uses `finalize-rollback` only after old production is audited, ready, and restored to autostart.

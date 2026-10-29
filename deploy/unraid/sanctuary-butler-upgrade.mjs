@@ -37,7 +37,13 @@
 //   --plant <case>    make that gate case fail on purpose, proving the rollback end to end
 //   verify --gate     run the gate against the live version without upgrading
 //
+// A fresh install (a host that never ran a Butler) passes --fresh to preflight and prepare. prepare --fresh takes the
+// bot id from Telegram getMe on the token already at incoming-token and the owner from --owner-id, and writes
+// predecessorContract "none" into request.json; install, upgrade and verify read that contract from there.
+//
 // Usage: sanctuary-butler-upgrade.mjs <preflight|prepare|install|verify|upgrade> <version> [--rehearse <step>] [--no-gate] [--plant <case>]
+//        sanctuary-butler-upgrade.mjs preflight <version> --fresh
+//        sanctuary-butler-upgrade.mjs prepare <version> --fresh --owner-id <telegram user id>
 //        sanctuary-butler-upgrade.mjs verify [--gate]
 
 import { execFileSync, spawn, spawnSync } from "node:child_process"
@@ -124,23 +130,26 @@ function imageId(version) {
 
 // ---- read-only rehearsal --------------------------------------------------
 
-function preflight(version) {
-  say(`preflight for ${version} (read-only; nothing is changed)`)
+function preflight(version, { fresh = false } = {}) {
+  say(`preflight for ${version}${fresh ? " (fresh install)" : ""} (read-only; nothing is changed)`)
 
   say("target image present and pulled")
   let id = imageId(version)
   if (!id) { try { docker(["pull", image(version)]); id = imageId(version) } catch { /* reported below */ } }
   id ? ok(`image ${id.slice(0, 19)}…`) : bad(`image ${image(version)} not present and could not be pulled`)
 
-  say("running Butler and rollback material")
+  say(fresh ? "no Butler on this host yet" : "running Butler and rollback material")
   let runningImage = null
-  try {
+  if (fresh) {
+    containerExists(CONTAINER) ? bad(`an ${CONTAINER} container already exists; a fresh install needs a host without one`) : ok(`no ${CONTAINER} container`)
+    existsSync(`${ROOT}/active.json`) ? bad("an authority is installed; this host is not fresh") : ok("no installed authority")
+  } else try {
     runningImage = docker(["inspect", CONTAINER, "--format", "{{.Image}}"], { stdio: ["ignore", "pipe", "ignore"] }).trim()
     ok(`running image ${runningImage.slice(0, 19)}… (this is the rollback target)`)
   } catch { bad(`the ${CONTAINER} container is absent`) }
   if (id && runningImage && id === runningImage) bad("target and running image are identical — nothing to upgrade")
 
-  const installed = existsSync(`${ROOT}/active.json`)
+  const installed = !fresh && existsSync(`${ROOT}/active.json`)
   if (installed) console.log("  note: an authority is installed, so this is an in-place upgrade (run `upgrade`, no token rotation)")
 
   say("no stale authority runtime state")
@@ -196,6 +205,7 @@ function preflight(version) {
 
   say("D-018: the fenced vault read the install depends on")
   if (installed) ok("not needed: the installed gateway already holds the token in root custody")
+  else if (fresh) ok("not needed: a fresh install hands the new token straight to the root authority")
   else if (id) {
     // Run the read fenced exactly as THIS version's install will fence it, so
     // the rehearsal is faithful: an unfixed image is tested without the fix and
@@ -220,12 +230,12 @@ function preflight(version) {
   } catch { bad("could not read disk free space") }
 
   say("preservation baselines readable")
-  existsSync(POLICY) ? ok(`steward policy present (${sha12(POLICY)})`) : bad(`steward policy missing at ${POLICY}`)
-  try { docker(["inspect", "jellyfin", "--format", "{{.Id}}"], { stdio: ["ignore", "pipe", "ignore"] }); ok("jellyfin inspectable for the unchanged-check") }
-  catch { bad("jellyfin container not inspectable") }
+  existsSync(POLICY) ? ok(`steward policy present (${sha12(POLICY)})`) : fresh ? ok("no steward policy yet (fresh install)") : bad(`steward policy missing at ${POLICY}`)
+  try { ok(jellyfinState() ? "jellyfin inspectable for the unchanged-check" : "no jellyfin container; it must stay absent") }
+  catch { bad("docker could not list or inspect the jellyfin container") }
 
   console.log("")
-  if (RED === 0) console.log(installed ? "PREFLIGHT GREEN — run `upgrade` (detached)." : "PREFLIGHT GREEN — the upgrade can proceed. Next: prepare, rotate the token, install.")
+  if (RED === 0) console.log(installed ? "PREFLIGHT GREEN — run `upgrade` (detached)." : fresh ? "PREFLIGHT GREEN — next: put the bot token at incoming-token, prepare --fresh, install." : "PREFLIGHT GREEN — the upgrade can proceed. Next: prepare, rotate the token, install.")
   else console.log(`PREFLIGHT RED — ${RED} blocker(s) above. Nothing was changed; fix these before rotating the token.`)
   process.exit(RED === 0 ? 0 : 1)
 }
@@ -265,22 +275,69 @@ function fencedVaultRead(version, hasFix) {
 
 function sha12(path) { return digest(readFileSync(path)).slice(7, 19) }
 
+// ---- fresh install helpers (a host with no predecessor Butler) -------------
+
+/** The root request for a fresh install: the bot comes from Telegram getMe on the new token, the owner from the installer. */
+export function freshInstallRequest({ epochId, botId, ownerId, pins }) {
+  if (!/^[1-9][0-9]*$/u.test(String(botId))) throw new Error("the bot id from Telegram is invalid")
+  if (!/^[1-9][0-9]*$/u.test(String(ownerId))) throw new Error("the owner's Telegram id must be a positive number")
+  return { schemaVersion: 1, epochId, botId: String(botId), ownerUserId: String(ownerId), ownerChatId: String(ownerId), ...pins, predecessorContract: "none" }
+}
+/** The bot id a Telegram getMe answer names, checked against the token's own prefix. */
+export function botIdFromGetMe(body, token) {
+  const id = body?.ok === true && Number.isSafeInteger(body.result?.id) ? String(body.result.id) : null
+  if (!id) throw new Error("Telegram did not accept the bot token (getMe failed)")
+  if (String(token).split(":")[0] !== id) throw new Error("the bot token does not belong to the bot Telegram names")
+  return id
+}
+/** The incoming request for an in-place upgrade: the same identity, new pins, and a fresh install's contract carried forward. */
+export function upgradeRequest(current, pins) {
+  return {
+    schemaVersion: 1, epochId: current.epochId, botId: current.botId, ownerUserId: current.ownerUserId, ownerChatId: current.ownerChatId, ...pins,
+    ...(current.predecessorContract === "none" ? { predecessorContract: "none" } : {}),
+  }
+}
+/** Whether a preserved file stayed as it was; one that was absent before had nothing to preserve. */
+export function unchanged(before, after) { return before === null || before === after }
+function containerExists(name) { return docker(["container", "ls", "--all", "--quiet", "--filter", `name=^/${name}$`]).trim() !== "" }
+/** Jellyfin's identity for the unchanged-check, or null on a host without Jellyfin (it must then stay absent). */
+function jellyfinState() {
+  return containerExists("jellyfin") ? docker(["inspect", "jellyfin", "--format", "{{.Id}}|{{.Image}}|{{.RestartCount}}|{{.State.StartedAt}}"]).trim() : null
+}
+function policyState() { return existsSync(POLICY) ? sha12(POLICY) : null }
+function installedRequest() { try { return JSON.parse(readFileSync(`${ROOT}/request.json`, "utf8")) } catch { return null } }
+
 // ---- prepare (idempotent staging; running Butler untouched) ---------------
 
-function prepare(version) {
-  say(`prepare inputs for ${version}`)
+async function prepare(version, { fresh = false, ownerId } = {}) {
+  say(`prepare inputs for ${version}${fresh ? " (fresh install)" : ""}`)
   const id = imageId(version)
   if (!id) fail(`image ${image(version)} is not present; pull it first`)
   if (existsSync(`${ROOT}/active.json`)) fail("an authority is installed; use `upgrade` (in place, no token rotation) instead of prepare/install")
+  let botId = null
+  if (fresh) {
+    if (containerExists(CONTAINER)) fail(`an ${CONTAINER} container already exists; a fresh install needs a host without one`)
+    const tokenPath = `${ROOT}/incoming-token`
+    if (!existsSync(tokenPath) || statSync(tokenPath).size === 0) fail(`no bot token at ${tokenPath}; the installer puts it there first`)
+    const token = readFileSync(tokenPath, "utf8").trim()
+    const body = await fetch(`https://api.telegram.org/bot${token}/getMe`).then((response) => response.json()).catch(() => null)
+    try { botId = botIdFromGetMe(body, token) } catch (error) { fail(error.message) }
+    ok(`Telegram knows the bot (id ${botId})`)
+  }
   const epochId = `${version.replace(/[^A-Za-z0-9_-]/g, "-")}-${new Date().toISOString().slice(0, 10).replace(/-/g, "")}`
   const manifestBytes = stageIncomingPackage(version)
   writePrivate(`${ROOT}/package-manifest.json`, manifestBytes)
-  const creds = JSON.parse(readFileSync(`/mnt/user/appdata/ouro-butler/runtime/container-credentials.json`, "utf8")).credentials[0].runtimeConfig
-  const request = {
-    schemaVersion: 1, epochId,
-    botId: String(creds.telegramBotToken).split(":")[0],
-    ownerUserId: String(creds.telegramAuthorizedUserId), ownerChatId: String(creds.telegramAuthorizedChatId),
-    ...packagePins(manifestBytes),
+  let request
+  if (fresh) {
+    try { request = freshInstallRequest({ epochId, botId, ownerId, pins: packagePins(manifestBytes) }) } catch (error) { fail(error.message) }
+  } else {
+    const creds = JSON.parse(readFileSync(`/mnt/user/appdata/ouro-butler/runtime/container-credentials.json`, "utf8")).credentials[0].runtimeConfig
+    request = {
+      schemaVersion: 1, epochId,
+      botId: String(creds.telegramBotToken).split(":")[0],
+      ownerUserId: String(creds.telegramAuthorizedUserId), ownerChatId: String(creds.telegramAuthorizedChatId),
+      ...packagePins(manifestBytes),
+    }
   }
   if (request.ownerUserId !== request.ownerChatId) fail("owner user and chat must match")
   writePrivate(`${ROOT}/request.json`, Buffer.from(JSON.stringify(request)))
@@ -290,7 +347,7 @@ function prepare(version) {
   verifyPackage(`${ROOT}/incoming-package`, `${ROOT}/package-manifest.json`, `${ROOT}/request.json`)
   ok("package verifies")
 
-  console.log("\nPREPARE done. Next: rotate the bot token into ${ROOT}/incoming-token, then install.".replace("${ROOT}", ROOT))
+  console.log(fresh ? "\nPREPARE done. Next: install." : "\nPREPARE done. Next: rotate the bot token into ${ROOT}/incoming-token, then install.".replace("${ROOT}", ROOT))
 }
 
 // The package digest plus the host primitive pins every request carries.
@@ -573,10 +630,16 @@ function migrateBundle(version, rollbackImage) {
   const pkgBundle = `${ROOT}/incoming-package/deploy/unraid/sanctuary.ouro`
   const migrate = `${ROOT}/incoming-package/deploy/unraid/migrate-sanctuary-bundle.mjs`
   if (!existsSync(`${pkgBundle}/provider-readiness.json`)) fail(`packaged bundle template missing provider-readiness.json at ${pkgBundle}`)
-  sh("/usr/local/bin/node", [migrate, "--package-root", pkgBundle, "--agent-root", BUNDLE, "--operation", "migrate",
-    "--rollback-image-id", rollbackImage, "--target-image-id", imageId(version)])
-  ok("bundle migrated (rollback retained)")
-  sh("/usr/local/bin/node", [migrate, "--package-root", pkgBundle, "--agent-root", BUNDLE, "--operation", "commit"])
+  if (rollbackImage === null) {
+    // A fresh install has no earlier image to roll back to: write the packaged files with no rollback record.
+    sh("/usr/local/bin/node", [migrate, "--package-root", pkgBundle, "--agent-root", BUNDLE, "--operation", "seed"])
+    ok("bundle seeded from the package (fresh install)")
+  } else {
+    sh("/usr/local/bin/node", [migrate, "--package-root", pkgBundle, "--agent-root", BUNDLE, "--operation", "migrate",
+      "--rollback-image-id", rollbackImage, "--target-image-id", imageId(version)])
+    ok("bundle migrated (rollback retained)")
+    sh("/usr/local/bin/node", [migrate, "--package-root", pkgBundle, "--agent-root", BUNDLE, "--operation", "commit"])
+  }
   // migrate/commit ran as root; the resident owns its bundle as uid 10001, so restore ownership
   sh("/bin/chown", ["-R", "10001:10001", BUNDLE])
   restoreReplayRoot()
@@ -760,6 +823,7 @@ function install(version) {
   if (!existsSync(`${ROOT}/incoming-token`) || statSync(`${ROOT}/incoming-token`).size === 0) fail(`no rotated token at ${ROOT}/incoming-token — rotate it in BotFather first`)
   if (existsSync(JOURNAL)) fail("a template transaction is already pending; resolve it first")
   if (targetHasVaultFix(version) === false) fail(`${version} lacks the D-018 fenced-read fix; the install would strand Telegram (run preflight)`)
+  const fresh = installedRequest()?.predecessorContract === "none"
 
   // Clear stale authority runtime dirs from a prior failed attempt so #runtimeDirectories
   // starts clean (it skips a dir that already exists). Safe only when no authority is live
@@ -773,11 +837,12 @@ function install(version) {
     ok("cleared stale authority runtime dirs (cgroup/staging/socket/epochs) and any leaked gateway")
   }
   const targetImage = imageId(version)
-  const rollbackImage = docker(["inspect", CONTAINER, "--format", "{{.Image}}"]).trim()
+  if (fresh && containerExists(CONTAINER)) fail(`an ${CONTAINER} container already exists; a fresh install needs a host without one`)
+  const rollbackImage = fresh ? null : docker(["inspect", CONTAINER, "--format", "{{.Image}}"]).trim()
   if (!targetImage || targetImage === rollbackImage) fail("target/rollback image identity invalid")
-  const jellyfinBefore = docker(["inspect", "jellyfin", "--format", "{{.Id}}|{{.Image}}|{{.RestartCount}}|{{.State.StartedAt}}"]).trim()
-  const policyBefore = existsSync(POLICY) ? sha12(POLICY) : fail(`steward policy missing`)
-  ok(`target ${targetImage.slice(0,19)}… rollback ${rollbackImage.slice(0,19)}… policy ${policyBefore}`)
+  const jellyfinBefore = jellyfinState()
+  const policyBefore = fresh ? policyState() : policyState() ?? fail(`steward policy missing`)
+  ok(`target ${targetImage.slice(0,19)}… rollback ${rollbackImage ? `${rollbackImage.slice(0,19)}…` : "none (fresh install)"} policy ${policyBefore ?? "none yet"}`)
 
   const srcTemplate = `${ROOT}/source-template.xml`
   sh("/usr/bin/install", ["-m", "600", "-o", "0", "-g", "0", `${incoming}/deploy/unraid/sanctuary.xml`, srcTemplate])
@@ -787,7 +852,7 @@ function install(version) {
   try {
     say("transaction: prepare -> authority-install -> authority-activate -> commit")
     tx("prepare", ["--source-template", srcTemplate, "--version-tag", image(version),
-      "--manifest-digest", manifestDigest, "--rollback-image-id", rollbackImage, "--target-image-id", targetImage])
+      "--manifest-digest", manifestDigest, "--rollback-image-id", rollbackImage ?? "none", "--target-image-id", targetImage])
     ok("prepared")
     tx("authority-install"); ok("authority installed (gateway up)")
     recreateResident(version)
@@ -800,14 +865,17 @@ function install(version) {
   } catch (e) {
     resumeCgroupReaper()
     console.log(`\n!! install failed:\n${e.message}\n!! auto-rolling back so the Butler is not left down`)
+    if (fresh) {
+      freshRollback()
+      fail("fresh install rolled back; nothing is left running. Fix the error above, then run prepare --fresh and install again.")
+    }
     autoRollback(rollbackImage, version)
     fail("install rolled back; the Butler is on its prior version. See output above.")
   }
 
   say("preservation")
-  const jellyfinAfter = docker(["inspect", "jellyfin", "--format", "{{.Id}}|{{.Image}}|{{.RestartCount}}|{{.State.StartedAt}}"]).trim()
-  jellyfinBefore === jellyfinAfter ? ok("jellyfin unchanged") : fail("JELLYFIN CHANGED")
-  sha12(POLICY) === policyBefore ? ok("steward policy unchanged") : fail("STEWARD POLICY CHANGED")
+  jellyfinState() === jellyfinBefore ? ok(jellyfinBefore ? "jellyfin unchanged" : "no jellyfin, as before") : fail("JELLYFIN CHANGED")
+  unchanged(policyBefore, policyState()) ? ok(policyBefore ? "steward policy unchanged" : "no steward policy before install") : fail("STEWARD POLICY CHANGED")
   console.log(`\nINSTALL done — ${version} live. Run verify.`)
 }
 
@@ -821,6 +889,17 @@ function killLeakedGateway() {
     for (const pid of pids) { try { sh("/bin/kill", ["-TERM", pid]) } catch { /* ignore */ } }
     if (pids.length) { sh("/bin/sleep", ["3"]); for (const pid of pids) { try { sh("/bin/kill", ["-KILL", pid]) } catch { /* ignore */ } } ok(`stopped ${pids.length} leaked authority process(es)`) }
   } catch { /* best effort */ }
+}
+
+// A fresh install rolls back to nothing: the authority retires and removes the resident it created, the template
+// transaction removes the template it wrote, and nothing is restarted because nothing ran before.
+function freshRollback() {
+  for (const op of ["authority-retire", "authority-restore", "rollback"]) {
+    try { tx(op) } catch (e) { console.log(`   ${op}: ${String(e.message).split("\n")[0]}`) }
+  }
+  killLeakedGateway()
+  try { if (containerExists(CONTAINER)) docker(["rm", "-f", CONTAINER]) } catch (e) { console.log(`   remove ${CONTAINER}: ${String(e.message).split("\n")[0]}`) }
+  console.log(containerExists(CONTAINER) ? `   ${CONTAINER} is still present — remove it by hand before retrying` : "   rollback complete — no Butler container is left behind")
 }
 
 function autoRollback(rollbackImage, version) {
@@ -1119,22 +1198,22 @@ async function upgrade(version, rehearse, { noGate = false, plant } = {}) {
   if (!id) { docker(["pull", image(version)]); id = imageId(version) }
   if (!id) fail(`image ${image(version)} could not be pulled`)
   ok(`image ${id.slice(0, 19)}…`)
+  const current = JSON.parse(readFileSync(`${ROOT}/request.json`, "utf8"))
   if (existsSync(UPGRADE_JOURNAL)) console.log("  note: resuming the pending in-place upgrade with its staged package")
   else {
-    const current = JSON.parse(readFileSync(`${ROOT}/request.json`, "utf8"))
     const manifestBytes = stageIncomingPackage(version)
     const pkgVersion = JSON.parse(readFileSync(`${ROOT}/incoming-package/deploy/unraid/sanctuary.ouro/bundle-meta.json`, "utf8")).runtimeVersion
     if (pkgVersion !== version) fail(`staged package is ${pkgVersion}, not ${version}`)
     writePrivate(INCOMING_MANIFEST, manifestBytes)
-    const request = { schemaVersion: 1, epochId: current.epochId, botId: current.botId, ownerUserId: current.ownerUserId, ownerChatId: current.ownerChatId, ...packagePins(manifestBytes) }
+    const request = upgradeRequest(current, packagePins(manifestBytes))
     writePrivate(INCOMING_REQUEST, Buffer.from(JSON.stringify(request)))
     verifyPackage(`${ROOT}/incoming-package`, INCOMING_MANIFEST, INCOMING_REQUEST)
     ok("new package staged beside the live one and verified")
   }
   const lifecycle = `${ROOT}/incoming-package/dist/heart/daemon/sanctuary-authority-root-lifecycle.js`
   const priorImage = butlerState().split(" ")[0]
-  const jellyfinBefore = docker(["inspect", "jellyfin", "--format", "{{.Id}}|{{.Image}}|{{.RestartCount}}|{{.State.StartedAt}}"]).trim()
-  const policyBefore = existsSync(POLICY) ? sha12(POLICY) : fail("steward policy missing")
+  const jellyfinBefore = jellyfinState()
+  const policyBefore = current.predecessorContract === "none" ? policyState() : policyState() ?? fail("steward policy missing")
   const telegram = await checkTelegramBeforePause({ journalExists: existsSync(UPGRADE_JOURNAL) })
   if (!telegram.ok) fail(`api.telegram.org is not reachable from this host (${telegram.detail}); the new gateway could not pass its Telegram identity check. Nothing was paused or changed; fix the network and re-run.`)
   if (telegram.skipped) console.log("  note: resuming a pending upgrade; Telegram reachability not re-checked")
@@ -1158,9 +1237,9 @@ async function upgrade(version, rehearse, { noGate = false, plant } = {}) {
   if (!gated || failure) resumeSupervision()
   say("preservation")
   const preserved = []
-  const jellyfinNow = docker(["inspect", "jellyfin", "--format", "{{.Id}}|{{.Image}}|{{.RestartCount}}|{{.State.StartedAt}}"]).trim()
-  jellyfinNow === jellyfinBefore ? ok("jellyfin unchanged") : (gated && !failure ? (bad("JELLYFIN CHANGED"), preserved.push("jellyfin changed")) : fail("JELLYFIN CHANGED"))
-  sha12(POLICY) === policyBefore ? ok("steward policy unchanged") : (gated && !failure ? (bad("STEWARD POLICY CHANGED"), preserved.push("steward policy changed")) : fail("STEWARD POLICY CHANGED"))
+  const jellyfinNow = jellyfinState()
+  jellyfinNow === jellyfinBefore ? ok(jellyfinBefore ? "jellyfin unchanged" : "no jellyfin, as before") : (gated && !failure ? (bad("JELLYFIN CHANGED"), preserved.push("jellyfin changed")) : fail("JELLYFIN CHANGED"))
+  unchanged(policyBefore, policyState()) ? ok("steward policy unchanged") : (gated && !failure ? (bad("STEWARD POLICY CHANGED"), preserved.push("steward policy changed")) : fail("STEWARD POLICY CHANGED"))
   const live = docker(["inspect", CONTAINER, "--format", "{{.Config.Image}} {{.State.Status}}/{{.State.Health.Status}}"]).trim()
   ok(`butler: ${live}`)
   if (failure && !planned) fail("upgrade rolled back; the Butler is on its prior version (see above)")
@@ -1212,7 +1291,7 @@ function verify(withGate = false) {
   ok(`butler: ${st}`)
   const auth = docker(["logs", CONTAINER, "--since", "2m"], { stdio: ["ignore","pipe","pipe"] }).split("\n").filter((l) => l.includes("401")).length
   auth === 0 ? ok("no Telegram auth failures in the last 2m") : bad(`${auth} 401s in the last 2m`)
-  existsSync(POLICY) ? ok(`steward policy ${sha12(POLICY)}`) : bad("steward policy missing")
+  existsSync(POLICY) ? ok(`steward policy ${sha12(POLICY)}`) : installedRequest()?.predecessorContract === "none" ? ok("no steward policy yet") : bad("steward policy missing")
   const psycheMount = JSON.parse(docker(["inspect", CONTAINER, "--format", "{{json .Mounts}}"]) || "[]")
   psycheMountIssue(psycheMount) === null ? ok("psyche is mounted read-only in the resident") : bad(psycheMountIssue(psycheMount))
   const trustMount = JSON.parse(docker(["inspect", CONTAINER, "--format", "{{json .Mounts}}"]) || "[]")
@@ -1226,8 +1305,7 @@ function verify(withGate = false) {
     const psycheIssues = psycheProblems(psycheDir)
     psycheIssues.length === 0 ? ok("psyche files are resident-owned 0600 (read-only through the mount)") : bad(`psyche files do not match what the resident boot check requires: ${psycheIssues.slice(0, 3).join("; ")}`)
   } else bad("psyche folder missing from the bundle")
-  const jf = docker(["inspect", "jellyfin", "--format", "{{.State.Status}} restarts={{.RestartCount}}"]).trim()
-  ok(`jellyfin ${jf}`)
+  ok(containerExists("jellyfin") ? `jellyfin ${docker(["inspect", "jellyfin", "--format", "{{.State.Status}} restarts={{.RestartCount}}"]).trim()}` : "no jellyfin container")
   if (withGate) {
     say("replay gate (live version, no upgrade)")
     const gate = runReplayGate(undefined)
@@ -1241,21 +1319,25 @@ function fail(m) { console.error(`\nREFUSING: ${m}`); process.exit(1) }
 // ---- entry ----------------------------------------------------------------
 
 export function parseUpgradeArgs(argv) {
-  const usage = "Usage: sanctuary-butler-upgrade.mjs <preflight|prepare|install|upgrade> <version> [--rehearse <step>] [--no-gate] [--plant <case>] | verify [--gate]"
+  const usage = "Usage: sanctuary-butler-upgrade.mjs <preflight|prepare|install|upgrade> <version> [--rehearse <step>] [--no-gate] [--plant <case>] | preflight <version> --fresh | prepare <version> --fresh --owner-id <id> | verify [--gate]"
   const [phase, ...rest] = argv
   if (!phase || !["preflight", "prepare", "install", "verify", "upgrade"].includes(phase)) throw new Error(usage)
-  const parsed = { phase, version: undefined, rehearse: undefined, noGate: false, plant: undefined, gate: false }
+  const parsed = { phase, version: undefined, rehearse: undefined, noGate: false, plant: undefined, gate: false, fresh: false, ownerId: undefined }
   for (let i = 0; i < rest.length; i += 1) {
     const arg = rest[i]
     if (arg === "--rehearse" && phase === "upgrade" && rest[i + 1]) parsed.rehearse = rest[++i]
     else if (arg === "--no-gate" && phase === "upgrade") parsed.noGate = true
     else if (arg === "--plant" && phase === "upgrade" && rest[i + 1]) parsed.plant = rest[++i]
     else if (arg === "--gate" && phase === "verify") parsed.gate = true
+    else if (arg === "--fresh" && (phase === "preflight" || phase === "prepare")) parsed.fresh = true
+    else if (arg === "--owner-id" && phase === "prepare" && rest[i + 1]) parsed.ownerId = rest[++i]
     else if (!arg.startsWith("--") && parsed.version === undefined && phase !== "verify") parsed.version = arg
     else throw new Error(usage)
   }
   if (parsed.noGate && parsed.plant) throw new Error("--plant needs the gate; it cannot be combined with --no-gate")
   if (parsed.rehearse && (parsed.noGate || parsed.plant)) throw new Error("--rehearse does not use the gate; do not combine it with --no-gate or --plant")
+  if (phase === "prepare" && parsed.fresh !== (parsed.ownerId !== undefined)) throw new Error("prepare --fresh needs --owner-id <the owner's Telegram user id>, and --owner-id needs --fresh")
+  if (parsed.ownerId !== undefined && !/^[1-9][0-9]*$/u.test(parsed.ownerId)) throw new Error("--owner-id must be a Telegram user id (a positive number)")
   if (phase !== "verify" && !/^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$/.test(parsed.version || "")) throw new Error("a semver version is required, e.g. 0.1.0-alpha.829")
   return parsed
 }
@@ -1264,8 +1346,8 @@ async function run(argv) {
   let args
   try { args = parseUpgradeArgs(argv) } catch (error) { console.error(error.message); process.exit(2) }
   requireRoot()
-  if (args.phase === "preflight") preflight(args.version)
-  else if (args.phase === "prepare") prepare(args.version)
+  if (args.phase === "preflight") preflight(args.version, { fresh: args.fresh })
+  else if (args.phase === "prepare") await prepare(args.version, { fresh: args.fresh, ownerId: args.ownerId })
   else if (args.phase === "install") install(args.version)
   else if (args.phase === "verify") verify(args.gate)
   else if (args.phase === "upgrade") await upgrade(args.version, args.rehearse, { noGate: args.noGate, plant: args.plant })

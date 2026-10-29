@@ -2768,10 +2768,14 @@ async function executeVaultStatus(
 const RUNTIME_CONFIG_KEY_SEGMENT = /^[A-Za-z][A-Za-z0-9_-]*$/
 const FORBIDDEN_RUNTIME_CONFIG_KEY_SEGMENTS = new Set(["__proto__", "prototype", "constructor"])
 
+// The Sanctuary runtime reads these machine credentials at the top level of the config (sanctuary-runtime.ts); every
+// other key is a dotted path, so a mistyped key cannot replace a whole section with a string.
+const TOP_LEVEL_RUNTIME_CONFIG_KEYS = new Set(["unraidGraphqlUrl", "unraidReadApiKey", "unraidWriteApiKey", "sabnzbdApiKey"])
+
 function parseRuntimeConfigKey(key: string): string[] {
   const segments = key.split(".").map((segment) => segment.trim()).filter(Boolean)
-  if (segments.length < 2) {
-    throw new Error("runtime config key must be a dotted path such as bluebubbles.password")
+  if (segments.length < 2 && !(segments.length === 1 && TOP_LEVEL_RUNTIME_CONFIG_KEYS.has(segments[0]!))) {
+    throw new Error(`runtime config key must be a dotted path such as bluebubbles.password, or one of ${[...TOP_LEVEL_RUNTIME_CONFIG_KEYS].join(", ")}`)
   }
   for (const segment of segments) {
     if (!RUNTIME_CONFIG_KEY_SEGMENT.test(segment) || FORBIDDEN_RUNTIME_CONFIG_KEY_SEGMENTS.has(segment)) {
@@ -2922,6 +2926,8 @@ async function promptRuntimeConfigValue(
   deps: OuroCliDeps,
 ): Promise<string> {
   if (command.value !== undefined) return command.value
+  // A file (or /dev/stdin) keeps a secret out of argv, so a script can store one without a terminal.
+  if (command.valueFile !== undefined) return readSecretValueFile("--value-file", command.valueFile)
   if (isSensitiveRuntimeConfigKey(command.key)) {
     if (!deps.promptSecret) {
       throw new Error("secret entry requires an interactive terminal so the value can be hidden. Re-run without --value in a terminal, or pass --value only from a trusted non-logged script.")
@@ -6653,19 +6659,20 @@ async function executeProviderRefresh(
   return message
 }
 
-/** Reads an API key from a file (or /dev/stdin) so it never appears in argv. */
-function readApiKeyFile(filePath: string): string {
+/** Reads a secret from a file (or /dev/stdin) so it never appears in argv. */
+function readSecretValueFile(flag: string, filePath: string): string {
   let raw: string
   try {
     raw = fs.readFileSync(filePath, "utf8")
   } catch (error) {
     /* v8 ignore next -- fs.readFileSync only throws Error objects @preserve */
-    throw new Error(`could not read --api-key-file ${filePath}: ${error instanceof Error ? error.message : String(error)}`)
+    throw new Error(`could not read ${flag} ${filePath}: ${error instanceof Error ? error.message : String(error)}`)
   }
-  const key = raw.trim()
-  if (!key) throw new Error(`--api-key-file ${filePath} is empty.`)
-  return key
+  const value = raw.trim()
+  if (!value) throw new Error(`${flag} ${filePath} is empty.`)
+  return value
 }
+function readApiKeyFile(filePath: string): string { return readSecretValueFile("--api-key-file", filePath) }
 
 async function executeAuthRun(
   command: Extract<ResolvedOuroCliCommand, { kind: "auth.run" }>,

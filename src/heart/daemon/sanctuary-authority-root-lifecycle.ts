@@ -67,7 +67,7 @@ interface UpgradeSide { imageId: string; imageReference: string; packageDigest: 
 interface UpgradeJournal {
   schemaVersion: 1
   epochId: string
-  from: UpgradeSide & { rollbackImageId: string }
+  from: UpgradeSide & { rollbackImageId: string | null }
   to: UpgradeSide
   completed: string[]
   /** Set once a rollback starts: from then on only a rollback may continue this journal. */
@@ -86,8 +86,11 @@ interface Request {
   prlimitDigest: string
   setsidDigest: string
   shellDigest: string
+  /** "none" marks a fresh install: no predecessor resident, token or cursor to hand over. */
+  predecessorContract?: "none"
 }
-interface Transaction { targetImageId: string; rollbackImageId: string }
+/** A fresh install has no image to roll back to, so its rollback image is null. */
+interface Transaction { targetImageId: string; rollbackImageId: string | null }
 interface Container {
   Name: string
   Image: string
@@ -98,7 +101,10 @@ interface Container {
 
 function validateRequest(value: unknown): Request {
   const request = value as Request
-  if (!request || typeof request !== "object" || Object.keys(request).sort().join(",") !== "botId,epochId,nodeDigest,ownerChatId,ownerUserId,packageDigest,prlimitDigest,schemaVersion,setsidDigest,shellDigest"
+  const keys = "botId,epochId,nodeDigest,ownerChatId,ownerUserId,packageDigest,prlimitDigest,schemaVersion,setsidDigest,shellDigest"
+  if (!request || typeof request !== "object"
+    || Object.keys(request).filter((key) => key !== "predecessorContract").sort().join(",") !== keys
+    || (Object.hasOwn(request, "predecessorContract") && request.predecessorContract !== "none")
     || request.schemaVersion !== 1 || !/^[A-Za-z0-9_-]{1,128}$/u.test(request.epochId)
     || ![request.botId, request.ownerUserId, request.ownerChatId].every((id) => typeof id === "string" && /^[1-9][0-9]*$/u.test(id))
     || request.ownerUserId !== request.ownerChatId
@@ -122,17 +128,21 @@ export class SanctuaryAuthorityRootLifecycle {
     this.#gid = options.expectedGid ?? 0
     this.#socketGid = options.socketGroupId ?? 10001
     if (process.getuid!() !== this.#uid || process.getgid!() !== this.#gid) throw new Error("Sanctuary root lifecycle requires root")
-    if (!DIGEST.test(transaction.targetImageId) || !DIGEST.test(transaction.rollbackImageId) || transaction.targetImageId === transaction.rollbackImageId) throw new Error("Sanctuary root lifecycle image identity is invalid")
-    this.#transaction = { targetImageId: transaction.targetImageId, rollbackImageId: transaction.rollbackImageId }
     this.#directory(ROOT)
     this.#request = validateRequest(JSON.parse(this.#private(`${ROOT}/request.json`)))
+    const rollbackValid = transaction.rollbackImageId === null ? this.#fresh() : DIGEST.test(transaction.rollbackImageId)
+    if (!DIGEST.test(transaction.targetImageId) || !rollbackValid || transaction.targetImageId === transaction.rollbackImageId) throw new Error("Sanctuary root lifecycle image identity is invalid")
+    this.#transaction = { targetImageId: transaction.targetImageId, rollbackImageId: transaction.rollbackImageId }
     emitNervesEvent({ component: "daemon", event: "daemon.sanctuary_root_lifecycle_loaded", message: "Sanctuary root lifecycle identity loaded", meta: { epochId: this.#request.epochId, targetImageId: transaction.targetImageId } })
   }
 
   plan() {
     const { epochId, botId, ownerUserId, ownerChatId, packageDigest } = this.#request
-    return { schemaVersion: 1, epochId, botId, ownerUserId, ownerChatId, packageDigest, publicKeyDigest: null, predecessorContract: "canonical-pre-gateway", targetContract: "canonical-gateway" }
+    return { schemaVersion: 1, epochId, botId, ownerUserId, ownerChatId, packageDigest, publicKeyDigest: null, predecessorContract: this.#fresh() ? "none" : "canonical-pre-gateway", targetContract: "canonical-gateway" }
   }
+
+  /** Whether this is a fresh install, which hands over nothing from a predecessor. */
+  #fresh(): boolean { return this.#request.predecessorContract === "none" }
 
   async boot(): Promise<boolean> {
     if (!fs.existsSync(this.#p(`${ROOT}/activation.json`))) return false
@@ -198,9 +208,15 @@ export class SanctuaryAuthorityRootLifecycle {
       "rollback:reconcile-executions": { read: () => this.#retiredProcess(), apply: () => this.#retireProcess() },
       "rollback:stop-gateway": { read: () => this.#retiredProcess() && this.#pid() === null, apply: () => this.#stopGateway() },
       "rollback:end-epoch": { read: () => this.#epoch().state === "retired", apply: () => this.#endEpoch() },
-      "rollback:restore-token-cursor": { read: () => this.#restoredToken(), apply: () => this.#restoreToken() },
-      "rollback:restore-resident": { read: () => this.#rollback().State.Running, apply: () => this.#restoreResident() },
-      "rollback:verify-rollback": { read: () => this.#rollbackVerified(), apply: () => this.#verifyRollback() },
+      "rollback:restore-token-cursor": this.#fresh()
+        ? { read: () => this.#epoch().state === "retired", apply: () => this.#requireStopped() }
+        : { read: () => this.#restoredToken(), apply: () => this.#restoreToken() },
+      "rollback:restore-resident": this.#fresh()
+        ? { read: () => this.#residentAbsent(), apply: () => this.#removeResident() }
+        : { read: () => this.#rollback().State.Running, apply: () => this.#restoreResident() },
+      "rollback:verify-rollback": this.#fresh()
+        ? { read: () => fs.existsSync(this.#p(`${this.#epochRoot()}/rollback.json`)) && this.#freshRollbackClean(), apply: () => this.#verifyFreshRollback() }
+        : { read: () => this.#rollbackVerified(), apply: () => this.#verifyRollback() },
     }
     const effect = effects[step]
     if (!effect) throw new Error("Sanctuary root lifecycle effect is invalid")
@@ -227,6 +243,12 @@ export class SanctuaryAuthorityRootLifecycle {
         }
         if (this.#containers().some((container) => container.State.Running)) throw new Error("Sanctuary resident did not stop")
         if (fs.existsSync(this.#p(`${this.#epochRoot()}/migration.json`))) { this.#migration(); return }
+        if (this.#fresh()) {
+          // A fresh install starts from nothing: an installed authority here means this is not one.
+          if (fs.existsSync(this.#p(`${ROOT}/active.json`)) || fs.existsSync(this.#p(`${ROOT}/activation.json`))) throw new Error("Sanctuary fresh install found an installed authority")
+          this.#write(`${this.#epochRoot()}/migration.json`, JSON.stringify({ ...this.plan(), ...this.#transaction, predecessorCursor: 0 }))
+          return
+        }
         if (fs.existsSync(this.#p(`${ROOT}/active.json`))) {
           const previous = JSON.parse(this.#private(`${ROOT}/active.json`)) as SanctuaryTelegramAuthorityConfig
           const epoch = readSanctuaryAuthorityEpoch(previous.epochRoot, { expectedUid: this.#uid, expectedGid: this.#gid })
@@ -382,7 +404,7 @@ export class SanctuaryAuthorityRootLifecycle {
     this.#write(`${this.#epochRoot()}/current-token`, token)
     await prepareSanctuaryAuthorityEpoch({
       root: this.#p(this.#epochRoot()), epochId: this.#request.epochId, tokenPath: this.#p(`${this.#epochRoot()}/current-token`),
-      previousTokenPath: this.#p(`${this.#epochRoot()}/previous-token`), botId: this.#request.botId,
+      previousTokenPath: this.#fresh() ? null : this.#p(`${this.#epochRoot()}/previous-token`), botId: this.#request.botId,
       ownerUserId: this.#request.ownerUserId, ownerChatId: this.#request.ownerChatId,
       predecessorCursor: this.#migration().predecessorCursor, packageDigest: this.#request.packageDigest,
     }, {
@@ -668,6 +690,25 @@ export class SanctuaryAuthorityRootLifecycle {
     if (!resident.State.Running) this.#docker(["start", "ouro-butler"])
     await this.#wait(() => this.#rollback().State.Health?.Status === "healthy" && this.#rollback().State.Running)
   }
+  // A fresh install rolls back to nothing: its token stays in root custody for a retry,
+  // and the resident it created is removed rather than restored.
+  #residentAbsent(): boolean {
+    return !this.#containers().some((container) => container.Name === "/ouro-butler")
+  }
+  #removeResident(): void {
+    this.#assertNoForeignPoller()
+    if (this.#epoch().state !== "retired" || this.#pid() !== null) throw new Error("Sanctuary epoch must retire before the fresh resident is removed")
+    const resident = this.#containers().find((container) => container.Name === "/ouro-butler")
+    if (resident && resident.Image !== this.#transaction.targetImageId) throw new Error("Sanctuary resident image changed")
+    if (resident) this.#docker(["rm", "--force", "ouro-butler"])
+  }
+  #freshRollbackClean(): boolean {
+    return this.#epoch().state === "retired" && this.#pid() === null && this.#residentAbsent()
+  }
+  #verifyFreshRollback(): void {
+    if (!this.#freshRollbackClean()) throw new Error("Sanctuary rollback readback failed")
+    this.#write(`${this.#epochRoot()}/rollback.json`, JSON.stringify({ epochId: this.#request.epochId, state: "retired" }))
+  }
   #rollbackVerified(): boolean {
     return fs.existsSync(this.#p(`${this.#epochRoot()}/rollback.json`)) && this.#restoredToken() && this.#pid() === null && this.#rollback().State.Running && this.#rollback().State.Health?.Status === "healthy"
   }
@@ -764,7 +805,7 @@ export class SanctuaryAuthorityRootLifecycle {
       || !journal.completed.every((step) => (SANCTUARY_UPGRADE_STEPS as readonly string[]).includes(step))
       || (journal.rollingBack !== undefined && journal.rollingBack !== true)
       || !sides.every((side) => side && DIGEST.test(side.imageId) && DIGEST.test(side.packageDigest) && IMAGE_REFERENCE.test(side.imageReference))
-      || !DIGEST.test(journal.from.rollbackImageId)) throw new Error("Sanctuary upgrade journal is invalid")
+      || !(journal.from.rollbackImageId === null ? this.#fresh() : DIGEST.test(journal.from.rollbackImageId))) throw new Error("Sanctuary upgrade journal is invalid")
     return journal
   }
 
@@ -774,7 +815,7 @@ export class SanctuaryAuthorityRootLifecycle {
     if (input.targetImageId === this.#transaction.targetImageId) throw new Error("Sanctuary already runs the requested image")
     if (this.#docker(["image", "inspect", "--format", "{{.Id}}", input.imageReference]).trim() !== input.targetImageId) throw new Error("Sanctuary upgrade image identity does not match its reference")
     const request = validateRequest(JSON.parse(this.#private(INCOMING_REQUEST)))
-    if ((["epochId", "botId", "ownerUserId", "ownerChatId"] as const).some((key) => request[key] !== this.#request[key])) throw new Error("Sanctuary upgrade would change the authority identity")
+    if ((["epochId", "botId", "ownerUserId", "ownerChatId", "predecessorContract"] as const).some((key) => request[key] !== this.#request[key])) throw new Error("Sanctuary upgrade would change the authority identity")
     if (request.packageDigest === this.#request.packageDigest) throw new Error("Sanctuary upgrade package is already installed")
     this.#verifyPackage(`${ROOT}/incoming-package`, true, INCOMING_MANIFEST, request)
     this.#removeTree(PREVIOUS)

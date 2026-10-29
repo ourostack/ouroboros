@@ -644,7 +644,7 @@ const SUBCOMMAND_HELP: Record<string, CommandHelp> = {
   },
   "vault config set": {
     description: "Write runtime configuration into the agent credential vault without printing values",
-    usage: "ouro vault config set [--agent <name>] --key <path> [--value <value>] [--scope agent|machine]",
+    usage: "ouro vault config set [--agent <name>] --key <path> [--value <value> | --value-file <path>] [--scope agent|machine]",
     example: "ouro vault config set --key teams.clientSecret",
   },
   "vault config status": {

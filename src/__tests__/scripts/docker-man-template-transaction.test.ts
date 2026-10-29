@@ -1135,3 +1135,47 @@ describe("root-owned DockerMan template transaction", () => {
     expect(readFileSync(badDigest.targetPath, "utf8")).toBe(template())
   })
 })
+
+describe("fresh install: no predecessor, no Jellyfin", () => {
+  const freshPlan = { schemaVersion: 1, epochId: "epoch-fresh", packageDigest: image("d"), publicKeyDigest: null, botId: "777", ownerUserId: "42", ownerChatId: "42", predecessorContract: "none", targetContract: "canonical-gateway" }
+  const effect = { beforeDigest: image("1"), afterDigest: image("2"), readback: async () => image("2"), apply: vi.fn() }
+  const jellyfinAbsent = () => execFileSync.mockImplementation((file: string, args: string[]) => {
+    if (file === "/usr/bin/docker" && args[1] === "ls") return "\n"
+    if (file === "/usr/bin/docker" && args.at(-1) === "jellyfin") throw new Error("no such container")
+    return `${JSON.stringify({ name: "/jellyfin", ...jellyfin })}\n`
+  })
+
+  it("checkpoints an absent Jellyfin as null and keeps it absent through commit", async () => {
+    const module = await load()
+    jellyfinAbsent()
+    expect(module.inspectCurrentJellyfinState()).toBeNull()
+    expect(execFileSync).toHaveBeenCalledWith("/usr/bin/docker", ["container", "ls", "--all", "--quiet", "--filter", "name=^/jellyfin$"], { encoding: "utf8", maxBuffer: 65_536, stdio: ["ignore", "pipe", "ignore"] })
+    const state = fixture()
+    const output: string[] = []
+    module.runDockerManTemplateTransactionCli(["prepare", "--source-template", state.sourceTemplatePath, "--version-tag", canonicalVersionTag, "--manifest-digest", image("c"), "--rollback-image-id", "none", "--target-image-id", image("b")], state.options, (text) => output.push(text))
+    expect(JSON.parse(output[0]!)).toMatchObject({ rollbackImageId: null, jellyfin: null })
+    module.beginDockerManAuthorityHandoff(freshPlan, state.options)
+    for (const name of authorityInstallSteps) await module.runDockerManAuthorityEffect(name, effect, state.options)
+    expect(module.markDockerManTemplateTransactionCommitting(state.options).state).toBe("committing")
+    expect(() => module.commitDockerManTemplateTransaction({ ...finalProof(state.targetPath), container: { ...finalProof(state.targetPath).container, imageId: image("b") }, jellyfin: jellyfin }, state.options)).toThrow(/Jellyfin proof/u)
+    serveJellyfin()
+    expect(() => module.markDockerManTemplateTransactionCommitting(state.options)).toThrow(/Jellyfin changed/u)
+  })
+
+  it("ties a missing rollback image to a no-predecessor plan, in both directions", async () => {
+    const module = await load()
+    const fresh = fixture()
+    module.prepareDockerManTemplateTransaction({ ...fresh.input, rollbackImageId: null }, fresh.options)
+    expect(() => module.beginDockerManAuthorityHandoff({ ...freshPlan, predecessorContract: "canonical-pre-gateway" }, fresh.options)).toThrow(/rollback image/u)
+    const migration = fixture("prior")
+    module.prepareDockerManTemplateTransaction(migration.input, migration.options)
+    expect(() => module.beginDockerManAuthorityHandoff(freshPlan, migration.options)).toThrow(/rollback image/u)
+    expect(() => module.beginDockerManAuthorityHandoff({ ...freshPlan, predecessorContract: "other" }, migration.options)).toThrow(/plan is invalid/u)
+  })
+
+  it("fails closed when Docker cannot list containers", async () => {
+    const module = await load()
+    execFileSync.mockImplementation(() => { throw new Error("docker down") })
+    expect(() => module.inspectCurrentJellyfinState()).toThrow(/inspection failed/u)
+  })
+})
