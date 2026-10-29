@@ -162,6 +162,17 @@ Expected shape:
 - `npx ouro.bot@latest` and `ouro` report the same version.
 - `ouro status` shows the daemon overview plus discovered agents, senses, and workers.
 
+### Run Ouro Butler On Unraid
+
+Ouro Butler is an agent that looks after an Unraid 7.2+ server with you over Telegram. It is an alpha. Install it from the Unraid web terminal:
+
+```bash
+curl -fsSLo /tmp/ouro-butler-install.sh https://github.com/ourostack/ouroboros/releases/latest/download/install.sh
+bash /tmp/ouro-butler-install.sh
+```
+
+Read [deploy/unraid/INSTALL.md](deploy/unraid/INSTALL.md) first for what you need (an Anthropic API key and a Telegram bot) and the known limits.
+
 ### Work On The Harness
 
 From the repo:
