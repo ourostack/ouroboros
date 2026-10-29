@@ -4,7 +4,7 @@
     {
       "version": "0.1.0-alpha.970",
       "changes": [
-        "Butler reads its owner's name, its own name, the household's public endpoints and required containers from a per-install house config instead of hard-coded values, so one package can serve any household."
+        "Butler reads its owner's name, its own name, the household's public endpoints and required containers from a per-install house config instead of hard-coded values, so one package can serve any household, and reads anything else worth knowing about the household from house/HOUSE.md."
       ]
     },
     {
