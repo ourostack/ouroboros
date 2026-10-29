@@ -6307,6 +6307,25 @@ describe("Teams adapter - pipeline integration (U7)", () => {
     expect(input.capabilities).toEqual(expect.objectContaining({ senseType: "closed", channel: "teams" }))
   })
 
+  it("shows the model the message a Teams reply quotes (2026-10-29)", async () => {
+    vi.resetModules()
+    const { mockHandleInboundTurn } = mockPipelineDeps()
+    const teams = await import("../../senses/teams")
+    const { buildOrientationFrame } = await import("../../heart/orientation-frame")
+    const mockStream = { emit: vi.fn(), update: vi.fn(), close: vi.fn() }
+
+    await teams.handleTeamsMessage("that one", mockStream as any, "conv-123", {
+      signin: vi.fn(), aadObjectId: "aad-user-123", tenantId: "tenant-abc", displayName: "Test User",
+      quotedReply: { text: "which build should I ship?", author: "agent" },
+    })
+
+    const input = mockHandleInboundTurn.mock.calls[0][0]
+    expect(input.messages).toMatchObject([{ role: "user", content: "that one" }])
+    expect(buildOrientationFrame({ channel: "teams", messages: input.messages }).source).toEqual({
+      kind: "teams", replyingToText: "which build should I ship?", replyingToAuthor: "agent",
+    })
+  })
+
   it("passes AAD provider and external ID to pipeline for trust gate", async () => {
     vi.resetModules()
     const { mockHandleInboundTurn } = mockPipelineDeps()

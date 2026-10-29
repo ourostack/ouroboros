@@ -28,7 +28,7 @@ import type { McpOwner, RuntimeMcpServers } from "../repertoire/mcp-manager"
 import { emitNervesEvent } from "../nerves/runtime"
 import type { ToolContext } from "../repertoire/tools-base"
 import { readSessionTransaction, withSessionTurnLease, type SessionTurnLease } from "../mind/session-transaction"
-import { stampReplyingToText, type OrientationFrame } from "../heart/orientation-frame"
+import { stampReplyingToText, type OrientationFrame, type ReplyingToAuthor } from "../heart/orientation-frame"
 import { withTurnExecutionLease } from "../heart/turn-execution-lease"
 import type { ShepherdSession } from "./shepherd/surface"
 
@@ -188,6 +188,12 @@ export interface RunSenseTurnOptions {
   shepherdSession?: ShepherdSession
   /** Optional authenticated transport binding for the new user event. */
   ingressRelations?: SessionIngressRelations
+  /**
+   * What the person replied to, as the transport showed it, for when the replied-to
+   * message is not an event in this session (a notice, older history, their own message).
+   * Presentation context only: it is the quoted text, never an instruction.
+   */
+  replyingTo?: { text: string; author?: ReplyingToAuthor }
   /** Exact already-committed user ingress claimed by a durable transport worker. */
   precommittedIngress?: { eventId: string; reference: string }
   /** Latency profile. Live turns keep local session state but skip remote sync and pre-model kept-note judging. */
@@ -613,7 +619,11 @@ async function runSenseTurnExclusive(options: RunSenseTurnOptions, owner: McpOwn
     }
   }
   const replyToEventId = precommittedIngressEvent?.relations.replyToEventId ?? options.ingressRelations?.replyToEventId
-  const repliedToText = spokenText(existing?.events?.find((event) => event.id === replyToEventId))
+  const matchedReplyText = spokenText(existing?.events?.find((event) => event.id === replyToEventId))
+  const fallbackReplyText = options.replyingTo?.text.trim().slice(0, 1200) ?? ""
+  const repliedTo = matchedReplyText
+    ? { text: matchedReplyText, author: "agent" as const }
+    : fallbackReplyText ? { text: fallbackReplyText, author: options.replyingTo!.author } : undefined
   if (precommittedIngressEvent) {
     const projectedIngress = exactProjectedIngressMessage(existing!, sessionMessages, precommittedIngressEvent.id, baseSession.value)
     if (!projectedIngress || projectedIngress.role !== "user" || projectedIngress.content !== userMessage) throw new Error("shared turn precommitted ingress is absent from the provider projection")
@@ -622,7 +632,7 @@ async function runSenseTurnExclusive(options: RunSenseTurnOptions, owner: McpOwn
       threadRootEventId: precommittedIngressEvent.relations.threadRootEventId,
       references: precommittedIngressEvent.relations.references,
     })
-    if (repliedToText) stampReplyingToText(projectedIngress, repliedToText)
+    if (repliedTo) stampReplyingToText(projectedIngress, repliedTo.text, repliedTo.author)
   }
   // Pending dir
   const pendingDir = getPendingDir(agentName, friendId, channel, sessionKey)
@@ -733,7 +743,7 @@ async function runSenseTurnExclusive(options: RunSenseTurnOptions, owner: McpOwn
     const userMsg: ChatCompletionMessageParam = { role: "user", content: userMessage }
     stampIngressTime(userMsg)
     if (options.ingressRelations) stampIngressRelations(userMsg, options.ingressRelations)
-    if (repliedToText) stampReplyingToText(userMsg, repliedToText)
+    if (repliedTo) stampReplyingToText(userMsg, repliedTo.text, repliedTo.author)
     inboundMessages.push(userMsg)
   }
   const turnResult = await handleInboundTurn({

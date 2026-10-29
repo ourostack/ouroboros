@@ -31,6 +31,7 @@ import {
   buildOrientationFrame,
   type OrientationConversationKind,
   type OrientationSource,
+  type ReplyingToAuthor,
 } from "../../heart/orientation-frame"
 import { getProactiveInternalContentBlockReason, emitProactiveInternalContentBlocked } from "../proactive-content-guard"
 import { containsInternalMetaMarkers, emitBluebubblesMetaBlocked } from "../bluebubbles-meta-guard"
@@ -44,7 +45,7 @@ import {
   type BlueBubblesNormalizedEvent,
   type BlueBubblesNormalizedMessage,
 } from "./model"
-import { BlueBubblesSendError, createBlueBubblesClient, type BlueBubblesClient } from "./client"
+import { BlueBubblesSendError, createBlueBubblesClient, type BlueBubblesClient, type BlueBubblesRepliedMessage } from "./client"
 import { BlueBubblesHostAccountError, verifyBlueBubblesServerAccount } from "./host-account-verifier"
 import { createBlueBubblesWebhookReconciler } from "./webhook-registration"
 import {
@@ -719,12 +720,19 @@ function extractHistoricalLaneSummary(
   return summaries
 }
 
+// Whose words the replied-to message was: the agent's own account, the person replying, or someone else.
+function repliedMessageAuthor(replied: BlueBubblesRepliedMessage, actorExternalId: string): ReplyingToAuthor {
+  if (replied.fromMe) return "agent"
+  return replied.senderAddress && replied.senderAddress === actorExternalId ? "person" : "other"
+}
+
 function buildBlueBubblesOrientationSource(
   event: BlueBubblesNormalizedMessage,
   existingMessages: OpenAI.ChatCompletionMessageParam[],
   evidence: BlueBubblesSemanticCaptureEvent,
   conversationKind: OrientationConversationKind,
   repliedToText?: string | null,
+  repliedToAuthor?: ReplyingToAuthor,
 ): OrientationSource {
   const repairNotice = event.repairNotice?.trim()
   const actor = evidence.actor
@@ -766,7 +774,7 @@ function buildBlueBubblesOrientationSource(
     lane: threadId ? "thread" : "top_level",
     defaultReplyTarget: threadId ? "current_lane" : "top_level",
     ...(threadId ? { threadId } : {}),
-    ...(repliedToText ? { replyingToText: repliedToText } : {}),
+    ...(repliedToText ? { replyingToText: repliedToText, ...(repliedToAuthor ? { replyingToAuthor: repliedToAuthor } : {}) } : {}),
     ...(repairNotice ? { repairNotice } : {}),
     ...(summaries.length > 0 ? { recentLanes: summaries } : {}),
     ...(hasThreadRoute
@@ -1960,8 +1968,15 @@ async function handleBlueBubblesNormalizedEvent(
       // Fetch the text of the message being replied to (if this is a threaded reply)
       const threadGuid = event.threadOriginatorGuid?.trim()
       let repliedToText: string | null = null
+      let repliedToAuthor: ReplyingToAuthor | undefined
       if (threadGuid) {
-        repliedToText = await client.getMessageText(threadGuid).catch(() => null)
+        if (client.getRepliedMessage) {
+          const replied = await client.getRepliedMessage(threadGuid).catch(() => null)
+          repliedToText = replied?.text ?? null
+          repliedToAuthor = replied ? repliedMessageAuthor(replied, options.orientationEvidence.actor.externalId) : undefined
+        } else {
+          repliedToText = await client.getMessageText(threadGuid).catch(() => null)
+        }
         emitNervesEvent({
           component: "senses",
           event: "senses.bluebubbles_reply_context",
@@ -1984,6 +1999,7 @@ async function handleBlueBubblesNormalizedEvent(
           options.orientationEvidence,
           options.orientationConversationKind,
           repliedToText,
+          repliedToAuthor,
         ),
       })
       if (!isLatestTurnCurrent(options.latestTurnCapability)) {

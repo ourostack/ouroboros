@@ -862,5 +862,38 @@ describe("a reply to an earlier message (2026-10-28: \"yes please\" to the book 
 
     expect(frame.source?.replyingToText).toBe("from the sense")
   })
+  it.each([
+    ["agent", "- replying to (your message): pick one?"],
+    ["person", "- replying to (their own earlier message): pick one?"],
+    ["other", "- replying to (someone else's message): pick one?"],
+  ] as const)("says whose words a %s reply quotes", async (author, line) => {
+    const { buildOrientationFrame, renderOrientationFrame, stampReplyingToText } = await import("../../heart/orientation-frame")
+    const reply = { role: "user" as const, content: "that one" }
+    stampReplyingToText(reply, "pick one?", author)
+    const frame = buildOrientationFrame({ channel: "telegram", messages: [reply] })
+
+    expect(frame.source).toEqual({ kind: "telegram", replyingToText: "pick one?", replyingToAuthor: author })
+    expect(renderOrientationFrame(frame)).toContain(line)
+  })
+
+  it("reads list options only from the agent's own quoted message, not the person's", async () => {
+    const { buildOrientationFrame, stampReplyingToText } = await import("../../heart/orientation-frame")
+    const reply = { role: "user" as const, content: "the second" }
+    stampReplyingToText(reply, "my list:\n1. milk\n2. eggs", "person")
+    const frame = buildOrientationFrame({ channel: "telegram", messages: [
+      { role: "assistant", content: "which show?\n1. Abbott\n2. Severance" },
+      reply,
+    ] })
+
+    expect(frame.priorAssistantReferents.map((item) => item.text)).toEqual(["Abbott", "Severance"])
+  })
+
+  it("ignores an author stamp that is not one of the three kinds", async () => {
+    const { buildOrientationFrame } = await import("../../heart/orientation-frame")
+    const reply = { role: "user" as const, content: "ok", _replyingToText: "quoted", _replyingToAuthor: "bot" } as unknown as { role: "user"; content: string }
+    const frame = buildOrientationFrame({ channel: "telegram", messages: [reply] })
+
+    expect(frame.source).toEqual({ kind: "telegram", replyingToText: "quoted" })
+  })
 })
 

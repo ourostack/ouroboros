@@ -548,6 +548,24 @@ describe("runSenseTurn", () => {
     expect(buildOrientationFrame({ channel: "telegram", messages: input.messages }).source?.replyingToText).toBe(want)
   })
 
+  it.each([
+    { kind: "a notice the session never recorded", events: [], replyingTo: { text: "  three episodes are stuck  ", author: "agent" as const }, want: { replyingToText: "three episodes are stuck", replyingToAuthor: "agent" } },
+    { kind: "the person's own earlier message", events: [], replyingTo: { text: "add milk", author: "person" as const }, want: { replyingToText: "add milk", replyingToAuthor: "person" } },
+    { kind: "a quote with no known author", events: [], replyingTo: { text: "x".repeat(1300) }, want: { replyingToText: "x".repeat(1200) } },
+    { kind: "a blank quote", events: [], replyingTo: { text: "   ", author: "other" as const }, want: {} },
+    { kind: "a matched session event, which wins over the quote", events: [{ id: "evt-000010", role: "assistant", content: "from the session", toolCalls: [] }], replyingTo: { text: "from the transport", author: "person" as const }, want: { replyingToText: "from the session", replyingToAuthor: "agent" } },
+  ])("falls back to the quote the transport showed: $kind (2026-10-29)", async ({ events, replyingTo, want }) => {
+    mockLoadSession.mockReturnValue({ messages: [], events, usage: { inputTokens: 0, outputTokens: 0, reasoningTokens: 0, totalTokens: 0 }, state: {} })
+    const { runSenseTurn } = await import("../../senses/shared-turn")
+    const { buildOrientationFrame } = await import("../../heart/orientation-frame")
+    await runSenseTurn({ agentName: "test-agent", channel: "telegram", sessionKey: "session-123", friendId: "friend-1", userMessage: "keep waiting",
+      ingressRelations: { replyToEventId: "evt-000010", threadRootEventId: null, references: ["telegram-inbound:x"] }, replyingTo })
+
+    const input = mockHandleInboundTurn.mock.calls[0]![0]
+    const source = buildOrientationFrame({ channel: "telegram", messages: input.messages }).source
+    expect({ replyingToText: source?.replyingToText, replyingToAuthor: source?.replyingToAuthor }).toEqual({ replyingToText: undefined, replyingToAuthor: undefined, ...want })
+  })
+
   it("behaviorally holds the session lease before load through persistence and accepted delivery", async () => {
     const entered = Promise.withResolvers<void>()
     const release = Promise.withResolvers<void>()
@@ -1337,6 +1355,30 @@ describe("runSenseTurn", () => {
       userMessage: "yes please!!!", precommittedIngress: { eventId: ingress.id, reference } })
 
     expect(replyingTo).toBe("want it sent to your PocketBook?")
+  })
+
+  it("shows the model the transport's quote on a precommitted reply the session can't match (2026-10-29)", async () => {
+    const reference = "telegram-admission:notice-reply"
+    const system = makeSessionEvent({ id: "evt-000001", sequence: 1, role: "system", content: "system" })
+    const ingress = makeSessionEvent({ id: "evt-000002", sequence: 2, role: "user", content: "keep waiting", references: [reference] })
+    mockSessionTransaction([system, ingress])
+    mockLoadSession.mockReturnValue({
+      messages: [{ role: "system", content: "system" }, { role: "user", content: "keep waiting" }],
+      events: [system, ingress],
+      projectionEventIds: [system.id, ingress.id],
+      state: undefined,
+    })
+    let source: { replyingToText?: string; replyingToAuthor?: string } | undefined
+    mockHandleInboundTurn.mockImplementationOnce(async (input: any) => {
+      const { buildOrientationFrame } = await import("../../heart/orientation-frame")
+      source = buildOrientationFrame({ channel: "telegram", messages: (await input.sessionLoader.loadOrCreate()).messages }).source
+      return { resolvedContext: makeResolvedContext(), gateResult: { allowed: true }, turnOutcome: "settled", messages: [] }
+    })
+    const { runSenseTurn } = await import("../../senses/shared-turn")
+    await runSenseTurn({ agentName: "test-agent", channel: "telegram", sessionKey: "telegram:approved", friendId: "friend-1",
+      userMessage: "keep waiting", precommittedIngress: { eventId: ingress.id, reference }, replyingTo: { text: "three cheerleaders episodes are stuck", author: "agent" } })
+
+    expect(source).toMatchObject({ replyingToText: "three cheerleaders episodes are stuck", replyingToAuthor: "agent" })
   })
 
   it("refuses precommitted ingress when the session itself is missing", async () => {

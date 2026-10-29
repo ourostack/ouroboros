@@ -52,6 +52,8 @@ export interface OrientationSourceTarget {
   authorship: "agent" | "non_agent_unknown" | "unknown"
 }
 
+export type ReplyingToAuthor = "agent" | "person" | "other"
+
 export interface OrientationSource {
   kind: string
   /** Prompt presentation only. Durable/tool authority remains outside the frame. */
@@ -65,6 +67,8 @@ export interface OrientationSource {
   defaultReplyTarget?: string
   threadId?: string
   replyingToText?: string
+  /** Who wrote the replied-to message, when the sense knows: the agent, the person replying, or someone else. */
+  replyingToAuthor?: ReplyingToAuthor
   repairNotice?: string
   routingHint?: string
   recentLanes?: Array<{ key: string; label: string; snippet: string }>
@@ -308,13 +312,25 @@ function deriveActionPolicy(
 
 // A reply names the message it answers. The sense stamps that message's text on the
 // user message, so "yes" binds to what was replied to, not to the latest thing said.
-export function stampReplyingToText(message: OpenAI.ChatCompletionMessageParam, text: string): void {
-  ;(message as unknown as Record<string, unknown>)._replyingToText = text
+// The author says whose words they were; a person can quote their own earlier message.
+export function stampReplyingToText(message: OpenAI.ChatCompletionMessageParam, text: string, author?: ReplyingToAuthor): void {
+  const record = message as unknown as Record<string, unknown>
+  record._replyingToText = text
+  if (author) record._replyingToAuthor = author
 }
 
-function replyingToTextOf(message: OpenAI.ChatCompletionMessageParam): string | undefined {
-  const text = (message as unknown as Record<string, unknown>)._replyingToText
-  return typeof text === "string" && text.trim() ? text.trim() : undefined
+function replyingToOf(message: OpenAI.ChatCompletionMessageParam): { text: string; author?: ReplyingToAuthor } | undefined {
+  const record = message as unknown as Record<string, unknown>
+  const text = record._replyingToText
+  if (typeof text !== "string" || !text.trim()) return undefined
+  const author = record._replyingToAuthor
+  return author === "agent" || author === "person" || author === "other" ? { text: text.trim(), author } : { text: text.trim() }
+}
+
+const REPLYING_TO_LABEL: Record<ReplyingToAuthor, string> = {
+  agent: " (your message)",
+  person: " (their own earlier message)",
+  other: " (someone else's message)",
 }
 
 export function buildOrientationFrame(input: BuildOrientationFrameInput): OrientationFrame {
@@ -324,10 +340,14 @@ export function buildOrientationFrame(input: BuildOrientationFrameInput): Orient
   const currentUserSpeech = derivedCurrent.messages
     .map((message) => extractMessageText(message))
     .filter((text) => text.length > 0)
-  const replyingToText = derivedCurrent.messages.map(replyingToTextOf).find((text) => text !== undefined)
+  const replyingTo = derivedCurrent.messages.map(replyingToOf).find((reply) => reply !== undefined)
   const previousAssistant = latestAssistantBefore(input.messages, derivedCurrent.firstIndex)
-  const priorAssistantReferents = extractOrderedListReferents(replyingToText ?? extractMessageText(previousAssistant))
-  const source = replyingToText && !input.source?.replyingToText ? { kind: input.channel, ...input.source, replyingToText } : input.source
+  // Only the agent's own message holds the list a "the second one" points into.
+  const replyListText = replyingTo && (replyingTo.author ?? "agent") === "agent" ? replyingTo.text : undefined
+  const priorAssistantReferents = extractOrderedListReferents(replyListText ?? extractMessageText(previousAssistant))
+  const source = replyingTo && !input.source?.replyingToText
+    ? { kind: input.channel, ...input.source, replyingToText: replyingTo.text, ...(replyingTo.author ? { replyingToAuthor: replyingTo.author } : {}) }
+    : input.source
   const candidateStructuredOutput = latestStructuredOutputFrom(input.structuredOutputs)
   const speechKind = input.speechKind ?? "utterance"
   const signals = deriveSignals(currentUserSpeech, priorAssistantReferents, candidateStructuredOutput, speechKind)
@@ -453,7 +473,10 @@ export function renderOrientationFrame(frame: OrientationFrame): string {
     if (frame.source.lane) lines.push(`- lane: ${frame.source.lane}`)
     if (frame.source.defaultReplyTarget) lines.push(`- default reply target: ${frame.source.defaultReplyTarget}`)
     if (frame.source.threadId) lines.push(`- thread id: ${frame.source.threadId}`)
-    if (frame.source.replyingToText) lines.push(`- replying to: ${frame.source.replyingToText}`)
+    if (frame.source.replyingToText) {
+      const label = frame.source.replyingToAuthor ? REPLYING_TO_LABEL[frame.source.replyingToAuthor] : ""
+      lines.push(`- replying to${label}: ${frame.source.replyingToText}`)
+    }
     if (frame.source.repairNotice) lines.push(`- repair notice: ${frame.source.repairNotice}`)
     if (frame.source.routingHint) lines.push(`- routing hint: ${frame.source.routingHint}`)
     if (frame.source.recentLanes && frame.source.recentLanes.length > 0) {
