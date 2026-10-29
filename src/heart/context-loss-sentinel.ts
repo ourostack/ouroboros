@@ -198,6 +198,44 @@ function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms))
 }
 
+function processGone(pid: number): boolean {
+  try {
+    process.kill(pid, 0)
+    return false
+  } catch (error) {
+    return (error as { code?: unknown }).code === "ESRCH"
+  }
+}
+
+/**
+ * A lock whose writer died (a crash, a reboot) would otherwise block every refresh forever. It is taken over only when it
+ * names a process that no longer exists; any other content waits as before. The lock is renamed aside first, so of two
+ * waiters only one takes it, and a lock that changed owner in the meantime is put back.
+ */
+function breakDeadOwnerLock(lockPath: string): boolean {
+  let owner: string
+  try {
+    owner = fs.readFileSync(lockPath, "utf-8").trim()
+  } catch {
+    return false
+  }
+  if (!/^\d+$/.test(owner) || !processGone(Number(owner))) return false
+  const aside = `${lockPath}.${process.pid}.${Date.now()}.stale`
+  try {
+    fs.renameSync(lockPath, aside)
+  } catch {
+    return false
+  }
+  if (fs.readFileSync(aside, "utf-8").trim() !== owner) {
+    try { fs.linkSync(aside, lockPath) } catch { /* a newer lock exists; it owns the path */ }
+    fs.rmSync(aside, { force: true })
+    return false
+  }
+  fs.rmSync(aside, { force: true })
+  emitNervesEvent({ level: "warn", component: "heart", event: "heart.context_loss_sentinel_stale_lock", message: "took over a context-loss Sentinel lock whose owner process is gone", meta: { owner: Number(owner) } })
+  return true
+}
+
 async function withFileLock<T>(lockPath: string, timeoutMs: number, fn: () => Promise<T>): Promise<T> {
   fs.mkdirSync(path.dirname(lockPath), { recursive: true })
   const startedAt = Date.now()
@@ -216,6 +254,7 @@ async function withFileLock<T>(lockPath: string, timeoutMs: number, fn: () => Pr
       if (code !== "EEXIST") {
         throw error
       }
+      if (breakDeadOwnerLock(lockPath)) continue
       if (Date.now() - startedAt > timeoutMs) {
         throw new Error(`context-loss Sentinel lock timed out: ${lockPath}`)
       }

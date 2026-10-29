@@ -2,6 +2,12 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.968",
+      "changes": [
+        "The context-loss Sentinel takes over its write lock when the process that left it is gone. A lock left by a crash or a reboot used to block every Sentinel refresh until someone deleted it, which turned daemon health critical, so `ouro up` failed and self-update rolled new releases back."
+      ]
+    },
+    {
       "version": "0.1.0-alpha.967",
       "changes": [
         "When you reply to an older Telegram message, the Butler now sees which message you are answering, so a quick \"yes\" goes to the question you meant instead of the newest one.",
