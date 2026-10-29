@@ -68,6 +68,7 @@ const mocks = vi.hoisted(() => ({
   queryRecentMessagesWithMetadata: vi.fn(),
   repairEvent: vi.fn(async (event: unknown) => event),
   getMessageText: vi.fn(async () => null),
+  getRepliedMessage: undefined as undefined | ((guid: string) => Promise<unknown>),
   recordMutation: vi.fn(),
   initializeSemanticCutover: vi.fn(),
   writeSemanticCapture: vi.fn(),
@@ -303,6 +304,7 @@ vi.mock("../../../senses/bluebubbles/client", async () => {
       queryRecentMessagesWithMetadata: (...args: any[]) => mocks.queryRecentMessagesWithMetadata(...args),
       repairEvent: (...args: any[]) => mocks.repairEvent(...args),
       getMessageText: (...args: any[]) => mocks.getMessageText(...args),
+      ...(mocks.getRepliedMessage ? { getRepliedMessage: (guid: string) => mocks.getRepliedMessage!(guid) } : {}),
     })),
   }
 })
@@ -912,6 +914,7 @@ function resetMocks(): void {
   })
   mocks.repairEvent.mockReset().mockImplementation(async (event: unknown) => event)
   mocks.getMessageText.mockReset().mockResolvedValue(null)
+  mocks.getRepliedMessage = undefined
   mocks.recordMutation.mockReset()
   mocks.initializeSemanticCutover.mockReset().mockReturnValue({
     schemaVersion: 1,
@@ -1141,6 +1144,31 @@ describe("BlueBubbles sense runtime", () => {
     expect(firstRunAgentOptions().orientationFrame.source).toMatchObject({
       replyingToText: "This is the original message being replied to",
     })
+  })
+
+  it.each([
+    { kind: "the agent's own message", replied: { text: "want it on your PocketBook?", fromMe: true }, want: { replyingToText: "want it on your PocketBook?", replyingToAuthor: "agent" } },
+    { kind: "the person's own message", replied: { text: "add milk", fromMe: false, senderAddress: "ari@mendelow.me" }, want: { replyingToText: "add milk", replyingToAuthor: "person" } },
+    { kind: "someone else's message", replied: { text: "see you at 6", fromMe: false, senderAddress: "+15555550100" }, want: { replyingToText: "see you at 6", replyingToAuthor: "other" } },
+    { kind: "a message with no sender", replied: { text: "hello", fromMe: false }, want: { replyingToText: "hello", replyingToAuthor: "other" } },
+  ])("says whose words an iMessage reply quotes: $kind (2026-10-29)", async ({ replied, want }) => {
+    mocks.getRepliedMessage = vi.fn(async () => replied)
+
+    const bluebubbles = await import("../../../senses/bluebubbles")
+    await bluebubbles.handleBlueBubblesEvent(dmThreadPayload)
+
+    expect(mocks.getMessageText).not.toHaveBeenCalled()
+    expect(firstRunAgentOptions().orientationFrame.source).toMatchObject(want)
+  })
+
+  it("frames no reply when the replied-to message can't be fetched (2026-10-29)", async () => {
+    mocks.getRepliedMessage = vi.fn(async () => { throw new Error("offline") })
+
+    const bluebubbles = await import("../../../senses/bluebubbles")
+    await bluebubbles.handleBlueBubblesEvent(dmThreadPayload)
+
+    expect(firstRunAgentOptions().orientationFrame.source.replyingToText).toBeUndefined()
+    expect(firstRunAgentOptions().orientationFrame.source.replyingToAuthor).toBeUndefined()
   })
 
   it("keeps group observe turns model-visible while recording no unearned visible completion", async () => {

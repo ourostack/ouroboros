@@ -68,6 +68,16 @@ export interface BlueBubblesClient {
   repairEvent(event: BlueBubblesNormalizedEvent): Promise<BlueBubblesNormalizedEvent>
   /** Fetch the text content of a message by its GUID. Returns null if not found or on error. */
   getMessageText(messageGuid: string): Promise<string | null>
+  /** Fetch a replied-to message: its text, and whether this account sent it. Null if not found or on error. */
+  getRepliedMessage?(messageGuid: string): Promise<BlueBubblesRepliedMessage | null>
+}
+
+export interface BlueBubblesRepliedMessage {
+  text: string
+  /** True when the agent's own account sent it. */
+  fromMe: boolean
+  /** The sender's handle (phone or email) when someone else sent it. */
+  senderAddress?: string
 }
 
 export interface BlueBubblesListRecentMessagesParams {
@@ -914,6 +924,10 @@ export function createBlueBubblesClient(
     },
 
     async getMessageText(messageGuid: string): Promise<string | null> {
+      return (await this.getRepliedMessage!(messageGuid))?.text ?? null
+    },
+
+    async getRepliedMessage(messageGuid: string): Promise<BlueBubblesRepliedMessage | null> {
       await assertHostAccount()
       const url = buildRepairUrl(config.serverUrl, messageGuid, config.password)
       try {
@@ -949,7 +963,11 @@ export function createBlueBubblesClient(
           message: "fetched message text by guid",
           meta: { messageGuid },
         })
-        return data.text.trim() || null
+        const text = data.text.trim()
+        if (!text) return null
+        const handle = asRecord(data.handle)
+        const senderAddress = handle ? readString(handle, "address")?.trim() : undefined
+        return { text, fromMe: data.isFromMe === true, ...(senderAddress ? { senderAddress } : {}) }
       } catch (error) {
         emitNervesEvent({
           level: "warn",

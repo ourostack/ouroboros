@@ -31,6 +31,7 @@ import { drainOutboundRecords, OUTBOUND_ORIGIN_LABELS, recordOutboundInSession }
 import type { OutboundOrigin } from "../heart/session-events"
 import { enforceTrustGate } from "./trust-gate"
 import { handleInboundTurn, type FailoverState } from "./pipeline"
+import { stampReplyingToText, type ReplyingToAuthor } from "../heart/orientation-frame"
 import { admitSessionActivity, SessionTransactionError, SessionTurnBusyError, withSessionTurnLease, type SessionTurnLease } from "../mind/session-transaction"
 
 const teamsFailoverStates = new Map<string, FailoverState>()
@@ -718,12 +719,67 @@ function getFriendStore(): InstanceType<typeof FileFriendStore> {
   return new FileFriendStore(friendsPath)
 }
 
+export interface TeamsQuotedReply {
+  text: string
+  author?: ReplyingToAuthor
+}
+
+function decodeHtmlText(html: string): string {
+  return html
+    .replace(/<br\s*\/?>/giu, "\n")
+    .replace(/<[^>]*>/gu, "")
+    .replace(/&nbsp;/gu, " ")
+    .replace(/&lt;/gu, "<")
+    .replace(/&gt;/gu, ">")
+    .replace(/&quot;/gu, '"')
+    .replace(/&#39;/gu, "'")
+    .replace(/&amp;/gu, "&")
+    .replace(/\s+/gu, " ")
+    .trim()
+}
+
+/**
+ * Teams carries a quoted reply as a text/html attachment holding a
+ * schema.skype.com/Reply blockquote: the quoted author's id (itemprop="mri")
+ * and a preview of their words (itemprop="preview"). Ids compare without the
+ * "28:"/"29:" channel prefixes, so the bot's own words read as the agent's.
+ */
+// The person's message, with the quote they replied to stamped on it for the orientation frame.
+function teamsUserMessage(content: string, quotedReply: TeamsQuotedReply | undefined): OpenAI.ChatCompletionMessageParam {
+  const message: OpenAI.ChatCompletionMessageParam = { role: "user", content }
+  if (quotedReply) stampReplyingToText(message, quotedReply.text, quotedReply.author)
+  return message
+}
+
+export function parseTeamsQuotedReply(
+  attachments: ReadonlyArray<{ contentType?: string; content?: unknown }> | undefined,
+  ids: { botId?: string; userId?: string },
+): TeamsQuotedReply | undefined {
+  for (const attachment of attachments ?? []) {
+    if (attachment.contentType !== "text/html" || typeof attachment.content !== "string") continue
+    const quote = /<blockquote[^>]*itemtype="http:\/\/schema\.skype\.com\/Reply"[^>]*>([\s\S]*?)<\/blockquote>/iu.exec(attachment.content)
+    if (!quote) continue
+    const preview = /<p[^>]*itemprop="preview"[^>]*>([\s\S]*?)<\/p>/iu.exec(quote[1])
+    const text = decodeHtmlText(preview ? preview[1] : quote[1]).slice(0, 1200)
+    if (!text) continue
+    const mri = /itemprop="mri"[^>]*itemid="([^"]+)"/iu.exec(quote[1])?.[1]
+    const bare = (id: string | undefined) => id?.replace(/^\d+:/u, "")
+    const author: ReplyingToAuthor | undefined = !mri ? undefined
+      : bare(mri) === bare(ids.botId) ? "agent"
+        : bare(mri) === bare(ids.userId) ? "person" : "other"
+    return { text, ...(author ? { author } : {}) }
+  }
+  return undefined
+}
+
 // Context from the Teams activity that carries OAuth tokens and signin ability
 export interface TeamsMessageContext {
   /** The incoming activity itself, distinct from a quoted reply target. */
   inboundActivityId?: string
   /** Actual incoming quote target, never the incoming activity's own id. */
   replyToId?: string
+  /** The quoted message Teams showed above the person's reply, when they quoted one. */
+  quotedReply?: TeamsQuotedReply
   graphToken?: string
   adoToken?: string
   githubToken?: string
@@ -929,7 +985,7 @@ export async function handleTeamsMessage(text: string, stream: TeamsStream, conv
       channel: "teams",
       sessionKey: conversationId,
       capabilities: teamsCapabilities,
-      messages: [{ role: "user" as const, content: currentText }],
+      messages: [teamsUserMessage(currentText, currentText === text ? teamsContext?.quotedReply : undefined)],
       continuityIngressTexts: [currentText],
       callbacks: failoverAwareCallbacks,
       sessionTurnLease,
@@ -1415,6 +1471,7 @@ function registerBotHandlers(app: InstanceType<typeof App> & { id?: string; api?
       const teamsContext: TeamsMessageContext = {
         inboundActivityId: activity.id,
         replyToId: activity.replyToId,
+        quotedReply: parseTeamsQuotedReply(activity.attachments, { botId: activity.recipient?.id ?? app.id, userId }),
         graphToken,
         adoToken,
         githubToken,

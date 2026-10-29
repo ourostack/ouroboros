@@ -2,6 +2,12 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.969",
+      "changes": [
+        "When someone replies to an earlier message in Telegram, iMessage or Teams, the agent now sees what they replied to and whose words it was, even when that message isn't in its own history."
+      ]
+    },
+    {
       "version": "0.1.0-alpha.968",
       "changes": [
         "The context-loss Sentinel takes over its write lock when the process that left it is gone. A lock left by a crash or a reboot used to block every Sentinel refresh until someone deleted it, which turned daemon health critical, so `ouro up` failed and self-update rolled new releases back."

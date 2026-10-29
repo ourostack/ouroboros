@@ -1164,6 +1164,17 @@ describe("Telegram sense", () => {
 
     await f.getOnMessage()({ updateId: 99, messageId: "100", userId: "42", chatId: "42", text: "unknown reply", replyToMessageId: "999" })
     expect(f.runTurn).toHaveBeenLastCalledWith(expect.objectContaining({ ingressRelations: expect.objectContaining({ replyToEventId: null }) }))
+
+    expect(f.runTurn.mock.lastCall![0]).not.toHaveProperty("replyingTo")
+
+    // A reply to a message the journal never mapped (a notice, older history) still carries Telegram's quote (2026-10-29).
+    await f.getOnMessage()({ updateId: 101, messageId: "102", userId: "42", chatId: "42", text: "keep waiting", replyToMessageId: "998", replyToText: "three episodes are stuck", replyToAuthor: "agent" })
+    expect(f.runTurn).toHaveBeenLastCalledWith(expect.objectContaining({
+      ingressRelations: expect.objectContaining({ replyToEventId: null }),
+      replyingTo: { text: "three episodes are stuck", author: "agent" },
+    }))
+    await f.getOnMessage()({ updateId: 103, messageId: "104", userId: "42", chatId: "42", text: "and this", replyToMessageId: "997", replyToText: "my note" })
+    expect(f.runTurn).toHaveBeenLastCalledWith(expect.objectContaining({ replyingTo: { text: "my note" } }))
   })
 
   it("persists one HMAC-bound acceptance receipt with observed provider, tool, and delivery counts", async () => {

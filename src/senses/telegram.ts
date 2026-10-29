@@ -1720,6 +1720,7 @@ export function createTelegramSenseApp(options: CreateTelegramSenseAppOptions): 
         },
         userMessage: message.text,
         ingressRelations,
+        ...(message.replyToText ? { replyingTo: { text: message.replyToText, ...(message.replyToAuthor ? { author: message.replyToAuthor } : {}) } } : {}),
         ...(ingressReceipt ? { precommittedIngress: ingressReceipt } : {}),
         turnMetricsObserver,
         emptyResponseFallback: fullVisibility.emptyResponseFallback,

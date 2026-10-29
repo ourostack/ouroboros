@@ -3106,6 +3106,24 @@ describe("BlueBubbles client", () => {
     ).rejects.toThrow("BlueBubbles send failed (500): unknown")
   })
 
+  describe("getRepliedMessage", () => {
+    it.each([
+      { kind: "the agent's own message", data: { text: " want it on your PocketBook? ", isFromMe: true }, want: { text: "want it on your PocketBook?", fromMe: true } },
+      { kind: "someone else's message", data: { text: "add milk", isFromMe: false, handle: { address: "+15555550100" } }, want: { text: "add milk", fromMe: false, senderAddress: "+15555550100" } },
+      { kind: "a message with no handle", data: { text: "hi" }, want: { text: "hi", fromMe: false } },
+      { kind: "a message with only whitespace", data: { text: "   ", isFromMe: true }, want: null },
+    ])("reads the words and sender of $kind (2026-10-29)", async ({ data, want }) => {
+      global.fetch = vi.fn().mockResolvedValue(new Response(JSON.stringify({ data }), { status: 200 })) as typeof fetch
+      const { createBlueBubblesClient } = await import("../../../senses/bluebubbles/client")
+      const client = createBlueBubblesClient(
+        { serverUrl: "http://bluebubbles.local", password: "secret-token", accountId: "default" },
+        { port: 18790, webhookPath: "/bluebubbles-webhook", requestTimeoutMs: 30000 },
+      )
+
+      expect(await client.getRepliedMessage!("msg-guid-reply")).toEqual(want)
+    })
+  })
+
   describe("getMessageText", () => {
     it("returns text when API responds with valid payload", async () => {
       global.fetch = vi.fn().mockResolvedValue(
