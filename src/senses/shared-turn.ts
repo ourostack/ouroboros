@@ -28,7 +28,7 @@ import type { McpOwner, RuntimeMcpServers } from "../repertoire/mcp-manager"
 import { emitNervesEvent } from "../nerves/runtime"
 import type { ToolContext } from "../repertoire/tools-base"
 import { readSessionTransaction, withSessionTurnLease, type SessionTurnLease } from "../mind/session-transaction"
-import type { OrientationFrame } from "../heart/orientation-frame"
+import { stampReplyingToText, type OrientationFrame } from "../heart/orientation-frame"
 import { withTurnExecutionLease } from "../heart/turn-execution-lease"
 import type { ShepherdSession } from "./shepherd/surface"
 
@@ -397,6 +397,20 @@ function rawSessionEvents(value: unknown): SessionEvent[] {
   return record.version === 2 && Array.isArray(record.events) ? record.events as SessionEvent[] : []
 }
 
+// What the agent said in a replied-to message: the settle answer it delivered, else its text.
+// Only the agent's own messages are quoted; a control card or notice is not something it asked.
+function spokenText(event: SessionEvent | undefined): string {
+  if (event?.role !== "assistant") return ""
+  for (const call of event.toolCalls) {
+    if (call.function.name !== "settle") continue
+    try {
+      const answer = (JSON.parse(call.function.arguments) as { answer?: unknown }).answer
+      if (typeof answer === "string" && answer.trim()) return answer.trim().slice(0, 1200)
+    } catch { /* a malformed settle names nothing */ }
+  }
+  return typeof event.content === "string" ? event.content.trim().slice(0, 1200) : ""
+}
+
 function exactProjectedIngressMessage(
   existing: NonNullable<ReturnType<typeof loadSession>>,
   messages: ChatCompletionMessageParam[],
@@ -598,6 +612,8 @@ async function runSenseTurnExclusive(options: RunSenseTurnOptions, owner: McpOwn
       system.content = system.content.split(`\n${marker}`)[0] + `\n${marker}\n${JSON.stringify(options.shepherdSession)}\nUse this exact UUID for shepherd_read/shepherd_send. If gone, fail explicitly; never substitute a short ref. This locator grants no authority.`
     }
   }
+  const replyToEventId = precommittedIngressEvent?.relations.replyToEventId ?? options.ingressRelations?.replyToEventId
+  const repliedToText = spokenText(existing?.events?.find((event) => event.id === replyToEventId))
   if (precommittedIngressEvent) {
     const projectedIngress = exactProjectedIngressMessage(existing!, sessionMessages, precommittedIngressEvent.id, baseSession.value)
     if (!projectedIngress || projectedIngress.role !== "user" || projectedIngress.content !== userMessage) throw new Error("shared turn precommitted ingress is absent from the provider projection")
@@ -606,6 +622,7 @@ async function runSenseTurnExclusive(options: RunSenseTurnOptions, owner: McpOwn
       threadRootEventId: precommittedIngressEvent.relations.threadRootEventId,
       references: precommittedIngressEvent.relations.references,
     })
+    if (repliedToText) stampReplyingToText(projectedIngress, repliedToText)
   }
   // Pending dir
   const pendingDir = getPendingDir(agentName, friendId, channel, sessionKey)
@@ -716,6 +733,7 @@ async function runSenseTurnExclusive(options: RunSenseTurnOptions, owner: McpOwn
     const userMsg: ChatCompletionMessageParam = { role: "user", content: userMessage }
     stampIngressTime(userMsg)
     if (options.ingressRelations) stampIngressRelations(userMsg, options.ingressRelations)
+    if (repliedToText) stampReplyingToText(userMsg, repliedToText)
     inboundMessages.push(userMsg)
   }
   const turnResult = await handleInboundTurn({

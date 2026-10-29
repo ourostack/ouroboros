@@ -828,3 +828,39 @@ describe("orientation frame", () => {
     )
   })
 })
+
+describe("a reply to an earlier message (2026-10-28: \"yes please\" to the book question was taken as a yes to the newer download question)", () => {
+  it("frames the replied-to message and reads its options, not the latest message's", async () => {
+    const { buildOrientationFrame, renderOrientationFrame, stampReplyingToText } = await import("../../heart/orientation-frame")
+    const reply = { role: "user" as const, content: "yes please!!!" }
+    stampReplyingToText(reply, "  want it sent to your PocketBook?\n1. yes\n2. no  ")
+    const frame = buildOrientationFrame({ channel: "telegram", messages: [
+      { role: "assistant", content: "want it sent to your PocketBook?\n1. yes\n2. no" },
+      { role: "assistant", content: "three episodes are stuck:\n1. keep waiting\n2. give up\n3. retry E03" },
+      reply,
+    ] })
+
+    expect(frame.source).toEqual({ kind: "telegram", replyingToText: "want it sent to your PocketBook?\n1. yes\n2. no" })
+    expect(frame.priorAssistantReferents.map((item) => item.text)).toEqual(["yes", "no"])
+    expect(renderOrientationFrame(frame)).toContain("- replying to: want it sent to your PocketBook?")
+  })
+
+  it("keeps a sense's own source and ignores a blank stamp", async () => {
+    const { buildOrientationFrame, stampReplyingToText } = await import("../../heart/orientation-frame")
+    const reply = { role: "user" as const, content: "ok" }
+    stampReplyingToText(reply, "   ")
+    const frame = buildOrientationFrame({ channel: "bluebubbles", messages: [reply], source: { kind: "bluebubbles", lane: "top_level" } })
+
+    expect(frame.source).toEqual({ kind: "bluebubbles", lane: "top_level" })
+  })
+
+  it("never overwrites the replied-to text a sense set itself", async () => {
+    const { buildOrientationFrame, stampReplyingToText } = await import("../../heart/orientation-frame")
+    const reply = { role: "user" as const, content: "yes" }
+    stampReplyingToText(reply, "from the session")
+    const frame = buildOrientationFrame({ channel: "teams", messages: [reply], source: { kind: "teams", replyingToText: "from the sense" } })
+
+    expect(frame.source?.replyingToText).toBe("from the sense")
+  })
+})
+
