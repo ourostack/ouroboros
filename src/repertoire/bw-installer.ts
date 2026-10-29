@@ -16,7 +16,7 @@ const INSTALL_TIMEOUT_MS = 120_000
 const WHICH_TIMEOUT_MS = 5_000
 const DEFAULT_WINDOWS_PATHEXT = ".EXE;.CMD;.BAT;.COM"
 /** Must match the `@bitwarden/cli` dependency in package.json (a test checks). */
-export const PINNED_BW_CLI_VERSION = "2026.6.0"
+export const PINNED_BW_CLI_VERSION = "2026.9.1"
 
 function execFileAsync(cmd: string, args: string[], timeout: number): Promise<string> {
   return new Promise((resolve, reject) => {

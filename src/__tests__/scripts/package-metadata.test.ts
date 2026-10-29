@@ -79,7 +79,7 @@ describe("package metadata", () => {
     expect(packageJob).toContain('printf "%s" "{}" >"$BW_VERIFY_ROOT/appdata/data.json"')
     expect(packageJob).toContain('BITWARDENCLI_APPDATA_DIR="$BW_VERIFY_ROOT/appdata" bw --version 2>"$BW_VERIFY_ROOT/stderr"')
     expect(packageJob).toContain('test ! -s "$BW_VERIFY_ROOT/stderr"')
-    expect(packageJob).toContain('test "$BW_VERSION" = 2026.6.0')
+    expect(packageJob).toContain('test "$BW_VERSION" = 2026.9.1')
     expect(packageJob).toContain('test ! -e "/home/ouro/.config/Bitwarden CLI"')
     expect(packageJob).toContain('chmod 0700 "$AUDIT_PERMISSION_ROOT"')
     expect(packageJob).toContain('chmod 0600 "$AUDIT_PERMISSION_ROOT"/*.json')
