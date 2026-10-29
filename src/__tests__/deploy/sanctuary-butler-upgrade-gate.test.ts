@@ -104,15 +104,55 @@ describe("parseUpgradeArgs", () => {
     expect(upgrade.parseUpgradeArgs(["upgrade", "0.1.0-alpha.865", "--rehearse", "start"])).toMatchObject({ rehearse: "start" })
     expect(upgrade.parseUpgradeArgs(["verify"])).toMatchObject({ phase: "verify", gate: false })
     expect(upgrade.parseUpgradeArgs(["verify", "--gate"])).toMatchObject({ phase: "verify", gate: true })
-    expect(upgrade.parseUpgradeArgs(["preflight", "0.1.0-alpha.865"])).toMatchObject({ phase: "preflight" })
+    expect(upgrade.parseUpgradeArgs(["preflight", "0.1.0-alpha.865"])).toMatchObject({ phase: "preflight", fresh: false })
+    expect(upgrade.parseUpgradeArgs(["preflight", "0.1.0-alpha.865", "--fresh"])).toMatchObject({ phase: "preflight", fresh: true })
+    expect(upgrade.parseUpgradeArgs(["prepare", "0.1.0-alpha.865", "--fresh", "--owner-id", "42"])).toMatchObject({ phase: "prepare", fresh: true, ownerId: "42" })
+    expect(upgrade.parseUpgradeArgs(["prepare", "0.1.0-alpha.865"])).toMatchObject({ phase: "prepare", fresh: false, ownerId: undefined })
   })
 
   it.each([
     [[]], [["bogus"]], [["upgrade"]], [["upgrade", "latest"]], [["upgrade", "0.1.0-alpha.865", "--plant"]], [["upgrade", "0.1.0-alpha.865", "--wat"]],
     [["upgrade", "0.1.0-alpha.865", "extra"]], [["verify", "--no-gate"]], [["verify", "0.1.0-alpha.865"]], [["preflight", "0.1.0-alpha.865", "--no-gate"]],
+    [["prepare", "0.1.0-alpha.865", "--fresh"]], [["prepare", "0.1.0-alpha.865", "--owner-id", "42"]], [["prepare", "0.1.0-alpha.865", "--fresh", "--owner-id", "0"]],
+    [["prepare", "0.1.0-alpha.865", "--fresh", "--owner-id", "@ari"]], [["install", "0.1.0-alpha.865", "--fresh"]], [["upgrade", "0.1.0-alpha.865", "--fresh"]], [["preflight", "0.1.0-alpha.865", "--owner-id", "42"]],
     [["upgrade", "0.1.0-alpha.865", "--no-gate", "--plant", "x"]], [["upgrade", "0.1.0-alpha.865", "--rehearse", "start", "--no-gate"]], [["upgrade", "0.1.0-alpha.865", "--rehearse", "start", "--plant", "x"]],
   ])("rejects %j", (argv) => {
     expect(() => upgrade.parseUpgradeArgs(argv)).toThrow()
+  })
+})
+
+describe("fresh install helpers", () => {
+  const pins = { packageDigest: `sha256:${"a".repeat(64)}`, nodeDigest: `sha256:${"b".repeat(64)}` }
+  it("builds a fresh request from the Telegram bot and the owner the installer named", () => {
+    expect(upgrade.freshInstallRequest({ epochId: "e1", botId: "123", ownerId: "42", pins })).toEqual({
+      schemaVersion: 1, epochId: "e1", botId: "123", ownerUserId: "42", ownerChatId: "42", ...pins, predecessorContract: "none",
+    })
+    expect(() => upgrade.freshInstallRequest({ epochId: "e1", botId: "0", ownerId: "42", pins })).toThrow(/bot id/u)
+    expect(() => upgrade.freshInstallRequest({ epochId: "e1", botId: "123", ownerId: "-5", pins })).toThrow(/owner/u)
+  })
+  it("takes the bot id from getMe only when Telegram accepts the token and it belongs to that bot", () => {
+    expect(upgrade.botIdFromGetMe({ ok: true, result: { id: 123 } }, "123:abc")).toBe("123")
+    expect(() => upgrade.botIdFromGetMe({ ok: false }, "123:abc")).toThrow(/did not accept/u)
+    expect(() => upgrade.botIdFromGetMe(null, "123:abc")).toThrow(/did not accept/u)
+    expect(() => upgrade.botIdFromGetMe({ ok: true, result: { id: 999 } }, "123:abc")).toThrow(/does not belong/u)
+  })
+  it("carries a fresh install's contract into every later upgrade request, and only a fresh one", () => {
+    const current = { schemaVersion: 1, epochId: "e1", botId: "123", ownerUserId: "42", ownerChatId: "42", packageDigest: "old", extra: "dropped" }
+    expect(upgrade.upgradeRequest(current, pins)).toEqual({ schemaVersion: 1, epochId: "e1", botId: "123", ownerUserId: "42", ownerChatId: "42", ...pins })
+    expect(upgrade.upgradeRequest({ ...current, predecessorContract: "none" }, pins)).toMatchObject({ predecessorContract: "none", ...pins })
+  })
+  it("treats a preserved file that was absent before as having nothing to preserve", () => {
+    expect(upgrade.unchanged(null, null)).toBe(true)
+    expect(upgrade.unchanged(null, "abc")).toBe(true)
+    expect(upgrade.unchanged("abc", "abc")).toBe(true)
+    expect(upgrade.unchanged("abc", null)).toBe(false)
+    expect(upgrade.unchanged("abc", "def")).toBe(false)
+  })
+  it("rolls a failed fresh install back to nothing instead of restarting a predecessor", () => {
+    const install = source.slice(source.indexOf("function install(version)"), source.indexOf("function killLeakedGateway"))
+    expect(install.indexOf("if (fresh) {")).toBeLessThan(install.indexOf("autoRollback(rollbackImage, version)"))
+    expect(install).toContain('"--rollback-image-id", rollbackImage ?? "none"')
+    expect(source).toContain('"--operation", "seed"')
   })
 })
 

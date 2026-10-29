@@ -90,14 +90,16 @@ describe("container runtime policy", () => {
     expect(habit).toContain("status: active")
   })
 
-  it("ships Sanctuary on the cost-effective MiniMax provider", () => {
+  // A fresh install starts on Anthropic, the provider the public alpha supports. The readiness policy below is only
+  // read by the operator acceptance harness, which still runs its MiniMax checks.
+  it("ships new Butlers on Anthropic, keeping the acceptance harness's MiniMax readiness policy", () => {
     const agent = JSON.parse(fs.readFileSync("deploy/unraid/sanctuary.ouro/agent.json", "utf8")) as {
       humanFacing: { provider: string; model: string }
       agentFacing: { provider: string; model: string }
     }
 
-    expect(agent.humanFacing).toEqual({ provider: "minimax", model: "MiniMax-M3" })
-    expect(agent.agentFacing).toEqual({ provider: "minimax", model: "MiniMax-M3" })
+    expect(agent.humanFacing).toEqual({ provider: "anthropic", model: "claude-opus-5-5" })
+    expect(agent.agentFacing).toEqual({ provider: "anthropic", model: "claude-sonnet-5-5" })
     const readiness = JSON.parse(fs.readFileSync("deploy/unraid/sanctuary.ouro/provider-readiness.json", "utf8"))
     expect(readiness).toEqual({
       version: 1,
