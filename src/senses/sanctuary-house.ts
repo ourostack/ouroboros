@@ -1,5 +1,6 @@
 import * as fs from "node:fs"
 import * as path from "node:path"
+import { emitNervesEvent } from "../nerves/runtime"
 
 // A household install describes its own home in <bundle>/house/house.json, a file the
 // package never overwrites. Nothing here may name a particular household: a missing or
@@ -69,8 +70,11 @@ export function parseSanctuaryHouse(raw: unknown): SanctuaryHouse {
 /** Read <agentRoot>/house/house.json; a missing or unreadable file is the generic house. */
 export function readSanctuaryHouse(agentRoot: string): SanctuaryHouse {
   try {
-    return parseSanctuaryHouse(JSON.parse(fs.readFileSync(path.join(agentRoot, "house", "house.json"), "utf-8")))
+    const house = parseSanctuaryHouse(JSON.parse(fs.readFileSync(path.join(agentRoot, "house", "house.json"), "utf-8")))
+    emitNervesEvent({ component: "senses", event: "senses.sanctuary_house_read", message: "Sanctuary house config read", meta: { source: "house.json", endpoints: house.publicEndpoints.length, requiredContainers: house.requiredContainers.length } })
+    return house
   } catch {
+    emitNervesEvent({ component: "senses", event: "senses.sanctuary_house_read", message: "Sanctuary house config missing or unreadable; using the generic house", meta: { source: "default" } })
     return { ...DEFAULT_SANCTUARY_HOUSE, publicEndpoints: [], requiredContainers: [] }
   }
 }
