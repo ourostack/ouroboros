@@ -59,7 +59,7 @@ export type OuroCliCommand =
   | { kind: "vault.recover"; agent?: string; sources: string[]; email?: string; serverUrl?: string; store?: VaultUnlockStoreKind; generateUnlockSecret?: boolean }
   | { kind: "vault.unlock"; agent?: string; store?: VaultUnlockStoreKind }
   | { kind: "vault.status"; agent?: string; store?: VaultUnlockStoreKind }
-  | { kind: "vault.config.set"; agent?: string; key: string; value?: string; scope?: RuntimeConfigScope }
+  | { kind: "vault.config.set"; agent?: string; key: string; value?: string; valueFile?: string; scope?: RuntimeConfigScope }
   | { kind: "vault.config.status"; agent?: string; scope?: RuntimeConfigStatusScope }
   | { kind: "vault.item.set"; agent?: string; item: string; template?: VaultItemTemplate; secretFields?: string[]; publicFields?: string[]; note?: string; compatibilityAlias?: VaultItemCompatibilityAlias }
   | { kind: "vault.item.status"; agent?: string; item: string; compatibilityAlias?: VaultItemCompatibilityAlias }

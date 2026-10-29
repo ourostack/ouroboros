@@ -2922,6 +2922,8 @@ async function promptRuntimeConfigValue(
   deps: OuroCliDeps,
 ): Promise<string> {
   if (command.value !== undefined) return command.value
+  // A file (or /dev/stdin) keeps a secret out of argv, so a script can store one without a terminal.
+  if (command.valueFile !== undefined) return readSecretValueFile("--value-file", command.valueFile)
   if (isSensitiveRuntimeConfigKey(command.key)) {
     if (!deps.promptSecret) {
       throw new Error("secret entry requires an interactive terminal so the value can be hidden. Re-run without --value in a terminal, or pass --value only from a trusted non-logged script.")
@@ -6653,19 +6655,20 @@ async function executeProviderRefresh(
   return message
 }
 
-/** Reads an API key from a file (or /dev/stdin) so it never appears in argv. */
-function readApiKeyFile(filePath: string): string {
+/** Reads a secret from a file (or /dev/stdin) so it never appears in argv. */
+function readSecretValueFile(flag: string, filePath: string): string {
   let raw: string
   try {
     raw = fs.readFileSync(filePath, "utf8")
   } catch (error) {
     /* v8 ignore next -- fs.readFileSync only throws Error objects @preserve */
-    throw new Error(`could not read --api-key-file ${filePath}: ${error instanceof Error ? error.message : String(error)}`)
+    throw new Error(`could not read ${flag} ${filePath}: ${error instanceof Error ? error.message : String(error)}`)
   }
-  const key = raw.trim()
-  if (!key) throw new Error(`--api-key-file ${filePath} is empty.`)
-  return key
+  const value = raw.trim()
+  if (!value) throw new Error(`${flag} ${filePath} is empty.`)
+  return value
 }
+function readApiKeyFile(filePath: string): string { return readSecretValueFile("--api-key-file", filePath) }
 
 async function executeAuthRun(
   command: Extract<ResolvedOuroCliCommand, { kind: "auth.run" }>,

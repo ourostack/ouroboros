@@ -223,7 +223,7 @@ export function usage(): string {
     "  ouro vault recover [--agent <name>] --from <json> [--from <json>] [--email <email>] [--server <url>] [--store <store>]",
     "  ouro vault unlock [--agent <name>] [--store auto|macos-keychain|windows-dpapi|linux-secret-service|plaintext-file]",
     "  ouro vault status [--agent <name>] [--store auto|macos-keychain|windows-dpapi|linux-secret-service|plaintext-file]",
-    "  ouro vault config set [--agent <name>] --key <path> [--value <value>] [--scope agent|machine]",
+    "  ouro vault config set [--agent <name>] --key <path> [--value <value> | --value-file <path>] [--scope agent|machine]",
     "  ouro vault config status [--agent <name>] [--scope agent|machine|all]",
     "  ouro vault item set [--agent <name>] --item <path> --secret-field <name> [--public-field <key=value>] [--note <text>]",
     "  ouro vault item status [--agent <name>] --item <path>",
@@ -1091,10 +1091,16 @@ function parseVaultConfigCommand(args: string[]): OuroCliCommand {
   const { agent, rest } = extractAgentFlag(args.slice(1))
   let key: string | undefined
   let value: string | undefined
+  let valueFile: string | undefined
   let scope: "agent" | "machine" | "all" | undefined
 
   for (let i = 0; i < rest.length; i += 1) {
     const token = rest[i]
+    if (token === "--value-file") {
+      valueFile = rest[i + 1] ?? ""
+      i += 1
+      continue
+    }
     if (token === "--key") {
       key = rest[i + 1]
       i += 1
@@ -1121,16 +1127,18 @@ function parseVaultConfigCommand(args: string[]): OuroCliCommand {
     throw new Error("Usage: ouro vault config set [--agent <name>] --key <path> [--value <value>] OR ouro vault config status [--agent <name>]")
   }
   if (sub === "status") {
-    if (key || value) {
+    if (key || value || valueFile) {
       throw new Error("Usage: ouro vault config status [--agent <name>]")
     }
     return { kind: "vault.config.status", ...(agent ? { agent } : {}), ...(scope ? { scope } : {}) }
   }
   if (scope === "all") throw new Error("vault config --scope all is only valid for status")
   if (!key) {
-    throw new Error("Usage: ouro vault config set [--agent <name>] --key <path> [--value <value>]")
+    throw new Error("Usage: ouro vault config set [--agent <name>] --key <path> [--value <value> | --value-file <path>]")
   }
-  return { kind: "vault.config.set", ...(agent ? { agent } : {}), key, ...(value !== undefined ? { value } : {}), ...(scope ? { scope } : {}) }
+  if (value !== undefined && valueFile !== undefined) throw new Error("vault config set takes --value or --value-file, not both")
+  if (valueFile !== undefined && !valueFile) throw new Error("vault config set --value-file needs a path (use /dev/stdin to pipe the value)")
+  return { kind: "vault.config.set", ...(agent ? { agent } : {}), key, ...(value !== undefined ? { value } : {}), ...(valueFile !== undefined ? { valueFile } : {}), ...(scope ? { scope } : {}) }
 }
 
 function normalizeConnectTarget(value: string | undefined): "providers" | "perplexity" | "embeddings" | "teams" | "bluebubbles" | "mail" | "voice" | "a2a" | "telegram" | "workbench" | undefined {

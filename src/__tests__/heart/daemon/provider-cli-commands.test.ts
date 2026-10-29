@@ -989,6 +989,16 @@ describe("provider CLI command parsing", () => {
       key: "bluebubbles.password",
       scope: "machine",
     })
+    expect(parseOuroCommand(["vault", "config", "set", "--agent", "sanctuary", "--key", "unraidReadApiKey", "--value-file", "/dev/stdin", "--scope", "machine"])).toEqual({
+      kind: "vault.config.set",
+      agent: "sanctuary",
+      key: "unraidReadApiKey",
+      valueFile: "/dev/stdin",
+      scope: "machine",
+    })
+    expect(() => parseOuroCommand(["vault", "config", "set", "--key", "a.b", "--value", "x", "--value-file", "/k"])).toThrow("not both")
+    expect(() => parseOuroCommand(["vault", "config", "set", "--key", "a.b", "--value-file"])).toThrow("needs a path")
+    expect(() => parseOuroCommand(["vault", "config", "status", "--value-file", "/k"])).toThrow("Usage: ouro vault config status")
     expect(parseOuroCommand(["vault", "config", "set", "--agent", "Slugger", "--key", "bluebubbles.password", "--value", "secret"])).toEqual({
       kind: "vault.config.set",
       agent: "Slugger",
@@ -10496,6 +10506,16 @@ describe("provider CLI command execution", () => {
       ["vault", "config", "set", "--agent", "Slugger", "--key", "teams.clientId"],
       makeCliDeps(homeDir, bundlesRoot),
     )).rejects.toThrow("vault config set requires --value")
+    const emptyValueFile = path.join(homeDir, "empty-value")
+    fs.writeFileSync(emptyValueFile, "\n")
+    await expect(runOuroCli(
+      ["vault", "config", "set", "--agent", "Slugger", "--key", "bluebubbles.password", "--value-file", emptyValueFile],
+      makeCliDeps(homeDir, bundlesRoot),
+    )).rejects.toThrow(`--value-file ${emptyValueFile} is empty.`)
+    await expect(runOuroCli(
+      ["vault", "config", "set", "--agent", "Slugger", "--key", "bluebubbles.password", "--value-file", path.join(homeDir, "missing")],
+      makeCliDeps(homeDir, bundlesRoot),
+    )).rejects.toThrow("could not read --value-file")
     await expect(runOuroCli(
       ["vault", "config", "set", "--agent", "Slugger", "--key", "__proto__.polluted", "--value", "x"],
       makeCliDeps(homeDir, bundlesRoot),
