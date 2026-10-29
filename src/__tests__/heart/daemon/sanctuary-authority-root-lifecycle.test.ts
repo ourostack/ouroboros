@@ -1225,6 +1225,98 @@ describe("fixed root installation effects", () => {
   })
 })
 
+describe("fresh install: no predecessor resident, token or cursor", () => {
+  function freshFixture() {
+    const f = fixture()
+    Object.assign(f.request, { predecessorContract: "none" })
+    f.transaction.rollbackImageId = null as unknown as string
+    const lifecycle = f.staged()
+    f.createTarget()
+    f.write(`${rootPath}/incoming-token`, "123:newTokenabcdefghijklmnopqrstuvwxyz")
+    const fetch = vi.spyOn(globalThis, "fetch").mockImplementation(async () => new Response(JSON.stringify({ ok: true, result: { id: 123 } }), { status: 200 }))
+    let gone = false
+    const original = host.exec.getMockImplementation()!
+    host.exec.mockImplementation((file: string, args: string[], options?: { input?: string }) => {
+      if (file === "/usr/bin/docker" && args[0] === "rm") { gone = true; return "" }
+      if (file === "/usr/bin/docker" && args[0] === "ps" && gone) return ""
+      return original(file, args, options)
+    })
+    return { ...f, lifecycle, fetch, isGone: () => gone }
+  }
+  async function installFresh(f: ReturnType<typeof freshFixture>) {
+    for (const step of ["freeze-resident", "stage-authority", "verify-token-rotation", "transfer-cursor", "remove-resident-token"]) {
+      await f.lifecycle.effect(step).apply()
+      expect(await f.lifecycle.effect(step).readback()).toBe(f.lifecycle.effect(step).afterDigest)
+    }
+    const epochRoot = `${rootPath}/epochs/fixture-epoch`
+    const epoch = JSON.parse(fs.readFileSync(f.p(`${epochRoot}/epoch.json`), "utf8"))
+    host.cursor.mockResolvedValue({ keyId: "fixture-epoch", botId: "123", publicKeyDigest: epoch.publicKeyDigest, cursor: 0 })
+    host.spawn.mockImplementation(() => {
+      f.write(`${epochRoot}/authority.lock`, "45678")
+      f.write("/proc/45678/status", `Uid:\t${process.getuid!()}\t${process.getuid!()}\t${process.getuid!()}\t${process.getuid!()}\n`)
+      f.write("/proc/45678/cmdline", `${f.p("/usr/local/bin/node")}\0${f.p(`${rootPath}/package/dist/heart/daemon/sanctuary-telegram-authority-entry.js`)}\0--config\0${f.p(`${rootPath}/active.json`)}\0`)
+      f.write(`${epochRoot}/readiness.json`, { status: "ready", botId: "123", publicKeyDigest: epoch.publicKeyDigest })
+      return { unref: vi.fn(), once: vi.fn() }
+    })
+    for (const step of ["start-gateway", "configure-resident", "start-resident", "verify-install"]) await f.lifecycle.effect(step).apply()
+    fs.rmSync(f.p("/proc/45678"), { recursive: true })
+    return { epochRoot, epoch }
+  }
+  it("installs with a zero cursor, probes only the new token and never snapshots a predecessor vault", async () => {
+    const f = freshFixture()
+    expect(f.lifecycle.plan().predecessorContract).toBe("none")
+    const { epochRoot, epoch } = await installFresh(f)
+    expect(epoch).toMatchObject({ previousTokenDigest: null, revokedTokenStatus: null, predecessorCursor: 0 })
+    expect(JSON.parse(fs.readFileSync(f.p(`${epochRoot}/migration.json`), "utf8"))).toMatchObject({ predecessorContract: "none", rollbackImageId: null, predecessorCursor: 0 })
+    expect(fs.existsSync(f.p(`${epochRoot}/previous-token`))).toBe(false)
+    expect(f.fetch.mock.calls.map((call) => String(call[0]))).toEqual(["https://api.telegram.org/bot123:newTokenabcdefghijklmnopqrstuvwxyz/getMe"])
+    expect(host.exec.mock.calls.some((call) => call[1][0] === "run" && vaultOp(call[1]) === "snapshot")).toBe(false)
+    expect(JSON.parse(fs.readFileSync(f.p(`${rootPath}/activation.json`), "utf8"))).toMatchObject({ state: "active", rollbackImageId: null })
+  })
+  it("rolls back to nothing: retires the epoch, keeps the token in root custody and removes the resident it created", async () => {
+    const f = freshFixture()
+    const { epochRoot } = await installFresh(f)
+    await expect(f.lifecycle.effect("rollback:restore-resident").apply()).rejects.toThrow(/must retire/u)
+    await expect(f.lifecycle.effect("rollback:verify-rollback").apply()).rejects.toThrow(/readback failed/u)
+    f.setRunning(false)
+    for (const step of ["freeze-resident", "retire-registrations", "reconcile-executions", "stop-gateway", "end-epoch", "restore-token-cursor", "restore-resident", "verify-rollback"]) {
+      const effect = f.lifecycle.effect(`rollback:${step}`)
+      await effect.apply()
+      expect(await effect.readback()).toBe(effect.afterDigest)
+    }
+    expect(f.isGone()).toBe(true)
+    expect(host.exec.mock.calls.filter((call) => call[1][0] === "rm").map((call) => call[1])).toEqual([["rm", "--force", "ouro-butler"]])
+    expect(host.exec.mock.calls.some((call) => call[1][0] === "run" && vaultOp(call[1]) === "restore")).toBe(false)
+    expect(JSON.parse(fs.readFileSync(f.p(`${epochRoot}/rollback.json`), "utf8"))).toEqual({ epochId: "fixture-epoch", state: "retired" })
+    expect(fs.readFileSync(f.p(`${epochRoot}/current-token`), "utf8")).toBe("123:newTokenabcdefghijklmnopqrstuvwxyz")
+    // Re-running removal once the resident is gone is a no-op.
+    await f.lifecycle.effect("rollback:restore-resident").apply()
+    expect(host.exec.mock.calls.filter((call) => call[1][0] === "rm")).toHaveLength(1)
+  })
+  it("refuses to remove a resident whose image changed", async () => {
+    const f = freshFixture()
+    await installFresh(f)
+    f.setRunning(false)
+    for (const step of ["freeze-resident", "retire-registrations", "reconcile-executions", "stop-gateway", "end-epoch"]) await f.lifecycle.effect(`rollback:${step}`).apply()
+    const removal = f.lifecycle.effect("rollback:restore-resident")
+    expect(await removal.readback()).not.toBe(removal.afterDigest)
+    alterDocker((args, value) => args[0] === "inspect" ? value.replace(digest("new-image"), digest("other-image")) : value)
+    await expect(f.lifecycle.effect("rollback:restore-resident").apply()).rejects.toThrow(/image changed/u)
+  })
+  it("refuses an installed authority, a non-fresh null rollback image and an unknown contract", async () => {
+    const f = freshFixture()
+    f.write(`${rootPath}/active.json`, { previous: true })
+    await expect(f.lifecycle.effect("freeze-resident").apply()).rejects.toThrow(/found an installed authority/u)
+    fs.unlinkSync(f.p(`${rootPath}/active.json`))
+    f.write(`${rootPath}/activation.json`, { previous: true })
+    await expect(f.lifecycle.effect("freeze-resident").apply()).rejects.toThrow(/found an installed authority/u)
+    f.write(`${rootPath}/request.json`, { ...f.request, predecessorContract: "canonical-pre-gateway" })
+    expect(() => new SanctuaryAuthorityRootLifecycle(f.transaction, f.rootOptions)).toThrow(/request is invalid/u)
+    const { predecessorContract: _omitted, ...migration } = f.request as typeof f.request & { predecessorContract?: string }
+    f.write(`${rootPath}/request.json`, migration)
+    expect(() => new SanctuaryAuthorityRootLifecycle(f.transaction, f.rootOptions)).toThrow(/image identity is invalid/u)
+  })
+})
 describe("in-place authority upgrade", () => {
   const currentReference = "ghcr.io/ourostack/ouroboros-butler:0.1.0-alpha.830"
   const nextReference = "ghcr.io/ourostack/ouroboros-butler:0.1.0-alpha.835"
@@ -1496,6 +1588,17 @@ describe("in-place authority upgrade", () => {
     await expect(f.lifecycle.upgrade({ targetImageId: digest("next-image"), imageReference: nextReference, failAfter: "stop" })).rejects.toThrow(/stop/u)
     const journal = JSON.parse(fs.readFileSync(f.p(`${rootPath}/upgrade.json`), "utf8"))
     f.write(`${rootPath}/upgrade.json`, { ...journal, rollingBack: "yes" })
+    await expect(f.lifecycleFor().rollbackUpgrade()).rejects.toThrow(/journal is invalid/u)
+  })
+
+  it("refuses a null rollback image outside a fresh install and an upgrade that changes the predecessor contract", async () => {
+    const f = await upgradeFixture()
+    f.write(`${rootPath}/incoming-request.json`, { ...f.nextRequest, predecessorContract: "none" })
+    await expect(f.lifecycle.upgrade({ targetImageId: digest("next-image"), imageReference: nextReference })).rejects.toThrow(/authority identity/u)
+    f.write(`${rootPath}/incoming-request.json`, f.nextRequest)
+    await expect(f.lifecycle.upgrade({ targetImageId: digest("next-image"), imageReference: nextReference, failAfter: "stop" })).rejects.toThrow(/stop/u)
+    const journal = JSON.parse(fs.readFileSync(f.p(`${rootPath}/upgrade.json`), "utf8"))
+    f.write(`${rootPath}/upgrade.json`, { ...journal, from: { ...journal.from, rollbackImageId: null } })
     await expect(f.lifecycleFor().rollbackUpgrade()).rejects.toThrow(/journal is invalid/u)
   })
 

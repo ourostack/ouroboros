@@ -248,4 +248,34 @@ describe("in-place package rebind", () => {
     expect(() => rebindSanctuaryAuthorityEpochPackage(f.root, { ...owner, from: f.input.packageDigest, to: next })).toThrow(/retired/u)
   })
 })
+  it("prepares a fresh-install epoch with no predecessor token, probing only the new token", async () => {
+    const f = fixture()
+    const input = { ...f.input, previousTokenPath: null, predecessorCursor: 0 }
+    const epoch = await prepareSanctuaryAuthorityEpoch(input, f.options)
+    expect(epoch).toMatchObject({ state: "prepared", previousTokenDigest: null, revokedTokenStatus: null, predecessorCursor: 0 })
+    expect(f.probe).toHaveBeenCalledExactlyOnceWith("123:abcdefghijklmnopqrstuvwxyz")
+    expect(readSanctuaryAuthorityEpoch(f.root, f.options)).toEqual(epoch)
+    expect(await prepareSanctuaryAuthorityEpoch(input, f.options)).toEqual(epoch)
+    await expect(prepareSanctuaryAuthorityEpoch(f.input, f.options)).rejects.toThrow(/input changed|predecessor token changed/u)
+  })
+  it("refuses a fresh epoch that claims a carried cursor or a half-recorded predecessor", async () => {
+    const f = fixture()
+    await expect(prepareSanctuaryAuthorityEpoch({ ...f.input, previousTokenPath: null }, f.options)).rejects.toThrow(/input is invalid/u)
+    const epoch = await prepareSanctuaryAuthorityEpoch({ ...f.input, previousTokenPath: null, predecessorCursor: 0 }, f.options)
+    const epochPath = path.join(f.root, "epoch.json")
+    const stored = JSON.parse(fs.readFileSync(epochPath, "utf8"))
+    for (const mutate of [
+      (record: any) => { record.revokedTokenStatus = 401 },
+      (record: any) => { record.previousTokenDigest = `sha256:${"b".repeat(64)}`; record.revokedTokenStatus = null },
+      (record: any) => { record.predecessorCursor = 5 },
+      (record: any) => { record.previousTokenDigest = "not-a-digest"; record.revokedTokenStatus = 401 },
+    ]) {
+      const candidate = structuredClone(stored)
+      const target = candidate.value ?? candidate
+      mutate(target)
+      fs.writeFileSync(epochPath, JSON.stringify(candidate))
+      expect(() => readSanctuaryAuthorityEpoch(f.root, f.options)).toThrow(/epoch is invalid/u)
+    }
+    expect(epoch.previousTokenDigest).toBeNull()
+  })
 })
