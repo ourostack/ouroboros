@@ -24,17 +24,18 @@ export const NOTICE_LIST_MAX = 6
 export const NOTICE_RETRY_MS = 30_000
 const NAME_MAX = 60
 const REASON_MAX = 300
+const NOTE_MAX = 400
 const REPLY_MAX = 240
 const BLOCK_DESCRIPTION: Record<ShepherdActionBlockReason, string> = {
-  reply_invalid: "the suggested reply was invalid",
-  menu_disallowed: "scheduled continuation cannot approve a menu",
-  host_unverified: "the host could not verify safe input state",
-  guidance: "operator guidance blocked input",
-  loop_guard: "the reply limit was reached",
-  focus: "the human owns the focused session",
-  state_changed: "the target state changed",
-  custody: "input delivery was already claimed or needs reconciliation",
-  stopped: "Shepherd stopped",
+  reply_invalid: "I couldn't come up with a safe reply",
+  menu_disallowed: "it's showing a menu, and I don't pick menu options",
+  host_unverified: "I couldn't confirm it was safe to type there",
+  guidance: "your Shepherd guidance says to leave it",
+  loop_guard: "I've already answered it too many times",
+  focus: "you're in it or just left it",
+  state_changed: "it changed while I was looking",
+  custody: "an earlier reply may still be on its way",
+  stopped: "Shepherd was stopping",
 }
 
 /** Kinds a "needs-me" owner still hears about. */
@@ -59,50 +60,64 @@ export function plain(value: string, max: number): string {
   return flat.length <= max ? flat : `${flat.slice(0, max - 1).trimEnd()}…`
 }
 
-function who(record: ReturnRecord, location: string | HostSession | undefined): string {
-  const session = typeof location === "object" ? location : undefined
-  const agentName = record.agent ?? session?.agent
-  const cwd = record.cwd ?? session?.cwd
+/**
+ * The session as a person would name it: the agent, the tab or workspace title it works under, and its folder. A host
+ * handle such as `surface:12` is added only when another session would read the same, so a reply reaches the right one.
+ */
+function label(agentName: string | null | undefined, cwd: string | null | undefined, titles: Array<string | null | undefined>): string {
   const agent = agentName ? plain(agentName, NAME_MAX) : ""
   const folder = cwd ? plain(path.basename(cwd), NAME_MAX) : ""
-  const ref = typeof location === "string" ? location : session?.ref
-  const handle = plain(ref ?? record.session.slice(0, 8), NAME_MAX)
-  const labels = [record.workspaceTitle ?? session?.workspaceTitle, record.title ?? session?.title].filter((label): label is string => !!label).map((label) => plain(label, NAME_MAX))
-  const where = labels.length ? `${labels.join(" / ")}; ${handle}` : handle
-  return `${agent || "A coding agent"}${folder ? ` in ${folder}` : ""}${where ? ` (${where})` : ""}`
+  const title = titles.map(value => value ? plain(value, NAME_MAX) : "").find(value => value && value.toLowerCase() !== folder.toLowerCase())
+  return `${agent || "A coding agent"}${title ? ` on ${title}` : ""}${folder ? ` in ${folder}` : ""}`
 }
 
-/** One return as one sentence pair: who returned, what Shepherd did, and why. */
-export function noticeLine(record: ReturnRecord, location?: string | HostSession): string {
-  const subject = who(record, location)
-  const why = `Why: ${plain(record.reason, REASON_MAX) || "no reason given"}`
+function who(record: ReturnRecord, location: string | HostSession | undefined): string {
+  const session = typeof location === "object" ? location : undefined
+  return label(record.agent ?? session?.agent, record.cwd ?? session?.cwd, [record.title ?? session?.title, record.workspaceTitle ?? session?.workspaceTitle])
+}
+
+function handle(record: ReturnRecord, location: string | HostSession | undefined): string {
+  const ref = typeof location === "string" ? location : location?.ref
+  return plain(ref || record.session.slice(0, 8), NAME_MAX)
+}
+
+/** The judge's own note to the owner, used when Shepherd took no action that the note could misdescribe. */
+const NOTE_KINDS = new Set<ReturnRecord["kind"]>(["gate", "done", "waiting", "working"])
+
+/** One return as one or two sentences, written to the owner: who, what happened, and what Shepherd did. */
+export function noticeLine(record: ReturnRecord, location?: string | HostSession, ambiguous = false): string {
+  const subject = `${who(record, location)}${ambiguous ? ` (${handle(record, location)})` : ""}`
+  const note = record.note ? plain(record.note, NOTE_MAX) : ""
+  if (note && NOTE_KINDS.has(record.kind)) return `${subject}: ${note}`
+  const reason = plain(record.reason, REASON_MAX)
+  const because = reason ? ` ${reason.replace(/^./, first => first.toUpperCase())}${/[.!?…]$/.test(reason) ? "" : "."}` : ""
   switch (record.kind) {
     case "premature":
       if (record.action === "respond" && record.reply) {
-        const sent = record.reply.startsWith("key:") ? `pressed ${plain(record.reply.slice(4), 10)}` : `sent it back: "${plain(record.reply, REPLY_MAX)}"`
-        return `${subject} stopped early, so I ${sent}. ${why}`
+        const sent = record.reply.startsWith("key:") ? `pressed ${plain(record.reply.slice(4), 10)}` : `told it: "${plain(record.reply, REPLY_MAX)}"`
+        return `${subject} stopped early, so I ${sent}.${because}`
       }
-      if (record.actionBlockReason) return `${subject} stopped early; no input sent because ${BLOCK_DESCRIPTION[record.actionBlockReason]}. ${why}`
-      return `${subject} stopped early, but I did not answer it, so it is waiting for you. ${why}`
+      if (record.actionBlockReason) return `${subject} stopped early. I didn't answer because ${BLOCK_DESCRIPTION[record.actionBlockReason]}.${because}`
+      return `${subject} stopped early and I left it for you.${because}`
     case "gate":
-      return `${subject} needs you. ${why}`
+      return `${subject} needs you.${because}`
     case "done":
-      return `${subject} says it is done. ${why}`
+      return `${subject} says it's done.${because}`
     case "waiting":
-      return `${subject} is waiting on an outside dependency; the work is not yet delivered. ${why}`
+      return `${subject} is waiting on something outside it; it isn't done yet.${because}`
     case "loop_guard":
-      return `${subject}: I stopped answering it after too many replies, so it is waiting for you. ${why}`
+      return `${subject} kept stopping, so I stopped answering it and left it for you.${because}`
     case "working":
-      return `${subject} is still working in the background and has news. ${why}`
+      return `${subject} is still working, with news.${because}`
     case "unclear":
-      return `I could not determine the current state of ${subject}. ${why}`
+      return `I couldn't tell what ${subject} is doing.${because}`
     default:
-      return `I could not complete my observation of ${subject}; the agent's state was not determined. ${why}`
+      return `I couldn't check on ${subject}.${because}`
   }
 }
 
 /** Closes every notice: the person answers in the same conversation, and the agent relays it with `shepherd_send`. */
-export const NOTICE_REPLY_LINE = "Reply here and I'll pass your answer on."
+export const NOTICE_REPLY_LINE = "Reply here and I'll pass it on."
 
 /** A bounded display of latest observations; all input records retain delivery custody. */
 export function noticeMessage(records: ReturnRecord[], refs: ReadonlyMap<string, string | HostSession> = new Map(), context: { recovered?: boolean } = {}): string {
@@ -116,16 +131,22 @@ export function noticeMessage(records: ReturnRecord[], refs: ReadonlyMap<string,
       || ((!Number.isFinite(at) && !Number.isFinite(previousAt) || at === previousAt) && record.transition > previous.transition)) latest.set(key, record)
   }
   const sessions = [...latest].sort(([a], [b]) => a < b ? -1 : 1).map(([, record]) => record)
+  // Labels shared by two different sessions, among those the host lists and those in this message.
+  const owners = new Map<string, Set<string>>()
+  const claim = (name: string, id: string) => owners.set(name, (owners.get(name) ?? new Set()).add(id))
+  for (const [id, location] of refs) if (typeof location === "object") claim(label(location.agent, location.cwd, [location.title, location.workspaceTitle]), id)
+  for (const record of sessions) claim(who(record, refs.get(record.session)), record.session)
   const lines = sessions.slice(0, NOTICE_LIST_MAX).map(record => {
-    const line = noticeLine(record, refs.get(record.session))
+    const line = noticeLine(record, refs.get(record.session), owners.get(who(record, refs.get(record.session)))!.size > 1)
     if (!context.recovered) return line
     const at = Date.parse(record.at)
     return `${line} (${Number.isFinite(at) ? `observed at ${new Date(at).toISOString()}` : "observation time unknown"})`
   })
   const more = sessions.length - lines.length
   const body = sessions.length === 1 ? lines[0]!
-    : [`Updates from ${sessions.length} coding sessions:`, ...lines.map(line => `- ${line}`), ...(more > 0 ? [`- and ${more} more.`] : [])].join("\n")
-  return `${context.recovered ? `Includes recovered historical observations, not live status:\n${body}` : body}\n\n${NOTICE_REPLY_LINE}`
+    : [`${sessions.length} updates:`, ...lines.map(line => `- ${line}`), ...(more > 0 ? [`- and ${more} more.`] : [])].join("\n")
+  const recovered = sessions.length === 1 ? "Catching up on something I saw earlier, so it may be out of date:" : "Catching up on things I saw earlier, so these may be out of date:"
+  return `${context.recovered ? `${recovered}\n${body}` : body}\n\n${NOTICE_REPLY_LINE}`
 }
 
 export interface NoticeTarget {

@@ -2,6 +2,12 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.966",
+      "changes": [
+        "Shepherd's messages read like a teammate's. For a session that needs you, is done, is waiting, or has news, the judge writes the note to you in plain words, and the message names the session by its agent, tab title and folder instead of a terminal handle. Shepherd adds the handle only when two open sessions would read the same. When the judge says nothing has changed since its last message about a session, Shepherd doesn't send it again, until you go to that session, Shepherd answers it, or six hours pass."
+      ]
+    },
+    {
       "version": "0.1.0-alpha.965",
       "changes": [
         "Ouro ships Bitwarden CLI 2026.9.1 instead of 2026.6.0. Its core-js 3.50.0 replaces 3.49.0, two of whose files Microsoft Defender's enterprise policy quarantines on managed Macs, which broke every vault command with \"Cannot find module '../internals/hidden-keys'\". A new bw version also gets a fresh vault profile, so the first vault use after updating signs in once."
