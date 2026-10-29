@@ -2768,10 +2768,14 @@ async function executeVaultStatus(
 const RUNTIME_CONFIG_KEY_SEGMENT = /^[A-Za-z][A-Za-z0-9_-]*$/
 const FORBIDDEN_RUNTIME_CONFIG_KEY_SEGMENTS = new Set(["__proto__", "prototype", "constructor"])
 
+// The Sanctuary runtime reads these machine credentials at the top level of the config (sanctuary-runtime.ts); every
+// other key is a dotted path, so a mistyped key cannot replace a whole section with a string.
+const TOP_LEVEL_RUNTIME_CONFIG_KEYS = new Set(["unraidGraphqlUrl", "unraidReadApiKey", "unraidWriteApiKey", "sabnzbdApiKey"])
+
 function parseRuntimeConfigKey(key: string): string[] {
   const segments = key.split(".").map((segment) => segment.trim()).filter(Boolean)
-  if (segments.length < 2) {
-    throw new Error("runtime config key must be a dotted path such as bluebubbles.password")
+  if (segments.length < 2 && !(segments.length === 1 && TOP_LEVEL_RUNTIME_CONFIG_KEYS.has(segments[0]!))) {
+    throw new Error(`runtime config key must be a dotted path such as bluebubbles.password, or one of ${[...TOP_LEVEL_RUNTIME_CONFIG_KEYS].join(", ")}`)
   }
   for (const segment of segments) {
     if (!RUNTIME_CONFIG_KEY_SEGMENT.test(segment) || FORBIDDEN_RUNTIME_CONFIG_KEY_SEGMENTS.has(segment)) {

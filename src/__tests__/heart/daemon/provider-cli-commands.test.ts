@@ -7240,6 +7240,21 @@ describe("provider CLI command execution", () => {
       },
     })
 
+    // A secret piped through --value-file is stored trimmed and never echoed, and never touched argv.
+    const valueFile = path.join(homeDir, "unraid-read-key")
+    fs.writeFileSync(valueFile, "file-held-key\n")
+    resetRuntimeCredentialConfigCache()
+    const fileSet = await runOuroCli(
+      ["vault", "config", "set", "--agent", "Slugger", "--scope", "machine", "--key", "unraidReadApiKey", "--value-file", valueFile],
+      makeCliDeps(homeDir, bundlesRoot, { now: () => Date.parse(NOW) }),
+    )
+    expect(fileSet).toContain("stored unraidReadApiKey for Slugger")
+    expect(fileSet).not.toContain("file-held-key")
+    expect(readRuntimeSecret("Slugger", "runtime/machines/machine_config/config").config).toMatchObject({
+      unraidReadApiKey: "file-held-key",
+      bluebubbles: { password: "local-password" },
+    })
+
     writeRuntimeConfig("Slugger", {
       bluebubbles: { serverUrl: "http://localhost:1234", password: "super-secret" },
     })
