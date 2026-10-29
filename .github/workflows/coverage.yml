@@ -576,4 +576,4 @@ jobs:
           TARBALL="release-tarball/ouro.bot-cli-${LOCAL}.tgz"
           test -f "$TARBALL"
           node -e 'const c=require("./changelog.json");const v=c.versions.find((x)=>x.version===process.argv[1]);process.stdout.write((v?v.changes:[]).join("\n\n")||"See changelog.json.")' "$LOCAL" > "${RUNNER_TEMP}/notes.md"
-          gh release create "$TAG" "$TARBALL" --target "$GITHUB_SHA" --title "@ouro.bot/cli ${LOCAL}" --notes-file "${RUNNER_TEMP}/notes.md"
+          gh release create "$TAG" "$TARBALL" deploy/unraid/install.sh --target "$GITHUB_SHA" --title "@ouro.bot/cli ${LOCAL}" --notes-file "${RUNNER_TEMP}/notes.md"
