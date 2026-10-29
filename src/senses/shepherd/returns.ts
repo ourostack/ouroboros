@@ -28,6 +28,8 @@ export interface ReturnRecord {
   actionBlockReason?: ShepherdActionBlockReason
   action: ReturnAction
   reason: string
+  /** The judge's note to the owner, in their terms; the owner notice uses it when Shepherd took no action. */
+  note?: string
   reply: string | null
   latencyMs: number | null
   inputTokens: number | null
@@ -35,7 +37,7 @@ export interface ReturnRecord {
   noticeEligible?: boolean
   noticeState?: "queued" | "suppressed" | "failed"
   noticeId?: string
-  noticeSuppressionReason?: "policy" | "stopped"
+  noticeSuppressionReason?: "policy" | "stopped" | "repeat"
   trigger?: "immediate" | "network" | "periodic"
   dispatch?: { id: string; state: "claimed" | "sent" | "not_sent" | "unknown" }
 }

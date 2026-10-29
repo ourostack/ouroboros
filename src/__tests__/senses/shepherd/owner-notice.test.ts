@@ -81,9 +81,9 @@ describe("owner notice text", () => {
     const text = noticeLine(record({
       kind: "error", action: "let_through", reply: null, reason: "Connection error.",
     }))
-    expect(text).toMatch(/^I could not /)
+    expect(text).toMatch(/^I couldn't /)
     expect(text).toContain("Connection error.")
-    expect(text).not.toMatch(/stopped|waiting for you|needs you/)
+    expect(text).not.toMatch(/stopped|left it for you|needs you/)
   })
 
   it("P0: an inconclusive observation cannot assert a stop while its evidence says work is running", () => {
@@ -91,33 +91,50 @@ describe("owner notice text", () => {
       kind: "unclear", action: "let_through", reply: null,
       reason: "The agent is still mid-task, running a shell inspection; it has not handed control back.",
     }))
-    expect(text).toMatch(/^I could not /)
-    expect(text).not.toMatch(/\bstopped\b|waiting for you|needs you/)
+    expect(text).toMatch(/^I couldn't tell /)
+    expect(text).not.toMatch(/\bstopped\b|left it for you|needs you/)
     expect(text).toContain("has not handed control back")
   })
 
   it("reports machine-format refusal without claiming the human must decide", () => {
     const text = noticeLine(record({ action: "let_through", reply: null, actionBlockReason: "reply_invalid", replyIssue: "too_long" }))
-    expect(text).toMatch(/no input sent because/)
-    expect(text).not.toMatch(/waiting for you|needs you|could not tell/)
+    expect(text).toContain("I didn't answer because I couldn't come up with a safe reply.")
+    expect(text).not.toMatch(/left it for you|needs you|couldn't tell/)
   })
 
   it("reports an outside dependency without calling it done or asking the owner to act", () => {
-    expect(noticeLine(record({ kind: "waiting", reason: "PR awaits review." }))).toContain("waiting on an outside dependency")
-    expect(noticeLine(record({ kind: "waiting" }))).not.toMatch(/needs you|done|waiting for you/)
+    expect(noticeLine(record({ kind: "waiting", reason: "PR awaits review." }))).toContain("waiting on something outside it; it isn't done yet.")
+    expect(noticeLine(record({ kind: "waiting" }))).not.toMatch(/needs you|says it's done|left it for you/)
     expect(noticeWanted("needs-me", record({ kind: "waiting" }))).toBe(false)
   })
-  it("names the foreground agent, folder, workspace and tab for an unhooked return", () => {
+
+  it("names the session by its agent and title, never by a host handle or session id", () => {
     const session = { id: "0a1b2c3d-4e5f", ref: "surface:30", workspace: "workspace:3", workspaceTitle: "workflows",
       title: "Troubleshoot Outlook", agent: "Copilot", cwd: "/Users/a/personal-desk", focused: false }
     expect(noticeMessage([record({ agent: null, cwd: null, kind: "done", reason: "Fixed the error." })], new Map([[session.id, session]])))
-      .toBe(`Copilot in personal-desk (workflows / Troubleshoot Outlook; surface:30) says it is done. Why: Fixed the error.\n\n${NOTICE_REPLY_LINE}`)
-    expect(noticeLine(record({ title: "Saved tab", workspaceTitle: "Saved workspace" }), session))
-      .toContain("(Saved workspace / Saved tab; surface:30)")
+      .toBe(`Copilot on Troubleshoot Outlook in personal-desk says it's done. Fixed the error.\n\n${NOTICE_REPLY_LINE}`)
+    expect(noticeLine(record({ title: "Saved tab", workspaceTitle: "Saved workspace" }), session)).toMatch(/^Claude Code on Saved tab in ouroboros /)
+    // A title that only repeats the folder falls through to the next label, then to the folder.
+    expect(noticeLine(record({ title: "ouroboros", workspaceTitle: "Ouro HX" }))).toMatch(/^Claude Code on Ouro HX in ouroboros /)
+    expect(noticeLine(record({ title: "ouroboros" }))).toMatch(/^Claude Code in ouroboros /)
+    expect(noticeLine(record(), "surface:12")).not.toMatch(/surface|0a1b2c3d/)
+  })
+
+  it("adds the host handle only when another session would read the same, so a reply reaches the right one", () => {
+    const tab = (id: string, ref: string, title: string) => ({ id, ref, workspace: "w", workspaceTitle: "desk", title, agent: "Claude Code", cwd: "/Users/a/personal-desk", focused: false })
+    const refs = new Map([["S1", tab("S1", "surface:1", "ouro hx")], ["S2", tab("S2", "surface:2", "ouro hx")], ["S3", tab("S3", "surface:3", "spoonjoy")]])
+    const gate = (session: string) => record({ session, agent: null, cwd: null, kind: "gate", action: "let_through", reply: null, note: "It wants your sign-off." })
+    expect(noticeMessage([gate("S1")], refs)).toMatch(/^Claude Code on ouro hx in personal-desk \(surface:1\): It wants/)
+    expect(noticeMessage([gate("S3")], refs)).toMatch(/^Claude Code on spoonjoy in personal-desk: It wants/)
+    // Two sessions in one digest that read the same are told apart, by short id when the host has no handle.
+    const twins = noticeMessage([record({ session: "aaaaaaaa-1" }), record({ session: "bbbbbbbb-2" })], new Map([["aaaaaaaa-1", "surface:9"]]))
+    expect(twins).toContain("- Claude Code in ouroboros (surface:9) stopped early")
+    expect(twins).toContain("- Claude Code in ouroboros (bbbbbbbb) stopped early")
+    expect(noticeLine(record(), undefined, true)).toMatch(/^Claude Code in ouroboros \(0a1b2c3d\) /)
   })
 
   it("keeps untrusted terminal text to one plain bounded line", () => {
-    expect(plain("a\u0000b\nc‮d e", 50)).toBe("a b c d e")
+    expect(plain("a\u0000b\nc\u202ed e", 50)).toBe("a b c d e")
     expect(plain("**bold** <at>Ari</at> [link](x) `code` #h | ~s~ \\n @everyone", 100)).toBe("bold at Ari /at link (x) code h s n everyone")
     expect(plain('say "hi"', 50)).toBe("say 'hi'")
     expect(plain("abcdefghij", 5)).toBe("abcd…")
@@ -125,33 +142,44 @@ describe("owner notice text", () => {
   })
 
   it("says who returned, what Shepherd did and why, for every kind", () => {
-    expect(noticeLine(record({ session: "" }))).toMatch(/^Claude Code in ouroboros stopped early/)
-    expect(noticeLine(record(), "surface:12")).toBe('Claude Code in ouroboros (surface:12) stopped early, so I sent it back: "keep going, run the tests". Why: It asked whether to continue a task it was told to finish.')
-    expect(noticeLine(record({ reply: "key:2" }), "surface:3")).toBe("Claude Code in ouroboros (surface:3) stopped early, so I pressed 2. Why: It asked whether to continue a task it was told to finish.")
-    expect(noticeLine(record({ action: "let_through", reply: null, reason: "Ari is in this session" }))).toBe("Claude Code in ouroboros (0a1b2c3d) stopped early, but I did not answer it, so it is waiting for you. Why: Ari is in this session")
-    expect(noticeLine(record({ kind: "gate", action: "let_through", agent: "Copilot", cwd: "/Users/a/desk", reason: "wants to push to main" }), "w1:p2")).toBe("Copilot in desk (w1:p2) needs you. Why: wants to push to main")
-    expect(noticeLine(record({ kind: "done", action: "let_through", agent: null, cwd: null, reason: "" }), "s")).toBe("A coding agent (s) says it is done. Why: no reason given")
-    expect(noticeLine(record({ kind: "loop_guard", reason: "loop guard: x" }), "s")).toBe("Claude Code in ouroboros (s): I stopped answering it after too many replies, so it is waiting for you. Why: loop guard: x")
-    expect(noticeLine(record({ kind: "working", reason: "tests pass" }), "s")).toBe("Claude Code in ouroboros (s) is still working in the background and has news. Why: tests pass")
-    expect(noticeLine(record({ kind: "unclear", reason: "a shell" }), "s")).toBe("I could not determine the current state of Claude Code in ouroboros (s). Why: a shell")
-    expect(noticeLine(record({ kind: "error", reason: "the judge timed out" }), "s")).toBe("I could not complete my observation of Claude Code in ouroboros (s); the agent's state was not determined. Why: the judge timed out")
+    expect(noticeLine(record())).toBe('Claude Code in ouroboros stopped early, so I told it: "keep going, run the tests". It asked whether to continue a task it was told to finish.')
+    expect(noticeLine(record({ reply: "key:2" }))).toBe("Claude Code in ouroboros stopped early, so I pressed 2. It asked whether to continue a task it was told to finish.")
+    expect(noticeLine(record({ action: "let_through", reply: null, reason: "Ari is in this session" }))).toBe("Claude Code in ouroboros stopped early and I left it for you. Ari is in this session.")
+    expect(noticeLine(record({ kind: "gate", action: "let_through", agent: "Copilot", cwd: "/Users/a/desk", reason: "wants to push to main" }))).toBe("Copilot in desk needs you. Wants to push to main.")
+    expect(noticeLine(record({ kind: "done", action: "let_through", agent: null, cwd: null, reason: "" }))).toBe("A coding agent says it's done.")
+    expect(noticeLine(record({ kind: "loop_guard", reason: "loop guard: x" }))).toBe("Claude Code in ouroboros kept stopping, so I stopped answering it and left it for you. Loop guard: x.")
+    expect(noticeLine(record({ kind: "working", reason: "tests pass!" }))).toBe("Claude Code in ouroboros is still working, with news. Tests pass!")
+    expect(noticeLine(record({ kind: "unclear", reason: "a shell" }))).toBe("I couldn't tell what Claude Code in ouroboros is doing. A shell.")
+    expect(noticeLine(record({ kind: "error", reason: "the judge timed out" }))).toBe("I couldn't check on Claude Code in ouroboros. The judge timed out.")
+  })
+
+  it("uses the judge's own note to the owner when Shepherd took no action it could misdescribe", () => {
+    const note = "It shipped the release and wants your sign-off. It also hit an archive failure it can't fix."
+    for (const kind of ["gate", "done", "waiting", "working"] as const) {
+      expect(noticeLine(record({ kind, action: "let_through", reply: null, note, title: "ouro hx" }))).toBe(`Claude Code on ouro hx in ouroboros: ${note}`)
+    }
+    // Where Shepherd answered, held back or failed, its own account is used: the judge could not know what happened.
+    expect(noticeLine(record({ note }))).toMatch(/stopped early, so I told it/)
+    expect(noticeLine(record({ kind: "loop_guard", note }))).toMatch(/kept stopping/)
+    expect(noticeLine(record({ kind: "error", note }))).toMatch(/^I couldn't check/)
+    expect(noticeLine(record({ kind: "gate", note: "Push to <at>main</at> @Ari" }))).toBe("Claude Code in ouroboros: Push to at main /at Ari")
   })
 
   it("never lets terminal fields carry markup or a mention", () => {
-    const line = noticeLine(record({ agent: "<at>Ari</at>", cwd: "/x/**repo**", reason: "[click](http://e) @Ari\nnext line", reply: 'go "now" @Ari' }), "s:1")
-    expect(line).toBe('at Ari /at in repo (s:1) stopped early, so I sent it back: "go \'now\' Ari". Why: click (http://e) Ari next line')
+    const line = noticeLine(record({ agent: "<at>Ari</at>", cwd: "/x/**repo**", reason: "[click](http://e) @Ari\nnext line", reply: 'go "now" @Ari' }))
+    expect(line).toBe('at Ari /at in repo stopped early, so I told it: "go \'now\' Ari". Click (http://e) Ari next line.')
     expect(line).not.toMatch(/[<>[\]*@\n]/)
   })
 
   it("invites a reply in the same conversation, which the agent relays to the coding session", () => {
-    expect(NOTICE_REPLY_LINE).toBe("Reply here and I'll pass your answer on.")
+    expect(NOTICE_REPLY_LINE).toBe("Reply here and I'll pass it on.")
     expect(noticeMessage([record({ kind: "gate" })])).toBe(`${noticeLine(record({ kind: "gate" }))}\n\n${NOTICE_REPLY_LINE}`)
   })
 
   it("puts a burst in one message and counts what does not fit", () => {
     expect(noticeMessage([record()], new Map([["0a1b2c3d-4e5f", "surface:12"]]))).toBe(replyable(noticeLine(record(), "surface:12")))
     const two = noticeMessage([record(), record({ session: "S2", kind: "gate", agent: "Codex" })], new Map([["S2", "surface:2"]]))
-    expect(two.split("\n")).toEqual(["Updates from 2 coding sessions:", `- ${noticeLine(record())}`, `- ${noticeLine(record({ session: "S2", kind: "gate", agent: "Codex" }), "surface:2")}`, "", NOTICE_REPLY_LINE])
+    expect(two.split("\n")).toEqual(["2 updates:", `- ${noticeLine(record())}`, `- ${noticeLine(record({ session: "S2", kind: "gate", agent: "Codex" }), "surface:2")}`, "", NOTICE_REPLY_LINE])
     const many = noticeMessage(Array.from({ length: 9 }, (_, index) => record({ session: `S${index}` })))
     expect(many.split("\n")).toHaveLength(1 + 6 + 1 + 2)
     expect(many.split("\n").at(-3)).toBe("- and 3 more.")
@@ -166,7 +194,7 @@ describe("owner notice text", () => {
     expect(noticeMessage(records)).toBe(replyable(noticeLine(records[5]!)))
     expect(noticeMessage([...records].reverse())).toBe(replyable(noticeLine(records[5]!)))
     expect(records).toEqual(original)
-    expect(noticeMessage([records[0]!, { ...records[1]!, host: "other-host" }])).toContain("Updates from 2 coding sessions:")
+    expect(noticeMessage([records[0]!, { ...records[1]!, host: "other-host" }])).toContain("2 updates:")
   })
 
   it("orders distinct targets and treats invalid timestamps conservatively with deterministic ties", () => {
@@ -178,13 +206,14 @@ describe("owner notice text", () => {
     const lastInvalid = { ...invalid, transition: "z", reason: "later unknown" }
     expect(noticeMessage([invalid, lastInvalid])).toBe(replyable(noticeLine(lastInvalid)))
     expect(noticeMessage([lastInvalid, invalid])).toBe(replyable(noticeLine(lastInvalid)))
-    const reversed = noticeMessage([record({ session: "Z" }), record({ session: "A" })])
-    expect(reversed.indexOf("(A)")).toBeLessThan(reversed.indexOf("(Z)"))
+    const reversed = noticeMessage([record({ session: "Z", agent: "Zed" }), record({ session: "A", agent: "Amp" })])
+    expect(reversed.indexOf("Amp")).toBeLessThan(reversed.indexOf("Zed"))
   })
 
   it("labels recovered observations with their own time, never restart time or live status", () => {
     const message = noticeMessage([record({ at: "invalid-time" })], new Map(), { recovered: true })
-    expect(message).toMatch(/historical/i)
+    expect(message).toMatch(/^Catching up on something I saw earlier, so it may be out of date:/)
+    expect(noticeMessage([record(), record({ session: "S2" })], new Map(), { recovered: true })).toMatch(/^Catching up on things I saw earlier, so these may be out of date:/)
     expect(message).toContain("observation time unknown")
     expect(message).not.toContain("invalid-time")
     const dated = noticeMessage([record()], new Map(), { recovered: true })
@@ -605,7 +634,7 @@ describe("owner notifier", () => {
     for (let index = 0; index < 9; index++) await instance.notify(record({ session: `S${index}`, reason: `reason-${index}` }))
     await instance.flush()
     expect(sent).toHaveLength(1)
-    expect(sent[0]!.text).toContain("Updates from 9 coding sessions:")
+    expect(sent[0]!.text).toContain("9 updates:")
     expect(sent[0]!.text).toContain("and 3 more")
     expect(readNoticeOutbox(root).every(entry => entry.deliveries[ari.friendId]?.state === "sent")).toBe(true)
   })
@@ -618,8 +647,8 @@ describe("owner notifier", () => {
     const recovered = notifier({ send })
     await recovered.instance.flush()
     expect(send).toHaveBeenCalledTimes(1)
-    expect(send.mock.calls[0]).toEqual([ari, expect.stringContaining("Updates from 7 coding sessions:"), expect.any(Array)])
-    expect(send.mock.calls[0]).toEqual([ari, expect.stringMatching(/historical/i), expect.any(Array)])
+    expect(send.mock.calls[0]).toEqual([ari, expect.stringContaining("7 updates:"), expect.any(Array)])
+    expect(send.mock.calls[0]).toEqual([ari, expect.stringMatching(/may be out of date/), expect.any(Array)])
     expect((send.mock.calls[0] as unknown[])[2]).toHaveLength(207)
     const entries = readNoticeOutbox(root)
     expect(entries).toHaveLength(207)
@@ -768,11 +797,11 @@ describe("owner notifier", () => {
     expect(off.sent).toEqual([])
   })
 
-  it("names the session by a short id when the host cannot list its sessions", async () => {
+  it("still names the session by its agent and folder when the host cannot list its sessions", async () => {
     const { instance, sent } = notifier({ listSessions: async () => { throw new Error("socket closed") } })
     instance.notify(record())
     await instance.flush()
-    expect(sent[0]!.text).toContain("(0a1b2c3d)")
+    expect(sent[0]!.text).toMatch(/^Claude Code in ouroboros stopped early/)
   })
 
   it("logs a warning and sends nothing when no family friend is reachable", async () => {

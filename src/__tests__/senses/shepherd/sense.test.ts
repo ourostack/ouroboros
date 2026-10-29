@@ -9,7 +9,7 @@ import type { HostWatchHandlers, ReturnedControl, ShepherdHost } from "../../../
 import type { JudgeResult, ReturnPacket } from "../../../senses/shepherd/judge"
 import { parseVerdict } from "../../../senses/shepherd/judge"
 import { appendReturn, readReturns, returnsLogPath, type ReturnRecord } from "../../../senses/shepherd/returns"
-import { FOCUS_HOLD_MS, escalationContent, field, humanName, noticePolicy, queueEscalation, startShepherdSenseApp, wakeForEscalations } from "../../../senses/shepherd/sense"
+import { FOCUS_HOLD_MS, REPEAT_WINDOW_MS, escalationContent, field, humanName, noticePolicy, queueEscalation, startShepherdSenseApp, wakeForEscalations } from "../../../senses/shepherd/sense"
 import { ackFrame, startFakeCmux } from "./fake-cmux"
 import { recordShepherdCorrection, setShepherdSessionPause } from "../../../senses/shepherd/guidance"
 import { hookEvent, SCREENS, tree } from "./fixtures"
@@ -1147,6 +1147,93 @@ describe("Shepherd sense: letting returns through", () => {
     host.handlers!.returned({ sessionId: "S1", transitionId: "w", agent: null, cwd: null, lastBody: null, backgroundWork: null })
     await vi.waitFor(() => expect(judged).toHaveBeenCalled())
     await new Promise((resolve) => setTimeout(resolve, 20))
+  })
+})
+
+describe("Shepherd sense: not repeating itself to the owner", () => {
+  it("passes the last note to the judge and holds a repeat of the same kind, but not a new kind", async () => {
+    const answers: JudgeResult[] = [
+      verdict({ kind: "gate", reply: null, reason: "asks Ari to sign off", note: "It wants your sign-off." }),
+      verdict({ kind: "gate", reply: null, reason: "still asks Ari to sign off", note: "It still wants your sign-off.", repeat: true }),
+      verdict({ kind: "done", reply: null, reason: "Ari signed off", note: "It's finished.", repeat: true }),
+    ]
+    const judge = vi.fn(async (_packet: ReturnPacket) => answers.shift()!)
+    const { host, notices, escalations, returned, last } = await start(judge)
+    host.screens.S1 = ["Accept or send back?"]
+    await returned({ sessionId: "S1", transitionId: "r1" })
+    expect(judge.mock.calls[0]![0].lastNote).toBeUndefined()
+    expect(notices.map(record => record.note)).toEqual(["It wants your sign-off."])
+
+    clock += 11 * 60_000
+    host.screens.S1 = ["Accept or send back? (still waiting)"]
+    await returned({ sessionId: "S1", transitionId: "r2" })
+    expect(judge.mock.calls[1]![0].lastNote).toEqual({ text: "It wants your sign-off.", at: "2026-10-10T20:00:00.000Z" })
+    expect(last()).toMatchObject({ kind: "gate", noticeSuppressionReason: "repeat", noticeEligible: false })
+    expect(notices).toHaveLength(1)
+    expect(escalations).toHaveLength(1)
+
+    clock += 60_000
+    host.screens.S1 = ["All done."]
+    await returned({ sessionId: "S1", transitionId: "r3" })
+    expect(notices.map(record => record.note)).toEqual(["It wants your sign-off.", "It's finished."])
+  })
+
+  it("forgets what the owner was told once they go to the session or Shepherd answers it, even across a restart", async () => {
+    const answers: JudgeResult[] = [
+      verdict({ kind: "gate", reply: null, reason: "asks Ari", note: "It wants your call." }),
+      verdict({ kind: "gate", reply: null, reason: "asks Ari again", note: "It wants your call again." }),
+      verdict({ kind: "gate", reply: null, reason: "asks Ari a third time", note: "Third ask." }),
+      verdict(),
+      verdict({ kind: "gate", reply: null, reason: "asks Ari once more" }),
+    ]
+    const judge = vi.fn(async (_packet: ReturnPacket) => answers.shift()!)
+    const { host, notices, returned } = await start(judge)
+    host.screens.S1 = ["Need your call"]
+    await returned({ sessionId: "S1", transitionId: "f1" })
+    host.handlers!.focused("S1")
+    clock += FOCUS_HOLD_MS + 1_000
+    host.screens.S1 = ["Need your call, after Ari looked"]
+    await returned({ sessionId: "S1", transitionId: "f2" })
+    expect(judge.mock.calls[1]![0].lastNote).toBeUndefined()
+    expect(notices.map(record => record.note)).toEqual(["It wants your call.", "It wants your call again."])
+
+    clock += 60_000
+    host.screens.S1 = ["Need your call, third"]
+    await returned({ sessionId: "S1", transitionId: "f3" })
+    expect(judge.mock.calls[2]![0].lastNote?.text).toBe("It wants your call again.")
+    clock += 60_000
+    host.screens.S1 = [SCREENS.claudePremature]
+    await returned({ sessionId: "S1", transitionId: "f4" })
+    expect(readReturns(agentRoot).at(-1)).toMatchObject({ action: "respond" })
+    stop!()
+    stop = null
+
+    clock += 60_000
+    const again = await start(judge)
+    again.host.screens.S1 = ["Need your call, after Shepherd answered"]
+    await again.returned({ sessionId: "S1", transitionId: "f5" })
+    expect(judge.mock.calls[4]![0].lastNote).toBeUndefined()
+  })
+
+  it("forgets what the owner was told after the repeat window, and remembers it across a restart", async () => {
+    const judge = vi.fn(async (_packet: ReturnPacket) => verdict({ kind: "gate", reply: null, reason: "asks Ari" }))
+    const first = await start(judge)
+    first.host.screens.S1 = ["Need your call"]
+    await first.returned({ sessionId: "S1", transitionId: "w1" })
+    stop!()
+    stop = null
+
+    clock += 60_000
+    const second = await start(judge)
+    second.host.screens.S1 = ["Need your call again"]
+    await second.returned({ sessionId: "S1", transitionId: "w2" })
+    // With no note, the judge sees the reason it gave last time.
+    expect(judge.mock.calls[1]![0].lastNote).toEqual({ text: "asks Ari", at: "2026-10-10T20:00:00.000Z" })
+
+    clock += REPEAT_WINDOW_MS
+    second.host.screens.S1 = ["Need your call, much later"]
+    await second.returned({ sessionId: "S1", transitionId: "w3" })
+    expect(judge.mock.calls[2]![0].lastNote).toBeUndefined()
   })
 })
 

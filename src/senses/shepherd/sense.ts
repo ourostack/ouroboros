@@ -50,6 +50,8 @@ const FIELD_MAX = 200
 const CONNECTIVITY_POLL_MS = 15_000
 const RECOVERY_JUDGE_ATTEMPTS = 3
 const CONCURRENT_OBSERVATIONS = 4
+/** How long the owner's last notice about a session counts as already told: after this a repeat is sent again. */
+export const REPEAT_WINDOW_MS = 6 * 3_600_000
 const NETWORK_RESUME = "Connectivity has recovered. Continue the existing task only if safe. Check uncertain writes before retrying. Do not bypass approvals or deliberate pauses."
 export const PERIODIC_RESUME = "Reassess your existing task and continue only already-authorized remaining work. Respect human decisions and pauses. Reconcile uncertain effects before retrying; do not wait for a scheduled tick when you can work now."
 
@@ -224,7 +226,14 @@ export async function startShepherdSenseApp(options: ShepherdSenseOptions): Prom
   let cancelQuietBatch: (() => void) | null = null
   let checkInPass = 0
   const generations = new Map<string, number>()
-  const history = new Map(readReturns(agentRoot).filter(record => record.host === host.name).map(record => [record.session, record]))
+  const past = readReturns(agentRoot).filter(record => record.host === host.name)
+  const history = new Map(past.map(record => [record.session, record]))
+  /** The last notice the owner was sent about each session, so the judge can tell when it has nothing new. */
+  const lastNoticed = new Map<string, ReturnRecord>()
+  for (const record of past) {
+    if (record.action === "respond") lastNoticed.delete(record.session)
+    else if (record.noticeState === "queued") lastNoticed.set(record.session, record)
+  }
   const generationFor = (session: string) => generations.get(session) ?? 0
   const invalidate = (session: string) => generations.set(session, generationFor(session) + 1)
 
@@ -505,13 +514,18 @@ export async function startShepherdSenseApp(options: ShepherdSenseOptions): Prom
         return
       }
       let verdict: JudgeResult
+      let repeatOf: ReturnRecord["kind"] | null = null
       try {
         const prior = history.get(event.sessionId)
+        const told = lastNoticed.get(event.sessionId)
+        const lastNote = told && now() - Date.parse(told.at) < REPEAT_WINDOW_MS ? { text: told.note ?? told.reason, at: told.at } : undefined
         verdict = await judge({ human, agent: record.agent, cwd: record.cwd, task: record.task,
           lastBody: periodic ? null : event.lastBody ? redactSecrets(event.lastBody) : null,
           backgroundWork: current ? current.backgroundWork : event.backgroundWork, screen, guidance,
           ...(recovery ? { networkRecovered: true as const } : {}),
-          ...(periodic ? { periodicCheckIn: { priorJudgment: prior ? { kind: prior.kind, reason: prior.reason, at: prior.at } : null } } : {}) })
+          ...(periodic ? { periodicCheckIn: { priorJudgment: prior ? { kind: prior.kind, reason: prior.reason, at: prior.at } : null } } : {}),
+          ...(lastNote ? { lastNote } : {}) })
+        repeatOf = verdict.repeat === true && lastNote ? told!.kind : null
       } catch (error) {
         if (periodic) notice = !stopped && eventGeneration === generationFor(event.sessionId) && !guidance.paused &&
           current?.session.focused !== true && current?.backgroundWork !== true && now() - state.focusedAt >= FOCUS_HOLD_MS
@@ -543,7 +557,7 @@ export async function startShepherdSenseApp(options: ShepherdSenseOptions): Prom
       const kind = (current ? current.backgroundWork : event.backgroundWork) ? "working" : verdict.kind
       const news = verdict.news === true || (kind === "working" && verdict.kind === "gate")
       Object.assign(record, { kind, judgeKind, reason: verdict.reason, latencyMs: verdict.latencyMs, inputTokens: verdict.inputTokens,
-        ...(verdict.replyIssue ? { replyIssue: verdict.replyIssue } : {}) })
+        ...(verdict.replyIssue ? { replyIssue: verdict.replyIssue } : {}), ...(verdict.note ? { note: verdict.note } : {}) })
       if (!recovery && !periodic && kind === "waiting" && verdict.waitingOnNetwork) rememberNetworkWait(event, screen, eventGeneration)
       const noticeScreen = screen.replace(/\b\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})\b/g, "<observation-time>")
       noticeBasis = [host.name, event.sessionId, record.agent, record.cwd, record.task, noticeScreen, guidance.revision]
@@ -615,6 +629,8 @@ export async function startShepherdSenseApp(options: ShepherdSenseOptions): Prom
               } : undefined
               if (await dispatch(record, reply, current?.instance ?? session?.instance ?? null, fingerprint(screen), periodic ? current : undefined, canSend)) {
                 Object.assign(record, { action: "respond", reply: reply.text })
+                // Shepherd moved the session on, so what the owner was told no longer describes it.
+                lastNoticed.delete(event.sessionId)
                 state.streak += 1
                 state.answers.push(now())
                 status = `answered for ${human}: ${verdict.reason}`
@@ -622,6 +638,11 @@ export async function startShepherdSenseApp(options: ShepherdSenseOptions): Prom
             }
           }
         }
+      }
+      // The judge says the owner already heard this, in a notice of the same kind, and Shepherd did nothing new.
+      if (notice && repeatOf === record.kind && record.action !== "respond") {
+        notice = false
+        record.noticeSuppressionReason = "repeat"
       }
       if (record.kind === "gate" || record.kind === "done" || record.kind === "waiting" || record.kind === "loop_guard") {
         escalateOutcome = true
@@ -657,7 +678,10 @@ export async function startShepherdSenseApp(options: ShepherdSenseOptions): Prom
         try {
           const acceptance = await notifyOwner(record)
           record.noticeState = acceptance.state
-          if (acceptance.state === "queued") record.noticeId = acceptance.noticeId
+          if (acceptance.state === "queued") {
+            record.noticeId = acceptance.noticeId
+            if (record.action !== "respond") lastNoticed.set(event.sessionId, record)
+          }
           else record.noticeSuppressionReason = acceptance.reason
           if (noticeSignature && (acceptance.state === "queued" || acceptance.reason === "policy")) {
             try {
@@ -710,6 +734,8 @@ export async function startShepherdSenseApp(options: ShepherdSenseOptions): Prom
       if (stopped) return
       invalidate(session)
       networkWaiting.delete(session)
+      // The owner went to the session themselves, so whatever comes next is news to them.
+      lastNoticed.delete(session)
       const state = guardFor(session)
       Object.assign(state, { streak: 0, tripped: false, focusedAt: now() })
     },
