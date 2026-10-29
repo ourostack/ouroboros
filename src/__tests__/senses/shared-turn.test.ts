@@ -529,6 +529,25 @@ describe("runSenseTurn", () => {
     expect(result.response).toBe("hello from the agent")
   })
 
+  it.each([
+    { kind: "a settle answer", event: { id: "evt-000010", role: "assistant", content: null, toolCalls: [{ id: "call-1", type: "function", function: { name: "lookup", arguments: "{}" } }, { id: "call-2", type: "function", function: { name: "settle", arguments: JSON.stringify({ answer: "  want it on your PocketBook as well?  " }) } }] }, want: "want it on your PocketBook as well?" },
+    { kind: "plain text", event: { id: "evt-000010", role: "assistant", content: "  it airs tonight  ", toolCalls: [] }, want: "it airs tonight" },
+    { kind: "a settle with no answer", event: { id: "evt-000010", role: "assistant", content: [], toolCalls: [{ id: "call-1", type: "function", function: { name: "lookup", arguments: "{}" } }, { id: "call-2", type: "function", function: { name: "settle", arguments: JSON.stringify({ intent: "complete" }) } }] }, want: undefined },
+    { kind: "a malformed settle", event: { id: "evt-000010", role: "assistant", content: null, toolCalls: [{ id: "call-1", type: "function", function: { name: "lookup", arguments: "{}" } }, { id: "call-2", type: "function", function: { name: "settle", arguments: "{" } }] }, want: undefined },
+    { kind: "an event the session no longer has", event: { id: "evt-000002", role: "assistant", content: "older", toolCalls: [] }, want: undefined },
+    { kind: "a settle answer beside narration", event: { id: "evt-000010", role: "assistant", content: "let me check", toolCalls: [{ id: "call-1", type: "function", function: { name: "settle", arguments: JSON.stringify({ answer: "want it on your PocketBook?" }) } }] }, want: "want it on your PocketBook?" },
+    { kind: "a control card, which the agent never asked", event: { id: "evt-000010", role: "system", content: "[Telegram control artifact]\n1. approve\n2. deny", toolCalls: [] }, want: undefined },
+  ])("shows the model the message a Telegram reply answers, not only the latest one: $kind (2026-10-28)", async ({ event, want }) => {
+    mockLoadSession.mockReturnValue({ messages: [], events: [event], usage: { inputTokens: 0, outputTokens: 0, reasoningTokens: 0, totalTokens: 0 }, state: {} })
+    const { runSenseTurn } = await import("../../senses/shared-turn")
+    const { buildOrientationFrame } = await import("../../heart/orientation-frame")
+    await runSenseTurn({ agentName: "test-agent", channel: "telegram", sessionKey: "session-123", friendId: "friend-1", userMessage: "yes please!!!",
+      ingressRelations: { replyToEventId: "evt-000010", threadRootEventId: null, references: ["telegram-inbound:x"] } })
+
+    const input = mockHandleInboundTurn.mock.calls[0]![0]
+    expect(buildOrientationFrame({ channel: "telegram", messages: input.messages }).source?.replyingToText).toBe(want)
+  })
+
   it("behaviorally holds the session lease before load through persistence and accepted delivery", async () => {
     const entered = Promise.withResolvers<void>()
     const release = Promise.withResolvers<void>()
@@ -1291,6 +1310,33 @@ describe("runSenseTurn", () => {
       precommittedIngress: { eventId: "evt-000002", reference },
     })
     expect(mockHandleInboundTurn).toHaveBeenCalledOnce()
+  })
+
+  it("shows the model the message a precommitted Telegram reply answers (2026-10-28)", async () => {
+    const reference = "telegram-admission:reply"
+    const system = makeSessionEvent({ id: "evt-000001", sequence: 1, role: "system", content: "system" })
+    const book = makeSessionEvent({ id: "evt-000002", sequence: 2, role: "assistant", content: "want it sent to your PocketBook?" })
+    const episodes = makeSessionEvent({ id: "evt-000003", sequence: 3, role: "assistant", content: "retry S12E03?" })
+    const ingress = makeSessionEvent({ id: "evt-000004", sequence: 4, role: "user", content: "yes please!!!", references: [reference] })
+    ingress.relations.replyToEventId = book.id
+    mockSessionTransaction([system, book, episodes, ingress])
+    mockLoadSession.mockReturnValue({
+      messages: [{ role: "system", content: "system" }, { role: "assistant", content: book.content }, { role: "assistant", content: episodes.content }, { role: "user", content: "yes please!!!" }],
+      events: [system, book, episodes, ingress],
+      projectionEventIds: [system.id, book.id, episodes.id, ingress.id],
+      state: undefined,
+    })
+    let replyingTo: string | undefined
+    mockHandleInboundTurn.mockImplementationOnce(async (input: any) => {
+      const { buildOrientationFrame } = await import("../../heart/orientation-frame")
+      replyingTo = buildOrientationFrame({ channel: "telegram", messages: (await input.sessionLoader.loadOrCreate()).messages }).source?.replyingToText
+      return { resolvedContext: makeResolvedContext(), gateResult: { allowed: true }, turnOutcome: "settled", messages: [] }
+    })
+    const { runSenseTurn } = await import("../../senses/shared-turn")
+    await runSenseTurn({ agentName: "test-agent", channel: "telegram", sessionKey: "telegram:approved", friendId: "friend-1",
+      userMessage: "yes please!!!", precommittedIngress: { eventId: ingress.id, reference } })
+
+    expect(replyingTo).toBe("want it sent to your PocketBook?")
   })
 
   it("refuses precommitted ingress when the session itself is missing", async () => {

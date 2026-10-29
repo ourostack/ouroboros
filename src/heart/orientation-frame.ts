@@ -306,6 +306,17 @@ function deriveActionPolicy(
   }
 }
 
+// A reply names the message it answers. The sense stamps that message's text on the
+// user message, so "yes" binds to what was replied to, not to the latest thing said.
+export function stampReplyingToText(message: OpenAI.ChatCompletionMessageParam, text: string): void {
+  ;(message as unknown as Record<string, unknown>)._replyingToText = text
+}
+
+function replyingToTextOf(message: OpenAI.ChatCompletionMessageParam): string | undefined {
+  const text = (message as unknown as Record<string, unknown>)._replyingToText
+  return typeof text === "string" && text.trim() ? text.trim() : undefined
+}
+
 export function buildOrientationFrame(input: BuildOrientationFrameInput): OrientationFrame {
   const derivedCurrent = input.currentUserMessages
     ? { messages: input.currentUserMessages, firstIndex: input.messages.length }
@@ -313,8 +324,10 @@ export function buildOrientationFrame(input: BuildOrientationFrameInput): Orient
   const currentUserSpeech = derivedCurrent.messages
     .map((message) => extractMessageText(message))
     .filter((text) => text.length > 0)
+  const replyingToText = derivedCurrent.messages.map(replyingToTextOf).find((text) => text !== undefined)
   const previousAssistant = latestAssistantBefore(input.messages, derivedCurrent.firstIndex)
-  const priorAssistantReferents = extractOrderedListReferents(extractMessageText(previousAssistant))
+  const priorAssistantReferents = extractOrderedListReferents(replyingToText ?? extractMessageText(previousAssistant))
+  const source = replyingToText && !input.source?.replyingToText ? { kind: input.channel, ...input.source, replyingToText } : input.source
   const candidateStructuredOutput = latestStructuredOutputFrom(input.structuredOutputs)
   const speechKind = input.speechKind ?? "utterance"
   const signals = deriveSignals(currentUserSpeech, priorAssistantReferents, candidateStructuredOutput, speechKind)
@@ -337,7 +350,7 @@ export function buildOrientationFrame(input: BuildOrientationFrameInput): Orient
     ...(latestStructuredOutput ? { latestStructuredOutput } : {}),
     signals,
     actionPolicy,
-    ...(input.source ? { source: input.source } : {}),
+    ...(source ? { source } : {}),
     ...(speechKind === "utterance" ? {} : { speechKind }),
   }
 
