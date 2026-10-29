@@ -135,18 +135,20 @@ describe("package asset validation", () => {
     ]) expect(section).toContain(requirement)
   })
 
+  // The pins move only with a reviewed psyche change. The last one made the psyche generic: {{owner}}, {{butler}} and
+  // {{household}} placeholders, with one household's facts moved to its own house/HOUSE.md.
   it("ships the owner v8 identity correction without changing any other psyche content or containment source", () => {
     const root = path.resolve("deploy/unraid")
     const identity = fs.readFileSync(path.join(root, "sanctuary.ouro/psyche/IDENTITY.md"), "utf8")
     const oldSentence = "My primary server interface is the typed Unraid GraphQL repertoire, never shell."
     const newSentence = "I use the typed Unraid GraphQL repertoire for server operations and owner-authorized native tools for resident work inside my existing container boundary."
     expect(identity).toContain(newSentence)
-    expect(createHash("sha256").update(identity.replace(newSentence, oldSentence)).digest("hex")).toBe("024a02ad975deadb6d22afd4b0683047210a993e00f73d9f7f499898c6229590")
+    expect(createHash("sha256").update(identity.replace(newSentence, oldSentence)).digest("hex")).toBe("5910bcb581042bc38a7781ad6d4afcfb7e87fd15edd0dfee29d254fef535af47")
     for (const [name, expected] of Object.entries({
-      "ASPIRATIONS.md": "2a0ab1c8084e0d703ea614341d08f041e01dbd50c4d2dec347b955c3a29a4c94",
-      "LORE.md": "7f3210616addbec15b643540c4d01f9c928948ce5c3f6f2d53ea69ee753e4926",
-      "SOUL.md": "b530937623d6b99710d5d63791aa78ddfaf1016f658c8fd28d5119cbce8291f8",
-      "TACIT.md": "dad9ed831eb1bcf8083c5165cc3023c85e8d29e239b74b9af6795d426739ee0b",
+      "ASPIRATIONS.md": "86be39b65f18127b7ad1289a0c35e73ae2a58f07ffffed8de2d5a80b47084f59",
+      "LORE.md": "092ec5a8389958d09acc4dfc556bf16a6f61121a86c91a53cb9ba2f8f9cd2fca",
+      "SOUL.md": "f6edc80394aae5201b7e4e8237be74c8b0b51c18116c57d23762e6b0032427a5",
+      "TACIT.md": "e9118b8cfc75bb53b849107a06626a490733ea769d8fb5c72c64d1db2047723c",
     })) expect(createHash("sha256").update(fs.readFileSync(path.join(root, "sanctuary.ouro/psyche", name))).digest("hex")).toBe(expected)
     const contract = JSON.parse(fs.readFileSync(path.join(root, "sanctuary-acceptance-contract.json"), "utf8"))
     expect(JSON.stringify(contract.scenarioSources["containment-audit"])).toContain("sanctuary-containment-audit-v2")

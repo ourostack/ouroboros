@@ -55,6 +55,8 @@ interface PsycheText {
   lore: string;
   tacitKnowledge: string;
   aspirations: string;
+  /** The owner's own facts about their home, from house/HOUSE.md. */
+  house: string;
 }
 
 // Lazy-loaded psyche text cache, scoped by agent root. The daemon can host
@@ -64,10 +66,45 @@ let _psycheCache: {
   psyche: PsycheText;
 } | null = null;
 
-function loadPsycheFile(agentRoot: string, name: string): string {
+// A household install names its owner, its Butler and its home in house/house.json,
+// a file the package never overwrites. The packaged psyche writes {{owner}}, {{butler}}
+// and {{household}} where those names go, so one psyche serves every household.
+const HOUSE_NAME_DEFAULTS: Record<string, string> = {
+  owner: "the owner",
+  butler: "the Butler",
+  household: "the household",
+}
+
+function loadHouseNames(agentRoot: string): Record<string, string> {
+  try {
+    const parsed = JSON.parse(fs.readFileSync(path.join(agentRoot, "house", "house.json"), "utf-8")) as Record<string, unknown>
+    const names: Record<string, string> = { ...HOUSE_NAME_DEFAULTS }
+    for (const [key, field] of [["owner", "ownerName"], ["butler", "butlerName"], ["household", "householdName"]] as const) {
+      const value = parsed[field]
+      if (typeof value === "string" && value.trim()) names[key] = value.trim()
+    }
+    return names
+  } catch {
+    return { ...HOUSE_NAME_DEFAULTS }
+  }
+}
+
+function fillHouseNames(text: string, names: Record<string, string>): string {
+  return text.replace(/\{\{(owner|butler|household)\}\}/gu, (_match, key: string) => names[key]!)
+}
+
+function loadPsycheFile(agentRoot: string, name: string, names: Record<string, string>): string {
   try {
     const psycheDir = path.join(agentRoot, "psyche");
-    return fs.readFileSync(path.join(psycheDir, name), "utf-8").trim();
+    return fillHouseNames(fs.readFileSync(path.join(psycheDir, name), "utf-8").trim(), names);
+  } catch {
+    return "";
+  }
+}
+
+function loadHouseFile(agentRoot: string, names: Record<string, string>): string {
+  try {
+    return fillHouseNames(fs.readFileSync(path.join(agentRoot, "house", "HOUSE.md"), "utf-8").trim(), names);
   } catch {
     return "";
   }
@@ -76,12 +113,14 @@ function loadPsycheFile(agentRoot: string, name: string): string {
 function loadPsyche(): PsycheText {
   const agentRoot = getAgentRoot();
   if (_psycheCache?.agentRoot === agentRoot) return _psycheCache.psyche;
+  const names = loadHouseNames(agentRoot);
   const psyche = {
-    soul: loadPsycheFile(agentRoot, "SOUL.md"),
-    identity: loadPsycheFile(agentRoot, "IDENTITY.md"),
-    lore: loadPsycheFile(agentRoot, "LORE.md"),
-    tacitKnowledge: loadPsycheFile(agentRoot, "TACIT.md"),
-    aspirations: loadPsycheFile(agentRoot, "ASPIRATIONS.md"),
+    soul: loadPsycheFile(agentRoot, "SOUL.md", names),
+    identity: loadPsycheFile(agentRoot, "IDENTITY.md", names),
+    lore: loadPsycheFile(agentRoot, "LORE.md", names),
+    tacitKnowledge: loadPsycheFile(agentRoot, "TACIT.md", names),
+    aspirations: loadPsycheFile(agentRoot, "ASPIRATIONS.md", names),
+    house: loadHouseFile(agentRoot, names),
   };
   _psycheCache = { agentRoot, psyche };
   return psyche;
@@ -185,6 +224,12 @@ function aspirationsSection(): string {
   const text = loadPsyche().aspirations;
   if (!text) return "";
   return `## my aspirations\n${text}`;
+}
+
+function houseSection(): string {
+  const text = loadPsyche().house;
+  if (!text) return "";
+  return `## my house\n${text}`;
 }
 
 function peerCoordinationGuidance(channel: Channel): string {
@@ -1678,6 +1723,7 @@ export async function buildSystem(channel: Channel = "cli", options?: BuildSyste
         authorizedPsyche ? loreSection() : "",
         authorizedPsyche ? tacitKnowledgeSection() : "",
         authorizedPsyche ? aspirationsSection() : "",
+        authorizedPsyche ? houseSection() : "",
         relationshipFriendContextSection(context),
         trustContextSection(context),
         "# my tools",
@@ -1699,6 +1745,7 @@ export async function buildSystem(channel: Channel = "cli", options?: BuildSyste
     loreSection(),
     tacitKnowledgeSection(),
     aspirationsSection(),
+    houseSection(),
 
     // Group 2: my body & environment (minus dateSection and rhythmStatusSection)
     "# my body & environment",

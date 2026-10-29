@@ -494,7 +494,9 @@ describe("Mendelow Cloud Butler household UX", () => {
   })
 
   it("serves Ari and approved household members without requiring the internal server name", () => {
-    expect(psyche("IDENTITY")).toContain("Mendelow Cloud Butler")
+    // The packaged psyche names no household: the Butler's and owner's names come from house/house.json at prompt time.
+    expect(psyche("IDENTITY")).toContain("{{butler}}")
+    expect(psyche("IDENTITY")).not.toContain("Mendelow")
     expect(psyche("IDENTITY")).toContain("approved household members")
     expect(psyche("IDENTITY")).toContain("People do not need to say Sanctuary")
     expect(psyche("IDENTITY")).not.toContain("serve one trusted operator")
@@ -548,10 +550,10 @@ describe("Mendelow Cloud Butler household UX", () => {
 
   it("keeps safety and duty content intact beside the brevity rules", () => {
     const soul = psyche("SOUL")
-    expect(soul).toContain("Never trimmed: uncertainty and unverified disclosures, what tools returned and each step's evidence, may-never-finish caveats, owner notices, confirmation before destructive or irreversible actions, offers that need his answer, and necessary multi-part questions.")
-    expect(soul).toContain("Money, credentials, and irreversible or restricted actions stay with Ari")
+    expect(soul).toContain("Never trimmed: uncertainty and unverified disclosures, what tools returned and each step's evidence, may-never-finish caveats, owner notices, confirmation before destructive or irreversible actions, offers that need their answer, and necessary multi-part questions.")
+    expect(soul).toContain("Money, credentials, and irreversible or restricted actions stay with {{owner}}")
     expect(soul).toContain("a promised follow-up needs a filed watch")
-    expect(soul).toContain("A missing tool goes to Claude Code in one line, never to Ari as a UI click.")
+    expect(soul).toContain("A missing tool goes to `report_failure` in one line, never to {{owner}} as a UI click.")
     expect(soul).toContain("For reversible choices within standing policy")
     expect(soul).toContain("Facts follow the primary-source rule")
     expect(soul).toContain("all flourish steps aside")
@@ -672,17 +674,11 @@ describe("Mendelow Cloud Butler household UX", () => {
     const transcripts = JSON.parse(fs.readFileSync(transcriptPath, "utf8")) as Transcript[]
     const expectedOff = transcripts.find((entry) => entry.id === "expected-off")!
     expect(expectedOff.reply).toContain("applies only to Books")
-    expect(psyche("LORE")).toContain("Books is the `calibre-web` container. Answer \"is Books up?\" from `calibre-web` alone")
-    expect(psyche("LORE")).toContain("record `container:calibre-web` with that state and keep `container:calibre` off unless Ari explicitly says otherwise")
-    expect(psyche("LORE")).toContain("Jellyfin is the household media shelf")
-    // Every conversation reads the lore, A2A peers included, so this is where a peer learns to use the books tool for a book lookup.
+    // Which containers are Books and how its tool is used are one household's facts, so they live in that house's
+    // house/HOUSE.md, not in the packaged lore every install shares.
     const lore = psyche("LORE")
-    expect(lore).toContain("/home/ouro/AgentBundles/sanctuary.ouro/books/books")
-    expect(lore).toMatch(/`books search "[^"]+"`/u)
-    expect(lore).toMatch(/`books library find "[^"]+"`/u)
-    expect(lore).toMatch(/`books get --title/u)
-    expect(lore).toMatch(/never add `--deliver`[^.]*unless[^.]*(asks|asked)/iu)
-    expect(lore).toMatch(/before (a|any) web search/iu)
+    expect(lore).toContain("Jellyfin is the household media shelf")
+    expect(lore).not.toMatch(/calibre|PocketBook|\bAri\b/u)
     expect(expectedOff.tools).toEqual(["steward_policy_manage"])
     const reminder = transcripts.find((entry) => entry.id === "specified-snooze")!
     expect(reminder.reply).toContain("Friday at 10:00 AM")
@@ -710,8 +706,8 @@ describe("Mendelow Cloud Butler household UX", () => {
       expect(visibility.reply).toContain(heading)
     }
     expect(visibility.reply).not.toMatch(/daemon|dead.?letter|policy lane|private.?runtime|SABnzbd|Sonarr|Radarr|Deluge/iu)
-    expect(psyche("TACIT")).toContain("For Ari's whole-household status questions")
-    expect(psyche("TACIT")).toContain("active work, waiting on Ari, snoozed wake times, intentionally quiet services, healthy systems, and other current issues")
+    expect(psyche("TACIT")).toContain("For {{owner}}'s whole-household status questions")
+    expect(psyche("TACIT")).toContain("active work, waiting on {{owner}}, snoozed wake times, intentionally quiet services, healthy systems, and other current issues")
     expect(psyche("TACIT")).toContain("Do not narrate daemon, event-queue, provider-lane, or backend service internals")
     const storage = transcripts.find((entry) => entry.id === "storage-creative")!
     expect(storage.reply).not.toMatch(/\b94 GB\b/u)

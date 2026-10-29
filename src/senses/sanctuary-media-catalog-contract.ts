@@ -155,7 +155,7 @@ function hasGroundedFirstPersonVisibility(answer: string, formattedCount: string
 
 function commonAnswerRejection(answer: string, technicalDetailRequested: boolean): string | undefined {
   if (/\b(?:you'?d|you\s+would|you\s+need\s+to|please)\b.*\b(?:check|look at|poke|nudge)\b.*\b(?:log|logs|dashboard|jellyfin|unmanic)\b/iu.test(answer)) {
-    return "Do not send Ari to check Jellyfin, Unmanic, dashboards, or logs for ordinary library visibility while safe catalog tools are available. Use the catalog evidence, or if the catalog read itself fails, say exactly what I could and could not verify."
+    return "Do not send the owner to check Jellyfin, Unmanic, dashboards, or logs for ordinary library visibility while safe catalog tools are available. Use the catalog evidence, or if the catalog read itself fails, say exactly what I could and could not verify."
   }
   if (REPORT_LABEL.test(answer)) return "Answer conversationally; do not use status-report labels such as version:, house:, render check:, status:, or result:."
   if (!technicalDetailRequested && HOUSEHOLD_JARGON.test(answer)) return "Use household language such as shelf or library; omit implementation jargon unless technical detail was requested."

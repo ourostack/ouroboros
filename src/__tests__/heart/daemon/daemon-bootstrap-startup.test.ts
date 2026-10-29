@@ -36,7 +36,7 @@ describe("daemon container credential bootstrap startup boundary", () => {
 
     expect(messages).toEqual([
       "Sanctuary installation needs attention\n  human-required: restart Mendelow Cloud Butler from its verified release so the installed bundle can finish updating",
-      "Sanctuary installation needs attention\n  human-required: resume the reviewed Mendelow Cloud Butler update recovery procedure",
+      "Sanctuary installation needs attention\n  human-required: resume the reviewed Butler update recovery procedure",
       "Sanctuary installation needs attention\n  human-required: roll back to a verified Mendelow Cloud Butler release or install that release again",
     ])
     expect(messages.join("\n")).not.toMatch(/(?:restart_from|run_verified|roll_back)/u)
@@ -145,7 +145,7 @@ describe("daemon container credential bootstrap startup boundary", () => {
     expect(startDaemon).not.toHaveBeenCalled()
     expect(startupMocks.emit).toHaveBeenCalledWith(expect.objectContaining({
       event: "daemon.entry_error",
-      message: "Sanctuary installation needs attention\n  human-required: resume the reviewed Mendelow Cloud Butler update recovery procedure",
+      message: "Sanctuary installation needs attention\n  human-required: resume the reviewed Butler update recovery procedure",
     }))
   })
 
@@ -267,7 +267,7 @@ describe("daemon container credential bootstrap startup boundary", () => {
 
     const redactedExit = vi.fn()
     failFastSanctuaryBundlePreparationStartup({ failure: new Error("secret raw path"), exit: redactedExit })
-    expect(startupMocks.writeTombstone).toHaveBeenLastCalledWith("startupFailurePublic", expect.objectContaining({ message: "Sanctuary installation needs attention\n  human-required: resume the reviewed Mendelow Cloud Butler update recovery procedure" }))
+    expect(startupMocks.writeTombstone).toHaveBeenLastCalledWith("startupFailurePublic", expect.objectContaining({ message: "Sanctuary installation needs attention\n  human-required: resume the reviewed Butler update recovery procedure" }))
     expect(JSON.stringify(startupMocks.writeTombstone.mock.calls)).not.toContain("secret raw path")
     expect(redactedExit).toHaveBeenCalledWith(1)
   })

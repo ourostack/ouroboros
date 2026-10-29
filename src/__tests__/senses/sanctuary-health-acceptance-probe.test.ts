@@ -6,6 +6,7 @@ import * as path from "node:path"
 import { describe, expect, it, vi } from "vitest"
 
 import {
+  acceptanceTargetEndpoint,
   createSanctuaryHealthAcceptanceProbeCliHost,
   createSanctuaryHealthAcceptanceProbeCliOutput,
   createSanctuaryHealthAcceptanceProbeDependencies,
@@ -22,6 +23,7 @@ import {
   stopSanctuaryHealthAcceptanceProbeProcess,
   type SanctuaryHealthAcceptanceProbeInput,
 } from "../../senses/sanctuary-health-acceptance-probe"
+import { TEST_HOUSE } from "../fixtures/sanctuary-house"
 import { sanctuarySchedulerLivenessReceiptMac } from "../../heart/daemon/sanctuary-scheduler-liveness"
 import * as healthRunner from "../../senses/sanctuary-health-runner"
 
@@ -69,6 +71,7 @@ function setup(label: SanctuaryHealthAcceptanceProbeInput["label"]) {
     agentRoot,
     runtimeRoot,
     toolContext: healthyContext(),
+    house: TEST_HOUSE,
     ambientFetch: vi.fn().mockResolvedValue(new Response(null, { status: 204 })) as typeof fetch,
     now: () => new Date("2026-08-18T17:00:00.000Z"),
     identityKey: () => "k".repeat(43),
@@ -330,6 +333,7 @@ describe("packaged Sanctuary health acceptance probe", () => {
       expect(normalized.identityKey).toEqual(expect.any(Function))
       expect(normalized.waitForSchedulerReceipt).toEqual(expect.any(Function))
       expect(normalized.deferOwnerAttestation).toBe(true)
+      expect(createSanctuaryHealthAcceptanceProbeDependencies({ ...overrides, house: undefined }).house).toMatchObject({ publicEndpoints: [], requiredContainers: [] })
 
       const runnerOptions = { runPrivateTurn: vi.fn() }
       const acceptanceFs = { copyFile: vi.fn(), readFile: vi.fn() }
@@ -366,8 +370,14 @@ describe("packaged Sanctuary health acceptance probe", () => {
     expect(() => exactLocalDailyBoundary(new Date("0050-01-15T20:00:00Z"))).toThrow(/could not be resolved/u)
   })
 
+  it("targets the household's Books endpoint, else its first, and refuses a house with none", () => {
+    expect(acceptanceTargetEndpoint(TEST_HOUSE)).toBe("https://books.mendelow.cloud/")
+    expect(acceptanceTargetEndpoint({ publicEndpoints: [{ name: "Photos", url: "https://photos.example/" }] })).toBe("https://photos.example/")
+    expect(() => acceptanceTargetEndpoint({ publicEndpoints: [] })).toThrow(/needs a public endpoint/u)
+  })
+
   it("fails closed on exhausted or invalid loopback server boundaries", async () => {
-    const fixture = await createSanctuaryHealthAcceptanceLoopbackFixture([], vi.fn() as typeof fetch)
+    const fixture = await createSanctuaryHealthAcceptanceLoopbackFixture([], vi.fn() as typeof fetch, undefined, "https://books.mendelow.cloud/")
     try {
       await expect(fixture.fetch("https://books.mendelow.cloud/")).resolves.toMatchObject({ status: 500 })
     } finally { await new Promise<void>((resolve) => { fixture.server.close(() => resolve()) }) }

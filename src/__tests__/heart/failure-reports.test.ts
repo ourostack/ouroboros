@@ -68,7 +68,7 @@ describe("filing failure reports", () => {
     for (const holder of ["claude", "second"]) {
       const [entry] = outbox.list(holder).entries
       expect(entry).toMatchObject({ kind: "failure_report", meta: { reportId: result.id, shortId: result.shortId, severity: "medium", failedTool: "hue_set", ariWords: "turn the porch light on" } })
-      expect(entry!.body).toContain("Ari asked: turn the porch light on")
+      expect(entry!.body).toContain("The owner asked: turn the porch light on")
       expect(entry!.body).toContain("hue_set failed: no tool can control lights")
       expect(entry!.body).toContain("telegram/chat-1")
     }
@@ -362,7 +362,7 @@ describe("report origin", () => {
     const { agentRoot, store, outbox } = await setup()
     await fileFailureReport(agentRoot, store, input(), T0)
     const [entry] = outbox.list("claude").entries
-    expect(entry!.body).toContain("Ari asked: turn the porch light on")
+    expect(entry!.body).toContain("The owner asked: turn the porch light on")
     expect(entry!.body).not.toContain("UNTRUSTED")
     expect(entry!.body).toContain("Origin: friend ari, trust family, owner yes")
     expect(entry!.meta).toMatchObject({ origin: { friendId: "ari", friendName: "ari", trustLevel: "family", ownerOrigin: true } })

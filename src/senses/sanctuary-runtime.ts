@@ -9,7 +9,7 @@ import { resolveSanctuaryPackageManagedRoots } from "../heart/daemon/sanctuary-p
 import { loadOrCreateMachineIdentity } from "../heart/machine-identity"
 import { readMachineRuntimeCredentialConfig, refreshMachineRuntimeCredentialConfig } from "../heart/runtime-credentials"
 import { createApprovedUnraidRestartExecutor, type UnraidRestartAttempt } from "../repertoire/unraid-restart"
-import { annotateContainers, SERVICE_CONTAINERS } from "../repertoire/sanctuary-container-policy"
+import { annotateContainers, serviceContainers } from "../repertoire/sanctuary-container-policy"
 import { consumeRoutineActionGrant, readStewardPolicy, recoverRoutineActionReceipts, transitionRoutineActionReceipt, withRoutineActionAttempt, withStewardPolicyLease } from "../heart/steward-policy"
 import { UnraidClient } from "../repertoire/unraid-client"
 import { createUnraidReadTools } from "../repertoire/tools-unraid"
@@ -17,7 +17,8 @@ import type { ToolContext } from "../repertoire/tools-base"
 import { emitNervesEvent } from "../nerves/runtime"
 import { readSanctuaryAcceptanceApproval, readSanctuaryAcceptanceMarker, sanctuaryAcceptanceEventMeta } from "../heart/daemon/sanctuary-acceptance-marker"
 import { projectSanctuaryGrounding, sanctuaryGroundingDigest, type SanctuaryToolGrounding } from "./sanctuary-grounding"
-import { probeSanctuaryEndpoint, SANCTUARY_PUBLIC_ENDPOINTS } from "./sanctuary-health"
+import { probeSanctuaryEndpoint } from "./sanctuary-health"
+import { readSanctuaryHouse } from "./sanctuary-house"
 import { createSanctuarySabClient, sanctuarySabReadUnavailableCode } from "./sanctuary-sab"
 import { createSanctuaryMediaOptimizationClient } from "./sanctuary-media-optimization"
 import { getPackageVersion } from "../mind/bundle-manifest"
@@ -250,7 +251,7 @@ export function createSanctuaryToolContext(agentName: string): Pick<ToolContext,
     answerGates: { sourceGrounding: true, brevity: true, shelfClaims: true },
     sanctuary: {
       // The model-facing list carries the steward policy's desired state beside docker's: a container kept stopped on purpose is not a fault. The restart path reads the plain list.
-      listContainers: acceptanceRead("unraid_list_containers", async (signal?: AbortSignal) => annotateContainers(signal ? await reads.listContainers(signal) : await reads.listContainers(), currentStewardPolicy(agentRoot), Date.now())),
+      listContainers: acceptanceRead("unraid_list_containers", async (signal?: AbortSignal) => annotateContainers(signal ? await reads.listContainers(signal) : await reads.listContainers(), currentStewardPolicy(agentRoot), Date.now(), serviceContainers(readSanctuaryHouse(agentRoot)))),
       getContainerLogs: acceptanceRead("unraid_get_container_logs", reads.getContainerLogs),
       getStorage: acceptanceRead("unraid_get_storage", reads.getStorage),
       getDisks: acceptanceRead("unraid_get_disks", reads.getDisks),
@@ -261,9 +262,10 @@ export function createSanctuaryToolContext(agentName: string): Pick<ToolContext,
         runtimePackageVersion: getPackageVersion(),
       })),
       checkServices: acceptanceRead("unraid_check_services", async () => {
-        const services = await Promise.all(SANCTUARY_PUBLIC_ENDPOINTS.map(async (url) => {
-          const name = new URL(url).hostname.split(".")[0]!
-          const container = SERVICE_CONTAINERS[name.charAt(0).toUpperCase() + name.slice(1)]
+        const house = readSanctuaryHouse(agentRoot)
+        const containersByService = serviceContainers(house)
+        const services = await Promise.all(house.publicEndpoints.map(async ({ name, url }) => {
+          const container = containersByService[name.charAt(0).toUpperCase() + name.slice(1)]
           return { name, ...(container ? { container } : {}), ...await probeSanctuaryEndpoint(url) }
         }))
         return { ok: true, data: { observedAt: new Date().toISOString(), services, degraded: services.some((service) => !service.ok) } }

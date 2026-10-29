@@ -2920,7 +2920,7 @@ if audit_registered_dockerman_template "$IMAGE_ID" "$VERSION_IMAGE" canonical-pr
     }
   })
 
-  it("ships Mendelow Cloud Butler with the exact persistent roots and complete bootstrap bundle", () => {
+  it("ships Ouro Butler with the exact persistent roots and complete bootstrap bundle", () => {
     const dockerfile = fs.readFileSync("deploy/unraid/Dockerfile", "utf8")
     const template = fs.readFileSync("deploy/unraid/sanctuary.xml", "utf8")
     const runbook = fs.readFileSync("deploy/unraid/README.txt", "utf8")
@@ -2933,7 +2933,7 @@ if audit_registered_dockerman_template "$IMAGE_ID" "$VERSION_IMAGE" canonical-pr
       bundleSchemaVersion: number
     }
 
-    expect(template).toContain("<Overview>Mendelow Cloud Butler")
+    expect(template).toContain("<Overview>Ouro Butler")
     expect(template).toContain('Default="/mnt/user/appdata/ouro-butler/runtime/.ouro-cli"')
     expect(template).toContain('Default="/mnt/user/appdata/ouro-butler/agent/sanctuary.ouro"')
     expect(template).not.toContain('/mnt/user/appdata/ouro-butler/AgentBundles')

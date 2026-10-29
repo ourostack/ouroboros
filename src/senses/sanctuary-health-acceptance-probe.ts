@@ -6,6 +6,7 @@ import * as os from "node:os"
 import * as path from "node:path"
 
 import { getAgentRoot } from "../heart/identity"
+import { readSanctuaryHouse, type SanctuaryHouse } from "./sanctuary-house"
 import { emitNervesEvent } from "../nerves/runtime"
 import {
   createSanctuaryHealthSweep,
@@ -21,7 +22,12 @@ import { verifySanctuarySchedulerLivenessReceiptMac, type SanctuarySchedulerLive
 import { readOrCreateTelegramIdentityKey } from "./telegram"
 
 const SHA256 = /^[0-9a-f]{64}$/u
-const TARGET_ENDPOINT = "https://books.mendelow.cloud/"
+/** The probe faults the household's Books endpoint, else its first public endpoint. */
+export function acceptanceTargetEndpoint(house: Pick<SanctuaryHouse, "publicEndpoints">): string {
+  const target = house.publicEndpoints.find((endpoint) => endpoint.name.toLowerCase() === "books") ?? house.publicEndpoints[0]
+  if (!target) throw new Error("Sanctuary health acceptance probe needs a public endpoint in house/house.json")
+  return target.url
+}
 const CRON_MARKER = "# ouro:habit:sanctuary:sanctuary:sanctuary-health"
 const CRON_COMMAND = "*/15 * * * * /usr/local/bin/node /opt/ouro/dist/heart/daemon/ouro-entry.js poke sanctuary --habit sanctuary-health --trigger cron"
 const PROCESS_ENTRY = "/opt/ouro/dist/senses/sanctuary-health-acceptance-probe-entry.js"
@@ -97,6 +103,7 @@ export interface SanctuaryHealthAcceptanceProbeDependencies {
     readFile(statePath: string): string
   }
   createLoopbackServer?: typeof createServer
+  house: Pick<SanctuaryHouse, "publicEndpoints" | "requiredContainers">
 }
 
 interface HealthSnapshot { exists: boolean; bytes: string }
@@ -405,6 +412,7 @@ export async function createSanctuaryHealthAcceptanceLoopbackFixture(
   statuses: Array<200 | 503>,
   ambientFetch: typeof fetch,
   createLoopbackServer: typeof createServer = createServer,
+  targetEndpoint = "",
 ): Promise<{
   fetch: typeof fetch
   server: Server
@@ -428,7 +436,7 @@ export async function createSanctuaryHealthAcceptanceLoopbackFixture(
   if (!address || typeof address === "string") { await closeServer(server); throw new Error("Sanctuary loopback fixture address is invalid") }
   const fixtureUrl = `http://127.0.0.1:${address.port}/health`
   const fixtureFetch = (async (input: string | URL | Request, init?: RequestInit) => {
-    if (String(input) === TARGET_ENDPOINT) return globalThis.fetch(fixtureUrl, { ...init, redirect: "manual" })
+    if (String(input) === targetEndpoint) return globalThis.fetch(fixtureUrl, { ...init, redirect: "manual" })
     return ambientFetch(input, init)
   }) as typeof fetch
   return { fetch: fixtureFetch, server, observed }
@@ -438,8 +446,9 @@ export function createSanctuaryHealthAcceptanceProbeDependencies(
   overrides: Partial<SanctuaryHealthAcceptanceProbeDependencies> = {},
   schedulerWait: { timeoutMs?: number; pollMs?: number } = {},
 ): SanctuaryHealthAcceptanceProbeDependencies {
+  const agentRoot = overrides.agentRoot ?? getAgentRoot("sanctuary")
   const defaults: SanctuaryHealthAcceptanceProbeDependencies = {
-    agentRoot: overrides.agentRoot ?? getAgentRoot("sanctuary"),
+    agentRoot,
     runtimeRoot: overrides.runtimeRoot ?? path.join(os.homedir(), ".ouro-cli"),
     ambientFetch: overrides.ambientFetch ?? fetch,
     now: overrides.now ?? (() => new Date()),
@@ -459,6 +468,7 @@ export function createSanctuaryHealthAcceptanceProbeDependencies(
     toolContext: overrides.toolContext ?? createSanctuaryToolContext("sanctuary"),
     acceptanceFs: overrides.acceptanceFs,
     createLoopbackServer: overrides.createLoopbackServer,
+    house: overrides.house ?? readSanctuaryHouse(agentRoot),
   }
   return defaults
 }
@@ -483,6 +493,7 @@ async function normalizeWorkingState(input: {
   catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error }
   const sweep = createSanctuaryHealthSweep({
     toolContext: input.deps.toolContext,
+    house: input.deps.house,
     statePath: temporaryState,
     fetch: input.deps.ambientFetch,
     now: () => input.effectiveNow,
@@ -538,7 +549,7 @@ async function verifyRealCheckEquivalent(input: {
   const copyFile = input.deps.acceptanceFs?.copyFile ?? fs.copyFileSync
   try { copyFile(input.statePath, verifyState) }
   catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error }
-  const sweep = createSanctuaryHealthSweep({ toolContext: input.deps.toolContext, statePath: verifyState, fetch: input.deps.ambientFetch, now: () => input.effectiveNow })
+  const sweep = createSanctuaryHealthSweep({ toolContext: input.deps.toolContext, house: input.deps.house, statePath: verifyState, fetch: input.deps.ambientFetch, now: () => input.effectiveNow })
   await sweep()
   const receipt = readHealthState(verifyState, input.deps.acceptanceFs?.readFile).sweepReceipts.at(-1)
   return Boolean(receipt && receipt.incidentDigest === input.expectedIncidentDigest)
@@ -601,13 +612,14 @@ export async function runSanctuaryHealthAcceptanceProbe(
       expectedIncidentDigest = await normalizeWorkingState({ workspace, statePath, deps: dependencies, effectiveNow })
       if (input.label === "unit-16h-acceptance-delivery-probe") {
         const state = readHealthState(statePath)
-        state.incidents[`endpoint:${TARGET_ENDPOINT}`] = { id: `endpoint:${TARGET_ENDPOINT}`, summary: `${TARGET_ENDPOINT} returned 503` }
+        const target = acceptanceTargetEndpoint(dependencies.house)
+        state.incidents[`endpoint:${target}`] = { id: `endpoint:${target}`, summary: `${target} returned 503` }
         state.lastDigestDay = localDay(new Date(effectiveNow.getTime() - 36 * 60 * 60 * 1_000))
         writeHealthState(statePath, state)
       }
       const runPhase = async (name: string, trigger: "cron" | "acceptance", fixtureStatus: 200 | 503 | null, fetchImpl: typeof fetch, now: Date): Promise<void> => {
         const sweep = createSanctuaryHealthSweep({
-          toolContext: dependencies.toolContext, statePath, fetch: fetchImpl, now: () => now, lease, endpointDebounce: false,
+          toolContext: dependencies.toolContext, house: dependencies.house, statePath, fetch: fetchImpl, now: () => now, lease, endpointDebounce: false,
           acceptanceEventMeta: () => ({ scenarioHandleDigest: input.scenarioHandleDigest }),
         })
         await runSanctuaryHealthHabit("sanctuary", {
@@ -623,12 +635,12 @@ export async function runSanctuaryHealthAcceptanceProbe(
       if (input.label === "unit-16g-health-transition") {
         await runPhase("live-baseline", "acceptance", null, dependencies.ambientFetch, effectiveNow)
         await runPhase("live-repeat", "acceptance", null, dependencies.ambientFetch, effectiveNow)
-        fixture = await createSanctuaryHealthAcceptanceLoopbackFixture([503, 503, 200, 503], dependencies.ambientFetch, dependencies.createLoopbackServer)
+        fixture = await createSanctuaryHealthAcceptanceLoopbackFixture([503, 503, 200, 503], dependencies.ambientFetch, dependencies.createLoopbackServer, acceptanceTargetEndpoint(dependencies.house))
         for (const [name, status] of [["fixture-fail", 503], ["fixture-repeat", 503], ["fixture-recover", 200], ["fixture-refail", 503]] as const) {
           await runPhase(name, "acceptance", status, fixture.fetch, effectiveNow)
         }
       } else {
-        fixture = await createSanctuaryHealthAcceptanceLoopbackFixture([503, 503], dependencies.ambientFetch, dependencies.createLoopbackServer)
+        fixture = await createSanctuaryHealthAcceptanceLoopbackFixture([503, 503], dependencies.ambientFetch, dependencies.createLoopbackServer, acceptanceTargetEndpoint(dependencies.house))
         await runPhase("delivery-probe-first", "acceptance", 503, fixture.fetch, effectiveNow)
         await runPhase("delivery-probe-repeat", "acceptance", 503, fixture.fetch, effectiveNow)
       }

@@ -23,6 +23,7 @@ import { FileFriendStore, getChannelCapabilities } from "@ouro.bot/friends"
 
 import { shieldDelegatedBanner } from "../a2a/delegated-command"
 import { getAgentRoot } from "../heart/identity"
+import { DEFAULT_SANCTUARY_HOUSE, readSanctuaryHouse } from "./sanctuary-house"
 import type { RunAgentOptions } from "../heart/core"
 import { readSanctuaryAcceptanceMarker, sanctuaryAcceptanceEventMeta } from "../heart/daemon/sanctuary-acceptance-marker"
 import { readRuntimeCredentialConfig, readMachineRuntimeCredentialConfig } from "../heart/runtime-credentials"
@@ -583,6 +584,12 @@ function openSecureTelegramDirectory(directory: string, afterOpen?: (handle: num
     closeSync(handle)
     throw error
   }
+}
+
+/** The admitted owner's display name comes from the household's own house config. */
+export function ownerDisplayName(agentName: string): string {
+  const { ownerName } = readSanctuaryHouse(getAgentRoot(agentName))
+  return ownerName === DEFAULT_SANCTUARY_HOUSE.ownerName ? "Owner" : ownerName
 }
 
 export function readOrCreateTelegramIdentityKey(agentRoot: string, hooks: {
@@ -1715,7 +1722,7 @@ export function createTelegramSenseApp(options: CreateTelegramSenseAppOptions): 
         identity: {
           provider: "telegram-user",
           externalId: options.admission ? message.userId : subject,
-          displayName: options.admission ? "Ari" : `Telegram user ${subject}`,
+          displayName: options.admission ? ownerDisplayName(options.agentName) : `Telegram user ${subject}`,
           ...(options.admission ? { tenantId: botId! } : {}),
         },
         userMessage: message.text,

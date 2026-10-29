@@ -4,7 +4,7 @@ import { writeDaemonTombstone } from "./daemon-tombstone"
 const REDACTED_BOOTSTRAP_STARTUP_ERROR = "container credential bootstrap rejected; recoverable claim retained for reconciliation"
 const SANCTUARY_BUNDLE_RECOVERY_GUIDANCE = {
   restart_from_verified_release: "restart Mendelow Cloud Butler from its verified release so the installed bundle can finish updating",
-  run_verified_update_recovery: "resume the reviewed Mendelow Cloud Butler update recovery procedure",
+  run_verified_update_recovery: "resume the reviewed Butler update recovery procedure",
   roll_back_or_install_verified_release: "roll back to a verified Mendelow Cloud Butler release or install that release again",
 } as const
 const REDACTED_SANCTUARY_BUNDLE_PREPARATION_ERROR = `Sanctuary installation needs attention\n  human-required: ${SANCTUARY_BUNDLE_RECOVERY_GUIDANCE.run_verified_update_recovery}`
