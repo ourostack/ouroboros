@@ -135,20 +135,16 @@ describe("package asset validation", () => {
     ]) expect(section).toContain(requirement)
   })
 
-  // The pins move only with a reviewed psyche change. The last one made the psyche generic: {{owner}}, {{butler}} and
-  // {{household}} placeholders, with one household's facts moved to its own house/HOUSE.md.
-  it("ships the owner v8 identity correction without changing any other psyche content or containment source", () => {
+  // The pins move only with a reviewed psyche change. The last one (2026-11-03) removed duplicated and contradictory
+  // rules, named the Butler's job in IDENTITY, and made a refusal one line with no lecture.
+  it("ships the reviewed psyche without any other psyche content change", () => {
     const root = path.resolve("deploy/unraid")
-    const identity = fs.readFileSync(path.join(root, "sanctuary.ouro/psyche/IDENTITY.md"), "utf8")
-    const oldSentence = "My primary server interface is the typed Unraid GraphQL repertoire, never shell."
-    const newSentence = "I use the typed Unraid GraphQL repertoire for server operations and owner-authorized native tools for resident work inside my existing container boundary."
-    expect(identity).toContain(newSentence)
-    expect(createHash("sha256").update(identity.replace(newSentence, oldSentence)).digest("hex")).toBe("5910bcb581042bc38a7781ad6d4afcfb7e87fd15edd0dfee29d254fef535af47")
     for (const [name, expected] of Object.entries({
       "ASPIRATIONS.md": "86be39b65f18127b7ad1289a0c35e73ae2a58f07ffffed8de2d5a80b47084f59",
-      "LORE.md": "092ec5a8389958d09acc4dfc556bf16a6f61121a86c91a53cb9ba2f8f9cd2fca",
-      "SOUL.md": "f6edc80394aae5201b7e4e8237be74c8b0b51c18116c57d23762e6b0032427a5",
-      "TACIT.md": "e9118b8cfc75bb53b849107a06626a490733ea769d8fb5c72c64d1db2047723c",
+      "IDENTITY.md": "9bedd63979fdf66af3a8abf86251a34ee1b7f7dc04da42ab62f65b2b2b9263ef",
+      "LORE.md": "bb6eac6943e97471aa6e87ee8d88d1dcc15aa69a56fd23889b3ee195d08031f9",
+      "SOUL.md": "6b544fd82cc09819f5311aea8fbfca5dde76b64443baebb28bd785620612ba8a",
+      "TACIT.md": "a8c7a58ca7984d4a09bda0f7339194428928da7733918343176cf9483e5cf9dc",
     })) expect(createHash("sha256").update(fs.readFileSync(path.join(root, "sanctuary.ouro/psyche", name))).digest("hex")).toBe(expected)
     const contract = JSON.parse(fs.readFileSync(path.join(root, "sanctuary-acceptance-contract.json"), "utf8"))
     expect(JSON.stringify(contract.scenarioSources["containment-audit"])).toContain("sanctuary-containment-audit-v2")
