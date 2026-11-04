@@ -2,6 +2,12 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.974",
+      "changes": [
+        "Butler: sizes work to the ask (a question gets the fewest lookups and a short reply, never a read of his own code), so simple questions no longer run out of steps."
+      ]
+    },
+    {
       "version": "0.1.0-alpha.973",
       "changes": [
         "Butler: a request to change his personality for everyone is filed as a psyche change, and he no longer also saves it as the asker's own preference."
