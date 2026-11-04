@@ -144,7 +144,7 @@ describe("package asset validation", () => {
       "IDENTITY.md": "9bedd63979fdf66af3a8abf86251a34ee1b7f7dc04da42ab62f65b2b2b9263ef",
       "LORE.md": "f916a39d4044c788393135486872c9073ca9b91c0c05d2aaa21a2f27c9c680d1",
       "SOUL.md": "6b544fd82cc09819f5311aea8fbfca5dde76b64443baebb28bd785620612ba8a",
-      "TACIT.md": "a8c7a58ca7984d4a09bda0f7339194428928da7733918343176cf9483e5cf9dc",
+      "TACIT.md": "3ae527d754721df12e541b563894d5fec1a239d3aece974ec9d04c2dc4456be2",
     })) expect(createHash("sha256").update(fs.readFileSync(path.join(root, "sanctuary.ouro/psyche", name))).digest("hex")).toBe(expected)
     const contract = JSON.parse(fs.readFileSync(path.join(root, "sanctuary-acceptance-contract.json"), "utf8"))
     expect(JSON.stringify(contract.scenarioSources["containment-audit"])).toContain("sanctuary-containment-audit-v2")
