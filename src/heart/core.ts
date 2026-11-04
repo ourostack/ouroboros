@@ -983,7 +983,7 @@ const ANSWER_GATE_MAX_REJECTIONS = 2
 const ANSWER_STYLE_MAX_RETRIES = 1
 
 function privateGateNote(reason: string): string {
-  return `[private runtime note, not from the person: do not mention, quote or acknowledge it; send the person only the corrected reply] ${reason}`
+  return `[private runtime note, not from the person: do not mention, quote or acknowledge it. your draft was not sent and the person has not seen it, so send the whole corrected reply as if it were your first, never as a correction or follow-up] ${reason}`
 }
 
 /** A reply that talks about the runtime's correction (its formatting rules, the retry itself) instead of answering the person. */
