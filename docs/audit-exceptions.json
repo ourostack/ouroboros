@@ -2,12 +2,6 @@
   "schemaVersion": 1,
   "items": [
     {
-      "advisory": "https://github.com/advisories/GHSA-86w9-cpqp-85rv",
-      "package": "node-forge",
-      "reason": "Reached only through @bitwarden/cli 2026.9.1, which still pins node-forge 1.4.0, and no patched node-forge exists (<=1.4.0 affected). The advisory concerns RSA PKCS#1 v1.5 signature verification; the harness uses bw for vault reads. Re-decide when a patched node-forge or bitwarden release ships.",
-      "due": "2026-11-15"
-    },
-    {
       "advisory": "https://github.com/advisories/GHSA-vfj7-8cjw-p6xm",
       "package": "braces",
       "reason": "Reached only through fast-glob 3.3.3 -> micromatch 4.0.8 -> braces 3.0.3, and no patched braces exists (3.0.3 is the latest; the advisory covers all versions). The risk is stack exhaustion from deeply nested brace patterns; the harness passes glob patterns from its own file tools, so the worst case is a failed tool call in the agent's own process. Re-decide when a patched braces or micromatch ships.",
@@ -30,6 +24,12 @@
       "package": "@azure/msal-node",
       "reason": "Reached only through @azure/identity 4.x (DefaultAzureCredential in the mailroom, which never runs the authorization code flow) and @microsoft/teams.apps 2.x (pinned to msal-node ^5, bot client-credential tokens only). The advisory affects only the auth_code flow (acquireTokenByCode), which neither path calls; the patched line is msal-node 7.1, two majors past what those SDKs accept. Re-decide when @azure/identity and teams.apps accept msal-node 7.",
       "due": "2026-11-15"
+    },
+    {
+      "advisory": "https://github.com/advisories/GHSA-g3hv-75wg-m249",
+      "package": "minimatch",
+      "reason": "Reached only through eslint 10 and typescript-eslint 8 (devDependencies for linting, not shipped in @ouro.bot/cli or ouro.bot), which accept minimatch 10.x; the patched line is minimatch 11. The risk is slow glob matching on patterns the repo's own lint config supplies. Re-decide when eslint and typescript-eslint accept minimatch 11.",
+      "due": "2026-11-30"
     }
   ]
 }

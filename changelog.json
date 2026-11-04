@@ -2,6 +2,12 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.972",
+      "changes": [
+        "The Butler's rules are rewritten for clarity: it now states its job plainly (the household's media and the server it lives on), does what it is asked with its tools instead of describing the job back, says no in one line without a lecture, files a failure report only when it actually could not finish, and no longer carries duplicated or contradictory rules."
+      ]
+    },
+    {
       "version": "0.1.0-alpha.971",
       "changes": [
         "Ouro Butler can be installed on a new Unraid 7.2+ server with one script (deploy/unraid/install.sh, attached to every release): it asks a few questions, reads secrets with the echo off, creates the vault, Anthropic access and Unraid API keys, finds the owner's Telegram id, and installs the root authority with no earlier Butler to hand over from. vault config set can now read a secret from --value-file (use /dev/stdin to pipe it) and store the top-level Unraid and SABnzbd machine keys."

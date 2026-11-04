@@ -1,6 +1,6 @@
 {
   "name": "@ouro.bot/cli",
-  "version": "0.1.0-alpha.971",
+  "version": "0.1.0-alpha.972",
   "engines": {
     "node": ">=22"
   },
@@ -112,6 +112,7 @@
       "react": "$react",
       "@types/react": "$@types/react"
     },
-    "shell-quote": "^1.8.4"
+    "shell-quote": "^1.8.4",
+    "node-forge": "1.4.2"
   }
 }

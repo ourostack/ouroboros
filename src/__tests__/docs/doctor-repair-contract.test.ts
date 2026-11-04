@@ -65,7 +65,8 @@ describe("doctor and bounded-repair documentation contract", () => {
     expect(item).toEqual(expect.objectContaining({
       status: "open",
       owner: "Mailroom",
-      due: "2026-10-31",
+      // Moved from 2026-10-31 on 2026-11-03 (PR 1155): the work is still open and the expired date blocked unrelated releases.
+      due: "2026-11-17",
     }))
     expect(String(item?.removalCriteria)).toContain("transaction")
     expect(String(item?.removalCriteria)).toContain("orphan")
