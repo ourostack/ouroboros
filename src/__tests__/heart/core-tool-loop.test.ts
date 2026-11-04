@@ -3716,6 +3716,8 @@ describe("settle answer gates (opt-in per agent)", () => {
       mockCreate.mockReturnValueOnce(settleCall("short", "Hi Rachel! Silly or swoony tonight?"))
       const { visible } = await run({ gates: GATES, user: ask })
       expect(JSON.stringify(mockCreate.mock.calls[1][0].messages)).toContain("private runtime note, not from the person")
+      // 2026-11-04, alpha.974 on Claude: told nothing about delivery, the retry opened "one correction: i shortened a title" and the person got only that.
+      expect(JSON.stringify(mockCreate.mock.calls[1][0].messages)).toContain("your draft was not sent and the person has not seen it")
       expect(visible.join("")).toBe("Hi Rachel! Silly or swoony tonight?")
     })
 
