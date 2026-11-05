@@ -92,7 +92,7 @@ describe("mail_send provider status rendering", () => {
       ownerEmail: null,
       source: null,
       from: "slugger@ouro.bot",
-      to: ["ari@mendelow.me"],
+      to: ["owner@example.test"],
       cc: [],
       bcc: [],
       subject: "Provider status",
@@ -109,7 +109,7 @@ describe("mail_send provider status rendering", () => {
         code: "explicit-confirmation",
         reason: "Explicit confirmation authorized this native-agent send",
         evaluatedAt: "2026-04-23T01:31:00.000Z",
-        recipients: ["ari@mendelow.me"],
+        recipients: ["owner@example.test"],
         fallback: "none",
       },
       provider: "azure-communication-services",
@@ -133,7 +133,7 @@ describe("mail_send provider status rendering", () => {
       "policy fallback: none",
       "transport: azure-communication-services",
       "time: 2026-04-23T01:31:00.000Z",
-      "to: ari@mendelow.me",
+      "to: owner@example.test",
     ].join("\n"))
     expect(confirmMailDraftSendMock).toHaveBeenCalledWith(expect.objectContaining({
       agentId: "slugger",
@@ -171,7 +171,7 @@ describe("mail_send provider status rendering", () => {
       "policy fallback: unknown",
       "transport: azure-communication-services",
       "time: 2026-04-23T01:31:00.000Z",
-      "to: ari@mendelow.me",
+      "to: owner@example.test",
     ].join("\n"))
 
     confirmMailDraftSendMock.mockResolvedValueOnce({
@@ -197,7 +197,7 @@ describe("mail_send provider status rendering", () => {
       "policy fallback: none",
       "transport: unknown",
       "time: 2026-04-23T01:40:00.000Z",
-      "to: ari@mendelow.me",
+      "to: owner@example.test",
     ].join("\n"))
   })
 })

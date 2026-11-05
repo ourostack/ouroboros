@@ -49,7 +49,7 @@ describe("mail travel extraction", () => {
         subject: "Departure reminder",
         text: "Departure: 2026-05-01 09:00\nConfirmation code: AB-123",
         source: "hey",
-        ownerEmail: "ari@mendelow.me",
+        ownerEmail: "owner@example.test",
       }),
       message({
         id: "mail_lodging",
@@ -68,7 +68,7 @@ describe("mail travel extraction", () => {
         kind: "flight",
         messageId: "mail_departure",
         source: "hey",
-        ownerEmail: "ari@mendelow.me",
+        ownerEmail: "owner@example.test",
         summary: "flight departing 2026-05-01 09:00",
         fields: {
           departure: "2026-05-01 09:00",

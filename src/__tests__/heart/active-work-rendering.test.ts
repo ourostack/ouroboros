@@ -85,7 +85,7 @@ describe("formatActiveWorkFrame (selfhood framing)", () => {
               friendId: "ari",
               friendName: "Ari",
               channel: "bluebubbles",
-              key: "chat:any;-;ari@mendelow.me",
+              key: "chat:any;-;owner@example.test",
               sessionPath: "/tmp/ari.json",
               lastActivityAt: "2026-07-08T20:48:25.328Z",
               lastActivityMs: Date.parse("2026-07-08T20:48:25.328Z"),
@@ -99,7 +99,7 @@ describe("formatActiveWorkFrame (selfhood framing)", () => {
       }))
 
       expect(result).toContain("## contact timing")
-      expect(result).toContain("freshest friend-facing contact: Ari/bluebubbles/chat:any;-;ari@mendelow.me; last inbound 11m ago; i last replied 11m ago")
+      expect(result).toContain("freshest friend-facing contact: Ari/bluebubbles/chat:any;-;owner@example.test; last inbound 11m ago; i last replied 11m ago")
     } finally {
       vi.useRealTimers()
     }
@@ -116,7 +116,7 @@ describe("formatActiveWorkFrame (selfhood framing)", () => {
             friendId: "ari",
             friendName: "Ari",
             channel: "bluebubbles",
-            key: "chat:any;-;ari@mendelow.me",
+            key: "chat:any;-;owner@example.test",
             sessionPath: "/tmp/ari.json",
             lastActivityAt: "2026-07-08T20:48:25.328Z",
             lastActivityMs: Date.parse("2026-07-08T20:48:25.328Z"),
@@ -359,7 +359,7 @@ describe("formatActiveWorkFrame (selfhood framing)", () => {
             friendId: "friend-1",
             friendName: "Ari",
             channel: "bluebubbles",
-            key: "chat:any;-;ari@mendelow.me",
+            key: "chat:any;-;owner@example.test",
             sessionPath: "/tmp/ari-bb.json",
             lastActivityAt: "2026-03-21T09:00:00.000Z",
             lastActivityMs: Date.parse("2026-03-21T09:00:00.000Z"),
@@ -369,7 +369,7 @@ describe("formatActiveWorkFrame (selfhood framing)", () => {
       } as any,
     }))
     expect(result).toContain("other active sessions:")
-    expect(result).toContain("Ari/bluebubbles/chat:any;-;ari@mendelow.me")
+    expect(result).toContain("Ari/bluebubbles/chat:any;-;owner@example.test")
   })
 
   it("keeps the compact checkpoint aligned with the full active-work render for live coding state", () => {

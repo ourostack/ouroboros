@@ -14,7 +14,7 @@ function tripRecord(overrides: Partial<TripRecord> = {}): TripRecord {
     schemaVersion: 1,
     tripId: "trip_test_0000000000000000",
     agentId: "slugger",
-    ownerEmail: "ari@mendelow.me",
+    ownerEmail: "owner@example.test",
     name: "Europe summer 2026",
     status: "confirmed",
     startDate: "2026-08-01",

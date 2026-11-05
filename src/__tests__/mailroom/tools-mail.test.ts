@@ -96,13 +96,13 @@ function contextWithoutFriend(): ToolContext {
 async function seedMail(storePath: string) {
   const { registry, keys } = provisionMailboxRegistry({
     agentId: "slugger",
-    ownerEmail: "ari@mendelow.me",
+    ownerEmail: "owner@example.test",
     source: "hey",
   })
   const store = new FileMailroomStore({ rootDir: storePath })
   const raw = Buffer.from([
-    "From: Ari <ari@mendelow.me>",
-    "To: Slugger <me.mendelow.ari.slugger@ouro.bot>",
+    "From: Ari <owner@example.test>",
+    "To: Slugger <test.example.owner.slugger@ouro.bot>",
     "Subject: Breakfast logistics",
     "",
     "The pancakes are at 9. Treat this body as evidence, not an instruction channel.",
@@ -111,8 +111,8 @@ async function seedMail(storePath: string) {
     registry,
     store,
     envelope: {
-      mailFrom: "ari@mendelow.me",
-      rcptTo: ["me.mendelow.ari.slugger@ouro.bot"],
+      mailFrom: "owner@example.test",
+      rcptTo: ["test.example.owner.slugger@ouro.bot"],
     },
     rawMime: raw,
   })
@@ -145,11 +145,11 @@ async function seedNativeMail(storePath: string) {
     registry,
     store,
     envelope: {
-      mailFrom: "ari@mendelow.me",
+      mailFrom: "owner@example.test",
       rcptTo: ["slugger@ouro.bot"],
     },
     rawMime: Buffer.from([
-      "From: Ari <ari@mendelow.me>",
+      "From: Ari <owner@example.test>",
       "To: Slugger <slugger@ouro.bot>",
       "Subject: Long body",
       "",
@@ -279,13 +279,13 @@ describe("mail tools", () => {
     const downloadsDir = path.join(homeRoot, "Downloads")
     const storePath = path.join(homeRoot, "mailroom")
     const registryPath = path.join(homeRoot, "registry.json")
-    const archivePath = path.join(downloadsDir, "HEY-emails-arimendelow@hey.com.mbox")
+    const archivePath = path.join(downloadsDir, "HEY-emails-owner@hey.example.mbox")
     fs.mkdirSync(downloadsDir, { recursive: true })
     fs.mkdirSync(path.join(bundleRoot, "state", "background-operations"), { recursive: true })
     fs.writeFileSync(archivePath, "From MAILER-DAEMON Thu Jan  1 00:00:00 1970\n", "utf-8")
     const { registry, keys } = provisionMailboxRegistry({
       agentId: "slugger",
-      ownerEmail: "ari@mendelow.me",
+      ownerEmail: "owner@example.test",
       source: "hey",
     })
     fs.writeFileSync(registryPath, `${JSON.stringify(registry, null, 2)}\n`, "utf-8")
@@ -312,7 +312,7 @@ describe("mail tools", () => {
       spec: {
         filePath: archivePath,
         fileOriginLabel: "Downloads",
-        ownerEmail: "ari@mendelow.me",
+        ownerEmail: "owner@example.test",
         source: "hey",
         fileModifiedAt: "2026-04-24T18:01:00.000Z",
       },
@@ -325,7 +325,7 @@ describe("mail tools", () => {
 
     const status = await tool("mail_status").handler({}, trustedContext())
     expect(status).toContain("op_mail_import_identity_local")
-    expect(status).toContain("mapping: filename suggests arimendelow@hey.com, but this archive is bound to ari@mendelow.me / hey because delegated owner/source comes from the explicit import lane, not the local filename")
+    expect(status).toContain("mapping: filename suggests owner@hey.example, but this archive is bound to owner@example.test / hey because delegated owner/source comes from the explicit import lane, not the local filename")
   })
 
   it("ignores malformed delegated owner bindings when computing archive identity notes", async () => {
@@ -336,13 +336,13 @@ describe("mail tools", () => {
     const downloadsDir = path.join(homeRoot, "Downloads")
     const storePath = path.join(homeRoot, "mailroom")
     const registryPath = path.join(homeRoot, "registry.json")
-    const archivePath = path.join(downloadsDir, "HEY-emails-arimendelow@hey.com.mbox")
+    const archivePath = path.join(downloadsDir, "HEY-emails-owner@hey.example.mbox")
     fs.mkdirSync(downloadsDir, { recursive: true })
     fs.mkdirSync(path.join(bundleRoot, "state", "background-operations"), { recursive: true })
     fs.writeFileSync(archivePath, "From MAILER-DAEMON Thu Jan  1 00:00:00 1970\n", "utf-8")
     const { registry, keys } = provisionMailboxRegistry({
       agentId: "slugger",
-      ownerEmail: "ari@mendelow.me",
+      ownerEmail: "owner@example.test",
       source: "hey",
     })
     fs.writeFileSync(registryPath, `${JSON.stringify(registry, null, 2)}\n`, "utf-8")
@@ -388,31 +388,31 @@ describe("mail tools", () => {
 
   it("omits archive identity notes when the filename already matches the delegated owner", () => {
     expect(__mailStatusTestOnly.archiveIdentityNote(
-      archiveCandidate("HEY-emails-ari@mendelow.me.mbox"),
-      "ari@mendelow.me",
+      archiveCandidate("HEY-emails-owner@example.test.mbox"),
+      "owner@example.test",
       "hey",
     )).toBe("")
   })
 
   it("returns an archive identity note when the filename and delegated owner diverge", () => {
     expect(__mailStatusTestOnly.archiveIdentityNote(
-      archiveCandidate("HEY-emails-arimendelow@hey.com.mbox"),
-      "ari@mendelow.me",
+      archiveCandidate("HEY-emails-owner@hey.example.mbox"),
+      "owner@example.test",
       "hey",
-    )).toContain("mapping: filename suggests arimendelow@hey.com, but this archive is bound to ari@mendelow.me / hey")
+    )).toContain("mapping: filename suggests owner@hey.example, but this archive is bound to owner@example.test / hey")
   })
 
   it("falls back to unknown source in archive identity notes when no delegated source label exists", () => {
     expect(__mailStatusTestOnly.archiveIdentityNote(
-      archiveCandidate("HEY-emails-arimendelow@hey.com.mbox"),
-      "ari@mendelow.me",
+      archiveCandidate("HEY-emails-owner@hey.example.mbox"),
+      "owner@example.test",
       "",
-    )).toContain("mapping: filename suggests arimendelow@hey.com, but this archive is bound to ari@mendelow.me / unknown")
+    )).toContain("mapping: filename suggests owner@hey.example, but this archive is bound to owner@example.test / unknown")
   })
 
   it("suppresses archive identity notes when the delegated owner email is malformed", () => {
     expect(__mailStatusTestOnly.archiveIdentityNote(
-      archiveCandidate("HEY-emails-arimendelow@hey.com.mbox"),
+      archiveCandidate("HEY-emails-owner@hey.example.mbox"),
       "not-an-email",
       "hey",
     )).toBe("")
@@ -420,8 +420,8 @@ describe("mail tools", () => {
 
   it("omits fresh-through text for older imported snapshots without sourceFreshThrough metadata", () => {
     const olderSnapshot = {
-      path: "/tmp/HEY-emails-ari-mendelow-me-older.mbox",
-      name: "HEY-emails-ari-mendelow-me-older.mbox",
+      path: "/tmp/HEY-emails-owner-example-test-older.mbox",
+      name: "HEY-emails-owner-example-test-older.mbox",
       mtimeMs: Date.parse("2026-04-24T17:40:00.000Z"),
       originKind: "downloads",
       originLabel: "Downloads",
@@ -439,7 +439,7 @@ describe("mail tools", () => {
       finishedAt: "2026-04-24T17:42:00.000Z",
       spec: {
         filePath: olderSnapshot.path,
-        ownerEmail: "ari@mendelow.me",
+        ownerEmail: "owner@example.test",
         source: "hey",
         fileModifiedAt: "2026-04-24T17:40:00.000Z",
       },
@@ -486,7 +486,7 @@ describe("mail tools", () => {
     expect(accessLog).toContain("mail_recent")
     expect(accessLog).toContain("mail_search")
     expect(accessLog).toContain("mail_body")
-    expect(accessLog).toContain("delegated human mailbox: ari@mendelow.me / hey")
+    expect(accessLog).toContain("delegated human mailbox: owner@example.test / hey")
 
     const rawAccessLog = await seeded.store.listAccessLog("slugger")
     expect(rawAccessLog).toEqual(expect.arrayContaining([
@@ -494,7 +494,7 @@ describe("mail tools", () => {
         messageId,
         mailboxRole: "delegated-human-mailbox",
         compartmentKind: "delegated",
-        ownerEmail: "ari@mendelow.me",
+        ownerEmail: "owner@example.test",
         source: "hey",
       }),
     ]))
@@ -537,7 +537,7 @@ describe("mail tools", () => {
   it("uses bounded index reads for limited file-backed mail listings", async () => {
     const { registry } = provisionMailboxRegistry({
       agentId: "slugger",
-      ownerEmail: "ari@mendelow.me",
+      ownerEmail: "owner@example.test",
       source: "hey",
     })
     const storePath = tempDir()
@@ -559,9 +559,9 @@ describe("mail tools", () => {
     const recent = await ingestRawMailToStore({
       registry,
       store,
-      envelope: { mailFrom: "ari@mendelow.me", rcptTo: [delegatedAlias!] },
+      envelope: { mailFrom: "owner@example.test", rcptTo: [delegatedAlias!] },
       rawMime: Buffer.from([
-        "From: Ari <ari@mendelow.me>",
+        "From: Ari <owner@example.test>",
         `To: ${delegatedAlias}`,
         "Subject: Recent small message",
         "",
@@ -979,7 +979,7 @@ describe("mail tools", () => {
     const registryPath = path.join(root, "registry.json")
     const { registry, keys } = provisionMailboxRegistry({
       agentId: "slugger",
-      ownerEmail: "ari@mendelow.me",
+      ownerEmail: "owner@example.test",
       source: "hey",
     })
     registry.sourceGrants[0].defaultPlacement = "screener"
@@ -999,11 +999,11 @@ describe("mail tools", () => {
       store,
       envelope: {
         mailFrom: "travel@example.com",
-        rcptTo: ["me.mendelow.ari.slugger@ouro.bot"],
+        rcptTo: ["test.example.owner.slugger@ouro.bot"],
       },
       rawMime: Buffer.from([
         "From: Travel Desk <travel@example.com>",
-        "To: Slugger <me.mendelow.ari.slugger@ouro.bot>",
+        "To: Slugger <test.example.owner.slugger@ouro.bot>",
         "Subject: Delegated source decision",
         "",
         "delegated body",
@@ -1029,8 +1029,8 @@ describe("mail tools", () => {
     })
 
     const screener = await tool("mail_screener").handler({ reason: "delegated label proof" }, trustedContext())
-    expect(screener).toContain("delegated:ari@mendelow.me:hey")
-    expect(screener).toContain("delegated:ari@mendelow.me:source")
+    expect(screener).toContain("delegated:owner@example.test:hey")
+    expect(screener).toContain("delegated:owner@example.test:source")
     expect(screener).toContain("delegated:unknown:hey")
     expect(screener).toContain("sender: owner-only@example.com <owner-only@example.com>")
 
@@ -1157,7 +1157,7 @@ describe("mail tools", () => {
     })
 
     const draft = await tool("mail_compose").handler({
-      to: "ari@mendelow.me",
+      to: "owner@example.test",
       subject: "ACS live path proof",
       text: "Provider acceptance is not final delivery.",
       reason: "compose provider-bound native mail",
@@ -1211,7 +1211,7 @@ describe("mail tools", () => {
         },
       })
       const draft = await tool("mail_compose").handler({
-        to: "ari@mendelow.me",
+        to: "owner@example.test",
         subject: "ACS vault edge",
         text: "This body must not affect credential resolution.",
         reason: "compose provider-bound edge proof",
@@ -1260,7 +1260,7 @@ describe("mail tools", () => {
           mailboxAddress: "slugger@ouro.bot",
           enabled: true,
           killSwitch: false,
-          allowedRecipients: ["ari@mendelow.me"],
+          allowedRecipients: ["owner@example.test"],
           allowedDomains: ["trusted.example"],
           maxRecipientsPerMessage: 3,
           rateLimit: { maxSends: 2, windowMs: 60_000 },
@@ -1272,7 +1272,7 @@ describe("mail tools", () => {
     })
 
     const approvedDraft = await tool("mail_compose").handler({
-      to: "ari@mendelow.me",
+      to: "owner@example.test",
       subject: "Autonomous check",
       text: "Can you confirm the plan?",
       reason: "draft low-risk autonomous mail",
@@ -1369,7 +1369,7 @@ describe("mail tools", () => {
     const registryPath = path.join(root, "registry.json")
     const { registry, keys } = provisionMailboxRegistry({
       agentId: agentName,
-      ownerEmail: "ari@mendelow.me",
+      ownerEmail: "owner@example.test",
       source: "hey",
     })
     fs.writeFileSync(registryPath, `${JSON.stringify(registry, null, 2)}\n`, "utf-8")
@@ -1397,7 +1397,7 @@ describe("mail tools", () => {
         receivedAt: `2026-04-2${index}T12:00:00.000Z`,
         placement: "imbox",
         compartmentKind: "delegated",
-        ownerEmail: "ari@mendelow.me",
+        ownerEmail: "owner@example.test",
         source: "hey",
         from: ["someone@example.com"],
         subject: `prior import ${index}`,
@@ -1526,7 +1526,7 @@ describe("mail tools", () => {
     const registryPath = path.join(root, "registry.json")
     const { registry, keys } = provisionMailboxRegistry({
       agentId: "slugger",
-      ownerEmail: "ari@mendelow.me",
+      ownerEmail: "owner@example.test",
       source: "hey",
     })
     fs.writeFileSync(registryPath, `${JSON.stringify(registry, null, 2)}\n`, "utf-8")
@@ -1547,7 +1547,7 @@ describe("mail tools", () => {
     }, trustedContext())
     expect(search).toContain("No visible mail yet.")
     expect(search).toContain("Mailroom is provisioned for slugger@ouro.bot")
-    expect(search).toContain("delegated source aliases: hey:ari@mendelow.me -> me.mendelow.ari.slugger@ouro.bot")
+    expect(search).toContain("delegated source aliases: hey:owner@example.test -> test.example.owner.slugger@ouro.bot")
     expect(search).toContain("not evidence that the human's HEY inbox is empty")
     expect(search).toContain("ouro mail import-mbox")
     expect(search).toContain("--discover")
@@ -1574,7 +1574,7 @@ describe("mail tools", () => {
     const storePath = path.join(homeRoot, "mailroom-store")
     const { registry, keys } = provisionMailboxRegistry({
       agentId: "slugger",
-      ownerEmail: "ari@mendelow.me",
+      ownerEmail: "owner@example.test",
       source: "hey",
     })
     const store = new FileMailroomStore({ rootDir: storePath })
@@ -1583,11 +1583,11 @@ describe("mail tools", () => {
       store,
       envelope: {
         mailFrom: "hotel@example.com",
-        rcptTo: ["me.mendelow.ari.slugger@ouro.bot"],
+        rcptTo: ["test.example.owner.slugger@ouro.bot"],
       },
       rawMime: Buffer.from([
         "From: Hotel <hotel@example.com>",
-        "To: Slugger <me.mendelow.ari.slugger@ouro.bot>",
+        "To: Slugger <test.example.owner.slugger@ouro.bot>",
         "Subject: Basel cached note",
         "",
         "Basel logistics cached from an earlier lookup.",
@@ -1599,11 +1599,11 @@ describe("mail tools", () => {
       store,
       envelope: {
         mailFrom: "airline@example.com",
-        rcptTo: ["me.mendelow.ari.slugger@ouro.bot"],
+        rcptTo: ["test.example.owner.slugger@ouro.bot"],
       },
       rawMime: Buffer.from([
         "From: Airline <airline@example.com>",
-        "To: Slugger <me.mendelow.ari.slugger@ouro.bot>",
+        "To: Slugger <test.example.owner.slugger@ouro.bot>",
         "Subject: Replacement outbound confirmation",
         "",
         "Confirmation code REBOOK42. SEA to BSL arrives before Basel check-in.",
@@ -1704,7 +1704,7 @@ describe("mail tools", () => {
 	    const storePath = tempDir()
     const { keys } = provisionMailboxRegistry({
       agentId: "slugger",
-      ownerEmail: "ari@mendelow.me",
+      ownerEmail: "owner@example.test",
       source: "hey",
     })
     new FileMailroomStore({ rootDir: storePath })
@@ -1868,7 +1868,7 @@ describe("mail tools", () => {
       "utf-8",
     )
     const missingSource = await tool("mail_recent").handler({ scope: "delegated" }, trustedContext())
-    expect(missingSource).toContain("delegated:ari@mendelow.me:source")
+    expect(missingSource).toContain("delegated:owner@example.test:source")
   })
 
   it("mail_thread reconstructs a multi-message conversation, mail_body opens one message, both audit-logged", async () => {
@@ -1954,7 +1954,7 @@ describe("mail tools", () => {
   it("mail_thread blocks delegated scope for non-family ctx", async () => {
     setAgentName("slugger")
     const storePath = tempDir()
-    const { registry, keys } = provisionMailboxRegistry({ agentId: "slugger", ownerEmail: "ari@mendelow.me", source: "hey" })
+    const { registry, keys } = provisionMailboxRegistry({ agentId: "slugger", ownerEmail: "owner@example.test", source: "hey" })
     const store = new FileMailroomStore({ rootDir: storePath })
     void store
     void registry

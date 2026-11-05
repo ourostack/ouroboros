@@ -51,7 +51,7 @@ function findTool(name: string) {
 function makeReturnObligation(overrides: Partial<ReturnObligation> = {}): ReturnObligation {
   return {
     id: "1775976317954-s5pno43r",
-    origin: { friendId: "ari", channel: "bluebubbles", key: "chat:any;-;ari@mendelow.me" },
+    origin: { friendId: "ari", channel: "bluebubbles", key: "chat:any;-;owner@example.test" },
     status: "queued",
     delegatedContent: "stale: investigate private-runtime leak",
     createdAt: 1775976317954,
@@ -62,7 +62,7 @@ function makeReturnObligation(overrides: Partial<ReturnObligation> = {}): Return
 function makeObligation(overrides: Partial<Obligation> = {}): Obligation {
   return {
     id: "1775976317954-2gkm4pz0",
-    origin: { friendId: "ari", channel: "bluebubbles", key: "chat:any;-;ari@mendelow.me" },
+    origin: { friendId: "ari", channel: "bluebubbles", key: "chat:any;-;owner@example.test" },
     content: "investigate private-runtime leak",
     status: "pending",
     createdAt: "2026-04-12T06:45:17.954Z",

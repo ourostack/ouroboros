@@ -25,17 +25,17 @@
       "message": {
         "agentId": "slugger",
         "compartmentKind": "delegated",
-        "ownerEmail": "ari@mendelow.me",
+        "ownerEmail": "owner@example.test",
         "source": "hey",
-        "recipient": "me.mendelow.ari.slugger@ouro.bot"
+        "recipient": "test.example.owner.slugger@ouro.bot"
       },
       "expected": {
         "mailboxRole": "delegated-human-mailbox",
-        "mailboxLabel": "ari@mendelow.me / hey delegated to slugger",
+        "mailboxLabel": "owner@example.test / hey delegated to slugger",
         "agentId": "slugger",
-        "ownerEmail": "ari@mendelow.me",
+        "ownerEmail": "owner@example.test",
         "source": "hey",
-        "recipient": "me.mendelow.ari.slugger@ouro.bot",
+        "recipient": "test.example.owner.slugger@ouro.bot",
         "sendAsHumanAllowed": false
       }
     },
@@ -44,7 +44,7 @@
       "message": {
         "agentId": "slugger",
         "compartmentKind": "delegated",
-        "recipient": "me.mendelow.ari.slugger@ouro.bot"
+        "recipient": "test.example.owner.slugger@ouro.bot"
       },
       "expected": {
         "mailboxRole": "delegated-human-mailbox",
@@ -52,7 +52,7 @@
         "agentId": "slugger",
         "ownerEmail": null,
         "source": null,
-        "recipient": "me.mendelow.ari.slugger@ouro.bot",
+        "recipient": "test.example.owner.slugger@ouro.bot",
         "sendAsHumanAllowed": false
       }
     }

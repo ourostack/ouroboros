@@ -586,7 +586,7 @@ describe("orientation frame", () => {
     "",
     'Ari asked on 2026-07-21: "sanity checking that all hotels i booked for my upcoming travel have ac - can you confirm?" Open each of the confirmations you just listed (Ruby Mimi Zurich, Hotel Marthof Basel, LUGANODANTE Lugano, La Villa Mombaruzzo, The Grafton Hotel Dublin) and check specifically for air conditioning — the amenities lines, room description, or any AC/climate/aircon mention. Where the confirmation doesn\'t say, check your notes/facts, and if it\'s still unknown say "unknown" rather than guessing. Do NOT claim a hotel has AC unless you actually saw evidence.',
     "",
-    "Then send Ari ONE clean iMessage (ari@mendelow.me) with a short per-hotel rundown — hotel: yes / no / unknown, one line each, plus a one-line note on how you'd confirm the unknowns (e.g. checking the hotel site or emailing them). Keep it text-length and warm. Your iMessage sending is fixed and working, so it should go through. Send it once and confirm delivery — do not retry on error, just report back what happened.",
+    "Then send Ari ONE clean iMessage (owner@example.test) with a short per-hotel rundown — hotel: yes / no / unknown, one line each, plus a one-line note on how you'd confirm the unknowns (e.g. checking the hotel site or emailing them). Keep it text-length and warm. Your iMessage sending is fixed and working, so it should go through. Send it once and confirm delivery — do not retry on error, just report back what happened.",
   ].join("\n")
 
   it("does not hold a long standalone instruction that merely contains a correction word", () => {

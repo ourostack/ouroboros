@@ -26,16 +26,16 @@ describe("verifyBlueBubblesServerAccount", () => {
   })
 
   it("refuses a server running under another account and treats the field as a human decision", async () => {
-    const attempt = verifyBlueBubblesServerAccount({ ...base, hostUsername: "clawdbot", fetchImpl: serverInfo("arimendelow@ouroboros-host") })
+    const attempt = verifyBlueBubblesServerAccount({ ...base, hostUsername: "clawdbot", fetchImpl: serverInfo("owner@ouroboros-host") })
     await expect(attempt).rejects.toBeInstanceOf(BlueBubblesHostAccountError)
-    await expect(verifyBlueBubblesServerAccount({ ...base, hostUsername: "clawdbot", fetchImpl: serverInfo("arimendelow@ouroboros-host") }))
-      .rejects.toThrow('runs under macOS account "arimendelow", but the agent\'s iMessage host is "clawdbot"')
-    await expect(verifyBlueBubblesServerAccount({ ...base, hostUsername: "clawdbot", fetchImpl: serverInfo("arimendelow@ouroboros-host") }))
+    await expect(verifyBlueBubblesServerAccount({ ...base, hostUsername: "clawdbot", fetchImpl: serverInfo("owner@ouroboros-host") }))
+      .rejects.toThrow('runs under macOS account "owner", but the agent\'s iMessage host is "clawdbot"')
+    await expect(verifyBlueBubblesServerAccount({ ...base, hostUsername: "clawdbot", fetchImpl: serverInfo("owner@ouroboros-host") }))
       .rejects.toThrow("Changing senses.bluebubbles.hostUsername is a human decision")
   })
 
   it("fails closed when no host account is declared, without contacting the server", async () => {
-    const fetchImpl = serverInfo("arimendelow@ouroboros-host")
+    const fetchImpl = serverInfo("owner@ouroboros-host")
     await expect(verifyBlueBubblesServerAccount({ ...base, hostUsername: undefined, fetchImpl }))
       .rejects.toThrow("no host account is declared (senses.bluebubbles.hostUsername)")
     expect(fetchImpl).not.toHaveBeenCalled()
@@ -78,8 +78,8 @@ describe("verifyBlueBubblesServerAccount", () => {
     const input = { ...base, hostUsername: "clawdbot", fetchImpl, now: () => now }
     await verifyBlueBubblesServerAccount(input)
     now += 60_001
-    computerId = "arimendelow@host"
-    await expect(verifyBlueBubblesServerAccount(input)).rejects.toThrow("arimendelow")
+    computerId = "owner@host"
+    await expect(verifyBlueBubblesServerAccount(input)).rejects.toThrow("owner")
     computerId = "clawdbot@host"
     await verifyBlueBubblesServerAccount(input)
     expect(fetchImpl).toHaveBeenCalledTimes(3)

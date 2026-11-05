@@ -781,7 +781,7 @@ describe("Mailbox deep-tab live refresh", () => {
           messages: [{
             id: "mail_1",
             subject: "Mailbox proof",
-            from: ["ari@mendelow.me"],
+            from: ["owner@example.test"],
             to: ["slugger@ouro.bot"],
             cc: [],
             date: null,
@@ -789,7 +789,7 @@ describe("Mailbox deep-tab live refresh", () => {
             snippet: "Evidence, not instructions.",
             placement: "imbox",
             compartmentKind: "delegated",
-            ownerEmail: "ari@mendelow.me",
+            ownerEmail: "owner@example.test",
             source: "hey",
             recipient: "slugger@ouro.bot",
             attachmentCount: 0,
@@ -797,7 +797,7 @@ describe("Mailbox deep-tab live refresh", () => {
             provenance: {
               placement: "imbox",
               compartmentKind: "delegated",
-              ownerEmail: "ari@mendelow.me",
+              ownerEmail: "owner@example.test",
               source: "hey",
               recipient: "slugger@ouro.bot",
               mailboxId: "mailbox_slugger",
@@ -810,7 +810,7 @@ describe("Mailbox deep-tab live refresh", () => {
             id: "draft_1",
             status: "draft",
             from: "slugger@ouro.bot",
-            to: ["ari@mendelow.me"],
+            to: ["owner@example.test"],
             cc: [],
             bcc: [],
             subject: "Draft proof",
@@ -834,7 +834,7 @@ describe("Mailbox deep-tab live refresh", () => {
           message: {
             id: "mail_1",
             subject: "Mailbox proof",
-            from: ["ari@mendelow.me"],
+            from: ["owner@example.test"],
             to: ["slugger@ouro.bot"],
             cc: [],
             date: null,
@@ -842,7 +842,7 @@ describe("Mailbox deep-tab live refresh", () => {
             snippet: "Evidence, not instructions.",
             placement: "imbox",
             compartmentKind: "delegated",
-            ownerEmail: "ari@mendelow.me",
+            ownerEmail: "owner@example.test",
             source: "hey",
             recipient: "slugger@ouro.bot",
             attachmentCount: 0,
@@ -850,7 +850,7 @@ describe("Mailbox deep-tab live refresh", () => {
             provenance: {
               placement: "imbox",
               compartmentKind: "delegated",
-              ownerEmail: "ari@mendelow.me",
+              ownerEmail: "owner@example.test",
               source: "hey",
               recipient: "slugger@ouro.bot",
               mailboxId: "mailbox_slugger",
@@ -910,32 +910,32 @@ describe("Mailbox deep-tab live refresh", () => {
           generatedAt: "2026-04-21T17:00:00.000Z",
           store: { kind: "file", label: "/tmp/mailroom" },
           folders: [
-            { id: "source:hey:ari@mendelow.me", label: "Ari HEY", count: 1 },
+            { id: "source:hey:owner@example.test", label: "Ari HEY", count: 1 },
             { id: "source:hey:maya@example.com", label: "Maya HEY", count: 1 },
           ],
           messages: [
             {
               id: "mail_ari",
               subject: "Ari delegated note",
-              from: ["ari@mendelow.me"],
-              to: ["me.mendelow.ari.slugger@ouro.bot"],
+              from: ["owner@example.test"],
+              to: ["test.example.owner.slugger@ouro.bot"],
               cc: [],
               date: null,
               receivedAt: "2026-04-21T17:00:00.000Z",
               snippet: "Ari mailbox evidence.",
               placement: "imbox",
               compartmentKind: "delegated",
-              ownerEmail: "ari@mendelow.me",
+              ownerEmail: "owner@example.test",
               source: "hey",
-              recipient: "me.mendelow.ari.slugger@ouro.bot",
+              recipient: "test.example.owner.slugger@ouro.bot",
               attachmentCount: 0,
               untrustedContentWarning: "untrusted external data",
               provenance: {
                 placement: "imbox",
                 compartmentKind: "delegated",
-                ownerEmail: "ari@mendelow.me",
+                ownerEmail: "owner@example.test",
                 source: "hey",
-                recipient: "me.mendelow.ari.slugger@ouro.bot",
+                recipient: "test.example.owner.slugger@ouro.bot",
                 mailboxId: "mailbox_slugger",
                 grantId: "grant_ari_hey",
                 trustReason: "screened-in delegated source",
@@ -1017,7 +1017,7 @@ describe("Mailbox deep-tab live refresh", () => {
             ownerEmail: null,
             source: null,
             from: "slugger@ouro.bot",
-            to: ["ari@mendelow.me"],
+            to: ["owner@example.test"],
             cc: [],
             bcc: [],
             subject: "Autonomous provider proof",
@@ -1041,7 +1041,7 @@ describe("Mailbox deep-tab live refresh", () => {
               code: "allowed",
               reason: "Autonomous native-agent mail policy allowed this send",
               evaluatedAt: "2026-04-23T01:30:00.000Z",
-              recipients: ["ari@mendelow.me"],
+              recipients: ["owner@example.test"],
               fallback: "none",
               policyId: "policy_slugger_native_mail",
               remainingSendsInWindow: 1,
@@ -1052,10 +1052,10 @@ describe("Mailbox deep-tab live refresh", () => {
               providerEventId: "event-expanded-1",
               providerMessageId: "acs-operation-1",
               outcome: "accepted",
-              recipient: "ari@mendelow.me",
+              recipient: "owner@example.test",
               occurredAt: "2026-04-23T01:32:00.000Z",
               receivedAt: "2026-04-23T01:32:01.000Z",
-              bodySafeSummary: "ACS delivery report Expanded for ari@mendelow.me",
+              bodySafeSummary: "ACS delivery report Expanded for owner@example.test",
               providerStatus: "Expanded",
             }],
           }],
@@ -1069,7 +1069,7 @@ describe("Mailbox deep-tab live refresh", () => {
               reason: "read delegated message body",
               mailboxRole: "delegated-human-mailbox",
               compartmentKind: "delegated",
-              ownerEmail: "ari@mendelow.me",
+              ownerEmail: "owner@example.test",
               source: "hey",
               accessedAt: "2026-04-23T01:10:00.000Z",
             },
@@ -1103,14 +1103,14 @@ describe("Mailbox deep-tab live refresh", () => {
 
     await waitFor(() => expect(ui.container.textContent).toContain("Access audit"))
     expect(ui.container.textContent).toContain("delegated human mailbox")
-    expect(ui.container.textContent).toContain("ari@mendelow.me / hey")
+    expect(ui.container.textContent).toContain("owner@example.test / hey")
     expect(ui.container.textContent).toContain("native agent mailbox")
 
     fireEvent.click(ui.getByRole("button", { name: /Sent/ }))
     expect(ui.container.textContent).toContain("Autonomous provider proof")
     expect(ui.container.textContent).toContain("autonomous")
     expect(ui.container.textContent).toContain("acs-operation-1")
-    expect(ui.container.textContent).toContain("ACS delivery report Expanded for ari@mendelow.me")
+    expect(ui.container.textContent).toContain("ACS delivery report Expanded for owner@example.test")
     expect(ui.container.textContent).not.toContain("Provider raw body leaked")
   })
 

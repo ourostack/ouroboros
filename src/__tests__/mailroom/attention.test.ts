@@ -278,9 +278,9 @@ describe("mail screener attention", () => {
           messageId: "mail_display",
           senderEmail: "travel@example.com",
           senderDisplay: "Travel Desk",
-          recipient: "me.mendelow.ari.slugger@ouro.bot",
+          recipient: "test.example.owner.slugger@ouro.bot",
           source: "hey",
-          ownerEmail: "ari@mendelow.me",
+          ownerEmail: "owner@example.test",
           placement: "screener",
           status: "pending",
           trustReason: "delegated test",
@@ -304,7 +304,7 @@ describe("mail screener attention", () => {
     expect(result.queued[0]).toEqual(expect.objectContaining({
       mailboxRole: "delegated-human-mailbox",
       compartmentKind: "delegated",
-      ownerEmail: "ari@mendelow.me",
+      ownerEmail: "owner@example.test",
       source: "hey",
     }))
     expect(result.queued[1]).toEqual(expect.objectContaining({
@@ -316,7 +316,7 @@ describe("mail screener attention", () => {
     expect(result.state.notifiedCandidateIds).toEqual(["candidate_mail_display", "candidate_mail_later"])
     const bodies = pendingBodies(pendingDir).join("\n\n")
     expect(bodies).toContain("sender: Travel Desk <travel@example.com>")
-    expect(bodies).toContain("delegated owner: ari@mendelow.me")
+    expect(bodies).toContain("delegated owner: owner@example.test")
     expect(bodies).toContain("source: hey")
   })
 })

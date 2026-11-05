@@ -6,7 +6,7 @@ const dmOgPayload = {
     guid: "CCDE56E5-8D22-4DF9-B1A8-98E868A1B234",
     text: "https://ouroboros.bot",
     handle: {
-      address: "ari@mendelow.me",
+      address: "owner@example.test",
       service: "iMessage",
       country: "US",
     },
@@ -32,9 +32,9 @@ const dmOgPayload = {
     hasPayloadData: true,
     chats: [
       {
-        guid: "any;-;ari@mendelow.me",
+        guid: "any;-;owner@example.test",
         style: 45,
-        chatIdentifier: "ari@mendelow.me",
+        chatIdentifier: "owner@example.test",
         displayName: "",
       },
     ],
@@ -50,7 +50,7 @@ const dmImagePayload = {
     guid: "E6451C2E-CDFA-4C12-9C1B-ADD8D2F2DEB4",
     text: "",
     handle: {
-      address: "ari@mendelow.me",
+      address: "owner@example.test",
       service: "iMessage",
       country: "US",
     },
@@ -69,9 +69,9 @@ const dmImagePayload = {
     isFromMe: false,
     chats: [
       {
-        guid: "any;-;ari@mendelow.me",
+        guid: "any;-;owner@example.test",
         style: 45,
-        chatIdentifier: "ari@mendelow.me",
+        chatIdentifier: "owner@example.test",
         displayName: "",
       },
     ],
@@ -84,7 +84,7 @@ const dmAudioPayload = {
     guid: "5D50082A-49A1-46C5-BB71-58C60A0EB3A8",
     text: "",
     handle: {
-      address: "ari@mendelow.me",
+      address: "owner@example.test",
       service: "iMessage",
       country: "US",
     },
@@ -101,9 +101,9 @@ const dmAudioPayload = {
     isFromMe: false,
     chats: [
       {
-        guid: "any;-;ari@mendelow.me",
+        guid: "any;-;owner@example.test",
         style: 45,
-        chatIdentifier: "ari@mendelow.me",
+        chatIdentifier: "owner@example.test",
         displayName: "",
       },
     ],
@@ -116,7 +116,7 @@ const dmThreadPayload = {
     guid: "C4B2E437-A373-43F6-9740-9CD84E5893A0",
     text: "threaded reply",
     handle: {
-      address: "ari@mendelow.me",
+      address: "owner@example.test",
       service: "iMessage",
       country: "US",
     },
@@ -126,9 +126,9 @@ const dmThreadPayload = {
     threadOriginatorGuid: "54D4109C-7170-41A1-8161-F6F8C863CC0D",
     chats: [
       {
-        guid: "any;-;ari@mendelow.me",
+        guid: "any;-;owner@example.test",
         style: 45,
-        chatIdentifier: "ari@mendelow.me",
+        chatIdentifier: "owner@example.test",
         displayName: "",
       },
     ],
@@ -141,7 +141,7 @@ const dmTopLevelPayload = {
     guid: "B20D4E2B-2E6E-48B5-95CD-6E24A368E4A7",
     text: "top-level follow-up",
     handle: {
-      address: "ari@mendelow.me",
+      address: "owner@example.test",
       service: "iMessage",
       country: "US",
     },
@@ -151,9 +151,9 @@ const dmTopLevelPayload = {
     threadOriginatorGuid: null,
     chats: [
       {
-        guid: "any;-;ari@mendelow.me",
+        guid: "any;-;owner@example.test",
         style: 45,
-        chatIdentifier: "ari@mendelow.me",
+        chatIdentifier: "owner@example.test",
         displayName: "",
       },
     ],
@@ -166,7 +166,7 @@ const groupThreadPayload = {
     guid: "E29915DA-FC59-412A-BACC-B5EEDBA414EB",
     text: "yay!",
     handle: {
-      address: "ari@mendelow.me",
+      address: "owner@example.test",
       service: "iMessage",
       country: "US",
     },
@@ -191,7 +191,7 @@ const reactionPayload = {
     guid: "BA2CFB68-52D2-4D8F-8A33-394C37035347",
     text: "Loved “yep, threaded replies solid. both came through with the correct quoted message”",
     handle: {
-      address: "ari@mendelow.me",
+      address: "owner@example.test",
       service: "iMessage",
       country: "US",
     },
@@ -202,9 +202,9 @@ const reactionPayload = {
     associatedMessageType: "love",
     chats: [
       {
-        guid: "any;-;ari@mendelow.me",
+        guid: "any;-;owner@example.test",
         style: 45,
-        chatIdentifier: "ari@mendelow.me",
+        chatIdentifier: "owner@example.test",
         displayName: "",
       },
     ],
@@ -217,7 +217,7 @@ const editedPayload = {
     guid: "4A4F2A85-21AD-4AC6-98A8-34B8F4D07AA9",
     text: "  edited version  ",
     handle: {
-      address: "ari@mendelow.me",
+      address: "owner@example.test",
       service: "iMessage",
       country: "US",
     },
@@ -232,9 +232,9 @@ const editedPayload = {
     associatedMessageType: null,
     chats: [
       {
-        guid: "any;-;ari@mendelow.me",
+        guid: "any;-;owner@example.test",
         style: 45,
-        chatIdentifier: "ari@mendelow.me",
+        chatIdentifier: "owner@example.test",
         displayName: "",
       },
     ],
@@ -247,7 +247,7 @@ const unsentPayload = {
     guid: "A9C0AB3C-858A-42BC-9951-66A5C9B1B2B8",
     text: "",
     handle: {
-      address: "ari@mendelow.me",
+      address: "owner@example.test",
       service: "iMessage",
       country: "US",
     },
@@ -261,9 +261,9 @@ const unsentPayload = {
     associatedMessageType: null,
     chats: [
       {
-        guid: "any;-;ari@mendelow.me",
+        guid: "any;-;owner@example.test",
         style: 45,
-        chatIdentifier: "ari@mendelow.me",
+        chatIdentifier: "owner@example.test",
         displayName: "",
       },
     ],
@@ -276,7 +276,7 @@ const readPayload = {
     guid: "174D57C8-5985-4528-8539-E4DBD777FE59",
     text: "still here — are you testing message delivery or do you need something?",
     handle: {
-      address: "ari@mendelow.me",
+      address: "owner@example.test",
       service: "iMessage",
       country: "US",
     },
@@ -290,9 +290,9 @@ const readPayload = {
     associatedMessageType: null,
     chats: [
       {
-        guid: "any;-;ari@mendelow.me",
+        guid: "any;-;owner@example.test",
         style: 45,
-        chatIdentifier: "ari@mendelow.me",
+        chatIdentifier: "owner@example.test",
         displayName: "",
       },
     ],
@@ -339,7 +339,7 @@ const deliveryPayload = {
     text: "",
     chats: [
       {
-        guid: "any;-;ari@mendelow.me",
+        guid: "any;-;owner@example.test",
       },
     ],
     dateDelivered: 1772949405000,
@@ -355,7 +355,7 @@ const updatedMessageWithoutMutationPayload = {
     attachments: [],
     chats: [
       {
-        guid: "any;-;ari@mendelow.me",
+        guid: "any;-;owner@example.test",
       },
     ],
   },
@@ -368,7 +368,7 @@ const blankEditPayload = {
     text: "   ",
     chats: [
       {
-        guid: "any;-;ari@mendelow.me",
+        guid: "any;-;owner@example.test",
       },
     ],
     dateEdited: 1772949605000,
@@ -381,7 +381,7 @@ const editWithoutTextFieldPayload = {
     guid: "01F7B8E0-C038-449E-B91A-B5AC3196C113",
     chats: [
       {
-        guid: "any;-;ari@mendelow.me",
+        guid: "any;-;owner@example.test",
       },
     ],
     dateEdited: 1772949705000,
@@ -393,12 +393,12 @@ const missingTextPayload = {
   data: {
     guid: "2E4F2F28-A84C-4B58-B15A-E82E15F37090",
     handle: {
-      address: "ari@mendelow.me",
+      address: "owner@example.test",
     },
     attachments: [],
     chats: [
       {
-        guid: "any;-;ari@mendelow.me",
+        guid: "any;-;owner@example.test",
       },
     ],
   },
@@ -412,7 +412,7 @@ const bareReactionGuidPayload = {
     associatedMessageType: "like",
     chats: [
       {
-        guid: "any;-;ari@mendelow.me",
+        guid: "any;-;owner@example.test",
       },
     ],
   },
@@ -425,7 +425,7 @@ const reactionWithoutTargetGuidPayload = {
     associatedMessageType: "laugh",
     chats: [
       {
-        guid: "any;-;ari@mendelow.me",
+        guid: "any;-;owner@example.test",
       },
     ],
   },
@@ -478,8 +478,8 @@ describe("normalizeBlueBubblesEvent", () => {
 
     expect(result.kind).toBe("message")
     expect(result.chat.isGroup).toBe(false)
-    expect(result.chat.sessionKey).toBe("chat:any;-;ari@mendelow.me")
-    expect(result.sender.externalId).toBe("ari@mendelow.me")
+    expect(result.chat.sessionKey).toBe("chat:any;-;owner@example.test")
+    expect(result.sender.externalId).toBe("owner@example.test")
     expect(result.sender.observed).toBe(true)
     expect(result.messageGuid).toBe("CCDE56E5-8D22-4DF9-B1A8-98E868A1B234")
     expect(result.textForAgent).toContain("https://ouroboros.bot")
@@ -530,7 +530,7 @@ describe("normalizeBlueBubblesEvent", () => {
       data: {
         guid: "B2-FIX-TEXT-PLUS-IMAGE",
         text: "check this out",
-        handle: { address: "ari@mendelow.me", service: "iMessage" },
+        handle: { address: "owner@example.test", service: "iMessage" },
         attachments: [
           {
             guid: "att-guid-1",
@@ -545,9 +545,9 @@ describe("normalizeBlueBubblesEvent", () => {
         isFromMe: false,
         chats: [
           {
-            guid: "any;-;ari@mendelow.me",
+            guid: "any;-;owner@example.test",
             style: 45,
-            chatIdentifier: "ari@mendelow.me",
+            chatIdentifier: "owner@example.test",
             displayName: "",
           },
         ],
@@ -567,7 +567,7 @@ describe("normalizeBlueBubblesEvent", () => {
       data: {
         guid: "B2-FIX-TEXT-MULTI-ATT",
         text: "here they are",
-        handle: { address: "ari@mendelow.me", service: "iMessage" },
+        handle: { address: "owner@example.test", service: "iMessage" },
         attachments: [
           { guid: "a1", mimeType: "image/png", transferName: "a.png" },
           { guid: "a2", mimeType: "image/png", transferName: "b.png" },
@@ -576,9 +576,9 @@ describe("normalizeBlueBubblesEvent", () => {
         isFromMe: false,
         chats: [
           {
-            guid: "any;-;ari@mendelow.me",
+            guid: "any;-;owner@example.test",
             style: 45,
-            chatIdentifier: "ari@mendelow.me",
+            chatIdentifier: "owner@example.test",
             displayName: "",
           },
         ],
@@ -605,15 +605,15 @@ describe("normalizeBlueBubblesEvent", () => {
       data: {
         guid: "B2-FIX-TEXT-ONLY",
         text: "hello there",
-        handle: { address: "ari@mendelow.me", service: "iMessage" },
+        handle: { address: "owner@example.test", service: "iMessage" },
         attachments: [],
         dateCreated: 1772946701000,
         isFromMe: false,
         chats: [
           {
-            guid: "any;-;ari@mendelow.me",
+            guid: "any;-;owner@example.test",
             style: 45,
-            chatIdentifier: "ari@mendelow.me",
+            chatIdentifier: "owner@example.test",
             displayName: "",
           },
         ],
@@ -638,7 +638,7 @@ describe("normalizeBlueBubblesEvent", () => {
     const result = normalizeBlueBubblesEvent(dmThreadPayload)
 
     expect(result.kind).toBe("message")
-    expect(result.chat.sessionKey).toBe("chat:any;-;ari@mendelow.me")
+    expect(result.chat.sessionKey).toBe("chat:any;-;owner@example.test")
     expect(result.replyToGuid).toBe("54D4109C-7170-41A1-8161-F6F8C863CC0D")
   })
 
@@ -724,7 +724,7 @@ describe("normalizeBlueBubblesEvent", () => {
 
     expect(topLevel.kind).toBe("message")
     expect(threaded.kind).toBe("message")
-    expect(topLevel.chat.sessionKey).toBe("chat:any;-;ari@mendelow.me")
+    expect(topLevel.chat.sessionKey).toBe("chat:any;-;owner@example.test")
     expect(threaded.chat.sessionKey).toBe(topLevel.chat.sessionKey)
   })
 
@@ -768,7 +768,7 @@ describe("normalizeBlueBubblesEvent", () => {
         guid: "NUMERIC-TAPBACK-2000",
         associatedMessageGuid: "p:0/TARGET-2000",
         associatedMessageType: 2000,
-        chats: [{ guid: "any;-;ari@mendelow.me" }],
+        chats: [{ guid: "any;-;owner@example.test" }],
       },
     })
 
@@ -817,7 +817,7 @@ describe("normalizeBlueBubblesEvent", () => {
           guid: `NON-REACTION-${String(associatedMessageType)}`,
           text: "plain message",
           associatedMessageType,
-          chats: [{ guid: "any;-;ari@mendelow.me" }],
+          chats: [{ guid: "any;-;owner@example.test" }],
         },
       })
       expect(result.kind).toBe("message")
@@ -1043,7 +1043,7 @@ describe("renderBlueBubblesReactionText", () => {
     expect(result.kind).toBe("mutation")
     expect(result.mutationType).toBe("read")
     expect(result.shouldNotifyAgent).toBe(false)
-    expect(result.chat.sessionKey).toBe("chat:any;-;ari@mendelow.me")
+    expect(result.chat.sessionKey).toBe("chat:any;-;owner@example.test")
     expect(result.effectiveTimestamp).toBe(1772948415000)
   })
 
@@ -1136,7 +1136,7 @@ describe("renderBlueBubblesReactionText", () => {
 
     expect(result.kind).toBe("message")
     expect(result.eventType).toBe("updated-message")
-    expect(result.chat.chatIdentifier).toBe("ari@mendelow.me")
+    expect(result.chat.chatIdentifier).toBe("owner@example.test")
     expect(result.textForAgent).toBe("")
     expect(result.requiresRepair).toBe(true)
   })
@@ -1148,7 +1148,7 @@ describe("renderBlueBubblesReactionText", () => {
     expect(result.kind).toBe("message")
     expect(result.text).toBe("")
     expect(result.textForAgent).toBe("")
-    expect(result.chat.chatIdentifier).toBe("ari@mendelow.me")
+    expect(result.chat.chatIdentifier).toBe("owner@example.test")
   })
 
   it("normalizes reactions whether the target guid is bare or absent", async () => {

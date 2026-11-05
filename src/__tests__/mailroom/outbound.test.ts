@@ -326,7 +326,7 @@ describe("mail outbound confirmed send", () => {
       store,
       agentId: "slugger",
       from: "slugger@ouro.bot",
-      to: ["ari@mendelow.me"],
+      to: ["owner@example.test"],
       subject: "Provider submit",
       text: "Provider acceptance is not delivery.",
       actor: { kind: "agent", agentId: "slugger" },
@@ -346,7 +346,7 @@ describe("mail outbound confirmed send", () => {
     })
 
     expect(providerClient.submit).toHaveBeenCalledWith(expect.objectContaining({
-      draft: expect.objectContaining({ id: draft.id, from: "slugger@ouro.bot", to: ["ari@mendelow.me"] }),
+      draft: expect.objectContaining({ id: draft.id, from: "slugger@ouro.bot", to: ["owner@example.test"] }),
       transport: expect.objectContaining({ kind: "azure-communication-services" }),
     }))
     expect(submitted).toEqual(expect.objectContaining({
@@ -364,7 +364,7 @@ describe("mail outbound confirmed send", () => {
       eventTime: "2026-04-23T01:35:00.000Z",
       data: {
         sender: "slugger@ouro.bot",
-        recipient: "ari@mendelow.me",
+        recipient: "owner@example.test",
         messageId: "acs-operation-1",
         status: "Delivered",
         deliveryStatusDetails: { statusMessage: "250 2.0.0 accepted" },
@@ -420,7 +420,7 @@ describe("mail outbound confirmed send", () => {
         ownerEmail: null,
         source: null,
         from: "slugger@ouro.bot",
-        to: ["ari@mendelow.me"],
+        to: ["owner@example.test"],
         cc: [],
         bcc: [],
         subject: "Binding proof",
@@ -484,7 +484,7 @@ describe("mail outbound confirmed send", () => {
         eventType: "Microsoft.Communication.EmailDeliveryReportReceived",
         eventTime: "2026-04-23T01:35:00.000Z",
         data: {
-          recipient: "ARI@MENDELOW.ME",
+          recipient: "owner@example.test",
           messageId: "acs-operation-1",
           status,
         },
@@ -492,7 +492,7 @@ describe("mail outbound confirmed send", () => {
         providerEventId: `event-${status}`,
         providerMessageId: "acs-operation-1",
         outcome,
-        recipient: "ari@mendelow.me",
+        recipient: "owner@example.test",
         occurredAt: "2026-04-23T01:35:00.000Z",
         receivedAt: "2026-04-23T01:35:00.000Z",
       }))
@@ -560,7 +560,7 @@ describe("mail outbound confirmed send", () => {
       ownerEmail: null,
       source: null,
       from: "slugger@ouro.bot",
-      to: ["ari@mendelow.me"],
+      to: ["owner@example.test"],
       cc: [],
       bcc: [],
       subject: "Provider status",
@@ -641,7 +641,7 @@ describe("mail outbound confirmed send", () => {
         ownerEmail: null,
         source: null,
         from: "slugger@ouro.bot",
-        to: ["ari@mendelow.me"],
+        to: ["owner@example.test"],
         cc: ["ops@example.com"],
         bcc: [],
         subject: "ACS REST proof",
@@ -692,7 +692,7 @@ describe("mail outbound confirmed send", () => {
       ownerEmail: null,
       source: null,
       from: "slugger@ouro.bot",
-      to: ["ari@mendelow.me"],
+      to: ["owner@example.test"],
       cc: [],
       bcc: [],
       subject: "ACS REST edge proof",
@@ -820,7 +820,7 @@ describe("mail outbound confirmed send", () => {
       store,
       agentId: "slugger",
       from: "slugger@ouro.bot",
-      to: ["ari@mendelow.me"],
+      to: ["owner@example.test"],
       subject: "Minimal provider submit",
       text: "Provider metadata is sometimes sparse.",
       actor: { kind: "agent", agentId: "slugger" },

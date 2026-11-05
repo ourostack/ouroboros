@@ -136,9 +136,9 @@ function writeMailroom(agentRoot: string, fixture: MailroomFixture = {}): string
     sourceGrants: [{
       grantId: "grant_slugger_hey_31a41026",
       agentId: "slugger",
-      ownerEmail: "ari@mendelow.me",
+      ownerEmail: "owner@example.test",
       source: "hey",
-      aliasAddress: "me.mendelow.ari.slugger@ouro.bot",
+      aliasAddress: "test.example.owner.slugger@ouro.bot",
       keyId: "mail_slugger-hey_4c628d031cbe560c",
       publicKeyPem: "-----BEGIN PUBLIC KEY-----\nstub\n-----END PUBLIC KEY-----\n",
       defaultPlacement: "imbox",

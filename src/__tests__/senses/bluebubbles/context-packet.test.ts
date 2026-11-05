@@ -16,7 +16,7 @@ function message(overrides: Partial<any> = {}) {
     : "thread-guid"
   const senderExternalId = Object.prototype.hasOwnProperty.call(overrides, "senderExternalId")
     ? overrides.senderExternalId
-    : "ari@mendelow.me"
+    : "owner@example.test"
   const senderRawId = Object.prototype.hasOwnProperty.call(overrides, "senderRawId")
     ? overrides.senderRawId
     : senderExternalId
@@ -44,7 +44,7 @@ function message(overrides: Partial<any> = {}) {
       isGroup: true,
       sessionKey: overrides.sessionKey ?? "chat:any;+;thread-guid",
       sendTarget: { kind: "chat_guid" as const, value: chatGuid ?? chatIdentifier ?? "unknown" },
-      participantHandles: ["ari@mendelow.me"],
+      participantHandles: ["owner@example.test"],
     },
     text: overrides.text ?? "who is pending?",
     textForAgent: overrides.textForAgent ?? overrides.text ?? "who is pending?",

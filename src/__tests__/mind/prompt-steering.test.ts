@@ -348,7 +348,7 @@ describe("centerOfGravitySteeringSection", () => {
             friendId: "ari",
             friendName: "Ari",
             channel: "bluebubbles",
-            key: "chat:any;-;ari@mendelow.me",
+            key: "chat:any;-;owner@example.test",
             sessionPath: "/tmp/ari-bb.json",
             lastActivityAt: recent,
             lastActivityMs: Date.parse(recent),
@@ -366,7 +366,7 @@ describe("centerOfGravitySteeringSection", () => {
 
     expect(result).toContain("one part of the visible picture, not the whole picture")
     expect(result).toContain("other active sessions:")
-    expect(result).toContain("Ari/bluebubbles/chat:any;-;ari@mendelow.me")
+    expect(result).toContain("Ari/bluebubbles/chat:any;-;owner@example.test")
     expect(result).toContain("my center of gravity lives in the active-work world-state above")
     expect(result).toContain("when that world-state conflicts with older transcript history, the world-state wins.")
   })
@@ -1158,7 +1158,7 @@ describe("obligation steering helpers", () => {
             friendId: "ari",
             friendName: "Ari",
             channel: "bluebubbles",
-            key: "chat_any;-;ari@mendelow.me",
+            key: "chat_any;-;owner@example.test",
             sessionPath: "/tmp/ari-bb.json",
             lastActivityAt: "2026-03-21T10:39:00.000Z",
             lastActivityMs: Date.parse("2026-03-21T10:39:00.000Z"),
@@ -1187,7 +1187,7 @@ describe("obligation steering helpers", () => {
         },
         {
           id: "ob-ari-bb",
-          origin: { friendId: "ari", channel: "bluebubbles", key: "chat:any;-;ari@mendelow.me" },
+          origin: { friendId: "ari", channel: "bluebubbles", key: "chat:any;-;owner@example.test" },
           content: "bring the answer back there",
           status: "investigating",
           createdAt: "2026-03-21T10:39:10.000Z",
@@ -1199,7 +1199,7 @@ describe("obligation steering helpers", () => {
     const result = buildExactStatusReply(frame, frame.pendingObligations?.[0] ?? null, "just checked the current thread", "all-sessions-family")
 
     expect(result).toContain("other active sessions:")
-    expect(result).toContain('- Ari/bluebubbles/chat:any;-;ari@mendelow.me: [investigating] this live thread; artifact no artifact yet; next work on "bring the answer back there" and bring back a concrete artifact')
+    expect(result).toContain('- Ari/bluebubbles/chat:any;-;owner@example.test: [investigating] this live thread; artifact no artifact yet; next work on "bring the answer back there" and bring back a concrete artifact')
     expect(result).not.toContain("self/inner/dialog")
     expect(result).not.toContain("ari-old/cli/session")
     expect(result.match(/Ari\/bluebubbles\//g)?.length ?? 0).toBe(1)
