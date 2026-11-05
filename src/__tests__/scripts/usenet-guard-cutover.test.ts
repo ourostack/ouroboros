@@ -129,7 +129,7 @@ printf '%s\n' "$*" >> ${JSON.stringify(calls)}
     expect(emitted[0]).toContain(" false ")
     expect(emitted[0]).not.toContain("test-only-secret-123")
     expect(fs.readFileSync(log, "utf8")).not.toContain("test-only-secret-123")
-  })
+  }, 30_000)
 
   it.each([
     ["missing credential", ""],

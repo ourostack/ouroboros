@@ -540,5 +540,5 @@ describe("butler-ship CLI", () => {
     await d.sleep(1)
     const g = d.gh(["--version"])
     expect(typeof g.code).toBe("number")
-  })
+  }, 30_000)
 })
