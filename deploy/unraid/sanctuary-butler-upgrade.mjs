@@ -1312,6 +1312,9 @@ function verify(withGate = false) {
   existsSync(POLICY) ? ok(`steward policy ${sha12(POLICY)}`) : installedRequest()?.predecessorContract === "none" ? ok("no steward policy yet") : bad("steward policy missing")
   const psycheMount = JSON.parse(docker(["inspect", CONTAINER, "--format", "{{json .Mounts}}"]) || "[]")
   psycheMountIssue(psycheMount) === null ? ok("psyche mount is in a supported shape") : bad(psycheMountIssue(psycheMount))
+  existsSync(TEMPLATE) && readFileSync(TEMPLATE, "utf8").includes(`Target="${PSYCHE_TARGET}"`)
+    ? bad("installed DockerMan template still mounts the psyche read-only; a DockerMan Apply would restore it")
+    : ok("installed DockerMan template has no separate psyche mount")
   const trustMount = JSON.parse(docker(["inspect", CONTAINER, "--format", "{{json .Mounts}}"]) || "[]")
   trustMountIssue(trustMount) === null ? ok("the operator trust directory is mounted read-only in the resident") : bad(trustMountIssue(trustMount))
   const trustIssue = existsSync(TRUST_HOST_DIR) ? trustDirIssue(lstatSync(TRUST_HOST_DIR)) : `${TRUST_HOST_DIR} is missing`

@@ -1549,6 +1549,22 @@ describe("Sanctuary live scenario capture", () => {
     expect(() => finalizeSanctuaryScenarioCapture(gate, receipts)).toThrow(AggregateError)
   })
 
+  it.each([[5, true], [6, true], [4, false], [7, false]] as const)("derives Unit-16e from a %i-mount exact resident: %s", (mountCount, passes) => {
+    // Five mounts now; six for alpha.978 and earlier (and a rollback to one), which add the read-only psyche mount.
+    const after = base(); after.containment!.mountCount = mountCount
+    expect(after.containment!.mountsExact).toBe(true)
+    const assertions = deriveSanctuaryScenarioAssertions("unit-16e-containment-audit", base(), after, 400_000)
+    if (passes) {
+      expect(assertions).toMatchObject({ mountCount })
+      expect(() => validateSanctuaryUnit16EvidenceAssertions("unit-16e-containment-audit", assertions!)).not.toThrow()
+    } else expect(assertions).toBeNull()
+  })
+
+  it("does not derive Unit-16e from a five-mount resident whose mounts are not exact", () => {
+    const after = base(); after.containment!.mountCount = 5; after.containment!.mountsExact = false
+    expect(deriveSanctuaryScenarioAssertions("unit-16e-containment-audit", base(), after, 400_000)).toBeNull()
+  })
+
   it.each([true, false])("derives Unit-16e v2 only from exact role evidence with reasoning=%s", (reasoning) => {
     const after = base()
     after.containment!.profileBoundaries = sanctuaryContainmentBoundariesFixture(reasoning ? ["reasoning-effort"] : [])

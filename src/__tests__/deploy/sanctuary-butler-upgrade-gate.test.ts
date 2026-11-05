@@ -549,6 +549,13 @@ describe("the resident's psyche mount", () => {
     expect(verifyBody).toContain('ok("psyche mount is in a supported shape")')
     expect(verifyBody).toContain('"psyche files are resident-owned 0600"')
   })
+  it("has verify report whether the installed DockerMan template still carries the psyche Config", () => {
+    const verifyBody = source.slice(source.indexOf("function verify("), source.indexOf("function fail("))
+    const check = verifyBody.slice(verifyBody.indexOf("existsSync(TEMPLATE)"))
+    expect(check).toMatch(/^existsSync\(TEMPLATE\) && readFileSync\(TEMPLATE, "utf8"\)\.includes\(`Target="\$\{PSYCHE_TARGET\}"`\)/u)
+    expect(check).toContain('? bad("installed DockerMan template still mounts the psyche read-only; a DockerMan Apply would restore it")')
+    expect(check).toContain(': ok("installed DockerMan template has no separate psyche mount")')
+  })
 })
 
 describe("the installed DockerMan template loses its psyche Config", () => {
