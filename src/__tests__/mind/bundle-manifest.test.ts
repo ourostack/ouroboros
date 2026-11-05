@@ -36,6 +36,7 @@ describe("bundle-manifest", () => {
     for (const entry of CANONICAL_BUNDLE_MANIFEST) {
       expect(isCanonicalBundlePath(entry.path)).toBe(true)
     }
+    expect(isCanonicalBundlePath("product/PRODUCT.md")).toBe(true)
     expect(isCanonicalBundlePath("")).toBe(true)
     expect(isCanonicalBundlePath("./")).toBe(true)
     expect(isCanonicalBundlePath("\\\\tasks\\\\habit.md")).toBe(true)

@@ -338,6 +338,31 @@ function friendsShellWriteRefused(command: string, agentRoot: string | undefined
   return protectedFolderShellWriteRefused(command, (words) => commandMentionsFriendsStore(command, words, agentRoot))
 }
 
+// --- the product rules in shell commands ---
+// product/PRODUCT.md is the package's standing rules for this agent; releases replace it, and nothing in a conversation does.
+// Unlike the friends store, a bare relative "product/" is an ordinary project folder almost everywhere, so it counts as this
+// agent's only when the command is plainly working in the agent root.
+function commandMentionsProduct(command: string, words: readonly string[], agentRoot: string): boolean {
+  const lexicalRoot = path.resolve(agentRoot)
+  const roots = [lexicalRoot, canonicalize(lexicalRoot)]
+  if (globOrExpansionCouldReach(command, path.join(lexicalRoot, "product"), agentRoot)) return true
+  const named = roots.some((root) => command.split(path.join(root, "product")).slice(1).some((rest) => rest === "" || /^[/\s'"]/.test(rest)))
+  if (named) return true
+  if (!/(?:^|[\s'"=(])product(?:\/|$|[\s'"])/.test(command)) return false
+  if (roots.includes(process.cwd())) return true
+  return words.some((word, index) => words[index - 1] === "cd" && roots.includes(path.resolve(expandHome(word))))
+}
+
+function productShellWriteRefused(command: string, agentRoot: string | undefined): boolean {
+  if (!agentRoot) return false
+  try {
+    return protectedFolderShellWriteRefused(command, (words) => commandMentionsProduct(command, words, agentRoot))
+  } catch {
+    // The filesystem could not say where the agent root lands: refuse rather than guess.
+    return true
+  }
+}
+
 // --- structural guardrail checks (always on, all trust levels) ---
 
 function checkReadBeforeWrite(toolName: string, args: Record<string, string>, context: GuardContext): GuardResult {
@@ -377,6 +402,7 @@ function checkProtectedPaths(toolName: string, args: Record<string, string>, con
         const psycheClass = psycheFileClass(filePath, agentRoot)
         if (psycheClass) return psycheWriteAllowed(psycheClass, filePath, context) ? allow : deny(PSYCHE_REFUSAL)
         if (insideAgentFolder(filePath, agentRoot, "friends")) return deny(REASONS.protectedPath)
+        if (insideAgentFolder(filePath, agentRoot, "product")) return deny(REASONS.protectedPath)
       } catch {
         return deny(REASONS.protectedPath)
       }
@@ -388,6 +414,7 @@ function checkProtectedPaths(toolName: string, args: Record<string, string>, con
     const command = args.command || ""
     if (psycheShellWriteRefused(command, context.agentRoot)) return deny(PSYCHE_REFUSAL)
     if (friendsShellWriteRefused(command, context.agentRoot)) return deny(REASONS.protectedPath)
+    if (productShellWriteRefused(command, context.agentRoot)) return deny(REASONS.protectedPath)
     if (shellWritesToProtectedPath(command)) return deny(REASONS.protectedPath)
   }
 

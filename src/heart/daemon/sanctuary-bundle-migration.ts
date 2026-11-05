@@ -9,6 +9,7 @@ export const SANCTUARY_PACKAGE_MANAGED_FILES = [
   "mcp/media-mcp.mjs",
   "habits/sanctuary-health.md",
   "awaiting/house-care-sweep.md",
+  "product/PRODUCT.md",
 ] as const
 
 // The psyche belongs to the install: it is seeded from these files only when `psyche/` is absent, and no release touches it again.

@@ -1432,3 +1432,30 @@ describe("Sanctuary starter psyche", () => {
     expect(relatives.filter((relative: string) => relative === "psyche" || relative.startsWith("psyche/"))).toEqual([])
   })
 })
+
+describe("Sanctuary product rules", () => {
+  it("seeds and repairs product/PRODUCT.md like any managed file", () => {
+    expect(SANCTUARY_PACKAGE_MANAGED_FILES).toContain("product/PRODUCT.md")
+    const packageRoot = makePackageRoot()
+    const agentRoot = makeRoot("sanctuary-product-rules")
+    write(agentRoot, "bundle-meta.json", { runtimeVersion: "old", bundleSchemaVersion: 2, lastUpdated: "old" })
+    migrateSanctuaryPackageManagedBundle({ packageRoot, agentRoot })
+    const product = path.join(agentRoot, "product", "PRODUCT.md")
+    expect(fs.readFileSync(product, "utf8")).toBe("packaged:product/PRODUCT.md\n")
+    fs.writeFileSync(product, "talked into a new rule\n")
+    expect(migrateSanctuaryPackageManagedBundle({ packageRoot, agentRoot })).toEqual({ managedFilesUpdated: 1 })
+    expect(fs.readFileSync(product, "utf8")).toBe("packaged:product/PRODUCT.md\n")
+  })
+
+  it("rollback removes product/PRODUCT.md when the snapshot had none", () => {
+    const packageRoot = makePackageRoot()
+    const agentRoot = makeRoot("sanctuary-product-rollback")
+    write(agentRoot, "bundle-meta.json", { runtimeVersion: "old", bundleSchemaVersion: 2, lastUpdated: "old" })
+    migrateSanctuaryPackageManagedBundle({ packageRoot, agentRoot, retainRollback: true, rollbackImageId: `sha256:${"1".repeat(64)}`, targetImageId: `sha256:${"9".repeat(64)}` })
+    expect(fs.existsSync(path.join(agentRoot, "product", "PRODUCT.md"))).toBe(true)
+    expect(rollbackSanctuaryPackageManagedBundle(agentRoot)).toBe(true)
+    expect(fs.existsSync(path.join(agentRoot, "product", "PRODUCT.md"))).toBe(false)
+    // The folder the release created goes too, so a rollback to 979 leaves no non-canonical entry behind.
+    expect(fs.existsSync(path.join(agentRoot, "product"))).toBe(false)
+  })
+})

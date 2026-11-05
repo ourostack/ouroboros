@@ -1576,6 +1576,53 @@ describe("OURO_CLI_TRUST_MANIFEST — rollback and versions", () => {
   })
 })
 
+describe("the product rules change only by release", () => {
+  const PROTECTED = "that path is protected — i can read it but not modify it."
+  beforeEach(() => {
+    vi.resetModules()
+    vi.mocked(fs.existsSync).mockReturnValue(false)
+  })
+
+  it.each(["family", undefined])("refuses file and shell writes to product/PRODUCT.md at %s trust", async (trustLevel) => {
+    const { guardInvocation } = await import("../../repertoire/guardrails")
+    const ctx = (target: string) => ({ readPaths: new Set([target]), agentRoot: "/bundle", trustLevel: trustLevel as "family" | undefined })
+    for (const target of ["/bundle/product/PRODUCT.md", "product/PRODUCT.md", "../bundle/product/PRODUCT.md"]) {
+      for (const tool of ["write_file", "edit_file"]) {
+        expect(guardInvocation(tool, { path: target }, ctx(target)), `${tool} ${target}`).toEqual({ allowed: false, reason: PROTECTED })
+      }
+    }
+    for (const command of ["echo x > /bundle/product/PRODUCT.md", "cp a /bundle/product/PRODUCT.md", "cd /bundle && sed -i s/a/b/ product/PRODUCT.md", "sed -i s/a/b/ /bundle/prod*/PRODUCT.md"]) {
+      expect(guardInvocation("shell", { command }, ctx("")), command).toEqual({ allowed: false, reason: PROTECTED })
+    }
+  })
+
+  it("leaves other projects' product folders and reads of the rules alone", async () => {
+    const { guardInvocation } = await import("../../repertoire/guardrails")
+    const ctx = { readPaths: new Set(["/home/x/code/app/product/notes.md"]), agentRoot: "/bundle", trustLevel: "family" as const }
+    expect(guardInvocation("write_file", { path: "/home/x/code/app/product/notes.md" }, ctx)).toEqual({ allowed: true })
+    for (const command of ["cd ~/code/app && sed -i s/a/b/ product/x.md", "git add product/", "cat /bundle/product/PRODUCT.md"]) {
+      expect(guardInvocation("shell", { command }, ctx), command).toEqual({ allowed: true })
+    }
+  })
+
+  it("counts a relative product/ as the agent's when the shell already runs in the agent root", async () => {
+    const { guardInvocation } = await import("../../repertoire/guardrails")
+    const agentRoot = process.cwd()
+    expect(guardInvocation("shell", { command: "sed -i s/a/b/ product/PRODUCT.md" }, { readPaths: new Set(), agentRoot, trustLevel: "family" })).toEqual({ allowed: false, reason: PROTECTED })
+    expect(guardInvocation("shell", { command: "sed -i s/a/b/ product/PRODUCT.md" }, { readPaths: new Set(), agentRoot: "/bundle", trustLevel: "family" })).toEqual({ allowed: true })
+  })
+
+  it("refuses when the filesystem cannot say where the agent root lands", async () => {
+    const { guardInvocation } = await import("../../repertoire/guardrails")
+    vi.spyOn(fs.realpathSync, "native").mockImplementation(() => { throw Object.assign(new Error("denied"), { code: "EACCES" }) })
+    try {
+      expect(guardInvocation("shell", { command: "echo hi" }, { readPaths: new Set(), agentRoot: "/bundle", trustLevel: "family" })).toEqual({ allowed: false, reason: PROTECTED })
+    } finally {
+      vi.restoreAllMocks()
+    }
+  })
+})
+
 describe("protected folders resolve paths the way the file tools do", () => {
   const root = "/home/ouro/AgentBundles/sanctuary.ouro"
   const ctx = (target: string) => ({ readPaths: new Set([target]), agentRoot: root, trustLevel: "family" as const })

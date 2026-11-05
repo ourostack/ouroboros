@@ -614,3 +614,9 @@ describe("package asset validation", () => {
     )
   })
 })
+
+describe("the Butler product rules ship in the package", () => {
+  it("lists product/PRODUCT.md as a required package asset", () => {
+    expect(REQUIRED_PACKAGE_ASSET_PATHS).toContain("deploy/unraid/sanctuary.ouro/product/PRODUCT.md")
+  })
+})
