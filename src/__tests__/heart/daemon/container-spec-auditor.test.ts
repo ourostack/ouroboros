@@ -681,3 +681,71 @@ describe("Sanctuary pre-activation container auditor", () => {
     }))
   })
 })
+
+describe("canonical-gateway psyche mount shapes", () => {
+  const image = "sha256:" + "a".repeat(64)
+  const psycheTarget = "/home/ouro/AgentBundles/sanctuary.ouro/psyche"
+  const psycheSource = "/mnt/user/appdata/ouro-butler/agent/sanctuary.ouro/psyche"
+  const trustTarget = "/etc/ouro/trust/sanctuary"
+  const policy = JSON.stringify({ scheduler: "supercronic", updates: "disabled" })
+  const gatewayConfigs = [
+    '<Config Target="/run/ouro-authority" Mode="ro" Type="Path">/run/ouro-authority</Config>',
+    '<Config Target="/etc/ouro/trust/sanctuary" Mode="ro" Type="Path">/mnt/user/appdata/ouro-butler/trust/sanctuary</Config>',
+  ]
+  const psycheConfig = (mode: string) => `<Config Target="${psycheTarget}" Mode="${mode}" Type="Path">${psycheSource}</Config>`
+  function gatewayTemplate(extra: string[]): string {
+    return stagedTemplate().replace(`sha256:${"a".repeat(64)}`, expectedImageReference).replace("</Container>", `${[...gatewayConfigs, ...extra].join("\n")}\n</Container>`)
+  }
+  function audit(spec: unknown) {
+    return auditSpec(spec, { mountContract: "canonical-gateway", expectedImage: image, expectedImageReference, expectedIcon, expectedEnvironment })
+  }
+  function auditTemplates(templateXml: string) {
+    return [
+      auditPersistent({ mountContract: "canonical-gateway", templateXml, runtimePolicyText: policy, expectedImageReference }),
+      auditStaged({ mountContract: "canonical-gateway", templateXml: templateXml.replace(expectedImageReference, image), runtimePolicyText: policy, expectedImage: image }),
+    ]
+  }
+
+  it("accepts the old resident with the read-only psyche mount", () => {
+    expect(audit(validInspect(true, { psycheMount: true }))).toEqual({ ok: true, violations: [] })
+  })
+
+  it("accepts the new resident without a psyche mount", () => {
+    expect(audit(validInspect(true))).toEqual({ ok: true, violations: [] })
+  })
+
+  it("rejects a separate read-write psyche mount", () => {
+    const spec = validInspect(true, { psycheMount: true })
+    spec.Mounts.find((mount) => mount.Destination === psycheTarget)!.RW = true
+    expect(audit(spec).violations).toContain("effective mounts do not match the selected Sanctuary mount contract")
+  })
+
+  it.each([false, true])("still rejects a missing trust mount (psyche mount: %s)", (psycheMount) => {
+    const spec = validInspect(true, { psycheMount })
+    spec.Mounts = spec.Mounts.filter((mount) => mount.Destination !== trustTarget)
+    expect(audit(spec).violations).toContain("effective mounts do not match the selected Sanctuary mount contract")
+  })
+
+  it("does not widen the pre-gateway contract to the psyche mount", () => {
+    const spec = validInspect()
+    spec.Mounts.push({ Type: "bind", Source: psycheSource, Destination: psycheTarget, RW: false, Propagation: "rprivate" })
+    expect(auditSpec(spec, { mountContract: "canonical-pre-gateway", expectedImage: image, expectedImageReference, expectedIcon, expectedEnvironment }).ok).toBe(false)
+  })
+
+  it("accepts the old template with the read-only psyche Config", () => {
+    for (const result of auditTemplates(gatewayTemplate([psycheConfig("ro")]))) expect(result).toEqual({ ok: true, violations: [] })
+  })
+
+  it("accepts the new template without a psyche Config", () => {
+    for (const result of auditTemplates(gatewayTemplate([]))) expect(result).toEqual({ ok: true, violations: [] })
+  })
+
+  it("rejects a template with a read-write psyche Config", () => {
+    for (const result of auditTemplates(gatewayTemplate([psycheConfig("rw")]))) expect(result.violations).toContain("template Config entries must equal the canonical path binds")
+  })
+
+  it.each([[[]], [[psycheConfig("ro")]]])("still rejects a template missing the trust Config (%j)", (extra) => {
+    const template = gatewayTemplate(extra).replace(`${gatewayConfigs[1]}\n`, "")
+    for (const result of auditTemplates(template)) expect(result.violations).toContain("template Config entries must equal the canonical path binds")
+  })
+})

@@ -735,7 +735,7 @@ export class SanctuaryAuthorityRootLifecycle {
     const steps: Record<(typeof SANCTUARY_UPGRADE_STEPS)[number], () => void | Promise<void>> = {
       stop: () => this.#halt(),
       switch: async () => { await this.#halt(); this.#switchPackage(journal) },
-      resident: () => this.#recreateResident(journal.to.imageReference, journal.to.imageId),
+      resident: () => this.#recreateResident(journal.to.imageReference, journal.to.imageId, { psycheMount: false }),
       migrate: () => target().#bundle(["--operation", "migrate", "--rollback-image-id", journal.from.imageId, "--target-image-id", journal.to.imageId]),
       start: () => target().#startUpgraded(),
     }
@@ -789,7 +789,8 @@ export class SanctuaryAuthorityRootLifecycle {
     const predecessor = new SanctuaryAuthorityRootLifecycle({ targetImageId: journal.from.imageId, rollbackImageId: journal.from.rollbackImageId }, this.#options)
     predecessor.#publishBoot()
     if (this.#containers().find((container) => container.Name === "/ouro-butler")?.Image !== journal.from.imageId) {
-      predecessor.#recreateResident(journal.from.imageReference, journal.from.imageId)
+      // The predecessor release (up to alpha.978) expects its psyche read-only over the bundle; give it back that shape.
+      predecessor.#recreateResident(journal.from.imageReference, journal.from.imageId, { psycheMount: true })
     }
     await predecessor.#startUpgraded(PREDECESSOR_READY_TIMEOUT_MS)
     this.#remove(UPGRADE)
@@ -892,13 +893,14 @@ export class SanctuaryAuthorityRootLifecycle {
     this.#write(BOOT, fs.readFileSync(this.#p(`${ROOT}/package/deploy/unraid/sanctuary-authority-service.sh`), "utf8"))
   }
 
-  #recreateResident(reference: string, imageId: string): void {
+  /** `psycheMount` adds the read-only psyche mount that releases up to alpha.978 expect; only a rollback passes true. */
+  #recreateResident(reference: string, imageId: string, { psycheMount }: { psycheMount: boolean }): void {
     if (this.#containers().some((container) => container.Name === "/ouro-butler")) this.#docker(["rm", "-f", "ouro-butler"])
     this.#docker(["create", "--name", "ouro-butler", "--network", "host", "--restart", "unless-stopped", "--user", "10001:10001",
       "-l", "net.unraid.docker.managed=dockerman", "-l", `net.unraid.docker.icon=${ICON}`, "-l", "org.opencontainers.image.source=https://github.com/ourostack/ouroboros",
       "-v", `${RUNTIME}:/home/ouro/.ouro-cli:rw`, "-v", `${BUNDLE}:/home/ouro/AgentBundles/sanctuary.ouro:rw`,
       "-v", `${EVENTS}:/run/ouro-events:ro`, "-v", `${SOCKET}:${SOCKET}:ro`,
-      "-v", `${BUNDLE}/psyche:/home/ouro/AgentBundles/sanctuary.ouro/psyche:ro`,
+      ...(psycheMount ? ["-v", `${BUNDLE}/psyche:/home/ouro/AgentBundles/sanctuary.ouro/psyche:ro`] : []),
       "-v", `${TRUST}:/etc/ouro/trust/sanctuary:ro`, reference])
     const resident = this.#containers().find((container) => container.Name === "/ouro-butler")
     if (resident?.Image !== imageId || resident.State.Running) throw new Error("Sanctuary resident recreation readback failed")

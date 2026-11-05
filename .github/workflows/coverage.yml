@@ -153,7 +153,7 @@ jobs:
           done
           sudo mkdir -p \
             /mnt/user/appdata/ouro-butler/runtime/.ouro-cli \
-            /mnt/user/appdata/ouro-butler/agent/sanctuary.ouro/psyche \
+            /mnt/user/appdata/ouro-butler/agent/sanctuary.ouro \
             /mnt/user/appdata/ouro-butler/trust/sanctuary \
             /boot/config/custom/ouro-events/spool \
             /run/ouro-authority
@@ -166,7 +166,6 @@ jobs:
             --mount type=bind,src=/mnt/user/appdata/ouro-butler/agent/sanctuary.ouro,dst=/home/ouro/AgentBundles/sanctuary.ouro \
             --mount type=bind,src=/boot/config/custom/ouro-events/spool,dst=/run/ouro-events,readonly \
             --mount type=bind,src=/run/ouro-authority,dst=/run/ouro-authority,readonly \
-            --mount type=bind,src=/mnt/user/appdata/ouro-butler/agent/sanctuary.ouro/psyche,dst=/home/ouro/AgentBundles/sanctuary.ouro/psyche,readonly \
             --mount type=bind,src=/mnt/user/appdata/ouro-butler/trust/sanctuary,dst=/etc/ouro/trust/sanctuary,readonly \
             "$AUDIT_VERSION_IMAGE"
           test "$(docker inspect --format '{{.Config.Image}}' ouro-butler)" = "$AUDIT_VERSION_IMAGE"

@@ -13,15 +13,16 @@ const trustMount = { Type: "bind", Source: "/mnt/user/appdata/ouro-butler/trust/
 const socketBind = "/run/ouro-authority:/run/ouro-authority:ro"
 const policy = '{"scheduler":"supercronic","updates":"disabled"}'
 
-function spec(gateway: boolean) {
+// `psyche` builds the shape releases up to alpha.978 created, with the psyche folder mounted read-only over the bundle.
+function spec(gateway: boolean, psyche = false) {
   const value = sanctuaryContainerInspectFixture()
   value.Config.Image = reference
   value.Mounts.splice(3)
-  if (gateway) value.Mounts.push({ ...socketMount }, { ...psycheMount }, { ...trustMount })
+  if (gateway) value.Mounts.push({ ...socketMount }, ...(psyche ? [{ ...psycheMount }] : []), { ...trustMount })
   return value
 }
 
-function template(gateway: boolean, repository = image) {
+function template(gateway: boolean, repository = image, psyche = false) {
   return `<?xml version="1.0"?>
 <Container version="2">
 <Name>ouro-butler</Name><Repository>${repository}</Repository>
@@ -31,7 +32,7 @@ function template(gateway: boolean, repository = image) {
 <Config Target="/home/ouro/.ouro-cli" Mode="rw" Type="Path">/mnt/user/appdata/ouro-butler/runtime/.ouro-cli</Config>
 <Config Target="/home/ouro/AgentBundles/sanctuary.ouro" Mode="rw" Type="Path">/mnt/user/appdata/ouro-butler/agent/sanctuary.ouro</Config>
 <Config Target="/run/ouro-events" Mode="ro" Type="Path">/boot/config/custom/ouro-events/spool</Config>
-${gateway ? '<Config Target="/run/ouro-authority" Mode="ro" Type="Path">/run/ouro-authority</Config>\n<Config Target="/home/ouro/AgentBundles/sanctuary.ouro/psyche" Mode="ro" Type="Path">/mnt/user/appdata/ouro-butler/agent/sanctuary.ouro/psyche</Config>\n<Config Target="/etc/ouro/trust/sanctuary" Mode="ro" Type="Path">/mnt/user/appdata/ouro-butler/trust/sanctuary</Config>' : ""}
+${gateway ? `<Config Target="/run/ouro-authority" Mode="ro" Type="Path">/run/ouro-authority</Config>\n${psyche ? '<Config Target="/home/ouro/AgentBundles/sanctuary.ouro/psyche" Mode="ro" Type="Path">/mnt/user/appdata/ouro-butler/agent/sanctuary.ouro/psyche</Config>\n' : ""}<Config Target="/etc/ouro/trust/sanctuary" Mode="ro" Type="Path">/mnt/user/appdata/ouro-butler/trust/sanctuary</Config>` : ""}
 </Container>`
 }
 
@@ -39,9 +40,10 @@ describe("versioned Sanctuary gateway deployment mounts", () => {
   it("runs packaged-image CI against the exact gateway mounts and every explicit audit mode", () => {
     const workflow = fs.readFileSync(".github/workflows/coverage.yml", "utf8")
     const create = workflow.match(/docker create --pull=never --name ouro-butler[\s\S]*?"\$AUDIT_VERSION_IMAGE"/u)?.[0] ?? ""
-    expect(create.match(/--mount type=bind,/gu)).toHaveLength(6)
+    expect(create.match(/--mount type=bind,/gu)).toHaveLength(5)
     expect(create).toContain("--mount type=bind,src=/run/ouro-authority,dst=/run/ouro-authority,readonly")
-    expect(create).toContain("--mount type=bind,src=/mnt/user/appdata/ouro-butler/agent/sanctuary.ouro/psyche,dst=/home/ouro/AgentBundles/sanctuary.ouro/psyche,readonly")
+    expect(create).not.toContain("/sanctuary.ouro/psyche")
+    expect(workflow).not.toContain("sanctuary.ouro/psyche")
     expect(create).toContain("--mount type=bind,src=/mnt/user/appdata/ouro-butler/trust/sanctuary,dst=/etc/ouro/trust/sanctuary,readonly")
     const preparation = workflow.slice(workflow.indexOf("for AUDIT_SOURCE in"), workflow.indexOf('AUDIT_ICON='))
     expect(preparation.match(/\/run\/ouro-authority/gu)).toHaveLength(3)
@@ -66,6 +68,10 @@ describe("versioned Sanctuary gateway deployment mounts", () => {
     expect(auditSanctuaryStagedFiles({ templateXml: template(!gateway), runtimePolicyText: policy, expectedImage: image, mountContract }).ok).toBe(false)
     expect(auditSanctuaryPersistentTemplate({ templateXml: template(gateway, reference), runtimePolicyText: policy, expectedImageReference: reference, mountContract }).ok).toBe(true)
     expect(auditSanctuaryPersistentTemplate({ templateXml: template(!gateway, reference), runtimePolicyText: policy, expectedImageReference: reference, mountContract }).ok).toBe(false)
+    // The pre-978 shape with the read-only psyche mount passes only the gateway contract, so a rollback still audits.
+    expect(auditSanctuaryContainerSpec(spec(true, true), options).ok).toBe(gateway)
+    expect(auditSanctuaryStagedFiles({ templateXml: template(true, image, true), runtimePolicyText: policy, expectedImage: image, mountContract }).ok).toBe(gateway)
+    expect(auditSanctuaryPersistentTemplate({ templateXml: template(true, reference, true), runtimePolicyText: policy, expectedImageReference: reference, mountContract }).ok).toBe(gateway)
     for (const mutate of [
       (value: ReturnType<typeof spec>) => { value.Name = "/other" },
       (value: ReturnType<typeof spec>) => { value.Args = [] },
