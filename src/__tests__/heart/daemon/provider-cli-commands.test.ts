@@ -358,7 +358,7 @@ function hostedEnsureResponse(overrides: Partial<Record<string, unknown>> = {}):
   return {
     ok: true,
     mailboxAddress: "slugger@ouro.bot",
-    sourceAlias: "me.mendelow.ari.slugger@ouro.bot",
+    sourceAlias: "test.example.owner.slugger@ouro.bot",
     addedMailbox: true,
     addedSourceGrant: true,
     generatedPrivateKeys: {
@@ -375,9 +375,9 @@ function hostedEnsureResponse(overrides: Partial<Record<string, unknown>> = {}):
     sourceGrant: {
       grantId: "grant_slugger_hey_9f8b26a4",
       agentId: "slugger",
-      ownerEmail: "ari@mendelow.me",
+      ownerEmail: "owner@example.test",
       source: "hey",
-      aliasAddress: "me.mendelow.ari.slugger@ouro.bot",
+      aliasAddress: "test.example.owner.slugger@ouro.bot",
       keyId: "mail_slugger_hey",
       defaultPlacement: "imbox",
       enabled: true,
@@ -419,9 +419,9 @@ function hostedRotateResponse(overrides: Partial<Record<string, unknown>> = {}):
     sourceGrant: {
       grantId: "grant_slugger_hey_9f8b26a4",
       agentId: "slugger",
-      ownerEmail: "ari@mendelow.me",
+      ownerEmail: "owner@example.test",
       source: "hey",
-      aliasAddress: "me.mendelow.ari.slugger@ouro.bot",
+      aliasAddress: "test.example.owner.slugger@ouro.bot",
       keyId: "mail_slugger_hey_rotated",
       defaultPlacement: "imbox",
       enabled: true,
@@ -989,6 +989,16 @@ describe("provider CLI command parsing", () => {
       key: "bluebubbles.password",
       scope: "machine",
     })
+    expect(parseOuroCommand(["vault", "config", "set", "--agent", "sanctuary", "--key", "unraidReadApiKey", "--value-file", "/dev/stdin", "--scope", "machine"])).toEqual({
+      kind: "vault.config.set",
+      agent: "sanctuary",
+      key: "unraidReadApiKey",
+      valueFile: "/dev/stdin",
+      scope: "machine",
+    })
+    expect(() => parseOuroCommand(["vault", "config", "set", "--key", "a.b", "--value", "x", "--value-file", "/k"])).toThrow("not both")
+    expect(() => parseOuroCommand(["vault", "config", "set", "--key", "a.b", "--value-file"])).toThrow("needs a path")
+    expect(() => parseOuroCommand(["vault", "config", "status", "--value-file", "/k"])).toThrow("Usage: ouro vault config status")
     expect(parseOuroCommand(["vault", "config", "set", "--agent", "Slugger", "--key", "bluebubbles.password", "--value", "secret"])).toEqual({
       kind: "vault.config.set",
       agent: "Slugger",
@@ -1015,13 +1025,13 @@ describe("provider CLI command parsing", () => {
     expect(parseOuroCommand([
       "vault", "item", "set",
       "--agent", "Slugger",
-      "--item", "ops/porkbun/ari@mendelow.me",
+      "--item", "ops/porkbun/owner@example.test",
       "--template", "porkbun-api",
       "--note", "human context",
     ])).toEqual({
       kind: "vault.item.set",
       agent: "Slugger",
-      item: "ops/porkbun/ari@mendelow.me",
+      item: "ops/porkbun/owner@example.test",
       template: "porkbun-api",
       note: "human context",
     })
@@ -1031,13 +1041,13 @@ describe("provider CLI command parsing", () => {
       "--item", "ops/custom/service",
       "--secret-field", "apiKey",
       "--secret-field", "secretApiKey",
-      "--public-field", "account=ari@mendelow.me",
+      "--public-field", "account=owner@example.test",
     ])).toEqual({
       kind: "vault.item.set",
       agent: "Slugger",
       item: "ops/custom/service",
       secretFields: ["apiKey", "secretApiKey"],
-      publicFields: ["account=ari@mendelow.me"],
+      publicFields: ["account=owner@example.test"],
     })
     expect(parseOuroCommand(["vault", "item", "status", "--agent", "Slugger", "--item", "ops/custom/service"])).toEqual({
       kind: "vault.item.status",
@@ -1093,28 +1103,28 @@ describe("provider CLI command parsing", () => {
       .toThrow("Usage: ouro vault item set")
     expect(() => parseOuroCommand(["vault", "item", "set", "--item", "ops/service"]))
       .toThrow("requires --secret-field")
-    expect(parseOuroCommand(["vault", "ops", "porkbun", "set", "--agent", "Slugger", "--account", "ari@mendelow.me"])).toEqual({
+    expect(parseOuroCommand(["vault", "ops", "porkbun", "set", "--agent", "Slugger", "--account", "owner@example.test"])).toEqual({
       kind: "vault.item.set",
       agent: "Slugger",
-      item: "ops/registrars/porkbun/accounts/ari@mendelow.me",
+      item: "ops/registrars/porkbun/accounts/owner@example.test",
       template: "porkbun-api",
       compatibilityAlias: "vault ops porkbun",
     })
-    expect(parseOuroCommand(["vault", "ops", "porkbun", "set", "--account", "ari@mendelow.me"])).toEqual({
+    expect(parseOuroCommand(["vault", "ops", "porkbun", "set", "--account", "owner@example.test"])).toEqual({
       kind: "vault.item.set",
-      item: "ops/registrars/porkbun/accounts/ari@mendelow.me",
+      item: "ops/registrars/porkbun/accounts/owner@example.test",
       template: "porkbun-api",
       compatibilityAlias: "vault ops porkbun",
     })
-    expect(parseOuroCommand(["vault", "ops", "porkbun", "status", "--agent", "Slugger", "--account", "ari@mendelow.me"])).toEqual({
+    expect(parseOuroCommand(["vault", "ops", "porkbun", "status", "--agent", "Slugger", "--account", "owner@example.test"])).toEqual({
       kind: "vault.item.status",
       agent: "Slugger",
-      item: "ops/registrars/porkbun/accounts/ari@mendelow.me",
+      item: "ops/registrars/porkbun/accounts/owner@example.test",
       compatibilityAlias: "vault ops porkbun",
     })
-    expect(parseOuroCommand(["vault", "ops", "porkbun", "status", "--account", "ari@mendelow.me"])).toEqual({
+    expect(parseOuroCommand(["vault", "ops", "porkbun", "status", "--account", "owner@example.test"])).toEqual({
       kind: "vault.item.status",
-      item: "ops/registrars/porkbun/accounts/ari@mendelow.me",
+      item: "ops/registrars/porkbun/accounts/owner@example.test",
       compatibilityAlias: "vault ops porkbun",
     })
     expect(parseOuroCommand(["vault", "ops", "porkbun", "status"])).toEqual({
@@ -1136,7 +1146,7 @@ describe("provider CLI command parsing", () => {
       .toThrow("ouro vault config set")
     expect(() => parseOuroCommand(["vault", "ops", "porkbun", "set", "--agent", "Slugger"]))
       .toThrow("ouro vault ops porkbun set")
-    expect(() => parseOuroCommand(["vault", "ops", "porkbun", "set", "--agent", "Slugger", "--account", "ari/mendelow.me"]))
+    expect(() => parseOuroCommand(["vault", "ops", "porkbun", "set", "--agent", "Slugger", "--account", "owner/example.test"]))
       .toThrow("Porkbun account")
     expect(() => parseOuroCommand(["vault", "ops", "porkbun", "status", "--account"]))
       .toThrow("Porkbun account")
@@ -1214,7 +1224,7 @@ describe("provider CLI command parsing", () => {
       .toThrow("dns rollback requires --yes after choosing a backup")
     expect(() => parseOuroCommand(["dns", "plan", "--agent", "Slugger", "--binding", bindingPath, "--bad"]))
       .toThrow("Usage: ouro dns plan [--agent <name>] --binding <path>")
-    expect(() => parseOuroCommand(["dns", "plan", "--agent", "Slugger", "--binding", bindingPath, "--credential-item", "ops/registrars/porkbun/accounts/ari@mendelow.me"]))
+    expect(() => parseOuroCommand(["dns", "plan", "--agent", "Slugger", "--binding", bindingPath, "--credential-item", "ops/registrars/porkbun/accounts/owner@example.test"]))
       .toThrow("credential item belongs in the DNS workflow binding")
   })
 
@@ -1287,18 +1297,18 @@ describe("provider CLI command parsing", () => {
       agent: "Slugger",
       target: "workbench",
     })
-    expect(parseOuroCommand(["connect", "mail", "--agent", "Slugger", "--owner-email", "ari@mendelow.me", "--source", "hey"])).toEqual({
+    expect(parseOuroCommand(["connect", "mail", "--agent", "Slugger", "--owner-email", "owner@example.test", "--source", "hey"])).toEqual({
       kind: "connect",
       agent: "Slugger",
       target: "mail",
-      ownerEmail: "ari@mendelow.me",
+      ownerEmail: "owner@example.test",
       source: "hey",
     })
-    expect(parseOuroCommand(["connect", "mail", "--agent", "Slugger", "--owner-email", "ari@mendelow.me", "--source", "hey", "--rotate-missing-mail-keys"])).toEqual({
+    expect(parseOuroCommand(["connect", "mail", "--agent", "Slugger", "--owner-email", "owner@example.test", "--source", "hey", "--rotate-missing-mail-keys"])).toEqual({
       kind: "connect",
       agent: "Slugger",
       target: "mail",
-      ownerEmail: "ari@mendelow.me",
+      ownerEmail: "owner@example.test",
       source: "hey",
       rotateMissingMailKeys: true,
     })
@@ -1308,11 +1318,11 @@ describe("provider CLI command parsing", () => {
       target: "mail",
       noDelegatedSource: true,
     })
-    expect(parseOuroCommand(["mail", "import-mbox", "--file", "/tmp/hey.mbox", "--owner-email", "ari@mendelow.me", "--source", "hey", "--agent", "Slugger"])).toEqual({
+    expect(parseOuroCommand(["mail", "import-mbox", "--file", "/tmp/hey.mbox", "--owner-email", "owner@example.test", "--source", "hey", "--agent", "Slugger"])).toEqual({
       kind: "mail.import-mbox",
       agent: "Slugger",
       filePath: "/tmp/hey.mbox",
-      ownerEmail: "ari@mendelow.me",
+      ownerEmail: "owner@example.test",
       source: "hey",
     })
     expect(parseOuroCommand(["mail", "import-mbox", "--file", "/tmp/hey.mbox", "--foreground", "--operation-id", "op-123"])).toEqual({
@@ -1325,10 +1335,10 @@ describe("provider CLI command parsing", () => {
       kind: "mail.import-mbox",
       filePath: "/tmp/hey.mbox",
     })
-    expect(parseOuroCommand(["mail", "import-mbox", "--discover", "--owner-email", "ari@mendelow.me", "--source", "hey"])).toEqual({
+    expect(parseOuroCommand(["mail", "import-mbox", "--discover", "--owner-email", "owner@example.test", "--source", "hey"])).toEqual({
       kind: "mail.import-mbox",
       discover: true,
-      ownerEmail: "ari@mendelow.me",
+      ownerEmail: "owner@example.test",
       source: "hey",
     })
     expect(parseOuroCommand(["mail", "backfill-indexes", "--agent", "Slugger"])).toEqual({
@@ -1351,16 +1361,16 @@ describe("provider CLI command parsing", () => {
       kind: "account.ensure",
       agent: "Slugger",
     })
-    expect(parseOuroCommand(["account", "ensure", "--agent", "Slugger", "--owner-email", "ari@mendelow.me", "--source", "hey"])).toEqual({
+    expect(parseOuroCommand(["account", "ensure", "--agent", "Slugger", "--owner-email", "owner@example.test", "--source", "hey"])).toEqual({
       kind: "account.ensure",
       agent: "Slugger",
-      ownerEmail: "ari@mendelow.me",
+      ownerEmail: "owner@example.test",
       source: "hey",
     })
-    expect(parseOuroCommand(["account", "ensure", "--agent", "Slugger", "--owner-email", "ari@mendelow.me", "--source", "hey", "--rotate-missing-mail-keys"])).toEqual({
+    expect(parseOuroCommand(["account", "ensure", "--agent", "Slugger", "--owner-email", "owner@example.test", "--source", "hey", "--rotate-missing-mail-keys"])).toEqual({
       kind: "account.ensure",
       agent: "Slugger",
-      ownerEmail: "ari@mendelow.me",
+      ownerEmail: "owner@example.test",
       source: "hey",
       rotateMissingMailKeys: true,
     })
@@ -1374,16 +1384,16 @@ describe("provider CLI command parsing", () => {
     })
     expect(() => parseOuroCommand(["connect", "perplexity", "bluebubbles", "--agent", "Slugger"])).toThrow("providers|perplexity|embeddings|teams|bluebubbles|mail|voice|a2a|telegram|workbench")
     expect(() => parseOuroCommand(["connect", "unknown", "--agent", "Slugger"])).toThrow("providers|perplexity|embeddings|teams|bluebubbles|mail|voice|a2a|telegram|workbench")
-    expect(() => parseOuroCommand(["connect", "teams", "--agent", "Slugger", "--owner-email", "ari@mendelow.me"])).toThrow("Mail source flags require")
+    expect(() => parseOuroCommand(["connect", "teams", "--agent", "Slugger", "--owner-email", "owner@example.test"])).toThrow("Mail source flags require")
     expect(() => parseOuroCommand(["connect", "mail", "--agent", "Slugger", "--owner-email"])).toThrow("ouro connect")
     expect(() => parseOuroCommand(["connect", "mail", "--agent", "Slugger", "--source", "hey"])).toThrow("--source requires --owner-email")
-    expect(() => parseOuroCommand(["account", "ensure", "--agent", "Slugger", "--owner-email", "ari@mendelow.me", "--source"])).toThrow("ouro account ensure")
-    expect(() => parseOuroCommand(["account", "ensure", "--agent", "Slugger", "--no-delegated-source", "--owner-email", "ari@mendelow.me"])).toThrow("--no-delegated-source")
+    expect(() => parseOuroCommand(["account", "ensure", "--agent", "Slugger", "--owner-email", "owner@example.test", "--source"])).toThrow("ouro account ensure")
+    expect(() => parseOuroCommand(["account", "ensure", "--agent", "Slugger", "--no-delegated-source", "--owner-email", "owner@example.test"])).toThrow("--no-delegated-source")
     expect(() => parseOuroCommand(["mail"])).toThrow("ouro mail import-mbox")
     expect(() => parseOuroCommand(["mail", "status"])).toThrow("ouro mail import-mbox")
     expect(() => parseOuroCommand(["mail", "import-mbox", "--file"])).toThrow("ouro mail import-mbox")
     expect(() => parseOuroCommand(["mail", "import-mbox", "--discover", "--file", "/tmp/hey.mbox"])).toThrow("ouro mail import-mbox")
-    expect(() => parseOuroCommand(["mail", "import-mbox", "--owner-email", "ari@mendelow.me"])).toThrow("ouro mail import-mbox")
+    expect(() => parseOuroCommand(["mail", "import-mbox", "--owner-email", "owner@example.test"])).toThrow("ouro mail import-mbox")
     expect(() => parseOuroCommand(["mail", "backfill-indexes", "extra"])).toThrow("ouro mail import-mbox")
     expect(() => parseOuroCommand(["mail", "sync-cache", "--foreground"])).toThrow("ouro mail sync-cache")
     expect(() => parseOuroCommand(["mail", "sync-cache", "leftover"])).toThrow("ouro mail sync-cache")
@@ -1888,7 +1898,7 @@ describe("provider CLI command execution", () => {
     const bundlesRoot = makeTempDir("provider-cli-connect-mail-bundles")
     const homeDir = makeTempDir("provider-cli-connect-mail-home")
     writeAgentConfig(bundlesRoot, "Slugger")
-    const answers = ["ari@mendelow.me", "hey"]
+    const answers = ["owner@example.test", "hey"]
 
     const result = await runOuroCli(["connect", "mail", "--agent", "Slugger"], makeCliDeps(homeDir, bundlesRoot, {
       now: () => Date.parse(NOW),
@@ -1897,7 +1907,7 @@ describe("provider CLI command execution", () => {
 
     expect(result).toContain("Agent Mail connected for Slugger")
     expect(result).toContain("mailbox: slugger@ouro.bot")
-    expect(result).toContain("delegated alias: me.mendelow.ari.slugger@ouro.bot")
+    expect(result).toContain("delegated alias: test.example.owner.slugger@ouro.bot")
     expect(result).toContain("private mail keys were not printed")
     expect(result).not.toContain("PRIVATE KEY")
     const stored = readRuntimeSecret("Slugger")
@@ -1916,9 +1926,9 @@ describe("provider CLI command execution", () => {
     const registry = JSON.parse(fs.readFileSync(registryPath, "utf-8")) as { sourceGrants: Array<Record<string, unknown>> }
     expect(registry.sourceGrants[0]).toMatchObject({
       agentId: "slugger",
-      ownerEmail: "ari@mendelow.me",
+      ownerEmail: "owner@example.test",
       source: "hey",
-      aliasAddress: "me.mendelow.ari.slugger@ouro.bot",
+      aliasAddress: "test.example.owner.slugger@ouro.bot",
     })
     expect(readAgentConfig(bundlesRoot, "Slugger").senses).toMatchObject({
       mail: { enabled: true },
@@ -1975,7 +1985,7 @@ describe("provider CLI command execution", () => {
       "--agent",
       "Slugger",
       "--owner-email",
-      "ari@mendelow.me",
+      "owner@example.test",
       "--source",
       "hey",
     ], makeCliDeps(homeDir, bundlesRoot, {
@@ -1984,7 +1994,7 @@ describe("provider CLI command execution", () => {
 
     expect(result).toContain("Agent Mail connected for Slugger")
     expect(result).toContain("mailbox: slugger@ouro.bot")
-    expect(result).toContain("delegated alias: me.mendelow.ari.slugger@ouro.bot")
+    expect(result).toContain("delegated alias: test.example.owner.slugger@ouro.bot")
     const stored = readRuntimeSecret("Slugger")
     expect(stored.config.mailroom).toEqual(expect.objectContaining({
       mailboxAddress: "slugger@ouro.bot",
@@ -2019,13 +2029,13 @@ describe("provider CLI command execution", () => {
       "--agent",
       "DefaultSource",
       "--owner-email",
-      "ari@mendelow.me",
+      "owner@example.test",
     ], makeCliDeps(homeDir, bundlesRoot, {
       now: () => Date.parse(NOW),
     }))
 
     expect(defaultSource).toContain("mailbox: defaultsource@ouro.bot")
-    expect(defaultSource).toContain("delegated alias: me.mendelow.ari.defaultsource@ouro.bot")
+    expect(defaultSource).toContain("delegated alias: test.example.owner.defaultsource@ouro.bot")
 
     const blankSource = await runOuroCli([
       "account",
@@ -2033,7 +2043,7 @@ describe("provider CLI command execution", () => {
       "--agent",
       "BlankSource",
       "--owner-email",
-      "ari@mendelow.me",
+      "owner@example.test",
       "--source",
       "   ",
     ], makeCliDeps(homeDir, bundlesRoot, {
@@ -2041,7 +2051,7 @@ describe("provider CLI command execution", () => {
     }))
 
     expect(blankSource).toContain("mailbox: blanksource@ouro.bot")
-    expect(blankSource).toContain("delegated alias: me.mendelow.ari.blanksource@ouro.bot")
+    expect(blankSource).toContain("delegated alias: test.example.owner.blanksource@ouro.bot")
 
     const blankOwner = await runOuroCli([
       "account",
@@ -2068,21 +2078,21 @@ describe("provider CLI command execution", () => {
         perplexityApiKey: "pplx-secret",
       },
     })
-    const answers = ["ari@mendelow.me", ""]
+    const answers = ["owner@example.test", ""]
 
     const result = await runOuroCli(["connect", "mail", "--agent", "Slugger"], makeCliDeps(homeDir, bundlesRoot, {
       now: () => Date.parse(NOW),
       promptInput: async () => answers.shift() ?? "",
     }))
 
-    expect(result).toContain("delegated alias: me.mendelow.ari.slugger@ouro.bot")
+    expect(result).toContain("delegated alias: test.example.owner.slugger@ouro.bot")
     const stored = readRuntimeSecret("Slugger")
     expect(stored.config.integrations).toEqual({ perplexityApiKey: "pplx-secret" })
     const registryPath = (stored.config.mailroom as Record<string, unknown>).registryPath as string
     const registry = JSON.parse(fs.readFileSync(registryPath, "utf-8")) as { sourceGrants: Array<Record<string, unknown>> }
     expect(registry.sourceGrants[0]).toMatchObject({
       source: "hey",
-      ownerEmail: "ari@mendelow.me",
+      ownerEmail: "owner@example.test",
     })
   })
 
@@ -2104,14 +2114,14 @@ describe("provider CLI command execution", () => {
     const firstRegistry = JSON.parse(fs.readFileSync(firstRegistryPath, "utf-8")) as { mailboxes: Array<Record<string, unknown>>; sourceGrants: Array<Record<string, unknown>> }
     expect(firstRegistry.sourceGrants).toHaveLength(0)
 
-    const secondAnswers = ["ari@mendelow.me", "hey"]
+    const secondAnswers = ["owner@example.test", "hey"]
     const second = await runOuroCli(["connect", "mail", "--agent", "Slugger"], makeCliDeps(homeDir, bundlesRoot, {
       now: () => Date.parse(NOW),
       promptInput: async () => secondAnswers.shift() ?? "",
     }))
     expect(second).toContain("Agent Mail connected for Slugger")
     expect(second).toContain("mailbox: slugger@ouro.bot")
-    expect(second).toContain("delegated alias: me.mendelow.ari.slugger@ouro.bot")
+    expect(second).toContain("delegated alias: test.example.owner.slugger@ouro.bot")
     const secondStored = readRuntimeSecret("Slugger")
     const secondMailroom = secondStored.config.mailroom as Record<string, unknown>
     expect(secondMailroom.registryPath).toBe(firstRegistryPath)
@@ -2120,7 +2130,7 @@ describe("provider CLI command execution", () => {
     expect(secondRegistry.mailboxes).toEqual(firstRegistry.mailboxes)
     expect(secondRegistry.sourceGrants).toHaveLength(1)
 
-    const thirdAnswers = ["ari@mendelow.me", "hey"]
+    const thirdAnswers = ["owner@example.test", "hey"]
     await runOuroCli(["connect", "mail", "--agent", "Slugger"], makeCliDeps(homeDir, bundlesRoot, {
       now: () => Date.parse(NOW),
       promptInput: async () => thirdAnswers.shift() ?? "",
@@ -2141,7 +2151,7 @@ describe("provider CLI command execution", () => {
     fetchMock.mockImplementationOnce(async (input: RequestInfo | URL, init?: RequestInit) => {
       expectHostedEnsureRequest(input, init, {
         agentId: "Slugger",
-        ownerEmail: "ari@mendelow.me",
+        ownerEmail: "owner@example.test",
         source: "hey",
       })
       return mockJsonResponse(hostedEnsureResponse())
@@ -2153,7 +2163,7 @@ describe("provider CLI command execution", () => {
       "--agent",
       "Slugger",
       "--owner-email",
-      "ari@mendelow.me",
+      "owner@example.test",
       "--source",
       "hey",
     ], makeCliDeps(homeDir, bundlesRoot, {
@@ -2175,7 +2185,7 @@ describe("provider CLI command execution", () => {
     expect(stored.config.mailroom).toEqual(expect.objectContaining({
       mode: "hosted",
       mailboxAddress: "slugger@ouro.bot",
-      sourceAlias: "me.mendelow.ari.slugger@ouro.bot",
+      sourceAlias: "test.example.owner.slugger@ouro.bot",
       azureAccountUrl: HOSTED_BLOB_ACCOUNT_URL,
       azureContainer: "mailroom",
       registryAzureAccountUrl: HOSTED_BLOB_ACCOUNT_URL,
@@ -2206,7 +2216,7 @@ describe("provider CLI command execution", () => {
     writeHostedWorkSubstrateConfig("Slugger", {
       mode: "hosted",
       mailboxAddress: "slugger@ouro.bot",
-      sourceAlias: "me.mendelow.ari.slugger@ouro.bot",
+      sourceAlias: "test.example.owner.slugger@ouro.bot",
       azureAccountUrl: HOSTED_BLOB_ACCOUNT_URL,
       azureContainer: "mailroom",
       registryRevision: "1:1:700",
@@ -2215,7 +2225,7 @@ describe("provider CLI command execution", () => {
     fetchMock.mockImplementationOnce(async (input: RequestInfo | URL, init?: RequestInit) => {
       expectHostedEnsureRequest(input, init, {
         agentId: "Slugger",
-        ownerEmail: "ari@mendelow.me",
+        ownerEmail: "owner@example.test",
         source: "hey",
       })
       return mockJsonResponse(hostedEnsureResponse({
@@ -2239,7 +2249,7 @@ describe("provider CLI command execution", () => {
       "--agent",
       "Slugger",
       "--owner-email",
-      "ari@mendelow.me",
+      "owner@example.test",
       "--source",
       "hey",
     ], makeCliDeps(homeDir, bundlesRoot, {
@@ -2273,7 +2283,7 @@ describe("provider CLI command execution", () => {
     fetchMock.mockImplementationOnce(async (input: RequestInfo | URL, init?: RequestInit) => {
       expectHostedEnsureRequest(input, init, {
         agentId: "Slugger",
-        ownerEmail: "ari@mendelow.me",
+        ownerEmail: "owner@example.test",
         source: "hey",
       })
       return mockJsonResponse(hostedEnsureResponse())
@@ -2285,7 +2295,7 @@ describe("provider CLI command execution", () => {
       "--agent",
       "Slugger",
       "--owner-email",
-      "ari@mendelow.me",
+      "owner@example.test",
       "--source",
       "hey",
     ], makeCliDeps(homeDir, bundlesRoot, {
@@ -2336,9 +2346,9 @@ describe("provider CLI command execution", () => {
       sourceGrants: (keyIds.grants ?? []).map((grant, index) => ({
         grantId: `grant_${index}`,
         agentId: grant.agentId ?? "slugger",
-        ownerEmail: "ari@mendelow.me",
+        ownerEmail: "owner@example.test",
         source: "hey",
-        aliasAddress: "me.mendelow.ari.slugger@ouro.bot",
+        aliasAddress: "test.example.owner.slugger@ouro.bot",
         keyId: grant.keyId,
         publicKeyPem: "-----BEGIN PUBLIC KEY-----\n",
         defaultPlacement: "imbox",
@@ -2547,7 +2557,7 @@ describe("provider CLI command execution", () => {
     writeHostedWorkSubstrateConfig("Slugger", {
       mode: "hosted",
       mailboxAddress: "slugger@ouro.bot",
-      sourceAlias: "me.mendelow.ari.slugger@ouro.bot",
+      sourceAlias: "test.example.owner.slugger@ouro.bot",
       azureAccountUrl: HOSTED_BLOB_ACCOUNT_URL,
       azureContainer: "mailroom",
       privateKeys: {
@@ -2557,7 +2567,7 @@ describe("provider CLI command execution", () => {
     fetchMock.mockImplementationOnce(async (input: RequestInfo | URL, init?: RequestInit) => {
       expectHostedEnsureRequest(input, init, {
         agentId: "Slugger",
-        ownerEmail: "ari@mendelow.me",
+        ownerEmail: "owner@example.test",
         source: "hey",
       })
       return mockJsonResponse(hostedEnsureResponse({
@@ -2573,7 +2583,7 @@ describe("provider CLI command execution", () => {
       "--agent",
       "Slugger",
       "--owner-email",
-      "ari@mendelow.me",
+      "owner@example.test",
       "--source",
       "hey",
     ], makeCliDeps(homeDir, bundlesRoot, {
@@ -2591,7 +2601,7 @@ describe("provider CLI command execution", () => {
     writeHostedWorkSubstrateConfig("Slugger", {
       mode: "hosted",
       mailboxAddress: "slugger@ouro.bot",
-      sourceAlias: "me.mendelow.ari.slugger@ouro.bot",
+      sourceAlias: "test.example.owner.slugger@ouro.bot",
       azureAccountUrl: HOSTED_BLOB_ACCOUNT_URL,
       azureContainer: "mailroom",
       privateKeys: {},
@@ -2600,7 +2610,7 @@ describe("provider CLI command execution", () => {
       .mockImplementationOnce(async (input: RequestInfo | URL, init?: RequestInit) => {
         expectHostedEnsureRequest(input, init, {
           agentId: "Slugger",
-          ownerEmail: "ari@mendelow.me",
+          ownerEmail: "owner@example.test",
           source: "hey",
         })
         return mockJsonResponse(hostedEnsureResponse({
@@ -2612,7 +2622,7 @@ describe("provider CLI command execution", () => {
       .mockImplementationOnce(async (input: RequestInfo | URL, init?: RequestInit) => {
         expectHostedRotateRequest(input, init, {
           agentId: "Slugger",
-          ownerEmail: "ari@mendelow.me",
+          ownerEmail: "owner@example.test",
           source: "hey",
           rotateMailbox: true,
           rotateSourceGrant: true,
@@ -2627,7 +2637,7 @@ describe("provider CLI command execution", () => {
       "--agent",
       "Slugger",
       "--owner-email",
-      "ari@mendelow.me",
+      "owner@example.test",
       "--source",
       "hey",
       "--rotate-missing-mail-keys",
@@ -2741,7 +2751,7 @@ describe("provider CLI command execution", () => {
       "--agent",
       "Slugger",
       "--owner-email",
-      "ari@mendelow.me",
+      "owner@example.test",
       "--source",
       "hey",
     ], makeCliDeps(homeDir, bundlesRoot, {
@@ -2768,7 +2778,7 @@ describe("provider CLI command execution", () => {
       "--agent",
       "Slugger",
       "--owner-email",
-      "ari@mendelow.me",
+      "owner@example.test",
       "--source",
       "hey",
     ], makeCliDeps(homeDir, bundlesRoot, {
@@ -2796,7 +2806,7 @@ describe("provider CLI command execution", () => {
         "--agent",
         "Slugger",
         "--owner-email",
-        "ari@mendelow.me",
+        "owner@example.test",
         "--source",
         "hey",
       ], makeCliDeps(homeDir, bundlesRoot, {
@@ -2897,7 +2907,7 @@ describe("provider CLI command execution", () => {
       "--agent",
       "Slugger",
       "--owner-email",
-      "ari@mendelow.me",
+      "owner@example.test",
       "--source",
       "hey",
     ], makeCliDeps(homeDir, bundlesRoot, {
@@ -2924,7 +2934,7 @@ describe("provider CLI command execution", () => {
       "--agent",
       "Slugger",
       "--owner-email",
-      "ari@mendelow.me",
+      "owner@example.test",
       "--source",
       "hey",
     ], makeCliDeps(homeDir, bundlesRoot, {
@@ -3010,7 +3020,7 @@ describe("provider CLI command execution", () => {
       "--agent",
       "Slugger",
       "--owner-email",
-      "ari@mendelow.me",
+      "owner@example.test",
       "--source",
       "hey",
     ], makeCliDeps(homeDir, bundlesRoot, {
@@ -3124,7 +3134,7 @@ describe("provider CLI command execution", () => {
     const homeDir = makeTempDir("provider-cli-connect-mail-unreadable-home")
     writeAgentConfig(bundlesRoot, "Slugger")
     mockVaultDeps.rawSecrets.set("Slugger:runtime/config", "{")
-    const answers = ["ari@mendelow.me", "hey"]
+    const answers = ["owner@example.test", "hey"]
 
     await expect(runOuroCli(["connect", "mail", "--agent", "Slugger"], makeCliDeps(homeDir, bundlesRoot, {
       promptInput: async () => answers.shift() ?? "",
@@ -3163,7 +3173,7 @@ describe("provider CLI command execution", () => {
     fs.mkdirSync(mailStateDir, { recursive: true })
     const provisioned = provisionMailboxRegistry({
       agentId: "Slugger",
-      ownerEmail: "ari@mendelow.me",
+      ownerEmail: "owner@example.test",
       source: "hey",
     })
     const registryPath = path.join(mailStateDir, "registry.json")
@@ -3178,9 +3188,9 @@ describe("provider CLI command execution", () => {
     })
     const mboxPath = path.join(mailStateDir, "hey.mbox")
     fs.writeFileSync(mboxPath, [
-      "From ari@mendelow.me Sat Apr 20 12:00:00 2026",
-      "From: Ari <ari@mendelow.me>",
-      "To: Slugger <me.mendelow.ari.slugger@ouro.bot>",
+      "From owner@example.test Sat Apr 20 12:00:00 2026",
+      "From: Ari <owner@example.test>",
+      "To: Slugger <test.example.owner.slugger@ouro.bot>",
       "Subject: Shadow imbox hello",
       "Message-ID: <hello@example.com>",
       "Date: Mon, 20 Apr 2026 12:00:00 -0700",
@@ -3198,7 +3208,7 @@ describe("provider CLI command execution", () => {
       "--file",
       mboxPath,
       "--owner-email",
-      "ari@mendelow.me",
+      "owner@example.test",
       "--source",
       "hey",
     ], makeCliDeps(homeDir, bundlesRoot))
@@ -3223,7 +3233,7 @@ describe("provider CLI command execution", () => {
     fs.mkdirSync(mailStateDir, { recursive: true })
     const provisioned = provisionMailboxRegistry({
       agentId: "Slugger",
-      ownerEmail: "ari@mendelow.me",
+      ownerEmail: "owner@example.test",
       source: "hey",
     })
     const registryPath = path.join(mailStateDir, "registry.json")
@@ -3238,11 +3248,11 @@ describe("provider CLI command execution", () => {
     })
     const sandboxDir = path.join(repoRoot, ".playwright-mcp")
     fs.mkdirSync(sandboxDir, { recursive: true })
-    const mboxPath = path.join(sandboxDir, "HEY-emails-ari-mendelow-me.mbox")
+    const mboxPath = path.join(sandboxDir, "HEY-emails-owner-example-test.mbox")
     fs.writeFileSync(mboxPath, [
-      "From ari@mendelow.me Sat Apr 20 12:00:00 2026",
-      "From: Ari <ari@mendelow.me>",
-      "To: Slugger <me.mendelow.ari.slugger@ouro.bot>",
+      "From owner@example.test Sat Apr 20 12:00:00 2026",
+      "From: Ari <owner@example.test>",
+      "To: Slugger <test.example.owner.slugger@ouro.bot>",
       "Subject: Primary HEY export",
       "Message-ID: <primary@example.com>",
       "Date: Mon, 20 Apr 2026 12:00:00 -0700",
@@ -3259,7 +3269,7 @@ describe("provider CLI command execution", () => {
       "--foreground",
       "--discover",
       "--owner-email",
-      "ari@mendelow.me",
+      "owner@example.test",
       "--source",
       "hey",
     ], makeCliDeps(homeDir, bundlesRoot, {
@@ -3281,8 +3291,8 @@ describe("provider CLI command execution", () => {
     const downloadsDir = path.join(homeDir, "Downloads")
     fs.mkdirSync(sandboxDir, { recursive: true })
     fs.mkdirSync(downloadsDir, { recursive: true })
-    const first = path.join(sandboxDir, "HEY-emails-ari-mendelow-me.mbox")
-    const second = path.join(downloadsDir, "HEY-emails-ari.mendelow.me-copy.mbox")
+    const first = path.join(sandboxDir, "HEY-emails-owner-example-test.mbox")
+    const second = path.join(downloadsDir, "HEY-emails-owner.example.test-copy.mbox")
     fs.writeFileSync(first, "", "utf-8")
     fs.writeFileSync(second, "", "utf-8")
     const sameTime = new Date("2026-04-24T03:08:00.000Z")
@@ -3297,7 +3307,7 @@ describe("provider CLI command execution", () => {
       "--foreground",
       "--discover",
       "--owner-email",
-      "ari@mendelow.me",
+      "owner@example.test",
       "--source",
       "hey",
     ], makeCliDeps(homeDir, bundlesRoot, {
@@ -3320,7 +3330,7 @@ describe("provider CLI command execution", () => {
       "--foreground",
       "--discover",
       "--owner-email",
-      "ari@mendelow.me",
+      "owner@example.test",
       "--source",
       "hey",
     ], makeCliDeps(homeDir, bundlesRoot, {
@@ -3348,7 +3358,7 @@ describe("provider CLI command execution", () => {
     writeAgentConfig(bundlesRoot, "Slugger")
     const downloadsDir = path.join(homeDir, "Downloads")
     fs.mkdirSync(downloadsDir, { recursive: true })
-    const mboxPath = path.join(downloadsDir, "HEY-emails-ari-mendelow-me.mbox")
+    const mboxPath = path.join(downloadsDir, "HEY-emails-owner-example-test.mbox")
     fs.writeFileSync(mboxPath, "", "utf-8")
     const originalCwd = process.cwd()
     const originalHome = process.env.HOME
@@ -3411,7 +3421,7 @@ describe("provider CLI command execution", () => {
     fs.mkdirSync(mailStateDir, { recursive: true })
     const provisioned = provisionMailboxRegistry({
       agentId: "Slugger",
-      ownerEmail: "ari@mendelow.me",
+      ownerEmail: "owner@example.test",
       source: "hey",
     })
     const registryPath = path.join(mailStateDir, "registry.json")
@@ -3426,9 +3436,9 @@ describe("provider CLI command execution", () => {
     })
     const mboxPath = path.join(mailStateDir, "hey-undated.mbox")
     fs.writeFileSync(mboxPath, [
-      "From ari@mendelow.me",
-      "From: Ari <ari@mendelow.me>",
-      "To: Slugger <me.mendelow.ari.slugger@ouro.bot>",
+      "From owner@example.test",
+      "From: Ari <owner@example.test>",
+      "To: Slugger <test.example.owner.slugger@ouro.bot>",
       "Subject: Undated archive note",
       "Message-ID: <undated@example.com>",
       "",
@@ -3445,7 +3455,7 @@ describe("provider CLI command execution", () => {
       "--file",
       mboxPath,
       "--owner-email",
-      "ari@mendelow.me",
+      "owner@example.test",
       "--source",
       "hey",
     ], makeCliDeps(homeDir, bundlesRoot))
@@ -3530,7 +3540,7 @@ describe("provider CLI command execution", () => {
     fs.writeFileSync(mboxPath, "", "utf-8")
     fs.writeFileSync(registryPath, JSON.stringify(provisionMailboxRegistry({
       agentId: "slugger",
-      ownerEmail: "ari@mendelow.me",
+      ownerEmail: "owner@example.test",
       source: "hey",
     }).registry), "utf-8")
     writeRuntimeConfig("Slugger", {
@@ -3788,7 +3798,7 @@ describe("provider CLI command execution", () => {
       "--file",
       mboxPath,
       "--owner-email",
-      "ari@mendelow.me",
+      "owner@example.test",
       "--source",
       "hey",
     ], makeCliDeps(homeDir, bundlesRoot, { spawnBackgroundCli } as Partial<OuroCliDeps>))
@@ -3805,7 +3815,7 @@ describe("provider CLI command execution", () => {
       "--file",
       mboxPath,
       "--owner-email",
-      "ari@mendelow.me",
+      "owner@example.test",
       "--source",
       "hey",
       "--foreground",
@@ -3824,7 +3834,7 @@ describe("provider CLI command execution", () => {
     expect(record.status).toBe("queued")
     expect(record.spec).toEqual(expect.objectContaining({
       filePath: mboxPath,
-      ownerEmail: "ari@mendelow.me",
+      ownerEmail: "owner@example.test",
       source: "hey",
       fileSizeBytes: 0,
     }))
@@ -3872,7 +3882,7 @@ describe("provider CLI command execution", () => {
       title: "mail import",
       summary: "queued delegated mail import",
       createdAt: "2026-04-24T05:39:00.000Z",
-      spec: { filePath: mboxPath, ownerEmail: "ari@mendelow.me", source: "hey" },
+      spec: { filePath: mboxPath, ownerEmail: "owner@example.test", source: "hey" },
     })
     completeBackgroundOperation({
       agentName: "Slugger",
@@ -3892,7 +3902,7 @@ describe("provider CLI command execution", () => {
       "--file",
       mboxPath,
       "--owner-email",
-      "ari@mendelow.me",
+      "owner@example.test",
       "--source",
       "hey",
     ], makeCliDeps(homeDir, bundlesRoot, { spawnBackgroundCli } as Partial<OuroCliDeps>))
@@ -3919,7 +3929,7 @@ describe("provider CLI command execution", () => {
       title: "mail import",
       summary: "queued delegated mail import",
       createdAt: "2026-04-24T05:39:00.000Z",
-      spec: { filePath: mboxPath, ownerEmail: "ari@mendelow.me", source: "hey" },
+      spec: { filePath: mboxPath, ownerEmail: "owner@example.test", source: "hey" },
     })
     completeBackgroundOperation({
       agentName: "Slugger",
@@ -3950,7 +3960,7 @@ describe("provider CLI command execution", () => {
       "--file",
       mboxPath,
       "--owner-email",
-      "ari@mendelow.me",
+      "owner@example.test",
       "--source",
       "hey",
     ], makeCliDeps(homeDir, bundlesRoot, { spawnBackgroundCli } as Partial<OuroCliDeps>))
@@ -3995,7 +4005,7 @@ describe("provider CLI command execution", () => {
       title: "mail import",
       summary: "queued delegated mail import",
       createdAt: "2026-04-24T05:45:00.000Z",
-      spec: { filePath: mboxPath, ownerEmail: "ari@mendelow.me", source: "hey" },
+      spec: { filePath: mboxPath, ownerEmail: "owner@example.test", source: "hey" },
     })
     failBackgroundOperation({
       agentName: "Slugger",
@@ -4016,7 +4026,7 @@ describe("provider CLI command execution", () => {
       title: "mail import",
       summary: "queued delegated mail import",
       createdAt: "2026-04-24T05:50:00.000Z",
-      spec: { filePath: mboxPath, ownerEmail: "ari@mendelow.me", source: "hey" },
+      spec: { filePath: mboxPath, ownerEmail: "owner@example.test", source: "hey" },
     })
     markBackgroundOperationRunning({
       agentName: "Slugger",
@@ -4034,7 +4044,7 @@ describe("provider CLI command execution", () => {
       "--file",
       mboxPath,
       "--owner-email",
-      "ari@mendelow.me",
+      "owner@example.test",
       "--source",
       "hey",
     ], makeCliDeps(homeDir, bundlesRoot))
@@ -4133,7 +4143,7 @@ describe("provider CLI command execution", () => {
       title: "mail import",
       summary: "queued delegated mail import",
       createdAt: "2026-04-24T05:55:00.000Z",
-      spec: { filePath: mboxPath, ownerEmail: "ari@mendelow.me", source: "hey" },
+      spec: { filePath: mboxPath, ownerEmail: "owner@example.test", source: "hey" },
     })
     markBackgroundOperationRunning({
       agentName: "Slugger",
@@ -4153,7 +4163,7 @@ describe("provider CLI command execution", () => {
       "--file",
       mboxPath,
       "--owner-email",
-      "ari@mendelow.me",
+      "owner@example.test",
       "--source",
       "hey",
     ], makeCliDeps(homeDir, bundlesRoot, { spawnBackgroundCli } as Partial<OuroCliDeps>))
@@ -4218,7 +4228,7 @@ describe("provider CLI command execution", () => {
       title: "mail import",
       summary: "queued delegated mail import",
       createdAt: "2026-04-24T05:42:00.000Z",
-      spec: { filePath: otherPath, ownerEmail: "ari@mendelow.me", source: "hey" },
+      spec: { filePath: otherPath, ownerEmail: "owner@example.test", source: "hey" },
     })
     markBackgroundOperationRunning({
       agentName: "Slugger",
@@ -4236,7 +4246,7 @@ describe("provider CLI command execution", () => {
       title: "mail import",
       summary: "queued delegated mail import",
       createdAt: "2026-04-24T05:43:00.000Z",
-      spec: { filePath: mboxPath, ownerEmail: "ari@mendelow.me", source: "hey" },
+      spec: { filePath: mboxPath, ownerEmail: "owner@example.test", source: "hey" },
     })
     failBackgroundOperation({
       agentName: "Slugger",
@@ -4258,7 +4268,7 @@ describe("provider CLI command execution", () => {
       "--file",
       mboxPath,
       "--owner-email",
-      "ari@mendelow.me",
+      "owner@example.test",
       "--source",
       "hey",
     ], makeCliDeps(homeDir, bundlesRoot, { spawnBackgroundCli } as Partial<OuroCliDeps>))
@@ -4285,7 +4295,7 @@ describe("provider CLI command execution", () => {
       title: "mail import",
       summary: "queued delegated mail import",
       createdAt: "2026-04-24T05:39:00.000Z",
-      spec: { filePath: mboxPath, ownerEmail: "ari@mendelow.me", source: "hey" },
+      spec: { filePath: mboxPath, ownerEmail: "owner@example.test", source: "hey" },
     })
     completeBackgroundOperation({
       agentName: "Slugger",
@@ -4305,7 +4315,7 @@ describe("provider CLI command execution", () => {
       "--file",
       mboxPath,
       "--owner-email",
-      "ari@mendelow.me",
+      "owner@example.test",
       "--source",
       "hey",
     ], makeCliDeps(homeDir, bundlesRoot, { spawnBackgroundCli } as Partial<OuroCliDeps>))
@@ -4431,7 +4441,7 @@ describe("provider CLI command execution", () => {
     fs.mkdirSync(mailStateDir, { recursive: true })
     const provisioned = provisionMailboxRegistry({
       agentId: "Slugger",
-      ownerEmail: "ari@mendelow.me",
+      ownerEmail: "owner@example.test",
       source: "hey",
     })
     const registryPath = path.join(mailStateDir, "registry.json")
@@ -4446,10 +4456,10 @@ describe("provider CLI command execution", () => {
     })
     const mboxPath = path.join(mailStateDir, "hey.mbox")
     fs.writeFileSync(mboxPath, [
-      "From ari@mendelow.me Thu Apr 20 12:00:00 2026",
+      "From owner@example.test Thu Apr 20 12:00:00 2026",
       "Date: Thu, 20 Apr 2026 12:00:00 -0700",
-      "From: Ari <ari@mendelow.me>",
-      "To: Slugger <me.mendelow.ari.slugger@ouro.bot>",
+      "From: Ari <owner@example.test>",
+      "To: Slugger <test.example.owner.slugger@ouro.bot>",
       "Subject: Status test",
       "Message-ID: <status@example.com>",
       "",
@@ -4478,7 +4488,7 @@ describe("provider CLI command execution", () => {
       "--file",
       mboxPath,
       "--owner-email",
-      "ari@mendelow.me",
+      "owner@example.test",
       "--source",
       "hey",
     ], makeCliDeps(homeDir, bundlesRoot, { sendCommand }))
@@ -4518,7 +4528,7 @@ describe("provider CLI command execution", () => {
     fs.mkdirSync(mailStateDir, { recursive: true })
     const provisioned = provisionMailboxRegistry({
       agentId: "Slugger",
-      ownerEmail: "ari@mendelow.me",
+      ownerEmail: "owner@example.test",
       source: "hey",
     })
     const registryPath = path.join(mailStateDir, "registry.json")
@@ -4533,10 +4543,10 @@ describe("provider CLI command execution", () => {
     })
     const mboxPath = path.join(mailStateDir, "hey-fallback.mbox")
     fs.writeFileSync(mboxPath, [
-      "From ari@mendelow.me Thu Apr 20 12:00:00 2026",
+      "From owner@example.test Thu Apr 20 12:00:00 2026",
       "Date: Thu, 20 Apr 2026 12:00:00 -0700",
-      "From: Ari <ari@mendelow.me>",
-      "To: Slugger <me.mendelow.ari.slugger@ouro.bot>",
+      "From: Ari <owner@example.test>",
+      "To: Slugger <test.example.owner.slugger@ouro.bot>",
       "Subject: Fallback wake test",
       "Message-ID: <fallback-status@example.com>",
       "",
@@ -4556,7 +4566,7 @@ describe("provider CLI command execution", () => {
       "--file",
       mboxPath,
       "--owner-email",
-      "ari@mendelow.me",
+      "owner@example.test",
       "--source",
       "hey",
     ], makeCliDeps(homeDir, bundlesRoot, { sendCommand }))
@@ -4578,7 +4588,7 @@ describe("provider CLI command execution", () => {
     fs.mkdirSync(mailStateDir, { recursive: true })
     const provisioned = provisionMailboxRegistry({
       agentId: "Slugger",
-      ownerEmail: "ari@mendelow.me",
+      ownerEmail: "owner@example.test",
       source: "hey",
     })
     const registryPath = path.join(mailStateDir, "registry.json")
@@ -4593,10 +4603,10 @@ describe("provider CLI command execution", () => {
     })
     const mboxPath = path.join(mailStateDir, "hey-degraded.mbox")
     fs.writeFileSync(mboxPath, [
-      "From ari@mendelow.me Thu Apr 20 12:00:00 2026",
+      "From owner@example.test Thu Apr 20 12:00:00 2026",
       "Date: Thu, 20 Apr 2026 12:00:00 -0700",
-      "From: Ari <ari@mendelow.me>",
-      "To: Slugger <me.mendelow.ari.slugger@ouro.bot>",
+      "From: Ari <owner@example.test>",
+      "To: Slugger <test.example.owner.slugger@ouro.bot>",
       "Subject: Wake degraded test",
       "Message-ID: <wake-degraded@example.com>",
       "",
@@ -4618,7 +4628,7 @@ describe("provider CLI command execution", () => {
       "--file",
       mboxPath,
       "--owner-email",
-      "ari@mendelow.me",
+      "owner@example.test",
       "--source",
       "hey",
     ], makeCliDeps(homeDir, bundlesRoot, { sendCommand }))
@@ -4641,7 +4651,7 @@ describe("provider CLI command execution", () => {
     fs.mkdirSync(mailStateDir, { recursive: true })
     const provisioned = provisionMailboxRegistry({
       agentId: "Slugger",
-      ownerEmail: "ari@mendelow.me",
+      ownerEmail: "owner@example.test",
       source: "hey",
     })
     const registryPath = path.join(mailStateDir, "registry.json")
@@ -4656,10 +4666,10 @@ describe("provider CLI command execution", () => {
     })
     const mboxPath = path.join(mailStateDir, "hey-target-resolution-degraded.mbox")
     fs.writeFileSync(mboxPath, [
-      "From ari@mendelow.me Thu Apr 20 12:00:00 2026",
+      "From owner@example.test Thu Apr 20 12:00:00 2026",
       "Date: Thu, 20 Apr 2026 12:00:00 -0700",
-      "From: Ari <ari@mendelow.me>",
-      "To: Slugger <me.mendelow.ari.slugger@ouro.bot>",
+      "From: Ari <owner@example.test>",
+      "To: Slugger <test.example.owner.slugger@ouro.bot>",
       "Subject: Target resolution degraded test",
       "Message-ID: <target-resolution-degraded@example.com>",
       "",
@@ -4682,7 +4692,7 @@ describe("provider CLI command execution", () => {
       "--file",
       mboxPath,
       "--owner-email",
-      "ari@mendelow.me",
+      "owner@example.test",
       "--source",
       "hey",
     ], makeCliDeps(homeDir, bundlesRoot, { sendCommand }))
@@ -4901,7 +4911,7 @@ describe("provider CLI command execution", () => {
     const registryPath = path.join(mailStateDir, "registry.json")
     fs.writeFileSync(registryPath, `${JSON.stringify(provisionMailboxRegistry({
       agentId: "Slugger",
-      ownerEmail: "ari@mendelow.me",
+      ownerEmail: "owner@example.test",
       source: "hey",
     }).registry, null, 2)}\n`, "utf-8")
     writeRuntimeConfig("Slugger", {
@@ -4966,8 +4976,8 @@ describe("provider CLI command execution", () => {
     const downloadsDir = path.join(homeDir, "Downloads")
     fs.mkdirSync(sandboxDir, { recursive: true })
     fs.mkdirSync(downloadsDir, { recursive: true })
-    const first = path.join(sandboxDir, "HEY-emails-ari-mendelow-me.mbox")
-    const second = path.join(downloadsDir, "HEY-emails-ari.mendelow.me-copy.mbox")
+    const first = path.join(sandboxDir, "HEY-emails-owner-example-test.mbox")
+    const second = path.join(downloadsDir, "HEY-emails-owner.example.test-copy.mbox")
     fs.writeFileSync(first, "", "utf-8")
     fs.writeFileSync(second, "", "utf-8")
     const sameTime = new Date("2026-04-24T03:08:00.000Z")
@@ -4985,7 +4995,7 @@ describe("provider CLI command execution", () => {
       "op_mail_import_fail_ambiguity",
       "--discover",
       "--owner-email",
-      "ari@mendelow.me",
+      "owner@example.test",
       "--source",
       "hey",
     ], makeCliDeps(homeDir, bundlesRoot, {
@@ -5003,7 +5013,7 @@ describe("provider CLI command execution", () => {
       remediation?: string[]
     }
     expect(record.status).toBe("failed")
-    expect(record.detail).toBe("mode: discover; owner: ari@mendelow.me; source: hey")
+    expect(record.detail).toBe("mode: discover; owner: owner@example.test; source: hey")
     expect(record.failure).toEqual({
       class: "archive-ambiguity",
       retryDisposition: "fix-before-retry",
@@ -5073,7 +5083,7 @@ describe("provider CLI command execution", () => {
     const registryPath = path.join(mailStateDir, "registry.json")
     fs.writeFileSync(registryPath, `${JSON.stringify(provisionMailboxRegistry({
       agentId: "Slugger",
-      ownerEmail: "ari@mendelow.me",
+      ownerEmail: "owner@example.test",
       source: "hey",
     }).registry, null, 2)}\n`, "utf-8")
     writeRuntimeConfig("Slugger", {
@@ -5168,7 +5178,7 @@ describe("provider CLI command execution", () => {
       "--file",
       mboxPath,
       "--owner-email",
-      "ari@mendelow.me",
+      "owner@example.test",
       "--source",
       "hey",
     ], makeCliDeps(homeDir, bundlesRoot, { sendCommand }))).rejects.toThrow("No enabled Mailroom source grant found")
@@ -5208,12 +5218,12 @@ describe("provider CLI command execution", () => {
     fs.mkdirSync(mailStateDir, { recursive: true })
     const first = provisionMailboxRegistry({
       agentId: "Slugger",
-      ownerEmail: "ari@mendelow.me",
+      ownerEmail: "owner@example.test",
       source: "hey",
     })
     const second = provisionMailboxRegistry({
       agentId: "Slugger",
-      ownerEmail: "ari+work@mendelow.me",
+      ownerEmail: "ari+work@example.test",
       source: "gmail",
     })
     const registry = {
@@ -5286,7 +5296,7 @@ describe("provider CLI command execution", () => {
     const registryPath = path.join(mailStateDir, "registry.json")
     fs.writeFileSync(registryPath, `${JSON.stringify(provisionMailboxRegistry({
       agentId: "Slugger",
-      ownerEmail: "ari@mendelow.me",
+      ownerEmail: "owner@example.test",
       source: "hey",
     }).registry, null, 2)}\n`, "utf-8")
     writeRuntimeConfig("Slugger", {
@@ -7230,6 +7240,21 @@ describe("provider CLI command execution", () => {
       },
     })
 
+    // A secret piped through --value-file is stored trimmed and never echoed, and never touched argv.
+    const valueFile = path.join(homeDir, "unraid-read-key")
+    fs.writeFileSync(valueFile, "file-held-key\n")
+    resetRuntimeCredentialConfigCache()
+    const fileSet = await runOuroCli(
+      ["vault", "config", "set", "--agent", "Slugger", "--scope", "machine", "--key", "unraidReadApiKey", "--value-file", valueFile],
+      makeCliDeps(homeDir, bundlesRoot, { now: () => Date.parse(NOW) }),
+    )
+    expect(fileSet).toContain("stored unraidReadApiKey for Slugger")
+    expect(fileSet).not.toContain("file-held-key")
+    expect(readRuntimeSecret("Slugger", "runtime/machines/machine_config/config").config).toMatchObject({
+      unraidReadApiKey: "file-held-key",
+      bluebubbles: { password: "local-password" },
+    })
+
     writeRuntimeConfig("Slugger", {
       bluebubbles: { serverUrl: "http://localhost:1234", password: "super-secret" },
     })
@@ -7271,21 +7296,21 @@ describe("provider CLI command execution", () => {
       [
         "vault", "item", "set",
         "--agent", "Slugger",
-        "--item", "ops/porkbun/ari@mendelow.me",
+        "--item", "ops/porkbun/owner@example.test",
         "--secret-field", "apiKey",
         "--secret-field", "secretApiKey",
-        "--public-field", "account=ari@mendelow.me",
+        "--public-field", "account=owner@example.test",
         "--note", "Account-level Porkbun key; DNS workflow bindings live outside this note.",
       ],
       deps,
     )
 
     expect(prompted).toEqual([
-      "Secret field apiKey for ops/porkbun/ari@mendelow.me: ",
-      "Secret field secretApiKey for ops/porkbun/ari@mendelow.me: ",
+      "Secret field apiKey for ops/porkbun/owner@example.test: ",
+      "Secret field secretApiKey for ops/porkbun/owner@example.test: ",
     ])
     expect(result).toContain("stored ordinary vault item for Slugger")
-    expect(result).toContain("item: vault:Slugger:ops/porkbun/ari@mendelow.me")
+    expect(result).toContain("item: vault:Slugger:ops/porkbun/owner@example.test")
     expect(result).toContain("public fields: account")
     expect(result).toContain("secret fields: apiKey, secretApiKey")
     expect(result).toContain("notes: present")
@@ -7294,13 +7319,13 @@ describe("provider CLI command execution", () => {
     expect(result).not.toContain("porkbun-secret-key")
     expect(mockVaultDeps.rawSecrets.has("Slugger:runtime/config")).toBe(false)
 
-    const stored = mockVaultDeps.storedItems.get("Slugger:ops/porkbun/ari@mendelow.me")
+    const stored = mockVaultDeps.storedItems.get("Slugger:ops/porkbun/owner@example.test")
     expect(stored?.notes).toBe("Account-level Porkbun key; DNS workflow bindings live outside this note.")
     const payload = JSON.parse(stored?.password ?? "{}") as Record<string, unknown>
     expect(payload).toMatchObject({
       schemaVersion: 1,
       updatedAt: NOW,
-      publicFields: { account: "ari@mendelow.me" },
+      publicFields: { account: "owner@example.test" },
       secretFields: {
         apiKey: "porkbun-api-key",
         secretApiKey: "porkbun-secret-key",
@@ -7346,7 +7371,7 @@ describe("provider CLI command execution", () => {
         "--item", "ops/porkbun/template-account",
         "--template", "porkbun-api",
         "--secret-field", "apiKey",
-        "--public-field", "account=ari@mendelow.me",
+        "--public-field", "account=owner@example.test",
       ],
       deps,
     )
@@ -7362,7 +7387,7 @@ describe("provider CLI command execution", () => {
     expect(payload).toMatchObject({
       schemaVersion: 1,
       updatedAt: NOW,
-      publicFields: { account: "ari@mendelow.me" },
+      publicFields: { account: "owner@example.test" },
       secretFields: {
         apiKey: "templated-api-key",
         secretApiKey: "templated-secret-key",
@@ -7515,19 +7540,19 @@ describe("provider CLI command execution", () => {
     })
 
     const result = await runOuroCli(
-      ["vault", "ops", "porkbun", "set", "--agent", "Slugger", "--account", "ari@mendelow.me"],
+      ["vault", "ops", "porkbun", "set", "--agent", "Slugger", "--account", "owner@example.test"],
       deps,
     )
 
     expect(prompted).toEqual([
-      "Porkbun API key for ari@mendelow.me: ",
-      "Porkbun Secret API key for ari@mendelow.me: ",
+      "Porkbun API key for owner@example.test: ",
+      "Porkbun Secret API key for owner@example.test: ",
     ])
     expect(result).toContain("deprecated compatibility alias")
     expect(result).toContain("ouro vault item set --template porkbun-api")
     expect(result).toContain("stored ordinary vault item for Slugger")
-    expect(result).toContain("ops/registrars/porkbun/accounts/ari@mendelow.me")
-    expect(result).toContain("account: ari@mendelow.me")
+    expect(result).toContain("ops/registrars/porkbun/accounts/owner@example.test")
+    expect(result).toContain("account: owner@example.test")
     expect(result).toContain("secret values were not printed")
     expect(result).not.toContain("authority:")
     expect(result).not.toContain("ops credentials")
@@ -7535,12 +7560,12 @@ describe("provider CLI command execution", () => {
     expect(result).not.toContain("porkbun-secret-key")
     expect(mockVaultDeps.rawSecrets.has("Slugger:runtime/config")).toBe(false)
 
-    const stored = mockVaultDeps.storedItems.get("Slugger:ops/registrars/porkbun/accounts/ari@mendelow.me")
+    const stored = mockVaultDeps.storedItems.get("Slugger:ops/registrars/porkbun/accounts/owner@example.test")
     const payload = JSON.parse(stored?.password ?? "{}") as Record<string, unknown>
     expect(payload).toMatchObject({
       schemaVersion: 1,
       updatedAt: NOW,
-      publicFields: { account: "ari@mendelow.me" },
+      publicFields: { account: "owner@example.test" },
       secretFields: {
         apiKey: "porkbun-api-key",
         secretApiKey: "porkbun-secret-key",
@@ -7554,22 +7579,22 @@ describe("provider CLI command execution", () => {
     const bundlesRoot = makeTempDir("provider-cli-vault-ops-porkbun-status-bundles")
     const homeDir = makeTempDir("provider-cli-vault-ops-porkbun-status-home")
     writeAgentConfig(bundlesRoot, "Slugger")
-    const itemName = "ops/registrars/porkbun/accounts/ari@mendelow.me"
+    const itemName = "ops/registrars/porkbun/accounts/owner@example.test"
 
     mockVaultDeps.credentialProbeGet.mockResolvedValueOnce({
       domain: itemName,
-      username: "ari@mendelow.me",
+      username: "owner@example.test",
       createdAt: NOW,
     })
     const present = await runOuroCli(
-      ["vault", "ops", "porkbun", "status", "--agent", "Slugger", "--account", "ari@mendelow.me"],
+      ["vault", "ops", "porkbun", "status", "--agent", "Slugger", "--account", "owner@example.test"],
       makeCliDeps(homeDir, bundlesRoot),
     )
     expect(present).toContain("deprecated compatibility alias")
     expect(present).toContain("agent: Slugger")
     expect(present).toContain(`ordinary vault item: vault:Slugger:${itemName}`)
     expect(present).toContain("status: present")
-    expect(present).toContain("account: ari@mendelow.me")
+    expect(present).toContain("account: owner@example.test")
     expect(present).toContain("secret values were not printed")
     expect(present).not.toContain("authority:")
     expect(present).not.toContain("porkbun-api-key")
@@ -7608,12 +7633,12 @@ describe("provider CLI command execution", () => {
     writeAgentConfig(bundlesRoot, "Slugger")
 
     await expect(runOuroCli(
-      ["vault", "ops", "porkbun", "set", "--agent", "Slugger", "--account", "ari@mendelow.me"],
+      ["vault", "ops", "porkbun", "set", "--agent", "Slugger", "--account", "owner@example.test"],
       makeCliDeps(homeDir, bundlesRoot),
     )).rejects.toThrow("Porkbun ops credential entry requires an interactive terminal")
 
     await expect(runOuroCli(
-      ["vault", "ops", "porkbun", "set", "--agent", "Slugger", "--account", "ari@mendelow.me"],
+      ["vault", "ops", "porkbun", "set", "--agent", "Slugger", "--account", "owner@example.test"],
       makeCliDeps(homeDir, bundlesRoot, {
         promptSecret: async () => "   ",
       }),
@@ -7621,14 +7646,14 @@ describe("provider CLI command execution", () => {
 
     const answers = ["porkbun-api-key", "   "]
     await expect(runOuroCli(
-      ["vault", "ops", "porkbun", "set", "--agent", "Slugger", "--account", "ari@mendelow.me"],
+      ["vault", "ops", "porkbun", "set", "--agent", "Slugger", "--account", "owner@example.test"],
       makeCliDeps(homeDir, bundlesRoot, {
         promptSecret: async () => answers.shift() ?? "",
       }),
     )).rejects.toThrow("Porkbun Secret API key cannot be blank")
 
     await expect(runOuroCli(
-      ["vault", "ops", "porkbun", "set", "--agent", "SerpentGuide", "--account", "ari@mendelow.me"],
+      ["vault", "ops", "porkbun", "set", "--agent", "SerpentGuide", "--account", "owner@example.test"],
       makeCliDeps(homeDir, bundlesRoot, {
         promptSecret: async () => "porkbun-api-key",
       }),
@@ -7655,7 +7680,7 @@ describe("provider CLI command execution", () => {
       workflow: "dns",
       domain: "ouro.bot",
       driver: "porkbun",
-      credentialItem: "ops/registrars/porkbun/accounts/ari@mendelow.me",
+      credentialItem: "ops/registrars/porkbun/accounts/owner@example.test",
       resources: { records: [{ type: "A", name: "mx1" }, { type: "MX", name: "@" }] },
       desired: {
         records: [
@@ -7664,7 +7689,7 @@ describe("provider CLI command execution", () => {
         ],
       },
     }, null, 2)}\n`, "utf-8")
-    mockVaultDeps.rawSecrets.set("Slugger:ops/registrars/porkbun/accounts/ari@mendelow.me", JSON.stringify({
+    mockVaultDeps.rawSecrets.set("Slugger:ops/registrars/porkbun/accounts/owner@example.test", JSON.stringify({
       secretFields: {
         apiKey: "porkbun-api-key",
         secretApiKey: "porkbun-secret-key",
@@ -7692,7 +7717,7 @@ describe("provider CLI command execution", () => {
     )
 
     expect(result).toContain("dns plan for ouro.bot")
-    expect(result).toContain("credential item: vault:Slugger:ops/registrars/porkbun/accounts/ari@mendelow.me")
+    expect(result).toContain("credential item: vault:Slugger:ops/registrars/porkbun/accounts/owner@example.test")
     expect(result).toContain("changes: 2")
     expect(result).toContain("secret values were not printed")
     const artifact = fs.readFileSync(outputPath, "utf-8")
@@ -7700,7 +7725,7 @@ describe("provider CLI command execution", () => {
     expect(artifact).not.toContain("porkbun-api-key")
     expect(artifact).not.toContain("porkbun-secret-key")
 
-    mockVaultDeps.rawSecrets.set("Slugger:ops/registrars/porkbun/accounts/ari@mendelow.me", JSON.stringify({
+    mockVaultDeps.rawSecrets.set("Slugger:ops/registrars/porkbun/accounts/owner@example.test", JSON.stringify({
       secretFields: { apiKey: "porkbun-api-key" },
     }))
     await expect(runOuroCli(
@@ -7711,10 +7736,10 @@ describe("provider CLI command execution", () => {
       }),
     )).rejects.toThrow("missing required secret field secretApiKey")
 
-    mockVaultDeps.rawSecrets.set("Slugger:ops/registrars/porkbun/accounts/ari@mendelow.me", JSON.stringify({
+    mockVaultDeps.rawSecrets.set("Slugger:ops/registrars/porkbun/accounts/owner@example.test", JSON.stringify({
       schemaVersion: 1,
       kind: "ops-credential/porkbun",
-      account: "ari@mendelow.me",
+      account: "owner@example.test",
       apiKey: "legacy-porkbun-api-key",
       secretApiKey: "legacy-porkbun-secret-key",
     }))
@@ -7748,7 +7773,7 @@ describe("provider CLI command execution", () => {
       workflow: "dns",
       domain: "ouro.bot",
       driver: "porkbun",
-      credentialItem: "ops/registrars/porkbun/accounts/ari@mendelow.me",
+      credentialItem: "ops/registrars/porkbun/accounts/owner@example.test",
       resources: { records: [{ type: "TXT", name: "_acme-challenge.mx1" }] },
       desired: { records: [] },
       certificate: {
@@ -7757,7 +7782,7 @@ describe("provider CLI command execution", () => {
         storeItem: "runtime/mail/certificates/mx1.ouro.bot",
       },
     }, null, 2)}\n`, "utf-8")
-    mockVaultDeps.rawSecrets.set("Slugger:ops/registrars/porkbun/accounts/ari@mendelow.me", JSON.stringify({
+    mockVaultDeps.rawSecrets.set("Slugger:ops/registrars/porkbun/accounts/owner@example.test", JSON.stringify({
       secretFields: {
         apiKey: "porkbun-api-key",
         secretApiKey: "porkbun-secret-key",
@@ -7822,7 +7847,7 @@ describe("provider CLI command execution", () => {
       workflow: "dns",
       domain: "ouro.bot",
       driver: "porkbun",
-      credentialItem: "ops/registrars/porkbun/accounts/ari@mendelow.me",
+      credentialItem: "ops/registrars/porkbun/accounts/owner@example.test",
       resources: { records: [{ type: "MX", name: "@" }] },
       desired: { records: [] },
     }, null, 2)}\n`, "utf-8")
@@ -7838,7 +7863,7 @@ describe("provider CLI command execution", () => {
       workflow: "dns",
       domain: "ouro.bot",
       driver: "porkbun",
-      credentialItem: "ops/registrars/porkbun/accounts/ari@mendelow.me",
+      credentialItem: "ops/registrars/porkbun/accounts/owner@example.test",
       resources: { records: [{ type: "TXT", name: "_acme-challenge.mx1" }] },
       desired: { records: [] },
       certificate: {
@@ -7869,7 +7894,7 @@ describe("provider CLI command execution", () => {
       workflow: "dns",
       domain: "ouro.bot",
       driver: "porkbun",
-      credentialItem: "ops/registrars/porkbun/accounts/ari@mendelow.me",
+      credentialItem: "ops/registrars/porkbun/accounts/owner@example.test",
       resources: { records: [{ type: "MX", name: "@" }] },
       desired: {
         records: [
@@ -7877,7 +7902,7 @@ describe("provider CLI command execution", () => {
         ],
       },
     }, null, 2)}\n`, "utf-8")
-    mockVaultDeps.rawSecrets.set("Slugger:ops/registrars/porkbun/accounts/ari@mendelow.me", JSON.stringify({
+    mockVaultDeps.rawSecrets.set("Slugger:ops/registrars/porkbun/accounts/owner@example.test", JSON.stringify({
       secretFields: {
         apiKey: "porkbun-api-key",
         secretApiKey: "porkbun-secret-key",
@@ -7925,7 +7950,7 @@ describe("provider CLI command execution", () => {
       workflow: "dns",
       domain: "ouro.bot",
       driver: "porkbun",
-      credentialItem: "ops/registrars/porkbun/accounts/ari@mendelow.me",
+      credentialItem: "ops/registrars/porkbun/accounts/owner@example.test",
       resources: { records: [{ type: "A", name: "mx1" }, { type: "MX", name: "@" }, { type: "TXT", name: "_dmarc" }] },
       desired: {
         records: [
@@ -7944,7 +7969,7 @@ describe("provider CLI command execution", () => {
         },
       },
     })}\n`, "utf-8")
-    mockVaultDeps.rawSecrets.set("Slugger:ops/registrars/porkbun/accounts/ari@mendelow.me", JSON.stringify({
+    mockVaultDeps.rawSecrets.set("Slugger:ops/registrars/porkbun/accounts/owner@example.test", JSON.stringify({
       secretFields: {
         apiKey: "porkbun-api-key",
         secretApiKey: "porkbun-secret-key",
@@ -8217,7 +8242,7 @@ describe("provider CLI command execution", () => {
   })
 
   for (const [label, declaredHost, typedHost, expected] of [
-    ["a typed account that differs from the declared host", "clawdbot", "arimendelow", 'BlueBubbles host setup refused for macOS account "arimendelow"'],
+    ["a typed account that differs from the declared host", "clawdbot", "owner", 'BlueBubbles host setup refused for macOS account "owner"'],
     ["a blank account with no declared host", undefined, "", "BlueBubbles host account cannot be blank"],
   ] as const) {
     it(`refuses BlueBubbles setup for ${label} before touching the host`, async () => {
@@ -10496,6 +10521,16 @@ describe("provider CLI command execution", () => {
       ["vault", "config", "set", "--agent", "Slugger", "--key", "teams.clientId"],
       makeCliDeps(homeDir, bundlesRoot),
     )).rejects.toThrow("vault config set requires --value")
+    const emptyValueFile = path.join(homeDir, "empty-value")
+    fs.writeFileSync(emptyValueFile, "\n")
+    await expect(runOuroCli(
+      ["vault", "config", "set", "--agent", "Slugger", "--key", "bluebubbles.password", "--value-file", emptyValueFile],
+      makeCliDeps(homeDir, bundlesRoot),
+    )).rejects.toThrow(`--value-file ${emptyValueFile} is empty.`)
+    await expect(runOuroCli(
+      ["vault", "config", "set", "--agent", "Slugger", "--key", "bluebubbles.password", "--value-file", path.join(homeDir, "missing")],
+      makeCliDeps(homeDir, bundlesRoot),
+    )).rejects.toThrow("could not read --value-file")
     await expect(runOuroCli(
       ["vault", "config", "set", "--agent", "Slugger", "--key", "__proto__.polluted", "--value", "x"],
       makeCliDeps(homeDir, bundlesRoot),

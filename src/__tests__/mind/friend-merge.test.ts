@@ -169,7 +169,7 @@ describe("mergeFriends", () => {
     const family = record({ id: "family-ari", notes: { name: { value: "Ari", savedAt: "t" } } })
     await store.put(family.id, family)
     // How a Teams message from an unknown AAD user creates its stranger record.
-    const teamsResolver = () => new FriendResolver(store, { provider: "aad", externalId: AAD.externalId, tenantId: AAD.tenantId, displayName: "Ari Mendelow", channel: "teams" })
+    const teamsResolver = () => new FriendResolver(store, { provider: "aad", externalId: AAD.externalId, tenantId: AAD.tenantId, displayName: "Alex Example", channel: "teams" })
     const stranger = (await teamsResolver().resolve()).friend
     expect(stranger.trustLevel).toBe("stranger")
     expect(fs.readdirSync(path.join(friendsDir, "_external-id-claims"))).toHaveLength(1)
@@ -209,6 +209,28 @@ describe("friend dedupe", () => {
     expect(groups.map((group) => [group.canonical.id, group.duplicates.map((item) => item.id)])).toEqual([
       ["canonical", ["dup-new", "chain", "chain-tail", "dup-a", "dup-b"]],
       ["kindless", ["kindless-2"]],
+    ])
+  })
+
+  it("groups records of any name and trust that share a person identity, into the higher-trust record", () => {
+    const handle = (externalId: string) => ({ provider: "imessage-handle" as const, externalId, linkedAt: "t" })
+    const groupChat = handle("group:any;+;chat-1")
+    const groups = planFriendDedupe([
+      record({ id: "family-ari", externalIds: [handle("+15551234567"), handle("owner@example.test"), groupChat] }),
+      record({
+        id: "stale-stranger",
+        name: "owner@example.test",
+        trustLevel: "stranger",
+        createdAt: "2025-01-01T00:00:00.000Z",
+        notes: { a: { value: "1", savedAt: "t" }, b: { value: "2", savedAt: "t" } },
+        externalIds: [handle("owner@example.test")],
+      }),
+      record({ id: "group-member", name: "Sam", trustLevel: "friend", externalIds: [handle("+15550000000"), groupChat] }),
+      record({ id: "teams-ari", externalIds: [{ ...AAD, linkedAt: "t" }] }),
+      record({ id: "teams-other-tenant", name: "Other", externalIds: [{ ...AAD, tenantId: "tenant-2", linkedAt: "t" }] }),
+    ])
+    expect(groups.map((group) => [group.canonical.id, group.duplicates.map((item) => item.id)])).toEqual([
+      ["family-ari", ["stale-stranger"]],
     ])
   })
 

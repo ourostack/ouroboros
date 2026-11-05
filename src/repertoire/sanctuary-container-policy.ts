@@ -7,7 +7,10 @@ import type { StewardPolicyRecord } from "../heart/steward-policy"
 import { emitNervesEvent } from "../nerves/runtime"
 
 /** House service name to the one container that is that service. */
-export const SERVICE_CONTAINERS: Readonly<Record<string, string>> = { Books: "calibre-web" }
+/** The household services a container serves, by name: Books is the house's books container, when it names one. */
+export function serviceContainers(house: { booksContainer?: string }): Readonly<Record<string, string>> {
+  return house.booksContainer ? { Books: house.booksContainer } : {}
+}
 
 const WANTED_ON = new Set(["on", "always_on", "expected_on"])
 const WANTED_OFF = /^(?:off|disabled|paused|intentionally_off|intentionally_paused)$/u
@@ -29,11 +32,11 @@ export function desiredContainerState(policy: Pick<StewardPolicyRecord, "desired
 }
 
 /** Adds `desired`, `note` and `serves` to each container of an ok container-list result; any other result is returned unchanged. */
-export function annotateContainers<T>(result: T, policy: Pick<StewardPolicyRecord, "desiredStates"> | null, nowMs: number): T {
+export function annotateContainers<T>(result: T, policy: Pick<StewardPolicyRecord, "desiredStates"> | null, nowMs: number, serviceMap: Readonly<Record<string, string>> = {}): T {
   const value = result as { ok?: unknown; data?: { containers?: unknown } } | null
   if (!value || value.ok !== true || !Array.isArray(value.data?.containers)) return result
   emitNervesEvent({ component: "repertoire", event: "repertoire.sanctuary_container_policy_annotated", message: "annotated the container list with steward-policy desired state", meta: { containers: value.data.containers.length, policyRead: policy !== null } })
-  const services = Object.entries(SERVICE_CONTAINERS)
+  const services = Object.entries(serviceMap)
   const containers = value.data.containers.map((entry) => {
     const item = entry as { name?: unknown; state?: unknown }
     const name = typeof item.name === "string" ? item.name : ""

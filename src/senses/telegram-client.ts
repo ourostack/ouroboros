@@ -104,7 +104,9 @@ export interface TelegramUpdate {
     voice?: { file_id?: string; mime_type?: string; file_size?: number }
     animation?: { file_id?: string; file_name?: string; mime_type?: string; file_size?: number }
     sticker?: { file_id?: string; file_size?: number; is_animated?: boolean; is_video?: boolean }
-    reply_to_message?: { message_id: number }
+    reply_to_message?: { message_id: number; text?: string; caption?: string; from?: { id: number; is_bot?: boolean } }
+    /** The part of the replied-to message the person highlighted, when they quoted only part of it. */
+    quote?: { text?: string }
   }
   callback_query?: {
     id: string
@@ -123,6 +125,10 @@ export interface TelegramInboundMessage {
   attachments?: TelegramInboundAttachment[]
   attachmentNotices?: string[]
   replyToMessageId?: string
+  /** The replied-to message's words as Telegram showed them: the highlighted quote, else its text or caption. */
+  replyToText?: string
+  /** Who wrote the replied-to message: the bot (the agent), the person replying, or someone else. */
+  replyToAuthor?: "agent" | "person" | "other"
   authority?: TelegramAuthorityTransportMetadata
 }
 
@@ -696,6 +702,13 @@ export function createTelegramLongPoll(options: TelegramLongPollOptions): Telegr
     message.document, message.audio, message.video, message.voice, message.animation, message.sticker,
   ].filter(Boolean).length + (message.photo?.length ? 1 : 0)
 
+  const repliedTo = (message: NonNullable<TelegramUpdate["message"]>, userId: string): Pick<TelegramInboundMessage, "replyToText" | "replyToAuthor"> => {
+    const reply = message.reply_to_message!
+    const quoted = [message.quote?.text, reply.text, reply.caption].find((value) => typeof value === "string" && value.trim())
+    const author = reply.from?.is_bot ? "agent" : reply.from && String(reply.from.id) === userId ? "person" : reply.from ? "other" : undefined
+    return { ...(quoted ? { replyToText: quoted.trim() } : {}), ...(author ? { replyToAuthor: author } : {}) }
+  }
+
   const authorizedMessage = (update: TelegramUpdate, authority?: TelegramAuthorityTransportMetadata): TelegramInboundMessage | null => {
     const message = update.message
     const userId = message?.from ? String(message.from.id) : ""
@@ -717,7 +730,7 @@ export function createTelegramLongPoll(options: TelegramLongPollOptions): Telegr
       attachments,
       ...(attachmentNotices.length ? { attachmentNotices } : {}),
       ...(Number.isSafeInteger(message.reply_to_message?.message_id) && message.reply_to_message!.message_id > 0
-        ? { replyToMessageId: String(message.reply_to_message!.message_id) }
+        ? { replyToMessageId: String(message.reply_to_message!.message_id), ...repliedTo(message, userId) }
         : {}),
       ...(authority ? { authority } : {}),
     }

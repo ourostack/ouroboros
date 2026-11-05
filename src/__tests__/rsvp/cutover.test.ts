@@ -33,12 +33,13 @@ vi.mock("../../heart/runtime-credentials", () => ({
 
 import {
   checkRsvpCutover,
+  resolveLegacyLaunchAgentLabel,
   runRsvpCutover,
   type RsvpCutoverDeps,
 } from "../../rsvp/cutover"
 
 const tempRoots: string[] = []
-const legacyLabel = "com.arimendelow.rsvp-tracker"
+const legacyLabel = "com.owner.rsvp-tracker"
 const forbiddenChatGuid = "any;+;secret-chat-guid"
 const forbiddenServerUrl = "http://127.0.0.1:1234"
 const forbiddenSharedSecret = "shared-bluebubbles-password"
@@ -971,5 +972,30 @@ describe("RSVP legacy cutover checks", () => {
     expect(fs.existsSync(result.rollback.configBackupPath)).toBe(true)
     expect(fs.existsSync(result.rollback.manifestPath)).toBe(true)
     expect(fs.readFileSync(sharedSecretsPath, "utf-8")).toBe(sharedSecretsBefore)
+  })
+})
+
+describe("legacy LaunchAgent label discovery", () => {
+  it("uses the owner's own *.rsvp-tracker label when its plist is installed", () => {
+    const dirs: Record<string, string[]> = {
+      "/legacy": ["config.json"],
+      "/Users/owner/Library/LaunchAgents": ["com.apple.foo.plist", "org.someone.rsvp-tracker.plist"],
+    }
+    const label = resolveLegacyLaunchAgentLabel("/legacy", {
+      homeDir: () => "/Users/owner",
+      readdirSync: (dir) => {
+        if (!dirs[dir]) throw new Error("ENOENT")
+        return dirs[dir]
+      },
+    })
+    expect(label).toBe("org.someone.rsvp-tracker")
+  })
+
+  it("falls back to the neutral default when no legacy plist exists or a folder is unreadable", () => {
+    const label = resolveLegacyLaunchAgentLabel("/legacy", {
+      homeDir: () => "/Users/owner",
+      readdirSync: () => { throw new Error("EACCES") },
+    })
+    expect(label).toBe("com.owner.rsvp-tracker")
   })
 })

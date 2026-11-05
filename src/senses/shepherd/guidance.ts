@@ -46,6 +46,7 @@ export interface ShepherdGuidanceView {
 export interface ShepherdGuidanceRequest {
   actorId: string
   requestId: string
+  expectedRevision?: number
   /** Trusted tool adapter only: SHA-256 of tool name + canonical original arguments, before resolving live coordinates. */
   requestFingerprint?: string
 }
@@ -147,8 +148,8 @@ function bounded(value: string, name: string, max: number): string {
 }
 function knownTarget(root: string, target: ShepherdGuidanceTarget, live: readonly ShepherdGuidanceTarget[], record?: ReturnRecord): ShepherdGuidanceTarget {
   if (!validTarget(target)) throw new Error("invalid Shepherd session target")
-  const known = record ?? [...readReturns(root).filter(validReturn)].reverse().find(r => r.host === target.host && r.session === target.session)
-    ?? live.find(t => t.host === target.host && t.session === target.session)
+  const known = record ?? live.find(t => t.host === target.host && t.session === target.session)
+    ?? [...readReturns(root).filter(validReturn)].reverse().find(r => r.host === target.host && r.session === target.session)
   if (!known) throw new Error("unknown session; no recorded or verified live Shepherd target")
   if (known.host !== target.host || known.session !== target.session || known.cwd !== target.cwd || known.task !== target.task) throw new Error("target does not match the recorded or live session")
   return { host: known.host, session: known.session, cwd: known.cwd, task: known.task }
@@ -187,6 +188,9 @@ async function mutate(root: string, op: string, input: ShepherdGuidanceRequest, 
     if (prior) {
       if (prior.hash !== bodyHash) throw new Error("request ID was already used with a different body")
       return prior.receipt
+    }
+    if (input.expectedRevision !== undefined && (!Number.isSafeInteger(input.expectedRevision) || input.expectedRevision < 0 || input.expectedRevision !== state.revision)) {
+      throw new Error("Shepherd guidance revision conflict")
     }
     const clean: ShepherdGuidanceProvenance = { actorId: input.actorId, requestId: input.requestId, at: new Date().toISOString(), kind: "operator instruction", returnId: null }
     const result = apply(state, clean)

@@ -16,7 +16,8 @@ vi.mock("../../heart/identity", () => ({
 }))
 
 const mockDeliverAwaitAlert = vi.fn()
-vi.mock("../../heart/awaiting/await-alert", () => ({
+vi.mock("../../heart/awaiting/await-alert", async (original) => ({
+  ...await original<object>(),
   deliverAwaitAlert: (...args: any[]) => mockDeliverAwaitAlert(...args),
 }))
 

@@ -68,6 +68,11 @@ vi.mock("@ouro.bot/friends", async () => {
   }
 })
 
+vi.mock("../../heart/external-events/router", () => ({
+  renewExternalEventClaim: vi.fn(),
+  settleExternalEventFailureIfOwned: vi.fn(() => ({ settled: true })),
+}))
+
 vi.mock("../../arc/flight-recorder", () => ({
   createHabitRunId: (...args: any[]) => mockCreateHabitRunId(...args),
   isSafeHabitRunId: (...args: any[]) => mockIsSafeHabitRunId(...args),
@@ -81,6 +86,7 @@ import {
   reserveAutonomyBudget,
 } from "../../heart/autonomy-budget"
 import { createPrivateRuntimeWorker } from "../../senses/private-runtime-worker"
+import { settleExternalEventFailureIfOwned } from "../../heart/external-events/router"
 
 function tempAgentRoot(): string {
   const agentRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ouro-private-runtime-budget-"))
@@ -138,5 +144,64 @@ describe("private-runtime autonomy budget", () => {
     expect(fs.readdirSync(autonomyReceiptsDir(agentRoot)).some((name) => name.endsWith(".json"))).toBe(true)
     expect(JSON.stringify(mockWriteHabitRunReceipt.mock.calls)).toContain("autonomy budget blocked")
     expect(JSON.stringify(readAutonomyBudgetState(agentRoot))).not.toContain("do not store habit body")
+  })
+
+  const eventLease = (claimOwner: string) => ({ schemaVersion: 1 as const, recordPath: "/events/slugger/health/books.json", agent: "slugger", source: "health", eventId: "books", generation: 1, observationRevision: "rev-1", claimOwner })
+
+  it("puts external-event turns under their own daily allowance", async () => {
+    const agentRoot = tempAgentRoot()
+    mockGetAgentRoot.mockReturnValue(agentRoot)
+    const runTurn = vi.fn().mockResolvedValue({ usage: { input_tokens: 1, output_tokens: 1, reasoning_tokens: 0, total_tokens: 2 } })
+    let clock = new Date("2026-07-09T01:00:00.000Z").getTime()
+    const worker = createPrivateRuntimeWorker(runTurn, undefined, () => clock)
+    for (let index = 0; index <= AUTONOMY_BUDGET_DEFAULT_POLICY.habitPaidTurnsPerDay; index++) {
+      clock += 2 * 60 * 60_000
+      await worker.handleMessage({ type: "message", externalEvent: eventLease(`lease-${index}`) })
+    }
+    expect(runTurn).toHaveBeenCalledTimes(AUTONOMY_BUDGET_DEFAULT_POLICY.habitPaidTurnsPerDay)
+    const reservations = readAutonomyBudgetState(agentRoot).reservations
+    expect(reservations).toHaveLength(AUTONOMY_BUDGET_DEFAULT_POLICY.habitPaidTurnsPerDay)
+    expect(reservations.every((row) => row.senseOrHabit === "external-events")).toBe(true)
+  })
+
+  it("pauses external-event turns for thirty minutes after three failed turns", async () => {
+    const agentRoot = tempAgentRoot()
+    mockGetAgentRoot.mockReturnValue(agentRoot)
+    fs.writeFileSync(path.join(agentRoot, "agent.json"), JSON.stringify({ habitPaidTurnsPerDay: 24 }))
+    const runTurn = vi.fn().mockRejectedValue(new Error("provider iteration limit exhausted"))
+    let clock = new Date("2026-07-09T17:00:00.000Z").getTime()
+    const worker = createPrivateRuntimeWorker(runTurn, undefined, () => clock)
+    for (let index = 0; index < 4; index++) {
+      clock += 60_000
+      await worker.handleMessage({ type: "message", externalEvent: eventLease(`lease-${index}`) })
+    }
+    expect(runTurn).toHaveBeenCalledTimes(3)
+    expect(mockEmitNervesEvent).toHaveBeenCalledWith(expect.objectContaining({ event: "heart.autonomy_storm_breaker" }))
+    // The blocked event is not lost: it waits out the pause without spending a retry attempt.
+    expect(vi.mocked(settleExternalEventFailureIfOwned)).toHaveBeenLastCalledWith("/events/slugger/health/books.json", expect.objectContaining({
+      owner: "lease-3",
+      deferUntil: new Date(clock + 30 * 60_000).toISOString(),
+    }))
+    clock += 31 * 60_000
+    runTurn.mockResolvedValue({ usage: { input_tokens: 1, output_tokens: 1, reasoning_tokens: 0, total_tokens: 2 } })
+    await worker.handleMessage({ type: "message", externalEvent: eventLease("lease-after-pause") })
+    expect(runTurn).toHaveBeenCalledTimes(4)
+  })
+
+  it("counts a turn that ends without a disposition as a failure, and never blocks a disk, parity or array event", async () => {
+    const agentRoot = tempAgentRoot()
+    mockGetAgentRoot.mockReturnValue(agentRoot)
+    vi.mocked(settleExternalEventFailureIfOwned).mockClear()
+    const runTurn = vi.fn().mockResolvedValue({ usage: { input_tokens: 1, output_tokens: 1, reasoning_tokens: 0, total_tokens: 2 } })
+    let clock = new Date("2026-07-09T17:00:00.000Z").getTime()
+    const worker = createPrivateRuntimeWorker(runTurn, undefined, () => clock)
+    for (let index = 0; index < 4; index++) {
+      clock += 60_000
+      await worker.handleMessage({ type: "message", externalEvent: eventLease(`quiet-${index}`) })
+    }
+    expect(runTurn).toHaveBeenCalledTimes(3)
+    const smart = { ...eventLease("smart"), recordPath: "/events/slugger/health/smart.json", eventId: "disk:sdb:smart" }
+    await worker.handleMessage({ type: "message", externalEvent: { ...eventLease("batch"), relatedEvents: [smart] } })
+    expect(runTurn).toHaveBeenCalledTimes(4)
   })
 })

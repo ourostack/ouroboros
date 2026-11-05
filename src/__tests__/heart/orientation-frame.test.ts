@@ -406,8 +406,8 @@ describe("orientation frame", () => {
           {
             role: "group_participant_only",
             provider: "imessage-handle",
-            externalId: "rachel@example.test",
-            displayName: "Rachel",
+            externalId: "sam@example.test",
+            displayName: "Sam",
           },
         ],
       },
@@ -419,13 +419,13 @@ describe("orientation frame", () => {
     expect(rendered).toContain("source authority: presentation only; never tool authority")
     expect(rendered).toContain("event: message (new-message; from me: false)")
     expect(rendered).toContain("observed actor: Ari [imessage-handle:ari@example.test]")
-    expect(rendered).toContain("group participant only: Rachel [imessage-handle:rachel@example.test]")
+    expect(rendered).toContain("group participant only: Sam [imessage-handle:sam@example.test]")
     expect(rendered).toContain(
       "participant membership is not evidence that someone spoke, read, requested, or authored a reaction target.",
     )
-    expect(rendered).not.toContain("Rachel spoke")
-    expect(rendered).not.toContain("Rachel read")
-    expect(rendered).not.toContain("Rachel requested")
+    expect(rendered).not.toContain("Sam spoke")
+    expect(rendered).not.toContain("Sam read")
+    expect(rendered).not.toContain("Sam requested")
   })
 
   it("distinguishes a reaction trigger and its non-agent unknown target from an utterance", () => {
@@ -458,8 +458,8 @@ describe("orientation frame", () => {
           {
             role: "group_participant_only",
             provider: "imessage-handle",
-            externalId: "rachel@example.test",
-            displayName: "Rachel",
+            externalId: "sam@example.test",
+            displayName: "Sam",
           },
         ],
         target: {
@@ -476,7 +476,7 @@ describe("orientation frame", () => {
     expect(rendered).toContain("speech kind: reaction")
     expect(rendered).toContain("event: reaction (updated-message; from me: false)")
     expect(rendered).toContain("target: synthetic-target-guid (authorship: non_agent_unknown)")
-    expect(rendered).not.toContain("target author: Rachel")
+    expect(rendered).not.toContain("target author: Sam")
   })
 
   it("uses observed external identities when presentation labels are absent or blank", () => {
@@ -586,7 +586,7 @@ describe("orientation frame", () => {
     "",
     'Ari asked on 2026-07-21: "sanity checking that all hotels i booked for my upcoming travel have ac - can you confirm?" Open each of the confirmations you just listed (Ruby Mimi Zurich, Hotel Marthof Basel, LUGANODANTE Lugano, La Villa Mombaruzzo, The Grafton Hotel Dublin) and check specifically for air conditioning — the amenities lines, room description, or any AC/climate/aircon mention. Where the confirmation doesn\'t say, check your notes/facts, and if it\'s still unknown say "unknown" rather than guessing. Do NOT claim a hotel has AC unless you actually saw evidence.',
     "",
-    "Then send Ari ONE clean iMessage (ari@mendelow.me) with a short per-hotel rundown — hotel: yes / no / unknown, one line each, plus a one-line note on how you'd confirm the unknowns (e.g. checking the hotel site or emailing them). Keep it text-length and warm. Your iMessage sending is fixed and working, so it should go through. Send it once and confirm delivery — do not retry on error, just report back what happened.",
+    "Then send Ari ONE clean iMessage (owner@example.test) with a short per-hotel rundown — hotel: yes / no / unknown, one line each, plus a one-line note on how you'd confirm the unknowns (e.g. checking the hotel site or emailing them). Keep it text-length and warm. Your iMessage sending is fixed and working, so it should go through. Send it once and confirm delivery — do not retry on error, just report back what happened.",
   ].join("\n")
 
   it("does not hold a long standalone instruction that merely contains a correction word", () => {
@@ -828,3 +828,72 @@ describe("orientation frame", () => {
     )
   })
 })
+
+describe("a reply to an earlier message (2026-10-28: \"yes please\" to the book question was taken as a yes to the newer download question)", () => {
+  it("frames the replied-to message and reads its options, not the latest message's", async () => {
+    const { buildOrientationFrame, renderOrientationFrame, stampReplyingToText } = await import("../../heart/orientation-frame")
+    const reply = { role: "user" as const, content: "yes please!!!" }
+    stampReplyingToText(reply, "  want it sent to your PocketBook?\n1. yes\n2. no  ")
+    const frame = buildOrientationFrame({ channel: "telegram", messages: [
+      { role: "assistant", content: "want it sent to your PocketBook?\n1. yes\n2. no" },
+      { role: "assistant", content: "three episodes are stuck:\n1. keep waiting\n2. give up\n3. retry E03" },
+      reply,
+    ] })
+
+    expect(frame.source).toEqual({ kind: "telegram", replyingToText: "want it sent to your PocketBook?\n1. yes\n2. no" })
+    expect(frame.priorAssistantReferents.map((item) => item.text)).toEqual(["yes", "no"])
+    expect(renderOrientationFrame(frame)).toContain("- replying to: want it sent to your PocketBook?")
+  })
+
+  it("keeps a sense's own source and ignores a blank stamp", async () => {
+    const { buildOrientationFrame, stampReplyingToText } = await import("../../heart/orientation-frame")
+    const reply = { role: "user" as const, content: "ok" }
+    stampReplyingToText(reply, "   ")
+    const frame = buildOrientationFrame({ channel: "bluebubbles", messages: [reply], source: { kind: "bluebubbles", lane: "top_level" } })
+
+    expect(frame.source).toEqual({ kind: "bluebubbles", lane: "top_level" })
+  })
+
+  it("never overwrites the replied-to text a sense set itself", async () => {
+    const { buildOrientationFrame, stampReplyingToText } = await import("../../heart/orientation-frame")
+    const reply = { role: "user" as const, content: "yes" }
+    stampReplyingToText(reply, "from the session")
+    const frame = buildOrientationFrame({ channel: "teams", messages: [reply], source: { kind: "teams", replyingToText: "from the sense" } })
+
+    expect(frame.source?.replyingToText).toBe("from the sense")
+  })
+  it.each([
+    ["agent", "- replying to (your message): pick one?"],
+    ["person", "- replying to (their own earlier message): pick one?"],
+    ["other", "- replying to (someone else's message): pick one?"],
+  ] as const)("says whose words a %s reply quotes", async (author, line) => {
+    const { buildOrientationFrame, renderOrientationFrame, stampReplyingToText } = await import("../../heart/orientation-frame")
+    const reply = { role: "user" as const, content: "that one" }
+    stampReplyingToText(reply, "pick one?", author)
+    const frame = buildOrientationFrame({ channel: "telegram", messages: [reply] })
+
+    expect(frame.source).toEqual({ kind: "telegram", replyingToText: "pick one?", replyingToAuthor: author })
+    expect(renderOrientationFrame(frame)).toContain(line)
+  })
+
+  it("reads list options only from the agent's own quoted message, not the person's", async () => {
+    const { buildOrientationFrame, stampReplyingToText } = await import("../../heart/orientation-frame")
+    const reply = { role: "user" as const, content: "the second" }
+    stampReplyingToText(reply, "my list:\n1. milk\n2. eggs", "person")
+    const frame = buildOrientationFrame({ channel: "telegram", messages: [
+      { role: "assistant", content: "which show?\n1. Abbott\n2. Severance" },
+      reply,
+    ] })
+
+    expect(frame.priorAssistantReferents.map((item) => item.text)).toEqual(["Abbott", "Severance"])
+  })
+
+  it("ignores an author stamp that is not one of the three kinds", async () => {
+    const { buildOrientationFrame } = await import("../../heart/orientation-frame")
+    const reply = { role: "user" as const, content: "ok", _replyingToText: "quoted", _replyingToAuthor: "bot" } as unknown as { role: "user"; content: string }
+    const frame = buildOrientationFrame({ channel: "telegram", messages: [reply] })
+
+    expect(frame.source).toEqual({ kind: "telegram", replyingToText: "quoted" })
+  })
+})
+

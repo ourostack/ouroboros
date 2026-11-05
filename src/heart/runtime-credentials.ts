@@ -89,9 +89,10 @@ function isProviderCredentialRecord(value: unknown): value is ProviderCredential
   const provider = value.provider as AgentProvider
   const canonicalCredentials = splitProviderCredentialFields(provider, credentials).credentials
   const canonicalConfig = splitProviderCredentialFields(provider, config).config
-  if (!PROVIDER_CREDENTIALS[provider].required.every((field) => (
+  const requirements = PROVIDER_CREDENTIALS[provider]
+  if (![requirements.required, ...(requirements.alternativeRequired ?? [])].some((fields) => fields.every((field) => (
     isPresentCredentialValue(canonicalCredentials[field]) || isPresentCredentialValue(canonicalConfig[field])
-  ))) return false
+  )))) return false
   const provenance = value.provenance
   if (!isRecord(provenance)) return false
   if (!hasExactKeys(provenance, ["source", "updatedAt"])) return false

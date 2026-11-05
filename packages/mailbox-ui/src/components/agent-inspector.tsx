@@ -18,6 +18,7 @@ interface AgentInspectorProps {
   deskPrefs?: MailboxDeskPrefs | null
   refreshGeneration: number
   initialRoute?: RouteState
+  onNavigate?: (route: RouteState) => void
 }
 
 const TABS: Array<{ id: TabId; label: string }> = [
@@ -38,18 +39,16 @@ function attentionColor(level: string): "red" | "yellow" | "lime" | "zinc" {
   return "zinc"
 }
 
-export function AgentInspector({ agentName, view, deskPrefs, refreshGeneration, initialRoute }: AgentInspectorProps) {
+export function AgentInspector({ agentName, view, deskPrefs, refreshGeneration, initialRoute, onNavigate }: AgentInspectorProps) {
   const [activeTab, setActiveTab] = useState<TabId>(initialRoute?.tab ?? "overview")
   const [focusTarget, setFocusTarget] = useState<string | undefined>(initialRoute?.focus)
-  const initialConsumed = useRef(false)
   const previousAgent = useRef(agentName)
 
   useEffect(() => {
     const agentChanged = previousAgent.current !== agentName
     previousAgent.current = agentName
 
-    if (initialRoute?.agent === agentName && !initialConsumed.current) {
-      initialConsumed.current = true
+    if (initialRoute?.agent === agentName) {
       setActiveTab(initialRoute.tab)
       setFocusTarget(initialRoute.focus)
       return
@@ -62,16 +61,20 @@ export function AgentInspector({ agentName, view, deskPrefs, refreshGeneration, 
   }, [agentName, initialRoute?.agent, initialRoute?.focus, initialRoute?.tab])
 
   const navigate = useCallback((target: NavigateTarget) => {
+    const route = { agent: agentName, tab: target.tab, focus: target.focus }
     setActiveTab(target.tab)
     setFocusTarget(target.focus)
-    window.history.pushState(null, "", buildHash({ agent: agentName, tab: target.tab, focus: target.focus }))
-  }, [agentName])
+    window.history.pushState(null, "", buildHash(route))
+    onNavigate?.(route)
+  }, [agentName, onNavigate])
 
   const handleTabClick = useCallback((tab: TabId) => {
+    const route = { agent: agentName, tab, focus: undefined }
     setActiveTab(tab)
     setFocusTarget(undefined)
-    window.history.pushState(null, "", buildHash({ agent: agentName, tab, focus: undefined }))
-  }, [agentName])
+    window.history.pushState(null, "", buildHash(route))
+    onNavigate?.(route)
+  }, [agentName, onNavigate])
 
   const consumeFocus = useCallback(() => setFocusTarget(undefined), [])
 

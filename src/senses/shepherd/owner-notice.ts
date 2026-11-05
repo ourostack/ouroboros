@@ -1,13 +1,17 @@
+import { createHash } from "node:crypto"
 import * as path from "node:path"
-import { FileFriendStore, type FriendRecord } from "@ouro.bot/friends"
+import { FileFriendStore, isLocalMachineOwnerIdentity, machineOwnerUsername, type FriendRecord } from "@ouro.bot/friends"
 import { resolveAlertKey } from "../../heart/awaiting/await-alert"
-import { getTeamsConfig, getTeamsSecondaryConfig, type TeamsConfig } from "../../heart/config"
-import type { ShepherdNoticePolicy } from "../../heart/identity"
+import { getBlueBubblesConfig, getTeamsConfig, getTeamsSecondaryConfig, type TeamsConfig } from "../../heart/config"
+import { loadAgentConfig, type ShepherdNoticePolicy } from "../../heart/identity"
+import { resolveReachTarget, type ReachChannel } from "../../heart/reach-channel"
 import { emitNervesEvent } from "../../nerves/runtime"
 import type { TeamsBotApi } from "../teams"
+import type { BlueBubblesClient } from "../bluebubbles/client"
+import type { ProactiveBlueBubblesSessionSendParams, ProactiveBlueBubblesSessionSendResult } from "../bluebubbles"
 import type { HostSession } from "./host"
-import { readReturns, type ReturnRecord } from "./returns"
-import { claimPendingNotices, declareNoticeTargets, enqueueNotice, knownNotice, noticeDeliveryState, noticeRecordId, readNoticeOutbox, recordNoticeDelivery } from "./notice-outbox"
+import type { ReturnRecord, ShepherdActionBlockReason } from "./returns"
+import { claimPendingNotices, declareNoticeTargets, enqueueNotice, noticeDeliveryState, readNoticeOutbox, recordNoticeDelivery } from "./notice-outbox"
 
 /**
  * The owner notice: after a judged return, the agent's owner hears what happened in one short plain message on their
@@ -15,12 +19,24 @@ import { claimPendingNotices, declareNoticeTargets, enqueueNotice, knownNotice, 
  * policy covers whether or not the Ouro agent decides it matters. Returns that arrive close together share one message.
  */
 export const NOTICE_COALESCE_MS = 5_000
-/** Returns named one by one in a coalesced message; the rest are counted. */
+/** Distinct sessions named in a digest; the remaining sessions are counted. */
 export const NOTICE_LIST_MAX = 6
 export const NOTICE_RETRY_MS = 30_000
 const NAME_MAX = 60
 const REASON_MAX = 300
+const NOTE_MAX = 400
 const REPLY_MAX = 240
+const BLOCK_DESCRIPTION: Record<ShepherdActionBlockReason, string> = {
+  reply_invalid: "I couldn't come up with a safe reply",
+  menu_disallowed: "it's showing a menu, and I don't pick menu options",
+  host_unverified: "I couldn't confirm it was safe to type there",
+  guidance: "your Shepherd guidance says to leave it",
+  loop_guard: "I've already answered it too many times",
+  focus: "you're in it or just left it",
+  state_changed: "it changed while I was looking",
+  custody: "an earlier reply may still be on its way",
+  stopped: "Shepherd was stopping",
+}
 
 /** Kinds a "needs-me" owner still hears about. */
 const NEEDS_ME = new Set<ReturnRecord["kind"]>(["gate", "done", "loop_guard"])
@@ -44,87 +60,189 @@ export function plain(value: string, max: number): string {
   return flat.length <= max ? flat : `${flat.slice(0, max - 1).trimEnd()}…`
 }
 
-function who(record: ReturnRecord, location: string | HostSession | undefined): string {
-  const session = typeof location === "object" ? location : undefined
-  const agentName = record.agent ?? session?.agent
-  const cwd = record.cwd ?? session?.cwd
+/**
+ * The session as a person would name it: the agent, the tab or workspace title it works under, and its folder. A host
+ * handle such as `surface:12` is added only when another session would read the same, so a reply reaches the right one.
+ */
+function label(agentName: string | null | undefined, cwd: string | null | undefined, titles: Array<string | null | undefined>): string {
   const agent = agentName ? plain(agentName, NAME_MAX) : ""
   const folder = cwd ? plain(path.basename(cwd), NAME_MAX) : ""
-  const ref = typeof location === "string" ? location : session?.ref
-  const handle = plain(ref ?? record.session.slice(0, 8), NAME_MAX)
-  const labels = [record.workspaceTitle ?? session?.workspaceTitle, record.title ?? session?.title].filter((label): label is string => !!label).map((label) => plain(label, NAME_MAX))
-  const where = labels.length ? `${labels.join(" / ")}; ${handle}` : handle
-  return `${agent || "A coding agent"}${folder ? ` in ${folder}` : ""}${where ? ` (${where})` : ""}`
+  const title = titles.map(value => value ? plain(value, NAME_MAX) : "").find(value => value && value.toLowerCase() !== folder.toLowerCase())
+  return `${agent || "A coding agent"}${title ? ` on ${title}` : ""}${folder ? ` in ${folder}` : ""}`
 }
 
-/** One return as one sentence pair: who returned, what Shepherd did, and why. */
-export function noticeLine(record: ReturnRecord, location?: string | HostSession): string {
-  const subject = who(record, location)
-  const why = `Why: ${plain(record.reason, REASON_MAX) || "no reason given"}`
+function who(record: ReturnRecord, location: string | HostSession | undefined): string {
+  const session = typeof location === "object" ? location : undefined
+  return label(record.agent ?? session?.agent, record.cwd ?? session?.cwd, [record.title ?? session?.title, record.workspaceTitle ?? session?.workspaceTitle])
+}
+
+function handle(record: ReturnRecord, location: string | HostSession | undefined): string {
+  const ref = typeof location === "string" ? location : location?.ref
+  return plain(ref || record.session.slice(0, 8), NAME_MAX)
+}
+
+/** The judge's own note to the owner, used when Shepherd took no action that the note could misdescribe. */
+const NOTE_KINDS = new Set<ReturnRecord["kind"]>(["gate", "done", "waiting", "working"])
+
+/** One return as one or two sentences, written to the owner: who, what happened, and what Shepherd did. */
+export function noticeLine(record: ReturnRecord, location?: string | HostSession, ambiguous = false): string {
+  const subject = `${who(record, location)}${ambiguous ? ` (${handle(record, location)})` : ""}`
+  const note = record.note ? plain(record.note, NOTE_MAX) : ""
+  if (note && NOTE_KINDS.has(record.kind)) return `${subject}: ${note}`
+  const reason = plain(record.reason, REASON_MAX)
+  const because = reason ? ` ${reason.replace(/^./, first => first.toUpperCase())}${/[.!?…]$/.test(reason) ? "" : "."}` : ""
   switch (record.kind) {
     case "premature":
       if (record.action === "respond" && record.reply) {
-        const sent = record.reply.startsWith("key:") ? `pressed ${plain(record.reply.slice(4), 10)}` : `sent it back: "${plain(record.reply, REPLY_MAX)}"`
-        return `${subject} stopped early, so I ${sent}. ${why}`
+        const sent = record.reply.startsWith("key:") ? `pressed ${plain(record.reply.slice(4), 10)}` : `told it: "${plain(record.reply, REPLY_MAX)}"`
+        return `${subject} stopped early, so I ${sent}.${because}`
       }
-      return `${subject} stopped early, but I did not answer it, so it is waiting for you. ${why}`
+      if (record.actionBlockReason) return `${subject} stopped early. I didn't answer because ${BLOCK_DESCRIPTION[record.actionBlockReason]}.${because}`
+      return `${subject} stopped early and I left it for you.${because}`
     case "gate":
-      return `${subject} needs you. ${why}`
+      return `${subject} needs you.${because}`
     case "done":
-      return `${subject} says it is done. ${why}`
+      return `${subject} says it's done.${because}`
     case "waiting":
-      return `${subject} is waiting on an outside dependency; the work is not yet delivered. ${why}`
+      return `${subject} is waiting on something outside it; it isn't done yet.${because}`
     case "loop_guard":
-      return `${subject}: I stopped answering it after too many replies, so it is waiting for you. ${why}`
+      return `${subject} kept stopping, so I stopped answering it and left it for you.${because}`
     case "working":
-      return `${subject} is still working in the background and has news. ${why}`
+      return `${subject} is still working, with news.${because}`
     case "unclear":
-      return `${subject} stopped and I could not tell what it needs, so I left it. ${why}`
+      return `I couldn't tell what ${subject} is doing.${because}`
     default:
-      return `${subject} stopped but I could not judge it, so I left it. ${why}`
+      return `I couldn't check on ${subject}.${because}`
   }
 }
 
-/** One message for a burst: a single return is its line; several are a short list, the extra ones counted. */
-export function noticeMessage(records: ReturnRecord[], refs: ReadonlyMap<string, string | HostSession> = new Map()): string {
-  const lines = records.slice(0, NOTICE_LIST_MAX).map((record) => noticeLine(record, refs.get(record.session)))
-  if (records.length === 1) return lines[0]!
-  const more = records.length - lines.length
-  return [`${records.length} coding agents stopped:`, ...lines.map((line) => `- ${line}`), ...(more > 0 ? [`- and ${more} more.`] : [])].join("\n")
+/** Closes every notice: the person answers in the same conversation, and the agent relays it with `shepherd_send`. */
+export const NOTICE_REPLY_LINE = "Reply here and I'll pass it on."
+
+/** A bounded display of latest observations; all input records retain delivery custody. */
+export function noticeMessage(records: ReturnRecord[], refs: ReadonlyMap<string, string | HostSession> = new Map(), context: { recovered?: boolean } = {}): string {
+  const latest = new Map<string, ReturnRecord>()
+  for (const record of records) {
+    const key = JSON.stringify([record.host, record.session])
+    const previous = latest.get(key)
+    const at = Date.parse(record.at)
+    const previousAt = previous ? Date.parse(previous.at) : NaN
+    if (!previous || (Number.isFinite(at) && (!Number.isFinite(previousAt) || at > previousAt))
+      || ((!Number.isFinite(at) && !Number.isFinite(previousAt) || at === previousAt) && record.transition > previous.transition)) latest.set(key, record)
+  }
+  const sessions = [...latest].sort(([a], [b]) => a < b ? -1 : 1).map(([, record]) => record)
+  // Labels shared by two different sessions, among those the host lists and those in this message.
+  const owners = new Map<string, Set<string>>()
+  const claim = (name: string, id: string) => owners.set(name, (owners.get(name) ?? new Set()).add(id))
+  for (const [id, location] of refs) if (typeof location === "object") claim(label(location.agent, location.cwd, [location.title, location.workspaceTitle]), id)
+  for (const record of sessions) claim(who(record, refs.get(record.session)), record.session)
+  const lines = sessions.slice(0, NOTICE_LIST_MAX).map(record => {
+    const line = noticeLine(record, refs.get(record.session), owners.get(who(record, refs.get(record.session)))!.size > 1)
+    if (!context.recovered) return line
+    const at = Date.parse(record.at)
+    return `${line} (${Number.isFinite(at) ? `observed at ${new Date(at).toISOString()}` : "observation time unknown"})`
+  })
+  const more = sessions.length - lines.length
+  const body = sessions.length === 1 ? lines[0]!
+    : [`${sessions.length} updates:`, ...lines.map(line => `- ${line}`), ...(more > 0 ? [`- and ${more} more.`] : [])].join("\n")
+  const recovered = sessions.length === 1 ? "Catching up on something I saw earlier, so it may be out of date:" : "Catching up on things I saw earlier, so these may be out of date:"
+  return `${context.recovered ? `${recovered}\n${body}` : body}\n\n${NOTICE_REPLY_LINE}`
 }
 
 export interface NoticeTarget {
   friendId: string
   name: string
-  /** The session key the send is logged under: the friend's Teams session when there is one. */
+  /** The channel the notice goes out on: the friend's stated choice, else their most recent, else any reachable one. */
+  channel: ReachChannel
+  /** The session key the send uses: the friend's 1:1 session on that channel when there is one. */
   key: string
   tenantId?: string
 }
 
-function teamsAadId(friend: FriendRecord): { id: string; tenantId?: string } | null {
-  const ext = friend.externalIds.find((entry) => entry.provider === "aad" && !entry.externalId.startsWith("group:"))
-  return ext ? { id: ext.externalId.toLowerCase(), tenantId: ext.tenantId } : null
+/**
+ * The channels this agent can reach people on from this machine: its enabled Teams sense, and its enabled BlueBubbles
+ * sense when this machine has a BlueBubbles connection (credentials live per machine, so another machine may own it).
+ */
+export function readEnabledReachChannels(agent: string, agentRoot: string, blueBubblesConfig: () => unknown = getBlueBubblesConfig): Set<ReachChannel> {
+  const enabled = new Set<ReachChannel>()
+  try {
+    const senses = loadAgentConfig({ agentName: agent, agentRoot }).senses
+    if (senses?.bluebubbles?.enabled) {
+      try {
+        blueBubblesConfig()
+        enabled.add("bluebubbles")
+      } catch (error) {
+        emitNervesEvent({ level: "warn", component: "senses", event: "senses.shepherd_notice_bluebubbles_not_attached", message: "BlueBubbles is enabled but not connected on this machine, so owner notices use another channel", meta: { agent, error: (error as Error).message } })
+      }
+    }
+    if (senses?.teams?.enabled) enabled.add("teams")
+  } catch (error) {
+    emitNervesEvent({ level: "warn", component: "senses", event: "senses.shepherd_notice_channels_unreadable", message: "could not read which channels are enabled, so no owner notice channel is reachable", meta: { agent, error: (error as Error).message } })
+  }
+  return enabled
+}
+
+/** Every channel id a friend record holds, in the same `channel:handle` form `resolveReachTarget` returns. */
+function personIdentities(friend: FriendRecord): Set<string> {
+  const identities = new Set<string>()
+  // Only called for a reachable friend, whose externalIds is therefore a list.
+  for (const entry of friend.externalIds) {
+    // A `group:` id names a group chat the friend is in, which other people share; it never identifies the person.
+    if (typeof entry?.externalId !== "string" || entry.externalId.trim() === "" || entry.externalId.startsWith("group:")) continue
+    if (entry.provider === "imessage-handle") identities.add(`bluebubbles:${entry.externalId.toLowerCase()}`)
+    if (entry.provider === "aad") identities.add(`teams:${entry.externalId.toLowerCase()}`)
+  }
+  return identities
 }
 
 /**
- * Who hears the notice: every family friend reachable on Teams (a Teams user id the bot can open a chat with), once per
- * Teams user even when several friend records share one. Teams is the only proactive channel wired today.
+ * Who hears the notice, and where: the family friend who is this machine's own user (`local` id), else every family
+ * friend, on the channel `resolveReachTarget` chooses for them, once per
+ * person on that channel even when several friend records share one id. With no 1:1 session yet, the send opens one:
+ * BlueBubbles by the friend's handle, Teams by a new 1:1 conversation.
  */
-export async function resolveNoticeTargets(agentRoot: string, store: { listAll(): Promise<FriendRecord[]> } = new FileFriendStore(path.join(agentRoot, "friends"))): Promise<NoticeTarget[]> {
+export async function resolveNoticeTargets(
+  agentRoot: string,
+  store: { listAll(): Promise<FriendRecord[]> } = new FileFriendStore(path.join(agentRoot, "friends")),
+  enabledChannels: ReadonlySet<ReachChannel> = new Set(),
+  username: string | null = machineOwnerUsername(),
+): Promise<NoticeTarget[]> {
   const seen = new Set<string>()
   const targets: NoticeTarget[] = []
-  for (const friend of await store.listAll()) {
-    if (friend.trustLevel !== "family") continue
-    const aad = teamsAadId(friend)
-    if (!aad || seen.has(aad.id)) continue
-    seen.add(aad.id)
-    targets.push({ friendId: friend.id, name: friend.name, key: resolveAlertKey(agentRoot, friend.id, "teams") ?? "shepherd", ...(aad.tenantId ? { tenantId: aad.tenantId } : {}) })
+  const family = (await store.listAll()).filter(friend => friend.trustLevel === "family")
+  // The notice is the owner's: when family friends are linked to this machine's own user, only they hear it, never
+  // their relatives, even when none of them is reachable yet.
+  const owners = family.filter(friend => (Array.isArray(friend.externalIds) ? friend.externalIds : [])
+    .some(entry => typeof entry?.provider === "string" && typeof entry.externalId === "string" && isLocalMachineOwnerIdentity(entry.provider, entry.externalId, username)))
+  for (const friend of owners.length > 0 ? owners : family) {
+    const reach = resolveReachTarget({
+      friend, enabledChannels, sessionsDir: path.join(agentRoot, "state", "sessions"), friendsDir: path.join(agentRoot, "friends"),
+      agentName: path.basename(agentRoot, ".ouro"),
+    })
+    if ("unreachable" in reach) continue
+    // One notice per person: a friend whose iMessage handle or Teams id another target already has is that person.
+    const identities = personIdentities(friend)
+    identities.add(`${reach.channel}:${reach.handle}`)
+    if ([...identities].some(identity => seen.has(identity))) continue
+    for (const identity of identities) seen.add(identity)
+    const alertKey = resolveAlertKey(agentRoot, friend.id, reach.channel)
+    // A BlueBubbles fallback key must be a DM: a group key would be refused, and "shepherd" sends to the handle.
+    const fallback = reach.channel === "bluebubbles" ? (alertKey?.includes(";-;") ? alertKey : null) : alertKey
+    targets.push({ friendId: friend.id, name: friend.name, channel: reach.channel, key: reach.key ?? fallback ?? "shepherd", ...(reach.tenantId ? { tenantId: reach.tenantId } : {}) })
+  }
+  if (owners.length > 0 && targets.length === 0) {
+    emitNervesEvent({ level: "warn", component: "senses", event: "senses.shepherd_notice_owner_unreachable", message: "this machine's owner has no reachable channel, so the Shepherd owner notice waits; link their iMessage handle or Teams id", meta: { owners: owners.length } })
   }
   emitNervesEvent({ component: "senses", event: "senses.shepherd_notice_targets", message: "resolved Shepherd owner notice targets", meta: { count: targets.length } })
   return targets
 }
 
-export type NoticeSender = (target: NoticeTarget, text: string) => Promise<{
+/** One id per batch and person, so a retried batch is saved into the conversation once. */
+export function noticeDeliveryId(friendId: string, noticeIds: readonly string[]): string {
+  return `shepherd:${createHash("sha256").update(`${friendId}\0${[...noticeIds].sort().join(",")}`).digest("hex")}`
+}
+
+export type NoticeSender = (target: NoticeTarget, text: string, noticeIds: string[]) => Promise<{
   delivered: boolean
   reason?: string
   delivery?: { state: "accepted" | "not_sent" | "unknown"; messageId?: string; conversationId?: string }
@@ -150,17 +268,41 @@ async function liveBotApi(config: TeamsConfig): Promise<TeamsBotApi> {
 /* v8 ignore stop */
 
 /**
- * Sends through the Teams sense's own proactive path (`sendProactiveTeamsMessageToSession`: trust check, internal-content
- * guard, 1:1 chat with the friend's Teams id) with a bot client of this process's own, built from the agent's Teams
- * credentials. Nothing listens on a port: the client only acquires a bot token and calls the Bot Framework.
+ * Sends on the target's channel through that sense's own proactive path, which applies its trust check, internal-content
+ * guard and 1:1 rule, and saves the notice into the friend's conversation.
+ *
+ * - Teams: `sendProactiveTeamsMessageToSession` with a bot client of this process's own, built from the agent's Teams
+ *   credentials. Nothing listens on a port: the client only acquires a bot token and calls the Bot Framework.
+ * - BlueBubbles: `sendProactiveBlueBubblesMessageToSession` over the BlueBubbles REST API, which checks the server's
+ *   account before sending. When the client cannot be set up (no credentials, say), the notice stays pending.
  */
-export function createTeamsNoticeSender(agentRoot: string, deps: {
+export function createNoticeSender(agentRoot: string, deps: {
   primary?: () => TeamsConfig
   secondary?: () => TeamsConfig
   botApi?: (config: TeamsConfig) => Promise<TeamsBotApi>
+  createBlueBubblesClient?: () => BlueBubblesClient
+  sendBlueBubbles?: (params: ProactiveBlueBubblesSessionSendParams, deps: { createClient: () => BlueBubblesClient; createFriendStore: () => FileFriendStore }) => Promise<ProactiveBlueBubblesSessionSendResult>
 } = {}): NoticeSender {
   const bots = new Map<string, Promise<TeamsBotApi>>()
-  return async (target, text) => {
+  return async (target, text, noticeIds) => {
+    const deliveryId = noticeDeliveryId(target.friendId, noticeIds)
+    if (target.channel === "bluebubbles") {
+      let client: BlueBubblesClient
+      let send: NonNullable<typeof deps.sendBlueBubbles>
+      try {
+        /* v8 ignore next 2 -- tests inject the client and sender; the live ones need BlueBubbles credentials @preserve */
+        client = deps.createBlueBubblesClient ? deps.createBlueBubblesClient() : (await import("../bluebubbles/client")).createBlueBubblesClient()
+        send = deps.sendBlueBubbles ?? (await import("../bluebubbles")).sendProactiveBlueBubblesMessageToSession
+      } catch (error) {
+        emitNervesEvent({ level: "warn", component: "senses", event: "senses.shepherd_notice_bluebubbles_unavailable", message: "BlueBubbles could not be set up for the Shepherd owner notice; it stays waiting", meta: { friendId: target.friendId, error: (error as Error).message } })
+        return { delivered: false, reason: "bluebubbles_unavailable" }
+      }
+      const store = new FileFriendStore(path.join(agentRoot, "friends"))
+      return send(
+        { friendId: target.friendId, sessionKey: target.key, text, intent: "generic_outreach", deliveryId, origin: "shepherd" },
+        { createClient: () => client, createFriendStore: () => store },
+      )
+    }
     const config = chooseTeamsBot(target.tenantId, (deps.primary ?? getTeamsConfig)(), (deps.secondary ?? getTeamsSecondaryConfig)())
     if (!config) return { delivered: false, reason: "no_teams_bot" }
     let bot = bots.get(config.clientId)
@@ -173,7 +315,7 @@ export function createTeamsNoticeSender(agentRoot: string, deps: {
     }
     const { sendProactiveTeamsMessageToSession } = await import("../teams")
     return sendProactiveTeamsMessageToSession(
-      { friendId: target.friendId, sessionKey: target.key, text, textFormat: "plain", intent: "generic_outreach", captureReceipt: true },
+      { friendId: target.friendId, sessionKey: target.key, text, textFormat: "plain", intent: "generic_outreach", captureReceipt: true, deliveryId, origin: "shepherd" },
       { botApi: await bot, store: new FileFriendStore(path.join(agentRoot, "friends")) },
     )
   }
@@ -187,41 +329,59 @@ export interface OwnerNotifierOptions {
   /** The host's sessions, for the short handle (`surface:12`) each notice names. */
   listSessions: () => Promise<HostSession[]>
   resolveTargets?: () => Promise<NoticeTarget[]>
+  /** The channels notices may use; read from agent.json on every flush by default. */
+  enabledChannels?: () => ReadonlySet<ReachChannel>
   send?: NoticeSender
 }
 
+export type NoticeIntentAcceptance =
+  | { state: "queued"; noticeId: string }
+  | { state: "suppressed"; reason: "policy" | "stopped" }
+
 export interface OwnerNotifier {
-  notify(record: ReturnRecord): Promise<void>
+  notify(record: ReturnRecord): Promise<NoticeIntentAcceptance>
   /** Sends what is waiting now; resolves when it is sent or has failed. */
   flush(): Promise<void>
   stop(): void
 }
 
-/** Collects notices for NOTICE_COALESCE_MS after the first, then sends them as one message. It never throws. */
+/** Collects durable notice intents; acceptance is distinct from transport delivery. */
 export function createOwnerNotifier(options: OwnerNotifierOptions): OwnerNotifier {
   const { agent, policy } = options
-  const resolveTargets = options.resolveTargets ?? (() => resolveNoticeTargets(options.agentRoot))
-  const send = options.send ?? createTeamsNoticeSender(options.agentRoot)
+  const enabledChannels = options.enabledChannels ?? (() => readEnabledReachChannels(agent, options.agentRoot))
+  const resolveTargets = options.resolveTargets ?? (() => resolveNoticeTargets(options.agentRoot, undefined, enabledChannels()))
+  const send = options.send ?? createNoticeSender(options.agentRoot)
   const retryWrites = new Map<string, ReturnRecord>()
-  const writes = new Set<Promise<void>>()
+  const recoveredNoticeIds = new Set<string>()
+  const writes = new Set<Promise<string>>()
   let cancel: (() => void) | null = null
   let stopped = false
   let flushing: Promise<void> | null = null
+  let drainRequested = false
 
   function schedule(ms: number): void {
-    if (!stopped && policy !== "off") cancel ??= options.schedule(() => { void flush() }, ms)
+    if (!stopped && policy !== "off") cancel ??= options.schedule(() => {
+      cancel?.()
+      cancel = null
+      if (flushing) drainRequested = true
+      else void flush()
+    }, ms)
   }
 
-  function persistIntent(record: ReturnRecord): Promise<void> {
+  function persistIntent(record: ReturnRecord): Promise<string> {
     const key = `${record.host}:${record.session}:${record.transition}:${record.at}`
     retryWrites.set(key, record)
-    const write = enqueueNotice(options.agentRoot, record).then(() => {
+    const write = enqueueNotice(options.agentRoot, record).then(id => {
       retryWrites.delete(key)
+      return id
     }).catch(error => {
       emitNervesEvent({ level: "error", component: "senses", event: "senses.shepherd_notice_error", message: "could not persist a Shepherd owner notice intent; it remains waiting", meta: { agent, error: (error as Error).message } })
       schedule(NOTICE_RETRY_MS)
-    }).finally(() => { writes.delete(write) })
+      throw error
+    })
     writes.add(write)
+    // Observe cleanup immediately, while the producer still receives the rejecting promise.
+    void write.then(() => { writes.delete(write) }, () => { writes.delete(write) })
     return write
   }
 
@@ -229,9 +389,10 @@ export function createOwnerNotifier(options: OwnerNotifierOptions): OwnerNotifie
     cancel?.()
     cancel = null
     if (stopped || policy === "off") return
-    await Promise.all([...writes])
-    for (const record of [...retryWrites.values()]) await persistIntent(record)
     try {
+      await Promise.allSettled([...writes])
+      const retried = await Promise.allSettled([...retryWrites.values()].map(persistIntent))
+      if (retried.some(result => result.status === "rejected")) schedule(NOTICE_RETRY_MS)
       const entries = readNoticeOutbox(options.agentRoot).filter(entry =>
         noticeWanted(policy, entry.record) && (Object.keys(entry.deliveries).length === 0 || Object.values(entry.deliveries).some(value => value.state !== "sent")),
       )
@@ -243,8 +404,9 @@ export function createOwnerNotifier(options: OwnerNotifierOptions): OwnerNotifie
         // Without the host's handles, each notice names a short session id instead.
       }
       const targets = await resolveTargets()
+      if (stopped) return
       if (targets.length === 0) {
-        emitNervesEvent({ level: "warn", component: "senses", event: "senses.shepherd_notice_no_target", message: "no family friend is reachable on Teams, so the Shepherd owner notice was not sent", meta: { agent, returns: entries.length } })
+        emitNervesEvent({ level: "warn", component: "senses", event: "senses.shepherd_notice_no_target", message: "no family friend is reachable on any enabled channel, so the Shepherd owner notice was not sent", meta: { agent, returns: entries.length } })
         schedule(NOTICE_RETRY_MS)
         return
       }
@@ -254,14 +416,19 @@ export function createOwnerNotifier(options: OwnerNotifierOptions): OwnerNotifie
         delivery.state === "pending" && !reachable.has(friendId),
       ))
       for (const target of targets) {
+        if (stopped) break
         const pending = entries.filter(entry => noticeDeliveryState(entry, target.friendId) === "pending")
-        for (let start = 0; start < pending.length && !stopped; start += NOTICE_LIST_MAX) {
+        if (pending.length > 0) {
           // Only the worker that atomically claims a pending entry may initiate transport.
-          const batch = await claimPendingNotices(options.agentRoot, pending.slice(start, start + NOTICE_LIST_MAX).map(entry => entry.id), target.friendId, new Date().toISOString())
+          const batch = await claimPendingNotices(options.agentRoot, pending.map(entry => entry.id), target.friendId, new Date().toISOString())
           if (batch.length === 0) continue
           const ids = batch.map(entry => entry.id)
+          if (stopped) {
+            await recordNoticeDelivery(options.agentRoot, ids, target.friendId, { state: "pending", at: new Date().toISOString(), reason: "stopped before transport" })
+            break
+          }
           try {
-            const result = await send(target, noticeMessage(batch.map(entry => entry.record), refs))
+            const result = await send(target, noticeMessage(batch.map(entry => entry.record), refs, { recovered: ids.some(id => recoveredNoticeIds.has(id)) }), ids)
             const state = result.delivered ? "sent"
               : result.delivery ? result.delivery.state === "not_sent" ? "pending" : "unknown"
                 : result.reason && result.reason !== "send_error" ? "pending" : "unknown"
@@ -290,20 +457,20 @@ export function createOwnerNotifier(options: OwnerNotifierOptions): OwnerNotifie
 
   function flush(): Promise<void> {
     if (flushing) return flushing
-    flushing = runFlush().finally(() => { flushing = null })
+    flushing = runFlush().finally(() => {
+      flushing = null
+      if (drainRequested) {
+        drainRequested = false
+        schedule(NOTICE_COALESCE_MS)
+      }
+    })
     return flushing
   }
 
   try {
     const existing = readNoticeOutbox(options.agentRoot)
-    let recovered = false
-    for (const record of readReturns(options.agentRoot)) {
-      if (record.noticeEligible === true && noticeWanted(policy, record) && !knownNotice(options.agentRoot, noticeRecordId(record), existing)) {
-        void persistIntent(record)
-        recovered = true
-      }
-    }
-    if (recovered || existing.some(entry => Object.keys(entry.deliveries).length === 0 || Object.values(entry.deliveries).some(value => value.state === "pending"))) schedule(NOTICE_RETRY_MS)
+    for (const entry of existing) recoveredNoticeIds.add(entry.id)
+    if (existing.some(entry => Object.keys(entry.deliveries).length === 0 || Object.values(entry.deliveries).some(value => value.state === "pending"))) schedule(NOTICE_RETRY_MS)
   } catch (error) {
     emitNervesEvent({ level: "error", component: "senses", event: "senses.shepherd_notice_error", message: "could not read waiting Shepherd owner notices", meta: { agent, error: (error as Error).message } })
     schedule(NOTICE_RETRY_MS)
@@ -311,10 +478,11 @@ export function createOwnerNotifier(options: OwnerNotifierOptions): OwnerNotifie
 
   return {
     notify(record) {
-      if (stopped || !noticeWanted(policy, record)) return Promise.resolve()
+      if (stopped) return Promise.resolve({ state: "suppressed", reason: "stopped" })
+      if (!noticeWanted(policy, record)) return Promise.resolve({ state: "suppressed", reason: "policy" })
       const write = persistIntent(record)
       schedule(NOTICE_COALESCE_MS)
-      return write
+      return write.then(noticeId => ({ state: "queued", noticeId }))
     },
     flush,
     stop() {

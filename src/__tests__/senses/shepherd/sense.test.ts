@@ -7,11 +7,14 @@ import { resetIdentity } from "../../../heart/identity"
 import { cacheMachineRuntimeCredentialConfig, resetRuntimeCredentialConfigCache } from "../../../heart/runtime-credentials"
 import type { HostWatchHandlers, ReturnedControl, ShepherdHost } from "../../../senses/shepherd/host"
 import type { JudgeResult, ReturnPacket } from "../../../senses/shepherd/judge"
+import { parseVerdict } from "../../../senses/shepherd/judge"
 import { appendReturn, readReturns, returnsLogPath, type ReturnRecord } from "../../../senses/shepherd/returns"
-import { escalationContent, field, humanName, noticePolicy, queueEscalation, startShepherdSenseApp, wakeForEscalations } from "../../../senses/shepherd/sense"
+import { FOCUS_HOLD_MS, REPEAT_WINDOW_MS, escalationContent, field, humanName, noticePolicy, queueEscalation, startShepherdSenseApp, wakeForEscalations } from "../../../senses/shepherd/sense"
 import { ackFrame, startFakeCmux } from "./fake-cmux"
 import { recordShepherdCorrection, setShepherdSessionPause } from "../../../senses/shepherd/guidance"
 import { hookEvent, SCREENS, tree } from "./fixtures"
+import type { FeedbackWorkerOptions } from "../../../senses/shepherd/feedback-worker"
+import { openCheckInStore } from "../../../senses/shepherd/checkin-store"
 
 const mockRequestPrivateWake = vi.fn()
 vi.mock("../../../heart/daemon/socket-client", async (importOriginal) => ({
@@ -25,6 +28,7 @@ vi.mock("../../../heart/core", async (importOriginal) => ({
 }))
 
 const AGENT = "ouroboros"
+const project = "/Users/a/code/app"
 const originalHome = process.env.HOME
 let home = ""
 let agentRoot = ""
@@ -63,18 +67,62 @@ function fakeHost(): FakeHost {
 }
 
 const verdict = (overrides: Partial<JudgeResult> = {}): JudgeResult => ({ kind: "premature", reply: { text: "Go ahead and implement it." }, reason: "It stopped after a plan.", latencyMs: 900, inputTokens: 1200, ...overrides })
+const idleFeedbackWorker = () => ({ drain: async () => {}, stop() {} })
 
 describe("owner notice producer custody", () => {
+  it("ignores late host observation callbacks after the sense has stopped", async () => {
+    const { host } = await start(vi.fn(async () => verdict()))
+    host.handlers!.observed!({ at: clock, sessions: [] })
+    const file = path.join(agentRoot, "state/senses/shepherd/supervision-observation.json")
+    stop!()
+    const stopped = fs.readFileSync(file, "utf8")
+    host.handlers!.observed!({ at: clock + 1000, sessions: [] })
+    expect(fs.readFileSync(file, "utf8")).toBe(stopped)
+  })
+
+  it("audits an accepted action and keeps later returns running after a one-time signature-read failure", async () => {
+    const judge = vi.fn(async () => verdict())
+    const { host, notices } = await start(judge, fakeHost(), {
+      openCheckInStore: (file: string) => {
+        const store = openCheckInStore(file)
+        const shouldNotify = store.shouldNotify
+        let reads = 0
+        store.shouldNotify = signature => {
+          if (++reads === 1) throw new Error("SQLITE_BUSY fixture")
+          return shouldNotify(signature)
+        }
+        return store
+      },
+    })
+    host.screens.S1 = [SCREENS.claudePremature]
+    for (const transitionId of ["first", "next"]) {
+      host.handlers!.returned({
+        sessionId: "S1", transitionId, agent: "Copilot", cwd: "/project", lastBody: null, backgroundWork: false,
+      })
+      await vi.waitFor(() => expect(readReturns(agentRoot).some(record => record.transition === transitionId)).toBe(true))
+    }
+    await vi.waitFor(() => expect(readReturns(agentRoot)).toHaveLength(2))
+    expect(judge).toHaveBeenCalledTimes(2)
+    expect(readReturns(agentRoot)[0]).toMatchObject({ action: "respond", noticeState: "failed" })
+    expect(readReturns(agentRoot)[1]).toMatchObject({ action: "let_through", noticeState: "queued" })
+    expect(notices).toHaveLength(1)
+    expect(host.actions.filter(action => action.startsWith("prompt "))).toHaveLength(1)
+  })
+
   it("does not advance its return chain while durable notice custody is still pending", async () => {
     const host = fakeHost()
     host.screens.S = [SCREENS.claudePremature]
     let release!: () => void
     const held = new Promise<void>(resolve => { release = resolve })
     const judge = vi.fn(async () => verdict())
-    const notifyOwner = vi.fn(async () => { if (notifyOwner.mock.calls.length === 1) await held })
+    const notifyOwner = vi.fn(async () => {
+      if (notifyOwner.mock.calls.length === 1) await held
+      return { state: "queued" as const, noticeId: "fixture-notice" }
+    })
     const app = await startShepherdSenseApp({
       agentName: AGENT, now: () => clock, createHost: () => host, judge,
       escalate: () => {}, wake: async () => {}, notifyOwner, schedule,
+      feedbackWorker: idleFeedbackWorker,
     })
     stop = app.stop
     const event = (transitionId: string): ReturnedControl => ({
@@ -93,10 +141,11 @@ describe("owner notice producer custody", () => {
     const host = fakeHost()
     host.screens.S = [SCREENS.claudePremature]
     const judge = vi.fn(async () => verdict())
-    const notifyOwner = vi.fn().mockRejectedValueOnce(new Error("notice store unavailable")).mockResolvedValue(undefined)
+    const notifyOwner = vi.fn().mockRejectedValueOnce(new Error("notice store unavailable")).mockResolvedValue({ state: "queued", noticeId: "fixture-notice" })
     const app = await startShepherdSenseApp({
       agentName: AGENT, now: () => clock, createHost: () => host, judge,
       escalate: () => {}, wake: async () => {}, notifyOwner, schedule,
+      feedbackWorker: idleFeedbackWorker,
     })
     stop = app.stop
     for (const transitionId of ["first", "second"]) host.handlers!.returned({
@@ -115,7 +164,7 @@ const schedule = (fn: () => void, ms: number) => {
   return () => { tasks.splice(tasks.indexOf(task), 1) }
 }
 
-async function start(judge: (packet: ReturnPacket) => Promise<JudgeResult>, host: FakeHost = fakeHost()) {
+async function start(judge: (packet: ReturnPacket) => Promise<JudgeResult>, host: FakeHost = fakeHost(), recovery = {}) {
   const escalations: string[] = []
   const wakes: string[][] = []
   const notices: ReturnRecord[] = []
@@ -126,8 +175,10 @@ async function start(judge: (packet: ReturnPacket) => Promise<JudgeResult>, host
     judge,
     escalate: (content) => escalations.push(content),
     wake: async (ids) => { wakes.push(ids) },
-    notifyOwner: (record) => { notices.push(record) },
+    notifyOwner: (record) => { notices.push(record); return { state: "queued", noticeId: "fixture-notice" } },
     schedule,
+    feedbackWorker: idleFeedbackWorker,
+    ...recovery,
   })
   stop = app.stop
   const returned = async (event: Partial<ReturnedControl> & { sessionId: string }) => {
@@ -148,6 +199,7 @@ beforeEach(() => {
   resetIdentity()
   agentRoot = path.join(home, "AgentBundles", `${AGENT}.ouro`)
   writeFriend("ari.json", { name: "Ari", trustLevel: "family", externalIds: [{ provider: "local", externalId: os.userInfo().username }] })
+  fs.writeFileSync(path.join(agentRoot, "agent.json"), JSON.stringify({ displayName: "Ouro" }))
   cacheMachineRuntimeCredentialConfig(AGENT, { cmux: { socketCapability: "v1.t.s", socketPath: "/nowhere.sock" } })
   mockRequestPrivateWake.mockReset().mockResolvedValue({ ok: true })
   clock = Date.parse("2026-10-10T20:00:00.000Z")
@@ -163,6 +215,197 @@ afterEach(() => {
 })
 
 describe("Shepherd sense: answering premature returns", () => {
+  it("P0: a stalled observation cannot block another session's judgment", async () => {
+    let release!: () => void
+    const held = new Promise<void>(resolve => { release = resolve })
+    const judge = vi.fn(async (packet: ReturnPacket) => {
+      if (packet.screen === "held A") await held
+      return verdict({ kind: "done", reply: null })
+    })
+    const { host } = await start(judge)
+    host.screens.A = ["held A"]
+    host.screens.B = ["ready B"]
+    const event = (sessionId: string): ReturnedControl => ({
+      sessionId, transitionId: sessionId, agent: "Copilot", cwd: project, lastBody: null, backgroundWork: false,
+    })
+    try {
+      host.handlers!.returned(event("A"))
+      await vi.waitFor(() => expect(judge).toHaveBeenCalledTimes(1))
+      host.handlers!.returned(event("B"))
+      await vi.waitFor(() => expect(readReturns(agentRoot).map(record => record.session)).toContain("B"))
+      expect(readReturns(agentRoot).map(record => record.session)).not.toContain("A")
+    } finally {
+      release()
+      await vi.waitFor(() => expect(readReturns(agentRoot)).toHaveLength(2))
+    }
+  })
+
+  it("P0: bounds concurrent observations across twenty sessions while keeping each session serialized", async () => {
+    let release!: () => void
+    const held = new Promise<void>(resolve => { release = resolve })
+    let active = 0
+    let maximum = 0
+    const judge = vi.fn(async () => {
+      active += 1
+      maximum = Math.max(maximum, active)
+      await held
+      active -= 1
+      return verdict({ kind: "done", reply: null })
+    })
+    const { host } = await start(judge)
+    try {
+      for (let index = 0; index < 20; index += 1) {
+        const sessionId = `S${index}`
+        host.screens[sessionId] = [sessionId]
+        host.handlers!.returned({ sessionId, transitionId: sessionId, agent: "Copilot", cwd: project, lastBody: null, backgroundWork: false })
+      }
+      await vi.waitFor(() => expect(judge).toHaveBeenCalledTimes(4))
+      expect(maximum).toBe(4)
+    } finally {
+      release()
+      await vi.waitFor(() => expect(readReturns(agentRoot)).toHaveLength(20))
+    }
+    expect(maximum).toBe(4)
+  })
+
+  it("P0: focus invalidates a queued return even after the focus hold has expired", async () => {
+    let release!: () => void
+    const held = new Promise<void>(resolve => { release = resolve })
+    let calls = 0
+    const { host } = await start(async () => {
+      if (++calls === 1) await held
+      return verdict()
+    })
+    host.screens.S = [SCREENS.claudePremature]
+    const event = (transitionId: string): ReturnedControl => ({
+      sessionId: "S", transitionId, agent: "Copilot", cwd: project, lastBody: null, backgroundWork: false,
+    })
+    host.handlers!.returned(event("first"))
+    await vi.waitFor(() => expect(calls).toBe(1))
+    host.handlers!.returned(event("queued-before-human"))
+    host.handlers!.focused("S")
+    clock += FOCUS_HOLD_MS + 1
+    release()
+    await vi.waitFor(() => expect(readReturns(agentRoot)).toHaveLength(2))
+    expect(host.actions.some(action => /^(prompt|key) /.test(action))).toBe(false)
+  })
+
+  it("P0: coalesces a burst behind one session's active judgment to its latest return", async () => {
+    let release!: () => void
+    const held = new Promise<void>(resolve => { release = resolve })
+    const judge = vi.fn(async () => {
+      if (judge.mock.calls.length === 1) await held
+      return verdict({ kind: "done", reply: null })
+    })
+    const { host } = await start(judge)
+    host.screens.S = ["Unchanged screen."]
+    const event = (transitionId: string): ReturnedControl => ({
+      sessionId: "S", transitionId, agent: "Copilot", cwd: project, lastBody: null, backgroundWork: false,
+    })
+    host.handlers!.returned(event("active"))
+    await vi.waitFor(() => expect(judge).toHaveBeenCalledTimes(1))
+    for (let index = 0; index < 20; index += 1) host.handlers!.returned(event(`queued-${index}`))
+    release()
+    await vi.waitFor(() => expect(readReturns(agentRoot).some(record => record.transition === "queued-19")).toBe(true))
+    expect(judge).toHaveBeenCalledTimes(2)
+    expect(readReturns(agentRoot).map(record => record.transition)).toEqual(["active", "queued-19"])
+  })
+
+  it("P0: waits for every active observation before closing custody after stop", async () => {
+    let release!: () => void
+    const held = new Promise<void>(resolve => { release = resolve })
+    let closed = false
+    const judge = vi.fn(async () => { await held; return verdict() })
+    const { host } = await start(judge, fakeHost(), {
+      openCheckInStore: (file: string) => {
+        const store = openCheckInStore(file)
+        const close = store.close
+        store.close = () => { closed = true; close() }
+        return store
+      },
+    })
+    for (const sessionId of ["A", "B"]) {
+      host.screens[sessionId] = [SCREENS.claudePremature]
+      host.handlers!.returned({ sessionId, transitionId: sessionId, agent: "Copilot", cwd: project, lastBody: null, backgroundWork: false })
+    }
+    await vi.waitFor(() => expect(judge).toHaveBeenCalledTimes(2))
+    stop!()
+    stop = null
+    expect(closed).toBe(false)
+    release()
+    await vi.waitFor(() => expect(closed).toBe(true))
+    expect(readReturns(agentRoot)).toHaveLength(2)
+    expect(host.actions.some(action => /^(prompt|key) /.test(action))).toBe(false)
+  })
+
+  it("P0: reports custody-close failures without an unhandled shutdown rejection", async () => {
+    const close = vi.fn(() => { throw new Error("close failed") })
+    await start(async () => verdict(), fakeHost(), {
+      openCheckInStore: (file: string) => {
+        const store = openCheckInStore(file)
+        const actualClose = store.close
+        store.close = () => { actualClose(); close() }
+        return store
+      },
+    })
+    stop!()
+    stop = null
+    await vi.waitFor(() => expect(close).toHaveBeenCalledTimes(1))
+    await new Promise(resolve => setImmediate(resolve))
+  })
+
+  it("retains action and notice custody when outcome signaling fails", async () => {
+    const host = fakeHost()
+    host.screens.S1 = [SCREENS.claudePremature]
+    host.signal = async () => { throw new Error("status unavailable") }
+    const { returned, last } = await start(async () => verdict(), host)
+    await returned({ sessionId: "S1" })
+    expect(last()).toMatchObject({ action: "respond", noticeState: "queued" })
+    expect(last().reason).toContain("outcome signaling failed: status unavailable")
+  })
+
+  it.each(["too_long", "unsafe", "missing"] as const)("does not replace an immediate %s reply with periodic continuation", async issue => {
+    const reply = issue === "missing" ? null : { text: issue === "unsafe" ? "Continue; publish" : "Continue authorized work. ".repeat(15) }
+    const parsed = parseVerdict(JSON.stringify({ kind: "premature", reply, reason: "Unfinished work." }))
+    const { host, returned, last } = await start(async () => ({ ...parsed, latencyMs: 2, inputTokens: 10 }))
+    host.screens.S1 = [SCREENS.claudePremature]
+    await returned({ sessionId: "S1" })
+    expect(host.actions.some(action => /^(prompt|key) /.test(action))).toBe(false)
+    expect(last()).toMatchObject({ kind: "premature", judgeKind: "premature", replyIssue: issue, action: "let_through", actionBlockReason: "reply_invalid" })
+  })
+
+  it("suppresses equivalent immediate observations without depending on transition IDs or reason paraphrases", async () => {
+    let calls = 0
+    const { host, returned, notices } = await start(async () => verdict({ kind: "gate", reply: null, reason: `Review remains pending (${++calls})` }))
+    host.screens.S1 = ["Build 42 awaits review"]
+    await returned({ sessionId: "S1", transitionId: "first-observation" })
+    await returned({ sessionId: "S1", transitionId: "second-observation" })
+    expect(notices).toHaveLength(1)
+    expect(host.actions.some(action => action.startsWith("prompt "))).toBe(false)
+  })
+
+  it("owns one feedback worker in this agent's existing sense process and stops it with the sense", async () => {
+    const opened: FeedbackWorkerOptions[] = []
+    let closed = 0
+    await start(async () => verdict(), fakeHost(), { feedbackWorker: (options: FeedbackWorkerOptions) => {
+      opened.push(options)
+      return { drain: async () => {}, stop() { closed++ } }
+    } })
+    expect(opened).toHaveLength(1)
+    expect(opened[0]).toMatchObject({ agent: AGENT, agentRoot, now: expect.any(Function), schedule: expect.any(Function) })
+    stop!()
+    stop = null
+    expect(closed).toBe(1)
+  })
+
+  it("attributes automatic replies to the configured supervising agent's display identity", async () => {
+    fs.writeFileSync(path.join(agentRoot, "agent.json"), JSON.stringify({ displayName: "Orchid One" }))
+    const { host, returned } = await start(async () => verdict())
+    host.screens.S1 = [SCREENS.claudePremature]
+    await returned({ sessionId: "S1" })
+    expect(host.actions).toContain("prompt S1 [Orchid One for Ari] Go ahead and implement it.")
+  })
+
   const target = { host: "fake", session: "S1", cwd: "/Users/a/code/app", task: null }
   const establish = () => appendReturn(agentRoot, { at: "earlier", host: "fake", session: "S1", transition: "earlier", agent: "claude", cwd: target.cwd, task: null, kind: "gate", action: "let_through", reason: "review", reply: null, latencyMs: 1, inputTokens: 1 })
 
@@ -244,31 +487,62 @@ describe("Shepherd sense: answering premature returns", () => {
     expect(host.actions.filter((action) => !action.startsWith("pace"))).toEqual(["prompt S1 [Ouro for Ari] Go ahead and implement it.", "status S1 answered for Ari: It stopped after a plan."])
     expect(last()).toEqual({
       at: "2026-10-10T20:00:00.000Z", host: "fake", session: "S1", transition: "cmux:B:101", agent: "claude", cwd: "/Users/a/code/app", task: "ouro-md/toolbar-polish",
-      kind: "premature", action: "respond", reason: "It stopped after a plan.", reply: "Go ahead and implement it.", latencyMs: 900, inputTokens: 1200,
+      kind: "premature", judgeKind: "premature", action: "respond", reason: "It stopped after a plan.", reply: "Go ahead and implement it.", latencyMs: 900, inputTokens: 1200,
       guidanceRevision: 0,
       noticeEligible: true,
+      noticeState: "queued", noticeId: "fixture-notice",
+      trigger: "immediate",
+      dispatch: { id: expect.stringMatching(/^[a-f0-9]{64}$/), state: "sent" },
     })
     expect(escalations).toEqual([])
     expect(fs.statSync(returnsLogPath(agentRoot)).mode & 0o777).toBe(0o600)
   })
 
-  it("presses a menu key instead of typing text", async () => {
-    const { host, returned, last } = await start(async () => verdict({ reply: { key: "2" }, reason: "Mocking the clock is the recommended fix." }))
+  it("never answers an approval request addressed to the human, even when the judge calls it premature", async () => {
+    const { host, returned, last, escalations } = await start(async () => verdict({ reason: "It offered options instead of choosing." }))
+    host.screens.S1 = [SCREENS.claudePremature]
+    await returned({ sessionId: "S1", transitionId: "approve-design", lastBody: "The spec is written. Ari, please approve the design or send it back." })
+    expect(host.actions.some(action => /^(prompt|key) /.test(action))).toBe(false)
+    expect(last()).toMatchObject({ kind: "gate", judgeKind: "premature", action: "let_through", reply: null,
+      reason: "the agent asked Ari to decide: It offered options instead of choosing." })
+    expect(escalations).toHaveLength(1)
+  })
+
+  it("reads an approval request from the screen when the last message carries none", async () => {
+    const { host, returned, last } = await start(async () => verdict())
+    host.screens.S1 = [`${SCREENS.claudePremature}\nOnly you can sign off the release.`]
+    await returned({ sessionId: "S1", transitionId: "approve-screen" })
+    expect(host.actions.some(action => /^(prompt|key) /.test(action))).toBe(false)
+    expect(last()).toMatchObject({ kind: "gate", judgeKind: "premature", reply: null })
+  })
+
+  it.each(["enter", "escape", "up", "down", "tab", "ctrl-c", "1", "2", "3", "4", "5", "6", "7", "8", "9", "y", "n"] as const)(
+    "refuses a malicious immediate key %s before custody or host input", async key => {
+    let claims = 0
+    const { host, returned, last } = await start(async () => verdict({ reply: { key }, reason: "Model asks to approve." }), fakeHost(), {
+      openCheckInStore: (file: string) => {
+        const store = openCheckInStore(file), claim = store.claimDispatch
+        store.claimDispatch = (...args) => { claims++; return claim(...args) }
+        return store
+      },
+    })
     host.screens.S2 = [SCREENS.codexMenu]
     await returned({ sessionId: "S2", agent: "codex" })
-    expect(host.actions.filter((action) => !action.startsWith("pace"))).toEqual(["key S2 2", "status S2 answered for Ari: Mocking the clock is the recommended fix."])
-    expect(last()).toMatchObject({ action: "respond", reply: "key:2" })
+    expect(host.actions.some(action => /^(prompt|key) /.test(action))).toBe(false)
+    expect(claims).toBe(0)
+    expect(last()).toMatchObject({ action: "let_through", actionBlockReason: "menu_disallowed", reply: null })
+    expect(last()).not.toHaveProperty("dispatch")
   })
 
   it("still answers when only a timer or counter ticked on the screen while judging", async () => {
-    const { host, returned, last } = await start(async () => verdict({ reply: { key: "1" } }))
-    host.screens.S2 = ["Shell Run startup    59s |\nDo you want to run this command?\n> 1. Yes\n  2. No", "Shell Run startup  1m 0s |\nDo you want to run this command?\n> 1. Yes\n  2. No"]
-    await returned({ sessionId: "S2", agent: null })
-    expect(last()).toMatchObject({ action: "respond", reply: "key:1" })
+    const { host, returned, last } = await start(async () => verdict())
+    host.screens.S2 = ["Copilot task elapsed    59s |\nAuthorized implementation remains. Want me to continue?\n>", "Copilot task elapsed  1m 0s |\nAuthorized implementation remains. Want me to continue?\n>"]
+    await returned({ sessionId: "S2", agent: "copilot" })
+    expect(last()).toMatchObject({ action: "respond", reply: "Go ahead and implement it." })
     // The timer can also be missing from one redraw.
-    host.screens.S2 = ["Shell Run startup  40s\nDo you want to run this command?\n> 1. Yes", "Shell Run startup       \nDo you want to run this command?\n> 1. Yes"]
-    await returned({ sessionId: "S2", agent: null, transitionId: "timer-gone" })
-    expect(last()).toMatchObject({ action: "respond", reply: "key:1" })
+    host.screens.S2 = ["Copilot task elapsed  40s\nAuthorized implementation remains. Want me to continue?\n>", "Copilot task elapsed       \nAuthorized implementation remains. Want me to continue?\n>"]
+    await returned({ sessionId: "S2", agent: "copilot", transitionId: "timer-gone" })
+    expect(last()).toMatchObject({ action: "respond", reply: "Go ahead and implement it." })
   })
 
   it("sends nothing when the screen changed while judging or the human focused the session", async () => {
@@ -294,6 +568,7 @@ describe("Shepherd sense: answering premature returns", () => {
     host.screens.S1 = [SCREENS.claudePremature]
     for (const id of ["1", "2", "3", "4"]) {
       clock += 1_000
+      host.screens.S1 = [`${SCREENS.claudePremature}\nNew progress before return ${id}`]
       await returned({ sessionId: "S1", transitionId: id })
     }
     expect(host.actions.filter((action) => action.startsWith("prompt"))).toHaveLength(3)
@@ -316,6 +591,7 @@ describe("Shepherd sense: answering premature returns", () => {
 
     host.handlers!.focused("S1")
     clock += 120_000
+    host.screens.S1 = [`${SCREENS.claudePremature}\nNew progress after human focus`]
     await returned({ sessionId: "S1", transitionId: "5" })
     expect(last()).toMatchObject({ action: "respond" })
     // The owner hears about every judged return once, and about the tripped guard only when it trips.
@@ -329,10 +605,453 @@ describe("Shepherd sense: answering premature returns", () => {
       clock += 120_000
       if (index % 3 === 0) host.handlers!.focused("S1")
       clock += 61_000
+      host.screens.S1 = [`${SCREENS.claudePremature}\nNew progress before return ${index}`]
       await returned({ sessionId: "S1", transitionId: `h${index}` })
     }
     expect(host.actions.filter((action) => action.startsWith("prompt"))).toHaveLength(10)
     expect(last()).toMatchObject({ kind: "loop_guard" })
+  })
+})
+
+describe("Shepherd sense: connectivity recovery", () => {
+  const networkWait = () => ({ ...verdict({ kind: "waiting", reply: null, reason: "Internet is offline." }), waitingOnNetwork: true })
+  async function poll() {
+    const task = tasks.find(task => task.ms === 0 || task.ms === 15_000)
+    expect(task, "network waits must schedule a connectivity check").toBeDefined()
+    tasks.splice(tasks.indexOf(task!), 1)
+    task!.fn()
+    await new Promise(resolve => setImmediate(resolve))
+    await new Promise(resolve => setImmediate(resolve))
+  }
+
+  it("P0: probes immediately so a short outage can establish its real offline baseline", async () => {
+    const checkConnectivity = vi.fn(async () => "offline" as const)
+    const { host, returned } = await start(async () => networkWait(), fakeHost(), { checkConnectivity })
+    host.screens.S = ["Connection error."]
+    await returned({ sessionId: "S", transitionId: "s" })
+    expect(tasks.filter(task => task.ms === 0)).toHaveLength(1)
+    await poll()
+    expect(checkConnectivity).toHaveBeenCalledTimes(1)
+    expect(tasks.filter(task => task.ms === 15_000)).toHaveLength(1)
+  })
+
+  it("P0: advances an older delayed poll when a new session stops during a brief outage", async () => {
+    let online = true
+    const { host, returned } = await start(async packet => packet.networkRecovered ? verdict() : networkWait(),
+      fakeHost(), { checkConnectivity: async () => online ? "online" : "offline" })
+    host.screens.A = ["Old network wait."]
+    host.screens.B = ["New network wait."]
+    await returned({ sessionId: "A", transitionId: "a" })
+    await poll()
+    expect(tasks.filter(task => task.ms === 15_000)).toHaveLength(1)
+    online = false
+    await returned({ sessionId: "B", transitionId: "b" })
+    expect(tasks.filter(task => task.ms === 0)).toHaveLength(1)
+    expect(tasks.filter(task => task.ms === 15_000)).toHaveLength(0)
+    await poll()
+    online = true
+    await poll()
+    await vi.waitFor(() => expect(host.actions.filter(action => action.startsWith("prompt B "))).toHaveLength(1))
+  })
+
+  it("P0: keeps connectivity recovery moving while another session's judge is stalled", async () => {
+    let online = false
+    let release!: () => void
+    const held = new Promise<void>(resolve => { release = resolve })
+    const judge = vi.fn(async (packet: ReturnPacket) => {
+      if (packet.screen === "Held observation.") { await held; return verdict({ kind: "done", reply: null }) }
+      return packet.networkRecovered ? verdict() : networkWait()
+    })
+    const { host, returned } = await start(judge, fakeHost(), { checkConnectivity: async () => online ? "online" : "offline" })
+    host.screens.S = ["Connection error."]
+    host.screens.H = ["Held observation."]
+    await returned({ sessionId: "S", transitionId: "s" })
+    host.handlers!.returned({ sessionId: "H", transitionId: "h", agent: "Copilot", cwd: project, lastBody: null, backgroundWork: false })
+    await vi.waitFor(() => expect(judge).toHaveBeenCalledTimes(2))
+    try {
+      await poll()
+      online = true
+      await poll()
+      await vi.waitFor(() => expect(host.actions.filter(action => action.startsWith("prompt S "))).toHaveLength(1))
+      expect(readReturns(agentRoot).some(record => record.session === "H")).toBe(false)
+    } finally {
+      release()
+      await vi.waitFor(() => expect(readReturns(agentRoot).some(record => record.session === "H")).toBe(true))
+    }
+  })
+
+  it.each([401, 413, 429])("P0: never schedules connectivity or judgment retry for HTTP %s", async status => {
+    const judge = vi.fn(async () => { throw Object.assign(new Error("fetch failed"), { status }) })
+    const { host, returned, notices } = await start(judge)
+    host.screens.S = ["Stopped."]
+    await returned({ sessionId: "S", transitionId: "s" })
+    expect(judge).toHaveBeenCalledTimes(1)
+    expect(tasks.some(task => task.ms === 0 || task.ms === 15_000)).toBe(false)
+    expect(notices).toHaveLength(1)
+    expect(host.actions.some(action => /^(prompt|key) /.test(action))).toBe(false)
+  })
+
+  it("P0: retries its own failed observation while online without inventing target recovery evidence", async () => {
+    const packets: ReturnPacket[] = []
+    const { host, returned } = await start(async packet => {
+      packets.push(packet)
+      if (packets.length === 1) throw new Error("fetch failed")
+      return verdict({ kind: "gate", reply: null, reason: "Needs Ari's decision." })
+    }, fakeHost(), { checkConnectivity: async () => "online" })
+    host.screens.S = ["Waiting for Ari's decision."]
+    await returned({ sessionId: "S", transitionId: "s" })
+    await poll()
+    await vi.waitFor(() => expect(packets).toHaveLength(2))
+    expect(packets.every(packet => packet.networkRecovered === undefined)).toBe(true)
+    expect(host.actions.some(action => /^(prompt|key) /.test(action))).toBe(false)
+    expect(readReturns(agentRoot).at(-1)).toMatchObject({ kind: "gate", trigger: "immediate" })
+    expect(tasks.some(task => task.ms === 0 || task.ms === 15_000)).toBe(false)
+  })
+
+  it("P0: preserves real offline-to-online evidence observed after its own failed immediate judgment", async () => {
+    let online = false
+    const packets: ReturnPacket[] = []
+    const { host, returned } = await start(async packet => {
+      packets.push(packet)
+      if (packets.length === 1) throw new Error("fetch failed")
+      return packet.networkRecovered ? verdict() : networkWait()
+    }, fakeHost(), { checkConnectivity: async () => online ? "online" : "offline" })
+    host.screens.S = ["Connection error. Waiting for connectivity."]
+    await returned({ sessionId: "S", transitionId: "s" })
+    await poll()
+    online = true
+    await poll()
+    await vi.waitFor(() => expect(host.actions.filter(action => action.startsWith("prompt S "))).toHaveLength(1))
+    expect(packets).toHaveLength(2)
+    expect(packets[1]).toMatchObject({ networkRecovered: true })
+  })
+
+  it("P0: bounds its own observation retries and exposes exhaustion without sending input", async () => {
+    const judge = vi.fn(async () => { throw new Error("fetch failed") })
+    const { host, returned, notices } = await start(judge, fakeHost(), { checkConnectivity: async () => "online" })
+    host.screens.S = ["Stopped."]
+    await returned({ sessionId: "S", transitionId: "s" })
+    await poll()
+    await poll()
+    expect(judge).toHaveBeenCalledTimes(3)
+    expect(tasks.some(task => task.ms === 0 || task.ms === 15_000)).toBe(false)
+    expect(notices).toHaveLength(1)
+    expect(notices[0]).toMatchObject({ kind: "error", reason: "fetch failed" })
+    expect(host.actions.some(action => /^(prompt|key) /.test(action))).toBe(false)
+  })
+
+  it("P0: focus during a failed-observation retry read prevents another judgment", async () => {
+    const judge = vi.fn(async () => { throw new Error("fetch failed") })
+    const { host, returned } = await start(judge, fakeHost(), { checkConnectivity: async () => "online" })
+    host.screens.S = ["Stopped."]
+    await returned({ sessionId: "S", transitionId: "s" })
+    const read = host.read
+    host.read = async (id, lines) => {
+      const screen = await read(id, lines)
+      host.handlers!.focused(id)
+      return screen
+    }
+    await poll()
+    expect(judge).toHaveBeenCalledTimes(1)
+    expect(readReturns(agentRoot).at(-1)).toMatchObject({ actionBlockReason: "state_changed", noticeEligible: false })
+    expect(host.actions.some(action => /^(prompt|key) /.test(action))).toBe(false)
+  })
+
+  it.each(["focus", "screen", "pause", "removed"] as const)("P0: does not retry its failed observation after %s protection", async protection => {
+    const judge = vi.fn(async () => { throw new Error("fetch failed") })
+    const { host, returned } = await start(judge, fakeHost(), { checkConnectivity: async () => "online" })
+    host.screens.S = ["Stopped."]
+    await returned({ sessionId: "S", transitionId: "s" })
+    if (protection === "focus") host.handlers!.focused("S")
+    if (protection === "screen") host.screens.S = ["go on! back on normal internet, have fun :)"]
+    if (protection === "pause") await setShepherdSessionPause(agentRoot, {
+      actorId: "ari", requestId: "pause", target: { host: "fake", session: "S", cwd: project, task: null }, paused: true,
+    })
+    if (protection === "removed") delete host.screens.S
+    if (tasks.some(task => task.ms === 0 || task.ms === 15_000)) await poll()
+    expect(judge).toHaveBeenCalledTimes(1)
+    expect(host.actions.some(action => /^(prompt|key) /.test(action))).toBe(false)
+  })
+
+  it("P0: retains a confirmed recovery when only its fresh judgment failed before dispatch", async () => {
+    let online = false
+    let recoveryJudgments = 0
+    const { host, returned } = await start(async packet => {
+      if (!packet.networkRecovered) return networkWait()
+      if (++recoveryJudgments === 1) throw new Error("fetch failed")
+      return verdict()
+    }, fakeHost(), { checkConnectivity: async () => online ? "online" : "offline" })
+    host.screens.S = ["Connection error. Waiting for connectivity."]
+    await returned({ sessionId: "S", transitionId: "s" })
+    await poll()
+    online = true
+    await poll()
+    expect(host.actions.some(action => action.startsWith("prompt"))).toBe(false)
+    await poll()
+    await vi.waitFor(() => expect(host.actions.filter(action => action.startsWith("prompt"))).toHaveLength(1))
+    expect(recoveryJudgments).toBe(2)
+    expect(tasks.filter(task => task.ms === 15_000)).toHaveLength(0)
+  })
+
+  it("P0: bounds repeated recovery-judge failures without sending or silently dropping the first retry", async () => {
+    let online = false
+    let recoveryJudgments = 0
+    const { host, returned } = await start(async packet => {
+      if (!packet.networkRecovered) return networkWait()
+      recoveryJudgments += 1
+      throw new Error("fetch failed")
+    }, fakeHost(), { checkConnectivity: async () => online ? "online" : "offline" })
+    host.screens.S = ["Connection error. Waiting for connectivity."]
+    await returned({ sessionId: "S", transitionId: "s" })
+    await poll()
+    online = true
+    for (let attempt = 0; attempt < 3; attempt += 1) await poll()
+    expect(recoveryJudgments).toBe(3)
+    expect(host.actions.some(action => /^(prompt|key) /.test(action))).toBe(false)
+    expect(tasks.filter(task => task.ms === 15_000)).toHaveLength(0)
+  })
+
+  it("P0: Ari's manual resume invalidates a failed recovery judgment even after the focus hold expires", async () => {
+    let online = false
+    let recoveryJudgments = 0
+    const host = fakeHost()
+    const { returned } = await start(async packet => {
+      if (!packet.networkRecovered) return networkWait()
+      recoveryJudgments += 1
+      host.handlers!.focused("S")
+      host.screens.S = ["go on! back on normal internet, have fun :)", "Continuing the existing task."]
+      throw new Error("fetch failed")
+    }, host, { checkConnectivity: async () => online ? "online" : "offline" })
+    host.screens.S = ["Connection error. Waiting for connectivity."]
+    await returned({ sessionId: "S", transitionId: "s" })
+    await poll()
+    online = true
+    await poll()
+    clock += FOCUS_HOLD_MS + 1
+    if (tasks.some(task => task.ms === 15_000)) await poll()
+    expect(recoveryJudgments).toBe(1)
+    expect(host.actions.some(action => /^(prompt|key) /.test(action))).toBe(false)
+  })
+
+  it("rejudges each network-stopped session after a confirmed offline-to-online transition and nudges once", async () => {
+    let online = false
+    const packets: ReturnPacket[] = []
+    const { host, returned } = await start(async packet => {
+      packets.push(packet)
+      return packets.length <= 2 ? networkWait() : verdict()
+    }, fakeHost(), { checkConnectivity: async () => online ? "online" : "offline" })
+    host.screens.A = ["Internet disconnected. Waiting for connectivity."]
+    host.screens.B = ["Connection error. Resume after internet returns."]
+    await returned({ sessionId: "A", transitionId: "a" })
+    await returned({ sessionId: "B", transitionId: "b" })
+    await poll()
+    expect(host.actions.filter(action => action.startsWith("prompt"))).toEqual([])
+    online = true
+    await poll()
+    await vi.waitFor(() => expect(host.actions.filter(action => action.startsWith("prompt"))).toHaveLength(2))
+    expect(packets.slice(2)).toEqual([
+      expect.objectContaining({ networkRecovered: true }),
+      expect.objectContaining({ networkRecovered: true }),
+    ])
+    expect(host.actions.filter(action => action.startsWith("prompt")).every(action => action.includes("Check uncertain writes before retrying"))).toBe(true)
+    expect(readReturns(agentRoot).filter(record => record.action === "respond").map(record => record.transition)).toEqual(["network:1:a", "network:1:b"])
+    expect(tasks.filter(task => task.ms === 15_000)).toHaveLength(0)
+  })
+
+  it.each(["online", "unknown"])("does not nudge without a confirmed offline baseline (%s)", async connectivity => {
+    const { host, returned } = await start(async () => networkWait(), fakeHost(), { checkConnectivity: async () => connectivity })
+    host.screens.S = ["Offline."]
+    await returned({ sessionId: "S", transitionId: "s" })
+    await poll()
+    await poll()
+    expect(host.actions.some(action => /^(prompt|key) /.test(action))).toBe(false)
+    expect(readReturns(agentRoot)).toHaveLength(1)
+  })
+
+  it.each(["gate", "done", "working", "unclear", "waiting", "key"])("fresh %s verdict never becomes a network resume", async kind => {
+    let first = true
+    let online = false
+    const { host, returned } = await start(async () => {
+      if (first) { first = false; return networkWait() }
+      return kind === "key" ? verdict({ reply: { key: "enter" } }) : verdict({ kind: kind as JudgeResult["kind"], reply: null })
+    }, fakeHost(), { checkConnectivity: async () => online ? "online" : "offline" })
+    host.screens.S = ["Offline."]
+    await returned({ sessionId: "S", transitionId: "s" })
+    await poll()
+    online = true
+    await poll()
+    expect(host.actions.some(action => /^(prompt|key) /.test(action))).toBe(false)
+    if (kind === "key") {
+      const record = readReturns(agentRoot).at(-1)!
+      expect(record).toMatchObject({ action: "let_through", actionBlockReason: "menu_disallowed", reply: null })
+      expect(record).not.toHaveProperty("dispatch")
+    }
+  })
+
+  it("rechecks a return whose judge failed on the network but never retries an uncertain prompt send", async () => {
+    let judged = 0
+    let online = false
+    const host = fakeHost()
+    host.prompt = async (id, line) => { host.actions.push(`prompt ${id} ${line}`); throw new Error("fetch failed") }
+    const { returned } = await start(async () => {
+      if (++judged === 1) throw new Error("fetch failed")
+      return verdict()
+    }, host, { checkConnectivity: async () => online ? "online" : "offline" })
+    host.screens.S = ["Connection error. Stopped."]
+    await returned({ sessionId: "S", transitionId: "s" })
+    await poll()
+    online = true
+    await poll()
+    await vi.waitFor(() => expect(host.actions.filter(action => action.startsWith("prompt"))).toHaveLength(1))
+    expect(tasks.filter(task => task.ms === 15_000)).toHaveLength(0)
+    expect(readReturns(agentRoot).at(-1)!.reason).toContain("fetch failed")
+  })
+
+  it.each(["focus", "paused", "new-return", "screen", "removed"])("drops a stale or protected recovery candidate (%s)", async protection => {
+    let online = false
+    const { host, returned } = await start(async packet => packet.networkRecovered ? verdict() : networkWait(), fakeHost(), { checkConnectivity: async () => online ? "online" : "offline" })
+    host.screens.S = ["Offline."]
+    await returned({ sessionId: "S", transitionId: "s" })
+    await poll()
+    if (protection === "focus") host.handlers!.focused("S")
+    if (protection === "paused") await setShepherdSessionPause(agentRoot, { actorId: "ari", requestId: "pause", target: { host: "fake", session: "S", cwd: "/Users/a/code/app", task: null }, paused: true })
+    if (protection === "new-return") await returned({ sessionId: "S", transitionId: "background", backgroundWork: true })
+    if (protection === "screen") host.screens.S = ["Work resumed without Shepherd."]
+    if (protection === "removed") delete host.screens.S
+    online = true
+    await poll()
+    expect(host.actions.some(action => /^(prompt|key) /.test(action))).toBe(false)
+  })
+
+  it("requires offline evidence after each candidate stopped, not an earlier session's outage", async () => {
+    let online = false
+    const { host, returned } = await start(async packet => packet.networkRecovered ? verdict() : networkWait(), fakeHost(), { checkConnectivity: async () => online ? "online" : "offline" })
+    host.screens.A = ["Offline."]
+    host.screens.B = ["Network error."]
+    await returned({ sessionId: "A", transitionId: "a" })
+    await poll()
+    host.handlers!.focused("A")
+    online = true
+    await returned({ sessionId: "B", transitionId: "b" })
+    await poll()
+    expect(host.actions.some(action => action.startsWith("prompt"))).toBe(false)
+  })
+
+  it.each(["focus", "new-return"] as const)("honors a %s event during the final recovery screen read", async change => {
+    let online = false
+    const host = fakeHost()
+    host.screens.S = ["Offline."]
+    const read = host.read
+    let reads = 0
+    host.read = async (id, lines) => {
+      const text = await read(id, lines)
+      if (++reads === 3) {
+        if (change === "focus") host.handlers!.focused(id)
+        else host.handlers!.returned({ sessionId: id, transitionId: "new-return", agent: "Copilot", cwd: "/project", lastBody: null, backgroundWork: false })
+      }
+      return text
+    }
+    const { returned } = await start(async packet => packet.networkRecovered ? verdict() : networkWait(), host, { checkConnectivity: async () => online ? "online" : "offline" })
+    await returned({ sessionId: "S", transitionId: "s" })
+    await poll()
+    online = true
+    await poll()
+    expect(host.actions.some(action => action.startsWith("prompt"))).toBe(false)
+  })
+
+  it("cancels a pending connectivity check when stopped", async () => {
+    const { host, returned } = await start(async () => networkWait(), fakeHost(), { checkConnectivity: async () => "offline" })
+    host.screens.S = ["Offline."]
+    await returned({ sessionId: "S", transitionId: "s" })
+    stop!()
+    stop = null
+    expect(tasks).toHaveLength(0)
+  })
+
+  it("P0: discards recovered candidates if stop wins during the fresh session listing", async () => {
+    let online = false
+    let stopOnList = false
+    const host = fakeHost()
+    const list = host.list
+    host.list = async () => {
+      const sessions = await list()
+      if (stopOnList) { stop!(); stop = null }
+      return sessions
+    }
+    const judge = vi.fn(async (packet: ReturnPacket) => packet.networkRecovered ? verdict() : networkWait())
+    const { returned } = await start(judge, host, { checkConnectivity: async () => online ? "online" : "offline" })
+    host.screens.S = ["Offline."]
+    await returned({ sessionId: "S", transitionId: "s" })
+    await poll()
+    online = true
+    stopOnList = true
+    await poll()
+    expect(judge).toHaveBeenCalledTimes(1)
+    expect(host.actions.some(action => /^(prompt|key) /.test(action))).toBe(false)
+  })
+
+  it("discards an in-flight probe result and late host events after stop", async () => {
+    let release!: (value: "offline") => void
+    const held = new Promise<"offline">(resolve => { release = resolve })
+    const { host, returned } = await start(async () => networkWait(), fakeHost(), { checkConnectivity: () => held })
+    host.screens.S = ["Offline."]
+    await returned({ sessionId: "S", transitionId: "s" })
+    await poll()
+    stop!()
+    stop = null
+    release("offline")
+    await returned({ sessionId: "S", transitionId: "s" })
+    expect(tasks).toHaveLength(0)
+    expect(readReturns(agentRoot)).toHaveLength(1)
+  })
+
+  it("stops the recovery batch before a second judgment or input when stopped during the first judgment", async () => {
+    let online = false
+    let recoveryJudgments = 0
+    const { host, returned } = await start(async packet => {
+      if (packet.networkRecovered) { recoveryJudgments += 1; stop!(); stop = null; return verdict() }
+      return networkWait()
+    }, fakeHost(), { checkConnectivity: async () => online ? "online" : "offline" })
+    host.screens.A = ["Offline."]
+    host.screens.B = ["Offline."]
+    await returned({ sessionId: "A", transitionId: "a" })
+    await returned({ sessionId: "B", transitionId: "b" })
+    await poll()
+    online = true
+    await poll()
+    expect(host.actions.some(action => action.startsWith("prompt"))).toBe(false)
+    expect(recoveryJudgments).toBe(1)
+    expect(readReturns(agentRoot).find(record => record.transition === "network:1:b")).toMatchObject({ actionBlockReason: "stopped", noticeEligible: false })
+  })
+
+  it("retries a failed connectivity check without inventing online evidence", async () => {
+    let failed = true
+    const { host, returned } = await start(async () => networkWait(), fakeHost(), { checkConnectivity: async () => {
+      if (failed) { failed = false; throw new Error("probe unavailable") }
+      return "online"
+    } })
+    host.screens.S = ["Offline."]
+    await returned({ sessionId: "S", transitionId: "s" })
+    await poll()
+    await poll()
+    expect(host.actions.some(action => action.startsWith("prompt"))).toBe(false)
+  })
+
+  it("does not retain an outdated judgment when a new background return arrived meanwhile", async () => {
+    let first = true
+    const host = fakeHost()
+    host.screens.S = ["Offline."]
+    const { returned } = await start(async () => {
+      if (first) {
+        first = false
+        host.handlers!.returned({ sessionId: "S", transitionId: "new", agent: "claude", cwd: null, lastBody: null, backgroundWork: true })
+      }
+      return networkWait()
+    }, host)
+    await returned({ sessionId: "S", transitionId: "s" })
+    await vi.waitFor(() => expect(readReturns(agentRoot)).toHaveLength(2))
+    expect(tasks.filter(task => task.ms === 15_000)).toHaveLength(0)
+    expect(host.actions.some(action => action.startsWith("prompt"))).toBe(false)
   })
 })
 
@@ -428,6 +1147,93 @@ describe("Shepherd sense: letting returns through", () => {
     host.handlers!.returned({ sessionId: "S1", transitionId: "w", agent: null, cwd: null, lastBody: null, backgroundWork: null })
     await vi.waitFor(() => expect(judged).toHaveBeenCalled())
     await new Promise((resolve) => setTimeout(resolve, 20))
+  })
+})
+
+describe("Shepherd sense: not repeating itself to the owner", () => {
+  it("passes the last note to the judge and holds a repeat of the same kind, but not a new kind", async () => {
+    const answers: JudgeResult[] = [
+      verdict({ kind: "gate", reply: null, reason: "asks Ari to sign off", note: "It wants your sign-off." }),
+      verdict({ kind: "gate", reply: null, reason: "still asks Ari to sign off", note: "It still wants your sign-off.", repeat: true }),
+      verdict({ kind: "done", reply: null, reason: "Ari signed off", note: "It's finished.", repeat: true }),
+    ]
+    const judge = vi.fn(async (_packet: ReturnPacket) => answers.shift()!)
+    const { host, notices, escalations, returned, last } = await start(judge)
+    host.screens.S1 = ["Accept or send back?"]
+    await returned({ sessionId: "S1", transitionId: "r1" })
+    expect(judge.mock.calls[0]![0].lastNote).toBeUndefined()
+    expect(notices.map(record => record.note)).toEqual(["It wants your sign-off."])
+
+    clock += 11 * 60_000
+    host.screens.S1 = ["Accept or send back? (still waiting)"]
+    await returned({ sessionId: "S1", transitionId: "r2" })
+    expect(judge.mock.calls[1]![0].lastNote).toEqual({ text: "It wants your sign-off.", at: "2026-10-10T20:00:00.000Z" })
+    expect(last()).toMatchObject({ kind: "gate", noticeSuppressionReason: "repeat", noticeEligible: false })
+    expect(notices).toHaveLength(1)
+    expect(escalations).toHaveLength(1)
+
+    clock += 60_000
+    host.screens.S1 = ["All done."]
+    await returned({ sessionId: "S1", transitionId: "r3" })
+    expect(notices.map(record => record.note)).toEqual(["It wants your sign-off.", "It's finished."])
+  })
+
+  it("forgets what the owner was told once they go to the session or Shepherd answers it, even across a restart", async () => {
+    const answers: JudgeResult[] = [
+      verdict({ kind: "gate", reply: null, reason: "asks Ari", note: "It wants your call." }),
+      verdict({ kind: "gate", reply: null, reason: "asks Ari again", note: "It wants your call again." }),
+      verdict({ kind: "gate", reply: null, reason: "asks Ari a third time", note: "Third ask." }),
+      verdict(),
+      verdict({ kind: "gate", reply: null, reason: "asks Ari once more" }),
+    ]
+    const judge = vi.fn(async (_packet: ReturnPacket) => answers.shift()!)
+    const { host, notices, returned } = await start(judge)
+    host.screens.S1 = ["Need your call"]
+    await returned({ sessionId: "S1", transitionId: "f1" })
+    host.handlers!.focused("S1")
+    clock += FOCUS_HOLD_MS + 1_000
+    host.screens.S1 = ["Need your call, after Ari looked"]
+    await returned({ sessionId: "S1", transitionId: "f2" })
+    expect(judge.mock.calls[1]![0].lastNote).toBeUndefined()
+    expect(notices.map(record => record.note)).toEqual(["It wants your call.", "It wants your call again."])
+
+    clock += 60_000
+    host.screens.S1 = ["Need your call, third"]
+    await returned({ sessionId: "S1", transitionId: "f3" })
+    expect(judge.mock.calls[2]![0].lastNote?.text).toBe("It wants your call again.")
+    clock += 60_000
+    host.screens.S1 = [SCREENS.claudePremature]
+    await returned({ sessionId: "S1", transitionId: "f4" })
+    expect(readReturns(agentRoot).at(-1)).toMatchObject({ action: "respond" })
+    stop!()
+    stop = null
+
+    clock += 60_000
+    const again = await start(judge)
+    again.host.screens.S1 = ["Need your call, after Shepherd answered"]
+    await again.returned({ sessionId: "S1", transitionId: "f5" })
+    expect(judge.mock.calls[4]![0].lastNote).toBeUndefined()
+  })
+
+  it("forgets what the owner was told after the repeat window, and remembers it across a restart", async () => {
+    const judge = vi.fn(async (_packet: ReturnPacket) => verdict({ kind: "gate", reply: null, reason: "asks Ari" }))
+    const first = await start(judge)
+    first.host.screens.S1 = ["Need your call"]
+    await first.returned({ sessionId: "S1", transitionId: "w1" })
+    stop!()
+    stop = null
+
+    clock += 60_000
+    const second = await start(judge)
+    second.host.screens.S1 = ["Need your call again"]
+    await second.returned({ sessionId: "S1", transitionId: "w2" })
+    // With no note, the judge sees the reason it gave last time.
+    expect(judge.mock.calls[1]![0].lastNote).toEqual({ text: "asks Ari", at: "2026-10-10T20:00:00.000Z" })
+
+    clock += REPEAT_WINDOW_MS
+    second.host.screens.S1 = ["Need your call, much later"]
+    await second.returned({ sessionId: "S1", transitionId: "w3" })
+    expect(judge.mock.calls[2]![0].lastNote).toBeUndefined()
   })
 })
 
@@ -534,7 +1340,7 @@ describe("Shepherd sense: the default owner notice", () => {
     const host = fakeHost()
     host.screens.S1 = [SCREENS.claudePremature]
     const list = vi.spyOn(host, "list")
-    const app = await startShepherdSenseApp({ agentName: AGENT, now: () => clock, createHost: () => host, judge: async () => verdict(), escalate: () => undefined, wake: async () => undefined, schedule })
+    const app = await startShepherdSenseApp({ agentName: AGENT, now: () => clock, createHost: () => host, judge: async () => verdict(), escalate: () => undefined, wake: async () => undefined, schedule, feedbackWorker: idleFeedbackWorker })
     stop = app.stop
     host.handlers!.returned({ transitionId: "n1", sessionId: "S1", agent: "claude", cwd: "/Users/a/code/app", lastBody: null, backgroundWork: null })
     await vi.waitFor(() => expect(readReturns(agentRoot).some((record) => record.transition === "n1")).toBe(true))

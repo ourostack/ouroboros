@@ -18,6 +18,9 @@ const ANTHROPIC_SETUP_TOKEN_PREFIX = "sk-ant-oat01-";
 const ANTHROPIC_SETUP_TOKEN_MIN_LENGTH = 80;
 const ANTHROPIC_OAUTH_BETA_HEADER =
   "claude-code-20250219,oauth-2025-04-20,fine-grained-tool-streaming-2025-05-14,interleaved-thinking-2025-05-14";
+// The API refuses newer models to Claude Code versions it considers too old (claude-opus-5-5 needs 2.1.280 or newer),
+// so this names a current release. Raise it when the API asks for a newer one.
+const CLAUDE_CLI_USER_AGENT = "claude-cli/2.1.310 (external, cli)";
 
 interface AnthropicCredential {
   token: string;
@@ -169,12 +172,19 @@ export function toAnthropicMessages(
   return { system: systemParts.length > 0 ? systemParts.join("\n\n") : undefined, messages: converted };
 }
 
-function toAnthropicTools(tools: OpenAI.ChatCompletionFunctionTool[]): Array<Record<string, unknown>> {
-  return tools.map((tool) => ({
-    name: tool.function.name,
-    description: tool.function.description ?? "",
-    input_schema: (tool.function.parameters as Record<string, unknown>) ?? { type: "object", properties: {} },
-  }));
+// The Anthropic API rejects the whole request when any tool's input_schema has
+// oneOf, allOf or anyOf at the top level, so those keys are dropped here. Each
+// tool's handler still enforces its own either/or rules.
+export function toAnthropicTools(tools: OpenAI.ChatCompletionFunctionTool[]): Array<Record<string, unknown>> {
+  return tools.map((tool) => {
+    const { oneOf: _oneOf, allOf: _allOf, anyOf: _anyOf, ...schema } =
+      (tool.function.parameters as Record<string, unknown>) ?? { type: "object", properties: {} };
+    return {
+      name: tool.function.name,
+      description: tool.function.description ?? "",
+      input_schema: schema,
+    };
+  });
 }
 
 function toAnthropicUsage(raw: Record<string, unknown>): UsageData {
@@ -216,7 +226,17 @@ function mergeAnthropicToolArguments(current: string, partial: string): string {
   return current + partial
 }
 
+// An org whose prepaid API credits are used up gets HTTP 400 (or 402) with this phrase. That is a
+// usage limit, not a malformed request, so failover tells the human the right thing.
+const ANTHROPIC_CREDIT_LOW_PHRASE = "credit balance is too low";
+
+function isAnthropicCreditExhausted(error: Error): boolean {
+  const status = (error as HttpError).status;
+  return (status === 400 || status === 402) && error.message.toLowerCase().includes(ANTHROPIC_CREDIT_LOW_PHRASE);
+}
+
 export function classifyAnthropicError(error: Error): ProviderErrorClassification {
+  if (isAnthropicCreditExhausted(error)) return "usage-limit";
   return classifyHttpError(error, {
     isAuthFailure: isAnthropicAuthFailure,
     isServerError: (e) => (e as HttpError).status === 529,
@@ -229,7 +249,8 @@ function isAnthropicAuthFailure(error: Error): boolean {
     lower.includes("oauth authentication") ||
     lower.includes("authentication failed") ||
     lower.includes("unauthorized") ||
-    lower.includes("invalid api key")
+    lower.includes("invalid api key") ||
+    lower.includes("invalid x-api-key")
   );
 }
 
@@ -238,6 +259,7 @@ async function streamAnthropicMessages(
   client: Anthropic,
   model: string,
   request: ProviderTurnRequest,
+  options: { claudeCodePreamble: boolean } = { claudeCodePreamble: true },
 ): Promise<TurnResult> {
   const { system, messages } = toAnthropicMessages(request.messages);
   const additionalSystemParts = request.messages
@@ -261,13 +283,14 @@ async function streamAnthropicMessages(
   // prompt when using OAuth setup tokens (sk-ant-oat01). Without it, Opus/Sonnet
   // 4.6 requests are rejected with 400. This is the API's validation that the
   // token is being used by a Claude Code client.
-  const preambleText = "You are Claude Code, Anthropic's official CLI for Claude."
+  // API-key mode (a plain API key, for example through a credit gateway) needs no such block.
+  const preambleText = options.claudeCodePreamble ? "You are Claude Code, Anthropic's official CLI for Claude." : ""
   if (request.systemPrompt) {
     // Structured SystemPrompt: merge preamble + stable prefix into one cached block,
     // volatile suffix as a separate uncached block.
     const stableBlock = {
       type: "text" as const,
-      text: preambleText + "\n\n" + request.systemPrompt.stable,
+      text: preambleText ? preambleText + "\n\n" + request.systemPrompt.stable : request.systemPrompt.stable,
       cache_control: { type: "ephemeral" as const },
     }
     params.system = [
@@ -279,8 +302,10 @@ async function streamAnthropicMessages(
     ]
   } else if (system) {
     // Fallback: no structured prompt, extract from messages (legacy path)
-    params.system = [{ type: "text" as const, text: preambleText }, { type: "text" as const, text: system }]
-  } else {
+    params.system = preambleText
+      ? [{ type: "text" as const, text: preambleText }, { type: "text" as const, text: system }]
+      : [{ type: "text" as const, text: system }]
+  } else if (preambleText) {
     params.system = [{ type: "text" as const, text: preambleText }]
   }
   if (anthropicTools.length > 0) params.tools = anthropicTools;
@@ -447,6 +472,52 @@ async function streamAnthropicMessages(
   };
 }
 
+const ANTHROPIC_PING_MODEL = "claude-haiku-4-5-20251001";
+
+/**
+ * API-key mode: a plain Anthropic API key, optionally against another base URL such as a credit
+ * gateway. No Claude Code identity headers, no Claude Code system preamble and no token refresh;
+ * prompt caching, thinking, tools and streaming work as in setup-token mode.
+ */
+function createAnthropicApiKeyRuntime(model: string, apiKey: string, baseUrl: string | undefined): ProviderRuntime {
+  const modelCaps = getModelCapabilities(model);
+  const capabilities = new Set<ProviderCapability>();
+  if (modelCaps.reasoningEffort) capabilities.add("reasoning-effort");
+  // authToken: null keeps the SDK from also sending an ANTHROPIC_AUTH_TOKEN from the environment.
+  const client = new Anthropic({ apiKey, authToken: null, baseURL: baseUrl, maxRetries: 0 });
+  emitNervesEvent({
+    component: "engine",
+    event: "engine.anthropic_api_key_mode",
+    message: "anthropic provider using API-key mode",
+    meta: { provider: "anthropic", customBaseUrl: baseUrl !== undefined },
+  });
+  return {
+    id: "anthropic",
+    model,
+    client,
+    capabilities,
+    supportedReasoningEfforts: modelCaps.reasoningEffort,
+    resetTurnState(_messages: OpenAI.ChatCompletionMessageParam[]): void {
+      // Anthropic request payload is derived from canonical messages each turn.
+    },
+    appendToolOutput(_callId: string, _output: string): void {
+      // Anthropic uses canonical messages for tool_result tracking.
+    },
+    streamTurn(request: ProviderTurnRequest): Promise<TurnResult> {
+      return streamAnthropicMessages(client, model, request, { claudeCodePreamble: false });
+    },
+    async ping(signal?: AbortSignal): Promise<void> {
+      await client.messages.create(
+        { model: ANTHROPIC_PING_MODEL, max_tokens: 1, messages: [{ role: "user", content: "ping" }] },
+        { signal },
+      );
+    },
+    classifyError(error: Error): ProviderErrorClassification {
+      return classifyAnthropicError(error);
+    },
+  };
+}
+
 export function createAnthropicProviderRuntime(model: string, anthropicConfig: AnthropicProviderConfig = getAnthropicConfig()): ProviderRuntime {
   emitNervesEvent({
     component: "engine",
@@ -454,6 +525,8 @@ export function createAnthropicProviderRuntime(model: string, anthropicConfig: A
     message: "anthropic provider init",
     meta: { provider: "anthropic" },
   });
+  const apiKey = anthropicConfig.apiKey?.trim();
+  if (apiKey) return createAnthropicApiKeyRuntime(model, apiKey, anthropicConfig.baseUrl?.trim() || undefined);
   if (!anthropicConfig.setupToken) {
     throw new Error(
       getAnthropicReauthGuidance(
@@ -476,7 +549,7 @@ export function createAnthropicProviderRuntime(model: string, anthropicConfig: A
       defaultHeaders: {
         "anthropic-beta": ANTHROPIC_OAUTH_BETA_HEADER,
         "anthropic-dangerous-direct-browser-access": "true",
-        "user-agent": "claude-cli/2.1.2 (external, cli)",
+        "user-agent": CLAUDE_CLI_USER_AGENT,
         "x-app": "cli",
       },
     });
@@ -523,7 +596,7 @@ export function createAnthropicProviderRuntime(model: string, anthropicConfig: A
     async ping(signal?: AbortSignal): Promise<void> {
       const freshClient = await ensureClient();
       await (freshClient as Anthropic).messages.create(
-        { model: "claude-haiku-4-5-20251001", max_tokens: 1, messages: [{ role: "user", content: "ping" }] },
+        { model: ANTHROPIC_PING_MODEL, max_tokens: 1, messages: [{ role: "user", content: "ping" }] },
         { signal, headers: { "anthropic-beta": "claude-code-20250219,oauth-2025-04-20" } },
       )
     },

@@ -358,6 +358,16 @@ describe("pingProvider", () => {
     expect(result["github-copilot"]).toMatchObject({ ok: false, classification: "auth-failure", message: "vault locked" })
   })
 
+  it("pings anthropic in API-key mode (apiKey without setupToken counts as credentials)", async () => {
+    mockAnthropicCreate.mockResolvedValue({ content: [{ text: "hi" }] })
+    const result = await pingProvider("anthropic", {
+      model: "claude-opus-4-6",
+      apiKey: "ouro-gw-test",
+      baseUrl: "http://127.0.0.1:8787",
+    } as never)
+    expect(result.ok).toBe(true)
+  })
+
   it("returns auth-failure for empty credentials (anthropic)", async () => {
     const result = await pingProvider("anthropic", {
       model: "claude-opus-4-6",

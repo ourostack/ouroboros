@@ -73,7 +73,7 @@ export function buildAwaitTurnMessage(options: AwaitTurnMessageOptions): string 
   }
 
   lines.push("")
-  lines.push("look around and decide. if the condition is met, call resolve_await with verdict='yes' and a one-line observation. otherwise call resolve_await with verdict='no' and a one-line observation of what i saw this tick.")
+  lines.push("look around and decide. if the condition is met, call resolve_await with verdict='yes', a one-line observation, and a message: what i tell whoever asked, in plain words to them, saying what i just checked. otherwise call resolve_await with verdict='no' and a one-line observation of what i saw this tick.")
   lines.push("verdicts: 'yes' (condition met), 'no' (not yet or unsure), 'ask_owner' (only when the condition cannot be met without my owner deciding, e.g. a confirmed dead download, or a stall the tool marks owner_decision_needed; give a plain question and 2-4 choices).")
 
   return lines.join("\n")

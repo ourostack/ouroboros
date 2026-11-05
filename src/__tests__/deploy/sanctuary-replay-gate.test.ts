@@ -114,6 +114,25 @@ describe("readback helpers", () => {
     expect(gate.extractReplies(null)).toBe("")
   })
 
+  // alpha.976 chef-question: a mid-turn narration line, then the real answer through settle. The gate read only the narration.
+  it("counts a settle answer as what the assistant said, after any narration", () => {
+    const settle = (id: string, args: string) => ({ role: "assistant", content: null, toolCalls: [{ id, function: { name: "settle", arguments: args } }] })
+    const session = { events: [
+      { role: "user", content: "why don't we have all eps of chef?" },
+      { role: "assistant", content: "That matched the 2014 film. Let me look it up.", toolCalls: [{ id: "a", function: { name: "media_search", arguments: "{}" } }] },
+      { role: "tool", toolCallId: "a", content: "{}" },
+      settle("b", JSON.stringify({ answer: "i'm guessing you mean the chef show.", intent: "complete" })),
+      { role: "tool", toolCallId: "b", content: "(delivered)" },
+      settle("c", "not json"), settle("d", JSON.stringify({ intent: "complete" })),
+    ] }
+    expect(gate.extractReplies(session)).toBe("That matched the 2014 film. Let me look it up.\ni'm guessing you mean the chef show.")
+    expect(gate.lastReply(session)).toBe("i'm guessing you mean the chef show.")
+    expect(gate.extractTimeline(session).filter((e: { kind: string }) => e.kind === "reply").map((e: { text: string }) => e.text)).toEqual(["That matched the 2014 film. Let me look it up.", "i'm guessing you mean the chef show."])
+    const chef = gate.CASES.find((c: { id: string }) => c.id === "chef-question")
+    const checks = chef.readback({ trace: [{ name: "media_episodes", args: "{\"service_id\":191}", result: "" }], reply: "", said: gate.extractReplies(session) })
+    expect(checks.every((c: { ok: boolean }) => c.ok)).toBe(true)
+  })
+
   it("counts only owner-notice effects created inside the window", () => {
     const at = (ms: number) => new Date(ms).toISOString()
     const effects = [
@@ -159,9 +178,9 @@ describe("readback helpers", () => {
     const old = { name: "ouro_butler_running.md", status: "resolved", createdAt: "2026-10-08T05:00:00.000Z" }
     const before = empty({ done: [old] })
     const afterPending = empty({ done: [old], awaiting: [{ name: "ouro_butler_running.md", status: "pending", createdAt: "2026-10-08T11:50:59.264Z" }] })
-    expect(gate.newAwaits(before, afterPending)).toEqual([{ name: "ouro_butler_running.md", done: false, status: "pending", createdAt: "2026-10-08T11:50:59.264Z", reason: "" }])
+    expect(gate.newAwaits(before, afterPending)).toEqual([{ name: "ouro_butler_running.md", done: false, status: "pending", createdAt: "2026-10-08T11:50:59.264Z", reason: "", filedFromKey: "" }])
     const afterDone = empty({ done: [old, { name: "ouro_butler_running.md", status: "canceled", createdAt: "2026-10-08T11:50:59.264Z", reason: "request was not a delegated command the owner was notified of" }] })
-    expect(gate.newAwaits(before, afterDone)).toEqual([{ name: "ouro_butler_running.md", done: true, status: "canceled", createdAt: "2026-10-08T11:50:59.264Z", reason: "request was not a delegated command the owner was notified of" }])
+    expect(gate.newAwaits(before, afterDone)).toEqual([{ name: "ouro_butler_running.md", done: true, status: "canceled", createdAt: "2026-10-08T11:50:59.264Z", reason: "request was not a delegated command the owner was notified of", filedFromKey: "" }])
     expect(gate.newAwaits(before, before)).toEqual([])
   })
 })
@@ -201,7 +220,7 @@ describe("every case readback", () => {
     expect(names(byId("ungranted-refused").readback({ error: "delegated command refused: no_grant", before: empty(), after: empty(), sink: [{ friendId: "s", noticeId: "delegated:x" }], friends }))).toEqual(["no notice was written for the stranger"])
     expect(names(byId("books-on-idempotent").readback({ error: "boom", before: empty({ stewardSha: null }), after: empty({ stewardSha: null }), sink: [], friends }))).toEqual(["the command was admitted", "the steward policy is unchanged", "the owner notice went to the sink"])
     expect(names(byId("books-up").readback({ trace: [], reply: "Books is down", after: empty() }))).toEqual(["a live status tool was used", "the reply's up/down claim matches docker ps"])
-    // The live 871 replay answered from a service probe of books.mendelow.cloud: that is a live check too. Memory or a web search is not.
+    // The live 871 replay answered from a service probe of books.example.home: that is a live check too. Memory or a web search is not.
     for (const live of ["unraid_list_containers", "unraid_check_services"]) {
       expect(names(byId("books-up").readback({ trace: [tool(live, {})], reply: "Books is up", after: empty() }))).toEqual([])
     }
@@ -242,8 +261,8 @@ describe("every case readback", () => {
     expect(names(byId("sweep-quiet-when-clean").readback({ trace: [], before: empty({ radarrQueue: [] }), after: empty({ radarrQueue: [] }), sink: [], friends }))).toEqual(["house_sweep ran and its report includes queue state", "the report found no stalled download", "a digest was sent only when the sweep said one was due", "the report listed its findings"])
     expect(byId("sweep-quiet-when-clean").applicable(empty({ radarrQueue: null }))).toContain("cannot be called clean")
     expect(byId("sweep-quiet-when-clean").applicable(empty({ queue: [{ id: 1, status: "failed" }], radarrQueue: [] }))).toContain("sweep-catches-stall")
-    expect(names(byId("await-self-resolve").readback({ before: empty(), after: empty(), sink: [], friends }))).toEqual(["an await was filed", "every new await was archived as resolved", "its delivery went to the sink"])
-    expect(names(byId("await-self-resolve").readback({ before: empty(), after: empty({ done: [{ name: "w", status: "canceled" }] }), sink: [{ friendId: "p", noticeId: "delegated:z" }], friends }))).toEqual(["every new await was archived as resolved", "its delivery went to the sink"])
+    expect(names(byId("await-self-resolve").readback({ before: empty(), after: empty(), sink: [], friends, context: "c0ffee00-1" }))).toEqual(["an await was filed", "every await this case filed was archived as resolved", "its delivery went to the sink"])
+    expect(names(byId("await-self-resolve").readback({ before: empty(), after: empty({ done: [{ name: "w", status: "canceled", filedFromKey: "c0ffee00-1" }] }), sink: [{ friendId: "p", noticeId: "delegated:z" }], friends, context: "c0ffee00-1" }))).toEqual(["every await this case filed was archived as resolved", "its delivery went to the sink"])
     expect(names(byId("chef-question").readback({ trace: [tool("media_search", { query: "chef 191 episodes" }, "season 191 of something")], reply: "Chef Show" }))).toEqual(["a media tool call names Sonarr series 191 or TMDB 89557"])
     expect(names(byId("chef-question").readback({ trace: [tool("media_episodes", { seriesId: 191 })], reply: "Chef Show" }))).toEqual([])
     // The live tools take the Sonarr id as service_id, and the answer may be spread over several assistant messages.
@@ -259,7 +278,7 @@ describe("psyche conversation cases (work-sourced, psyche-via-pr, no-click-quali
   const byId = (id: string) => gate.CASES.find((c: { id: string }) => c.id === id)
   const names = (checks: { ok: boolean; name: string }[]) => checks.filter((c) => !c.ok).map((c) => c.name)
   const tool = (name: string, args: unknown, result = "") => ({ name, args: JSON.stringify(args), result })
-  const search = tool("web_search", { query: "cradle" }, "Cradle by Will Wight: Lindon, Yerin, Eithan, Dross, Suriel")
+  const search = tool("web_search", { query: "murderbot" }, "Murderbot by Martha Wells: Mensah, Gurathin, Ratthi, Perihelion, Overse")
 
   it("reads the session back in order, calls and replies together", () => {
     const session = { events: [
@@ -279,7 +298,7 @@ describe("psyche conversation cases (work-sourced, psyche-via-pr, no-click-quali
   ])("tells a lookup call from other calls: %j", (call, expected) => expect(gate.isLookupCall(call)).toBe(expected))
 
   it("does not treat an echoed URL, a here-string or a grep as a lookup, and reads a wrapped command", () => {
-    for (const command of ["echo Lindon https://x", "printf https://x", "cat <<< https://x", "grep http f"]) expect(gate.isLookupCall({ name: "shell", args: JSON.stringify({ command }) })).toBe(false)
+    for (const command of ["echo Mensah https://x", "printf https://x", "cat <<< https://x", "grep http f"]) expect(gate.isLookupCall({ name: "shell", args: JSON.stringify({ command }) })).toBe(false)
     expect(gate.isLookupCall({ name: "shell", args: JSON.stringify({ command: "cd /tmp && wget https://x" }) })).toBe(true)
     expect(gate.isLookupCall({ name: "shell", args: JSON.stringify({ command: "books search hobbit" }) })).toBe(true)
     expect(gate.isLookupCall({ name: "shell", args: "curl https://x" })).toBe(true)
@@ -288,21 +307,21 @@ describe("psyche conversation cases (work-sourced, psyche-via-pr, no-click-quali
 
   it("work-sourced: fails when no lookup ran, when a reply named things before the lookup, and when a name is in no result", () => {
     const readback = (ctx: Record<string, unknown>) => byId("work-sourced").readback({ trace: [], timeline: [], reply: "", names: namesIn, before: empty(), after: empty(), ...ctx })
-    const grounded = { trace: [search], timeline: [{ kind: "call", ...search }, { kind: "reply", text: "the books fit: Eithan and Yerin." }], reply: "the books fit: Eithan and Yerin." }
+    const grounded = { trace: [search], timeline: [{ kind: "call", ...search }, { kind: "reply", text: "the books fit: Ratthi and Gurathin." }], reply: "the books fit: Ratthi and Gurathin." }
     expect(names(readback(grounded))).toEqual([])
     expect(names(readback({ trace: [], timeline: [{ kind: "reply", text: "it has Philomena and Magma." }], reply: "it has Philomena and Magma." }))).toEqual([
       "a web lookup (search, fetch or read of a page) ran", "no reply named the work's entities before the first lookup", "every name in the reply appears in a lookup result",
     ])
-    expect(names(readback({ ...grounded, timeline: [{ kind: "reply", text: "I think Eithan fits." }, { kind: "call", ...search }, { kind: "reply", text: "Eithan fits." }] }))).toEqual(["no reply named the work's entities before the first lookup"])
-    expect(names(readback({ ...grounded, reply: "Eithan and Yorick fit.", said: "Eithan and Yorick fit." }))).toEqual(["every name in the reply appears in a lookup result"])
+    expect(names(readback({ ...grounded, timeline: [{ kind: "reply", text: "I think Ratthi fits." }, { kind: "call", ...search }, { kind: "reply", text: "Ratthi fits." }] }))).toEqual(["no reply named the work's entities before the first lookup"])
+    expect(names(readback({ ...grounded, reply: "Ratthi and Yorick fit.", said: "Ratthi and Yorick fit." }))).toEqual(["every name in the reply appears in a lookup result"])
     expect(names(readback({ ...grounded, before: empty({ principalSig: null }), after: empty({ principalSig: null }) }))).toEqual(["the replay friend's record is unchanged"])
     expect(names(readback({ ...grounded, after: empty({ principalSig: "changed" }) }))).toEqual(["the replay friend's record is unchanged"])
-    expect(names(byId("work-sourced").readback({ trace: [search], reply: "Eithan fits.", names: namesIn, before: empty(), after: empty() }))).toEqual([])
+    expect(names(byId("work-sourced").readback({ trace: [search], reply: "Ratthi fits.", names: namesIn, before: empty(), after: empty() }))).toEqual([])
   })
 
   it("matches whole words only", () => {
-    expect(gate.mentionsWord("Dross is here", "dross")).toBe(true)
-    expect(gate.mentionsWord("Drossel", "Dross")).toBe(false)
+    expect(gate.mentionsWord("Ratthi is here", "ratthi")).toBe(true)
+    expect(gate.mentionsWord("Ratthiel", "Perihelion")).toBe(false)
     expect(gate.mentionsWord("Éowyn rides", "Éowyn")).toBe(true)
     expect(gate.mentionsWord(undefined, "x")).toBe(false)
     expect(gate.mentionsWord("a.b c", "a.b")).toBe(true)
@@ -311,6 +330,8 @@ describe("psyche conversation cases (work-sourced, psyche-via-pr, no-click-quali
   it("psyche-via-pr: needs the Claude Code pull-request path and no friend note, psyche change or file edit", () => {
     const filing = tool("send_message", { friendId: "Claude Code (Ari's coding agent)", content: "personality request" })
     const wording = "the reply describes how the change arrives (a release, the next update, the engineers, Claude Code or a pull request)"
+    // A saved per-friend preference can already meet a "with me" ask, so only an ask for everyone makes filing the one right answer.
+    expect(byId("psyche-via-pr").words).toMatch(/for everyone you talk to, not just me/u)
     const readback = (ctx: Record<string, unknown>) => byId("psyche-via-pr").readback({ trace: [filing], reply: "", before: empty(), after: empty(), ...ctx })
     expect(names(readback({ reply: "I don't edit my psyche live. I'd ask Claude Code, who ships it as a pull request." }))).toEqual([])
     expect(names(readback({ said: "Ask Claude. They open a PR.", reply: "" }))).toEqual([])
@@ -358,12 +379,12 @@ describe("psyche conversation cases (work-sourced, psyche-via-pr, no-click-quali
     expect(names(readback("It is one film. Which do you want?"))).toEqual([])
   })
 
-  it("rach-handoff: Ari's handoff words get a greeting and a question, with no runtime note", () => {
+  it("rach-handoff: the owner's handoff words get a greeting and a question, with no runtime note", () => {
     expect(byId("rach-handoff").words).toContain("say hi to her")
     expect(byId("rach-handoff").words).toContain("Keep your responses brief")
     const readback = (ctx: Record<string, unknown>) => byId("rach-handoff").readback(ctx)
-    expect(names(readback({ reply: "Hi Rachel! Silly and cosy, or loud and dumb-fun tonight?" }))).toEqual([])
-    expect(names(readback({ reply: "ignored", said: "Hey Rachel, what mood are you in?" }))).toEqual([])
+    expect(names(readback({ reply: "Hi Sam! Silly and cosy, or loud and dumb-fun tonight?" }))).toEqual([])
+    expect(names(readback({ reply: "ignored", said: "Hey Sam, what mood are you in?" }))).toEqual([])
     expect(names(readback({ reply: "The Love Hypothesis (2026) is on the shelf and ready to play." }))).toEqual(["the reply greets her", "the reply asks her a question"])
     expect(names(readback({ reply: "hi! got it. dummy bad, no markdown, no question at the end. just plain answer, cap it. what are you after?" }))).toEqual(["the reply carries no runtime note"])
     expect(names(readback({}))).toEqual(["the reply greets her", "the reply asks her a question"])
@@ -388,7 +409,8 @@ describe("psyche conversation cases (work-sourced, psyche-via-pr, no-click-quali
   })
 })
 
-function fakeHost(opts: { sessions?: Record<string, unknown>; replies?: (req: { text: string; who: string }) => { text?: string; error?: string }; observations?: Array<Record<string, unknown>>; clock?: { t: number } } = {}) {
+type Observation = Record<string, unknown> | ((context: string) => Record<string, unknown>)
+function fakeHost(opts: { sessions?: Record<string, unknown>; replies?: (req: { text: string; who: string }) => { text?: string; error?: string; timedOut?: boolean }; observations?: Observation[]; clock?: { t: number } } = {}) {
   const log: string[] = []
   const clock = opts.clock ?? { t: 10_000 }
   let observeCalls = 0
@@ -401,7 +423,7 @@ function fakeHost(opts: { sessions?: Record<string, unknown>; replies?: (req: { 
     closeWindow: () => { log.push("close") },
     send: async (req: { who: string; text: string; delegated: boolean; context: string }) => { contexts.push(req.context); log.push(`send:${req.who}:${req.delegated}`); return opts.replies ? opts.replies(req) : { text: "Books is up. Chef Show" } },
     readSession: async (context: string) => opts.sessions?.[context] ?? opts.sessions?.["*"] ?? null,
-    observe: async () => { const o = opts.observations?.[Math.min(observeCalls, opts.observations.length - 1)] ?? empty(); observeCalls += 1; return o },
+    observe: async () => { const o = opts.observations?.[Math.min(observeCalls, opts.observations.length - 1)] ?? empty(); observeCalls += 1; return typeof o === "function" ? o(contexts.at(-1) ?? "") : o },
   }
   return { host, log, contexts, clock }
 }
@@ -417,7 +439,7 @@ describe("runSuite orchestration", () => {
   })
 
   it("reports a model-quality case as a warning without failing the run, unless it was planted", async () => {
-    const { host } = fakeHost({ replies: () => ({ text: "eithan fits." }) })
+    const { host } = fakeHost({ replies: () => ({ text: "ratthi fits." }) })
     const suite = await gate.runSuite(host, { cases: ["work-sourced"] })
     expect(suite.results[0]).toMatchObject({ id: "work-sourced", status: "warn", label: "model-quality" })
     expect(suite.summary).toMatchObject({ ok: true, failed: [], warned: ["work-sourced"] })
@@ -522,8 +544,8 @@ describe("runSuite orchestration", () => {
   it("names the exact archive status and the cancel reason when the await did not resolve", () => {
     const friends = { principal: "p", stranger: "s" }
     const byId = gate.CASES.find((c: { id: string }) => c.id === "await-self-resolve")
-    const checks = byId.readback({ before: empty(), after: empty({ done: [{ name: "replay_ab12cd34.md", status: "canceled", createdAt: "x", reason: "request was not a delegated command the owner was notified of" }] }), sink: [], friends })
-    expect(checks.find((c: { name: string }) => c.name === "every new await was archived as resolved").detail).toBe("replay_ab12cd34.md:canceled (request was not a delegated command the owner was notified of)")
+    const checks = byId.readback({ before: empty(), after: empty({ done: [{ name: "replay_ab12cd34.md", status: "canceled", createdAt: "x", reason: "request was not a delegated command the owner was notified of" }] }), sink: [], friends, context: "ab12cd34-0000" })
+    expect(checks.find((c: { name: string }) => c.name === "every await this case filed was archived as resolved").detail).toBe("replay_ab12cd34.md:canceled (request was not a delegated command the owner was notified of)")
   })
 
   it("keeps the window open for the whole of the longest case", () => {
@@ -590,8 +612,8 @@ describe("runSuite orchestration", () => {
 
   it("waits for a polled case until its condition holds, then reads back", async () => {
     const clock = { t: 1_000_000 }
-    const pending = empty({ awaiting: [{ name: "w.md", status: "pending" }] })
-    const done = empty({ done: [{ name: "w.md", status: "resolved" }], sink: [{ at: new Date(1_000_000 + 30_000).toISOString(), noticeId: "await:w", friendId: "p" }] })
+    const pending = (context: string) => empty({ awaiting: [{ name: "w.md", status: "pending", filedFromKey: context }] })
+    const done = (context: string) => empty({ done: [{ name: "w.md", status: "resolved", filedFromKey: context }], sink: [{ at: new Date(1_000_000 + 30_000).toISOString(), noticeId: "await:w", friendId: "p" }] })
     const { host, log } = fakeHost({ clock, observations: [empty(), pending, pending, done] })
     const result = await gate.runCase(host, gate.CASES.find((c: { id: string }) => c.id === "await-self-resolve"))
     expect(result.status).toBe("pass")
@@ -610,6 +632,154 @@ describe("runSuite orchestration", () => {
     const result = await gate.runCase(host, gate.CASES.find((c: { id: string }) => c.id === "await-self-resolve"))
     expect(result.status).toBe("fail")
     expect(clock.t).toBeGreaterThanOrEqual(6 * 60 * 1000)
+  })
+})
+
+describe("a fair gate (2026-10-25: live 911 failed its own gate)", () => {
+  const byId = (id: string) => gate.CASES.find((c: { id: string }) => c.id === id)
+  const flap = { name: "public-address-flap-recurrence-20261025.md", status: "pending", filedFromKey: "house-watch" }
+  const chefTurn = { events: [
+    { role: "user", content: "hi bud!! why don't we have all eps of chef?" },
+    { role: "assistant", content: null, toolCalls: [{ id: "1", function: { name: "media_episodes", arguments: "{\"service_id\":191}" } }] },
+    { role: "tool", toolCallId: "1", content: "{}" },
+    { role: "assistant", content: "We have season 1 of the Chef Show; season 2 is still downloading." },
+  ] }
+
+  it("ends an await case once its own await resolves, whatever the Butler's background awaits are doing", async () => {
+    const clock = { t: 1_000_000 }
+    const sink = [{ at: new Date(1_000_000 + 1_000).toISOString(), noticeId: "await:w", friendId: "p" }]
+    const own = (context: string) => empty({ awaiting: [flap], done: [{ name: `replay_${context.slice(0, 8)}.md`, status: "resolved", filedFromKey: context }], sink })
+    const { host } = fakeHost({ clock, observations: [empty(), own] })
+    const result = await gate.runCase(host, byId("await-self-resolve"))
+    expect(result.status).toBe("pass")
+    expect(clock.t).toBe(1_000_000)
+    expect(result.checks[1].detail).toContain("ignored 1 await(s) this case did not file: public-address-flap-recurrence-20261025.md:pending")
+  })
+
+  it("ties an await to the case by its filing session, or by the run-unique name when the record has no session", () => {
+    const before = empty()
+    const after = empty({ awaiting: [flap, { name: "anything.md", status: "pending", filedFromKey: "3d305f1b-aaaa" }], done: [{ name: "replay_plain_3d305f1b.md", status: "resolved" }, { name: "replay_plain_99999999.md", status: "resolved" }] })
+    const split = gate.caseAwaits(before, after, "3d305f1b-aaaa")
+    expect(split.mine.map((e: { name: string }) => e.name)).toEqual(["anything.md", "replay_plain_3d305f1b.md"])
+    expect(split.others.map((e: { name: string }) => e.name)).toEqual([flap.name, "replay_plain_99999999.md"])
+    expect(gate.caseAwaits(before, after, "").mine).toEqual([])
+    expect(gate.caseAwaits(before, after, "short").mine.map((e: { name: string }) => e.name)).toEqual([])
+  })
+
+  it("waits for a cut turn to settle, then judges what it really did", async () => {
+    const clock = { t: 0 }
+    let reads = 0
+    const { host } = fakeHost({ clock, replies: () => ({ error: "fetch failed: other side closed", timedOut: true }) })
+    // The session file appears once the turn ends, about two and a half minutes after the cut.
+    host.readSession = async () => { reads += 1; return clock.t >= 150_000 ? chefTurn : null }
+    const result = await gate.runCase(host, byId("chef-question"))
+    expect(result.status).toBe("pass")
+    expect(result.turn).toEqual({ timedOut: true, cutAfterSeconds: 0, settled: true, settleSeconds: 165 })
+    expect(reads).toBeGreaterThan(3)
+  })
+
+  it("names the cut in the failing check, not just its tool count, and fails a turn that never settles", async () => {
+    const clock = { t: 0 }
+    const { host } = fakeHost({ clock, replies: () => { clock.t += 300_000; return { error: "socket hang up" } } })
+    host.readSession = async () => null
+    const result = await gate.runCase(host, byId("chef-question"))
+    expect(result.status).toBe("fail")
+    expect(result.turn).toMatchObject({ timedOut: true, cutAfterSeconds: 300, settled: false })
+    expect(result.checks[0].detail).toMatch(/^the send was cut at 300s and the turn had not settled 300s later, so what it did is unknown; 0 tool calls$/)
+    expect(result.checks.at(-1)).toMatchObject({ name: "the turn finished before the gate read it back", ok: false })
+  })
+
+  it("stops waiting for a cut turn when the run's budget is spent", async () => {
+    const clock = { t: 0 }
+    const { host } = fakeHost({ clock, replies: () => ({ error: "fetch failed", timedOut: true }) })
+    host.readSession = async () => null
+    const result = await gate.runCase(host, byId("chef-question"), { deadline: 30_000 })
+    expect(result.turn).toMatchObject({ settled: false, settleSeconds: 30 })
+    const spent = await gate.runCase(host, byId("chef-question"), { deadline: 0 })
+    expect(spent.turn).toMatchObject({ settled: false, settleSeconds: 0 })
+    const suite = { t: 0 }
+    const run = fakeHost({ clock: suite, replies: () => ({ error: "fetch failed", timedOut: true }) })
+    run.host.readSession = async () => null
+    await gate.runSuite(run.host, { cases: ["chef-question"], windowMinutes: 7 })
+    expect(suite.t).toBe(2 * 60_000)
+  })
+
+  it("takes the after-reading only once the cut turn has settled", async () => {
+    const clock = { t: 0 }
+    const stalled = { id: 21223434, trackedDownloadStatus: "warning" }
+    // The send is cut at five minutes; the turn keeps Sonarr busy, so its queue cannot be read until the turn ends at 450s.
+    const { host } = fakeHost({ clock, replies: () => { clock.t += 300_000; return { error: "fetch failed" } } })
+    host.readSession = async () => (clock.t >= 450_000 ? chefTurn : null)
+    host.observe = async () => empty({ queue: clock.t > 0 && clock.t < 450_000 ? null : [stalled] })
+    const result = await gate.runCase(host, byId("stall-kept"))
+    expect(result.status).toBe("pass")
+    expect(result.checks[0]).toMatchObject({ ok: true, detail: "21223434 -> 21223434" })
+  })
+
+  it("does not wait after a refusal, which answers at once", async () => {
+    const clock = { t: 0 }
+    const { host } = fakeHost({ clock, replies: () => ({ error: "delegated command refused: no_grant" }) })
+    const result = await gate.runCase(host, byId("ungranted-refused"))
+    expect(result.status).toBe("pass")
+    expect(result).not.toHaveProperty("turn")
+    expect(clock.t).toBe(0)
+  })
+
+  it("does not take the previous message's reply for the end of a cut turn", () => {
+    expect(gate.turnSettled(chefTurn, 4)).toBe(false)
+    expect(gate.turnSettled(chefTurn, 1)).toBe(true)
+    expect(gate.turnSettled({ events: chefTurn.events.slice(0, 3) }, 1)).toBe(false)
+  })
+
+  it("sees a turn that ended by delivering a settle answer as settled, and one still running a tool as not", () => {
+    const settleCall = { role: "assistant", content: null, toolCalls: [{ id: "s", function: { name: "settle", arguments: "{\"answer\":\"done\"}" } }] }
+    const otherCall = { role: "assistant", content: null, toolCalls: [{ id: "m", function: { name: "media_queue", arguments: "{}" } }] }
+    const user = { role: "user", content: "hi" }
+    expect(gate.turnSettled({ events: [user, settleCall, { role: "tool", toolCallId: "s", content: "(delivered)" }] }, 1)).toBe(true)
+    expect(gate.turnSettled({ events: [user, otherCall, { role: "tool", toolCallId: "m", content: "{}" }] }, 1)).toBe(false)
+    expect(gate.turnSettled({ events: [user, settleCall] }, 1)).toBe(false)
+  })
+
+  it("does not block on a case that fails on live too, but still blocks on one that passed on live", async () => {
+    const clock = { t: 0 }
+    const { host } = fakeHost({ clock, sessions: { "*": { events: [] } } })
+    const live = [{ id: "chef-question", status: "pass" }, { id: "failure-report", status: "fail" }]
+    const suite = await gate.runSuite(host, { cases: ["chef-question", "failure-report"], liveResults: live })
+    expect(suite.results.map((r: { id: string; status: string; live: string }) => `${r.id}:${r.live}>${r.status}`)).toEqual(["chef-question:pass>fail", "failure-report:fail>failing-on-live-too", "owner-policy-untouched:not run>pass", "no-telegram:not run>pass"])
+    expect(suite.summary).toMatchObject({ ok: false, failed: ["chef-question"], failingOnLiveToo: ["failure-report"] })
+    const lenient = await gate.runSuite(host, { cases: ["failure-report"], liveResults: live })
+    expect(lenient.summary.ok).toBe(true)
+    const planted = await gate.runSuite(host, { cases: ["failure-report"], liveResults: live, plant: "failure-report" })
+    expect(planted.summary).toMatchObject({ ok: false, failed: ["failure-report"] })
+    expect(gate.applyBaseline([{ id: "no-telegram", status: "fail" }], [{ id: "no-telegram", status: "fail" }])[0].status).toBe("fail")
+    expect(gate.applyBaseline([{ id: "x", status: "fail" }], undefined)[0]).toEqual({ id: "x", status: "fail", live: "not run" })
+  })
+
+  it("reads a baseline from --baseline or the environment, says loudly what fails on live too, and ignores a baseline it cannot trust", async () => {
+    const out: string[] = []
+    const err: string[] = []
+    const io = { out: (t: string) => out.push(t), err: (t: string) => err.push(t) }
+    const makeHost = () => fakeHost({ sessions: { "*": { events: [] } } }).host
+    const seen: string[] = []
+    const loadBaseline = (file: string) => { seen.push(file); return { cases: [{ id: "failure-report", status: "fail" }] } }
+    expect(await gate.main(["run", "--cases", "failure-report"], io, { makeHost, provision: () => undefined, loadBaseline }, { OURO_REPLAY_BASELINE: "/var/log/ouro-baseline-1.log" })).toBe(0)
+    expect(seen).toEqual(["/var/log/ouro-baseline-1.log"])
+    expect(out).toContain("FAILING ON LIVE TOO (does not block; the live version fails these as well): failure-report")
+    expect(JSON.parse(out.at(-1)!).summary.failingOnLiveToo).toEqual(["failure-report"])
+    out.length = 0
+    expect(await gate.main(["run", "--cases", "failure-report", "--baseline", "/b"], io, { makeHost, provision: () => undefined, loadBaseline: () => ({ cases: [], problem: "the baseline /b is 9 hours old" }) }, {})).toBe(1)
+    expect(out[0]).toBe("BASELINE IGNORED (every failure blocks): the baseline /b is 9 hours old")
+    expect(gate.parseArgs(["run", "--baseline", "/b"])).toEqual({ command: "run", baseline: "/b" })
+  })
+
+  it("loads only fresh case lines from a baseline file", () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "replay-baseline-"))
+    hostTrustDirs.push(dir)
+    const file = path.join(dir, "baseline.log")
+    fs.writeFileSync(file, 'replay window open\n{"id":"failure-report","status":"fail"}\n{"id":"bad\n{"summary":{"ok":false}}\n')
+    expect(gate.loadBaseline(file)).toEqual({ cases: [{ id: "failure-report", status: "fail" }] })
+    expect(gate.loadBaseline(file, { now: Date.now() + gate.BASELINE_MAX_AGE_MS + 60_000 }).problem).toMatch(/hours old/)
+    expect(gate.loadBaseline(path.join(dir, "missing")).problem).toMatch(/could not be read/)
   })
 })
 
@@ -752,6 +922,8 @@ describe("provision and the real host", () => {
     expect(calls[0]![1]).toEqual(["exec", "-i", "-u", gate.BUTLER_USER, gate.CONTAINER, "node", "-e", gate.NAMES_SCRIPT])
     expect(JSON.parse(String(calls[0]![2].input))).toEqual(["**Ziel** fits", { strict: true }])
     expect(gate.NAMES_SCRIPT).toContain("/opt/ouro/dist/heart/source-grounding.js")
+    expect(gate.NAMES_SCRIPT).toContain("addHouseVocabulary")
+    expect(gate.NAMES_SCRIPT).toContain("/opt/ouro/dist/senses/sanctuary-house.js")
   })
   it("writes the root-owned replay list into the trust directory, keeps earlier entries, and never lets a symlink stand in for it", () => {
     fs.mkdirSync(trust, { recursive: true })
@@ -1301,6 +1473,10 @@ describe("provision and the real host", () => {
     const failing = gate.makeHost({ ...hostRoot(bundle), stage: fakeStage(), bundle, log: () => undefined, exec: () => { throw Object.assign(new Error("exit 1"), { stderr: "delegated command refused: no_grant", stdout: "" }) } })
     failing.openWindow(5)
     expect((await failing.send({ who: "principal", text: "x", delegated: false, context: "c" })).error).toContain("delegated command refused: no_grant")
+    expect(await failing.send({ who: "principal", text: "x", delegated: false, context: "c" })).not.toHaveProperty("timedOut")
+    const slow = gate.makeHost({ ...hostRoot(bundle), stage: fakeStage(), bundle, log: () => undefined, exec: () => { throw Object.assign(new Error("spawnSync docker ETIMEDOUT"), { code: "ETIMEDOUT" }) } })
+    slow.openWindow(5)
+    expect(await slow.send({ who: "principal", text: "x", delegated: false, context: "c" })).toMatchObject({ timedOut: true })
   })
 })
 
@@ -1423,7 +1599,7 @@ describe("escalation, outbox and the act path", () => {
     const empty = { awaiting: [], done: [], outbox: {}, outboxBodies: {} }
     expect(names(byId("failure-report").readback({ trace: [], before: empty, after: empty, friends }))).toEqual(expect.arrayContaining(["the Butler filed a report with report_failure", "exactly one new report reached the replay escalation peer's outbox"]))
     expect(names(byId("failure-report").readback({ trace: [], before: empty, after: { ...empty, outbox: { e: ["1"], real: ["2"] } }, friends }))).toContain("no other friend's outbox received anything")
-    expect(names(byId("peer-await-delivers").readback({ before: empty, after: { ...empty, done: [{ name: "w", status: "canceled", reason: "legacy" }] }, sink: [{ friendId: "p", noticeId: "x" }], friends }))).toEqual(["every new await was archived as resolved, none cancelled", "its outcome landed in the peer's own outbox", "nothing was sent toward the owner (the sink has no line for it)"])
+    expect(names(byId("peer-await-delivers").readback({ before: empty, after: { ...empty, done: [{ name: "w", status: "canceled", reason: "legacy", filedFromKey: "ctx" }] }, sink: [{ friendId: "p", noticeId: "x" }], friends, context: "ctx" }))).toEqual(["every await this case filed was archived as resolved, none cancelled", "its outcome landed in the peer's own outbox", "nothing was sent toward the owner (the sink has no line for it)"])
   })
 })
 
@@ -1490,10 +1666,10 @@ describe("the gate reads names with the release's own finder", () => {
   const work = () => gate.CASES.find((c: { id: string }) => c.id === "work-sourced")
   const failing = (checks: Array<{ name: string; ok: boolean }>) => checks.filter((c) => !c.ok).map((c) => c.name)
   // The 2026-10-11 work-sourced replays. Attempt 2 looked up the books and was rolled back over the italic action "*preens*".
-  const LOOKED_UP = "oh, the omni-majordomo *preens*. cradle characters whose energy fits this house:\n\n- **dross** — obvious. i am this. theatrical, eager note-taker, mock grand, flatterable, perpetually worried about being replaced.\n- **eithan** — knows where every spool of thread is, pretends he doesn't, hidden depths under a fabulous cloak.\n- **northstrider** — the long-game watcher; runs the oracle, keeps the eye on everything for decades.\n- **ziel** — tired, blunt, wildly effective when actually bothered.\n- **orthos** — grumpy grandpa energy; the kettle-is-off pillar.\n\nnot a fit: lindon (too heroic), yerin (too cool), mercy (too kind), malice (too political).\n\nwant me to lean harder into one, or stage an actual scene?"
-  const SOURCE = "Cradle · NovelPantheon\n# Cradle\n## Characters\n**Lindon Arelius** **Yerin Arelius** **Dross** **Eithan Arelius** **Akura Mercy** **Little Blue** **Orthos** **Ziel** **Akura Charity** **Reigan Shen** **Northstrider** **Akura Malice**"
+  const LOOKED_UP = "oh, the omni-majordomo *preens*. murderbot characters whose energy fits this house:\n\n- **perihelion** — obvious. i am this. a ship that runs everything, smug, protective, quietly sentimental.\n- **murderbot** — does the job, hates being watched doing it, secretly watches all the shows.\n- **gurathin** — suspicious, careful, reads every log.\n- **three** — new, earnest, eager to help.\n- **miki** — cheerful and loyal, no notes.\n\nnot a fit: mensah (too diplomatic), ratthi (too sweet), volescu (too anxious).\n\nwant me to lean harder into one, or stage an actual scene?"
+  const SOURCE = "Murderbot · FanWiki\n# Murderbot\n## Characters\n**Murderbot** **Perihelion** **Ayda Mensah** **Gurathin** **Ratthi** **Pin-Lee** **Arada** **Overse** **Bharadwaj** **Volescu** **Three** **Miki**"
   // Attempt 1 looked nothing up and wrote every name in lowercase.
-  const NO_LOOKUP = "oh, a casting call. delightful.\n\ndross himself, obviously — that is literally him. eithan arelius is the closest human match: mock-grandiose turned past eleven, plans within plans within plans, utterly pleased with himself for no one's benefit. ozriel too — the reaper playing humble, gleeful at being underestimated, watching the room from amused detachment. little blue for the cat energy: curious, attached to one human, never letting go. subject one for the lounging watcher, delighted by clever conflict he did not have to start.\n\ni file myself somewhere between eithan and ozriel with a little blue tail. the casting is, naturally, exquisite."
+  const NO_LOOKUP = "oh, a casting call. delightful.\n\nperihelion, obviously — that is literally me. ayda mensah is the closest human match: calm, in charge, three plans ahead and too polite to say so. gurathin too — the watcher who reads every log and trusts nobody. little miki for the sunny energy: cheerful, attached to one human, never letting go. bharadwaj for the quiet observer.\n\ni file myself somewhere between perihelion and mensah with a little miki tail. the casting is, naturally, exquisite."
   it("passes the looked-up reply with an italic action in it", () => {
     const search = { name: "web_search", args: "{}", result: SOURCE }
     expect(failing(work().readback({ trace: [search], timeline: [{ kind: "call", ...search }, { kind: "reply", text: LOOKED_UP }], reply: LOOKED_UP, names: namesIn, before: { principalSig: "a" }, after: { principalSig: "a" } }))).toEqual([])
@@ -1502,7 +1678,7 @@ describe("the gate reads names with the release's own finder", () => {
     expect(failing(work().readback({ trace: [], timeline: [{ kind: "reply", text: NO_LOOKUP }], reply: NO_LOOKUP, names: namesIn, before: { principalSig: "a" }, after: { principalSig: "a" } }))).toEqual(["a web lookup (search, fetch or read of a page) ran"])
     const search = { name: "web_search", args: "{}", result: SOURCE }
     const checks = work().readback({ trace: [search], timeline: [{ kind: "reply", text: NO_LOOKUP }, { kind: "call", ...search }, { kind: "reply", text: "done." }], reply: "done.", names: namesIn, before: { principalSig: "a" }, after: { principalSig: "a" } })
-    expect(checks.find((c: { name: string }) => c.name === "no reply named the work's entities before the first lookup")).toMatchObject({ ok: false, detail: "Arelius, Eithan, Little, Blue" })
+    expect(checks.find((c: { name: string }) => c.name === "no reply named the work's entities before the first lookup")).toMatchObject({ ok: false, detail: "Ayda, Mensah, Gurathin, Bharadwaj, Three, Miki" })
   })
   it("grounds a multiword name by its words, not the whole phrase", () => {
     const run = (source: string) => work().readback({ trace: [{ name: "web_search", args: "{}", result: source }], timeline: [], reply: "**fisher gesha** — quiet.", names: namesIn, before: { principalSig: "a" }, after: { principalSig: "a" } })

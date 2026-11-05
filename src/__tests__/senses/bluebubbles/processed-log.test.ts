@@ -11,16 +11,16 @@ const messageEvent = {
   fromMe: false,
   sender: {
     provider: "imessage-handle" as const,
-    externalId: "ari@mendelow.me",
-    rawId: "ari@mendelow.me",
-    displayName: "ari@mendelow.me",
+    externalId: "owner@example.test",
+    rawId: "owner@example.test",
+    displayName: "owner@example.test",
   },
   chat: {
-    chatGuid: "any;-;ari@mendelow.me",
-    chatIdentifier: "ari@mendelow.me",
+    chatGuid: "any;-;owner@example.test",
+    chatIdentifier: "owner@example.test",
     isGroup: false,
-    sessionKey: "chat:any;-;ari@mendelow.me",
-    sendTarget: { kind: "chat_guid" as const, value: "any;-;ari@mendelow.me" },
+    sessionKey: "chat:any;-;owner@example.test",
+    sendTarget: { kind: "chat_guid" as const, value: "any;-;owner@example.test" },
     participantHandles: [],
   },
   text: "you there?",
@@ -73,7 +73,7 @@ describe("BlueBubbles processed log", () => {
         "senses",
         "bluebubbles",
         "processed",
-        "chat_any;-;ari@mendelow.me.ndjson",
+        "chat_any;-;owner@example.test.ndjson",
       ),
     )
     expect(getBlueBubblesProcessedLogPath("slugger", messageEvent.chat.sessionKey)).toBe(logPath)

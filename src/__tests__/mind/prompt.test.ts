@@ -415,7 +415,7 @@ describe("buildSystem", () => {
     context.friend.role = "acquaintance"
     context.friend.trustLevel = "acquaintance"
     context.friend.externalIds = [
-      { provider: "imessage-handle", externalId: "ari@mendelow.me", linkedAt: "2026-03-14T18:00:00.000Z" },
+      { provider: "imessage-handle", externalId: "owner@example.test", linkedAt: "2026-03-14T18:00:00.000Z" },
       { provider: "imessage-handle", externalId: "group:any;+;project-group-123", linkedAt: "2026-03-14T18:00:00.000Z" },
     ]
 
@@ -517,7 +517,7 @@ describe("buildSystem", () => {
     context.friend.role = "acquaintance"
     context.friend.trustLevel = "acquaintance"
     context.friend.externalIds = [
-      { provider: "imessage-handle", externalId: "ari@mendelow.me", linkedAt: "2026-03-14T18:00:00.000Z" },
+      { provider: "imessage-handle", externalId: "owner@example.test", linkedAt: "2026-03-14T18:00:00.000Z" },
     ]
 
     const result = flattenSystemPrompt(await buildSystem(
@@ -604,6 +604,88 @@ describe("buildSystem", () => {
     const result = flattenSystemPrompt(await buildSystem())
     expect(result).toContain("## my aspirations")
     expect(result).toContain("improving the harness")
+  })
+
+  it("fills house names into the psyche and adds the household's own notes", async () => {
+    vi.mocked(fs.readFileSync).mockImplementation((filePath: any) => {
+      const p = String(filePath)
+      if (p.endsWith("house.json")) return JSON.stringify({ ownerName: " Sam ", butlerName: "Hearth", householdName: 7 })
+      if (p.endsWith("HOUSE.md")) return "{{owner}} keeps the books at {{household}}."
+      if (p.endsWith("IDENTITY.md")) return "I am {{butler}}, working for {{owner}}."
+      if (p.endsWith("package.json")) return MOCK_PACKAGE_JSON
+      if (p.endsWith("secrets.json")) return JSON.stringify({})
+      return ""
+    })
+    const { patchRuntimeConfig, resetConfigCache } = await import("../../heart/config")
+    resetConfigCache()
+    patchRuntimeConfig({ providers: { minimax: { apiKey: "test-key" } } })
+    const { buildSystem, flattenSystemPrompt, resetPsycheCache } = await import("../../mind/prompt")
+    resetPsycheCache()
+    const result = flattenSystemPrompt(await buildSystem())
+    expect(result).toContain("I am Hearth, working for Sam.")
+    expect(result).toContain("## my house\nSam keeps the books at the household.")
+  })
+
+  describe("product standing rules", () => {
+    const withProduct = (product: string) => vi.mocked(fs.readFileSync).mockImplementation((filePath: any) => {
+      const p = String(filePath)
+      if (p.endsWith("PRODUCT.md")) return product
+      if (p.endsWith("package.json")) return MOCK_PACKAGE_JSON
+      if (p.endsWith("secrets.json")) return JSON.stringify({})
+      return ""
+    })
+    const scopedContext = { friend: { id: "f", name: "F", trustLevel: "family", externalIds: [], tenantMemberships: [], toolPreferences: {}, notes: {}, totalTokens: 0, createdAt: "", updatedAt: "", schemaVersion: 1 }, channel: { channel: "telegram", senseType: "chat", isRemote: true, isGroup: false, availableIntegrations: [], supportsAttachments: false, supportsReactions: false, chatStyle: true, supportsStreaming: false, supportsRichCards: true, maxMessageLength: 4096 } } as never
+    const load = async () => {
+      const { patchRuntimeConfig, resetConfigCache } = await import("../../heart/config")
+      resetConfigCache()
+      patchRuntimeConfig({ providers: { minimax: { apiKey: "test-key" } } })
+      const mod = await import("../../mind/prompt")
+      mod.resetPsycheCache()
+      return mod
+    }
+
+    it("places the section last in the body group of the general prompt", async () => {
+      withProduct("never do X")
+      const { buildSystem, flattenSystemPrompt } = await load()
+      const result = flattenSystemPrompt(await buildSystem())
+      const at = result.indexOf("## my standing rules\nnever do X")
+      expect(at).toBeGreaterThan(result.indexOf("# my body & environment"))
+      expect(at).toBeLessThan(result.indexOf("# my tools & capabilities"))
+      expect(result.slice(at)).toMatch(/^## my standing rules\nnever do X\n\n# my tools & capabilities/)
+    })
+
+    it("places the section just before the tools heading in the relationship-scoped prompt, without psyche authorization", async () => {
+      withProduct("never do X")
+      const { buildSystem, flattenSystemPrompt } = await load()
+      const result = flattenSystemPrompt(await buildSystem("telegram", { relationshipContextScopes: ["own_requests"] }, scopedContext))
+      expect(result).toContain("## my standing rules\nnever do X\n\n# my tools")
+    })
+
+    it("has no section when there is no PRODUCT.md", async () => {
+      withProduct("")
+      const { buildSystem, flattenSystemPrompt } = await load()
+      expect(flattenSystemPrompt(await buildSystem())).not.toContain("## my standing rules")
+      expect(flattenSystemPrompt(await buildSystem("telegram", { relationshipContextScopes: ["own_requests"] }, scopedContext))).not.toContain("## my standing rules")
+    })
+  })
+
+  it("uses generic names and no house section when the household has no house files", async () => {
+    vi.mocked(fs.readFileSync).mockImplementation((filePath: any) => {
+      const p = String(filePath)
+      if (p.endsWith("house.json") || p.endsWith("HOUSE.md")) throw Object.assign(new Error("missing"), { code: "ENOENT" })
+      if (p.endsWith("IDENTITY.md")) return "I am {{butler}}, working for {{owner}} at {{household}}."
+      if (p.endsWith("package.json")) return MOCK_PACKAGE_JSON
+      if (p.endsWith("secrets.json")) return JSON.stringify({})
+      return ""
+    })
+    const { patchRuntimeConfig, resetConfigCache } = await import("../../heart/config")
+    resetConfigCache()
+    patchRuntimeConfig({ providers: { minimax: { apiKey: "test-key" } } })
+    const { buildSystem, flattenSystemPrompt, resetPsycheCache } = await import("../../mind/prompt")
+    resetPsycheCache()
+    const result = flattenSystemPrompt(await buildSystem())
+    expect(result).toContain("I am the Butler, working for the owner at the household.")
+    expect(result).not.toContain("## my house")
   })
 
   it("includes runtime info section for cli channel", async () => {
@@ -2122,7 +2204,7 @@ describe("psyche loading", () => {
     await buildSystem()
     // Check that readFileSync was called with paths under the mock agent root
     const calls = vi.mocked(fs.readFileSync).mock.calls.map(c => String(c[0]))
-    const psycheCalls = calls.filter(p => p.includes("psyche"))
+    const psycheCalls = calls.filter(p => p.includes("/psyche/"))
     expect(psycheCalls.length).toBeGreaterThan(0)
     for (const p of psycheCalls) {
       expect(p).toContain(path.join("/mock/repo/testagent", "psyche"))
@@ -2157,12 +2239,16 @@ describe("psyche loading", () => {
     const callCount1 = vi.mocked(fs.readFileSync).mock.calls.length
     await buildSystem()
     const callCount2 = vi.mocked(fs.readFileSync).mock.calls.length
-    // Second call should not re-read psyche files. Non-psyche reads (package.json,
-    // bundle-meta.json, secrets.json) still happen, so filter to psyche paths only.
+    // The second build only reads the psyche files to compare their content, and
+    // rebuilds nothing: the cached text is the same object.
     const psycheCallsAfterFirst = vi.mocked(fs.readFileSync).mock.calls
-      .slice(callCount1)
-      .filter(c => String(c[0]).includes("psyche"))
-    expect(psycheCallsAfterFirst.length).toBe(0)
+      .slice(callCount1, callCount2)
+      .map(c => path.basename(String(c[0])))
+      .filter((_name, i) => String(vi.mocked(fs.readFileSync).mock.calls[callCount1 + i]![0]).includes("/psyche/"))
+    expect(new Set(psycheCallsAfterFirst)).toEqual(new Set(["SOUL.md", "IDENTITY.md", "LORE.md", "TACIT.md", "ASPIRATIONS.md"]))
+    const { loadPsycheAt } = await import("../../mind/prompt")
+    expect(loadPsycheAt("/mock/repo/testagent")).toBe(loadPsycheAt("/mock/repo/testagent"))
+    void flattenSystemPrompt
   })
 
   it("reloads psyche text when the active agent root changes", async () => {
@@ -3186,7 +3272,7 @@ describe("buildSystem with context", () => {
         id: "uuid-bb-1",
         name: "Ari",
         trustLevel: "family" as const,
-        externalIds: [{ provider: "imessage-handle" as const, externalId: "ari@mendelow.me", linkedAt: "2026-01-01T00:00:00.000Z" }],
+        externalIds: [{ provider: "imessage-handle" as const, externalId: "owner@example.test", linkedAt: "2026-01-01T00:00:00.000Z" }],
         tenantMemberships: [],
         toolPreferences: {},
         notes: {},

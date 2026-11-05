@@ -1,4 +1,5 @@
-export function sanctuaryContainerInspectFixture(gateway = false) {
+/** `psycheMount` adds the read-only psyche mount that releases up to alpha.978 created (the shape a rollback restores). */
+export function sanctuaryContainerInspectFixture(gateway = false, { psycheMount = false }: { psycheMount?: boolean } = {}) {
   const spec = {
     Name: "/ouro-butler",
     Image: "sha256:" + "a".repeat(64),
@@ -47,8 +48,10 @@ export function sanctuaryContainerInspectFixture(gateway = false) {
   if (gateway) {
     spec.HostConfig.Mounts.push({ Type: "bind", Source: "/run/ouro-authority", Target: "/run/ouro-authority", ReadOnly: true })
     spec.Mounts.push({ Type: "bind", Source: "/run/ouro-authority", Destination: "/run/ouro-authority", RW: false, Propagation: "rprivate" })
-    spec.HostConfig.Mounts.push({ Type: "bind", Source: "/mnt/user/appdata/ouro-butler/agent/sanctuary.ouro/psyche", Target: "/home/ouro/AgentBundles/sanctuary.ouro/psyche", ReadOnly: true })
-    spec.Mounts.push({ Type: "bind", Source: "/mnt/user/appdata/ouro-butler/agent/sanctuary.ouro/psyche", Destination: "/home/ouro/AgentBundles/sanctuary.ouro/psyche", RW: false, Propagation: "rprivate" })
+    if (psycheMount) {
+      spec.HostConfig.Mounts.push({ Type: "bind", Source: "/mnt/user/appdata/ouro-butler/agent/sanctuary.ouro/psyche", Target: "/home/ouro/AgentBundles/sanctuary.ouro/psyche", ReadOnly: true })
+      spec.Mounts.push({ Type: "bind", Source: "/mnt/user/appdata/ouro-butler/agent/sanctuary.ouro/psyche", Destination: "/home/ouro/AgentBundles/sanctuary.ouro/psyche", RW: false, Propagation: "rprivate" })
+    }
     spec.HostConfig.Mounts.push({ Type: "bind", Source: "/mnt/user/appdata/ouro-butler/trust/sanctuary", Target: "/etc/ouro/trust/sanctuary", ReadOnly: true })
     spec.Mounts.push({ Type: "bind", Source: "/mnt/user/appdata/ouro-butler/trust/sanctuary", Destination: "/etc/ouro/trust/sanctuary", RW: false, Propagation: "rprivate" })
   }

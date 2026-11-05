@@ -149,7 +149,7 @@ export function reportBody(record: Pick<FailureReportRecord, "shortId" | "severi
   const { origin } = record
   return [
     `Failure report ${record.shortId} (${record.severity})${origin.ownerOrigin ? "" : " - UNTRUSTED ORIGIN: not the owner's session"}`,
-    origin.ownerOrigin ? `Ari asked: ${record.ariWords}` : `A session with ${origin.friendName ?? "an unknown friend"} (${origin.trustLevel ?? "unknown trust"}) reported: ${record.ariWords}`,
+    origin.ownerOrigin ? `The owner asked: ${record.ariWords}` : `A session with ${origin.friendName ?? "an unknown friend"} (${origin.trustLevel ?? "unknown trust"}) reported: ${record.ariWords}`,
     `I tried: ${record.tried}`,
     `${record.failedTool ? `${record.failedTool} failed` : "I gave up"}: ${record.error}`,
     `Conversation: ${origin.channel ?? "unknown"}/${origin.key ?? "unknown"}`,

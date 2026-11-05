@@ -4,6 +4,7 @@ import { runPrivateRuntimeTurn, type PreparedHabitContext } from "./private-runt
 import type { PriorHabitSessionSummaryInfo } from "./habit-turn-message"
 import type { PrivateTurnDecision } from "../heart/private-runtime"
 import { renewExternalEventClaim, settleExternalEventFailureIfOwned, type ExternalEventLeaseContext } from "../heart/external-events/router"
+import { isCriticalNoticeKey } from "./telegram-handoff"
 import { emitNervesEvent } from "../nerves/runtime"
 import { getAgentName, getAgentRoot } from "../heart/identity"
 import { getPrivateRuntimePendingDir, hasPendingMessages } from "../mind/pending"
@@ -40,7 +41,7 @@ import {
   usageMetadataFromUsageData,
   type RunLedgerLifecycle,
 } from "../heart/run-ledger"
-import { reserveAutonomyBudget, resolveAutonomyBudgetPolicy, type AutonomyBudgetDecision } from "../heart/autonomy-budget"
+import { recordAutonomyFailure, reserveAutonomyBudget, resolveAutonomyBudgetPolicy, type AutonomyBudgetDecision, type AutonomyStormInput } from "../heart/autonomy-budget"
 import { privateRuntimeHabitRejectionReason } from "./habit-lifecycle-guard"
 
 export type PrivateRuntimeWorkerReason = "boot" | "habit" | "instinct" | "await"
@@ -249,23 +250,55 @@ function reserveHabitAutonomyBudget(habitRun: PreparedHabitRun, nowIso: string):
 }
 
 /**
- * Cap on consecutive `instinct` follow-on turns triggered by `hasPendingWork()`
- * with no externally-queued work in between. Without this cap, a turn that
- * writes anything back into the private-runtime pending dir as a side effect of
- * processing (e.g. a surface tool routing a response) puts the worker into
- * a self-sustaining loop where the next turn's drain produces another write,
- * and so on. Real workflows rarely chain more than 2–3 instinct turns; an
- * external trigger (habit, poke, chat) resets the counter so legitimate
- * follow-on work is unaffected.
- *
- * Three feels right: legitimate cascading follow-ups (e.g. processing a
- * batch of delegated returns) get through; a true self-loop caps fast.
+ * External-event turns are paid model work, so they draw on their own daily allowance (the agent's
+ * habitPaidTurnsPerDay, counted under the "external-events" name so a busy event day cannot starve a
+ * habit) and share one storm breaker: three failed event turns within ten minutes pause event turns
+ * for thirty minutes.
  */
-export const MAX_CONSECUTIVE_INSTINCT_TURNS = 3
+const EXTERNAL_EVENT_BUDGET_NAME = "external-events"
+
+function externalEventStorm(agentName: string): AutonomyStormInput {
+  return {
+    agent: agentName,
+    triggerType: "habit",
+    sourceKind: "private-runtime",
+    senseOrHabit: EXTERNAL_EVENT_BUDGET_NAME,
+    provider: "model",
+    target: { kind: EXTERNAL_EVENT_BUDGET_NAME },
+    normalizedErrorName: "external_event_turn_failed",
+    normalizedErrorCode: "turn_failed",
+    codeLocation: "private-runtime-worker",
+    idempotencyBucket: EXTERNAL_EVENT_BUDGET_NAME,
+  }
+}
+
+/** A blocked event turn waits this long (the breaker's block length) and keeps its retry attempts. */
+const EXTERNAL_EVENT_BLOCKED_DEFER_MS = 30 * 60_000
+
+function reserveExternalEventAutonomyBudget(event: ExternalEventLeaseContext, nowIso: string): AutonomyBudgetDecision | null {
+  // Disk, parity and array failures always get a turn: the owner must hear about them even on a busy day.
+  if ([event, ...(event.relatedEvents ?? [])].some((member) => isCriticalNoticeKey(member.eventId))) return null
+  const agentRoot = getAgentRoot()
+  const agentName = getAgentName()
+  return reserveAutonomyBudget(agentRoot, {
+    agent: agentName,
+    triggerType: "habit",
+    sourceKind: "private-runtime",
+    senseOrHabit: EXTERNAL_EVENT_BUDGET_NAME,
+    target: { kind: EXTERNAL_EVENT_BUDGET_NAME },
+    idempotencyKey: `event:${event.recordPath}:${event.generation}:${event.claimOwner}`,
+    now: nowIso,
+    storm: externalEventStorm(agentName),
+  }, resolveAutonomyBudgetPolicy(agentRoot, agentName))
+}
+
+function recordExternalEventTurnFailure(nowIso: string): void {
+  const agentRoot = getAgentRoot()
+  recordAutonomyFailure(agentRoot, { ...externalEventStorm(getAgentName()), occurredAt: nowIso }, resolveAutonomyBudgetPolicy(agentRoot, getAgentName()))
+}
 
 /**
- * Habit recursion detector thresholds. The instinct cap above protects
- * against pending-dir self-loops; this protects against the *external*
+ * Habit recursion detector thresholds. This protects against the *external*
  * IPC self-loop where heartbeat-shaped messages get re-issued faster
  * than their cadence — e.g. a hook misconfigured to repost on every
  * heartbeat, a daemon retry storm, or a stuck timer firing back-to-back.
@@ -630,8 +663,6 @@ export function createPrivateRuntimeWorker(
       let nextExternalEventHeartbeat = externalEvent ? startExternalEventHeartbeat(externalEvent) : undefined
       let nextCompletion: QueueEntry["completion"] | undefined = completion
       let nextNoSend = reason === "habit" ? noSend : undefined
-      let nextHabitRun: PreparedHabitRun | null = null
-      let consecutiveInstinctTurns = reason === "instinct" ? 1 : 0
 
       runLoop: do {
         const currentReason = nextReason
@@ -645,11 +676,8 @@ export function createPrivateRuntimeWorker(
         nextExternalEventHeartbeat = undefined
         nextCompletion = undefined
         const currentHabitRun: PreparedHabitRun | null = currentReason === "habit" && currentHabitName
-          ? nextHabitRun && nextHabitRun.habit.name === currentHabitName
-            ? nextHabitRun
-            : await prepareHabitRun(currentHabitName, currentTrigger, new Date(nowSource()).toISOString())
+          ? await prepareHabitRun(currentHabitName, currentTrigger, new Date(nowSource()).toISOString())
           : null
-        nextHabitRun = null
         let currentHabitRunFinalized = false
         const finalizeCurrentHabitRun = (): void => {
           if (!currentHabitRun || currentHabitRunFinalized) return
@@ -666,6 +694,8 @@ export function createPrivateRuntimeWorker(
           const turnStartedAt = new Date(nowSource()).toISOString()
           const autonomyDecision = currentHabitRun && !currentHabitRun.blockedReason
             ? reserveHabitAutonomyBudget(currentHabitRun, turnStartedAt)
+            : currentExternalEvent
+            ? reserveExternalEventAutonomyBudget(currentExternalEvent, turnStartedAt)
             : null
           if (currentHabitRun) recordHabitStartIfNeeded(currentHabitRun)
           if (currentHabitRun?.blockedReason) {
@@ -745,15 +775,19 @@ export function createPrivateRuntimeWorker(
             : blockedAutonomyTurn || turnOutcome === "blocked" || turnOutcome === "suspended"
               ? "external-event turn was blocked"
               : "external-event turn completed without a terminal disposition"
+          const settledAt = nowSource()
+          const deferUntil = blockedAutonomyTurn ? new Date(settledAt + EXTERNAL_EVENT_BLOCKED_DEFER_MS).toISOString() : undefined
           let settledIncomplete = false
           for (const member of [currentExternalEvent, ...(currentExternalEvent.relatedEvents ?? [])]) {
             const result = settleExternalEventFailureIfOwned(member.recordPath, {
               owner: member.claimOwner,
               expectedGeneration: member.generation,
               error: failureReason,
+              ...(deferUntil ? { deferUntil } : {}),
             })
             settledIncomplete = result.settled || settledIncomplete
           }
+          if (!blockedAutonomyTurn && (turnErrors.length > 0 || turnOutcome === "errored" || settledIncomplete)) recordExternalEventTurnFailure(new Date(settledAt).toISOString())
           if (settledIncomplete && turnErrors.length === 0) turnErrors.push(failureReason)
         }
         if (currentReason === "habit" && currentHabitName === "heartbeat") {
@@ -772,8 +806,7 @@ export function createPrivateRuntimeWorker(
           if (activeCompletion === currentCompletion) activeCompletion = undefined
         }
 
-        // Drain queue first. Externally-queued work resets the instinct cap
-        // because a real outside trigger arrived between turns.
+        // Drain queue first: queued entries carry their own decisions.
         if (queue.length > 0) settleCurrentCompletion()
         while (queue.length > 0) {
           const next = queue.shift()!
@@ -800,7 +833,6 @@ export function createPrivateRuntimeWorker(
           nextExternalEventHeartbeat = next.stopExternalEventHeartbeat
           nextCompletion = next.completion
           nextNoSend = next.reason === "habit" ? next.noSend : undefined
-          consecutiveInstinctTurns = nextReason === "instinct" ? consecutiveInstinctTurns + 1 : 0
           continue runLoop
         }
 
@@ -810,10 +842,9 @@ export function createPrivateRuntimeWorker(
           break
         }
 
-        // Then check hasPendingWork fallback. This is the loop site: any
-        // tool that writes to the private-runtime pending dir during a turn
-        // would cause hasPendingWork() to be true here, producing a
-        // self-sustaining "instinct" loop with no external input. Cap it.
+        // Then check hasPendingWork. A follow-up turn would need its own
+        // approved private-turn decision, which only the daemon issues, so the
+        // run ends here and the pending work waits for the next authorized turn.
         if (hasPendingWork(currentHabitRun?.paths.pendingDir)) {
           if (currentExternalEvent && (turnErrors.length > 0
             || (turnResult && typeof turnResult === "object" && "turnOutcome" in turnResult && turnResult.turnOutcome === "errored"))) {
@@ -822,49 +853,19 @@ export function createPrivateRuntimeWorker(
             break
           }
           clearHeartbeatRestShield()
-          if (consecutiveInstinctTurns >= MAX_CONSECUTIVE_INSTINCT_TURNS) {
-            emitNervesEvent({
-              level: "warn",
-              component: "senses",
-              event: "senses.private_runtime_worker_instinct_loop_capped",
-              message: "private-runtime worker stopped chaining instinct turns; pending work remains for next external trigger",
-              meta: {
-                consecutiveInstinctTurns,
-                cap: MAX_CONSECUTIVE_INSTINCT_TURNS,
-                lastReason: nextReason,
-              },
-            })
-            finalizeCurrentHabitRun()
-            settleCurrentCompletion()
-            break
-          }
-          if (currentReason === "habit" && currentHabitName && currentHabitRun) {
-            consecutiveInstinctTurns += 1
-            nextReason = "habit"
-            nextTaskId = undefined
-            nextHabitName = currentHabitName
-            nextAwaitName = undefined
-            nextTrigger = currentTrigger
-            nextPrivateTurnDecision = undefined
-            nextExternalEvent = undefined
-            nextExternalEventHeartbeat = undefined
-            nextNoSend = currentNoSend
-            nextHabitRun = currentHabitRun
-          } else {
-            finalizeCurrentHabitRun()
-            consecutiveInstinctTurns += 1
-            nextReason = "instinct"
-            nextTaskId = undefined
-            nextHabitName = undefined
-            nextAwaitName = undefined
-            nextTrigger = undefined
-            nextPrivateTurnDecision = undefined
-            nextExternalEvent = undefined
-            nextExternalEventHeartbeat = undefined
-            nextNoSend = undefined
-          }
-          nextCompletion = currentCompletion
-          continue
+          // Pending work remains and the queue is empty. A chained turn would
+          // carry no daemon-issued decision, and the provider boundary refuses
+          // decisionless turns, so end the run; the next daemon trigger resumes.
+          emitNervesEvent({
+            level: "info",
+            component: "senses",
+            event: "senses.private_runtime_worker_chain_needs_decision",
+            message: "private-runtime worker stopped: pending work remains but a chained turn has no approved decision",
+            meta: { reason: currentReason, habitName: currentHabitName ?? null },
+          })
+          finalizeCurrentHabitRun()
+          settleCurrentCompletion()
+          break
         }
 
         finalizeCurrentHabitRun()

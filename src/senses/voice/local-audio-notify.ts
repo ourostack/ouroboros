@@ -41,11 +41,13 @@ export function defaultOwnerNoticeDeliverers(agentName: string): Partial<Record<
         text: request.content,
         intent: request.intent,
         authorizingSession: request.authorizingSession,
+        origin: "voice",
       } as Parameters<typeof sendProactiveBlueBubblesMessageToSession>[0])
       if (result.delivered) return { status: "delivered_now", detail: "sent to the bluebubbles chat now" }
       if (result.reason === "missing_target") return { status: "blocked", detail: "bluebubbles could not resolve a routable target for that session" }
       if (result.reason === "blocked_meta_content") return { status: "blocked", detail: "blocked: contains internal meta markers" }
       if (result.reason === "send_error") return { status: "failed", detail: "bluebubbles send failed" }
+      if (result.reason === "host_account_refused") return { status: "failed", detail: "the BlueBubbles server is not signed in to this agent's account, so nothing was sent" }
       return { status: "unavailable", detail: "live delivery unavailable right now; queued for the next active turn" }
     },
     telegram: async (request) => {

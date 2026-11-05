@@ -7,7 +7,7 @@ import { loadSessionEnvelopeFile, projectedSessionEventIds, selectEffectiveSessi
 import { currentSessionTurnLease, readSessionTransaction, withSessionTurnLease, writeSessionTransaction, type SessionTurnLease } from "../mind/session-transaction"
 import { escapeTelegramHtml, sendTelegramText, splitTelegramText, TelegramApiError, type TelegramBotApi } from "./telegram-client"
 
-export const FIXED_ADMISSION_ACKNOWLEDGEMENT = "Thanks — I’ve asked Ari. Your message is still unread and unprocessed; I’ll only read it if Ari welcomes you in."
+export const FIXED_ADMISSION_ACKNOWLEDGEMENT = "Thanks — I’ve asked the person I work for. Your message is still unread and unprocessed; I’ll only read it if they welcome you in."
 export const FIXED_USENET_SYSTEM_FAILSAFE = "Quick heads-up: I paused downloads because the server was discarding most of what it fetched. Nothing needs doing this second — I’ll investigate and follow up when I’m back online."
 const SYSTEM_FAILSAFE_UNAVAILABLE_MS = 2 * 60_000
 
@@ -300,6 +300,11 @@ export class FileTelegramEffectJournal {
   readIfExists(id: string): TelegramEffectArtifact | null {
     const filePath = this.artifactPath(id)
     return fs.existsSync(filePath) ? this.read(id) : null
+  }
+
+  /** The artifact an idempotency key already owns, if any; its existence means the journal owns that delivery. */
+  readByIdempotencyKey(idempotencyKey: string): TelegramEffectArtifact | null {
+    return this.readIfExists(artifactId(idempotencyKey))
   }
 
   quarantineInvalid(id: string, reason: string): void {

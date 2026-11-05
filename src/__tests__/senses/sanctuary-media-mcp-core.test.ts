@@ -7,7 +7,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 // it has no TypeScript types. It is imported here for its two pure exports, which
 // are the deterministic core the agent must never have to reason out itself.
 // @ts-expect-error - untyped hand-written module deployed verbatim
-import { classifyStall, computeDownloadState, diagnose, queueRowView, STALL_OWNER_CHOICES } from "../../../deploy/unraid/sanctuary.ouro/mcp/media-mcp.mjs"
+import { classifyStall, computeDownloadState, diagnose, queueRowView, shelfItem, STALL_OWNER_CHOICES } from "../../../deploy/unraid/sanctuary.ouro/mcp/media-mcp.mjs"
 
 const GB = 1073741824
 const hoursAgo = (now: number, h: number) => new Date(now - h * 3_600_000).toISOString()
@@ -1403,5 +1403,37 @@ describe("media MCP — media_fill_missing", () => {
     expect(mod.unknownArguments("media_chain_health", { x: 1 }).message).toContain("no parameters")
     expect(mod.TOOLS.find((t: any) => t.name === "media_fill_missing")._meta).toEqual({ "ouro.bot/timeoutMs": 240_000 })
     expect(mod.TOOLS.find((t: any) => t.name === "media_fill_missing").annotations).toBeUndefined()
+  })
+})
+
+describe("shelfItem request and shelf state", () => {
+  const movie = (mediaInfo?: Record<string, unknown>) => shelfItem({ id: 7, mediaType: "movie", title: "Heat", releaseDate: "1995-12-15", ...(mediaInfo ? { mediaInfo } : {}) })
+
+  it("never reports a request that Jellyseerr does not list (the Oct 15 'already requested, processing' lie)", () => {
+    const tracked = movie({ status: 3, externalServiceId: 42, requests: [], downloadStatus: [] })
+    expect(tracked.request_state).toBe("never_requested")
+    expect(tracked.shelf_state).toBe("in_radarr_not_downloading")
+    expect(tracked.radarr_id).toBe(42)
+    expect(tracked.sonarr_id).toBeNull()
+  })
+
+  it("names a real download and the latest real request", () => {
+    const downloading = movie({ status: 3, requests: [{ status: 1 }, { status: 2 }], downloadStatus: [{ title: "Heat" }] })
+    expect(downloading.shelf_state).toBe("downloading")
+    expect(downloading.request_state).toBe("approved")
+    expect(movie({ status: 2, requests: [{ status: 9 }] }).request_state).toBe("requested")
+  })
+
+  it("says it does not know when the payload carries no request list", () => {
+    expect(movie({ status: 5 }).request_state).toBe("unknown_check_media_request_status")
+    expect(movie().request_state).toBe("never_requested")
+    expect(movie().shelf_state).toBe("not_on_shelf")
+  })
+
+  it("puts a series' arr id in sonarr_id only", () => {
+    const series = shelfItem({ id: 9, mediaType: "tv", name: "The Chef Show", firstAirDate: "2019-06-07", mediaInfo: { status: 3, externalServiceId: 5, requests: [] } })
+    expect(series.shelf_state).toBe("in_sonarr_not_downloading")
+    expect(series.sonarr_id).toBe(5)
+    expect(series.radarr_id).toBeNull()
   })
 })

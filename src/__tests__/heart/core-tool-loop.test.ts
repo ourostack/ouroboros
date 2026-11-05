@@ -20,7 +20,7 @@ vi.mock("fs", () => ({
 }))
 
 vi.mock("child_process", () => ({
-  execSync: vi.fn(),
+  exec: vi.fn(),
   spawnSync: vi.fn(),
   spawn: vi.fn(),
 }))
@@ -185,7 +185,7 @@ describe("relationship-scoped canonical option boundaries", () => {
     const shellSessions = await import("../../repertoire/shell-sessions")
     const { runAgent } = await import("../../heart/core")
     vi.mocked(childProcess.spawn).mockReset().mockImplementation(actualChildProcess.spawn)
-    vi.mocked(childProcess.execSync).mockReset().mockReturnValue("foreground result")
+    vi.mocked(childProcess.exec).mockReset().mockImplementation(actualChildProcess.exec)
     const owner = { agentName: "sanctuary", agentRoot: "/mock/repo/sanctuary" }
     const command = `exec ${JSON.stringify(process.execPath)} -e ${JSON.stringify("process.stdin.resume(); process.stdout.write('owned-ready')")}`
     const live = context()
@@ -195,11 +195,15 @@ describe("relationship-scoped canonical option boundaries", () => {
       .mockReturnValueOnce(call("shell", { command, ...(background === undefined ? {} : { background }) }))
       .mockReturnValueOnce(call("settle", { answer: "finished" }))
     try {
-      await runAgent([{ role: "user", content: "run the bounded local shell fixture" }], makeCallbacks(), "telegram", undefined, {
+      const messages: ChatCompletionMessageParam[] = [{ role: "user", content: "run the bounded local shell fixture" }]
+      await runAgent(messages, makeCallbacks(), "telegram", undefined, {
         toolContext: live,
       })
       expect(childProcess.spawn).toHaveBeenCalledTimes(background === true ? 1 : 0)
-      expect(childProcess.execSync).toHaveBeenCalledTimes(background === false || background === undefined ? 1 : 0)
+      expect(childProcess.exec).toHaveBeenCalledTimes(background === false || background === undefined ? 1 : 0)
+      if (background === false || background === undefined) {
+        expect(messages).toContainEqual(expect.objectContaining({ role: "tool", content: "owned-ready" }))
+      }
       if (background === true) {
         await vi.waitFor(() => expect(shellSessions.listShellSessions(owner)).toHaveLength(1))
         const [session] = shellSessions.listShellSessions(owner)
@@ -2152,16 +2156,42 @@ describe("runAgent tool loop guard", () => {
       expect(callbacks.onError).toHaveBeenCalledWith(expect.objectContaining({ message: expect.stringContaining("iteration limit exhausted") }), "terminal")
     })
 
-    it("keeps the old error when settle is not available on the channel", async () => {
+    const restCall = (note: string) => makeStream([makeChunk(undefined, [{ index: 0, id: "call_rest", function: { name: "rest", arguments: JSON.stringify({ note }) } }])])
+
+    it("gives a private turn one rest-only wrap-up call instead of erroring when the budget is used up", async () => {
       const { runAgent } = await import("../../heart/core")
       let response = 0
       mockCreate.mockImplementation(() => probeCall(`call_${++response}`, `v${response}`))
       const callbacks = makeCallbacks()
       const result = await runAgent([{ role: "user", content: "keep probing" }], callbacks, "inner", undefined, {
-        tools: [probeTool] as any, execTool: vi.fn().mockResolvedValue("ok"), toolContext: { signin: async () => undefined },
+        tools: [probeTool] as any, execTool: vi.fn().mockResolvedValue("ok"), toolContext: { signin: async () => undefined, delegatedOrigins: [{ id: "held" }] },
+        pendingMessages: [{ from: "friend", content: "new" }],
       } as any)
       expect(result.outcome).toBe("errored")
-      expect(callbacks.onError).toHaveBeenCalledWith(expect.objectContaining({ message: "provider iteration limit exhausted at response 24 before tool execution" }), "terminal")
+      const wrapUpRequest = mockCreate.mock.calls.at(-1)![0]
+      expect((wrapUpRequest.tools ?? []).map((tool: any) => tool.function?.name ?? tool.name)).toEqual(["rest"])
+      expect(JSON.stringify(wrapUpRequest.messages)).toContain("call rest now with a short note")
+      mockCreate.mockReset()
+      response = 0
+      mockCreate.mockImplementation(() => response < 24 ? probeCall(`call_${++response}`, `v${response}`) : restCall("probed 23 values; pick up at v24"))
+      const rested = await runAgent([{ role: "user", content: "keep probing" }], makeCallbacks(), "inner", undefined, {
+        tools: [probeTool] as any, execTool: vi.fn().mockResolvedValue("ok"), toolContext: { signin: async () => undefined, delegatedOrigins: [{ id: "held" }] },
+        pendingMessages: [{ from: "friend", content: "new" }],
+      } as any)
+      expect(rested.outcome).not.toBe("errored")
+    })
+
+    it("keeps the iteration-limit error when the turn's tools offer neither settle nor rest", async () => {
+      const { runAgent } = await import("../../heart/core")
+      let response = 0
+      mockCreate.mockImplementation(() => probeCall(`call_${++response}`, `v${response}`))
+      const callbacks = makeCallbacks()
+      const result = await runAgent([{ role: "user", content: "keep probing" }], callbacks, "inner", undefined, {
+        tools: [probeTool] as any, execTool: vi.fn().mockResolvedValue("ok"), hardDisableTools: true,
+        toolContext: { signin: async () => undefined, delegatedOrigins: [{ id: "held" }] },
+      } as any)
+      expect(result.outcome).toBe("errored")
+      expect(callbacks.onError).toHaveBeenCalledWith(expect.objectContaining({ message: expect.stringContaining("before tool execution") }), "terminal")
     })
   })
 
@@ -2964,6 +2994,21 @@ describe("runAgent tool loop guard", () => {
       expect(boundaries).toContainEqual(expect.objectContaining({ name: "shell", reason: "dependency_rejected", invoked: false, sideEffect: false }))
     })
 
+    it("lets a call through after the same contract rejected it twice in one turn", async () => {
+      mockCreate
+        .mockReturnValueOnce(streamed("unraid_get_system", {}, "contract-1"))
+        .mockReturnValueOnce(streamed("unraid_get_system", {}, "contract-2"))
+        .mockReturnValueOnce(streamed("unraid_get_system", {}, "contract-3"))
+        .mockReturnValueOnce(streamed("settle", { answer: "done", intent: "complete" }, "contract-settle"))
+      const execTool = vi.fn().mockResolvedValue(JSON.stringify({ ok: true }))
+      const { runAgent } = await import("../../heart/core")
+      await runAgent([{ role: "user", content: "status" }], makeCallbacks(), "cli", undefined, {
+        tools: [readTool("unraid_get_system")], execTool, toolContext: { signin: async () => undefined },
+        requiredToolCalls: { names: [], retryMessage: "unused", validateToolCallBeforeDispatch: () => "Search for the requested title first." },
+      } as any)
+      expect(execTool).toHaveBeenCalledTimes(1)
+    })
+
     it("fails closed when an initially required tool is not advertised", async () => {
       const { runAgent } = await import("../../heart/core")
       await expect(runAgent([{ role: "user", content: "status" }], makeCallbacks(), "telegram", undefined, {
@@ -3477,7 +3522,7 @@ describe("settle answer gates (opt-in per agent)", () => {
 
   const settleCall = (id: string, answer: string, intent = "complete") => makeStream([makeChunk(undefined, [{ index: 0, id, function: { name: "settle", arguments: JSON.stringify({ answer, intent }) } }])])
   const INVENTED = "the show has Philomena, Magma and Bunty. same energy."
-  const GROUNDED = "the books have Lindon and Yerin. same energy."
+  const GROUNDED = "the books have Mensah and Gurathin. same energy."
   const DISCLOSED = "I couldn't verify Philomena, Magma, Bunty against a source, so treat those as unconfirmed.\n\n" + INVENTED
   const searchTool = [{ type: "function", function: { name: "web_search", description: "search", parameters: { type: "object", properties: { query: { type: "string" } } } } }]
   const GATES = { sourceGrounding: true, brevity: true }
@@ -3485,8 +3530,8 @@ describe("settle answer gates (opt-in per agent)", () => {
   const run = async (opts: { execTool?: any; gates?: Record<string, boolean> | undefined; user?: string[]; prior?: any[]; extra?: Record<string, unknown>; context?: Record<string, unknown> } = {}) => {
     const visible: string[] = []
     const { runAgent } = await import("../../heart/core")
-    const messages = (opts.user ?? ["channel more dross from cradle energy"]).flatMap((text, index) => (index === 0 ? [] : [{ role: "assistant", content: "ok." }]).concat([{ role: "user", content: text }]) as any[])
-    const history = [...(opts.prior ?? []), { role: "user", content: opts.user?.[0] ?? "channel more dross from cradle energy" }, ...messages.slice(0)] as any[]
+    const messages = (opts.user ?? ["channel more perihelion from murderbot energy"]).flatMap((text, index) => (index === 0 ? [] : [{ role: "assistant", content: "ok." }]).concat([{ role: "user", content: text }]) as any[])
+    const history = [...(opts.prior ?? []), { role: "user", content: opts.user?.[0] ?? "channel more perihelion from murderbot energy" }, ...messages.slice(0)] as any[]
     const result = await runAgent(history, makeCallbacks({ onTextChunk: vi.fn((text: string) => { visible.push(text) }), onClearText: vi.fn(() => { visible.length = 0 }) }), "telegram", undefined, {
       tools: searchTool as any, execTool: opts.execTool ?? vi.fn(), toolContext: { signin: async () => undefined, ...(opts.gates ? { answerGates: opts.gates } : {}), ...(opts.context ? { context: opts.context as any } : {}) }, ...opts.extra,
     })
@@ -3498,7 +3543,7 @@ describe("settle answer gates (opt-in per agent)", () => {
       mockCreate.mockReturnValueOnce(settleCall("s1", INVENTED))
       mockCreate.mockReturnValueOnce(searchCall("ws"))
       mockCreate.mockReturnValueOnce(settleCall("s2", GROUNDED))
-      const execTool = vi.fn(async () => "Lindon and Yerin are the leads of Cradle")
+      const execTool = vi.fn(async () => "Mensah and Gurathin are the leads of Murderbot")
       const { result, visible } = await run({ execTool, gates: GATES })
       expect(result.outcome).toBe("settled")
       expect(execTool).toHaveBeenCalledTimes(1)
@@ -3532,14 +3577,14 @@ describe("settle answer gates (opt-in per agent)", () => {
     })
 
     it("treats names from earlier turns as known and arms the name rule from the latest message only", async () => {
-      const prior = [{ role: "user", content: "what movies could I watch?" }, { role: "assistant", content: "Ozriel is in Cradle." }, { role: "tool", content: "Eithan too", tool_call_id: "t" }, { role: "assistant", content: "ok." }]
-      const answer = "**ozriel** and **eithan** fit the cast. who else."
+      const prior = [{ role: "user", content: "what movies could I watch?" }, { role: "assistant", content: "Bharadwaj is in Murderbot." }, { role: "tool", content: "Ratthi too", tool_call_id: "t" }, { role: "assistant", content: "ok." }]
+      const answer = "**bharadwaj** and **ratthi** fit the cast. who else."
       mockCreate.mockReturnValueOnce(settleCall("known", answer))
       const known = await run({ gates: GATES, prior, user: ["who is in the cast?"] })
       expect(mockCreate).toHaveBeenCalledTimes(1)
       expect(known.visible.join("")).toBe(answer)
       mockCreate.mockReset()
-      mockCreate.mockReturnValueOnce(settleCall("fresh", "**ozriel** — the reaper."))
+      mockCreate.mockReturnValueOnce(settleCall("fresh", "**bharadwaj** — the reaper."))
       mockCreate.mockReturnValueOnce(searchCall("ws"))
       mockCreate.mockReturnValueOnce(settleCall("again", "nothing found."))
       await run({ gates: GATES, user: ["who is in the cast?"], execTool: vi.fn(async () => "nothing") })
@@ -3547,11 +3592,11 @@ describe("settle answer gates (opt-in per agent)", () => {
     })
 
     it("ends the person's turn where it began, so the engine's own nudges and earlier attempts do not launder a name", async () => {
-      for (const id of ["a", "b", "c"]) mockCreate.mockReturnValueOnce(settleCall(id, "**ozriel** — the reaper."))
+      for (const id of ["a", "b", "c"]) mockCreate.mockReturnValueOnce(settleCall(id, "**bharadwaj** — the reaper."))
       const { result, visible } = await run({ gates: GATES, user: ["who is in the cast?"] })
       expect(result.outcome).toBe("settled")
       expect(mockCreate).toHaveBeenCalledTimes(3)
-      expect(visible.join("")).toContain("I couldn't verify ozriel")
+      expect(visible.join("")).toContain("I couldn't verify bharadwaj")
     })
 
     // alpha.886 replay (session 9918e561): the model answered in plain text, no settle call, and the invented cast went out unchecked.
@@ -3559,7 +3604,7 @@ describe("settle answer gates (opt-in per agent)", () => {
       mockCreate.mockReturnValueOnce(makeStream([makeChunk(INVENTED)]))
       mockCreate.mockReturnValueOnce(searchCall("ws"))
       mockCreate.mockReturnValueOnce(settleCall("s2", GROUNDED))
-      const execTool = vi.fn(async () => "Lindon and Yerin are the leads of Cradle")
+      const execTool = vi.fn(async () => "Mensah and Gurathin are the leads of Murderbot")
       const { result, visible } = await run({ execTool, gates: GATES })
       expect(result.outcome).toBe("settled")
       expect(execTool).toHaveBeenCalledTimes(1)
@@ -3668,13 +3713,15 @@ describe("settle answer gates (opt-in per agent)", () => {
 
     it("keeps the reason private and lets a brief reply end with a question", async () => {
       mockCreate.mockReturnValueOnce(settleCall("long", LONG))
-      mockCreate.mockReturnValueOnce(settleCall("short", "Hi Rachel! Silly or swoony tonight?"))
+      mockCreate.mockReturnValueOnce(settleCall("short", "Hi Sam! Silly or swoony tonight?"))
       const { visible } = await run({ gates: GATES, user: ask })
       expect(JSON.stringify(mockCreate.mock.calls[1][0].messages)).toContain("private runtime note, not from the person")
-      expect(visible.join("")).toBe("Hi Rachel! Silly or swoony tonight?")
+      // 2026-11-04, alpha.974 on Claude: told nothing about delivery, the retry opened "one correction: i shortened a title" and the person got only that.
+      expect(JSON.stringify(mockCreate.mock.calls[1][0].messages)).toContain("your draft was not sent and the person has not seen it")
+      expect(visible.join("")).toBe("Hi Sam! Silly or swoony tonight?")
     })
 
-    // 2026-10-11, Rach handoff: after a brevity rejection the model answered the note, and the note reached Rachel.
+    // 2026-10-11, spouse handoff: after a brevity rejection the model answered the note, and the note reached Sam.
     const LEAKED = "got it. dummy bad, no markdown, no question at the end. just plain answer, cap it."
     it("never delivers a retry that only answers the runtime note; the last real draft goes out instead", async () => {
       mockCreate.mockReturnValueOnce(settleCall("long", LONG))
@@ -3683,7 +3730,7 @@ describe("settle answer gates (opt-in per agent)", () => {
       expect(result.outcome).toBe("settled")
       expect(visible.join("")).toBe(LONG)
       expect(visible.join("")).not.toContain("dummy bad")
-      // The history holds what Rachel got, so the next turn does not see itself having said the note.
+      // The history holds what Sam got, so the next turn does not see itself having said the note.
       expect(JSON.stringify(history)).not.toContain("dummy bad")
     })
 
@@ -3715,7 +3762,7 @@ describe("settle answer gates (opt-in per agent)", () => {
       mockCreate.mockReturnValueOnce(settleCall("b", INVENTED))
       mockCreate.mockReturnValueOnce(settleCall("c", `${INVENTED} ${"padding words here. ".repeat(40)}`))
       mockCreate.mockReturnValueOnce(settleCall("d", "short."))
-      const { visible } = await run({ gates: GATES, user: ["be brief", "name the cradle characters"] })
+      const { visible } = await run({ gates: GATES, user: ["be brief", "name the murderbot characters"] })
       expect(visible.join("")).toBe("short.")
     })
   })

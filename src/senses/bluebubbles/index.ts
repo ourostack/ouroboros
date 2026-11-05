@@ -1,7 +1,7 @@
 import * as fs from "node:fs"
 import * as http from "node:http"
 import * as path from "node:path"
-import { createHash } from "node:crypto"
+import { createHash, randomUUID } from "node:crypto"
 import OpenAI from "openai"
 import { runAgent, type ChannelCallbacks, createSummarize } from "../../heart/core"
 import { getBlueBubblesChannelConfig, getBlueBubblesConfig, sessionPath } from "../../heart/config"
@@ -24,10 +24,14 @@ import { buildSystem, flattenSystemPrompt } from "../../mind/prompt"
 import { getSharedMcpManager } from "../../repertoire/mcp-manager"
 import { emitNervesEvent } from "../../nerves/runtime"
 import { withSessionTurnLease, type SessionTurnLease } from "../../mind/session-transaction"
+import { drainOutboundRecords, OUTBOUND_ORIGIN_LABELS, recordOutboundInSession } from "../../mind/outbound-record"
+import { resolveAlertKey } from "../../heart/awaiting/await-alert"
+import type { OutboundOrigin } from "../../heart/session-events"
 import {
   buildOrientationFrame,
   type OrientationConversationKind,
   type OrientationSource,
+  type ReplyingToAuthor,
 } from "../../heart/orientation-frame"
 import { getProactiveInternalContentBlockReason, emitProactiveInternalContentBlocked } from "../proactive-content-guard"
 import { containsInternalMetaMarkers, emitBluebubblesMetaBlocked } from "../bluebubbles-meta-guard"
@@ -41,8 +45,8 @@ import {
   type BlueBubblesNormalizedEvent,
   type BlueBubblesNormalizedMessage,
 } from "./model"
-import { BlueBubblesSendError, createBlueBubblesClient, type BlueBubblesClient } from "./client"
-import { verifyBlueBubblesServerAccount } from "./host-account-verifier"
+import { BlueBubblesSendError, createBlueBubblesClient, type BlueBubblesClient, type BlueBubblesRepliedMessage } from "./client"
+import { BlueBubblesHostAccountError, verifyBlueBubblesServerAccount } from "./host-account-verifier"
 import { createBlueBubblesWebhookReconciler } from "./webhook-registration"
 import {
   listRecordedBlueBubblesInbound,
@@ -112,6 +116,8 @@ import {
 import {
   markBlueBubblesOutboundAccepted,
   markBlueBubblesOutboundFailed,
+  markBlueBubblesOutboundPendingManualVerification,
+  blueBubblesOutboundTextMatches,
   readBlueBubblesOutboundRecordByIdempotencyKey,
   reserveBlueBubblesOutbound,
   type BlueBubblesAttachmentIdentityInput,
@@ -149,6 +155,11 @@ const BLUEBUBBLES_VISIBLE_OUTBOUND_STATUSES = new Set<BlueBubblesOutboundRecord[
   "local-visible",
   "delivered",
 ])
+// A reply whose final send keeps failing stays pending for recovery this many
+// times, then gets a terminal receipt so one message cannot drain the budget.
+const BLUEBUBBLES_REPLY_DELIVERY_MAX_ATTEMPTS = 3
+// A timed-out send may still land, so wait before checking the chat and retrying.
+const BLUEBUBBLES_REPLY_RETRY_DELAY_MS = 10 * 60_000
 export const BLUEBUBBLES_SEMANTIC_GENERATION_RETENTION_MS = 15 * 60_000
 
 export function pruneBlueBubblesSemanticObservationGenerations(nowMs = Date.now()): number {
@@ -418,11 +429,15 @@ export interface ProactiveBlueBubblesSessionSendParams {
     key: string
     trustLevel?: string
   }
+  /** Identifies this delivery when it is saved into the chat's session; one is generated per send when absent. */
+  deliveryId?: string
+  /** Who is sending, for the `[you sent this via ...]` prefix the saved message carries. Defaults to `proactive`. */
+  origin?: OutboundOrigin
 }
 
 export interface ProactiveBlueBubblesSessionSendResult {
   delivered: boolean
-  reason?: "friend_not_found" | "trust_skip" | "missing_target" | "send_error" | "group_blocked" | "internal_content_blocked" | "blocked_meta_content"
+  reason?: "friend_not_found" | "trust_skip" | "missing_target" | "send_error" | "group_blocked" | "internal_content_blocked" | "blocked_meta_content" | "host_account_refused"
 }
 
 const defaultDeps: RuntimeDeps = {
@@ -461,9 +476,10 @@ const defaultDeps: RuntimeDeps = {
 const BLUEBUBBLES_RUNTIME_SYNC_INTERVAL_MS = 30_000
 const BLUEBUBBLES_RECOVERY_PASS_DELAY_MS = 1_000
 const BLUEBUBBLES_RECOVERY_PASS_INTERVAL_MS = 30_000
-const BLUEBUBBLES_LIVE_TURN_TIMEOUT_MS = 2 * 60_000
-const BLUEBUBBLES_RECOVERY_TURN_TIMEOUT_MS = 10 * 60_000
-const BLUEBUBBLES_LIVE_TURN_STALLED_MS = 90_000
+// A turn that is still thinking after this long is treated as hung. It is generous on purpose: a slow reply that
+// arrives is worth far more than a dropped one, and a newer message from the person still supersedes an older turn.
+const BLUEBUBBLES_TURN_TIMEOUT_MS = 10 * 60_000
+const BLUEBUBBLES_LIVE_TURN_STALLED_MS = 5 * 60_000
 const BLUEBUBBLES_CALLBACK_CLEANUP_TIMEOUT_MS = 2_000
 const BLUEBUBBLES_ACTIVITY_OPERATION_TIMEOUT_MS = 20_000
 const BLUEBUBBLES_CATCHUP_PAGE_SIZE = 50
@@ -704,12 +720,19 @@ function extractHistoricalLaneSummary(
   return summaries
 }
 
+// Whose words the replied-to message was: the agent's own account, the person replying, or someone else.
+function repliedMessageAuthor(replied: BlueBubblesRepliedMessage, actorExternalId: string): ReplyingToAuthor {
+  if (replied.fromMe) return "agent"
+  return replied.senderAddress && replied.senderAddress === actorExternalId ? "person" : "other"
+}
+
 function buildBlueBubblesOrientationSource(
   event: BlueBubblesNormalizedMessage,
   existingMessages: OpenAI.ChatCompletionMessageParam[],
   evidence: BlueBubblesSemanticCaptureEvent,
   conversationKind: OrientationConversationKind,
   repliedToText?: string | null,
+  repliedToAuthor?: ReplyingToAuthor,
 ): OrientationSource {
   const repairNotice = event.repairNotice?.trim()
   const actor = evidence.actor
@@ -751,7 +774,7 @@ function buildBlueBubblesOrientationSource(
     lane: threadId ? "thread" : "top_level",
     defaultReplyTarget: threadId ? "current_lane" : "top_level",
     ...(threadId ? { threadId } : {}),
-    ...(repliedToText ? { replyingToText: repliedToText } : {}),
+    ...(repliedToText ? { replyingToText: repliedToText, ...(repliedToAuthor ? { replyingToAuthor: repliedToAuthor } : {}) } : {}),
     ...(repairNotice ? { repairNotice } : {}),
     ...(summaries.length > 0 ? { recentLanes: summaries } : {}),
     ...(hasThreadRoute
@@ -817,12 +840,6 @@ function sha256Hex(input: string): string {
   return createHash("sha256").update(input).digest("hex")
 }
 
-function timestampIsoForAutonomy(event: BlueBubblesNormalizedEvent): string {
-  return Number.isFinite(event.timestamp)
-    ? new Date(event.timestamp).toISOString()
-    : new Date().toISOString()
-}
-
 function blueBubblesAutonomyTarget(event: BlueBubblesNormalizedEvent): Record<string, string | undefined> {
   return {
     messageGuid: event.messageGuid,
@@ -876,7 +893,6 @@ function recordBlueBubblesRecoveryFailureForBudget(
   try {
     recordAutonomyFailure(getAgentRoot(agentName), {
       ...blueBubblesRecoveryStormInput(agentName, event, source),
-      occurredAt: timestampIsoForAutonomy(event),
     })
   } catch {
     // Autonomy failure accounting must not turn a recovery error into a broader sense outage.
@@ -1821,7 +1837,6 @@ async function handleBlueBubblesNormalizedEvent(
       senseOrHabit: "bluebubbles",
       target: blueBubblesAutonomyTarget(event),
       idempotencyKey: `bluebubbles-recovery:${source}:${event.messageGuid}`,
-      now: timestampIsoForAutonomy(event),
       storm: blueBubblesRecoveryStormInput(agentName, event, source),
     })
     if (!decision.allowed) {
@@ -1864,6 +1879,8 @@ async function handleBlueBubblesNormalizedEvent(
       const friendId = context.friend.id
       const sessPath = resolvedDeps.sessionPath(friendId, "bluebubbles", event.chat.sessionKey)
       return await resolvedDeps.withSessionTurnLease(sessPath, async (sessionTurnLease) => {
+      // Messages sent into this chat while another turn held it wait outside the session; they go in first.
+      drainOutboundRecords(getAgentRoot(), friendId, "bluebubbles", event.chat.sessionKey, sessionTurnLease)
       try {
         findObsoleteBlueBubblesThreadSessions(sessPath)
       } catch (error) {
@@ -1951,8 +1968,15 @@ async function handleBlueBubblesNormalizedEvent(
       // Fetch the text of the message being replied to (if this is a threaded reply)
       const threadGuid = event.threadOriginatorGuid?.trim()
       let repliedToText: string | null = null
+      let repliedToAuthor: ReplyingToAuthor | undefined
       if (threadGuid) {
-        repliedToText = await client.getMessageText(threadGuid).catch(() => null)
+        if (client.getRepliedMessage) {
+          const replied = await client.getRepliedMessage(threadGuid).catch(() => null)
+          repliedToText = replied?.text ?? null
+          repliedToAuthor = replied ? repliedMessageAuthor(replied, options.orientationEvidence.actor.externalId) : undefined
+        } else {
+          repliedToText = await client.getMessageText(threadGuid).catch(() => null)
+        }
         emitNervesEvent({
           component: "senses",
           event: "senses.bluebubbles_reply_context",
@@ -1975,6 +1999,7 @@ async function handleBlueBubblesNormalizedEvent(
           options.orientationEvidence,
           options.orientationConversationKind,
           repliedToText,
+          repliedToAuthor,
         ),
       })
       if (!isLatestTurnCurrent(options.latestTurnCapability)) {
@@ -1985,13 +2010,17 @@ async function handleBlueBubblesNormalizedEvent(
 
     let finalTransportInvoked = false
     let finalTransportAccepted = false
+    let spokeBeforeFinalTransport = false
     const outboundRuntimeConfig = getBlueBubblesConfig()
     const callbacks = createBlueBubblesCallbacks(
       client,
       event.chat,
       replyTarget,
       event.chat.isGroup,
-      () => noteBlueBubblesActiveTurnVisibleActivity(agentName, liveTurnId),
+      () => {
+        spokeBeforeFinalTransport = true
+        noteBlueBubblesActiveTurnVisibleActivity(agentName, liveTurnId)
+      },
       {
         admitOutbound: async () => (
           !options.lifecycleSignal?.aborted
@@ -2112,7 +2141,7 @@ async function handleBlueBubblesNormalizedEvent(
       lifecycleSignal?.throwIfAborted()
 
       // ── Call shared pipeline ────────────────────────────────────────
-      const timeoutMs = options.timeoutMs ?? BLUEBUBBLES_LIVE_TURN_TIMEOUT_MS
+      const timeoutMs = options.timeoutMs ?? BLUEBUBBLES_TURN_TIMEOUT_MS
       timeoutPromise = new Promise<BlueBubblesHandleResult>((resolve) => {
         resolveTimeout = resolve
       })
@@ -2363,6 +2392,21 @@ async function handleBlueBubblesNormalizedEvent(
               reason: error instanceof Error ? error.message : String(error),
             },
           })
+          if (spokeBeforeFinalTransport) {
+            // The friend already saw part of this turn; a retry would repeat it.
+            const failed = readBlueBubblesOutboundRecordByIdempotencyKey(
+              getAgentRoot(),
+              blueBubblesInboundReplyIdempotencyKey(options.currentIngressEvidence.captureKeyHash),
+            )
+            if (failed) {
+              markBlueBubblesOutboundPendingManualVerification({
+                agentRoot: getAgentRoot(),
+                recordId: failed.recordId,
+                decidedAt: new Date().toISOString(),
+                reason: "mid-turn speech was visible before the final send failed",
+              })
+            }
+          }
           return {
             handled: true,
             notifiedAgent: false,
@@ -2879,6 +2923,25 @@ function blueBubblesInboundReplyIdempotencyKey(captureKeyHash: string): string {
   return `bluebubbles-inbound-reply:${captureKeyHash}`
 }
 
+async function blueBubblesFailedReplyIsVisible(
+  deps: RuntimeDeps,
+  chat: BlueBubblesChatRef,
+  record: BlueBubblesOutboundRecord,
+): Promise<boolean> {
+  const since = Date.parse(record.createdAt)
+  const recent = await deps.createClient().listRecentMessages?.({
+    chatGuid: chat.chatGuid,
+    limit: 25,
+  }) ?? []
+  return recent.some((message) => (
+    message.kind === "message"
+    && message.fromMe
+    && message.timestamp >= since
+    && message.chat.chatGuid === chat.chatGuid
+    && blueBubblesOutboundTextMatches(record, message.text)
+  ))
+}
+
 function blueBubblesRecoveredOutboundOutcome(
   record: BlueBubblesOutboundRecord,
 ): BlueBubblesSemanticHandledOutcome {
@@ -3020,7 +3083,15 @@ async function handleCapturedBlueBubblesSemanticEvent(
       getAgentRoot(),
       blueBubblesInboundReplyIdempotencyKey(captured.capture.keyHash),
     )
-    if (durableOutbound) {
+    const retryFailedReply = durableOutbound?.status === "failed"
+      && (durableOutbound.failedAttempts ?? 0) < BLUEBUBBLES_REPLY_DELIVERY_MAX_ATTEMPTS
+    if (
+      retryFailedReply
+      && Date.now() < Date.parse(durableOutbound.failedAt ?? durableOutbound.updatedAt) + BLUEBUBBLES_REPLY_RETRY_DELAY_MS
+    ) {
+      return { handled: true, notifiedAgent: false, kind: captured.normalized.kind, reason: "delivery_failed" }
+    }
+    if (durableOutbound && !retryFailedReply) {
       const outcome = blueBubblesRecoveredOutboundOutcome(durableOutbound)
       emitNervesEvent({
         level: "warn",
@@ -3133,7 +3204,74 @@ async function handleCapturedBlueBubblesSemanticEvent(
         orientationConversationKind: canonicalEvent.chat.isGroup ? "group" : "one_to_one",
         publishAcceptedReceipt,
       }
+      let failedReplyVisible = false
+      if (retryFailedReply) {
+        try {
+          failedReplyVisible = await blueBubblesFailedReplyIsVisible(resolvedDeps, canonicalEvent.chat, durableOutbound)
+        } catch (error) {
+          // Without the chat history a retry could reply twice; try again later.
+          emitNervesEvent({
+            level: "warn",
+            component: "senses",
+            event: "senses.bluebubbles_reply_retry_deferred",
+            message: "deferred a bluebubbles reply retry because recent chat messages could not be read",
+            meta: {
+              messageGuid: captured.normalized.messageGuid,
+              reason: error instanceof Error ? error.message : String(error),
+            },
+          })
+          return { handled: true, notifiedAgent: false, kind: captured.normalized.kind, reason: "delivery_failed" }
+        }
+      }
+      if (failedReplyVisible) {
+        // The send that timed out reached the chat after all; do not reply twice.
+        emitNervesEvent({
+          level: "warn",
+          component: "senses",
+          event: "senses.bluebubbles_inbound_reply_recovery_suppressed",
+          message: "suppressed bluebubbles reply retry because a reply is already in the chat",
+          meta: { messageGuid: captured.normalized.messageGuid, recordId: durableOutbound!.recordId },
+        })
+        publishTerminalReceipt("message_completed", "reply_visible_after_failed_send")
+        semanticHandlingCompleted = true
+        return { handled: true, notifiedAgent: false, kind: captured.normalized.kind, reason: "already_processed" }
+      }
       result = await handleBlueBubblesNormalizedEvent(canonicalEvent, resolvedDeps, source, capturedOptions)
+      // A budget or storm-breaker block defers the message; it was never seen.
+      // Leave it pending so a later recovery pass retries it once the block lifts.
+      if (result.reason === "autonomy_budget_blocked") return result
+      if (result.reason === "delivery_failed") {
+        // The reply never reached the chat. Leave the message pending so a later
+        // recovery pass sends it, until the per-message attempt cap is reached.
+        let failed = readBlueBubblesOutboundRecordByIdempotencyKey(
+          getAgentRoot(),
+          blueBubblesInboundReplyIdempotencyKey(captured.capture.keyHash),
+        )
+        if (failed?.status === "failed") {
+          if (retryFailedReply && failed.failedAttempts === durableOutbound.failedAttempts) {
+            // The retry failed before it reached the transport; count it anyway.
+            failed = markBlueBubblesOutboundFailed({
+              agentRoot: getAgentRoot(),
+              recordId: failed.recordId,
+              failedAt: new Date().toISOString(),
+              reason: "retry failed before the final transport",
+            })
+          }
+          /* v8 ignore next -- a failed record re-read after a send always carries its count @preserve */
+          const failedAttempts = failed.failedAttempts ?? 0
+          if (failedAttempts < BLUEBUBBLES_REPLY_DELIVERY_MAX_ATTEMPTS) return result
+          emitNervesEvent({
+            level: "error",
+            component: "senses",
+            event: "senses.bluebubbles_reply_delivery_abandoned",
+            message: "gave up sending a bluebubbles reply after repeated transport failures",
+            meta: { messageGuid: captured.normalized.messageGuid, failedAttempts },
+          })
+          publishTerminalReceipt("message_observed", "reply_delivery_retries_exhausted")
+          semanticHandlingCompleted = true
+          return result
+        }
+      }
       handledOutcome = result.notifiedAgent ? "message_completed" : "message_observed"
     }
     if (result.notifiedAgent) {
@@ -3618,7 +3756,7 @@ export async function catchUpMissedBlueBubblesMessages(
 
         semanticGenerationOwned = true
         const handled = await handleCapturedBlueBubblesSemanticEvent(captured, resolvedDeps, "upstream-catchup", {
-          timeoutMs: BLUEBUBBLES_RECOVERY_TURN_TIMEOUT_MS,
+          timeoutMs: BLUEBUBBLES_TURN_TIMEOUT_MS,
           autonomyBudgetTrigger: "recovery",
           observationReservation,
           lifecycleSignal: options.lifecycleSignal,
@@ -3758,7 +3896,7 @@ export async function recoverCapturedBlueBubblesInboundMessages(
           normalized,
           writeResult: "semantic_capture_duplicate",
         }, resolvedDeps, "webhook", {
-          timeoutMs: BLUEBUBBLES_RECOVERY_TURN_TIMEOUT_MS,
+          timeoutMs: BLUEBUBBLES_TURN_TIMEOUT_MS,
           autonomyBudgetTrigger: "recovery",
           semanticRecovery: true,
           observationReservation,
@@ -4069,6 +4207,40 @@ function buildChatRefForSessionKey(friend: FriendRecord, sessionKey: string): Bl
   }
 }
 
+/**
+ * The session a proactive send is saved into: the chat key it was sent on, else the friend's existing DM session, else
+ * the DM key an inbound message from their handle would use (`chat:any;-;<handle>`), so their reply loads it.
+ */
+function proactiveRecordKey(friend: FriendRecord, sessionKey: string, chat: BlueBubblesChatRef, sentChatGuid?: string): string | null {
+  if (normalizeBlueBubblesSessionKey(sessionKey).startsWith("chat:")) return sessionKey
+  // The DM the server actually sent into is where the friend's reply will be keyed.
+  if (sentChatGuid?.includes(";-;")) return `chat:${sentChatGuid}`
+  const existing = resolveAlertKey(getAgentRoot(), friend.id, "bluebubbles")
+  if (existing?.includes(";-;")) return existing
+  /* v8 ignore start -- a non-chat key is routed by the friend's handle, so a delivered send always had one @preserve */
+  const handle = findImessageHandle(friend) ?? chat.chatIdentifier
+  return handle ? `chat:any;-;${handle}` : null
+  /* v8 ignore stop */
+}
+
+/** Saves a delivered message into its chat. Never throws: recording never changes the result of a send that went out. */
+function recordBlueBubblesProactiveSend(friend: FriendRecord, params: ProactiveBlueBubblesSessionSendParams, chat: BlueBubblesChatRef, sentChatGuid?: string): void {
+  try {
+    const key = proactiveRecordKey(friend, params.sessionKey, chat, sentChatGuid)
+    /* v8 ignore next -- a delivered send always had a chat GUID or identifier to send to @preserve */
+    if (!key) return
+    const origin = params.origin ?? "proactive"
+    recordOutboundInSession({
+      agentRoot: getAgentRoot(), friendId: friend.id, channel: "bluebubbles", key, content: params.text, origin,
+      deliveryId: params.deliveryId ?? `proactive:${randomUUID()}`, originLabel: OUTBOUND_ORIGIN_LABELS[origin],
+    })
+  } catch (error) {
+    emitNervesEvent({ level: "warn", component: "senses", event: "senses.bluebubbles_proactive_record_error",
+      message: "the BlueBubbles message was sent, but could not be saved into its chat",
+      meta: { friendId: friend.id, error: error instanceof Error ? error.message : String(error) } })
+  }
+}
+
 export async function sendProactiveBlueBubblesMessageToSession(
   params: ProactiveBlueBubblesSessionSendParams,
   deps: Partial<RuntimeDeps> = {},
@@ -4199,7 +4371,7 @@ export async function sendProactiveBlueBubblesMessageToSession(
   }
 
   try {
-    await client.sendText({ chat, text: params.text })
+    const sent = await client.sendText({ chat, text: params.text })
     emitNervesEvent({
       component: "senses",
       event: "senses.bluebubbles_proactive_sent",
@@ -4211,8 +4383,29 @@ export async function sendProactiveBlueBubblesMessageToSession(
         chatIdentifier: chat.chatIdentifier ?? null,
       },
     })
+    recordBlueBubblesProactiveSend(friend, params, chat, sent?.chatGuid)
     return { delivered: true }
   } catch (error) {
+    if (error instanceof BlueBubblesSendError && error.errorCode === "chat_unresolved") {
+      emitNervesEvent({
+        level: "warn",
+        component: "senses",
+        event: "senses.bluebubbles_proactive_no_chat",
+        message: "no BlueBubbles chat matched this friend, so nothing was sent",
+        meta: { friendId: params.friendId, sessionKey: params.sessionKey },
+      })
+      return { delivered: false, reason: "missing_target" }
+    }
+    if (error instanceof BlueBubblesHostAccountError) {
+      emitNervesEvent({
+        level: "warn",
+        component: "senses",
+        event: "senses.bluebubbles_proactive_host_account_refused",
+        message: "proactive bluebubbles send refused: the server is signed in to another account",
+        meta: { friendId: params.friendId, sessionKey: params.sessionKey, reason: error.message },
+      })
+      return { delivered: false, reason: "host_account_refused" }
+    }
     emitNervesEvent({
       level: "error",
       component: "senses",

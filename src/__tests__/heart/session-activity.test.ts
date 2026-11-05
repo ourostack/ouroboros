@@ -80,6 +80,10 @@ describe("session activity", () => {
     const result = listSessionActivity({ sessionsDir, friendsDir, agentName: "slugger" })
 
     expect(result.map((entry) => entry.friendId)).toEqual(["friend-1", "friend-2"])
+    // Asked for one friend, it never reads another friend's sessions.
+    vi.mocked(fs.readdirSync).mockClear()
+    expect(listSessionActivity({ sessionsDir, friendsDir, agentName: "slugger", friendId: "friend-2" }).map((entry) => entry.friendId)).toEqual(["friend-2"])
+    expect(vi.mocked(fs.readdirSync).mock.calls.map(([dir]) => String(dir))).not.toContain(path.join(sessionsDir, "friend-1"))
     expect(result[0]).toMatchObject({
       friendId: "friend-1",
       friendName: "Ari",
@@ -556,7 +560,7 @@ describe("session activity", () => {
         friendId: "ari",
         friendName: "Ari",
         channel: "bluebubbles",
-        key: "chat:any;-;ari@mendelow.me",
+        key: "chat:any;-;owner@example.test",
         sessionPath: "/mock/ari.json",
         lastActivityAt: "2026-07-08T20:48:25.328Z",
         lastActivityMs: Date.parse("2026-07-08T20:48:25.328Z"),
@@ -574,7 +578,7 @@ describe("session activity", () => {
     expect(describeSessionActivityTiming(selected, {
       nowMs,
       prefix: "freshest friend-facing contact",
-    })).toBe("freshest friend-facing contact: Ari/bluebubbles/chat:any;-;ari@mendelow.me; last inbound 11m ago; i last replied 11m ago")
+    })).toBe("freshest friend-facing contact: Ari/bluebubbles/chat:any;-;owner@example.test; last inbound 11m ago; i last replied 11m ago")
   })
 
   it("prefers friend-facing contact over newer mtime fallback when selecting contact timing", async () => {
@@ -597,7 +601,7 @@ describe("session activity", () => {
         friendId: "ari",
         friendName: "Ari",
         channel: "bluebubbles",
-        key: "chat:any;-;ari@mendelow.me",
+        key: "chat:any;-;owner@example.test",
         sessionPath: "/mock/ari.json",
         lastActivityAt: "2026-07-08T20:00:00.000Z",
         lastActivityMs: Date.parse("2026-07-08T20:00:00.000Z"),
@@ -612,7 +616,7 @@ describe("session activity", () => {
     const selected = selectFreshestFriendFacingActivity(records)
 
     expect(selected?.friendId).toBe("ari")
-    expect(describeSessionActivityTiming(selected, { nowMs })).toBe("friend-facing contact: Ari/bluebubbles/chat:any;-;ari@mendelow.me; last activity 1h ago")
+    expect(describeSessionActivityTiming(selected, { nowMs })).toBe("friend-facing contact: Ari/bluebubbles/chat:any;-;owner@example.test; last activity 1h ago")
   })
 
   it("does not select mtime fallback records as friend-facing contact", async () => {
@@ -645,7 +649,7 @@ describe("session activity", () => {
       friendId: "ari",
       friendName: "Ari",
       channel: "bluebubbles",
-      key: "chat:any;-;ari@mendelow.me",
+      key: "chat:any;-;owner@example.test",
       sessionPath: "/mock/ari.json",
       lastActivityAt: "2026-07-08T20:59:00.000Z",
       lastActivityMs: Date.parse("2026-07-08T20:59:00.000Z"),
@@ -667,7 +671,7 @@ describe("session activity", () => {
       friendId: "ari",
       friendName: "Ari",
       channel: "bluebubbles",
-      key: "chat:any;-;ari@mendelow.me",
+      key: "chat:any;-;owner@example.test",
       sessionPath: "/mock/ari.json",
       lastActivityAt: "2026-07-08T20:59:00.000Z",
       lastActivityMs: Date.parse("2026-07-08T20:59:00.000Z"),

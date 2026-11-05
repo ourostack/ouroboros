@@ -120,7 +120,7 @@ export const COMMAND_REGISTRY: Record<string, CommandHelp & { category: CommandC
     category: "Agents",
     description: "Make this machine the agent's home, the one machine that runs it. The move is recorded in the agent's synced bundle, and the old home stops running it.",
     usage: "ouro move <agent> here",
-    example: "ouro move slugger here",
+    example: "ouro move my-agent here",
   },
   whoami: {
     category: "Agents",
@@ -132,15 +132,15 @@ export const COMMAND_REGISTRY: Record<string, CommandHelp & { category: CommandC
     category: "Agents",
     description: "Join a call on this Mac through the BlackHole audio devices, or leave it",
     usage: "ouro voice join --agent <name> [--friend <id>] [--participants <text>] [--occasion <text>] [--mode conversation] | ouro voice leave --agent <name> | ouro voice status --agent <name>",
-    example: "ouro voice join --agent slugger --participants \"Ari and Sam\" --occasion \"podcast prep\"",
+    example: "ouro voice join --agent my-agent --participants \"Ari and Sam\" --occasion \"podcast prep\"",
     subcommands: ["join", "leave", "status"],
   },
   shepherd: {
     category: "Agents",
-    description: "Open an independent Ouro composer for one coding terminal. Uses a named picker when ambiguous; /cancel cancels only Ouro's turn, /quit exits. Not an input hook in the coding agent.",
-    usage: "ouro shepherd chat --agent <name> [--session <UUID>]",
+    description: "Open an independent Ouro composer or administer Shepherd as the existing local owner. Administration is same-UID authority, not proof of human presence. status/inspect are read-only; mutations require --expected-revision and --request-id. pause/resume require --host and --session; resume never releases held custody. mandate grant requires --project, --task, --expires-at; revoke requires --id. reconcile --id --resolution retired derives host evidence; delivered is unsupported until native receipt lookup is qualified. maintenance --destination requires fresh disabled-and-stopped daemon proof and retired terminals. --web opens the compact graphical view in cmux. Not an input hook in the coding agent.",
+    usage: "ouro shepherd chat --agent <name> [--session <UUID>] [--web]",
     example: "ouro shepherd chat --agent ouroboros",
-    subcommands: ["chat"],
+    subcommands: ["chat", "status", "inspect", "pause", "resume", "mandate", "reconcile", "maintenance"],
   },
   config: {
     category: "Agents",
@@ -172,7 +172,7 @@ export const COMMAND_REGISTRY: Record<string, CommandHelp & { category: CommandC
     category: "Tasks",
     description: "Submit an external event or apply a reviewed receipt-repair manifest through the owning daemon",
     usage: "ouro event submit --agent <agent> --source <source> --type <event-type> --id <provider-id> [--summary <text>] [--evidence <path>] [--payload <path>] [--priority high|normal|low] [--no-wake] | ouro event repair --manifest <path>",
-    example: "ouro event submit --agent slugger --source app-store-connect --type feedback.created --id evt_123 --evidence /tmp/feedback",
+    example: "ouro event submit --agent my-agent --source app-store-connect --type feedback.created --id evt_123 --evidence /tmp/feedback",
     subcommands: ["submit", "repair"],
   },
   poke: {
@@ -225,34 +225,34 @@ export const COMMAND_REGISTRY: Record<string, CommandHelp & { category: CommandC
     category: "Tasks",
     description: "Show durable Arc work state, recovery Sentinel state, or run the context-loss gauntlet.",
     usage: "ouro work card|gauntlet|sentinel [refresh] [--agent <name>] [--format text|json|--json]",
-    example: "ouro work sentinel --agent slugger --format json",
+    example: "ouro work sentinel --agent my-agent --format json",
     subcommands: ["card", "gauntlet", "sentinel"],
   },
   "nerves-review": {
     category: "Internal",
     description: `Read-only review of recent nerves events from one agent log stream (default: ${DEFAULT_NERVES_PROCESS})`,
     usage: "ouro nerves-review [--agent <name>] [--process <name>] [--component <substr>] [--event <substr>] [--level <level>] [--since <duration>] [--limit <n>] [--json]",
-    example: "ouro nerves-review --agent slugger --component daemon --event habit --since 30m --json",
+    example: "ouro nerves-review --agent my-agent --component daemon --event habit --since 30m --json",
   },
   "work card": {
     category: "Tasks",
     description: "Show the agent's durable Work Card compiled from arc records.",
     usage: "ouro work card [--agent <name>] [--format text|json|--json]",
-    example: "ouro work card --agent slugger --format json",
+    example: "ouro work card --agent my-agent --format json",
     hidden: true,
   },
   "work gauntlet": {
     category: "Tasks",
     description: "Score whether durable Arc, flight recorder, and Desk state can recover after context loss.",
     usage: "ouro work gauntlet [--agent <name>] [--format text|json|--json]",
-    example: "ouro work gauntlet --agent slugger --format json",
+    example: "ouro work gauntlet --agent my-agent --format json",
     hidden: true,
   },
   "work sentinel": {
     category: "Tasks",
     description: "Show read-only Arc Sentinel recovery state, or explicitly refresh it.",
     usage: "ouro work sentinel [refresh] [--agent <name>] [--format text|json|--json]",
-    example: "ouro work sentinel refresh --agent slugger --format json",
+    example: "ouro work sentinel refresh --agent my-agent --format json",
     hidden: true,
   },
   "migrate-to-desk": {
@@ -276,8 +276,8 @@ export const COMMAND_REGISTRY: Record<string, CommandHelp & { category: CommandC
   },
   auth: {
     category: "Auth",
-    description: "Set up or verify agent credentials",
-    usage: "ouro auth [verify] [--agent <name>] [--provider <provider>]",
+    description: "Set up or verify agent credentials. For Anthropic API-key mode (for example through a credit gateway), pass --api-key-file <path> (use /dev/stdin to pipe it) and optionally --base-url <url>; the key is never taken from the command line.",
+    usage: "ouro auth [verify] [--agent <name>] [--provider <provider>] [--api-key-file <path> [--base-url <url>]]",
     example: "ouro auth",
     subcommands: ["verify"],
   },
@@ -375,6 +375,13 @@ export const COMMAND_REGISTRY: Record<string, CommandHelp & { category: CommandC
     example: "ouro session list",
     subcommands: ["list"],
   },
+  gateway: {
+    category: "System",
+    description: "Run the credit gateway: one master key for agents, upstream Anthropic API keys spent in a fixed order",
+    usage: "ouro gateway serve --keys-dir <dir> [--host <host>] [--port <port>]",
+    example: "ouro gateway serve --keys-dir /mnt/user/appdata/credit-gateway/keys",
+    subcommands: ["serve"],
+  },
   mcp: {
     category: "System",
     description: "Interact with MCP servers",
@@ -414,7 +421,7 @@ export const COMMAND_REGISTRY: Record<string, CommandHelp & { category: CommandC
       "ouro bluebubbles context-smoke [--agent <name>] --message-guid <guid> [--persist] [--json]",
       "ouro bluebubbles host <install|status|repair|remove|collect> [--username <name> --uid <uid> --home <path>] [--request-id <id>] [--json]",
     ].join("\n"),
-    example: "ouro bluebubbles context-smoke --agent slugger --message-guid abc123 --persist --json",
+    example: "ouro bluebubbles context-smoke --agent my-agent --message-guid abc123 --persist --json",
     subcommands: ["replay", "context-smoke", "host"],
   },
 }
@@ -423,12 +430,12 @@ const SUBCOMMAND_HELP: Record<string, CommandHelp> = {
   "habit probe": {
     description: "Probe one habit through its real dispatch path with an irrevocable no-send boundary; it cannot send and reports zero transport invocations",
     usage: "ouro habit probe --agent <name> --habit <name> --no-send [--json]",
-    example: "ouro habit probe --agent slugger --habit report-name --no-send --json",
+    example: "ouro habit probe --agent my-agent --habit report-name --no-send --json",
   },
   "habit cancel": {
     description: "Cancel a habit offline from a previously verified evidence bridge",
     usage: "ouro habit cancel --agent <name> --habit <name> --evidence <bridge-id>",
-    example: "ouro habit cancel --agent slugger --habit report-name --evidence pre-v1-bluebubbles-event-id",
+    example: "ouro habit cancel --agent my-agent --habit report-name --evidence pre-v1-bluebubbles-event-id",
   },
   "private decisions": {
     description: "Read recent private-runtime allow/deny decisions from the policy ledger",
@@ -483,7 +490,7 @@ const SUBCOMMAND_HELP: Record<string, CommandHelp> = {
   "mcp doctor": {
     description: "Run a bounded direct MCP bridge check. Use `--host-stall-observed` only when the host app was independently observed stalled; `host-stall-unexplained` preserves that evidence but does not prove a host-app cause.",
     usage: "ouro mcp doctor --agent <name> [--socket <path>] [--host-stall-observed] [--json]",
-    example: "ouro mcp doctor --agent slugger --json",
+    example: "ouro mcp doctor --agent my-agent --json",
   },
   "connect mail": {
     description: "Provision portable Agent Mail / Mailroom access and enable the Mail sense",
@@ -515,6 +522,11 @@ const SUBCOMMAND_HELP: Record<string, CommandHelp> = {
     usage: "ouro a2a onboard [--agent <name>] (--card-url <url>|--did <did:key> --name <name>) [--trust <level>] [--name <name>]",
     example: "ouro a2a onboard --agent <agent> --card-url https://peer.example/.well-known/agent-card.json --trust friend",
   },
+  "gateway serve": {
+    description: "Run the credit gateway in the foreground. It accepts the master key from <keys-dir>/master.key and forwards each request to the Anthropic API with the first upstream *.key (by file name) whose credits are not exhausted; a key whose credit balance is too low is skipped for the cooldown (default 60 minutes). GET /health needs no key.",
+    usage: "ouro gateway serve --keys-dir <dir> [--host <host>] [--port <port>] [--state <path>] [--upstream <url>] [--cooldown-minutes <n>]",
+    example: "ouro gateway serve --keys-dir /mnt/user/appdata/credit-gateway/keys --port 8787",
+  },
   "a2a serve": {
     description: "Run this agent's local A2A JSON-RPC sense server",
     usage: "ouro a2a serve [--agent <name>] [--host <host>] [--port <port>] [--base-url <url>] [--path <path>]",
@@ -528,7 +540,7 @@ const SUBCOMMAND_HELP: Record<string, CommandHelp> = {
   "habit summary": {
     description: "Read a habit run summary from receipts and session artifacts without contacting the daemon",
     usage: "ouro habit summary [--agent <name>] (--run-id <id>|--habit <name>|--operation-id <id>) [--which latest|previous|latest-success|latest-failure] [--json]",
-    example: "ouro habit summary --agent slugger --operation-id habit:standup --which latest --json",
+    example: "ouro habit summary --agent my-agent --operation-id habit:standup --which latest --json",
   },
   "rsvp doctor": {
     description: "Check native RSVP configuration, credentials, BlueBubbles attachment, ledgers, receipts, and migration readiness without sending messages; use --json --strict in triage",
@@ -632,7 +644,7 @@ const SUBCOMMAND_HELP: Record<string, CommandHelp> = {
   },
   "vault config set": {
     description: "Write runtime configuration into the agent credential vault without printing values",
-    usage: "ouro vault config set [--agent <name>] --key <path> [--value <value>] [--scope agent|machine]",
+    usage: "ouro vault config set [--agent <name>] --key <path> [--value <value> | --value-file <path>] [--scope agent|machine]",
     example: "ouro vault config set --key teams.clientSecret",
   },
   "vault config status": {

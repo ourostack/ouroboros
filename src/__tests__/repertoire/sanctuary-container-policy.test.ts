@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest"
-import { annotateContainers, desiredContainerState, STOPPED_ON_PURPOSE_NOTE } from "../../repertoire/sanctuary-container-policy"
+import { annotateContainers, serviceContainers, desiredContainerState, STOPPED_ON_PURPOSE_NOTE } from "../../repertoire/sanctuary-container-policy"
 
 const entry = (value: string, expiresAt?: string) => ({ value, provenance: "stated" as const, version: 1, source: "test", ...(expiresAt ? { expiresAt } : {}) })
 const NOW = Date.parse("2026-10-09T00:00:00Z")
@@ -26,7 +26,7 @@ describe("annotateContainers", () => {
   it("marks a policy-stopped container as stopped on purpose and tags calibre-web as Books", () => {
     const result = annotateContainers(list([
       { name: "calibre", state: "created" }, { name: "calibre-web", state: "running" }, { name: "plain", state: "running" },
-    ]), policy, NOW)
+    ]), policy, NOW, serviceContainers({ booksContainer: "calibre-web" }))
     expect(result.data.containers).toEqual([
       { name: "calibre", state: "created", desired: "stopped", note: STOPPED_ON_PURPOSE_NOTE },
       { name: "calibre-web", state: "running", desired: "running", serves: "Books" },
@@ -40,7 +40,11 @@ describe("annotateContainers", () => {
     expect(result.data.containers[1]).toMatchObject({ desired: "running", note: "the steward policy wants this running but it is not" })
   })
   it("still tags Books with no policy, and tolerates malformed entries", () => {
-    expect(annotateContainers(list([{ name: "calibre-web", state: "running" }, { state: 1 }]), null, NOW).data.containers).toEqual([{ name: "calibre-web", state: "running", serves: "Books" }, { state: 1 }])
+    expect(annotateContainers(list([{ name: "calibre-web", state: "running" }, { state: 1 }]), null, NOW, serviceContainers({ booksContainer: "calibre-web" })).data.containers).toEqual([{ name: "calibre-web", state: "running", serves: "Books" }, { state: 1 }])
+  })
+  it("tags no service when the household names no books container", () => {
+    expect(serviceContainers({})).toEqual({})
+    expect(annotateContainers(list([{ name: "calibre-web", state: "running" }]), null, NOW).data.containers).toEqual([{ name: "calibre-web", state: "running" }])
   })
   it("returns failures and other shapes unchanged", () => {
     const failed = { ok: false, error: { code: "x" } }

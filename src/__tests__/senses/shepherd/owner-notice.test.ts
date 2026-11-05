@@ -9,11 +9,14 @@ import { resetIdentity, setAgentName } from "../../../heart/identity"
 import { appendReturn, type ReturnRecord } from "../../../senses/shepherd/returns"
 import { noticeDeliveryState, readNoticeOutbox } from "../../../senses/shepherd/notice-outbox"
 import {
+  NOTICE_REPLY_LINE,
   NOTICE_COALESCE_MS,
   NOTICE_RETRY_MS,
   chooseTeamsBot,
   createOwnerNotifier,
-  createTeamsNoticeSender,
+  createNoticeSender,
+  noticeDeliveryId,
+  readEnabledReachChannels,
   noticeLine,
   noticeMessage,
   noticeWanted,
@@ -21,6 +24,8 @@ import {
   resolveNoticeTargets,
   type NoticeTarget,
 } from "../../../senses/shepherd/owner-notice"
+
+const replyable = (body: string): string => `${body}\n\n${NOTICE_REPLY_LINE}`
 
 const mockSend = vi.fn()
 vi.mock("node:fs", async original => {
@@ -52,6 +57,7 @@ const bot = (clientId: string, tenantId: string): TeamsConfig => ({ clientId, cl
 
 let root = ""
 beforeEach(() => {
+  vi.mocked(fs.renameSync).mockReset()
   root = fs.mkdtempSync(path.join(os.tmpdir(), "shepherd-notice-"))
   events.length = 0
   mockSend.mockReset().mockResolvedValue({ delivered: true })
@@ -71,22 +77,64 @@ describe("owner notice policy", () => {
 })
 
 describe("owner notice text", () => {
+  it("P0: attributes its own failed judgment to Shepherd, not an agent stopping", () => {
+    const text = noticeLine(record({
+      kind: "error", action: "let_through", reply: null, reason: "Connection error.",
+    }))
+    expect(text).toMatch(/^I couldn't /)
+    expect(text).toContain("Connection error.")
+    expect(text).not.toMatch(/stopped|left it for you|needs you/)
+  })
+
+  it("P0: an inconclusive observation cannot assert a stop while its evidence says work is running", () => {
+    const text = noticeLine(record({
+      kind: "unclear", action: "let_through", reply: null,
+      reason: "The agent is still mid-task, running a shell inspection; it has not handed control back.",
+    }))
+    expect(text).toMatch(/^I couldn't tell /)
+    expect(text).not.toMatch(/\bstopped\b|left it for you|needs you/)
+    expect(text).toContain("has not handed control back")
+  })
+
+  it("reports machine-format refusal without claiming the human must decide", () => {
+    const text = noticeLine(record({ action: "let_through", reply: null, actionBlockReason: "reply_invalid", replyIssue: "too_long" }))
+    expect(text).toContain("I didn't answer because I couldn't come up with a safe reply.")
+    expect(text).not.toMatch(/left it for you|needs you|couldn't tell/)
+  })
+
   it("reports an outside dependency without calling it done or asking the owner to act", () => {
-    expect(noticeLine(record({ kind: "waiting", reason: "PR awaits review." }))).toContain("waiting on an outside dependency")
-    expect(noticeLine(record({ kind: "waiting" }))).not.toMatch(/needs you|done|waiting for you/)
+    expect(noticeLine(record({ kind: "waiting", reason: "PR awaits review." }))).toContain("waiting on something outside it; it isn't done yet.")
+    expect(noticeLine(record({ kind: "waiting" }))).not.toMatch(/needs you|says it's done|left it for you/)
     expect(noticeWanted("needs-me", record({ kind: "waiting" }))).toBe(false)
   })
-  it("names the foreground agent, folder, workspace and tab for an unhooked return", () => {
+
+  it("names the session by its agent and title, never by a host handle or session id", () => {
     const session = { id: "0a1b2c3d-4e5f", ref: "surface:30", workspace: "workspace:3", workspaceTitle: "workflows",
       title: "Troubleshoot Outlook", agent: "Copilot", cwd: "/Users/a/personal-desk", focused: false }
     expect(noticeMessage([record({ agent: null, cwd: null, kind: "done", reason: "Fixed the error." })], new Map([[session.id, session]])))
-      .toBe("Copilot in personal-desk (workflows / Troubleshoot Outlook; surface:30) says it is done. Why: Fixed the error.")
-    expect(noticeLine(record({ title: "Saved tab", workspaceTitle: "Saved workspace" }), session))
-      .toContain("(Saved workspace / Saved tab; surface:30)")
+      .toBe(`Copilot on Troubleshoot Outlook in personal-desk says it's done. Fixed the error.\n\n${NOTICE_REPLY_LINE}`)
+    expect(noticeLine(record({ title: "Saved tab", workspaceTitle: "Saved workspace" }), session)).toMatch(/^Claude Code on Saved tab in ouroboros /)
+    // A title that only repeats the folder falls through to the next label, then to the folder.
+    expect(noticeLine(record({ title: "ouroboros", workspaceTitle: "Ouro HX" }))).toMatch(/^Claude Code on Ouro HX in ouroboros /)
+    expect(noticeLine(record({ title: "ouroboros" }))).toMatch(/^Claude Code in ouroboros /)
+    expect(noticeLine(record(), "surface:12")).not.toMatch(/surface|0a1b2c3d/)
+  })
+
+  it("adds the host handle only when another session would read the same, so a reply reaches the right one", () => {
+    const tab = (id: string, ref: string, title: string) => ({ id, ref, workspace: "w", workspaceTitle: "desk", title, agent: "Claude Code", cwd: "/Users/a/personal-desk", focused: false })
+    const refs = new Map([["S1", tab("S1", "surface:1", "ouro hx")], ["S2", tab("S2", "surface:2", "ouro hx")], ["S3", tab("S3", "surface:3", "spoonjoy")]])
+    const gate = (session: string) => record({ session, agent: null, cwd: null, kind: "gate", action: "let_through", reply: null, note: "It wants your sign-off." })
+    expect(noticeMessage([gate("S1")], refs)).toMatch(/^Claude Code on ouro hx in personal-desk \(surface:1\): It wants/)
+    expect(noticeMessage([gate("S3")], refs)).toMatch(/^Claude Code on spoonjoy in personal-desk: It wants/)
+    // Two sessions in one digest that read the same are told apart, by short id when the host has no handle.
+    const twins = noticeMessage([record({ session: "aaaaaaaa-1" }), record({ session: "bbbbbbbb-2" })], new Map([["aaaaaaaa-1", "surface:9"]]))
+    expect(twins).toContain("- Claude Code in ouroboros (surface:9) stopped early")
+    expect(twins).toContain("- Claude Code in ouroboros (bbbbbbbb) stopped early")
+    expect(noticeLine(record(), undefined, true)).toMatch(/^Claude Code in ouroboros \(0a1b2c3d\) /)
   })
 
   it("keeps untrusted terminal text to one plain bounded line", () => {
-    expect(plain("a\u0000b\nc‮d e", 50)).toBe("a b c d e")
+    expect(plain("a\u0000b\nc\u202ed e", 50)).toBe("a b c d e")
     expect(plain("**bold** <at>Ari</at> [link](x) `code` #h | ~s~ \\n @everyone", 100)).toBe("bold at Ari /at link (x) code h s n everyone")
     expect(plain('say "hi"', 50)).toBe("say 'hi'")
     expect(plain("abcdefghij", 5)).toBe("abcd…")
@@ -94,31 +142,83 @@ describe("owner notice text", () => {
   })
 
   it("says who returned, what Shepherd did and why, for every kind", () => {
-    expect(noticeLine(record({ session: "" }))).toMatch(/^Claude Code in ouroboros stopped early/)
-    expect(noticeLine(record(), "surface:12")).toBe('Claude Code in ouroboros (surface:12) stopped early, so I sent it back: "keep going, run the tests". Why: It asked whether to continue a task it was told to finish.')
-    expect(noticeLine(record({ reply: "key:2" }), "surface:3")).toBe("Claude Code in ouroboros (surface:3) stopped early, so I pressed 2. Why: It asked whether to continue a task it was told to finish.")
-    expect(noticeLine(record({ action: "let_through", reply: null, reason: "Ari is in this session" }))).toBe("Claude Code in ouroboros (0a1b2c3d) stopped early, but I did not answer it, so it is waiting for you. Why: Ari is in this session")
-    expect(noticeLine(record({ kind: "gate", action: "let_through", agent: "Copilot", cwd: "/Users/a/desk", reason: "wants to push to main" }), "w1:p2")).toBe("Copilot in desk (w1:p2) needs you. Why: wants to push to main")
-    expect(noticeLine(record({ kind: "done", action: "let_through", agent: null, cwd: null, reason: "" }), "s")).toBe("A coding agent (s) says it is done. Why: no reason given")
-    expect(noticeLine(record({ kind: "loop_guard", reason: "loop guard: x" }), "s")).toBe("Claude Code in ouroboros (s): I stopped answering it after too many replies, so it is waiting for you. Why: loop guard: x")
-    expect(noticeLine(record({ kind: "working", reason: "tests pass" }), "s")).toBe("Claude Code in ouroboros (s) is still working in the background and has news. Why: tests pass")
-    expect(noticeLine(record({ kind: "unclear", reason: "a shell" }), "s")).toBe("Claude Code in ouroboros (s) stopped and I could not tell what it needs, so I left it. Why: a shell")
-    expect(noticeLine(record({ kind: "error", reason: "the judge timed out" }), "s")).toBe("Claude Code in ouroboros (s) stopped but I could not judge it, so I left it. Why: the judge timed out")
+    expect(noticeLine(record())).toBe('Claude Code in ouroboros stopped early, so I told it: "keep going, run the tests". It asked whether to continue a task it was told to finish.')
+    expect(noticeLine(record({ reply: "key:2" }))).toBe("Claude Code in ouroboros stopped early, so I pressed 2. It asked whether to continue a task it was told to finish.")
+    expect(noticeLine(record({ action: "let_through", reply: null, reason: "Ari is in this session" }))).toBe("Claude Code in ouroboros stopped early and I left it for you. Ari is in this session.")
+    expect(noticeLine(record({ kind: "gate", action: "let_through", agent: "Copilot", cwd: "/Users/a/desk", reason: "wants to push to main" }))).toBe("Copilot in desk needs you. Wants to push to main.")
+    expect(noticeLine(record({ kind: "done", action: "let_through", agent: null, cwd: null, reason: "" }))).toBe("A coding agent says it's done.")
+    expect(noticeLine(record({ kind: "loop_guard", reason: "loop guard: x" }))).toBe("Claude Code in ouroboros kept stopping, so I stopped answering it and left it for you. Loop guard: x.")
+    expect(noticeLine(record({ kind: "working", reason: "tests pass!" }))).toBe("Claude Code in ouroboros is still working, with news. Tests pass!")
+    expect(noticeLine(record({ kind: "unclear", reason: "a shell" }))).toBe("I couldn't tell what Claude Code in ouroboros is doing. A shell.")
+    expect(noticeLine(record({ kind: "error", reason: "the judge timed out" }))).toBe("I couldn't check on Claude Code in ouroboros. The judge timed out.")
+  })
+
+  it("uses the judge's own note to the owner when Shepherd took no action it could misdescribe", () => {
+    const note = "It shipped the release and wants your sign-off. It also hit an archive failure it can't fix."
+    for (const kind of ["gate", "done", "waiting", "working"] as const) {
+      expect(noticeLine(record({ kind, action: "let_through", reply: null, note, title: "ouro hx" }))).toBe(`Claude Code on ouro hx in ouroboros: ${note}`)
+    }
+    // Where Shepherd answered, held back or failed, its own account is used: the judge could not know what happened.
+    expect(noticeLine(record({ note }))).toMatch(/stopped early, so I told it/)
+    expect(noticeLine(record({ kind: "loop_guard", note }))).toMatch(/kept stopping/)
+    expect(noticeLine(record({ kind: "error", note }))).toMatch(/^I couldn't check/)
+    expect(noticeLine(record({ kind: "gate", note: "Push to <at>main</at> @Ari" }))).toBe("Claude Code in ouroboros: Push to at main /at Ari")
   })
 
   it("never lets terminal fields carry markup or a mention", () => {
-    const line = noticeLine(record({ agent: "<at>Ari</at>", cwd: "/x/**repo**", reason: "[click](http://e) @Ari\nnext line", reply: 'go "now" @Ari' }), "s:1")
-    expect(line).toBe('at Ari /at in repo (s:1) stopped early, so I sent it back: "go \'now\' Ari". Why: click (http://e) Ari next line')
+    const line = noticeLine(record({ agent: "<at>Ari</at>", cwd: "/x/**repo**", reason: "[click](http://e) @Ari\nnext line", reply: 'go "now" @Ari' }))
+    expect(line).toBe('at Ari /at in repo stopped early, so I told it: "go \'now\' Ari". Click (http://e) Ari next line.')
     expect(line).not.toMatch(/[<>[\]*@\n]/)
   })
 
+  it("invites a reply in the same conversation, which the agent relays to the coding session", () => {
+    expect(NOTICE_REPLY_LINE).toBe("Reply here and I'll pass it on.")
+    expect(noticeMessage([record({ kind: "gate" })])).toBe(`${noticeLine(record({ kind: "gate" }))}\n\n${NOTICE_REPLY_LINE}`)
+  })
+
   it("puts a burst in one message and counts what does not fit", () => {
-    expect(noticeMessage([record()], new Map([["0a1b2c3d-4e5f", "surface:12"]]))).toBe(noticeLine(record(), "surface:12"))
+    expect(noticeMessage([record()], new Map([["0a1b2c3d-4e5f", "surface:12"]]))).toBe(replyable(noticeLine(record(), "surface:12")))
     const two = noticeMessage([record(), record({ session: "S2", kind: "gate", agent: "Codex" })], new Map([["S2", "surface:2"]]))
-    expect(two.split("\n")).toEqual(["2 coding agents stopped:", `- ${noticeLine(record())}`, `- ${noticeLine(record({ session: "S2", kind: "gate", agent: "Codex" }), "surface:2")}`])
+    expect(two.split("\n")).toEqual(["2 updates:", `- ${noticeLine(record())}`, `- ${noticeLine(record({ session: "S2", kind: "gate", agent: "Codex" }), "surface:2")}`, "", NOTICE_REPLY_LINE])
     const many = noticeMessage(Array.from({ length: 9 }, (_, index) => record({ session: `S${index}` })))
-    expect(many.split("\n")).toHaveLength(1 + 6 + 1)
-    expect(many.split("\n").at(-1)).toBe("- and 3 more.")
+    expect(many.split("\n")).toHaveLength(1 + 6 + 1 + 2)
+    expect(many.split("\n").at(-3)).toBe("- and 3 more.")
+    expect(many.endsWith(`\n\n${NOTICE_REPLY_LINE}`)).toBe(true)
+  })
+
+  it("counts six observations of one stable target as one session and displays the latest", () => {
+    const records = Array.from({ length: 6 }, (_, index) => record({
+      at: `2026-10-12T20:0${index}:00.000Z`, reason: `observation-${index}`,
+    }))
+    const original = structuredClone(records)
+    expect(noticeMessage(records)).toBe(replyable(noticeLine(records[5]!)))
+    expect(noticeMessage([...records].reverse())).toBe(replyable(noticeLine(records[5]!)))
+    expect(records).toEqual(original)
+    expect(noticeMessage([records[0]!, { ...records[1]!, host: "other-host" }])).toContain("2 updates:")
+  })
+
+  it("orders distinct targets and treats invalid timestamps conservatively with deterministic ties", () => {
+    const valid = record({ transition: "z", reason: "valid", at: "2026-10-12T20:00:00.000Z" })
+    const invalid = record({ transition: "a", reason: "unknown", at: "invalid" })
+    expect(noticeMessage([invalid, valid])).toBe(replyable(noticeLine(valid)))
+    expect(noticeMessage([valid, invalid])).toBe(replyable(noticeLine(valid)))
+    expect(noticeMessage([valid, { ...valid, transition: "a", reason: "older tie" }])).toBe(replyable(noticeLine(valid)))
+    const lastInvalid = { ...invalid, transition: "z", reason: "later unknown" }
+    expect(noticeMessage([invalid, lastInvalid])).toBe(replyable(noticeLine(lastInvalid)))
+    expect(noticeMessage([lastInvalid, invalid])).toBe(replyable(noticeLine(lastInvalid)))
+    const reversed = noticeMessage([record({ session: "Z", agent: "Zed" }), record({ session: "A", agent: "Amp" })])
+    expect(reversed.indexOf("Amp")).toBeLessThan(reversed.indexOf("Zed"))
+  })
+
+  it("labels recovered observations with their own time, never restart time or live status", () => {
+    const message = noticeMessage([record({ at: "invalid-time" })], new Map(), { recovered: true })
+    expect(message).toMatch(/^Catching up on something I saw earlier, so it may be out of date:/)
+    expect(noticeMessage([record(), record({ session: "S2" })], new Map(), { recovered: true })).toMatch(/^Catching up on things I saw earlier, so these may be out of date:/)
+    expect(message).toContain("observation time unknown")
+    expect(message).not.toContain("invalid-time")
+    const dated = noticeMessage([record()], new Map(), { recovered: true })
+    expect(dated).toContain("2026-10-12T20:00:00.000Z")
+    expect(dated.endsWith(`\n\n${NOTICE_REPLY_LINE}`)).toBe(true)
   })
 })
 
@@ -136,9 +236,9 @@ describe("owner notice targets", () => {
         friend("f6", { name: "Sam", externalIds: [{ provider: "aad", externalId: "aad-6", linkedAt: "" }] }),
       ],
     }
-    expect(await resolveNoticeTargets(root, store)).toEqual([
-      { friendId: "f1", name: "Ari", key: "conv-1", tenantId: "t1" },
-      { friendId: "f6", name: "Sam", key: "shepherd" },
+    expect(await resolveNoticeTargets(root, store, new Set(["teams"]), "not-a-linked-user")).toEqual([
+      { friendId: "f1", name: "Ari", channel: "teams", key: "conv-1", tenantId: "t1" },
+      { friendId: "f6", name: "Sam", channel: "teams", key: "shepherd" },
     ])
     expect(events).toContainEqual(expect.objectContaining({ event: "senses.shepherd_notice_targets", meta: { count: 2 } }))
   })
@@ -146,7 +246,130 @@ describe("owner notice targets", () => {
   it("reads the bundle's friend records by default", async () => {
     fs.mkdirSync(path.join(root, "friends"), { recursive: true })
     fs.writeFileSync(path.join(root, "friends", "f1.json"), JSON.stringify(friend("f1", { name: "Ari", externalIds: [{ provider: "aad", externalId: "aad-1", linkedAt: "" }] })))
-    expect(await resolveNoticeTargets(root)).toEqual([{ friendId: "f1", name: "Ari", key: "shepherd" }])
+    expect(await resolveNoticeTargets(root, undefined, new Set(["teams"]))).toEqual([{ friendId: "f1", name: "Ari", channel: "teams", key: "shepherd" }])
+    expect(await resolveNoticeTargets(root)).toEqual([])
+  })
+
+  it("targets a family friend on BlueBubbles when reachChannel is bluebubbles", async () => {
+    const ari = friend("f1", { name: "Ari", externalIds: [
+      { provider: "imessage-handle", externalId: "+15555550123", linkedAt: "" },
+      { provider: "aad", externalId: "aad-1", tenantId: "t1", linkedAt: "" },
+    ], relationshipPolicy: { schemaVersion: 1, version: 1, preferences: {
+      reachChannel: { value: "bluebubbles", provenance: "stated", version: 1, source: "test" },
+    } } } as Partial<FriendRecord>)
+    expect(await resolveNoticeTargets(root, { listAll: async () => [ari] }, new Set(["bluebubbles", "teams"]))).toEqual([
+      { friendId: "f1", name: "Ari", channel: "bluebubbles", key: "shepherd" },
+    ])
+  })
+
+  it("dedupes two friend records sharing one iMessage handle", async () => {
+    const store = { listAll: async () => [
+      friend("f1", { name: "Ari", externalIds: [{ provider: "imessage-handle", externalId: "ari@example.com", linkedAt: "" }] }),
+      friend("f2", { name: "Ari again", externalIds: [{ provider: "imessage-handle", externalId: "ARI@example.com", linkedAt: "" }] }),
+    ] }
+    expect(await resolveNoticeTargets(root, store, new Set(["bluebubbles"]))).toEqual([
+      { friendId: "f1", name: "Ari", channel: "bluebubbles", key: "shepherd" },
+    ])
+  })
+
+  it("sends one notice per person even when their iMessage and Teams ids sit on separate records", async () => {
+    const store = { listAll: async () => [
+      friend("f1", { name: "Ari", externalIds: [{ provider: "imessage-handle", externalId: "+15555550123", linkedAt: "" }, { provider: "aad", externalId: "AAD-1", linkedAt: "" }] }),
+      friend("f2", { name: "Ari on Teams", externalIds: [null as never, { provider: "aad", externalId: "aad-1", linkedAt: "" }, { provider: "local", externalId: "", linkedAt: "" }] }),
+      friend("f3", { name: "Sam", externalIds: [{ provider: "aad", externalId: "aad-3", linkedAt: "" }, { provider: "aad", externalId: "group:x", linkedAt: "" }] }),
+    ] }
+    expect(await resolveNoticeTargets(root, store, new Set(["bluebubbles", "teams"]))).toEqual([
+      { friendId: "f1", name: "Ari", channel: "bluebubbles", key: "shepherd" },
+      { friendId: "f3", name: "Sam", channel: "teams", key: "shepherd" },
+    ])
+  })
+
+  it("two family members in one iMessage group each get their own notice", async () => {
+    const group = { provider: "imessage-handle" as const, externalId: "group:any;+;family-group", linkedAt: "" }
+    const store = { listAll: async () => [
+      friend("f1", { name: "Ari", externalIds: [group, { provider: "imessage-handle", externalId: "+15555550123", linkedAt: "" }] }),
+      friend("f2", { name: "Sam", externalIds: [group, { provider: "imessage-handle", externalId: "+15555550199", linkedAt: "" }] }),
+    ] }
+    expect(await resolveNoticeTargets(root, store, new Set(["bluebubbles"]))).toEqual([
+      { friendId: "f1", name: "Ari", channel: "bluebubbles", key: "shepherd" },
+      { friendId: "f2", name: "Sam", channel: "bluebubbles", key: "shepherd" },
+    ])
+  })
+
+  it("only this machine's own user hears it, not their relatives, when one is linked", async () => {
+    const store = { listAll: async () => [
+      friend("f1", { name: "Relative", externalIds: [{ provider: "imessage-handle", externalId: "+15555550199", linkedAt: "" }] }),
+      friend("f2", { name: "Ari", externalIds: [{ provider: "local", externalId: "ari", linkedAt: "" }, { provider: "imessage-handle", externalId: "+15555550123", linkedAt: "" }] }),
+      friend("f3", { name: "Not family", trustLevel: "friend", externalIds: [{ provider: "local", externalId: "ari", linkedAt: "" }, { provider: "imessage-handle", externalId: "+15555550100", linkedAt: "" }] }),
+      friend("f4", { name: "No ids", externalIds: undefined as never }),
+      friend("f5", { name: "Odd ids", externalIds: [null as never, { provider: "local", externalId: 7 as never, linkedAt: "" }] }),
+    ] }
+    expect(await resolveNoticeTargets(root, store, new Set(["bluebubbles"]), "ari")).toEqual([
+      { friendId: "f2", name: "Ari", channel: "bluebubbles", key: "shepherd" },
+    ])
+    // With no family friend for this machine's user (a server, say), every family friend hears it.
+    expect((await resolveNoticeTargets(root, store, new Set(["bluebubbles"]), "someone-else")).map(target => target.friendId)).toEqual(["f1", "f2"])
+    // A user with no account entry, as in some containers, is the same as no linked owner.
+    expect((await resolveNoticeTargets(root, store, new Set(["bluebubbles"]), null)).map(target => target.friendId)).toEqual(["f1", "f2"])
+  })
+
+  it("recognizes an older user@host owner id, so relatives still do not hear it", async () => {
+    const store = { listAll: async () => [
+      friend("f1", { name: "Relative", externalIds: [{ provider: "imessage-handle", externalId: "+15555550199", linkedAt: "" }] }),
+      friend("f2", { name: "Ari", externalIds: [{ provider: "local", externalId: "ari@macbook", linkedAt: "" }, { provider: "imessage-handle", externalId: "+15555550123", linkedAt: "" }] }),
+    ] }
+    expect((await resolveNoticeTargets(root, store, new Set(["bluebubbles"]), "ari")).map(target => target.friendId)).toEqual(["f2"])
+  })
+
+  it("reaches the owner record that has a channel, and never falls back to relatives when none does", async () => {
+    const stray = friend("f0", { name: "Ari (cli)", externalIds: [{ provider: "local", externalId: "ari", linkedAt: "" }] })
+    const owner = friend("f2", { name: "Ari", externalIds: [{ provider: "local", externalId: "ari", linkedAt: "" }, { provider: "imessage-handle", externalId: "+15555550123", linkedAt: "" }] })
+    const relative = friend("f1", { name: "Relative", externalIds: [{ provider: "imessage-handle", externalId: "+15555550199", linkedAt: "" }] })
+    expect((await resolveNoticeTargets(root, { listAll: async () => [stray, relative, owner] }, new Set(["bluebubbles"]), "ari")).map(target => target.friendId)).toEqual(["f2"])
+    expect(await resolveNoticeTargets(root, { listAll: async () => [stray, relative] }, new Set(["bluebubbles"]), "ari")).toEqual([])
+    expect(events).toContainEqual(expect.objectContaining({ level: "warn", event: "senses.shepherd_notice_owner_unreachable", meta: { owners: 1 } }))
+  })
+
+  it("uses only a DM alert key as the BlueBubbles fallback", async () => {
+    const write = (id: string, key: string) => {
+      fs.mkdirSync(path.join(root, "state", "sessions", id, "bluebubbles"), { recursive: true })
+      fs.writeFileSync(path.join(root, "state", "sessions", id, "bluebubbles", `${key}.json`), "{}")
+    }
+    write("f1", "chat_any;-;+15555550123")
+    write("f2", "chat_any;+;group-1")
+    const store = { listAll: async () => [
+      friend("f1", { name: "Ari", externalIds: [{ provider: "imessage-handle", externalId: "+15555550123", linkedAt: "" }] }),
+      friend("f2", { name: "Sam", externalIds: [{ provider: "imessage-handle", externalId: "sam@example.com", linkedAt: "" }] }),
+    ] }
+    expect(await resolveNoticeTargets(root, store, new Set(["bluebubbles"]))).toEqual([
+      { friendId: "f1", name: "Ari", channel: "bluebubbles", key: "chat_any;-;+15555550123" },
+      { friendId: "f2", name: "Sam", channel: "bluebubbles", key: "shepherd" },
+    ])
+  })
+})
+
+describe("enabled reach channels", () => {
+  it("reads the enabled BlueBubbles and Teams senses from agent.json", () => {
+    const attached = () => ({ serverUrl: "http://bb", password: "x" })
+    fs.writeFileSync(path.join(root, "agent.json"), JSON.stringify({ senses: { bluebubbles: { enabled: true }, teams: { enabled: false } } }))
+    expect([...readEnabledReachChannels("notice-test", root, attached)]).toEqual(["bluebubbles"])
+    fs.writeFileSync(path.join(root, "agent.json"), JSON.stringify({ senses: { bluebubbles: { enabled: true }, teams: { enabled: true } } }))
+    expect([...readEnabledReachChannels("notice-test", root, attached)]).toEqual(["bluebubbles", "teams"])
+  })
+
+  it("leaves BlueBubbles out when this machine has no BlueBubbles connection, so Teams carries the notice", () => {
+    fs.writeFileSync(path.join(root, "agent.json"), JSON.stringify({ senses: { bluebubbles: { enabled: true }, teams: { enabled: true } } }))
+    const detached = () => { throw new Error("bluebubbles.serverUrl is required in this machine's agent-vault runtime config") }
+    expect([...readEnabledReachChannels("notice-test", root, detached)]).toEqual(["teams"])
+    expect(events).toContainEqual(expect.objectContaining({ level: "warn", event: "senses.shepherd_notice_bluebubbles_not_attached" }))
+    // The default reads this machine's runtime config, which a test machine does not have.
+    expect([...readEnabledReachChannels("notice-test", root)]).toEqual(["teams"])
+  })
+
+  it("reaches no channel and logs when the config cannot be read", () => {
+    fs.writeFileSync(path.join(root, "agent.json"), "{not json")
+    expect([...readEnabledReachChannels("notice-test", root)]).toEqual([])
+    expect(events).toContainEqual(expect.objectContaining({ level: "warn", event: "senses.shepherd_notice_channels_unreadable" }))
   })
 })
 
@@ -163,28 +386,28 @@ describe("owner notice over Teams", () => {
 
   it("sends plain text through the Teams proactive path and reuses its bot client", async () => {
     const botApi = vi.fn(async (config: TeamsConfig) => ({ id: config.clientId, conversations: {} }))
-    const send = createTeamsNoticeSender(root, { primary: () => bot("p", "t1"), secondary: () => bot("", ""), botApi })
-    const target: NoticeTarget = { friendId: "f1", name: "Ari", key: "conv-1", tenantId: "t1" }
-    expect(await send(target, "hello")).toEqual({ delivered: true })
-    await send(target, "again")
+    const send = createNoticeSender(root, { primary: () => bot("p", "t1"), secondary: () => bot("", ""), botApi })
+    const target: NoticeTarget = { friendId: "f1", name: "Ari", channel: "teams", key: "conv-1", tenantId: "t1" }
+    expect(await send(target, "hello", ["n1"])).toEqual({ delivered: true })
+    await send(target, "again", ["n2"])
     expect(botApi).toHaveBeenCalledTimes(1)
     expect(mockSend).toHaveBeenCalledWith(
-      { friendId: "f1", sessionKey: "conv-1", text: "hello", textFormat: "plain", intent: "generic_outreach", captureReceipt: true },
+      { friendId: "f1", sessionKey: "conv-1", text: "hello", textFormat: "plain", intent: "generic_outreach", captureReceipt: true, deliveryId: noticeDeliveryId("f1", ["n1"]), origin: "shepherd" },
       expect.objectContaining({ botApi: { id: "p", conversations: {} } }),
     )
   })
 
   it("builds a bot client again after one could not be built", async () => {
     const botApi = vi.fn().mockRejectedValueOnce(new Error("no token")).mockResolvedValue({ id: "p", conversations: {} })
-    const send = createTeamsNoticeSender(root, { primary: () => bot("p", "t1"), secondary: () => bot("", ""), botApi })
-    await expect(send({ friendId: "f1", name: "Ari", key: "k" }, "hi")).rejects.toThrow("no token")
-    expect(await send({ friendId: "f1", name: "Ari", key: "k" }, "hi")).toEqual({ delivered: true })
+    const send = createNoticeSender(root, { primary: () => bot("p", "t1"), secondary: () => bot("", ""), botApi })
+    await expect(send({ friendId: "f1", name: "Ari", channel: "teams", key: "k" }, "hi", ["n1"])).rejects.toThrow("no token")
+    expect(await send({ friendId: "f1", name: "Ari", channel: "teams", key: "k" }, "hi", ["n1"])).toEqual({ delivered: true })
     expect(botApi).toHaveBeenCalledTimes(2)
   })
 
   it("reports a missing Teams bot without trying to send", async () => {
-    const send = createTeamsNoticeSender(root, { primary: () => bot("", ""), secondary: () => bot("", "") })
-    expect(await send({ friendId: "f1", name: "Ari", key: "k" }, "hi")).toEqual({ delivered: false, reason: "no_teams_bot" })
+    const send = createNoticeSender(root, { primary: () => bot("", ""), secondary: () => bot("", "") })
+    expect(await send({ friendId: "f1", name: "Ari", channel: "teams", key: "k" }, "hi", ["n1"])).toEqual({ delivered: false, reason: "no_teams_bot" })
     expect(mockSend).not.toHaveBeenCalled()
   })
 
@@ -193,13 +416,54 @@ describe("owner notice over Teams", () => {
     process.env.HOME = root
     setAgentName("notice-test")
     try {
-      const send = createTeamsNoticeSender(root)
+      const send = createNoticeSender(root)
       // No runtime credentials in this test: no bot is configured.
-      expect(await send({ friendId: "f1", name: "Ari", key: "k" }, "hi")).toEqual({ delivered: false, reason: "no_teams_bot" })
+      expect(await send({ friendId: "f1", name: "Ari", channel: "teams", key: "k" }, "hi", ["n1"])).toEqual({ delivered: false, reason: "no_teams_bot" })
     } finally {
       process.env.HOME = home
       resetIdentity()
     }
+  })
+})
+
+describe("owner notice over BlueBubbles", () => {
+  const target: NoticeTarget = { friendId: "f1", name: "Ari", channel: "bluebubbles", key: "chat:any;-;+15555550123" }
+
+  it("sends through the BlueBubbles proactive path with the batch's delivery id and origin shepherd", async () => {
+    const client = { marker: "client" }
+    const sendBlueBubbles = vi.fn(async () => ({ delivered: true }))
+    const send = createNoticeSender(root, { createBlueBubblesClient: () => client as never, sendBlueBubbles: sendBlueBubbles as never })
+    expect(await send(target, "hello", ["n2", "n1"])).toEqual({ delivered: true })
+    expect(sendBlueBubbles).toHaveBeenCalledWith(
+      { friendId: "f1", sessionKey: "chat:any;-;+15555550123", text: "hello", intent: "generic_outreach", deliveryId: noticeDeliveryId("f1", ["n1", "n2"]), origin: "shepherd" },
+      expect.objectContaining({ createClient: expect.any(Function), createFriendStore: expect.any(Function) }),
+    )
+    const deps = (sendBlueBubbles.mock.calls[0] as unknown[])[1] as { createClient: () => unknown; createFriendStore: () => unknown }
+    expect(deps.createClient()).toBe(client)
+    expect(deps.createFriendStore()).toBeDefined()
+    expect(mockSend).not.toHaveBeenCalled()
+  })
+
+  it("a BlueBubbles setup throw returns the notice to pending", async () => {
+    const sendBlueBubbles = vi.fn()
+    const send = createNoticeSender(root, { createBlueBubblesClient: () => { throw new Error("missing bluebubbles credentials") }, sendBlueBubbles })
+    expect(await send(target, "hello", ["n1"])).toEqual({ delivered: false, reason: "bluebubbles_unavailable" })
+    expect(sendBlueBubbles).not.toHaveBeenCalled()
+    expect(events).toContainEqual(expect.objectContaining({ level: "warn", event: "senses.shepherd_notice_bluebubbles_unavailable", meta: { friendId: "f1", error: "missing bluebubbles credentials" } }))
+  })
+
+  it("uses the BlueBubbles sense's own proactive sender by default", async () => {
+    const sendText = vi.fn()
+    const send = createNoticeSender(root, { createBlueBubblesClient: () => ({ sendText }) as never })
+    // No friend record in this bundle: the sense refuses before it sends anything.
+    expect(await send(target, "hello", ["n1"])).toMatchObject({ delivered: false })
+    expect(sendText).not.toHaveBeenCalled()
+  })
+
+  it("names one delivery id per person and batch, whatever order the ids arrive in", () => {
+    expect(noticeDeliveryId("f1", ["b", "a"])).toBe(noticeDeliveryId("f1", ["a", "b"]))
+    expect(noticeDeliveryId("f1", ["a"])).not.toBe(noticeDeliveryId("f2", ["a"]))
+    expect(noticeDeliveryId("f1", ["a"])).toMatch(/^shepherd:[0-9a-f]{64}$/)
   })
 })
 
@@ -211,7 +475,7 @@ describe("owner notifier", () => {
     tasks.push(task)
     return () => { tasks = tasks.filter((entry) => entry !== task) }
   }
-  const ari: NoticeTarget = { friendId: "f1", name: "Ari", key: "conv-1" }
+  const ari: NoticeTarget = { friendId: "f1", name: "Ari", channel: "teams", key: "conv-1" }
   beforeEach(() => { tasks = [] })
 
   function notifier(overrides: Partial<Parameters<typeof createOwnerNotifier>[0]> = {}) {
@@ -226,15 +490,42 @@ describe("owner notifier", () => {
     return { instance, sent }
   }
 
-  it("retains an enqueue failure for retry and reports custody explicitly instead of silently dropping it", async () => {
+  it("rejects failed enqueue instead of reporting queued custody, then retries safely", async () => {
     const { instance, sent } = notifier()
     vi.mocked(fs.renameSync).mockImplementationOnce(() => { throw new Error("outbox publication unavailable") })
-    await instance.notify(record())
+    await expect(instance.notify(record())).rejects.toThrow("outbox publication unavailable")
     expect(sent).toEqual([])
     expect(events).toContainEqual(expect.objectContaining({ level: "error", message: "could not persist a Shepherd owner notice intent; it remains waiting" }))
     await instance.flush()
     expect(sent).toHaveLength(1)
     expect(readNoticeOutbox(root)[0]!.deliveries[ari.friendId]!.state).toBe("sent")
+  })
+
+  it("returns explicit queued and policy/stopped suppression acceptance", async () => {
+    const { instance } = notifier()
+    const value = record()
+    await expect(instance.notify(value)).resolves.toEqual({ state: "queued", noticeId: expect.any(String) })
+    const off = notifier({ policy: "off" })
+    await expect(off.instance.notify(record())).resolves.toEqual({ state: "suppressed", reason: "policy" })
+    instance.stop()
+    await expect(instance.notify(record())).resolves.toEqual({ state: "suppressed", reason: "stopped" })
+    expect(readNoticeOutbox(root)).toHaveLength(1)
+  })
+
+  it("handles a failed write observed by a scheduled flush without an unhandled rejection", async () => {
+    const { instance, sent } = notifier()
+    vi.mocked(fs.renameSync).mockImplementation(() => { throw new Error("disk unavailable") })
+    const accepted = instance.notify(record())
+    const rejected = expect(accepted).rejects.toThrow("disk unavailable")
+    tasks[0]!.fn()
+    await rejected
+    await instance.flush()
+    expect(sent).toEqual([])
+    expect(tasks.map(task => task.ms)).toEqual([NOTICE_RETRY_MS])
+    vi.mocked(fs.renameSync).mockRestore()
+    tasks[0]!.fn()
+    await vi.waitFor(() => expect(sent).toHaveLength(1))
+    instance.stop()
   })
 
   it("reports a corrupt outbox at startup and keeps a retry scheduled without initiating transport", async () => {
@@ -338,13 +629,84 @@ describe("owner notifier", () => {
     expect(noticeDeliveryState(readNoticeOutbox(root)[0]!, ari.friendId)).toBe("unknown")
   })
 
-  it("delivers the what and why for every return instead of replacing excess returns with a count", async () => {
+  it("bounds a burst to one digest while preserving receipts for undisplayed sessions", async () => {
     const { instance, sent } = notifier()
     for (let index = 0; index < 9; index++) await instance.notify(record({ session: `S${index}`, reason: `reason-${index}` }))
     await instance.flush()
-    expect(sent).toHaveLength(2)
-    expect(sent.map(value => value.text).join("\n")).not.toContain("and 3 more")
-    for (let index = 0; index < 9; index++) expect(sent.map(value => value.text).join("\n")).toContain(`reason-${index}`)
+    expect(sent).toHaveLength(1)
+    expect(sent[0]!.text).toContain("9 updates:")
+    expect(sent[0]!.text).toContain("and 3 more")
+    expect(readNoticeOutbox(root).every(entry => entry.deliveries[ari.friendId]?.state === "sent")).toBe(true)
+  })
+
+  it("turns a recovered 207-observation backlog into one historical digest with one receipt relationship", async () => {
+    const first = notifier()
+    for (let index = 0; index < 207; index++) await first.instance.notify(record({ session: `S${index % 7}` }))
+    first.instance.stop()
+    const send = vi.fn(async () => ({ delivered: true, delivery: { state: "accepted" as const, messageId: "digest-accepted" } }))
+    const recovered = notifier({ send })
+    await recovered.instance.flush()
+    expect(send).toHaveBeenCalledTimes(1)
+    expect(send.mock.calls[0]).toEqual([ari, expect.stringContaining("7 updates:"), expect.any(Array)])
+    expect(send.mock.calls[0]).toEqual([ari, expect.stringMatching(/may be out of date/), expect.any(Array)])
+    expect((send.mock.calls[0] as unknown[])[2]).toHaveLength(207)
+    const entries = readNoticeOutbox(root)
+    expect(entries).toHaveLength(207)
+    expect(entries.every(entry => entry.deliveries[ari.friendId]?.messageId === "digest-accepted")).toBe(true)
+  })
+
+  it("drains work accepted while an earlier send and its scheduled callback are in flight", async () => {
+    const begun = Promise.withResolvers<void>()
+    const release = Promise.withResolvers<void>()
+    const send = vi.fn(async () => {
+      if (send.mock.calls.length === 1) { begun.resolve(); await release.promise }
+      return { delivered: true }
+    })
+    const { instance } = notifier({ send })
+    await instance.notify(record())
+    const active = instance.flush()
+    await begun.promise
+    await instance.notify(record({ session: "new-session" }))
+    const fired = tasks.shift()!
+    fired.fn()
+    release.resolve()
+    await active
+    expect(tasks).toHaveLength(1)
+    tasks.shift()!.fn()
+    await vi.waitFor(() => expect(send).toHaveBeenCalledTimes(2))
+    await instance.flush()
+    expect(readNoticeOutbox(root).every(entry => entry.deliveries[ari.friendId]?.state === "sent")).toBe(true)
+    instance.stop()
+  })
+
+  it("does not start a send when stopped during an asynchronous claim", async () => {
+    const { instance, sent } = notifier()
+    await instance.notify(record())
+    const rename = vi.mocked(fs.renameSync).getMockImplementation()!
+    let publications = 0
+    vi.mocked(fs.renameSync).mockImplementation((from, to) => {
+      rename(from, to)
+      if (++publications === 2) instance.stop()
+    })
+    await instance.flush()
+    expect(sent).toEqual([])
+    expect(readNoticeOutbox(root)[0]!.deliveries[ari.friendId]?.state).toBe("pending")
+  })
+
+  it.each(["targets", "declaration"] as const)("does not send after stopping during %s", async boundary => {
+    const { instance, sent } = notifier({ resolveTargets: async () => {
+      if (boundary === "targets") instance.stop()
+      return [ari]
+    } })
+    await instance.notify(record())
+    if (boundary === "declaration") {
+      const rename = vi.mocked(fs.renameSync).getMockImplementation()!
+      vi.mocked(fs.renameSync).mockImplementationOnce((from, to) => { rename(from, to); instance.stop() })
+    }
+    await instance.flush()
+    expect(sent).toEqual([])
+    expect(readNoticeOutbox(root)).toHaveLength(1)
+    expect(Object.values(readNoticeOutbox(root)[0]!.deliveries).every(delivery => delivery.state === "pending")).toBe(true)
   })
 
   it("persists no-target returns for delivery after linking an owner", async () => {
@@ -358,7 +720,7 @@ describe("owner notifier", () => {
   })
 
   it("keeps retrying a pending owner absent from the current target list without replaying accepted owners", async () => {
-    const sam: NoticeTarget = { friendId: "f2", name: "Sam", key: "conv-2" }
+    const sam: NoticeTarget = { friendId: "f2", name: "Sam", channel: "teams", key: "conv-2" }
     const first = notifier({
       resolveTargets: async () => [ari, sam],
       send: async target => target.friendId === sam.friendId
@@ -381,11 +743,13 @@ describe("owner notifier", () => {
     expect(tasks).toEqual([])
   })
 
-  it("recovers a logged eligible return interrupted before its outbox write", async () => {
-    appendReturn(root, record({ noticeEligible: true }))
+  it("startup does not import 207 eligible audit records as new notice intent", async () => {
+    for (let index = 0; index < 207; index++) appendReturn(root, record({ noticeEligible: true }))
     const { instance, sent } = notifier()
     await instance.flush()
-    expect(sent).toHaveLength(1)
+    expect(sent).toEqual([])
+    expect(readNoticeOutbox(root)).toEqual([])
+    expect(tasks).toEqual([])
   })
 
   it("does not replay legacy or explicitly suppressed returns when recovering", async () => {
@@ -426,18 +790,18 @@ describe("owner notifier", () => {
     expect(tasks).toEqual([])
     instance.notify(record({ kind: "gate" }))
     await instance.flush()
-    expect(sent.map((entry) => entry.text)).toEqual([noticeLine(record({ kind: "gate" }), "surface:12")])
+    expect(sent.map((entry) => entry.text)).toEqual([replyable(noticeLine(record({ kind: "gate" }), "surface:12"))])
     const off = notifier({ policy: "off" })
     off.instance.notify(record({ kind: "gate" }))
     await off.instance.flush()
     expect(off.sent).toEqual([])
   })
 
-  it("names the session by a short id when the host cannot list its sessions", async () => {
+  it("still names the session by its agent and folder when the host cannot list its sessions", async () => {
     const { instance, sent } = notifier({ listSessions: async () => { throw new Error("socket closed") } })
     instance.notify(record())
     await instance.flush()
-    expect(sent[0]!.text).toContain("(0a1b2c3d)")
+    expect(sent[0]!.text).toMatch(/^Claude Code in ouroboros stopped early/)
   })
 
   it("logs a warning and sends nothing when no family friend is reachable", async () => {
@@ -450,8 +814,8 @@ describe("owner notifier", () => {
   })
 
   it("logs a send that fails or is refused and still tries the next owner, without throwing", async () => {
-    const sam: NoticeTarget = { friendId: "f2", name: "Sam", key: "k" }
-    const kim: NoticeTarget = { friendId: "f3", name: "Kim", key: "k" }
+    const sam: NoticeTarget = { friendId: "f2", name: "Sam", channel: "teams", key: "k" }
+    const kim: NoticeTarget = { friendId: "f3", name: "Kim", channel: "bluebubbles", key: "k" }
     const send = vi.fn()
       .mockRejectedValueOnce(new Error("Bot Framework 503"))
       .mockResolvedValueOnce({ delivered: false, reason: "internal_content_blocked" })
@@ -478,6 +842,62 @@ describe("owner notifier", () => {
     instance.stop()
     expect(tasks).toEqual([])
     instance.stop()
+  })
+
+  it("host_account_refused keeps the notice pending and schedules a retry", async () => {
+    const send = vi.fn().mockResolvedValue({ delivered: false, reason: "host_account_refused" })
+    const { instance } = notifier({ send })
+    await instance.notify(record())
+    tasks = []
+    await instance.flush()
+    expect(noticeDeliveryState(readNoticeOutbox(root)[0]!, ari.friendId)).toBe("pending")
+    expect(tasks.map(task => task.ms)).toEqual([NOTICE_RETRY_MS])
+    instance.stop()
+  })
+
+  it("the same batch retried uses the same deliveryId", async () => {
+    const ids: string[] = []
+    const send = vi.fn(async (target: NoticeTarget, _text: string, noticeIds: string[]) => {
+      ids.push(noticeDeliveryId(target.friendId, noticeIds))
+      return ids.length === 1 ? { delivered: false, reason: "bluebubbles_unavailable" } : { delivered: true }
+    })
+    const { instance } = notifier({ send })
+    await instance.notify(record())
+    await instance.flush()
+    await instance.flush()
+    expect(send).toHaveBeenCalledTimes(2)
+    expect(ids[1]).toBe(ids[0])
+    expect(noticeDeliveryState(readNoticeOutbox(root)[0]!, ari.friendId)).toBe("sent")
+    instance.stop()
+  })
+
+  it("Teams target still receives the messageId receipt", async () => {
+    const send = vi.fn(async () => ({ delivered: true, delivery: { state: "accepted" as const, messageId: "teams-activity-1" } }))
+    const { instance } = notifier({ send })
+    await instance.notify(record())
+    await instance.flush()
+    expect((send.mock.calls[0] as unknown[])[0]).toMatchObject({ channel: "teams" })
+    expect(readNoticeOutbox(root)[0]!.deliveries[ari.friendId]).toMatchObject({ state: "sent", messageId: "teams-activity-1" })
+  })
+
+  it("a not-delivered result writes nothing to state/pending", async () => {
+    const { instance } = notifier({ send: async () => ({ delivered: false, reason: "bluebubbles_unavailable" }) })
+    await instance.notify(record())
+    await instance.flush()
+    expect(fs.existsSync(path.join(root, "state", "pending"))).toBe(false)
+    expect(noticeDeliveryState(readNoticeOutbox(root)[0]!, ari.friendId)).toBe("pending")
+    instance.stop()
+  })
+
+  it("reads enabled channels from agent.json for the default targets", async () => {
+    fs.writeFileSync(path.join(root, "agent.json"), JSON.stringify({ senses: { teams: { enabled: true } } }))
+    fs.mkdirSync(path.join(root, "friends"), { recursive: true })
+    fs.writeFileSync(path.join(root, "friends", "f1.json"), JSON.stringify(friend("f1", { name: "Ari", externalIds: [{ provider: "aad", externalId: "aad-1", linkedAt: "" }] })))
+    const targets: NoticeTarget[] = []
+    const { instance } = notifier({ resolveTargets: undefined, send: async target => { targets.push(target); return { delivered: true } } })
+    await instance.notify(record())
+    await instance.flush()
+    expect(targets).toEqual([{ friendId: "f1", name: "Ari", channel: "teams", key: "shepherd" }])
   })
 
   it("defaults to the bundle's family friends and the Teams sender", async () => {

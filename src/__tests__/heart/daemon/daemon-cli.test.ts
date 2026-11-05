@@ -373,6 +373,28 @@ describe("ouro CLI parsing", () => {
     expect(() => parseOuroCommand(["auth", "--agent", "slugger", "--provider", "not-real"])).toThrow("Usage")
   })
 
+  it("parses anthropic API-key mode auth flags and rejects them elsewhere", () => {
+    expect(parseOuroCommand(["auth", "--agent", "butler", "--provider", "anthropic", "--api-key-file", "/keys/master.key", "--base-url", "http://127.0.0.1:8787"])).toEqual({
+      kind: "auth.run",
+      agent: "butler",
+      provider: "anthropic",
+      apiKeyFile: "/keys/master.key",
+      baseUrl: "http://127.0.0.1:8787",
+    })
+    expect(parseOuroCommand(["auth", "--agent", "butler", "--provider", "anthropic", "--api-key-file", "/dev/stdin"])).toEqual({
+      kind: "auth.run",
+      agent: "butler",
+      provider: "anthropic",
+      apiKeyFile: "/dev/stdin",
+    })
+    expect(() => parseOuroCommand(["auth", "--agent", "butler", "--provider", "minimax", "--api-key-file", "/k"])).toThrow("only for --provider anthropic")
+    expect(() => parseOuroCommand(["auth", "--agent", "butler", "--api-key-file", "/k"])).toThrow("only for --provider anthropic")
+    expect(() => parseOuroCommand(["auth", "--agent", "butler", "--provider", "anthropic", "--base-url", "http://x"])).toThrow("--base-url requires --api-key-file")
+    expect(() => parseOuroCommand(["auth", "--agent", "butler", "--provider", "anthropic", "--api-key-file", "/k", "--base-url", "ftp://x"])).toThrow("http(s) URL")
+    expect(() => parseOuroCommand(["auth", "--agent", "butler", "--provider", "anthropic", "--api-key-file"])).toThrow("--api-key-file requires a value")
+    expect(() => parseOuroCommand(["auth", "--agent", "butler", "--provider", "anthropic", "--api-key-file", "--base-url"])).toThrow("--api-key-file requires a value")
+  })
+
   it("parses auth verify and auth switch subcommands", () => {
     expect(parseOuroCommand(["auth", "verify"])).toEqual({
       kind: "auth.verify",
@@ -1202,6 +1224,54 @@ describe("ouro CLI execution", () => {
       expect(output).toContain("✓ authenticating anthropic")
       expect(output).toContain("... verifying anthropic")
       expect(deps.sendCommand).not.toHaveBeenCalled()
+    } finally {
+      tmp.cleanup()
+    }
+  })
+
+  it("runs `auth --api-key-file` by reading the key from the file and passing it with the base URL", async () => {
+    const tmp = createTmpBundle({
+      agentName: "auth-api-key",
+      agentJson: {
+        version: 2,
+        enabled: true,
+        provider: "anthropic",
+        humanFacing: { provider: "anthropic", model: "claude-opus-4-6" },
+        agentFacing: { provider: "anthropic", model: "claude-opus-4-6" },
+        phrases: { thinking: ["working"], tool: ["running tool"], followup: ["processing"] },
+      },
+    })
+    const keyFile = path.join(tmp.bundlesRoot, "master.key")
+    fs.writeFileSync(keyFile, "  ouro-gw-test-key \n", { mode: 0o600 })
+    const emptyKeyFile = path.join(tmp.bundlesRoot, "empty.key")
+    fs.writeFileSync(emptyKeyFile, "\n")
+    const runAuthFlow = vi.fn(async () => ({ message: `authenticated ${tmp.agentName} with anthropic`, credentialPath: "providers/anthropic" }))
+    const deps = {
+      socketPath: "/tmp/ouro-test.sock",
+      sendCommand: vi.fn(async () => ({ ok: true, message: "unexpected daemon call" })),
+      startDaemonProcess: vi.fn(async () => ({ pid: 1 })),
+      writeStdout: vi.fn(),
+      checkSocketAlive: vi.fn(async () => true),
+      cleanupStaleSocket: vi.fn(),
+      fallbackPendingMessage: vi.fn(() => "/tmp/pending.jsonl"),
+      bundlesRoot: tmp.bundlesRoot,
+      runAuthFlow,
+    } as OuroCliDeps & { runAuthFlow: typeof runAuthFlow }
+
+    try {
+      await runOuroCli(["auth", "--agent", tmp.agentName, "--provider", "anthropic", "--api-key-file", keyFile, "--base-url", "http://127.0.0.1:8787"], deps)
+      expect(runAuthFlow).toHaveBeenCalledWith(expect.objectContaining({
+        agentName: tmp.agentName,
+        provider: "anthropic",
+        apiKey: "ouro-gw-test-key",
+        baseUrl: "http://127.0.0.1:8787",
+      }))
+      const output = deps.writeStdout.mock.calls.map((call) => String(call[0])).join("")
+      expect(output).not.toContain("ouro-gw-test-key")
+
+      await expect(runOuroCli(["auth", "--agent", tmp.agentName, "--provider", "anthropic", "--api-key-file", emptyKeyFile], deps)).rejects.toThrow("is empty")
+      await expect(runOuroCli(["auth", "--agent", tmp.agentName, "--provider", "anthropic", "--api-key-file", path.join(tmp.bundlesRoot, "missing.key")], deps)).rejects.toThrow("could not read --api-key-file")
+      expect(runAuthFlow).toHaveBeenCalledTimes(1)
     } finally {
       tmp.cleanup()
     }
@@ -4955,7 +5025,7 @@ describe("ensureDaemonRunning", () => {
       getRuntimeMetadata: () => ({
         version: "0.1.0-alpha.20",
         lastUpdated: "2026-03-09T11:00:00.000Z",
-        repoRoot: "/Users/arimendelow/Projects/ouroboros-agent-harness-bb-health-status",
+        repoRoot: "/Users/owner/Projects/ouroboros-agent-harness-bb-health-status",
         configFingerprint: "cfg-local",
       }),
     }))
@@ -4982,7 +5052,7 @@ describe("ensureDaemonRunning", () => {
               socketPath: "/tmp/ouro-test.sock",
               version: "0.1.0-alpha.20",
               lastUpdated: "2026-03-09T11:00:00.000Z",
-              repoRoot: "/Users/arimendelow/Projects/ouroboros-agent-harness-cross-chat-bridge-orchestration",
+              repoRoot: "/Users/owner/Projects/ouroboros-agent-harness-cross-chat-bridge-orchestration",
               configFingerprint: "cfg-running",
               workerCount: 0,
               senseCount: 0,
@@ -5021,7 +5091,7 @@ describe("ensureDaemonRunning", () => {
         socketPath: "/tmp/ouro-test.sock",
         localVersion: "0.1.0-alpha.20",
         localLastUpdated: "2026-03-09T11:00:00.000Z",
-        localRepoRoot: "/Users/arimendelow/Projects/ouroboros-agent-harness-bb-health-status",
+        localRepoRoot: "/Users/owner/Projects/ouroboros-agent-harness-bb-health-status",
         localConfigFingerprint: "cfg-local",
         localManagedAgents: "slugger",
         prepareDaemonRuntimeReplacement,
@@ -5029,7 +5099,7 @@ describe("ensureDaemonRunning", () => {
       await expect(syncDeps.fetchRunningRuntimeMetadata?.()).resolves.toEqual({
         version: "0.1.0-alpha.20",
         lastUpdated: "2026-03-09T11:00:00.000Z",
-        repoRoot: "/Users/arimendelow/Projects/ouroboros-agent-harness-cross-chat-bridge-orchestration",
+        repoRoot: "/Users/owner/Projects/ouroboros-agent-harness-cross-chat-bridge-orchestration",
         configFingerprint: "cfg-running",
         managedAgents: "slugger",
       })
@@ -7235,8 +7305,8 @@ describe("ouro whoami and session list CLI execution", () => {
         friendId: "friend-1",
         friendName: "Ari",
         channel: "bluebubbles",
-        key: "chat_any;-;ari@mendelow.me",
-        sessionPath: "/tmp/AgentBundles/slugger.ouro/state/sessions/friend-1/bluebubbles/chat_any;-;ari@mendelow.me.json",
+        key: "chat_any;-;owner@example.test",
+        sessionPath: "/tmp/AgentBundles/slugger.ouro/state/sessions/friend-1/bluebubbles/chat_any;-;owner@example.test.json",
         lastActivityAt: "2026-03-14T16:00:00.000Z",
         lastActivityMs: 123,
         activitySource: "friend-facing",

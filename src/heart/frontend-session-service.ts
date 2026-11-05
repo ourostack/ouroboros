@@ -11,20 +11,8 @@ import {
 import { emitNervesEvent } from "../nerves/runtime"
 import { authorizedShepherdTargets, type ShepherdSession } from "../senses/shepherd/surface"
 import type { FrontendJournalEvent } from "./frontend-journal"
-
-export class FrontendTurnConflictError extends Error {
-  constructor(turnId: string) {
-    super(`frontend turn already exists: ${turnId}`)
-    this.name = "FrontendTurnConflictError"
-  }
-}
-
-export class FrontendSessionConflictError extends Error {
-  constructor(sessionKey: string) {
-    super(`frontend session already has an active turn: ${sessionKey}`)
-    this.name = "FrontendSessionConflictError"
-  }
-}
+import { FrontendSessionConflictError, FrontendTurnConflictError } from "./frontend-turn-errors"
+export { FrontendSessionConflictError, FrontendTurnConflictError } from "./frontend-turn-errors"
 
 export interface FrontendTurnRequest {
   turnId: string

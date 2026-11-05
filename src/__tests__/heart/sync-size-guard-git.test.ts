@@ -51,7 +51,7 @@ describe("postTurnPush size guard against a real git remote", () => {
     const result = postTurnPush(bundle, { enabled: true, remote: "origin" })
 
     expect(result).toEqual({ ok: true })
-    const pushedFiles = git(remote, ["ls-tree", "-r", "--name-only", "main"]).split("\n")
+    const pushedFiles = git(remote, ["--git-dir", remote, "ls-tree", "-r", "--name-only", "main"]).split("\n")
     expect(pushedFiles).toEqual([".gitignore", "notes.md"])
     expect(git(bundle, ["status", "--porcelain"])).toBe("?? arc/")
     const skipped = JSON.parse(fs.readFileSync(path.join(bundle, "state", "sync-skipped-files.json"), "utf-8"))
@@ -68,8 +68,8 @@ describe("postTurnPush size guard against a real git remote", () => {
     fs.writeFileSync(path.join(bundle, "notes.md"), "later\n", "utf-8")
     expect(postTurnPush(bundle, { enabled: true, remote: "origin" }).ok).toBe(true)
 
-    expect(git(remote, ["show", "main:log.jsonl"])).toBe("{}")
-    expect(git(remote, ["show", "main:notes.md"])).toBe("later")
+    expect(git(remote, ["--git-dir", remote, "show", "main:log.jsonl"])).toBe("{}")
+    expect(git(remote, ["--git-dir", remote, "show", "main:notes.md"])).toBe("later")
     expect(git(bundle, ["status", "--porcelain"])).toBe("M log.jsonl")
   })
 
@@ -93,9 +93,9 @@ describe("postTurnPush size guard against a real git remote", () => {
     fs.writeFileSync(path.join(bundle, "notes.md"), "mine\n", "utf-8")
 
     expect(postTurnPush(bundle, { enabled: true, remote: "origin" })).toEqual({ ok: true })
-    expect(git(remote, ["show", "main:notes.md"])).toBe("mine")
-    expect(git(remote, ["show", "main:from-other.md"])).toBe("hi")
-    expect(git(remote, ["show", "main:log.jsonl"])).toBe("{}")
+    expect(git(remote, ["--git-dir", remote, "show", "main:notes.md"])).toBe("mine")
+    expect(git(remote, ["--git-dir", remote, "show", "main:from-other.md"])).toBe("hi")
+    expect(git(remote, ["--git-dir", remote, "show", "main:log.jsonl"])).toBe("{}")
     expect(fs.statSync(path.join(bundle, "log.jsonl")).size).toBe(SYNC_FILE_SIZE_LIMIT_BYTES + 1)
     expect(fs.existsSync(path.join(bundle, "state", "pending-sync.json"))).toBe(false)
   })
@@ -120,7 +120,7 @@ describe("postTurnPush size guard against a real git remote", () => {
     fs.writeFileSync(path.join(bundle, "state", "pending-sync.json"), JSON.stringify({ error: "push failed" }), "utf-8")
 
     expect(postTurnPush(bundle, { enabled: true, remote: "origin" })).toEqual({ ok: true })
-    expect(git(remote, ["show", "main:notes.md"])).toBe("stranded")
+    expect(git(remote, ["--git-dir", remote, "show", "main:notes.md"])).toBe("stranded")
     expect(fs.existsSync(path.join(bundle, "state", "pending-sync.json"))).toBe(false)
   })
 
@@ -137,9 +137,9 @@ describe("postTurnPush size guard against a real git remote", () => {
     fs.writeFileSync(path.join(bundle, "notes.md"), "after rename\n", "utf-8")
 
     expect(postTurnPush(bundle, { enabled: true, remote: "origin" })).toEqual({ ok: true })
-    const pushedFiles = git(remote, ["ls-tree", "-r", "--name-only", "main"]).split("\n")
+    const pushedFiles = git(remote, ["--git-dir", remote, "ls-tree", "-r", "--name-only", "main"]).split("\n")
     expect(pushedFiles).toContain("old/big.jsonl")
     expect(pushedFiles).not.toContain("new/big.jsonl")
-    expect(git(remote, ["show", "main:notes.md"])).toBe("after rename")
+    expect(git(remote, ["--git-dir", remote, "show", "main:notes.md"])).toBe("after rename")
   })
 })

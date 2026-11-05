@@ -160,11 +160,25 @@ describe("writing a trust file", () => {
     expect(fs.lstatSync(path.join(dir, "g.json")).isSymbolicLink()).toBe(false)
   })
 
-  it("refuses to overwrite a backup that already exists, and cleans up its temporary file when the rename fails", () => {
+  it("never overwrites a backup that already exists: same-millisecond writes take the next free name", () => {
     writeTrustedFile(tmp.agentRoot, "g.json", "one\n", NOW)
     const dir = operatorTrustDir(tmp.agentRoot)
-    fs.writeFileSync(path.join(dir, `g.json.bak-${NOW.toISOString().replace(/[:.]/gu, "-")}`), "taken")
-    expect(() => writeTrustedFile(tmp.agentRoot, "g.json", "two\n", NOW)).toThrow()
+    const base = path.join(dir, `g.json.bak-${NOW.toISOString().replace(/[:.]/gu, "-")}`)
+    fs.writeFileSync(base, "taken")
+    expect(writeTrustedFile(tmp.agentRoot, "g.json", "two\n", NOW).backup).toBe(`${base}-1`)
+    expect(writeTrustedFile(tmp.agentRoot, "g.json", "three\n", NOW).backup).toBe(`${base}-2`)
+    expect(fs.readFileSync(base, "utf8")).toBe("taken")
+    expect(fs.readFileSync(`${base}-1`, "utf8")).toBe("one\n")
+    expect(fs.readFileSync(`${base}-2`, "utf8")).toBe("two\n")
+    expect(fs.readFileSync(path.join(dir, "g.json"), "utf8")).toBe("three\n")
+  })
+
+  it("gives up when every backup name is taken, and cleans up its temporary file when the rename fails", () => {
+    writeTrustedFile(tmp.agentRoot, "g.json", "one\n", NOW)
+    const dir = operatorTrustDir(tmp.agentRoot)
+    const base = path.join(dir, `g.json.bak-${NOW.toISOString().replace(/[:.]/gu, "-")}`)
+    for (let suffix = 0; suffix <= 99; suffix++) fs.writeFileSync(suffix === 0 ? base : `${base}-${suffix}`, "taken")
+    expect(() => writeTrustedFile(tmp.agentRoot, "g.json", "two\n", NOW)).toThrow(/EEXIST/)
     expect(fs.readFileSync(path.join(dir, "g.json"), "utf8")).toBe("one\n")
     fs.mkdirSync(path.join(dir, "blocked.json"))
     expect(() => writeTrustedFile(tmp.agentRoot, "blocked.json", "x", NOW)).toThrow()

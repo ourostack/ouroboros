@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react"
-import { fetchJson, subscribeToEvents } from "./api"
-import { buildHash, parseHash, type RouteState } from "./navigation"
+import { fetchJson, subscribeToEvents, type ConnectionState } from "./api"
+import { buildHash, parseHash, buildSupervisionHash, parseSupervisionHash, type RouteState } from "./navigation"
 import { SidebarLayout } from "./catalyst/sidebar-layout"
 import {
   Sidebar,
@@ -15,6 +15,7 @@ import {
 import { Navbar, NavbarItem, NavbarSection, NavbarSpacer } from "./catalyst/navbar"
 import { Badge } from "./catalyst/badge"
 import { AgentInspector } from "./components/agent-inspector"
+import { Supervision } from "./components/supervision"
 import type { MailboxAgentInnerView, MailboxAgentView, MailboxDeskPrefs, MailboxMachineView } from "./contracts"
 
 function getInitialRoute(): RouteState | null {
@@ -29,86 +30,172 @@ function attentionBadgeColor(level: string): "red" | "yellow" | "lime" | "zinc" 
 }
 
 export function App() {
+  const [supervisionRoute, setSupervisionRoute] = useState(() => parseSupervisionHash(window.location.hash))
+  const machineMode = useRef(supervisionRoute !== null)
   const [machine, setMachine] = useState<MailboxMachineView | null>(null)
   const [selectedAgent, setSelectedAgent] = useState<string>(getInitialRoute()?.agent ?? "")
   const [agentView, setAgentView] = useState<MailboxAgentView | null>(null)
+  const [deskPrefs, setDeskPrefs] = useState<MailboxDeskPrefs | null>(null)
+  const [machineError, setMachineError] = useState<string | null>(null)
+  const [agentError, setAgentError] = useState<string | null>(null)
+  const [machineReceivedAt, setMachineReceivedAt] = useState<string | null>(null)
+  const [agentReceivedAt, setAgentReceivedAt] = useState<string | null>(null)
+  const [connection, setConnection] = useState<ConnectionState>("connecting")
   const [refreshGeneration, setRefreshGeneration] = useState(0)
   const refreshRef = useRef(0)
   const initialRoute = useRef(getInitialRoute())
+  const [agentRoute, setAgentRoute] = useState(getInitialRoute)
+  const selectedRef = useRef(selectedAgent)
+  const mounted = useRef(true)
+  const machineRequest = useRef(0)
+  const agentRequest = useRef(0)
+  const machineAbort = useRef<AbortController | null>(null)
+  const agentAbort = useRef<AbortController | null>(null)
+
+  const selectAgent = useCallback((name: string) => {
+    if (selectedRef.current === name) return
+    selectedRef.current = name
+    agentRequest.current += 1
+    refreshRef.current += 1
+    agentAbort.current?.abort()
+    setSelectedAgent(name)
+    setAgentView(null)
+    setDeskPrefs(null)
+    setAgentError(null)
+    setAgentReceivedAt(null)
+  }, [])
 
   const loadMachine = useCallback(async () => {
+    const id = ++machineRequest.current
+    machineAbort.current?.abort()
+    const controller = new AbortController()
+    machineAbort.current = controller
     try {
-      const data = await fetchJson<MailboxMachineView>("/machine")
+      const data = await fetchJson<MailboxMachineView>("/machine", { signal: controller.signal })
+      if (!mounted.current || id !== machineRequest.current) return
       setMachine(data)
-      if (!selectedAgent && data.agents.length > 0) {
+      setMachineError(null)
+      setMachineReceivedAt(new Date().toISOString())
+      if (!machineMode.current && !selectedRef.current && data.agents.length > 0) {
         const agent = initialRoute.current?.agent ?? data.agents[0]!.agentName
-        setSelectedAgent(agent)
+        selectAgent(agent)
       }
-    } catch { /* retry on SSE */ }
-  }, [selectedAgent])
-
-  const [deskPrefs, setDeskPrefs] = useState<MailboxDeskPrefs | null>(null)
+    } catch (error) {
+      if (!mounted.current || controller.signal.aborted || id !== machineRequest.current) return
+      setMachineError(error instanceof Error ? error.message : String(error))
+    }
+  }, [selectAgent])
 
   const loadAgent = useCallback(async (name: string) => {
-    if (!name) { setAgentView(null); setDeskPrefs(null); return }
+    if (!name) return
+    const id = ++agentRequest.current
+    agentAbort.current?.abort()
+    const controller = new AbortController()
+    agentAbort.current = controller
+    const isCurrent = () => mounted.current && id === agentRequest.current && selectedRef.current === name
     try {
       const [view, prefs] = await Promise.all([
-        fetchJson<MailboxAgentView>(`/agents/${encodeURIComponent(name)}`),
-        fetchJson<MailboxDeskPrefs>(`/agents/${encodeURIComponent(name)}/desk-prefs`),
+        fetchJson<MailboxAgentView>(`/agents/${encodeURIComponent(name)}`, { signal: controller.signal }),
+        fetchJson<MailboxDeskPrefs>(`/agents/${encodeURIComponent(name)}/desk-prefs`, { signal: controller.signal }),
       ])
+      if (!isCurrent()) return
+      if (view.agent.agentName !== name) throw new Error("the response belongs to another agent")
       setAgentView(view)
       setDeskPrefs(prefs)
-    } catch { setAgentView(null); setDeskPrefs(null) }
+      setAgentError(null)
+      setAgentReceivedAt(new Date().toISOString())
+    } catch (error) {
+      if (!isCurrent() || controller.signal.aborted) return
+      setAgentError(error instanceof Error ? error.message : String(error))
+    }
+  }, [])
+
+  useEffect(() => {
+    mounted.current = true
+    return () => {
+      mounted.current = false
+      machineRequest.current += 1
+      agentRequest.current += 1
+      refreshRef.current += 1
+      machineAbort.current?.abort()
+      agentAbort.current?.abort()
+    }
   }, [])
 
   useEffect(() => { loadMachine() }, [loadMachine])
   useEffect(() => { if (selectedAgent) loadAgent(selectedAgent) }, [selectedAgent, loadAgent])
 
-  // SSE-driven refresh
+  const refresh = useCallback(async () => {
+    const id = ++refreshRef.current
+    const name = machineMode.current ? "" : selectedRef.current
+    await Promise.all([loadMachine(), name ? loadAgent(name) : Promise.resolve()])
+    if (mounted.current && refreshRef.current === id) setRefreshGeneration((current) => current + 1)
+  }, [loadMachine, loadAgent])
+
   useEffect(() => {
-    const unsubscribe = subscribeToEvents(() => {
-      const id = ++refreshRef.current
-      void loadMachine().then(async () => {
-        if (refreshRef.current !== id) return
-        if (selectedAgent) {
-          await loadAgent(selectedAgent)
-          if (refreshRef.current !== id) return
-        }
-        setRefreshGeneration((current) => current + 1)
-      })
-    })
-    return unsubscribe
-  }, [loadMachine, loadAgent, selectedAgent])
+    return subscribeToEvents(() => { void refresh() }, setConnection)
+  }, [refresh])
 
   // Browser back/forward
   useEffect(() => {
     const onHash = () => {
+      const supervision = parseSupervisionHash(window.location.hash)
+      if (supervision) {
+        machineMode.current = true
+        setSupervisionRoute(supervision)
+        return
+      }
       const route = parseHash(window.location.hash)
-      if (route) setSelectedAgent(route.agent)
+      if (route) {
+        machineMode.current = false
+        setAgentRoute(route)
+        setSupervisionRoute(null)
+        selectAgent(route.agent)
+      }
     }
     window.addEventListener("hashchange", onHash)
     return () => window.removeEventListener("hashchange", onHash)
-  }, [])
+  }, [selectAgent])
 
   const handleSelectAgent = useCallback((name: string) => {
-    setSelectedAgent(name)
-    // Don't clear agentView — show stale data until fresh data arrives.
-    // The inspector will show the previous agent briefly, which is better than a blank flash.
-    window.history.pushState(null, "", buildHash({ agent: name, tab: "overview", focus: undefined }))
+    const route: RouteState = { agent: name, tab: "overview", focus: undefined }
+    setAgentRoute(route)
+    machineMode.current = false
+    setSupervisionRoute(null)
+    selectAgent(name)
+    window.history.pushState(null, "", buildHash(route))
+  }, [selectAgent])
+
+  const handleSupervision = useCallback((agent: string | null) => {
+    machineMode.current = true
+    setSupervisionRoute({ agent })
+    window.history.pushState(null, "", buildSupervisionHash(agent))
   }, [])
 
   if (!machine) {
     return (
       <div className="flex h-screen items-center justify-center bg-ouro-void">
         <div className="text-center">
-          <div className="mx-auto mb-4 h-4 w-4 animate-pulse rounded-full bg-ouro-glow shadow-[0_0_20px_theme(--color-ouro-glow)]" />
-          <p className="font-mono text-sm text-ouro-mist">Connecting to Mailbox…</p>
+          {machineError ? (
+            <div role="alert">
+              <p className="text-ouro-bone">Could not connect to Mailbox: {machineError}</p>
+              <button type="button" onClick={() => { void refresh() }} className="mt-3 text-ouro-glow underline">
+                Retry connection
+              </button>
+            </div>
+          ) : (
+            <>
+              <div className="mx-auto mb-4 h-4 w-4 animate-pulse rounded-full bg-ouro-glow shadow-[0_0_20px_theme(--color-ouro-glow)]" />
+              <p role="status" className="font-mono text-sm text-ouro-mist">Connecting to Mailbox…</p>
+            </>
+          )}
         </div>
       </div>
     )
   }
 
   const t = machine.overview.totals
+  const currentView = agentView?.agent.agentName === selectedAgent ? agentView : null
 
   return (
     <SidebarLayout
@@ -140,6 +227,9 @@ export function App() {
             {/* Machine stats — compact row */}
             <SidebarSection>
               <SidebarHeading className="text-ouro-mist/60">Machine</SidebarHeading>
+              <SidebarItem current={supervisionRoute !== null} onClick={() => handleSupervision(null)}>
+                <SidebarLabel className="text-ouro-bone">Supervision</SidebarLabel>
+              </SidebarItem>
               <div className="grid grid-cols-3 gap-1.5 px-2">
                 {[
                   { v: t.liveTasks ?? 0, l: "Tasks", alert: (t.blockedTasks ?? 0) > 0 },
@@ -162,7 +252,7 @@ export function App() {
               {machine.agents.map((agent) => (
                 <SidebarItem
                   key={agent.agentName}
-                  current={agent.agentName === selectedAgent}
+                  current={supervisionRoute === null && agent.agentName === selectedAgent}
                   onClick={() => handleSelectAgent(agent.agentName)}
                 >
                   <div className="flex min-w-0 flex-1 items-center justify-between gap-2">
@@ -187,16 +277,16 @@ export function App() {
             </div>
           </SidebarFooter>
           {/* Agent status line — manual override or auto-derived */}
-          {selectedAgent && agentView && (
+          {supervisionRoute === null && selectedAgent && currentView && (
             <div className="px-4 py-2 border-t border-ouro-moss/20">
               <p className="text-xs italic text-ouro-shadow/70">
                 {(() => {
                   const manualStatus = deskPrefs?.statusLine
                   if (manualStatus) return manualStatus
-                  const inner: MailboxAgentInnerView = agentView.inner
+                  const inner: MailboxAgentInnerView = currentView.inner
                   const status = inner.status
                   if (status === "running" || inner.hasPending) return "thinking through something privately"
-                  const obCount = agentView.work.obligations.openCount
+                  const obCount = currentView.work.obligations.openCount
                   if (obCount > 2) return "a few loose ends"
                   if (obCount > 0) return "carrying something"
                   return "steady"
@@ -207,13 +297,43 @@ export function App() {
         </Sidebar>
       }
     >
-      <AgentInspector
-        agentName={selectedAgent}
-        view={agentView}
-        deskPrefs={deskPrefs}
-        refreshGeneration={refreshGeneration}
-        initialRoute={initialRoute.current?.agent === selectedAgent ? initialRoute.current : undefined}
-      />
+      <div role="status" className="mb-4 text-xs text-ouro-mist">
+        {connection === "connected" ? "Live connection" : connection === "reconnecting"
+          ? "Disconnected - reconnecting. Displayed snapshots may be stale."
+          : "Connecting to live updates. Displayed snapshots may be stale."}
+        {machineReceivedAt && <> Last machine snapshot received <time dateTime={machineReceivedAt}>{new Date(machineReceivedAt).toLocaleTimeString()}</time>.</>}
+      </div>
+      {machineError && (
+        <div role="alert" className="mb-4 text-sm text-ouro-gold">
+          Could not refresh the machine snapshot: {machineError}. Showing the last successful machine snapshot.
+          <button type="button" onClick={() => { void refresh() }} className="ml-2 underline">Retry</button>
+        </div>
+      )}
+      {supervisionRoute === null && agentError && (
+        <div role="alert" className="mb-4 text-sm text-ouro-gold">
+          Could not load {selectedAgent}: {agentError}.
+          {currentView && <> Showing the last successful snapshot for {selectedAgent}{agentReceivedAt && <> received <time dateTime={agentReceivedAt}>{new Date(agentReceivedAt).toLocaleTimeString()}</time></>}.</>}
+          <button type="button" onClick={() => { void loadAgent(selectedAgent) }} className="ml-2 underline">Retry agent</button>
+        </div>
+      )}
+      {supervisionRoute ? (
+        <Supervision agents={machine.agents.map(agent => agent.agentName)} agentName={supervisionRoute.agent}
+          focus={supervisionRoute.focus} refreshGeneration={refreshGeneration} onSelectOwner={handleSupervision} />
+      ) : currentView || !selectedAgent ? (
+        <AgentInspector
+          key={selectedAgent}
+          agentName={selectedAgent}
+          view={currentView}
+          deskPrefs={deskPrefs}
+          refreshGeneration={refreshGeneration}
+          initialRoute={agentRoute?.agent === selectedAgent ? agentRoute : undefined}
+          onNavigate={setAgentRoute}
+        />
+      ) : (
+        <p role="status" className="py-12 text-ouro-mist">
+          {agentError ? `No snapshot available for ${selectedAgent}.` : `Loading ${selectedAgent}...`}
+        </p>
+      )}
     </SidebarLayout>
   )
 }

@@ -57,7 +57,7 @@ import { isRsvpHabitName } from "../rsvp/habit-policy"
 import { readHealth, getDefaultHealthPath } from "../heart/daemon/daemon-health"
 import { readFlightRecorderResume, formatFlightRecorderResume } from "../arc/flight-recorder"
 import { deskRecordOrientationSection } from "../mind/desk-section"
-import type { HabitSessionToolContext } from "../repertoire/tools-base"
+import type { HabitSessionToolContext, ToolContext } from "../repertoire/tools-base"
 import type { ExternalEventLeaseContext } from "../heart/external-events/router"
 import { createSanctuaryToolContext, isSanctuaryAgent } from "./sanctuary-runtime"
 import { getSenseSessionPath } from "./shared-turn"
@@ -990,7 +990,7 @@ function buildExternalEventLeaseMessage(event: ExternalEventLeaseContext): strin
   const members = [event, ...(event.relatedEvents ?? [])]
   const dispositionInstruction = members.length === 1
     ? "Investigate the current observation, then call external_event_disposition once for this lease before settling."
-    : "Investigate the current observations, then call external_event_disposition once with one bounded batch containing every listed lease before settling."
+    : "Investigate the current observations, then call external_event_disposition once with one bounded batch containing every listed lease before settling. The batch gets at most one owner message: the first ask or report sends it, so its reason must cover every lease."
   return [
     "[current external-event disposition contract]",
     "This exact lease frame is authoritative for this turn. Ignore older receipts, failed tool arguments, held-work summaries, and checkpoints when choosing disposition arguments.",
@@ -1462,9 +1462,9 @@ export async function runPrivateRuntimeTurn(options?: RunPrivateRuntimeTurnOptio
             },
           },
           externalEventEffects: {
-            deliverOwnerDecision: async (input: { source: string; eventId: string; generation: number; text: string }) => {
+            deliverOwnerDecision: async (input: Parameters<NonNullable<ToolContext["externalEventEffects"]>["deliverOwnerDecision"]>[0]) => {
               const { sendTelegramExternalEventDecision } = await import("./telegram")
-              await sendTelegramExternalEventDecision(agentName, input)
+              return sendTelegramExternalEventDecision(agentName, input)
             },
           },
         }

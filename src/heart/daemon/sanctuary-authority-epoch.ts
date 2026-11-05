@@ -8,7 +8,8 @@ interface EpochInput {
   root: string
   epochId: string
   tokenPath: string
-  previousTokenPath: string
+  /** The predecessor's token, proven revoked. Null for a fresh install, which never had one. */
+  previousTokenPath: string | null
   botId: string
   ownerUserId: string
   ownerChatId: string
@@ -26,10 +27,11 @@ interface Epoch {
   packageDigest: string
   tokenPath: string
   tokenDigest: string
-  previousTokenDigest: string
+  /** Null, together with revokedTokenStatus, for a fresh install with no predecessor token. */
+  previousTokenDigest: string | null
   publicKeyPem: string
   publicKeyDigest: string
-  revokedTokenStatus: 401
+  revokedTokenStatus: 401 | null
   createdAt: string
   terminalCursor: number | null
 }
@@ -69,9 +71,12 @@ function validate(value: unknown): Epoch {
     || typeof epoch.epochId !== "string" || !/^[A-Za-z0-9_-]{1,128}$/u.test(epoch.epochId)
     || ![epoch.botId, epoch.ownerUserId, epoch.ownerChatId].every((id) => typeof id === "string" && /^[1-9][0-9]*$/u.test(id)) || epoch.ownerUserId !== epoch.ownerChatId
     || !Number.isSafeInteger(epoch.predecessorCursor) || epoch.predecessorCursor < 0
-    || ![epoch.packageDigest, epoch.tokenDigest, epoch.previousTokenDigest, epoch.publicKeyDigest].every((value) => typeof value === "string" && DIGEST.test(value))
+    || ![epoch.packageDigest, epoch.tokenDigest, epoch.publicKeyDigest].every((value) => typeof value === "string" && DIGEST.test(value))
+    || (epoch.previousTokenDigest === null
+      ? epoch.revokedTokenStatus !== null || epoch.predecessorCursor !== 0
+      : typeof epoch.previousTokenDigest !== "string" || !DIGEST.test(epoch.previousTokenDigest) || epoch.revokedTokenStatus !== 401)
     || epoch.tokenDigest === epoch.previousTokenDigest || typeof epoch.tokenPath !== "string" || !path.isAbsolute(epoch.tokenPath)
-    || typeof epoch.publicKeyPem !== "string" || epoch.revokedTokenStatus !== 401
+    || typeof epoch.publicKeyPem !== "string"
     || typeof epoch.createdAt !== "string" || !Number.isFinite(Date.parse(epoch.createdAt)) || new Date(epoch.createdAt).toISOString() !== epoch.createdAt
     || (epoch.state === "prepared" ? epoch.terminalCursor !== null : !Number.isSafeInteger(epoch.terminalCursor) || epoch.terminalCursor! < epoch.predecessorCursor)) throw new Error("Sanctuary authority epoch is invalid")
   return epoch
@@ -129,16 +134,22 @@ export async function prepareSanctuaryAuthorityEpoch(input: EpochInput, options:
     || ![input.botId, input.ownerUserId, input.ownerChatId].every((id) => typeof id === "string" && /^[1-9][0-9]*$/u.test(id)) || input.ownerUserId !== input.ownerChatId
     || !Number.isSafeInteger(input.predecessorCursor) || input.predecessorCursor < 0 || !DIGEST.test(input.packageDigest)) throw new Error("Sanctuary authority epoch input is invalid")
   const token = privateBytes(input.tokenPath, options).toString("utf8").trim()
-  const previousToken = privateBytes(input.previousTokenPath, options).toString("utf8").trim()
-  if (!TOKEN.test(token) || !TOKEN.test(previousToken) || token.split(":")[0] !== input.botId || previousToken.split(":")[0] !== input.botId || token === previousToken) throw new Error("Sanctuary authority requires a fresh same-bot token")
-  const previous = await options.probe(previousToken)
-  if (previous.status !== 401 || previous.botId !== null) throw new Error("Sanctuary previous Telegram token is not proven revoked")
+  // A fresh install has no predecessor token to prove revoked, and therefore no cursor to carry.
+  const previousToken = input.previousTokenPath === null ? null : privateBytes(input.previousTokenPath, options).toString("utf8").trim()
+  if (previousToken === null && input.predecessorCursor !== 0) throw new Error("Sanctuary authority epoch input is invalid")
+  if (!TOKEN.test(token) || token.split(":")[0] !== input.botId
+    || (previousToken !== null && (!TOKEN.test(previousToken) || previousToken.split(":")[0] !== input.botId || token === previousToken))) throw new Error("Sanctuary authority requires a fresh same-bot token")
+  if (previousToken !== null) {
+    const previous = await options.probe(previousToken)
+    if (previous.status !== 401 || previous.botId !== null) throw new Error("Sanctuary previous Telegram token is not proven revoked")
+  }
   const current = await options.probe(token)
   if (current.status !== 200 || current.botId !== input.botId) throw new Error("Sanctuary new Telegram token identity is invalid")
   const epochPath = path.join(input.root, "epoch.json")
   const keyPath = path.join(input.root, "issuer.pem")
   const intentPath = path.join(input.root, "issuer-intent.json")
-  const inputDigest = sha(JSON.stringify({ ...input, tokenDigest: sha(token), previousTokenDigest: sha(previousToken) }))
+  const previousTokenDigest = previousToken === null ? null : sha(previousToken)
+  const inputDigest = sha(JSON.stringify({ ...input, tokenDigest: sha(token), previousTokenDigest }))
   return withImmediateSessionTurnLease(epochPath, (lease) => {
     const transaction = readSessionTransaction(epochPath, lease)
     let existing = false
@@ -151,7 +162,7 @@ export async function prepareSanctuaryAuthorityEpoch(input: EpochInput, options:
       for (const key of ["epochId", "botId", "ownerUserId", "ownerChatId", "predecessorCursor", "packageDigest", "tokenPath"] as const) {
         if (epoch[key] !== input[key]) throw new Error("Sanctuary authority epoch input changed")
       }
-      if (epoch.previousTokenDigest !== sha(previousToken)) throw new Error("Sanctuary authority predecessor token changed")
+      if (epoch.previousTokenDigest !== previousTokenDigest) throw new Error("Sanctuary authority predecessor token changed")
       if (fs.existsSync(intentPath)) {
         const intent = JSON.parse(privateBytes(intentPath, options).toString("utf8"))
         if (intent.inputDigest !== inputDigest || intent.key !== privateBytes(keyPath, options).toString("utf8")) throw new Error("Sanctuary issuer cleanup identity changed")
@@ -176,8 +187,8 @@ export async function prepareSanctuaryAuthorityEpoch(input: EpochInput, options:
     }
     const epoch = validate({
       schemaVersion: 1, state: "prepared", epochId: input.epochId, botId: input.botId, ownerUserId: input.ownerUserId, ownerChatId: input.ownerChatId,
-      predecessorCursor: input.predecessorCursor, packageDigest: input.packageDigest, tokenPath: input.tokenPath, tokenDigest: sha(token), previousTokenDigest: sha(previousToken),
-      ...issuer(input.root, options), revokedTokenStatus: 401, createdAt: intent.createdAt, terminalCursor: null,
+      predecessorCursor: input.predecessorCursor, packageDigest: input.packageDigest, tokenPath: input.tokenPath, tokenDigest: sha(token), previousTokenDigest,
+      ...issuer(input.root, options), revokedTokenStatus: previousTokenDigest === null ? null : 401, createdAt: intent.createdAt, terminalCursor: null,
     })
     writeSessionTransaction(epochPath, epoch, { lease, expectedRevision: transaction.revision })
     fs.unlinkSync(intentPath)

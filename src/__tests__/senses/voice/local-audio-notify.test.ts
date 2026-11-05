@@ -80,6 +80,8 @@ describe("defaultOwnerNoticeDeliverers", () => {
     expect((await bluebubbles!(request)).status).toBe("blocked")
     sendBlueBubbles.mockResolvedValueOnce({ delivered: false, reason: "send_error" })
     expect((await bluebubbles!(request)).status).toBe("failed")
+    sendBlueBubbles.mockResolvedValueOnce({ delivered: false, reason: "host_account_refused" })
+    expect((await bluebubbles!(request)).status).toBe("failed")
     sendBlueBubbles.mockResolvedValueOnce({ delivered: false, reason: "no_client" })
     expect((await bluebubbles!(request)).status).toBe("unavailable")
     expect(sendBlueBubbles.mock.calls[0]![0]).toMatchObject({ friendId: "ari", sessionKey: "k", text: "hi", intent: "generic_outreach" })

@@ -34,11 +34,11 @@ describe("RSVP legacy migration", () => {
     const agentRoot = tempDir("ouro-rsvp-agent-")
     const legacyRoot = tempDir("ouro-rsvp-legacy-")
     const baselinePath = writeLegacySnapshot(legacyRoot, "snapshot_2026-07-08_100007.json", {
-      "g-1": { first_name: "Ari", last_name: "Example", group_id: 10, attending_status: "attending" },
+      "g-1": { first_name: "Alex", last_name: "Example", group_id: 10, attending_status: "attending" },
     })
     const latestPath = writeLegacySnapshot(legacyRoot, "snapshot_2026-07-09_100007.json", {
-      "g-1": { first_name: "Ari", last_name: "Example", group_id: 10, attending_status: "attending" },
-      "g-2": { first_name: "Bina", last_name: "Example", group_id: 20, attending_status: "declined" },
+      "g-1": { first_name: "Alex", last_name: "Example", group_id: 10, attending_status: "attending" },
+      "g-2": { first_name: "Jamie", last_name: "Example", group_id: 20, attending_status: "declined" },
     })
     writeJson(path.join(legacyRoot, "data", "sent_state.json"), {
       snapshot_path: baselinePath,
@@ -73,7 +73,7 @@ describe("RSVP legacy migration", () => {
     })
     const latestRaw = fs.readFileSync(result.latestSnapshotPath, "utf-8")
     const baselineRaw = fs.readFileSync(result.baselineSnapshotPath, "utf-8")
-    expect(latestRaw).toContain("Bina")
+    expect(latestRaw).toContain("Jamie")
     expect(latestRaw).not.toContain(legacyRoot)
     expect(baselineRaw).not.toContain(legacyRoot)
     expect(path.resolve(latestPath)).toContain(legacyRoot)
@@ -84,7 +84,7 @@ describe("RSVP legacy migration", () => {
     const agentRoot = tempDir("ouro-rsvp-agent-")
     const legacyRoot = tempDir("ouro-rsvp-legacy-")
     writeLegacySnapshot(legacyRoot, "snapshot_2026-07-09_100007.json", {
-      "g-1": { first_name: "Ari", last_name: "Example", group_id: 10, attending_status: "attending" },
+      "g-1": { first_name: "Alex", last_name: "Example", group_id: 10, attending_status: "attending" },
     })
 
     expect(importLegacyRsvpState({
@@ -145,7 +145,7 @@ describe("RSVP legacy migration", () => {
     const outsideRoot = tempDir("ouro-rsvp-outside-")
     const legacyRoot = tempDir("ouro-rsvp-legacy-")
     const outsideSnapshot = writeLegacySnapshot(outsideRoot, "snapshot_2026-07-09_100007.json", {
-      "g-1": { first_name: "Ari", last_name: "Example", group_id: 10, attending_status: "attending" },
+      "g-1": { first_name: "Alex", last_name: "Example", group_id: 10, attending_status: "attending" },
     })
     writeJson(path.join(legacyRoot, "data", "sent_state.json"), { snapshot_path: outsideSnapshot })
     expect(importLegacyRsvpState({
@@ -174,7 +174,7 @@ describe("RSVP legacy migration", () => {
     const malformedBaseline = path.join(malformedRoot, "data", "baseline.json")
     writeJson(malformedBaseline, { no_guests: true })
     writeLegacySnapshot(malformedRoot, "snapshot_2026-07-09_100007.json", {
-      "g-1": { first_name: "Ari", last_name: "Example", group_id: 10, attending_status: "attending" },
+      "g-1": { first_name: "Alex", last_name: "Example", group_id: 10, attending_status: "attending" },
     })
     writeJson(path.join(malformedRoot, "data", "sent_state.json"), { snapshot_path: malformedBaseline })
     expect(importLegacyRsvpState({
@@ -189,11 +189,11 @@ describe("RSVP legacy migration", () => {
     const invalidAllGuestsRoot = tempDir("ouro-rsvp-legacy-")
     const customBaseline = path.join(invalidAllGuestsRoot, "data", "baseline.json")
     writeJson(customBaseline, {
-      guests: { "g-1": { first_name: "Ari", last_name: "Example", group_id: 10, attending_status: "attending" } },
+      guests: { "g-1": { first_name: "Alex", last_name: "Example", group_id: 10, attending_status: "attending" } },
       all_guests: [],
     })
     writeLegacySnapshot(invalidAllGuestsRoot, "snapshot_2026-07-09_100007.json", {
-      "g-1": { first_name: "Ari", last_name: "Example", group_id: 10, attending_status: "attending" },
+      "g-1": { first_name: "Alex", last_name: "Example", group_id: 10, attending_status: "attending" },
     })
     writeJson(path.join(invalidAllGuestsRoot, "data", "sent_state.json"), { snapshot_path: customBaseline, source: 123 })
     const imported = importLegacyRsvpState({

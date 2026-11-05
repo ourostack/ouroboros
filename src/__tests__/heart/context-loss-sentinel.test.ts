@@ -4,6 +4,11 @@ import * as path from "path"
 import { execFileSync, spawn } from "child_process"
 import { afterEach, describe, expect, it, vi } from "vitest"
 
+vi.mock("fs", async original => {
+  const actual = await original<typeof import("fs")>()
+  return { ...actual, readFileSync: vi.fn(actual.readFileSync), renameSync: vi.fn(actual.renameSync), linkSync: vi.fn(actual.linkSync) }
+})
+
 import {
   readFlightRecorderResume,
   recordFlightRecorderEvent,
@@ -354,6 +359,89 @@ afterEach(() => {
   for (const dir of tempDirs.splice(0)) {
     fs.rmSync(dir, { recursive: true, force: true })
   }
+})
+
+describe("context-loss Sentinel lock left by a dead process", () => {
+  const deadPid = (): number => {
+    const child = spawn(process.execPath, ["-e", ""])
+    return child.pid!
+  }
+  const refresh = (root: string, id: string, lockTimeoutMs = 1) => refreshContextLossSentinel("slugger", root, {
+    trigger: "daemon_health", now: () => new Date("2026-06-08T20:20:45.000Z"), createReceiptId: () => id,
+    providerVisibility: providerVisibility(), daemonHealthResults: okHealth(), gitStatus: () => ({ ok: true, porcelain: "" }), lockTimeoutMs,
+  })
+  const exited = async (pid: number) => {
+    for (let attempt = 0; attempt < 200; attempt++) {
+      try { process.kill(pid, 0) } catch { return }
+      await new Promise(resolve => setTimeout(resolve, 10))
+    }
+  }
+
+  it("takes the lock over and refreshes, leaving no lock behind", async () => {
+    const root = makeAgentRoot()
+    const paths = contextLossSentinelPaths(root)
+    fs.mkdirSync(paths.rootDir, { recursive: true })
+    const pid = deadPid()
+    await exited(pid)
+    fs.writeFileSync(paths.lock, `${pid}\n`, "utf-8")
+    await refresh(root, "sentinel-after-dead-owner", 1_000)
+    expect(readContextLossSentinelView(root).latest?.id).toBe("sentinel-after-dead-owner")
+    expect(fs.existsSync(paths.lock)).toBe(false)
+    expect(fs.readdirSync(paths.rootDir).filter(name => name.endsWith(".stale"))).toEqual([])
+  })
+
+  it("leaves a lock that another waiter took over or replaced, and waits", async () => {
+    const root = makeAgentRoot()
+    const paths = contextLossSentinelPaths(root)
+    fs.mkdirSync(paths.rootDir, { recursive: true })
+    const pid = deadPid()
+    await exited(pid)
+    const actual = await vi.importActual<typeof import("fs")>("fs")
+    const onLock = <A extends unknown[], R>(fn: (...args: A) => R, real: (...args: A) => R, match: (path: unknown) => boolean) =>
+      vi.mocked(fn).mockImplementation(((...args: A) => match(args[0]) && fakes.length ? (fakes.shift() as () => R)() : real(...args)) as never)
+    const fakes: Array<() => unknown> = []
+    const isLock = (value: unknown) => value === paths.lock
+    const isAside = (value: unknown) => typeof value === "string" && value.endsWith(".stale")
+    try {
+      // Another waiter renamed it aside first.
+      fs.writeFileSync(paths.lock, `${pid}\n`, "utf-8")
+      fakes.push(() => { actual.writeFileSync(paths.lock, `${process.pid}\n`, "utf-8"); throw Object.assign(new Error("gone"), { code: "ENOENT" }) })
+      onLock(fs.renameSync, actual.renameSync, isLock)
+      await expect(refresh(root, "sentinel-raced")).rejects.toThrow("lock timed out")
+      vi.mocked(fs.renameSync).mockImplementation(actual.renameSync)
+
+      // A live owner wrote the lock between the read and the rename: it is put back, and that owner keeps it.
+      actual.writeFileSync(paths.lock, `${process.pid}\n`, "utf-8")
+      fakes.push(() => `${pid}\n`)
+      onLock(fs.readFileSync as (...args: unknown[]) => unknown, actual.readFileSync as (...args: unknown[]) => unknown, isLock)
+      await expect(refresh(root, "sentinel-new-owner")).rejects.toThrow("lock timed out")
+      expect(actual.readFileSync(paths.lock, "utf-8")).toBe(`${process.pid}\n`)
+
+      // When yet another lock already holds the path, the put-back leaves it alone.
+      actual.writeFileSync(paths.lock, `${pid}\n`, "utf-8")
+      fakes.push(() => "someone-else\n")
+      onLock(fs.readFileSync as (...args: unknown[]) => unknown, actual.readFileSync as (...args: unknown[]) => unknown, isAside)
+      const linkFakes = [() => { actual.writeFileSync(paths.lock, `${process.pid}\n`, "utf-8"); throw Object.assign(new Error("exists"), { code: "EEXIST" }) }]
+      vi.mocked(fs.linkSync).mockImplementation(((...args: Parameters<typeof actual.linkSync>) => linkFakes.length ? linkFakes.shift()!() : actual.linkSync(...args)) as never)
+      await expect(refresh(root, "sentinel-third-owner")).rejects.toThrow("lock timed out")
+      expect(actual.readFileSync(paths.lock, "utf-8")).toBe(`${process.pid}\n`)
+      vi.mocked(fs.readFileSync).mockImplementation(actual.readFileSync)
+      vi.mocked(fs.linkSync).mockImplementation(actual.linkSync)
+      expect(actual.readdirSync(paths.rootDir).filter(name => name.endsWith(".stale"))).toEqual([])
+
+      // A lock that disappears before it can be read is simply retried.
+      actual.rmSync(paths.lock, { force: true })
+      actual.writeFileSync(paths.lock, `${pid}\n`, "utf-8")
+      fakes.push(() => { actual.rmSync(paths.lock, { force: true }); throw Object.assign(new Error("gone"), { code: "ENOENT" }) })
+      onLock(fs.readFileSync as (...args: unknown[]) => unknown, actual.readFileSync as (...args: unknown[]) => unknown, isLock)
+      await refresh(root, "sentinel-vanished", 1_000)
+      expect(readContextLossSentinelView(root).latest?.id).toBe("sentinel-vanished")
+    } finally {
+      vi.mocked(fs.readFileSync).mockImplementation(actual.readFileSync)
+      vi.mocked(fs.renameSync).mockImplementation(actual.renameSync)
+      vi.mocked(fs.linkSync).mockImplementation(actual.linkSync)
+    }
+  })
 })
 
 describe("context-loss Sentinel core", () => {
@@ -3014,6 +3102,16 @@ describe("context-loss Sentinel core", () => {
       lockTimeoutMs: 1,
     })).rejects.toThrow("context-loss Sentinel lock timed out")
     expect(fs.existsSync(paths.lock)).toBe(true)
+
+    // A lock that names a live process, or one this process cannot signal, still waits.
+    for (const owner of [String(process.pid), "1"]) {
+      fs.writeFileSync(paths.lock, `${owner}\n`, "utf-8")
+      await expect(refreshContextLossSentinel("slugger", lockedRoot, {
+        trigger: "daemon_health", now: () => new Date("2026-06-08T20:20:45.000Z"), createReceiptId: () => `sentinel-live-${owner}`,
+        providerVisibility: providerVisibility(), daemonHealthResults: okHealth(), gitStatus: () => ({ ok: true, porcelain: "" }), lockTimeoutMs: 1,
+      })).rejects.toThrow("context-loss Sentinel lock timed out")
+      expect(fs.readFileSync(paths.lock, "utf-8")).toBe(`${owner}\n`)
+    }
 
     const errorRoot = makeAgentRoot()
     const errorPaths = contextLossSentinelPaths(errorRoot)

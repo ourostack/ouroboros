@@ -31,6 +31,7 @@ const NETWORK_ERROR_MESSAGE_PATTERNS: readonly string[] = [
 // True if the error looks like a transient network issue (no HTTP status, just
 // a socket/DNS/timeout failure from the underlying transport).
 export function isNetworkError(error: Error): boolean {
+  if ((error as HttpError).status !== undefined) return false
   const code = (error as NodeJS.ErrnoException).code || ""
   if (NETWORK_ERROR_CODES.has(code)) return true
   const msg = (error.message || "").toLowerCase()

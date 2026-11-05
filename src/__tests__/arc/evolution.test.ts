@@ -56,7 +56,7 @@ function baseCaseInput() {
     evidenceRefs: [
       {
         kind: "desk_friction" as const,
-        locator: "/Users/arimendelow/desk/ouro-evolution-loop/_friction/2026-05-23-desk-semantic-search-fallback.md",
+        locator: "/Users/owner/desk/ouro-evolution-loop/_friction/2026-05-23-desk-semantic-search-fallback.md",
         capturedAt: "2026-05-23T20:00:00.000Z",
         redaction: "none" as const,
         reason: "Records semantic_unavailable true after app restart",
@@ -232,7 +232,7 @@ describe("evolution case store", () => {
     })
     const ratified = recordEvolutionRatification(agentRoot, created.id, {
       destination: "desk_lesson",
-      locator: "/Users/arimendelow/desk/_meta/tips/desk-semantic-search.md",
+      locator: "/Users/owner/desk/_meta/tips/desk-semantic-search.md",
       landedAt: "2026-05-23T20:25:00.000Z",
       reason: "Future agents need repair guidance",
     })
@@ -459,7 +459,7 @@ describe("evolution case store", () => {
     const closed = closeEvolutionCase(agentRoot, ratified.id, { reason: "Ratified as none needed" })
     const stillClosed = recordEvolutionRatification(agentRoot, closed.id, {
       destination: "desk_lesson",
-      locator: "/Users/arimendelow/desk/_meta/tips/synthetic.md",
+      locator: "/Users/owner/desk/_meta/tips/synthetic.md",
       landedAt: "2026-05-23T20:55:00.000Z",
       reason: "Late ratification update preserves closure",
     })

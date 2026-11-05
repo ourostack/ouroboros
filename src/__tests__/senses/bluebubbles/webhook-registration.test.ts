@@ -399,12 +399,12 @@ describe("BlueBubbles webhook registration host account", () => {
     ["reconcile", reconcileBlueBubblesWebhookRegistration],
   ] as const)("refuses to %s hooks on a server running under another account, touching nothing", async (_label, run) => {
     const fetchImpl = vi.fn()
-    hostAccount.verify.mockRejectedValueOnce(new Error('the BlueBubbles server runs under macOS account "arimendelow"'))
+    hostAccount.verify.mockRejectedValueOnce(new Error('the BlueBubbles server runs under macOS account "owner"'))
 
     const result = await run(input, { fetchImpl })
 
     expect(result).toMatchObject({ ok: false, state: "host-account-refused", changed: false })
-    expect(result.detail).toContain('macOS account "arimendelow"')
+    expect(result.detail).toContain('macOS account "owner"')
     expect(fetchImpl).not.toHaveBeenCalled()
   })
 

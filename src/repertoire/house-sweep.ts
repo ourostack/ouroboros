@@ -201,7 +201,7 @@ function summarizeArr(service: "sonarr" | "radarr", queuePayload: unknown, missi
       id, area: "downloads", severity: "warn", refs,
       next: series ? "fix" : "owner",
       summary: `${label} download of ${name} is stuck at ${percent}% (${release}): ${problem}`,
-      fingerprint: fingerprintOf(id, problem!.startsWith("no progress") ? "frozen" : problem!),
+      fingerprint: fingerprintOf(id, "stuck"),
       ...(series ? { fix: { tool: "media_fill_missing", args: { service_id: subjectId }, note: "keeps the partial download; replaces it only when a seeded alternative is grabbed" } } : {}),
     })
   }
@@ -242,7 +242,7 @@ function summarizeArr(service: "sonarr" | "radarr", queuePayload: unknown, missi
     findings.push({
       id, area: "missing", severity: "info", next: "fix",
       summary: series ? `${entry.name}: ${entry.count} monitored episode${entry.count === 1 ? "" : "s"} missing, the oldest aired ${days} days ago` : `${entry.name}: monitored movie still missing after ${days} days`,
-      fingerprint: fingerprintOf(id, String(entry.count)),
+      fingerprint: fingerprintOf(id, "missing"),
       fix: series
         ? { tool: "media_fill_missing", args: { service_id: subjectId }, note: "searches, grabs a seeded release, imports what finished" }
         : { tool: "media_search_now", args: { kind: "movie", service_id: subjectId }, note: "triggers a Radarr search" },
@@ -289,7 +289,7 @@ async function sweepHost(sanctuary: NonNullable<HouseSweepDeps["sanctuary"]>, po
   summary.arrayUsedPercent = num(arrayInfo.usedPercent)
   const capacity = (id: string, label: string, percent: number | null): void => {
     if (percent === null || percent < CAPACITY_PERCENT) return
-    findings.push({ id, area: "disk", severity: percent >= CRITICAL_CAPACITY_PERCENT ? "critical" : "warn", next: "owner", summary: `${label} is ${percent}% full`, fingerprint: fingerprintOf(id, String(Math.floor(percent))) })
+    findings.push({ id, area: "disk", severity: percent >= CRITICAL_CAPACITY_PERCENT ? "critical" : "warn", next: "owner", summary: `${label} is ${percent}% full`, fingerprint: fingerprintOf(id, percent >= CRITICAL_CAPACITY_PERCENT ? "critical" : "full") })
   }
   capacity("disk:array:capacity", "the array", summary.arrayUsedPercent)
   for (const share of list(storage?.shares).map(dict)) capacity(`disk:share:${text(share.name)}:capacity`, `share ${text(share.name)}`, num(share.usedPercent))
@@ -299,7 +299,7 @@ async function sweepHost(sanctuary: NonNullable<HouseSweepDeps["sanctuary"]>, po
     const id = `disk:${text(disk.id)}`
     if (disk.smart === "failed") findings.push({ id: `${id}:smart`, area: "disk", severity: "critical", next: "owner", summary: `${text(disk.name)} reports a failed SMART status`, fingerprint: fingerprintOf(`${id}:smart`, "failed") })
     const temperature = num(disk.temperatureC)
-    if (temperature !== null && temperature >= TEMPERATURE_C) findings.push({ id: `${id}:temperature`, area: "disk", severity: "warn", next: "owner", summary: `${text(disk.name)} is ${temperature}C`, fingerprint: fingerprintOf(`${id}:temperature`, String(Math.floor(temperature / 5))) })
+    if (temperature !== null && temperature >= TEMPERATURE_C) findings.push({ id: `${id}:temperature`, area: "disk", severity: "warn", next: "owner", summary: `${text(disk.name)} is ${temperature}C`, fingerprint: fingerprintOf(`${id}:temperature`, "hot") })
   }
   const parity = dict(disks?.parity)
   summary.parity = text(parity.result) || null
@@ -307,7 +307,7 @@ async function sweepHost(sanctuary: NonNullable<HouseSweepDeps["sanctuary"]>, po
   summary.parityAgeDays = ageHours === null ? null : Math.floor(ageHours / 24)
   if (disks) {
     const result = summary.parity
-    if (result === "failed") findings.push({ id: "parity:result", area: "parity", severity: "critical", next: "owner", summary: `the last parity check failed (${num(parity.errors) ?? "unknown"} errors)`, fingerprint: fingerprintOf("parity:result", `failed:${num(parity.errors)}`) })
+    if (result === "failed") findings.push({ id: "parity:result", area: "parity", severity: "critical", next: "owner", summary: `the last parity check failed (${num(parity.errors) ?? "unknown"} errors)`, fingerprint: fingerprintOf("parity:result", "failed") })
     else if (result !== "in_progress" && (summary.parityAgeDays === null || summary.parityAgeDays >= PARITY_MAX_AGE_DAYS)) findings.push({ id: "parity:age", area: "parity", severity: "warn", next: "owner", summary: summary.parityAgeDays === null ? "parity check age is unknown" : `the last parity check was ${summary.parityAgeDays} days ago`, fingerprint: fingerprintOf("parity:age", summary.parityAgeDays === null ? "unknown" : "old") })
   }
   return { summary, problem: unavailable.length > 0 ? `${unavailable.join(", ")} unreadable` : null }
@@ -428,10 +428,12 @@ export async function runHouseSweep(deps: HouseSweepDeps): Promise<HouseSweepRep
     })
     .sort((a, b) => SEVERITY_ORDER[a.severity] - SEVERITY_ORDER[b.severity] || a.id.localeCompare(b.id))
   if (!deps.replay) {
-    // A finding that is gone is forgotten, so it is told again if it comes back.
-    // ...but only when its source was readable: an outage must not make every finding look new on recovery.
+    // A finding that has been gone for REMIND_DAYS is forgotten, so it is told again if it comes back after that.
+    // A brief disappearance (or an unreadable source) keeps the entry, so a flickering finding never returns as "new".
     const present = new Set(ordered.map((finding) => finding.id))
-    const kept = Object.fromEntries(Object.entries(ledger).filter(([id]) => present.has(id) || sourcesFor(id).some((source) => sources[source] !== "ok")))
+    const kept = Object.fromEntries(Object.entries(ledger).filter(([id, told]) => present.has(id)
+      || sourcesFor(id).some((source) => sources[source] !== "ok")
+      || nowMs - Date.parse(told.reportedAt) < REMIND_DAYS * DAY_MS))
     if (Object.keys(kept).length !== Object.keys(ledger).length) writeLedger(deps.agentRoot, kept)
   }
 

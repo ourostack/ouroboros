@@ -2,10 +2,11 @@ import type { ShepherdConnection } from "../../heart/shepherd-config"
 import { emitNervesEvent } from "../../nerves/runtime"
 import { createCmuxClient } from "./client"
 import { createCmuxHost } from "./cmux"
+import { createCopilotAppHost } from "./copilot-app"
 import { createHerdrHost } from "./herdr"
 
 /**
- * The seam between Shepherd and a terminal host (cmux, Herdr). A host lists and reads terminal
+ * The seam between Shepherd and a terminal host (cmux, Herdr, the GitHub Copilot app). A host lists and reads terminal
  * sessions, types into them, shows a status line, and tells Shepherd when a coding agent handed
  * control back. Detection is the host's own knowledge (its hook events, its agent states, or a
  * quiet screen); judging the return is Shepherd's.
@@ -22,8 +23,28 @@ export interface HostSession {
   cwd?: string | null
   /** The coding agent running there, when the host knows it. */
   agent: string | null
+  instance?: string | null
   /** The human's current terminal: Shepherd never types into it. */
   focused: boolean
+  /** Advisory selection hint from the key window, never a permission to write. */
+  selected?: boolean
+}
+
+export interface ShepherdInspection {
+  session: HostSession
+  instance: string | null
+  screen: string
+  /** Exact raw-screen digest; distinct from the judged-text custody key and human-send proof. */
+  screenFingerprint: string
+  activity: "idle" | "working" | "unknown"
+  composer: "empty" | "draft" | "unknown"
+  backgroundWork: boolean | null
+}
+
+/** Ambiguous input throws; not_sent guarantees zero attempted terminal input. */
+export interface GuardedPromptResult {
+  state: "sent" | "not_sent"
+  reason?: string
 }
 
 /** A coding agent stopped and is waiting for the human. `transitionId` is the host's own id for that stop. */
@@ -44,19 +65,37 @@ export interface HostWatchHandlers {
   returned: (event: ReturnedControl) => void
   /** The human focused this session. */
   focused: (sessionId: string) => void
+  /** Read-only inventory from the existing watcher, independent of the judgment queue. No screen payloads. */
+  observed?: (observation: ShepherdHostObservation) => void
+}
+
+export interface ShepherdHostObservation {
+  at: number
+  sessions: Array<{
+    session: HostSession
+    activity: "working" | "idle" | "shell" | "unknown"
+    observedAt: number | null
+    error?: "read_failed"
+  }>
+  error?: "host_unavailable" | "sense_stopped"
 }
 
 /**
- * A key Shepherd may press in a menu. Text never goes into a menu, and keys never go anywhere else. Shepherd's own
- * judge never presses `ctrl-c`; only the human can, through `shepherd_send`.
+ * A key an explicit owner request may press through `shepherd_send`.
+ * Automatic judgments never dispatch menu, navigation or control keys.
  */
 export type ShepherdKey = "enter" | "escape" | "up" | "down" | "tab" | "ctrl-c" | "1" | "2" | "3" | "4" | "5" | "6" | "7" | "8" | "9" | "y" | "n"
 
 export interface ShepherdHost {
   name: string
   list(): Promise<HostSession[]>
+  /** Strict complete stable-terminal inventory. Sparse/malformed replies throw, never mean absence. */
+  retirementInventory?(): Promise<string[]>
   /** The screen tail with scrollback, plain text. */
   read(sessionId: string, lines: number): Promise<string>
+  inspect?(sessionId: string): Promise<ShepherdInspection>
+  /** canSend is checked synchronously after adapter I/O, immediately before attempting input. */
+  promptIfUnchanged?(sessionId: string, line: string, expected: ShepherdInspection, canSend?: () => boolean): Promise<GuardedPromptResult>
   /** Types one line and submits it, so it cannot be mistaken for a paste or a keystroke. */
   prompt(sessionId: string, line: string): Promise<void>
   key(sessionId: string, key: ShepherdKey): Promise<void>
@@ -73,6 +112,7 @@ export interface ShepherdHost {
 /** The host for this machine's connection. */
 export function createShepherdHost(connection: ShepherdConnection, options: { agentName: string; now?: () => number; schedule?: (fn: () => void, ms: number) => () => void }): ShepherdHost {
   emitNervesEvent({ component: "senses", event: "senses.shepherd_host_created", message: "opened the Shepherd terminal host", meta: { host: connection.host } })
+  if (connection.host === "copilot-app") return createCopilotAppHost(connection, { schedule: options.schedule, now: options.now })
   return connection.host === "herdr"
     ? createHerdrHost(connection, { schedule: options.schedule })
     : createCmuxHost(createCmuxClient(connection, { agentName: options.agentName }), { now: options.now, schedule: options.schedule })

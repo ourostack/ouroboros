@@ -23,6 +23,39 @@ The only Ouro-owned durable credential locations are the bundle and the agent va
 
 Do not introduce a second credential source of truth. Raw credentials belong in the owning agent's vault. Bundle files may contain references, configuration, state, and vault coordinates, but not raw credentials.
 
+### Agent display identity
+
+`agent.json` may include `displayName`, the agent's human-facing name. It does not
+rename its bundle, change the `--agent` identifier, select providers or grant
+authority. For example, the bundle `orchid-runtime.ouro` can have
+`"displayName": "Orchid One"`. Add that field to the existing document; do not
+replace the rest of its configuration.
+
+An explicit display name must contain 1–80 characters, without surrounding
+whitespace, markup delimiters, control or invisible formatting characters. Both
+runtime config readers validate it. Existing bundles without the field use their
+configured agent identifier; the runtime never guesses a name from psyche prose
+or maps every agent to "Ouro". Shepherd's session entry, composer, attribution and
+feedback acknowledgements use this explicit identity. **Ouro Shepherd** remains
+the product name.
+
+### Shepherd periodic check-in cadence
+
+The owning bundle's existing `agent.json` may set
+`senses.shepherd.checkInMinutes`. Omitted means `60` (hourly); `0` disables
+periodic checks; otherwise it must be an integer from `30` through `1440`.
+Invalid values are explicit configuration errors, not silent defaults. Restart
+the Shepherd sense after editing this setting. It is portable agent policy, not
+a machine credential or provider setting; add it without replacing other fields.
+
+The timer only initiates fresh triage of returned-control sessions. It is not
+agent pacing, a provider retry promise, recovered-connectivity evidence or
+permission to bypass human decisions, drafts, unknown input state or background
+work. The existing provider lanes and retry policy are unchanged. Unchanged
+periodic blockers do not repeat owner notices or private wakes. See
+[Shepherd Sense](shepherd-sense.md#periodic-fresh-check-ins) for host limits,
+guarded input and shared durable uncertain-send custody.
+
 ## Provider Selection
 
 Every agent has two provider lanes in `agent.json`:
@@ -98,13 +131,24 @@ When a human runs bare `ouro` in a TTY, Ouro opens the same command family from 
 
 `ouro connect teams` connects the Teams sense. It prompts for `teams.clientId`, `teams.clientSecret`, `teams.tenantId`, and optional `teams.managedIdentityClientId`, stores them in `runtime/config`, and enables `senses.teams.enabled` in `agent.json`.
 
+Bot credentials and proactive delivery do not prove conversational ingress.
+Verify the bot registration's endpoint separately from the local receiver and
+its public route. For an existing supervised local quick tunnel, use the
+controller described in `scripts/teams-sense/README.md`; a living Cloudflare
+process or a printed hostname can conceal a permanently rejected tunnel.
+Conversational diagnostics correlate `inboundActivityId`, conversation, bot and
+tenant identifiers through received, admitted, running and reply/failure stages,
+without logging message bodies. `reply_emitted` is explicitly unconfirmed stream
+output; `replied` requires a returned outgoing activity ID. Neither is a substitute
+for operator-led live acceptance of a new request in the actual Teams conversation.
+
 `ouro connect bluebubbles` is the standard setup for this machine's BlueBubbles attachment. It prompts for the local server URL, app password, webhook listener settings, stores them in `runtime/machines/<machine-id>/config`, enables `senses.bluebubbles.enabled` in `agent.json`, and sets up host continuity. For a same-user bridge, Ouro installs or verifies the native-compatible `com.bluebubbles.server` LaunchAgent. For a bridge in another logged-in macOS account, Ouro installs a generic helper and returns one nonce-bound `human-required` Terminal command plus a matching `ouro bluebubbles host collect --request-id <id>` command; it never requests, stores, or logs that account's login password.
 
 BlueBubbles sends iMessages as whichever Apple ID is signed in to the macOS account its server runs under, so each agent declares that account in `agent.json` as `senses.bluebubbles.hostUsername` (for example `"bluebubbles": { "enabled": true, "hostUsername": "clawdbot" }`). Ouro itself may run in that account or in another one. Before anything that acts as the Apple ID (sending, editing, typing indicators, read receipts, and the sense health check), the BlueBubbles client asks the server which account it runs under (`computer_id` in `/api/v1/server/info`) and refuses unless it is the declared host; every send asks again rather than reusing an earlier answer. Listening is gated the same way: the sense registers its webhook only on a server running under the declared host, rechecks before taking in each incoming webhook event and drops it (HTTP 403) when that cannot be confirmed, and reading messages from the server (catch-up, queued recovery, message lookups, `ouro bluebubbles replay` and `context-smoke`) is refused the same way, so the agent never takes in another account's iMessages. Queued messages stay queued until the account is confirmed. This applies to the BlueBubbles sense, the agent's `send_message` tool and RSVP sends alike. The daemon does not start the sense, and the agent does not see BlueBubbles as ready, until a host account is declared. `ouro connect bluebubbles` asks for the account by name, never defaults it to whoever runs the command, refuses an account that differs from an already declared host, and records it before installing anything. `ouro bluebubbles host install|repair` refuses any account that no BlueBubbles-enabled agent declares; `status` and `remove` stay available so a wrong account can be inspected and cleaned up. `ouro doctor` fails when the host account is missing, and its webhook check fails when the server runs under another account. Choosing `hostUsername` is a human decision, because it chooses whose Apple ID the agent speaks as.
 
 ### Sanctuary Jellyfin catalog access
 
-The Sanctuary media-optimization read uses one dedicated Jellyfin user, not an administrator API key and not a Jellyfin database scrape. In Jellyfin's Users dashboard, create a user for Mendelow Cloud Butler, leave administrator access off, disable access to all libraries, and grant exactly the Movies and TV libraries. Disable all devices and allow only the device id `mendelow-cloud-butler-sanctuary`. Keep playback, transcoding, remuxing, conversion, remote access/control, live TV, public sharing, deletion, download, and management permissions off. Signing in or issuing a token is `human-required` because it can involve the Jellyfin dashboard and secret entry.
+The Sanctuary media-optimization read uses one dedicated Jellyfin user, not an administrator API key and not a Jellyfin database scrape. In Jellyfin's Users dashboard, create a user for your Butler, leave administrator access off, disable access to all libraries, and grant exactly the Movies and TV libraries. Disable all devices and allow only the Butler's device id: its name from `house/house.json` as a lowercase slug followed by `-sanctuary` (for example `the-butler-sanctuary` for "the Butler"). Keep playback, transcoding, remuxing, conversion, remote access/control, live TV, public sharing, deletion, download, and management permissions off. Signing in or issuing a token is `human-required` because it can involve the Jellyfin dashboard and secret entry.
 
 Store the dedicated user's ID, exact two library IDs, and access token in Sanctuary's existing machine-scoped vault config from inside the canonical Butler container. The nonsecret IDs may use `--value`; omit `--value` for the token so the CLI reads it through its hidden prompt instead of command history:
 
@@ -468,6 +512,8 @@ Use this checklist for any existing agent that predates the vault-backed credent
    Repeat `--from <json>` for each local JSON export that should be imported. Enter and confirm a human-chosen unlock secret when prompted, and save it outside Ouro immediately. The prompt does not echo the secret. The command stores vault coordinates in `agent.json`, imports provider credentials into `providers/*`, imports portable runtime/integration credentials into `runtime/config`, imports BlueBubbles local attachment fields into `runtime/machines/<machine-id>/config`, and prints only field/provider summaries.
 
 4. Unlock the vault on this machine.
+
+   If readiness instead reports that the local Bitwarden CLI installation is incomplete, repair the CLI selected by Ouro, normally its bundled pinned copy, then run `ouro doctor` before retrying `ouro up`. A working `bw --version` on PATH does not validate Ouro's bundled copy. A missing Node.js module is a local installation failure, not evidence that the vault is locked or provider credentials are invalid. Do not replace the vault or reauthenticate providers to repair missing CLI files. Startup remains blocked until the normal credential and provider checks pass.
 
    ```bash
    ouro vault unlock --agent <agent>

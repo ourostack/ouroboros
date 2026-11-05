@@ -112,7 +112,8 @@ function healthFixture() {
   return { ...f, m, input, request, snapshot, child, spawn, spawnSync, paths, receipt }
 }
 
-function containerFixture() {
+// `psycheMount` adds the read-only psyche mount that releases up to alpha.978 created (the shape a rollback restores).
+function containerFixture(psycheMount = false) {
   const m = memoryFilesystem()
   const inspection: Record<string, any> = {
     containerId: "0".repeat(64), name: "/ouro-butler", imageId: `sha256:${"a".repeat(64)}`, pid: 4242, running: true, health: "healthy",
@@ -122,7 +123,7 @@ function containerFixture() {
       ["/mnt/user/appdata/ouro-butler/runtime/.ouro-cli", "/home/ouro/.ouro-cli", true],
       ["/mnt/user/appdata/ouro-butler/agent/sanctuary.ouro", "/home/ouro/AgentBundles/sanctuary.ouro", true],
       ["/boot/config/custom/ouro-events/spool", "/run/ouro-events", false], ["/run/ouro-authority", "/run/ouro-authority", false],
-      ["/mnt/user/appdata/ouro-butler/agent/sanctuary.ouro/psyche", "/home/ouro/AgentBundles/sanctuary.ouro/psyche", false],
+      ...(psycheMount ? [["/mnt/user/appdata/ouro-butler/agent/sanctuary.ouro/psyche", "/home/ouro/AgentBundles/sanctuary.ouro/psyche", false]] : []),
       ["/mnt/user/appdata/ouro-butler/trust/sanctuary", "/etc/ouro/trust/sanctuary", false],
     ].map(([Source, Destination, RW]) => ({ Source, Destination, RW, Type: "bind", Mode: "", Propagation: "rprivate" })),
   }
@@ -557,10 +558,24 @@ describe("physical health probe lifecycle", () => {
 })
 
 describe("native container and root owner observations", () => {
-  it("observes one exact six-mount gateway container and all root readiness owners", async () => {
+  it("accepts the old six-mount resident with the read-only psyche mount", async () => {
+    const f = containerFixture(true)
+    expect(await f.call("containerSnapshot")(f.inspection.imageId)).toMatchObject({ mountCount: 6, mountsExact: true })
+  })
+  it("rejects a separate read-write psyche mount", async () => {
+    const f = containerFixture(true)
+    f.inspection.mounts.find((mount: { Destination: string }) => mount.Destination === "/home/ouro/AgentBundles/sanctuary.ouro/psyche").RW = true
+    expect((await f.call("containerSnapshot")(f.inspection.imageId)).mountsExact).toBe(false)
+  })
+  it.each([false, true])("still rejects a missing trust mount (psyche mount: %s)", async (psycheMount) => {
+    const f = containerFixture(psycheMount)
+    f.inspection.mounts = f.inspection.mounts.filter((mount: { Destination: string }) => mount.Destination !== "/etc/ouro/trust/sanctuary")
+    expect((await f.call("containerSnapshot")(f.inspection.imageId)).mountsExact).toBe(false)
+  })
+  it("observes one exact five-mount gateway container and all root readiness owners", async () => {
     const f = containerFixture()
     const snapshot = await f.call("containerSnapshot")(f.inspection.imageId)
-    expect(snapshot).toMatchObject({ mountCount: 6, mountsExact: true, securityExact: true, readOnlyRoot: false, vaultUnlocked: true, updaterDisabled: true, autostartExact: true })
+    expect(snapshot).toMatchObject({ mountCount: 5, mountsExact: true, securityExact: true, readOnlyRoot: false, vaultUnlocked: true, updaterDisabled: true, autostartExact: true })
     expect(f.call("observeRebootPreflight()")).toMatchObject({ safe: true, mutationActive: false })
     expect(f.fetch).toHaveBeenCalledOnce()
     expect(f.m.descriptors.size).toBe(0)

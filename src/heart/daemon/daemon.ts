@@ -505,6 +505,8 @@ export type DaemonCommand =
   | { kind: "daemon.restart"; reason?: string; requestedBy?: string }
   | { kind: "daemon.status" }
   | { kind: "daemon.health" }
+  | { kind: "daemon.shepherd_stopped"; agent: string }
+  | { kind: "daemon.shepherd_quiesce"; agent: string }
   | { kind: "daemon.logs" }
   | { kind: "daemon.sense_revive"; agent: string; sense: string; reason: string }
   | { kind: "agent.start"; agent: string }
@@ -551,6 +553,7 @@ export type DaemonCommand =
   | { kind: "mcp.call"; agent?: string; server: string; tool: string; args?: string }
   | { kind: "hatch.start" }
   | { kind: "agent.senseTurn"; agent: string; friendId: string; channel: string; sessionKey: string; message: string; runtimeMcp?: RuntimeMcpServers }
+  | import("../../senses/shepherd/feedback-submit").FeedbackCommand
 
 export interface DaemonResponse {
   ok: boolean
@@ -1107,13 +1110,23 @@ export class OuroDaemon {
 
     await this.orphanStartupDrain(this.socketPath)
     await this.openCommandSocket()
-    await this.reconcileExternalEvents()
+    this.triggerAutoStartAgents()
+    this.triggerAutoStartSensesWhenAgentsSettled()
+    // Not awaited: a startup external event can run a long private turn, and
+    // that turn must never hold senses such as Telegram down at boot.
+    void this.reconcileExternalEvents().catch((error) => {
+      emitNervesEvent({
+        level: "warn",
+        component: "daemon",
+        event: "daemon.external_event_startup_reconcile_error",
+        message: "startup external-event reconciliation failed",
+        meta: { error: error instanceof Error ? error.message : /* v8 ignore next -- reconciliation failures are Error objects @preserve */ String(error) },
+      })
+    })
     this.externalEventReconcileTimer = setInterval(() => {
       void this.reconcileExternalEvents()
     }, 1_000)
     this.externalEventReconcileTimer.unref?.()
-    this.triggerAutoStartAgents()
-    this.triggerAutoStartSensesWhenAgentsSettled()
 
     // Write all managed PIDs to disk so the next daemon can clean up
     /* v8 ignore start -- pidfile write: collects PIDs from process managers @preserve */
@@ -2295,6 +2308,20 @@ export class OuroDaemon {
           data,
         }
       }
+      case "daemon.shepherd_stopped": {
+        if (typeof command.agent !== "string" || !this.senseManager?.shepherdStoppedProof) {
+          return { ok: false, error: "Shepherd lifecycle proof is unavailable" }
+        }
+        const data = this.senseManager.shepherdStoppedProof(command.agent)
+        return { ok: true, data }
+      }
+      case "daemon.shepherd_quiesce": {
+        if (typeof command.agent !== "string" || !this.senseManager?.quiesceShepherd) {
+          return { ok: false, error: "Shepherd lifecycle control is unavailable" }
+        }
+        const data = await this.senseManager.quiesceShepherd(command.agent)
+        return { ok: true, data }
+      }
       case "daemon.health": {
         const checks = await this.healthMonitor.runChecks()
         const summary = checks.map((check) => `${check.name}:${check.status}:${check.message}`).join("\n")
@@ -2416,6 +2443,9 @@ export class OuroDaemon {
       case "agent.senseTurn":
         return handleAgentSenseTurn(command, { socketPath: this.socketPath })
       /* v8 ignore stop */
+      case "agent.shepherdFeedback":
+      case "agent.shepherdFeedbackStatus":
+        return (await import("../../senses/shepherd/feedback-submit")).executeFeedbackCommand(command)
       case "cron.list": {
         const jobs = this.scheduler.listJobs()
         const summary = jobs.length === 0

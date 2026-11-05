@@ -39,10 +39,10 @@ function message(overrides: Partial<StoredMailMessage> = {}): StoredMailMessage 
     compartmentKind: "delegated",
     compartmentId: "grant_hey",
     grantId: "grant_hey",
-    ownerEmail: "ari@mendelow.me",
+    ownerEmail: "owner@example.test",
     source: "hey",
-    recipient: "me.mendelow.ari.slugger@ouro.bot",
-    envelope: { mailFrom: "support@hey.com", rcptTo: ["me.mendelow.ari.slugger@ouro.bot"] },
+    recipient: "test.example.owner.slugger@ouro.bot",
+    envelope: { mailFrom: "support@hey.com", rcptTo: ["test.example.owner.slugger@ouro.bot"] },
     placement: "imbox",
     trustReason: "delegated source grant hey historical mbox import",
     rawObject: "raw/mail_trip_1.eml",
@@ -51,7 +51,7 @@ function message(overrides: Partial<StoredMailMessage> = {}): StoredMailMessage 
     bodyForm: "plaintext",
     private: {
       from: ["support@hey.com"],
-      to: ["me.mendelow.ari.slugger@ouro.bot"],
+      to: ["test.example.owner.slugger@ouro.bot"],
       cc: [],
       subject: "Basel stay 2433516539",
       text: "Hotel Marthof stay for Basel confirmation 2433516539 with updated arrival details.",
@@ -68,7 +68,7 @@ function message(overrides: Partial<StoredMailMessage> = {}): StoredMailMessage 
 function privateEnvelope(overrides: Partial<PrivateMailEnvelope> = {}): PrivateMailEnvelope {
   return {
     from: ["support@hey.com"],
-    to: ["me.mendelow.ari.slugger@ouro.bot"],
+    to: ["test.example.owner.slugger@ouro.bot"],
     cc: [],
     subject: "Basel stay 2433516539",
     text: "Hotel Marthof stay for Basel confirmation 2433516539 with updated arrival details.",
@@ -315,7 +315,7 @@ describe("mail search cache", () => {
     expect(delegated[0]).toMatchObject({
       messageId: "mail_trip_1",
       source: "hey",
-      ownerEmail: "ari@mendelow.me",
+      ownerEmail: "owner@example.test",
       subject: "Basel stay 2433516539",
     })
 

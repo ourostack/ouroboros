@@ -65,9 +65,9 @@ describe("local Shepherd surface contract", () => {
   })
   it("validates exact UUIDs and rejects reuse of a short ref after disappearance", async () => {
     const live = host()
-    expect(await listShepherdTargets(live.value)).toEqual([{ id, host: "cmux", label: "Copilot / /repo / work / tab" }])
+    expect(await listShepherdTargets(live.value)).toEqual([{ id, host: "cmux", label: "Copilot / /repo / work / tab", displayLabel: "tab", selected: false }])
     expect(await listShepherdTargets(live.value, "/dev/ttys009")).toEqual([])
-    expect(await listShepherdTargets(live.value, "/dev/ttys008")).toEqual([{ id, host: "cmux", label: "Copilot / /repo / work / tab" }])
+    expect(await listShepherdTargets(live.value, "/dev/ttys008")).toEqual([{ id, host: "cmux", label: "Copilot / /repo / work / tab", displayLabel: "tab", selected: false }])
     const pinned = await validateShepherdTarget(live.value, id)
     live.change([{ id: "22222222-2222-4222-8222-222222222222", ref: "surface:1", title: "replacement", agent: "Codex" }])
     await expect(validateShepherdTarget(live.value, pinned.id)).rejects.toThrow("unavailable")
@@ -75,7 +75,7 @@ describe("local Shepherd surface contract", () => {
     live.change([{ id, agent: null }])
     await expect(listShepherdTargets(live.value)).resolves.toEqual([])
     live.change([{ id: "surface:1", agent: "Copilot" }, { id, agent: "Codex", title: "tab\n\u001b\b\u009b" }])
-    await expect(listShepherdTargets(live.value)).resolves.toEqual([{ id, host: "cmux", label: "Codex / tab" }])
+    await expect(listShepherdTargets(live.value)).resolves.toEqual([{ id, host: "cmux", label: "Codex / tab", displayLabel: "tab", selected: false }])
     await expect(listShepherdTargets(live.value, "/dev/ttys009")).resolves.toEqual([])
   })
 
@@ -96,6 +96,20 @@ describe("local Shepherd surface contract", () => {
     expect(() => machineShepherdHost("ouro")).toThrow("cmux")
   })
 
+  it("offers short human labels and an advisory current-session hint without exposing paths or UUIDs", async () => {
+    const live = host()
+    live.change([{ id, agent: "Copilot", cwd: "/Users/ari/code/project",
+      workspaceTitle: "project", title: "Ship session attention - GitHub Copilot", selected: true }])
+    const targets = await listShepherdTargets(live.value)
+    expect(targets[0]).toMatchObject({
+      displayLabel: "Ship session attention - GitHub Copilot", selected: true,
+    })
+    expect(targets[0]!.displayLabel).not.toContain("/Users")
+    expect(targets[0]!.displayLabel).not.toContain(id)
+    live.change([{ id, agent: "Codex", cwd: "/private/repo", title: "/private/repo", workspaceTitle: id }])
+    expect((await listShepherdTargets(live.value))[0]).toMatchObject({ displayLabel: "Codex session", selected: false })
+  })
+
   it("authorizes the daemon's target listing only for the existing local owner", async () => {
     const events: LogEvent[] = []
     const unregister = registerGlobalLogSink(event => events.push(event))
@@ -103,7 +117,7 @@ describe("local Shepherd surface contract", () => {
       await expect(authorizedShepherdTargets("ouro", "wrong")).rejects.toThrow("OS user's")
       const live = host()
       runtime.host.mockReturnValue(live.value)
-      await expect(authorizedShepherdTargets("ouro", "owner")).resolves.toEqual([{ id, host: "cmux", label: "Copilot / /repo / work / tab" }])
+      await expect(authorizedShepherdTargets("ouro", "owner")).resolves.toEqual([{ id, host: "cmux", label: "Copilot / /repo / work / tab", displayLabel: "tab", selected: false }])
       await expect(authorizedShepherdTargets("ouro", "owner", "/dev/ttys009")).resolves.toEqual([])
       expect(events.filter(event => event.event === "senses.shepherd_targets_resolved").map(event => event.meta)).toEqual([{ agent: "ouro", count: 1 }, { agent: "ouro", count: 0 }])
     } finally { unregister() }

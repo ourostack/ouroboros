@@ -124,7 +124,7 @@ jobs:
             command -v bw >/dev/null
             BW_VERSION="$(BITWARDENCLI_APPDATA_DIR="$BW_VERIFY_ROOT/appdata" bw --version 2>"$BW_VERIFY_ROOT/stderr")"
             test ! -s "$BW_VERIFY_ROOT/stderr"
-            test "$BW_VERSION" = 2026.6.0
+            test "$BW_VERSION" = 2026.9.1
             rm -rf -- "$BW_VERIFY_ROOT"
             trap - 0
             test ! -e "/home/ouro/.config/Bitwarden CLI"
@@ -153,7 +153,7 @@ jobs:
           done
           sudo mkdir -p \
             /mnt/user/appdata/ouro-butler/runtime/.ouro-cli \
-            /mnt/user/appdata/ouro-butler/agent/sanctuary.ouro/psyche \
+            /mnt/user/appdata/ouro-butler/agent/sanctuary.ouro \
             /mnt/user/appdata/ouro-butler/trust/sanctuary \
             /boot/config/custom/ouro-events/spool \
             /run/ouro-authority
@@ -166,7 +166,6 @@ jobs:
             --mount type=bind,src=/mnt/user/appdata/ouro-butler/agent/sanctuary.ouro,dst=/home/ouro/AgentBundles/sanctuary.ouro \
             --mount type=bind,src=/boot/config/custom/ouro-events/spool,dst=/run/ouro-events,readonly \
             --mount type=bind,src=/run/ouro-authority,dst=/run/ouro-authority,readonly \
-            --mount type=bind,src=/mnt/user/appdata/ouro-butler/agent/sanctuary.ouro/psyche,dst=/home/ouro/AgentBundles/sanctuary.ouro/psyche,readonly \
             --mount type=bind,src=/mnt/user/appdata/ouro-butler/trust/sanctuary,dst=/etc/ouro/trust/sanctuary,readonly \
             "$AUDIT_VERSION_IMAGE"
           test "$(docker inspect --format '{{.Config.Image}}' ouro-butler)" = "$AUDIT_VERSION_IMAGE"
@@ -576,4 +575,4 @@ jobs:
           TARBALL="release-tarball/ouro.bot-cli-${LOCAL}.tgz"
           test -f "$TARBALL"
           node -e 'const c=require("./changelog.json");const v=c.versions.find((x)=>x.version===process.argv[1]);process.stdout.write((v?v.changes:[]).join("\n\n")||"See changelog.json.")' "$LOCAL" > "${RUNNER_TEMP}/notes.md"
-          gh release create "$TAG" "$TARBALL" --target "$GITHUB_SHA" --title "@ouro.bot/cli ${LOCAL}" --notes-file "${RUNNER_TEMP}/notes.md"
+          gh release create "$TAG" "$TARBALL" deploy/unraid/install.sh --target "$GITHUB_SHA" --title "@ouro.bot/cli ${LOCAL}" --notes-file "${RUNNER_TEMP}/notes.md"

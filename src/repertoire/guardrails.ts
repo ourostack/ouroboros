@@ -1183,6 +1183,9 @@ function checkFirstClassMcpTrust(context: GuardContext): GuardResult {
 }
 
 function checkTrustLevelGuardrails(toolName: string, args: Record<string, string>, context: GuardContext): GuardResult {
+  if (toolName === "teams_send_image" && context.trustLevel !== "family") {
+    return deny("sending local images in Teams requires family trust.")
+  }
   const cacheSyncResult = mailCacheSyncShellGuardrail(toolName, args, context)
   if (!cacheSyncResult.allowed) return cacheSyncResult
 

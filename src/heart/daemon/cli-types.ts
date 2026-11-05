@@ -59,7 +59,7 @@ export type OuroCliCommand =
   | { kind: "vault.recover"; agent?: string; sources: string[]; email?: string; serverUrl?: string; store?: VaultUnlockStoreKind; generateUnlockSecret?: boolean }
   | { kind: "vault.unlock"; agent?: string; store?: VaultUnlockStoreKind }
   | { kind: "vault.status"; agent?: string; store?: VaultUnlockStoreKind }
-  | { kind: "vault.config.set"; agent?: string; key: string; value?: string; scope?: RuntimeConfigScope }
+  | { kind: "vault.config.set"; agent?: string; key: string; value?: string; valueFile?: string; scope?: RuntimeConfigScope }
   | { kind: "vault.config.status"; agent?: string; scope?: RuntimeConfigStatusScope }
   | { kind: "vault.item.set"; agent?: string; item: string; template?: VaultItemTemplate; secretFields?: string[]; publicFields?: string[]; note?: string; compatibilityAlias?: VaultItemCompatibilityAlias }
   | { kind: "vault.item.status"; agent?: string; item: string; compatibilityAlias?: VaultItemCompatibilityAlias }
@@ -70,11 +70,12 @@ export type OuroCliCommand =
   | { kind: "mail.import-mbox"; agent?: string; filePath?: string; discover?: boolean; ownerEmail?: string; source?: string; foreground?: boolean; operationId?: string }
   | { kind: "mail.backfill-indexes"; agent?: string; foreground?: boolean; operationId?: string }
   | { kind: "mail.sync-cache"; agent?: string }
-  | { kind: "auth.run"; agent?: string; provider?: AgentProvider }
+  | { kind: "auth.run"; agent?: string; provider?: AgentProvider; apiKeyFile?: string; baseUrl?: string }
   | { kind: "auth.verify"; agent?: string; provider?: AgentProvider }
   | { kind: "auth.switch"; agent?: string; provider: AgentProvider; facing?: Facing }
   | { kind: "chat.connect"; agent: string }
-  | { kind: "shepherd.chat"; agent: string; session?: string }
+  | { kind: "shepherd.chat"; agent: string; session?: string; web?: boolean }
+  | import("../shepherd/operations").ShepherdOperation
   | { kind: "message.send"; from: string; to: string; content: string; sessionId?: string; taskRef?: string }
   | { kind: "external.event.submit"; agent: string; source: string; eventType: string; eventId: string; summary?: string; evidence?: string[]; payloadPath?: string; priority?: string; sessionId?: string; taskRef?: string; wake?: boolean; observationRevision?: string; transition?: import("../external-events/router").ExternalEventTransition }
   | { kind: "external.event.repair"; manifestPath: string }
@@ -102,6 +103,7 @@ export type OuroCliCommand =
   | { kind: "a2a.escalation"; action: "grant" | "revoke" | "list"; agent?: string; friendId?: string; did?: string; source?: string }
   | { kind: "a2a.delegatedCommands"; action: "grant" | "revoke" | "list"; agent?: string; friendId?: string; did?: string; expires?: string; source?: string; json?: boolean }
   | { kind: "a2a.serve"; agent?: string; host?: string; port?: number; baseUrl?: string; path?: string }
+  | { kind: "gateway.serve"; keysDir: string; host?: string; port?: number; statePath?: string; upstream?: string; cooldownMinutes?: number }
   | { kind: "changelog"; from?: string; agent?: string }
   | { kind: "mcp.list"; agent?: string }
   | { kind: "mcp.call"; agent?: string; server: string; tool: string; args?: string }
@@ -194,7 +196,8 @@ export interface OuroCliDeps {
   prepareDaemonRuntimeReplacement?: () => Promise<void> | void
   ensureDaemonBootPersistence?: (socketPath: string) => Promise<void> | void
   startChat?: (agentName: string) => Promise<void>
-  startShepherdChat?: (options: { agent: string; session?: string; socketPath: string }) => Promise<void>
+  startShepherdChat?: (options: { agent: string; session?: string; socketPath: string; web?: boolean }) => Promise<void>
+  runShepherdOperation?: (command: import("../shepherd/operations").ShepherdOperation) => Promise<unknown>
   tailLogs?: (options?: { follow?: boolean; lines?: number; agentFilter?: string }) => () => void
   pruneDaemonLogs?: (options?: { logsDir?: string; agentName?: string; bundlesRoot?: string }) => { filesCompacted: number; bytesFreed: number }
   friendStore?: FriendStore
@@ -258,6 +261,8 @@ export interface OuroCliDeps {
   now?: () => number
   /** Test seam: whether this process runs as root (the trust-directory grant commands refuse otherwise). Defaults to the real euid. */
   isRoot?: () => boolean
+  /** Foreground servers (`ouro gateway serve`) wait on this instead of SIGINT/SIGTERM when it is set; tests resolve it. */
+  waitForShutdownSignal?: () => Promise<void>
   /** Test seam: this agent's own A2A DID, or null when unreadable. Defaults to reading the agent's stored identity without minting one. */
   ownA2ADid?: (agentName: string) => Promise<string | null>
   startupPollIntervalMs?: number
@@ -340,6 +345,7 @@ export interface DiscoveredCredential {
 
 // ── Command group type aliases (used in toDaemonCommand exclusion) ──
 export type FriendCliCommand = Extract<OuroCliCommand, { kind: "friend.list" } | { kind: "friend.show" } | { kind: "friend.create" } | { kind: "friend.update" } | { kind: "friend.link" } | { kind: "friend.unlink" } | { kind: "friend.linkCode" } | { kind: "friend.merge" } | { kind: "friend.dedupe" }>
+export type GatewayServeCliCommand = Extract<OuroCliCommand, { kind: "gateway.serve" }>
 export type A2ACliCommand = Extract<OuroCliCommand, { kind: "a2a.card" } | { kind: "a2a.onboard" } | { kind: "a2a.serve" } | { kind: "a2a.escalation" } | { kind: "a2a.delegatedCommands" }>
 /** Client-side A2A commands: this machine talks to an agent as a verified friend (no agent, no daemon). */
 export type A2AClientCliCommand = Extract<OuroCliCommand, { kind: "a2a.message" } | { kind: "a2a.identity" } | { kind: "a2a.outbox" }>

@@ -137,7 +137,7 @@ record token-boundary`
         .replaceAll('primitive("/usr/bin/prlimit")', `primitive(${JSON.stringify(shellPrimitive)})`)
         .replaceAll('primitive("/usr/bin/setsid")', `primitive(${JSON.stringify(shellPrimitive)})`)
         .replaceAll('primitive("/bin/sh")', `primitive(${JSON.stringify(shellPrimitive)})`)
-      const run = (epoch = "epoch1", bot = "8541786263", owner = "42") => spawnSync(process.execPath, ["-", source, epoch, bot, owner], { input: program, encoding: "utf8" })
+      const run = (epoch = "epoch1", bot = "1000000001", owner = "42") => spawnSync(process.execPath, ["-", source, epoch, bot, owner], { input: program, encoding: "utf8" })
       const first = run()
       expect(first.status, first.stderr).toBe(0)
       expect(fs.existsSync(token), "package compatibility is proven before human token input").toBe(false)
@@ -149,7 +149,7 @@ record token-boundary`
       const manifest = JSON.parse(manifestBytes.toString())
       const request = JSON.parse(requestBytes.toString())
       expect(request).toEqual({
-        schemaVersion: 1, epochId: "epoch1", botId: "8541786263", ownerUserId: "42", ownerChatId: "42",
+        schemaVersion: 1, epochId: "epoch1", botId: "1000000001", ownerUserId: "42", ownerChatId: "42",
         packageDigest: sha(manifestBytes), nodeDigest: sha(fs.readFileSync(nodePrimitive)),
         prlimitDigest: sha(fs.readFileSync(shellPrimitive)), setsidDigest: sha(fs.readFileSync(shellPrimitive)), shellDigest: sha(fs.readFileSync(shellPrimitive)),
       })
@@ -166,7 +166,7 @@ record token-boundary`
       expect(fs.readFileSync(manifestPath)).toEqual(manifestBytes)
       expect(fs.readFileSync(requestPath)).toEqual(requestBytes)
       expect(fs.readFileSync(token, "utf8")).toBe("synthetic-human-input")
-      for (const args of [["epoch2"], ["../bad"], ["epoch1", "other"], ["epoch1", "8541786263", "-42"]]) expect(run(...args).status).not.toBe(0)
+      for (const args of [["epoch2"], ["../bad"], ["epoch1", "other"], ["epoch1", "1000000001", "-42"]]) expect(run(...args).status).not.toBe(0)
       const stale = path.join(state, "incoming-package", "unreviewed")
       fs.writeFileSync(stale, "extra")
       expect(run().stderr).toContain("unexpected incoming package residue")
@@ -285,12 +285,13 @@ ${activation}`
         }
         if (fs.existsSync(path.join(state, "new-mounts"))) {
           const mounts = fs.readFileSync(path.join(state, "new-mounts"), "utf8")
-          expect(mounts.match(/--mount /gu)).toHaveLength(6)
+          expect(mounts.match(/--mount /gu)).toHaveLength(5)
           expect(mounts).toContain("src=/run/ouro-authority,dst=/run/ouro-authority,readonly")
+          expect(mounts).not.toContain("sanctuary.ouro/psyche")
         }
       }
     } finally { fs.rmSync(root, { recursive: true, force: true }) }
-  })
+  }, 30_000)
   it("selects the exact image contract rather than the unchanged alpha816 package version", () => {
     const script = `set -eu
 validate_exact_image_id() { return 0; }
@@ -364,7 +365,7 @@ sanctuary_image_mount_contract "$IMAGE"`
     expect(template).toContain("retire_sanctuary_authority_if_pending")
   })
 
-  it("executes the real create and rollback shell fixtures with six then three mounts", () => {
+  it("executes the real create and rollback shell fixtures with five then three mounts", () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "s6-runbook-mounts-"))
     try {
       const source = helper("create_sanctuary_container")
@@ -383,8 +384,9 @@ create_sanctuary_container "$OLD" old canonical-pre-gateway`
       expect(result.status, result.stderr).toBe(0)
       const calls = fs.readFileSync(log, "utf8").trim().split("\n")
       expect(calls).toHaveLength(2)
-      expect(calls.map((call) => (call.match(/--mount /gu) ?? []).length)).toEqual([6, 3])
+      expect(calls.map((call) => (call.match(/--mount /gu) ?? []).length)).toEqual([5, 3])
       expect(calls[0]).toContain("type=bind,src=/run/ouro-authority,dst=/run/ouro-authority,readonly")
+      expect(calls[0]).not.toContain("sanctuary.ouro/psyche")
       expect(calls[1]).not.toContain("/run/ouro-authority")
       for (const call of calls) expect(call).toContain("--restart unless-stopped --user 10001:10001")
     } finally { fs.rmSync(root, { recursive: true, force: true }) }

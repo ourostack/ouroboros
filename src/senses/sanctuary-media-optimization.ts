@@ -2,7 +2,7 @@ import { emitNervesEvent } from "../nerves/runtime"
 
 const UNMANIC_BASE = "http://127.0.0.1:8888"
 const JELLYFIN_BASE = "http://127.0.0.1:8096"
-const JELLYFIN_DEVICE_ID = "mendelow-cloud-butler-sanctuary"
+const DEFAULT_JELLYFIN_DEVICE_ID = "the-butler-sanctuary"
 const MAX_BODY_BYTES = 8 * 1024 * 1024
 const MAX_LABEL_BYTES = 200
 const PAGE_SIZE = 500
@@ -25,6 +25,8 @@ class ReadFailure extends Error {
 
 interface ClientOptions {
   jellyfinUserId?: string
+  /** The only device the restricted Jellyfin user may sign in from; the runtime derives it from the house's Butler name. */
+  jellyfinDeviceId?: string
   jellyfinAccessToken?: string
   jellyfinFolderIds?: readonly [string, string] | readonly string[]
   fetch?: typeof globalThis.fetch
@@ -142,12 +144,14 @@ export function createSanctuaryMediaOptimizationClient(options: ClientOptions) {
   const folderIds = options.jellyfinFolderIds?.map((folder) => folder.trim()) ?? []
   if (jellyfinConfigured && !/^(?:[0-9a-f]{32}|[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})$/iu.test(userId)) throw new Error("Jellyfin user ID is invalid")
   if (jellyfinConfigured && !/^[A-Za-z0-9._~-]{16,512}$/u.test(token)) throw new Error("Jellyfin access token is invalid")
+  const deviceId = options.jellyfinDeviceId?.trim() ?? DEFAULT_JELLYFIN_DEVICE_ID
+  if (jellyfinConfigured && !/^[a-z0-9][a-z0-9-]{2,127}$/u.test(deviceId)) throw new Error("Jellyfin device ID is invalid")
   if (jellyfinConfigured && (folderIds.length !== 2 || new Set(folderIds).size !== 2 || folderIds.some((folder) => !/^[A-Za-z0-9_-]{1,128}$/u.test(folder)))) throw new Error("Jellyfin folder IDs must contain exactly two unique IDs")
 
   emitNervesEvent({ component: "senses", event: "sanctuary_media_optimization_client_created", message: "Sanctuary media optimization client created" })
 
   const fetchImpl = options.fetch ?? globalThis.fetch
-  const authorization = `MediaBrowser Client="Mendelow Cloud Butler", Device="Sanctuary", DeviceId="${JELLYFIN_DEVICE_ID}", Version="1.0.0", Token="${token}"`
+  const authorization = `MediaBrowser Client="Ouro Butler", Device="Sanctuary", DeviceId="${deviceId}", Version="1.0.0", Token="${token}"`
 
   async function request(url: URL | string, deadline: number, init: RequestInit = {}): Promise<unknown> {
     const controller = new AbortController()
@@ -181,7 +185,7 @@ export function createSanctuaryMediaOptimizationClient(options: ClientOptions) {
     const enabledDevices = Array.isArray(policy.EnabledDevices) ? policy.EnabledDevices : []
     const forbiddenFlags = ["EnableContentDeletion", "EnableContentDownloading", "EnableRemoteControlOfOtherUsers", "EnableSharedDeviceControl", "EnableRemoteAccess", "EnableLiveTvManagement", "EnableLiveTvAccess", "EnableMediaPlayback", "EnableAudioPlaybackTranscoding", "EnableVideoPlaybackTranscoding", "EnablePlaybackRemuxing", "ForceRemoteSourceTranscoding", "EnableSyncTranscoding", "EnableMediaConversion", "EnablePublicSharing", "EnableAllChannels"]
     if (enabledFolders.length !== 2 || enabledFolders.some((folder) => typeof folder !== "string") || enabledFolders.toSorted().join("\u0000") !== folderIds.toSorted().join("\u0000")
-      || enabledDevices.length !== 1 || enabledDevices[0] !== JELLYFIN_DEVICE_ID || policy.EnableAllDevices !== false
+      || enabledDevices.length !== 1 || enabledDevices[0] !== deviceId || policy.EnableAllDevices !== false
       || string(identity.Id).toLowerCase() !== userId.toLowerCase() || policy.IsAdministrator !== false || policy.IsDisabled !== false || policy.EnableAllFolders !== false
       || forbiddenFlags.some((flag) => policy[flag] !== false)
       || !Array.isArray(policy.EnableContentDeletionFromFolders) || policy.EnableContentDeletionFromFolders.length !== 0

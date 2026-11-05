@@ -2,12 +2,12 @@
   "version": 2,
   "enabled": true,
   "humanFacing": {
-    "provider": "minimax",
-    "model": "MiniMax-M3"
+    "provider": "anthropic",
+    "model": "claude-opus-5-5"
   },
   "agentFacing": {
-    "provider": "minimax",
-    "model": "MiniMax-M3"
+    "provider": "anthropic",
+    "model": "claude-sonnet-5-5"
   },
   "context": {
     "maxTokens": 80000,

@@ -32,7 +32,9 @@ function exactKeys(value, expected, label) {
   if (JSON.stringify(keys) !== JSON.stringify([...expected].sort())) throw new Error(`${label} has unexpected fields`)
 }
 
+// A household without Jellyfin checkpoints null: the container must stay absent.
 function validateJellyfinState(raw, label = "Jellyfin checkpoint") {
+  if (raw === null) return null
   const value = object(raw, label)
   exactKeys(value, ["containerId", "imageId", "state", "restartCount"], label)
   if (!CONTAINER_ID.test(value.containerId) || !IMAGE_ID.test(value.imageId) || !JELLYFIN_STATES.has(value.state) || !Number.isSafeInteger(value.restartCount) || value.restartCount < 0) throw new Error(`${label} is invalid`)
@@ -40,6 +42,13 @@ function validateJellyfinState(raw, label = "Jellyfin checkpoint") {
 }
 
 export function inspectCurrentJellyfinState() {
+  let present
+  try {
+    present = execFileSync("/usr/bin/docker", ["container", "ls", "--all", "--quiet", "--filter", "name=^/jellyfin$"], { encoding: "utf8", maxBuffer: 65_536, stdio: ["ignore", "pipe", "ignore"] }).trim() !== ""
+  } catch {
+    throw new Error("Jellyfin container inspection failed")
+  }
+  if (!present) return null
   let inspected
   try {
     inspected = JSON.parse(execFileSync("/usr/bin/docker", ["container", "inspect", "--format", JELLYFIN_FORMAT, "jellyfin"], { encoding: "utf8", maxBuffer: 65_536, stdio: ["ignore", "pipe", "ignore"] }).trim())
@@ -55,6 +64,11 @@ export function inspectCurrentJellyfinState() {
 function assertJellyfinUnchanged(expected) {
   const current = inspectCurrentJellyfinState()
   if (JSON.stringify(current) !== JSON.stringify(expected)) throw new Error("Jellyfin changed during the Butler transaction")
+}
+
+// A fresh install has no predecessor image; its rollback image is null.
+function validRollbackImage(value) {
+  return value === null || IMAGE_ID.test(value)
 }
 
 function digest(bytes) {
@@ -217,7 +231,7 @@ function validateJournalRecord(raw, state) {
   } else if (prior.bytesBase64 !== null || prior.metadata !== null || record.priorTemplateDigest !== null) {
     throw new Error("template transaction journal absent prior state is invalid")
   }
-  if (!VERSION_TAG.test(record.canonicalVersionTag) || !IMAGE_ID.test(record.reviewedManifestDigest) || !IMAGE_ID.test(record.rollbackImageId) || !IMAGE_ID.test(record.targetImageId) || record.rollbackImageId === record.targetImageId || !IMAGE_ID.test(record.targetTemplateDigest)) throw new Error("template transaction journal release identity is invalid")
+  if (!VERSION_TAG.test(record.canonicalVersionTag) || !IMAGE_ID.test(record.reviewedManifestDigest) || !validRollbackImage(record.rollbackImageId) || !IMAGE_ID.test(record.targetImageId) || record.rollbackImageId === record.targetImageId || !IMAGE_ID.test(record.targetTemplateDigest)) throw new Error("template transaction journal release identity is invalid")
   const jellyfin = validateJellyfinState(record.jellyfin, "template transaction journal Jellyfin checkpoint")
   if (!IMAGE_ID.test(record.digest) || record.digest !== recordDigest(record)) throw new Error("template transaction journal digest is invalid")
   return { ...record, jellyfin, priorBytes }
@@ -305,7 +319,7 @@ function validateTemplateSource(input, state) {
   if (metadataIfPresent(state.targetPath)) validateRegularFile(state.targetPath, state.expectedUid, state.expectedGid, "DockerMan template")
   validateDirectory(dirname(input.sourceTemplatePath), state.expectedUid, state.expectedGid)
   validateRegularFile(input.sourceTemplatePath, state.expectedUid, state.expectedGid, "source template")
-  if (!VERSION_TAG.test(input.canonicalVersionTag) || !IMAGE_ID.test(input.reviewedManifestDigest) || !IMAGE_ID.test(input.rollbackImageId) || !IMAGE_ID.test(input.targetImageId) || input.rollbackImageId === input.targetImageId) throw new Error("reviewed release identity is invalid")
+  if (!VERSION_TAG.test(input.canonicalVersionTag) || !IMAGE_ID.test(input.reviewedManifestDigest) || !validRollbackImage(input.rollbackImageId) || !IMAGE_ID.test(input.targetImageId) || input.rollbackImageId === input.targetImageId) throw new Error("reviewed release identity is invalid")
   const sourceBytes = readFileSync(input.sourceTemplatePath)
   const identity = templateIdentity(sourceBytes, input.canonicalVersionTag)
   return { sourceBytes, identity }
@@ -434,7 +448,7 @@ function validateAuthorityPlan(raw) {
   exactKeys(plan, ["schemaVersion", "epochId", "packageDigest", "publicKeyDigest", "botId", "ownerUserId", "ownerChatId", "predecessorContract", "targetContract"], "authority handoff plan")
   if (plan.schemaVersion !== 1 || !/^[A-Za-z0-9_-]{1,128}$/u.test(plan.epochId) || !IMAGE_ID.test(plan.packageDigest) || (plan.publicKeyDigest !== null && !IMAGE_ID.test(plan.publicKeyDigest))
     || !["botId", "ownerUserId", "ownerChatId"].every((key) => typeof plan[key] === "string" && /^[1-9][0-9]*$/u.test(plan[key]))
-    || plan.ownerUserId !== plan.ownerChatId || plan.predecessorContract !== "canonical-pre-gateway" || plan.targetContract !== "canonical-gateway") throw new Error("authority handoff plan is invalid")
+    || plan.ownerUserId !== plan.ownerChatId || !["canonical-pre-gateway", "none"].includes(plan.predecessorContract) || plan.targetContract !== "canonical-gateway") throw new Error("authority handoff plan is invalid")
   return plan
 }
 
@@ -446,6 +460,8 @@ function validateAuthorityHandoff(raw, record) {
   const handoff = object(raw, "authority handoff")
   exactKeys(handoff, ["plan", "state", "completed", "rollbackCompleted", "pending", "cancelled"], "authority handoff")
   validateAuthorityPlan(handoff.plan)
+  // Only a fresh install (no predecessor) may lack a rollback image, and it must lack one.
+  if ((handoff.plan.predecessorContract === "none") !== (record.rollbackImageId === null)) throw new Error("authority handoff plan does not match the rollback image")
   if (!["installing", "active", "retiring", "retired"].includes(handoff.state) || !Array.isArray(handoff.completed) || !Array.isArray(handoff.rollbackCompleted) || !Array.isArray(handoff.cancelled)) throw new Error("authority handoff state is invalid")
   const validateEffect = (effect, direction, step) => {
     object(effect, "authority effect")
@@ -627,7 +643,7 @@ export function runDockerManTemplateTransactionCli(argv, options = {}, write = (
       sourceTemplatePath: values.get("--source-template"),
       canonicalVersionTag: values.get("--version-tag"),
       reviewedManifestDigest: values.get("--manifest-digest"),
-      rollbackImageId: values.get("--rollback-image-id"),
+      rollbackImageId: values.get("--rollback-image-id") === "none" ? null : values.get("--rollback-image-id"),
       targetImageId: values.get("--target-image-id"),
     }, options)
   } else if (operation === "mark-committing" && values.size === 0) {

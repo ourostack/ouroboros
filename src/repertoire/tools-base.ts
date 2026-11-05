@@ -101,6 +101,8 @@ export interface HabitSessionToolContext {
 export interface ToolContext {
   /** A validated immutable terminal locator, not relationship authority. */
   readonly currentShepherdSurface?: import("../senses/shepherd/surface").ShepherdSession;
+  /** Trusted turn-local subtraction from the normal engine menu; never grants a tool. */
+  readonly allowedEngineTools?: readonly string[];
   graphToken?: string;
   adoToken?: string;
   githubToken?: string;
@@ -117,6 +119,8 @@ export interface ToolContext {
     id: string;
     conversations: unknown;
   };
+  /** Authenticated adapter closure bound to this turn's current Teams conversation. */
+  teamsSendImage?: (attachment: import("../senses/teams-image").TeamsImageAttachment, caption: string) => Promise<string>;
   bluebubblesReplyTarget?: BlueBubblesReplyTargetController;
   currentSession?: BridgeSessionRef;
   /**
@@ -154,7 +158,11 @@ export interface ToolContext {
     recordCommittedDisposition?(event: import("../heart/external-events/router").ExternalEventLeaseContext): void;
   }>;
   readonly externalEventEffects?: Readonly<{
-    deliverOwnerDecision(input: { source: string; eventId: string; generation: number; text: string }): Promise<void>;
+    /** relatedEvents are the rest of the dispatched batch; one owner message speaks for the whole batch. */
+    deliverOwnerDecision(input: {
+      source: string; eventId: string; generation: number; text: string;
+      relatedEvents: Array<{ source: string; eventId: string; generation: number }>;
+    }): Promise<import("../heart/external-events/router").ExternalEventOwnerMessage>;
   }>;
   /** Irrevocable per-turn capability reduction used by transport-safe probes. */
   readonly noSend?: true;

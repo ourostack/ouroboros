@@ -4,7 +4,7 @@ import { createSanctuaryMediaOptimizationClient } from "../../senses/sanctuary-m
 
 const TOKEN = "a".repeat(32)
 const USER_ID = "b".repeat(32)
-const DEVICE_ID = "mendelow-cloud-butler-sanctuary"
+const DEVICE_ID = "the-butler-sanctuary"
 const RESTRICTED_POLICY = {
   IsAdministrator: false, IsDisabled: false, EnableAllFolders: false,
   EnabledFolders: ["library-a", "library-b"], EnableAllDevices: false, EnabledDevices: [DEVICE_ID],
@@ -113,7 +113,7 @@ describe("Sanctuary media optimization read", () => {
     for (const [input, init] of jellyfinCalls) {
       expect(String(input)).not.toContain(TOKEN)
       expect((init as RequestInit).method).toBe("GET")
-      expect((init as RequestInit).headers).toEqual({ Authorization: `MediaBrowser Client="Mendelow Cloud Butler", Device="Sanctuary", DeviceId="mendelow-cloud-butler-sanctuary", Version="1.0.0", Token="${TOKEN}"` })
+      expect((init as RequestInit).headers).toEqual({ Authorization: `MediaBrowser Client="Ouro Butler", Device="Sanctuary", DeviceId="the-butler-sanctuary", Version="1.0.0", Token="${TOKEN}"` })
     }
     const itemsUrl = new URL(String(jellyfinCalls.find(([input]) => String(input).includes("/Items?"))?.[0]))
     expect(itemsUrl.searchParams.get("userId")).toBeNull()
@@ -327,6 +327,7 @@ describe("Sanctuary media optimization read", () => {
 
   it("requires a live restricted Jellyfin identity and never leaks credential material in failures", async () => {
     expect(() => createSanctuaryMediaOptimizationClient({ jellyfinUserId: "bad", jellyfinAccessToken: TOKEN, jellyfinFolderIds: ["library-a", "library-b"] })).toThrow("Jellyfin user ID")
+    expect(() => createSanctuaryMediaOptimizationClient({ jellyfinUserId: USER_ID, jellyfinAccessToken: TOKEN, jellyfinFolderIds: ["library-a", "library-b"], jellyfinDeviceId: "Bad Device" })).toThrow("Jellyfin device ID")
     expect(() => createSanctuaryMediaOptimizationClient({ jellyfinUserId: USER_ID, jellyfinAccessToken: "bad token", jellyfinFolderIds: ["library-a", "library-b"] })).toThrow("Jellyfin access token")
     expect(() => createSanctuaryMediaOptimizationClient({ jellyfinUserId: USER_ID, jellyfinAccessToken: TOKEN, jellyfinFolderIds: ["same", "same"] })).toThrow("Jellyfin folder IDs")
     for (const drift of [

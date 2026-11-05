@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it, vi } from "vitest"
 import * as fs from "node:fs"
 import * as os from "node:os"
 import * as path from "node:path"
+import { createHash } from "node:crypto"
 import { SANCTUARY_OWNER_ADDITIONS } from "../../fixtures/sanctuary-containment"
 
 const durabilityProbe = vi.hoisted(() => ({
@@ -10,6 +11,8 @@ const durabilityProbe = vi.hoisted(() => ({
   events: [] as string[],
   failAfter: null as string | null,
   failAfterPrefix: null as string | null,
+  beforeOpen: null as ((target: string) => void) | null,
+  afterOpen: null as ((target: string) => void) | null,
   failureArmed: false,
   failureInjected: false,
 }))
@@ -44,8 +47,10 @@ vi.mock("node:fs", async (importOriginal) => {
       return actual.fsyncSync(handle)
     },
     openSync(target: fs.PathLike, flags: fs.OpenMode, mode?: fs.Mode) {
+      durabilityProbe.beforeOpen?.(String(target))
       const handle = actual.openSync(target, flags, mode)
       durabilityProbe.descriptors.set(handle, String(target))
+      durabilityProbe.afterOpen?.(String(target))
       return handle
     },
     renameSync(before: fs.PathLike, after: fs.PathLike) {
@@ -71,12 +76,14 @@ import { consumeRoutineActionGrant, readRoutineActionReceipts, readStewardPolicy
 import {
   SANCTUARY_BUNDLE_ROLLBACK_FILE,
   SANCTUARY_PACKAGE_MANAGED_FILES,
+  SANCTUARY_STARTER_PSYCHE_FILES,
   commitSanctuaryPackageManagedBundle,
   ensureSanctuaryPackageManagedBundle,
   inspectSanctuaryPackageManagedBundle,
   inspectSanctuaryPackageManagedBundleRollback,
   migrateSanctuaryPackageManagedBundle,
   rollbackSanctuaryPackageManagedBundle,
+  seedSanctuaryPsycheIfAbsent,
 } from "../../../heart/daemon/sanctuary-bundle-migration"
 
 const roots: string[] = []
@@ -128,6 +135,7 @@ function emptyPackagedPolicy() {
 function makePackageRoot(): string {
   const root = makeRoot("sanctuary-package")
   for (const relative of SANCTUARY_PACKAGE_MANAGED_FILES) write(root, relative, `packaged:${relative}\n`)
+  for (const relative of SANCTUARY_STARTER_PSYCHE_FILES) write(root, relative, `starter:${relative}\n`)
   write(root, "bundle-meta.json", { runtimeVersion: "0.1.0-alpha.743", bundleSchemaVersion: 3, lastUpdated: "2026-08-30T00:00:00.000Z" })
   write(root, "state/policy/steward.json", emptyPackagedPolicy())
   return root
@@ -143,7 +151,18 @@ function makeExactAgentRoot(packageRoot: string): string {
   }
   fs.copyFileSync(path.join(packageRoot, "bundle-meta.json"), path.join(agentRoot, "bundle-meta.json"))
   fs.chmodSync(path.join(agentRoot, "bundle-meta.json"), 0o600)
+  copyStarterPsyche(packageRoot, agentRoot)
   return agentRoot
+}
+
+// An installed bundle already has the owner's psyche; the release no longer manages it.
+function copyStarterPsyche(packageRoot: string, agentRoot: string): void {
+  fs.mkdirSync(path.join(agentRoot, "psyche"), { mode: 0o755 })
+  fs.chmodSync(path.join(agentRoot, "psyche"), 0o755)
+  for (const relative of SANCTUARY_STARTER_PSYCHE_FILES) {
+    fs.copyFileSync(path.join(packageRoot, relative), path.join(agentRoot, relative))
+    fs.chmodSync(path.join(agentRoot, relative), 0o600)
+  }
 }
 
 function inspect(packageRoot: string, agentRoot: string, runtimePackageVersion = "0.1.0-alpha.743") {
@@ -170,6 +189,8 @@ afterEach(() => {
   durabilityProbe.events = []
   durabilityProbe.failAfter = null
   durabilityProbe.failAfterPrefix = null
+  durabilityProbe.beforeOpen = null
+  durabilityProbe.afterOpen = null
   durabilityProbe.failureArmed = false
   durabilityProbe.failureInjected = false
   durabilityProbe.descriptors.clear()
@@ -186,13 +207,15 @@ describe("Sanctuary package-managed bundle migration", () => {
     write(agentRoot, "tool-profiles.json", profiles)
     const identity = fs.readFileSync(path.join(agentRoot, "psyche/IDENTITY.md"), "utf8")
     write(agentRoot, "psyche/IDENTITY.md", identity.replace("I use the typed Unraid GraphQL repertoire for server operations and owner-authorized native tools for resident work inside my existing container boundary.", "My primary server interface is the typed Unraid GraphQL repertoire, never shell."))
+    const ownedIdentity = fs.readFileSync(path.join(agentRoot, "psyche/IDENTITY.md"), "utf8")
     write(agentRoot, "bundle-meta.json", { runtimeVersion: "old", bundleSchemaVersion: 2, operatorNote: "keep" })
     write(agentRoot, "state/policy/steward.json", emptyPackagedPolicy())
     write(agentRoot, "state/sessions/owner.json", "private history\n")
     const tacit = fs.readFileSync(path.join(agentRoot, "psyche/TACIT.md"), "utf8")
     const result = migrateSanctuaryPackageManagedBundle({ packageRoot, agentRoot })
     expect(JSON.parse(fs.readFileSync(path.join(agentRoot, "tool-profiles.json"), "utf8")).profiles["sanctuary-owner"].version).toBe(17)
-    expect(result.managedFilesUpdated).toBe(2)
+    expect(result.managedFilesUpdated).toBe(1)
+    expect(fs.readFileSync(path.join(agentRoot, "psyche/IDENTITY.md"), "utf8")).toBe(ownedIdentity)
     for (const relative of SANCTUARY_PACKAGE_MANAGED_FILES) {
       expect(fs.readFileSync(path.join(agentRoot, relative), "utf8")).toBe(fs.readFileSync(path.join(packageRoot, relative), "utf8"))
       expect(fs.statSync(path.join(agentRoot, relative)).mode & 0o777).toBe(0o600)
@@ -328,8 +351,10 @@ describe("Sanctuary package-managed bundle migration", () => {
     write(agentRoot, "state/policy/policy-audit.ndjson", "legitimate live policy change\n")
     expect(rollbackSanctuaryPackageManagedBundle(agentRoot)).toBe(true)
     const after = treeSnapshot(agentRoot)
-    const unrelated = (entry: string) => entry.includes("state/sessions/owner.json") || entry.includes("habits") || entry.includes("state/policy")
+    const unrelated = (entry: string) => entry.includes("state/sessions/owner.json") || entry.includes("habits") || entry.includes("state/policy") || entry.includes(" psyche")
     expect(after.filter((entry) => !unrelated(entry))).toEqual(before.filter((entry) => !unrelated(entry)))
+    // The psyche seeded on this fresh install is the install's, so rolling the release back keeps it.
+    expect(after.filter((entry) => entry.includes(" psyche"))).toHaveLength(1 + SANCTUARY_STARTER_PSYCHE_FILES.length)
     expect(JSON.parse(fs.readFileSync(path.join(agentRoot, "state", "sessions", "owner.json"), "utf8"))).toEqual({ preserve: "session-after-migration" })
     expect(fs.readFileSync(path.join(agentRoot, "habits", "operator-preference.md"), "utf8")).toBe("preserve new preference\n")
     expect(fs.existsSync(path.join(agentRoot, SANCTUARY_BUNDLE_ROLLBACK_FILE))).toBe(false)
@@ -341,12 +366,12 @@ describe("Sanctuary package-managed bundle migration", () => {
   it("persists every restored inode and parent directory before deleting the rollback journal", () => {
     const packageRoot = makePackageRoot()
     const agentRoot = makeRoot("sanctuary-durable-restore-order")
-    const soulPath = path.join(agentRoot, "psyche", "SOUL.md")
+    const soulPath = path.join(agentRoot, "mcp", "media-mcp.mjs")
     const psychePath = path.dirname(soulPath)
     const removedFile = path.join(agentRoot, "provider-readiness.json")
     const removedDirectory = path.join(agentRoot, "habits")
     const journalPath = path.join(agentRoot, SANCTUARY_BUNDLE_ROLLBACK_FILE)
-    write(agentRoot, "psyche/SOUL.md", "old soul\n")
+    write(agentRoot, "mcp/media-mcp.mjs", "old media\n")
     fs.chmodSync(soulPath, 0o640)
     fs.chmodSync(psychePath, 0o750)
 
@@ -387,10 +412,11 @@ describe("Sanctuary package-managed bundle migration", () => {
   it.each(["restored file", "removed file", "removed directory", "restored directory mode"] as const)("keeps the rollback journal when the %s durability sync fails, then converges on retry", (fault) => {
     const packageRoot = makePackageRoot()
     const agentRoot = makeRoot("sanctuary-durable-restore-fault")
-    const psychePath = path.join(agentRoot, "psyche")
-    const soulPath = path.join(psychePath, "SOUL.md")
+    const psychePath = path.join(agentRoot, "mcp")
+    const soulPath = path.join(psychePath, "media-mcp.mjs")
+    copyStarterPsyche(packageRoot, agentRoot)
     if (fault === "restored file") {
-      write(agentRoot, "psyche/SOUL.md", "old soul\n")
+      write(agentRoot, "mcp/media-mcp.mjs", "old media\n")
       fs.chmodSync(soulPath, 0o640)
     }
     if (fault === "restored directory mode") {
@@ -492,8 +518,8 @@ describe("Sanctuary package-managed bundle migration", () => {
   it("keeps the durable record when rollback itself is interrupted, then converges on restart", () => {
     const packageRoot = makePackageRoot()
     const agentRoot = makeRoot("sanctuary-live-interrupted-rollback")
-    write(agentRoot, "psyche/SOUL.md", "old soul\n")
-    fs.chmodSync(path.join(agentRoot, "psyche"), 0o500)
+    write(agentRoot, "mcp/media-mcp.mjs", "old media\n")
+    fs.chmodSync(path.join(agentRoot, "mcp"), 0o500)
 
     expect(() => migrateSanctuaryPackageManagedBundle({
       packageRoot,
@@ -504,12 +530,12 @@ describe("Sanctuary package-managed bundle migration", () => {
     })).toThrow(/migration and rollback both failed/u)
     expect(inspectSanctuaryPackageManagedBundleRollback(agentRoot)).toEqual({ rollbackImageId: `sha256:${"3".repeat(64)}`, targetImageId: `sha256:${"9".repeat(64)}`, state: "rollback" })
 
-    fs.chmodSync(path.join(agentRoot, "psyche"), 0o700)
+    fs.chmodSync(path.join(agentRoot, "mcp"), 0o700)
     expect(rollbackSanctuaryPackageManagedBundle(agentRoot, { retainRecord: true })).toBe(true)
-    expect(fs.readFileSync(path.join(agentRoot, "psyche", "SOUL.md"), "utf8")).toBe("old soul\n")
+    expect(fs.readFileSync(path.join(agentRoot, "mcp", "media-mcp.mjs"), "utf8")).toBe("old media\n")
     expect(inspectSanctuaryPackageManagedBundleRollback(agentRoot)).not.toBeNull()
     expect(commitSanctuaryPackageManagedBundle(agentRoot)).toBe(true)
-    fs.chmodSync(path.join(agentRoot, "psyche"), 0o700)
+    fs.chmodSync(path.join(agentRoot, "mcp"), 0o700)
   })
 
   it("removes the durable record after a caught managed-source fault restores cleanly", () => {
@@ -601,10 +627,10 @@ describe("Sanctuary package-managed bundle migration", () => {
     const completePackageRoot = makePackageRoot()
     const linkedAgentRoot = makeRoot("sanctuary-live-linked")
     const outside = makeRoot("sanctuary-outside")
-    fs.mkdirSync(path.join(linkedAgentRoot, "psyche"), { recursive: true })
-    fs.symlinkSync(path.join(outside, "soul"), path.join(linkedAgentRoot, "psyche", "SOUL.md"))
+    fs.mkdirSync(path.join(linkedAgentRoot, "habits"), { recursive: true })
+    fs.symlinkSync(path.join(outside, "health"), path.join(linkedAgentRoot, "habits", "sanctuary-health.md"))
     expect(() => migrateSanctuaryPackageManagedBundle({ packageRoot: completePackageRoot, agentRoot: linkedAgentRoot })).toThrow(/symlink/u)
-    expect(fs.existsSync(path.join(outside, "soul"))).toBe(false)
+    expect(fs.existsSync(path.join(outside, "health"))).toBe(false)
   })
 
   it.each([
@@ -639,7 +665,7 @@ describe("Sanctuary package-managed bundle migration", () => {
       (packageRoot, agentRoot) => { const target = makeRoot("agent-link-target"); fs.rmSync(agentRoot, { recursive: true }); fs.symlinkSync(target, agentRoot); expect(() => migrateSanctuaryPackageManagedBundle({ packageRoot, agentRoot })).toThrow(/agent root/u) },
       (packageRoot, agentRoot) => { const source = path.join(packageRoot, SANCTUARY_PACKAGE_MANAGED_FILES[0]); fs.rmSync(source); fs.mkdirSync(source); expect(() => migrateSanctuaryPackageManagedBundle({ packageRoot, agentRoot })).toThrow(/regular file/u) },
       (packageRoot, agentRoot) => { const source = path.join(packageRoot, SANCTUARY_PACKAGE_MANAGED_FILES[0]); fs.rmSync(source); fs.symlinkSync(path.join(packageRoot, SANCTUARY_PACKAGE_MANAGED_FILES[1]), source); expect(() => migrateSanctuaryPackageManagedBundle({ packageRoot, agentRoot })).toThrow(/symlink/u) },
-      (packageRoot, agentRoot) => { fs.writeFileSync(path.join(agentRoot, "psyche"), "not a directory"); expect(() => migrateSanctuaryPackageManagedBundle({ packageRoot, agentRoot })).toThrow(/parent must be a directory/u) },
+      (packageRoot, agentRoot) => { fs.writeFileSync(path.join(agentRoot, "habits"), "not a directory"); expect(() => migrateSanctuaryPackageManagedBundle({ packageRoot, agentRoot })).toThrow(/parent must be a directory/u) },
       (packageRoot, agentRoot) => { fs.mkdirSync(path.join(agentRoot, "tool-profiles.json")); expect(() => migrateSanctuaryPackageManagedBundle({ packageRoot, agentRoot })).toThrow(/regular file/u) },
       (packageRoot, agentRoot) => { write(packageRoot, "bundle-meta.json", null as unknown as object); expect(() => migrateSanctuaryPackageManagedBundle({ packageRoot, agentRoot })).toThrow(/object/u) },
       (packageRoot, agentRoot) => { fs.writeFileSync(path.join(packageRoot, "bundle-meta.json"), "[]"); expect(() => migrateSanctuaryPackageManagedBundle({ packageRoot, agentRoot })).toThrow(/object/u) },
@@ -1133,10 +1159,276 @@ describe("Sanctuary package-managed bundle migration", () => {
     // The state before the upgrade script puts modes back: loose modes, as after a recursive chown on the host.
     for (const name of fs.readdirSync(psyche)) fs.chmodSync(path.join(psyche, name), 0o644)
     fs.chmodSync(psyche, 0o700)
-    expect(inspect(packageRoot, agentRoot)).toMatchObject({ data: { ready: false } })
+    // The psyche is the install's, so loose psyche modes no longer make the bundle unready.
+    expect(inspect(packageRoot, agentRoot)).toMatchObject({ ok: true, data: { parity: "exact", ready: true } })
     const upgrade = await import(/* @vite-ignore */ path.resolve(__dirname, "../../../../deploy/unraid/sanctuary-butler-upgrade.mjs"))
     upgrade.restorePsycheModes(psyche)
     expect(upgrade.psycheProblems(psyche).filter((line: string) => !line.includes("owned by uid"))).toEqual([])
     expect(inspect(packageRoot, agentRoot)).toMatchObject({ ok: true, data: { parity: "exact", ready: true } })
+  })
+})
+
+describe("Sanctuary starter psyche", () => {
+  const VERSION = "0.1.0-alpha.743"
+  const ensure = (packageRoot: string, agentRoot: string, deps: Parameters<typeof ensureSanctuaryPackageManagedBundle>[1] = {}) => ensureSanctuaryPackageManagedBundle({ packageRoot, agentRoot, runtimePackageVersion: VERSION }, deps)
+  const seedLeftovers = (agentRoot: string) => fs.readdirSync(agentRoot).filter((name) => name.startsWith(".psyche-seed."))
+  const liveError = (code: string) => ({ ok: false, error: { code, message: "installed Sanctuary bundle is invalid", degraded: true, repair: { actor: "human-required", action: "roll_back_or_install_verified_release" } } })
+
+  function expectStarterPsyche(packageRoot: string, agentRoot: string): void {
+    expect(fs.lstatSync(path.join(agentRoot, "psyche")).isDirectory()).toBe(true)
+    expect(fs.statSync(path.join(agentRoot, "psyche")).mode & 0o777).toBe(0o755)
+    expect(fs.readdirSync(path.join(agentRoot, "psyche")).sort()).toEqual(SANCTUARY_STARTER_PSYCHE_FILES.map((relative) => path.basename(relative)).sort())
+    for (const relative of SANCTUARY_STARTER_PSYCHE_FILES) {
+      expect(fs.readFileSync(path.join(agentRoot, relative))).toEqual(fs.readFileSync(path.join(packageRoot, relative)))
+      expect(fs.statSync(path.join(agentRoot, relative)).mode & 0o777).toBe(0o600)
+    }
+  }
+
+  it("is no longer package-managed", () => {
+    expect(SANCTUARY_STARTER_PSYCHE_FILES).toEqual(["psyche/ASPIRATIONS.md", "psyche/IDENTITY.md", "psyche/LORE.md", "psyche/SOUL.md", "psyche/TACIT.md"])
+    expect(SANCTUARY_PACKAGE_MANAGED_FILES.filter((relative) => relative.startsWith("psyche/"))).toEqual([])
+  })
+
+  it("seeds the starter psyche when psyche/ is absent", () => {
+    const packageRoot = makePackageRoot()
+    const agentRoot = makeExactAgentRoot(packageRoot)
+    fs.rmSync(path.join(agentRoot, "psyche"), { recursive: true })
+
+    expect(ensure(packageRoot, agentRoot)).toMatchObject({ ok: true, data: { parity: "exact", ready: true } })
+    expectStarterPsyche(packageRoot, agentRoot)
+    expect(seedLeftovers(agentRoot)).toEqual([])
+  })
+
+  it("seeds the real packaged starter psyche byte for byte", () => {
+    const packageRoot = path.resolve("deploy/unraid/sanctuary.ouro")
+    const agentRoot = makeRoot("sanctuary-real-seed")
+    expect(seedSanctuaryPsycheIfAbsent({ packageRoot, agentRoot })).toEqual({ ok: true, seeded: true })
+    expectStarterPsyche(packageRoot, agentRoot)
+    expect(seedSanctuaryPsycheIfAbsent({ packageRoot, agentRoot })).toEqual({ ok: true, seeded: false })
+  })
+
+  it("seeds a fresh install through the host-side migration", () => {
+    const packageRoot = makePackageRoot()
+    const agentRoot = makeRoot("sanctuary-fresh-seed")
+    migrateSanctuaryPackageManagedBundle({ packageRoot, agentRoot })
+    expectStarterPsyche(packageRoot, agentRoot)
+  })
+
+  it("leaves an existing psyche untouched, even with a file missing", () => {
+    const packageRoot = makePackageRoot()
+    const agentRoot = makeExactAgentRoot(packageRoot)
+    fs.rmSync(path.join(agentRoot, "psyche/LORE.md"))
+    fs.writeFileSync(path.join(agentRoot, "psyche/SOUL.md"), "the owner's own soul\n")
+    const before = treeSnapshot(agentRoot)
+
+    expect(ensure(packageRoot, agentRoot)).toMatchObject({ ok: true, data: { parity: "exact", ready: true } })
+    expect(migrateSanctuaryPackageManagedBundle({ packageRoot, agentRoot })).toEqual({ managedFilesUpdated: 0 })
+    expect(fs.existsSync(path.join(agentRoot, "psyche/LORE.md"))).toBe(false)
+    expect(fs.readFileSync(path.join(agentRoot, "psyche/SOUL.md"), "utf8")).toBe("the owner's own soul\n")
+    expect(treeSnapshot(agentRoot)).toEqual(before)
+  })
+
+  it("does not repair psyche drift", () => {
+    const packageRoot = makePackageRoot()
+    const agentRoot = makeExactAgentRoot(packageRoot)
+    const tacit = path.join(agentRoot, "psyche/TACIT.md")
+    fs.writeFileSync(tacit, "what the owner taught me\n")
+    fs.chmodSync(tacit, 0o640)
+
+    expect(inspect(packageRoot, agentRoot)).toMatchObject({ ok: true, data: { parity: "exact", mismatchCodes: [], ready: true } })
+    expect(ensure(packageRoot, agentRoot)).toMatchObject({ ok: true, data: { parity: "exact", ready: true } })
+    expect(fs.readFileSync(tacit, "utf8")).toBe("what the owner taught me\n")
+    expect(fs.statSync(tacit).mode & 0o777).toBe(0o640)
+  })
+
+  it("refuses a psyche symlink", () => {
+    const packageRoot = makePackageRoot()
+    const agentRoot = makeExactAgentRoot(packageRoot)
+    const outside = makeRoot("sanctuary-psyche-link-target")
+    fs.rmSync(path.join(agentRoot, "psyche"), { recursive: true })
+    fs.symlinkSync(outside, path.join(agentRoot, "psyche"))
+
+    expect(seedSanctuaryPsycheIfAbsent({ packageRoot, agentRoot })).toEqual({ ok: false, code: "invalid_live_bundle" })
+    expect(ensure(packageRoot, agentRoot)).toEqual(liveError("invalid_live_bundle"))
+    expect(() => migrateSanctuaryPackageManagedBundle({ packageRoot, agentRoot })).toThrow(/psyche must be a real directory/u)
+    expect(fs.readdirSync(outside)).toEqual([])
+    expect(fs.lstatSync(path.join(agentRoot, "psyche")).isSymbolicLink()).toBe(true)
+    expect(seedLeftovers(agentRoot)).toEqual([])
+  })
+
+  it("refuses a psyche that is a regular file", () => {
+    const packageRoot = makePackageRoot()
+    const agentRoot = makeExactAgentRoot(packageRoot)
+    fs.rmSync(path.join(agentRoot, "psyche"), { recursive: true })
+    fs.writeFileSync(path.join(agentRoot, "psyche"), "not a directory\n")
+
+    expect(ensure(packageRoot, agentRoot)).toEqual(liveError("invalid_live_bundle"))
+    expect(fs.readFileSync(path.join(agentRoot, "psyche"), "utf8")).toBe("not a directory\n")
+  })
+
+  it("a crash mid-seed leaves no half psyche", () => {
+    const packageRoot = makePackageRoot()
+    const agentRoot = makeExactAgentRoot(packageRoot)
+    fs.rmSync(path.join(agentRoot, "psyche"), { recursive: true })
+    let writes = 0
+    const crashingSeed: typeof seedSanctuaryPsycheIfAbsent = (input) => seedSanctuaryPsycheIfAbsent(input, {
+      writeFile: (fd, content) => {
+        writes += 1
+        if (writes === 3) throw Object.assign(new Error("process stopped"), { code: "EIO" })
+        fs.writeFileSync(fd, content)
+      },
+    })
+
+    expect(ensure(packageRoot, agentRoot, { seed: crashingSeed })).toEqual({ ok: false, error: { code: "inspection_unavailable", message: "Sanctuary install state is unavailable", degraded: true, repair: { actor: "human-required", action: "run_verified_update_recovery" } } })
+    expect(fs.existsSync(path.join(agentRoot, "psyche"))).toBe(false)
+    expect(seedLeftovers(agentRoot)).toHaveLength(1)
+
+    expect(ensure(packageRoot, agentRoot)).toMatchObject({ ok: true, data: { parity: "exact", ready: true } })
+    expectStarterPsyche(packageRoot, agentRoot)
+    expect(seedLeftovers(agentRoot)).toEqual([])
+  })
+
+  it("never renames the staged psyche over one that appears while it is staged", () => {
+    const packageRoot = makePackageRoot()
+    const agentRoot = makeRoot("sanctuary-psyche-race")
+    let writes = 0
+    const result = () => seedSanctuaryPsycheIfAbsent({ packageRoot, agentRoot }, {
+      writeFile: (fd, content) => {
+        fs.writeFileSync(fd, content)
+        writes += 1
+        if (writes === SANCTUARY_STARTER_PSYCHE_FILES.length) write(agentRoot, "psyche/SOUL.md", "written by someone else\n")
+      },
+    })
+
+    expect(result).toThrow(/psyche appeared/u)
+    expect(fs.readdirSync(path.join(agentRoot, "psyche"))).toEqual(["SOUL.md"])
+    expect(fs.readFileSync(path.join(agentRoot, "psyche/SOUL.md"), "utf8")).toBe("written by someone else\n")
+    expect(seedSanctuaryPsycheIfAbsent({ packageRoot, agentRoot })).toEqual({ ok: true, seeded: false })
+    expect(seedLeftovers(agentRoot)).toEqual([])
+  })
+
+  it("leaves a stage-shaped symlink alone", () => {
+    const packageRoot = makePackageRoot()
+    const agentRoot = makeExactAgentRoot(packageRoot)
+    const outside = makeRoot("sanctuary-psyche-stage-target")
+    fs.writeFileSync(path.join(outside, "SOUL.md"), "keep\n", { mode: 0o600 })
+    fs.symlinkSync(outside, path.join(agentRoot, ".psyche-seed.linked"))
+
+    expect(ensure(packageRoot, agentRoot)).toMatchObject({ ok: true, data: { ready: true } })
+    expect(fs.lstatSync(path.join(agentRoot, ".psyche-seed.linked")).isSymbolicLink()).toBe(true)
+    expect(fs.readFileSync(path.join(outside, "SOUL.md"), "utf8")).toBe("keep\n")
+  })
+
+  it("never deletes an owner folder whose name only resembles a seed stage", () => {
+    const packageRoot = makePackageRoot()
+    const agentRoot = makeRoot("sanctuary-psyche-owner-notes")
+    const notes = path.join(agentRoot, ".psyche-seed.notes")
+    fs.mkdirSync(notes, { mode: 0o700 })
+    fs.chmodSync(notes, 0o700)
+    fs.writeFileSync(path.join(notes, "mine.md"), "the owner's notes\n", { mode: 0o600 })
+
+    expect(ensure(packageRoot, agentRoot)).toMatchObject({ ok: true, data: { parity: "exact", ready: true } })
+    expect(migrateSanctuaryPackageManagedBundle({ packageRoot, agentRoot })).toEqual({ managedFilesUpdated: 0 })
+    expect(fs.readFileSync(path.join(notes, "mine.md"), "utf8")).toBe("the owner's notes\n")
+    expectStarterPsyche(packageRoot, agentRoot)
+  })
+
+  it.each([
+    ["an unexpected entry", (stage: string) => { fs.mkdirSync(path.join(stage, "inner")); fs.writeFileSync(path.join(stage, "SOUL.md"), "partial", { mode: 0o600 }) }],
+    ["a non-starter file", (stage: string) => fs.writeFileSync(path.join(stage, "mine.md"), "owner\n", { mode: 0o600 })],
+    ["a starter file at a loose mode", (stage: string) => { fs.writeFileSync(path.join(stage, "SOUL.md"), "owner\n"); fs.chmodSync(path.join(stage, "SOUL.md"), 0o644) }],
+    ["a starter directory", (stage: string) => fs.mkdirSync(path.join(stage, "SOUL.md"))],
+    ["a loose stage mode", (stage: string) => { fs.writeFileSync(path.join(stage, "SOUL.md"), "partial", { mode: 0o600 }); fs.chmodSync(stage, 0o750) }],
+  ])("leaves a correctly named stage holding %s alone and still boots", (_label, arrange) => {
+    const packageRoot = makePackageRoot()
+    const agentRoot = makeExactAgentRoot(packageRoot)
+    const stage = path.join(agentRoot, ".psyche-seed.Ab12Cd")
+    fs.mkdirSync(stage, { mode: 0o700 })
+    fs.chmodSync(stage, 0o700)
+    arrange(stage)
+    const before = treeSnapshot(stage)
+
+    expect(ensure(packageRoot, agentRoot)).toMatchObject({ ok: true, data: { parity: "exact", ready: true } })
+    expect(migrateSanctuaryPackageManagedBundle({ packageRoot, agentRoot })).toEqual({ managedFilesUpdated: 0 })
+    expect(treeSnapshot(stage)).toEqual(before)
+  })
+
+  it("removes a seeder-shaped stage at either seeder mode", () => {
+    const packageRoot = makePackageRoot()
+    const agentRoot = makeExactAgentRoot(packageRoot)
+    for (const [name, mode] of [[".psyche-seed.aaaaaa", 0o700], [".psyche-seed.BBBBBB", 0o755]] as const) {
+      fs.mkdirSync(path.join(agentRoot, name))
+      fs.chmodSync(path.join(agentRoot, name), mode)
+      fs.writeFileSync(path.join(agentRoot, name, "LORE.md"), "partial", { mode: 0o600 })
+    }
+    expect(ensure(packageRoot, agentRoot)).toMatchObject({ ok: true, data: { ready: true } })
+    expect(seedLeftovers(agentRoot)).toEqual([])
+  })
+
+  it.each(["beforeOpen", "afterOpen"] as const)("skips a stage swapped for another directory (%s)", (hook) => {
+    const packageRoot = makePackageRoot()
+    const agentRoot = makeExactAgentRoot(packageRoot)
+    const stage = path.join(agentRoot, ".psyche-seed.swap01")
+    const moved = path.join(agentRoot, "moved-stage")
+    fs.mkdirSync(stage, { mode: 0o700 })
+    fs.chmodSync(stage, 0o700)
+    fs.writeFileSync(path.join(stage, "SOUL.md"), "partial", { mode: 0o600 })
+    durabilityProbe[hook] = (target) => {
+      if (target !== stage) return
+      durabilityProbe[hook] = null
+      fs.renameSync(stage, moved)
+      fs.mkdirSync(stage, { mode: 0o700 })
+      fs.chmodSync(stage, 0o700)
+      fs.writeFileSync(path.join(stage, "SOUL.md"), "swapped in", { mode: 0o600 })
+    }
+
+    expect(ensure(packageRoot, agentRoot)).toMatchObject({ ok: true, data: { ready: true } })
+    expect(fs.readFileSync(path.join(stage, "SOUL.md"), "utf8")).toBe("swapped in")
+    expect(fs.readFileSync(path.join(moved, "SOUL.md"), "utf8")).toBe("partial")
+  })
+
+  it("reports a missing packaged starter psyche as invalid release contents", () => {
+    const packageRoot = makePackageRoot()
+    const agentRoot = makeRoot("sanctuary-missing-starter")
+    fs.rmSync(path.join(packageRoot, "psyche/LORE.md"))
+
+    expect(ensure(packageRoot, agentRoot)).toEqual({ ok: false, error: { code: "invalid_package_source", message: "verified release contents are invalid", degraded: true, repair: { actor: "human-required", action: "roll_back_or_install_verified_release" } } })
+    expect(() => migrateSanctuaryPackageManagedBundle({ packageRoot, agentRoot })).toThrow(/starter psyche source is missing: psyche\/LORE\.md/u)
+    expect(fs.existsSync(path.join(agentRoot, "psyche"))).toBe(false)
+    expect(seedLeftovers(agentRoot)).toEqual([])
+  })
+
+  it("refuses to seed into a root that is not a canonical real directory", () => {
+    const packageRoot = makePackageRoot()
+    expect(() => seedSanctuaryPsycheIfAbsent({ packageRoot, agentRoot: "relative" })).toThrow(/absolute/u)
+  })
+
+  it("a rollback record written by the previous release is refused clearly", () => {
+    const packageRoot = makePackageRoot()
+    const agentRoot = makeExactAgentRoot(packageRoot)
+    migrateSanctuaryPackageManagedBundle({ packageRoot, agentRoot, retainRollback: true, rollbackImageId: `sha256:${"1".repeat(64)}`, targetImageId: `sha256:${"9".repeat(64)}` })
+    const recordPath = path.join(agentRoot, SANCTUARY_BUNDLE_ROLLBACK_FILE)
+    const record = JSON.parse(fs.readFileSync(recordPath, "utf8"))
+    // The previous release snapshotted the psyche alongside the managed files.
+    const meta = record.files.pop()
+    for (const relative of SANCTUARY_STARTER_PSYCHE_FILES) record.files.push({ relative, contentBase64: fs.readFileSync(path.join(agentRoot, relative)).toString("base64"), mode: 0o600 })
+    record.files.push(meta)
+    record.directories.push({ relative: "psyche", mode: 0o755 })
+    const { snapshotDigest: _digest, ...payload } = record
+    record.snapshotDigest = createHash("sha256").update(JSON.stringify(payload)).digest("hex")
+    fs.writeFileSync(recordPath, `${JSON.stringify(record)}\n`)
+
+    expect(inspect(packageRoot, agentRoot)).toEqual(invalidJournalInspection())
+    expect(() => inspectSanctuaryPackageManagedBundleRollback(agentRoot)).toThrow(/rollback record paths are invalid/u)
+  })
+
+  it("rollback snapshot no longer includes psyche", () => {
+    const packageRoot = makePackageRoot()
+    const agentRoot = makeExactAgentRoot(packageRoot)
+    migrateSanctuaryPackageManagedBundle({ packageRoot, agentRoot, retainRollback: true, rollbackImageId: `sha256:${"1".repeat(64)}`, targetImageId: `sha256:${"9".repeat(64)}` })
+    const record = JSON.parse(fs.readFileSync(path.join(agentRoot, SANCTUARY_BUNDLE_ROLLBACK_FILE), "utf8"))
+    const relatives = [...record.files, ...record.directories].map((entry: { relative: string }) => entry.relative)
+    expect(relatives.length).toBeGreaterThan(0)
+    expect(relatives.filter((relative: string) => relative === "psyche" || relative.startsWith("psyche/"))).toEqual([])
   })
 })

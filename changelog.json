@@ -2,6 +2,376 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.980",
+      "changes": [
+        "Retry transient empty host-broker snapshot reads in the Sanctuary Unit16 runner, preventing final acceptance evidence capture from failing before scenario execution."
+      ]
+    },
+    {
+      "version": "0.1.0-alpha.979",
+      "changes": [
+        "The Butler's psyche now belongs to the install: releases no longer overwrite or lock it, and a fresh install is seeded with the starter psyche once."
+      ]
+    },
+    {
+      "version": "0.1.0-alpha.978",
+      "changes": [
+        "Psyche edits now take effect on the next turn for every agent. Each prompt build compares the content of the psyche and house files with the cached copy and rereads on any change, so an edit by the agent, its owner or a sync pull no longer waits for a restart. Content is compared rather than mtimes, which FUSE shares such as Unraid's do not always update."
+      ]
+    },
+    {
+      "version": "0.1.0-alpha.977",
+      "changes": [
+        "The replay gate now reads the Butler's settle answer as his reply. A chef-question run that answered correctly through settle after a narration line was failed for not naming the show, which rolled back alpha.976."
+      ]
+    },
+    {
+      "version": "0.1.0-alpha.976",
+      "changes": [
+        "Personal data about the maintainer's own household is removed from the repository: replay-gate cases, fixtures, tests, docs and the operator runbook use neutral example values. The Butler reads its Telegram bot identity, Jellyfin device id (an explicit jellyfin.deviceId wins over the name-derived one) and owner names from its own configuration instead of source; the RSVP cutover finds the legacy launch agent by its *.rsvp-tracker.plist file; the replay gate's name check loads the house's names as each turn does"
+      ]
+    },
+    {
+      "version": "0.1.0-alpha.975",
+      "changes": [
+        "Butler: when a reply check sends a draft back, the runtime tells the model the draft was never sent, so the person gets the whole answer instead of only a 'one correction' follow-up."
+      ]
+    },
+    {
+      "version": "0.1.0-alpha.974",
+      "changes": [
+        "Butler: sizes work to the ask (a question gets the fewest lookups and a short reply, never a read of his own code), so simple questions no longer run out of steps."
+      ]
+    },
+    {
+      "version": "0.1.0-alpha.973",
+      "changes": [
+        "Butler: a request to change his personality for everyone is filed as a psyche change, and he no longer also saves it as the asker's own preference."
+      ]
+    },
+    {
+      "version": "0.1.0-alpha.972",
+      "changes": [
+        "The Butler's rules are rewritten for clarity: it now states its job plainly (the household's media and the server it lives on), does what it is asked with its tools instead of describing the job back, says no in one line without a lecture, files a failure report only when it actually could not finish, and no longer carries duplicated or contradictory rules."
+      ]
+    },
+    {
+      "version": "0.1.0-alpha.971",
+      "changes": [
+        "Ouro Butler can be installed on a new Unraid 7.2+ server with one script (deploy/unraid/install.sh, attached to every release): it asks a few questions, reads secrets with the echo off, creates the vault, Anthropic access and Unraid API keys, finds the owner's Telegram id, and installs the root authority with no earlier Butler to hand over from. vault config set can now read a secret from --value-file (use /dev/stdin to pipe it) and store the top-level Unraid and SABnzbd machine keys."
+      ]
+    },
+    {
+      "version": "0.1.0-alpha.970",
+      "changes": [
+        "Butler reads its owner's name, its own name, the household's public endpoints and required containers from a per-install house config instead of hard-coded values, so one package can serve any household, and reads anything else worth knowing about the household from house/HOUSE.md."
+      ]
+    },
+    {
+      "version": "0.1.0-alpha.969",
+      "changes": [
+        "When someone replies to an earlier message in Telegram, iMessage or Teams, the agent now sees what they replied to and whose words it was, even when that message isn't in its own history."
+      ]
+    },
+    {
+      "version": "0.1.0-alpha.968",
+      "changes": [
+        "The context-loss Sentinel takes over its write lock when the process that left it is gone. A lock left by a crash or a reboot used to block every Sentinel refresh until someone deleted it, which turned daemon health critical, so `ouro up` failed and self-update rolled new releases back."
+      ]
+    },
+    {
+      "version": "0.1.0-alpha.967",
+      "changes": [
+        "When you reply to an older Telegram message, the Butler now sees which message you are answering, so a quick \"yes\" goes to the question you meant instead of the newest one.",
+        "Replies to the Butler's control cards and notices are not mistaken for answers to his questions."
+      ]
+    },
+    {
+      "version": "0.1.0-alpha.966",
+      "changes": [
+        "Shepherd's messages read like a teammate's. For a session that needs you, is done, is waiting, or has news, the judge writes the note to you in plain words, and the message names the session by its agent, tab title and folder instead of a terminal handle. Shepherd adds the handle only when two open sessions would read the same. When the judge says nothing has changed since its last message about a session, Shepherd doesn't send it again, until you go to that session, Shepherd answers it, or six hours pass."
+      ]
+    },
+    {
+      "version": "0.1.0-alpha.965",
+      "changes": [
+        "Ouro ships Bitwarden CLI 2026.9.1 instead of 2026.6.0. Its core-js 3.50.0 replaces 3.49.0, two of whose files Microsoft Defender's enterprise policy quarantines on managed Macs, which broke every vault command with \"Cannot find module '../internals/hidden-keys'\". A new bw version also gets a fresh vault profile, so the first vault use after updating signs in once."
+      ]
+    },
+    {
+      "version": "0.1.0-alpha.963",
+      "changes": [
+        "The vault now syncs after unlock unless Ouro itself synced in the last minute. Before, `bw status` and `bw unlock` rewrote the profile's data file, which made a stale cache look fresh, so a running daemon could keep reading an old copy of a vault item (for example a machine config changed from another Bitwarden client) indefinitely."
+      ]
+    },
+    {
+      "version": "0.1.0-alpha.962",
+      "changes": [
+        "The upgrade check that asks the Butler to change his personality now asks for a change for everyone, so his saved per-person preference can no longer make the check pass or fail at random.",
+        "When the Butler finishes watching something for you, he now tells you in his own plain words what he checked, instead of forwarding his internal notes.",
+        "If the Butler's first try at telling you a watch finished does not go through, he resends the same words instead of getting stuck."
+      ]
+    },
+    {
+      "version": "0.1.0-alpha.961",
+      "changes": [
+        "When Butler finishes a watch you asked for in Telegram, he now actually tells you and closes it, instead of silently re-checking every few hours."
+      ]
+    },
+    {
+      "version": "0.1.0-alpha.960",
+      "changes": [
+        "Shepherd can watch sessions in the GitHub Copilot app. Add a `copilotApp` record to the machine config (`ouro vault config set --agent <agent> --scope machine --key copilotApp.stateDir --value \"$HOME/.copilot\"`) and Shepherd follows the app's sessions instead of cmux or Herdr: it notices when one stops or waits for a permission, judges it, and answers with a queued message. It leaves alone a session you messaged in the last five minutes, or in the last half hour while you are at the Mac with the app in front, and a turn you stopped yourself. Messages from other agents, schedules and Shepherd itself do not count as yours."
+      ]
+    },
+    {
+      "version": "0.1.0-alpha.959",
+      "changes": [
+        "Butler no longer tells you he \"couldn't verify\" ordinary words like Client or Service: a word only counts as a name when the conversation never uses it as a plain word, and anything his own server tools read this turn counts as checked."
+      ]
+    },
+    {
+      "version": "0.1.0-alpha.958",
+      "changes": [
+        "The Butler release gate now judges a new release against the version that is actually running, not an older baseline.",
+        "Gate checks that wait on a reply now count only the replies their own case asked for.",
+        "Messages sent while a turn is cut short now wait their turn within the replay window instead of failing the gate."
+      ]
+    },
+    {
+      "version": "0.1.0-alpha.957",
+      "changes": [
+        "Butler no longer starts a model turn just to close a problem that fixed itself, unless he had told you about it.",
+        "Background turns that run out of steps now wrap up cleanly instead of failing.",
+        "Turns started by server events now count against Butler's daily allowance, and repeated failures pause them for 30 minutes.",
+        "Media lookups now say whether a title was actually requested and whether it is downloading, instead of claiming it is being processed.",
+        "Questions and reports Butler sends you are written in plain words, separate from his internal notes.",
+        "A web endpoint must fail two health checks in a row before Butler treats it as down, and informational Unraid notices are ignored.",
+        "The house digest stops repeating the same stuck items as new.",
+        "Butler sends at most three unprompted messages a day and none between 23:00 and 08:00, except disk, parity and array alerts.",
+        "Server events blocked by Butler's daily allowance or failure pause now wait and retry instead of being dropped, and disk, parity and array events are never held back.",
+        "The health acceptance probe keeps checking a web endpoint once per sweep, so its scripted scenarios still match what Butler does.",
+        "Media request and request-status answers use the same plain shelf states (downloading, in Radarr or Sonarr but not downloading, available) instead of \"processing\"."
+      ]
+    },
+    {
+      "version": "0.1.0-alpha.956",
+      "changes": [
+        "A new credit gateway (ouro gateway serve) lets agents use one master key while it spends several Anthropic API keys in a fixed order, moving to the next key only when one runs out of credits, with a health page and a runbook for running it next to the Butler on Unraid.",
+        "The Anthropic provider can now use a plain API key and a custom base URL (ouro auth --provider anthropic --api-key-file <path> --base-url <url>, which reads the key from a file or standard input and never from the command line), so an agent can run on API credits through the credit gateway; the existing setup-token login works as before.",
+        "The credit gateway refuses any request path that would send a key to a host other than the Anthropic API."
+      ]
+    },
+    {
+      "version": "0.1.0-alpha.955",
+      "changes": [
+        "iMessage no longer loses a reply that fails to send. When Slugger's reply times out or otherwise fails at BlueBubbles, your message stays pending; about ten minutes later a recovery pass checks the chat, and if the reply did not arrive after all, Slugger answers again. The message is marked handled only once a reply goes through. After three failed sends it is given up on with an error in the logs, so one stuck message cannot use up the day's recovery budget. If Slugger had already said something partway through that turn, the message is not retried, so you never see that part twice."
+      ]
+    },
+    {
+      "version": "0.1.0-alpha.954",
+      "changes": [
+        "When an agent passes your answer into a coding session, the [agent for you] label is typed once, even if the agent already wrote it."
+      ]
+    },
+    {
+      "version": "0.1.0-alpha.953",
+      "changes": [
+        "Shepherd works both ways on any channel: every notice ends with \"Reply here and I'll pass your answer on.\", and when you answer one in iMessage, Teams or any other conversation, your agent recognizes the notice as its own, reads that coding session in Herdr or cmux, passes your answer on, and tells you what it sent.",
+        "iMessage no longer drops a slow reply: a turn now has ten minutes instead of two before it is treated as hung, and a newer message from you still replaces an older turn. A turn that truly hangs can now mean up to ten minutes of silence, so send another message to move on. The health check calls a turn stalled only after five minutes."
+      ]
+    },
+    {
+      "version": "0.1.0-alpha.952",
+      "changes": [
+        "An iMessage held back by the recovery budget or storm breaker is no longer lost: it stays pending, and a later recovery pass handles it once the block lifts. Budget and breaker windows now run on the real clock instead of the message's own timestamp, so the block can actually lift.",
+        "`ouro friend dedupe` now finds records that share the same person identity, such as a stale stranger record holding an iMessage handle that a family record also owns, and proposes merging them into the higher-trust record. Group-chat handles are not treated as a shared identity."
+      ]
+    },
+    {
+      "version": "0.1.0-alpha.951",
+      "changes": [
+        "Slugger's Anthropic turns work again: a tool schema with oneOf, allOf or anyOf at the top level made the API refuse every request, so Ouro now drops those keys when it sends tools to Anthropic, and each tool still enforces its own rules."
+      ]
+    },
+    {
+      "version": "0.1.0-alpha.950",
+      "changes": [
+        "Slugger's model calls work again: Ouro now identifies as a current Claude Code release, so the API stops refusing claude-opus-5-5, and Shepherd's check-ins and notices resume.",
+        "Saving an operator trust file twice in the same millisecond no longer fails: the second backup takes the next free name, and no backup is ever overwritten."
+      ]
+    },
+    {
+      "version": "0.1.0-alpha.948",
+      "changes": [
+        "A Butler upgrade's automatic rollback no longer fails when the stopping gateway removes its lock file mid-read, and host supervision now stays paused for the whole upgrade, replay gate and rollback included, instead of waking up after 30 minutes."
+      ]
+    },
+    {
+      "version": "0.1.0-alpha.947",
+      "changes": [
+        "The daemon now starts its senses, such as Telegram, before it handles startup external events, so a slow or failing private turn at boot can no longer keep Telegram offline."
+      ]
+    },
+    {
+      "version": "0.1.0-alpha.946",
+      "changes": [
+        "Shepherd's notices about your coding agents now reach you on the channel you use, such as iMessage, and every message the agent sends on its own is saved into that conversation, so your reply arrives with context.",
+        "On a machine linked to its owner, Shepherd's notices go only to that owner and never to other family members."
+      ]
+    },
+    {
+      "version": "0.1.0-alpha.945",
+      "changes": [
+        "Slugger's private follow-up turns now end cleanly instead of failing, and Shepherd never answers an approval request that is addressed to the human."
+      ]
+    },
+    {
+      "version": "0.1.0-alpha.944",
+      "changes": [
+        "The Butler sends at most one Telegram warning for a batch of health events from one sweep, records the rest as covered by it, and settles a retry of an already-sent warning without sending it again."
+      ]
+    },
+    {
+      "version": "0.1.0-alpha.943",
+      "changes": [
+        "Butler: a question like \"do you have any idea when that movie will be available?\" no longer gets treated as a title lookup that blocks every search until the step limit; the replay gate now checks this case."
+      ]
+    },
+    {
+      "version": "0.1.0-alpha.942",
+      "changes": [
+        "Patch multer to 2.5.0 and accept the MSAL Node auth-code advisory, which no Ouro path reaches, so release checks pass again."
+      ]
+    },
+    {
+      "version": "0.1.0-alpha.941",
+      "changes": [
+        "Shepherd owner-requested terminal input now reports submission separately from unverified receiver receipt, execution, capability and progress; uncertain attempts retain identity and are not blindly retried."
+      ]
+    },
+    {
+      "version": "0.1.0-alpha.940",
+      "changes": [
+        "Report missing Bitwarden CLI modules as a blocked local installation failure without exposing subprocess details or suggesting vault replacement or provider reauthentication; distinguish Ouro's selected bundled CLI from a working global bw."
+      ]
+    },
+    {
+      "version": "0.1.0-alpha.939",
+      "changes": [
+        "Shepherd attributes failed observations to itself without inventing an agent stop or a human decision, and keeps explicit HTTP responses separate from pure transport failures.",
+        "Retain bounded pre-dispatch judgment retries and real offline-to-online evidence, advance new outage probes, and prevent a stalled judge from blocking unrelated sessions with bounded per-session scheduling.",
+        "Capture queued generations, coalesce stale per-session work, preserve uncertain-send replay barriers and existing focus/pause/menu guards, and wait for active observations before closing custody.",
+        "This P0-only release preserves existing legacy automation warnings; native guarded admission and full Shepherd v1 remain unqualified."
+      ]
+    },
+    {
+      "version": "0.1.0-alpha.938",
+      "changes": [
+        "Shepherd rejects provider-filtered, refused or incomplete judgments before parsing or input, and retains safe completion metadata without refusal text or bypassing provider safeguards.",
+        "Judge evaluation reports explicit provider and malformed-answer error codes plus known failed-call input usage without classification credit; native admission and full v1 remain unqualified."
+      ]
+    },
+    {
+      "version": "0.1.0-alpha.937",
+      "changes": [
+        "Add an explicit tool-free Shepherd judge evaluation command with a frozen 160-case corpus, three repetitions, unique-case metrics and private progress reports.",
+        "Reject malformed judge answers from classification credit, require safe text for continuation recall, and report output failures without claiming successful persistence.",
+        "Refuse model-selected menu, navigation and control keys before custody on every automatic trigger; keep explicit owner-requested keys separate and use a text-only judge rubric.",
+        "Keep remaining legacy text automation visibly unqualified: stored mandates do not yet govern every trigger, and native guarded input and full Shepherd v1 remain open gates.",
+        "Preserve meaningful sanitized error context for evaluation argument, output and entry failures."
+      ]
+    },
+    {
+      "version": "0.1.0-alpha.936",
+      "changes": [
+        "Add live Ouro Mailbox Supervision with aged terminal observations, explicit source failures, historical judgments and held-input visibility.",
+        "Add existing-owner local commands for mandate revisions, session pauses, exact custody inspection, evidence-derived retirement and recoverable offline archives.",
+        "Preserve original uncertain outcomes and replay barriers through reconciliation, migration, archive interruption and retry.",
+        "Trace unavailable supervision observations and verified maintenance quiescence without leaking source contents, and preserve CLI startup telemetry when command parsing fails.",
+        "Keep Herdr observation watchers stopped during callback-driven shutdown and prevent obsolete inventory refreshes from creating duplicate polling timers.",
+        "Explicitly label retained legacy automation and receipt-less sends as unqualified; stored mandates do not yet govern every trigger, and Shepherd v1 remains unqualified."
+      ]
+    },
+    {
+      "version": "0.1.0-alpha.935",
+      "changes": [
+        "Keep Teams requests running when advisory typing updates are rejected, with correlated warnings and unchanged single-attempt reply custody.",
+        "Run foreground shell commands without blocking receiver I/O, preserving timeouts, closed stdin and command error output."
+      ]
+    },
+    {
+      "version": "0.1.0-alpha.934",
+      "changes": [
+        "Hold duplicate Teams activities durably before model execution, steering or quoted queuing, preserving receipts across restart and session reset.",
+        "Do not replay uncertain Teams sends after a lost acknowledgement; split-message recovery requires an explicit HTTP 413 and smaller payloads.",
+        "Preserve unconsumed Teams steering in its original request context, reject incomplete production identities, and bypass the SDK stream hidden retry loop with acknowledged single-attempt messages.",
+        "Keep distinct Teams fallback actors separate when optional AAD metadata is empty.",
+        "Include bot and request correlation context on Teams handler and SDK error telemetry."
+      ]
+    },
+    {
+      "version": "0.1.0-alpha.933",
+      "changes": [
+        "Recover existing supervised Teams tunnels after permanent rejection or sustained readiness loss, with scoped and confirmed bot endpoint registration.",
+        "Recover accepted Shepherd notice intent without importing audit history, and compact pending observations into bounded historical session digests with durable receipt custody.",
+        "Preserve valid premature judgments independently of invalid suggested replies; keep length-only periodic fixed-text continuation behind all existing input safety guards.",
+        "Correlate Teams request and reply stages without message bodies, and contain notice-ledger failures so later returns remain runnable."
+      ]
+    },
+    {
+      "version": "0.1.0-alpha.932",
+      "changes": [
+        "Shepherd recognizes the current Copilot block-framed composer border without relaxing draft, background-work, approval/menu, identity or screen-stability guards."
+      ]
+    },
+    {
+      "version": "0.1.0-alpha.931",
+      "changes": [
+        "Shepherd freshly rechecks all returned coding sessions hourly, with a configurable cadence of 30 minutes or longer and no repeated unchanged-blocker notices.",
+        "Periodic continuation uses fixed plain text only after fresh process, quiet-screen, empty-input, focus and guidance checks; real blockers, drafts and background work remain untouched.",
+        "All automatic Shepherd input shares durable cross-trigger custody so uncertain sends cannot replay through another event, restart or changed screen."
+      ]
+    },
+    {
+      "version": "0.1.0-alpha.930",
+      "changes": [
+        "Receive session-native Shepherd feedback with automatic source context, durable receipts, private Teams acknowledgements and correlated clarification replies.",
+        "Use each supervising agent's configured display name across Shepherd entry points, addressing and acknowledgements."
+      ]
+    },
+    {
+      "version": "0.1.0-alpha.929",
+      "changes": [
+        "Shepherd resumes network-stopped coding sessions once after independently confirmed offline-to-online recovery, with a fresh judgment and existing focus, pause, changed-screen and loop guards.",
+        "Connectivity recovery never presses approval keys or blindly retries uncertain writes; changed sessions, background work and uncertain terminal sends are not replayed."
+      ]
+    },
+    {
+      "version": "0.1.0-alpha.928",
+      "changes": [
+        "Teams can send private local PNG and JPEG images into the current conversation, with bounded inline bytes, family trust, no-send enforcement and honest activity receipts.",
+        "Preserves the existing Teams integration schema order when adding inline image delivery.",
+        "Records private-image preparation and Teams acceptance in structured telemetry without logging image bytes, paths or captions."
+      ]
+    },
+    {
+      "version": "0.1.0-alpha.927",
+      "changes": [
+        "Keep the managed session-attention listener alive under cmuxOnly by validating its native entry with the configured machine-scoped cmux socket authority, without exposing credentials in command arguments."
+      ]
+    },
+    {
+      "version": "0.1.0-alpha.926",
+      "changes": [
+        "Open a compact independent Ouro session composer with short About labels, draft preservation, canonical replies and no blind resubmission.",
+        "Install a managed cmux Swift Talk to Ouro entry that opens a browser split without moving coding focus; pin each conversation independently and retain the existing family-only terminal authority.",
+        "Preserve the original session and request identity through lost acknowledgements and listener restarts; refresh choices without retargeting, recover definitively refused starts, and keep one-off web views from replacing the managed native entry.",
+        "Validate the UTF-8 request budget before arming a send, keep explicitly oversized unsent drafts editable, and decode multibyte HTTP messages without corruption; an earlier unknown acknowledgement still retains its original identity.",
+        "Trace independent view generation, native entry generation and expected frontend conflicts without logging entry credentials, nonces, session keys or human feedback."
+      ]
+    },
+    {
       "version": "0.1.0-alpha.925",
       "changes": [
         "Report every Shepherd terminal with its full label and distinguish outside dependency waits, idle local completion, and delivered work; forgetting a learned preference leaves built-in waiting policy unchanged."
@@ -839,7 +1209,7 @@
       "version": "0.1.0-alpha.798",
       "changes": [
         "Keep the installed Butler bundle aligned with its verified release before provider and Telegram startup, and expose the same bounded install check to the owner.",
-        "Install and update Mendelow Cloud Butler as a first-class Unraid app through a crash-safe, exact-version DockerMan transaction with known-good rollback and active Community Apps recognition proof.",
+        "Install and update Ouro Butler as a first-class Unraid app through a crash-safe, exact-version DockerMan transaction with known-good rollback and active Community Apps recognition proof.",
         "Reject unsafe legacy update sources and malformed DockerMan templates before any host or container change.",
         "Make interrupted Sanctuary updates and first-install adoption cold-recoverable, reject unsafe bundle roots and uncommitted journal residue before mutation, compare DockerMan and bundle identities before cleanup, restore package-managed bytes and modes durably, preserve exclusive Butler autostart, and prove Jellyfin remains unchanged across the transaction."
       ]
@@ -853,7 +1223,7 @@
     {
       "version": "0.1.0-alpha.796",
       "changes": [
-        "Give Mendelow Cloud Butler a concrete situational voice with casual lowercase, restrained punctuation, and varied activity phrases.",
+        "Give Ouro Butler a concrete situational voice with casual lowercase, restrained punctuation, and varied activity phrases.",
         "Render Butler-authored bold, italic, and inline-code Markdown safely in Telegram while preserving canonical raw text, literal data, full URLs, and plain control messages."
       ]
     },
@@ -926,7 +1296,7 @@
     {
       "version": "0.1.0-alpha.786",
       "changes": [
-        "Harden Sanctuary Unit16 evidence snapshot timeout, sharpen Mendelow Cloud Butler personality, add a restricted read-only Jellyfin catalog search for household movie/title/taste questions, and degrade optional media metrics without losing catalog evidence."
+        "Harden Sanctuary Unit16 evidence snapshot timeout, sharpen Ouro Butler personality, add a restricted read-only Jellyfin catalog search for household movie/title/taste questions, and degrade optional media metrics without losing catalog evidence."
       ]
     },
     {
@@ -1218,7 +1588,7 @@
       "changes": [
         "Turn Sanctuary system evidence into one deduplicated, agent-owned care loop with durable snoozes, reminders, and resolution.",
         "Add family-safe Telegram admission, relationship-scoped privacy and authority, approval, revocation, and friendly household UX.",
-        "Publish Mendelow Cloud Butler as a non-root multi-architecture Unraid Community Apps container with read-only privileged event ingress, provenance, and an SBOM.",
+        "Publish Ouro Butler as a non-root multi-architecture Unraid Community Apps container with read-only privileged event ingress, provenance, and an SBOM.",
         "Harden exact-image Unraid updates and privileged event ingestion with package-derived deployment staging, transactional guard installation, canonical boot verification, bounded spool recovery, and fail-closed integrity checks.",
         "Keep live Sanctuary upgrades aligned with the packaged Butler contract through an idempotent package-managed persona, tools, habits, and metadata migration with exact non-recursive cleanup, a digest-verified crash-durable rollback journal bound to exact old and target images, and no package-carried action authority.",
         "Recover package-managed upgrades across every old-container rename, start, and autostart kill boundary by accepting only an exact, unambiguous old-image production topology before idempotently completing rollback.",
@@ -1234,7 +1604,7 @@
         "Preserve owner, household, and external-event authority across scheduled awaits, terminally archive definitively stale bindings while preserving corrupt state for repair, and keep event snoozes on the existing exact-receipt disposition and router path without fabricating human obligations.",
         "Verify real Sanctuary service, storage, download-queue, spend-guard, and recovery outcomes while keeping first-class Community Apps publication immutable, public, securely installed, and bound to the canonical ouro-butler container.",
         "Bind every post-activation acceptance launch explicitly to the final production topology so staging defaults cannot inspect or drive the wrong container.",
-        "Publish the Community Apps listing under the Mendelow Cloud Butler name, label the alpha channel as beta, and place it in the Utilities category.",
+        "Publish the Community Apps listing under the Ouro Butler name, label the alpha channel as beta, and place it in the Utilities category.",
         "Align final Sanctuary acceptance with the live four-mount container, live relationship profiles, pending stranger quarantine and admission-card flow, and acceptance-only delivery probe without inventing dropped updates, family sessions, or a production daily digest.",
         "Fail closed when admission acceptance lacks its production Telegram credential dependency, and cover missing identity, unresolved live-profile handlers, absent admission projections, and both quarantine branches at the release gate."
       ]
@@ -1298,7 +1668,7 @@
     {
       "version": "0.1.0-alpha.735",
       "changes": [
-        "Repair Mendelow Cloud Butler for Sanctuary's Unraid legacy adoption with an explicit source-to-target machine identity migration that validates the complete credential envelope before applying only in-memory canonical clones while preserving the original source for recovery and the shipped durable approvals contract.",
+        "Repair Ouro Butler for the Butler's Unraid legacy adoption with an explicit source-to-target machine identity migration that validates the complete credential envelope before applying only in-memory canonical clones while preserving the original source for recovery and the shipped durable approvals contract.",
         "Split adoption into resumable preparation, hidden-input provider authentication, strict live GLM/Gemini readiness, and a noninteractive final install that revalidates the exact legacy container and image immediately before mutation.",
         "Make legacy evidence capture restart-safe with exact container/image-bound validation, private atomic no-overwrite publication, deterministic partial-snapshot reuse, and fail-closed rejection of conflicting or unsafe evidence.",
         "Supersede 0.1.0-alpha.734 before deployment; it must not be built, imported, or installed on Sanctuary."
@@ -1307,12 +1677,12 @@
     {
       "version": "0.1.0-alpha.734",
       "changes": [
-        "Ship Mendelow Cloud Butler for Sanctuary with an authorized durable Telegram inbox, restart-safe durable approvals, scoped Unraid read/restart tools, and transition-based proactive health alerts.",
+        "Ship Ouro Butler for Sanctuary with an authorized durable Telegram inbox, restart-safe durable approvals, scoped Unraid read/restart tools, and transition-based proactive health alerts.",
         "Pin the packaged Sanctuary agent to GLM-5.2 through the locked OpenAI-compatible provider in both outward and inner lanes; MiniMax is not a deployment fallback.",
         "Fence ambiguous Telegram update, approval-prompt, approved-action, and alert-delivery crash windows so protected effects are never blindly replayed.",
         "Route every packaged deterministic Sanctuary health source through one native daemon-owned Supercronic lifecycle with namespace-isolated manifests, exact readiness verification, durable occurrence receipts/cursors, habit-wide overlap rejection, coordinated shutdown, no model turn, and no verified-schedule timer fallback.",
         "Consume each authenticated Sanctuary scheduler slot through a crash-durable no-replace claim before any health effect, keep Unit 16f strictly observer-only across failure and recovery, verify complete scheduler and owner attestations before host finalization, and fsync new receipt directories plus temporary cleanup across crash boundaries.",
-        "Package a reproducible non-root Unraid image and canonical Mendelow Cloud Butler bundle/template, pin production dependencies, reject stale or ambiguous server state, and strictly validate then conflict-reconcile one-time container credentials into the canonical vault before attested readback, cache activation, or source deletion; interrupted claims remain recoverable and bootstrap failure exits PID 1 nonzero.",
+        "Package a reproducible non-root Unraid image and canonical Ouro Butler bundle/template, pin production dependencies, reject stale or ambiguous server state, and strictly validate then conflict-reconcile one-time container credentials into the canonical vault before attested readback, cache activation, or source deletion; interrupted claims remain recoverable and bootstrap failure exits PID 1 nonzero.",
         "Fail closed before handler dispatch when a provider emits malformed, duplicate, mixed-validity, or unadvertised tool calls; scope the typed Unraid Telegram profile to Sanctuary while preserving generic Telegram agents, and discard secret-bearing transport error objects after redaction.",
         "Audit staged Unraid templates plus actual image and stopped-container inspect records against the exact immutable local Docker image ID, image environment, direct daemon command, non-root user, exact two writable roots, host networking, updater-off policy, and absence of ports, devices, capabilities, or injected container flags before activation; preserve one Telegram poller through bounded-readiness cutover, rollback, restore, and atomic Unraid autostart readback.",
         "Consume approval decision tokens before continuation work and persist token-free terminal tombstones so failed callbacks cannot replay within the same process or after restart.",

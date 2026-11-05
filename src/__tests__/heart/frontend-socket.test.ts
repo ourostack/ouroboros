@@ -370,11 +370,32 @@ describe("frontend socket", () => {
       id: "start",
       ok: false,
       error: {
-        code: "invalid_params",
+        code: "turn_rejected",
         message: "runtimeMcpServers supports only ouro_workbench",
       },
     })
     expect(runner).not.toHaveBeenCalled()
+    socket.destroy()
+  })
+
+  it("labels a non-Error preparation failure as definitively unstarted", async () => {
+    const { FrontendSessionService } = await import("../../heart/frontend-session-service")
+    const { startFrontendSocketServer } = await import("../../heart/frontend-socket")
+    const runner = vi.fn(async () => settledResult())
+    const service = new FrontendSessionService({ runner })
+    vi.spyOn(service, "prepareTurn").mockImplementationOnce(() => { throw "owned preparation refusal" })
+    const server = await startFrontendSocketServer({ socketPath: socketPath("unstarted-string"), service })
+    cleanup.push(() => server.stop())
+    const socket = await connect(server.socketPath)
+    const frames = collectFrames(socket)
+    socket.write(`${JSON.stringify({ protocolVersion: 1, id: "refused", method: "turn.start", params: {
+      turnId: "unstarted", agent: "boss", friendId: "owner", channel: "cli", sessionKey: "session", message: "must not run",
+    } })}\n`)
+    expect(await waitForFrame(frames, frame => frame.id === "refused")).toMatchObject({
+      ok: false, error: { code: "turn_rejected", message: "owned preparation refusal" },
+    })
+    expect(runner).not.toHaveBeenCalled()
+    expect(service.hasTurn("unstarted")).toBe(false)
     socket.destroy()
   })
 
@@ -405,12 +426,12 @@ describe("frontend socket", () => {
     socket.write('{"protocolVersion":1,"id":"unsafe","method":"turn.start.observe-only","params":{"turnId":"turn-unsafe","agent":"boss","friendId":"friend-1","channel":"mcp","sessionKey":"session-unsafe","message":"observe","runtimeMcpServers":{"ouro_workbench":{"command":"/bin/echo","args":[]}}}}\n')
     expect(await waitForFrame(frames, (frame) => frame.id === "unsafe")).toMatchObject({
       ok: false,
-      error: { code: "invalid_params", message: "turn.start.observe-only cannot include runtimeMcpServers" },
+      error: { code: "turn_rejected", message: "turn.start.observe-only cannot include runtimeMcpServers" },
     })
     socket.write('{"protocolVersion":1,"id":"legacy-field","method":"turn.start","params":{"turnId":"turn-legacy","agent":"boss","friendId":"friend-1","channel":"mcp","sessionKey":"session-legacy","message":"observe","toolMode":"none"}}\n')
     expect(await waitForFrame(frames, (frame) => frame.id === "legacy-field")).toMatchObject({
       ok: false,
-      error: { code: "invalid_params", message: "toolMode is unsupported; use turn.start.observe-only" },
+      error: { code: "turn_rejected", message: "toolMode is unsupported; use turn.start.observe-only" },
     })
     socket.destroy()
   })
@@ -497,7 +518,7 @@ describe("frontend socket", () => {
       })}\n`)
       const frame = await waitForFrame(frames, (candidate) => candidate.id === id)
       if (error) {
-        expect(frame).toMatchObject({ ok: false, error: { code: "invalid_params", message: expect.stringContaining(error) } })
+        expect(frame).toMatchObject({ ok: false, error: { code: "turn_rejected", message: expect.stringContaining(error) } })
       } else {
         expect(frame).toMatchObject({ ok: true, result: { accepted: true } })
       }
@@ -543,7 +564,7 @@ describe("frontend socket", () => {
       id: "second",
       ok: false,
       error: {
-        code: "invalid_params",
+        code: "turn_rejected",
         message: "frontend session already has an active turn: session-1",
       },
     })
@@ -605,7 +626,7 @@ describe("frontend socket", () => {
       { protocolVersion: 1, id: null, ok: false, error: { code: "invalid_params", message: "params must be an object" } },
       { protocolVersion: 1, id: "version", ok: false, error: { code: "unsupported_version", message: "protocolVersion must be 1" } },
       { protocolVersion: 1, id: "unknown", ok: false, error: { code: "method_not_found", message: "unknown frontend method: nope" } },
-      { protocolVersion: 1, id: "invalid", ok: false, error: { code: "invalid_params", message: "turnId must be a non-empty string" } },
+      { protocolVersion: 1, id: "invalid", ok: false, error: { code: "turn_rejected", message: "turnId must be a non-empty string" } },
       { protocolVersion: 1, id: null, ok: false, error: { code: "invalid_params", message: "sessionKey must be a non-empty string" } },
     ])
     socket.destroy()

@@ -236,7 +236,7 @@ function makeInput(overrides: Partial<InboundTurnInput> = {}): InboundTurnInput 
   return {
     channel: "bluebubbles" as Channel,
     capabilities: caps,
-    sessionKey: "chat-ari-rachel",
+    sessionKey: "chat-ari-sam",
     messages: [{ role: "user", content: "who is pending?" }] as ChatCompletionMessageParam[],
     continuityIngressTexts: ["who is pending?"],
     callbacks: makeCallbacks(),

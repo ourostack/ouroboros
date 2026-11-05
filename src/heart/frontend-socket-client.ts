@@ -19,6 +19,13 @@ export interface FrontendProtocolClient {
   close(): void
 }
 
+export class FrontendRequestError extends Error {
+  constructor(readonly code: string, message: string) {
+    super(message)
+    this.name = "FrontendRequestError"
+  }
+}
+
 export class SocketFrontendClient implements FrontendProtocolClient {
   private readonly socketPath: string
   private readonly pending = new Map<string, { resolve: (value: any) => void; reject: (error: Error) => void }>()
@@ -115,7 +122,7 @@ export class SocketFrontendClient implements FrontendProtocolClient {
         if (!pending) continue
         this.pending.delete(frame.id)
         if (frame.ok === false) {
-          pending.reject(new Error(String(frame.error?.message ?? "frontend request failed")))
+          pending.reject(new FrontendRequestError(String(frame.error?.code ?? "request_failed"), String(frame.error?.message ?? "frontend request failed")))
         } else {
           pending.resolve(frame.result)
         }

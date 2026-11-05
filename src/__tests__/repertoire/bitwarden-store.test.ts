@@ -873,7 +873,7 @@ describe("BitwardenCredentialStore", () => {
       }
     })
 
-    it("uses the newest Bitwarden cache timestamp when both freshness files exist", async () => {
+    it("syncs when only data.json is fresh, because unlock rewrites it", async () => {
       const appDataDir = fs.mkdtempSync(path.join(os.tmpdir(), "bw-sync-multi-fresh-"))
       const markerPath = path.join(appDataDir, ".ouro-last-sync")
       const dataPath = path.join(appDataDir, "data.json")
@@ -911,7 +911,7 @@ describe("BitwardenCredentialStore", () => {
 
       try {
         await isolatedStore.login()
-        expect(calls.find((c) => c[0] === "sync")).toBeUndefined()
+        expect(calls.find((c) => c[0] === "sync")).toBeDefined()
       } finally {
         fs.rmSync(appDataDir, { recursive: true, force: true })
       }

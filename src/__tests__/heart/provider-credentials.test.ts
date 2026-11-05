@@ -93,6 +93,16 @@ describe("provider credentials vault store", () => {
   it("splits secret credential fields from non-secret provider config fields", () => {
     emitTestEvent("provider credential field split")
 
+    expect(splitProviderCredentialFields("anthropic", {
+      apiKey: "sk-ant-usr-test",
+      baseUrl: "http://127.0.0.1:8787",
+      setupToken: "sk-ant-oat01-test",
+      model: "ignored",
+    })).toEqual({
+      credentials: { setupToken: "sk-ant-oat01-test", apiKey: "sk-ant-usr-test" },
+      config: { baseUrl: "http://127.0.0.1:8787" },
+    })
+
     expect(splitProviderCredentialFields("azure", {
       apiKey: "azure-key",
       endpoint: "https://example.openai.azure.com",

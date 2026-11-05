@@ -341,18 +341,27 @@ describe("runHouseSweep reporting ledger", () => {
     const finding = first.findings.find((f) => f.id === "downloads:sonarr:11")!
     writeLedger(root, {
       "downloads:sonarr:11": { fingerprint: finding.fingerprint, reportedAt: iso(-DAY) },
-      "downloads:sonarr:99": { fingerprint: "old", reportedAt: iso(-DAY) },
+      "downloads:sonarr:99": { fingerprint: "old", reportedAt: iso(-8 * DAY) },
+      "downloads:sonarr:98": { fingerprint: "flicker", reportedAt: iso(-DAY) },
     })
     const quiet = await sweep({}, { sonarr: { queue: [stalled] } })
     expect(quiet.findings.find((f) => f.id === "downloads:sonarr:11")!.alreadyReported).toBe(true)
     expect(quiet.digest_due).toBe(false)
     expect(quiet.digest_draft).toBe("")
-    expect(Object.keys(readLedger(root))).toEqual(["downloads:sonarr:11"])
+    // Gone for more than a week: forgotten. Gone briefly: remembered, so it cannot come back as "new".
+    expect(Object.keys(readLedger(root)).sort()).toEqual(["downloads:sonarr:11", "downloads:sonarr:98"])
     const remind = await sweep({ now: () => NOW + 8 * DAY }, { sonarr: { queue: [stalled] } })
     expect(remind.findings.find((f) => f.id === "downloads:sonarr:11")!.alreadyReported).toBe(false)
     writeLedger(root, { "downloads:sonarr:11": { fingerprint: "different", reportedAt: iso(-DAY) } })
     const changed = await sweep({}, { sonarr: { queue: [stalled] } })
     expect(changed.digest_due).toBe(true)
+  })
+  it("keeps a finding's fingerprint when only its numbers drift", async () => {
+    const row = (days: number) => ({ seriesId: 1, series: { title: "Old Show" }, airDateUtc: iso(-days * DAY), monitored: true })
+    const before = await sweep({}, { sonarr: { missing: { records: [row(10), row(20)] } } })
+    const after = await sweep({}, { sonarr: { missing: { records: [row(10), row(20), row(9)] } } })
+    const fp = (report: typeof before) => report.findings.find((f) => f.id === "missing:sonarr:1")!.fingerprint
+    expect(fp(after)).toBe(fp(before))
   })
   it("a replay sweep ignores and never writes the ledger", async () => {
     const live = await sweep({}, { sonarr: { queue: [stalled] } })
@@ -386,7 +395,7 @@ describe("sanitizing, pruning, and the daily cap", () => {
     expect(summary).toContain("Evil Show")
   })
   it("keeps ledger entries whose source could not be read, and prunes those whose source is fine", async () => {
-    const entry = { fingerprint: "x", reportedAt: iso(-DAY) }
+    const entry = { fingerprint: "x", reportedAt: iso(-8 * DAY) }
     writeLedger(root, { "downloads:sonarr:1": entry, "downloads:radarr:2": entry, "missing:sonarr:3": entry, "containers:a": entry, "disk:array:capacity": entry, "grants:routine:z": entry, "sweep:host": entry, "parity:age": entry, "stale:other": entry })
     const report = await sweep({ sanctuary: undefined }, { fail: "sonarr" })
     expect(report.sources.sonarr).not.toBe("ok")

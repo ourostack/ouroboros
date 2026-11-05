@@ -1,5 +1,6 @@
 import * as fs from "fs";
 import * as path from "path";
+import { createHash } from "crypto";
 import type OpenAI from "openai";
 import { getProviderDisplayLabel } from "../heart/core";
 import { buildChangelogCommand } from "../heart/versioning/ouro-version-manager";
@@ -55,40 +56,104 @@ interface PsycheText {
   lore: string;
   tacitKnowledge: string;
   aspirations: string;
+  /** The owner's own facts about their home, from house/HOUSE.md. */
+  house: string;
+  /** The packaged product's standing rules, from product/PRODUCT.md. */
+  product: string;
 }
 
-// Lazy-loaded psyche text cache, scoped by agent root. The daemon can host
-// multiple agents, so identity text must never be cached process-wide.
-let _psycheCache: {
-  agentRoot: string;
-  psyche: PsycheText;
-} | null = null;
+// Psyche text cache, one entry per agent root (the daemon can host several agents). An entry is good only while
+// the files it was read from are unchanged: every load hashes their content, so an edit by the agent, its owner or
+// a sync pull takes effect on the very next prompt build. Content, not mtime or inode, because those are unreliable
+// on FUSE shares such as Unraid's /mnt/user; the files are small, so hashing them is cheap.
+const _psycheCache = new Map<string, { fingerprint: string; psyche: PsycheText }>();
 
-function loadPsycheFile(agentRoot: string, name: string): string {
-  try {
-    const psycheDir = path.join(agentRoot, "psyche");
-    return fs.readFileSync(path.join(psycheDir, name), "utf-8").trim();
-  } catch {
-    return "";
+const PSYCHE_SOURCE_FILES = {
+  soul: ["psyche", "SOUL.md"],
+  identity: ["psyche", "IDENTITY.md"],
+  lore: ["psyche", "LORE.md"],
+  tacitKnowledge: ["psyche", "TACIT.md"],
+  aspirations: ["psyche", "ASPIRATIONS.md"],
+  house: ["house", "HOUSE.md"],
+  product: ["product", "PRODUCT.md"],
+  houseNames: ["house", "house.json"],
+} as const;
+
+type PsycheSources = Record<keyof typeof PSYCHE_SOURCE_FILES, string | null>;
+
+/** Every file the psyche is built from, read once; null when a file is absent or unreadable. */
+function readPsycheSources(agentRoot: string): PsycheSources {
+  const sources = {} as PsycheSources;
+  for (const [key, parts] of Object.entries(PSYCHE_SOURCE_FILES) as [keyof PsycheSources, readonly string[]][]) {
+    try {
+      sources[key] = String(fs.readFileSync(path.join(agentRoot, ...parts), "utf-8"));
+    } catch {
+      sources[key] = null;
+    }
   }
+  return sources;
 }
 
-function loadPsyche(): PsycheText {
-  const agentRoot = getAgentRoot();
-  if (_psycheCache?.agentRoot === agentRoot) return _psycheCache.psyche;
+/** A content hash of the sources; an absent file hashes differently from an empty one. */
+function psycheFingerprint(sources: PsycheSources): string {
+  const hash = createHash("sha256");
+  for (const text of Object.values(sources)) hash.update(text === null ? "-" : `+${text.length}:${text}`);
+  return hash.digest("hex");
+}
+
+// A household install names its owner, its Butler and its home in house/house.json,
+// a file the package never overwrites. The packaged psyche writes {{owner}}, {{butler}}
+// and {{household}} where those names go, so one psyche serves every household.
+const HOUSE_NAME_DEFAULTS: Record<string, string> = {
+  owner: "the owner",
+  butler: "the Butler",
+  household: "the household",
+}
+
+function parseHouseNames(text: string | null): Record<string, string> {
+  const names: Record<string, string> = { ...HOUSE_NAME_DEFAULTS }
+  try {
+    const parsed = JSON.parse(text ?? "") as Record<string, unknown>
+    for (const [key, field] of [["owner", "ownerName"], ["butler", "butlerName"], ["household", "householdName"]] as const) {
+      const value = parsed[field]
+      if (typeof value === "string" && value.trim()) names[key] = value.trim()
+    }
+  } catch {
+    // no house.json, or not JSON: the defaults stand
+  }
+  return names
+}
+
+function fillHouseNames(text: string | null, names: Record<string, string>): string {
+  return (text ?? "").trim().replace(/\{\{(owner|butler|household)\}\}/gu, (_match, key: string) => names[key]!)
+}
+
+/** The psyche for one agent root. Each call reads its files once and rebuilds only when their content changed. */
+export function loadPsycheAt(agentRoot: string): PsycheText {
+  const sources = readPsycheSources(agentRoot);
+  const fingerprint = psycheFingerprint(sources);
+  const cached = _psycheCache.get(agentRoot);
+  if (cached?.fingerprint === fingerprint) return cached.psyche;
+  const names = parseHouseNames(sources.houseNames);
   const psyche = {
-    soul: loadPsycheFile(agentRoot, "SOUL.md"),
-    identity: loadPsycheFile(agentRoot, "IDENTITY.md"),
-    lore: loadPsycheFile(agentRoot, "LORE.md"),
-    tacitKnowledge: loadPsycheFile(agentRoot, "TACIT.md"),
-    aspirations: loadPsycheFile(agentRoot, "ASPIRATIONS.md"),
+    soul: fillHouseNames(sources.soul, names),
+    identity: fillHouseNames(sources.identity, names),
+    lore: fillHouseNames(sources.lore, names),
+    tacitKnowledge: fillHouseNames(sources.tacitKnowledge, names),
+    aspirations: fillHouseNames(sources.aspirations, names),
+    house: fillHouseNames(sources.house, names),
+    product: fillHouseNames(sources.product, names),
   };
-  _psycheCache = { agentRoot, psyche };
+  _psycheCache.set(agentRoot, { fingerprint, psyche });
   return psyche;
 }
 
+function loadPsyche(): PsycheText {
+  return loadPsycheAt(getAgentRoot());
+}
+
 export function resetPsycheCache(): void {
-  _psycheCache = null;
+  _psycheCache.clear();
 }
 
 export type { Channel }
@@ -185,6 +250,18 @@ function aspirationsSection(): string {
   const text = loadPsyche().aspirations;
   if (!text) return "";
   return `## my aspirations\n${text}`;
+}
+
+function houseSection(): string {
+  const text = loadPsyche().house;
+  if (!text) return "";
+  return `## my house\n${text}`;
+}
+
+function productSection(): string {
+  const text = loadPsyche().product;
+  if (!text) return "";
+  return `## my standing rules\n${text}`;
 }
 
 function peerCoordinationGuidance(channel: Channel): string {
@@ -1678,8 +1755,10 @@ export async function buildSystem(channel: Channel = "cli", options?: BuildSyste
         authorizedPsyche ? loreSection() : "",
         authorizedPsyche ? tacitKnowledgeSection() : "",
         authorizedPsyche ? aspirationsSection() : "",
+        authorizedPsyche ? houseSection() : "",
         relationshipFriendContextSection(context),
         trustContextSection(context),
+        productSection(),
         "# my tools",
         toolsSection(channel, options, context),
         toolRestrictionSection(context),
@@ -1699,6 +1778,7 @@ export async function buildSystem(channel: Channel = "cli", options?: BuildSyste
     loreSection(),
     tacitKnowledgeSection(),
     aspirationsSection(),
+    houseSection(),
 
     // Group 2: my body & environment (minus dateSection and rhythmStatusSection)
     "# my body & environment",
@@ -1706,6 +1786,7 @@ export async function buildSystem(channel: Channel = "cli", options?: BuildSyste
     runtimeInfoSection(channel, options),
     channelNatureSection(getChannelCapabilities(channel)),
     providerSection(channel, options),
+    productSection(),
 
     // Group 3: my tools & capabilities
     "# my tools & capabilities",

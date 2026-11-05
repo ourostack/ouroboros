@@ -108,6 +108,8 @@ beforeEach(() => {
 })
 
 afterEach(() => {
+  vi.useRealTimers()
+  vi.unstubAllEnvs()
   for (const root of isolatedRoots.splice(0)) fs.rmSync(root, { recursive: true, force: true })
 })
 
@@ -1336,6 +1338,9 @@ describe("Telegram sense coverage contracts", () => {
   })
 
   it("runs one-shot production event and await adapters through a transient Telegram app", async () => {
+    // Owner messages are held 23:00-08:00 Los Angeles time (proactive pacing); pin midday there so this test passes at any hour and on any machine.
+    vi.stubEnv("TZ", "America/Los_Angeles")
+    vi.useFakeTimers({ toFake: ["Date"], shouldAdvanceTime: true, now: new Date("2026-10-20T19:00:00.000Z") })
     const f = defaultFixture()
     f.api.request.mockResolvedValue({ message_id: 71 })
     mocks.readRuntimeCredentialConfig.mockReturnValue({ ok: true, config: {

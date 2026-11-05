@@ -110,6 +110,19 @@ const cache = new Map()
   })
 
   describe("checkFileCompleteness", () => {
+    it("exempts only the exact pure Shepherd modules, not their IO siblings", () => {
+      const pure = ["operation-commands", "operations", "supervision"].map(name => `src/heart/shepherd/${name}.ts`)
+      const io = [
+        "src/heart/mailbox/mailbox-supervision.ts", "src/senses/shepherd/operations-defaults.ts",
+        "src/heart/shepherd/operations-extra.ts", "src/heart/shepherd/supervision-reader.ts",
+      ]
+      const source = "export function execute() { return 42 }"
+      const result = checkFileCompleteness(new Map(), new Map([...pure, ...io].map(file => [file, source])))
+      expect(result.exempt).toEqual([...pure].sort())
+      expect(result.missing).toEqual([...io].sort())
+      expect(result.status).toBe("fail")
+    })
+
     it("passes for file with emitNervesEvent call", () => {
       const files = new Map<string, string[]>([
         ["src/engine/core.ts", ["engine:engine.turn_start"]],

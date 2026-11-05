@@ -28,6 +28,7 @@ import {
   readSentinelView,
   readSessionInventory,
   readSessionTranscript,
+  readMailboxSupervision,
 } from "./mailbox-read"
 import type {
   MailboxAttentionView,
@@ -59,9 +60,11 @@ import type {
   MailboxSentinelView,
   MailboxSessionInventory,
   MailboxSessionTranscript,
+  ShepherdSupervisionView,
 } from "./mailbox-types"
 
 export interface MailboxHttpReadHookOptions {
+  readAgentSupervision?: (agentName: string) => ShepherdSupervisionView
   bundlesRoot?: string
   healthPath?: string
   logPath?: string | null
@@ -94,6 +97,7 @@ export interface MailboxHttpReadHookOptions {
 }
 
 export interface MailboxHttpReadHooks {
+  readAgentSupervision(agentName: string): ShepherdSupervisionView
   agentRoot(agentName: string): string
   readAgentSessions(agentName: string): MailboxSessionInventory
   readAgentTranscript(agentName: string, friendId: string, channel: string, key: string): MailboxSessionTranscript | null
@@ -156,6 +160,7 @@ export function createMailboxHttpReadHooks(options: MailboxHttpReadHookOptions):
 
   return {
     agentRoot,
+    readAgentSupervision: options.readAgentSupervision ?? ((agentName: string) => readMailboxSupervision(agentName, { agentRoot: agentRoot(agentName) })),
     readAgentSessions: options.readAgentSessions ?? ((agentName: string) => readSessionInventory(agentName, readOptions)),
     readAgentTranscript: options.readAgentTranscript ?? ((agentName: string, friendId: string, channel: string, key: string) => readSessionTranscript(agentName, friendId, channel, key, readOptions)),
     readAgentCoding: options.readAgentCoding ?? ((agentName: string) => readCodingDeep(agentRoot(agentName))),

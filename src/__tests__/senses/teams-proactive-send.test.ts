@@ -3,8 +3,17 @@ import * as fs from "node:fs"
 import * as os from "node:os"
 import * as path from "node:path"
 
-vi.mock("../../nerves/runtime", () => ({
-  emitNervesEvent: vi.fn(),
+// Events still reach the real emitter, so the nerves audit observes them.
+vi.mock("../../nerves/runtime", async () => {
+  const actual = await vi.importActual<typeof import("../../nerves/runtime")>("../../nerves/runtime")
+  return { ...actual, emitNervesEvent: vi.fn((event: Parameters<typeof actual.emitNervesEvent>[0]) => actual.emitNervesEvent(event)) }
+})
+
+const outbound = vi.hoisted(() => ({ record: vi.fn(() => "recorded"), drain: vi.fn(() => 0) }))
+vi.mock("../../mind/outbound-record", async (original) => ({
+  ...await original<typeof import("../../mind/outbound-record")>(),
+  recordOutboundInSession: outbound.record,
+  drainOutboundRecords: outbound.drain,
 }))
 
 // Hard-mock the daemon socket client. The runtime guard in socket-client.ts
@@ -942,6 +951,50 @@ describe("sendProactiveTeamsMessageToSession", () => {
         text: "carry this into the other chat now",
       }),
     )
+  })
+
+  it("records into the conversation it created, even without captureReceipt", async () => {
+    outbound.record.mockClear()
+    const store = new FileFriendStore("/mock")
+    vi.mocked(store.get).mockResolvedValue(makeFriend({ trustLevel: "family" }))
+    const teams = await loadTeams()
+    expect(await teams.sendProactiveTeamsMessageToSession({
+      friendId: "friend-uuid-1", sessionKey: "shepherd", text: "Coding agent returned.", deliveryId: "shepherd:d1", origin: "shepherd",
+    }, { botApi: makeBotApi(), store })).toEqual({ delivered: true })
+    expect(outbound.record).toHaveBeenCalledWith({
+      agentRoot: "/mock/agent/root", friendId: "friend-uuid-1", channel: "teams", key: "conv-123",
+      content: "Coding agent returned.", origin: "shepherd", deliveryId: "shepherd:d1", originLabel: "Shepherd",
+    })
+  })
+
+  it("a delivered send stays delivered when it cannot be saved into the conversation", async () => {
+    const identity = await import("../../heart/identity")
+    vi.mocked(identity.getAgentRoot).mockImplementationOnce(() => { throw new Error("no agent name") })
+    const store = new FileFriendStore("/mock")
+    vi.mocked(store.get).mockResolvedValue(makeFriend({ trustLevel: "family" }))
+    const teams = await loadTeams()
+    expect(await teams.sendProactiveTeamsMessageToSession({
+      friendId: "friend-uuid-1", sessionKey: "shepherd", text: "Coding agent returned.", captureReceipt: true,
+    }, { botApi: makeBotApi(), store })).toMatchObject({ delivered: true, delivery: { state: "accepted" } })
+    const { emitNervesEvent } = await import("../../nerves/runtime")
+    expect(vi.mocked(emitNervesEvent)).toHaveBeenCalledWith(expect.objectContaining({ level: "warn", event: "senses.teams_proactive_record_error" }))
+    vi.mocked(identity.getAgentRoot).mockImplementationOnce(() => { throw "no agent name" })
+    expect(await teams.sendProactiveTeamsMessageToSession({
+      friendId: "friend-uuid-1", sessionKey: "shepherd", text: "Again.",
+    }, { botApi: makeBotApi(), store })).toEqual({ delivered: true })
+    expect(vi.mocked(emitNervesEvent)).toHaveBeenCalledWith(expect.objectContaining({ event: "senses.teams_proactive_record_error", meta: expect.objectContaining({ error: "no agent name" }) }))
+  })
+
+  it("labels an unnamed proactive send and records nothing when the send fails", async () => {
+    outbound.record.mockClear()
+    const store = new FileFriendStore("/mock")
+    vi.mocked(store.get).mockResolvedValue(makeFriend({ trustLevel: "family" }))
+    const teams = await loadTeams()
+    await teams.sendProactiveTeamsMessageToSession({ friendId: "friend-uuid-1", sessionKey: "s", text: "hello" }, { botApi: makeBotApi(), store })
+    expect(outbound.record).toHaveBeenCalledWith(expect.objectContaining({ origin: "proactive", originLabel: "a proactive message", deliveryId: expect.stringMatching(/^proactive:[0-9a-f-]{36}$/) }))
+    outbound.record.mockClear()
+    await teams.sendProactiveTeamsMessageToSession({ friendId: "friend-uuid-1", sessionKey: "s", text: "hello" }, { botApi: makeBotApi({ sendError: new Error("lost") }), store })
+    expect(outbound.record).not.toHaveBeenCalled()
   })
 
   it("asks Teams for plain text when the caller says so", async () => {

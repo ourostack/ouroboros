@@ -140,6 +140,7 @@ import type {
   HelpCliCommand,
   RuntimeConfigScope,
   A2ACliCommand,
+  GatewayServeCliCommand,
   A2AClientCliCommand,
 } from "./cli-types"
 import { parseOuroCommand, inferAgentNameFromRemote } from "./cli-parse"
@@ -1961,7 +1962,8 @@ export async function checkManualCloneBundles(deps: ManualCloneCheckDeps): Promi
 
 // ── toDaemonCommand ──
 
-function toDaemonCommand(command: Exclude<OuroCliCommand, { kind: "shepherd.chat" } | { kind: "daemon.up" } | { kind: "daemon.dev" } | { kind: "daemon.logs.prune" } | { kind: "mailbox" } | { kind: "hatch.start" } | AuthCliCommand | AuthVerifyCliCommand | AuthSwitchCliCommand | ProviderCliCommand | RepairCliCommand | VaultCliCommand | DnsCliCommand | FriendCliCommand | A2ACliCommand | A2AClientCliCommand | WhoamiCliCommand | VoiceCliCommand | SessionCliCommand | ThoughtsCliCommand | ChangelogCliCommand | ConfigModelCliCommand | ConfigModelsCliCommand | RollbackCliCommand | VersionsCliCommand | SelfUpdateCliCommand | AttentionCliCommand | PrivateDecisionsCliCommand | PrivateStatusCliCommand | WorkCardCliCommand | WorkGauntletCliCommand | WorkSentinelCliCommand | NervesReviewCliCommand | McpServeCliCommand | AcpServeCliCommand | McpCanaryCliCommand | McpDoctorCliCommand | SetupCliCommand | HookCliCommand | HabitLocalCliCommand | DeskCliCommand | MigrateToDeskCliCommand | DoctorCliCommand | RsvpCliCommand | CloneCliCommand | HelpCliCommand | { kind: "bluebubbles.replay" } | { kind: "bluebubbles.context-smoke" } | { kind: "bluebubbles.host" } | { kind: "bluebubbles.host.collect" } | { kind: "connect" } | { kind: "account.ensure" } | { kind: "mail.import-mbox" } | { kind: "mail.backfill-indexes" } | { kind: "mail.sync-cache" } | { kind: "plugin.install" } | { kind: "plugin.list" } | { kind: "plugin.remove" } | { kind: "agent.move" }>): DaemonCommand {
+function toDaemonCommand(command: Exclude<OuroCliCommand, import("../shepherd/operations").ShepherdOperation | { kind: "shepherd.chat" }
+ | { kind: "daemon.up" } | { kind: "daemon.dev" } | { kind: "daemon.logs.prune" } | { kind: "mailbox" } | { kind: "hatch.start" } | AuthCliCommand | AuthVerifyCliCommand | AuthSwitchCliCommand | ProviderCliCommand | RepairCliCommand | VaultCliCommand | DnsCliCommand | FriendCliCommand | A2ACliCommand | GatewayServeCliCommand | A2AClientCliCommand | WhoamiCliCommand | VoiceCliCommand | SessionCliCommand | ThoughtsCliCommand | ChangelogCliCommand | ConfigModelCliCommand | ConfigModelsCliCommand | RollbackCliCommand | VersionsCliCommand | SelfUpdateCliCommand | AttentionCliCommand | PrivateDecisionsCliCommand | PrivateStatusCliCommand | WorkCardCliCommand | WorkGauntletCliCommand | WorkSentinelCliCommand | NervesReviewCliCommand | McpServeCliCommand | AcpServeCliCommand | McpCanaryCliCommand | McpDoctorCliCommand | SetupCliCommand | HookCliCommand | HabitLocalCliCommand | DeskCliCommand | MigrateToDeskCliCommand | DoctorCliCommand | RsvpCliCommand | CloneCliCommand | HelpCliCommand | { kind: "bluebubbles.replay" } | { kind: "bluebubbles.context-smoke" } | { kind: "bluebubbles.host" } | { kind: "bluebubbles.host.collect" } | { kind: "connect" } | { kind: "account.ensure" } | { kind: "mail.import-mbox" } | { kind: "mail.backfill-indexes" } | { kind: "mail.sync-cache" } | { kind: "plugin.install" } | { kind: "plugin.list" } | { kind: "plugin.remove" } | { kind: "agent.move" }>): DaemonCommand {
   if (command.kind === "habit.probe") {
     return {
       kind: "habit.probe",
@@ -2766,10 +2768,14 @@ async function executeVaultStatus(
 const RUNTIME_CONFIG_KEY_SEGMENT = /^[A-Za-z][A-Za-z0-9_-]*$/
 const FORBIDDEN_RUNTIME_CONFIG_KEY_SEGMENTS = new Set(["__proto__", "prototype", "constructor"])
 
+// The Sanctuary runtime reads these machine credentials at the top level of the config (sanctuary-runtime.ts); every
+// other key is a dotted path, so a mistyped key cannot replace a whole section with a string.
+const TOP_LEVEL_RUNTIME_CONFIG_KEYS = new Set(["unraidGraphqlUrl", "unraidReadApiKey", "unraidWriteApiKey", "sabnzbdApiKey"])
+
 function parseRuntimeConfigKey(key: string): string[] {
   const segments = key.split(".").map((segment) => segment.trim()).filter(Boolean)
-  if (segments.length < 2) {
-    throw new Error("runtime config key must be a dotted path such as bluebubbles.password")
+  if (segments.length < 2 && !(segments.length === 1 && TOP_LEVEL_RUNTIME_CONFIG_KEYS.has(segments[0]!))) {
+    throw new Error(`runtime config key must be a dotted path such as bluebubbles.password, or one of ${[...TOP_LEVEL_RUNTIME_CONFIG_KEYS].join(", ")}`)
   }
   for (const segment of segments) {
     if (!RUNTIME_CONFIG_KEY_SEGMENT.test(segment) || FORBIDDEN_RUNTIME_CONFIG_KEY_SEGMENTS.has(segment)) {
@@ -2920,6 +2926,8 @@ async function promptRuntimeConfigValue(
   deps: OuroCliDeps,
 ): Promise<string> {
   if (command.value !== undefined) return command.value
+  // A file (or /dev/stdin) keeps a secret out of argv, so a script can store one without a terminal.
+  if (command.valueFile !== undefined) return readSecretValueFile("--value-file", command.valueFile)
   if (isSensitiveRuntimeConfigKey(command.key)) {
     if (!deps.promptSecret) {
       throw new Error("secret entry requires an interactive terminal so the value can be hidden. Re-run without --value in a terminal, or pass --value only from a trusted non-logged script.")
@@ -6651,11 +6659,27 @@ async function executeProviderRefresh(
   return message
 }
 
+/** Reads a secret from a file (or /dev/stdin) so it never appears in argv. */
+function readSecretValueFile(flag: string, filePath: string): string {
+  let raw: string
+  try {
+    raw = fs.readFileSync(filePath, "utf8")
+  } catch (error) {
+    /* v8 ignore next -- fs.readFileSync only throws Error objects @preserve */
+    throw new Error(`could not read ${flag} ${filePath}: ${error instanceof Error ? error.message : String(error)}`)
+  }
+  const value = raw.trim()
+  if (!value) throw new Error(`${flag} ${filePath} is empty.`)
+  return value
+}
+function readApiKeyFile(filePath: string): string { return readSecretValueFile("--api-key-file", filePath) }
+
 async function executeAuthRun(
   command: Extract<ResolvedOuroCliCommand, { kind: "auth.run" }>,
   deps: OuroCliDeps,
 ): Promise<string> {
   const provider = command.provider ?? readAgentConfigForAgent(command.agent, deps.bundlesRoot).config.humanFacing.provider
+  const apiKey = command.apiKeyFile ? readApiKeyFile(command.apiKeyFile) : undefined
   /* v8 ignore next -- tests always inject runAuthFlow; default is for production @preserve */
   const authRunner = deps.runAuthFlow ?? (await import("../auth/auth-flow")).runRuntimeAuthFlow
   const progress = createHumanCommandProgress(deps, "auth")
@@ -6668,6 +6692,8 @@ async function executeAuthRun(
       promptInput: deps.promptInput,
       promptSecret: deps.promptSecret,
       onProgress: (message) => progress.updateDetail(message),
+      ...(apiKey ? { apiKey } : {}),
+      ...(command.baseUrl ? { baseUrl: command.baseUrl } : {}),
     })
   } catch (error) {
     progress.end()
@@ -8997,6 +9023,15 @@ export async function runOuroCli(args: string[], deps: OuroCliDeps = createDefau
     return ""
   }
 
+  if (command.kind === "shepherd.status" || command.kind === "shepherd.inspect" || command.kind === "shepherd.pause"
+    || command.kind === "shepherd.resume" || command.kind === "shepherd.mandate.grant" || command.kind === "shepherd.mandate.revoke"
+    || command.kind === "shepherd.reconcile" || command.kind === "shepherd.maintenance") {
+    if (!deps.runShepherdOperation) throw new Error("Shepherd local administration service is unavailable")
+    const text = JSON.stringify(await deps.runShepherdOperation(command), null, 2)
+    deps.writeStdout(text)
+    return text
+  }
+
   if (command.kind === "shepherd.chat") {
     const daemonResult = deps.ensureDaemonForFrontend
       ? await deps.ensureDaemonForFrontend(command.agent)
@@ -9011,7 +9046,10 @@ export async function runOuroCli(args: string[], deps: OuroCliDeps = createDefau
     const { frontendSocketPathForDaemon } = await import("../frontend-socket")
     const socketPath = frontendSocketPathForDaemon(deps.socketPath)
     if (deps.startShepherdChat) {
-      await deps.startShepherdChat({ agent: command.agent, ...(command.session ? { session: command.session } : {}), socketPath })
+      await deps.startShepherdChat({ agent: command.agent, ...(command.session ? { session: command.session } : {}), ...(command.web ? { web: true } : {}), socketPath })
+    } else if (command.web) {
+      const { runShepherdAttention } = await import("../../senses/shepherd/attention")
+      await runShepherdAttention({ agent: command.agent, ...(command.session ? { session: command.session } : {}), socketPath })
     } else {
       const { runShepherdComposer } = await import("../../senses/shepherd/composer")
       await runShepherdComposer({ agent: command.agent, ...(command.session ? { session: command.session } : {}), socketPath })
@@ -9340,6 +9378,14 @@ export async function runOuroCli(args: string[], deps: OuroCliDeps = createDefau
 
   if (command.kind === "a2a.card" || command.kind === "a2a.onboard" || command.kind === "a2a.serve" || command.kind === "a2a.escalation" || command.kind === "a2a.delegatedCommands") {
     return executeA2ACommand(command, deps)
+  }
+
+  if (command.kind === "gateway.serve") {
+    const { runCreditGatewayCommand } = await import("../../gateway/server")
+    return runCreditGatewayCommand(command, {
+      writeStdout: deps.writeStdout,
+      ...(deps.waitForShutdownSignal ? { waitForStop: deps.waitForShutdownSignal } : {}),
+    })
   }
 
   // ── provider commands (local, no daemon socket needed) ──

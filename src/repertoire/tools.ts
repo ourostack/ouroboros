@@ -119,7 +119,7 @@ function applyPreference(tool: OpenAI.ChatCompletionFunctionTool, pref: string):
   };
 }
 
-type SelectionContext = Pick<ToolContext, "noSend" | "habitSession" | "autonomousTurnKind" | "delegatedCommand" | "voiceCall"> & RootHostSelectionContext
+type SelectionContext = Pick<ToolContext, "noSend" | "habitSession" | "autonomousTurnKind" | "delegatedCommand" | "voiceCall" | "allowedEngineTools"> & RootHostSelectionContext
 
 export function selectToolsForChannel(
   capabilities?: ChannelCapabilities,
@@ -164,7 +164,8 @@ export function selectToolsForChannel(
       : []
   } else {
     const available = new Set(capabilities?.availableIntegrations ?? [])
-    const integrations = available.size === 0 ? [] : [...teamsToolDefinitions, ...adoSemanticToolDefinitions, ...githubToolDefinitions]
+    const integrations = [...teamsToolDefinitions, ...adoSemanticToolDefinitions, ...githubToolDefinitions]
+      .filter((definition) => available.size > 0 || definition.tool.function.name === "teams_send_image")
       .filter((definition) => definition.integration ? available.has(definition.integration) : capabilities?.channel === "teams")
       .map((definition) => {
         const preference = definition.integration ? toolPreferences?.[definition.integration] : undefined
@@ -196,6 +197,8 @@ export function selectToolsForChannel(
     }
   }
   ordinary = ordinary.filter((definition) =>
+    (definition.tool.function.name !== "teams_send_image" || (!context?.noSend && !context?.habitSession && !context?.autonomousTurnKind))
+    &&
     (!relationship || relationship.advertisedToolNames.includes(definition.tool.function.name))
     && (!definition.requiredCapability || providerCapabilities?.has(definition.requiredCapability) === true))
   const engine = [
@@ -203,7 +206,8 @@ export function selectToolsForChannel(
     ...(inner ? [restTool] : [observeTool, settleTool]),
     ...(capabilities?.chatStyle ? [speakTool] : []),
   ].filter((tool) => (!sanctuary || (knownSanctuaryProfile && tool.function.name !== "observe"))
-    && (!relationship || relationship.advertisedToolNames.includes(tool.function.name)))
+    && (!relationship || relationship.advertisedToolNames.includes(tool.function.name))
+    && (!context?.allowedEngineTools || context.allowedEngineTools.includes(tool.function.name)))
   return Object.freeze({
     ordinary: Object.freeze(ordinary.map((definition) => definition === hostTool ? definition : Object.freeze({
       ...definition,

@@ -84,7 +84,7 @@ Then run `ouro up` here to start the agent. The old home stops it within about a
 
 When two machines already share bundles, give each agent a home in this order so nothing goes dark or runs twice:
 
-1. Upgrade the machine that should keep running an agent (for example, the Mac that runs `slugger`). With no homes yet, it keeps running everything it ran before.
+1. Upgrade the machine that should keep running an agent (for example, the Mac that runs `my-agent`). With no homes yet, it keeps running everything it ran before.
 2. On each machine, claim the agents that belong there: `ouro move <agent> here`. From then on, that machine runs only the agents it claimed.
 3. Run `ouro up` on that machine and check `ouro status`: every agent shows `home: this machine`, `home: <machine>, not run here`, or `no home` with the claim command.
 

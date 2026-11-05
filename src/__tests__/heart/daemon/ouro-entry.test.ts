@@ -6,6 +6,21 @@ describe("ouro CLI entrypoint", () => {
     vi.unstubAllGlobals()
   })
 
+  it("keeps owner administration machine-scoped before owner validation", async () => {
+    vi.resetModules()
+    const runOuroCli = vi.fn(async () => "ok")
+    const emitNervesEvent = vi.fn()
+    const configureDaemonRuntimeLogger = vi.fn()
+    vi.doMock("../../../heart/daemon/daemon-cli", () => ({ runOuroCli }))
+    vi.doMock("../../../nerves/runtime", () => ({ emitNervesEvent }))
+    vi.doMock("../../../heart/daemon/runtime-logging", () => ({ configureDaemonRuntimeLogger }))
+    vi.spyOn(process, "argv", "get").mockReturnValue(["node", "ouro-entry.js", "shepherd", "status", "--agent", "missing"])
+    await import("../../../heart/daemon/ouro-entry")
+    await Promise.resolve()
+    expect(configureDaemonRuntimeLogger).toHaveBeenCalledWith("ouro", { machine: true })
+    expect(runOuroCli).toHaveBeenCalledWith(["shepherd", "status", "--agent", "missing"])
+  })
+
   it("invokes runOuroCli with argv args and emits startup event", async () => {
     vi.resetModules()
 

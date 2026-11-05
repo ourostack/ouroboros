@@ -11,6 +11,7 @@ import {
   sanitizeProviderMessages,
   type SessionEnvelope,
   type SessionEvent,
+  type SessionEventOutbound,
   type SessionIngressRelations,
 } from "../heart/session-events"
 import type { StructuredOutput } from "../heart/structured-output"
@@ -369,13 +370,26 @@ export function saveSession(
   })
 }
 
-export function appendSyntheticAssistantMessage(filePath: string, content: string, lease?: SessionTurnLease): boolean {
+/**
+ * Appends an assistant message the agent did not produce in this session's own turn. With `createIfMissing`, a missing
+ * session starts as an empty envelope. With `outbound`, a delivery already recorded here is not recorded again.
+ */
+export function appendSyntheticAssistantMessage(
+  filePath: string,
+  content: string,
+  lease?: SessionTurnLease,
+  options: { outbound?: SessionEventOutbound; createIfMissing?: boolean } = {},
+): boolean {
   try {
     return withMutationLease(filePath, lease, (owned) => {
-      if (!fs.existsSync(filePath)) return false
-      const envelope = loadSessionEnvelopeFile(filePath)
+      const recordedAt = new Date().toISOString()
+      const exists = fs.existsSync(filePath)
+      if (!exists && !options.createIfMissing) return false
+      const envelope = exists ? loadSessionEnvelopeFile(filePath) : emptySessionEnvelope(recordedAt)
       if (!envelope) return false
-      const updated = appendSyntheticAssistantEvent(envelope, content, new Date().toISOString())
+      const deliveryId = options.outbound?.deliveryId
+      if (deliveryId && envelope.events.some((event) => event.provenance.outbound?.deliveryId === deliveryId)) return true
+      const updated = appendSyntheticAssistantEvent(envelope, content, recordedAt, options.outbound)
       writeSessionEnvelopeUnderLease(filePath, updated, owned)
       emitNervesEvent({
         component: "mind",
@@ -388,6 +402,19 @@ export function appendSyntheticAssistantMessage(filePath: string, content: strin
   } catch {
     return false
   }
+}
+
+function emptySessionEnvelope(recordedAt: string): SessionEnvelope {
+  return buildCanonicalSessionEnvelope({
+    existing: null,
+    previousMessages: [],
+    currentMessages: [],
+    trimmedMessages: [],
+    recordedAt,
+    lastUsage: null,
+    state: null,
+    projectionBasis: { maxTokens: null, contextMargin: null, inputTokens: null },
+  }).envelope
 }
 
 export function loadSession(filePath: string): SessionData | null {

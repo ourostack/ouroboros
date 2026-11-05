@@ -250,6 +250,27 @@ describe("loadAgentConfig", () => {
     process.argv = ["node", "cli-entry.js", "--agent", "ouroboros"]
   })
 
+  it.each([
+    { input: { enabled: true, checkInMinutes: 30 }, want: { enabled: true, checkInMinutes: 30 } },
+    { input: { enabled: true, notify: "off", checkInMinutes: 0 }, want: { enabled: true, notify: "off", checkInMinutes: 0 } },
+  ])("preserves Shepherd cadence independently of notice policy: $input", async ({ input, want }) => {
+    vi.mocked(fs.readFileSync).mockReturnValue(JSON.stringify({
+      version: 2, enabled: true,
+      humanFacing: { provider: "anthropic", model: "test" },
+      agentFacing: { provider: "anthropic", model: "test" },
+      phrases: { thinking: ["t"], tool: ["t"], followup: ["f"] },
+      senses: { shepherd: input },
+    }))
+    const { loadAgentConfig, resetIdentity } = await import("../../heart/identity")
+    resetIdentity()
+    expect(loadAgentConfig().senses?.shepherd).toEqual(want)
+  })
+
+  it.each([29, 1441, 30.5, "60", null, false])("rejects invalid Shepherd cadence instead of dropping it: %j", async value => {
+    const { normalizeSenses } = await import("../../heart/identity")
+    expect(() => normalizeSenses({ shepherd: { enabled: true, checkInMinutes: value } }, "/test/agent.json")).toThrow("checkInMinutes")
+  })
+
   it("reads and parses agent.json schema", async () => {
     vi.mocked(fs.readFileSync).mockReturnValue(
       JSON.stringify({

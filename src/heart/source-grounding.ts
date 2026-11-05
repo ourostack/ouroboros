@@ -56,13 +56,21 @@ export const LABEL_WORDS = new Set([
 ])
 /** Words that read as names but are not about a work: the house, the tools it uses, months, weekdays, common brands and services. */
 export const HOUSE_VOCABULARY = new Set([
-  "ari", "butler", "claude", "code", "sanctuary", "jellyfin", "sonarr", "radarr", "prowlarr", "jellyseerr", "calibre", "books", "telegram", "unraid", "docker",
-  "mendelow", "cloud", "pocketbook", "astraweb", "usenet", "sabnzbd", "bazarr", "tmdb", "tvdb", "libgen", "plex", "github", "google", "apple", "amazon", "netflix",
+  "butler", "claude", "code", "sanctuary", "jellyfin", "sonarr", "radarr", "prowlarr", "jellyseerr", "calibre", "books", "telegram", "unraid", "docker",
+  "cloud", "pocketbook", "astraweb", "usenet", "sabnzbd", "bazarr", "tmdb", "tvdb", "libgen", "plex", "github", "google", "apple", "amazon", "netflix",
   "hulu", "disney", "youtube", "spotify", "kindle", "kobo", "goodreads", "audible", "python", "javascript", "typescript", "node", "lodash", "vitest", "react",
   "linux", "windows", "macos", "android", "chrome", "firefox", "safari", "slack", "discord", "wikipedia", "english", "ouro", "ouroboros", "a2a", "radarr", "http", "https", "calibre-web", "readarr", "lidarr", "overseerr", "tautulli", "sabnzbd", "deluge", "delugevpn", "binhex",
   "january", "february", "march", "april", "may", "june", "july", "august", "september", "october", "november", "december",
   "monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday",
 ])
+/** The running house's own names (owner, Butler, household), added at runtime from house/house.json so no household is named in source. */
+const RUNTIME_HOUSE_VOCABULARY = new Set<string>()
+export function addHouseVocabulary(names: readonly string[]): void {
+  for (const name of names) for (const word of name.toLowerCase().match(/\p{L}+/gu) ?? []) RUNTIME_HOUSE_VOCABULARY.add(word)
+}
+function isHouseWord(lower: string): boolean {
+  return HOUSE_VOCABULARY.has(lower) || RUNTIME_HOUSE_VOCABULARY.has(lower)
+}
 /** Status verbs and media nouns that open or fill ordinary replies about media work ("Added the show Silo. Season 1 is grabbing now."): never names, wherever they sit. */
 export const EXEMPT_WORDS = new Set([
   "added", "adding", "found", "finding", "sent", "sending", "searching", "searched", "grabbing", "grabbed", "grab", "season", "seasons", "episode", "episodes", "queued", "queueing",
@@ -111,6 +119,11 @@ export function mentions(haystack: string, name: string): boolean {
   return new RegExp(`(?<![\\p{L}\\p{N}])${escapeRegExp(name)}(?![\\p{L}\\p{N}])`, "iu").test(haystack)
 }
 
+/** Case-sensitive whole word: the text uses this word in lowercase ("the download client"), so it is an ordinary word there, not a name. */
+function usesLowercase(text: string, name: string): boolean {
+  return new RegExp(`(?<![\\p{L}\\p{N}])${escapeRegExp(name.toLowerCase())}(?![\\p{L}\\p{N}])`, "u").test(text)
+}
+
 /** Ordinary sentence openers that strict mode still does not take for names. */
 export const STRICT_OPENERS = new Set("too mock very just same such quite rather really kind sort bit less fairly mostly almost simply much little big small high low hard pure plain cheap hmm hm well okay ok yes yeah sure right also great nice cool done sorry thanks thank perfect fine good alright first second third then now so short quick".split(" "))
 const STRICT_SIGN = /^(?:\s*[,:\u2014\u2013]|\s+(?:if|for)\s)/
@@ -130,7 +143,7 @@ export function candidateNames(text: string, strict = false): string[] {
     if (word.length < MIN_NAME_LENGTH) continue
     if (word.length <= MAX_ACRONYM_LENGTH && word === word.toUpperCase()) continue
     const lower = word.toLowerCase()
-    if (lower === "the" || CONTRACTION.test(word) || HOUSE_VOCABULARY.has(lower) || EXEMPT_WORDS.has(lower) || seen.has(lower)) continue
+    if (lower === "the" || CONTRACTION.test(word) || isHouseWord(lower) || EXEMPT_WORDS.has(lower) || seen.has(lower)) continue
     const before = text.slice(0, match.index).replace(/[ \t"'“‘(\[*_#>-]+$/u, "")
     const startsSentence = before === "" || /[.!?:\n]$/.test(before)
     const after = text.slice(match.index! + match[0].length)
@@ -154,11 +167,12 @@ export function candidateNames(text: string, strict = false): string[] {
  * The one name finder: the runtime check below and the replay gate (which runs this file from the shipped release) both call it.
  * Italic actions are blanked first. `strict` is set when the person asked for names. `prose` adds lowercase names in plain prose,
  * for a reply written before any lookup. `reference` is text whose names count in the reply in any case: a name it holds that the
- * reply typed in lowercase ("eithan" for "Eithan") is still a name.
+ * reply typed in lowercase ("eithan" for "Eithan") is still a name, unless the reference itself also uses it as a lowercase word.
  */
 export function namesIn(text: string, options: { strict?: boolean; prose?: boolean; reference?: string } = {}): string[] {
   const body = text.replace(ITALIC_ACTION, (action) => " ".repeat(action.length))
-  const referenced = options.reference ? candidateNames(options.reference).filter((name) => mentions(body, name)) : []
+  const reference = options.reference
+  const referenced = reference ? candidateNames(reference).filter((name) => mentions(body, name) && !usesLowercase(reference, name)) : []
   const found = [...candidateNames(body, options.strict), ...lowercaseListNames(body), ...(options.prose ? lowercaseProseNames(body) : []), ...referenced]
   return found.filter((name, index) => found.findIndex((other) => other.toLowerCase() === name.toLowerCase()) === index)
 }
@@ -173,7 +187,7 @@ export function lowercaseEmphasisNames(text: string): string[] {
   for (const phrase of phrases) {
     if (!EMPHASIS_PHRASE.test(phrase) || SLUG.test(phrase)) continue
     const words = phrase.split(" ")
-    const stop = words.some((word) => word.length < MIN_NAME_LENGTH || COMMON_STARTERS.has(word) || EXEMPT_WORDS.has(word) || HOUSE_VOCABULARY.has(word) || LABEL_WORDS.has(word) || LOWERCASE_LIST_STOP.has(word) || EMPHASIS_STOP.has(word))
+    const stop = words.some((word) => word.length < MIN_NAME_LENGTH || COMMON_STARTERS.has(word) || EXEMPT_WORDS.has(word) || isHouseWord(word) || LABEL_WORDS.has(word) || LOWERCASE_LIST_STOP.has(word) || EMPHASIS_STOP.has(word))
     if (!stop && !names.some((name) => name.toLowerCase() === phrase)) names.push(phrase)
   }
   return names
@@ -208,7 +222,7 @@ export function lowercaseListNames(text: string): string[] {
   const names: string[] = []
   for (const intro of text.matchAll(LOWERCASE_LIST_INTRO)) {
     const items = intro[1]!.split(/,|;|\band\b|\bor\b/i).map((item) => item.trim().split(/\s+/).slice(0, 2).join(" ")).map((item) => (/\s/.test(item) ? item.split(" ")[0]! : item))
-    const words = items.filter((item) => LOWERCASE_LIST_ITEM.test(item) && !COMMON_STARTERS.has(item) && !LOWERCASE_LIST_STOP.has(item) && !HOUSE_VOCABULARY.has(item))
+    const words = items.filter((item) => LOWERCASE_LIST_ITEM.test(item) && !COMMON_STARTERS.has(item) && !LOWERCASE_LIST_STOP.has(item) && !isHouseWord(item))
     if (words.length >= 2) names.push(...words)
   }
   return [...new Set(names)]
@@ -220,7 +234,7 @@ export function lowercaseListNames(text: string): string[] {
  */
 export function lowercaseProseNames(text: string): string[] {
   const names: string[] = []
-  const nameLike = (word: string): boolean => LOWERCASE_LIST_ITEM.test(word) && !COMMON_STARTERS.has(word) && !EXEMPT_WORDS.has(word) && !HOUSE_VOCABULARY.has(word)
+  const nameLike = (word: string): boolean => LOWERCASE_LIST_ITEM.test(word) && !COMMON_STARTERS.has(word) && !EXEMPT_WORDS.has(word) && !isHouseWord(word)
     && !LABEL_WORDS.has(word) && !LOWERCASE_LIST_STOP.has(word) && !EMPHASIS_STOP.has(word) && !SLUG.test(word)
   for (const intro of text.matchAll(PROSE_LIST_INTRO)) {
     const items = intro[1]!.split(/\s*,\s*(?:and\s+|or\s+)?|\s+and\s+|\s+or\s+/).map((item) => item.trim()).filter(Boolean)
@@ -272,7 +286,7 @@ export function sourceGroundingFinding(input: { answer: string; userText: string
         : `${named} do not appear in anything you looked up this turn, so they may be made up. check them against the source you read, drop the ones it does not support, or look them up, then settle again.`,
     }
   }
-  const unsourced = names.filter((name) => mentions(input.userText, name) && !mentions(lookedUp, name) && claimsSomethingAbout(input.answer, name))
+  const unsourced = names.filter((name) => mentions(input.userText, name) && !mentions(lookedUp, name) && !mentions(houseRead, name) && !mentions(otherRead, name) && claimsSomethingAbout(input.answer, name))
   if (answerCue && lookups.length === 0 && unsourced.length > 0) {
     return {
       kind: "unsourced_claim", names: unsourced, lookups: 0,

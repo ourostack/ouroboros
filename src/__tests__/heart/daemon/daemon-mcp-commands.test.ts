@@ -34,6 +34,7 @@ describe("daemon mcp command handlers", () => {
     vi.restoreAllMocks()
     vi.doUnmock("../../../repertoire/mcp-manager")
     vi.doUnmock("../../../senses/shared-turn")
+    vi.doUnmock("../../../senses/shepherd/feedback-submit")
   })
 
   function makeDaemonOptions(socketPath: string) {
@@ -65,6 +66,22 @@ describe("daemon mcp command handlers", () => {
       },
     }
   }
+
+  it("routes native feedback and its status through dedicated handlers rather than a generic agent turn", async () => {
+    const receipt = { id: "feedback:11111111-1111-4111-8111-111111111111", receipt: "Orchid: received; Teams follow-up queued.", state: "pending" }
+    vi.doMock("../../../senses/shepherd/feedback-submit", () => ({
+      executeFeedbackCommand: async (command: { kind: string }) => ({ ok: true, message: receipt.receipt,
+        data: { ...receipt, operation: command.kind } }),
+    }))
+    const { OuroDaemon } = await import("../../../heart/daemon/daemon")
+    const daemon = new OuroDaemon(makeDaemonOptions(tmpSocketPath("daemon-feedback")) as ConstructorParameters<typeof OuroDaemon>[0])
+    const common = { agent: "orchid", friendId: "owner" }
+    const submitted = await daemon.handleCommand({ kind: "agent.shepherdFeedback", ...common,
+      origin: { tty: "/dev/ttys001" }, submission: { requestId: "11111111-1111-4111-8111-111111111111", feedback: "You should have caught this." } })
+    expect(submitted).toEqual({ ok: true, message: receipt.receipt, data: { ...receipt, operation: "agent.shepherdFeedback" } })
+    const status = await daemon.handleCommand({ kind: "agent.shepherdFeedbackStatus", ...common, requestId: "11111111-1111-4111-8111-111111111111" })
+    expect(status.data).toEqual({ ...receipt, operation: "agent.shepherdFeedbackStatus" })
+  })
 
   it("mcp.list returns tool data from the shared MCP manager", async () => {
     const mockManager = {

@@ -100,7 +100,7 @@ describe("mailroom smtp ingress", () => {
     const rootDir = tempDir()
     const { registry } = provisionMailboxRegistry({
       agentId: "slugger",
-      ownerEmail: "ari@mendelow.me",
+      ownerEmail: "owner@example.test",
       source: "hey",
     })
     const store = new FileMailroomStore({ rootDir })
@@ -109,7 +109,7 @@ describe("mailroom smtp ingress", () => {
 
     const rejected = await smtpSession(port, [
       "HELO localhost\r\n",
-      "MAIL FROM:<ari@mendelow.me>\r\n",
+      "MAIL FROM:<owner@example.test>\r\n",
       "RCPT TO:<unknown@ouro.bot>\r\n",
       "QUIT\r\n",
     ])
@@ -117,10 +117,10 @@ describe("mailroom smtp ingress", () => {
 
     const accepted = await smtpSession(port, [
       "HELO localhost\r\n",
-      "MAIL FROM:<ari@mendelow.me>\r\n",
-      "RCPT TO:<me.mendelow.ari.slugger@ouro.bot>\r\n",
+      "MAIL FROM:<owner@example.test>\r\n",
+      "RCPT TO:<test.example.owner.slugger@ouro.bot>\r\n",
       "DATA\r\n",
-      "From: Ari <ari@mendelow.me>\r\nTo: me.mendelow.ari.slugger@ouro.bot\r\nSubject: SMTP proof\r\n\r\nHello Slugger.\r\n.\r\n",
+      "From: Ari <owner@example.test>\r\nTo: test.example.owner.slugger@ouro.bot\r\nSubject: SMTP proof\r\n\r\nHello Slugger.\r\n.\r\n",
       "QUIT\r\n",
     ])
     expect(accepted).toContain("250")
@@ -129,9 +129,9 @@ describe("mailroom smtp ingress", () => {
     const nullSender = await smtpSession(port, [
       "HELO localhost\r\n",
       "MAIL FROM:<>\r\n",
-      "RCPT TO:<me.mendelow.ari.slugger@ouro.bot>\r\n",
+      "RCPT TO:<test.example.owner.slugger@ouro.bot>\r\n",
       "DATA\r\n",
-      "From: Mailer Daemon <postmaster@example.com>\r\nTo: me.mendelow.ari.slugger@ouro.bot\r\nSubject: Null sender\r\n\r\nDelivery status.\r\n.\r\n",
+      "From: Mailer Daemon <postmaster@example.com>\r\nTo: test.example.owner.slugger@ouro.bot\r\nSubject: Null sender\r\n\r\nDelivery status.\r\n.\r\n",
       "QUIT\r\n",
     ])
     expect(nullSender).toContain("250")
@@ -160,7 +160,7 @@ describe("mailroom smtp ingress", () => {
   it("surfaces data handling failures", async () => {
     const { registry } = provisionMailboxRegistry({
       agentId: "slugger",
-      ownerEmail: "ari@mendelow.me",
+      ownerEmail: "owner@example.test",
       source: "hey",
     })
     const server = createMailroomSmtpServer({
@@ -171,10 +171,10 @@ describe("mailroom smtp ingress", () => {
     const port = await listen(server)
     const transcript = await smtpSession(port, [
       "HELO localhost\r\n",
-      "MAIL FROM:<ari@mendelow.me>\r\n",
-      "RCPT TO:<me.mendelow.ari.slugger@ouro.bot>\r\n",
+      "MAIL FROM:<owner@example.test>\r\n",
+      "RCPT TO:<test.example.owner.slugger@ouro.bot>\r\n",
       "DATA\r\n",
-      "From: Ari <ari@mendelow.me>\r\n\r\nToo large.\r\n.\r\n",
+      "From: Ari <owner@example.test>\r\n\r\nToo large.\r\n.\r\n",
       "QUIT\r\n",
     ])
     expect(transcript).toMatch(/4\d\d|5\d\d/)
@@ -184,7 +184,7 @@ describe("mailroom smtp ingress", () => {
   it("wraps non-Error store failures from SMTP DATA handling", async () => {
     const { registry } = provisionMailboxRegistry({
       agentId: "slugger",
-      ownerEmail: "ari@mendelow.me",
+      ownerEmail: "owner@example.test",
       source: "hey",
     })
     const throwingStore = {
@@ -211,10 +211,10 @@ describe("mailroom smtp ingress", () => {
     const port = await listen(server)
     const transcript = await smtpSession(port, [
       "HELO localhost\r\n",
-      "MAIL FROM:<ari@mendelow.me>\r\n",
-      "RCPT TO:<me.mendelow.ari.slugger@ouro.bot>\r\n",
+      "MAIL FROM:<owner@example.test>\r\n",
+      "RCPT TO:<test.example.owner.slugger@ouro.bot>\r\n",
       "DATA\r\n",
-      "From: Ari <ari@mendelow.me>\r\n\r\nStore fails.\r\n.\r\n",
+      "From: Ari <owner@example.test>\r\n\r\nStore fails.\r\n.\r\n",
       "QUIT\r\n",
     ])
     expect(transcript).toMatch(/4\d\d|5\d\d/)

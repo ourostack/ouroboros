@@ -41,6 +41,8 @@ import { createSanctuaryInteractiveControl, sanctuaryInteractiveControlReady } f
 import { sendTelegramExternalEventDecision } from "../../senses/telegram"
 
 afterEach(() => {
+  vi.useRealTimers()
+  vi.unstubAllEnvs()
   vi.restoreAllMocks()
   vi.clearAllMocks()
   fs.rmSync(mocks.root, { recursive: true, force: true })
@@ -48,6 +50,9 @@ afterEach(() => {
 
 describe("D-007 real one-shot disposal caller", () => {
   it.each(["accepted", "failed"] as const)("preserves the resident through %s delivery and native transient-app cleanup", async (outcome) => {
+    // Owner messages are held 23:00-08:00 Los Angeles time (proactive pacing); pin midday there so this test passes at any hour and on any machine.
+    vi.stubEnv("TZ", "America/Los_Angeles")
+    vi.useFakeTimers({ toFake: ["Date"], shouldAdvanceTime: true, now: new Date("2026-10-20T19:00:00.000Z") })
     mocks.root = fs.mkdtempSync("/tmp/d007-send-")
     fs.writeFileSync(path.join(mocks.root, "tool-profiles.json"), JSON.stringify({ version: 2, profiles: {
       "sanctuary-owner": { version: 1, contextScopes: ["household.private"], toolNames: [], effectScopes: ["telegram.owner_event", "telegram.proactive"] },
@@ -74,7 +79,7 @@ describe("D-007 real one-shot disposal caller", () => {
     try {
       const delivery = sendTelegramExternalEventDecision("sanctuary", { source: "fixture", eventId: "owned", generation: 1, text: "Fixture receipt." })
       if (outcome === "failed") await expect(delivery).rejects.toThrow("isolated transport failure")
-      else await expect(delivery).resolves.toBeUndefined()
+      else await expect(delivery).resolves.toEqual({ status: "sent", effectKey: 'external-event:["fixture","owned",1]' })
       expect(mocks.request).toHaveBeenCalledTimes(1)
       expect(mocks.request.mock.calls[0]![0]).toBe("sendMessage")
       expect(mocks.request.mock.calls[0]![1]).toMatchObject({ chat_id: "42", text: "Fixture receipt.", parse_mode: "HTML" })

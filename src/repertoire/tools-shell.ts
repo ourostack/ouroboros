@@ -1,4 +1,4 @@
-import { execSync } from "child_process";
+import { exec } from "child_process";
 import { spawnBackgroundShell, getShellSession, listShellSessions, tailShellSession, detectDestructivePatterns, type ShellSessionOwner } from "./shell-sessions";
 import { getAgentName, getAgentRoot, loadAgentConfig } from "../heart/identity";
 import { emitNervesEvent } from "../nerves/runtime";
@@ -48,7 +48,7 @@ export const shellToolDefinitions: ToolDefinition[] = [
       }
       return { kind: "not_required" }
     },
-    handler: (a, ctx) => {
+    handler: async (a, ctx) => {
       assertRelationshipToolOwner(ctx)
       // Destructive pattern detection (friction, not a block)
       const destructivePatterns = detectDestructivePatterns(a.command)
@@ -84,9 +84,12 @@ export const shellToolDefinitions: ToolDefinition[] = [
       }
       const baseTimeout = requestedTimeout > 0 ? requestedTimeout : configDefault
       const timeout = Math.min(baseTimeout, MAX_TIMEOUT)
-      const output = execSync(a.command, {
-        encoding: "utf-8",
-        timeout,
+      const output = await new Promise<string>((resolve, reject) => {
+        const child = exec(a.command, { encoding: "utf-8", timeout }, (error, stdout, stderr) => {
+          if (error) reject(Object.assign(error, { stdout, stderr }))
+          else resolve(stdout)
+        })
+        child.stdin?.end()
       })
 
       if (destructivePatterns.length > 0) {

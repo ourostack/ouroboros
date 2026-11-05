@@ -1000,17 +1000,17 @@ describe("hosted mail tools", () => {
       compartmentKind: "delegated",
       compartmentId: "grant_hey",
       grantId: "grant_hey",
-      ownerEmail: "ari@mendelow.me",
+      ownerEmail: "owner@example.test",
       source: "hey",
-      recipient: "me.mendelow.ari.slugger@ouro.bot",
-      envelope: { mailFrom: "travel@example.com", rcptTo: ["me.mendelow.ari.slugger@ouro.bot"] },
+      recipient: "test.example.owner.slugger@ouro.bot",
+      envelope: { mailFrom: "travel@example.com", rcptTo: ["test.example.owner.slugger@ouro.bot"] },
       trustReason: "delegated source grant hey historical mbox import",
       rawObject: "raw/mail_merge_delegated_newer.json",
       receivedAt: "2026-04-24T18:35:00.000Z",
     }
     const delegatedEnvelope: PrivateMailEnvelope = {
       from: ["travel@example.com"],
-      to: ["me.mendelow.ari.slugger@ouro.bot"],
+      to: ["test.example.owner.slugger@ouro.bot"],
       cc: [],
       subject: "Delegated newer doc",
       text: "Delegated newer doc body.",
@@ -1062,10 +1062,10 @@ describe("hosted mail tools", () => {
       compartmentKind: "delegated",
       compartmentId: "grant_hey",
       grantId: "grant_hey",
-      ownerEmail: "ari@mendelow.me",
+      ownerEmail: "owner@example.test",
       source: "hey",
-      recipient: "me.mendelow.ari.slugger@ouro.bot",
-      envelope: { mailFrom: "support@hey.com", rcptTo: ["me.mendelow.ari.slugger@ouro.bot"] },
+      recipient: "test.example.owner.slugger@ouro.bot",
+      envelope: { mailFrom: "support@hey.com", rcptTo: ["test.example.owner.slugger@ouro.bot"] },
       placement: "imbox",
       trustReason: "delegated source grant hey historical mbox import",
       rawObject: "raw/mail_trip_cached.json",
@@ -1085,7 +1085,7 @@ describe("hosted mail tools", () => {
     }
     const cachedEnvelope: PrivateMailEnvelope = {
       from: ["support@hey.com"],
-      to: ["me.mendelow.ari.slugger@ouro.bot"],
+      to: ["test.example.owner.slugger@ouro.bot"],
       cc: [],
       subject: "Basel stay 2433516539",
       text: "Hotel Marthof stay for Basel confirmation 2433516539 with updated arrival details.",
@@ -1154,10 +1154,10 @@ describe("hosted mail tools", () => {
       compartmentKind: "delegated",
       compartmentId: "grant_hey",
       grantId: "grant_hey",
-      ownerEmail: "ari@mendelow.me",
+      ownerEmail: "owner@example.test",
       source: "hey",
-      recipient: "me.mendelow.ari.slugger@ouro.bot",
-      envelope: { mailFrom: "support@hey.com", rcptTo: ["me.mendelow.ari.slugger@ouro.bot"] },
+      recipient: "test.example.owner.slugger@ouro.bot",
+      envelope: { mailFrom: "support@hey.com", rcptTo: ["test.example.owner.slugger@ouro.bot"] },
       placement: "imbox",
       trustReason: "delegated source grant hey historical mbox import",
       rawObject: "raw/mail_trip_cached_default_reason.json",
@@ -1177,7 +1177,7 @@ describe("hosted mail tools", () => {
     }
     const cachedEnvelope: PrivateMailEnvelope = {
       from: ["support@hey.com"],
-      to: ["me.mendelow.ari.slugger@ouro.bot"],
+      to: ["test.example.owner.slugger@ouro.bot"],
       cc: [],
       subject: "Basel stay 2433516539",
       text: "Hotel Marthof stay for Basel confirmation 2433516539 with updated arrival details.",
@@ -1237,22 +1237,22 @@ describe("hosted mail tools", () => {
     const agentRoot = path.join(process.env.HOME!, "AgentBundles", "slugger.ouro")
     const backgroundDir = path.join(agentRoot, "state", "background-operations")
     const registryPath = path.join(agentRoot, "state", "mailroom", "registry.json")
-    const archivePath = path.join(process.env.HOME!, "Downloads", "HEY-emails-ari-mendelow-me.mbox")
-    const olderArchivePath = path.join(process.env.HOME!, "Downloads", "HEY-emails-ari-mendelow-me-older.mbox")
+    const archivePath = path.join(process.env.HOME!, "Downloads", "HEY-emails-owner-example-test.mbox")
+    const olderArchivePath = path.join(process.env.HOME!, "Downloads", "HEY-emails-owner-example-test-older.mbox")
     fs.mkdirSync(path.dirname(registryPath), { recursive: true })
     fs.mkdirSync(path.dirname(archivePath), { recursive: true })
     fs.mkdirSync(backgroundDir, { recursive: true })
 
     const { registry } = provisionMailboxRegistry({
       agentId: "slugger",
-      ownerEmail: "ari@mendelow.me",
+      ownerEmail: "owner@example.test",
       source: "hey",
     })
     fs.writeFileSync(registryPath, `${JSON.stringify(registry, null, 2)}\n`, "utf-8")
     fs.writeFileSync(archivePath, [
       "From MAILER-DAEMON Thu Jan  1 00:00:00 1970",
       "From: Hotel Marthof <reservations@example.com>",
-      "To: Slugger <me.mendelow.ari.slugger@ouro.bot>",
+      "To: Slugger <test.example.owner.slugger@ouro.bot>",
       "Date: Wed, 24 Apr 2026 10:00:00 -0700",
       "Subject: Basel stay 2433516539",
       "",
@@ -1262,7 +1262,7 @@ describe("hosted mail tools", () => {
     fs.writeFileSync(olderArchivePath, [
       "From MAILER-DAEMON Thu Jan  1 00:00:00 1970",
       "From: Old Booking <archive@example.com>",
-      "To: Slugger <me.mendelow.ari.slugger@ouro.bot>",
+      "To: Slugger <test.example.owner.slugger@ouro.bot>",
       "Date: Tue, 23 Apr 2026 10:00:00 -0700",
       "Subject: Older delegated archive",
       "",
@@ -1283,7 +1283,7 @@ describe("hosted mail tools", () => {
       finishedAt: "2026-04-24T18:02:00.000Z",
       spec: {
         filePath: archivePath,
-        ownerEmail: "ari@mendelow.me",
+        ownerEmail: "owner@example.test",
         source: "hey",
         fileModifiedAt: "2026-04-24T18:01:00.000Z",
       },
@@ -1307,7 +1307,7 @@ describe("hosted mail tools", () => {
       finishedAt: "2026-04-23T18:02:00.000Z",
       spec: {
         filePath: olderArchivePath,
-        ownerEmail: "ari@mendelow.me",
+        ownerEmail: "owner@example.test",
         source: "hey",
         fileModifiedAt: "2026-04-23T18:01:00.000Z",
       },
@@ -1411,21 +1411,21 @@ describe("hosted mail tools", () => {
     const agentRoot = path.join(process.env.HOME!, "AgentBundles", "slugger.ouro")
     const backgroundDir = path.join(agentRoot, "state", "background-operations")
     const registryPath = path.join(agentRoot, "state", "mailroom", "registry.json")
-    const archivePath = path.join(process.env.HOME!, "Downloads", "HEY-emails-ari-mendelow-me.mbox")
+    const archivePath = path.join(process.env.HOME!, "Downloads", "HEY-emails-owner-example-test.mbox")
     fs.mkdirSync(path.dirname(registryPath), { recursive: true })
     fs.mkdirSync(path.dirname(archivePath), { recursive: true })
     fs.mkdirSync(backgroundDir, { recursive: true })
 
     const { registry } = provisionMailboxRegistry({
       agentId: "slugger",
-      ownerEmail: "ari@mendelow.me",
+      ownerEmail: "owner@example.test",
       source: "hey",
     })
     fs.writeFileSync(registryPath, `${JSON.stringify(registry, null, 2)}\n`, "utf-8")
     fs.writeFileSync(archivePath, [
       "From aerlingus@example.com Fri Apr 05 10:00:00 2026",
       "From: Aer Lingus <support@aerlingus.com>",
-      "To: Slugger <me.mendelow.ari.slugger@ouro.bot>",
+      "To: Slugger <test.example.owner.slugger@ouro.bot>",
       "Date: Fri, 05 Apr 2026 10:00:00 -0700",
       "Subject: Aer Lingus Confirmation - Booking Ref: 24LEBB",
       "",
@@ -1446,7 +1446,7 @@ describe("hosted mail tools", () => {
       finishedAt: "2026-04-24T18:42:00.000Z",
       spec: {
         filePath: archivePath,
-        ownerEmail: "ari@mendelow.me",
+        ownerEmail: "owner@example.test",
         source: "hey",
         fileModifiedAt: "2026-04-24T18:41:00.000Z",
       },
@@ -1878,7 +1878,7 @@ describe("hosted mail tools", () => {
 
     const { registry, keys } = provisionMailboxRegistry({
       agentId: "slugger",
-      ownerEmail: "ari@mendelow.me",
+      ownerEmail: "owner@example.test",
       source: "hey",
     })
     const fileStore = new FileMailroomStore({ rootDir: tempDir() })
@@ -1887,11 +1887,11 @@ describe("hosted mail tools", () => {
       store: fileStore,
       envelope: {
         mailFrom: "rebook@example.com",
-        rcptTo: ["me.mendelow.ari.slugger@ouro.bot"],
+        rcptTo: ["test.example.owner.slugger@ouro.bot"],
       },
       rawMime: Buffer.from([
         "From: Rebook Desk <rebook@example.com>",
-        "To: Slugger <me.mendelow.ari.slugger@ouro.bot>",
+        "To: Slugger <test.example.owner.slugger@ouro.bot>",
         "Subject: Replacement outbound REBOOK42",
         "",
         "Replacement outbound flight evidence lives here.",
@@ -1903,11 +1903,11 @@ describe("hosted mail tools", () => {
       store: fileStore,
       envelope: {
         mailFrom: "hotel@example.com",
-        rcptTo: ["me.mendelow.ari.slugger@ouro.bot"],
+        rcptTo: ["test.example.owner.slugger@ouro.bot"],
       },
       rawMime: Buffer.from([
         "From: Hotel Desk <hotel@example.com>",
-        "To: Slugger <me.mendelow.ari.slugger@ouro.bot>",
+        "To: Slugger <test.example.owner.slugger@ouro.bot>",
         "Subject: Italy lodging",
         "",
         "Italy lodging evidence lives here.",
@@ -1925,7 +1925,7 @@ describe("hosted mail tools", () => {
       const rebook = message.envelope.mailFrom.includes("rebook")
       return {
         from: ["cache@example.com"],
-        to: ["me.mendelow.ari.slugger@ouro.bot"],
+        to: ["test.example.owner.slugger@ouro.bot"],
         cc: [],
         subject: rebook ? "Replacement outbound REBOOK42" : "Italy lodging",
         text: rebook ? "Replacement outbound flight evidence lives here." : "Italy lodging evidence lives here.",
@@ -1936,7 +1936,7 @@ describe("hosted mail tools", () => {
     }
     const staleEnvelope: PrivateMailEnvelope = {
       from: ["cache@example.com"],
-      to: ["me.mendelow.ari.slugger@ouro.bot"],
+      to: ["test.example.owner.slugger@ouro.bot"],
       cc: [],
       subject: "Stale cached travel doc",
       text: "",
@@ -2098,11 +2098,11 @@ describe("hosted mail tools", () => {
       compartmentKind: "delegated",
       compartmentId: "grant_slugger_hey",
       grantId: "grant_slugger_hey",
-      ownerEmail: "ari@mendelow.me",
-      recipient: "me.mendelow.ari.slugger@ouro.bot",
+      ownerEmail: "owner@example.test",
+      recipient: "test.example.owner.slugger@ouro.bot",
       envelope: {
         mailFrom: "travel@example.com",
-        rcptTo: ["me.mendelow.ari.slugger@ouro.bot"],
+        rcptTo: ["test.example.owner.slugger@ouro.bot"],
       },
       placement: "imbox",
       source: "hey",
@@ -2479,11 +2479,11 @@ describe("hosted mail tools", () => {
       compartmentKind: "delegated",
       compartmentId: "grant_slugger_hey",
       grantId: "grant_slugger_hey",
-      ownerEmail: "ari@mendelow.me",
-      recipient: "me.mendelow.ari.slugger@ouro.bot",
+      ownerEmail: "owner@example.test",
+      recipient: "test.example.owner.slugger@ouro.bot",
       envelope: {
         mailFrom: "legacy@example.com",
-        rcptTo: ["me.mendelow.ari.slugger@ouro.bot"],
+        rcptTo: ["test.example.owner.slugger@ouro.bot"],
       },
       placement: "imbox",
       trustReason: "delegated-source",
@@ -2768,7 +2768,7 @@ describe("hosted mail tools", () => {
     setAgentName("slugger")
     const agentRoot = path.join(homeRoot, "AgentBundles", "slugger.ouro")
     const sandboxDir = path.join(homeRoot, ".playwright-mcp")
-    const archivePath = path.join(sandboxDir, "HEY-emails-ari-mendelow-me.mbox")
+    const archivePath = path.join(sandboxDir, "HEY-emails-owner-example-test.mbox")
     fs.mkdirSync(sandboxDir, { recursive: true })
     fs.writeFileSync(archivePath, "From MAILER-DAEMON Thu Jan  1 00:00:00 1970\n", "utf-8")
     const importedAt = new Date("2026-04-24T18:01:00.000Z")
@@ -2789,7 +2789,7 @@ describe("hosted mail tools", () => {
       spec: {
         filePath: archivePath,
         fileOriginLabel: "browser sandbox (.playwright-mcp)",
-        ownerEmail: "ari@mendelow.me",
+        ownerEmail: "owner@example.test",
         source: "hey",
         fileModifiedAt: "2026-04-24T18:01:00.000Z",
       },
@@ -2803,7 +2803,7 @@ describe("hosted mail tools", () => {
 
     const { registry, keys } = provisionMailboxRegistry({
       agentId: "slugger",
-      ownerEmail: "ari@mendelow.me",
+      ownerEmail: "owner@example.test",
       source: "hey",
     })
     const store = new FileMailroomStore({ rootDir: tempDir() })
@@ -2839,7 +2839,7 @@ describe("hosted mail tools", () => {
     expect(status).toContain("mailbox: slugger@ouro.bot")
     expect(status).toContain("lane map:")
     expect(status).toContain("native: slugger@ouro.bot")
-    expect(status).toContain("delegated: ari@mendelow.me / hey -> me.mendelow.ari.slugger@ouro.bot")
+    expect(status).toContain("delegated: owner@example.test / hey -> test.example.owner.slugger@ouro.bot")
     expect(status).toContain("recent archives:")
     expect(status).toContain("[browser sandbox (.playwright-mcp)]")
     expect(status).toContain("status: imported via op_mail_import_status")
@@ -2856,8 +2856,8 @@ describe("hosted mail tools", () => {
     const agentRoot = path.join(homeRoot, "AgentBundles", "slugger.ouro")
     const downloadsDir = path.join(homeRoot, "Downloads")
     const sandboxDir = path.join(homeRoot, ".playwright-mcp")
-    const olderPath = path.join(downloadsDir, "HEY-emails-arimendelow@hey.com.mbox")
-    const newestPath = path.join(sandboxDir, "HEY-emails-ari-mendelow-me.mbox")
+    const olderPath = path.join(downloadsDir, "HEY-emails-owner@hey.example.mbox")
+    const newestPath = path.join(sandboxDir, "HEY-emails-owner-example-test.mbox")
     fs.mkdirSync(downloadsDir, { recursive: true })
     fs.mkdirSync(sandboxDir, { recursive: true })
     fs.mkdirSync(path.join(agentRoot, "state", "background-operations"), { recursive: true })
@@ -2882,7 +2882,7 @@ describe("hosted mail tools", () => {
       spec: {
         filePath: olderPath,
         fileOriginLabel: "Downloads",
-        ownerEmail: "ari@mendelow.me",
+        ownerEmail: "owner@example.test",
         source: "hey",
         fileModifiedAt: "2026-04-24T17:40:00.000Z",
       },
@@ -2908,7 +2908,7 @@ describe("hosted mail tools", () => {
       spec: {
         filePath: newestPath,
         fileOriginLabel: "browser sandbox (.playwright-mcp)",
-        ownerEmail: "ari@mendelow.me",
+        ownerEmail: "owner@example.test",
         source: "hey",
         fileModifiedAt: "2026-04-24T18:05:00.000Z",
       },
@@ -2922,7 +2922,7 @@ describe("hosted mail tools", () => {
 
     const { registry, keys } = provisionMailboxRegistry({
       agentId: "slugger",
-      ownerEmail: "ari@mendelow.me",
+      ownerEmail: "owner@example.test",
       source: "hey",
     })
     const store = new FileMailroomStore({ rootDir: tempDir() })
@@ -2965,7 +2965,7 @@ describe("hosted mail tools", () => {
     setAgentName("slugger")
     const agentRoot = path.join(homeRoot, "AgentBundles", "slugger.ouro")
     const sandboxDir = path.join(homeRoot, ".playwright-mcp")
-    const archivePath = path.join(sandboxDir, "HEY-emails-ari-mendelow-me-imported-summary-only.mbox")
+    const archivePath = path.join(sandboxDir, "HEY-emails-owner-example-test-imported-summary-only.mbox")
     fs.mkdirSync(sandboxDir, { recursive: true })
     fs.writeFileSync(archivePath, "From MAILER-DAEMON Thu Jan  1 00:00:00 1970\n", "utf-8")
     const importedAt = new Date("2026-04-24T18:01:00.000Z")
@@ -2982,7 +2982,7 @@ describe("hosted mail tools", () => {
       createdAt: "2026-04-24T18:00:30.000Z",
       updatedAt: "2026-04-24T18:02:30.000Z",
       spec: {
-        ownerEmail: "ari@mendelow.me",
+        ownerEmail: "owner@example.test",
       },
     }, null, 2)}\n`, "utf-8")
     fs.writeFileSync(path.join(agentRoot, "state", "background-operations", "op_mail_import_summary_only_imported.json"), `${JSON.stringify({
@@ -3011,7 +3011,7 @@ describe("hosted mail tools", () => {
 
     const { registry, keys } = provisionMailboxRegistry({
       agentId: "slugger",
-      ownerEmail: "ari@mendelow.me",
+      ownerEmail: "owner@example.test",
       source: "hey",
     })
     const store = new FileMailroomStore({ rootDir: tempDir() })
@@ -3100,7 +3100,7 @@ describe("hosted mail tools", () => {
     setAgentName("slugger")
     const agentRoot = path.join(homeRoot, "AgentBundles", "slugger.ouro")
     const sandboxDir = path.join(homeRoot, ".playwright-mcp")
-    const archivePath = path.join(sandboxDir, "HEY-emails-ari-mendelow-me.mbox")
+    const archivePath = path.join(sandboxDir, "HEY-emails-owner-example-test.mbox")
     fs.mkdirSync(sandboxDir, { recursive: true })
     fs.writeFileSync(archivePath, "From MAILER-DAEMON Thu Jan  1 00:00:00 1970\n", "utf-8")
     const importedAt = new Date("2026-04-24T18:01:00.000Z")
@@ -3122,7 +3122,7 @@ describe("hosted mail tools", () => {
       spec: {
         filePath: archivePath,
         fileOriginLabel: "browser sandbox (.playwright-mcp)",
-        ownerEmail: "ari@mendelow.me",
+        ownerEmail: "owner@example.test",
         source: "hey",
         fileModifiedAt: importedAt.toISOString(),
       },
@@ -3136,7 +3136,7 @@ describe("hosted mail tools", () => {
 
     const { registry, keys } = provisionMailboxRegistry({
       agentId: "slugger",
-      ownerEmail: "ari@mendelow.me",
+      ownerEmail: "owner@example.test",
       source: "hey",
     })
     const store = new FileMailroomStore({ rootDir: tempDir() })
@@ -3179,7 +3179,7 @@ describe("hosted mail tools", () => {
     setAgentName("slugger")
     const agentRoot = path.join(homeRoot, "AgentBundles", "slugger.ouro")
     const downloadsDir = path.join(homeRoot, "Downloads")
-    const archivePath = path.join(downloadsDir, "HEY-emails-arimendelow@hey.com.mbox")
+    const archivePath = path.join(downloadsDir, "HEY-emails-owner@hey.example.mbox")
     fs.mkdirSync(downloadsDir, { recursive: true })
     fs.writeFileSync(archivePath, "From MAILER-DAEMON Thu Jan  1 00:00:00 1970\n", "utf-8")
     const importedAt = new Date("2026-04-24T18:01:00.000Z")
@@ -3200,7 +3200,7 @@ describe("hosted mail tools", () => {
       spec: {
         filePath: archivePath,
         fileOriginLabel: "Downloads",
-        ownerEmail: "ari@mendelow.me",
+        ownerEmail: "owner@example.test",
         source: "hey",
         fileModifiedAt: "2026-04-24T18:01:00.000Z",
       },
@@ -3214,7 +3214,7 @@ describe("hosted mail tools", () => {
 
     const { registry, keys } = provisionMailboxRegistry({
       agentId: "slugger",
-      ownerEmail: "ari@mendelow.me",
+      ownerEmail: "owner@example.test",
       source: "hey",
     })
     const store = new FileMailroomStore({ rootDir: tempDir() })
@@ -3246,7 +3246,7 @@ describe("hosted mail tools", () => {
 
     const status = await statusTool!.handler({}, trustedContext())
     expect(status).toContain("status: imported via op_mail_import_identity_note")
-    expect(status).toContain("mapping: filename suggests arimendelow@hey.com, but this archive is bound to ari@mendelow.me / hey because delegated owner/source comes from the explicit import lane, not the local filename")
+    expect(status).toContain("mapping: filename suggests owner@hey.example, but this archive is bound to owner@example.test / hey because delegated owner/source comes from the explicit import lane, not the local filename")
   })
 
   it("ignores malformed filename email hints instead of crashing mail_status", async () => {
@@ -3276,7 +3276,7 @@ describe("hosted mail tools", () => {
       spec: {
         filePath: archivePath,
         fileOriginLabel: "Downloads",
-        ownerEmail: "ari@mendelow.me",
+        ownerEmail: "owner@example.test",
         source: "hey",
         fileModifiedAt: "2026-04-24T18:01:00.000Z",
       },
@@ -3289,7 +3289,7 @@ describe("hosted mail tools", () => {
 
     const { registry, keys } = provisionMailboxRegistry({
       agentId: "slugger",
-      ownerEmail: "ari@mendelow.me",
+      ownerEmail: "owner@example.test",
       source: "hey",
     })
     const store = new FileMailroomStore({ rootDir: tempDir() })
@@ -3330,7 +3330,7 @@ describe("hosted mail tools", () => {
     setAgentName("slugger")
     const agentRoot = path.join(homeRoot, "AgentBundles", "slugger.ouro")
     const downloadsDir = path.join(homeRoot, "Downloads")
-    const archivePath = path.join(downloadsDir, "HEY-emails-arimendelow@hey.com.mbox")
+    const archivePath = path.join(downloadsDir, "HEY-emails-owner@hey.example.mbox")
     fs.mkdirSync(downloadsDir, { recursive: true })
     fs.writeFileSync(archivePath, "From MAILER-DAEMON Thu Jan  1 00:00:00 1970\n", "utf-8")
     const importedAt = new Date("2026-04-24T18:01:00.000Z")
@@ -3364,7 +3364,7 @@ describe("hosted mail tools", () => {
 
     const { registry, keys } = provisionMailboxRegistry({
       agentId: "slugger",
-      ownerEmail: "ari@mendelow.me",
+      ownerEmail: "owner@example.test",
       source: "hey",
     })
     const store = new FileMailroomStore({ rootDir: tempDir() })
@@ -3406,7 +3406,7 @@ describe("hosted mail tools", () => {
     setAgentName("slugger")
     const agentRoot = path.join(homeRoot, "AgentBundles", "slugger.ouro")
     const sandboxDir = path.join(homeRoot, ".playwright-mcp")
-    const archivePath = path.join(sandboxDir, "HEY-emails-ari-mendelow-me-summary-only.mbox")
+    const archivePath = path.join(sandboxDir, "HEY-emails-owner-example-test-summary-only.mbox")
     fs.mkdirSync(sandboxDir, { recursive: true })
     fs.writeFileSync(archivePath, "From MAILER-DAEMON Thu Jan  1 00:00:00 1970\n", "utf-8")
     const importedAt = new Date("2026-04-24T18:01:00.000Z")
@@ -3427,7 +3427,7 @@ describe("hosted mail tools", () => {
       spec: {
         filePath: archivePath,
         fileOriginLabel: "browser sandbox (.playwright-mcp)",
-        ownerEmail: "ari@mendelow.me",
+        ownerEmail: "owner@example.test",
         fileModifiedAt: importedAt.toISOString(),
       },
       result: {
@@ -3439,7 +3439,7 @@ describe("hosted mail tools", () => {
 
     const { registry, keys } = provisionMailboxRegistry({
       agentId: "slugger",
-      ownerEmail: "ari@mendelow.me",
+      ownerEmail: "owner@example.test",
       source: "hey",
     })
     const store = new FileMailroomStore({ rootDir: tempDir() })
@@ -3470,7 +3470,7 @@ describe("hosted mail tools", () => {
     expect(statusTool).toBeTruthy()
 
     const status = await statusTool!.handler({}, trustedContext())
-    expect(status).toContain("status: ready (newer than last import via op_mail_import_summary_only); owner/source: ari@mendelow.me / unknown")
+    expect(status).toContain("status: ready (newer than last import via op_mail_import_summary_only); owner/source: owner@example.test / unknown")
     expect(status).toContain("freshness: stale-risky (newer archive discovered after the last import; re-import needed)")
     expect(status).toContain("delegated mail archive already imported earlier")
   })
@@ -3514,7 +3514,7 @@ describe("hosted mail tools", () => {
 
     const { registry, keys } = provisionMailboxRegistry({
       agentId: "slugger",
-      ownerEmail: "ari@mendelow.me",
+      ownerEmail: "owner@example.test",
       source: "hey",
     })
     const store = new FileMailroomStore({ rootDir: tempDir() })
@@ -3556,7 +3556,7 @@ describe("hosted mail tools", () => {
     setAgentName("slugger")
     const agentRoot = path.join(homeRoot, "AgentBundles", "slugger.ouro")
     const sandboxDir = path.join(homeRoot, ".playwright-mcp")
-    const archivePath = path.join(sandboxDir, "HEY-emails-ari-mendelow-me-unknown-failure.mbox")
+    const archivePath = path.join(sandboxDir, "HEY-emails-owner-example-test-unknown-failure.mbox")
     fs.mkdirSync(sandboxDir, { recursive: true })
     fs.writeFileSync(archivePath, "From MAILER-DAEMON Thu Jan  1 00:00:00 1970\n", "utf-8")
     fs.mkdirSync(path.join(agentRoot, "state", "background-operations"), { recursive: true })
@@ -3578,7 +3578,7 @@ describe("hosted mail tools", () => {
     }, null, 2)}\n`, "utf-8")
     const { keys } = provisionMailboxRegistry({
       agentId: "slugger",
-      ownerEmail: "ari@mendelow.me",
+      ownerEmail: "owner@example.test",
       source: "hey",
     })
     const store = new FileMailroomStore({ rootDir: tempDir() })
@@ -3625,7 +3625,7 @@ describe("hosted mail tools", () => {
     setAgentName("slugger")
     const { registry, keys } = provisionMailboxRegistry({
       agentId: "slugger",
-      ownerEmail: "ari@mendelow.me",
+      ownerEmail: "owner@example.test",
       source: "hey",
     })
     registry.sourceGrants[0].defaultPlacement = "screener"
@@ -3635,11 +3635,11 @@ describe("hosted mail tools", () => {
       store,
       envelope: {
         mailFrom: "travel@example.com",
-        rcptTo: ["me.mendelow.ari.slugger@ouro.bot"],
+        rcptTo: ["test.example.owner.slugger@ouro.bot"],
       },
       rawMime: Buffer.from([
         "From: Travel Desk <travel@example.com>",
-        "To: Slugger <me.mendelow.ari.slugger@ouro.bot>",
+        "To: Slugger <test.example.owner.slugger@ouro.bot>",
         "Subject: Hosted delegated sender policy non-Error read failure",
         "",
         "delegated body",
@@ -3716,7 +3716,7 @@ describe("hosted mail tools", () => {
       createdAt: "2026-04-24T18:01:00.000Z",
       updatedAt: "not-a-date",
       spec: {
-        ownerEmail: "ari@mendelow.me",
+        ownerEmail: "owner@example.test",
       },
     }, null, 2)}\n`, "utf-8")
 
@@ -3750,7 +3750,7 @@ describe("hosted mail tools", () => {
 
     const status = await statusTool!.handler({}, trustedContext())
     expect(status).toContain("- op_mail_import_source_only [running] unknown / hey :: waiting on source-only import")
-    expect(status).toContain("- op_mail_import_owner_only_invalid_ts [queued] ari@mendelow.me / unknown :: queued with stale metadata")
+    expect(status).toContain("- op_mail_import_owner_only_invalid_ts [queued] owner@example.test / unknown :: queued with stale metadata")
     expect(status.indexOf("op_mail_import_source_only [running]")).toBeLessThan(status.indexOf("op_mail_import_owner_only_invalid_ts [queued]"))
   })
 
@@ -3760,8 +3760,8 @@ describe("hosted mail tools", () => {
     setAgentName("slugger")
     const agentRoot = path.join(homeRoot, "AgentBundles", "slugger.ouro")
     const sandboxDir = path.join(homeRoot, ".playwright-mcp")
-    const failedArchivePath = path.join(sandboxDir, "HEY-emails-ari-mendelow-me-failed.mbox")
-    const runningArchivePath = path.join(sandboxDir, "HEY-emails-ari-mendelow-me-running.mbox")
+    const failedArchivePath = path.join(sandboxDir, "HEY-emails-owner-example-test-failed.mbox")
+    const runningArchivePath = path.join(sandboxDir, "HEY-emails-owner-example-test-running.mbox")
     fs.mkdirSync(sandboxDir, { recursive: true })
     fs.writeFileSync(failedArchivePath, "From MAILER-DAEMON Thu Jan  1 00:00:00 1970\n", "utf-8")
     fs.writeFileSync(runningArchivePath, "From MAILER-DAEMON Thu Jan  1 00:00:00 1970\n", "utf-8")
@@ -3781,7 +3781,7 @@ describe("hosted mail tools", () => {
       spec: {
         filePath: failedArchivePath,
         fileOriginLabel: "browser sandbox (.playwright-mcp)",
-        ownerEmail: "ari@mendelow.me",
+        ownerEmail: "owner@example.test",
         source: "hey",
         fileModifiedAt: "2026-04-24T18:01:00.000Z",
       },
@@ -3806,7 +3806,7 @@ describe("hosted mail tools", () => {
       spec: {
         filePath: runningArchivePath,
         fileOriginLabel: "browser sandbox (.playwright-mcp)",
-        ownerEmail: "ari@mendelow.me",
+        ownerEmail: "owner@example.test",
         source: "hey",
         fileModifiedAt: "2026-04-24T18:04:00.000Z",
       },
@@ -3814,7 +3814,7 @@ describe("hosted mail tools", () => {
 
     const { registry, keys } = provisionMailboxRegistry({
       agentId: "slugger",
-      ownerEmail: "ari@mendelow.me",
+      ownerEmail: "owner@example.test",
       source: "hey",
     })
     const store = new FileMailroomStore({ rootDir: tempDir() })
@@ -3845,10 +3845,10 @@ describe("hosted mail tools", () => {
     expect(statusTool).toBeTruthy()
 
     const status = await statusTool!.handler({}, trustedContext())
-    expect(status).toContain("status: failed via op_mail_import_failed; owner/source: ari@mendelow.me / hey")
+    expect(status).toContain("status: failed via op_mail_import_failed; owner/source: owner@example.test / hey")
     expect(status).toContain("freshness: blocked (last import failed; current freshness is not yet trustworthy)")
     expect(status).toContain("archive-access")
-    expect(status).toContain("status: running via op_mail_import_running; owner/source: ari@mendelow.me / hey")
+    expect(status).toContain("status: running via op_mail_import_running; owner/source: owner@example.test / hey")
     expect(status).toContain("freshness: pending (import still in progress; current freshness will settle when the operation finishes)")
     expect(status).toContain("importing delegated mail")
     expect(status.indexOf("op_mail_import_running [running]")).toBeLessThan(status.indexOf("op_mail_import_failed [failed]"))
@@ -3860,7 +3860,7 @@ describe("hosted mail tools", () => {
     setAgentName("slugger")
     const agentRoot = path.join(homeRoot, "AgentBundles", "slugger.ouro")
     const sandboxDir = path.join(homeRoot, ".playwright-mcp")
-    const archivePath = path.join(sandboxDir, "HEY-emails-ari-mendelow-me-unknown-timestamp.mbox")
+    const archivePath = path.join(sandboxDir, "HEY-emails-owner-example-test-unknown-timestamp.mbox")
     fs.mkdirSync(sandboxDir, { recursive: true })
     fs.writeFileSync(archivePath, "From MAILER-DAEMON Thu Jan  1 00:00:00 1970\n", "utf-8")
     fs.mkdirSync(path.join(agentRoot, "state", "background-operations"), { recursive: true })
@@ -3879,7 +3879,7 @@ describe("hosted mail tools", () => {
       spec: {
         filePath: archivePath,
         fileOriginLabel: "browser sandbox (.playwright-mcp)",
-        ownerEmail: "ari@mendelow.me",
+        ownerEmail: "owner@example.test",
         source: "hey",
       },
       result: {
@@ -3891,7 +3891,7 @@ describe("hosted mail tools", () => {
 
     const { registry, keys } = provisionMailboxRegistry({
       agentId: "slugger",
-      ownerEmail: "ari@mendelow.me",
+      ownerEmail: "owner@example.test",
       source: "hey",
     })
     const store = new FileMailroomStore({ rootDir: tempDir() })
@@ -3932,7 +3932,7 @@ describe("hosted mail tools", () => {
     setAgentName("slugger")
     const { registry, keys } = provisionMailboxRegistry({
       agentId: "slugger",
-      ownerEmail: "ari@mendelow.me",
+      ownerEmail: "owner@example.test",
       source: "hey",
     })
     registry.sourceGrants[0].defaultPlacement = "screener"
@@ -3942,11 +3942,11 @@ describe("hosted mail tools", () => {
       store,
       envelope: {
         mailFrom: "travel@example.com",
-        rcptTo: ["me.mendelow.ari.slugger@ouro.bot"],
+        rcptTo: ["test.example.owner.slugger@ouro.bot"],
       },
       rawMime: Buffer.from([
         "From: Travel Desk <travel@example.com>",
-        "To: Slugger <me.mendelow.ari.slugger@ouro.bot>",
+        "To: Slugger <test.example.owner.slugger@ouro.bot>",
         "Subject: Hosted delegated sender policy",
         "",
         "delegated body",
@@ -4002,7 +4002,7 @@ describe("hosted mail tools", () => {
     setAgentName("slugger")
     const { registry, keys } = provisionMailboxRegistry({
       agentId: "slugger",
-      ownerEmail: "ari@mendelow.me",
+      ownerEmail: "owner@example.test",
       source: "hey",
     })
     registry.sourceGrants[0].defaultPlacement = "screener"
@@ -4012,11 +4012,11 @@ describe("hosted mail tools", () => {
       store,
       envelope: {
         mailFrom: "link@example.com",
-        rcptTo: ["me.mendelow.ari.slugger@ouro.bot"],
+        rcptTo: ["test.example.owner.slugger@ouro.bot"],
       },
       rawMime: Buffer.from([
         "From: Link Friend <link@example.com>",
-        "To: Slugger <me.mendelow.ari.slugger@ouro.bot>",
+        "To: Slugger <test.example.owner.slugger@ouro.bot>",
         "Subject: Hosted delegated link-friend",
         "",
         "delegated body",
@@ -4073,7 +4073,7 @@ describe("hosted mail tools", () => {
     setAgentName("slugger")
     const { registry, keys } = provisionMailboxRegistry({
       agentId: "slugger",
-      ownerEmail: "ari@mendelow.me",
+      ownerEmail: "owner@example.test",
       source: "hey",
     })
     registry.sourceGrants[0].defaultPlacement = "screener"
@@ -4083,11 +4083,11 @@ describe("hosted mail tools", () => {
       store,
       envelope: {
         mailFrom: "travel@example.com",
-        rcptTo: ["me.mendelow.ari.slugger@ouro.bot"],
+        rcptTo: ["test.example.owner.slugger@ouro.bot"],
       },
       rawMime: Buffer.from([
         "From: Travel Desk <travel@example.com>",
-        "To: Slugger <me.mendelow.ari.slugger@ouro.bot>",
+        "To: Slugger <test.example.owner.slugger@ouro.bot>",
         "Subject: Hosted delegated sender policy write failure",
         "",
         "delegated body",
@@ -4140,7 +4140,7 @@ describe("hosted mail tools", () => {
     setAgentName("slugger")
     const { registry, keys } = provisionMailboxRegistry({
       agentId: "slugger",
-      ownerEmail: "ari@mendelow.me",
+      ownerEmail: "owner@example.test",
       source: "hey",
     })
     registry.sourceGrants[0].defaultPlacement = "screener"
@@ -4150,11 +4150,11 @@ describe("hosted mail tools", () => {
       store,
       envelope: {
         mailFrom: "travel@example.com",
-        rcptTo: ["me.mendelow.ari.slugger@ouro.bot"],
+        rcptTo: ["test.example.owner.slugger@ouro.bot"],
       },
       rawMime: Buffer.from([
         "From: Travel Desk <travel@example.com>",
-        "To: Slugger <me.mendelow.ari.slugger@ouro.bot>",
+        "To: Slugger <test.example.owner.slugger@ouro.bot>",
         "Subject: Hosted delegated sender policy non-Error write failure",
         "",
         "delegated body",

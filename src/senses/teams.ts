@@ -18,7 +18,7 @@ import { createCommandRegistry, registerDefaultCommands, parseSlashCommand } fro
 import { createTraceId } from "../nerves"
 import { emitNervesEvent } from "../nerves/runtime"
 import { getProactiveInternalContentBlockReason, emitProactiveInternalContentBlocked } from "./proactive-content-guard"
-import { createTurnCoordinator } from "../heart/turn-coordinator"
+import { createTurnCoordinator, type SteeringFollowUp } from "../heart/turn-coordinator"
 import { getAgentRoot, getAgentName } from "../heart/identity"
 import { getSharedMcpManager } from "../repertoire/mcp-manager"
 import { buildProgressStory, renderProgressStory } from "../heart/progress-story"
@@ -26,13 +26,19 @@ import { createToolActivityCallbacks } from "../heart/tool-activity-callbacks"
 import { getDebugMode } from "./commands"
 import * as http from "http"
 import * as path from "path"
+import { createHash, randomUUID } from "node:crypto"
+import { drainOutboundRecords, OUTBOUND_ORIGIN_LABELS, recordOutboundInSession } from "../mind/outbound-record"
+import type { OutboundOrigin } from "../heart/session-events"
 import { enforceTrustGate } from "./trust-gate"
 import { handleInboundTurn, type FailoverState } from "./pipeline"
-import { SessionTurnBusyError, withSessionTurnLease, type SessionTurnLease } from "../mind/session-transaction"
+import { stampReplyingToText, type ReplyingToAuthor } from "../heart/orientation-frame"
+import { admitSessionActivity, SessionTransactionError, SessionTurnBusyError, withSessionTurnLease, type SessionTurnLease } from "../mind/session-transaction"
 
 const teamsFailoverStates = new Map<string, FailoverState>()
 import { drainDeferredReturns, drainPending, getPendingDir } from "../mind/pending"
 import { classifySteeringFollowUpEffect, type SteeringFollowUpEffect } from "./continuity"
+import { createTeamsImageSender } from "./teams-image"
+import { FeedbackReplyRefusal, resolveFeedbackReply } from "./shepherd/feedback-reply"
 
 // Stream interface matching IStreamer from @microsoft/teams.apps
 // emit() accepts string or object with text+entities+channelData (matches SDK's
@@ -174,6 +180,12 @@ export type TeamsCallbacksWithFlush = ChannelCallbacks & { flush(): void | Promi
 // safeSend (ctx.send). Tool results, kicks, and errors use safeUpdate
 // (transient status) or safeSend (terminal errors). Reasoning is accumulated
 // and periodically pushed via safeUpdate on the same flush timer tick.
+function isTeamsSizeRejection(error: unknown): boolean {
+  return typeof error === "object" && error !== null && "response" in error
+    && typeof error.response === "object" && error.response !== null && "status" in error.response
+    && error.response.status === 413
+}
+
 export function createTeamsCallbacks(
   stream: TeamsStream,
   controller: AbortController,
@@ -283,17 +295,20 @@ export function createTeamsCallbacks(
   async function tryEmit(text: string): Promise<boolean> {
     /* v8 ignore next -- defensive guard: stopped set by prior error; tested via flush abort path @preserve */
     if (stopped) return false
+    let awaitingTransport = false
     try {
       // stream.emit() is typed as void but the Teams SDK returns a Promise
       // internally (async HTTP). Cast to capture the result for awaiting.
       const result: unknown = stream.emit(streamChunk(text))
       streamHasContent = true
       if (result && typeof (result as { then?: Function }).then === "function") {
+        awaitingTransport = true
         await (result as Promise<unknown>)
       }
       return true
     } catch (err) {
       markStopped("tryEmit", err)
+      if (awaitingTransport && !isTeamsSizeRejection(err)) throw err
       return false
     }
   }
@@ -306,14 +321,20 @@ export function createTeamsCallbacks(
   // which has a sendMessage fallback that may still succeed. Caller (flushNow) is
   // responsible for the `!stopped` precondition; no defensive guard here.
   async function tryEmitNoAbort(text: string): Promise<boolean> {
+    let awaitingTransport = false
     try {
       const result: unknown = stream.emit(streamChunk(text))
       streamHasContent = true
       if (result && typeof (result as { then?: Function }).then === "function") {
+        awaitingTransport = true
         await (result as Promise<unknown>)
       }
       return true
-    } catch {
+    } catch (error) {
+      if (awaitingTransport && !isTeamsSizeRejection(error)) {
+        markStopped("speak-unknown", error)
+        throw error
+      }
       return false
     }
   }
@@ -571,7 +592,9 @@ export function createTeamsCallbacks(
           // Stream is dead (not from finalization) — fall back to sendMessage; split on failure as recovery.
           try {
             await sendMessage(text)
-          } catch {
+          } catch (error) {
+            // A lost acknowledgement is not a rejection. Only a definite size rejection permits a smaller retry.
+            if (!isTeamsSizeRejection(error) || text.length <= RECOVERY_CHUNK_SIZE) throw error
             const chunks = splitMessage(text, RECOVERY_CHUNK_SIZE)
             for (const chunk of chunks) await sendMessage(chunk)
           }
@@ -603,6 +626,88 @@ function teamsTurnKey(conversationId: string): string {
   return `teams:${conversationId}`
 }
 
+function teamsAdmissionKey(conversationId: string): string {
+  return `teams-admission:${conversationId}`
+}
+
+interface QueuedTeamsTurn {
+  actorKey: string
+  steering?: SteeringFollowUp
+  run: () => Promise<void>
+  resolve: () => void
+  reject: (error: unknown) => void
+}
+const queuedTeamsTurns = new Map<string, QueuedTeamsTurn[]>()
+const activeTeamsActors = new Map<string, string>()
+const consumingTeamsSteering = new Set<string>()
+
+function drainTeamsSteering(key: string): SteeringFollowUp[] {
+  const followUps = _turnCoordinator.drainFollowUps(key)
+  const consumed = new Set(followUps)
+  const queue = queuedTeamsTurns.get(key)
+  if (queue) queuedTeamsTurns.set(key, queue.filter(turn => !turn.steering || !consumed.has(turn.steering)))
+  return followUps
+}
+
+/** Context-bearing replies cannot steer an already-running tool loop. Keep the
+ * original SDK context/transport alive until a fresh handleTeamsMessage lease.
+ * Ordinary same-actor steering still uses the existing coordinator buffer. */
+async function coordinateTeamsTurn(
+  conversationId: string,
+  text: string,
+  identity: { aadObjectId?: string; tenantId?: string; userId?: string; replyToId?: string },
+  run: () => Promise<void>,
+): Promise<void> {
+  const key = teamsTurnKey(conversationId)
+  const actorKey = JSON.stringify([identity.aadObjectId || identity.userId || "", identity.tenantId ?? ""])
+  if (!_turnCoordinator.tryBeginTurn(key)) {
+    if (!identity.replyToId && !/\bfeedback:/i.test(text) && consumingTeamsSteering.has(key) &&
+      activeTeamsActors.get(key) === actorKey && !queuedTeamsTurns.get(key)?.some(turn => !turn.steering)) {
+      const steering = { conversationId, text, receivedAt: Date.now(), effect: classifySteeringFollowUpEffect(text) }
+      _turnCoordinator.enqueueFollowUp(key, steering)
+      const queue = queuedTeamsTurns.get(key) ?? []
+      queue.push({ actorKey, run, steering, resolve: () => {}, reject: () => {} })
+      queuedTeamsTurns.set(key, queue)
+      return
+    }
+    await new Promise<void>((resolve, reject) => {
+      const queue = queuedTeamsTurns.get(key) ?? []
+      queue.push({ actorKey, run, resolve, reject })
+      queuedTeamsTurns.set(key, queue)
+    })
+    return
+  }
+  let next: QueuedTeamsTurn | undefined = { actorKey, run, resolve: () => {}, reject: () => {} }
+  let initialError: unknown
+  let first = true
+  try {
+    while (next) {
+      activeTeamsActors.set(key, next.actorKey)
+      if (next.steering) {
+        for (const followUp of _turnCoordinator.drainFollowUps(key)) {
+          if (followUp !== next.steering) _turnCoordinator.enqueueFollowUp(key, followUp)
+        }
+      }
+      try {
+        await next.run()
+        next.resolve()
+      } catch (error) {
+        if (first) initialError = error
+        next.reject(error)
+      }
+      first = false
+      // Preserve received order while identity/admission I/O finishes, without holding admission through a model turn.
+      await _turnCoordinator.withTurnLock(teamsAdmissionKey(conversationId), async () => {})
+      next = queuedTeamsTurns.get(key)?.shift()
+    }
+  } finally {
+    queuedTeamsTurns.delete(key)
+    activeTeamsActors.delete(key)
+    _turnCoordinator.endTurn(key)
+  }
+  if (initialError !== undefined) throw initialError
+}
+
 export async function withConversationLock(convId: string, fn: () => Promise<void>): Promise<void> {
   await _turnCoordinator.withTurnLock(teamsTurnKey(convId), fn)
 }
@@ -614,8 +719,67 @@ function getFriendStore(): InstanceType<typeof FileFriendStore> {
   return new FileFriendStore(friendsPath)
 }
 
+export interface TeamsQuotedReply {
+  text: string
+  author?: ReplyingToAuthor
+}
+
+function decodeHtmlText(html: string): string {
+  return html
+    .replace(/<br\s*\/?>/giu, "\n")
+    .replace(/<[^>]*>/gu, "")
+    .replace(/&nbsp;/gu, " ")
+    .replace(/&lt;/gu, "<")
+    .replace(/&gt;/gu, ">")
+    .replace(/&quot;/gu, '"')
+    .replace(/&#39;/gu, "'")
+    .replace(/&amp;/gu, "&")
+    .replace(/\s+/gu, " ")
+    .trim()
+}
+
+/**
+ * Teams carries a quoted reply as a text/html attachment holding a
+ * schema.skype.com/Reply blockquote: the quoted author's id (itemprop="mri")
+ * and a preview of their words (itemprop="preview"). Ids compare without the
+ * "28:"/"29:" channel prefixes, so the bot's own words read as the agent's.
+ */
+// The person's message, with the quote they replied to stamped on it for the orientation frame.
+function teamsUserMessage(content: string, quotedReply: TeamsQuotedReply | undefined): OpenAI.ChatCompletionMessageParam {
+  const message: OpenAI.ChatCompletionMessageParam = { role: "user", content }
+  if (quotedReply) stampReplyingToText(message, quotedReply.text, quotedReply.author)
+  return message
+}
+
+export function parseTeamsQuotedReply(
+  attachments: ReadonlyArray<{ contentType?: string; content?: unknown }> | undefined,
+  ids: { botId?: string; userId?: string },
+): TeamsQuotedReply | undefined {
+  for (const attachment of attachments ?? []) {
+    if (attachment.contentType !== "text/html" || typeof attachment.content !== "string") continue
+    const quote = /<blockquote[^>]*itemtype="http:\/\/schema\.skype\.com\/Reply"[^>]*>([\s\S]*?)<\/blockquote>/iu.exec(attachment.content)
+    if (!quote) continue
+    const preview = /<p[^>]*itemprop="preview"[^>]*>([\s\S]*?)<\/p>/iu.exec(quote[1])
+    const text = decodeHtmlText(preview ? preview[1] : quote[1]).slice(0, 1200)
+    if (!text) continue
+    const mri = /itemprop="mri"[^>]*itemid="([^"]+)"/iu.exec(quote[1])?.[1]
+    const bare = (id: string | undefined) => id?.replace(/^\d+:/u, "")
+    const author: ReplyingToAuthor | undefined = !mri ? undefined
+      : bare(mri) === bare(ids.botId) ? "agent"
+        : bare(mri) === bare(ids.userId) ? "person" : "other"
+    return { text, ...(author ? { author } : {}) }
+  }
+  return undefined
+}
+
 // Context from the Teams activity that carries OAuth tokens and signin ability
 export interface TeamsMessageContext {
+  /** The incoming activity itself, distinct from a quoted reply target. */
+  inboundActivityId?: string
+  /** Actual incoming quote target, never the incoming activity's own id. */
+  replyToId?: string
+  /** The quoted message Teams showed above the person's reply, when they quoted one. */
+  quotedReply?: TeamsQuotedReply
   graphToken?: string
   adoToken?: string
   githubToken?: string
@@ -630,6 +794,20 @@ export interface TeamsMessageContext {
   githubConnectionName?: string
   // Bot Framework API client for proactive messaging
   botApi?: ToolContext["botApi"]
+  teamsSendImage?: ToolContext["teamsSendImage"]
+}
+
+function reportTeamsRequest(
+  stage: "admitted" | "duplicate_held" | "running" | "reply_emitted" | "replied" | "failed",
+  conversationId: string,
+  context: Pick<TeamsMessageContext, "inboundActivityId" | "tenantId" | "botApi"> | undefined,
+  details: Record<string, unknown> = {},
+): void {
+  if (!context?.inboundActivityId) return
+  emitNervesEvent({
+    component: "channels", event: "channel.teams_request_stage", message: "Teams conversational request stage",
+    meta: { stage, inboundActivityId: context.inboundActivityId, conversationId, tenantId: context.tenantId, botId: context.botApi?.id, ...details },
+  })
 }
 
 function createTeamsCommandRegistry() {
@@ -709,8 +887,17 @@ export async function handleTeamsMessage(text: string, stream: TeamsStream, conv
   // ── Teams adapter concerns: controller, callbacks, session path ──────────
   const controller = new AbortController()
   const channelConfig = getTeamsChannelConfig()
-  const callbacks = createTeamsCallbacks(stream, controller, sendMessage, { conversationId, flushIntervalMs: channelConfig.flushIntervalMs, ...(reactionOverrides?.suppressEmptyStreamMessage ? { suppressEmptyStreamMessage: true } : {}) })
   const traceId = createTraceId()
+  const observedStream: TeamsStream = {
+    emit(activity) {
+      const result = stream.emit(activity)
+      reportTeamsRequest("reply_emitted", conversationId, teamsContext, { traceId, delivery: "unconfirmed_stream" })
+      return result
+    },
+    update(text) { return stream.update(text) },
+    close: stream.close.bind(stream),
+  }
+  const callbacks = createTeamsCallbacks(observedStream, controller, sendMessage, { conversationId, flushIntervalMs: channelConfig.flushIntervalMs, ...(reactionOverrides?.suppressEmptyStreamMessage ? { suppressEmptyStreamMessage: true } : {}) })
   const sessPath = sessionPath(friendId, "teams", conversationId)
   const teamsCapabilities = getChannelCapabilities("teams")
   const pendingDir = getPendingDir(agentName, friendId, "teams", conversationId)
@@ -718,6 +905,20 @@ export async function handleTeamsMessage(text: string, stream: TeamsStream, conv
 
   try {
   await runWithLease(sessPath, async (sessionTurnLease) => {
+  reportTeamsRequest("running", conversationId, teamsContext, { traceId, friendId })
+  // Messages sent into this conversation while another turn held it wait outside the session; they go in first.
+  drainOutboundRecords(owner.agentRoot, friendId, "teams", conversationId, sessionTurnLease)
+  // Proactive feedback acknowledgements are not magically in this model session's
+  // history. Recover their frozen packet only after identity and lease ownership.
+  let feedbackReply
+  try {
+    feedbackReply = resolveFeedbackReply({ agentRoot: owner.agentRoot, friendId,
+      conversationId, replyToId: teamsContext?.replyToId, text })
+  } catch (error) {
+    if (!(error instanceof FeedbackReplyRefusal)) throw error
+    await stream.emit(error.message)
+    return
+  }
   // Do not emit any activity until this turn owns the durable session.
   if (!reactionOverrides) {
     stream.update(pickPhrase(getPhrases().thinking) + "...")
@@ -732,6 +933,7 @@ export async function handleTeamsMessage(text: string, stream: TeamsStream, conv
     summarize: createSummarize("human"),
     tenantId: teamsContext.tenantId,
     botApi: teamsContext.botApi,
+    teamsSendImage: teamsContext.teamsSendImage,
   } : {}) }
 
   let currentText = text
@@ -743,10 +945,13 @@ export async function handleTeamsMessage(text: string, stream: TeamsStream, conv
     // Build runAgentOptions with Teams-specific fields
     const agentOptions: RunAgentOptions = {
       traceId,
-      toolContext: teamsToolContext as ToolContext,
+      toolContext: {
+        ...teamsToolContext,
+        ...(feedbackReply ? { currentShepherdSurface: feedbackReply.source } : {}),
+      } as ToolContext,
       mcpManager,
       drainSteeringFollowUps: () => {
-        drainedSteeringFollowUps = _turnCoordinator.drainFollowUps(turnKey)
+        drainedSteeringFollowUps = drainTeamsSteering(turnKey)
           .map(({ text: followUpText, effect }) => ({ text: followUpText, effect }))
         return drainedSteeringFollowUps
       },
@@ -780,7 +985,7 @@ export async function handleTeamsMessage(text: string, stream: TeamsStream, conv
       channel: "teams",
       sessionKey: conversationId,
       capabilities: teamsCapabilities,
-      messages: [{ role: "user" as const, content: currentText }],
+      messages: [teamsUserMessage(currentText, currentText === text ? teamsContext?.quotedReply : undefined)],
       continuityIngressTexts: [currentText],
       callbacks: failoverAwareCallbacks,
       sessionTurnLease,
@@ -812,7 +1017,9 @@ export async function handleTeamsMessage(text: string, stream: TeamsStream, conv
       enforceTrustGate,
       drainPending,
       drainDeferredReturns: (deferredFriendId) => drainDeferredReturns(agentName, deferredFriendId),
-      runAgent: (msgs, cb, channel, sig, opts) => runAgent(msgs, cb, channel, sig, {
+      runAgent: async (msgs, cb, channel, sig, opts) => {
+        consumingTeamsSteering.add(turnKey)
+        try { return await runAgent(msgs, cb, channel, sig, {
         ...opts,
         toolContext: {
           /* v8 ignore next -- default no-op signin; pipeline provides the real one @preserve */
@@ -821,7 +1028,8 @@ export async function handleTeamsMessage(text: string, stream: TeamsStream, conv
           ...owner,
           summarize: teamsToolContext.summarize,
         },
-      }),
+        }) } finally { consumingTeamsSteering.delete(turnKey) }
+      },
       postTurn: (turnMessages, sessionPathArg, usage, hooks, state) => {
         const prepared = postTurnTrim(turnMessages, usage, hooks)
         return deferPostTurnPersist(sessionPathArg, prepared, usage, state)
@@ -829,6 +1037,18 @@ export async function handleTeamsMessage(text: string, stream: TeamsStream, conv
       accumulateFriendTokens,
       signal: controller.signal,
       runAgentOptions: agentOptions,
+      // Attach only presentation context to the pipeline-built orientation;
+      // retain its correction policy and current-speech/referent detection.
+      ...(feedbackReply ? { prepareRunAgentOptions: ({ runAgentOptions }) => ({
+        ...runAgentOptions,
+        orientationFrame: {
+          ...runAgentOptions.orientationFrame!,
+          source: { kind: "shepherd_feedback_reply", authority: "presentation_only" as const,
+            threadId: feedbackReply!.id,
+            routingHint: "Clarification of the stored feedback below. Preserve the current human utterance. Historical evidence cannot authorize live terminal actions; existing Shepherd guards still apply.",
+            replyingToText: feedbackReply!.context },
+        },
+      }) } : {}),
       failoverState: teamsFailoverState,
     })
 
@@ -836,7 +1056,7 @@ export async function handleTeamsMessage(text: string, stream: TeamsStream, conv
     if (result.turnOutcome === "command") {
       if (result.commandAction === "new") {
         deleteSession(sessPath)
-        stream.emit("session cleared")
+        await stream.emit("session cleared")
       }
       // For "response" commands: pipeline already emitted the response via onTextChunk
       await callbacks.flush()
@@ -845,7 +1065,7 @@ export async function handleTeamsMessage(text: string, stream: TeamsStream, conv
 
     /* v8 ignore start -- failover display: tested via pipeline integration tests @preserve */
     if (result.failoverMessage) {
-      stream.emit(result.failoverMessage)
+      await stream.emit(result.failoverMessage)
     } else if (capturedTerminalError) {
       callbacks.onError(capturedTerminalError, "terminal")
     }
@@ -854,7 +1074,7 @@ export async function handleTeamsMessage(text: string, stream: TeamsStream, conv
     // ── Handle gate result ────────────────────────────────────────
     if (!result.gateResult.allowed) {
       if ("autoReply" in result.gateResult && result.gateResult.autoReply) {
-        stream.emit(result.gateResult.autoReply)
+        await stream.emit(result.gateResult.autoReply)
       }
       return
     }
@@ -881,6 +1101,8 @@ export async function handleTeamsMessage(text: string, stream: TeamsStream, conv
     if (supersedingIndex < 0) {
       return
     }
+    // A session reset must not carry the old feedback binding into its replay.
+    feedbackReply = null
     const supersedingFollowUp = drainedSteeringFollowUps[supersedingIndex]
     const replayTail = drainedSteeringFollowUps
       .slice(supersedingIndex + 1)
@@ -902,9 +1124,11 @@ export async function handleTeamsMessage(text: string, stream: TeamsStream, conv
   })
   } catch (error) {
     if (error instanceof SessionTurnBusyError || (error instanceof Error && error.name === "SessionTurnBusyError")) {
-      stream.emit("this conversation is busy finishing another turn; please try again")
+      reportTeamsRequest("failed", conversationId, teamsContext, { traceId, reason: "lease_busy" })
+      await stream.emit("this conversation is busy finishing another turn; please try again")
       return
     }
+    reportTeamsRequest("failed", conversationId, teamsContext, { traceId, reason: "turn_failed" })
     throw error
   }
 }
@@ -1041,7 +1265,6 @@ function registerBotHandlers(app: InstanceType<typeof App> & { id?: string; api?
     const reaction = activity.value?.actionValue?.reaction
     const comment = activity.value?.actionValue?.feedback
     const convId = activity.conversation?.id || "unknown"
-    const turnKey = teamsTurnKey(convId)
 
     // Validate payload — graceful no-op for malformed invocations
     if (activity.value?.actionName !== "feedback" || !reaction) {
@@ -1050,19 +1273,13 @@ function registerBotHandlers(app: InstanceType<typeof App> & { id?: string; api?
 
     const syntheticText = buildFeedbackSyntheticText(reaction, comment)
 
-    // Turn coordination: if a turn is active, enqueue as steering follow-up
-    if (!_turnCoordinator.tryBeginTurn(turnKey)) {
-      _turnCoordinator.enqueueFollowUp(turnKey, {
-        conversationId: convId,
-        text: syntheticText,
-        receivedAt: Date.now(),
-        effect: classifySteeringFollowUpEffect(syntheticText),
-      })
-      return undefined
-    }
-
+    await coordinateTeamsTurn(convId, syntheticText, {
+      aadObjectId: activity.from?.aadObjectId, userId: activity.from?.id,
+      tenantId: activity.conversation?.tenantId, replyToId: activity.replyToId,
+    }, async () => {
     try {
       const teamsContext: TeamsMessageContext = {
+        replyToId: activity.replyToId,
         signin: async () => undefined,
         aadObjectId: activity.from?.aadObjectId,
         tenantId: activity.conversation?.tenantId,
@@ -1076,9 +1293,8 @@ function registerBotHandlers(app: InstanceType<typeof App> & { id?: string; api?
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : String(err)
       emitNervesEvent({ level: "error", event: "channel.feedback_handler_error", component: "channels", message: msg.slice(0, 200), meta: {} })
-    } finally {
-      _turnCoordinator.endTurn(turnKey)
     }
+    })
     return undefined
   })
   /* v8 ignore stop */
@@ -1106,14 +1322,87 @@ function registerBotHandlers(app: InstanceType<typeof App> & { id?: string; api?
   /* v8 ignore stop */
 
   app.on("message", async (ctx) => {
-    const { stream, activity, api, signin } = ctx
+    const { activity, api, signin } = ctx
     const text = activity.text || ""
     const convId = activity.conversation?.id || "unknown"
     const turnKey = teamsTurnKey(convId)
     const userId = activity.from?.id || ""
     const channelId = activity.channelId || "msteams"
+    const requestContext = {
+      inboundActivityId: activity.id, tenantId: activity.conversation?.tenantId,
+      botApi: app.id && api ? { id: app.id, conversations: api.conversations } : undefined,
+    }
+    const sendText = async (text: string) => {
+      try {
+        const receipt = await ctx.send({ type: "message", text, replyToId: activity.id, entities: aiLabelEntities() as Entity[], channelData: { feedbackLoopEnabled: true } })
+        const messageId = receipt && typeof receipt === "object" && "id" in receipt && typeof receipt.id === "string" ? receipt.id : undefined
+        reportTeamsRequest(messageId ? "replied" : "reply_emitted", convId, requestContext, { delivery: messageId ? "accepted" : "unconfirmed", ...(messageId ? { outboundActivityId: messageId } : {}) })
+      } catch (error) {
+        reportTeamsRequest("failed", convId, requestContext, { reason: "send_unknown" })
+        throw error
+      }
+    }
+    // HttpStream queues void emits and retries unknown HTTP failures internally.
+    // Use the SDK's single-attempt, awaitable send instead of that hidden retry loop.
+    const stream: TeamsStream = {
+      emit: value => sendText(typeof value === "string" ? value : value.text),
+      update: async () => {
+        try {
+          await ctx.send({ type: "typing" })
+        } catch (error) {
+          emitNervesEvent({
+            level: "warn", component: "channels", event: "channel.teams_typing_failed",
+            message: "Teams rejected an advisory typing update; the reply is still pending",
+            meta: { conversationId: convId, inboundActivityId: activity.id,
+              error: error instanceof Error ? error.message : String(error) },
+          })
+        }
+      },
+      close: async () => undefined,
+    }
 
-    emitNervesEvent({ level: "info", event: "channel.message_received", component: "channels", message: `[${label}] incoming teams message`, meta: { userId: userId.slice(0, 12), conversationId: convId.slice(0, 20) } })
+    emitNervesEvent({ level: "info", event: "channel.message_received", component: "channels", message: `[${label}] incoming teams message`, meta: { stage: "received", inboundActivityId: activity.id, botId: app.id, tenantId: requestContext.tenantId, userId: userId.slice(0, 12), conversationId: convId } })
+
+    let work: Promise<void> | undefined
+    await _turnCoordinator.withTurnLock(teamsAdmissionKey(convId), async () => {
+    try {
+      if (process.env.OURO_TEAMS_DEVTOOLS !== "1" && [
+        app.id, activity.id, activity.channelId, activity.conversation?.id,
+        activity.conversation?.tenantId, activity.from?.aadObjectId || activity.from?.id,
+      ].some(value => typeof value !== "string" || !value.trim())) {
+        throw new SessionTransactionError("Teams activity identity is incomplete")
+      }
+      if (activity.id) {
+        const store = getFriendStore()
+        const identity = await new FriendResolver(store, {
+          provider: activity.from?.aadObjectId ? "aad" : "teams-conversation",
+          externalId: activity.from?.aadObjectId || convId,
+          tenantId: activity.conversation?.tenantId,
+          displayName: activity.from?.name || "Unknown",
+          channel: "teams",
+        }).resolve()
+        const admission = admitSessionActivity(sessionPath(identity.friend.id, "teams", convId), {
+          namespace: JSON.stringify(["teams.message", channelId, app.id?.toLowerCase() ?? null,
+            activity.conversation?.tenantId?.toLowerCase() ?? null,
+            activity.from?.aadObjectId?.toLowerCase() || userId, convId]),
+          activityId: activity.id,
+          payloadDigest: createHash("sha256").update(JSON.stringify([text, activity.replyToId ?? null])).digest("hex"),
+        })
+        if (admission.state === "duplicate") {
+          reportTeamsRequest("duplicate_held", convId, requestContext, { receiptId: admission.receiptId, outcome: "not_replayed" })
+          return
+        }
+      }
+      reportTeamsRequest("admitted", convId, requestContext)
+    } catch (error) {
+      reportTeamsRequest("failed", convId, requestContext, { reason: "activity_admission_failed" })
+      emitNervesEvent({
+        level: "error", component: "channels", event: "channel.activity_admission_error",
+        message: "Teams activity was not safely admitted; no new turn or steering was started",
+        meta: { conversationId: convId, inboundActivityId: activity.id, reason: "activity_admission_failed" },
+      })
+      throw error
+    }
 
     const commandRegistry = createTeamsCommandRegistry()
     const parsedSlashCommand = parseSlashCommand(text)
@@ -1121,7 +1410,7 @@ function registerBotHandlers(app: InstanceType<typeof App> & { id?: string; api?
       const dispatchResult = commandRegistry.dispatch(parsedSlashCommand.command, { channel: "teams" })
       if (dispatchResult.handled && dispatchResult.result) {
         if (dispatchResult.result.action === "response") {
-          stream.emit(dispatchResult.result.message || "")
+          await stream.emit(dispatchResult.result.message || "")
           return
         }
         if (dispatchResult.result.action === "new") {
@@ -1137,7 +1426,7 @@ function registerBotHandlers(app: InstanceType<typeof App> & { id?: string; api?
           })
           const commandContext = await commandResolver.resolve()
           deleteSession(sessionPath(commandContext.friend.id, "teams", convId))
-          stream.emit("session cleared")
+          await stream.emit("session cleared")
           if (_turnCoordinator.isTurnActive(turnKey)) {
             _turnCoordinator.enqueueFollowUp(turnKey, {
               conversationId: convId,
@@ -1151,18 +1440,10 @@ function registerBotHandlers(app: InstanceType<typeof App> & { id?: string; api?
       }
     }
 
-    // If this conversation already has an active turn, steer follow-up input
-    // into that turn and avoid starting a second concurrent turn.
-    if (!_turnCoordinator.tryBeginTurn(turnKey)) {
-      _turnCoordinator.enqueueFollowUp(turnKey, {
-        conversationId: convId,
-        text,
-        receivedAt: Date.now(),
-        effect: classifySteeringFollowUpEffect(text),
-      })
-      return
-    }
-
+    work = coordinateTeamsTurn(convId, text, {
+      aadObjectId: activity.from?.aadObjectId, userId, tenantId: activity.conversation?.tenantId,
+      replyToId: activity.replyToId,
+    }, async () => {
     try {
       // Resolve OAuth connection names for this user's tenant (supports per-tenant overrides).
       const tenantId = activity.conversation?.tenantId
@@ -1188,6 +1469,9 @@ function registerBotHandlers(app: InstanceType<typeof App> & { id?: string; api?
       emitNervesEvent({ level: "info", event: "channel.token_status", component: "channels", message: "oauth token availability", meta: { graph: !!graphToken, ado: !!adoToken, github: !!githubToken, tenantId } })
 
       const teamsContext: TeamsMessageContext = {
+        inboundActivityId: activity.id,
+        replyToId: activity.replyToId,
+        quotedReply: parseTeamsQuotedReply(activity.attachments, { botId: activity.recipient?.id ?? app.id, userId }),
         graphToken,
         adoToken,
         githubToken,
@@ -1210,26 +1494,23 @@ function registerBotHandlers(app: InstanceType<typeof App> & { id?: string; api?
         githubConnectionName: tenantOAuth.githubConnectionName,
         /* v8 ignore next -- bot API availability branch; requires live SDK context @preserve */
         botApi: app.id && api ? { id: app.id, conversations: api.conversations } : undefined,
+        teamsSendImage: createTeamsImageSender((message) => ctx.send(message), activity.id, aiLabelEntities() as Entity[]),
       }
 
-      /* v8 ignore next 5 -- bot-framework integration callback; tested via handleTeamsMessage sendMessage path @preserve */
-      const ctxSend = async (t: string) => {
-        // Use send with replyToId (not reply, which adds a blockquote).
-        // replyToId anchors the message after the user's message in Copilot Chat.
-        await ctx.send({ type: "message", text: t, replyToId: activity.id, entities: aiLabelEntities() as Entity[], channelData: { feedbackLoopEnabled: true } })
-      }
-      await handleTeamsMessage(text, stream, convId, teamsContext, ctxSend)
+      await handleTeamsMessage(text, stream, convId, teamsContext, sendText)
     } catch (err: unknown) {
+      reportTeamsRequest("failed", convId, requestContext, { reason: "handler_failed" })
       const msg = err instanceof Error ? err.message : String(err)
-      emitNervesEvent({ level: "error", event: "channel.handler_error", component: "channels", message: msg.slice(0, 200), meta: {} })
-    } finally {
-      _turnCoordinator.endTurn(turnKey)
+      emitNervesEvent({ level: "error", event: "channel.handler_error", component: "channels", message: msg.slice(0, 200), meta: { conversationId: convId, inboundActivityId: activity.id, botId: app.id } })
     }
+    })
+    })
+    await work
   })
 
   app.event("error", ({ error }: { error: unknown }) => {
     const msg = error instanceof Error ? error.message : String(error)
-    emitNervesEvent({ level: "error", event: "channel.app_error", component: "channels", message: `[${label}] ${msg}`, meta: {} })
+    emitNervesEvent({ level: "error", event: "channel.app_error", component: "channels", message: `[${label}] ${msg}`, meta: { botId: app.id, label } })
   })
 }
 
@@ -1259,6 +1540,10 @@ export interface ProactiveTeamsSessionSendParams {
     key: string
     trustLevel?: string
   }
+  /** Identifies this delivery when it is saved into the conversation's session; one is generated per send when absent. */
+  deliveryId?: string
+  /** Who is sending, for the `[you sent this via ...]` prefix the saved message carries. Defaults to `proactive`. */
+  origin?: OutboundOrigin
 }
 
 export interface ProactiveTeamsSessionSendResult {
@@ -1394,6 +1679,19 @@ export async function sendProactiveTeamsMessageToSession(
       meta: { friendId: params.friendId, aadObjectId: aadInfo.aadObjectId, sessionKey: params.sessionKey },
     })
     const messageId = activity && typeof activity === "object" && "id" in activity && typeof activity.id === "string" ? activity.id : undefined
+    // Saved into the conversation it was sent into, so the friend's reply there carries it.
+    const origin = params.origin ?? "proactive"
+    // Recording never changes the result of a send that already went out.
+    try {
+      recordOutboundInSession({
+        agentRoot: getAgentRoot(), friendId: friend.id, channel: "teams", key: conversation.id, content: params.text, origin,
+        deliveryId: params.deliveryId ?? `proactive:${randomUUID()}`, originLabel: OUTBOUND_ORIGIN_LABELS[origin],
+      })
+    } catch (error) {
+      emitNervesEvent({ level: "warn", component: "senses", event: "senses.teams_proactive_record_error",
+        message: "the Teams message was sent, but could not be saved into its conversation",
+        meta: { friendId: friend.id, error: error instanceof Error ? error.message : String(error) } })
+    }
     return {
       delivered: true,
       ...(params.captureReceipt ? { delivery: { state: "accepted" as const, conversationId, ...(messageId ? { messageId } : {}) } } : {}),

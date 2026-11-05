@@ -2087,6 +2087,26 @@ describe("Telegram durable authorized long poll", () => {
     expect(restartedRequest).toHaveBeenCalledWith("getUpdates", expect.objectContaining({ offset: 7 }), expect.any(AbortSignal))
   })
 
+  it.each([
+    { kind: "the bot's own message", reply: { message_id: 44, text: "  three episodes are stuck  ", from: { id: 777, is_bot: true } }, want: { replyToText: "three episodes are stuck", replyToAuthor: "agent" } },
+    { kind: "the person's own message", reply: { message_id: 44, text: "add milk", from: { id: 10 } }, want: { replyToText: "add milk", replyToAuthor: "person" } },
+    { kind: "someone else's message", reply: { message_id: 44, caption: "a photo caption", from: { id: 55 } }, want: { replyToText: "a photo caption", replyToAuthor: "other" } },
+    { kind: "a highlighted quote", reply: { message_id: 44, text: "first line. second line.", from: { id: 777, is_bot: true } }, quote: { text: "second line." }, want: { replyToText: "second line.", replyToAuthor: "agent" } },
+    { kind: "a message with no words or sender", reply: { message_id: 44 }, want: {} },
+  ])("keeps the words and author of the message a reply quotes: $kind (2026-10-29)", async ({ reply, quote, want }) => {
+    const onMessage = vi.fn(async () => undefined)
+    const request = vi.fn(async () => [
+      { update_id: 5, message: { message_id: 2, from: { id: 10 }, chat: { id: 10, type: "private" }, text: "keep waiting", reply_to_message: reply, ...(quote ? { quote } : {}) } },
+    ])
+    const offsetStore = { load: () => 5, save: vi.fn() }
+    const poll = createTelegramLongPoll({ api: { request, stop: vi.fn() }, expectedUserId: "10", expectedChatId: "10", offsetStore, onMessage })
+
+    await poll.pollOnce()
+    const message = (onMessage.mock.calls[0] as unknown as [Record<string, unknown>])[0]
+    expect({ replyToMessageId: message.replyToMessageId, replyToText: message.replyToText, replyToAuthor: message.replyToAuthor })
+      .toEqual({ replyToMessageId: "44", replyToText: undefined, replyToAuthor: undefined, ...want })
+  })
+
   it("propagates verified authority metadata to owner, stranger, and callback dispatch without affecting direct polling", async () => {
     const updates = [
       { update_id: 21, message: { message_id: 121, from: { id: 10 }, chat: { id: 10, type: "private" }, text: "owner" } },

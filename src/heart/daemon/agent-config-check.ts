@@ -265,6 +265,29 @@ function invalidPoolResult(
   model: string,
   pool: { ok: false; reason: "invalid" | "unavailable"; poolPath: string; error: string },
 ): ConfigCheckResult {
+  if (pool.reason === "unavailable" && /^bw CLI error:.*\bCannot find module\b/s.test(pool.error)) {
+    const summary = `${agentName}: local Bitwarden CLI installation is incomplete (missing Node.js module)`
+    const fix = "Repair the Bitwarden CLI selected by Ouro (normally its bundled copy), run 'ouro doctor', then retry 'ouro up'. A working 'bw --version' on PATH does not validate Ouro's bundled copy. Do not replace the vault or change provider credentials for this installation failure."
+    return {
+      ok: false,
+      error: summary,
+      fix,
+      issue: {
+        kind: "generic",
+        severity: "blocked",
+        actor: "agent-runnable",
+        summary,
+        detail: fix,
+        actions: [{
+          kind: "provider-retry",
+          label: "Check the local Bitwarden CLI installation",
+          command: "ouro doctor",
+          actor: "agent-runnable",
+          executable: false,
+        }],
+      },
+    }
+  }
   if (pool.reason === "unavailable" && isTransientVaultError(pool.error)) {
     return {
       ok: false,

@@ -54,7 +54,7 @@ describe("Sanctuary media catalog contract", () => {
   // 2026-10-11, Rach handoff: forcing a lookup and a returned title into every reply threw away the greeting and the questions.
   // Picking and browsing are conversation; the shelf-claim answer gate holds what a reply says is on the shelf.
   it.each([
-    "hello pal! I’m going to hand you to my wife, Rachel. I’d love for you to help her pick a movie from our Jellyfin library.",
+    "hello pal! I’m going to hand you to my wife, Sam. I’d love for you to help her pick a movie from our Jellyfin library.",
     "i want something silly and feel good. my originally idea was bay watch",
     "Of the films you have in stock, do you have a favorite?",
     "What movie should I watch?",
@@ -149,7 +149,7 @@ describe("Sanctuary media catalog contract", () => {
     expect(contract.validateTerminalAnswer("Yes—Moonstruck is on the shelf.")).toBeUndefined()
     expect(contract.validateTerminalAnswer("No—Moonstruck is not on the shelf.")).toContain("Lead with yes")
     expect(contract.validateTerminalAnswer("Yes—it is on the shelf.")).toContain("requested title")
-    expect(contract.validateTerminalAnswer("You need to check Jellyfin logs to be sure.")).toContain("Do not send Ari")
+    expect(contract.validateTerminalAnswer("You need to check Jellyfin logs to be sure.")).toContain("Do not send the owner")
   })
 
   it("grounds a natural-language absent-title answer in an exact search", () => {
@@ -171,6 +171,28 @@ describe("Sanctuary media catalog contract", () => {
     expect(contract.validateToolCallBeforeDispatch?.("sanctuary_search_media_catalog", { query: "Moonstruck" })).toBeUndefined()
     expect(contract.validateRequiredToolResult?.("sanctuary_search_media_catalog", catalogResult(11_870, ["Moonstruck"]), { query: "Moonstruck" })).toBe(true)
     expect(contract.validateTerminalAnswer("Yes—Moonstruck is on the shelf.")).toBeUndefined()
+  })
+
+  // 2026-10-24, Telegram: "do you have any idea when…" was read as a title lookup for the whole sentence, so every
+  // media_search was rejected before dispatch and the turn ran out of steps without answering.
+  it.each([
+    "do you have any idea when that Elizabeth Holmes documentary that we have requested will be available? question",
+    "Do you have an idea when Hope will be ready?",
+    "do you have any update on the Chef Show episodes?",
+    "Do you have a clue when the new Dune movie lands?",
+  ])("does not read a question about a request as a title lookup (%s)", (request) => {
+    const contract = sanctuaryMediaCatalogRequiredToolCalls(request, ["settle", ...requiredTools, "media_search"])
+    expect(contract?.validateToolCallBeforeDispatch("media_search", { query: "Elizabeth Holmes" })).toBeUndefined()
+  })
+
+  it("accepts a search for the title named inside a longer captured phrase", () => {
+    const contract = sanctuaryMediaCatalogRequiredToolCalls("Do we have Moonstruck on blu-ray?", requiredTools)!
+    expect(contract.validateToolCallBeforeDispatch?.("sanctuary_search_media_catalog", { query: "Moonstruck" })).toBeUndefined()
+    expect(contract.validateToolCallBeforeDispatch?.("sanctuary_search_media_catalog", { query: "Alien" })).toMatch(/moonstruck/iu)
+    expect(contract.validateToolCallBeforeDispatch?.("sanctuary_search_media_catalog", { query: "on" })).toMatch(/moonstruck/iu)
+    expect(contract.validateRequiredToolResult?.("sanctuary_search_media_catalog", catalogResult(11_870, ["Moonstruck"]), { query: "Moonstruck" })).toBe(true)
+    expect(contract.validateTerminalAnswer("Yes—Moonstruck is on the shelf.")).toBeUndefined()
+    expect(contract.validateTerminalAnswer("No—Moonstruck is not on the shelf.")).toContain("Lead with yes")
   })
 
   it("matches short titles only as complete normalized phrases", () => {

@@ -203,14 +203,14 @@ describe("MCP check_response tool", () => {
     vi.mocked(fs.readdirSync).mockReturnValue(["ari.json"] as any)
     vi.mocked(fs.readFileSync).mockReturnValue(JSON.stringify({
       id: "11111111-2222-4333-8444-555555555555",
-      name: "arimendelow",
-      externalIds: [{ provider: "local", externalId: "arimendelow" }],
+      name: "owner",
+      externalIds: [{ provider: "local", externalId: "owner" }],
     }))
 
     const { createMcpServer } = await import("../../../heart/mcp/mcp-server")
     const server = createMcpServer({
       agent: "test-agent",
-      friendId: "local-arimendelow",
+      friendId: "local-owner",
       socketPath: "/tmp/test.sock",
       stdin,
       stdout,

@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// Sanctuary media MCP server — the Mendelow Cloud Butler's media surface.
+// Sanctuary media MCP server — the Butler's media surface.
 //
 // Design authority: the Butler's own tool-surface spec (Telegram msgs 1700-1713, 2026-09-19).
 // Two hard constraints it set, enforced here:
@@ -31,7 +31,17 @@ const SEERR = cred?.jellyseerr ?? { url: "", apiKey: "" }
 const SONARR = cred?.sonarr ?? { url: "", apiKey: "" }
 const RADARR = cred?.radarr ?? { url: "", apiKey: "" }
 const PROWLARR = cred?.prowlarr ?? { url: "", apiKey: "" }
-const JELLYFIN_WEB = cred?.jellyfinWebUrl ?? "https://media.mendelow.cloud"
+// The household's Jellyfin web address: the credential file wins, then house/house.json.
+// With neither, search results carry no play link rather than a guessed one.
+function houseJellyfinWebUrl() {
+  try {
+    const house = JSON.parse(readFileSync(new URL("../house/house.json", pathToFileURL(CRED_PATH)), "utf8"))
+    return typeof house?.jellyfinWebUrl === "string" ? house.jellyfinWebUrl : ""
+  } catch {
+    return ""
+  }
+}
+const JELLYFIN_WEB = String(cred?.jellyfinWebUrl ?? houseJellyfinWebUrl()).replace(/\/+$/u, "")
 // Optional: when the credential file carries { jellyfin: { url, apiKey } } the library
 // is searched in Jellyfin too. Absent, title resolution uses Sonarr and Radarr only.
 const JELLYFIN = cred?.jellyfin ?? { url: "", apiKey: "" }
@@ -94,7 +104,7 @@ const prowlarr = (path, opts = {}) => req(PROWLARR.url, `/api/v1${path}`, { key:
 // ------------------------------------------------------------------ mapping
 
 // Jellyseerr media status codes.
-const MEDIA_STATUS = { 1: "unknown", 2: "pending", 3: "processing", 4: "partially_available", 5: "available" }
+const MEDIA_STATUS = { 1: "unknown", 2: "pending", 4: "partially_available", 5: "available" }
 const REQUEST_STATUS = { 1: "pending_approval", 2: "approved", 3: "declined", 4: "failed" }
 
 const TMDB_GENRES = {
@@ -110,11 +120,25 @@ function genreNames(item) {
   return ids.map((id) => TMDB_GENRES[id]).filter(Boolean)
 }
 
-function shelfItem(item) {
+// Jellyseerr's media status 3 only means Sonarr/Radarr track the title; it says nothing about
+// a download or a request. Name what is actually known so nobody reads it as "processing".
+function shelfStateOf(kind, info) {
+  if (info.status === 3) return info.downloadStatus?.length ? "downloading" : `in_${kind === "series" ? "sonarr" : "radarr"}_not_downloading`
+  return MEDIA_STATUS[info.status] ?? "not_on_shelf"
+}
+
+// A request exists only if Jellyseerr lists one; the media status is not a request.
+function requestStateOf(info) {
+  if (!Array.isArray(info.requests)) return info.status ? "unknown_check_media_request_status" : "never_requested"
+  if (info.requests.length === 0) return "never_requested"
+  return REQUEST_STATUS[info.requests[info.requests.length - 1].status] ?? "requested"
+}
+
+export function shelfItem(item) {
   const kind = item.mediaType === "tv" ? "series" : item.mediaType === "movie" ? "movie" : (item.firstAirDate ? "series" : "movie")
   const date = item.releaseDate ?? item.firstAirDate ?? ""
   const info = item.mediaInfo ?? {}
-  const status = MEDIA_STATUS[info.status] ?? "not_on_shelf"
+  const status = shelfStateOf(kind, info)
   return {
     title: item.title ?? item.name ?? null,
     year: date ? Number(date.slice(0, 4)) : null,
@@ -126,8 +150,8 @@ function shelfItem(item) {
     // The two fields that stop a second call:
     on_shelf: status === "available" || status === "partially_available",
     shelf_state: status,
-    request_state: info.status ? (status === "available" ? "available" : status) : "never_requested",
-    sonarr_id: info.externalServiceId ?? null,
+    request_state: requestStateOf(info),
+    sonarr_id: kind === "series" ? (info.externalServiceId ?? null) : null,
     radarr_id: kind === "movie" ? (info.externalServiceId ?? null) : null,
     poster_path: item.posterPath ? `https://image.tmdb.org/t/p/w500${item.posterPath}` : null,
     vote_average: item.voteAverage ?? null,
@@ -385,7 +409,7 @@ async function mediaRequest(a) {
 
   const existing = await findExistingRequest(tmdbId, kind)
   if (existing?.hasRequest) {
-    const shelf = MEDIA_STATUS[existing.media?.status] ?? "unknown"
+    const shelf = shelfStateOf(kind, existing.media ?? {})
     return {
       resolved: true, title: resolvedTitle ?? existing.media?.title ?? null, year: resolvedYear, kind, tmdb_id: tmdbId,
       request_id: `jellyseerr:${existing.id}`,
@@ -412,7 +436,7 @@ async function mediaRequest(a) {
     approval_state: REQUEST_STATUS[created.status] ?? "submitted",
     duplicate_of: null,
     jellyseerr_status: REQUEST_STATUS[created.status] ?? "submitted",
-    shelf_state: MEDIA_STATUS[created.media?.status] ?? "processing",
+    shelf_state: created.media?.status ? shelfStateOf(kind, created.media) : "not_on_shelf",
     submitted_at: created.createdAt,
     tvdb_id: created.media?.tvdbId ?? null,
     sonarr_id: kind === "series" ? (created.media?.externalServiceId ?? null) : null,
@@ -520,7 +544,7 @@ export async function mediaRequestStatus(a) {
 
   const kind = request.type === "tv" ? "series" : "movie"
   const media = request.media ?? {}
-  const shelf = MEDIA_STATUS[media.status] ?? "unknown"
+  const shelf = shelfStateOf(kind, media)
   const svcId = media.externalServiceId ?? null
 
   const result = {
@@ -852,7 +876,7 @@ async function mediaPlayOrResolve(a) {
     episodes_total: status.file.episodes_total ?? null,
     path: status.file.path,
     size_bytes: status.file.size_bytes,
-    play_url: onShelf ? `${JELLYFIN_WEB}/web/index.html#!/search.html?query=${encodeURIComponent(status.request.title ?? "")}` : null,
+    play_url: onShelf && JELLYFIN_WEB ? `${JELLYFIN_WEB}/web/index.html#!/search.html?query=${encodeURIComponent(status.request.title ?? "")}` : null,
     diagnosis: status.diagnosis,
   }
 }

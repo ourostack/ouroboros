@@ -62,6 +62,7 @@ export interface RsvpCutoverDeps {
   mkdirSync?: (dirPath: string) => void
   renameSync?: (oldPath: string, newPath: string) => void
   copyFileSync?: (sourcePath: string, targetPath: string) => void
+  readdirSync?: (dirPath: string) => string[]
   now?: () => Date
   spawnSync?: SpawnSyncLike
   platform?: NodeJS.Platform
@@ -99,6 +100,7 @@ interface NormalizedRsvpCutoverDeps {
   mkdirSync: (dirPath: string) => void
   renameSync: (oldPath: string, newPath: string) => void
   copyFileSync: (sourcePath: string, targetPath: string) => void
+  readdirSync: (dirPath: string) => string[]
   now: () => Date
   spawnSync: SpawnSyncLike
   platform: NodeJS.Platform
@@ -111,7 +113,24 @@ interface NormalizedRsvpCutoverDeps {
   unloadLaunchAgent?: RsvpCutoverDeps["unloadLaunchAgent"]
 }
 
-const LEGACY_LAUNCH_AGENT_LABEL = "com.arimendelow.rsvp-tracker"
+const DEFAULT_LEGACY_LAUNCH_AGENT_LABEL = "com.owner.rsvp-tracker"
+const LEGACY_LAUNCH_AGENT_PLIST = /^([A-Za-z0-9.-]+\.rsvp-tracker)\.plist$/u
+
+// The legacy tracker was installed under a per-owner reverse-DNS label, so find it by its
+// `*.rsvp-tracker.plist` file instead of naming any one owner in source.
+export function resolveLegacyLaunchAgentLabel(legacyRoot: string, deps: Pick<NormalizedRsvpCutoverDeps, "readdirSync" | "homeDir">): string {
+  for (const dir of [legacyRoot, path.join(deps.homeDir(), "Library", "LaunchAgents")]) {
+    let names: string[]
+    try {
+      names = deps.readdirSync(dir)
+    } catch {
+      continue
+    }
+    const match = [...names].sort().map((name) => LEGACY_LAUNCH_AGENT_PLIST.exec(name)).find((found) => found !== null)
+    if (match) return match[1]!
+  }
+  return DEFAULT_LEGACY_LAUNCH_AGENT_LABEL
+}
 const EMPTY_ROLLBACK: RsvpCutoverRollback = {
   configBackupPath: "",
   launchAgentBackupPath: "",
@@ -126,6 +145,7 @@ function normalizeDeps(deps: RsvpCutoverDeps = {}): NormalizedRsvpCutoverDeps {
     mkdirSync: deps.mkdirSync ?? ((dirPath) => fs.mkdirSync(dirPath, { recursive: true })),
     renameSync: deps.renameSync ?? fs.renameSync,
     copyFileSync: deps.copyFileSync ?? fs.copyFileSync,
+    readdirSync: deps.readdirSync ?? ((dirPath) => fs.readdirSync(dirPath)),
     now: deps.now ?? (() => new Date()),
     spawnSync: deps.spawnSync ?? spawnSync,
     platform: deps.platform ?? process.platform,
@@ -287,8 +307,8 @@ function firstExistingPath(candidates: Array<string | undefined>, deps: Pick<Nor
 function launchAgentPlistCandidates(legacyRoot: string, state: RsvpCutoverLaunchAgentState, deps: NormalizedRsvpCutoverDeps): string[] {
   const candidates = [
     state.plistPath,
-    path.join(legacyRoot, `${LEGACY_LAUNCH_AGENT_LABEL}.plist`),
-    path.join(deps.homeDir(), "Library", "LaunchAgents", `${LEGACY_LAUNCH_AGENT_LABEL}.plist`),
+    path.join(legacyRoot, `${resolveLegacyLaunchAgentLabel(legacyRoot, deps)}.plist`),
+    path.join(deps.homeDir(), "Library", "LaunchAgents", `${resolveLegacyLaunchAgentLabel(legacyRoot, deps)}.plist`),
   ]
   return [...new Set(candidates.filter((candidate): candidate is string => !!candidate && deps.existsSync(candidate)))]
 }
@@ -348,11 +368,11 @@ async function buildChecks(input: CheckRsvpCutoverInput, deps: NormalizedRsvpCut
 
   const launchAgentState = deps.getLaunchAgentState
     ? await deps.getLaunchAgentState({
-      label: LEGACY_LAUNCH_AGENT_LABEL,
+      label: resolveLegacyLaunchAgentLabel(input.legacyRoot, deps),
       legacyRoot: input.legacyRoot,
     })
     : await defaultLaunchAgentState({
-      label: LEGACY_LAUNCH_AGENT_LABEL,
+      label: resolveLegacyLaunchAgentLabel(input.legacyRoot, deps),
       legacyRoot: input.legacyRoot,
     }, deps)
   const processState = deps.getLegacyProcessState
@@ -411,7 +431,7 @@ function writeRollbackManifest(input: {
   input.deps.writeFileSync(manifestPath, `${JSON.stringify({
     action: input.action,
     createdAt: input.deps.now().toISOString(),
-    label: LEGACY_LAUNCH_AGENT_LABEL,
+    label: resolveLegacyLaunchAgentLabel(input.legacyRoot, input.deps),
     rollback,
   }, null, 2)}\n`)
   return rollback
@@ -443,24 +463,24 @@ async function retireLegacySendConfig(input: RunRsvpCutoverInput, deps: Normaliz
 async function quarantineLaunchAgent(input: RunRsvpCutoverInput, deps: NormalizedRsvpCutoverDeps): Promise<RsvpCutoverRollback> {
   const state = deps.getLaunchAgentState
     ? await deps.getLaunchAgentState({
-      label: LEGACY_LAUNCH_AGENT_LABEL,
+      label: resolveLegacyLaunchAgentLabel(input.legacyRoot, deps),
       legacyRoot: input.legacyRoot,
     })
     : await defaultLaunchAgentState({
-      label: LEGACY_LAUNCH_AGENT_LABEL,
+      label: resolveLegacyLaunchAgentLabel(input.legacyRoot, deps),
       legacyRoot: input.legacyRoot,
     }, deps)
   const candidates = launchAgentPlistCandidates(input.legacyRoot, state, deps)
   const plistPath = candidates[0]
   if (deps.unloadLaunchAgent) {
     await deps.unloadLaunchAgent({
-      label: LEGACY_LAUNCH_AGENT_LABEL,
+      label: resolveLegacyLaunchAgentLabel(input.legacyRoot, deps),
       legacyRoot: input.legacyRoot,
       ...(plistPath ? { plistPath } : {}),
     })
   } else {
     await defaultUnloadLaunchAgent({
-      label: LEGACY_LAUNCH_AGENT_LABEL,
+      label: resolveLegacyLaunchAgentLabel(input.legacyRoot, deps),
       ...(plistPath ? { plistPath } : {}),
     }, deps)
   }

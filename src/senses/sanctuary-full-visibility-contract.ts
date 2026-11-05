@@ -6,7 +6,7 @@ const REQUIRED_TOOL_NAMES = ["query_active_work", "query_cares", "unraid_get_sys
 const WHOLE_STATUS_REQUESTS = new Set(["what are you working on", "what's going on with sanctuary"])
 
 function unsupportedCurrentClaim(answer: string, queueUnavailable: boolean, authorizedDockerClaims: readonly string[]): string | undefined {
-  if (queueUnavailable && answer.trim().length === 0) return "Give Ari the current results that did complete and say plainly that the download queue is currently unavailable; do not return an empty answer."
+  if (queueUnavailable && answer.trim().length === 0) return "Give the owner the current results that did complete and say plainly that the download queue is currently unavailable; do not return an empty answer."
   if (queueUnavailable) {
     const unsupportedQueueClaim = answer.split(/[,;!?\n]|(?<!\d)\.(?!\d)/u).some((clause) => {
       if (!/\b(?:download(?:s| queue)?|queue|SABnzbd)\b/iu.test(clause)) return false
@@ -109,7 +109,7 @@ export function sanctuaryFullVisibilityRequiredToolCalls(request: string, _adver
   const completed = new Set<string>()
   return {
     names: REQUIRED_TOOL_NAMES,
-    retryMessage: "Before answering, read current active work, cares, system health, service state, storage, notifications, and the download queue. Current tool facts outrank care history; a stale care is a recheck item, not a present-tense fact. Then give Ari one compact household summary; do not ask him to choose a status slice.",
+    retryMessage: "Before answering, read current active work, cares, system health, service state, storage, notifications, and the download queue. Current tool facts outrank care history; a stale care is a recheck item, not a present-tense fact. Then give the owner one compact household summary; do not ask him to choose a status slice.",
     requireSuccessfulResults: true,
     validateRequiredToolResult: (name, result) => {
       const validation = successfulCurrentResult(name, result)

@@ -48,8 +48,8 @@ function message(overrides: Partial<any> = {}) {
     fromMe: false,
     sender: {
       provider: "imessage-handle" as const,
-      externalId: "ari@mendelow.me",
-      rawId: "ari@mendelow.me",
+      externalId: "owner@example.test",
+      rawId: "owner@example.test",
       displayName: "Ari",
     },
     chat: {
@@ -58,7 +58,7 @@ function message(overrides: Partial<any> = {}) {
       isGroup: true,
       sessionKey: "chat:any;+;thread-guid",
       sendTarget: { kind: "chat_guid" as const, value: "any;+;thread-guid" },
-      participantHandles: ["ari@mendelow.me"],
+      participantHandles: ["owner@example.test"],
     },
     text: overrides.text ?? "anchor body",
     textForAgent: overrides.textForAgent ?? overrides.text ?? "anchor body",

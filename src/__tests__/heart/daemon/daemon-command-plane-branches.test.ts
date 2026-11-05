@@ -102,6 +102,8 @@ describe("daemon command plane branches", () => {
       stopAll: vi.fn(async () => undefined),
       listSenseRows: vi.fn(() => []),
       reviveSense: vi.fn(),
+      shepherdStoppedProof: vi.fn(),
+      quiesceShepherd: vi.fn(),
     }
 
     const daemon = new OuroDaemon({
@@ -135,6 +137,32 @@ describe("daemon command plane branches", () => {
     } as any)
     return { daemon, processManager, scheduler, healthMonitor, router, senseManager }
   }
+
+  it("serves private lifecycle reads and awaited maintenance quiescence without weakening errors", async () => {
+    const { daemon, senseManager } = make(tmpSocketPath("shepherd-maintenance"))
+    const proof = { kind: "daemon_lifecycle", checkedAt: new Date().toISOString(), enabled: false, processState: "stopped" }
+    senseManager.shepherdStoppedProof.mockReturnValue(proof)
+    expect(await daemon.handleCommand({ kind: "daemon.shepherd_stopped", agent: "ouro" })).toMatchObject({ ok: true, data: proof })
+    expect(senseManager.shepherdStoppedProof).toHaveBeenCalledWith("ouro")
+    senseManager.quiesceShepherd.mockResolvedValue(proof)
+    expect(await daemon.handleCommand({ kind: "daemon.shepherd_quiesce", agent: "ouro" })).toMatchObject({ ok: true, data: proof })
+    senseManager.quiesceShepherd.mockRejectedValue(new Error("worker failed to stop"))
+    await expect(daemon.handleCommand({ kind: "daemon.shepherd_quiesce", agent: "ouro" })).rejects.toThrow("worker failed to stop")
+  })
+
+  it("refuses lifecycle commands with malformed owners or unavailable lifecycle services", async () => {
+    const { daemon, senseManager } = make(tmpSocketPath("shepherd-unavailable"))
+    for (const kind of ["daemon.shepherd_stopped", "daemon.shepherd_quiesce"] as const) {
+      expect(await daemon.handleCommand({ kind, agent: undefined } as never)).toMatchObject({ ok: false, error: expect.stringContaining("unavailable") })
+    }
+    expect(senseManager.shepherdStoppedProof).not.toHaveBeenCalled()
+    expect(senseManager.quiesceShepherd).not.toHaveBeenCalled()
+    Reflect.deleteProperty(senseManager, "shepherdStoppedProof")
+    Reflect.deleteProperty(senseManager, "quiesceShepherd")
+    for (const kind of ["daemon.shepherd_stopped", "daemon.shepherd_quiesce"] as const) {
+      expect(await daemon.handleCommand({ kind, agent: "ouro" })).toMatchObject({ ok: false, error: expect.stringContaining("unavailable") })
+    }
+  })
 
   it("delegates default external-event readiness to the Sanctuary runtime owner", async () => {
     const socketPath = tmpSocketPath("daemon-default-external-event-readiness")
@@ -1443,8 +1471,37 @@ describe("daemon command plane branches", () => {
 
       readiness.resolve()
       await start
-      expect(readExternalEventRecord(received.recordPath)).toMatchObject({ executionState: "running", attemptCount: 1 })
+      await vi.waitFor(() => expect(readExternalEventRecord(received.recordPath)).toMatchObject({ executionState: "running", attemptCount: 1 }))
       expect(processManager.sendToAgent).toHaveBeenCalledTimes(1)
+    } finally {
+      await daemon.stop()
+      fs.rmSync(externalEventRoot, { recursive: true, force: true })
+      fs.rmSync(bundlesRoot, { recursive: true, force: true })
+      fs.rmSync(ledgerPath, { force: true })
+    }
+  })
+
+  it("starts senses without waiting for a startup external-event private turn that never finishes", async () => {
+    const socketPath = tmpSocketPath("daemon-external-event-senses-first")
+    const ledgerPath = path.join(os.tmpdir(), `external-event-senses-first-${Date.now()}-${Math.random().toString(16).slice(2)}.jsonl`)
+    const externalEventRoot = fs.mkdtempSync(path.join(os.tmpdir(), "external-event-senses-first-root-"))
+    const bundlesRoot = fs.mkdtempSync(path.join(os.tmpdir(), "external-event-senses-first-bundles-"))
+    const received = recordExternalEvent({ agent: "slugger", source: "sanctuary-health", eventType: "health.observed", eventId: "slow-turn", observationRevision: "rev-1" }, { root: externalEventRoot })
+    const { daemon, processManager, senseManager } = make(socketPath, bundlesRoot, {
+      privateRuntimePolicyDeps: privateRuntimePolicyDeps(ledgerPath, "allow"),
+      externalEventRoot,
+      externalEventSourceReadiness: vi.fn(async () => undefined),
+    })
+    processManager.listAgentSnapshots.mockReturnValue([registeredSnapshot()])
+    const dispatchToAgent = vi.fn(() => new Promise<void>(() => {}))
+    ;(processManager as typeof processManager & { dispatchToAgent: typeof dispatchToAgent }).dispatchToAgent = dispatchToAgent
+
+    try {
+      await daemon.start()
+      expect(senseManager.startAutoStartSenses).toHaveBeenCalledTimes(1)
+      expect(processManager.startAutoStartAgents).toHaveBeenCalledTimes(1)
+      await vi.waitFor(() => expect(dispatchToAgent).toHaveBeenCalledOnce())
+      expect(readExternalEventRecord(received.recordPath)).toMatchObject({ executionState: "running", attemptCount: 1 })
     } finally {
       await daemon.stop()
       fs.rmSync(externalEventRoot, { recursive: true, force: true })
@@ -1677,6 +1734,27 @@ describe("daemon command plane branches", () => {
       ;((daemon as any).externalEventReconcileTimer as { _onTimeout(): void })._onTimeout()
       await new Promise((resolve) => setImmediate(resolve))
       expect(scanner).toHaveBeenCalledTimes(2)
+    } finally {
+      await daemon.stop()
+      fs.rmSync(externalEventRoot, { recursive: true, force: true })
+      fs.rmSync(spoolRoot, { recursive: true, force: true })
+    }
+  })
+
+  it("keeps the daemon up and logs a warning when startup external-event reconciliation throws", async () => {
+    const socketPath = tmpSocketPath("daemon-startup-reconcile-error")
+    const externalEventRoot = fs.mkdtempSync(path.join(os.tmpdir(), "daemon-startup-reconcile-error-root-"))
+    const spoolRoot = fs.mkdtempSync(path.join(os.tmpdir(), "daemon-startup-reconcile-error-spool-"))
+    const scanner = vi.fn(() => { throw new Error("spool unreadable") })
+    const { daemon, senseManager } = make(socketPath, undefined, { externalEventRoot, privilegedEventSpoolRoot: spoolRoot, privilegedEventScanner: scanner })
+
+    try {
+      await expect(daemon.start()).resolves.toBeUndefined()
+      expect(senseManager.startAutoStartSenses).toHaveBeenCalledTimes(1)
+      await vi.waitFor(() => expect(mockEmitNervesEvent).toHaveBeenCalledWith(expect.objectContaining({
+        event: "daemon.external_event_startup_reconcile_error",
+        meta: { error: "spool unreadable" },
+      })))
     } finally {
       await daemon.stop()
       fs.rmSync(externalEventRoot, { recursive: true, force: true })

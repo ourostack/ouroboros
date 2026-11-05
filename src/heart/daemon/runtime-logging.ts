@@ -25,6 +25,7 @@ export interface ConfigureDaemonRuntimeLoggerOptions {
   homeDir?: string
   agentName?: string
   configPath?: string
+  machine?: boolean
 }
 
 type RuntimeProcessName = "daemon" | "ouro" | "ouro-bot" | "bluebubbles" | "mail" | "voice" | "a2a" | "telegram" | "shepherd" | "teams"
@@ -135,7 +136,7 @@ export function configureDaemonRuntimeLogger(
   processName: RuntimeProcessName,
   options: ConfigureDaemonRuntimeLoggerOptions = {},
 ): void {
-  const pathTarget = resolveLoggingPathTarget(options.agentName)
+  const pathTarget: LoggingPathTarget = options.machine ? { kind: "machine" } : resolveLoggingPathTarget(options.agentName)
   const configPath = options.configPath
     ?? (pathTarget.kind === "machine"
       ? machineDaemonLoggingConfigPath(options.homeDir)

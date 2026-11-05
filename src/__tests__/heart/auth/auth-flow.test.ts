@@ -88,6 +88,25 @@ function emitTestEvent(testName: string): void {
 
 const cleanup: string[] = []
 
+describe("Shepherd cadence configuration parity", () => {
+  it.each([
+    { enabled: true, checkInMinutes: 30 },
+    { enabled: true, notify: "off", checkInMinutes: 0 },
+  ])("preserves cadence through the actual auth config reader: %j", shepherd => {
+    const bundlesRoot = makeTempDir("checkin-auth-config")
+    writeAgentConfig(bundlesRoot, "CheckInBot", "anthropic", { senses: { shepherd } })
+    expect(readAgentConfigForAgent("CheckInBot", bundlesRoot).config).toMatchObject({ senses: { shepherd } })
+  })
+
+  it("refuses an invalid explicit cadence through the auth reader", () => {
+    const bundlesRoot = makeTempDir("checkin-auth-invalid")
+    writeAgentConfig(bundlesRoot, "CheckInBot", "anthropic", {
+      senses: { shepherd: { enabled: true, checkInMinutes: 5 } },
+    })
+    expect(() => readAgentConfigForAgent("CheckInBot", bundlesRoot)).toThrow("checkInMinutes")
+  })
+})
+
 function makeTempDir(prefix: string): string {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), `${prefix}-`))
   cleanup.push(dir)
@@ -504,6 +523,41 @@ describe("runtime auth flow", () => {
     expect(expectProviderCredentialWrite("AnthropicBot", "anthropic").credentials.setupToken).toBe(
       setupToken,
     )
+  })
+
+  it("stores a supplied Anthropic API key and base URL without running claude setup-token", async () => {
+    emitTestEvent("anthropic api-key mode")
+    const homeDir = makeTempDir("auth-flow-home-anthropic-api-key")
+    const spawnSync = vi.fn(() => ({ status: 0 })) as any
+
+    const result = await runRuntimeAuthFlow(
+      { agentName: "GatewayBot", provider: "anthropic", apiKey: "  ouro-gw-test  ", baseUrl: "http://127.0.0.1:8787" },
+      { homeDir, spawnSync },
+    )
+
+    expect(spawnSync).not.toHaveBeenCalled()
+    expect(result.credentials).toEqual({ apiKey: "ouro-gw-test", baseUrl: "http://127.0.0.1:8787" })
+    const written = expectProviderCredentialWrite("GatewayBot", "anthropic")
+    expect(written.credentials).toEqual({ apiKey: "ouro-gw-test" })
+    expect(written.config).toEqual({ baseUrl: "http://127.0.0.1:8787" })
+
+    const withoutBaseUrl = await runRuntimeAuthFlow(
+      { agentName: "GatewayBot", provider: "anthropic", apiKey: "sk-ant-usr-test" },
+      { homeDir, spawnSync },
+    )
+    expect(withoutBaseUrl.credentials).toEqual({ apiKey: "sk-ant-usr-test" })
+  })
+
+  it("treats an Anthropic API key as complete hatch credentials", async () => {
+    emitTestEvent("anthropic api-key hatch credentials")
+    const runAuthFlow = vi.fn()
+    await expect(resolveHatchCredentials({
+      agentName: "GatewayHatch",
+      provider: "anthropic",
+      credentials: { apiKey: "sk-ant-usr-test" },
+      runAuthFlow,
+    })).resolves.toEqual({ apiKey: "sk-ant-usr-test" })
+    expect(runAuthFlow).not.toHaveBeenCalled()
   })
 
   it("requires prompt input for Anthropics setup-token flow", async () => {

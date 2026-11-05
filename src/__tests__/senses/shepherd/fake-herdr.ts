@@ -35,7 +35,7 @@ export async function startFakeHerdr(): Promise<FakeHerdr> {
     let buffer = ""
     socket.on("error", () => undefined)
     socket.on("close", () => streams.delete(socket))
-    socket.on("data", (chunk) => {
+    socket.on("data", async (chunk) => {
       buffer += chunk.toString("utf-8")
       let index = buffer.indexOf("\n")
       while (index >= 0) {
@@ -47,7 +47,7 @@ export async function startFakeHerdr(): Promise<FakeHerdr> {
         const handler = handlers.get(request.method)
         try {
           if (!handler) throw new HerdrError("unknown_method", `unknown method ${request.method}`)
-          const result = handler(request.params)
+          const result = await handler(request.params)
           if (result === null) continue
           socket.write(`${JSON.stringify({ id: request.id, result })}\n`)
           if (request.method === "events.subscribe") streams.add(socket)

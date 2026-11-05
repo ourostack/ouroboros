@@ -706,7 +706,7 @@ describe("surface tool", () => {
           {
             friendId: "friend-1",
             channel: "bluebubbles",
-            key: "chat:any;-;ari@mendelow.me",
+            key: "chat:any;-;owner@example.test",
           },
         ],
       })
@@ -714,8 +714,8 @@ describe("surface tool", () => {
         {
           friendId: "friend-1",
           channel: "bluebubbles",
-          key: "chat:any;-;ari@mendelow.me",
-          sessionPath: "/tmp/test-agent/state/sessions/friend-1/bluebubbles/chat_any;-;ari@mendelow.me.json",
+          key: "chat:any;-;owner@example.test",
+          sessionPath: "/tmp/test-agent/state/sessions/friend-1/bluebubbles/chat_any;-;owner@example.test.json",
         },
       ])
 
@@ -730,7 +730,7 @@ describe("surface tool", () => {
             friendId: "friend-1",
             friendName: "Ari",
             channel: "bluebubbles",
-            key: "chat:any;-;ari@mendelow.me",
+            key: "chat:any;-;owner@example.test",
             bridgeId: "bridge-1",
             delegatedContent: "think about this privately",
             source: "drained",
@@ -743,7 +743,7 @@ describe("surface tool", () => {
       expect(result).toContain("for next interaction via bluebubbles")
       expect(mockSendProactiveBlueBubblesMessageToSession).not.toHaveBeenCalled()
       expect(fs.writeFileSync).toHaveBeenCalledWith(
-        expect.stringMatching(/\/state\/pending\/friend-1\/bluebubbles\/chat:any;-;ari@mendelow.me\/\d+-[a-z0-9]+\.json$/),
+        expect.stringMatching(/\/state\/pending\/friend-1\/bluebubbles\/chat:any;-;owner@example.test\/\d+-[a-z0-9]+\.json$/),
         expect.stringContaining("private answer ready for the bluebubbles session"),
       )
     })
@@ -757,8 +757,8 @@ describe("surface tool", () => {
         {
           friendId: "friend-1",
           channel: "bluebubbles",
-          key: "chat:any;-;ari@mendelow.me",
-          sessionPath: "/tmp/test-agent/state/sessions/friend-1/bluebubbles/chat_any;-;ari@mendelow.me.json",
+          key: "chat:any;-;owner@example.test",
+          sessionPath: "/tmp/test-agent/state/sessions/friend-1/bluebubbles/chat_any;-;owner@example.test.json",
         },
       ])
 
@@ -803,8 +803,8 @@ describe("surface tool", () => {
         {
           friendId: "friend-1",
           channel: "bluebubbles",
-          key: "chat:any;-;ari@mendelow.me",
-          sessionPath: "/tmp/test-agent/state/sessions/friend-1/bluebubbles/chat_any;-;ari@mendelow.me.json",
+          key: "chat:any;-;owner@example.test",
+          sessionPath: "/tmp/test-agent/state/sessions/friend-1/bluebubbles/chat_any;-;owner@example.test.json",
         },
       ])
 
@@ -848,8 +848,8 @@ describe("surface tool", () => {
         {
           friendId: "friend-1",
           channel: "bluebubbles",
-          key: "chat:any;-;ari@mendelow.me",
-          sessionPath: "/tmp/test-agent/state/sessions/friend-1/bluebubbles/chat_any;-;ari@mendelow.me.json",
+          key: "chat:any;-;owner@example.test",
+          sessionPath: "/tmp/test-agent/state/sessions/friend-1/bluebubbles/chat_any;-;owner@example.test.json",
         },
       ])
 
@@ -986,8 +986,8 @@ describe("surface tool", () => {
         {
           friendId: "friend-1",
           channel: "bluebubbles",
-          key: "chat:any;-;ari@mendelow.me",
-          sessionPath: "/tmp/test-agent/state/sessions/friend-1/bluebubbles/chat_any;-;ari@mendelow.me.json",
+          key: "chat:any;-;owner@example.test",
+          sessionPath: "/tmp/test-agent/state/sessions/friend-1/bluebubbles/chat_any;-;owner@example.test.json",
         },
       ])
 
@@ -1001,7 +1001,7 @@ describe("surface tool", () => {
       expect(result).toContain("for next interaction via bluebubbles")
       expect(mockSendProactiveBlueBubblesMessageToSession).not.toHaveBeenCalled()
       expect(fs.writeFileSync).toHaveBeenCalledWith(
-        expect.stringMatching(/\/state\/pending\/friend-1\/bluebubbles\/chat:any;-;ari@mendelow.me\/\d+-[a-z0-9]+\.json$/),
+        expect.stringMatching(/\/state\/pending\/friend-1\/bluebubbles\/chat:any;-;owner@example.test\/\d+-[a-z0-9]+\.json$/),
         expect.stringContaining("freshest bluebubbles return should wait"),
       )
     })

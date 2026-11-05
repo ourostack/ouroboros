@@ -19,12 +19,12 @@ import {
 import type { BlueBubblesNormalizedMessage } from "../../senses/bluebubbles/model"
 import { classifyBlueBubblesReaction } from "../../senses/bluebubbles/reaction-policy"
 
-const CHAT_GUID = "iMessage;-;ari@synthetic.test"
-const CHAT_IDENTIFIER = "ari@synthetic.test"
+const CHAT_GUID = "iMessage;-;alex@synthetic.test"
+const CHAT_IDENTIFIER = "alex@synthetic.test"
 const REQUEST_AT = Date.parse("2026-08-12T18:05:00.000Z")
 const REQUEST_TEXT = "hey slugger wedding has happened, we can end this report :) thanks my dude"
 const RSVP_TEXT = [
-  "RSVP Update — Ari & Rachel",
+  "RSVP Update — Alex & Sam",
   "No changes since last check.",
   "147 attending / 126 declined / 0 pending",
 ].join("\n")
@@ -46,7 +46,7 @@ function message(input: {
       provider: "imessage-handle",
       externalId: input.fromMe ? "shared-account@synthetic.test" : CHAT_IDENTIFIER,
       rawId: input.fromMe ? "shared-account@synthetic.test" : CHAT_IDENTIFIER,
-      displayName: input.fromMe ? "" : "Ari",
+      displayName: input.fromMe ? "" : "Alex",
       observed: !input.fromMe,
     },
     chat: {
@@ -141,7 +141,7 @@ it("replays the RSVP request, grounded response, and later reaction without losi
   expect(evidenceJson.predecessor.body).toBe(RSVP_TEXT)
   expect(evidence).toContain('"direction":"shared-account outbound"')
   expect(evidence).toContain('"agentAuthorship":"unverified"')
-  expect(evidence).not.toMatch(/Rachel (said|read|saw|was seeing|is at|was at|located)/i)
+  expect(evidence).not.toMatch(/Sam (said|read|saw|was seeing|is at|was at|located)/i)
   expect(evidence).not.toMatch(/restart|woke[- ]?up|shelly unstuck|glitch/i)
 
   const currentUserMessage = Object.freeze<OpenAI.ChatCompletionUserMessageParam>({
@@ -240,7 +240,7 @@ it("replays the RSVP request, grounded response, and later reaction without losi
   expect(requestCapability.signal.aborted).toBe(true)
   expect(isCurrent(requestCapability)).toBe(false)
 
-  callbacks.onTextChunk("oh wait — that was a restart glitch and Rachel was reading something")
+  callbacks.onTextChunk("oh wait — that was a restart glitch and Sam was reading something")
   await expect(callbacks.flush()).resolves.toEqual({ status: "not_invoked", reason: "closed" })
   if (isCurrent(requestCapability)) {
     persistCanonicalProjection([{ role: "assistant", content: "late stale result" }])

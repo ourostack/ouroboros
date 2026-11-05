@@ -65,7 +65,8 @@ describe("doctor and bounded-repair documentation contract", () => {
     expect(item).toEqual(expect.objectContaining({
       status: "open",
       owner: "Mailroom",
-      due: "2026-10-31",
+      // Moved from 2026-10-31 on 2026-11-03 (PR 1155): the work is still open and the expired date blocked unrelated releases.
+      due: "2026-11-17",
     }))
     expect(String(item?.removalCriteria)).toContain("transaction")
     expect(String(item?.removalCriteria)).toContain("orphan")
@@ -84,7 +85,7 @@ describe("doctor and bounded-repair documentation contract", () => {
     expect(wrapper.version).toBe(packageJson.version)
     expect(changelog.versions[0]?.version).toBe(packageJson.version)
     const butlerRelease = changelog.versions.find((entry) =>
-      entry.changes.join("\n").includes("Ship Mendelow Cloud Butler for Sanctuary"),
+      entry.changes.join("\n").includes("Ship Ouro Butler for Sanctuary"),
     )
     expect(butlerRelease?.changes.join("\n")).toContain("durable approvals")
     expect(butlerRelease?.changes.join("\n")).toContain("Unraid")

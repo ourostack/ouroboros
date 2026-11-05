@@ -268,6 +268,24 @@ function createExclusive(file: string, body: string | Buffer): void {
   }
 }
 
+const MAX_BACKUP_SUFFIX = 99
+
+/**
+ * Keeps the previous bytes under the timestamped name, or under the first free `-1`, `-2`, ... variant when two writes
+ * land in the same millisecond. Every attempt is an exclusive create, so an existing backup is never overwritten.
+ */
+function createBackup(base: string, previous: Buffer): string {
+  for (let suffix = 0; ; suffix++) {
+    const candidate = suffix === 0 ? base : `${base}-${suffix}`
+    try {
+      createExclusive(candidate, previous)
+      return candidate
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "EEXIST" || suffix >= MAX_BACKUP_SUFFIX) throw error
+    }
+  }
+}
+
 function rawBytes(file: string): Buffer | null {
   let fd: number | undefined
   try {
@@ -282,7 +300,7 @@ function rawBytes(file: string): Buffer | null {
 
 /**
  * Replaces one file in the trust directory. The previous bytes are kept beside it as a timestamped backup, created the
- * same safe way. The new file is written to an exclusive random temporary name, owned and moded through its descriptor,
+ * same safe way and never overwriting an earlier one. The new file is written to an exclusive random temporary name, owned and moded through its descriptor,
  * fsynced and renamed into place, so a reader never sees a half-written file and nothing already on disk is followed.
  */
 export function writeTrustedFile(agentRoot: string, fileName: string, body: string, now: Date): { backup: string | null } {
@@ -292,8 +310,7 @@ export function writeTrustedFile(agentRoot: string, fileName: string, body: stri
   const previous = rawBytes(file)
   let backup: string | null = null
   if (previous) {
-    backup = `${file}.bak-${now.toISOString().replace(/[:.]/gu, "-")}`
-    createExclusive(backup, previous)
+    backup = createBackup(`${file}.bak-${now.toISOString().replace(/[:.]/gu, "-")}`, previous)
     fsyncDirectory(dir)
   }
   const tmp = path.join(dir, `.${fileName}.${randomBytes(8).toString("hex")}.tmp`)

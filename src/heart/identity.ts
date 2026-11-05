@@ -4,6 +4,8 @@ import * as path from "path"
 import { emitNervesEvent } from "../nerves/runtime"
 import { migrateAgentConfigV1ToV2 } from "./migrate-config"
 import { DEFAULT_HABIT_PAID_TURNS_PER_DAY, normalizeHabitPaidTurnsPerDay } from "./autonomy-budget"
+import { validateAgentDisplayName } from "../senses/shepherd/agent-presentation"
+import { normalizeShepherdCheckInMinutes } from "../senses/shepherd/checkin-config"
 
 export { normalizeHabitPaidTurnsPerDay } from "./autonomy-budget"
 
@@ -12,10 +14,12 @@ export type AgentProvider = "azure" | "minimax" | "anthropic" | "openai-codex" |
 /** Single source of truth for per-provider credential field names, env var mappings, and prompt labels. */
 export const PROVIDER_CREDENTIALS: Record<AgentProvider, {
   required: string[]
+  /** Other complete field sets that satisfy the provider instead of `required` (anthropic: an API key instead of a setup-token). */
+  alternativeRequired?: string[][]
   envVars: Record<string, string>
   promptLabels: Record<string, string>
 }> = {
-  anthropic:        { required: ["setupToken"],                        envVars: { ANTHROPIC_API_KEY: "setupToken" },                                                                                        promptLabels: { setupToken: "Anthropic setup-token" } },
+  anthropic:        { required: ["setupToken"], alternativeRequired: [["apiKey"]], envVars: { ANTHROPIC_API_KEY: "setupToken" },                                                                                        promptLabels: { setupToken: "Anthropic setup-token" } },
   "openai-codex":   { required: ["oauthAccessToken"],                  envVars: { OPENAI_API_KEY: "oauthAccessToken" },                                                                                     promptLabels: { oauthAccessToken: "OpenAI Codex OAuth token" } },
   azure:            { required: ["apiKey", "endpoint", "deployment"],   envVars: { AZURE_OPENAI_API_KEY: "apiKey", AZURE_OPENAI_KEY: "apiKey", AZURE_OPENAI_ENDPOINT: "endpoint", AZURE_OPENAI_DEPLOYMENT: "deployment" }, promptLabels: { apiKey: "Azure API key", endpoint: "Azure endpoint", deployment: "Azure deployment" } },
   minimax:          { required: ["apiKey"],                             envVars: { MINIMAX_API_KEY: "apiKey" },                                                                                              promptLabels: { apiKey: "MiniMax API key" } },
@@ -42,6 +46,7 @@ export interface AgentSenseConfig {
    * loop guard), or "off".
    */
   notify?: ShepherdNoticePolicy
+  checkInMinutes?: number
 }
 
 export type ShepherdNoticePolicy = "every" | "needs-me" | "off"
@@ -73,6 +78,8 @@ export interface AgentFacingConfig {
 
 export interface AgentConfig {
   version: number
+  /** Human-facing identity; does not change the bundle/routing identifier. */
+  displayName?: string
   enabled: boolean
   /** @deprecated Use humanFacing/agentFacing instead */
   provider?: AgentProvider
@@ -279,9 +286,9 @@ export function normalizeSenses(value: unknown, configFile: string): AgentSenses
       defaults[senseName] = { enabled, hostUsername: hostUsername.trim() }
       continue
     }
-    const notify = (rawSense as Record<string, unknown>).notify
-    if (senseName === "shepherd" && notify !== undefined) {
-      if (!SHEPHERD_NOTICE_POLICIES.includes(notify as ShepherdNoticePolicy)) {
+    if (senseName === "shepherd") {
+      const notify = (rawSense as Record<string, unknown>).notify
+      if (notify !== undefined && !SHEPHERD_NOTICE_POLICIES.includes(notify as ShepherdNoticePolicy)) {
         emitNervesEvent({
           level: "error",
           event: "config_identity.error",
@@ -291,7 +298,13 @@ export function normalizeSenses(value: unknown, configFile: string): AgentSenses
         })
         throw new Error(`agent.json at ${configFile}: senses.shepherd.notify must be one of ${SHEPHERD_NOTICE_POLICIES.join(", ")}.`)
       }
-      defaults[senseName] = { enabled, notify: notify as ShepherdNoticePolicy }
+      const checkInMinutes = (rawSense as Record<string, unknown>).checkInMinutes
+      const normalizedCheckInMinutes = normalizeShepherdCheckInMinutes(checkInMinutes)
+      defaults[senseName] = {
+        enabled,
+        ...(notify !== undefined ? { notify: notify as ShepherdNoticePolicy } : {}),
+        ...(checkInMinutes !== undefined ? { checkInMinutes: normalizedCheckInMinutes } : {}),
+      }
       continue
     }
     defaults[senseName] = { enabled }
@@ -633,6 +646,7 @@ export function loadAgentConfig(owner?: Readonly<{ agentName: string; agentRoot:
   // Required<AgentConfig> contract test in identity-contract.test.ts.
   const config: AgentConfig = {
     ...(parsed as unknown as AgentConfig),
+    displayName: validateAgentDisplayName(parsed.displayName),
     version,
     enabled,
     humanFacing,

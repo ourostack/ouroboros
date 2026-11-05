@@ -56,6 +56,93 @@ afterEach(async () => {
 })
 
 describe("Herdr host: panes", () => {
+  it("retains previous pane observations and reports malformed successful inventories as unavailable", async () => {
+    const observed = vi.fn()
+    const watcher = host().watch({ returned: vi.fn(), focused: vi.fn(), observed })
+    try {
+      await vi.waitFor(() => expect(observed).toHaveBeenCalled())
+      expect(observed.mock.calls.at(-1)![0].sessions).toHaveLength(3)
+      for (const result of [{}, { panes: [null] }, { panes: [{}] }]) {
+        server.respond("pane.list", () => result)
+        await scheduler.run(5_000)
+        expect(observed.mock.calls.at(-1)![0]).toMatchObject({ error: "host_unavailable" })
+        expect(observed.mock.calls.at(-1)![0].sessions).toHaveLength(3)
+      }
+    } finally { watcher.close() }
+  })
+
+  it("requires a complete well-formed pane inventory before proving terminal retirement", async () => {
+    expect(await host().retirementInventory!()).toEqual(["w1:p1", "w1:p2", "w2:p1"])
+    for (const result of [{}, { panes: null }, { panes: [null] }, { panes: [{}] }, { panes: [{ pane_id: "x" }, { pane_id: "x" }] }]) {
+      server.respond("pane.list", () => result)
+      await expect(host().retirementInventory!()).rejects.toThrow(/inventory/i)
+    }
+    server.respond("pane.list", () => ({ panes: [] }))
+    expect(await host().retirementInventory!()).toEqual([])
+  })
+
+  it("inspects current semantic state but never invents process-start or composer authority", async () => {
+    const herdr = host()
+    const inspection = await herdr.inspect!("w1:p1")
+    expect(inspection).toEqual({
+      session: expect.objectContaining({ id: "w1:p1", agent: "codex", cwd: "/Users/a/code/app/pkg" }),
+      instance: null, screen: SCREENS.codexMenu, activity: "idle", composer: "unknown", backgroundWork: null,
+      screenFingerprint: expect.stringMatching(/^[0-9a-f]{64}$/),
+    })
+    expect(await herdr.promptIfUnchanged!("w1:p1", "continue", inspection)).toEqual({ state: "not_sent", reason: expect.any(String) })
+    expect(server.requests.some(request => request.method === "agent.prompt" || request.method === "agent.send_keys")).toBe(false)
+    agents["w1:p1"] = agentInfo("w1:p1", { agent_status: "working" })
+    expect((await herdr.inspect!("w1:p1")).activity).toBe("working")
+    agents["w1:p1"] = agentInfo("w1:p1", { agent_status: "unknown" })
+    expect((await herdr.inspect!("w1:p1")).activity).toBe("unknown")
+  })
+
+  it("refuses Herdr missing/mismatched current target echoes and redacts semantic reads", async () => {
+    const herdr = host()
+    await expect(herdr.inspect!("missing")).rejects.toThrow()
+    agents["w1:p1"] = agentInfo("other")
+    await expect(herdr.inspect!("w1:p1")).rejects.toThrow()
+    agents["w1:p1"] = agentInfo("w1:p1", { foreground_cwd: null })
+    server.respond("pane.read", () => ({ read: { pane_id: "other", text: "private" } }))
+    await expect(herdr.inspect!("w1:p1")).rejects.toThrow()
+    server.respond("pane.read", () => ({ read: { pane_id: "w1:p1", text: "token=synthetic-secret" } }))
+    expect((await herdr.inspect!("w1:p1")).screen).toBe("token=[redacted]")
+  })
+
+  it("keeps sparse Herdr semantic evidence unknown and rejects malformed replies", async () => {
+    const herdr = host()
+    server.respond("agent.get", () => ({}))
+    await expect(herdr.inspect!("w1:p1")).rejects.toThrow("agent target mismatch")
+    server.respond("agent.get", () => ({ agent: { pane_id: "w1:p1" } }))
+    server.respond("pane.read", () => ({}))
+    await expect(herdr.inspect!("w1:p1")).rejects.toThrow("read target mismatch")
+    server.respond("pane.read", () => ({ read: { pane_id: "w1:p1" } }))
+    await expect(herdr.inspect!("w1:p1")).rejects.toThrow("read target mismatch")
+    server.respond("pane.read", () => ({ read: { pane_id: "w1:p1", text: "" } }))
+    panes[0] = { pane_id: "w1:p1", label: "fallback label" }
+    expect(await herdr.inspect!("w1:p1")).toEqual({
+      session: { id: "w1:p1", ref: "w1:p1", workspace: null, title: "fallback label", agent: null, cwd: null, focused: false },
+      instance: null, screen: "", activity: "unknown", composer: "unknown", backgroundWork: null,
+      screenFingerprint: "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    })
+    panes[0] = { pane_id: "w1:p1" }
+    expect((await herdr.inspect!("w1:p1")).session.title).toBe("")
+  })
+
+  it("exports exact raw-screen SHA-256 across separate inspections even when public redacted screens are equal", async () => {
+    const herdr = host()
+    let text = "token=first-secret\n"
+    server.respond("pane.read", () => ({ read: { pane_id: "w1:p1", text } }))
+    const first = await herdr.inspect!("w1:p1")
+    text = "token=other-secret\n"
+    const second = await herdr.inspect!("w1:p1")
+    expect(first.screen).toBe("token=[redacted]\n")
+    expect(second.screen).toBe(first.screen)
+    expect(first.screenFingerprint).toBe("f20457dfe4ae481973b609d73c68e536e5e8d32410d89f9a3986b8055026d9c8")
+    expect(second.screenFingerprint).toBe("28e38a8a09e2f17f2e0edb0dfbbc15e0d67d6343b85dd2ee66f5976f787dcfb2")
+    expect(first.screenFingerprint).not.toBe(second.screenFingerprint)
+    expect(server.requests.some(request => request.method === "agent.prompt" || request.method === "agent.send_keys")).toBe(false)
+  })
   it("lists panes, reads recent text, prompts, presses keys and shows Shepherd's status", async () => {
     const herdr = host()
     expect(herdr.name).toBe("herdr")
@@ -117,6 +204,132 @@ describe("Herdr host: panes", () => {
 })
 
 describe("Herdr host: returned control", () => {
+  it("ignores buffered status frames and transition timers after a streamed observer closes the watcher", async () => {
+    let armed = false
+    const observed = vi.fn(() => { if (armed) watcher.close() })
+    const returned = vi.fn()
+    const watcher = host().watch({ returned, focused: vi.fn(), observed })
+    try {
+      await vi.waitFor(() => expect(server.streamCount()).toBe(1))
+      const count = observed.mock.calls.length
+      const inspections = server.requests.filter(request => request.method === "agent.get").length
+      armed = true
+      server.pushRaw([statusEvent("w1:p1", "idle"), statusEvent("w1:p2", "idle")].map(frame => JSON.stringify(frame)).join("\n") + "\n")
+      await vi.waitFor(() => expect(observed).toHaveBeenCalledTimes(count + 1))
+      expect(scheduler.due(GRACE_MS)).toBe(0)
+      await scheduler.run(GRACE_MS)
+      expect(server.requests.filter(request => request.method === "agent.get")).toHaveLength(inspections)
+      expect(returned).not.toHaveBeenCalled()
+    } finally { watcher.close() }
+  })
+
+  it("does not subscribe or schedule after the initial observation callback closes the watcher", async () => {
+    const observed = vi.fn(() => watcher.close())
+    const watcher = host().watch({ returned: vi.fn(), focused: vi.fn(), observed })
+    await vi.waitFor(() => expect(observed).toHaveBeenCalledOnce())
+    expect(scheduler.due(5_000)).toBe(0)
+    expect(subscriptions()).toHaveLength(0)
+  })
+
+  it("does not schedule reconnection after an unavailable-observation callback closes the watcher", async () => {
+    const observed = vi.fn((observation: { error?: string }) => {
+      if (observation.error) watcher.close()
+    })
+    const watcher = host().watch({ returned: vi.fn(), focused: vi.fn(), observed })
+    await vi.waitFor(() => expect(server.streamCount()).toBe(1))
+    server.endStreams()
+    await vi.waitFor(() => expect(observed.mock.calls.some(([value]) => value.error === "host_unavailable")).toBe(true))
+    expect(scheduler.due(1_000)).toBe(0)
+    expect(scheduler.due(5_000)).toBe(0)
+  })
+
+  it.each(["success", "failure"] as const)("drops an in-flight refresh %s after shutdown", async outcome => {
+    const observed = vi.fn()
+    const watcher = host().watch({ returned: vi.fn(), focused: vi.fn(), observed })
+    await vi.waitFor(() => expect(server.streamCount()).toBe(1))
+    let resolve!: (value: unknown) => void
+    let reject!: (error: Error) => void
+    const held = new Promise((yes, no) => { resolve = yes; reject = no })
+    server.respond("pane.list", () => held)
+    await scheduler.run(5_000)
+    watcher.close()
+    const count = observed.mock.calls.length
+    if (outcome === "success") resolve({ panes })
+    else reject(new Error("late inventory failure"))
+    await new Promise(yes => setTimeout(yes, 30))
+    expect(observed).toHaveBeenCalledTimes(count)
+    expect(scheduler.due(5_000)).toBe(0)
+  })
+
+  it.each(["success", "failure"] as const)("does not let an older refresh %s replace a newer subscription or duplicate its timer", async outcome => {
+    const observed = vi.fn()
+    const watcher = host().watch({ returned: vi.fn(), focused: vi.fn(), observed })
+    try {
+      await vi.waitFor(() => expect(server.streamCount()).toBe(1))
+      let resolve!: (value: unknown) => void
+      let reject!: (error: Error) => void
+      const held = new Promise((yes, no) => { resolve = yes; reject = no })
+      server.respond("pane.list", () => held)
+      await scheduler.run(5_000)
+      server.respond("pane.list", () => ({ panes: [paneInfo("fresh", { agent_status: "idle" })] }))
+      server.push(paneEvent("pane_created", "fresh"))
+      await vi.waitFor(() => expect(observed.mock.calls.at(-1)![0].sessions[0].session.id).toBe("fresh"))
+      const count = observed.mock.calls.length
+      if (outcome === "success") resolve({ panes })
+      else reject(new Error("obsolete inventory failure"))
+      await new Promise(yes => setTimeout(yes, 30))
+      expect(observed).toHaveBeenCalledTimes(count)
+      expect(scheduler.due(5_000)).toBe(1)
+    } finally { watcher.close() }
+  })
+
+  it("keeps one refresh timer when a newer refresh overtakes an in-flight resubscription", async () => {
+    const observed = vi.fn()
+    const watcher = host().watch({ returned: vi.fn(), focused: vi.fn(), observed })
+    try {
+      await vi.waitFor(() => expect(server.streamCount()).toBe(1))
+      let resolve!: (value: unknown) => void
+      const held = new Promise(yes => { resolve = yes })
+      server.respond("pane.list", () => held)
+      server.push(paneEvent("pane_created", "fresh"))
+      await vi.waitFor(() => expect(server.requests.filter(request => request.method === "pane.list")).toHaveLength(2))
+      server.respond("pane.list", () => ({ panes: [paneInfo("fresh")] }))
+      await scheduler.run(5_000)
+      await vi.waitFor(() => expect(observed.mock.calls.at(-1)![0].sessions[0].session.id).toBe("fresh"))
+      const count = observed.mock.calls.length
+      resolve({ panes })
+      await new Promise(yes => setTimeout(yes, 30))
+      expect(observed).toHaveBeenCalledTimes(count)
+      expect(scheduler.due(5_000)).toBe(1)
+      server.push(statusEvent("not-in-inventory", "idle"))
+      await new Promise(yes => setTimeout(yes, 30))
+      expect(observed).toHaveBeenCalledTimes(count)
+    } finally { watcher.close() }
+  })
+
+  it("publishes initial and changed pane observations without reading screens or inventing process identity", async () => {
+    const observed = vi.fn()
+    const returned = vi.fn()
+    const watcher = host().watch({ returned, focused: vi.fn(), observed })
+    await vi.waitFor(() => expect(observed).toHaveBeenCalled())
+    await vi.waitFor(() => expect(server.streamCount()).toBe(1))
+    expect(observed.mock.calls[0]![0].sessions).toHaveLength(3)
+    expect(observed.mock.calls[0]![0].sessions[0]).toMatchObject({ session: { id: "w1:p1" }, activity: "working" })
+    expect(server.requests.some(request => request.method === "pane.read")).toBe(false)
+    server.push(statusEvent("w1:p1", "idle"))
+    await vi.waitFor(() => expect(observed.mock.calls.at(-1)![0].sessions[0].activity).toBe("idle"))
+    server.push(statusEvent("w1:p1", "unknown"))
+    await vi.waitFor(() => expect(observed.mock.calls.at(-1)![0].sessions[0].activity).toBe("unknown"))
+    panes[0]!.agent_status = "idle"
+    await scheduler.run(5_000)
+    await vi.waitFor(() => expect(observed.mock.calls.at(-1)![0].sessions[0].activity).toBe("idle"))
+    expect(returned).not.toHaveBeenCalled()
+    watcher.close()
+    const count = observed.mock.calls.length
+    await scheduler.run(5_000)
+    expect(observed).toHaveBeenCalledTimes(count)
+  })
+
   async function watching() {
     const returned: ReturnedControl[] = []
     const focused: string[] = []

@@ -628,6 +628,58 @@ describe("streamChatCompletion", () => {
     expect(result).toEqual({ content: "hello", toolCalls: [], outputItems: [], settleStreamed: false })
   })
 
+  it.each(["stop", "length", "content_filter", "tool_calls", "function_call", "future_reason"])(
+    "preserves safe completion termination metadata across a final usage-only frame: %s", async reason => {
+      const client = { chat: { completions: { create: vi.fn().mockReturnValue(makeStream([
+        { choices: [{ delta: { content: null }, finish_reason: reason }] },
+        { choices: [], usage: { prompt_tokens: 1114, completion_tokens: 0, total_tokens: 1114 } },
+      ])) } } }
+      const result = await streamChatCompletion(client, { messages: [], stream: true }, makeCallbacks())
+      expect(result.termination).toEqual({
+        finishReason: reason === "future_reason" ? "unknown" : reason, refused: false,
+      })
+      expect(result.usage.input_tokens).toBe(1114)
+    })
+
+  it.each([true, false])("preserves a refusal flag without recording refusal text (final reason present: %s)", async finalReason => {
+    const refusal = "Synthetic refusal detail must not be copied into the result."
+    const client = { chat: { completions: { create: vi.fn().mockReturnValue(makeStream([
+      { choices: [{ delta: { refusal }, finish_reason: null }] },
+      ...(finalReason ? [{ choices: [{ delta: {}, finish_reason: "stop" }] }] : []),
+    ])) } } }
+    const callbacks = makeCallbacks()
+    const result = await streamChatCompletion(client, { messages: [], stream: true }, callbacks)
+    expect(result.termination).toEqual({ finishReason: finalReason ? "stop" : null, refused: true })
+    expect(result.content).toBe("")
+    expect(JSON.stringify(result)).not.toContain(refusal)
+    expect(callbacks.onTextChunk).not.toHaveBeenCalled()
+  })
+
+  it.each([
+    ["length", "stop", "length"], ["future_reason", "stop", "unknown"],
+    ["stop", "content_filter", "content_filter"], ["length", "content_filter", "content_filter"],
+    ["content_filter", "stop", "content_filter"], ["length", "tool_calls", "length"],
+  ])("does not erase adverse provider termination %s with a later %s frame", async (first, second, expected) => {
+    const client = { chat: { completions: { create: vi.fn().mockReturnValue(makeStream([
+      { choices: [{ delta: {}, finish_reason: first }] },
+      { choices: [{ delta: {}, finish_reason: second }] },
+    ])) } } }
+    const result = await streamChatCompletion(client, { messages: [], stream: true }, makeCallbacks())
+    expect(result.termination).toEqual({ finishReason: expected, refused: false })
+  })
+
+  it("skips missing-delta frames without turning them into provider retries", async () => {
+    const client = { chat: { completions: { create: vi.fn().mockReturnValue(makeStream([
+      { choices: [{}] },
+      makeChunk("Synthetic answer"),
+      { choices: [{ finish_reason: "stop" }] },
+    ])) } } }
+    const result = await streamChatCompletion(client, { messages: [], stream: true }, makeCallbacks())
+    expect(result.content).toBe("Synthetic answer")
+    expect(result.termination).toEqual({ finishReason: "stop", refused: false })
+    expect(client.chat.completions.create).toHaveBeenCalledOnce()
+  })
+
   it("calls onModelStreamStart once on first content delta", async () => {
     const client = { chat: { completions: { create: vi.fn().mockReturnValue(makeStream([makeChunk("a"), makeChunk("b")])) } } }
     const callbacks = makeCallbacks()

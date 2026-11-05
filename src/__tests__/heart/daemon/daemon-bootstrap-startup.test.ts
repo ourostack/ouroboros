@@ -35,9 +35,9 @@ describe("daemon container credential bootstrap startup boundary", () => {
     ]
 
     expect(messages).toEqual([
-      "Sanctuary installation needs attention\n  human-required: restart Mendelow Cloud Butler from its verified release so the installed bundle can finish updating",
-      "Sanctuary installation needs attention\n  human-required: resume the reviewed Mendelow Cloud Butler update recovery procedure",
-      "Sanctuary installation needs attention\n  human-required: roll back to a verified Mendelow Cloud Butler release or install that release again",
+      "Sanctuary installation needs attention\n  human-required: restart Ouro Butler from its verified release so the installed bundle can finish updating",
+      "Sanctuary installation needs attention\n  human-required: resume the reviewed Butler update recovery procedure",
+      "Sanctuary installation needs attention\n  human-required: roll back to a verified Ouro Butler release or install that release again",
     ])
     expect(messages.join("\n")).not.toMatch(/(?:restart_from|run_verified|roll_back)/u)
   })
@@ -118,7 +118,7 @@ describe("daemon container credential bootstrap startup boundary", () => {
     expect(prepareManagedBundle).not.toHaveBeenCalled()
     expect(prepareDaemon).not.toHaveBeenCalled()
     expect(startDaemon).not.toHaveBeenCalled()
-    expect(startupMocks.writeTombstone).toHaveBeenCalledWith("startupFailurePublic", expect.objectContaining({ message: "Sanctuary installation needs attention\n  human-required: roll back to a verified Mendelow Cloud Butler release or install that release again" }))
+    expect(startupMocks.writeTombstone).toHaveBeenCalledWith("startupFailurePublic", expect.objectContaining({ message: "Sanctuary installation needs attention\n  human-required: roll back to a verified Ouro Butler release or install that release again" }))
   })
 
   it("classifies bundle ensure failure separately and stops before provider preparation", async () => {
@@ -145,7 +145,7 @@ describe("daemon container credential bootstrap startup boundary", () => {
     expect(startDaemon).not.toHaveBeenCalled()
     expect(startupMocks.emit).toHaveBeenCalledWith(expect.objectContaining({
       event: "daemon.entry_error",
-      message: "Sanctuary installation needs attention\n  human-required: resume the reviewed Mendelow Cloud Butler update recovery procedure",
+      message: "Sanctuary installation needs attention\n  human-required: resume the reviewed Butler update recovery procedure",
     }))
   })
 
@@ -262,12 +262,12 @@ describe("daemon container credential bootstrap startup boundary", () => {
     startupMocks.emit.mockClear()
     const controlledExit = vi.fn()
     failFastSanctuaryBundlePreparationStartup({ failure: createSanctuaryBundlePreparationFailure("roll_back_or_install_verified_release"), exit: controlledExit })
-    expect(startupMocks.writeTombstone).toHaveBeenLastCalledWith("startupFailurePublic", expect.objectContaining({ message: "Sanctuary installation needs attention\n  human-required: roll back to a verified Mendelow Cloud Butler release or install that release again" }))
+    expect(startupMocks.writeTombstone).toHaveBeenLastCalledWith("startupFailurePublic", expect.objectContaining({ message: "Sanctuary installation needs attention\n  human-required: roll back to a verified Ouro Butler release or install that release again" }))
     expect(controlledExit).toHaveBeenCalledWith(1)
 
     const redactedExit = vi.fn()
     failFastSanctuaryBundlePreparationStartup({ failure: new Error("secret raw path"), exit: redactedExit })
-    expect(startupMocks.writeTombstone).toHaveBeenLastCalledWith("startupFailurePublic", expect.objectContaining({ message: "Sanctuary installation needs attention\n  human-required: resume the reviewed Mendelow Cloud Butler update recovery procedure" }))
+    expect(startupMocks.writeTombstone).toHaveBeenLastCalledWith("startupFailurePublic", expect.objectContaining({ message: "Sanctuary installation needs attention\n  human-required: resume the reviewed Butler update recovery procedure" }))
     expect(JSON.stringify(startupMocks.writeTombstone.mock.calls)).not.toContain("secret raw path")
     expect(redactedExit).toHaveBeenCalledWith(1)
   })

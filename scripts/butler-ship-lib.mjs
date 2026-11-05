@@ -13,14 +13,23 @@ export function logPath(version) {
   return `/var/log/ouro-upgrade-${version}.log`
 }
 
+export function baselineLogPath(version) {
+  return `/var/log/ouro-baseline-${version}.log`
+}
+
+// The release's own gate, run against the live version before the upgrade, must finish inside the upgrade's own gate cap.
+export const BASELINE_RUN_SECONDS = 95 * 60
+export const FAILING_ON_LIVE_TOO = "failing-on-live-too"
+
 export function parseShipArgs(argv, env = {}) {
-  const usage = "Usage: butler-ship.mjs <version> [--host sanctuary] [--no-gate] [--plant <case>] [--dry-run]"
-  const out = { version: undefined, host: env.BUTLER_HOST || "sanctuary", noGate: false, plant: undefined, dryRun: false }
+  const usage = "Usage: butler-ship.mjs <version> [--host sanctuary] [--no-gate] [--no-baseline] [--plant <case>] [--dry-run]"
+  const out = { version: undefined, host: env.BUTLER_HOST || "sanctuary", noGate: false, noBaseline: false, plant: undefined, dryRun: false }
   for (let i = 0; i < argv.length; i += 1) {
     const arg = argv[i]
     if (arg === "--host" && argv[i + 1]) out.host = argv[++i]
     else if (arg === "--plant" && argv[i + 1]) out.plant = argv[++i]
     else if (arg === "--no-gate") out.noGate = true
+    else if (arg === "--no-baseline") out.noBaseline = true
     else if (arg === "--dry-run") out.dryRun = true
     else if (!arg.startsWith("--") && out.version === undefined) out.version = arg
     else throw new Error(usage)
@@ -132,11 +141,31 @@ export function rolledBackImage(text) {
   return m ? m[1] : undefined
 }
 
-export function buildResult({ version, terminal, log, logText, verifyText, verifyCode }) {
+/**
+ * One row per case: its status on the live version, on the candidate, and what that meant for the release. The candidate's gate
+ * already applied the rule (a case that failed on live too does not block); this only lays the two runs side by side.
+ */
+export function compareCases(liveCases, candidateCases) {
+  const status = (list) => new Map((Array.isArray(list) ? list : []).filter((c) => typeof c?.id === "string").map((c) => [c.id, String(c.status)]))
+  const live = status(liveCases)
+  const candidate = status(candidateCases)
+  const verdict = (s) => (s === "fail" ? "blocks" : s === FAILING_ON_LIVE_TOO ? "failing on live too" : s ?? "not run")
+  const ids = [...candidate.keys(), ...[...live.keys()].filter((id) => !candidate.has(id))]
+  return ids.map((id) => ({ id, live: live.get(id) ?? "not run", candidate: candidate.get(id) ?? "not run", verdict: verdict(candidate.get(id)) }))
+}
+
+export function formatComparison(rows) {
+  const width = Math.max(4, ...rows.map((r) => r.id.length))
+  const line = (a, b, c, d) => `  ${a.padEnd(width)}  ${b.padEnd(19)}  ${c.padEnd(19)}  ${d}`
+  return [line("case", "live", "candidate", "verdict"), ...rows.map((r) => line(r.id, r.live, r.candidate, r.verdict === "failing on live too" ? "FAILING ON LIVE TOO (does not block)" : r.verdict === "blocks" ? "BLOCKS" : r.verdict))]
+}
+
+export function buildResult({ version, terminal, log, logText, verifyText, verifyCode, baseline }) {
   const { cases, summary } = parseCases(logText)
   const verify = parseVerify(verifyText || "")
   const verifyGreen = verifyCode === 0 && verify.checks.length > 0 && verify.checks.every((c) => c.ok)
-  const result = { version, result: terminal, running_image: verify.running_image || rolledBackImage(logText) || null, cases, ...(summary ? { summary } : {}), verify: verify.checks, verify_green: verifyGreen, log }
+  const live = baseline?.cases ? { baseline: { log: baseline.log, ...(baseline.summary ? { summary: baseline.summary } : {}), cases: baseline.cases }, comparison: compareCases(baseline.cases, cases) } : { baseline: { skipped: baseline?.skipped ?? "not run" } }
+  const result = { version, result: terminal, running_image: verify.running_image || rolledBackImage(logText) || null, cases, ...(summary ? { summary } : {}), ...live, verify: verify.checks, verify_green: verifyGreen, log }
   const exitCode = terminal === "kept" && verifyGreen ? 0 : 1
   return { result, exitCode }
 }
@@ -149,8 +178,8 @@ export class ShipError extends Error {}
  * Each of gh/ssh/scp resolves to { code, stdout, stderr }.
  */
 export async function ship(opts, deps, timing = {}) {
-  const { version, host, noGate, plant, dryRun } = opts
-  const t = { poll: 30_000, coverage: 45 * 60_000, image: 30 * 60_000, upgrade: 90 * 60_000, ...timing }
+  const { version, host, noGate, noBaseline, plant, dryRun } = opts
+  const t = { poll: 30_000, coverage: 45 * 60_000, image: 30 * 60_000, baseline: 100 * 60_000, upgrade: 90 * 60_000, ...timing }
   const say = (m) => deps.log(`\n== ${m}`)
   const must = (r, what) => {
     if (r.code !== 0) throw new ShipError(`${what} failed (exit ${r.code}): ${String(r.stderr || r.stdout).trim().split("\n").slice(-3).join(" | ")}`)
@@ -167,7 +196,7 @@ export async function ship(opts, deps, timing = {}) {
   }
 
   say(`plan for ${version} on ${host}${dryRun ? " (dry run: read-only steps only)" : ""}`)
-  for (const step of ["resolve the release merge commit", "wait for its coverage-gate", `wait for ${IMAGE_REPO}:${version} on the host`, "back up and stage the release's upgrade and gate scripts", "preflight", `start the detached ${noGate ? "UNGATED " : ""}upgrade${plant ? ` (plant ${plant})` : ""}`, "follow the log to a terminal line", "verify"]) deps.log(`  - ${step}`)
+  for (const step of ["resolve the release merge commit", "wait for its coverage-gate", `wait for ${IMAGE_REPO}:${version} on the host`, "back up and stage the release's upgrade and gate scripts", "preflight", ...(noGate || noBaseline ? [] : ["run the release's gate against the live version (the baseline)"]), `start the detached ${noGate ? "UNGATED " : ""}upgrade${plant ? ` (plant ${plant})` : ""}`, "follow the log to a terminal line", "verify"]) deps.log(`  - ${step}`)
 
   say("1. resolve the release commit")
   const commits = JSON.parse(must(await deps.gh(["api", `repos/${REPO}/commits?sha=main&per_page=100`]), "listing main commits"))
@@ -218,12 +247,27 @@ export async function ship(opts, deps, timing = {}) {
   if (pre.code !== 0 || /^PREFLIGHT RED/m.test(pre.stdout) || !/^PREFLIGHT GREEN/m.test(pre.stdout)) throw new ShipError("preflight is not green; nothing was changed")
   if (dryRun) { deps.log("\ndry run complete: steps 1 to 3 and 5 passed"); return { dryRun: true, exitCode: 0 } }
 
-  say("6. start the detached upgrade")
+  // A case can only show the candidate is worse if it passes on the live version: run the release's own gate (staged in step 4)
+  // against the live Butler first, then hand its results to the upgrade's gate.
+  let baseline
+  if (noGate) baseline = { skipped: "--no-gate" }
+  else if (noBaseline) baseline = { skipped: "--no-baseline" }
+  else {
+    say("6. baseline: run the release's gate against the live version")
+    baseline = await runBaseline(version, host, deps, t)
+    if (baseline.skipped) deps.log(`  WARN no live baseline (${baseline.skipped}); every gate failure will block the release`)
+    else {
+      deps.log(`  ok   live baseline: ${baseline.cases.filter((c) => c.status === "fail").length} of ${baseline.cases.length} cases fail on the live version too`)
+    }
+  }
+
+  say("7. start the detached upgrade")
   const log = logPath(version)
   const flags = `${noGate ? " --no-gate" : ""}${plant ? ` --plant ${plant}` : ""}`
-  must(await deps.ssh(host, `: > ${log}; setsid nohup ${REMOTE_NODE} ${REMOTE_UPGRADE} upgrade ${version}${flags} > ${log} 2>&1 < /dev/null & echo started`), "starting the upgrade")
+  const env = baseline.cases ? `OURO_REPLAY_BASELINE=${baseline.log} ` : ""
+  must(await deps.ssh(host, `: > ${log}; ${env}setsid nohup ${REMOTE_NODE} ${REMOTE_UPGRADE} upgrade ${version}${flags} > ${log} 2>&1 < /dev/null & echo started`), "starting the upgrade")
 
-  say(`7. follow ${log}`)
+  say(`8. follow ${log}`)
   let seen = 0
   let text = ""
   let empty = 0
@@ -235,7 +279,7 @@ export async function ship(opts, deps, timing = {}) {
     if (poll.code !== 0 || !m) throw new ShipError(`could not read the upgrade log on the host (exit ${poll.code})`)
     text = poll.stdout.slice(0, m.index)
     const lines = splitLines(text)
-    lines.slice(seen).filter((l) => isCaseLine(l) || isSummaryLine(l) || /^(GATE|UPGRADE|REFUSING|PREFLIGHT)|FAILED/.test(l)).forEach((l) => deps.log(l))
+    lines.slice(seen).filter((l) => isCaseLine(l) || isSummaryLine(l) || /^(GATE|UPGRADE|REFUSING|PREFLIGHT|BASELINE)|FAILED|FAILING ON LIVE TOO/.test(l)).forEach((l) => deps.log(l))
     seen = lines.length
     // Only a finished process has a final answer: FAILED and "rolling back" lines appear before the rollback runs.
     if (m[1] === "0") {
@@ -249,10 +293,45 @@ export async function ship(opts, deps, timing = {}) {
     await deps.sleep(t.poll)
   }
 
-  say("8. verify")
+  say("9. verify")
   const ver = await deps.ssh(host, `${REMOTE_NODE} ${REMOTE_UPGRADE} verify`)
   ver.stdout.split("\n").forEach((l) => deps.log(l))
-  const { result, exitCode } = buildResult({ version, terminal, log, logText: text, verifyText: ver.stdout, verifyCode: ver.code })
+  const { result, exitCode } = buildResult({ version, terminal, log, logText: text, verifyText: ver.stdout, verifyCode: ver.code, baseline })
+  if (result.comparison) {
+    say("live baseline and candidate, side by side")
+    formatComparison(result.comparison).forEach((l) => deps.log(l))
+  }
   deps.log(JSON.stringify(result))
   return { result, exitCode }
+}
+
+/**
+ * Runs the staged gate against the live Butler, detached (it takes as long as the upgrade's gate), and follows its log until the
+ * process exits. Returns { log, cases, summary }, or { skipped } when no usable baseline came out of it, in which case the
+ * upgrade's gate stays strict. Throws only when the run might still be going, because the upgrade must not start beside it.
+ */
+async function runBaseline(version, host, deps, t) {
+  const log = baselineLogPath(version)
+  const started = await deps.ssh(host, `: > ${log}; setsid nohup timeout -s KILL ${BASELINE_RUN_SECONDS} ${REMOTE_NODE} ${REMOTE_GATE} run > ${log} 2>&1 < /dev/null & echo "@@PID:$!"`)
+  const pid = /@@PID:(\d+)/.exec(started.stdout)?.[1]
+  if (started.code !== 0 || !pid) return { skipped: `the live run did not start (exit ${started.code})` }
+  const start = deps.now()
+  let seen = 0
+  let text = ""
+  for (;;) {
+    const poll = await deps.ssh(host, `cat ${log} 2>/dev/null; echo "@@RUNNING:$(kill -0 ${pid} 2>/dev/null && echo 1 || echo 0)"`)
+    const m = /@@RUNNING:([01])\s*$/.exec(poll.stdout)
+    if (poll.code !== 0 || !m) throw new ShipError(`could not read the live baseline log ${log} on the host (exit ${poll.code}); nothing was upgraded`)
+    text = poll.stdout.slice(0, m.index)
+    const lines = splitLines(text)
+    lines.slice(seen).filter((l) => isCaseLine(l) || isSummaryLine(l)).forEach((l) => deps.log(`  live ${l}`))
+    seen = lines.length
+    if (m[1] === "0") break
+    if (deps.now() - start >= t.baseline) throw new ShipError(`timed out following the live baseline ${log}; it may still be running (pid ${pid}), so nothing was upgraded`)
+    await deps.sleep(t.poll)
+  }
+  const { cases, summary } = parseCases(text)
+  const usable = cases.filter((c) => typeof c.id === "string")
+  if (usable.length === 0) return { skipped: `the live run wrote no case results to ${log}` }
+  return { log, cases: usable.map((c) => ({ id: c.id, status: c.status })), ...(summary ? { summary } : {}) }
 }

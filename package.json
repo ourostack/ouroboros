@@ -1,6 +1,6 @@
 {
   "name": "@ouro.bot/cli",
-  "version": "0.1.0-alpha.925",
+  "version": "0.1.0-alpha.980",
   "engines": {
     "node": ">=22"
   },
@@ -32,6 +32,7 @@
     "teams": "tsc && node dist/senses/teams-entry.js --agent ouroboros",
     "bluebubbles": "tsc && node dist/senses/bluebubbles/entry.js --agent ouroboros",
     "voice:eval": "npm run build && node dist/senses/voice-realtime-eval-entry.js",
+    "shepherd:judge-eval": "npm run build && node dist/senses/shepherd/judge-evaluation-entry.js",
     "worktree:bootstrap": "npm install --ignore-scripts",
     "test": "vitest run",
     "test:integration": "npm run build && vitest run --config vitest.integration.config.ts",
@@ -60,7 +61,7 @@
     "@anthropic-ai/sdk": "^0.78.0",
     "@azure/identity": "^4.13.0",
     "@azure/storage-blob": "^12.31.0",
-    "@bitwarden/cli": "2026.6.0",
+    "@bitwarden/cli": "2026.9.1",
     "@microsoft/teams.api": "2.0.11",
     "@microsoft/teams.apps": "2.0.11",
     "@microsoft/teams.cards": "2.0.11",
@@ -102,7 +103,7 @@
   "overrides": {
     "deepmerge-ts": "^8.0.1",
     "form-data": "4.0.6",
-    "multer": "2.4.0",
+    "multer": "2.5.0",
     "tmp": "0.2.7",
     "@microsoft/teams.apps": {
       "@azure/msal-node": "^5.2.2"
@@ -111,6 +112,7 @@
       "react": "$react",
       "@types/react": "$@types/react"
     },
-    "shell-quote": "^1.8.4"
+    "shell-quote": "^1.8.4",
+    "node-forge": "1.4.2"
   }
 }

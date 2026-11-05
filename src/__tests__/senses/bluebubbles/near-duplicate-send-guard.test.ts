@@ -1,5 +1,5 @@
 // Regression for the post-#699 near-duplicate BlueBubbles delivery class
-// (2026-05-09 05:24–05:28 UTC, friend chat:any;-;ari@mendelow.me).
+// (2026-05-09 05:24–05:28 UTC, friend chat:any;-;owner@example.test).
 //
 // Symptom: a single inbound iMessage produced two near-identical answers
 // (evt-001814 + evt-001818, both starting "yep — I looked it up… Assuming
@@ -53,7 +53,7 @@ const TOP_LEVEL_REPLY_TARGET = {
   setSelection: () => "noop",
 }
 
-const CHAT = { chatGuid: "iMessage;-;ari@mendelow.me" }
+const CHAT = { chatGuid: "iMessage;-;owner@example.test" }
 
 const AUDACITY_A
   = "yep — I looked it up. Assuming you mean AMC's The Audacity, the executives are composites of Silicon Valley founders — there's a Duncan Park figure who reads as Adam Neumann-ish."

@@ -1,7 +1,7 @@
 // Merging friend records into one person, and retiring the merged-away records.
 //
 // Two product paths use this: redeeming an identity link code (a new channel identity
-// joins its owner's record) and deduplicating records that name the same local person.
+// joins its owner's record) and deduplicating records that name the same person.
 // The target record stays authoritative: a merge never raises trust, admission,
 // initiative or capability, so merging cannot be used to escalate anyone.
 //
@@ -12,7 +12,7 @@
 // only moves whole journal files and never rewrites them.
 import * as fs from "node:fs"
 import * as path from "node:path"
-import type { ExternalId, FriendRecord, FriendStore } from "@ouro.bot/friends"
+import type { ExternalId, FriendRecord, FriendStore, TrustLevel } from "@ouro.bot/friends"
 import { emitNervesEvent } from "../nerves/runtime"
 
 const RETIRED_DIR = "_retired"
@@ -254,50 +254,57 @@ function isLocalOnly(record: FriendRecord): boolean {
   return record.externalIds.length > 0 && record.externalIds.every((externalId) => externalId.provider === "local")
 }
 
+const TRUST_RANK: Record<TrustLevel, number> = { stranger: 0, acquaintance: 1, friend: 2, family: 3 }
+
 function canonicalOrder(a: FriendRecord, b: FriendRecord): number {
+  const trust = TRUST_RANK[b.trustLevel ?? "friend"] - TRUST_RANK[a.trustLevel ?? "friend"]
+  if (trust !== 0) return trust
   const notes = Object.keys(b.notes).length - Object.keys(a.notes).length
   if (notes !== 0) return notes
   if (a.createdAt !== b.createdAt) return a.createdAt < b.createdAt ? -1 : 1
   return a.id < b.id ? -1 : 1
 }
 
+/** A group-chat handle names every member of the chat, so it never identifies one person. */
+function isPersonIdentity(externalId: ExternalId): boolean {
+  return externalId.provider !== "local"
+    && !(externalId.provider === "imessage-handle" && externalId.externalId.startsWith("group:"))
+}
+
 /**
- * Records are duplicates when they are human, carry only local identities, share the
- * same name and trust level, and are joined through at least one shared local identity.
- * The canonical record is the one with the most notes, then the oldest.
+ * Human records are duplicates when either
+ * - they carry only local identities, share the same name and trust level, and are joined
+ *   through at least one shared local identity, or
+ * - they share an identical person identity (provider, id and tenant). The friends store
+ *   refuses to resolve such an identity because it is bound to more than one record.
+ * The canonical record is the one with the highest trust, then the most notes, then the oldest.
  */
 export function planFriendDedupe(records: FriendRecord[]): FriendDedupeGroup[] {
-  const buckets = new Map<string, FriendRecord[]>()
-  for (const record of records) {
-    if ((record.kind ?? "human") !== "human" || !isLocalOnly(record)) continue
-    const key = JSON.stringify([record.name.trim().toLowerCase(), record.trustLevel ?? "friend"])
-    buckets.set(key, [...(buckets.get(key) ?? []), record])
-  }
+  const humans = records.filter((record) => (record.kind ?? "human") === "human")
+  const parent = humans.map((_, index) => index)
+  const find = (index: number): number => (parent[index] === index ? index : (parent[index] = find(parent[index]!)))
+  const owner = new Map<string, number>()
+  humans.forEach((record, index) => {
+    const localBucket = isLocalOnly(record) ? [record.name.trim().toLowerCase(), record.trustLevel ?? "friend"] : null
+    for (const externalId of record.externalIds) {
+      if (!localBucket && !isPersonIdentity(externalId)) continue
+      const key = JSON.stringify([...(localBucket ?? []), externalIdKey(externalId)])
+      const seen = owner.get(key)
+      if (seen === undefined) owner.set(key, index)
+      else parent[find(index)] = find(seen)
+    }
+  })
+  const components = new Map<number, FriendRecord[]>()
+  humans.forEach((record, index) => {
+    const root = find(index)
+    components.set(root, [...(components.get(root) ?? []), record])
+  })
 
   const groups: FriendDedupeGroup[] = []
-  for (const bucket of buckets.values()) {
-    // Union records that share any local identity.
-    const parent = bucket.map((_, index) => index)
-    const find = (index: number): number => (parent[index] === index ? index : (parent[index] = find(parent[index]!)))
-    const owner = new Map<string, number>()
-    bucket.forEach((record, index) => {
-      for (const externalId of record.externalIds) {
-        const key = externalIdKey(externalId)
-        const seen = owner.get(key)
-        if (seen === undefined) owner.set(key, index)
-        else parent[find(index)] = find(seen)
-      }
-    })
-    const components = new Map<number, FriendRecord[]>()
-    bucket.forEach((record, index) => {
-      const root = find(index)
-      components.set(root, [...(components.get(root) ?? []), record])
-    })
-    for (const members of components.values()) {
-      if (members.length < 2) continue
-      const [canonical, ...duplicates] = [...members].sort(canonicalOrder)
-      groups.push({ canonical: canonical!, duplicates })
-    }
+  for (const members of components.values()) {
+    if (members.length < 2) continue
+    const [canonical, ...duplicates] = [...members].sort(canonicalOrder)
+    groups.push({ canonical: canonical!, duplicates })
   }
   return groups.sort((a, b) => canonicalOrder(a.canonical, b.canonical))
 }
@@ -321,7 +328,7 @@ export async function dedupeFriends(input: { store: FriendStore; friendsDir: str
       targetId: group.canonical.id,
       sourceIds: duplicateIds,
       actor: input.actor,
-      reason: "duplicate local records of the same person",
+      reason: "duplicate records of the same person",
       dryRun,
       ...(input.now ? { now: input.now } : {}),
     })

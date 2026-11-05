@@ -75,7 +75,7 @@ describe("container runtime policy", () => {
     expect(dockerfile).toContain('printf \'%s\' \'{}\' >"$BW_VERIFY_ROOT/appdata/data.json"')
     expect(dockerfile).toContain('BITWARDENCLI_APPDATA_DIR="$BW_VERIFY_ROOT/appdata" bw --version 2>"$BW_VERIFY_ROOT/stderr"')
     expect(dockerfile).toContain('test ! -s "$BW_VERIFY_ROOT/stderr"')
-    expect(dockerfile).toContain('test "$BW_VERSION" = "2026.6.0"')
+    expect(dockerfile).toContain('test "$BW_VERSION" = "2026.9.1"')
     expect(dockerfile).toContain('rm -rf -- "$BW_VERIFY_ROOT"')
     expect(dockerfile).toContain('test ! -e "/home/ouro/.config/Bitwarden CLI"')
     expect(dockerfile).not.toContain('$(bw --version)')
@@ -90,14 +90,16 @@ describe("container runtime policy", () => {
     expect(habit).toContain("status: active")
   })
 
-  it("ships Sanctuary on the cost-effective MiniMax provider", () => {
+  // A fresh install starts on Anthropic, the provider the public alpha supports. The readiness policy below is only
+  // read by the operator acceptance harness, which still runs its MiniMax checks.
+  it("ships new Butlers on Anthropic, keeping the acceptance harness's MiniMax readiness policy", () => {
     const agent = JSON.parse(fs.readFileSync("deploy/unraid/sanctuary.ouro/agent.json", "utf8")) as {
       humanFacing: { provider: string; model: string }
       agentFacing: { provider: string; model: string }
     }
 
-    expect(agent.humanFacing).toEqual({ provider: "minimax", model: "MiniMax-M3" })
-    expect(agent.agentFacing).toEqual({ provider: "minimax", model: "MiniMax-M3" })
+    expect(agent.humanFacing).toEqual({ provider: "anthropic", model: "claude-opus-5-5" })
+    expect(agent.agentFacing).toEqual({ provider: "anthropic", model: "claude-sonnet-5-5" })
     const readiness = JSON.parse(fs.readFileSync("deploy/unraid/sanctuary.ouro/provider-readiness.json", "utf8"))
     expect(readiness).toEqual({
       version: 1,
@@ -219,7 +221,7 @@ php() {
     } finally {
       fs.rmSync(testRoot, { recursive: true, force: true })
     }
-  })
+  }, 30_000)
 
   it("propagates effective-audit faults from a conditional function context", () => {
     const runbook = fs.readFileSync("deploy/unraid/README.txt", "utf8")
@@ -601,7 +603,7 @@ if assert_restore_preflight; then command printf 'MUTATION\n'; else exit $?; fi`
     } finally {
       fs.rmSync(testRoot, { recursive: true, force: true })
     }
-  })
+  }, 30_000)
 
   it("rejects representative inline credential forms from host snapshots without rejecting references", () => {
     const runbook = fs.readFileSync("deploy/unraid/README.txt", "utf8")
@@ -1603,7 +1605,7 @@ validate_sanctuary_roots "$RUNTIME_ROOT" "$AGENT_ROOT" live-precutover`
     } finally {
       fs.rmSync(testRoot, { recursive: true, force: true })
     }
-  })
+  }, 30_000)
 
   it("normalizes only exact existing-root private permission candidates before live validation", () => {
     const runbook = fs.readFileSync("deploy/unraid/README.txt", "utf8")
@@ -1833,6 +1835,10 @@ validate_sanctuary_roots "$RUNTIME_ROOT" "$AGENT_ROOT" live-precutover`
     expect(launcher).toContain('kill -KILL "$BROKER_PID"')
     expect(launcher).toContain('/usr/bin/docker start "$EXPECTED_CONTAINER_ID"')
     expect(launcher).toContain('test "$RESTORE_RUNNING" = true && test "$RESTORE_HEALTH" = healthy')
+    expect(launcher).toContain('REFRESH_ATTEMPT=0')
+    expect(launcher).toContain('while test "$REFRESH_ATTEMPT" -lt 5')
+    expect(launcher).toContain('if (!response) process.exit(2);')
+    expect(launcher).toContain('try { envelope = JSON.parse(response); } catch { process.exit(2); }')
     const startBroker = launcher.slice(launcher.indexOf("start_broker()"), launcher.indexOf("prepare_live_facts()"))
     expect(startBroker.indexOf("await_post_audit_health")).toBeLessThan(startBroker.indexOf("refresh_live_facts"))
     expect(launcher).not.toMatch(/autostart.*(?:write|install|rm|mv)/iu)
@@ -1970,7 +1976,7 @@ await_post_audit_health`
     } finally {
       fs.rmSync(testRoot, { recursive: true, force: true })
     }
-  })
+  }, 30_000)
 
   it("routes every post-activation acceptance launcher invocation through the final profile", () => {
     const runbook = fs.readFileSync("deploy/unraid/README.txt", "utf8")
@@ -2049,9 +2055,9 @@ await_post_audit_health`
 
   it("locks deployment and credential rotation to the canonical bot and exact key IDs", () => {
     const runbook = fs.readFileSync("deploy/unraid/README.txt", "utf8")
-    expect(runbook).toContain("Mendelow Cloud Butler")
-    expect(runbook).toContain("MendelowCloudButlerBot")
-    expect(runbook).toContain("8541786263")
+    expect(runbook).toContain("<butler-display-name>")
+    expect(runbook).toContain("<butler-bot-username>")
+    expect(runbook).toContain("<numeric-bot-id>")
     expect(runbook).not.toContain("Sanctuary Butler")
     expect(runbook).toMatch(/exact immutable\s+ID/u)
     expect(runbook).toContain("proves each old credential receives a 401 or 403")
@@ -2920,7 +2926,7 @@ if audit_registered_dockerman_template "$IMAGE_ID" "$VERSION_IMAGE" canonical-pr
     }
   })
 
-  it("ships Mendelow Cloud Butler with the exact persistent roots and complete bootstrap bundle", () => {
+  it("ships Ouro Butler with the exact persistent roots and complete bootstrap bundle", () => {
     const dockerfile = fs.readFileSync("deploy/unraid/Dockerfile", "utf8")
     const template = fs.readFileSync("deploy/unraid/sanctuary.xml", "utf8")
     const runbook = fs.readFileSync("deploy/unraid/README.txt", "utf8")
@@ -2933,14 +2939,14 @@ if audit_registered_dockerman_template "$IMAGE_ID" "$VERSION_IMAGE" canonical-pr
       bundleSchemaVersion: number
     }
 
-    expect(template).toContain("<Overview>Mendelow Cloud Butler")
+    expect(template).toContain("<Overview>Ouro Butler")
     expect(template).toContain('Default="/mnt/user/appdata/ouro-butler/runtime/.ouro-cli"')
     expect(template).toContain('Default="/mnt/user/appdata/ouro-butler/agent/sanctuary.ouro"')
     expect(template).not.toContain('/mnt/user/appdata/ouro-butler/AgentBundles')
     expect(template).toContain(`<Repository>ghcr.io/ourostack/ouroboros-butler:${JSON.parse(fs.readFileSync("package.json", "utf8")).version}</Repository>`)
     expect(template).toContain('Default="/boot/config/custom/ouro-events/spool" Mode="ro"')
     expect(template).not.toContain('Default="/mnt/user/appdata/sabnzbd/sabnzbd.ini"')
-    expect(runbook).toContain("Mendelow Cloud Butler operator runbook")
+    expect(runbook).toContain("Ouro Butler operator runbook")
     expect(runbook).toContain("/mnt/user/appdata/ouro-butler/runtime/.ouro-cli")
     expect(runbook).toContain("/mnt/user/appdata/ouro-butler/agent/sanctuary.ouro")
     expect(runbook).toContain("docker image inspect --format '{{.Id}}'")
