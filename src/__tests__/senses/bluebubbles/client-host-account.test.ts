@@ -12,11 +12,11 @@ import { createBlueBubblesClient } from "../../../senses/bluebubbles/client"
 import { resetBlueBubblesServerAccountCache } from "../../../senses/bluebubbles/host-account-verifier"
 
 const chat = {
-  chatGuid: "any;-;ari@mendelow.me",
-  chatIdentifier: "ari@mendelow.me",
+  chatGuid: "any;-;owner@example.test",
+  chatIdentifier: "owner@example.test",
   isGroup: false,
-  sessionKey: "chat:any;-;ari@mendelow.me",
-  sendTarget: { kind: "chat_guid", value: "any;-;ari@mendelow.me" } as const,
+  sessionKey: "chat:any;-;owner@example.test",
+  sendTarget: { kind: "chat_guid", value: "any;-;owner@example.test" } as const,
 }
 const config = { serverUrl: "http://bluebubbles.local", password: "pw", accountId: "default" }
 const channel = { port: 18790, webhookPath: "/bluebubbles-webhook", requestTimeoutMs: 30000 }

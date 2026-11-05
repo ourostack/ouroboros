@@ -460,12 +460,12 @@ describe("start-of-turn packet", () => {
       })
       const packet = buildStartOfTurnPacket(view, {
         currentSessionTiming: "",
-        friendContactTiming: "freshest friend-facing contact: Ari/bluebubbles/chat:any;-;ari@mendelow.me; last inbound 11m ago; i last replied 10m ago",
+        friendContactTiming: "freshest friend-facing contact: Ari/bluebubbles/chat:any;-;owner@example.test; last inbound 11m ago; i last replied 10m ago",
       })
 
       const rendered = renderStartOfTurnPacket(packet)
 
-      expect(rendered).toContain("**Recent contact:** freshest friend-facing contact: Ari/bluebubbles/chat:any;-;ari@mendelow.me")
+      expect(rendered).toContain("**Recent contact:** freshest friend-facing contact: Ari/bluebubbles/chat:any;-;owner@example.test")
       expect(rendered).toContain("last inbound 11m ago")
       expect(rendered).not.toContain("**Thread timing:**")
     })
@@ -531,13 +531,13 @@ describe("start-of-turn packet", () => {
         ),
       })
       const packet = buildStartOfTurnPacket(view, {
-        friendContactTiming: "freshest friend-facing contact: Ari/bluebubbles/chat:any;-;ari@mendelow.me; last inbound 11m ago",
+        friendContactTiming: "freshest friend-facing contact: Ari/bluebubbles/chat:any;-;owner@example.test; last inbound 11m ago",
         recoverySentinel: makeSentinelView(),
       } as any)
 
       const rendered = renderStartOfTurnPacket(packet)
 
-      expect(rendered).toContain("**Recent contact:** freshest friend-facing contact: Ari/bluebubbles/chat:any;-;ari@mendelow.me")
+      expect(rendered).toContain("**Recent contact:** freshest friend-facing contact: Ari/bluebubbles/chat:any;-;owner@example.test")
     })
   })
 

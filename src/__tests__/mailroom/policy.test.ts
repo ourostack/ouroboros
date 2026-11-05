@@ -47,7 +47,7 @@ describe("mailroom policy", () => {
   it("classifies delegated source mail as imbox and native unknown mail as screener", () => {
     const { registry } = provisionMailboxRegistry({
       agentId: "slugger",
-      ownerEmail: "ari@mendelow.me",
+      ownerEmail: "owner@example.test",
       source: "hey",
     })
     const native = classifyMailPlacement({
@@ -63,7 +63,7 @@ describe("mailroom policy", () => {
 
     const delegated = classifyMailPlacement({
       registry,
-      recipient: "me.mendelow.ari.slugger@ouro.bot",
+      recipient: "test.example.owner.slugger@ouro.bot",
       sender: "travel@example.com",
     })
     expect(delegated).toEqual(expect.objectContaining({
@@ -87,7 +87,7 @@ describe("mailroom policy", () => {
     delete (registry.sourceGrants[0] as { source?: string }).source
     expect(classifyMailPlacement({
       registry,
-      recipient: "me.mendelow.ari.slugger@ouro.bot",
+      recipient: "test.example.owner.slugger@ouro.bot",
       sender: "travel@example.com",
     })).toEqual(expect.objectContaining({
       placement: "imbox",
@@ -98,7 +98,7 @@ describe("mailroom policy", () => {
   it("classifies sender policies and weak authentication without adding a second trust system", () => {
     const { registry } = provisionMailboxRegistry({
       agentId: "slugger",
-      ownerEmail: "ari@mendelow.me",
+      ownerEmail: "owner@example.test",
       source: "hey",
     })
     registry.senderPolicies = [
@@ -190,7 +190,7 @@ describe("mailroom policy", () => {
 
     expect(classifyMailPlacement({
       registry,
-      recipient: "me.mendelow.ari.slugger@ouro.bot",
+      recipient: "test.example.owner.slugger@ouro.bot",
       sender: "travel@example.com",
     })).toEqual(expect.objectContaining({
       placement: "quarantine",

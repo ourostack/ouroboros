@@ -28,9 +28,9 @@ describe("bluebubbles thread lane cleanup", () => {
     const { findObsoleteBlueBubblesThreadSessions } = await import("../../../senses/bluebubbles/session-cleanup")
 
     const dir = makeTempDir()
-    const trunk = path.join(dir, "chat_any;-;ari@mendelow.me.json")
-    const threadA = path.join(dir, "chat_any;-;ari@mendelow.me_thread_123.json")
-    const threadB = path.join(dir, "chat_any;-;ari@mendelow.me_thread_456.json")
+    const trunk = path.join(dir, "chat_any;-;owner@example.test.json")
+    const threadA = path.join(dir, "chat_any;-;owner@example.test_thread_123.json")
+    const threadB = path.join(dir, "chat_any;-;owner@example.test_thread_456.json")
     const unrelatedChat = path.join(dir, "chat_any;-;someoneelse.json")
     const unrelatedThread = path.join(dir, "chat_any;-;someoneelse_thread_999.json")
 
@@ -54,8 +54,8 @@ describe("bluebubbles thread lane cleanup", () => {
     const { findObsoleteBlueBubblesThreadSessions } = await import("../../../senses/bluebubbles/session-cleanup")
 
     const dir = makeTempDir()
-    const missingTrunk = path.join(dir, "chat_any;-;ari@mendelow.me.json")
-    const nestedThread = path.join(dir, "chat_any;-;ari@mendelow.me_thread_123.json")
+    const missingTrunk = path.join(dir, "chat_any;-;owner@example.test.json")
+    const nestedThread = path.join(dir, "chat_any;-;owner@example.test_thread_123.json")
     const liveTrunk = path.join(dir, "chat_any;-;someoneelse.json")
     const textSibling = path.join(dir, "chat_any;-;someoneelse_thread_999.txt")
     writeFile(nestedThread)

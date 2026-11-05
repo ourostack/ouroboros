@@ -34,7 +34,7 @@ function writeOperation(agentRoot: string, name: string, record: Record<string, 
 	  fs.writeFileSync(filePath, [
 	    "From MAILER-DAEMON Thu Jan  1 00:00:00 1970",
     "From: Travel Desk <travel@example.com>",
-    "To: Slugger <me.mendelow.ari.slugger@ouro.bot>",
+    "To: Slugger <test.example.owner.slugger@ouro.bot>",
     "Date: Wed, 24 Apr 2026 10:00:00 -0700",
     `Subject: ${subject}`,
     "",
@@ -48,7 +48,7 @@ function writeOperation(agentRoot: string, name: string, record: Record<string, 
 	  fs.writeFileSync(filePath, messages.flatMap((message) => [
 	    "From MAILER-DAEMON Thu Jan  1 00:00:00 1970",
 	    "From: Travel Desk <travel@example.com>",
-	    "To: Slugger <me.mendelow.ari.slugger@ouro.bot>",
+	    "To: Slugger <test.example.owner.slugger@ouro.bot>",
 	    `Date: ${message.date}`,
 	    `Subject: ${message.subject}`,
 	    "",
@@ -62,7 +62,7 @@ function writeQuotedPrintableArchive(filePath: string, subject: string, encodedB
   fs.writeFileSync(filePath, [
     "From MAILER-DAEMON Thu Jan  1 00:00:00 1970",
     "From: Travel Desk <travel@example.com>",
-    "To: Slugger <me.mendelow.ari.slugger@ouro.bot>",
+    "To: Slugger <test.example.owner.slugger@ouro.bot>",
     "Date: Wed, 24 Apr 2026 10:00:00 -0700",
     `Subject: ${subject}`,
     "Content-Type: text/plain; charset=UTF-8",
@@ -131,13 +131,13 @@ describe("searchSuccessfulImportArchives", () => {
     setAgentName("slugger")
 
     const agentRoot = path.join(homeRoot, "AgentBundles", "slugger.ouro")
-    const archivePath = path.join(homeRoot, "Downloads", "HEY-emails-ari-mendelow-me.mbox")
-    const duplicateArchivePath = path.join(homeRoot, "Downloads", "HEY-emails-ari-mendelow-me-duplicate.mbox")
+    const archivePath = path.join(homeRoot, "Downloads", "HEY-emails-owner-example-test.mbox")
+    const duplicateArchivePath = path.join(homeRoot, "Downloads", "HEY-emails-owner-example-test-duplicate.mbox")
     const sourceOnlyArchivePath = path.join(homeRoot, "Downloads", "HEY-emails-source-only.mbox")
-    const wrongSourcePath = path.join(homeRoot, "Downloads", "HEY-emails-ari-mendelow-me-gmail.mbox")
+    const wrongSourcePath = path.join(homeRoot, "Downloads", "HEY-emails-owner-example-test-gmail.mbox")
     const { registry } = provisionMailboxRegistry({
       agentId: "slugger",
-      ownerEmail: "ari@mendelow.me",
+      ownerEmail: "owner@example.test",
       source: "hey",
     })
 
@@ -157,7 +157,7 @@ describe("searchSuccessfulImportArchives", () => {
       createdAt: "2026-04-24T17:59:00.000Z",
       updatedAt: "2026-04-24T17:59:00.000Z",
       spec: {
-        ownerEmail: "ari@mendelow.me",
+        ownerEmail: "owner@example.test",
         source: "hey",
       },
     })
@@ -173,7 +173,7 @@ describe("searchSuccessfulImportArchives", () => {
       updatedAt: "2026-04-24T18:00:00.000Z",
       spec: {
         filePath: path.join(homeRoot, "Downloads", "missing.mbox"),
-        ownerEmail: "ari@mendelow.me",
+        ownerEmail: "owner@example.test",
         source: "hey",
       },
     })
@@ -189,7 +189,7 @@ describe("searchSuccessfulImportArchives", () => {
       updatedAt: "2026-04-24T18:01:00.000Z",
       spec: {
         filePath: wrongSourcePath,
-        ownerEmail: "ari@mendelow.me",
+        ownerEmail: "owner@example.test",
         source: "gmail",
       },
     })
@@ -205,7 +205,7 @@ describe("searchSuccessfulImportArchives", () => {
       updatedAt: "2026-04-24T18:02:00.000Z",
       spec: {
         filePath: archivePath,
-        ownerEmail: "ari@mendelow.me",
+        ownerEmail: "owner@example.test",
         source: "hey",
       },
     })
@@ -221,7 +221,7 @@ describe("searchSuccessfulImportArchives", () => {
       updatedAt: "2026-04-24T18:03:00.000Z",
       spec: {
         filePath: archivePath,
-        ownerEmail: "ari@mendelow.me",
+        ownerEmail: "owner@example.test",
         source: "hey",
       },
     })
@@ -237,7 +237,7 @@ describe("searchSuccessfulImportArchives", () => {
       updatedAt: "2026-04-24T18:04:00.000Z",
       spec: {
         filePath: duplicateArchivePath,
-        ownerEmail: "ari@mendelow.me",
+        ownerEmail: "owner@example.test",
         source: "hey",
       },
     })
@@ -275,7 +275,7 @@ describe("searchSuccessfulImportArchives", () => {
     })
 
     expect(matches).toHaveLength(2)
-    expect(matches[0]?.ownerEmail).toBe("ari@mendelow.me")
+    expect(matches[0]?.ownerEmail).toBe("owner@example.test")
     expect(matches[0]?.source).toBe("hey")
 
     const cached = searchMailSearchCache({
@@ -297,7 +297,7 @@ describe("searchSuccessfulImportArchives", () => {
     const secondArchivePath = path.join(homeRoot, "Downloads", "owner-only-second.mbox")
     const { registry } = provisionMailboxRegistry({
       agentId: "slugger",
-      ownerEmail: "ari@mendelow.me",
+      ownerEmail: "owner@example.test",
       source: "hey",
     })
 
@@ -316,7 +316,7 @@ describe("searchSuccessfulImportArchives", () => {
       updatedAt: "2026-04-24T19:02:00.000Z",
       spec: {
         filePath: firstArchivePath,
-        ownerEmail: "ari@mendelow.me",
+        ownerEmail: "owner@example.test",
       },
     })
     writeOperation(agentRoot, "owner-only-older", {
@@ -331,7 +331,7 @@ describe("searchSuccessfulImportArchives", () => {
       updatedAt: "2026-04-24T19:01:00.000Z",
       spec: {
         filePath: secondArchivePath,
-        ownerEmail: "ari@mendelow.me",
+        ownerEmail: "owner@example.test",
       },
     })
 
@@ -367,10 +367,10 @@ describe("searchSuccessfulImportArchives", () => {
 	    process.env.HOME = homeRoot
 	    setAgentName("slugger")
 
-	    const archivePath = path.join(homeRoot, "Downloads", "HEY-emails-ari-mendelow-me-many.mbox")
+	    const archivePath = path.join(homeRoot, "Downloads", "HEY-emails-owner-example-test-many.mbox")
 	    const { registry } = provisionMailboxRegistry({
 	      agentId: "slugger",
-	      ownerEmail: "ari@mendelow.me",
+	      ownerEmail: "owner@example.test",
 	      source: "hey",
 	    })
 	    writeArchiveMessages(archivePath, [
@@ -391,7 +391,7 @@ describe("searchSuccessfulImportArchives", () => {
 	      registry,
 	      agentId: "slugger",
 	      filePath: archivePath,
-	      ownerEmail: "ari@mendelow.me",
+	      ownerEmail: "owner@example.test",
 	      source: "hey",
 	      queryTerms: ["rarecode"],
 	      limit: 1,
@@ -413,10 +413,10 @@ describe("searchSuccessfulImportArchives", () => {
     setAgentName("slugger")
 
     const agentRoot = path.join(homeRoot, "AgentBundles", "slugger.ouro")
-    const archivePath = path.join(homeRoot, "Downloads", "HEY-emails-ari-mendelow-me-quoted-printable.mbox")
+    const archivePath = path.join(homeRoot, "Downloads", "HEY-emails-owner-example-test-quoted-printable.mbox")
     const { registry } = provisionMailboxRegistry({
       agentId: "slugger",
-      ownerEmail: "ari@mendelow.me",
+      ownerEmail: "owner@example.test",
       source: "hey",
     })
 
@@ -438,7 +438,7 @@ describe("searchSuccessfulImportArchives", () => {
       updatedAt: "2026-04-24T20:10:00.000Z",
       spec: {
         filePath: archivePath,
-        ownerEmail: "ari@mendelow.me",
+        ownerEmail: "owner@example.test",
         source: "hey",
       },
     })
@@ -527,7 +527,7 @@ describe("searchSuccessfulImportArchives", () => {
       compartmentKind: "delegated",
       compartmentId: "grant_hey",
       grantId: "grant_hey",
-      ownerEmail: "ari@mendelow.me",
+      ownerEmail: "owner@example.test",
       source: "hey",
       placement: "imbox",
       from: ["someone@example.com"],
@@ -552,7 +552,7 @@ describe("searchSuccessfulImportArchives", () => {
       compartmentKind: "delegated",
       compartmentId: "grant_hey",
       grantId: "grant_hey",
-      ownerEmail: "ari@mendelow.me",
+      ownerEmail: "owner@example.test",
       source: "hey",
       placement: "imbox",
       from: ["confirmations@booking.com"],

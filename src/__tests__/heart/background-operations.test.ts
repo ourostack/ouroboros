@@ -41,7 +41,7 @@ describe("background operations", () => {
       createdAt: "2026-04-23T22:40:00.000Z",
       spec: {
         filePath: "/tmp/ari-hey.mbox",
-        ownerEmail: "ari@mendelow.me",
+        ownerEmail: "owner@example.test",
         source: "hey",
       },
     })
@@ -49,7 +49,7 @@ describe("background operations", () => {
     expect(queued.status).toBe("queued")
     expect(queued.spec).toEqual({
       filePath: "/tmp/ari-hey.mbox",
-      ownerEmail: "ari@mendelow.me",
+      ownerEmail: "owner@example.test",
       source: "hey",
     })
 
@@ -699,8 +699,8 @@ describe("background operations", () => {
       summary: "queued delegated mail import",
       createdAt: "2026-04-23T23:20:00.000Z",
       spec: {
-        filePath: "/tmp/HEY-emails-arimendelow@hey.com.mbox",
-        ownerEmail: "ari@mendelow.me",
+        filePath: "/tmp/HEY-emails-owner@hey.example.mbox",
+        ownerEmail: "owner@example.test",
         source: "hey",
       },
     })
@@ -710,7 +710,7 @@ describe("background operations", () => {
       id: "op_mail_import_old_fail",
       finishedAt: "2026-04-23T23:21:00.000Z",
       summary: "delegated mail import failed",
-      detail: "file: /tmp/HEY-emails-arimendelow@hey.com.mbox",
+      detail: "file: /tmp/HEY-emails-owner@hey.example.mbox",
       error: "download messages/mail_old.json timed out after 20000ms",
     })
 
@@ -723,8 +723,8 @@ describe("background operations", () => {
       summary: "queued delegated mail import",
       createdAt: "2026-04-23T23:22:00.000Z",
       spec: {
-        filePath: "/tmp/HEY-emails-arimendelow@hey.com.mbox",
-        ownerEmail: "ari@mendelow.me",
+        filePath: "/tmp/HEY-emails-owner@hey.example.mbox",
+        ownerEmail: "owner@example.test",
         source: "hey",
       },
     })
@@ -746,8 +746,8 @@ describe("background operations", () => {
       summary: "queued delegated mail import",
       createdAt: "2026-04-23T23:24:00.000Z",
       spec: {
-        filePath: "/tmp/HEY-emails-ari-mendelow-me.mbox",
-        ownerEmail: "ari@mendelow.me",
+        filePath: "/tmp/HEY-emails-owner-example-test.mbox",
+        ownerEmail: "owner@example.test",
         source: "hey",
       },
     })

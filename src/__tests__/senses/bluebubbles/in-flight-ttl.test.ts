@@ -52,7 +52,7 @@ describe("BB in-flight marker TTL", () => {
 
   describe("happy path", () => {
     it("begin/isInFlight/end form a normal claim+release cycle", () => {
-      const session = "chat:any;-;ari@mendelow.me"
+      const session = "chat:any;-;owner@example.test"
       const guid = "63268A55-A5FC-4316-A69E-646E9419BBFE"
 
       expect(isBlueBubblesMessageInFlight(session, guid)).toBe(false)
@@ -110,7 +110,7 @@ describe("BB in-flight marker TTL", () => {
     })
 
     it("begin replaces a stale marker (the leak-survival path) and re-claim succeeds", () => {
-      const session = "chat:any;-;ari@mendelow.me"
+      const session = "chat:any;-;owner@example.test"
       const guid = "63268A55-A5FC-4316-A69E-646E9419BBFE"
 
       // Simulate a leak: someone called begin but never called end.

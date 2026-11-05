@@ -102,7 +102,7 @@ const ouroBotBinding: DnsWorkflowBinding = {
   workflow: "dns",
   domain: "ouro.bot",
   driver: "porkbun",
-  credentialItem: "ops/registrars/porkbun/accounts/ari@mendelow.me",
+  credentialItem: "ops/registrars/porkbun/accounts/owner@example.test",
   resources: {
     records: [
       { type: "A", name: "mx1" },
@@ -141,7 +141,7 @@ describe("DNS workflow binding", () => {
     expect(loadDnsWorkflowBinding(ouroBotBinding)).toMatchObject({
       domain: "ouro.bot",
       driver: "porkbun",
-      credentialItem: "ops/registrars/porkbun/accounts/ari@mendelow.me",
+      credentialItem: "ops/registrars/porkbun/accounts/owner@example.test",
     })
     expect(() => loadDnsWorkflowBinding({
       ...ouroBotBinding,
@@ -165,8 +165,8 @@ describe("DNS workflow binding", () => {
       secretApiKey: "porkbun-secret-key",
     })
     expect(reader.readSecretField).toHaveBeenCalledTimes(2)
-    expect(reader.readSecretField).toHaveBeenNthCalledWith(1, "ops/registrars/porkbun/accounts/ari@mendelow.me", "apiKey")
-    expect(reader.readSecretField).toHaveBeenNthCalledWith(2, "ops/registrars/porkbun/accounts/ari@mendelow.me", "secretApiKey")
+    expect(reader.readSecretField).toHaveBeenNthCalledWith(1, "ops/registrars/porkbun/accounts/owner@example.test", "apiKey")
+    expect(reader.readSecretField).toHaveBeenNthCalledWith(2, "ops/registrars/porkbun/accounts/owner@example.test", "secretApiKey")
     expect(reader.readNotes).not.toHaveBeenCalled()
   })
 

@@ -1294,7 +1294,7 @@ describe("active work frame", () => {
           friendId: "friend-1",
           friendName: "Ari",
           channel: "bluebubbles",
-          key: "chat:any;-;ari@mendelow.me",
+          key: "chat:any;-;owner@example.test",
           sessionPath: "/tmp/state/sessions/friend-1/bluebubbles/chat-any.json",
           lastActivityAt: "2026-03-21T17:36:03.760Z",
           lastActivityMs: Date.parse("2026-03-21T17:36:03.760Z"),
@@ -1317,7 +1317,7 @@ describe("active work frame", () => {
     const nowSpy = vi.spyOn(Date, "now").mockReturnValue(Date.parse("2026-03-21T19:52:25.818Z"))
     const rendered = formatActiveWorkFrame(frame)
 
-    expect(rendered).toContain("- Ari/bluebubbles/chat:any;-;ari@mendelow.me: [active] this live thread; artifact no explicit artifact yet; next check this session and bring back the latest concrete state")
+    expect(rendered).toContain("- Ari/bluebubbles/chat:any;-;owner@example.test: [active] this live thread; artifact no explicit artifact yet; next check this session and bring back the latest concrete state")
     expect(rendered).not.toContain("Ari/cli/old-session")
     nowSpy.mockRestore()
   })

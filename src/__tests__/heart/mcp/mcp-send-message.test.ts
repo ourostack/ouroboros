@@ -271,14 +271,14 @@ describe("MCP send_message tool", () => {
     vi.mocked(fs.readdirSync).mockReturnValue(["ari.json"] as any)
     vi.mocked(fs.readFileSync).mockReturnValue(JSON.stringify({
       id: "11111111-2222-4333-8444-555555555555",
-      name: "arimendelow",
-      externalIds: [{ provider: "local", externalId: "arimendelow" }],
+      name: "owner",
+      externalIds: [{ provider: "local", externalId: "owner" }],
     }))
 
     const { createMcpServer } = await import("../../../heart/mcp/mcp-server")
     const server = createMcpServer({
       agent: "test-agent",
-      friendId: "local-arimendelow",
+      friendId: "local-owner",
       socketPath: "/tmp/test.sock",
       stdin,
       stdout,
@@ -314,14 +314,14 @@ describe("MCP send_message tool", () => {
     vi.mocked(fs.readdirSync).mockReturnValue(["ari.json"] as any)
     vi.mocked(fs.readFileSync).mockReturnValue(JSON.stringify({
       id: "11111111-2222-4333-8444-555555555555",
-      name: "arimendelow",
-      externalIds: [{ provider: "local", externalId: "arimendelow@macbook" }],
+      name: "owner",
+      externalIds: [{ provider: "local", externalId: "owner@macbook" }],
     }))
 
     const { createMcpServer } = await import("../../../heart/mcp/mcp-server")
     const server = createMcpServer({
       agent: "test-agent",
-      friendId: "local-arimendelow",
+      friendId: "local-owner",
       socketPath: "/tmp/test.sock",
       stdin,
       stdout,
@@ -335,7 +335,7 @@ describe("MCP send_message tool", () => {
     vi.mocked(fs.readFileSync).mockReturnValue(JSON.stringify({
       id: "11111111-2222-4333-8444-555555555555",
       name: "Ari",
-      externalIds: [{ provider: "local", externalId: "arimendelow" }],
+      externalIds: [{ provider: "local", externalId: "owner" }],
     }))
 
     const { createMcpServer } = await import("../../../heart/mcp/mcp-server")
@@ -396,19 +396,19 @@ describe("MCP send_message tool", () => {
       .mockReturnValueOnce(JSON.stringify({
         id: "11111111-2222-4333-8444-555555555555",
         name: "Ari",
-        externalIds: [{ provider: "github", externalId: "arimendelow" }],
+        externalIds: [{ provider: "github", externalId: "owner" }],
       }))
 
     const { createMcpServer } = await import("../../../heart/mcp/mcp-server")
     const server = createMcpServer({
       agent: "test-agent",
-      friendId: "local-arimendelow",
+      friendId: "local-owner",
       socketPath: "/tmp/test.sock",
       stdin,
       stdout,
     })
 
-    expect(server.friendId).toBe("local-arimendelow")
+    expect(server.friendId).toBe("local-owner")
   })
 
   it("send_message handles daemon command errors gracefully", async () => {

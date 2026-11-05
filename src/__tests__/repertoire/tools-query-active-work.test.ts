@@ -27,7 +27,7 @@ const listSessionActivityMock = vi.fn(() => [
     friendId: "friend-1",
     friendName: "Ari",
     channel: "bluebubbles",
-    key: "chat:any;-;ari@mendelow.me",
+    key: "chat:any;-;owner@example.test",
     sessionPath: "/mock/agent-root/state/sessions/friend-1/bluebubbles/chat.json",
     lastActivityAt: "2026-03-21T17:36:03.760Z",
     lastActivityMs: Date.parse("2026-03-21T17:36:03.760Z"),
@@ -99,7 +99,7 @@ const listCodingSessionsMock = vi.fn(() => [
     lastExitCode: 0,
     lastSignal: null,
     failure: null,
-    originSession: { friendId: "friend-1", channel: "bluebubbles", key: "chat:any;-;ari@mendelow.me" },
+    originSession: { friendId: "friend-1", channel: "bluebubbles", key: "chat:any;-;owner@example.test" },
   },
 ])
 const listVisibleBackgroundOperationsMock = vi.fn(() => [])
@@ -264,7 +264,7 @@ describe("query_active_work tool", () => {
         friendId: "friend-1",
         friendName: "Ari",
         channel: "bluebubbles",
-        key: "chat:any;-;ari@mendelow.me",
+        key: "chat:any;-;owner@example.test",
         sessionPath: "/mock/agent-root/state/sessions/friend-1/bluebubbles/chat.json",
         lastActivityAt: "2026-03-21T17:36:03.760Z",
         lastActivityMs: Date.parse("2026-03-21T17:36:03.760Z"),
@@ -338,7 +338,7 @@ describe("query_active_work tool", () => {
         lastExitCode: 0,
         lastSignal: null,
         failure: null,
-        originSession: { friendId: "friend-1", channel: "bluebubbles", key: "chat:any;-;ari@mendelow.me" },
+        originSession: { friendId: "friend-1", channel: "bluebubbles", key: "chat:any;-;owner@example.test" },
       },
     ])
     listVisibleBackgroundOperationsMock.mockReset()
@@ -379,7 +379,7 @@ describe("query_active_work tool", () => {
     expect(result).toContain("## live coding work")
     expect(result).toContain("codex coding-083")
     expect(result).toContain("## other active sessions")
-    expect(result).toContain("Ari/bluebubbles/chat:any;-;ari@mendelow.me")
+    expect(result).toContain("Ari/bluebubbles/chat:any;-;owner@example.test")
     expect(result).not.toContain("coding-001")
   })
 
@@ -883,9 +883,9 @@ describe("query_active_work tool", () => {
           hint: "likely transient hosted read failure",
         },
         spec: {
-          ownerEmail: "ari@mendelow.me",
+          ownerEmail: "owner@example.test",
           source: "hey",
-          filePath: "/tmp/.playwright-mcp/HEY-emails-ari-mendelow-me.mbox",
+          filePath: "/tmp/.playwright-mcp/HEY-emails-owner-example-test.mbox",
           fileOriginLabel: "browser sandbox (.playwright-mcp)",
         },
         createdAt: "2026-04-23T22:40:00.000Z",
@@ -926,9 +926,9 @@ describe("query_active_work tool", () => {
     expect(result).toContain("operation: op_mail_import_1")
     expect(result).toContain("importing Ari's HEY archive")
     expect(result).toContain("scanned 500 of 16616 messages")
-    expect(result).toContain("file: /tmp/.playwright-mcp/HEY-emails-ari-mendelow-me.mbox")
+    expect(result).toContain("file: /tmp/.playwright-mcp/HEY-emails-owner-example-test.mbox")
     expect(result).toContain("origin: browser sandbox (.playwright-mcp)")
-    expect(result).toContain("owner/source: ari@mendelow.me / hey")
+    expect(result).toContain("owner/source: owner@example.test / hey")
     expect(result).toContain("started: 2026-04-23T22:40:05.000Z")
     expect(result).toContain("updated: 2026-04-23T22:40:30.000Z")
     expect(result).toContain("failure class: transient-storage-read")

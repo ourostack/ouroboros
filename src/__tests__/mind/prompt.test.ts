@@ -415,7 +415,7 @@ describe("buildSystem", () => {
     context.friend.role = "acquaintance"
     context.friend.trustLevel = "acquaintance"
     context.friend.externalIds = [
-      { provider: "imessage-handle", externalId: "ari@mendelow.me", linkedAt: "2026-03-14T18:00:00.000Z" },
+      { provider: "imessage-handle", externalId: "owner@example.test", linkedAt: "2026-03-14T18:00:00.000Z" },
       { provider: "imessage-handle", externalId: "group:any;+;project-group-123", linkedAt: "2026-03-14T18:00:00.000Z" },
     ]
 
@@ -517,7 +517,7 @@ describe("buildSystem", () => {
     context.friend.role = "acquaintance"
     context.friend.trustLevel = "acquaintance"
     context.friend.externalIds = [
-      { provider: "imessage-handle", externalId: "ari@mendelow.me", linkedAt: "2026-03-14T18:00:00.000Z" },
+      { provider: "imessage-handle", externalId: "owner@example.test", linkedAt: "2026-03-14T18:00:00.000Z" },
     ]
 
     const result = flattenSystemPrompt(await buildSystem(
@@ -3225,7 +3225,7 @@ describe("buildSystem with context", () => {
         id: "uuid-bb-1",
         name: "Ari",
         trustLevel: "family" as const,
-        externalIds: [{ provider: "imessage-handle" as const, externalId: "ari@mendelow.me", linkedAt: "2026-01-01T00:00:00.000Z" }],
+        externalIds: [{ provider: "imessage-handle" as const, externalId: "owner@example.test", linkedAt: "2026-01-01T00:00:00.000Z" }],
         tenantMemberships: [],
         toolPreferences: {},
         notes: {},
