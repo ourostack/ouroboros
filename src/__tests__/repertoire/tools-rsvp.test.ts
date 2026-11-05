@@ -30,7 +30,7 @@ function snapshot(): RsvpSnapshot {
     },
     guests: {
       "1": { first_name: "Alex", last_name: "Example", group_id: 7, attending_status: "attending" },
-      "2": { first_name: "Rachel", last_name: "Example", group_id: 7, attending_status: null },
+      "2": { first_name: "Sam", last_name: "Example", group_id: 7, attending_status: null },
     },
     allGuests: {},
     provenance: { kind: "live-fetch", fetchedBy: "unit-test" },

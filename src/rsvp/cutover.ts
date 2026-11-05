@@ -111,7 +111,7 @@ interface NormalizedRsvpCutoverDeps {
   unloadLaunchAgent?: RsvpCutoverDeps["unloadLaunchAgent"]
 }
 
-const LEGACY_LAUNCH_AGENT_LABEL = "com.arimendelow.rsvp-tracker"
+const LEGACY_LAUNCH_AGENT_LABEL = "com.owner.rsvp-tracker"
 const EMPTY_ROLLBACK: RsvpCutoverRollback = {
   configBackupPath: "",
   launchAgentBackupPath: "",

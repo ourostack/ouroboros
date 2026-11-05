@@ -1,6 +1,6 @@
 /**
  * "On the shelf" is a promise that a title is in the house library and ready to play. A reply may make it only for a
- * title a library lookup in this turn found there (2026-10-11: the Butler told Rachel lists were "all on the shelf"
+ * title a library lookup in this turn found there (2026-10-11: the Butler told Sam lists were "all on the shelf"
  * with no lookup, and named titles its own search had just shown were missing). Pure functions; the runtime calls
  * them at settle for agents that opt in (see ToolContext.answerGates).
  */

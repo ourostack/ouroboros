@@ -54,7 +54,7 @@ describe("Sanctuary media catalog contract", () => {
   // 2026-10-11, Rach handoff: forcing a lookup and a returned title into every reply threw away the greeting and the questions.
   // Picking and browsing are conversation; the shelf-claim answer gate holds what a reply says is on the shelf.
   it.each([
-    "hello pal! I’m going to hand you to my wife, Rachel. I’d love for you to help her pick a movie from our Jellyfin library.",
+    "hello pal! I’m going to hand you to my wife, Sam. I’d love for you to help her pick a movie from our Jellyfin library.",
     "i want something silly and feel good. my originally idea was bay watch",
     "Of the films you have in stock, do you have a favorite?",
     "What movie should I watch?",

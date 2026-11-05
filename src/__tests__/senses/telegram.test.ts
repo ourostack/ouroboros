@@ -2016,7 +2016,7 @@ describe("Telegram sense", () => {
     expect(f.api.request).not.toHaveBeenCalled()
   })
 
-  // 2026-10-11: Ari handed his chat to Rachel, and two Jellyfin outage notes landed in her movie chat.
+  // 2026-10-11: Ari handed his chat to Sam, and two Jellyfin outage notes landed in her movie chat.
   it("holds house notices while Ari's chat is handed to someone else, then sends them after the window", async () => {
     const handedAt = Date.parse("2026-10-11T04:27:28.812Z")
     vi.useFakeTimers({ toFake: ["Date"] })
@@ -2029,7 +2029,7 @@ describe("Telegram sense", () => {
       fs.writeFileSync(sessionPath, JSON.stringify({
         version: 2,
         events: [{
-          id: "evt-000001", sequence: 1, role: "user", content: "hello pal! I’m going to hand you to my wife, Rachel. say hi to her!", name: null, toolCallId: null, toolCalls: [], attachments: [],
+          id: "evt-000001", sequence: 1, role: "user", content: "hello pal! I’m going to hand you to my wife, Sam. say hi to her!", name: null, toolCallId: null, toolCalls: [], attachments: [],
           time: { authoredAt: null, authoredAtSource: "unknown", observedAt: new Date(handedAt).toISOString(), observedAtSource: "ingest", recordedAt: new Date(handedAt).toISOString(), recordedAtSource: "save" },
           relations: { replyToEventId: null, threadRootEventId: null, references: [], toolCallId: null, supersedesEventId: null, redactsEventId: null },
           provenance: { captureKind: "live", legacyVersion: null, sourceMessageIndex: null },
@@ -2048,7 +2048,7 @@ describe("Telegram sense", () => {
       await f.app.sendOwnerNotice({ noticeId: "delegated:task-9", text: "Delegated command ran." })
       await f.app.sendOwnerNotice({ noticeId: "delegated:task-9", text: "Delegated command ran." })
       expect(sends()).toEqual([])
-      // Rachel's next message gets its reply, and the notices keep waiting.
+      // Sam's next message gets its reply, and the notices keep waiting.
       await f.getOnMessage()({ updateId: 90, messageId: "91", userId: "42", chatId: "42", text: "something silly please" })
       expect(sends()).toEqual(["All systems nominal."])
       expect(JSON.parse(fs.readFileSync(path.join(f.agentRoot, "state", "telegram", "held-owner-notices.json"), "utf8"))).toHaveLength(3)

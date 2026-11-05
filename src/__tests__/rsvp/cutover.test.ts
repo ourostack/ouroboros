@@ -38,7 +38,7 @@ import {
 } from "../../rsvp/cutover"
 
 const tempRoots: string[] = []
-const legacyLabel = "com.arimendelow.rsvp-tracker"
+const legacyLabel = "com.owner.rsvp-tracker"
 const forbiddenChatGuid = "any;+;secret-chat-guid"
 const forbiddenServerUrl = "http://127.0.0.1:1234"
 const forbiddenSharedSecret = "shared-bluebubbles-password"

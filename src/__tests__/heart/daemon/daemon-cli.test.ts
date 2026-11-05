@@ -5025,7 +5025,7 @@ describe("ensureDaemonRunning", () => {
       getRuntimeMetadata: () => ({
         version: "0.1.0-alpha.20",
         lastUpdated: "2026-03-09T11:00:00.000Z",
-        repoRoot: "/Users/arimendelow/Projects/ouroboros-agent-harness-bb-health-status",
+        repoRoot: "/Users/owner/Projects/ouroboros-agent-harness-bb-health-status",
         configFingerprint: "cfg-local",
       }),
     }))
@@ -5052,7 +5052,7 @@ describe("ensureDaemonRunning", () => {
               socketPath: "/tmp/ouro-test.sock",
               version: "0.1.0-alpha.20",
               lastUpdated: "2026-03-09T11:00:00.000Z",
-              repoRoot: "/Users/arimendelow/Projects/ouroboros-agent-harness-cross-chat-bridge-orchestration",
+              repoRoot: "/Users/owner/Projects/ouroboros-agent-harness-cross-chat-bridge-orchestration",
               configFingerprint: "cfg-running",
               workerCount: 0,
               senseCount: 0,
@@ -5091,7 +5091,7 @@ describe("ensureDaemonRunning", () => {
         socketPath: "/tmp/ouro-test.sock",
         localVersion: "0.1.0-alpha.20",
         localLastUpdated: "2026-03-09T11:00:00.000Z",
-        localRepoRoot: "/Users/arimendelow/Projects/ouroboros-agent-harness-bb-health-status",
+        localRepoRoot: "/Users/owner/Projects/ouroboros-agent-harness-bb-health-status",
         localConfigFingerprint: "cfg-local",
         localManagedAgents: "slugger",
         prepareDaemonRuntimeReplacement,
@@ -5099,7 +5099,7 @@ describe("ensureDaemonRunning", () => {
       await expect(syncDeps.fetchRunningRuntimeMetadata?.()).resolves.toEqual({
         version: "0.1.0-alpha.20",
         lastUpdated: "2026-03-09T11:00:00.000Z",
-        repoRoot: "/Users/arimendelow/Projects/ouroboros-agent-harness-cross-chat-bridge-orchestration",
+        repoRoot: "/Users/owner/Projects/ouroboros-agent-harness-cross-chat-bridge-orchestration",
         configFingerprint: "cfg-running",
         managedAgents: "slugger",
       })

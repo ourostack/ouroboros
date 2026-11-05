@@ -64,10 +64,10 @@ describe("BlueBubbles client host account gate", () => {
   })
 
   it("refuses every Apple ID action when the server runs under another account", async () => {
-    const server = fakeServer("arimendelow")
+    const server = fakeServer("owner")
     global.fetch = server.fetch
     const client = createBlueBubblesClient(config, channel)
-    const refusal = 'runs under macOS account "arimendelow", but the agent\'s iMessage host is "clawdbot"'
+    const refusal = 'runs under macOS account "owner", but the agent\'s iMessage host is "clawdbot"'
     await expect(client.sendText({ chat, text: "hi" })).rejects.toThrow(refusal)
     await expect(client.editMessage({ messageGuid: "g", text: "edit" })).rejects.toThrow(refusal)
     await expect(client.setTyping(chat, true)).rejects.toThrow(refusal)
@@ -76,10 +76,10 @@ describe("BlueBubbles client host account gate", () => {
   })
 
   it("refuses to read messages when the server runs under another account", async () => {
-    const server = fakeServer("arimendelow")
+    const server = fakeServer("owner")
     global.fetch = server.fetch
     const client = createBlueBubblesClient(config, channel)
-    const refusal = 'runs under macOS account "arimendelow"'
+    const refusal = 'runs under macOS account "owner"'
     await expect(client.queryRecentMessagesWithMetadata!({ limit: 5 })).rejects.toThrow(refusal)
     await expect(client.getMessageText!("msg-guid")).rejects.toThrow(refusal)
     await expect(client.repairEvent({ messageGuid: "msg-guid", requiresRepair: true, eventType: "message" } as any)).rejects.toThrow(refusal)
@@ -87,14 +87,14 @@ describe("BlueBubbles client host account gate", () => {
   })
 
   it("fails the health check when the server runs under another account", async () => {
-    const server = fakeServer("arimendelow")
+    const server = fakeServer("owner")
     global.fetch = server.fetch
-    await expect(createBlueBubblesClient(config, channel).checkHealth()).rejects.toThrow("arimendelow")
+    await expect(createBlueBubblesClient(config, channel).checkHealth()).rejects.toThrow("owner")
   })
 
   it("fails closed when the running agent declares no host account", async () => {
     loadAgentConfig.mockReturnValue({ senses: { bluebubbles: { enabled: true } } })
-    const server = fakeServer("arimendelow")
+    const server = fakeServer("owner")
     global.fetch = server.fetch
     await expect(createBlueBubblesClient(config, channel).sendText({ chat, text: "hi" }))
       .rejects.toThrow("no host account is declared")

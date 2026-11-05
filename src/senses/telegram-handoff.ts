@@ -1,7 +1,7 @@
 /**
- * Ari sometimes hands his Telegram chat to someone else ("I'm going to hand you to my wife, Rachel"). For a while after that,
+ * The owner sometimes hands their Telegram chat to someone else ("I'm going to hand you to my partner, Sam"). For a while after that,
  * the chat is that person's conversation, so house notices (an outage, a recovery) wait instead of landing in it
- * (2026-10-11: two Jellyfin outage notes went into Rachel's movie chat). The window runs until the chat has been quiet for two
+ * (2026-10-11: two Jellyfin outage notes went into Sam's movie chat). The window runs until the chat has been quiet for two
  * hours, so a long conversation is never interrupted. Pure functions plus a small held-notice file; the Telegram sense wires them in.
  */
 import * as fs from "node:fs"

@@ -14,7 +14,7 @@ function sampleSnapshot(): RsvpSnapshot {
     },
     guests: {
       "1": { first_name: "Alex", last_name: "Example", group_id: 7, attending_status: "attending" },
-      "2": { first_name: "Rachel", last_name: "Example", group_id: 7, attending_status: null },
+      "2": { first_name: "Sam", last_name: "Example", group_id: 7, attending_status: null },
       "3": { first_name: "Debra", last_name: "Edelson", group_id: 8, attending_status: "declined" },
       "4": { first_name: "", last_name: "", group_id: 7, attending_status: null },
       "5": { first_name: "Mystery", last_name: "Guest", group_id: 9, attending_status: "maybe" },
