@@ -82,6 +82,25 @@ describe("the psyche cache follows the files", () => {
     expect(loadPsycheAt(root).house).toBe("the house")
   })
 
+  it("reads product/PRODUCT.md into the psyche and picks up an edit", () => {
+    write("product/PRODUCT.md", "rules one")
+    expect(loadPsycheAt(root).product).toBe("rules one")
+    write("product/PRODUCT.md", "rules two")
+    expect(loadPsycheAt(root).product).toBe("rules two")
+  })
+
+  it("has no product text when the file is absent or empty", () => {
+    expect(loadPsycheAt(root).product).toBe("")
+    write("product/PRODUCT.md", "")
+    expect(loadPsycheAt(root).product).toBe("")
+  })
+
+  it("fills house names in the product text", () => {
+    write("house/house.json", JSON.stringify({ ownerName: "Ada" }))
+    write("product/PRODUCT.md", "{{owner}}")
+    expect(loadPsycheAt(root).product).toBe("Ada")
+  })
+
   it("keeps each agent's psyche apart", () => {
     const other = fs.mkdtempSync(path.join(os.tmpdir(), "psyche-reload-other-"))
     try {
