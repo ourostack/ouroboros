@@ -1525,6 +1525,55 @@ describe("protected folders resolve paths the way the file tools do", () => {
     }
   })
 
+  it("refuses a dangling relative symlink inside a symlinked folder that lands in the psyche or the friends store", async () => {
+    const agentRoot = tempRoot()
+    for (const dir of ["psyche", "friends", path.join("other", "dir")]) fs.mkdirSync(path.join(agentRoot, dir), { recursive: true })
+    fs.symlinkSync(path.join(agentRoot, "other", "dir"), path.join(agentRoot, "notes2"))
+    fs.symlinkSync("../../psyche/NEW.md", path.join(agentRoot, "other", "dir", "x.md"))
+    fs.symlinkSync("../../friends/forged.json", path.join(agentRoot, "other", "dir", "forged.json"))
+    const { guardInvocation } = await import("../../repertoire/guardrails")
+    for (const [name, reason] of [["x.md", "pull request"], ["forged.json", "protected"]]) {
+      const target = path.join(agentRoot, "notes2", name)
+      for (const tool of ["write_file", "edit_file"]) {
+        expect(guardInvocation(tool, { path: target }, { readPaths: new Set([target]), agentRoot, trustLevel: "family" }), `${tool} ${name}`).toMatchObject({ allowed: false, reason: expect.stringContaining(reason) })
+      }
+    }
+  })
+
+  it("refuses the write when the filesystem cannot say where a path lands", async () => {
+    const agentRoot = tempRoot()
+    const target = path.join(agentRoot, "notes", "x.md")
+    const errno = (code: string) => Object.assign(new Error(code), { code })
+    const { guardInvocation } = await import("../../repertoire/guardrails")
+    const realpathSpy = vi.spyOn(fs.realpathSync, "native").mockImplementation((() => { throw errno("EACCES") }) as typeof fs.realpathSync.native)
+    expect(guardInvocation("write_file", { path: target }, { readPaths: new Set([target]), agentRoot, trustLevel: "family" })).toMatchObject({ allowed: false, reason: expect.stringContaining("protected") })
+    realpathSpy.mockRestore()
+    vi.spyOn(fs, "lstatSync").mockImplementation((() => { throw errno("EIO") }) as typeof fs.lstatSync)
+    expect(guardInvocation("write_file", { path: target }, { readPaths: new Set([target]), agentRoot, trustLevel: "family" })).toMatchObject({ allowed: false, reason: expect.stringContaining("protected") })
+  })
+
+  it("refuses a write through a symlink loop or a chain longer than the kernel follows", async () => {
+    const agentRoot = tempRoot()
+    fs.symlinkSync(path.join(agentRoot, "loop-b"), path.join(agentRoot, "loop-a"))
+    fs.symlinkSync(path.join(agentRoot, "loop-a"), path.join(agentRoot, "loop-b"))
+    for (let i = 0; i < 41; i += 1) fs.symlinkSync(`chain-${i + 1}`, path.join(agentRoot, `chain-${i}`))
+    const { guardInvocation, canonicalTarget } = await import("../../repertoire/guardrails")
+    const refused = (name: string) => {
+      const target = path.join(agentRoot, name)
+      expect(() => canonicalTarget(target, agentRoot), name).toThrow()
+      expect(guardInvocation("write_file", { path: target }, { readPaths: new Set([target]), agentRoot, trustLevel: "family" }), name).toMatchObject({ allowed: false, reason: expect.stringContaining("protected") })
+    }
+    refused("loop-a")
+    expect(canonicalTarget(path.join(agentRoot, "chain-35"), agentRoot)[1]).toBe(path.join(realRealpath(agentRoot), "chain-41"))
+    // The kernel reports ELOOP itself well before 40 links (macOS stops at 32), so the guard's own hop limit is reached only
+    // when realpath keeps answering ENOENT along the chain.
+    vi.spyOn(fs.realpathSync, "native").mockImplementation(((p: fs.PathLike) => {
+      if (path.basename(String(p)).startsWith("chain-")) throw Object.assign(new Error("ENOENT"), { code: "ENOENT" })
+      return realRealpath(String(p))
+    }) as typeof fs.realpathSync.native)
+    refused("chain-0")
+  })
+
   it("leaves ordinary paths with today's results", async () => {
     const { guardInvocation } = await import("../../repertoire/guardrails")
     for (const target of [`${root}/notes/x.md`, "notes/x.md", "/tmp/x"]) {
@@ -1551,22 +1600,31 @@ describe("protected folders resolve paths the way the file tools do", () => {
       expect(forms[3].endsWith(path.join("ouro", "notes", "x.md"))).toBe(true)
     })
 
-    it("follows the final file when it exists, and stops following a symlink loop", async () => {
+    it("follows the final file when it exists, and steps past a file used as a directory", async () => {
       const agentRoot = tempRoot()
       fs.writeFileSync(path.join(agentRoot, "real.md"), "x")
       fs.symlinkSync(path.join(agentRoot, "real.md"), path.join(agentRoot, "alias.md"))
-      fs.symlinkSync(path.join(agentRoot, "loop-b"), path.join(agentRoot, "loop-a"))
-      fs.symlinkSync(path.join(agentRoot, "loop-a"), path.join(agentRoot, "loop-b"))
-      const { canonicalTarget } = await import("../../repertoire/guardrails")
+      const { canonicalTarget, guardInvocation } = await import("../../repertoire/guardrails")
       const realRoot = realRealpath(agentRoot)
       expect(canonicalTarget(path.join(agentRoot, "alias.md"), agentRoot)[1]).toBe(path.join(realRoot, "real.md"))
-      expect(canonicalTarget(path.join(agentRoot, "loop-a", "x"), agentRoot)[1]).toBe(path.join(realRoot, "loop-a", "x"))
+      const underFile = path.join(agentRoot, "real.md", "x")
+      expect(canonicalTarget(underFile, agentRoot)[1]).toBe(path.join(realRoot, "real.md", "x"))
+      expect(guardInvocation("write_file", { path: underFile }, { readPaths: new Set([underFile]), agentRoot, trustLevel: "family" })).toEqual({ allowed: true })
     })
 
-    it("keeps the lexical path when nothing on it can be resolved", async () => {
-      vi.spyOn(fs.realpathSync, "native").mockImplementation((() => { throw new Error("EACCES") }) as typeof fs.realpathSync.native)
-      const { canonicalTarget } = await import("../../repertoire/guardrails")
+    it("keeps the lexical path when nothing on it exists, and refuses when the filesystem denies the lookup", async () => {
+      const errno = (code: string) => Object.assign(new Error(code), { code })
+      const spy = vi.spyOn(fs.realpathSync, "native").mockImplementation((() => { throw errno("ENOENT") }) as typeof fs.realpathSync.native)
+      const { canonicalTarget, guardInvocation } = await import("../../repertoire/guardrails")
       expect(canonicalTarget("/a/b", "/root")).toEqual(["/a/b", "/a/b"])
+      // A root with no symlinked ancestors (macOS links /home and /tmp), so the ENOENT-only mock never has a link to follow.
+      const bare = "/guard-canonical-missing-root"
+      const target = `${bare}/notes/x.md`
+      const bareCtx = { readPaths: new Set([target]), agentRoot: bare, trustLevel: "family" as const }
+      expect(guardInvocation("write_file", { path: target }, bareCtx)).toEqual({ allowed: true })
+      spy.mockImplementation((() => { throw errno("EACCES") }) as typeof fs.realpathSync.native)
+      expect(() => canonicalTarget("/a/b", "/root")).toThrow("EACCES")
+      expect(guardInvocation("write_file", { path: target }, bareCtx)).toMatchObject({ allowed: false, reason: expect.stringContaining("protected") })
     })
   })
 

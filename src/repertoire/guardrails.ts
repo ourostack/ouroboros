@@ -54,12 +54,20 @@ const PROTECTED_PATH_SEGMENTS = [
 ]
 const PROTECTED_FILENAMES = ["agent.json", "tool-profiles.json"]
 
-/** How many symlinks a dangling-link walk follows before treating the path as unresolvable (the kernel's own limit is 40). */
+/** How many symlinks a dangling-link walk follows before refusing (the Linux kernel's own limit is 40). */
 const MAX_SYMLINK_HOPS = 40
+
+/** A lookup that failed only because part of the path does not exist yet; any other failure leaves the target unknown. */
+function rethrowUnlessMissing(error: unknown): void {
+  const code = (error as NodeJS.ErrnoException).code
+  if (code !== "ENOENT" && code !== "ENOTDIR") throw error
+}
 
 /**
  * The real location of `lexical`: `realpathSync.native` of the deepest part that exists, the final file included, with the
- * missing remainder appended. A dangling symlink is followed to where a write through it would land.
+ * missing remainder appended. A dangling symlink is followed, from its real parent, to where a write through it would land.
+ * Throws when the filesystem cannot say where the path lands (a denied lookup, a symlink loop, too many links), so the
+ * guard can refuse rather than fall back to the lexical path.
  */
 function canonicalize(lexical: string): string {
   let current = lexical
@@ -68,17 +76,20 @@ function canonicalize(lexical: string): string {
   for (;;) {
     try {
       return path.join(fs.realpathSync.native(current), ...missing)
-    } catch {
-      // `current` does not resolve; follow it if it is a dangling symlink, or step up to its parent.
+    } catch (error) {
+      rethrowUnlessMissing(error)
     }
+    let stat: fs.Stats | undefined
     try {
-      if (hops < MAX_SYMLINK_HOPS && fs.lstatSync(current).isSymbolicLink()) {
-        hops += 1
-        current = path.resolve(path.dirname(current), fs.readlinkSync(current))
-        continue
-      }
-    } catch {
-      // Nothing at `current`: step up.
+      stat = fs.lstatSync(current)
+    } catch (error) {
+      rethrowUnlessMissing(error)
+    }
+    if (stat?.isSymbolicLink()) {
+      if (hops >= MAX_SYMLINK_HOPS) throw new Error(`too many symbolic links resolving ${lexical}`)
+      hops += 1
+      current = path.resolve(fs.realpathSync.native(path.dirname(current)), fs.readlinkSync(current))
+      continue
     }
     const parent = path.dirname(current)
     if (parent === current) return path.join(current, ...missing)
@@ -304,9 +315,17 @@ function checkProtectedPaths(toolName: string, args: Record<string, string>, con
   if (toolName === "write_file" || toolName === "edit_file") {
     const filePath = args.path || ""
     // The file tools resolve a relative path against the repo root and follow symlinks, so the guard checks every form.
+    // A path whose landing place the filesystem cannot report is refused rather than checked lexically.
     const agentRoot = filePath ? context.agentRoot : undefined
-    if (agentRoot && insideAgentFolder(filePath, agentRoot, "psyche")) return deny(REASONS.psychePath)
-    if (isProtectedPath(filePath) || (agentRoot && insideAgentFolder(filePath, agentRoot, "friends"))) return deny(REASONS.protectedPath)
+    if (agentRoot) {
+      try {
+        if (insideAgentFolder(filePath, agentRoot, "psyche")) return deny(REASONS.psychePath)
+        if (insideAgentFolder(filePath, agentRoot, "friends")) return deny(REASONS.protectedPath)
+      } catch {
+        return deny(REASONS.protectedPath)
+      }
+    }
+    if (isProtectedPath(filePath)) return deny(REASONS.protectedPath)
   }
 
   if (toolName === "shell") {
