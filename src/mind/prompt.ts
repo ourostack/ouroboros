@@ -1,5 +1,6 @@
 import * as fs from "fs";
 import * as path from "path";
+import { createHash } from "crypto";
 import type OpenAI from "openai";
 import { getProviderDisplayLabel } from "../heart/core";
 import { buildChangelogCommand } from "../heart/versioning/ouro-version-manager";
@@ -60,30 +61,41 @@ interface PsycheText {
 }
 
 // Psyche text cache, one entry per agent root (the daemon can host several agents). An entry is good only while
-// the files it was read from are unchanged: every load compares a stat fingerprint of those files, so an edit by
-// the agent, its owner or a sync pull takes effect on the very next prompt build.
+// the files it was read from are unchanged: every load hashes their content, so an edit by the agent, its owner or
+// a sync pull takes effect on the very next prompt build. Content, not mtime or inode, because those are unreliable
+// on FUSE shares such as Unraid's /mnt/user; the files are small, so hashing them is cheap.
 const _psycheCache = new Map<string, { fingerprint: string; psyche: PsycheText }>();
 
-const PSYCHE_SOURCE_FILES = [
-  ["psyche", "SOUL.md"],
-  ["psyche", "IDENTITY.md"],
-  ["psyche", "LORE.md"],
-  ["psyche", "TACIT.md"],
-  ["psyche", "ASPIRATIONS.md"],
-  ["house", "HOUSE.md"],
-  ["house", "house.json"],
-] as const;
+const PSYCHE_SOURCE_FILES = {
+  soul: ["psyche", "SOUL.md"],
+  identity: ["psyche", "IDENTITY.md"],
+  lore: ["psyche", "LORE.md"],
+  tacitKnowledge: ["psyche", "TACIT.md"],
+  aspirations: ["psyche", "ASPIRATIONS.md"],
+  house: ["house", "HOUSE.md"],
+  houseNames: ["house", "house.json"],
+} as const;
 
-/** A cheap identity for the files the psyche is read from: inode, size and mtime in ns for each, "-" when absent. */
-function psycheFingerprint(agentRoot: string): string {
-  return PSYCHE_SOURCE_FILES.map((parts) => {
+type PsycheSources = Record<keyof typeof PSYCHE_SOURCE_FILES, string | null>;
+
+/** Every file the psyche is built from, read once; null when a file is absent or unreadable. */
+function readPsycheSources(agentRoot: string): PsycheSources {
+  const sources = {} as PsycheSources;
+  for (const [key, parts] of Object.entries(PSYCHE_SOURCE_FILES) as [keyof PsycheSources, readonly string[]][]) {
     try {
-      const stat = fs.statSync(path.join(agentRoot, ...parts), { bigint: true });
-      return `${stat.ino}:${stat.size}:${stat.mtimeNs}`;
+      sources[key] = String(fs.readFileSync(path.join(agentRoot, ...parts), "utf-8"));
     } catch {
-      return "-";
+      sources[key] = null;
     }
-  }).join("|");
+  }
+  return sources;
+}
+
+/** A content hash of the sources; an absent file hashes differently from an empty one. */
+function psycheFingerprint(sources: PsycheSources): string {
+  const hash = createHash("sha256");
+  for (const text of Object.values(sources)) hash.update(text === null ? "-" : `+${text.length}:${text}`);
+  return hash.digest("hex");
 }
 
 // A household install names its owner, its Butler and its home in house/house.json,
@@ -95,54 +107,38 @@ const HOUSE_NAME_DEFAULTS: Record<string, string> = {
   household: "the household",
 }
 
-function loadHouseNames(agentRoot: string): Record<string, string> {
+function parseHouseNames(text: string | null): Record<string, string> {
+  const names: Record<string, string> = { ...HOUSE_NAME_DEFAULTS }
   try {
-    const parsed = JSON.parse(fs.readFileSync(path.join(agentRoot, "house", "house.json"), "utf-8")) as Record<string, unknown>
-    const names: Record<string, string> = { ...HOUSE_NAME_DEFAULTS }
+    const parsed = JSON.parse(text ?? "") as Record<string, unknown>
     for (const [key, field] of [["owner", "ownerName"], ["butler", "butlerName"], ["household", "householdName"]] as const) {
       const value = parsed[field]
       if (typeof value === "string" && value.trim()) names[key] = value.trim()
     }
-    return names
   } catch {
-    return { ...HOUSE_NAME_DEFAULTS }
+    // no house.json, or not JSON: the defaults stand
   }
+  return names
 }
 
-function fillHouseNames(text: string, names: Record<string, string>): string {
-  return text.replace(/\{\{(owner|butler|household)\}\}/gu, (_match, key: string) => names[key]!)
+function fillHouseNames(text: string | null, names: Record<string, string>): string {
+  return (text ?? "").trim().replace(/\{\{(owner|butler|household)\}\}/gu, (_match, key: string) => names[key]!)
 }
 
-function loadPsycheFile(agentRoot: string, name: string, names: Record<string, string>): string {
-  try {
-    const psycheDir = path.join(agentRoot, "psyche");
-    return fillHouseNames(fs.readFileSync(path.join(psycheDir, name), "utf-8").trim(), names);
-  } catch {
-    return "";
-  }
-}
-
-function loadHouseFile(agentRoot: string, names: Record<string, string>): string {
-  try {
-    return fillHouseNames(fs.readFileSync(path.join(agentRoot, "house", "HOUSE.md"), "utf-8").trim(), names);
-  } catch {
-    return "";
-  }
-}
-
-/** The psyche for one agent root, reread whenever any of its files changed since the last load. */
+/** The psyche for one agent root. Each call reads its files once and rebuilds only when their content changed. */
 export function loadPsycheAt(agentRoot: string): PsycheText {
-  const fingerprint = psycheFingerprint(agentRoot);
+  const sources = readPsycheSources(agentRoot);
+  const fingerprint = psycheFingerprint(sources);
   const cached = _psycheCache.get(agentRoot);
   if (cached?.fingerprint === fingerprint) return cached.psyche;
-  const names = loadHouseNames(agentRoot);
+  const names = parseHouseNames(sources.houseNames);
   const psyche = {
-    soul: loadPsycheFile(agentRoot, "SOUL.md", names),
-    identity: loadPsycheFile(agentRoot, "IDENTITY.md", names),
-    lore: loadPsycheFile(agentRoot, "LORE.md", names),
-    tacitKnowledge: loadPsycheFile(agentRoot, "TACIT.md", names),
-    aspirations: loadPsycheFile(agentRoot, "ASPIRATIONS.md", names),
-    house: loadHouseFile(agentRoot, names),
+    soul: fillHouseNames(sources.soul, names),
+    identity: fillHouseNames(sources.identity, names),
+    lore: fillHouseNames(sources.lore, names),
+    tacitKnowledge: fillHouseNames(sources.tacitKnowledge, names),
+    aspirations: fillHouseNames(sources.aspirations, names),
+    house: fillHouseNames(sources.house, names),
   };
   _psycheCache.set(agentRoot, { fingerprint, psyche });
   return psyche;

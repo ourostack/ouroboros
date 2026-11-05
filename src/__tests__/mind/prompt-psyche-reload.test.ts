@@ -1,5 +1,6 @@
 // Psyche edits take effect on the very next prompt build, for every agent. Before alpha.978 the psyche was cached per
 // agent root for the life of the process, so an edit by the agent, its owner or a sync pull waited for a restart.
+// The cache compares content, not stat data, because mtimes are unreliable on FUSE shares.
 import { describe, it, expect, beforeEach, afterEach } from "vitest"
 import * as fs from "node:fs"
 import * as os from "node:os"
@@ -11,10 +12,6 @@ describe("the psyche cache follows the files", () => {
   const write = (rel: string, text: string) => {
     fs.mkdirSync(path.dirname(path.join(root, rel)), { recursive: true })
     fs.writeFileSync(path.join(root, rel), text)
-  }
-  const bumpMtime = (rel: string, seconds: number) => {
-    const at = new Date(Date.now() + seconds * 1000)
-    fs.utimesSync(path.join(root, rel), at, at)
   }
 
   beforeEach(() => {
@@ -39,11 +36,20 @@ describe("the psyche cache follows the files", () => {
     expect(loadPsycheAt(root).soul).toBe("soul two, longer")
   })
 
-  it("picks up a same-size edit that only moves the mtime", () => {
+  it("picks up a same-size edit even when the mtime does not move (FUSE shares can keep it)", () => {
     expect(loadPsycheAt(root).tacitKnowledge).toBe("tacit one")
+    const before = fs.statSync(path.join(root, "psyche/TACIT.md"))
     write("psyche/TACIT.md", "tacit two")
-    bumpMtime("psyche/TACIT.md", 5)
+    fs.utimesSync(path.join(root, "psyche/TACIT.md"), before.atime, before.mtime)
     expect(loadPsycheAt(root).tacitKnowledge).toBe("tacit two")
+  })
+
+  it("tells an empty file from an absent one", () => {
+    write("psyche/LORE.md", "")
+    expect(loadPsycheAt(root).lore).toBe("")
+    fs.rmSync(path.join(root, "psyche/LORE.md"))
+    write("psyche/LORE.md", "lore")
+    expect(loadPsycheAt(root).lore).toBe("lore")
   })
 
   it("picks up a file that is deleted, then recreated", () => {

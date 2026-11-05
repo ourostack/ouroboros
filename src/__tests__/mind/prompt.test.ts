@@ -2161,7 +2161,7 @@ describe("psyche loading", () => {
     await buildSystem()
     // Check that readFileSync was called with paths under the mock agent root
     const calls = vi.mocked(fs.readFileSync).mock.calls.map(c => String(c[0]))
-    const psycheCalls = calls.filter(p => p.includes("psyche"))
+    const psycheCalls = calls.filter(p => p.includes("/psyche/"))
     expect(psycheCalls.length).toBeGreaterThan(0)
     for (const p of psycheCalls) {
       expect(p).toContain(path.join("/mock/repo/testagent", "psyche"))
@@ -2196,12 +2196,16 @@ describe("psyche loading", () => {
     const callCount1 = vi.mocked(fs.readFileSync).mock.calls.length
     await buildSystem()
     const callCount2 = vi.mocked(fs.readFileSync).mock.calls.length
-    // Second call should not re-read psyche files. Non-psyche reads (package.json,
-    // bundle-meta.json, secrets.json) still happen, so filter to psyche paths only.
+    // The second build only reads the psyche files to compare their content, and
+    // rebuilds nothing: the cached text is the same object.
     const psycheCallsAfterFirst = vi.mocked(fs.readFileSync).mock.calls
-      .slice(callCount1)
-      .filter(c => String(c[0]).includes("psyche"))
-    expect(psycheCallsAfterFirst.length).toBe(0)
+      .slice(callCount1, callCount2)
+      .map(c => path.basename(String(c[0])))
+      .filter((_name, i) => String(vi.mocked(fs.readFileSync).mock.calls[callCount1 + i]![0]).includes("/psyche/"))
+    expect(new Set(psycheCallsAfterFirst)).toEqual(new Set(["SOUL.md", "IDENTITY.md", "LORE.md", "TACIT.md", "ASPIRATIONS.md"]))
+    const { loadPsycheAt } = await import("../../mind/prompt")
+    expect(loadPsycheAt("/mock/repo/testagent")).toBe(loadPsycheAt("/mock/repo/testagent"))
+    void flattenSystemPrompt
   })
 
   it("reloads psyche text when the active agent root changes", async () => {

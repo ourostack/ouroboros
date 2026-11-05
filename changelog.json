@@ -4,7 +4,7 @@
     {
       "version": "0.1.0-alpha.978",
       "changes": [
-        "Psyche edits now take effect on the next turn for every agent. The prompt rereads any psyche or house file whose size, mtime or inode changed, so an edit by the agent, its owner or a sync pull no longer waits for a restart."
+        "Psyche edits now take effect on the next turn for every agent. Each prompt build compares the content of the psyche and house files with the cached copy and rereads on any change, so an edit by the agent, its owner or a sync pull no longer waits for a restart. Content is compared rather than mtimes, which FUSE shares such as Unraid's do not always update."
       ]
     },
     {
