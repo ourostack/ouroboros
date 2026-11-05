@@ -46,7 +46,7 @@ describe("briefStyleViolation", () => {
   })
   // 2026-10-11, Rach handoff: a closing-question rule threw away the questions Ari asked the Butler to ask her.
   it("lets a brief reply end with a question", () => {
-    expect(briefStyleViolation("Hi Rachel! Silly or swoony tonight?")).toBeNull()
+    expect(briefStyleViolation("Hi Sam! Silly or swoony tonight?")).toBeNull()
     expect(briefStyleViolation("It is nine. Want me to set a reminder?")).toBeNull()
   })
   it("does not apply to a blocked reply or to a reply that asks for a confirmation or a choice", () => {

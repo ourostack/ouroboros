@@ -290,7 +290,7 @@ describe("mail sense runtime", () => {
     const agentRoot = path.join(homeRoot, "AgentBundles", "slugger.ouro")
     const repoRoot = path.join(homeRoot, "repo")
     const sandboxDir = path.join(repoRoot, ".playwright-mcp")
-    const mboxPath = path.join(sandboxDir, "HEY-emails-ari-mendelow-me.mbox")
+    const mboxPath = path.join(sandboxDir, "HEY-emails-owner-example-test.mbox")
     const statePath = path.join(agentRoot, "state", "senses", "mail", "import-discovery.json")
     fs.mkdirSync(sandboxDir, { recursive: true })
     fs.mkdirSync(path.dirname(statePath), { recursive: true })
@@ -317,7 +317,7 @@ describe("mail sense runtime", () => {
     const homeRoot = tempDir()
     process.env.HOME = homeRoot
     const agentRoot = path.join(homeRoot, "AgentBundles", "slugger.ouro")
-    const legacyMboxPath = path.join(homeRoot, "legacy", "HEY-emails-ari-mendelow-me.mbox")
+    const legacyMboxPath = path.join(homeRoot, "legacy", "HEY-emails-owner-example-test.mbox")
 
     vi.resetModules()
     vi.doMock("../../heart/mail-import-discovery", () => ({
@@ -362,7 +362,7 @@ describe("mail sense runtime", () => {
     const homeRoot = tempDir()
     process.env.HOME = homeRoot
     const agentRoot = path.join(homeRoot, "AgentBundles", "slugger.ouro")
-    const downloadsPath = path.join(homeRoot, "Downloads", "HEY-emails-ari-mendelow-me.mbox")
+    const downloadsPath = path.join(homeRoot, "Downloads", "HEY-emails-owner-example-test.mbox")
     const filesystemPath = path.join(homeRoot, "archives", "ari-backfill.mbox")
 
     vi.resetModules()
@@ -424,7 +424,7 @@ describe("mail sense runtime", () => {
     const agentRoot = path.join(homeRoot, "AgentBundles", "slugger.ouro")
     const repoRoot = path.join(homeRoot, "repo")
     const sandboxDir = path.join(repoRoot, ".playwright-mcp")
-    const mboxPath = path.join(sandboxDir, "HEY-emails-ari-mendelow-me.mbox")
+    const mboxPath = path.join(sandboxDir, "HEY-emails-owner-example-test.mbox")
     fs.mkdirSync(sandboxDir, { recursive: true })
     fs.writeFileSync(mboxPath, "From MAILER-DAEMON Thu Jan  1 00:00:00 1970\n", "utf-8")
     mockRequestPrivateWake.mockRejectedValueOnce(new Error("socket unavailable"))
@@ -445,7 +445,7 @@ describe("mail sense runtime", () => {
     const agentRoot = path.join(homeRoot, "AgentBundles", "slugger.ouro")
     const repoRoot = path.join(homeRoot, "repo")
     const sandboxDir = path.join(repoRoot, ".playwright-mcp")
-    const mboxPath = path.join(sandboxDir, "HEY-emails-ari-mendelow-me.mbox")
+    const mboxPath = path.join(sandboxDir, "HEY-emails-owner-example-test.mbox")
     fs.mkdirSync(sandboxDir, { recursive: true })
     fs.writeFileSync(mboxPath, "From MAILER-DAEMON Thu Jan  1 00:00:00 1970\n", "utf-8")
     mockRequestPrivateWake.mockResolvedValueOnce({
@@ -475,7 +475,7 @@ describe("mail sense runtime", () => {
     process.env.HOME = homeRoot
     const repoRoot = path.join(homeRoot, "repo")
     const sandboxDir = path.join(repoRoot, ".playwright-mcp")
-    const mboxPath = path.join(sandboxDir, "HEY-emails-ari-mendelow-me.mbox")
+    const mboxPath = path.join(sandboxDir, "HEY-emails-owner-example-test.mbox")
     const customPendingDir = path.join(homeRoot, "custom", "pending", "mail-import")
     fs.mkdirSync(sandboxDir, { recursive: true })
     fs.writeFileSync(mboxPath, "From MAILER-DAEMON Thu Jan  1 00:00:00 1970\n", "utf-8")
@@ -845,7 +845,7 @@ describe("mail sense runtime", () => {
     const agentRoot = path.join(homeRoot, "AgentBundles", "slugger.ouro")
     const registryPath = path.join(agentRoot, "state", "mailroom", "registry.json")
     const sandboxDir = path.join(homeRoot, "Projects", "_worktrees", "slugger-mail-fullmoon-mail", ".playwright-mcp")
-    const mboxPath = path.join(sandboxDir, "HEY-emails-ari-mendelow-me.mbox")
+    const mboxPath = path.join(sandboxDir, "HEY-emails-owner-example-test.mbox")
     fs.mkdirSync(path.dirname(registryPath), { recursive: true })
     fs.mkdirSync(sandboxDir, { recursive: true })
     fs.writeFileSync(mboxPath, "From MAILER-DAEMON Thu Jan  1 00:00:00 1970\n", "utf-8")
@@ -1001,7 +1001,7 @@ function registryFixture(input: {
     sourceGrants: (input.sourceGrants ?? []).map((entry, index) => ({
       grantId: `grant_${index}`,
       agentId: entry.agentId,
-      ownerEmail: "ari@mendelow.me",
+      ownerEmail: "owner@example.test",
       source: "hey",
       aliasAddress: `${entry.agentId.toLowerCase()}-hey@ouro.bot`,
       keyId: entry.keyId,

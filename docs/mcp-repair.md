@@ -59,4 +59,4 @@ ouro mcp doctor --agent <agent>
 
 ## Any-Agent Rule
 
-Do not special-case Slugger or any other personal bundle. Replace `<agent>` with the bundle name and use the same commands for every Ouro agent.
+Do not special-case any personal bundle. Replace `<agent>` with the bundle name and use the same commands for every Ouro agent.

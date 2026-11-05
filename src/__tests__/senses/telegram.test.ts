@@ -1973,13 +1973,13 @@ describe("Telegram sense", () => {
     setRuntimeLogger(createLogger({ sinks: [(entry) => { events.push({ event: entry.event, meta: entry.meta as Record<string, unknown> }) }] }))
     try {
       const f = fixture()
-      const member = (host: string, generation: number) => ({ source: "sanctuary-health", eventId: `endpoint:https://${host}.mendelow.cloud/`, generation })
+      const member = (host: string, generation: number) => ({ source: "sanctuary-health", eventId: `endpoint:https://${host}.example.home/`, generation })
       const batch = [member("books", 11), member("media", 12), member("readarr", 13), member("requests", 15)]
       const relatedTo = (index: number) => batch.filter((_, other) => other !== index)
       const first = await f.app.sendExternalEventDecision({ ...batch[2]!, relatedEvents: relatedTo(2), text: "Every public address is down at once; the house looks offline." })
       const second = await f.app.sendExternalEventDecision({ ...batch[3]!, relatedEvents: relatedTo(3), text: "This is the requests address, the same observation as readarr, inside the whole-house blackout." })
 
-      const readarrKey = 'external-event:["sanctuary-health","endpoint:https://readarr.mendelow.cloud/",13]'
+      const readarrKey = 'external-event:["sanctuary-health","endpoint:https://readarr.example.home/",13]'
       expect(first).toEqual({ status: "sent", effectKey: readarrKey })
       expect(second).toEqual({ status: "covered", effectKey: readarrKey })
       const sends = f.api.request.mock.calls.filter(([method]: [string]) => method === "sendMessage")
@@ -1993,9 +1993,9 @@ describe("Telegram sense", () => {
   // The same incident's readarr receipt was retried three more times after its warning had gone out.
   it("settles a retry of an already-delivered decision without sending again, even when reworded", async () => {
     const f = fixture()
-    const event = { source: "sanctuary-health", eventId: "endpoint:https://readarr.mendelow.cloud/", generation: 13 }
+    const event = { source: "sanctuary-health", eventId: "endpoint:https://readarr.example.home/", generation: 13 }
     await expect(f.app.sendExternalEventDecision({ ...event, text: "Every public address is down at once." })).resolves.toEqual({ status: "sent", effectKey: expect.any(String) })
-    await expect(f.app.sendExternalEventDecision({ ...event, text: "Re-checked: every public address is still down.", signal: new AbortController().signal })).resolves.toEqual({ status: "already_sent", effectKey: 'external-event:["sanctuary-health","endpoint:https://readarr.mendelow.cloud/",13]' })
+    await expect(f.app.sendExternalEventDecision({ ...event, text: "Re-checked: every public address is still down.", signal: new AbortController().signal })).resolves.toEqual({ status: "already_sent", effectKey: 'external-event:["sanctuary-health","endpoint:https://readarr.example.home/",13]' })
     expect(f.api.request.mock.calls.filter(([method]: [string]) => method === "sendMessage").map(([, body]: [string, any]) => body.text)).toEqual(["Every public address is down at once."])
   })
 
@@ -2016,7 +2016,7 @@ describe("Telegram sense", () => {
     expect(f.api.request).not.toHaveBeenCalled()
   })
 
-  // 2026-10-11: Ari handed his chat to Rachel, and two Jellyfin outage notes landed in her movie chat.
+  // 2026-10-11: Ari handed his chat to Sam, and two Jellyfin outage notes landed in her movie chat.
   it("holds house notices while Ari's chat is handed to someone else, then sends them after the window", async () => {
     const handedAt = Date.parse("2026-10-11T04:27:28.812Z")
     vi.useFakeTimers({ toFake: ["Date"] })
@@ -2029,7 +2029,7 @@ describe("Telegram sense", () => {
       fs.writeFileSync(sessionPath, JSON.stringify({
         version: 2,
         events: [{
-          id: "evt-000001", sequence: 1, role: "user", content: "hello pal! I’m going to hand you to my wife, Rachel. say hi to her!", name: null, toolCallId: null, toolCalls: [], attachments: [],
+          id: "evt-000001", sequence: 1, role: "user", content: "hello pal! I’m going to hand you to my wife, Sam. say hi to her!", name: null, toolCallId: null, toolCalls: [], attachments: [],
           time: { authoredAt: null, authoredAtSource: "unknown", observedAt: new Date(handedAt).toISOString(), observedAtSource: "ingest", recordedAt: new Date(handedAt).toISOString(), recordedAtSource: "save" },
           relations: { replyToEventId: null, threadRootEventId: null, references: [], toolCallId: null, supersedesEventId: null, redactsEventId: null },
           provenance: { captureKind: "live", legacyVersion: null, sourceMessageIndex: null },
@@ -2048,7 +2048,7 @@ describe("Telegram sense", () => {
       await f.app.sendOwnerNotice({ noticeId: "delegated:task-9", text: "Delegated command ran." })
       await f.app.sendOwnerNotice({ noticeId: "delegated:task-9", text: "Delegated command ran." })
       expect(sends()).toEqual([])
-      // Rachel's next message gets its reply, and the notices keep waiting.
+      // Sam's next message gets its reply, and the notices keep waiting.
       await f.getOnMessage()({ updateId: 90, messageId: "91", userId: "42", chatId: "42", text: "something silly please" })
       expect(sends()).toEqual(["All systems nominal."])
       expect(JSON.parse(fs.readFileSync(path.join(f.agentRoot, "state", "telegram", "held-owner-notices.json"), "utf8"))).toHaveLength(3)

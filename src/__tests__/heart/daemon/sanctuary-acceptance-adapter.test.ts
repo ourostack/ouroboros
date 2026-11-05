@@ -295,8 +295,8 @@ describe("Sanctuary acceptance adapter semantic proofs", () => {
   })
 
   it.each([
-    ['{"meta":{"update_id":8541786263}}', undefined],
-    ['{"meta":{"messageId":"8541786263"}}', undefined],
+    ['{"meta":{"update_id":1000000001}}', undefined],
+    ['{"meta":{"messageId":"1000000001"}}', undefined],
     ['{"meta":{"error":"provider rejected bearer sk-live-secret-material"}}', undefined],
     ['{"meta":{"note":"authorized subject 123456789"}}', { botId: "12345", authorizedUserId: "123456789", authorizedChatId: "987654321" }],
   ] as const)("detects forbidden Telegram/provider material in audit text %#", (raw, credentials) => {
@@ -1915,15 +1915,21 @@ describe("Sanctuary acceptance adapter semantic proofs", () => {
   })
 
   it("materializes executable configs from only fixed live state", async () => {
+    // The expected bot identity comes from the pinned root gateway's getMe, never from a constant.
+    const pinnedGateway = (() => ({
+      credentials: { botId: "1000000001", authorizedUserId: "42", authorizedChatId: "42" },
+      cursorSnapshot: async () => ({ cursor: 91, progressDigest: `sha256:${"a".repeat(64)}` }),
+      authorityTransport: { api: { request: async () => ({ id: 1000000001, username: "ExampleButlerBot" }), stop: () => {} }, hostApproval: { refresh: async () => true } },
+    })) as unknown as SanctuaryAcceptanceAdapterDependencies["gateway"]
     const contract = fs.readFileSync("deploy/unraid/sanctuary-acceptance-contract.json", "utf8")
     const deps = unit16Deps({ readFixedFile: (file) => {
       if (file.endsWith("sanctuary-acceptance-contract.json")) return contract
       if (file.endsWith("fixture-gateway-cursor.json")) return '{"nextUpdateId":91}'
       if (file.endsWith("closed-inventory.json")) return '{"keys":[{"id":"old-rw"},{"id":"old-ro"}]}'
       throw new Error("unexpected fixed file")
-    } })
+    }, gateway: pinnedGateway })
     await expect(executeSanctuaryAcceptanceAdapter({ operation: "materialize_config", command: "telegram-bootstrap" }, deps)).resolves.toMatchObject({
-      expectedBotId: "8541786263", expectedUsername: "MendelowCloudButlerBot", currentOffset: 91,
+      expectedBotId: "1000000001", expectedUsername: "ExampleButlerBot", currentOffset: 91,
       pollerAdapter: "/opt/ouro/deploy/unraid/sanctuary-acceptance-adapter.sh",
     })
     await expect(executeSanctuaryAcceptanceAdapter({ operation: "materialize_config", command: "cursor-snapshot", phase: "before" }, deps)).resolves.toMatchObject({ evidencePath: "/evidence/cursor-before.json", adapters: [expect.objectContaining({ allowGenesis: true })] })
@@ -1936,7 +1942,7 @@ describe("Sanctuary acceptance adapter semantic proofs", () => {
     await expect(executeSanctuaryAcceptanceAdapter({ operation: "materialize_config", command: "evidence-bundle-verify" }, deps)).resolves.toMatchObject({ evidencePath: "/evidence/unit-16-evidence-bundle.json" })
     await expect(executeSanctuaryAcceptanceAdapter({ operation: "materialize_config", command: "missing" }, deps)).rejects.toThrow(/template/u)
     await expect(executeSanctuaryAcceptanceAdapter({ operation: "materialize_config", command: "cursor-snapshot", phase: "invalid" }, deps)).rejects.toThrow(/phase/u)
-    const malformed = (offset: string, inventory: string) => unit16Deps({ readFixedFile: (file) => file.endsWith("contract.json") ? contract : file.endsWith("fixture-gateway-cursor.json") ? offset : inventory })
+    const malformed = (offset: string, inventory: string) => unit16Deps({ readFixedFile: (file) => file.endsWith("contract.json") ? contract : file.endsWith("fixture-gateway-cursor.json") ? offset : inventory, gateway: pinnedGateway })
     await expect(executeSanctuaryAcceptanceAdapter({ operation: "materialize_config", command: "telegram-bootstrap" }, malformed('{"nextUpdateId":-1}', "{}"))).rejects.toThrow(/offset/u)
     await expect(executeSanctuaryAcceptanceAdapter({ operation: "materialize_config", command: "unraid-key-rotate" }, malformed("{}", '{"keys":[]}'))).rejects.toThrow(/empty/u)
     await expect(executeSanctuaryAcceptanceAdapter({ operation: "materialize_config", command: "unraid-key-rotate" }, malformed("{}", '{"keys":[{"id":"same"},{"id":"same"}]}'))).rejects.toThrow(/ambiguous/u)

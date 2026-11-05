@@ -102,7 +102,7 @@ function matchesVerifiedNoSendProbe(value: unknown): boolean {
 
 function passingRsvpCutoverDeps(legacyRoot: string): NonNullable<OuroCliDeps["rsvpCutoverDeps"]> {
   return {
-    getLaunchAgentState: vi.fn(async () => ({ label: "com.arimendelow.rsvp-tracker", loaded: false, source: "injected" })),
+    getLaunchAgentState: vi.fn(async () => ({ label: "com.owner.rsvp-tracker", loaded: false, source: "injected" })),
     getLegacyProcessState: vi.fn(async () => ({ running: false, count: 0, source: "injected" })),
     checkNativeBlueBubblesCredential: vi.fn(async () => ({ ok: true, detail: "native BlueBubbles credential healthy" })),
     homeDir: vi.fn(() => path.dirname(legacyRoot)),
@@ -214,14 +214,14 @@ describe("ouro rsvp CLI parsing", () => {
       "--agent",
       "slugger",
       "--legacy-root",
-      "/Users/arimendelow/Projects/rsvp-tracker",
+      "/Users/owner/Projects/rsvp-tracker",
       "--action",
       "check",
       "--json",
     ])).toEqual({
       kind: "rsvp.cutover",
       agent: "slugger",
-      legacyRoot: "/Users/arimendelow/Projects/rsvp-tracker",
+      legacyRoot: "/Users/owner/Projects/rsvp-tracker",
       action: "check",
       json: true,
     })
@@ -229,12 +229,12 @@ describe("ouro rsvp CLI parsing", () => {
       "rsvp",
       "legacy-render",
       "--legacy-root",
-      "/Users/arimendelow/Projects/rsvp-tracker",
+      "/Users/owner/Projects/rsvp-tracker",
       "--output",
       "/tmp/legacy.json",
     ])).toEqual({
       kind: "rsvp.legacy-render",
-      legacyRoot: "/Users/arimendelow/Projects/rsvp-tracker",
+      legacyRoot: "/Users/owner/Projects/rsvp-tracker",
       outputPath: "/tmp/legacy.json",
     })
     expect(parseOuroCommand(["rsvp", "replay", "--agent", "slugger", "--fixture", "/tmp/replay.json", "--json"])).toEqual({
@@ -250,7 +250,7 @@ describe("ouro rsvp CLI parsing", () => {
       "--agent",
       "slugger",
       "--legacy-root",
-      "/Users/arimendelow/Projects/rsvp-tracker",
+      "/Users/owner/Projects/rsvp-tracker",
       "--mode",
       "shadow",
       "--yes",
@@ -259,7 +259,7 @@ describe("ouro rsvp CLI parsing", () => {
     ])).toEqual({
       kind: "rsvp.config.import-legacy",
       agent: "slugger",
-      legacyRoot: "/Users/arimendelow/Projects/rsvp-tracker",
+      legacyRoot: "/Users/owner/Projects/rsvp-tracker",
       mode: "shadow",
       yes: true,
       outputPath: "/tmp/import.json",
@@ -298,7 +298,7 @@ describe("ouro rsvp CLI parsing", () => {
       "--agent",
       "slugger",
       "--legacy-root",
-      "/Users/arimendelow/Projects/rsvp-tracker",
+      "/Users/owner/Projects/rsvp-tracker",
       "--mode",
       "shadow",
       "--output",
@@ -306,7 +306,7 @@ describe("ouro rsvp CLI parsing", () => {
     ])).toEqual({
       kind: "rsvp.import-legacy",
       agent: "slugger",
-      legacyRoot: "/Users/arimendelow/Projects/rsvp-tracker",
+      legacyRoot: "/Users/owner/Projects/rsvp-tracker",
       mode: "shadow",
       outputPath: "/tmp/import-legacy.json",
     })
@@ -684,7 +684,7 @@ describe("ouro rsvp CLI execution", () => {
     const deps = createMockDeps({
       bundlesRoot: tmp.bundlesRoot,
       rsvpCutoverDeps: {
-        getLaunchAgentState: vi.fn(async () => ({ label: "com.arimendelow.rsvp-tracker", loaded: false, source: "injected" })),
+        getLaunchAgentState: vi.fn(async () => ({ label: "com.owner.rsvp-tracker", loaded: false, source: "injected" })),
         getLegacyProcessState: vi.fn(async () => ({ running: false, count: 0, source: "injected" })),
         checkNativeBlueBubblesCredential: vi.fn(async () => ({ ok: true, detail: "healthy" })),
       },
@@ -994,7 +994,7 @@ describe("ouro rsvp CLI execution", () => {
       rsvpCutoverDeps: {
         existsSync: vi.fn(() => true),
         readFileSync: vi.fn(() => JSON.stringify({ bluebubbles: { enabled: false } })),
-        getLaunchAgentState: vi.fn(async () => ({ label: "com.arimendelow.rsvp-tracker", loaded: false, source: "injected" })),
+        getLaunchAgentState: vi.fn(async () => ({ label: "com.owner.rsvp-tracker", loaded: false, source: "injected" })),
         getLegacyProcessState: vi.fn(async () => ({ running: false, count: 0, source: "injected" })),
         checkNativeBlueBubblesCredential: vi.fn(async () => ({ ok: true, detail: "healthy" })),
       },

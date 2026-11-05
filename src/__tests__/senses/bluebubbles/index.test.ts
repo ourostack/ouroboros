@@ -349,7 +349,7 @@ const dmThreadPayload = {
     guid: "C4B2E437-A373-43F6-9740-9CD84E5893A0",
     text: "threaded reply",
     handle: {
-      address: "ari@mendelow.me",
+      address: "owner@example.test",
       service: "iMessage",
     },
     attachments: [],
@@ -358,9 +358,9 @@ const dmThreadPayload = {
     threadOriginatorGuid: "54D4109C-7170-41A1-8161-F6F8C863CC0D",
     chats: [
       {
-        guid: "any;-;ari@mendelow.me",
+        guid: "any;-;owner@example.test",
         style: 45,
-        chatIdentifier: "ari@mendelow.me",
+        chatIdentifier: "owner@example.test",
         displayName: "",
       },
     ],
@@ -373,7 +373,7 @@ const dmTopLevelPayload = {
     guid: "B20D4E2B-2E6E-48B5-95CD-6E24A368E4A7",
     text: "top-level follow-up",
     handle: {
-      address: "ari@mendelow.me",
+      address: "owner@example.test",
       service: "iMessage",
     },
     attachments: [],
@@ -382,9 +382,9 @@ const dmTopLevelPayload = {
     threadOriginatorGuid: null,
     chats: [
       {
-        guid: "any;-;ari@mendelow.me",
+        guid: "any;-;owner@example.test",
         style: 45,
-        chatIdentifier: "ari@mendelow.me",
+        chatIdentifier: "owner@example.test",
         displayName: "",
       },
     ],
@@ -397,7 +397,7 @@ const groupThreadPayload = {
     guid: "E29915DA-FC59-412A-BACC-B5EEDBA414EB",
     text: "yay!",
     handle: {
-      address: "ari@mendelow.me",
+      address: "owner@example.test",
       service: "iMessage",
     },
     attachments: [],
@@ -421,7 +421,7 @@ const reactionPayload = {
     guid: "BA2CFB68-52D2-4D8F-8A33-394C37035347",
     text: "Loved “great”",
     handle: {
-      address: "ari@mendelow.me",
+      address: "owner@example.test",
       service: "iMessage",
     },
     attachments: [],
@@ -431,9 +431,9 @@ const reactionPayload = {
     associatedMessageType: "love",
     chats: [
       {
-        guid: "any;-;ari@mendelow.me",
+        guid: "any;-;owner@example.test",
         style: 45,
-        chatIdentifier: "ari@mendelow.me",
+        chatIdentifier: "owner@example.test",
         displayName: "",
       },
     ],
@@ -446,7 +446,7 @@ const readPayload = {
     guid: "174D57C8-5985-4528-8539-E4DBD777FE59",
     text: "still here",
     handle: {
-      address: "ari@mendelow.me",
+      address: "owner@example.test",
       service: "iMessage",
     },
     attachments: [],
@@ -455,9 +455,9 @@ const readPayload = {
     isFromMe: false,
     chats: [
       {
-        guid: "any;-;ari@mendelow.me",
+        guid: "any;-;owner@example.test",
         style: 45,
-        chatIdentifier: "ari@mendelow.me",
+        chatIdentifier: "owner@example.test",
         displayName: "",
       },
     ],
@@ -470,7 +470,7 @@ const editPayload = {
     guid: "4A4F2A85-21AD-4AC6-98A8-34B8F4D07AA9",
     text: "edited version",
     handle: {
-      address: "ari@mendelow.me",
+      address: "owner@example.test",
       service: "iMessage",
     },
     attachments: [],
@@ -479,9 +479,9 @@ const editPayload = {
     isFromMe: false,
     chats: [
       {
-        guid: "any;-;ari@mendelow.me",
+        guid: "any;-;owner@example.test",
         style: 45,
-        chatIdentifier: "ari@mendelow.me",
+        chatIdentifier: "owner@example.test",
         displayName: "",
       },
     ],
@@ -494,7 +494,7 @@ const unsendPayload = {
     guid: "A9C0AB3C-858A-42BC-9951-66A5C9B1B2B8",
     text: "",
     handle: {
-      address: "ari@mendelow.me",
+      address: "owner@example.test",
       service: "iMessage",
     },
     attachments: [],
@@ -503,9 +503,9 @@ const unsendPayload = {
     isFromMe: false,
     chats: [
       {
-        guid: "any;-;ari@mendelow.me",
+        guid: "any;-;owner@example.test",
         style: 45,
-        chatIdentifier: "ari@mendelow.me",
+        chatIdentifier: "owner@example.test",
         displayName: "",
       },
     ],
@@ -518,7 +518,7 @@ const deliveryPayload = {
     guid: "D4CF9CC0-C1B5-4CF0-9397-E29FE23BAE51",
     text: "delivered",
     handle: {
-      address: "ari@mendelow.me",
+      address: "owner@example.test",
       service: "iMessage",
     },
     attachments: [],
@@ -527,9 +527,9 @@ const deliveryPayload = {
     isFromMe: false,
     chats: [
       {
-        guid: "any;-;ari@mendelow.me",
+        guid: "any;-;owner@example.test",
         style: 45,
-        chatIdentifier: "ari@mendelow.me",
+        chatIdentifier: "owner@example.test",
         displayName: "",
       },
     ],
@@ -563,17 +563,17 @@ function makeCatchUpMessage(overrides: Partial<{
       : false,
     sender: {
       provider: "imessage-handle" as const,
-      externalId: "ari@mendelow.me",
-      rawId: "ari@mendelow.me",
-      displayName: "ari@mendelow.me",
+      externalId: "owner@example.test",
+      rawId: "owner@example.test",
+      displayName: "owner@example.test",
       observed: true,
     },
     chat: {
-      chatGuid: "any;-;ari@mendelow.me",
-      chatIdentifier: "ari@mendelow.me",
+      chatGuid: "any;-;owner@example.test",
+      chatIdentifier: "owner@example.test",
       isGroup: false,
-      sessionKey: "chat:any;-;ari@mendelow.me",
-      sendTarget: { kind: "chat_guid" as const, value: "any;-;ari@mendelow.me" },
+      sessionKey: "chat:any;-;owner@example.test",
+      sendTarget: { kind: "chat_guid" as const, value: "any;-;owner@example.test" },
       participantHandles: [],
     },
     text,
@@ -678,7 +678,7 @@ const groupOrientationPayload = {
         displayName: "Synthetic Orientation Group",
         participants: [
           { address: "ari@example.test" },
-          { address: "rachel@example.test" },
+          { address: "sam@example.test" },
         ],
       },
     ],
@@ -1089,7 +1089,7 @@ describe("BlueBubbles sense runtime", () => {
     expect(mocks.sessionPath).toHaveBeenCalledWith(
       "friend-uuid",
       "bluebubbles",
-      "chat:any;-;ari@mendelow.me",
+      "chat:any;-;owner@example.test",
     )
     expect(mocks.buildSystem).toHaveBeenCalledWith(
       "bluebubbles",
@@ -1120,7 +1120,7 @@ describe("BlueBubbles sense runtime", () => {
     )
     expect(mocks.sendText).toHaveBeenCalledWith(
       expect.objectContaining({
-        chat: expect.objectContaining({ chatGuid: "any;-;ari@mendelow.me" }),
+        chat: expect.objectContaining({ chatGuid: "any;-;owner@example.test" }),
         replyToMessageGuid: "C4B2E437-A373-43F6-9740-9CD84E5893A0",
         text: "got it",
       }),
@@ -1148,7 +1148,7 @@ describe("BlueBubbles sense runtime", () => {
 
   it.each([
     { kind: "the agent's own message", replied: { text: "want it on your PocketBook?", fromMe: true }, want: { replyingToText: "want it on your PocketBook?", replyingToAuthor: "agent" } },
-    { kind: "the person's own message", replied: { text: "add milk", fromMe: false, senderAddress: "ari@mendelow.me" }, want: { replyingToText: "add milk", replyingToAuthor: "person" } },
+    { kind: "the person's own message", replied: { text: "add milk", fromMe: false, senderAddress: "owner@example.test" }, want: { replyingToText: "add milk", replyingToAuthor: "person" } },
     { kind: "someone else's message", replied: { text: "see you at 6", fromMe: false, senderAddress: "+15555550100" }, want: { replyingToText: "see you at 6", replyingToAuthor: "other" } },
     { kind: "a message with no sender", replied: { text: "hello", fromMe: false }, want: { replyingToText: "hello", replyingToAuthor: "other" } },
   ])("says whose words an iMessage reply quotes: $kind (2026-10-29)", async ({ replied, want }) => {
@@ -1238,13 +1238,13 @@ describe("BlueBubbles sense runtime", () => {
       1,
       "friend-uuid",
       "bluebubbles",
-      "chat:any;-;ari@mendelow.me",
+      "chat:any;-;owner@example.test",
     )
     expect(mocks.sessionPath).toHaveBeenNthCalledWith(
       2,
       "friend-uuid",
       "bluebubbles",
-      "chat:any;-;ari@mendelow.me",
+      "chat:any;-;owner@example.test",
     )
   })
 
@@ -1302,7 +1302,7 @@ describe("BlueBubbles sense runtime", () => {
         {
           role: "group_participant_only",
           provider: "imessage-handle",
-          externalId: "rachel@example.test",
+          externalId: "sam@example.test",
         },
       ],
     })
@@ -1335,9 +1335,9 @@ describe("BlueBubbles sense runtime", () => {
       fromMe: true,
       sender: {
         ...event.sender,
-        externalId: "rachel@example.test",
-        rawId: "rachel@example.test",
-        displayName: "Rachel",
+        externalId: "sam@example.test",
+        rawId: "sam@example.test",
+        displayName: "Sam",
       },
     }))
     const bluebubbles = await import("../../../senses/bluebubbles")
@@ -1354,7 +1354,7 @@ describe("BlueBubbles sense runtime", () => {
         },
         participants: [{
           role: "group_participant_only",
-          externalId: "rachel@example.test",
+          externalId: "sam@example.test",
         }],
       },
     })
@@ -1399,8 +1399,8 @@ describe("BlueBubbles sense runtime", () => {
 
   it("detects obsolete sibling thread lanes without deleting them before loading the shared chat trunk", async () => {
     const dir = makeTempDir()
-    const trunk = path.join(dir, "chat_any;-;ari@mendelow.me.json")
-    const staleThread = path.join(dir, "chat_any;-;ari@mendelow.me_thread_123.json")
+    const trunk = path.join(dir, "chat_any;-;owner@example.test.json")
+    const staleThread = path.join(dir, "chat_any;-;owner@example.test_thread_123.json")
     const unrelatedThread = path.join(dir, "chat_any;-;someoneelse_thread_999.json")
     writeFile(trunk)
     writeFile(staleThread)
@@ -1432,7 +1432,7 @@ describe("BlueBubbles sense runtime", () => {
 
     expect(mocks.sendText).toHaveBeenCalledWith(
       expect.objectContaining({
-        chat: expect.objectContaining({ chatGuid: "any;-;ari@mendelow.me" }),
+        chat: expect.objectContaining({ chatGuid: "any;-;owner@example.test" }),
         replyToMessageGuid: undefined,
         text: "got it",
       }),
@@ -1455,7 +1455,7 @@ describe("BlueBubbles sense runtime", () => {
 
     expect(mocks.sendText).toHaveBeenCalledWith(
       expect.objectContaining({
-        chat: expect.objectContaining({ chatGuid: "any;-;ari@mendelow.me" }),
+        chat: expect.objectContaining({ chatGuid: "any;-;owner@example.test" }),
         replyToMessageGuid: undefined,
         text: "got it",
       }),
@@ -1758,7 +1758,7 @@ describe("BlueBubbles sense runtime", () => {
 
   it("logs cleanup errors but still handles the turn on the shared chat trunk", async () => {
     const dir = makeTempDir()
-    const trunk = path.join(dir, "chat_any;-;ari@mendelow.me.json")
+    const trunk = path.join(dir, "chat_any;-;owner@example.test.json")
     writeFile(trunk)
     mocks.sessionPath.mockReturnValueOnce(trunk)
     const cleanupModule = await import("../../../senses/bluebubbles/session-cleanup")
@@ -1785,7 +1785,7 @@ describe("BlueBubbles sense runtime", () => {
 
   it("captures string-thrown cleanup failures explicitly too", async () => {
     const dir = makeTempDir()
-    const trunk = path.join(dir, "chat_any;-;ari@mendelow.me.json")
+    const trunk = path.join(dir, "chat_any;-;owner@example.test.json")
     writeFile(trunk)
     mocks.sessionPath.mockReturnValueOnce(trunk)
     const cleanupModule = await import("../../../senses/bluebubbles/session-cleanup")
@@ -1830,8 +1830,8 @@ describe("BlueBubbles sense runtime", () => {
     await bluebubbles.handleBlueBubblesEvent(dmThreadPayload)
 
     expect(mocks.markChatRead).toHaveBeenCalledTimes(1)
-    expect(mocks.markChatRead).toHaveBeenNthCalledWith(1, expect.objectContaining({ chatGuid: "any;-;ari@mendelow.me" }), expect.any(AbortSignal))
-    expect(mocks.setTyping).toHaveBeenNthCalledWith(1, expect.objectContaining({ chatGuid: "any;-;ari@mendelow.me" }), true, expect.any(AbortSignal))
+    expect(mocks.markChatRead).toHaveBeenNthCalledWith(1, expect.objectContaining({ chatGuid: "any;-;owner@example.test" }), expect.any(AbortSignal))
+    expect(mocks.setTyping).toHaveBeenNthCalledWith(1, expect.objectContaining({ chatGuid: "any;-;owner@example.test" }), true, expect.any(AbortSignal))
     expect(mocks.markChatRead.mock.invocationCallOrder[0]).toBeLessThan(mocks.sendText.mock.invocationCallOrder[0])
     expect(mocks.setTyping.mock.invocationCallOrder[0]).toBeLessThan(mocks.sendText.mock.invocationCallOrder[0])
     expect(mocks.sendText).not.toHaveBeenCalledWith(expect.objectContaining({
@@ -1840,13 +1840,13 @@ describe("BlueBubbles sense runtime", () => {
     expect(mocks.sendText).toHaveBeenNthCalledWith(
       1,
       expect.objectContaining({
-        chat: expect.objectContaining({ chatGuid: "any;-;ari@mendelow.me" }),
+        chat: expect.objectContaining({ chatGuid: "any;-;owner@example.test" }),
         replyToMessageGuid: "C4B2E437-A373-43F6-9740-9CD84E5893A0",
         text: "got it",
       }),
     )
     expect(mocks.editMessage).not.toHaveBeenCalled()
-    expect(mocks.setTyping).toHaveBeenNthCalledWith(2, expect.objectContaining({ chatGuid: "any;-;ari@mendelow.me" }), false, expect.any(AbortSignal))
+    expect(mocks.setTyping).toHaveBeenNthCalledWith(2, expect.objectContaining({ chatGuid: "any;-;owner@example.test" }), false, expect.any(AbortSignal))
   })
 
   it("suppresses raw browser MCP tool progress in BlueBubbles", async () => {
@@ -1884,18 +1884,18 @@ describe("BlueBubbles sense runtime", () => {
     await bluebubbles.handleBlueBubblesEvent(dmThreadPayload)
 
     expect(mocks.markChatRead).toHaveBeenCalledTimes(1)
-    expect(mocks.markChatRead).toHaveBeenNthCalledWith(1, expect.objectContaining({ chatGuid: "any;-;ari@mendelow.me" }), expect.any(AbortSignal))
-    expect(mocks.setTyping).toHaveBeenNthCalledWith(1, expect.objectContaining({ chatGuid: "any;-;ari@mendelow.me" }), true, expect.any(AbortSignal))
+    expect(mocks.markChatRead).toHaveBeenNthCalledWith(1, expect.objectContaining({ chatGuid: "any;-;owner@example.test" }), expect.any(AbortSignal))
+    expect(mocks.setTyping).toHaveBeenNthCalledWith(1, expect.objectContaining({ chatGuid: "any;-;owner@example.test" }), true, expect.any(AbortSignal))
     expect(mocks.sendText).toHaveBeenCalledTimes(1)
     expect(mocks.sendText).toHaveBeenNthCalledWith(
       1,
       expect.objectContaining({
-        chat: expect.objectContaining({ chatGuid: "any;-;ari@mendelow.me" }),
+        chat: expect.objectContaining({ chatGuid: "any;-;owner@example.test" }),
         replyToMessageGuid: "C4B2E437-A373-43F6-9740-9CD84E5893A0",
         text: "got it",
       }),
     )
-    expect(mocks.setTyping).toHaveBeenNthCalledWith(2, expect.objectContaining({ chatGuid: "any;-;ari@mendelow.me" }), false, expect.any(AbortSignal))
+    expect(mocks.setTyping).toHaveBeenNthCalledWith(2, expect.objectContaining({ chatGuid: "any;-;owner@example.test" }), false, expect.any(AbortSignal))
     expect(mocks.markChatRead.mock.invocationCallOrder[0]).toBeLessThan(mocks.sendText.mock.invocationCallOrder[0])
     expect(mocks.setTyping.mock.invocationCallOrder[0]).toBeLessThan(mocks.sendText.mock.invocationCallOrder[0])
   })
@@ -2000,7 +2000,7 @@ describe("BlueBubbles sense runtime", () => {
     expect(mocks.markChatRead).toHaveBeenCalledTimes(1)
     expect(mocks.markChatRead).toHaveBeenCalledWith(
       expect.objectContaining({
-        chatGuid: "any;-;ari@mendelow.me",
+        chatGuid: "any;-;owner@example.test",
       }),
       expect.any(AbortSignal),
     )
@@ -2049,7 +2049,7 @@ describe("BlueBubbles sense runtime", () => {
       text: expect.stringContaining("live iMessage turn timed out"),
     }))
     const { hasProcessedBlueBubblesMessage } = await import("../../../senses/bluebubbles/processed-log")
-    expect(hasProcessedBlueBubblesMessage("testagent", "chat:any;-;ari@mendelow.me", dmThreadPayload.data.guid)).toBe(false)
+    expect(hasProcessedBlueBubblesMessage("testagent", "chat:any;-;owner@example.test", dmThreadPayload.data.guid)).toBe(false)
 
     const recovery = await bluebubbles.recoverCapturedBlueBubblesInboundMessages()
     expect(recovery).toEqual(expect.objectContaining({ recovered: 0, failed: 0 }))
@@ -2091,7 +2091,7 @@ describe("BlueBubbles sense runtime", () => {
       activeTurnCount: 0,
       stalledTurnCount: 0,
     }))
-    expect(bluebubbles.isBlueBubblesMessageInFlight("chat:any;-;ari@mendelow.me", dmThreadPayload.data.guid)).toBe(false)
+    expect(bluebubbles.isBlueBubblesMessageInFlight("chat:any;-;owner@example.test", dmThreadPayload.data.guid)).toBe(false)
     expect(mocks.sendText).not.toHaveBeenCalledWith(expect.objectContaining({
       text: expect.stringContaining("live iMessage turn timed out"),
     }))
@@ -2184,9 +2184,9 @@ describe("BlueBubbles sense runtime", () => {
       activeTurnCount: 0,
       stalledTurnCount: 0,
     }))
-    expect(bluebubbles.isBlueBubblesMessageInFlight("chat:any;-;ari@mendelow.me", dmThreadPayload.data.guid)).toBe(false)
+    expect(bluebubbles.isBlueBubblesMessageInFlight("chat:any;-;owner@example.test", dmThreadPayload.data.guid)).toBe(false)
     const { hasProcessedBlueBubblesMessage } = await import("../../../senses/bluebubbles/processed-log")
-    expect(hasProcessedBlueBubblesMessage("testagent", "chat:any;-;ari@mendelow.me", dmThreadPayload.data.guid)).toBe(false)
+    expect(hasProcessedBlueBubblesMessage("testagent", "chat:any;-;owner@example.test", dmThreadPayload.data.guid)).toBe(false)
     expect(mocks.postTurnPersist).not.toHaveBeenCalled()
     expect(mocks.accumulateFriendTokens).not.toHaveBeenCalled()
     // The reply never reached the chat, so the message stays pending for recovery.
@@ -2434,7 +2434,7 @@ describe("BlueBubbles sense runtime", () => {
       "bluebubbles",
       "chat:any;+;35820e69c97c459992d29a334f412979",
     )
-    expect(lastUserMessageContent()).toBe("ari@mendelow.me: yay!")
+    expect(lastUserMessageContent()).toBe("owner@example.test: yay!")
     expect(firstRunAgentOptions().orientationFrame.source).toMatchObject({
       lane: "thread",
       threadId: "3E02B90F-D374-4381-BDD2-3572D3EB1195",
@@ -2647,7 +2647,7 @@ describe("BlueBubbles sense runtime", () => {
       serverUrl: "http://bluebubbles.local",
       password: "secret-token",
       accountId: "default",
-      ownHandles: ["ari@mendelow.me"],
+      ownHandles: ["owner@example.test"],
     })
 
     const bluebubbles = await import("../../../senses/bluebubbles")
@@ -2664,14 +2664,14 @@ describe("BlueBubbles sense runtime", () => {
       serverUrl: "http://bluebubbles.local",
       password: "secret-token",
       accountId: "default",
-      ownHandles: ["ari@mendelow.me"],
+      ownHandles: ["owner@example.test"],
     })
     mocks.findByExternalId.mockResolvedValueOnce({
       ...defaultFriendContext.friend,
       id: "ari-friend-id",
       name: "Ari",
       kind: "human",
-      externalIds: [{ provider: "imessage-handle", externalId: "ari@mendelow.me", linkedAt: "2026-04-28T19:51:15.766Z" }],
+      externalIds: [{ provider: "imessage-handle", externalId: "owner@example.test", linkedAt: "2026-04-28T19:51:15.766Z" }],
     })
 
     const payload = {
@@ -2680,7 +2680,7 @@ describe("BlueBubbles sense runtime", () => {
         ...groupThreadPayload.data,
         guid: "GROUP-KNOWN-FRIEND-NOT-SELF",
         isFromMe: false,
-        handle: { address: "ari@mendelow.me" },
+        handle: { address: "owner@example.test" },
       },
     }
 
@@ -2692,7 +2692,7 @@ describe("BlueBubbles sense runtime", () => {
     expect(mocks.handleInboundTurn).toHaveBeenCalledTimes(1)
     expect(mocks.emitNervesEvent).toHaveBeenCalledWith(expect.objectContaining({
       event: "senses.bluebubbles_self_handle_bypassed_known_friend",
-      meta: expect.objectContaining({ senderExternalId: "ari@mendelow.me", friendId: "ari-friend-id" }),
+      meta: expect.objectContaining({ senderExternalId: "owner@example.test", friendId: "ari-friend-id" }),
     }))
   })
 
@@ -2803,7 +2803,7 @@ describe("BlueBubbles sense runtime", () => {
       ownHandles: ["+14155550000"],
     })
 
-    // dmThreadPayload's sender is ari@mendelow.me — should still flow through
+    // dmThreadPayload's sender is owner@example.test — should still flow through
     const bluebubbles = await import("../../../senses/bluebubbles")
     const result = await bluebubbles.handleBlueBubblesEvent(dmThreadPayload)
     expect(result.reason).not.toBe("from_me")
@@ -2819,10 +2819,10 @@ describe("BlueBubbles sense runtime", () => {
     const bluebubbles = await import("../../../senses/bluebubbles")
     await expect(bluebubbles.handleBlueBubblesEvent(dmThreadPayload)).rejects.toThrow("turn blew up")
 
-    expect(mocks.setTyping).toHaveBeenNthCalledWith(1, expect.objectContaining({ chatGuid: "any;-;ari@mendelow.me" }), true, expect.any(AbortSignal))
+    expect(mocks.setTyping).toHaveBeenNthCalledWith(1, expect.objectContaining({ chatGuid: "any;-;owner@example.test" }), true, expect.any(AbortSignal))
     expect(mocks.sendText).not.toHaveBeenCalled()
     expect(mocks.editMessage).not.toHaveBeenCalled()
-    expect(mocks.setTyping).toHaveBeenNthCalledWith(2, expect.objectContaining({ chatGuid: "any;-;ari@mendelow.me" }), false, expect.any(AbortSignal))
+    expect(mocks.setTyping).toHaveBeenNthCalledWith(2, expect.objectContaining({ chatGuid: "any;-;owner@example.test" }), false, expect.any(AbortSignal))
   })
 
   it("gates queued activity and both buffered-send paths before transport", async () => {
@@ -2889,11 +2889,11 @@ describe("BlueBubbles sense runtime", () => {
     vi.useFakeTimers()
     const bluebubbles = await import("../../../senses/bluebubbles")
     const chat = {
-      chatGuid: "any;-;ari@mendelow.me",
-      chatIdentifier: "ari@mendelow.me",
+      chatGuid: "any;-;owner@example.test",
+      chatIdentifier: "owner@example.test",
       isGroup: false,
-      sessionKey: "chat:any;-;ari@mendelow.me",
-      sendTarget: { kind: "chat_guid" as const, value: "any;-;ari@mendelow.me" },
+      sessionKey: "chat:any;-;owner@example.test",
+      sendTarget: { kind: "chat_guid" as const, value: "any;-;owner@example.test" },
       participantHandles: [],
     }
     const effects: string[] = []
@@ -3006,11 +3006,11 @@ describe("BlueBubbles sense runtime", () => {
     const agentRoot = makeTempDir()
     const idempotencyKey = "bluebubbles-inbound-reply:durable-callback-duplicate"
     const chat = {
-      chatGuid: "any;-;ari@mendelow.me",
-      chatIdentifier: "ari@mendelow.me",
+      chatGuid: "any;-;owner@example.test",
+      chatIdentifier: "owner@example.test",
       isGroup: false,
-      sessionKey: "chat:any;-;ari@mendelow.me",
-      sendTarget: { kind: "chat_guid" as const, value: "any;-;ari@mendelow.me" },
+      sessionKey: "chat:any;-;owner@example.test",
+      sendTarget: { kind: "chat_guid" as const, value: "any;-;owner@example.test" },
       participantHandles: [],
     }
     const attachment = {
@@ -3072,11 +3072,11 @@ describe("BlueBubbles sense runtime", () => {
         sendText: mocks.sendText,
       } as any,
       {
-        chatGuid: "any;-;ari@mendelow.me",
-        chatIdentifier: "ari@mendelow.me",
+        chatGuid: "any;-;owner@example.test",
+        chatIdentifier: "owner@example.test",
         isGroup: false,
-        sessionKey: "chat:any;-;ari@mendelow.me",
-        sendTarget: { kind: "chat_guid", value: "any;-;ari@mendelow.me" },
+        sessionKey: "chat:any;-;owner@example.test",
+        sendTarget: { kind: "chat_guid", value: "any;-;owner@example.test" },
         participantHandles: [],
       },
       { getReplyToMessageGuid: () => undefined } as any,
@@ -3094,11 +3094,11 @@ describe("BlueBubbles sense runtime", () => {
     const agentRoot = makeTempDir()
     const idempotencyKey = "bluebubbles-inbound-reply:accepted-without-guid"
     const chat = {
-      chatGuid: "any;-;ari@mendelow.me",
-      chatIdentifier: "ari@mendelow.me",
+      chatGuid: "any;-;owner@example.test",
+      chatIdentifier: "owner@example.test",
       isGroup: false,
-      sessionKey: "chat:any;-;ari@mendelow.me",
-      sendTarget: { kind: "chat_guid" as const, value: "any;-;ari@mendelow.me" },
+      sessionKey: "chat:any;-;owner@example.test",
+      sendTarget: { kind: "chat_guid" as const, value: "any;-;owner@example.test" },
       participantHandles: [],
     }
     const bluebubbles = await import("../../../senses/bluebubbles")
@@ -3192,11 +3192,11 @@ describe("BlueBubbles sense runtime", () => {
     const latestTurns = await import("../../../senses/bluebubbles/latest-turn")
     const { BlueBubblesSendError } = await import("../../../senses/bluebubbles/client")
     const chat = {
-      chatGuid: "any;-;ari@mendelow.me",
-      chatIdentifier: "ari@mendelow.me",
+      chatGuid: "any;-;owner@example.test",
+      chatIdentifier: "owner@example.test",
       isGroup: false,
-      sessionKey: "chat:any;-;ari@mendelow.me",
-      sendTarget: { kind: "chat_guid" as const, value: "any;-;ari@mendelow.me" },
+      sessionKey: "chat:any;-;owner@example.test",
+      sendTarget: { kind: "chat_guid" as const, value: "any;-;owner@example.test" },
       participantHandles: [],
     }
     const olderReservation = latestTurns.reserveObservation({
@@ -3268,11 +3268,11 @@ describe("BlueBubbles sense runtime", () => {
     const agentRoot = makeTempDir()
     const idempotencyKey = "bluebubbles-inbound-reply:temporary-fence-retry"
     const chat = {
-      chatGuid: "any;-;ari@mendelow.me",
-      chatIdentifier: "ari@mendelow.me",
+      chatGuid: "any;-;owner@example.test",
+      chatIdentifier: "owner@example.test",
       isGroup: false,
-      sessionKey: "chat:any;-;ari@mendelow.me",
-      sendTarget: { kind: "chat_guid" as const, value: "any;-;ari@mendelow.me" },
+      sessionKey: "chat:any;-;owner@example.test",
+      sendTarget: { kind: "chat_guid" as const, value: "any;-;owner@example.test" },
       participantHandles: [],
     }
     const olderReservation = latestTurns.reserveObservation({
@@ -3370,11 +3370,11 @@ describe("BlueBubbles sense runtime", () => {
     const callbacks = bluebubbles.createBlueBubblesCallbacks(
       client as any,
       {
-        chatGuid: "any;-;ari@mendelow.me",
-        chatIdentifier: "ari@mendelow.me",
+        chatGuid: "any;-;owner@example.test",
+        chatIdentifier: "owner@example.test",
         isGroup: false,
-        sessionKey: "chat:any;-;ari@mendelow.me",
-        sendTarget: { kind: "chat_guid", value: "any;-;ari@mendelow.me" },
+        sessionKey: "chat:any;-;owner@example.test",
+        sendTarget: { kind: "chat_guid", value: "any;-;owner@example.test" },
         participantHandles: [],
       },
       { getReplyToMessageGuid: () => undefined } as any,
@@ -3572,16 +3572,16 @@ describe("BlueBubbles sense runtime", () => {
       fromMe: false,
       sender: {
         provider: "imessage-handle",
-        externalId: "ari@mendelow.me",
-        rawId: "ari@mendelow.me",
-        displayName: "ari@mendelow.me",
+        externalId: "owner@example.test",
+        rawId: "owner@example.test",
+        displayName: "owner@example.test",
       },
       chat: {
-        chatGuid: "any;-;ari@mendelow.me",
-        chatIdentifier: "ari@mendelow.me",
+        chatGuid: "any;-;owner@example.test",
+        chatIdentifier: "owner@example.test",
         isGroup: false,
-        sessionKey: "chat:any;-;ari@mendelow.me",
-        sendTarget: { kind: "chat_guid", value: "any;-;ari@mendelow.me" },
+        sessionKey: "chat:any;-;owner@example.test",
+        sendTarget: { kind: "chat_guid", value: "any;-;owner@example.test" },
       },
       text: "",
       textForAgent: "[audio attachment: Audio Message.mp3]",
@@ -3611,16 +3611,16 @@ describe("BlueBubbles sense runtime", () => {
       fromMe: false,
       sender: {
         provider: "imessage-handle",
-        externalId: "ari@mendelow.me",
-        rawId: "ari@mendelow.me",
-        displayName: "ari@mendelow.me",
+        externalId: "owner@example.test",
+        rawId: "owner@example.test",
+        displayName: "owner@example.test",
       },
       chat: {
-        chatGuid: "any;-;ari@mendelow.me",
-        chatIdentifier: "ari@mendelow.me",
+        chatGuid: "any;-;owner@example.test",
+        chatIdentifier: "owner@example.test",
         isGroup: false,
-        sessionKey: "chat:any;-;ari@mendelow.me",
-        sendTarget: { kind: "chat_guid", value: "any;-;ari@mendelow.me" },
+        sessionKey: "chat:any;-;owner@example.test",
+        sendTarget: { kind: "chat_guid", value: "any;-;owner@example.test" },
       },
       text: "",
       textForAgent: "[image attachment: IMG_5045.heic.jpeg (600x800)]",
@@ -3667,7 +3667,7 @@ describe("BlueBubbles sense runtime", () => {
     expect(mocks.markChatRead).toHaveBeenCalledTimes(1)
     expect(mocks.markChatRead).toHaveBeenCalledWith(
       expect.objectContaining({
-        chatGuid: "any;-;ari@mendelow.me",
+        chatGuid: "any;-;owner@example.test",
       }),
       expect.any(AbortSignal),
     )
@@ -3690,12 +3690,12 @@ describe("BlueBubbles sense runtime", () => {
         level: "warn",
         event: "senses.bluebubbles_mark_read_error",
         meta: expect.objectContaining({
-          chatGuid: "any;-;ari@mendelow.me",
+          chatGuid: "any;-;owner@example.test",
           reason: "read transport down",
         }),
       }),
     )
-    expect(mocks.setTyping).toHaveBeenNthCalledWith(1, expect.objectContaining({ chatGuid: "any;-;ari@mendelow.me" }), true, expect.any(AbortSignal))
+    expect(mocks.setTyping).toHaveBeenNthCalledWith(1, expect.objectContaining({ chatGuid: "any;-;owner@example.test" }), true, expect.any(AbortSignal))
     expect(mocks.setTyping.mock.invocationCallOrder[0]).toBeLessThan(mocks.sendText.mock.invocationCallOrder[0])
   })
 
@@ -3882,7 +3882,7 @@ describe("BlueBubbles sense runtime", () => {
 
   it("refuses webhook messages, and starts no work, when the server runs under another account", async () => {
     const verifyHostAccount = vi.fn(async () => {
-      throw new Error('the BlueBubbles server runs under macOS account "arimendelow"')
+      throw new Error('the BlueBubbles server runs under macOS account "owner"')
     })
     const bluebubbles = await import("../../../senses/bluebubbles")
     const handler = bluebubbles.createBlueBubblesWebhookHandler({ verifyHostAccount })
@@ -3909,7 +3909,7 @@ describe("BlueBubbles sense runtime", () => {
     expect(JSON.parse(res.getBody())).toEqual({
       handled: false,
       notifiedAgent: false,
-      error: 'the BlueBubbles server runs under macOS account "arimendelow"',
+      error: 'the BlueBubbles server runs under macOS account "owner"',
     })
     await flushAsyncWork()
     expect(mocks.runAgent).not.toHaveBeenCalled()
@@ -4768,16 +4768,16 @@ describe("BlueBubbles sense runtime", () => {
       fromMe: false,
       sender: {
         provider: "imessage-handle",
-        externalId: "ari@mendelow.me",
-        rawId: "ari@mendelow.me",
-        displayName: "ari@mendelow.me",
+        externalId: "owner@example.test",
+        rawId: "owner@example.test",
+        displayName: "owner@example.test",
       },
       chat: {
-        chatGuid: "any;-;ari@mendelow.me",
-        chatIdentifier: "ari@mendelow.me",
+        chatGuid: "any;-;owner@example.test",
+        chatIdentifier: "owner@example.test",
         isGroup: false,
-        sessionKey: "chat:any;-;ari@mendelow.me",
-        sendTarget: { kind: "chat_guid", value: "any;-;ari@mendelow.me" },
+        sessionKey: "chat:any;-;owner@example.test",
+        sendTarget: { kind: "chat_guid", value: "any;-;owner@example.test" },
         participantHandles: [],
       },
       text: "you there?",
@@ -4821,16 +4821,16 @@ describe("BlueBubbles sense runtime", () => {
       fromMe: false,
       sender: {
         provider: "imessage-handle",
-        externalId: "ari@mendelow.me",
-        rawId: "ari@mendelow.me",
-        displayName: "ari@mendelow.me",
+        externalId: "owner@example.test",
+        rawId: "owner@example.test",
+        displayName: "owner@example.test",
       },
       chat: {
-        chatGuid: "any;-;ari@mendelow.me",
-        chatIdentifier: "ari@mendelow.me",
+        chatGuid: "any;-;owner@example.test",
+        chatIdentifier: "owner@example.test",
         isGroup: false,
-        sessionKey: "chat:any;-;ari@mendelow.me",
-        sendTarget: { kind: "chat_guid", value: "any;-;ari@mendelow.me" },
+        sessionKey: "chat:any;-;owner@example.test",
+        sendTarget: { kind: "chat_guid", value: "any;-;owner@example.test" },
         participantHandles: [],
       },
       shouldNotifyAgent: false,
@@ -4846,16 +4846,16 @@ describe("BlueBubbles sense runtime", () => {
       fromMe: false,
       sender: {
         provider: "imessage-handle",
-        externalId: "ari@mendelow.me",
-        rawId: "ari@mendelow.me",
-        displayName: "ari@mendelow.me",
+        externalId: "owner@example.test",
+        rawId: "owner@example.test",
+        displayName: "owner@example.test",
       },
       chat: {
-        chatGuid: "any;-;ari@mendelow.me",
-        chatIdentifier: "ari@mendelow.me",
+        chatGuid: "any;-;owner@example.test",
+        chatIdentifier: "owner@example.test",
         isGroup: false,
-        sessionKey: "chat:any;-;ari@mendelow.me",
-        sendTarget: { kind: "chat_guid", value: "any;-;ari@mendelow.me" },
+        sessionKey: "chat:any;-;owner@example.test",
+        sendTarget: { kind: "chat_guid", value: "any;-;owner@example.test" },
         participantHandles: [],
       },
       shouldNotifyAgent: false,
@@ -4892,16 +4892,16 @@ describe("BlueBubbles sense runtime", () => {
       fromMe: false,
       sender: {
         provider: "imessage-handle",
-        externalId: "ari@mendelow.me",
-        rawId: "ari@mendelow.me",
-        displayName: "ari@mendelow.me",
+        externalId: "owner@example.test",
+        rawId: "owner@example.test",
+        displayName: "owner@example.test",
       },
       chat: {
-        chatGuid: "any;-;ari@mendelow.me",
-        chatIdentifier: "ari@mendelow.me",
+        chatGuid: "any;-;owner@example.test",
+        chatIdentifier: "owner@example.test",
         isGroup: false,
-        sessionKey: "chat:any;-;ari@mendelow.me",
-        sendTarget: { kind: "chat_guid", value: "any;-;ari@mendelow.me" },
+        sessionKey: "chat:any;-;owner@example.test",
+        sendTarget: { kind: "chat_guid", value: "any;-;owner@example.test" },
         participantHandles: [],
       },
       shouldNotifyAgent: false,
@@ -4939,16 +4939,16 @@ describe("BlueBubbles sense runtime", () => {
       fromMe: false,
       sender: {
         provider: "imessage-handle",
-        externalId: "ari@mendelow.me",
-        rawId: "ari@mendelow.me",
-        displayName: "ari@mendelow.me",
+        externalId: "owner@example.test",
+        rawId: "owner@example.test",
+        displayName: "owner@example.test",
       },
       chat: {
-        chatGuid: "any;-;ari@mendelow.me",
-        chatIdentifier: "ari@mendelow.me",
+        chatGuid: "any;-;owner@example.test",
+        chatIdentifier: "owner@example.test",
         isGroup: false,
-        sessionKey: "chat:any;-;ari@mendelow.me",
-        sendTarget: { kind: "chat_guid", value: "any;-;ari@mendelow.me" },
+        sessionKey: "chat:any;-;owner@example.test",
+        sendTarget: { kind: "chat_guid", value: "any;-;owner@example.test" },
         participantHandles: [],
       },
       shouldNotifyAgent: false,
@@ -4975,8 +4975,8 @@ describe("BlueBubbles sense runtime", () => {
     expect(mocks.repairEvent).not.toHaveBeenCalled()
     expect(mocks.handleInboundTurn).not.toHaveBeenCalled()
     const { getBlueBubblesProcessedLogPath, hasProcessedBlueBubblesMessage } = await import("../../../senses/bluebubbles/processed-log")
-    expect(hasProcessedBlueBubblesMessage("testagent", "chat:any;-;ari@mendelow.me", "mutation-timeout-guid")).toBe(false)
-    const processedLogPath = getBlueBubblesProcessedLogPath("testagent", "chat:any;-;ari@mendelow.me")
+    expect(hasProcessedBlueBubblesMessage("testagent", "chat:any;-;owner@example.test", "mutation-timeout-guid")).toBe(false)
+    const processedLogPath = getBlueBubblesProcessedLogPath("testagent", "chat:any;-;owner@example.test")
     const processedLog = fs.existsSync(processedLogPath) ? fs.readFileSync(processedLogPath, "utf-8") : ""
     expect(processedLog).not.toContain("\"messageGuid\":\"mutation-timeout-guid\"")
     const queued = await bluebubbles.recoverQueuedBlueBubblesMessages()
@@ -5002,16 +5002,16 @@ describe("BlueBubbles sense runtime", () => {
       fromMe: false,
       sender: {
         provider: "imessage-handle",
-        externalId: "ari@mendelow.me",
-        rawId: "ari@mendelow.me",
-        displayName: "ari@mendelow.me",
+        externalId: "owner@example.test",
+        rawId: "owner@example.test",
+        displayName: "owner@example.test",
       },
       chat: {
-        chatGuid: "any;-;ari@mendelow.me",
-        chatIdentifier: "ari@mendelow.me",
+        chatGuid: "any;-;owner@example.test",
+        chatIdentifier: "owner@example.test",
         isGroup: false,
-        sessionKey: "chat:any;-;ari@mendelow.me",
-        sendTarget: { kind: "chat_guid", value: "any;-;ari@mendelow.me" },
+        sessionKey: "chat:any;-;owner@example.test",
+        sendTarget: { kind: "chat_guid", value: "any;-;owner@example.test" },
         participantHandles: [],
       },
       shouldNotifyAgent: false,
@@ -5033,8 +5033,8 @@ describe("BlueBubbles sense runtime", () => {
     expect(mocks.repairEvent).not.toHaveBeenCalled()
     expect(mocks.handleInboundTurn).not.toHaveBeenCalled()
     const { getBlueBubblesProcessedLogPath, hasProcessedBlueBubblesMessage } = await import("../../../senses/bluebubbles/processed-log")
-    expect(hasProcessedBlueBubblesMessage("testagent", "chat:any;-;ari@mendelow.me", "mutation-named-timeout-guid")).toBe(false)
-    const processedLogPath = getBlueBubblesProcessedLogPath("testagent", "chat:any;-;ari@mendelow.me")
+    expect(hasProcessedBlueBubblesMessage("testagent", "chat:any;-;owner@example.test", "mutation-named-timeout-guid")).toBe(false)
+    const processedLogPath = getBlueBubblesProcessedLogPath("testagent", "chat:any;-;owner@example.test")
     const processedLog = fs.existsSync(processedLogPath) ? fs.readFileSync(processedLogPath, "utf-8") : ""
     expect(processedLog).not.toContain("\"messageGuid\":\"mutation-named-timeout-guid\"")
     expect(mocks.emitNervesEvent).toHaveBeenCalledWith(expect.objectContaining({
@@ -5097,7 +5097,7 @@ describe("BlueBubbles sense runtime", () => {
     )
 
     const { getBlueBubblesInboundLogPath } = await import("../../../senses/bluebubbles/inbound-log")
-    const logPath = getBlueBubblesInboundLogPath("testagent", "chat:any;-;ari@mendelow.me")
+    const logPath = getBlueBubblesInboundLogPath("testagent", "chat:any;-;owner@example.test")
     const lines = fs.readFileSync(logPath, "utf-8").trim().split("\n")
     expect(JSON.parse(lines[0] ?? "{}")).toEqual(expect.objectContaining({
       messageGuid: "upstream-missed-guid",
@@ -5139,12 +5139,12 @@ describe("BlueBubbles sense runtime", () => {
     await waitFor(() => mocks.repairEvent.mock.calls.length === 1)
 
     const newerReservation = latestTurns.reserveObservation({
-      chatGuid: "any;-;ari@mendelow.me",
-      chatIdentifier: "ari@mendelow.me",
+      chatGuid: "any;-;owner@example.test",
+      chatIdentifier: "owner@example.test",
     })
     const newerPromotion = latestTurns.promote(newerReservation, {
-      chatGuid: "any;-;ari@mendelow.me",
-      chatIdentifier: "ari@mendelow.me",
+      chatGuid: "any;-;owner@example.test",
+      chatIdentifier: "owner@example.test",
     })
     if (newerPromotion.status !== "promoted") throw new Error("expected newer promotion")
     releaseFirstRepair.resolve()
@@ -5360,12 +5360,12 @@ describe("BlueBubbles sense runtime", () => {
     await waitFor(() => mocks.listRecentMessages.mock.calls.length === 2)
 
     const liveReservation = latestTurns.reserveObservation({
-      chatGuid: "any;-;ari@mendelow.me",
-      chatIdentifier: "ari@mendelow.me",
+      chatGuid: "any;-;owner@example.test",
+      chatIdentifier: "owner@example.test",
     })
     const livePromotion = latestTurns.promote(liveReservation, {
-      chatGuid: "any;-;ari@mendelow.me",
-      chatIdentifier: "ari@mendelow.me",
+      chatGuid: "any;-;owner@example.test",
+      chatIdentifier: "owner@example.test",
     })
     if (livePromotion.status !== "promoted") throw new Error("expected live promotion")
     releaseSecondPage.resolve([])
@@ -5400,12 +5400,12 @@ describe("BlueBubbles sense runtime", () => {
     await waitFor(() => mocks.listRecentMessages.mock.calls.length === 1)
 
     const liveReservation = latestTurns.reserveObservation({
-      chatGuid: "any;-;ari@mendelow.me",
-      chatIdentifier: "ari@mendelow.me",
+      chatGuid: "any;-;owner@example.test",
+      chatIdentifier: "owner@example.test",
     })
     const livePromotion = latestTurns.promote(liveReservation, {
-      chatGuid: "any;-;ari@mendelow.me",
-      chatIdentifier: "ari@mendelow.me",
+      chatGuid: "any;-;owner@example.test",
+      chatIdentifier: "owner@example.test",
     })
     if (livePromotion.status !== "promoted") throw new Error("expected live promotion")
     releaseQuery.resolve([makeCatchUpMessage({
@@ -5813,7 +5813,7 @@ describe("BlueBubbles sense runtime", () => {
     expect(mocks.runAgent).not.toHaveBeenCalled()
 
     const { hasRecordedBlueBubblesInbound } = await import("../../../senses/bluebubbles/inbound-log")
-    expect(hasRecordedBlueBubblesInbound("testagent", "chat:any;-;ari@mendelow.me", "catchup-already-in-session")).toBe(true)
+    expect(hasRecordedBlueBubblesInbound("testagent", "chat:any;-;owner@example.test", "catchup-already-in-session")).toBe(true)
   })
 
   it("records catch-up query failures without crashing the recovery pass", async () => {
@@ -6015,8 +6015,8 @@ describe("BlueBubbles sense runtime", () => {
 
     expect(result).toEqual(expect.objectContaining({ inspected: 1, recovered: 0, skipped: 1, failed: 0 }))
     const { getBlueBubblesProcessedLogPath, hasProcessedBlueBubblesMessage } = await import("../../../senses/bluebubbles/processed-log")
-    expect(hasProcessedBlueBubblesMessage("testagent", "chat:any;-;ari@mendelow.me", "catchup-timeout-guid")).toBe(false)
-    const processedLogPath = getBlueBubblesProcessedLogPath("testagent", "chat:any;-;ari@mendelow.me")
+    expect(hasProcessedBlueBubblesMessage("testagent", "chat:any;-;owner@example.test", "catchup-timeout-guid")).toBe(false)
+    const processedLogPath = getBlueBubblesProcessedLogPath("testagent", "chat:any;-;owner@example.test")
     const processedLog = fs.existsSync(processedLogPath) ? fs.readFileSync(processedLogPath, "utf-8") : ""
     expect(processedLog).not.toContain("\"messageGuid\":\"catchup-timeout-guid\"")
     expect(mocks.writeSemanticHandled).toHaveBeenCalledWith(
@@ -6094,16 +6094,16 @@ describe("BlueBubbles sense runtime", () => {
       fromMe: false,
       sender: {
         provider: "imessage-handle",
-        externalId: "ari@mendelow.me",
-        rawId: "ari@mendelow.me",
-        displayName: "ari@mendelow.me",
+        externalId: "owner@example.test",
+        rawId: "owner@example.test",
+        displayName: "owner@example.test",
       },
       chat: {
-        chatGuid: "any;-;ari@mendelow.me",
-        chatIdentifier: "ari@mendelow.me",
+        chatGuid: "any;-;owner@example.test",
+        chatIdentifier: "owner@example.test",
         isGroup: false,
-        sessionKey: "chat:any;-;ari@mendelow.me",
-        sendTarget: { kind: "chat_guid", value: "any;-;ari@mendelow.me" },
+        sessionKey: "chat:any;-;owner@example.test",
+        sendTarget: { kind: "chat_guid", value: "any;-;owner@example.test" },
         participantHandles: [],
       },
       text: "",
@@ -7116,9 +7116,9 @@ describe("BlueBubbles sense runtime", () => {
     })
 
     const { hasRecordedBlueBubblesInbound } = await import("../../../senses/bluebubbles/inbound-log")
-    expect(hasRecordedBlueBubblesInbound("testagent", "chat:any;-;ari@mendelow.me", "B20D4E2B-2E6E-48B5-95CD-6E24A368E4A7")).toBe(true)
+    expect(hasRecordedBlueBubblesInbound("testagent", "chat:any;-;owner@example.test", "B20D4E2B-2E6E-48B5-95CD-6E24A368E4A7")).toBe(true)
     const { hasProcessedBlueBubblesMessage } = await import("../../../senses/bluebubbles/processed-log")
-    expect(hasProcessedBlueBubblesMessage("testagent", "chat:any;-;ari@mendelow.me", "B20D4E2B-2E6E-48B5-95CD-6E24A368E4A7")).toBe(true)
+    expect(hasProcessedBlueBubblesMessage("testagent", "chat:any;-;owner@example.test", "B20D4E2B-2E6E-48B5-95CD-6E24A368E4A7")).toBe(true)
     const capture = mocks.writeSemanticCapture.mock.calls[0]?.[1]
     expect(mocks.writeSemanticHandled).toHaveBeenCalledWith(
       "testagent",
@@ -7148,7 +7148,7 @@ describe("BlueBubbles sense runtime", () => {
     })
 
     const { getBlueBubblesInboundLogPath } = await import("../../../senses/bluebubbles/inbound-log")
-    const logPath = getBlueBubblesInboundLogPath("testagent", "chat:any;-;ari@mendelow.me")
+    const logPath = getBlueBubblesInboundLogPath("testagent", "chat:any;-;owner@example.test")
     const lines = fs.readFileSync(logPath, "utf-8").trim().split("\n")
 
     expect(lines).toHaveLength(1)
@@ -7177,7 +7177,7 @@ describe("BlueBubbles sense runtime", () => {
     const { hasRecordedBlueBubblesInbound } = await import("../../../senses/bluebubbles/inbound-log")
     expect(hasRecordedBlueBubblesInbound(
       "testagent",
-      "chat:any;-;ari@mendelow.me",
+      "chat:any;-;owner@example.test",
       "4A4F2A85-21AD-4AC6-98A8-34B8F4D07AA9",
     )).toBe(false)
     expect(mocks.handleInboundTurn).not.toHaveBeenCalled()
@@ -7202,16 +7202,16 @@ describe("BlueBubbles sense runtime", () => {
       fromMe: false,
       sender: {
         provider: "imessage-handle",
-        externalId: "ari@mendelow.me",
-        rawId: "ari@mendelow.me",
-        displayName: "ari@mendelow.me",
+        externalId: "owner@example.test",
+        rawId: "owner@example.test",
+        displayName: "owner@example.test",
       },
       chat: {
-        chatGuid: "any;-;ari@mendelow.me",
-        chatIdentifier: "ari@mendelow.me",
+        chatGuid: "any;-;owner@example.test",
+        chatIdentifier: "owner@example.test",
         isGroup: false,
-        sessionKey: "chat:any;-;ari@mendelow.me",
-        sendTarget: { kind: "chat_guid", value: "any;-;ari@mendelow.me" },
+        sessionKey: "chat:any;-;owner@example.test",
+        sendTarget: { kind: "chat_guid", value: "any;-;owner@example.test" },
         participantHandles: [],
       },
       text: "top-level follow-up",
@@ -7878,16 +7878,16 @@ describe("BlueBubbles sense runtime", () => {
     vi.mocked(getAgentRoot).mockReturnValue(tempAgentRoot)
 
     const { getBlueBubblesInboundLogPath } = await import("../../../senses/bluebubbles/inbound-log")
-    const logPath = getBlueBubblesInboundLogPath("testagent", "chat:any;-;ari@mendelow.me")
+    const logPath = getBlueBubblesInboundLogPath("testagent", "chat:any;-;owner@example.test")
     fs.mkdirSync(path.dirname(logPath), { recursive: true })
     fs.writeFileSync(
       logPath,
       `${JSON.stringify({
         recordedAt: "2026-04-24T23:20:14.289Z",
         messageGuid: "   ",
-        chatGuid: "any;-;ari@mendelow.me",
-        chatIdentifier: "ari@mendelow.me",
-        sessionKey: "chat:any;-;ari@mendelow.me",
+        chatGuid: "any;-;owner@example.test",
+        chatIdentifier: "owner@example.test",
+        sessionKey: "chat:any;-;owner@example.test",
         textForAgent: "captured recovery without a guid",
         source: "webhook",
       })}\n`,
@@ -8021,12 +8021,12 @@ describe("BlueBubbles sense runtime", () => {
     await waitFor(() => mocks.repairEvent.mock.calls.length === 1)
 
     const newerReservation = latestTurns.reserveObservation({
-      chatGuid: "any;-;ari@mendelow.me",
-      chatIdentifier: "ari@mendelow.me",
+      chatGuid: "any;-;owner@example.test",
+      chatIdentifier: "owner@example.test",
     })
     const newerPromotion = latestTurns.promote(newerReservation, {
-      chatGuid: "any;-;ari@mendelow.me",
-      chatIdentifier: "ari@mendelow.me",
+      chatGuid: "any;-;owner@example.test",
+      chatIdentifier: "owner@example.test",
     })
     if (newerPromotion.status !== "promoted") throw new Error("expected newer promotion")
     releaseFirstRepair.resolve()
@@ -8138,7 +8138,7 @@ describe("BlueBubbles sense runtime", () => {
     vi.mocked(getAgentRoot).mockReturnValue(tempAgentRoot)
 
     const { getBlueBubblesInboundLogPath } = await import("../../../senses/bluebubbles/inbound-log")
-    const logPath = getBlueBubblesInboundLogPath("testagent", "chat:any;+;ari@mendelow.me")
+    const logPath = getBlueBubblesInboundLogPath("testagent", "chat:any;+;owner@example.test")
     fs.mkdirSync(path.dirname(logPath), { recursive: true })
     fs.writeFileSync(
       logPath,
@@ -8146,14 +8146,14 @@ describe("BlueBubbles sense runtime", () => {
         JSON.stringify({
           recordedAt: "2026-04-24T23:24:15.289Z",
           messageGuid: "captured-chat-identifier-guid",
-          sessionKey: "chat_identifier_ari@mendelow.me",
+          sessionKey: "chat_identifier_owner@example.test",
           textForAgent: "identifier fallback",
           source: "webhook",
         }),
         JSON.stringify({
           recordedAt: "not-a-timestamp",
           messageGuid: "captured-group-fallback-guid",
-          sessionKey: "chat_any;+;ari@mendelow.me",
+          sessionKey: "chat_any;+;owner@example.test",
           textForAgent: "group fallback",
           source: "webhook",
         }),
@@ -8233,7 +8233,7 @@ describe("BlueBubbles sense runtime", () => {
     vi.mocked(getAgentRoot).mockReturnValue(tempAgentRoot)
 
     const { getBlueBubblesInboundLogPath } = await import("../../../senses/bluebubbles/inbound-log")
-    const logPath = getBlueBubblesInboundLogPath("testagent", "chat:any;-;ari@mendelow.me")
+    const logPath = getBlueBubblesInboundLogPath("testagent", "chat:any;-;owner@example.test")
     fs.mkdirSync(path.dirname(logPath), { recursive: true })
     fs.writeFileSync(
       logPath,
@@ -8241,18 +8241,18 @@ describe("BlueBubbles sense runtime", () => {
         JSON.stringify({
           recordedAt: "still-not-a-date",
           messageGuid: "captured-invalid-order-first",
-          chatGuid: "any;-;ari@mendelow.me",
-          chatIdentifier: "ari@mendelow.me",
-          sessionKey: "chat:any;-;ari@mendelow.me",
+          chatGuid: "any;-;owner@example.test",
+          chatIdentifier: "owner@example.test",
+          sessionKey: "chat:any;-;owner@example.test",
           textForAgent: "first invalid timestamp",
           source: "webhook",
         }),
         JSON.stringify({
           recordedAt: "also-not-a-date",
           messageGuid: "captured-invalid-order-second",
-          chatGuid: "any;-;ari@mendelow.me",
-          chatIdentifier: "ari@mendelow.me",
-          sessionKey: "chat:any;-;ari@mendelow.me",
+          chatGuid: "any;-;owner@example.test",
+          chatIdentifier: "owner@example.test",
+          sessionKey: "chat:any;-;owner@example.test",
           textForAgent: "second invalid timestamp",
           source: "webhook",
         }),
@@ -8328,16 +8328,16 @@ describe("BlueBubbles sense runtime", () => {
       fromMe: false,
       sender: {
         provider: "imessage-handle" as const,
-        externalId: "ari@mendelow.me",
-        rawId: "ari@mendelow.me",
-        displayName: "ari@mendelow.me",
+        externalId: "owner@example.test",
+        rawId: "owner@example.test",
+        displayName: "owner@example.test",
       },
       chat: {
-        chatGuid: "any;-;ari@mendelow.me",
-        chatIdentifier: "ari@mendelow.me",
+        chatGuid: "any;-;owner@example.test",
+        chatIdentifier: "owner@example.test",
         isGroup: false,
-        sessionKey: "chat:any;-;ari@mendelow.me",
-        sendTarget: { kind: "chat_guid" as const, value: "any;-;ari@mendelow.me" },
+        sessionKey: "chat:any;-;owner@example.test",
+        sendTarget: { kind: "chat_guid" as const, value: "any;-;owner@example.test" },
         participantHandles: [],
       },
       shouldNotifyAgent: false,
@@ -8403,12 +8403,12 @@ describe("BlueBubbles sense runtime", () => {
 
     const latestTurns = await import("../../../senses/bluebubbles/latest-turn")
     const olderReservation = latestTurns.reserveObservation({
-      chatGuid: "any;-;ari@mendelow.me",
-      chatIdentifier: "ari@mendelow.me",
+      chatGuid: "any;-;owner@example.test",
+      chatIdentifier: "owner@example.test",
     })
     const olderPromotion = latestTurns.promote(olderReservation, {
-      chatGuid: "any;-;ari@mendelow.me",
-      chatIdentifier: "ari@mendelow.me",
+      chatGuid: "any;-;owner@example.test",
+      chatIdentifier: "owner@example.test",
     })
     if (olderPromotion.status !== "promoted") throw new Error("expected older promotion")
 
@@ -8454,12 +8454,12 @@ describe("BlueBubbles sense runtime", () => {
 
     const latestTurns = await import("../../../senses/bluebubbles/latest-turn")
     const olderReservation = latestTurns.reserveObservation({
-      chatGuid: "any;-;ari@mendelow.me",
-      chatIdentifier: "ari@mendelow.me",
+      chatGuid: "any;-;owner@example.test",
+      chatIdentifier: "owner@example.test",
     })
     const olderPromotion = latestTurns.promote(olderReservation, {
-      chatGuid: "any;-;ari@mendelow.me",
-      chatIdentifier: "ari@mendelow.me",
+      chatGuid: "any;-;owner@example.test",
+      chatIdentifier: "owner@example.test",
     })
     if (olderPromotion.status !== "promoted") throw new Error("expected older promotion")
 
@@ -8551,12 +8551,12 @@ describe("BlueBubbles sense runtime", () => {
     const bluebubbles = await import("../../../senses/bluebubbles")
     const latestTurns = await import("../../../senses/bluebubbles/latest-turn")
     const olderReservation = latestTurns.reserveObservation({
-      chatGuid: "any;-;ari@mendelow.me",
-      chatIdentifier: "ari@mendelow.me",
+      chatGuid: "any;-;owner@example.test",
+      chatIdentifier: "owner@example.test",
     })
     const olderPromotion = latestTurns.promote(olderReservation, {
-      chatGuid: "any;-;ari@mendelow.me",
-      chatIdentifier: "ari@mendelow.me",
+      chatGuid: "any;-;owner@example.test",
+      chatIdentifier: "owner@example.test",
     })
     if (olderPromotion.status !== "promoted") throw new Error("expected older promotion")
     const live = bluebubbles.handleBlueBubblesEvent(dmTopLevelPayload)
@@ -8595,12 +8595,12 @@ describe("BlueBubbles sense runtime", () => {
     const bluebubbles = await import("../../../senses/bluebubbles")
     const latestTurns = await import("../../../senses/bluebubbles/latest-turn")
     const olderReservation = latestTurns.reserveObservation({
-      chatGuid: "any;-;ari@mendelow.me",
-      chatIdentifier: "ari@mendelow.me",
+      chatGuid: "any;-;owner@example.test",
+      chatIdentifier: "owner@example.test",
     })
     const olderPromotion = latestTurns.promote(olderReservation, {
-      chatGuid: "any;-;ari@mendelow.me",
-      chatIdentifier: "ari@mendelow.me",
+      chatGuid: "any;-;owner@example.test",
+      chatIdentifier: "owner@example.test",
     })
     if (olderPromotion.status !== "promoted") throw new Error("expected older promotion")
 
@@ -8646,12 +8646,12 @@ describe("BlueBubbles sense runtime", () => {
     await flushAsyncWork()
 
     const newerReservation = latestTurns.reserveObservation({
-      chatGuid: "any;-;ari@mendelow.me",
-      chatIdentifier: "ari@mendelow.me",
+      chatGuid: "any;-;owner@example.test",
+      chatIdentifier: "owner@example.test",
     })
     const newerPromotion = latestTurns.promote(newerReservation, {
-      chatGuid: "any;-;ari@mendelow.me",
-      chatIdentifier: "ari@mendelow.me",
+      chatGuid: "any;-;owner@example.test",
+      chatIdentifier: "owner@example.test",
     })
     if (newerPromotion.status !== "promoted") throw new Error("expected newer promotion")
 
@@ -8749,12 +8749,12 @@ describe("BlueBubbles sense runtime", () => {
     const bluebubbles = await import("../../../senses/bluebubbles")
     const latestTurns = await import("../../../senses/bluebubbles/latest-turn")
     const olderReservation = latestTurns.reserveObservation({
-      chatGuid: "any;-;ari@mendelow.me",
-      chatIdentifier: "ari@mendelow.me",
+      chatGuid: "any;-;owner@example.test",
+      chatIdentifier: "owner@example.test",
     })
     const olderPromotion = latestTurns.promote(olderReservation, {
-      chatGuid: "any;-;ari@mendelow.me",
-      chatIdentifier: "ari@mendelow.me",
+      chatGuid: "any;-;owner@example.test",
+      chatIdentifier: "owner@example.test",
     })
     if (olderPromotion.status !== "promoted") throw new Error("expected older promotion")
 
@@ -8789,12 +8789,12 @@ describe("BlueBubbles sense runtime", () => {
     const bluebubbles = await import("../../../senses/bluebubbles")
     const latestTurns = await import("../../../senses/bluebubbles/latest-turn")
     const olderReservation = latestTurns.reserveObservation({
-      chatGuid: "any;-;ari@mendelow.me",
-      chatIdentifier: "ari@mendelow.me",
+      chatGuid: "any;-;owner@example.test",
+      chatIdentifier: "owner@example.test",
     })
     const olderPromotion = latestTurns.promote(olderReservation, {
-      chatGuid: "any;-;ari@mendelow.me",
-      chatIdentifier: "ari@mendelow.me",
+      chatGuid: "any;-;owner@example.test",
+      chatIdentifier: "owner@example.test",
     })
     if (olderPromotion.status !== "promoted") throw new Error("expected older promotion")
 
@@ -9130,8 +9130,8 @@ describe("BlueBubbles sense runtime", () => {
     expect(timeoutTurnCalls()[0]?.[0]?.signal.aborted).toBe(true)
     expect(mocks.semanticHandled.get(capture.keyHash)).toEqual(expect.objectContaining({ outcome: "message_observed" }))
     const { getBlueBubblesProcessedLogPath, hasProcessedBlueBubblesMessage } = await import("../../../senses/bluebubbles/processed-log")
-    expect(hasProcessedBlueBubblesMessage("testagent", "chat:any;-;ari@mendelow.me", "captured-timeout-guid")).toBe(false)
-    const processedLogPath = getBlueBubblesProcessedLogPath("testagent", "chat:any;-;ari@mendelow.me")
+    expect(hasProcessedBlueBubblesMessage("testagent", "chat:any;-;owner@example.test", "captured-timeout-guid")).toBe(false)
+    const processedLogPath = getBlueBubblesProcessedLogPath("testagent", "chat:any;-;owner@example.test")
     const processedLog = fs.existsSync(processedLogPath) ? fs.readFileSync(processedLogPath, "utf-8") : ""
     expect(processedLog).not.toContain("\"messageGuid\":\"captured-timeout-guid\"")
     const queued = await bluebubbles.recoverQueuedBlueBubblesMessages()
@@ -9160,7 +9160,7 @@ describe("BlueBubbles sense runtime", () => {
       data: { ...dmTopLevelPayload.data, guid: "queued-host-refused-guid", text: "queued while refused" },
     })
     const verifyHostAccount = vi.fn(async () => {
-      throw 'the BlueBubbles server runs under macOS account "arimendelow"'
+      throw 'the BlueBubbles server runs under macOS account "owner"'
     })
     const createClient = vi.fn()
 
@@ -9172,7 +9172,7 @@ describe("BlueBubbles sense runtime", () => {
     expect(mocks.runAgent).not.toHaveBeenCalled()
     expect(mocks.emitNervesEvent).toHaveBeenCalledWith(expect.objectContaining({
       event: "senses.bluebubbles_recovery_host_refused",
-      meta: { pendingRecoveryCount: 1, reason: 'the BlueBubbles server runs under macOS account "arimendelow"' },
+      meta: { pendingRecoveryCount: 1, reason: 'the BlueBubbles server runs under macOS account "owner"' },
     }))
     await expect(bluebubbles.recoverQueuedBlueBubblesMessages({
       verifyHostAccount: async () => { throw new Error("could not confirm the server's account") },
@@ -9501,16 +9501,16 @@ describe("BlueBubbles sense runtime", () => {
       fromMe: false,
       sender: {
         provider: "imessage-handle",
-        externalId: "ari@mendelow.me",
-        rawId: "ari@mendelow.me",
-        displayName: "ari@mendelow.me",
+        externalId: "owner@example.test",
+        rawId: "owner@example.test",
+        displayName: "owner@example.test",
       },
       chat: {
-        chatGuid: "any;-;ari@mendelow.me",
-        chatIdentifier: "ari@mendelow.me",
+        chatGuid: "any;-;owner@example.test",
+        chatIdentifier: "owner@example.test",
         isGroup: false,
-        sessionKey: "chat:any;-;ari@mendelow.me",
-        sendTarget: { kind: "chat_guid", value: "any;-;ari@mendelow.me" },
+        sessionKey: "chat:any;-;owner@example.test",
+        sendTarget: { kind: "chat_guid", value: "any;-;owner@example.test" },
         participantHandles: [],
       },
       text: "you already saw this",
@@ -9761,7 +9761,7 @@ describe("BlueBubbles sense runtime", () => {
     expect(input.channel).toBe("bluebubbles")
     expect(input.capabilities).toEqual(expect.objectContaining({ senseType: "open", channel: "bluebubbles" }))
     expect(input.provider).toBe("imessage-handle")
-    expect(input.externalId).toBe("ari@mendelow.me")
+    expect(input.externalId).toBe("owner@example.test")
     expect(input.isGroupChat).toBe(false)
     expect(input.groupHasFamilyMember).toBe(false)
     expect(input.hasExistingGroupWithFamily).toBe(false)
@@ -9788,16 +9788,16 @@ describe("BlueBubbles sense runtime", () => {
       fromMe: false,
       sender: {
         provider: "imessage-handle",
-        externalId: "ari@mendelow.me",
-        rawId: "ari@mendelow.me",
-        displayName: "ari@mendelow.me",
+        externalId: "owner@example.test",
+        rawId: "owner@example.test",
+        displayName: "owner@example.test",
       },
       chat: {
-        chatGuid: "any;-;ari@mendelow.me",
-        chatIdentifier: "ari@mendelow.me",
+        chatGuid: "any;-;owner@example.test",
+        chatIdentifier: "owner@example.test",
         isGroup: false,
-        sessionKey: "chat:any;-;ari@mendelow.me",
-        sendTarget: { kind: "chat_guid", value: "any;-;ari@mendelow.me" },
+        sessionKey: "chat:any;-;owner@example.test",
+        sendTarget: { kind: "chat_guid", value: "any;-;owner@example.test" },
       },
       text: "",
       textForAgent: "",
@@ -9827,16 +9827,16 @@ describe("BlueBubbles sense runtime", () => {
       fromMe: false,
       sender: {
         provider: "imessage-handle",
-        externalId: "ari@mendelow.me",
-        rawId: "ari@mendelow.me",
-        displayName: "ari@mendelow.me",
+        externalId: "owner@example.test",
+        rawId: "owner@example.test",
+        displayName: "owner@example.test",
       },
       chat: {
-        chatGuid: "any;-;ari@mendelow.me",
-        chatIdentifier: "ari@mendelow.me",
+        chatGuid: "any;-;owner@example.test",
+        chatIdentifier: "owner@example.test",
         isGroup: false,
-        sessionKey: "chat:any;-;ari@mendelow.me",
-        sendTarget: { kind: "chat_guid", value: "any;-;ari@mendelow.me" },
+        sessionKey: "chat:any;-;owner@example.test",
+        sendTarget: { kind: "chat_guid", value: "any;-;owner@example.test" },
       },
       text: "",
       textForAgent: "   ",
@@ -9864,16 +9864,16 @@ describe("BlueBubbles sense runtime", () => {
       fromMe: false,
       sender: {
         provider: "imessage-handle",
-        externalId: "ari@mendelow.me",
-        rawId: "ari@mendelow.me",
-        displayName: "ari@mendelow.me",
+        externalId: "owner@example.test",
+        rawId: "owner@example.test",
+        displayName: "owner@example.test",
       },
       chat: {
-        chatGuid: "any;-;ari@mendelow.me",
-        chatIdentifier: "ari@mendelow.me",
+        chatGuid: "any;-;owner@example.test",
+        chatIdentifier: "owner@example.test",
         isGroup: false,
-        sessionKey: "chat:any;-;ari@mendelow.me",
-        sendTarget: { kind: "chat_guid", value: "any;-;ari@mendelow.me" },
+        sessionKey: "chat:any;-;owner@example.test",
+        sendTarget: { kind: "chat_guid", value: "any;-;owner@example.test" },
       },
       text: "",
       textForAgent: "",
@@ -9911,7 +9911,7 @@ describe("BlueBubbles sense runtime", () => {
     expect(mocks.handleInboundTurn).toHaveBeenCalledTimes(1)
     const input = mocks.handleInboundTurn.mock.calls[0][0]
     expect(input.isGroupChat).toBe(true)
-    expect(input.externalId).toBe("ari@mendelow.me")
+    expect(input.externalId).toBe("owner@example.test")
     expect(input.provider).toBe("imessage-handle")
   })
 
@@ -10067,7 +10067,7 @@ describe("BlueBubbles sense runtime", () => {
       name: "SomeAcquaintance",
       trustLevel: "acquaintance" as const,
       externalIds: [
-        { provider: "imessage-handle" as const, externalId: "ari@mendelow.me", linkedAt: "2026-01-01" },
+        { provider: "imessage-handle" as const, externalId: "owner@example.test", linkedAt: "2026-01-01" },
         { provider: "imessage-handle" as const, externalId: "group:shared-group-123", linkedAt: "2026-01-01" },
       ],
       tenantMemberships: [],
@@ -10120,7 +10120,7 @@ describe("BlueBubbles sense runtime", () => {
       name: "LonelyAcquaintance",
       trustLevel: "acquaintance" as const,
       externalIds: [
-        { provider: "imessage-handle" as const, externalId: "ari@mendelow.me", linkedAt: "2026-01-01" },
+        { provider: "imessage-handle" as const, externalId: "owner@example.test", linkedAt: "2026-01-01" },
         { provider: "imessage-handle" as const, externalId: "group:acq-only-group", linkedAt: "2026-01-01" },
       ],
       tenantMemberships: [],
@@ -10173,7 +10173,7 @@ describe("BlueBubbles sense runtime", () => {
       name: "NoGroupAcq",
       trustLevel: "acquaintance" as const,
       externalIds: [
-        { provider: "imessage-handle" as const, externalId: "ari@mendelow.me", linkedAt: "2026-01-01" },
+        { provider: "imessage-handle" as const, externalId: "owner@example.test", linkedAt: "2026-01-01" },
       ],
       tenantMemberships: [],
       toolPreferences: {},
@@ -10233,7 +10233,7 @@ describe("BlueBubbles sense runtime", () => {
       name: "SomeAcquaintance",
       trustLevel: "acquaintance" as const,
       externalIds: [
-        { provider: "imessage-handle" as const, externalId: "ari@mendelow.me", linkedAt: "2026-01-01" },
+        { provider: "imessage-handle" as const, externalId: "owner@example.test", linkedAt: "2026-01-01" },
         { provider: "imessage-handle" as const, externalId: "group:shared-group", linkedAt: "2026-01-01" },
       ],
       tenantMemberships: [],
@@ -10282,7 +10282,7 @@ describe("BlueBubbles sense runtime", () => {
       name: "AcqNoListAll",
       trustLevel: "acquaintance" as const,
       externalIds: [
-        { provider: "imessage-handle" as const, externalId: "ari@mendelow.me", linkedAt: "2026-01-01" },
+        { provider: "imessage-handle" as const, externalId: "owner@example.test", linkedAt: "2026-01-01" },
         { provider: "imessage-handle" as const, externalId: "group:some-group", linkedAt: "2026-01-01" },
       ],
       tenantMemberships: [],
@@ -10482,11 +10482,11 @@ describe("BlueBubbles sense runtime", () => {
           textForAgent: "same chat guid despite a repaired session key",
         }),
         chat: {
-          chatGuid: "any;-;ari@mendelow.me",
-          chatIdentifier: "ari@mendelow.me",
+          chatGuid: "any;-;owner@example.test",
+          chatIdentifier: "owner@example.test",
           isGroup: false,
           sessionKey: "chat:repaired-session-key",
-          sendTarget: { kind: "chat_guid" as const, value: "any;-;ari@mendelow.me" },
+          sendTarget: { kind: "chat_guid" as const, value: "any;-;owner@example.test" },
           participantHandles: [],
         },
       },
@@ -10507,7 +10507,7 @@ describe("BlueBubbles sense runtime", () => {
     await bluebubbles.handleBlueBubblesEvent(dmTopLevelPayload)
 
     expect(mocks.listRecentMessages).toHaveBeenCalledWith({
-      chatGuid: "any;-;ari@mendelow.me",
+      chatGuid: "any;-;owner@example.test",
       beforeTimestamp: dmTopLevelPayload.data.dateCreated,
       limit: 41,
       offset: 0,
@@ -10551,7 +10551,7 @@ describe("BlueBubbles sense runtime", () => {
       messageGuid: "verified-rsvp-predecessor",
       timestamp: dmTopLevelPayload.data.dateCreated - 1_000,
       fromMe: true,
-      textForAgent: "RSVP Update — Ari & Rachel\nNo changes since last check.",
+      textForAgent: "RSVP Update — Ari & Sam\nNo changes since last check.",
     })
     const older = makeCatchUpMessage({
       messageGuid: "older-context-row",
@@ -10590,7 +10590,7 @@ describe("BlueBubbles sense runtime", () => {
     await bluebubbles.handleBlueBubblesEvent(dmTopLevelPayload)
 
     expect(mocks.listRecentMessages).toHaveBeenCalledWith({
-      chatGuid: "any;-;ari@mendelow.me",
+      chatGuid: "any;-;owner@example.test",
       beforeTimestamp: dmTopLevelPayload.data.dateCreated,
       limit: 41,
       offset: 0,
@@ -10605,7 +10605,7 @@ describe("BlueBubbles sense runtime", () => {
     expect(Object.isFrozen(required.verifiedPredecessorMessage)).toBe(true)
     expect(required.verifiedPredecessorMessage.content).toContain("shared-account outbound")
     expect(required.verifiedPredecessorMessage.content).toContain('"agentAuthorship":"unverified"')
-    expect(required.verifiedPredecessorMessage.content).not.toMatch(/Rachel (said|read|saw|was seeing|is at)/i)
+    expect(required.verifiedPredecessorMessage.content).not.toMatch(/Sam (said|read|saw|was seeing|is at)/i)
     expect(providerMessages.filter((message) => message === required.currentUserMessage)).toHaveLength(1)
     expect(providerMessages.filter((message) => message === required.verifiedPredecessorMessage)).toHaveLength(1)
     expect(providerOptions.promptOnlyEvidenceMessages).toHaveLength(1)
@@ -11220,11 +11220,11 @@ describe("BlueBubbles sense runtime", () => {
     mocks.getAgentRoot.mockReturnValue(agentRoot)
     const { buildSenseContextPacket } = await import("../../../senses/context-packets")
     const { writeSenseContextPacket } = await import("../../../senses/context-packet-ledger")
-    const chatKeyHash = sha256Hex("any;-;ari@mendelow.me")
+    const chatKeyHash = sha256Hex("any;-;owner@example.test")
     const packet = buildSenseContextPacket({
       agent: "testagent",
       sense: "bluebubbles",
-      sessionKey: "chat:any;-;ari@mendelow.me",
+      sessionKey: "chat:any;-;owner@example.test",
       chatKeyHash,
       anchorMessageGuid: "previous-anchor",
       anchorTimestamp: "2026-03-07T22:00:00.000Z",
@@ -11238,7 +11238,7 @@ describe("BlueBubbles sense runtime", () => {
           sense: "bluebubbles",
           adapter: "bluebubbles-api-v1",
           service: "imessage",
-          chatGuid: "any;-;ari@mendelow.me",
+          chatGuid: "any;-;owner@example.test",
           chatGuidHash: chatKeyHash,
           messageGuid: "previous-script-guid",
           senderExternalIdHash: sha256Hex("slugger@example.com"),
@@ -11897,11 +11897,11 @@ describe("BlueBubbles sense runtime", () => {
       agentRoot,
       idempotencyKey: `bluebubbles-inbound-reply:${capture.keyHash}`,
       chat: {
-        chatGuid: "any;-;ari@mendelow.me",
-        chatIdentifier: "ari@mendelow.me",
+        chatGuid: "any;-;owner@example.test",
+        chatIdentifier: "owner@example.test",
         isGroup: false,
-        sessionKey: "chat:any;-;ari@mendelow.me",
-        sendTarget: { kind: "chat_guid", value: "any;-;ari@mendelow.me" },
+        sessionKey: "chat:any;-;owner@example.test",
+        sendTarget: { kind: "chat_guid", value: "any;-;owner@example.test" },
         participantHandles: [],
       },
       attachment: {
@@ -14992,14 +14992,14 @@ describe("isAgentSelfHandle", () => {
 })
 
 describe("BlueBubbles failed reply retry", () => {
-  // Real failures from 2026-10-27 in chat:any;-;ari@mendelow.me: both replies
+  // Real failures from 2026-10-27 in chat:any;-;owner@example.test: both replies
   // timed out at the final transport and were wrongly marked handled.
   const stuckGuid = "F53240B5-491C-4BA1-8707-4DC8E4D00727"
   const retriedGuid = "E7080C7C-81EE-4C97-8369-6695349CDD12"
   const otherChatGuid = "6C4F1D2E-8A1B-4F3C-9D5E-2B7A0C9E1F34"
   const recoveryBackoffMs = 11 * 60_000
 
-  function dmPayload(guid: string, handle = "ari@mendelow.me") {
+  function dmPayload(guid: string, handle = "owner@example.test") {
     return {
       ...dmTopLevelPayload,
       data: {
@@ -15137,11 +15137,11 @@ describe("BlueBubbles failed reply retry", () => {
       agentRoot,
       idempotencyKey: `bluebubbles-inbound-reply:${capture.keyHash}`,
       chat: {
-        chatGuid: "any;-;ari@mendelow.me",
-        chatIdentifier: "ari@mendelow.me",
+        chatGuid: "any;-;owner@example.test",
+        chatIdentifier: "owner@example.test",
         isGroup: false,
-        sessionKey: "chat:any;-;ari@mendelow.me",
-        sendTarget: { kind: "chat_guid", value: "any;-;ari@mendelow.me" },
+        sessionKey: "chat:any;-;owner@example.test",
+        sendTarget: { kind: "chat_guid", value: "any;-;owner@example.test" },
         participantHandles: [],
       },
       attachment: { serverUrl: "http://bluebubbles.local", accountId: "default" },
@@ -15180,14 +15180,14 @@ describe("BlueBubbles failed reply retry", () => {
         fromMe: true,
         timestamp: Date.now() + 30_000,
         text: "got it",
-        chat: { chatGuid: "any;-;ari@mendelow.me" },
+        chat: { chatGuid: "any;-;owner@example.test" },
       },
     ])
 
     vi.setSystemTime(Date.now() + recoveryBackoffMs)
     await bluebubbles.recoverCapturedBlueBubblesInboundMessages()
 
-    expect(mocks.listRecentMessages).toHaveBeenCalledWith(expect.objectContaining({ chatGuid: "any;-;ari@mendelow.me" }))
+    expect(mocks.listRecentMessages).toHaveBeenCalledWith(expect.objectContaining({ chatGuid: "any;-;owner@example.test" }))
     expect(mocks.sendText).toHaveBeenCalledTimes(1)
     expect(mocks.runAgent).toHaveBeenCalledTimes(1)
     expect(handledFor(capture)).toEqual(expect.objectContaining({
@@ -15204,10 +15204,10 @@ describe("BlueBubbles failed reply retry", () => {
     const bluebubbles = await import("../../../senses/bluebubbles")
     await bluebubbles.handleBlueBubblesEvent(payload)
     mocks.listRecentMessages.mockResolvedValue([
-      { kind: "message", fromMe: true, timestamp: Date.now() + 30_000, text: "yes, I'm here", chat: { chatGuid: "any;-;ari@mendelow.me" } },
+      { kind: "message", fromMe: true, timestamp: Date.now() + 30_000, text: "yes, I'm here", chat: { chatGuid: "any;-;owner@example.test" } },
       { kind: "message", fromMe: true, timestamp: Date.now() + 30_000, text: "got it", chat: { chatGuid: "any;-;someone-else" } },
-      { kind: "message", fromMe: true, timestamp: Date.now() - 60_000, text: "got it", chat: { chatGuid: "any;-;ari@mendelow.me" } },
-      { kind: "message", fromMe: false, timestamp: Date.now() + 30_000, text: "got it", chat: { chatGuid: "any;-;ari@mendelow.me" } },
+      { kind: "message", fromMe: true, timestamp: Date.now() - 60_000, text: "got it", chat: { chatGuid: "any;-;owner@example.test" } },
+      { kind: "message", fromMe: false, timestamp: Date.now() + 30_000, text: "got it", chat: { chatGuid: "any;-;owner@example.test" } },
     ])
 
     vi.setSystemTime(Date.now() + recoveryBackoffMs)
@@ -15259,11 +15259,11 @@ describe("BlueBubbles failed reply retry", () => {
       agentRoot,
       idempotencyKey: `bluebubbles-inbound-reply:${capture.keyHash}`,
       chat: {
-        chatGuid: "any;-;ari@mendelow.me",
-        chatIdentifier: "ari@mendelow.me",
+        chatGuid: "any;-;owner@example.test",
+        chatIdentifier: "owner@example.test",
         isGroup: false,
-        sessionKey: "chat:any;-;ari@mendelow.me",
-        sendTarget: { kind: "chat_guid", value: "any;-;ari@mendelow.me" },
+        sessionKey: "chat:any;-;owner@example.test",
+        sendTarget: { kind: "chat_guid", value: "any;-;owner@example.test" },
         participantHandles: [],
       },
       attachment: { serverUrl: "http://bluebubbles.local", accountId: "default" },
@@ -15366,7 +15366,7 @@ describe("BlueBubbles failed reply retry", () => {
     const stuckPayload = dmPayload(stuckGuid)
     const stuckCapture = await makeStoredSemanticCapture(stuckPayload)
     mocks.sendText.mockImplementation(async (input: any) => {
-      if (input.chat.chatGuid === "any;-;ari@mendelow.me") return sendTimeout()
+      if (input.chat.chatGuid === "any;-;owner@example.test") return sendTimeout()
       return { messageGuid: "sent-guid" }
     })
 

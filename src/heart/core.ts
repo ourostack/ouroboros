@@ -1629,7 +1629,7 @@ export async function runAgent(
   // retry, and none spends the last provider iteration.
   // A rejected reply never reaches the person, and neither does the runtime's note about it: the retry gets the reason as a private
   // note, and a retry that only talks about that note is replaced by the last real draft (2026-10-11: "got it. dummy bad, no markdown,
-  // no question at the end. just plain answer, cap it." went to Rachel).
+  // no question at the end. just plain answer, cap it." went to Sam).
   // `replacement` is the text to deliver instead of the answer, with any disclosure already applied; null delivers the answer as is.
   const answerGateVerdict = (answer: string, intent?: string): { error: string | null; replacement: string | null } => {
     if (lastRealDraft !== null && GATE_NOTE_ECHO.test(answer)) {

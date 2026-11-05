@@ -146,7 +146,7 @@ describe("Agent Mail local proof", () => {
     const attentionPath = path.join(root, "attention.json")
     const { registry, keys } = provisionMailboxRegistry({
       agentId: "slugger",
-      ownerEmail: "ari@mendelow.me",
+      ownerEmail: "owner@example.test",
       source: "hey",
     })
     fs.writeFileSync(registryPath, `${JSON.stringify(registry, null, 2)}\n`, "utf-8")
@@ -166,7 +166,7 @@ describe("Agent Mail local proof", () => {
       store,
       agentId: "slugger",
       rawMbox: fixtureMbox(),
-      ownerEmail: "ari@mendelow.me",
+      ownerEmail: "owner@example.test",
       source: "hey",
       importedAt: new Date("2026-04-21T21:00:00.000Z"),
     })
@@ -340,7 +340,7 @@ describe("Agent Mail local proof", () => {
     expect(thread).toContain("Confirmation code: LDN42A")
 
     const draft = await tool("mail_compose").handler({
-      to: "ari@mendelow.me",
+      to: "owner@example.test",
       subject: "Travel proof",
       text: "I found the London itinerary details.",
       reason: "local proof outbound draft",
@@ -374,7 +374,7 @@ describe("Agent Mail local proof", () => {
     expect(view.outbound).toEqual(expect.arrayContaining([expect.objectContaining({ status: "sent", subject: "Travel proof" })]))
     expect(view.messages).toEqual(expect.arrayContaining([
       expect.objectContaining({ subject: "Follow-up proof", placement: "imbox", provenance: expect.objectContaining({ compartmentKind: "native" }) }),
-      expect.objectContaining({ subject: "Flight to London confirmed", provenance: expect.objectContaining({ compartmentKind: "delegated", ownerEmail: "ari@mendelow.me" }) }),
+      expect.objectContaining({ subject: "Flight to London confirmed", provenance: expect.objectContaining({ compartmentKind: "delegated", ownerEmail: "owner@example.test" }) }),
     ]))
   })
 })

@@ -23,7 +23,7 @@ function tempDir(): string {
 async function seedMailbox(storePath: string) {
   const { registry, keys } = provisionMailboxRegistry({
     agentId: "slugger",
-    ownerEmail: "ari@mendelow.me",
+    ownerEmail: "owner@example.test",
     source: "hey",
   })
   const store = new FileMailroomStore({ rootDir: storePath })
@@ -31,12 +31,12 @@ async function seedMailbox(storePath: string) {
     registry,
     store,
     envelope: {
-      mailFrom: "ari@mendelow.me",
-      rcptTo: ["me.mendelow.ari.slugger@ouro.bot"],
+      mailFrom: "owner@example.test",
+      rcptTo: ["test.example.owner.slugger@ouro.bot"],
     },
     rawMime: Buffer.from([
-      "From: Ari <ari@mendelow.me>",
-      "To: Slugger <me.mendelow.ari.slugger@ouro.bot>",
+      "From: Ari <owner@example.test>",
+      "To: Slugger <test.example.owner.slugger@ouro.bot>",
       "Subject: Mailbox proof",
       "Date: Tue, 21 Apr 2026 10:00:00 -0700",
       "",
@@ -330,7 +330,7 @@ describe("Mailbox mail reader", () => {
     const storePath = tempDir()
     const { registry, keys } = provisionMailboxRegistry({
       agentId: "slugger",
-      ownerEmail: "ari@mendelow.me",
+      ownerEmail: "owner@example.test",
       source: "hey",
     })
     const store = new FileMailroomStore({ rootDir: storePath })
@@ -395,7 +395,7 @@ describe("Mailbox mail reader", () => {
     const storePath = tempDir()
     const zulu = provisionMailboxRegistry({
       agentId: "slugger",
-      ownerEmail: "ari@mendelow.me",
+      ownerEmail: "owner@example.test",
       source: "zulu",
     })
     const alpha = provisionMailboxRegistry({
@@ -408,12 +408,12 @@ describe("Mailbox mail reader", () => {
       registry: zulu.registry,
       store,
       envelope: {
-        mailFrom: "ari@mendelow.me",
+        mailFrom: "owner@example.test",
         rcptTo: [zulu.registry.sourceGrants[0].aliasAddress],
       },
       rawMime: Buffer.from([
-        "From: Ari <ari@mendelow.me>",
-        "To: Slugger <me.mendelow.ari.zulu.slugger@ouro.bot>",
+        "From: Ari <owner@example.test>",
+        "To: Slugger <test.example.owner.zulu.slugger@ouro.bot>",
         "Subject: Zulu source",
         "",
         "Zulu source body.",
@@ -454,7 +454,7 @@ describe("Mailbox mail reader", () => {
     const storePath = tempDir()
     const ari = provisionMailboxRegistry({
       agentId: "slugger",
-      ownerEmail: "ari@mendelow.me",
+      ownerEmail: "owner@example.test",
       source: "hey",
     })
     const jamie = provisionMailboxRegistry({
@@ -472,11 +472,11 @@ describe("Mailbox mail reader", () => {
       registry: ari.registry,
       store,
       envelope: {
-        mailFrom: "ari@mendelow.me",
+        mailFrom: "owner@example.test",
         rcptTo: [ari.registry.sourceGrants[0].aliasAddress],
       },
       rawMime: Buffer.from([
-        "From: Ari <ari@mendelow.me>",
+        "From: Ari <owner@example.test>",
         `To: ${ari.registry.sourceGrants[0].aliasAddress}`,
         "Subject: Ari HEY",
         "",
@@ -532,7 +532,7 @@ describe("Mailbox mail reader", () => {
     const mailbox = await readMailView("slugger")
     expect(mailbox.status).toBe("ready")
     expect(mailbox.folders).toEqual(expect.arrayContaining([
-      expect.objectContaining({ id: "source:hey:ari@mendelow.me", label: "HEY / ari@mendelow.me", count: 1 }),
+      expect.objectContaining({ id: "source:hey:owner@example.test", label: "HEY / owner@example.test", count: 1 }),
       expect.objectContaining({ id: "source:hey:jamie@example.com", label: "HEY / jamie@example.com", count: 1 }),
       expect.objectContaining({ id: "source:hey:unknown-owner", label: "HEY / unknown owner", count: 1 }),
     ]))
@@ -702,7 +702,7 @@ describe("Mailbox mail reader", () => {
       mailboxRole: "agent-native-mailbox",
       sendAuthority: "agent-native",
       from: "slugger@ouro.bot",
-      to: ["ari@mendelow.me"],
+      to: ["owner@example.test"],
       cc: [],
       bcc: [],
       subject: "Provider delivery proof",
@@ -719,7 +719,7 @@ describe("Mailbox mail reader", () => {
         code: "allowed",
         reason: "Autonomous native-agent mail policy allowed this send",
         evaluatedAt: "2026-04-23T01:30:00.000Z",
-        recipients: ["ari@mendelow.me"],
+        recipients: ["owner@example.test"],
         fallback: "none",
         policyId: "policy_slugger_native_mail",
         remainingSendsInWindow: 1,
@@ -737,10 +737,10 @@ describe("Mailbox mail reader", () => {
         providerEventId: "event-bounced-1",
         providerMessageId: "acs-operation-1",
         outcome: "bounced",
-        recipient: "ari@mendelow.me",
+        recipient: "owner@example.test",
         occurredAt: "2026-04-23T01:33:00.000Z",
         receivedAt: "2026-04-23T01:33:01.000Z",
-        bodySafeSummary: "ACS delivery report Bounced for ari@mendelow.me",
+        bodySafeSummary: "ACS delivery report Bounced for owner@example.test",
         providerStatus: "Bounced",
       }, {
         schemaVersion: 1,
@@ -785,7 +785,7 @@ describe("Mailbox mail reader", () => {
           expect.objectContaining({
             providerEventId: "event-bounced-1",
             outcome: "bounced",
-            bodySafeSummary: "ACS delivery report Bounced for ari@mendelow.me",
+            bodySafeSummary: "ACS delivery report Bounced for owner@example.test",
           }),
           expect.objectContaining({
             providerEventId: "event-expanded-unknown-recipient",
@@ -797,7 +797,7 @@ describe("Mailbox mail reader", () => {
       }),
     ]))
     const serializedOutbound = JSON.stringify(mailbox.outbound)
-    expect(serializedOutbound).toContain("ACS delivery report Bounced for ari@mendelow.me")
+    expect(serializedOutbound).toContain("ACS delivery report Bounced for owner@example.test")
     expect(serializedOutbound).not.toContain("smtp diagnostic body should stay private")
   })
 

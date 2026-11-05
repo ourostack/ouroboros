@@ -26,17 +26,17 @@ describe("checkBlueBubblesHostTarget", () => {
   })
 
   it("refuses a target no agent declares, naming the declared hosts without inviting a self-edit", () => {
-    const result = checkBlueBubblesHostTarget("arimendelow", [{ agent: "slugger", hostUsername: "clawdbot" }])
+    const result = checkBlueBubblesHostTarget("owner", [{ agent: "slugger", hostUsername: "clawdbot" }])
     expect(result).toEqual(expect.objectContaining({ ok: false, reason: "mismatch" }))
     if (result.ok) return
-    expect(result.message).toContain('macOS account "arimendelow"')
+    expect(result.message).toContain('macOS account "owner"')
     expect(result.message).toContain('slugger -> "clawdbot"')
     expect(result.message).toContain("Set up BlueBubbles under a declared account instead")
     expect(result.message).toContain("is a human decision")
   })
 
   it("fails closed when no agent declares any host account", () => {
-    const result = checkBlueBubblesHostTarget("arimendelow", [{ agent: "slugger" }])
+    const result = checkBlueBubblesHostTarget("owner", [{ agent: "slugger" }])
     expect(result).toEqual(expect.objectContaining({ ok: false, reason: "unset" }))
     if (result.ok) return
     expect(result.message).toContain("no agent with BlueBubbles enabled declares senses.bluebubbles.hostUsername")

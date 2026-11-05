@@ -47,7 +47,7 @@ function previewToken(output: string): string {
 function flightBookingMime(): Buffer {
   return Buffer.from([
     "From: Acme Air <noreply@acme-air.example>",
-    "To: ari@mendelow.me",
+    "To: owner@example.test",
     "Subject: Confirmation — flight LX 38 ZRH -> JFK",
     "Message-ID: <flight-zrh-jfk@acme-air.example>",
     "Date: Wed, 01 Apr 2026 09:00:00 -0700",
@@ -62,7 +62,7 @@ function flightBookingMime(): Buffer {
 function lodgingBookingMime(): Buffer {
   return Buffer.from([
     "From: Hotel Marthof <reservations@marthof.example>",
-    "To: ari@mendelow.me",
+    "To: owner@example.test",
     "Subject: Hotel booking confirmation",
     "Message-ID: <lodging-marthof@marthof.example>",
     "Date: Wed, 01 Apr 2026 09:30:00 -0700",
@@ -95,7 +95,7 @@ describe("mail booking → trip ledger end-to-end roundtrip", () => {
     mountAgent()
     const { registry } = provisionMailboxRegistry({
       agentId: "slugger",
-      ownerEmail: "ari@mendelow.me",
+      ownerEmail: "owner@example.test",
       source: "hey",
     })
     const native = resolveMailAddress(registry, "slugger@ouro.bot")
@@ -120,7 +120,7 @@ describe("mail booking → trip ledger end-to-end roundtrip", () => {
       schemaVersion: 1,
       tripId: "trip_basel_aaaaaaaaaaaaaaaa",
       agentId: "slugger",
-      ownerEmail: "ari@mendelow.me",
+      ownerEmail: "owner@example.test",
       name: "Basel weekend",
       status: "tentative",
       travellers: [{ name: "Ari" }],

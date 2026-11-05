@@ -20,13 +20,13 @@
     "voice": "incident",
     "audience": "owner",
     "user": "Why aren't my shows downloading?",
-    "reply": "downloads are paused to protect your prepaid credit — annoying, but obediently so. top it up here: https://www.astraweb.com/login. tell me when you’re done, and i’ll resume downloads and verify one finishes. or give me a reminder time, like “tomorrow at 9.”",
+    "reply": "downloads are paused to protect your prepaid credit — annoying, but obediently so. top it up here: https://usenet-provider.example/login. tell me when you’re done, and i’ll resume downloads and verify one finishes. or give me a reminder time, like “tomorrow at 9.”",
     "tools": ["sanctuary_get_download_queue", "unraid_get_notifications"],
     "evidence": {
       "queueError": "SAB queue verification credential is unavailable",
       "notifications": [
-        "Astraweb prepaid credit exhausted. Usenet indexer has been disabled.",
-        "Astraweb prepaid credit exhausted. Usenet indexer has been disabled."
+        "Usenet provider prepaid credit exhausted. Usenet indexer has been disabled.",
+        "Usenet provider prepaid credit exhausted. Usenet indexer has been disabled."
       ]
     }
   },

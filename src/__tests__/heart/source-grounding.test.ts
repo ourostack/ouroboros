@@ -1,5 +1,8 @@
 import { describe, expect, it } from "vitest"
-import { candidateNames, namesIn, STRICT_OPENERS, isLookupToolCall, lowercaseEmphasisNames, lowercaseListNames, lowercaseProseNames, mentions, sourceGroundingError, sourceGroundingFinding, withUnverifiedDisclosure, type TurnToolRecord } from "../../heart/source-grounding"
+import { addHouseVocabulary, candidateNames, namesIn, STRICT_OPENERS, isLookupToolCall, lowercaseEmphasisNames, lowercaseListNames, lowercaseProseNames, mentions, sourceGroundingError, sourceGroundingFinding, withUnverifiedDisclosure, type TurnToolRecord } from "../../heart/source-grounding"
+
+// The running house's owner name is house vocabulary, as sanctuary-runtime registers it from house/house.json.
+addHouseVocabulary(["Alex"])
 
 const lookup = (result: string): TurnToolRecord => ({ name: "web_search", args: { query: "x" }, result })
 const REAL_USER = "channel more dross from cradle energy. name the Cradle characters whose energy fits"
@@ -39,7 +42,7 @@ describe("candidateNames", () => {
     expect(candidateNames("i like Lindon and Yerin's sword")).toEqual(["Lindon", "Yerin"])
   })
   it("ignores short tokens, short acronyms, house vocabulary, months and weekdays", () => {
-    expect(candidateNames("so I think the AX of an A2A PR is OK and DNS, Ari said Radarr runs on Tuesday in March with Lodash")).toEqual([])
+    expect(candidateNames("so I think the AX of an A2A PR is OK and DNS, Alex said Radarr runs on Tuesday in March with Lodash")).toEqual([])
   })
   it("ignores common words at sentence and bullet starts but keeps every other one", () => {
     expect(candidateNames("Honestly it is fine. Philomena is oblivious.\nBunty is next\n- Lindon fights\n* Yerin too")).toEqual(["Philomena", "Bunty", "Lindon", "Yerin"])
@@ -85,11 +88,11 @@ describe("sourceGroundingError", () => {
   })
 
   it("passes house vocabulary even in a reply that mentions a show", () => {
-    expect(sourceGroundingError({ ...base, answer: "the show is on the shelf; Radarr and Sonarr agree, Ari.", tools: [] })).toBeNull()
+    expect(sourceGroundingError({ ...base, answer: "the show is on the shelf; Radarr and Sonarr agree, Alex.", tools: [] })).toBeNull()
   })
 
   it("blocks the real invented cast when nothing was looked up", () => {
-    const error = sourceGroundingError({ ...base, answer: "From the show, the fits are Philomena, Magma and Bunty. same energy, Ari.", tools: [] })
+    const error = sourceGroundingError({ ...base, answer: "From the show, the fits are Philomena, Magma and Bunty. same energy, Alex.", tools: [] })
     expect(error).toContain("Philomena")
     expect(error).toContain("Magma")
     expect(error).toContain("Bunty")
@@ -317,8 +320,8 @@ describe("review fixes (alpha.881)", () => {
 describe("round-2 review fixes (alpha.882)", () => {
   const f = (latest: string, answer: string, tools: TurnToolRecord[] = [], extra: object = {}) => sourceGroundingFinding({ userText: latest, latestUserText: latest, answer, tools, ...extra })
   it("does not treat who or name alone as a name question about a work", () => {
-    expect(f("who's home?", "Ari and Dana are home.")).toBeNull()
-    expect(f("who is connected?", "Ari is connected over Tailscale from the Mac mini and Dana is on the iPad.")).toBeNull()
+    expect(f("who's home?", "Alex and Dana are home.")).toBeNull()
+    expect(f("who is connected?", "Alex is connected over Tailscale from the Mac mini and Dana is on the iPad.")).toBeNull()
     expect(f("who is using the most disk?", "**jellyfin** is using the most disk, then **immich** and **sabnzbd**.")).toBeNull()
     expect(f("who are the characters?", "**ozriel** — the reaper.")).toMatchObject({ kind: "invented" })
     expect(f("who is that?", "**ozriel** is the lead character in the book.")).toMatchObject({ kind: "invented" })
@@ -362,7 +365,7 @@ describe("a reply that opens each paragraph with a name (alpha.883 live replay)"
   it("passes the same shape once the names were looked up, and ordinary replies to non-name questions", () => {
     expect(sourceGroundingFinding({ userText: ASK, latestUserText: ASK, answer: LIVE, tools: [lookup("Eithan Suriel Ozriel Mercy Shen Dross")] })).toBeNull()
     expect(sourceGroundingFinding({ userText: "add the show silo", latestUserText: "add the show silo", answer: "Silo is in Sonarr. Searching now.\n\nGrabbing season 2.", tools: [{ name: "media_search", args: {}, result: "Silo" }] })).toBeNull()
-    expect(sourceGroundingFinding({ userText: "who is home?", latestUserText: "who is home?", answer: "Dana is home. Ari is out.", tools: [] })).toBeNull()
+    expect(sourceGroundingFinding({ userText: "who is home?", latestUserText: "who is home?", answer: "Dana is home. Alex is out.", tools: [] })).toBeNull()
   })
 })
 
@@ -401,5 +404,18 @@ describe("one shared name finder (the 2026-10-11 work-sourced replays)", () => {
   it("passes the looked-up reply and flags a lowercase claim about a name the person gave", () => {
     expect(sourceGroundingFinding({ answer: LOOKED_UP, userText: ASK, tools: [{ name: "web_search", args: {}, result: SOURCE }] })).toBeNull()
     expect(sourceGroundingFinding({ answer: "lindon is the hero of the books, born unsouled.", userText: "tell me about Lindon from the Cradle books", tools: [] })).toMatchObject({ kind: "unsourced_claim", names: ["Lindon"] })
+  })
+})
+
+describe("addHouseVocabulary", () => {
+  it("treats the running house's own names as house vocabulary, not names to source", () => {
+    const text = "the server is fine, and Quorvath says Hollow is quiet"
+    expect(candidateNames(text)).toEqual(["Quorvath", "Hollow"])
+    addHouseVocabulary(["Quorvath", "Quorvath Hollow Butler"])
+    expect(candidateNames(text)).toEqual([])
+  })
+
+  it("ignores a house name with no letters in it", () => {
+    expect(() => addHouseVocabulary(["2024", ""])).not.toThrow()
   })
 })

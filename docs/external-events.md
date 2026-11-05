@@ -6,7 +6,7 @@ Use `ouro event submit` from a thin adapter after the adapter has already verifi
 
 ```bash
 ouro event submit \
-  --agent slugger \
+  --agent my-agent \
   --source app-store-connect \
   --type betaFeedbackScreenshotSubmissionCreated \
   --id "$feedback_instance_id" \

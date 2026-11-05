@@ -2,6 +2,12 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.976",
+      "changes": [
+        "Personal data about the maintainer's own household is removed from the repository: replay-gate cases, fixtures, tests, docs and the operator runbook use neutral example values. The Butler reads its Telegram bot identity, Jellyfin device id (an explicit jellyfin.deviceId wins over the name-derived one) and owner names from its own configuration instead of source; the RSVP cutover finds the legacy launch agent by its *.rsvp-tracker.plist file; the replay gate's name check loads the house's names as each turn does"
+      ]
+    },
+    {
       "version": "0.1.0-alpha.975",
       "changes": [
         "Butler: when a reply check sends a draft back, the runtime tells the model the draft was never sent, so the person gets the whole answer instead of only a 'one correction' follow-up."
@@ -1179,7 +1185,7 @@
       "version": "0.1.0-alpha.798",
       "changes": [
         "Keep the installed Butler bundle aligned with its verified release before provider and Telegram startup, and expose the same bounded install check to the owner.",
-        "Install and update Mendelow Cloud Butler as a first-class Unraid app through a crash-safe, exact-version DockerMan transaction with known-good rollback and active Community Apps recognition proof.",
+        "Install and update Ouro Butler as a first-class Unraid app through a crash-safe, exact-version DockerMan transaction with known-good rollback and active Community Apps recognition proof.",
         "Reject unsafe legacy update sources and malformed DockerMan templates before any host or container change.",
         "Make interrupted Sanctuary updates and first-install adoption cold-recoverable, reject unsafe bundle roots and uncommitted journal residue before mutation, compare DockerMan and bundle identities before cleanup, restore package-managed bytes and modes durably, preserve exclusive Butler autostart, and prove Jellyfin remains unchanged across the transaction."
       ]
@@ -1193,7 +1199,7 @@
     {
       "version": "0.1.0-alpha.796",
       "changes": [
-        "Give Mendelow Cloud Butler a concrete situational voice with casual lowercase, restrained punctuation, and varied activity phrases.",
+        "Give Ouro Butler a concrete situational voice with casual lowercase, restrained punctuation, and varied activity phrases.",
         "Render Butler-authored bold, italic, and inline-code Markdown safely in Telegram while preserving canonical raw text, literal data, full URLs, and plain control messages."
       ]
     },
@@ -1266,7 +1272,7 @@
     {
       "version": "0.1.0-alpha.786",
       "changes": [
-        "Harden Sanctuary Unit16 evidence snapshot timeout, sharpen Mendelow Cloud Butler personality, add a restricted read-only Jellyfin catalog search for household movie/title/taste questions, and degrade optional media metrics without losing catalog evidence."
+        "Harden Sanctuary Unit16 evidence snapshot timeout, sharpen Ouro Butler personality, add a restricted read-only Jellyfin catalog search for household movie/title/taste questions, and degrade optional media metrics without losing catalog evidence."
       ]
     },
     {
@@ -1558,7 +1564,7 @@
       "changes": [
         "Turn Sanctuary system evidence into one deduplicated, agent-owned care loop with durable snoozes, reminders, and resolution.",
         "Add family-safe Telegram admission, relationship-scoped privacy and authority, approval, revocation, and friendly household UX.",
-        "Publish Mendelow Cloud Butler as a non-root multi-architecture Unraid Community Apps container with read-only privileged event ingress, provenance, and an SBOM.",
+        "Publish Ouro Butler as a non-root multi-architecture Unraid Community Apps container with read-only privileged event ingress, provenance, and an SBOM.",
         "Harden exact-image Unraid updates and privileged event ingestion with package-derived deployment staging, transactional guard installation, canonical boot verification, bounded spool recovery, and fail-closed integrity checks.",
         "Keep live Sanctuary upgrades aligned with the packaged Butler contract through an idempotent package-managed persona, tools, habits, and metadata migration with exact non-recursive cleanup, a digest-verified crash-durable rollback journal bound to exact old and target images, and no package-carried action authority.",
         "Recover package-managed upgrades across every old-container rename, start, and autostart kill boundary by accepting only an exact, unambiguous old-image production topology before idempotently completing rollback.",
@@ -1574,7 +1580,7 @@
         "Preserve owner, household, and external-event authority across scheduled awaits, terminally archive definitively stale bindings while preserving corrupt state for repair, and keep event snoozes on the existing exact-receipt disposition and router path without fabricating human obligations.",
         "Verify real Sanctuary service, storage, download-queue, spend-guard, and recovery outcomes while keeping first-class Community Apps publication immutable, public, securely installed, and bound to the canonical ouro-butler container.",
         "Bind every post-activation acceptance launch explicitly to the final production topology so staging defaults cannot inspect or drive the wrong container.",
-        "Publish the Community Apps listing under the Mendelow Cloud Butler name, label the alpha channel as beta, and place it in the Utilities category.",
+        "Publish the Community Apps listing under the Ouro Butler name, label the alpha channel as beta, and place it in the Utilities category.",
         "Align final Sanctuary acceptance with the live four-mount container, live relationship profiles, pending stranger quarantine and admission-card flow, and acceptance-only delivery probe without inventing dropped updates, family sessions, or a production daily digest.",
         "Fail closed when admission acceptance lacks its production Telegram credential dependency, and cover missing identity, unresolved live-profile handlers, absent admission projections, and both quarantine branches at the release gate."
       ]
@@ -1638,7 +1644,7 @@
     {
       "version": "0.1.0-alpha.735",
       "changes": [
-        "Repair Mendelow Cloud Butler for Sanctuary's Unraid legacy adoption with an explicit source-to-target machine identity migration that validates the complete credential envelope before applying only in-memory canonical clones while preserving the original source for recovery and the shipped durable approvals contract.",
+        "Repair Ouro Butler for the Butler's Unraid legacy adoption with an explicit source-to-target machine identity migration that validates the complete credential envelope before applying only in-memory canonical clones while preserving the original source for recovery and the shipped durable approvals contract.",
         "Split adoption into resumable preparation, hidden-input provider authentication, strict live GLM/Gemini readiness, and a noninteractive final install that revalidates the exact legacy container and image immediately before mutation.",
         "Make legacy evidence capture restart-safe with exact container/image-bound validation, private atomic no-overwrite publication, deterministic partial-snapshot reuse, and fail-closed rejection of conflicting or unsafe evidence.",
         "Supersede 0.1.0-alpha.734 before deployment; it must not be built, imported, or installed on Sanctuary."
@@ -1647,12 +1653,12 @@
     {
       "version": "0.1.0-alpha.734",
       "changes": [
-        "Ship Mendelow Cloud Butler for Sanctuary with an authorized durable Telegram inbox, restart-safe durable approvals, scoped Unraid read/restart tools, and transition-based proactive health alerts.",
+        "Ship Ouro Butler for Sanctuary with an authorized durable Telegram inbox, restart-safe durable approvals, scoped Unraid read/restart tools, and transition-based proactive health alerts.",
         "Pin the packaged Sanctuary agent to GLM-5.2 through the locked OpenAI-compatible provider in both outward and inner lanes; MiniMax is not a deployment fallback.",
         "Fence ambiguous Telegram update, approval-prompt, approved-action, and alert-delivery crash windows so protected effects are never blindly replayed.",
         "Route every packaged deterministic Sanctuary health source through one native daemon-owned Supercronic lifecycle with namespace-isolated manifests, exact readiness verification, durable occurrence receipts/cursors, habit-wide overlap rejection, coordinated shutdown, no model turn, and no verified-schedule timer fallback.",
         "Consume each authenticated Sanctuary scheduler slot through a crash-durable no-replace claim before any health effect, keep Unit 16f strictly observer-only across failure and recovery, verify complete scheduler and owner attestations before host finalization, and fsync new receipt directories plus temporary cleanup across crash boundaries.",
-        "Package a reproducible non-root Unraid image and canonical Mendelow Cloud Butler bundle/template, pin production dependencies, reject stale or ambiguous server state, and strictly validate then conflict-reconcile one-time container credentials into the canonical vault before attested readback, cache activation, or source deletion; interrupted claims remain recoverable and bootstrap failure exits PID 1 nonzero.",
+        "Package a reproducible non-root Unraid image and canonical Ouro Butler bundle/template, pin production dependencies, reject stale or ambiguous server state, and strictly validate then conflict-reconcile one-time container credentials into the canonical vault before attested readback, cache activation, or source deletion; interrupted claims remain recoverable and bootstrap failure exits PID 1 nonzero.",
         "Fail closed before handler dispatch when a provider emits malformed, duplicate, mixed-validity, or unadvertised tool calls; scope the typed Unraid Telegram profile to Sanctuary while preserving generic Telegram agents, and discard secret-bearing transport error objects after redaction.",
         "Audit staged Unraid templates plus actual image and stopped-container inspect records against the exact immutable local Docker image ID, image environment, direct daemon command, non-root user, exact two writable roots, host networking, updater-off policy, and absence of ports, devices, capabilities, or injected container flags before activation; preserve one Telegram poller through bounded-readiness cutover, rollback, restore, and atomic Unraid autostart readback.",
         "Consume approval decision tokens before continuation work and persist token-free terminal tombstones so failed callbacks cannot replay within the same process or after restart.",

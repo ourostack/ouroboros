@@ -2,6 +2,7 @@ import { spawnSync } from "node:child_process"
 import * as fs from "node:fs"
 import * as path from "node:path"
 import { describe, expect, it } from "vitest"
+import { TEST_HOUSE } from "../fixtures/sanctuary-house"
 
 const ROOT = path.resolve(__dirname, "../../..")
 const INSTALLER = path.join(ROOT, "deploy/unraid/install.sh")
@@ -58,7 +59,11 @@ describe("Unraid first-install script", () => {
   it("writes a generic house description from the owner's answers and names no particular household", () => {
     expect(source).toContain('write_butler_file "$BUNDLE/house/house.json"')
     expect(source).toContain('write_butler_file "$BUNDLE/house/HOUSE.md"')
-    expect(source).not.toMatch(/mendelow|\bAri\b|calibre|PocketBook|8541786263/iu)
+    expect(source).not.toMatch(/calibre|PocketBook/iu)
+    // No hard-coded Telegram bot or chat id: those come from the owner at install time.
+    expect(source).not.toMatch(/\b\d{9,10}\b/u)
+    expect(source).not.toContain(TEST_HOUSE.ownerName)
+    expect(source).not.toContain(TEST_HOUSE.householdName)
   })
 
   it("is attached to every GitHub release so releases/latest/download/install.sh resolves", () => {

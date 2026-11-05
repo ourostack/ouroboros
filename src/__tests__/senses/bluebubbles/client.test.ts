@@ -25,11 +25,11 @@ vi.mock("../../../senses/bluebubbles/host-account-verifier", () => ({
 }))
 
 const dmChat = {
-  chatGuid: "any;-;ari@mendelow.me",
-  chatIdentifier: "ari@mendelow.me",
+  chatGuid: "any;-;owner@example.test",
+  chatIdentifier: "owner@example.test",
   isGroup: false,
-  sessionKey: "chat:any;-;ari@mendelow.me",
-  sendTarget: { kind: "chat_guid", value: "any;-;ari@mendelow.me" } as const,
+  sessionKey: "chat:any;-;owner@example.test",
+  sendTarget: { kind: "chat_guid", value: "any;-;owner@example.test" } as const,
 }
 
 describe("BlueBubbles client", () => {
@@ -69,11 +69,11 @@ describe("BlueBubbles client", () => {
 
     const result = await client.sendText({
       chat: {
-        chatGuid: "any;-;ari@mendelow.me",
-        chatIdentifier: "ari@mendelow.me",
+        chatGuid: "any;-;owner@example.test",
+        chatIdentifier: "owner@example.test",
         isGroup: false,
-        sessionKey: "chat:any;-;ari@mendelow.me",
-        sendTarget: { kind: "chat_guid", value: "any;-;ari@mendelow.me" },
+        sessionKey: "chat:any;-;owner@example.test",
+        sendTarget: { kind: "chat_guid", value: "any;-;owner@example.test" },
       },
       text: "  hello from ouro  ",
       replyToMessageGuid: "incoming-guid",
@@ -93,7 +93,7 @@ describe("BlueBubbles client", () => {
 
     const request = JSON.parse((global.fetch as any).mock.calls[0][1].body)
     expect(request).toMatchObject({
-      chatGuid: "any;-;ari@mendelow.me",
+      chatGuid: "any;-;owner@example.test",
       message: "hello from ouro",
       method: "private-api",
       selectedMessageGuid: "incoming-guid",
@@ -515,17 +515,17 @@ describe("BlueBubbles client", () => {
 
     expect(global.fetch).toHaveBeenNthCalledWith(
       1,
-      "http://bluebubbles.local/api/v1/chat/any%3B-%3Bari%40mendelow.me/read?password=secret-token",
+      "http://bluebubbles.local/api/v1/chat/any%3B-%3Bowner%40example.test/read?password=secret-token",
       expect.objectContaining({ method: "POST", signal: expect.any(AbortSignal) }),
     )
     expect(global.fetch).toHaveBeenNthCalledWith(
       2,
-      "http://bluebubbles.local/api/v1/chat/any%3B-%3Bari%40mendelow.me/typing?password=secret-token",
+      "http://bluebubbles.local/api/v1/chat/any%3B-%3Bowner%40example.test/typing?password=secret-token",
       expect.objectContaining({ method: "POST", signal: expect.any(AbortSignal) }),
     )
     expect(global.fetch).toHaveBeenNthCalledWith(
       3,
-      "http://bluebubbles.local/api/v1/chat/any%3B-%3Bari%40mendelow.me/typing?password=secret-token",
+      "http://bluebubbles.local/api/v1/chat/any%3B-%3Bowner%40example.test/typing?password=secret-token",
       expect.objectContaining({ method: "DELETE", signal: expect.any(AbortSignal) }),
     )
   })
@@ -678,11 +678,11 @@ describe("BlueBubbles client", () => {
     await expect(
       client.sendText({
         chat: {
-          chatGuid: "any;-;ari@mendelow.me",
-          chatIdentifier: "ari@mendelow.me",
+          chatGuid: "any;-;owner@example.test",
+          chatIdentifier: "owner@example.test",
           isGroup: false,
-          sessionKey: "chat:any;-;ari@mendelow.me",
-          sendTarget: { kind: "chat_guid", value: "any;-;ari@mendelow.me" },
+          sessionKey: "chat:any;-;owner@example.test",
+          sendTarget: { kind: "chat_guid", value: "any;-;owner@example.test" },
         },
         text: "   ",
       }),
@@ -720,8 +720,8 @@ describe("BlueBubbles client", () => {
           JSON.stringify({
             data: [
               {
-                guid: "any;-;ari@mendelow.me",
-                chatIdentifier: "ari@mendelow.me",
+                guid: "any;-;owner@example.test",
+                chatIdentifier: "owner@example.test",
               },
             ],
           }),
@@ -748,15 +748,15 @@ describe("BlueBubbles client", () => {
 
     const result = await client.sendText({
       chat: {
-        chatIdentifier: "ari@mendelow.me",
+        chatIdentifier: "owner@example.test",
         isGroup: false,
-        sessionKey: "chat_identifier:ari@mendelow.me",
-        sendTarget: { kind: "chat_identifier", value: "ari@mendelow.me" },
+        sessionKey: "chat_identifier:owner@example.test",
+        sendTarget: { kind: "chat_identifier", value: "owner@example.test" },
       },
       text: "hello from identifier",
     })
 
-    expect(result).toEqual({ messageGuid: "resolved-guid", chatGuid: "any;-;ari@mendelow.me" })
+    expect(result).toEqual({ messageGuid: "resolved-guid", chatGuid: "any;-;owner@example.test" })
     expect(global.fetch).toHaveBeenNthCalledWith(
       1,
       "http://bluebubbles.local/api/v1/chat/query?password=secret-token",
@@ -779,7 +779,7 @@ describe("BlueBubbles client", () => {
       }),
     )
     const sendBody = JSON.parse((global.fetch as any).mock.calls[1][1].body)
-    expect(sendBody.chatGuid).toBe("any;-;ari@mendelow.me")
+    expect(sendBody.chatGuid).toBe("any;-;owner@example.test")
   })
 
   it("can recover chat identifiers from guid-only chat query rows", async () => {
@@ -789,7 +789,7 @@ describe("BlueBubbles client", () => {
         new Response(
           JSON.stringify([
             {
-              guid: "any;-;ari@mendelow.me",
+              guid: "any;-;owner@example.test",
             },
           ]),
           { status: 200 },
@@ -815,10 +815,10 @@ describe("BlueBubbles client", () => {
 
     const result = await client.sendText({
       chat: {
-        chatIdentifier: "ari@mendelow.me",
+        chatIdentifier: "owner@example.test",
         isGroup: false,
-        sessionKey: "chat_identifier:ari@mendelow.me",
-        sendTarget: { kind: "chat_identifier", value: "ari@mendelow.me" },
+        sessionKey: "chat_identifier:owner@example.test",
+        sendTarget: { kind: "chat_identifier", value: "owner@example.test" },
       },
       text: "guid fallback",
     })
@@ -857,10 +857,10 @@ describe("BlueBubbles client", () => {
     await expect(
       client.sendText({
         chat: {
-          chatIdentifier: "ari@mendelow.me",
+          chatIdentifier: "owner@example.test",
           isGroup: false,
-          sessionKey: "chat_identifier:ari@mendelow.me",
-          sendTarget: { kind: "chat_identifier", value: "ari@mendelow.me" },
+          sessionKey: "chat_identifier:owner@example.test",
+          sendTarget: { kind: "chat_identifier", value: "owner@example.test" },
         },
         text: "bad guid shape",
       }),
@@ -898,10 +898,10 @@ describe("BlueBubbles client", () => {
     await expect(
       client.sendText({
         chat: {
-          chatIdentifier: "ari@mendelow.me",
+          chatIdentifier: "owner@example.test",
           isGroup: false,
-          sessionKey: "chat_identifier:ari@mendelow.me",
-          sendTarget: { kind: "chat_identifier", value: "ari@mendelow.me" },
+          sessionKey: "chat_identifier:owner@example.test",
+          sendTarget: { kind: "chat_identifier", value: "owner@example.test" },
         },
         text: "empty guid identifier",
       }),
@@ -932,10 +932,10 @@ describe("BlueBubbles client", () => {
     await expect(
       client.sendText({
         chat: {
-          chatIdentifier: "ari@mendelow.me",
+          chatIdentifier: "owner@example.test",
           isGroup: false,
-          sessionKey: "chat_identifier:ari@mendelow.me",
-          sendTarget: { kind: "chat_identifier", value: "ari@mendelow.me" },
+          sessionKey: "chat_identifier:owner@example.test",
+          sendTarget: { kind: "chat_identifier", value: "owner@example.test" },
         },
         text: "still needs routing",
       }),
@@ -966,10 +966,10 @@ describe("BlueBubbles client", () => {
     await expect(
       client.sendText({
         chat: {
-          chatIdentifier: "ari@mendelow.me",
+          chatIdentifier: "owner@example.test",
           isGroup: false,
-          sessionKey: "chat_identifier:ari@mendelow.me",
-          sendTarget: { kind: "chat_identifier", value: "ari@mendelow.me" },
+          sessionKey: "chat_identifier:owner@example.test",
+          sendTarget: { kind: "chat_identifier", value: "owner@example.test" },
         },
         text: "bad payload",
       }),
@@ -998,10 +998,10 @@ describe("BlueBubbles client", () => {
     await expect(
       client.sendText({
         chat: {
-          chatIdentifier: "ari@mendelow.me",
+          chatIdentifier: "owner@example.test",
           isGroup: false,
-          sessionKey: "chat_identifier:ari@mendelow.me",
-          sendTarget: { kind: "chat_identifier", value: "ari@mendelow.me" },
+          sessionKey: "chat_identifier:owner@example.test",
+          sendTarget: { kind: "chat_identifier", value: "owner@example.test" },
         },
         text: "query failed",
       }),
@@ -1030,11 +1030,11 @@ describe("BlueBubbles client", () => {
     await expect(
       client.sendText({
         chat: {
-          chatGuid: "any;-;ari@mendelow.me",
-          chatIdentifier: "ari@mendelow.me",
+          chatGuid: "any;-;owner@example.test",
+          chatIdentifier: "owner@example.test",
           isGroup: false,
-          sessionKey: "chat:any;-;ari@mendelow.me",
-          sendTarget: { kind: "chat_guid", value: "any;-;ari@mendelow.me" },
+          sessionKey: "chat:any;-;owner@example.test",
+          sendTarget: { kind: "chat_guid", value: "any;-;owner@example.test" },
         },
         text: "hello",
       }),
@@ -1080,9 +1080,9 @@ describe("BlueBubbles client", () => {
       fromMe: false,
       sender: {
         provider: "imessage-handle" as const,
-        externalId: "ari@mendelow.me",
-        rawId: "ari@mendelow.me",
-        displayName: "ari@mendelow.me",
+        externalId: "owner@example.test",
+        rawId: "owner@example.test",
+        displayName: "owner@example.test",
       },
       chat: dmChat,
       text: "hi",
@@ -1236,8 +1236,8 @@ describe("BlueBubbles client", () => {
             text: "you missed this while bluebubbles was down",
             dateCreated: 1772949155000,
             isFromMe: false,
-            handle: { address: "ari@mendelow.me" },
-            chats: [{ guid: "any;-;ari@mendelow.me", chatIdentifier: "ari@mendelow.me" }],
+            handle: { address: "owner@example.test" },
+            chats: [{ guid: "any;-;owner@example.test", chatIdentifier: "owner@example.test" }],
           },
         ],
       }), { status: 200 }),
@@ -1292,7 +1292,7 @@ describe("BlueBubbles client", () => {
             dateCreated: 1772949155000,
             isFromMe: true,
             handle: { address: "slugger@example.com" },
-            chats: [{ guid: "any;-;ari@mendelow.me", chatIdentifier: "ari@mendelow.me" }],
+            chats: [{ guid: "any;-;owner@example.test", chatIdentifier: "owner@example.test" }],
           },
         ],
       }), { status: 200 }),
@@ -1313,7 +1313,7 @@ describe("BlueBubbles client", () => {
     )
 
     const result = await client.listRecentMessages?.({
-      chatGuid: "any;-;ari@mendelow.me",
+      chatGuid: "any;-;owner@example.test",
       beforeTimestamp: 1772949200000,
       limit: 40,
     })
@@ -1322,7 +1322,7 @@ describe("BlueBubbles client", () => {
       limit: 40,
       offset: 0,
       sort: "DESC",
-      chatGuid: "any;-;ari@mendelow.me",
+      chatGuid: "any;-;owner@example.test",
       before: 1772949200000,
       with: ["chats", "attachments", "payloadData", "messageSummaryInfo"],
     })
@@ -1344,8 +1344,8 @@ describe("BlueBubbles client", () => {
             text: "current request",
             dateCreated: 1772949200000,
             isFromMe: false,
-            handle: { address: "ari@mendelow.me" },
-            chats: [{ guid: "any;-;ari@mendelow.me", chatIdentifier: "ari@mendelow.me" }],
+            handle: { address: "owner@example.test" },
+            chats: [{ guid: "any;-;owner@example.test", chatIdentifier: "owner@example.test" }],
           },
           { text: "malformed row without guid" },
           {
@@ -1354,7 +1354,7 @@ describe("BlueBubbles client", () => {
             dateCreated: 1772949155000,
             isFromMe: true,
             handle: { address: "shared-account@example.com" },
-            chats: [{ guid: "any;-;ari@mendelow.me", chatIdentifier: "ari@mendelow.me" }],
+            chats: [{ guid: "any;-;owner@example.test", chatIdentifier: "owner@example.test" }],
           },
         ],
       }), { status: 200 }),
@@ -1375,7 +1375,7 @@ describe("BlueBubbles client", () => {
     )
 
     const result = await client.queryRecentMessagesWithMetadata?.({
-      chatGuid: "any;-;ari@mendelow.me",
+      chatGuid: "any;-;owner@example.test",
       beforeTimestamp: 1772949200000,
       limit: 41,
       offset: 0,
@@ -1383,7 +1383,7 @@ describe("BlueBubbles client", () => {
 
     expect(global.fetch).toHaveBeenCalledTimes(1)
     expect(JSON.parse((global.fetch as any).mock.calls[0][1].body)).toMatchObject({
-      chatGuid: "any;-;ari@mendelow.me",
+      chatGuid: "any;-;owner@example.test",
       before: 1772949200000,
     })
     expect(JSON.parse((global.fetch as any).mock.calls[0][1].body)).not.toHaveProperty("beforeTimestamp")
@@ -1395,7 +1395,7 @@ describe("BlueBubbles client", () => {
         limit: 41,
         offset: 0,
         sort: "DESC",
-        chatGuid: "any;-;ari@mendelow.me",
+        chatGuid: "any;-;owner@example.test",
         beforeTimestamp: 1772949200000,
       },
     })
@@ -1409,8 +1409,8 @@ describe("BlueBubbles client", () => {
       text: "current future-dated request",
       dateCreated: futureAnchorTimestamp,
       isFromMe: false,
-      handle: { address: "ari@mendelow.me" },
-      chats: [{ guid: "any;-;ari@mendelow.me", chatIdentifier: "ari@mendelow.me" }],
+      handle: { address: "owner@example.test" },
+      chats: [{ guid: "any;-;owner@example.test", chatIdentifier: "owner@example.test" }],
     }
     global.fetch = vi.fn().mockResolvedValue(
       new Response(JSON.stringify({
@@ -1449,7 +1449,7 @@ describe("BlueBubbles client", () => {
       },
     )
     const query = await client.queryRecentMessagesWithMetadata?.({
-      chatGuid: "any;-;ari@mendelow.me",
+      chatGuid: "any;-;owner@example.test",
       beforeTimestamp: futureAnchorTimestamp,
       limit: 41,
       offset: 0,
@@ -1474,7 +1474,7 @@ describe("BlueBubbles client", () => {
             text: "context from identifier route",
             dateCreated: 1772949155000,
             handle: { address: "slugger@example.com" },
-            chats: [{ chatIdentifier: "ari@mendelow.me" }],
+            chats: [{ chatIdentifier: "owner@example.test" }],
           },
         ],
       }), { status: 200 }),
@@ -1496,7 +1496,7 @@ describe("BlueBubbles client", () => {
 
     const result = await client.listRecentMessages?.({
       chatGuid: "   ",
-      chatIdentifier: "  ari@mendelow.me  ",
+      chatIdentifier: "  owner@example.test  ",
       limit: 40,
     })
 
@@ -1504,7 +1504,7 @@ describe("BlueBubbles client", () => {
       limit: 40,
       offset: 0,
       sort: "DESC",
-      chatIdentifier: "ari@mendelow.me",
+      chatIdentifier: "owner@example.test",
       with: ["chats", "attachments", "payloadData", "messageSummaryInfo"],
     })
     expect(result).toEqual([
@@ -1708,16 +1708,16 @@ describe("BlueBubbles client", () => {
             guid: "delivery-guid",
             text: "you missed this while the webhook path was sick",
             handle: {
-              address: "ari@mendelow.me",
+              address: "owner@example.test",
               service: "iMessage",
             },
             isDelivered: true,
             dateDelivered: 1772949155000,
             chats: [
               {
-                guid: "any;-;ari@mendelow.me",
+                guid: "any;-;owner@example.test",
                 style: 45,
-                chatIdentifier: "ari@mendelow.me",
+                chatIdentifier: "owner@example.test",
                 displayName: "",
               },
             ],
@@ -1750,9 +1750,9 @@ describe("BlueBubbles client", () => {
       fromMe: false,
       sender: {
         provider: "imessage-handle",
-        externalId: "ari@mendelow.me",
-        rawId: "ari@mendelow.me",
-        displayName: "ari@mendelow.me",
+        externalId: "owner@example.test",
+        rawId: "owner@example.test",
+        displayName: "owner@example.test",
       },
       chat: dmChat,
       shouldNotifyAgent: false,
@@ -1778,14 +1778,14 @@ describe("BlueBubbles client", () => {
             guid: "delivery-guid",
             text: "",
             handle: {
-              address: "ari@mendelow.me",
+              address: "owner@example.test",
               service: "iMessage",
             },
             chats: [
               {
-                guid: "any;-;ari@mendelow.me",
+                guid: "any;-;owner@example.test",
                 style: 45,
-                chatIdentifier: "ari@mendelow.me",
+                chatIdentifier: "owner@example.test",
                 displayName: "",
               },
             ],
@@ -1818,9 +1818,9 @@ describe("BlueBubbles client", () => {
       fromMe: false,
       sender: {
         provider: "imessage-handle",
-        externalId: "ari@mendelow.me",
-        rawId: "ari@mendelow.me",
-        displayName: "ari@mendelow.me",
+        externalId: "owner@example.test",
+        rawId: "owner@example.test",
+        displayName: "owner@example.test",
       },
       chat: dmChat,
       shouldNotifyAgent: false,
@@ -1846,7 +1846,7 @@ describe("BlueBubbles client", () => {
             guid: "msg-og",
             text: "https://ouroboros.bot",
             handle: {
-              address: "ari@mendelow.me",
+              address: "owner@example.test",
               service: "iMessage",
             },
             attachments: [
@@ -1866,9 +1866,9 @@ describe("BlueBubbles client", () => {
             ],
             chats: [
               {
-                guid: "any;-;ari@mendelow.me",
+                guid: "any;-;owner@example.test",
                 style: 45,
-                chatIdentifier: "ari@mendelow.me",
+                chatIdentifier: "owner@example.test",
                 displayName: "",
               },
             ],
@@ -1900,9 +1900,9 @@ describe("BlueBubbles client", () => {
       fromMe: false,
       sender: {
         provider: "imessage-handle",
-        externalId: "ari@mendelow.me",
-        rawId: "ari@mendelow.me",
-        displayName: "ari@mendelow.me",
+        externalId: "owner@example.test",
+        rawId: "owner@example.test",
+        displayName: "owner@example.test",
       },
       chat: dmChat,
       text: "https://ouroboros.bot",
@@ -1956,9 +1956,9 @@ describe("BlueBubbles client", () => {
       fromMe: false,
       sender: {
         provider: "imessage-handle",
-        externalId: "ari@mendelow.me",
-        rawId: "ari@mendelow.me",
-        displayName: "ari@mendelow.me",
+        externalId: "owner@example.test",
+        rawId: "owner@example.test",
+        displayName: "owner@example.test",
       },
       chat: dmChat,
       text: "",
@@ -2005,9 +2005,9 @@ describe("BlueBubbles client", () => {
       fromMe: false,
       sender: {
         provider: "imessage-handle",
-        externalId: "ari@mendelow.me",
-        rawId: "ari@mendelow.me",
-        displayName: "ari@mendelow.me",
+        externalId: "owner@example.test",
+        rawId: "owner@example.test",
+        displayName: "owner@example.test",
       },
       chat: dmChat,
       shouldNotifyAgent: true,
@@ -2051,9 +2051,9 @@ describe("BlueBubbles client", () => {
       fromMe: false,
       sender: {
         provider: "imessage-handle",
-        externalId: "ari@mendelow.me",
-        rawId: "ari@mendelow.me",
-        displayName: "ari@mendelow.me",
+        externalId: "owner@example.test",
+        rawId: "owner@example.test",
+        displayName: "owner@example.test",
       },
       chat: dmChat,
       shouldNotifyAgent: true,
@@ -2098,9 +2098,9 @@ describe("BlueBubbles client", () => {
       fromMe: false,
       sender: {
         provider: "imessage-handle",
-        externalId: "ari@mendelow.me",
-        rawId: "ari@mendelow.me",
-        displayName: "ari@mendelow.me",
+        externalId: "owner@example.test",
+        rawId: "owner@example.test",
+        displayName: "owner@example.test",
       },
       chat: dmChat,
       shouldNotifyAgent: false,
@@ -2142,9 +2142,9 @@ describe("BlueBubbles client", () => {
       fromMe: false,
       sender: {
         provider: "imessage-handle",
-        externalId: "ari@mendelow.me",
-        rawId: "ari@mendelow.me",
-        displayName: "ari@mendelow.me",
+        externalId: "owner@example.test",
+        rawId: "owner@example.test",
+        displayName: "owner@example.test",
       },
       chat: dmChat,
       text: "https://ouroboros.bot",
@@ -2171,16 +2171,16 @@ describe("BlueBubbles client", () => {
             guid: "edit-guid",
             text: "edited version",
             handle: {
-              address: "ari@mendelow.me",
+              address: "owner@example.test",
               service: "iMessage",
             },
             attachments: [],
             dateEdited: 1772949005000,
             chats: [
               {
-                guid: "any;-;ari@mendelow.me",
+                guid: "any;-;owner@example.test",
                 style: 45,
-                chatIdentifier: "ari@mendelow.me",
+                chatIdentifier: "owner@example.test",
                 displayName: "",
               },
             ],
@@ -2213,9 +2213,9 @@ describe("BlueBubbles client", () => {
       fromMe: false,
       sender: {
         provider: "imessage-handle",
-        externalId: "ari@mendelow.me",
-        rawId: "ari@mendelow.me",
-        displayName: "ari@mendelow.me",
+        externalId: "owner@example.test",
+        rawId: "owner@example.test",
+        displayName: "owner@example.test",
       },
       chat: dmChat,
       shouldNotifyAgent: true,
@@ -2242,7 +2242,7 @@ describe("BlueBubbles client", () => {
               guid: "image-guid",
               text: "",
               handle: {
-                address: "ari@mendelow.me",
+                address: "owner@example.test",
                 service: "iMessage",
               },
               attachments: [
@@ -2256,9 +2256,9 @@ describe("BlueBubbles client", () => {
               ],
               chats: [
                 {
-                  guid: "any;-;ari@mendelow.me",
+                  guid: "any;-;owner@example.test",
                   style: 45,
-                  chatIdentifier: "ari@mendelow.me",
+                  chatIdentifier: "owner@example.test",
                   displayName: "",
                 },
               ],
@@ -2296,9 +2296,9 @@ describe("BlueBubbles client", () => {
       fromMe: false,
       sender: {
         provider: "imessage-handle",
-        externalId: "ari@mendelow.me",
-        rawId: "ari@mendelow.me",
-        displayName: "ari@mendelow.me",
+        externalId: "owner@example.test",
+        rawId: "owner@example.test",
+        displayName: "owner@example.test",
       },
       chat: dmChat,
       text: "",
@@ -2345,7 +2345,7 @@ describe("BlueBubbles client", () => {
               guid: "voice-guid",
               text: "",
               handle: {
-                address: "ari@mendelow.me",
+                address: "owner@example.test",
                 service: "iMessage",
               },
               attachments: [
@@ -2357,9 +2357,9 @@ describe("BlueBubbles client", () => {
               ],
               chats: [
                 {
-                  guid: "any;-;ari@mendelow.me",
+                  guid: "any;-;owner@example.test",
                   style: 45,
-                  chatIdentifier: "ari@mendelow.me",
+                  chatIdentifier: "owner@example.test",
                   displayName: "",
                 },
               ],
@@ -2398,9 +2398,9 @@ describe("BlueBubbles client", () => {
       fromMe: false,
       sender: {
         provider: "imessage-handle",
-        externalId: "ari@mendelow.me",
-        rawId: "ari@mendelow.me",
-        displayName: "ari@mendelow.me",
+        externalId: "owner@example.test",
+        rawId: "owner@example.test",
+        displayName: "owner@example.test",
       },
       chat: dmChat,
       text: "",
@@ -2448,7 +2448,7 @@ describe("BlueBubbles client", () => {
               guid: "voice-guid",
               text: "",
               handle: {
-                address: "ari@mendelow.me",
+                address: "owner@example.test",
                 service: "iMessage",
               },
               attachments: [
@@ -2460,9 +2460,9 @@ describe("BlueBubbles client", () => {
               ],
               chats: [
                 {
-                  guid: "any;-;ari@mendelow.me",
+                  guid: "any;-;owner@example.test",
                   style: 45,
-                  chatIdentifier: "ari@mendelow.me",
+                  chatIdentifier: "owner@example.test",
                   displayName: "",
                 },
               ],
@@ -2501,9 +2501,9 @@ describe("BlueBubbles client", () => {
       fromMe: false,
       sender: {
         provider: "imessage-handle",
-        externalId: "ari@mendelow.me",
-        rawId: "ari@mendelow.me",
-        displayName: "ari@mendelow.me",
+        externalId: "owner@example.test",
+        rawId: "owner@example.test",
+        displayName: "owner@example.test",
       },
       chat: dmChat,
       text: "",
@@ -2549,7 +2549,7 @@ describe("BlueBubbles client", () => {
             guid: "voice-guid",
             text: "",
             handle: {
-              address: "ari@mendelow.me",
+              address: "owner@example.test",
               service: "iMessage",
             },
             attachments: [
@@ -2561,9 +2561,9 @@ describe("BlueBubbles client", () => {
             ],
             chats: [
               {
-                guid: "any;-;ari@mendelow.me",
+                guid: "any;-;owner@example.test",
                 style: 45,
-                chatIdentifier: "ari@mendelow.me",
+                chatIdentifier: "owner@example.test",
                 displayName: "",
               },
             ],
@@ -2596,9 +2596,9 @@ describe("BlueBubbles client", () => {
       fromMe: false,
       sender: {
         provider: "imessage-handle",
-        externalId: "ari@mendelow.me",
-        rawId: "ari@mendelow.me",
-        displayName: "ari@mendelow.me",
+        externalId: "owner@example.test",
+        rawId: "owner@example.test",
+        displayName: "owner@example.test",
       },
       chat: dmChat,
       text: "",
@@ -2642,7 +2642,7 @@ describe("BlueBubbles client", () => {
             guid: "file-guid",
             text: "",
             handle: {
-              address: "ari@mendelow.me",
+              address: "owner@example.test",
               service: "iMessage",
             },
             attachments: [
@@ -2654,9 +2654,9 @@ describe("BlueBubbles client", () => {
             ],
             chats: [
               {
-                guid: "any;-;ari@mendelow.me",
+                guid: "any;-;owner@example.test",
                 style: 45,
-                chatIdentifier: "ari@mendelow.me",
+                chatIdentifier: "owner@example.test",
                 displayName: "",
               },
             ],
@@ -2689,9 +2689,9 @@ describe("BlueBubbles client", () => {
       fromMe: false,
       sender: {
         provider: "imessage-handle",
-        externalId: "ari@mendelow.me",
-        rawId: "ari@mendelow.me",
-        displayName: "ari@mendelow.me",
+        externalId: "owner@example.test",
+        rawId: "owner@example.test",
+        displayName: "owner@example.test",
       },
       chat: dmChat,
       text: "",
@@ -2728,7 +2728,7 @@ describe("BlueBubbles client", () => {
             guid: "audio-guid",
             text: "",
             handle: {
-              address: "ari@mendelow.me",
+              address: "owner@example.test",
               service: "iMessage",
             },
             attachments: [
@@ -2740,9 +2740,9 @@ describe("BlueBubbles client", () => {
             ],
             chats: [
               {
-                guid: "any;-;ari@mendelow.me",
+                guid: "any;-;owner@example.test",
                 style: 45,
-                chatIdentifier: "ari@mendelow.me",
+                chatIdentifier: "owner@example.test",
                 displayName: "",
               },
             ],
@@ -2775,9 +2775,9 @@ describe("BlueBubbles client", () => {
       fromMe: false,
       sender: {
         provider: "imessage-handle",
-        externalId: "ari@mendelow.me",
-        rawId: "ari@mendelow.me",
-        displayName: "ari@mendelow.me",
+        externalId: "owner@example.test",
+        rawId: "owner@example.test",
+        displayName: "owner@example.test",
       },
       chat: dmChat,
       text: "",
@@ -2804,7 +2804,7 @@ describe("BlueBubbles client", () => {
             guid: "msg-og-no-preview",
             text: "https://ouroboros.bot",
             handle: {
-              address: "ari@mendelow.me",
+              address: "owner@example.test",
               service: "iMessage",
             },
             attachments: [
@@ -2819,9 +2819,9 @@ describe("BlueBubbles client", () => {
             payloadData: [],
             chats: [
               {
-                guid: "any;-;ari@mendelow.me",
+                guid: "any;-;owner@example.test",
                 style: 45,
-                chatIdentifier: "ari@mendelow.me",
+                chatIdentifier: "owner@example.test",
                 displayName: "",
               },
             ],
@@ -2853,9 +2853,9 @@ describe("BlueBubbles client", () => {
       fromMe: false,
       sender: {
         provider: "imessage-handle",
-        externalId: "ari@mendelow.me",
-        rawId: "ari@mendelow.me",
-        displayName: "ari@mendelow.me",
+        externalId: "owner@example.test",
+        rawId: "owner@example.test",
+        displayName: "owner@example.test",
       },
       chat: dmChat,
       text: "https://ouroboros.bot",
@@ -2881,15 +2881,15 @@ describe("BlueBubbles client", () => {
           guid: "root-level-guid",
           text: "plain repaired text",
           handle: {
-            address: "ari@mendelow.me",
+            address: "owner@example.test",
             service: "iMessage",
           },
           attachments: [],
           chats: [
             {
-              guid: "any;-;ari@mendelow.me",
+              guid: "any;-;owner@example.test",
               style: 45,
-              chatIdentifier: "ari@mendelow.me",
+              chatIdentifier: "owner@example.test",
               displayName: "",
             },
           ],
@@ -2920,9 +2920,9 @@ describe("BlueBubbles client", () => {
       fromMe: false,
       sender: {
         provider: "imessage-handle",
-        externalId: "ari@mendelow.me",
-        rawId: "ari@mendelow.me",
-        displayName: "ari@mendelow.me",
+        externalId: "owner@example.test",
+        rawId: "owner@example.test",
+        displayName: "owner@example.test",
       },
       chat: dmChat,
       text: "plain repaired text",
@@ -2948,7 +2948,7 @@ describe("BlueBubbles client", () => {
           guid: "root-level-preview-guid",
           text: "",
           handle: {
-            address: "ari@mendelow.me",
+            address: "owner@example.test",
             service: "iMessage",
           },
           attachments: [
@@ -2973,9 +2973,9 @@ describe("BlueBubbles client", () => {
           ],
           chats: [
             {
-              guid: "any;-;ari@mendelow.me",
+              guid: "any;-;owner@example.test",
               style: 45,
-              chatIdentifier: "ari@mendelow.me",
+              chatIdentifier: "owner@example.test",
               displayName: "",
             },
           ],
@@ -3006,9 +3006,9 @@ describe("BlueBubbles client", () => {
       fromMe: false,
       sender: {
         provider: "imessage-handle",
-        externalId: "ari@mendelow.me",
-        rawId: "ari@mendelow.me",
-        displayName: "ari@mendelow.me",
+        externalId: "owner@example.test",
+        rawId: "owner@example.test",
+        displayName: "owner@example.test",
       },
       chat: dmChat,
       text: "",
@@ -3052,9 +3052,9 @@ describe("BlueBubbles client", () => {
       fromMe: false,
       sender: {
         provider: "imessage-handle",
-        externalId: "ari@mendelow.me",
-        rawId: "ari@mendelow.me",
-        displayName: "ari@mendelow.me",
+        externalId: "owner@example.test",
+        rawId: "owner@example.test",
+        displayName: "owner@example.test",
       },
       chat: dmChat,
       text: "",
@@ -3095,11 +3095,11 @@ describe("BlueBubbles client", () => {
     await expect(
       client.sendText({
         chat: {
-          chatGuid: "any;-;ari@mendelow.me",
-          chatIdentifier: "ari@mendelow.me",
+          chatGuid: "any;-;owner@example.test",
+          chatIdentifier: "owner@example.test",
           isGroup: false,
-          sessionKey: "chat:any;-;ari@mendelow.me",
-          sendTarget: { kind: "chat_guid", value: "any;-;ari@mendelow.me" },
+          sessionKey: "chat:any;-;owner@example.test",
+          sendTarget: { kind: "chat_guid", value: "any;-;owner@example.test" },
         },
         text: "hello",
       }),
@@ -3267,13 +3267,13 @@ describe("BlueBubbles client", () => {
             data: {
               guid: "msg-warn-1",
               text: "hi",
-              handle: { address: "ari@mendelow.me", service: "iMessage" },
+              handle: { address: "owner@example.test", service: "iMessage" },
               attachments: [],
               chats: [
                 {
-                  guid: "any;-;ari@mendelow.me",
+                  guid: "any;-;owner@example.test",
                   style: 45,
-                  chatIdentifier: "ari@mendelow.me",
+                  chatIdentifier: "owner@example.test",
                   displayName: "",
                 },
               ],
@@ -3298,9 +3298,9 @@ describe("BlueBubbles client", () => {
         fromMe: false,
         sender: {
           provider: "imessage-handle",
-          externalId: "ari@mendelow.me",
-          rawId: "ari@mendelow.me",
-          displayName: "ari@mendelow.me",
+          externalId: "owner@example.test",
+          rawId: "owner@example.test",
+          displayName: "owner@example.test",
         },
         chat: dmChat,
         text: "hi",
@@ -3330,13 +3330,13 @@ describe("BlueBubbles client", () => {
             data: {
               guid: "msg-warn-2",
               text: "hi",
-              handle: { address: "ari@mendelow.me", service: "iMessage" },
+              handle: { address: "owner@example.test", service: "iMessage" },
               attachments: [],
               chats: [
                 {
-                  guid: "any;-;ari@mendelow.me",
+                  guid: "any;-;owner@example.test",
                   style: 45,
-                  chatIdentifier: "ari@mendelow.me",
+                  chatIdentifier: "owner@example.test",
                   displayName: "",
                 },
               ],
@@ -3361,9 +3361,9 @@ describe("BlueBubbles client", () => {
         fromMe: false,
         sender: {
           provider: "imessage-handle",
-          externalId: "ari@mendelow.me",
-          rawId: "ari@mendelow.me",
-          displayName: "ari@mendelow.me",
+          externalId: "owner@example.test",
+          rawId: "owner@example.test",
+          displayName: "owner@example.test",
         },
         chat: dmChat,
         text: "hi",
@@ -3412,13 +3412,13 @@ describe("BlueBubbles client", () => {
         data: {
           guid,
           text: "check this",
-          handle: { address: "ari@mendelow.me", service: "iMessage" },
+          handle: { address: "owner@example.test", service: "iMessage" },
           attachments: [{ guid: "img-1", mimeType: "image/png", transferName: "screenshot.png" }],
           chats: [
             {
-              guid: "any;-;ari@mendelow.me",
+              guid: "any;-;owner@example.test",
               style: 45,
-              chatIdentifier: "ari@mendelow.me",
+              chatIdentifier: "owner@example.test",
               displayName: "",
             },
           ],
@@ -3473,9 +3473,9 @@ describe("BlueBubbles client", () => {
         fromMe: false,
         sender: {
           provider: "imessage-handle",
-          externalId: "ari@mendelow.me",
-          rawId: "ari@mendelow.me",
-          displayName: "ari@mendelow.me",
+          externalId: "owner@example.test",
+          rawId: "owner@example.test",
+          displayName: "owner@example.test",
         },
         chat: dmChat,
         text: "check this",
@@ -3570,9 +3570,9 @@ describe("BlueBubbles client", () => {
         fromMe: false,
         sender: {
           provider: "imessage-handle",
-          externalId: "ari@mendelow.me",
-          rawId: "ari@mendelow.me",
-          displayName: "ari@mendelow.me",
+          externalId: "owner@example.test",
+          rawId: "owner@example.test",
+          displayName: "owner@example.test",
         },
         chat: dmChat,
         text: "check this",
@@ -3659,9 +3659,9 @@ describe("BlueBubbles client", () => {
         fromMe: false,
         sender: {
           provider: "imessage-handle",
-          externalId: "ari@mendelow.me",
-          rawId: "ari@mendelow.me",
-          displayName: "ari@mendelow.me",
+          externalId: "owner@example.test",
+          rawId: "owner@example.test",
+          displayName: "owner@example.test",
         },
         chat: dmChat,
         text: "check this",
@@ -3727,13 +3727,13 @@ describe("BlueBubbles client", () => {
             data: {
               guid: "img-non-string-text",
               text: 42, // explicitly not a string
-              handle: { address: "ari@mendelow.me", service: "iMessage" },
+              handle: { address: "owner@example.test", service: "iMessage" },
               attachments: [{ guid: "img-1", mimeType: "image/png", transferName: "pic.png" }],
               chats: [
                 {
-                  guid: "any;-;ari@mendelow.me",
+                  guid: "any;-;owner@example.test",
                   style: 45,
-                  chatIdentifier: "ari@mendelow.me",
+                  chatIdentifier: "owner@example.test",
                   displayName: "",
                 },
               ],
@@ -3758,9 +3758,9 @@ describe("BlueBubbles client", () => {
         fromMe: false,
         sender: {
           provider: "imessage-handle",
-          externalId: "ari@mendelow.me",
-          rawId: "ari@mendelow.me",
-          displayName: "ari@mendelow.me",
+          externalId: "owner@example.test",
+          rawId: "owner@example.test",
+          displayName: "owner@example.test",
         },
         chat: dmChat,
         text: "",
@@ -3824,9 +3824,9 @@ describe("BlueBubbles client", () => {
         fromMe: false,
         sender: {
           provider: "imessage-handle",
-          externalId: "ari@mendelow.me",
-          rawId: "ari@mendelow.me",
-          displayName: "ari@mendelow.me",
+          externalId: "owner@example.test",
+          rawId: "owner@example.test",
+          displayName: "owner@example.test",
         },
         chat: dmChat,
         text: "check this",

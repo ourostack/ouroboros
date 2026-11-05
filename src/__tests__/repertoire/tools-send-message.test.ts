@@ -456,7 +456,7 @@ describe("send_message tool", () => {
       context: {
         friend: {
           id: "self",
-          name: "Mendelow Cloud Butler",
+          name: "Ouro Butler",
           trustLevel: "self",
           externalIds: [],
           tenantMemberships: [],

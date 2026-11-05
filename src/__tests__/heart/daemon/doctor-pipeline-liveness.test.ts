@@ -136,9 +136,9 @@ function writeMailroom(agentRoot: string, fixture: MailroomFixture = {}): string
     sourceGrants: [{
       grantId: "grant_slugger_hey_31a41026",
       agentId: "slugger",
-      ownerEmail: "ari@mendelow.me",
+      ownerEmail: "owner@example.test",
       source: "hey",
-      aliasAddress: "me.mendelow.ari.slugger@ouro.bot",
+      aliasAddress: "test.example.owner.slugger@ouro.bot",
       keyId: "mail_slugger-hey_4c628d031cbe560c",
       publicKeyPem: "-----BEGIN PUBLIC KEY-----\nstub\n-----END PUBLIC KEY-----\n",
       defaultPlacement: "imbox",
@@ -1483,7 +1483,7 @@ describe("checkSenses bluebubbles inbound-delivery liveness", () => {
     seedBlueBubblesRuntime()
     const fetchImpl = blueBubblesFetch("exact")
     hostAccount.verify.mockClear()
-    hostAccount.verify.mockRejectedValueOnce(new Error('the BlueBubbles server runs under macOS account "arimendelow", but the agent\'s iMessage host is "clawdbot"'))
+    hostAccount.verify.mockRejectedValueOnce(new Error('the BlueBubbles server runs under macOS account "owner", but the agent\'s iMessage host is "clawdbot"'))
 
     const checks = (await checkSenses(depsFor(bundlesRoot, {
       fetchImpl: fetchImpl as unknown as typeof fetch,
@@ -1493,7 +1493,7 @@ describe("checkSenses bluebubbles inbound-delivery liveness", () => {
 
     expect(hostAccount.verify).toHaveBeenCalledWith(expect.objectContaining({ agent: "slugger", hostUsername: "clawdbot" }))
     expect(webhook.status).toBe("fail")
-    expect(webhook.detail).toContain('runs under macOS account "arimendelow"')
+    expect(webhook.detail).toContain('runs under macOS account "owner"')
     expect(inbound.status).toBe("fail")
     expect(inbound.detail).toContain("host-account-refused owned-webhook evidence corroborates the silence")
   })

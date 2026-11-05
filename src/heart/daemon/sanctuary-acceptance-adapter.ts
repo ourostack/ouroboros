@@ -2266,8 +2266,9 @@ async function materializeConfig(payload: JsonObject, deps: SanctuaryAcceptanceA
   const config = { ...object(template.fixed, "acceptance fixed config") }
   const adapterPath = "/opt/ouro/deploy/unraid/sanctuary-acceptance-adapter.sh"
   if (command === "telegram-bootstrap") {
+    const identity = await probePinnedBotIdentity(deps)
     const offset = await readGatewayCursor(deps)
-    Object.assign(config, { expectedBotId: "8541786263", expectedUsername: "MendelowCloudButlerBot", currentOffset: offset.nextUpdateId })
+    Object.assign(config, { expectedBotId: identity.botId, expectedUsername: identity.username, currentOffset: offset.nextUpdateId })
   } else if (command === "cursor-snapshot") {
     const phase = text(payload.phase, "cursor snapshot phase")
     if (phase !== "before" && phase !== "after") throw new Error("cursor snapshot phase is invalid")
@@ -2285,8 +2286,8 @@ async function materializeConfig(payload: JsonObject, deps: SanctuaryAcceptanceA
   return config
 }
 
-async function telegramReadiness(payload: JsonObject, deps: SanctuaryAcceptanceAdapterDependencies): Promise<unknown> {
-  exactKeys(payload, ["operation"], "Telegram readiness payload")
+// The expected bot is the one the pinned root gateway holds: its getMe answer must match the gateway's pinned bot id.
+async function probePinnedBotIdentity(deps: SanctuaryAcceptanceAdapterDependencies): Promise<{ botId: string; username: string }> {
   let gateway: ReturnType<typeof openSanctuaryResidentAuthority>
   try { gateway = dependency(deps.gateway, "Telegram root gateway")() }
   catch { throw new Error("Telegram gateway inventory or pins are unavailable; actor: agent-runnable; inspect root migration") }
@@ -2301,11 +2302,19 @@ async function telegramReadiness(payload: JsonObject, deps: SanctuaryAcceptanceA
     try { api.stop() }
     catch { throw new Error("Telegram client cleanup failed; actor: agent-runnable; retry Telegram readiness") }
   }
+  const pinnedBotId = gateway.credentials.botId
   if (!bot || typeof bot !== "object" || Array.isArray(bot)
-    || String((bot as JsonObject).id) !== gateway.credentials.botId || gateway.credentials.botId !== "8541786263"
-    || (bot as JsonObject).username !== "MendelowCloudButlerBot") {
+    || typeof pinnedBotId !== "string" || !/^[1-9][0-9]{0,19}$/u.test(pinnedBotId)
+    || String((bot as JsonObject).id) !== pinnedBotId
+    || typeof (bot as JsonObject).username !== "string" || !/^[A-Za-z][A-Za-z0-9_]{3,31}$/u.test((bot as JsonObject).username as string)) {
     throw new Error("Telegram bot identity mismatch; actor: human-required; repair root gateway identity")
   }
+  return { botId: pinnedBotId, username: (bot as JsonObject).username as string }
+}
+
+async function telegramReadiness(payload: JsonObject, deps: SanctuaryAcceptanceAdapterDependencies): Promise<unknown> {
+  exactKeys(payload, ["operation"], "Telegram readiness payload")
+  await probePinnedBotIdentity(deps)
   return { ready: true, identityMatches: true }
 }
 

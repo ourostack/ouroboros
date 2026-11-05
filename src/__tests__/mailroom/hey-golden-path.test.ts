@@ -96,7 +96,7 @@ describe("HEY MBOX golden path", () => {
     const storePath = tempDir()
     const { registry, keys } = provisionMailboxRegistry({
       agentId: "slugger",
-      ownerEmail: "ari@mendelow.me",
+      ownerEmail: "owner@example.test",
       source: "hey",
     })
     const store = new FileMailroomStore({ rootDir: storePath })
@@ -106,7 +106,7 @@ describe("HEY MBOX golden path", () => {
       store,
       agentId: "slugger",
       rawMbox: fixtureMbox(),
-      ownerEmail: "ari@mendelow.me",
+      ownerEmail: "owner@example.test",
       source: "hey",
       importedAt: new Date("2026-04-21T21:00:00.000Z"),
     })
@@ -121,7 +121,7 @@ describe("HEY MBOX golden path", () => {
     expect(facts).toEqual(expect.arrayContaining([
       expect.objectContaining({
         kind: "flight",
-        ownerEmail: "ari@mendelow.me",
+        ownerEmail: "owner@example.test",
         source: "hey",
         fields: expect.objectContaining({
           flightNumber: "EA 432",

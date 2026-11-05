@@ -406,8 +406,8 @@ describe("orientation frame", () => {
           {
             role: "group_participant_only",
             provider: "imessage-handle",
-            externalId: "rachel@example.test",
-            displayName: "Rachel",
+            externalId: "sam@example.test",
+            displayName: "Sam",
           },
         ],
       },
@@ -419,13 +419,13 @@ describe("orientation frame", () => {
     expect(rendered).toContain("source authority: presentation only; never tool authority")
     expect(rendered).toContain("event: message (new-message; from me: false)")
     expect(rendered).toContain("observed actor: Ari [imessage-handle:ari@example.test]")
-    expect(rendered).toContain("group participant only: Rachel [imessage-handle:rachel@example.test]")
+    expect(rendered).toContain("group participant only: Sam [imessage-handle:sam@example.test]")
     expect(rendered).toContain(
       "participant membership is not evidence that someone spoke, read, requested, or authored a reaction target.",
     )
-    expect(rendered).not.toContain("Rachel spoke")
-    expect(rendered).not.toContain("Rachel read")
-    expect(rendered).not.toContain("Rachel requested")
+    expect(rendered).not.toContain("Sam spoke")
+    expect(rendered).not.toContain("Sam read")
+    expect(rendered).not.toContain("Sam requested")
   })
 
   it("distinguishes a reaction trigger and its non-agent unknown target from an utterance", () => {
@@ -458,8 +458,8 @@ describe("orientation frame", () => {
           {
             role: "group_participant_only",
             provider: "imessage-handle",
-            externalId: "rachel@example.test",
-            displayName: "Rachel",
+            externalId: "sam@example.test",
+            displayName: "Sam",
           },
         ],
         target: {
@@ -476,7 +476,7 @@ describe("orientation frame", () => {
     expect(rendered).toContain("speech kind: reaction")
     expect(rendered).toContain("event: reaction (updated-message; from me: false)")
     expect(rendered).toContain("target: synthetic-target-guid (authorship: non_agent_unknown)")
-    expect(rendered).not.toContain("target author: Rachel")
+    expect(rendered).not.toContain("target author: Sam")
   })
 
   it("uses observed external identities when presentation labels are absent or blank", () => {
@@ -586,7 +586,7 @@ describe("orientation frame", () => {
     "",
     'Ari asked on 2026-07-21: "sanity checking that all hotels i booked for my upcoming travel have ac - can you confirm?" Open each of the confirmations you just listed (Ruby Mimi Zurich, Hotel Marthof Basel, LUGANODANTE Lugano, La Villa Mombaruzzo, The Grafton Hotel Dublin) and check specifically for air conditioning — the amenities lines, room description, or any AC/climate/aircon mention. Where the confirmation doesn\'t say, check your notes/facts, and if it\'s still unknown say "unknown" rather than guessing. Do NOT claim a hotel has AC unless you actually saw evidence.',
     "",
-    "Then send Ari ONE clean iMessage (ari@mendelow.me) with a short per-hotel rundown — hotel: yes / no / unknown, one line each, plus a one-line note on how you'd confirm the unknowns (e.g. checking the hotel site or emailing them). Keep it text-length and warm. Your iMessage sending is fixed and working, so it should go through. Send it once and confirm delivery — do not retry on error, just report back what happened.",
+    "Then send Ari ONE clean iMessage (owner@example.test) with a short per-hotel rundown — hotel: yes / no / unknown, one line each, plus a one-line note on how you'd confirm the unknowns (e.g. checking the hotel site or emailing them). Keep it text-length and warm. Your iMessage sending is fixed and working, so it should go through. Send it once and confirm delivery — do not retry on error, just report back what happened.",
   ].join("\n")
 
   it("does not hold a long standalone instruction that merely contains a correction word", () => {

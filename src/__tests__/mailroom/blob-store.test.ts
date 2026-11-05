@@ -411,8 +411,8 @@ describe("AzureBlobMailroomStore", () => {
     const first = resolveMailAddress(firstProvision.registry, "slugger@ouro.bot")
     const second = resolveMailAddress(secondProvision.registry, "slugger@ouro.bot")
     if (!first || !second) throw new Error("expected slugger mailboxes")
-    const envelope = { mailFrom: "ari@mendelow.me", rcptTo: ["slugger@ouro.bot"] }
-    const rawMime = Buffer.from("From: Ari <ari@mendelow.me>\r\nTo: slugger@ouro.bot\r\nSubject: Tuple proof\r\n\r\nHello.\r\n")
+    const envelope = { mailFrom: "owner@example.test", rcptTo: ["slugger@ouro.bot"] }
+    const rawMime = Buffer.from("From: Ari <owner@example.test>\r\nTo: slugger@ouro.bot\r\nSubject: Tuple proof\r\n\r\nHello.\r\n")
 
     const baseline = await buildEncryptedStoredMailMessage({ resolved: first, envelope, rawMime })
     const samePublicKeyDifferentId = await buildEncryptedStoredMailMessage({
@@ -453,8 +453,8 @@ describe("AzureBlobMailroomStore", () => {
     const first = resolveMailAddress(firstProvision.registry, "slugger@ouro.bot")
     const second = resolveMailAddress(secondProvision.registry, "slugger@ouro.bot")
     if (!first || !second) throw new Error("expected slugger mailboxes")
-    const envelope = { mailFrom: "ari@mendelow.me", rcptTo: ["slugger@ouro.bot"] }
-    const rawMime = Buffer.from("From: Ari <ari@mendelow.me>\r\nTo: slugger@ouro.bot\r\nSubject: Concurrent proof\r\n\r\nHello.\r\n")
+    const envelope = { mailFrom: "owner@example.test", rcptTo: ["slugger@ouro.bot"] }
+    const rawMime = Buffer.from("From: Ari <owner@example.test>\r\nTo: slugger@ouro.bot\r\nSubject: Concurrent proof\r\n\r\nHello.\r\n")
 
     const results = await Promise.all([
       store.putRawMessage({ resolved: first, envelope, rawMime }),
@@ -492,8 +492,8 @@ describe("AzureBlobMailroomStore", () => {
     const first = resolveMailAddress(firstProvision.registry, "slugger@ouro.bot")
     const second = resolveMailAddress(secondProvision.registry, "slugger@ouro.bot")
     if (!first || !second) throw new Error("expected slugger mailboxes")
-    const envelope = { mailFrom: "ari@mendelow.me", rcptTo: ["slugger@ouro.bot"] }
-    const rawMime = Buffer.from("From: Ari <ari@mendelow.me>\r\nTo: slugger@ouro.bot\r\nSubject: Cleanup proof\r\n\r\nHello.\r\n")
+    const envelope = { mailFrom: "owner@example.test", rcptTo: ["slugger@ouro.bot"] }
+    const rawMime = Buffer.from("From: Ari <owner@example.test>\r\nTo: slugger@ouro.bot\r\nSubject: Cleanup proof\r\n\r\nHello.\r\n")
 
     const results = await Promise.all([
       store.putRawMessage({ resolved: first, envelope, rawMime }),
@@ -517,8 +517,8 @@ describe("AzureBlobMailroomStore", () => {
     const first = resolveMailAddress(firstProvision.registry, "slugger@ouro.bot")
     const second = resolveMailAddress(secondProvision.registry, "slugger@ouro.bot")
     if (!first || !second) throw new Error("expected slugger mailboxes")
-    const envelope = { mailFrom: "ari@mendelow.me", rcptTo: ["slugger@ouro.bot"] }
-    const rawMime = Buffer.from("From: Ari <ari@mendelow.me>\r\nTo: slugger@ouro.bot\r\nSubject: String cleanup proof\r\n\r\nHello.\r\n")
+    const envelope = { mailFrom: "owner@example.test", rcptTo: ["slugger@ouro.bot"] }
+    const rawMime = Buffer.from("From: Ari <owner@example.test>\r\nTo: slugger@ouro.bot\r\nSubject: String cleanup proof\r\n\r\nHello.\r\n")
 
     const results = await Promise.all([
       store.putRawMessage({ resolved: first, envelope, rawMime }),
@@ -538,8 +538,8 @@ describe("AzureBlobMailroomStore", () => {
     const provision = provisionMailboxRegistry({ agentId: "slugger" })
     const resolved = resolveMailAddress(provision.registry, "slugger@ouro.bot")
     if (!resolved) throw new Error("expected slugger mailbox")
-    const envelope = { mailFrom: "ari@mendelow.me", rcptTo: ["slugger@ouro.bot"] }
-    const rawMime = Buffer.from("From: Ari <ari@mendelow.me>\r\nTo: slugger@ouro.bot\r\nSubject: Shared raw proof\r\n\r\nHello.\r\n")
+    const envelope = { mailFrom: "owner@example.test", rcptTo: ["slugger@ouro.bot"] }
+    const rawMime = Buffer.from("From: Ari <owner@example.test>\r\nTo: slugger@ouro.bot\r\nSubject: Shared raw proof\r\n\r\nHello.\r\n")
 
     const results = await Promise.all([
       store.putRawMessage({ resolved, envelope, rawMime }),
@@ -568,10 +568,10 @@ describe("AzureBlobMailroomStore", () => {
       sourceGrants: [],
     }
     const envelope = {
-      mailFrom: "ari@mendelow.me",
+      mailFrom: "owner@example.test",
       rcptTo: ["slugger@ouro.bot", "other@ouro.bot"],
     }
-    const rawMime = Buffer.from("From: Ari <ari@mendelow.me>\r\nTo: slugger@ouro.bot, other@ouro.bot\r\nSubject: Shared delivery\r\n\r\nHello both.\r\n")
+    const rawMime = Buffer.from("From: Ari <owner@example.test>\r\nTo: slugger@ouro.bot, other@ouro.bot\r\nSubject: Shared delivery\r\n\r\nHello both.\r\n")
 
     const ingested = await ingestRawMailToStore({ registry, store, envelope, rawMime })
 
@@ -595,8 +595,8 @@ describe("AzureBlobMailroomStore", () => {
     const resolved = resolveMailAddress(slugger.registry, "slugger@ouro.bot")
     const foreignResolved = resolveMailAddress(other.registry, "other@ouro.bot")
     if (!resolved || !foreignResolved) throw new Error("expected both mailboxes")
-    const envelope = { mailFrom: "ari@mendelow.me", rcptTo: ["slugger@ouro.bot"] }
-    const rawMime = Buffer.from("From: Ari <ari@mendelow.me>\r\nTo: slugger@ouro.bot\r\nSubject: Foreign winner\r\n\r\nHello.\r\n")
+    const envelope = { mailFrom: "owner@example.test", rcptTo: ["slugger@ouro.bot"] }
+    const rawMime = Buffer.from("From: Ari <owner@example.test>\r\nTo: slugger@ouro.bot\r\nSubject: Foreign winner\r\n\r\nHello.\r\n")
     const target = await buildEncryptedStoredMailMessage({ resolved, envelope, rawMime })
     const foreign = await buildEncryptedStoredMailMessage({ resolved: foreignResolved, envelope, rawMime })
     serviceClient.container.blobs.set(`messages/${target.message.id}.json`, {
@@ -628,8 +628,8 @@ describe("AzureBlobMailroomStore", () => {
     const provision = provisionMailboxRegistry({ agentId: "slugger" })
     const resolved = resolveMailAddress(provision.registry, "slugger@ouro.bot")
     if (!resolved) throw new Error("expected slugger mailbox")
-    const envelope = { mailFrom: "ari@mendelow.me", rcptTo: ["slugger@ouro.bot"] }
-    const rawMime = Buffer.from("From: Ari <ari@mendelow.me>\r\nTo: slugger@ouro.bot\r\nSubject: Invalid winner\r\n\r\nHello.\r\n")
+    const envelope = { mailFrom: "owner@example.test", rcptTo: ["slugger@ouro.bot"] }
+    const rawMime = Buffer.from("From: Ari <owner@example.test>\r\nTo: slugger@ouro.bot\r\nSubject: Invalid winner\r\n\r\nHello.\r\n")
     const built = await buildEncryptedStoredMailMessage({ resolved, envelope, rawMime })
     const invalidWinners: Array<{ label: string; message: unknown }> = [
       { label: "non-object", message: "not-an-object" },
@@ -709,8 +709,8 @@ describe("AzureBlobMailroomStore", () => {
     const provision = provisionMailboxRegistry({ agentId: "slugger" })
     const resolved = resolveMailAddress(provision.registry, "slugger@ouro.bot")
     if (!resolved) throw new Error("expected slugger mailbox")
-    const envelope = { mailFrom: "ari@mendelow.me", rcptTo: ["slugger@ouro.bot"] }
-    const rawMime = Buffer.from("From: Ari <ari@mendelow.me>\r\nTo: slugger@ouro.bot\r\nSubject: Unreadable winner\r\n\r\nHello.\r\n")
+    const envelope = { mailFrom: "owner@example.test", rcptTo: ["slugger@ouro.bot"] }
+    const rawMime = Buffer.from("From: Ari <owner@example.test>\r\nTo: slugger@ouro.bot\r\nSubject: Unreadable winner\r\n\r\nHello.\r\n")
     const built = await buildEncryptedStoredMailMessage({ resolved, envelope, rawMime })
     unreadableService.container.blobs.set(`messages/${built.message.id}.json`, {
       data: Buffer.from(`${JSON.stringify(built.message)}\n`),
@@ -797,8 +797,8 @@ describe("AzureBlobMailroomStore", () => {
     if (!resolved) throw new Error("expected slugger mailbox")
     const created = await store.putRawMessage({
       resolved,
-      envelope: { mailFrom: "ari@mendelow.me", rcptTo: ["slugger@ouro.bot"] },
-      rawMime: Buffer.from("From: Ari <ari@mendelow.me>\r\nTo: slugger@ouro.bot\r\nSubject: Placement proof\r\n\r\nHello.\r\n"),
+      envelope: { mailFrom: "owner@example.test", rcptTo: ["slugger@ouro.bot"] },
+      rawMime: Buffer.from("From: Ari <owner@example.test>\r\nTo: slugger@ouro.bot\r\nSubject: Placement proof\r\n\r\nHello.\r\n"),
     })
     if (created.message.bodyForm !== "encrypted") throw new Error("expected encrypted message")
 
@@ -826,10 +826,10 @@ describe("AzureBlobMailroomStore", () => {
     const created = await store.putRawMessage({
       resolved,
       envelope: {
-        mailFrom: "ari@mendelow.me",
+        mailFrom: "owner@example.test",
         rcptTo: ["slugger@ouro.bot"],
       },
-      rawMime: Buffer.from("From: Ari <ari@mendelow.me>\r\nTo: slugger@ouro.bot\r\nSubject: Blob proof\r\n\r\nHello from Blob.\r\n"),
+      rawMime: Buffer.from("From: Ari <owner@example.test>\r\nTo: slugger@ouro.bot\r\nSubject: Blob proof\r\n\r\nHello from Blob.\r\n"),
       receivedAt: new Date("2024-01-01T00:00:00Z"),
     })
     expect(created.created).toBe(true)
@@ -847,10 +847,10 @@ describe("AzureBlobMailroomStore", () => {
     const duplicate = await store.putRawMessage({
       resolved,
       envelope: {
-        mailFrom: "ari@mendelow.me",
+        mailFrom: "owner@example.test",
         rcptTo: ["slugger@ouro.bot"],
       },
-      rawMime: Buffer.from("From: Ari <ari@mendelow.me>\r\nTo: slugger@ouro.bot\r\nSubject: Blob proof\r\n\r\nHello from Blob.\r\n"),
+      rawMime: Buffer.from("From: Ari <owner@example.test>\r\nTo: slugger@ouro.bot\r\nSubject: Blob proof\r\n\r\nHello from Blob.\r\n"),
       receivedAt: new Date("2024-01-01T00:00:00Z"),
     })
     expect(duplicate.created).toBe(false)
@@ -865,10 +865,10 @@ describe("AzureBlobMailroomStore", () => {
     const duplicateAfterRetry = await store.putRawMessage({
       resolved,
       envelope: {
-        mailFrom: "ari@mendelow.me",
+        mailFrom: "owner@example.test",
         rcptTo: ["slugger@ouro.bot"],
       },
-      rawMime: Buffer.from("From: Ari <ari@mendelow.me>\r\nTo: slugger@ouro.bot\r\nSubject: Blob proof\r\n\r\nHello from Blob.\r\n"),
+      rawMime: Buffer.from("From: Ari <owner@example.test>\r\nTo: slugger@ouro.bot\r\nSubject: Blob proof\r\n\r\nHello from Blob.\r\n"),
       receivedAt: new Date("2024-01-01T00:00:00Z"),
     })
     expect(duplicateAfterRetry.created).toBe(false)
@@ -1109,10 +1109,10 @@ describe("AzureBlobMailroomStore", () => {
     const created = await store.putRawMessage({
       resolved,
       envelope: {
-        mailFrom: "ari@mendelow.me",
+        mailFrom: "owner@example.test",
         rcptTo: ["slugger@ouro.bot"],
       },
-      rawMime: Buffer.from("From: Ari <ari@mendelow.me>\r\nTo: slugger@ouro.bot\r\nSubject: Blob proof\r\n\r\nHello from Blob.\r\n"),
+      rawMime: Buffer.from("From: Ari <owner@example.test>\r\nTo: slugger@ouro.bot\r\nSubject: Blob proof\r\n\r\nHello from Blob.\r\n"),
       receivedAt: new Date("2024-01-01T00:00:00Z"),
     })
 
@@ -1131,10 +1131,10 @@ describe("AzureBlobMailroomStore", () => {
     await expect(store.putRawMessage({
       resolved,
       envelope: {
-        mailFrom: "ari@mendelow.me",
+        mailFrom: "owner@example.test",
         rcptTo: ["slugger@ouro.bot"],
       },
-      rawMime: Buffer.from("From: Ari <ari@mendelow.me>\r\nTo: slugger@ouro.bot\r\nSubject: Blob proof\r\n\r\nHello from Blob.\r\n"),
+      rawMime: Buffer.from("From: Ari <owner@example.test>\r\nTo: slugger@ouro.bot\r\nSubject: Blob proof\r\n\r\nHello from Blob.\r\n"),
       receivedAt: new Date("2024-01-01T00:00:00Z"),
     })).rejects.toThrow(/committed message .* could not be read/i)
     expect(duplicateState.downloads).toBe(2)
@@ -1156,10 +1156,10 @@ describe("AzureBlobMailroomStore", () => {
     const created = await store.putRawMessage({
       resolved,
       envelope: {
-        mailFrom: "ari@mendelow.me",
+        mailFrom: "owner@example.test",
         rcptTo: ["slugger@ouro.bot"],
       },
-      rawMime: Buffer.from("From: Ari <ari@mendelow.me>\r\nTo: slugger@ouro.bot\r\nSubject: Blob proof\r\n\r\nHello from Blob.\r\n"),
+      rawMime: Buffer.from("From: Ari <owner@example.test>\r\nTo: slugger@ouro.bot\r\nSubject: Blob proof\r\n\r\nHello from Blob.\r\n"),
       receivedAt: new Date("2024-01-01T00:00:00Z"),
     })
 
@@ -1171,10 +1171,10 @@ describe("AzureBlobMailroomStore", () => {
     await expect(store.putRawMessage({
       resolved,
       envelope: {
-        mailFrom: "ari@mendelow.me",
+        mailFrom: "owner@example.test",
         rcptTo: ["slugger@ouro.bot"],
       },
-      rawMime: Buffer.from("From: Ari <ari@mendelow.me>\r\nTo: slugger@ouro.bot\r\nSubject: Blob proof\r\n\r\nHello from Blob.\r\n"),
+      rawMime: Buffer.from("From: Ari <owner@example.test>\r\nTo: slugger@ouro.bot\r\nSubject: Blob proof\r\n\r\nHello from Blob.\r\n"),
       receivedAt: new Date("2024-01-01T00:00:00Z"),
     })).rejects.toThrow("permission denied")
     expect(duplicateState.downloads).toBe(1)
@@ -1193,10 +1193,10 @@ describe("AzureBlobMailroomStore", () => {
     const created = await store.putRawMessage({
       resolved,
       envelope: {
-        mailFrom: "ari@mendelow.me",
+        mailFrom: "owner@example.test",
         rcptTo: ["slugger@ouro.bot"],
       },
-      rawMime: Buffer.from("From: Ari <ari@mendelow.me>\r\nTo: slugger@ouro.bot\r\nSubject: Blob proof\r\n\r\nHello from Blob.\r\n"),
+      rawMime: Buffer.from("From: Ari <owner@example.test>\r\nTo: slugger@ouro.bot\r\nSubject: Blob proof\r\n\r\nHello from Blob.\r\n"),
       receivedAt: new Date("2024-01-01T00:00:00Z"),
     })
 
@@ -1220,10 +1220,10 @@ describe("AzureBlobMailroomStore", () => {
     await expect(store.putRawMessage({
       resolved,
       envelope: {
-        mailFrom: "ari@mendelow.me",
+        mailFrom: "owner@example.test",
         rcptTo: ["slugger@ouro.bot"],
       },
-      rawMime: Buffer.from("From: Ari <ari@mendelow.me>\r\nTo: slugger@ouro.bot\r\nSubject: Blob proof\r\n\r\nHello from Blob.\r\n"),
+      rawMime: Buffer.from("From: Ari <owner@example.test>\r\nTo: slugger@ouro.bot\r\nSubject: Blob proof\r\n\r\nHello from Blob.\r\n"),
       receivedAt: new Date("2024-01-01T00:00:00Z"),
     })).rejects.toThrow(/committed message .* could not be read: socket closed early/i)
     expect(existsCalls).toBe(1)
@@ -1242,10 +1242,10 @@ describe("AzureBlobMailroomStore", () => {
     const created = await store.putRawMessage({
       resolved,
       envelope: {
-        mailFrom: "ari@mendelow.me",
+        mailFrom: "owner@example.test",
         rcptTo: ["slugger@ouro.bot"],
       },
-      rawMime: Buffer.from("From: Ari <ari@mendelow.me>\r\nTo: slugger@ouro.bot\r\nSubject: Blob proof\r\n\r\nHello from Blob.\r\n"),
+      rawMime: Buffer.from("From: Ari <owner@example.test>\r\nTo: slugger@ouro.bot\r\nSubject: Blob proof\r\n\r\nHello from Blob.\r\n"),
       receivedAt: new Date("2024-01-01T00:00:00Z"),
     })
 
@@ -1271,10 +1271,10 @@ describe("AzureBlobMailroomStore", () => {
     await expect(store.putRawMessage({
       resolved,
       envelope: {
-        mailFrom: "ari@mendelow.me",
+        mailFrom: "owner@example.test",
         rcptTo: ["slugger@ouro.bot"],
       },
-      rawMime: Buffer.from("From: Ari <ari@mendelow.me>\r\nTo: slugger@ouro.bot\r\nSubject: Blob proof\r\n\r\nHello from Blob.\r\n"),
+      rawMime: Buffer.from("From: Ari <owner@example.test>\r\nTo: slugger@ouro.bot\r\nSubject: Blob proof\r\n\r\nHello from Blob.\r\n"),
       receivedAt: new Date("2024-01-01T00:00:00Z"),
     })).rejects.toThrow("socket closed early")
     expect(existsCalls).toBe(1)
@@ -1627,7 +1627,7 @@ describe("AzureBlobMailroomStore", () => {
     })
     const { registry, keys } = provisionMailboxRegistry({
       agentId: "slugger",
-      ownerEmail: "ari@mendelow.me",
+      ownerEmail: "owner@example.test",
       source: "HEY/Primary Lane",
       sourceTag: "hey",
     })

@@ -79,8 +79,8 @@ describe("orientation_get tool", () => {
           participants: [{
             role: "group_participant_only",
             provider: "imessage-handle",
-            externalId: "rachel@example.test",
-            displayName: "Rachel",
+            externalId: "sam@example.test",
+            displayName: "Sam",
           }],
         },
       },
@@ -90,7 +90,7 @@ describe("orientation_get tool", () => {
     expect(parsed.source).toMatchObject({
       authority: "presentation_only",
       actor: { role: "observed_actor", externalId: "ari@example.test" },
-      participants: [{ role: "group_participant_only", externalId: "rachel@example.test" }],
+      participants: [{ role: "group_participant_only", externalId: "sam@example.test" }],
     })
     expect(parsed).not.toHaveProperty("currentIngressEvidence")
     expect(result).not.toContain(captureKeyHash)

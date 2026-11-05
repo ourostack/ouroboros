@@ -16,8 +16,8 @@ function message(overrides: Partial<any> = {}) {
     fromMe: false,
     sender: {
       provider: "imessage-handle" as const,
-      externalId: "ari@mendelow.me",
-      rawId: "ari@mendelow.me",
+      externalId: "owner@example.test",
+      rawId: "owner@example.test",
       displayName: "Ari",
     },
     chat: {
@@ -26,7 +26,7 @@ function message(overrides: Partial<any> = {}) {
       isGroup: true,
       sessionKey: "chat:any;+;thread-guid",
       sendTarget: { kind: "chat_guid" as const, value: "any;+;thread-guid" },
-      participantHandles: ["ari@mendelow.me"],
+      participantHandles: ["owner@example.test"],
     },
     text: overrides.text ?? "anchor body",
     textForAgent: overrides.textForAgent ?? overrides.text ?? "anchor body",
@@ -266,8 +266,8 @@ describe("BlueBubbles context smoke", () => {
           fromMe: false,
           sender: {
             provider: "imessage-handle",
-            externalId: "ari@mendelow.me",
-            rawId: "ari@mendelow.me",
+            externalId: "owner@example.test",
+            rawId: "owner@example.test",
             displayName: "Ari",
           },
           chat: {
@@ -276,7 +276,7 @@ describe("BlueBubbles context smoke", () => {
             isGroup: true,
             sessionKey: "chat:any;+;thread-guid",
             sendTarget: { kind: "chat_guid", value: "any;+;thread-guid" },
-            participantHandles: ["ari@mendelow.me"],
+            participantHandles: ["owner@example.test"],
           },
           shouldNotifyAgent: false,
           textForAgent: "message marked as read",

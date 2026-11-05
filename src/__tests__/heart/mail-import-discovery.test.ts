@@ -94,14 +94,14 @@ describe("mail import discovery", () => {
     const repoRoot = path.join(homeDir, "repo")
     const worktreeDir = path.join(homeDir, "Projects", "_worktrees", "slugger-mail-fullmoon-mail")
     const sandboxDir = path.join(worktreeDir, ".playwright-mcp")
-    const mboxPath = path.join(sandboxDir, "HEY-emails-ari-mendelow-me.mbox")
+    const mboxPath = path.join(sandboxDir, "HEY-emails-owner-example-test.mbox")
     fs.mkdirSync(sandboxDir, { recursive: true })
     fs.writeFileSync(mboxPath, "From MAILER-DAEMON Thu Jan  1 00:00:00 1970\n", "utf-8")
     mockGetAgentRepoWorkspacesRoot.mockReturnValue(path.join(homeDir, "AgentBundles", "slugger.ouro", "state", "workspaces"))
 
     const discoveredPath = discoverMailImportFilePath({
       agentName: "slugger",
-      ownerEmail: "ari@mendelow.me",
+      ownerEmail: "owner@example.test",
       source: "hey",
       repoRoot,
       homeDir,
@@ -114,7 +114,7 @@ describe("mail import discovery", () => {
     const homeDir = tempDir()
     const repoRoot = path.join(homeDir, "repo")
     const sandboxDir = path.join(homeDir, "Projects", "_worktrees", "slugger-mail-fullmoon-mail", ".playwright-mcp")
-    const mboxPath = path.join(sandboxDir, "HEY-emails-ari-mendelow-me.mbox")
+    const mboxPath = path.join(sandboxDir, "HEY-emails-owner-example-test.mbox")
     fs.mkdirSync(sandboxDir, { recursive: true })
     fs.writeFileSync(mboxPath, "From MAILER-DAEMON Thu Jan  1 00:00:00 1970\n", "utf-8")
     mockGetAgentRepoWorkspacesRoot.mockReturnValue(path.join(homeDir, "AgentBundles", "slugger.ouro", "state", "workspaces"))
@@ -172,7 +172,7 @@ describe("mail import discovery", () => {
     const homeDir = tempDir()
     const repoRoot = path.join(homeDir, "repo")
     const sandboxDir = path.join(homeDir, "Projects", "_worktrees", "slugger-mail-fullmoon-mail", ".playwright-mcp")
-    const mboxPath = path.join(sandboxDir, "HEY-emails-ari-mendelow-me.mbox")
+    const mboxPath = path.join(sandboxDir, "HEY-emails-owner-example-test.mbox")
     fs.mkdirSync(sandboxDir, { recursive: true })
     fs.writeFileSync(mboxPath, "From MAILER-DAEMON Thu Jan  1 00:00:00 1970\n", "utf-8")
     const downloadedAt = new Date("2026-04-24T05:40:00.000Z")
@@ -209,7 +209,7 @@ describe("mail import discovery", () => {
     const homeDir = tempDir()
     const repoRoot = path.join(homeDir, "repo")
     const sandboxDir = path.join(homeDir, "Projects", "_worktrees", "slugger-mail-fullmoon-mail", ".playwright-mcp")
-    const mboxPath = path.join(sandboxDir, "HEY-emails-ari-mendelow-me.mbox")
+    const mboxPath = path.join(sandboxDir, "HEY-emails-owner-example-test.mbox")
     fs.mkdirSync(sandboxDir, { recursive: true })
     fs.writeFileSync(mboxPath, "From MAILER-DAEMON Thu Jan  1 00:00:00 1970\n", "utf-8")
     const previousDownloadAt = new Date("2026-04-24T05:40:00.000Z")
@@ -254,7 +254,7 @@ describe("mail import discovery", () => {
     const homeDir = tempDir()
     const repoRoot = path.join(homeDir, "repo")
     const sandboxDir = path.join(homeDir, "Projects", "_worktrees", "slugger-mail-fullmoon-mail", ".playwright-mcp")
-    const mboxPath = path.join(sandboxDir, "HEY-emails-ari-mendelow-me.mbox")
+    const mboxPath = path.join(sandboxDir, "HEY-emails-owner-example-test.mbox")
     fs.mkdirSync(sandboxDir, { recursive: true })
     fs.writeFileSync(mboxPath, "From MAILER-DAEMON Thu Jan  1 00:00:00 1970\n", "utf-8")
     mockGetAgentRepoWorkspacesRoot.mockReturnValue(path.join(homeDir, "AgentBundles", "slugger.ouro", "state", "workspaces"))
@@ -295,7 +295,7 @@ describe("mail import discovery", () => {
     const homeDir = tempDir()
     const repoRoot = path.join(homeDir, "repo")
     const sandboxDir = path.join(homeDir, "Projects", "_worktrees", "slugger-mail-fullmoon-mail", ".playwright-mcp")
-    const mboxPath = path.join(sandboxDir, "HEY-emails-ari-mendelow-me.mbox")
+    const mboxPath = path.join(sandboxDir, "HEY-emails-owner-example-test.mbox")
     fs.mkdirSync(sandboxDir, { recursive: true })
     fs.writeFileSync(mboxPath, "From MAILER-DAEMON Thu Jan  1 00:00:00 1970\n", "utf-8")
     mockGetAgentRepoWorkspacesRoot.mockReturnValue(path.join(homeDir, "AgentBundles", "slugger.ouro", "state", "workspaces"))
@@ -337,7 +337,7 @@ describe("mail import discovery", () => {
     const homeDir = tempDir()
     const repoRoot = path.join(homeDir, "repo")
     const sandboxDir = path.join(homeDir, "Projects", "_worktrees", "slugger-mail-fullmoon-mail", ".playwright-mcp")
-    const mboxPath = path.join(sandboxDir, "HEY-emails-ari-mendelow-me.mbox")
+    const mboxPath = path.join(sandboxDir, "HEY-emails-owner-example-test.mbox")
     fs.mkdirSync(sandboxDir, { recursive: true })
     fs.writeFileSync(mboxPath, "From MAILER-DAEMON Thu Jan  1 00:00:00 1970\n", "utf-8")
     mockGetAgentRepoWorkspacesRoot.mockReturnValue(path.join(homeDir, "AgentBundles", "slugger.ouro", "state", "workspaces"))
@@ -393,7 +393,7 @@ describe("mail import discovery", () => {
     const homeDir = tempDir()
     const repoRoot = path.join(homeDir, "repo")
     const sandboxDir = path.join(homeDir, "Projects", "_worktrees", "slugger-mail-fullmoon-mail", ".playwright-mcp")
-    const mboxPath = path.join(sandboxDir, "HEY-emails-ari-mendelow-me.mbox")
+    const mboxPath = path.join(sandboxDir, "HEY-emails-owner-example-test.mbox")
     const otherPath = path.join(homeDir, "other-export.mbox")
     fs.mkdirSync(sandboxDir, { recursive: true })
     fs.writeFileSync(mboxPath, "From MAILER-DAEMON Thu Jan  1 00:00:00 1970\n", "utf-8")
@@ -459,7 +459,7 @@ describe("mail import discovery", () => {
     const homeDir = tempDir()
     const repoRoot = path.join(homeDir, "repo")
     const sandboxDir = path.join(homeDir, "Projects", "_worktrees", "slugger-mail-fullmoon-mail", ".playwright-mcp")
-    const mboxPath = path.join(sandboxDir, "HEY-emails-ari-mendelow-me.mbox")
+    const mboxPath = path.join(sandboxDir, "HEY-emails-owner-example-test.mbox")
     fs.mkdirSync(sandboxDir, { recursive: true })
     fs.writeFileSync(mboxPath, "From MAILER-DAEMON Thu Jan  1 00:00:00 1970\n", "utf-8")
     const downloadedAt = new Date("2026-04-24T05:40:00.000Z")
@@ -492,7 +492,7 @@ describe("mail import discovery", () => {
     const homeDir = tempDir()
     const repoRoot = path.join(homeDir, "repo")
     const sandboxDir = path.join(homeDir, "Projects", "_worktrees", "slugger-mail-fullmoon-mail", ".playwright-mcp")
-    const mboxPath = path.join(sandboxDir, "HEY-emails-ari-mendelow-me.mbox")
+    const mboxPath = path.join(sandboxDir, "HEY-emails-owner-example-test.mbox")
     fs.mkdirSync(sandboxDir, { recursive: true })
     fs.writeFileSync(mboxPath, "From MAILER-DAEMON Thu Jan  1 00:00:00 1970\n", "utf-8")
     const downloadedAt = new Date("2026-04-24T05:40:00.000Z")
@@ -624,10 +624,10 @@ describe("mail import discovery", () => {
     const sandboxDir = path.join(repoRoot, ".playwright-mcp")
     fs.mkdirSync(sandboxDir, { recursive: true })
     for (const name of [
-      "HEY-emails-ari-mendelow-me-1.mbox",
-      "HEY-emails-ari-mendelow-me-2.mbox",
-      "HEY-emails-ari-mendelow-me-3.mbox",
-      "HEY-emails-ari-mendelow-me-4.mbox",
+      "HEY-emails-owner-example-test-1.mbox",
+      "HEY-emails-owner-example-test-2.mbox",
+      "HEY-emails-owner-example-test-3.mbox",
+      "HEY-emails-owner-example-test-4.mbox",
     ]) {
       fs.writeFileSync(path.join(sandboxDir, name), "From MAILER-DAEMON Thu Jan  1 00:00:00 1970\n", "utf-8")
     }
@@ -656,7 +656,7 @@ describe("mail import discovery", () => {
     const repoRoot = path.join(homeDir, "repo")
     const sandboxDir = path.join(repoRoot, ".playwright-mcp")
     fs.mkdirSync(sandboxDir, { recursive: true })
-    const mboxPath = path.join(sandboxDir, "HEY-emails-ari-mendelow-me.mbox")
+    const mboxPath = path.join(sandboxDir, "HEY-emails-owner-example-test.mbox")
     fs.writeFileSync(mboxPath, "From MAILER-DAEMON Thu Jan  1 00:00:00 1970\n", "utf-8")
 
     const visible = listAmbientMailImportOperations({
@@ -685,7 +685,7 @@ describe("mail import discovery", () => {
     const agentRoot = path.join(homeDir, "AgentBundles", "slugger.ouro")
     const operationsDir = path.join(agentRoot, "state", "background-operations")
     const sandboxDir = path.join(repoRoot, ".playwright-mcp")
-    const mboxPath = path.join(sandboxDir, "HEY-emails-ari-mendelow-me.mbox")
+    const mboxPath = path.join(sandboxDir, "HEY-emails-owner-example-test.mbox")
     fs.mkdirSync(operationsDir, { recursive: true })
     fs.mkdirSync(sandboxDir, { recursive: true })
     fs.writeFileSync(mboxPath, "From MAILER-DAEMON Thu Jan  1 00:00:00 1970\n", "utf-8")

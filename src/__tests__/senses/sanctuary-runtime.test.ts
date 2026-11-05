@@ -81,8 +81,8 @@ vi.mock("../../senses/sanctuary-health", () => ({
 }))
 vi.mock("../../senses/sanctuary-house", () => ({
   readSanctuaryHouse: () => ({
-    ownerName: "Ari", butlerName: "Butler", householdName: "Home", requiredContainers: [], booksContainer: "calibre-web",
-    publicEndpoints: [{ name: "media", url: "https://media.mendelow.cloud/" }, { name: "books", url: "https://books.mendelow.cloud/" }],
+    ownerName: "Alex", butlerName: "Butler", householdName: "Home", requiredContainers: [], booksContainer: "calibre-web",
+    publicEndpoints: [{ name: "media", url: "https://media.example.home/" }, { name: "books", url: "https://books.example.home/" }],
   }),
 }))
 vi.mock("../../senses/sanctuary-sab", () => ({
@@ -106,7 +106,7 @@ vi.mock("../../senses/sanctuary-grounding", async (importOriginal) => {
 })
 
 import type { UnraidRestartAttempt } from "../../repertoire/unraid-restart"
-import { createSanctuaryToolContext, ensureSanctuarySourceRuntimeReady, runWithSanctuaryToolReceiptCollection } from "../../senses/sanctuary-runtime"
+import { createSanctuaryToolContext, ensureSanctuarySourceRuntimeReady, runWithSanctuaryToolReceiptCollection, sanctuaryJellyfinDeviceId } from "../../senses/sanctuary-runtime"
 
 function availableConfig(config: Record<string, unknown>) {
   return {
@@ -299,6 +299,7 @@ describe("Sanctuary runtime tool context", () => {
     })
     expect(runtimeMocks.createUnraidReadTools).toHaveBeenCalledOnce()
     expect(runtimeMocks.createSanctuaryMediaOptimizationClient).toHaveBeenCalledWith({
+      jellyfinDeviceId: "butler-sanctuary",
       jellyfinUserId: "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
       jellyfinAccessToken: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
       jellyfinFolderIds: ["library-a", "library-b"],
@@ -415,8 +416,8 @@ describe("Sanctuary runtime tool context", () => {
 
   it("checks every fixed public service endpoint on demand and records one bounded read receipt", async () => {
     runtimeMocks.probeSanctuaryEndpoint
-      .mockResolvedValueOnce({ url: "https://media.mendelow.cloud/", ok: true, status: 200 })
-      .mockResolvedValueOnce({ url: "https://books.mendelow.cloud/", ok: false, status: 503 })
+      .mockResolvedValueOnce({ url: "https://media.example.home/", ok: true, status: 200 })
+      .mockResolvedValueOnce({ url: "https://books.example.home/", ok: false, status: 503 })
     const context = createSanctuaryToolContext("slugger")
 
     await expect(context.sanctuary!.checkServices()).resolves.toEqual({
@@ -424,8 +425,8 @@ describe("Sanctuary runtime tool context", () => {
       data: {
         observedAt: expect.stringMatching(/^\d{4}-/u),
         services: [
-          { name: "media", url: "https://media.mendelow.cloud/", ok: true, status: 200 },
-          { name: "books", container: "calibre-web", url: "https://books.mendelow.cloud/", ok: false, status: 503 },
+          { name: "media", url: "https://media.example.home/", ok: true, status: 200 },
+          { name: "books", container: "calibre-web", url: "https://books.example.home/", ok: false, status: 503 },
         ],
         degraded: true,
       },
@@ -723,5 +724,24 @@ describe("Sanctuary runtime tool context", () => {
     const attempt: UnraidRestartAttempt = { state: "attempting", container: { id: "docker:b", name: "calibre-web" }, beforeState: "running", observedAt: "2026-08-20T00:00:00.000Z", actionDigest: "a".repeat(64), argumentDigest: "b".repeat(64), scenarioHandleDigest: "c".repeat(64), approvalId: "approval-2", attemptId: "attempt-2", mutationAcknowledged: false, afterState: null }
 
     await expect(persist(attempt)).rejects.toThrow("corrupt")
+  })
+})
+
+describe("Sanctuary Jellyfin device id", () => {
+  it("prefers an explicit jellyfin.deviceId from machine config over the derived slug", () => {
+    runtimeMocks.readMachineRuntimeCredentialConfig.mockReturnValueOnce(configured({ jellyfin: { userId: " bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb ", accessToken: " aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa ", folderIds: " library-a, library-b ", deviceId: "pinned-device-id" } }))
+    createSanctuaryToolContext("sanctuary")
+    expect(runtimeMocks.createSanctuaryMediaOptimizationClient).toHaveBeenLastCalledWith(expect.objectContaining({ jellyfinDeviceId: "pinned-device-id" }))
+  })
+
+  it("derives the pinned device id from the house's Butler name", () => {
+    // An existing install keeps the device id its restricted Jellyfin user was created with: it was this same slug.
+    expect(sanctuaryJellyfinDeviceId("Example Cloud Butler")).toBe("example-cloud-butler-sanctuary")
+    expect(sanctuaryJellyfinDeviceId("the Butler")).toBe("the-butler-sanctuary")
+    expect(sanctuaryJellyfinDeviceId("Café Butler")).toBe("cafe-butler-sanctuary")
+    expect(sanctuaryJellyfinDeviceId("x".repeat(300))).toMatch(/^[a-z0-9][a-z0-9-]{2,127}$/u)
+    expect(sanctuaryJellyfinDeviceId("執事")).toBe("the-butler-sanctuary")
+    expect(sanctuaryJellyfinDeviceId("  Café  Butler! ")).toBe("cafe-butler-sanctuary")
+    expect(sanctuaryJellyfinDeviceId("???")).toBe("the-butler-sanctuary")
   })
 })

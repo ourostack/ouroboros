@@ -466,7 +466,7 @@ describe("daemon entrypoint", () => {
     })
     vi.spyOn(process, "argv", "get").mockReturnValue(["node", "daemon-entry.js", "--package-managed-agent", "sanctuary"])
 
-    await expect(import("../../../heart/daemon/daemon-entry")).rejects.toThrow("human-required: roll back to a verified Mendelow Cloud Butler release or install that release again")
+    await expect(import("../../../heart/daemon/daemon-entry")).rejects.toThrow("human-required: roll back to a verified Ouro Butler release or install that release again")
     expect(exit).toHaveBeenCalledOnce()
     expect(exit).toHaveBeenCalledWith(1)
     expect(configureDaemonRuntimeLogger).toHaveBeenCalledWith("daemon")
