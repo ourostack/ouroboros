@@ -11,6 +11,8 @@ const durabilityProbe = vi.hoisted(() => ({
   events: [] as string[],
   failAfter: null as string | null,
   failAfterPrefix: null as string | null,
+  beforeOpen: null as ((target: string) => void) | null,
+  afterOpen: null as ((target: string) => void) | null,
   failureArmed: false,
   failureInjected: false,
 }))
@@ -45,8 +47,10 @@ vi.mock("node:fs", async (importOriginal) => {
       return actual.fsyncSync(handle)
     },
     openSync(target: fs.PathLike, flags: fs.OpenMode, mode?: fs.Mode) {
+      durabilityProbe.beforeOpen?.(String(target))
       const handle = actual.openSync(target, flags, mode)
       durabilityProbe.descriptors.set(handle, String(target))
+      durabilityProbe.afterOpen?.(String(target))
       return handle
     },
     renameSync(before: fs.PathLike, after: fs.PathLike) {
@@ -185,6 +189,8 @@ afterEach(() => {
   durabilityProbe.events = []
   durabilityProbe.failAfter = null
   durabilityProbe.failAfterPrefix = null
+  durabilityProbe.beforeOpen = null
+  durabilityProbe.afterOpen = null
   durabilityProbe.failureArmed = false
   durabilityProbe.failureInjected = false
   durabilityProbe.descriptors.clear()
@@ -1301,20 +1307,84 @@ describe("Sanctuary starter psyche", () => {
     expect(seedLeftovers(agentRoot)).toEqual([])
   })
 
-  it("leaves a non-directory leftover name alone and keeps an unexpected stage", () => {
+  it("leaves a stage-shaped symlink alone", () => {
     const packageRoot = makePackageRoot()
     const agentRoot = makeExactAgentRoot(packageRoot)
     const outside = makeRoot("sanctuary-psyche-stage-target")
-    fs.writeFileSync(path.join(outside, "keep"), "keep\n")
+    fs.writeFileSync(path.join(outside, "SOUL.md"), "keep\n", { mode: 0o600 })
     fs.symlinkSync(outside, path.join(agentRoot, ".psyche-seed.linked"))
+
     expect(ensure(packageRoot, agentRoot)).toMatchObject({ ok: true, data: { ready: true } })
     expect(fs.lstatSync(path.join(agentRoot, ".psyche-seed.linked")).isSymbolicLink()).toBe(true)
-    expect(fs.readFileSync(path.join(outside, "keep"), "utf8")).toBe("keep\n")
+    expect(fs.readFileSync(path.join(outside, "SOUL.md"), "utf8")).toBe("keep\n")
+  })
 
-    const nested = path.join(agentRoot, ".psyche-seed.nested")
-    fs.mkdirSync(path.join(nested, "inner"), { recursive: true })
-    expect(ensure(packageRoot, agentRoot)).toEqual(liveError("invalid_live_bundle"))
-    expect(fs.lstatSync(path.join(nested, "inner")).isDirectory()).toBe(true)
+  it("never deletes an owner folder whose name only resembles a seed stage", () => {
+    const packageRoot = makePackageRoot()
+    const agentRoot = makeRoot("sanctuary-psyche-owner-notes")
+    const notes = path.join(agentRoot, ".psyche-seed.notes")
+    fs.mkdirSync(notes, { mode: 0o700 })
+    fs.chmodSync(notes, 0o700)
+    fs.writeFileSync(path.join(notes, "mine.md"), "the owner's notes\n", { mode: 0o600 })
+
+    expect(ensure(packageRoot, agentRoot)).toMatchObject({ ok: true, data: { parity: "exact", ready: true } })
+    expect(migrateSanctuaryPackageManagedBundle({ packageRoot, agentRoot })).toEqual({ managedFilesUpdated: 0 })
+    expect(fs.readFileSync(path.join(notes, "mine.md"), "utf8")).toBe("the owner's notes\n")
+    expectStarterPsyche(packageRoot, agentRoot)
+  })
+
+  it.each([
+    ["an unexpected entry", (stage: string) => { fs.mkdirSync(path.join(stage, "inner")); fs.writeFileSync(path.join(stage, "SOUL.md"), "partial", { mode: 0o600 }) }],
+    ["a non-starter file", (stage: string) => fs.writeFileSync(path.join(stage, "mine.md"), "owner\n", { mode: 0o600 })],
+    ["a starter file at a loose mode", (stage: string) => { fs.writeFileSync(path.join(stage, "SOUL.md"), "owner\n"); fs.chmodSync(path.join(stage, "SOUL.md"), 0o644) }],
+    ["a starter directory", (stage: string) => fs.mkdirSync(path.join(stage, "SOUL.md"))],
+    ["a loose stage mode", (stage: string) => { fs.writeFileSync(path.join(stage, "SOUL.md"), "partial", { mode: 0o600 }); fs.chmodSync(stage, 0o750) }],
+  ])("leaves a correctly named stage holding %s alone and still boots", (_label, arrange) => {
+    const packageRoot = makePackageRoot()
+    const agentRoot = makeExactAgentRoot(packageRoot)
+    const stage = path.join(agentRoot, ".psyche-seed.Ab12Cd")
+    fs.mkdirSync(stage, { mode: 0o700 })
+    fs.chmodSync(stage, 0o700)
+    arrange(stage)
+    const before = treeSnapshot(stage)
+
+    expect(ensure(packageRoot, agentRoot)).toMatchObject({ ok: true, data: { parity: "exact", ready: true } })
+    expect(migrateSanctuaryPackageManagedBundle({ packageRoot, agentRoot })).toEqual({ managedFilesUpdated: 0 })
+    expect(treeSnapshot(stage)).toEqual(before)
+  })
+
+  it("removes a seeder-shaped stage at either seeder mode", () => {
+    const packageRoot = makePackageRoot()
+    const agentRoot = makeExactAgentRoot(packageRoot)
+    for (const [name, mode] of [[".psyche-seed.aaaaaa", 0o700], [".psyche-seed.BBBBBB", 0o755]] as const) {
+      fs.mkdirSync(path.join(agentRoot, name))
+      fs.chmodSync(path.join(agentRoot, name), mode)
+      fs.writeFileSync(path.join(agentRoot, name, "LORE.md"), "partial", { mode: 0o600 })
+    }
+    expect(ensure(packageRoot, agentRoot)).toMatchObject({ ok: true, data: { ready: true } })
+    expect(seedLeftovers(agentRoot)).toEqual([])
+  })
+
+  it.each(["beforeOpen", "afterOpen"] as const)("skips a stage swapped for another directory (%s)", (hook) => {
+    const packageRoot = makePackageRoot()
+    const agentRoot = makeExactAgentRoot(packageRoot)
+    const stage = path.join(agentRoot, ".psyche-seed.swap01")
+    const moved = path.join(agentRoot, "moved-stage")
+    fs.mkdirSync(stage, { mode: 0o700 })
+    fs.chmodSync(stage, 0o700)
+    fs.writeFileSync(path.join(stage, "SOUL.md"), "partial", { mode: 0o600 })
+    durabilityProbe[hook] = (target) => {
+      if (target !== stage) return
+      durabilityProbe[hook] = null
+      fs.renameSync(stage, moved)
+      fs.mkdirSync(stage, { mode: 0o700 })
+      fs.chmodSync(stage, 0o700)
+      fs.writeFileSync(path.join(stage, "SOUL.md"), "swapped in", { mode: 0o600 })
+    }
+
+    expect(ensure(packageRoot, agentRoot)).toMatchObject({ ok: true, data: { ready: true } })
+    expect(fs.readFileSync(path.join(stage, "SOUL.md"), "utf8")).toBe("swapped in")
+    expect(fs.readFileSync(path.join(moved, "SOUL.md"), "utf8")).toBe("partial")
   })
 
   it("reports a missing packaged starter psyche as invalid release contents", () => {

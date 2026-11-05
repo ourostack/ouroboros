@@ -117,6 +117,18 @@ describe("Sanctuary bundle inspection I/O failures", () => {
     expect(fs.readdirSync(agentRoot).sort()).toEqual(before)
   })
 
+  it.each(["stage", "starter file"])("leaves a seed stage with a foreign-owned %s alone", (foreignPart) => {
+    const { packageRoot, agentRoot } = makeLayout()
+    const stage = path.join(agentRoot, ".psyche-seed.Fo1234")
+    fs.mkdirSync(stage, { mode: 0o700 })
+    fs.chmodSync(stage, 0o700)
+    fs.writeFileSync(path.join(stage, "SOUL.md"), "partial", { mode: 0o600 })
+    faults.owner = foreignPart === "stage" ? stage : path.join(stage, "SOUL.md")
+
+    expect(ensureSanctuaryPackageManagedBundle({ packageRoot, agentRoot, runtimePackageVersion: "v" })).toMatchObject({ ok: true, data: { ready: true } })
+    expect(fs.readFileSync(path.join(stage, "SOUL.md"), "utf8")).toBe("partial")
+  })
+
   it("fails package activation closed when filesystem identity inspection fails", () => {
     const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "sanctuary-activation-io-")))
     roots.push(root)

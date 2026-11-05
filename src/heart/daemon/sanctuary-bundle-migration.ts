@@ -15,6 +15,9 @@ export const SANCTUARY_PACKAGE_MANAGED_FILES = [
 export const SANCTUARY_STARTER_PSYCHE_FILES = ["psyche/ASPIRATIONS.md", "psyche/IDENTITY.md", "psyche/LORE.md", "psyche/SOUL.md", "psyche/TACIT.md"] as const
 
 const PSYCHE_SEED_STAGE_PREFIX = ".psyche-seed."
+// mkdtemp appends six characters from [A-Za-z0-9]; any other name under the prefix belongs to the owner.
+const PSYCHE_SEED_STAGE_NAME = /^\.psyche-seed\.[A-Za-z0-9]{6}$/u
+const STARTER_PSYCHE_NAMES: ReadonlySet<string> = new Set(SANCTUARY_STARTER_PSYCHE_FILES.map((relative) => path.basename(relative)))
 
 export const SANCTUARY_BUNDLE_ROLLBACK_FILE = ".sanctuary-package-managed-rollback.json"
 const SANCTUARY_BUNDLE_COMMITTING_FILE = `${SANCTUARY_BUNDLE_ROLLBACK_FILE}.committing`
@@ -536,15 +539,41 @@ function psycheState(agentRoot: string): "absent" | "directory" | "invalid" {
   return stat.isDirectory() ? "directory" : "invalid"
 }
 
-// A seed interrupted before its rename leaves a staging folder of plain files that never became the psyche.
-// Only real directories with the stage prefix are ours; anything else under that name is left alone.
+function sameInode(left: fs.Stats, right: fs.Stats): boolean {
+  return left.dev === right.dev && left.ino === right.ino
+}
+
+// Returns the entries of a stage this seeder could have left, or null when anything about it says otherwise.
+function interruptedPsycheSeedEntries(stage: string, root: fs.Stats): string[] | null {
+  const before = fs.lstatSync(stage)
+  const mode = before.mode & 0o777
+  if (!before.isDirectory() || (mode !== 0o700 && mode !== 0o755) || before.uid !== root.uid || before.gid !== root.gid) return null
+  const handle = fs.openSync(stage, fs.constants.O_RDONLY | fs.constants.O_DIRECTORY | fs.constants.O_NOFOLLOW)
+  let entries: string[] = []
+  try {
+    if (!sameInode(before, fs.fstatSync(handle))) return null
+    entries = fs.readdirSync(stage)
+    if (!sameInode(before, fs.lstatSync(stage))) return null
+  } finally {
+    fs.closeSync(handle)
+  }
+  for (const entry of entries) {
+    if (!STARTER_PSYCHE_NAMES.has(entry)) return null
+    const stat = fs.lstatSync(path.join(stage, entry))
+    if (!stat.isFile() || (stat.mode & 0o777) !== 0o600 || stat.uid !== root.uid) return null
+  }
+  return entries
+}
+
+// A seed interrupted before its rename leaves a mkdtemp-named stage holding only starter files that never became the psyche.
+// Anything that does not match that exact shape may be the owner's, so it is left alone.
 function cleanupInterruptedPsycheSeeds(agentRoot: string): void {
+  const root = fs.lstatSync(agentRoot)
   let removed = false
-  for (const name of fs.readdirSync(agentRoot).filter((entry) => entry.startsWith(PSYCHE_SEED_STAGE_PREFIX)).sort()) {
+  for (const name of fs.readdirSync(agentRoot).filter((entry) => PSYCHE_SEED_STAGE_NAME.test(entry)).sort()) {
     const stage = path.join(agentRoot, name)
-    if (!fs.lstatSync(stage).isDirectory()) continue
-    const entries = fs.readdirSync(stage)
-    if (entries.some((entry) => !fs.lstatSync(path.join(stage, entry)).isFile())) throw new SanctuaryInspectionFault("invalid_live_bundle", `interrupted psyche seed stage contains unexpected entries: ${name}`)
+    const entries = interruptedPsycheSeedEntries(stage, root)
+    if (!entries) continue
     for (const entry of entries) fs.unlinkSync(path.join(stage, entry))
     fs.rmdirSync(stage)
     removed = true
@@ -586,6 +615,7 @@ export function seedSanctuaryPsycheIfAbsent(
     fs.closeSync(directory)
   }
   if (psycheState(input.agentRoot) !== "absent") throw new SanctuaryInspectionFault("invalid_live_bundle", "psyche appeared while the starter psyche was staged")
+  // POSIX rename can still replace an empty psyche directory created in this window, which loses no content; Node has no RENAME_NOREPLACE.
   fs.renameSync(stage, path.join(input.agentRoot, "psyche"))
   syncDirectory(input.agentRoot)
   emitNervesEvent({ component: "daemon", event: "daemon.sanctuary_psyche_seeded", message: "seeded the starter psyche into a bundle that had none", meta: { agentRoot: input.agentRoot, files: sources.length } })
