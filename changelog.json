@@ -4,7 +4,7 @@
     {
       "version": "0.1.0-alpha.976",
       "changes": [
-        "Personal data about the maintainer's own household is removed from the repository: replay-gate cases, fixtures, tests, docs and the operator runbook use neutral example values, and the Butler reads its Telegram bot identity, Jellyfin device id and owner names from its own configuration instead of source"
+        "Personal data about the maintainer's own household is removed from the repository: replay-gate cases, fixtures, tests, docs and the operator runbook use neutral example values. The Butler reads its Telegram bot identity, Jellyfin device id (an explicit jellyfin.deviceId wins over the name-derived one) and owner names from its own configuration instead of source; the RSVP cutover finds the legacy launch agent by its *.rsvp-tracker.plist file; the replay gate's name check loads the house's names as each turn does"
       ]
     },
     {
