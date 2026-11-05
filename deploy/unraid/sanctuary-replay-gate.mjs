@@ -78,7 +78,11 @@ export function extractTimeline(session) {
   for (const event of events) {
     if (event.role !== "assistant") continue
     if (typeof event.content === "string" && event.content.length > 0) timeline.push({ kind: "reply", text: event.content })
-    for (const call of event.toolCalls ?? []) timeline.push({ kind: "call", name: call.function?.name ?? "", args: call.function?.arguments ?? "", result: results.get(call.id) ?? "" })
+    for (const call of event.toolCalls ?? []) {
+      timeline.push({ kind: "call", name: call.function?.name ?? "", args: call.function?.arguments ?? "", result: results.get(call.id) ?? "" })
+      const answer = settleAnswer(call)
+      if (answer) timeline.push({ kind: "reply", text: answer })
+    }
   }
   return timeline
 }
@@ -148,10 +152,19 @@ export function offersToStartStoppedContainer(text) {
   return new RegExp(`\\b(?:want me to|should i|shall i|do you want me to|would you like me to|i can|i could|i'll|let me)\\b[^.!?\\n]*\\b${START_VERB}\\b`, "i").test(t)
 }
 
-/** Everything the assistant said across a session, in order (a reply may be spread over several messages). */
+/** The answer a settle call delivered, or "" for any other call. The Butler's final reply goes out through settle, not as message text. */
+export function settleAnswer(call) {
+  if (call?.function?.name !== "settle") return ""
+  try { const answer = JSON.parse(call.function.arguments ?? "").answer; return typeof answer === "string" ? answer : "" } catch { return "" }
+}
+
+/** What one assistant event said, in order: its own text, then any settle answers it delivered. */
+const spoken = (event) => event?.role !== "assistant" ? [] : [typeof event.content === "string" ? event.content : "", ...(event.toolCalls ?? []).map(settleAnswer)].filter((text) => text.length > 0)
+
+/** Everything the assistant said across a session, in order (a reply may be spread over several messages, and the last is often a settle answer). */
 export function extractReplies(session) {
   const events = Array.isArray(session?.events) ? session.events : []
-  return events.filter((event) => event.role === "assistant" && typeof event.content === "string" && event.content.length > 0).map((event) => event.content).join("\n")
+  return events.flatMap(spoken).join("\n")
 }
 
 export const STALL_MIN_AGE_HOURS = 6
@@ -640,15 +653,16 @@ export function ownerPolicyUntouched(before, after) {
 const sessionEvents = (session) => (Array.isArray(session?.events) ? session.events : [])
 /** The last thing the assistant said in a session, or "" when it has said nothing. */
 export function lastReply(session) {
-  const replies = sessionEvents(session).filter((event) => event.role === "assistant" && typeof event.content === "string" && event.content.length > 0)
-  return replies.at(-1)?.content ?? ""
+  return sessionEvents(session).flatMap(spoken).at(-1) ?? ""
 }
 
-/** A turn has finished when the session has grown past what it held before the message and ends on a plain reply (no tool calls pending). */
+/** A turn has finished when the session has grown past what it held before the message and ends on a plain reply (no tool calls pending), or on the delivery of a settle answer. */
 export function turnSettled(session, eventsBefore) {
   const events = sessionEvents(session)
   const last = events.at(-1)
-  return events.length > eventsBefore && last?.role === "assistant" && typeof last.content === "string" && last.content.length > 0 && !(Array.isArray(last.toolCalls) && last.toolCalls.length > 0)
+  if (events.length <= eventsBefore) return false
+  if (last?.role === "tool") return events.some((event) => event.role === "assistant" && (event.toolCalls ?? []).some((call) => call.id === last.toolCallId && call.function?.name === "settle"))
+  return last?.role === "assistant" && typeof last.content === "string" && last.content.length > 0 && !(Array.isArray(last.toolCalls) && last.toolCalls.length > 0)
 }
 
 /** After a cut send, wait (bounded) until the turn has settled and the session has stopped growing between two reads. */

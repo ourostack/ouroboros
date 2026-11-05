@@ -114,6 +114,25 @@ describe("readback helpers", () => {
     expect(gate.extractReplies(null)).toBe("")
   })
 
+  // alpha.976 chef-question: a mid-turn narration line, then the real answer through settle. The gate read only the narration.
+  it("counts a settle answer as what the assistant said, after any narration", () => {
+    const settle = (id: string, args: string) => ({ role: "assistant", content: null, toolCalls: [{ id, function: { name: "settle", arguments: args } }] })
+    const session = { events: [
+      { role: "user", content: "why don't we have all eps of chef?" },
+      { role: "assistant", content: "That matched the 2014 film. Let me look it up.", toolCalls: [{ id: "a", function: { name: "media_search", arguments: "{}" } }] },
+      { role: "tool", toolCallId: "a", content: "{}" },
+      settle("b", JSON.stringify({ answer: "i'm guessing you mean the chef show.", intent: "complete" })),
+      { role: "tool", toolCallId: "b", content: "(delivered)" },
+      settle("c", "not json"), settle("d", JSON.stringify({ intent: "complete" })),
+    ] }
+    expect(gate.extractReplies(session)).toBe("That matched the 2014 film. Let me look it up.\ni'm guessing you mean the chef show.")
+    expect(gate.lastReply(session)).toBe("i'm guessing you mean the chef show.")
+    expect(gate.extractTimeline(session).filter((e: { kind: string }) => e.kind === "reply").map((e: { text: string }) => e.text)).toEqual(["That matched the 2014 film. Let me look it up.", "i'm guessing you mean the chef show."])
+    const chef = gate.CASES.find((c: { id: string }) => c.id === "chef-question")
+    const checks = chef.readback({ trace: [{ name: "media_episodes", args: "{\"service_id\":191}", result: "" }], reply: "", said: gate.extractReplies(session) })
+    expect(checks.every((c: { ok: boolean }) => c.ok)).toBe(true)
+  })
+
   it("counts only owner-notice effects created inside the window", () => {
     const at = (ms: number) => new Date(ms).toISOString()
     const effects = [
@@ -710,6 +729,15 @@ describe("a fair gate (2026-10-25: live 911 failed its own gate)", () => {
     expect(gate.turnSettled(chefTurn, 4)).toBe(false)
     expect(gate.turnSettled(chefTurn, 1)).toBe(true)
     expect(gate.turnSettled({ events: chefTurn.events.slice(0, 3) }, 1)).toBe(false)
+  })
+
+  it("sees a turn that ended by delivering a settle answer as settled, and one still running a tool as not", () => {
+    const settleCall = { role: "assistant", content: null, toolCalls: [{ id: "s", function: { name: "settle", arguments: "{\"answer\":\"done\"}" } }] }
+    const otherCall = { role: "assistant", content: null, toolCalls: [{ id: "m", function: { name: "media_queue", arguments: "{}" } }] }
+    const user = { role: "user", content: "hi" }
+    expect(gate.turnSettled({ events: [user, settleCall, { role: "tool", toolCallId: "s", content: "(delivered)" }] }, 1)).toBe(true)
+    expect(gate.turnSettled({ events: [user, otherCall, { role: "tool", toolCallId: "m", content: "{}" }] }, 1)).toBe(false)
+    expect(gate.turnSettled({ events: [user, settleCall] }, 1)).toBe(false)
   })
 
   it("does not block on a case that fails on live too, but still blocks on one that passed on live", async () => {
