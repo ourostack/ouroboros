@@ -2,6 +2,12 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.976",
+      "changes": [
+        "Personal data about the maintainer's own household is removed from the repository: replay-gate cases, fixtures, tests, docs and the operator runbook use neutral example values, and the Butler reads its Telegram bot identity, Jellyfin device id and owner names from its own configuration instead of source"
+      ]
+    },
+    {
       "version": "0.1.0-alpha.975",
       "changes": [
         "Butler: when a reply check sends a draft back, the runtime tells the model the draft was never sent, so the person gets the whole answer instead of only a 'one correction' follow-up."
