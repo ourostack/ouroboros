@@ -5,6 +5,7 @@ import { isTrustedLevel, type TrustLevel } from "@ouro.bot/friends"
 import { parse as parseShell, quote as quoteShell, type ControlOperator } from "shell-quote"
 import { emitNervesEvent } from "../nerves/runtime"
 import { validateCommerceAuthority } from "../commerce/store"
+import { getRepoRoot } from "../heart/identity"
 
 export interface GuardContext {
   readPaths: ReadonlySet<string>
@@ -53,9 +54,57 @@ const PROTECTED_PATH_SEGMENTS = [
 ]
 const PROTECTED_FILENAMES = ["agent.json", "tool-profiles.json"]
 
-/** The agent's psyche folder ships only from the repository (a pull request and the replay gate), so no tool writes into it. */
-function isPsychePath(filePath: string, agentRoot: string | undefined): boolean {
-  if (!agentRoot || !filePath) return false
+/** How many symlinks a dangling-link walk follows before treating the path as unresolvable (the kernel's own limit is 40). */
+const MAX_SYMLINK_HOPS = 40
+
+/**
+ * The real location of `lexical`: `realpathSync.native` of the deepest part that exists, the final file included, with the
+ * missing remainder appended. A dangling symlink is followed to where a write through it would land.
+ */
+function canonicalize(lexical: string): string {
+  let current = lexical
+  const missing: string[] = []
+  let hops = 0
+  for (;;) {
+    try {
+      return path.join(fs.realpathSync.native(current), ...missing)
+    } catch {
+      // `current` does not resolve; follow it if it is a dangling symlink, or step up to its parent.
+    }
+    try {
+      if (hops < MAX_SYMLINK_HOPS && fs.lstatSync(current).isSymbolicLink()) {
+        hops += 1
+        current = path.resolve(path.dirname(current), fs.readlinkSync(current))
+        continue
+      }
+    } catch {
+      // Nothing at `current`: step up.
+    }
+    const parent = path.dirname(current)
+    if (parent === current) return path.join(current, ...missing)
+    missing.unshift(path.basename(current))
+    current = parent
+  }
+}
+
+/**
+ * Every place a file tool could write `p`: resolved against the agent root and against the repo root (which is what
+ * `write_file` and `edit_file` use), each in its lexical and canonical form. An absolute `p` is resolved only as itself.
+ */
+export function canonicalTarget(p: string, agentRoot: string): readonly string[] {
+  const lexicals = path.isAbsolute(p) ? [p] : [path.resolve(agentRoot, p), path.resolve(getRepoRoot(), p)]
+  return lexicals.flatMap((lexical) => [lexical, canonicalize(lexical)])
+}
+
+/** True when any form of `p` is the agent's `folder` (in either its lexical or its canonical form) or under it. */
+export function insideAgentFolder(p: string, agentRoot: string, folder: "psyche" | "friends" | "product"): boolean {
+  const lexicalFolder = path.resolve(agentRoot, folder)
+  const folders = [lexicalFolder, canonicalize(lexicalFolder)]
+  return canonicalTarget(p, agentRoot).some((target) => folders.some((dir) => target === dir || target.startsWith(`${dir}${path.sep}`)))
+}
+
+/** The agent's psyche folder ships only from the repository (a pull request and the replay gate), so no tool writes into it. The shell check uses this lexical form; the file tools use `insideAgentFolder`. */
+function isPsychePath(filePath: string, agentRoot: string): boolean {
   const psyche = path.resolve(agentRoot, "psyche")
   const target = path.resolve(agentRoot, filePath)
   return target === psyche || target.startsWith(`${psyche}${path.sep}`)
@@ -67,8 +116,7 @@ function isPsychePath(filePath: string, agentRoot: string | undefined): boolean 
  * Scoped to this agent's root, so a project directory that happens to be named `friends` stays editable. Defence in depth
  * only: a shell can still write anywhere its uid can, which is why delegated-command authority lives outside the bundle.
  */
-function isFriendsStorePath(filePath: string, agentRoot: string | undefined): boolean {
-  if (!agentRoot || !filePath) return false
+function isFriendsStorePath(filePath: string, agentRoot: string): boolean {
   const store = path.resolve(agentRoot, "friends")
   const target = path.resolve(agentRoot, filePath)
   return target === store || target.startsWith(`${store}${path.sep}`)
@@ -255,8 +303,10 @@ function checkDestructiveShellPatterns(toolName: string, args: Record<string, st
 function checkProtectedPaths(toolName: string, args: Record<string, string>, context: GuardContext): GuardResult {
   if (toolName === "write_file" || toolName === "edit_file") {
     const filePath = args.path || ""
-    if (isPsychePath(filePath, context.agentRoot)) return deny(REASONS.psychePath)
-    if (isProtectedPath(filePath) || isFriendsStorePath(filePath, context.agentRoot)) return deny(REASONS.protectedPath)
+    // The file tools resolve a relative path against the repo root and follow symlinks, so the guard checks every form.
+    const agentRoot = filePath ? context.agentRoot : undefined
+    if (agentRoot && insideAgentFolder(filePath, agentRoot, "psyche")) return deny(REASONS.psychePath)
+    if (isProtectedPath(filePath) || (agentRoot && insideAgentFolder(filePath, agentRoot, "friends"))) return deny(REASONS.protectedPath)
   }
 
   if (toolName === "shell") {

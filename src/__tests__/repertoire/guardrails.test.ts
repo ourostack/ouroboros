@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from "vitest"
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest"
 import * as fs from "node:fs"
 import * as os from "node:os"
 import * as path from "node:path"
@@ -9,6 +9,11 @@ vi.mock("node:fs", async () => {
     ...actual,
     existsSync: vi.fn().mockReturnValue(false),
   }
+})
+
+vi.mock("../../heart/identity", async () => {
+  const actual = await vi.importActual<typeof import("../../heart/identity")>("../../heart/identity")
+  return { ...actual, getRepoRoot: () => "/opt/ouro" }
 })
 
 describe("guardInvocation — structural guardrails", () => {
@@ -1435,6 +1440,144 @@ describe("OURO_CLI_TRUST_MANIFEST — rollback and versions", () => {
       expect(guardInvocation("write_file", { path: "" }, ctx({ readPaths: new Set() }))).toEqual({ allowed: true })
       expect(guardInvocation("read_file", { path: "/bundle/psyche/SOUL.md" }, ctx())).toEqual({ allowed: true })
       expect(guardInvocation("shell", { command: "cat /bundle/psyche/SOUL.md" }, ctx())).toEqual({ allowed: true })
+    })
+  })
+})
+
+describe("protected folders resolve paths the way the file tools do", () => {
+  const root = "/home/ouro/AgentBundles/sanctuary.ouro"
+  const ctx = (target: string) => ({ readPaths: new Set([target]), agentRoot: root, trustLevel: "family" as const })
+  const realRealpath = fs.realpathSync.native
+  const temps: string[] = []
+  const tempRoot = () => {
+    const made = fs.mkdtempSync(path.join(os.tmpdir(), "guard-canonical-"))
+    temps.push(made)
+    return made
+  }
+
+  beforeEach(() => {
+    vi.resetModules()
+    vi.mocked(fs.existsSync).mockReturnValue(false)
+  })
+  afterEach(() => {
+    vi.restoreAllMocks()
+    for (const made of temps.splice(0)) fs.rmSync(made, { recursive: true, force: true })
+  })
+
+  it("refuses a relative path that the file tools resolve into the psyche from the repo root", async () => {
+    const { guardInvocation } = await import("../../repertoire/guardrails")
+    const target = "../../home/ouro/AgentBundles/sanctuary.ouro/psyche/SOUL.md"
+    for (const tool of ["write_file", "edit_file"]) {
+      expect(guardInvocation(tool, { path: target }, ctx(target)), tool).toMatchObject({ allowed: false, reason: expect.stringContaining("pull request") })
+    }
+  })
+
+  it("refuses the same relative form into the friends store", async () => {
+    const { guardInvocation } = await import("../../repertoire/guardrails")
+    const target = "../../home/ouro/AgentBundles/sanctuary.ouro/friends/x.json"
+    for (const tool of ["write_file", "edit_file"]) {
+      expect(guardInvocation(tool, { path: target }, ctx(target)), tool).toMatchObject({ allowed: false, reason: expect.stringContaining("protected") })
+    }
+  })
+
+  it("refuses a case alias of the psyche folder that the filesystem resolves to it", async () => {
+    vi.spyOn(fs.realpathSync, "native").mockImplementation(((p: fs.PathLike) => {
+      const text = String(p)
+      if (text.startsWith(`${root}/Psyche`)) return text.replace(`${root}/Psyche`, `${root}/psyche`)
+      return realRealpath(text)
+    }) as typeof fs.realpathSync.native)
+    const { guardInvocation } = await import("../../repertoire/guardrails")
+    const target = `${root}/Psyche/SOUL.md`
+    expect(guardInvocation("write_file", { path: target }, ctx(target))).toMatchObject({ allowed: false, reason: expect.stringContaining("pull request") })
+  })
+
+  it("refuses a write through a psyche folder that is itself a symlink", async () => {
+    const agentRoot = tempRoot()
+    const elsewhere = tempRoot()
+    fs.symlinkSync(elsewhere, path.join(agentRoot, "psyche"))
+    const { guardInvocation } = await import("../../repertoire/guardrails")
+    const target = path.join(agentRoot, "psyche", "SOUL.md")
+    expect(guardInvocation("write_file", { path: target }, { readPaths: new Set([target]), agentRoot, trustLevel: "family" })).toMatchObject({ allowed: false })
+  })
+
+  it("refuses a write through a symlink elsewhere in the bundle that points into the psyche", async () => {
+    const agentRoot = tempRoot()
+    fs.mkdirSync(path.join(agentRoot, "psyche"))
+    fs.mkdirSync(path.join(agentRoot, "notes"))
+    fs.writeFileSync(path.join(agentRoot, "psyche", "SOUL.md"), "soul")
+    fs.symlinkSync(path.join(agentRoot, "psyche", "SOUL.md"), path.join(agentRoot, "notes", "link.md"))
+    const { guardInvocation } = await import("../../repertoire/guardrails")
+    const target = path.join(agentRoot, "notes", "link.md")
+    expect(guardInvocation("write_file", { path: target }, { readPaths: new Set([target]), agentRoot, trustLevel: "family" })).toMatchObject({ allowed: false, reason: expect.stringContaining("pull request") })
+  })
+
+  it("refuses a dangling symlink whose target would land in the psyche or the friends store", async () => {
+    const agentRoot = tempRoot()
+    fs.mkdirSync(path.join(agentRoot, "psyche"))
+    fs.mkdirSync(path.join(agentRoot, "friends"))
+    fs.mkdirSync(path.join(agentRoot, "notes"))
+    fs.symlinkSync("../psyche/NEW.md", path.join(agentRoot, "notes", "new.md"))
+    fs.symlinkSync(path.join(agentRoot, "friends", "forged.json"), path.join(agentRoot, "notes", "forged.json"))
+    const { guardInvocation } = await import("../../repertoire/guardrails")
+    for (const [name, reason] of [["new.md", "pull request"], ["forged.json", "protected"]]) {
+      const target = path.join(agentRoot, "notes", name)
+      expect(guardInvocation("write_file", { path: target }, { readPaths: new Set([target]), agentRoot, trustLevel: "family" }), name).toMatchObject({ allowed: false, reason: expect.stringContaining(reason) })
+    }
+  })
+
+  it("leaves ordinary paths with today's results", async () => {
+    const { guardInvocation } = await import("../../repertoire/guardrails")
+    for (const target of [`${root}/notes/x.md`, "notes/x.md", "/tmp/x"]) {
+      expect(guardInvocation("write_file", { path: target }, ctx(target)), target).toEqual({ allowed: true })
+    }
+    expect(guardInvocation("write_file", { path: `${root}/notes/x.md` }, { readPaths: new Set(), agentRoot: root, trustLevel: "family" })).toEqual({ allowed: true })
+  })
+
+  describe("canonicalTarget", () => {
+    it("returns an absolute path's own lexical and canonical forms", async () => {
+      const agentRoot = tempRoot()
+      const { canonicalTarget } = await import("../../repertoire/guardrails")
+      const target = path.join(agentRoot, "a", "b.md")
+      expect(canonicalTarget(target, "/somewhere/else")).toEqual([target, path.join(realRealpath(agentRoot), "a", "b.md")])
+    })
+
+    it("returns forms under both the agent root and the repo root for a relative path", async () => {
+      const agentRoot = tempRoot()
+      const { canonicalTarget } = await import("../../repertoire/guardrails")
+      const forms = canonicalTarget("notes/x.md", agentRoot)
+      expect(forms).toHaveLength(4)
+      expect(forms.slice(0, 2)).toEqual([path.join(agentRoot, "notes", "x.md"), path.join(realRealpath(agentRoot), "notes", "x.md")])
+      expect(forms[2]).toBe("/opt/ouro/notes/x.md")
+      expect(forms[3].endsWith(path.join("ouro", "notes", "x.md"))).toBe(true)
+    })
+
+    it("follows the final file when it exists, and stops following a symlink loop", async () => {
+      const agentRoot = tempRoot()
+      fs.writeFileSync(path.join(agentRoot, "real.md"), "x")
+      fs.symlinkSync(path.join(agentRoot, "real.md"), path.join(agentRoot, "alias.md"))
+      fs.symlinkSync(path.join(agentRoot, "loop-b"), path.join(agentRoot, "loop-a"))
+      fs.symlinkSync(path.join(agentRoot, "loop-a"), path.join(agentRoot, "loop-b"))
+      const { canonicalTarget } = await import("../../repertoire/guardrails")
+      const realRoot = realRealpath(agentRoot)
+      expect(canonicalTarget(path.join(agentRoot, "alias.md"), agentRoot)[1]).toBe(path.join(realRoot, "real.md"))
+      expect(canonicalTarget(path.join(agentRoot, "loop-a", "x"), agentRoot)[1]).toBe(path.join(realRoot, "loop-a", "x"))
+    })
+
+    it("keeps the lexical path when nothing on it can be resolved", async () => {
+      vi.spyOn(fs.realpathSync, "native").mockImplementation((() => { throw new Error("EACCES") }) as typeof fs.realpathSync.native)
+      const { canonicalTarget } = await import("../../repertoire/guardrails")
+      expect(canonicalTarget("/a/b", "/root")).toEqual(["/a/b", "/a/b"])
+    })
+  })
+
+  describe("insideAgentFolder", () => {
+    it("matches the folder itself and anything under it, and nothing beside it", async () => {
+      const { insideAgentFolder } = await import("../../repertoire/guardrails")
+      expect(insideAgentFolder(`${root}/product`, root, "product")).toBe(true)
+      expect(insideAgentFolder(`${root}/product/PRODUCT.md`, root, "product")).toBe(true)
+      expect(insideAgentFolder(`${root}/product-old/PRODUCT.md`, root, "product")).toBe(false)
+      expect(insideAgentFolder("product/PRODUCT.md", root, "product")).toBe(true)
+      expect(insideAgentFolder("/home/ari/code/app/product/x.md", root, "product")).toBe(false)
     })
   })
 })
