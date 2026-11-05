@@ -14,7 +14,7 @@ let store: FileFriendStore
 let family: FriendRecord
 
 function teamsResolver(): FriendResolver {
-  return new FriendResolver(store, { provider: "aad", externalId: AAD.externalId, tenantId: AAD.tenantId, displayName: "Ari Mendelow", channel: "teams" })
+  return new FriendResolver(store, { provider: "aad", externalId: AAD.externalId, tenantId: AAD.tenantId, displayName: "Alex Example", channel: "teams" })
 }
 
 async function teamsStranger(): Promise<FriendRecord> {

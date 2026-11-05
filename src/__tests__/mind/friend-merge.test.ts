@@ -169,7 +169,7 @@ describe("mergeFriends", () => {
     const family = record({ id: "family-ari", notes: { name: { value: "Ari", savedAt: "t" } } })
     await store.put(family.id, family)
     // How a Teams message from an unknown AAD user creates its stranger record.
-    const teamsResolver = () => new FriendResolver(store, { provider: "aad", externalId: AAD.externalId, tenantId: AAD.tenantId, displayName: "Ari Mendelow", channel: "teams" })
+    const teamsResolver = () => new FriendResolver(store, { provider: "aad", externalId: AAD.externalId, tenantId: AAD.tenantId, displayName: "Alex Example", channel: "teams" })
     const stranger = (await teamsResolver().resolve()).friend
     expect(stranger.trustLevel).toBe("stranger")
     expect(fs.readdirSync(path.join(friendsDir, "_external-id-claims"))).toHaveLength(1)

@@ -13,7 +13,7 @@ function sampleSnapshot(): RsvpSnapshot {
       adapter: "aisleplanner-api-v1",
     },
     guests: {
-      "1": { first_name: "Ari", last_name: "Mendelow", group_id: 7, attending_status: "attending" },
+      "1": { first_name: "Alex", last_name: "Example", group_id: 7, attending_status: "attending" },
       "2": { first_name: "Rachel", last_name: "Example", group_id: 7, attending_status: null },
       "3": { first_name: "Debra", last_name: "Edelson", group_id: 8, attending_status: "declined" },
       "4": { first_name: "", last_name: "", group_id: 7, attending_status: null },
@@ -51,8 +51,8 @@ describe("RSVP snapshot query", () => {
       status: "pending",
       count: 2,
       total: 5,
-      names: ["Rachel Example", "Unnamed guest (via Ari Mendelow)"],
-      text: "Pending (2/5): Rachel Example; Unnamed guest (via Ari Mendelow)",
+      names: ["Rachel Example", "Unnamed guest (via Alex Example)"],
+      text: "Pending (2/5): Rachel Example; Unnamed guest (via Alex Example)",
     })
   })
 
@@ -82,7 +82,7 @@ describe("RSVP snapshot query", () => {
   it("handles explicit status aliases, invalid status input, and empty result sets", () => {
     expect(queryRsvpSnapshot(sampleSnapshot(), { status: "attending" })).toMatchObject({
       status: "attending",
-      text: "Attending (1/5): Ari Mendelow",
+      text: "Attending (1/5): Alex Example",
     })
     expect(queryRsvpSnapshot(sampleSnapshot(), { status: "all" })).toMatchObject({
       status: "all",
@@ -90,11 +90,11 @@ describe("RSVP snapshot query", () => {
     })
     expect(queryRsvpSnapshot(sampleSnapshot(), { status: "bogus" as never, query: "who is attending?" })).toMatchObject({
       status: "attending",
-      names: ["Ari Mendelow"],
+      names: ["Alex Example"],
     })
     expect(queryRsvpSnapshot(sampleSnapshot(), { status: "pending", query: "ignored name" })).toMatchObject({
       status: "pending",
-      names: ["Rachel Example", "Unnamed guest (via Ari Mendelow)"],
+      names: ["Rachel Example", "Unnamed guest (via Alex Example)"],
     })
     expect(queryRsvpSnapshot(sampleSnapshot(), { query: "not-a-real-guest" })).toMatchObject({
       status: "all",
@@ -107,11 +107,11 @@ describe("RSVP snapshot query", () => {
     })
     expect(queryRsvpSnapshot(sampleSnapshot(), { status: "attending", query: "not-a-real-guest" })).toMatchObject({
       status: "attending",
-      text: "Attending (1/5): Ari Mendelow",
+      text: "Attending (1/5): Alex Example",
     })
     expect(queryRsvpSnapshot(sampleSnapshot(), { status: "attending", query: "who is pending?" })).toMatchObject({
       status: "attending",
-      names: ["Ari Mendelow"],
+      names: ["Alex Example"],
     })
     expect(queryRsvpSnapshot(declinedOnlySnapshot(), { status: "attending" })).toMatchObject({
       status: "attending",

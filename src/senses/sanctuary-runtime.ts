@@ -19,6 +19,7 @@ import { readSanctuaryAcceptanceApproval, readSanctuaryAcceptanceMarker, sanctua
 import { projectSanctuaryGrounding, sanctuaryGroundingDigest, type SanctuaryToolGrounding } from "./sanctuary-grounding"
 import { probeSanctuaryEndpoint } from "./sanctuary-health"
 import { readSanctuaryHouse } from "./sanctuary-house"
+import { addHouseVocabulary } from "../heart/source-grounding"
 import { createSanctuarySabClient, sanctuarySabReadUnavailableCode } from "./sanctuary-sab"
 import { createSanctuaryMediaOptimizationClient } from "./sanctuary-media-optimization"
 import { getPackageVersion } from "../mind/bundle-manifest"
@@ -91,10 +92,17 @@ function requiredPair(config: Record<string, unknown>, field: string): [string, 
   return [values[0]!, values[1]!]
 }
 
-function optionalJellyfin(config: Record<string, unknown>) {
+/** The Jellyfin device id the restricted user is pinned to: the house's Butler name as a slug, plus "-sanctuary". */
+export function sanctuaryJellyfinDeviceId(butlerName: string): string {
+  const slug = butlerName.normalize("NFKD").toLowerCase().replace(/[^a-z0-9]+/gu, "-").replace(/^-+|-+$/gu, "")
+  return `${slug || "the-butler"}-sanctuary`
+}
+
+function optionalJellyfin(config: Record<string, unknown>, butlerName: string) {
   if (config.jellyfin === undefined) return {}
   const jellyfin = requiredObject(config, "jellyfin")
   return {
+    jellyfinDeviceId: sanctuaryJellyfinDeviceId(butlerName),
     jellyfinUserId: required(jellyfin, "userId"),
     jellyfinAccessToken: required(jellyfin, "accessToken"),
     jellyfinFolderIds: requiredPair(jellyfin, "folderIds"),
@@ -208,12 +216,14 @@ export function createSanctuaryToolContext(agentName: string): Pick<ToolContext,
     meta: { agentName },
   })
   const agentRoot = getAgentRoot(agentName)
+  const startupHouse = readSanctuaryHouse(agentRoot)
+  addHouseVocabulary([startupHouse.ownerName, startupHouse.butlerName, startupHouse.householdName])
   const initial = machineConfig(agentName)
   const endpoint = required(initial, "unraidGraphqlUrl")
   const readClient = new UnraidClient({ endpoint, apiKey: required(initial, "unraidReadApiKey") })
   const reads = createUnraidReadTools(readClient)
   const sab = createSanctuarySabClient({ loadApiKey: () => loadSanctuarySabApiKey(agentName) })
-  const mediaOptimization = createSanctuaryMediaOptimizationClient(optionalJellyfin(initial))
+  const mediaOptimization = createSanctuaryMediaOptimizationClient(optionalJellyfin(initial, startupHouse.butlerName))
   const acceptanceRead = <TArgs extends unknown[], TResult>(toolName: string, read: (...args: TArgs) => Promise<TResult>) => async (...args: TArgs): Promise<TResult> => {
     try {
       const result = await read(...args)

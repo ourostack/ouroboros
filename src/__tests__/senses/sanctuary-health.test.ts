@@ -80,20 +80,20 @@ describe("Sanctuary deterministic health sweep", () => {
       .mockResolvedValueOnce(new Response(null, { status: 302, headers: { location: "/ready" } }))
       .mockResolvedValueOnce(new Response("ok", { status: 200 }))
 
-    await expect(probeSanctuaryEndpoint("https://books.mendelow.cloud/", fetch)).resolves.toEqual({
-      url: "https://books.mendelow.cloud/",
+    await expect(probeSanctuaryEndpoint("https://books.example.home/", fetch)).resolves.toEqual({
+      url: "https://books.example.home/",
       ok: true,
       status: 200,
     })
-    expect(fetch).toHaveBeenNthCalledWith(1, "https://books.mendelow.cloud/", expect.objectContaining({ redirect: "manual" }))
-    expect(fetch).toHaveBeenNthCalledWith(2, "https://books.mendelow.cloud/ready", expect.objectContaining({ redirect: "manual" }))
+    expect(fetch).toHaveBeenNthCalledWith(1, "https://books.example.home/", expect.objectContaining({ redirect: "manual" }))
+    expect(fetch).toHaveBeenNthCalledWith(2, "https://books.example.home/ready", expect.objectContaining({ redirect: "manual" }))
   })
 
   it("rejects redirects that change origin without contacting the target", async () => {
     const fetch = vi.fn().mockResolvedValue(new Response(null, { status: 302, headers: { location: "https://attacker.example/" } }))
 
-    await expect(probeSanctuaryEndpoint("https://books.mendelow.cloud/", fetch)).resolves.toEqual({
-      url: "https://books.mendelow.cloud/",
+    await expect(probeSanctuaryEndpoint("https://books.example.home/", fetch)).resolves.toEqual({
+      url: "https://books.example.home/",
       ok: false,
       status: 0,
     })
@@ -101,9 +101,9 @@ describe("Sanctuary deterministic health sweep", () => {
   })
 
   it.each([
-    "http://books.mendelow.cloud/",
-    "https://user@books.mendelow.cloud/",
-    "https://user:password@books.mendelow.cloud/",
+    "http://books.example.home/",
+    "https://user@books.example.home/",
+    "https://user:password@books.example.home/",
   ])("rejects an unsafe configured endpoint without fetching it: %s", async (url) => {
     const fetch = vi.fn()
 
@@ -118,14 +118,14 @@ describe("Sanctuary deterministic health sweep", () => {
   ])("returns terminal HTTP %i health", async (status, ok) => {
     const fetch = vi.fn().mockResolvedValue({ status, headers: new Headers(), body: null })
 
-    await expect(probeSanctuaryEndpoint("https://books.mendelow.cloud/", fetch as typeof globalThis.fetch))
-      .resolves.toEqual({ url: "https://books.mendelow.cloud/", ok, status })
+    await expect(probeSanctuaryEndpoint("https://books.example.home/", fetch as typeof globalThis.fetch))
+      .resolves.toEqual({ url: "https://books.example.home/", ok, status })
   })
 
   it("contains transport and response-body cancellation failures", async () => {
     const transportFailure = vi.fn().mockRejectedValue(new Error("offline"))
-    await expect(probeSanctuaryEndpoint("https://books.mendelow.cloud/", transportFailure)).resolves.toEqual({
-      url: "https://books.mendelow.cloud/", ok: false, status: 0,
+    await expect(probeSanctuaryEndpoint("https://books.example.home/", transportFailure)).resolves.toEqual({
+      url: "https://books.example.home/", ok: false, status: 0,
     })
 
     const cancelFailure = vi.fn().mockResolvedValue({
@@ -133,7 +133,7 @@ describe("Sanctuary deterministic health sweep", () => {
       headers: new Headers(),
       body: { cancel: vi.fn().mockRejectedValue(new Error("already closed")) },
     })
-    await expect(probeSanctuaryEndpoint("https://books.mendelow.cloud/", cancelFailure as typeof globalThis.fetch))
+    await expect(probeSanctuaryEndpoint("https://books.example.home/", cancelFailure as typeof globalThis.fetch))
       .resolves.toMatchObject({ ok: true, status: 200 })
 
     const redirectCancelFailure = vi.fn()
@@ -143,15 +143,15 @@ describe("Sanctuary deterministic health sweep", () => {
         body: { cancel: vi.fn().mockRejectedValue(new Error("already closed")) },
       })
       .mockResolvedValueOnce(new Response(null, { status: 204 }))
-    await expect(probeSanctuaryEndpoint("https://books.mendelow.cloud/", redirectCancelFailure as typeof globalThis.fetch))
+    await expect(probeSanctuaryEndpoint("https://books.example.home/", redirectCancelFailure as typeof globalThis.fetch))
       .resolves.toMatchObject({ ok: true, status: 204 })
   })
 
   it.each([
     ["a missing location", "", 1],
-    ["an insecure target", "http://books.mendelow.cloud/ready", 1],
-    ["a credentialed target", "https://user@books.mendelow.cloud/ready", 1],
-    ["a password-bearing target", "https://user:password@books.mendelow.cloud/ready", 1],
+    ["an insecure target", "http://books.example.home/ready", 1],
+    ["a credentialed target", "https://user@books.example.home/ready", 1],
+    ["a password-bearing target", "https://user:password@books.example.home/ready", 1],
   ])("rejects %s during redirects", async (_label, location, calls) => {
     const fetch = vi.fn().mockResolvedValue({
       status: 302,
@@ -159,7 +159,7 @@ describe("Sanctuary deterministic health sweep", () => {
       body: { cancel: vi.fn().mockResolvedValue(undefined) },
     })
 
-    await expect(probeSanctuaryEndpoint("https://books.mendelow.cloud/", fetch as typeof globalThis.fetch))
+    await expect(probeSanctuaryEndpoint("https://books.example.home/", fetch as typeof globalThis.fetch))
       .resolves.toMatchObject({ ok: false, status: 0 })
     expect(fetch).toHaveBeenCalledTimes(calls)
   })
@@ -167,7 +167,7 @@ describe("Sanctuary deterministic health sweep", () => {
   it("bounds same-origin redirect chains at six requests", async () => {
     const fetch = vi.fn().mockResolvedValue(new Response(null, { status: 399, headers: { location: "/again" } }))
 
-    await expect(probeSanctuaryEndpoint("https://books.mendelow.cloud/", fetch)).resolves.toMatchObject({ ok: false, status: 0 })
+    await expect(probeSanctuaryEndpoint("https://books.example.home/", fetch)).resolves.toMatchObject({ ok: false, status: 0 })
     expect(fetch).toHaveBeenCalledTimes(6)
   })
 
@@ -175,7 +175,7 @@ describe("Sanctuary deterministic health sweep", () => {
     const fetch = vi.fn().mockResolvedValue(new Response(null, { status: 204 }))
     vi.stubGlobal("fetch", fetch)
     try {
-      await expect(probeSanctuaryEndpoint("https://books.mendelow.cloud/")).resolves.toMatchObject({ ok: true, status: 204 })
+      await expect(probeSanctuaryEndpoint("https://books.example.home/")).resolves.toMatchObject({ ok: true, status: 204 })
     } finally {
       vi.unstubAllGlobals()
     }
@@ -420,13 +420,13 @@ describe("Sanctuary deterministic health sweep", () => {
       "parity:stale-or-failed",
       "notification:n1",
       "notification:n2",
-      "endpoint:https://media.mendelow.cloud/",
-      "endpoint:https://books.mendelow.cloud/",
+      "endpoint:https://media.example.home/",
+      "endpoint:https://books.example.home/",
     ]))
     expect(ids).not.toContain("container:Docker:optional:availability")
     expect(ids).not.toContain("notification:n3")
     expect(result.message).toBeNull()
-    expect(result.incidents.map((incident) => incident.summary)).toEqual(expect.arrayContaining(["unacknowledged notification: n2", "https://books.mendelow.cloud/ returned no response"]))
+    expect(result.incidents.map((incident) => incident.summary)).toEqual(expect.arrayContaining(["unacknowledged notification: n2", "https://books.example.home/ returned no response"]))
   })
 
   it.each([
@@ -641,12 +641,12 @@ describe("Sanctuary deterministic health sweep", () => {
     const file = statePath()
     const sweep = createSanctuaryHealthSweep({ house: TEST_HOUSE, toolContext: context("running"), statePath: file, fetch: fetch as unknown as typeof globalThis.fetch, now: () => new Date("2026-08-18T15:00:00.000Z"), endpointRetryDelayMs: 0 })
     await sweep()
-    expect(readSanctuaryHealthState(file).endpointFailures).toEqual({ "https://books.mendelow.cloud/": 1 })
+    expect(readSanctuaryHealthState(file).endpointFailures).toEqual({ "https://books.example.home/": 1 })
     down = false
     await sweep()
     expect(readSanctuaryHealthState(file)).not.toHaveProperty("endpointFailures")
     down = true
-    expect((await sweep()).incidents.map((incident) => incident.id)).not.toContain("endpoint:https://books.mendelow.cloud/")
+    expect((await sweep()).incidents.map((incident) => incident.id)).not.toContain("endpoint:https://books.example.home/")
   })
 
   it("probes no endpoints and requires no containers for a household that names none", async () => {
