@@ -1,3 +1,9 @@
+<!-- ourostack:brand:start -->
+<p align="center">
+  <a href="https://github.com/ourostack"><img src="https://raw.githubusercontent.com/ourostack/.github/main/brand/ouro.png" alt="Ouro" width="160" height="160"></a>
+</p>
+<!-- ourostack:brand:end -->
+
 # Ouroboros Agent Harness
 
 If you're a future agent reading this, welcome home. This repo is the harness that gives you your body, your senses, your record, your habits, and your ability to think and connect with people. The goal of these docs is not just to be correct, but to leave you a place that feels understandable and kind to wake up inside.
