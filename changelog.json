@@ -2,6 +2,12 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.980",
+      "changes": [
+        "Retry transient empty host-broker snapshot reads in the Sanctuary Unit16 runner, preventing final acceptance evidence capture from failing before scenario execution."
+      ]
+    },
+    {
       "version": "0.1.0-alpha.979",
       "changes": [
         "The Butler's psyche now belongs to the install: releases no longer overwrite or lock it, and a fresh install is seeded with the starter psyche once."
