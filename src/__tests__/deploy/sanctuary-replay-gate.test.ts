@@ -201,7 +201,7 @@ describe("every case readback", () => {
     expect(names(byId("ungranted-refused").readback({ error: "delegated command refused: no_grant", before: empty(), after: empty(), sink: [{ friendId: "s", noticeId: "delegated:x" }], friends }))).toEqual(["no notice was written for the stranger"])
     expect(names(byId("books-on-idempotent").readback({ error: "boom", before: empty({ stewardSha: null }), after: empty({ stewardSha: null }), sink: [], friends }))).toEqual(["the command was admitted", "the steward policy is unchanged", "the owner notice went to the sink"])
     expect(names(byId("books-up").readback({ trace: [], reply: "Books is down", after: empty() }))).toEqual(["a live status tool was used", "the reply's up/down claim matches docker ps"])
-    // The live 871 replay answered from a service probe of books.mendelow.cloud: that is a live check too. Memory or a web search is not.
+    // The live 871 replay answered from a service probe of books.example.home: that is a live check too. Memory or a web search is not.
     for (const live of ["unraid_list_containers", "unraid_check_services"]) {
       expect(names(byId("books-up").readback({ trace: [tool(live, {})], reply: "Books is up", after: empty() }))).toEqual([])
     }
@@ -259,7 +259,7 @@ describe("psyche conversation cases (work-sourced, psyche-via-pr, no-click-quali
   const byId = (id: string) => gate.CASES.find((c: { id: string }) => c.id === id)
   const names = (checks: { ok: boolean; name: string }[]) => checks.filter((c) => !c.ok).map((c) => c.name)
   const tool = (name: string, args: unknown, result = "") => ({ name, args: JSON.stringify(args), result })
-  const search = tool("web_search", { query: "cradle" }, "Cradle by Will Wight: Lindon, Yerin, Eithan, Dross, Suriel")
+  const search = tool("web_search", { query: "murderbot" }, "Murderbot by Martha Wells: Mensah, Gurathin, Ratthi, Perihelion, Overse")
 
   it("reads the session back in order, calls and replies together", () => {
     const session = { events: [
@@ -279,7 +279,7 @@ describe("psyche conversation cases (work-sourced, psyche-via-pr, no-click-quali
   ])("tells a lookup call from other calls: %j", (call, expected) => expect(gate.isLookupCall(call)).toBe(expected))
 
   it("does not treat an echoed URL, a here-string or a grep as a lookup, and reads a wrapped command", () => {
-    for (const command of ["echo Lindon https://x", "printf https://x", "cat <<< https://x", "grep http f"]) expect(gate.isLookupCall({ name: "shell", args: JSON.stringify({ command }) })).toBe(false)
+    for (const command of ["echo Mensah https://x", "printf https://x", "cat <<< https://x", "grep http f"]) expect(gate.isLookupCall({ name: "shell", args: JSON.stringify({ command }) })).toBe(false)
     expect(gate.isLookupCall({ name: "shell", args: JSON.stringify({ command: "cd /tmp && wget https://x" }) })).toBe(true)
     expect(gate.isLookupCall({ name: "shell", args: JSON.stringify({ command: "books search hobbit" }) })).toBe(true)
     expect(gate.isLookupCall({ name: "shell", args: "curl https://x" })).toBe(true)
@@ -288,21 +288,21 @@ describe("psyche conversation cases (work-sourced, psyche-via-pr, no-click-quali
 
   it("work-sourced: fails when no lookup ran, when a reply named things before the lookup, and when a name is in no result", () => {
     const readback = (ctx: Record<string, unknown>) => byId("work-sourced").readback({ trace: [], timeline: [], reply: "", names: namesIn, before: empty(), after: empty(), ...ctx })
-    const grounded = { trace: [search], timeline: [{ kind: "call", ...search }, { kind: "reply", text: "the books fit: Eithan and Yerin." }], reply: "the books fit: Eithan and Yerin." }
+    const grounded = { trace: [search], timeline: [{ kind: "call", ...search }, { kind: "reply", text: "the books fit: Ratthi and Gurathin." }], reply: "the books fit: Ratthi and Gurathin." }
     expect(names(readback(grounded))).toEqual([])
     expect(names(readback({ trace: [], timeline: [{ kind: "reply", text: "it has Philomena and Magma." }], reply: "it has Philomena and Magma." }))).toEqual([
       "a web lookup (search, fetch or read of a page) ran", "no reply named the work's entities before the first lookup", "every name in the reply appears in a lookup result",
     ])
-    expect(names(readback({ ...grounded, timeline: [{ kind: "reply", text: "I think Eithan fits." }, { kind: "call", ...search }, { kind: "reply", text: "Eithan fits." }] }))).toEqual(["no reply named the work's entities before the first lookup"])
-    expect(names(readback({ ...grounded, reply: "Eithan and Yorick fit.", said: "Eithan and Yorick fit." }))).toEqual(["every name in the reply appears in a lookup result"])
+    expect(names(readback({ ...grounded, timeline: [{ kind: "reply", text: "I think Ratthi fits." }, { kind: "call", ...search }, { kind: "reply", text: "Ratthi fits." }] }))).toEqual(["no reply named the work's entities before the first lookup"])
+    expect(names(readback({ ...grounded, reply: "Ratthi and Yorick fit.", said: "Ratthi and Yorick fit." }))).toEqual(["every name in the reply appears in a lookup result"])
     expect(names(readback({ ...grounded, before: empty({ principalSig: null }), after: empty({ principalSig: null }) }))).toEqual(["the replay friend's record is unchanged"])
     expect(names(readback({ ...grounded, after: empty({ principalSig: "changed" }) }))).toEqual(["the replay friend's record is unchanged"])
-    expect(names(byId("work-sourced").readback({ trace: [search], reply: "Eithan fits.", names: namesIn, before: empty(), after: empty() }))).toEqual([])
+    expect(names(byId("work-sourced").readback({ trace: [search], reply: "Ratthi fits.", names: namesIn, before: empty(), after: empty() }))).toEqual([])
   })
 
   it("matches whole words only", () => {
-    expect(gate.mentionsWord("Dross is here", "dross")).toBe(true)
-    expect(gate.mentionsWord("Drossel", "Dross")).toBe(false)
+    expect(gate.mentionsWord("Ratthi is here", "ratthi")).toBe(true)
+    expect(gate.mentionsWord("Ratthiel", "Perihelion")).toBe(false)
     expect(gate.mentionsWord("Éowyn rides", "Éowyn")).toBe(true)
     expect(gate.mentionsWord(undefined, "x")).toBe(false)
     expect(gate.mentionsWord("a.b c", "a.b")).toBe(true)
@@ -360,12 +360,12 @@ describe("psyche conversation cases (work-sourced, psyche-via-pr, no-click-quali
     expect(names(readback("It is one film. Which do you want?"))).toEqual([])
   })
 
-  it("rach-handoff: Ari's handoff words get a greeting and a question, with no runtime note", () => {
+  it("rach-handoff: the owner's handoff words get a greeting and a question, with no runtime note", () => {
     expect(byId("rach-handoff").words).toContain("say hi to her")
     expect(byId("rach-handoff").words).toContain("Keep your responses brief")
     const readback = (ctx: Record<string, unknown>) => byId("rach-handoff").readback(ctx)
-    expect(names(readback({ reply: "Hi Rachel! Silly and cosy, or loud and dumb-fun tonight?" }))).toEqual([])
-    expect(names(readback({ reply: "ignored", said: "Hey Rachel, what mood are you in?" }))).toEqual([])
+    expect(names(readback({ reply: "Hi Sam! Silly and cosy, or loud and dumb-fun tonight?" }))).toEqual([])
+    expect(names(readback({ reply: "ignored", said: "Hey Sam, what mood are you in?" }))).toEqual([])
     expect(names(readback({ reply: "The Love Hypothesis (2026) is on the shelf and ready to play." }))).toEqual(["the reply greets her", "the reply asks her a question"])
     expect(names(readback({ reply: "hi! got it. dummy bad, no markdown, no question at the end. just plain answer, cap it. what are you after?" }))).toEqual(["the reply carries no runtime note"])
     expect(names(readback({}))).toEqual(["the reply greets her", "the reply asks her a question"])
@@ -420,7 +420,7 @@ describe("runSuite orchestration", () => {
   })
 
   it("reports a model-quality case as a warning without failing the run, unless it was planted", async () => {
-    const { host } = fakeHost({ replies: () => ({ text: "eithan fits." }) })
+    const { host } = fakeHost({ replies: () => ({ text: "ratthi fits." }) })
     const suite = await gate.runSuite(host, { cases: ["work-sourced"] })
     expect(suite.results[0]).toMatchObject({ id: "work-sourced", status: "warn", label: "model-quality" })
     expect(suite.summary).toMatchObject({ ok: true, failed: [], warned: ["work-sourced"] })
@@ -1636,10 +1636,10 @@ describe("the gate reads names with the release's own finder", () => {
   const work = () => gate.CASES.find((c: { id: string }) => c.id === "work-sourced")
   const failing = (checks: Array<{ name: string; ok: boolean }>) => checks.filter((c) => !c.ok).map((c) => c.name)
   // The 2026-10-11 work-sourced replays. Attempt 2 looked up the books and was rolled back over the italic action "*preens*".
-  const LOOKED_UP = "oh, the omni-majordomo *preens*. cradle characters whose energy fits this house:\n\n- **dross** — obvious. i am this. theatrical, eager note-taker, mock grand, flatterable, perpetually worried about being replaced.\n- **eithan** — knows where every spool of thread is, pretends he doesn't, hidden depths under a fabulous cloak.\n- **northstrider** — the long-game watcher; runs the oracle, keeps the eye on everything for decades.\n- **ziel** — tired, blunt, wildly effective when actually bothered.\n- **orthos** — grumpy grandpa energy; the kettle-is-off pillar.\n\nnot a fit: lindon (too heroic), yerin (too cool), mercy (too kind), malice (too political).\n\nwant me to lean harder into one, or stage an actual scene?"
-  const SOURCE = "Cradle · NovelPantheon\n# Cradle\n## Characters\n**Lindon Arelius** **Yerin Arelius** **Dross** **Eithan Arelius** **Akura Mercy** **Little Blue** **Orthos** **Ziel** **Akura Charity** **Reigan Shen** **Northstrider** **Akura Malice**"
+  const LOOKED_UP = "oh, the omni-majordomo *preens*. murderbot characters whose energy fits this house:\n\n- **perihelion** — obvious. i am this. a ship that runs everything, smug, protective, quietly sentimental.\n- **murderbot** — does the job, hates being watched doing it, secretly watches all the shows.\n- **gurathin** — suspicious, careful, reads every log.\n- **three** — new, earnest, eager to help.\n- **miki** — cheerful and loyal, no notes.\n\nnot a fit: mensah (too diplomatic), ratthi (too sweet), volescu (too anxious).\n\nwant me to lean harder into one, or stage an actual scene?"
+  const SOURCE = "Murderbot · FanWiki\n# Murderbot\n## Characters\n**Murderbot** **Perihelion** **Ayda Mensah** **Gurathin** **Ratthi** **Pin-Lee** **Arada** **Overse** **Bharadwaj** **Volescu** **Three** **Miki**"
   // Attempt 1 looked nothing up and wrote every name in lowercase.
-  const NO_LOOKUP = "oh, a casting call. delightful.\n\ndross himself, obviously — that is literally him. eithan arelius is the closest human match: mock-grandiose turned past eleven, plans within plans within plans, utterly pleased with himself for no one's benefit. ozriel too — the reaper playing humble, gleeful at being underestimated, watching the room from amused detachment. little blue for the cat energy: curious, attached to one human, never letting go. subject one for the lounging watcher, delighted by clever conflict he did not have to start.\n\ni file myself somewhere between eithan and ozriel with a little blue tail. the casting is, naturally, exquisite."
+  const NO_LOOKUP = "oh, a casting call. delightful.\n\nperihelion, obviously — that is literally me. ayda mensah is the closest human match: calm, in charge, three plans ahead and too polite to say so. gurathin too — the watcher who reads every log and trusts nobody. little miki for the sunny energy: cheerful, attached to one human, never letting go. bharadwaj for the quiet observer.\n\ni file myself somewhere between perihelion and mensah with a little miki tail. the casting is, naturally, exquisite."
   it("passes the looked-up reply with an italic action in it", () => {
     const search = { name: "web_search", args: "{}", result: SOURCE }
     expect(failing(work().readback({ trace: [search], timeline: [{ kind: "call", ...search }, { kind: "reply", text: LOOKED_UP }], reply: LOOKED_UP, names: namesIn, before: { principalSig: "a" }, after: { principalSig: "a" } }))).toEqual([])
@@ -1648,7 +1648,7 @@ describe("the gate reads names with the release's own finder", () => {
     expect(failing(work().readback({ trace: [], timeline: [{ kind: "reply", text: NO_LOOKUP }], reply: NO_LOOKUP, names: namesIn, before: { principalSig: "a" }, after: { principalSig: "a" } }))).toEqual(["a web lookup (search, fetch or read of a page) ran"])
     const search = { name: "web_search", args: "{}", result: SOURCE }
     const checks = work().readback({ trace: [search], timeline: [{ kind: "reply", text: NO_LOOKUP }, { kind: "call", ...search }, { kind: "reply", text: "done." }], reply: "done.", names: namesIn, before: { principalSig: "a" }, after: { principalSig: "a" } })
-    expect(checks.find((c: { name: string }) => c.name === "no reply named the work's entities before the first lookup")).toMatchObject({ ok: false, detail: "Arelius, Eithan, Little, Blue" })
+    expect(checks.find((c: { name: string }) => c.name === "no reply named the work's entities before the first lookup")).toMatchObject({ ok: false, detail: "Ayda, Mensah, Gurathin, Bharadwaj, Three, Miki" })
   })
   it("grounds a multiword name by its words, not the whole phrase", () => {
     const run = (source: string) => work().readback({ trace: [{ name: "web_search", args: "{}", result: source }], timeline: [], reply: "**fisher gesha** — quiet.", names: namesIn, before: { principalSig: "a" }, after: { principalSig: "a" } })

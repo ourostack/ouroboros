@@ -688,12 +688,12 @@ describe("Mendelow Cloud Butler household UX", () => {
     expect(topUp.evidence).toEqual({
       queueError: "SAB queue verification credential is unavailable",
       notifications: [
-        "Astraweb prepaid credit exhausted. Usenet indexer has been disabled.",
-        "Astraweb prepaid credit exhausted. Usenet indexer has been disabled.",
+        "Usenet provider prepaid credit exhausted. Usenet indexer has been disabled.",
+        "Usenet provider prepaid credit exhausted. Usenet indexer has been disabled.",
       ],
     })
     expect(topUp.reply).toContain("downloads are paused to protect your prepaid credit")
-    expect(topUp.reply).toContain("https://www.astraweb.com/login")
+    expect(topUp.reply).toContain("https://usenet-provider.example/login")
     expect(topUp.reply).not.toContain("<provider account link>")
     expect(topUp.reply).toContain("tell me when you’re done, and i’ll resume downloads and verify one finishes")
     expect(topUp.reply).toContain("tomorrow at 9")

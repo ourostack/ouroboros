@@ -3522,7 +3522,7 @@ describe("settle answer gates (opt-in per agent)", () => {
 
   const settleCall = (id: string, answer: string, intent = "complete") => makeStream([makeChunk(undefined, [{ index: 0, id, function: { name: "settle", arguments: JSON.stringify({ answer, intent }) } }])])
   const INVENTED = "the show has Philomena, Magma and Bunty. same energy."
-  const GROUNDED = "the books have Lindon and Yerin. same energy."
+  const GROUNDED = "the books have Mensah and Gurathin. same energy."
   const DISCLOSED = "I couldn't verify Philomena, Magma, Bunty against a source, so treat those as unconfirmed.\n\n" + INVENTED
   const searchTool = [{ type: "function", function: { name: "web_search", description: "search", parameters: { type: "object", properties: { query: { type: "string" } } } } }]
   const GATES = { sourceGrounding: true, brevity: true }
@@ -3530,8 +3530,8 @@ describe("settle answer gates (opt-in per agent)", () => {
   const run = async (opts: { execTool?: any; gates?: Record<string, boolean> | undefined; user?: string[]; prior?: any[]; extra?: Record<string, unknown>; context?: Record<string, unknown> } = {}) => {
     const visible: string[] = []
     const { runAgent } = await import("../../heart/core")
-    const messages = (opts.user ?? ["channel more dross from cradle energy"]).flatMap((text, index) => (index === 0 ? [] : [{ role: "assistant", content: "ok." }]).concat([{ role: "user", content: text }]) as any[])
-    const history = [...(opts.prior ?? []), { role: "user", content: opts.user?.[0] ?? "channel more dross from cradle energy" }, ...messages.slice(0)] as any[]
+    const messages = (opts.user ?? ["channel more perihelion from murderbot energy"]).flatMap((text, index) => (index === 0 ? [] : [{ role: "assistant", content: "ok." }]).concat([{ role: "user", content: text }]) as any[])
+    const history = [...(opts.prior ?? []), { role: "user", content: opts.user?.[0] ?? "channel more perihelion from murderbot energy" }, ...messages.slice(0)] as any[]
     const result = await runAgent(history, makeCallbacks({ onTextChunk: vi.fn((text: string) => { visible.push(text) }), onClearText: vi.fn(() => { visible.length = 0 }) }), "telegram", undefined, {
       tools: searchTool as any, execTool: opts.execTool ?? vi.fn(), toolContext: { signin: async () => undefined, ...(opts.gates ? { answerGates: opts.gates } : {}), ...(opts.context ? { context: opts.context as any } : {}) }, ...opts.extra,
     })
@@ -3543,7 +3543,7 @@ describe("settle answer gates (opt-in per agent)", () => {
       mockCreate.mockReturnValueOnce(settleCall("s1", INVENTED))
       mockCreate.mockReturnValueOnce(searchCall("ws"))
       mockCreate.mockReturnValueOnce(settleCall("s2", GROUNDED))
-      const execTool = vi.fn(async () => "Lindon and Yerin are the leads of Cradle")
+      const execTool = vi.fn(async () => "Mensah and Gurathin are the leads of Murderbot")
       const { result, visible } = await run({ execTool, gates: GATES })
       expect(result.outcome).toBe("settled")
       expect(execTool).toHaveBeenCalledTimes(1)
@@ -3577,14 +3577,14 @@ describe("settle answer gates (opt-in per agent)", () => {
     })
 
     it("treats names from earlier turns as known and arms the name rule from the latest message only", async () => {
-      const prior = [{ role: "user", content: "what movies could I watch?" }, { role: "assistant", content: "Ozriel is in Cradle." }, { role: "tool", content: "Eithan too", tool_call_id: "t" }, { role: "assistant", content: "ok." }]
-      const answer = "**ozriel** and **eithan** fit the cast. who else."
+      const prior = [{ role: "user", content: "what movies could I watch?" }, { role: "assistant", content: "Bharadwaj is in Murderbot." }, { role: "tool", content: "Ratthi too", tool_call_id: "t" }, { role: "assistant", content: "ok." }]
+      const answer = "**bharadwaj** and **ratthi** fit the cast. who else."
       mockCreate.mockReturnValueOnce(settleCall("known", answer))
       const known = await run({ gates: GATES, prior, user: ["who is in the cast?"] })
       expect(mockCreate).toHaveBeenCalledTimes(1)
       expect(known.visible.join("")).toBe(answer)
       mockCreate.mockReset()
-      mockCreate.mockReturnValueOnce(settleCall("fresh", "**ozriel** — the reaper."))
+      mockCreate.mockReturnValueOnce(settleCall("fresh", "**bharadwaj** — the reaper."))
       mockCreate.mockReturnValueOnce(searchCall("ws"))
       mockCreate.mockReturnValueOnce(settleCall("again", "nothing found."))
       await run({ gates: GATES, user: ["who is in the cast?"], execTool: vi.fn(async () => "nothing") })
@@ -3592,11 +3592,11 @@ describe("settle answer gates (opt-in per agent)", () => {
     })
 
     it("ends the person's turn where it began, so the engine's own nudges and earlier attempts do not launder a name", async () => {
-      for (const id of ["a", "b", "c"]) mockCreate.mockReturnValueOnce(settleCall(id, "**ozriel** — the reaper."))
+      for (const id of ["a", "b", "c"]) mockCreate.mockReturnValueOnce(settleCall(id, "**bharadwaj** — the reaper."))
       const { result, visible } = await run({ gates: GATES, user: ["who is in the cast?"] })
       expect(result.outcome).toBe("settled")
       expect(mockCreate).toHaveBeenCalledTimes(3)
-      expect(visible.join("")).toContain("I couldn't verify ozriel")
+      expect(visible.join("")).toContain("I couldn't verify bharadwaj")
     })
 
     // alpha.886 replay (session 9918e561): the model answered in plain text, no settle call, and the invented cast went out unchecked.
@@ -3604,7 +3604,7 @@ describe("settle answer gates (opt-in per agent)", () => {
       mockCreate.mockReturnValueOnce(makeStream([makeChunk(INVENTED)]))
       mockCreate.mockReturnValueOnce(searchCall("ws"))
       mockCreate.mockReturnValueOnce(settleCall("s2", GROUNDED))
-      const execTool = vi.fn(async () => "Lindon and Yerin are the leads of Cradle")
+      const execTool = vi.fn(async () => "Mensah and Gurathin are the leads of Murderbot")
       const { result, visible } = await run({ execTool, gates: GATES })
       expect(result.outcome).toBe("settled")
       expect(execTool).toHaveBeenCalledTimes(1)
@@ -3713,15 +3713,15 @@ describe("settle answer gates (opt-in per agent)", () => {
 
     it("keeps the reason private and lets a brief reply end with a question", async () => {
       mockCreate.mockReturnValueOnce(settleCall("long", LONG))
-      mockCreate.mockReturnValueOnce(settleCall("short", "Hi Rachel! Silly or swoony tonight?"))
+      mockCreate.mockReturnValueOnce(settleCall("short", "Hi Sam! Silly or swoony tonight?"))
       const { visible } = await run({ gates: GATES, user: ask })
       expect(JSON.stringify(mockCreate.mock.calls[1][0].messages)).toContain("private runtime note, not from the person")
       // 2026-11-04, alpha.974 on Claude: told nothing about delivery, the retry opened "one correction: i shortened a title" and the person got only that.
       expect(JSON.stringify(mockCreate.mock.calls[1][0].messages)).toContain("your draft was not sent and the person has not seen it")
-      expect(visible.join("")).toBe("Hi Rachel! Silly or swoony tonight?")
+      expect(visible.join("")).toBe("Hi Sam! Silly or swoony tonight?")
     })
 
-    // 2026-10-11, Rach handoff: after a brevity rejection the model answered the note, and the note reached Rachel.
+    // 2026-10-11, spouse handoff: after a brevity rejection the model answered the note, and the note reached Sam.
     const LEAKED = "got it. dummy bad, no markdown, no question at the end. just plain answer, cap it."
     it("never delivers a retry that only answers the runtime note; the last real draft goes out instead", async () => {
       mockCreate.mockReturnValueOnce(settleCall("long", LONG))
@@ -3730,7 +3730,7 @@ describe("settle answer gates (opt-in per agent)", () => {
       expect(result.outcome).toBe("settled")
       expect(visible.join("")).toBe(LONG)
       expect(visible.join("")).not.toContain("dummy bad")
-      // The history holds what Rachel got, so the next turn does not see itself having said the note.
+      // The history holds what Sam got, so the next turn does not see itself having said the note.
       expect(JSON.stringify(history)).not.toContain("dummy bad")
     })
 
@@ -3762,7 +3762,7 @@ describe("settle answer gates (opt-in per agent)", () => {
       mockCreate.mockReturnValueOnce(settleCall("b", INVENTED))
       mockCreate.mockReturnValueOnce(settleCall("c", `${INVENTED} ${"padding words here. ".repeat(40)}`))
       mockCreate.mockReturnValueOnce(settleCall("d", "short."))
-      const { visible } = await run({ gates: GATES, user: ["be brief", "name the cradle characters"] })
+      const { visible } = await run({ gates: GATES, user: ["be brief", "name the murderbot characters"] })
       expect(visible.join("")).toBe("short.")
     })
   })

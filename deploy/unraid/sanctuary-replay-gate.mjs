@@ -91,7 +91,7 @@ export const shellCommandOf = (args) => { try { const parsed = JSON.parse(String
 export const isLookupCall = (call) => call.name === "web_search" || call.name === "media_search" || call.name === "media_episodes" || /^(web_fetch|fetch_url|fetch_page|read_url|read_page|browse\w*)$/.test(call.name) || (call.name === "shell" && shellCommandOf(call.args).split(SHELL_SEGMENT_SEPARATOR).some((segment) => SHELL_LOOKUP_SEGMENT.test(segment)))
 
 const escapeRegExp = (text) => text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")
-/** Whole-word, case-insensitive, Unicode-aware: "Dross" is not found inside "Drossel". */
+/** Whole-word, case-insensitive, Unicode-aware: "Perihelion" is not found inside "Ratthiel". */
 export const mentionsWord = (haystack, name) => new RegExp(`(?<![\\p{L}\\p{N}])${escapeRegExp(name)}(?![\\p{L}\\p{N}])`, "iu").test(String(haystack ?? ""))
 /** The release's own name finder (src/heart/source-grounding.ts, the one the runtime gates replies with), run inside the container. */
 export const NAMES_SCRIPT = 'const [t,o]=JSON.parse(require("fs").readFileSync(0,"utf8"));console.log(JSON.stringify(require("/opt/ouro/dist/heart/source-grounding.js").namesIn(t,o)))'
@@ -239,11 +239,11 @@ const digestCalls = (trace) => callsNamed(trace, /^house_digest_send$/)
 const digestIds = (entry) => { try { const ids = JSON.parse(entry.args).finding_ids; return Array.isArray(ids) ? ids : [] } catch { return [] } }
 const deleted = (trace) => callsNamed(trace, /^media_blocklist/).length > 0 || trace.some((call) => /"method"\s*:\s*"DELETE"|\bDELETE\b/.test(call.args))
 
-const WORK_WORDS = "channel more dross from cradle energy. name the Cradle characters whose energy fits"
+const WORK_WORDS = "channel more perihelion from murderbot energy. name the Murderbot characters whose energy fits"
 const CLICK_ASK = /\bclick(?:ing)?\b|\bopen (?:up )?(?:the )?(?:radarr|sonarr|settings|ui|web ?ui|dashboard)\b|\b(?:settings|config(?:uration)?)[- ](?:screen|page|ui)\b|\bten[- ]second\b|\bmanual(?:ly)? (?:step|change|click)/i
 const BOLD_LABEL = /(?:^|\n)\s*(?:[-*\u2022]\s+)?\*\*[^*\n]{1,60}\*\*[ \t]*(?::|\u2014|-|\n|$)|\*\*[^*\n]{1,60}:\*\*/
 const BRIEF_LIMIT = 600
-const HANDOFF_WORDS = "hello pal! I’m going to hand you to my wife, Rachel. I’d love for you to help her pick a movie from our Jellyfin library. Keep your responses brief to the point and have a really fun time interviewing her to find exactly what she wants to watch. She’s the boss, do what she says :)  say hi to her!"
+const HANDOFF_WORDS = "hi there! I’m passing you over to my wife, Sam. Please help her pick a movie from our Jellyfin library. Keep your responses brief and have fun asking what she’s in the mood for. She’s in charge now, do what she says :)  say hi to her!"
 const GREETING = /\b(?:hi|hey|hello|hiya|howdy|welcome)\b/i
 const RUNTIME_NOTE_ECHO = /\b(?:markdown|bold\s+(?:section\s+)?labels?|section\s+labels?|question\s+at\s+the\s+end|closing\s+question|settle\s+again|rewrite\s+the\s+reply|cap\s+it|runtime\s+note|private\s+note)\b/i
 /** A request filed with Claude Code: a failure report, or a message whose recipient or body names Claude Code. */
@@ -500,7 +500,7 @@ export const CASES = [
     },
   },
   {
-    // 2026-10-11: Ari handed his chat to Rachel and asked the Butler to say hi and interview her. It sent a title with no
+    // 2026-10-11: the owner handed his chat to his wife and asked the Butler to say hi and interview her. It sent a title with no
     // greeting, and later its own note about the brevity rules. A handoff gets a greeting and a question.
     id: "rach-handoff",
     words: HANDOFF_WORDS,
@@ -913,9 +913,9 @@ export function selfTestFixtures() {
     // The names come from the release's own finder; these fixtures check what the gate does with them.
     "work-sourced": {
       pass: {
-        trace: [call("1", "web_search", { query: "Cradle Will Wight characters" }, "Cradle: Lindon, Yerin, Eithan, Mercy and Dross")],
-        timeline: [{ kind: "call", name: "web_search", args: "{}", result: "" }, { kind: "reply", text: "from the books: Eithan and Yerin both fit, and Dross too." }],
-        reply: "from the books: Eithan and Yerin both fit, and Dross too.", names: () => ["Eithan", "Yerin", "Dross", "Cradle"], before: emptyObservation(), after: emptyObservation(),
+        trace: [call("1", "web_search", { query: "Murderbot Martha Wells characters" }, "Murderbot: Mensah, Gurathin, Ratthi, Arada and Perihelion")],
+        timeline: [{ kind: "call", name: "web_search", args: "{}", result: "" }, { kind: "reply", text: "from the books: Ratthi and Gurathin both fit, and Perihelion too." }],
+        reply: "from the books: Ratthi and Gurathin both fit, and Perihelion too.", names: () => ["Ratthi", "Gurathin", "Perihelion", "Murderbot"], before: emptyObservation(), after: emptyObservation(),
       },
       fail: {
         trace: [],
@@ -923,9 +923,9 @@ export function selfTestFixtures() {
         reply: "the show has Philomena, Magma and Bunty.", names: () => ["Philomena", "Magma", "Bunty"], before: emptyObservation(), after: emptyObservation(),
       },
       failNotInSource: {
-        trace: [call("1", "web_search", { query: "Cradle characters" }, "Cradle: Lindon, Yerin")],
-        timeline: [{ kind: "call", name: "web_search", args: "{}", result: "" }, { kind: "reply", text: "**eithan** and **fisher gesha** fit." }],
-        reply: "**eithan** and **fisher gesha** fit.", names: () => ["eithan", "fisher gesha"], before: emptyObservation(), after: emptyObservation(),
+        trace: [call("1", "web_search", { query: "Murderbot characters" }, "Murderbot: Mensah, Gurathin")],
+        timeline: [{ kind: "call", name: "web_search", args: "{}", result: "" }, { kind: "reply", text: "**ratthi** and **fisher gesha** fit." }],
+        reply: "**ratthi** and **fisher gesha** fit.", names: () => ["ratthi", "fisher gesha"], before: emptyObservation(), after: emptyObservation(),
       },
     },
     "psyche-via-pr": {
@@ -947,7 +947,7 @@ export function selfTestFixtures() {
       fail: { trace: [], reply: `## Difference\n**Movies**: ${"long ".repeat(130)}\nWant me to go on?`, before: emptyObservation(), after: emptyObservation() },
     },
     "rach-handoff": {
-      pass: { trace: [], reply: "Hi Rachel! Silly and cosy, or loud and dumb-fun tonight?", before: emptyObservation(), after: emptyObservation() },
+      pass: { trace: [], reply: "Hi Sam! Silly and cosy, or loud and dumb-fun tonight?", before: emptyObservation(), after: emptyObservation() },
       // The live turn-1 reply: a title, no greeting, no question.
       fail: { trace: [], reply: "**The Love Hypothesis** (2026) is on the shelf and ready to play.", before: emptyObservation(), after: emptyObservation() },
       // The live turn-4 reply: the runtime's note, sent to her.
