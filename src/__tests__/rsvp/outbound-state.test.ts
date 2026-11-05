@@ -48,11 +48,11 @@ describe("RSVP outbound baseline state", () => {
     emitNervesEvent.mockReset()
     previous = snapshot("16:00", {
       "guest-1": { first_name: "Alex", last_name: "Example", attending_status: "attending" },
-      "guest-2": { first_name: "Debra", last_name: "Edelson", attending_status: null },
+      "guest-2": { first_name: "Robin", last_name: "Declined", attending_status: null },
     })
     current = snapshot("17:00", {
       "guest-1": { first_name: "Alex", last_name: "Example", attending_status: "attending" },
-      "guest-2": { first_name: "Debra", last_name: "Edelson", attending_status: "declined" },
+      "guest-2": { first_name: "Robin", last_name: "Declined", attending_status: "declined" },
     })
   })
 
@@ -77,7 +77,7 @@ describe("RSVP outbound baseline state", () => {
     const decision = decideRsvpOutboundReport({
       agentRoot,
       currentSnapshot: current,
-      reportText: "RSVP Update -- Wedding\n\nNew RSVPs:\n- Debra Edelson -- declined",
+      reportText: "RSVP Update -- Wedding\n\nNew RSVPs:\n- Robin Declined -- declined",
       now: "2026-07-09T17:00:00.000Z",
     })
     recordRsvpOutboundAttempt({
@@ -174,7 +174,7 @@ describe("RSVP outbound baseline state", () => {
     const decision = decideRsvpOutboundReport({
       agentRoot,
       currentSnapshot: current,
-      reportText: "RSVP Update -- Wedding\n\nNew RSVPs:\n- Debra Edelson -- declined",
+      reportText: "RSVP Update -- Wedding\n\nNew RSVPs:\n- Robin Declined -- declined",
       now: "2026-07-09T17:00:00.000Z",
     })
     recordRsvpOutboundAttempt({
@@ -222,7 +222,7 @@ describe("RSVP outbound baseline state", () => {
     recordRsvpOutboundAttempt({
       agentRoot,
       currentSnapshot: current,
-      reportText: "RSVP Update -- Wedding\n\nNew RSVPs:\n- Debra Edelson -- declined",
+      reportText: "RSVP Update -- Wedding\n\nNew RSVPs:\n- Robin Declined -- declined",
       bluebubblesRecord: {
         recordId: "bb-out-local-visible",
         status: "local-visible",
@@ -244,7 +244,7 @@ describe("RSVP outbound baseline state", () => {
       readRsvpOutboundState,
       recordRsvpOutboundAttempt,
     } = await import("../../rsvp/outbound-state")
-    const reportText = "RSVP Update -- Wedding\n\nNew RSVPs:\n- Debra Edelson -- declined"
+    const reportText = "RSVP Update -- Wedding\n\nNew RSVPs:\n- Robin Declined -- declined"
 
     recordRsvpOutboundAttempt({
       agentRoot,
@@ -347,7 +347,7 @@ describe("RSVP outbound baseline state", () => {
     const first = decideRsvpOutboundReport({
       agentRoot,
       currentSnapshot: current,
-      reportText: "RSVP Update -- Wedding\n\nNew RSVPs:\n- Debra Edelson -- declined",
+      reportText: "RSVP Update -- Wedding\n\nNew RSVPs:\n- Robin Declined -- declined",
       now: "2026-07-09T17:00:00.000Z",
     })
     recordRsvpOutboundAttempt({

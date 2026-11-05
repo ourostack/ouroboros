@@ -23,13 +23,13 @@ describe("RSVP diff renderer", () => {
     const previous = snapshot("10:00", {
       "1": { first_name: "Casey", last_name: "Rivera", group_id: 7, attending_status: null },
       "2": { first_name: "Jordan", last_name: "Lee", group_id: 7, attending_status: "attending" },
-      "3": { first_name: "Debra", last_name: "Edelson", group_id: 8, attending_status: null },
+      "3": { first_name: "Robin", last_name: "Declined", group_id: 8, attending_status: null },
       "4": { first_name: "Old", last_name: "Guest", group_id: 9, attending_status: "declined" },
     })
     const current = snapshot("11:00", {
       "1": { first_name: "Casey", last_name: "Rivera", group_id: 7, attending_status: "attending" },
       "2": { first_name: "Jordan", last_name: "Lee", group_id: 7, attending_status: "declined" },
-      "3": { first_name: "Debra", last_name: "Edelson", group_id: 8, attending_status: null },
+      "3": { first_name: "Robin", last_name: "Declined", group_id: 8, attending_status: null },
       "5": { first_name: "", last_name: "", group_id: 7, attending_status: "declined" },
     })
 

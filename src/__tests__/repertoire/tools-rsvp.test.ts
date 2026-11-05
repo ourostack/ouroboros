@@ -62,7 +62,7 @@ describe("RSVP repertoire tools", () => {
       query: "who is pending?",
     }, { summarize } as never)
 
-    expect(result).toBe("Pending (1/2): Rachel Example")
+    expect(result).toBe("Pending (1/2): Sam Example")
     expect(summarize).not.toHaveBeenCalled()
   })
 

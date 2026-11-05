@@ -19,13 +19,13 @@ describe("RSVP snapshot v1", () => {
         adapter: "aisleplanner-api-v1",
       },
       guests: {
-        "g-2": { first_name: "Bina", last_name: "Example", group_id: 20, attending_status: "declined" },
-        "g-1": { first_name: "Ari", last_name: "Example", group_id: 10, attending_status: "attending" },
+        "g-2": { first_name: "Jamie", last_name: "Example", group_id: 20, attending_status: "declined" },
+        "g-1": { first_name: "Alex", last_name: "Example", group_id: 10, attending_status: "attending" },
         "g-3": { first_name: "", last_name: "", group_id: 10, attending_status: null },
       },
       allGuests: {
-        "g-1": { first_name: "Ari", last_name: "Example", group_id: 10 },
-        "g-2": { first_name: "Bina", last_name: "Example", group_id: 20 },
+        "g-1": { first_name: "Alex", last_name: "Example", group_id: 10 },
+        "g-2": { first_name: "Jamie", last_name: "Example", group_id: 20 },
         "g-3": { first_name: "", last_name: "", group_id: 10 },
       },
       provenance: {
@@ -67,7 +67,7 @@ describe("RSVP snapshot v1", () => {
       indexPolicy: { search: false, vector: false },
     })
     expect(JSON.stringify(metadata)).not.toContain("Ari")
-    expect(JSON.stringify(metadata)).not.toContain("Bina")
+    expect(JSON.stringify(metadata)).not.toContain("Jamie")
   })
 
   it("rejects malformed snapshots, duplicate guests, bad timestamps, and hash drift", async () => {
@@ -91,7 +91,7 @@ describe("RSVP snapshot v1", () => {
       fetchedAt: "2026-07-09T17:00:00.000Z",
       source: { kind: "aisleplanner", weddingId: "wedding-1", eventId: "event-1", adapter: "aisleplanner-api-v1" },
       guests: {
-        "g-1": { first_name: "Ari", last_name: "Example", group_id: 10, attending_status: "attending" },
+        "g-1": { first_name: "Alex", last_name: "Example", group_id: 10, attending_status: "attending" },
       },
       allGuests: {},
       provenance: { kind: "live-fetch", fetchedBy: "unit-test" },
