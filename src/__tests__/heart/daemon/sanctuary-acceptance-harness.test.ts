@@ -749,20 +749,20 @@ describe("Sanctuary acceptance harness", () => {
       provenanceAdapter: "/opt/ouro/deploy/unraid/sanctuary-acceptance-adapter.sh",
     }, liveProvenanceDependencies())
 
-    await expect(run("numeric-string", { neutral: "8541786263" })).rejects.toThrow(/raw Telegram identity/u)
-    await expect(run("numeric-value", { neutral: 8541786263 })).rejects.toThrow(/raw Telegram identity/u)
+    await expect(run("numeric-string", { neutral: "1000000001" })).rejects.toThrow(/raw Telegram identity/u)
+    await expect(run("numeric-value", { neutral: 1000000001 })).rejects.toThrow(/raw Telegram identity/u)
     await expect(run("sensitive-key", { nested: [{ telegramUserId: "opaque-looking" }] })).rejects.toThrow(/raw Telegram identity/u)
     await expect(run("token-shape", { nested: ["12345:abcdefghijklmnopqrstuvwxyz"] })).rejects.toThrow(/sensitive material/u)
     for (const [name, extra] of [
-      ["status-smuggling", { status: 8541786263 }],
-      ["code-smuggling", { resultCode: 8541786263 }],
-      ["count-smuggling", { retryCount: 8541786263 }],
-      ["false-timestamp", { capturedAt: 8541786263 }],
+      ["status-smuggling", { status: 1000000001 }],
+      ["code-smuggling", { resultCode: 1000000001 }],
+      ["count-smuggling", { retryCount: 1000000001 }],
+      ["false-timestamp", { capturedAt: 1000000001 }],
     ] as const) await expect(run(name, extra)).rejects.toThrow(/raw Telegram identity/u)
-    await expect(run("counter-string-smuggling", { evidenceCounters: { processed: "8541786263" } })).rejects.toThrow(/raw Telegram identity/u)
+    await expect(run("counter-string-smuggling", { evidenceCounters: { processed: "1000000001" } })).rejects.toThrow(/raw Telegram identity/u)
     await expect(run("extra-operational-fields", {
       capturedAt: 1_800_000_000_000,
-      evidenceCounters: { arbitrary: 8541786263, retries: 123_456 },
+      evidenceCounters: { arbitrary: 1000000001, retries: 123_456 },
       nested: { completedAt: "2026-08-20T12:34:56.789Z", events: [] },
     })).rejects.toThrow(/fields/u)
   })
@@ -958,7 +958,7 @@ describe("Sanctuary acceptance harness", () => {
     expect(stringValues(contract)).not.toEqual(expect.arrayContaining([
       expect.stringMatching(secretShapedValue),
     ]))
-    expect(stringValues({ telegramCredentialField: "8541786263:abcdefghijklmnopqrstuvwxyzABCDE" }))
+    expect(stringValues({ telegramCredentialField: "1000000001:abcdefghijklmnopqrstuvwxyzABCDE" }))
       .toEqual(expect.arrayContaining([expect.stringMatching(secretShapedValue)]))
   })
 
@@ -2046,7 +2046,7 @@ describe("Sanctuary acceptance harness", () => {
 
     const telegramConfig = (name: string) => ({
       evidencePath: path.join(dir, `${name}.json`), offsetPath: path.join(dir, `${name}-offset.json`),
-      expectedBotId: "8541786263", expectedUsername: "MendelowCloudButlerBot", currentOffset: 0,
+      expectedBotId: "1000000001", expectedUsername: "ExampleButlerBot", currentOffset: 0,
       ...telegramBootstrapFields(dir, name),
     })
     await reject("telegram-bootstrap", { ...telegramConfig("wrong-poller"), pollerAdapter: "/wrong" }, dependencies(), /fixed packaged/u)

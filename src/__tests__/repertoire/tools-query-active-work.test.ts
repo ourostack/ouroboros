@@ -107,7 +107,7 @@ const listExternalEventStatusMock = vi.fn(() => [])
 const listTelegramEffectsMock = vi.fn(() => [{
   id: "a".repeat(64),
   authorClass: "butler",
-  target: { kind: "approved_relationship", friendId: "ari", sessionKey: "telegram:8541786263:42" },
+  target: { kind: "approved_relationship", friendId: "ari", sessionKey: "telegram:1000000001:42" },
   parts: [{ state: "session_recorded" }],
   updatedAt: "2026-08-29T00:00:00.000Z",
 }])
@@ -250,7 +250,7 @@ describe("query_active_work tool", () => {
     getBoardMock.mockImplementation(() => makeEmptyBoard())
     listTelegramEffectsMock.mockReset()
     listTelegramEffectsMock.mockReturnValue([{
-      id: "a".repeat(64), authorClass: "butler", target: { kind: "approved_relationship", friendId: "ari", sessionKey: "telegram:8541786263:42" },
+      id: "a".repeat(64), authorClass: "butler", target: { kind: "approved_relationship", friendId: "ari", sessionKey: "telegram:1000000001:42" },
       parts: [{ state: "session_recorded" }], updatedAt: "2026-08-29T00:00:00.000Z",
     }])
     listTelegramAdmissionsMock.mockReset()

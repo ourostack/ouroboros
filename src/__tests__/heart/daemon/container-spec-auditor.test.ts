@@ -259,7 +259,7 @@ describe("Sanctuary pre-activation container auditor", () => {
   })
 
   it.each([
-    ["wrong technical name", (spec: any) => { spec.Name = "/Mendelow Cloud Butler" }],
+    ["wrong technical name", (spec: any) => { spec.Name = "/Ouro Butler" }],
     ["missing package activation", (spec: any) => { spec.Args = ["/opt/ouro/dist/heart/daemon/daemon-entry.js"]; spec.Config.Entrypoint = ["node", "/opt/ouro/dist/heart/daemon/daemon-entry.js"] }],
     ["duplicate package activation", (spec: any) => { spec.Args.push("--package-managed-agent", "sanctuary"); spec.Config.Entrypoint.push("--package-managed-agent", "sanctuary") }],
     ["wrong version reference", (spec: any) => { spec.Config.Image = "ghcr.io/ourostack/ouroboros-butler:latest" }],
@@ -612,7 +612,7 @@ describe("Sanctuary pre-activation container auditor", () => {
     const policy = JSON.stringify({ scheduler: "supercronic", updates: "disabled" })
 
     expect(auditSanctuaryPersistentTemplate({ templateXml: persistent, runtimePolicyText: policy, expectedImageReference })).toEqual({ ok: true, violations: [] })
-    expect(auditSanctuaryPersistentTemplate({ templateXml: persistent.replace("<Name>ouro-butler</Name>", "<Name>Mendelow Cloud Butler</Name>"), runtimePolicyText: policy, expectedImageReference }).ok).toBe(false)
+    expect(auditSanctuaryPersistentTemplate({ templateXml: persistent.replace("<Name>ouro-butler</Name>", "<Name>Ouro Butler</Name>"), runtimePolicyText: policy, expectedImageReference }).ok).toBe(false)
     expect(auditSanctuaryPersistentTemplate({ templateXml: persistent.replace(expectedImageReference, "ghcr.io/ourostack/ouroboros-butler:latest"), runtimePolicyText: policy, expectedImageReference }).ok).toBe(false)
     expect(auditSanctuaryPersistentTemplate({ templateXml: persistent.replace("<WebUI/>", "<WebUI>http://localhost</WebUI>"), runtimePolicyText: policy, expectedImageReference }).ok).toBe(false)
 

@@ -137,7 +137,7 @@ record token-boundary`
         .replaceAll('primitive("/usr/bin/prlimit")', `primitive(${JSON.stringify(shellPrimitive)})`)
         .replaceAll('primitive("/usr/bin/setsid")', `primitive(${JSON.stringify(shellPrimitive)})`)
         .replaceAll('primitive("/bin/sh")', `primitive(${JSON.stringify(shellPrimitive)})`)
-      const run = (epoch = "epoch1", bot = "8541786263", owner = "42") => spawnSync(process.execPath, ["-", source, epoch, bot, owner], { input: program, encoding: "utf8" })
+      const run = (epoch = "epoch1", bot = "1000000001", owner = "42") => spawnSync(process.execPath, ["-", source, epoch, bot, owner], { input: program, encoding: "utf8" })
       const first = run()
       expect(first.status, first.stderr).toBe(0)
       expect(fs.existsSync(token), "package compatibility is proven before human token input").toBe(false)
@@ -149,7 +149,7 @@ record token-boundary`
       const manifest = JSON.parse(manifestBytes.toString())
       const request = JSON.parse(requestBytes.toString())
       expect(request).toEqual({
-        schemaVersion: 1, epochId: "epoch1", botId: "8541786263", ownerUserId: "42", ownerChatId: "42",
+        schemaVersion: 1, epochId: "epoch1", botId: "1000000001", ownerUserId: "42", ownerChatId: "42",
         packageDigest: sha(manifestBytes), nodeDigest: sha(fs.readFileSync(nodePrimitive)),
         prlimitDigest: sha(fs.readFileSync(shellPrimitive)), setsidDigest: sha(fs.readFileSync(shellPrimitive)), shellDigest: sha(fs.readFileSync(shellPrimitive)),
       })
@@ -166,7 +166,7 @@ record token-boundary`
       expect(fs.readFileSync(manifestPath)).toEqual(manifestBytes)
       expect(fs.readFileSync(requestPath)).toEqual(requestBytes)
       expect(fs.readFileSync(token, "utf8")).toBe("synthetic-human-input")
-      for (const args of [["epoch2"], ["../bad"], ["epoch1", "other"], ["epoch1", "8541786263", "-42"]]) expect(run(...args).status).not.toBe(0)
+      for (const args of [["epoch2"], ["../bad"], ["epoch1", "other"], ["epoch1", "1000000001", "-42"]]) expect(run(...args).status).not.toBe(0)
       const stale = path.join(state, "incoming-package", "unreviewed")
       fs.writeFileSync(stale, "extra")
       expect(run().stderr).toContain("unexpected incoming package residue")

@@ -29,7 +29,7 @@ function snapshot(): RsvpSnapshot {
       adapter: "aisleplanner-api-v1",
     },
     guests: {
-      "1": { first_name: "Ari", last_name: "Mendelow", group_id: 7, attending_status: "attending" },
+      "1": { first_name: "Alex", last_name: "Example", group_id: 7, attending_status: "attending" },
       "2": { first_name: "Rachel", last_name: "Example", group_id: 7, attending_status: null },
     },
     allGuests: {},

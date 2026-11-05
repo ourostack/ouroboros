@@ -219,7 +219,7 @@ describe("release-bump helper", () => {
     const root = makeReleaseRoot()
     try {
       const templatePath = path.join(root, "deploy/unraid/sanctuary.xml")
-      fs.writeFileSync(templatePath, fs.readFileSync(templatePath, "utf8").replace("<Name>ouro-butler</Name>", "<Name>Mendelow Cloud Butler</Name>"))
+      fs.writeFileSync(templatePath, fs.readFileSync(templatePath, "utf8").replace("<Name>ouro-butler</Name>", "<Name>Ouro Butler</Name>"))
       expect(() => bumpReleaseVersion({ root, version: "0.1.0-alpha.588", changes: ["note"] })).toThrow(
         "sanctuary.xml must contain exactly one Docker-valid ouro-butler Name",
       )

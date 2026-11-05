@@ -85,7 +85,7 @@ describe("doctor and bounded-repair documentation contract", () => {
     expect(wrapper.version).toBe(packageJson.version)
     expect(changelog.versions[0]?.version).toBe(packageJson.version)
     const butlerRelease = changelog.versions.find((entry) =>
-      entry.changes.join("\n").includes("Ship Mendelow Cloud Butler for Sanctuary"),
+      entry.changes.join("\n").includes("Ship Ouro Butler for Sanctuary"),
     )
     expect(butlerRelease?.changes.join("\n")).toContain("durable approvals")
     expect(butlerRelease?.changes.join("\n")).toContain("Unraid")

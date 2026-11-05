@@ -371,15 +371,15 @@ describe("packaged Sanctuary health acceptance probe", () => {
   })
 
   it("targets the household's Books endpoint, else its first, and refuses a house with none", () => {
-    expect(acceptanceTargetEndpoint(TEST_HOUSE)).toBe("https://books.mendelow.cloud/")
+    expect(acceptanceTargetEndpoint(TEST_HOUSE)).toBe("https://books.example.home/")
     expect(acceptanceTargetEndpoint({ publicEndpoints: [{ name: "Photos", url: "https://photos.example/" }] })).toBe("https://photos.example/")
     expect(() => acceptanceTargetEndpoint({ publicEndpoints: [] })).toThrow(/needs a public endpoint/u)
   })
 
   it("fails closed on exhausted or invalid loopback server boundaries", async () => {
-    const fixture = await createSanctuaryHealthAcceptanceLoopbackFixture([], vi.fn() as typeof fetch, undefined, "https://books.mendelow.cloud/")
+    const fixture = await createSanctuaryHealthAcceptanceLoopbackFixture([], vi.fn() as typeof fetch, undefined, "https://books.example.home/")
     try {
-      await expect(fixture.fetch("https://books.mendelow.cloud/")).resolves.toMatchObject({ status: 500 })
+      await expect(fixture.fetch("https://books.example.home/")).resolves.toMatchObject({ status: 500 })
     } finally { await new Promise<void>((resolve) => { fixture.server.close(() => resolve()) }) }
 
     const fakeServer = (address: null | string, closeError?: Error) => ({

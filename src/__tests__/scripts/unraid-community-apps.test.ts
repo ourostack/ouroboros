@@ -4,7 +4,7 @@ import { describe, expect, it } from "vitest"
 
 const packageVersion = JSON.parse(fs.readFileSync("package.json", "utf8")) as { version: string }
 
-describe("Mendelow Cloud Butler Community Apps release", () => {
+describe("Ouro Butler Community Apps release", () => {
   it("builds and loads SQLite against the image libc instead of trusting an incompatible prebuild", () => {
     const dockerfile = fs.readFileSync("deploy/unraid/Dockerfile", "utf8")
     expect(dockerfile).toContain("npm run build-release --prefix node_modules/better-sqlite3")

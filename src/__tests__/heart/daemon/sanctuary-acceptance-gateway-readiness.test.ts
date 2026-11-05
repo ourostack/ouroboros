@@ -5,11 +5,11 @@ import { executeSanctuaryAcceptanceAdapter, type SanctuaryAcceptanceAdapterDepen
 afterEach(() => vi.restoreAllMocks())
 
 function fixture() {
-  const request = vi.fn<TelegramBotApi["request"]>(async () => ({ id: 8541786263, username: "MendelowCloudButlerBot" }))
+  const request = vi.fn<TelegramBotApi["request"]>(async () => ({ id: 1000000001, username: "ExampleButlerBot" }))
   const stop = vi.fn()
   const refresh = vi.fn(async () => true)
   const cursorSnapshot = vi.fn(async () => ({ cursor: 42, progressDigest: `sha256:${"a".repeat(64)}` }))
-  const gateway = { credentials: { botId: "8541786263", authorizedUserId: "42", authorizedChatId: "42" }, cursorSnapshot, authorityTransport: { api: { request, stop }, hostApproval: { refresh } } }
+  const gateway = { credentials: { botId: "1000000001", authorizedUserId: "42", authorizedChatId: "42" }, cursorSnapshot, authorityTransport: { api: { request, stop }, hostApproval: { refresh } } }
   const forbidden = vi.fn(() => { throw new Error("resident token access forbidden") })
   const deps = { gateway: () => gateway, refreshRuntime: forbidden, telegramCredentials: forbidden, createTelegramApi: forbidden } as unknown as SanctuaryAcceptanceAdapterDependencies
   return { deps, gateway, request, stop, refresh, cursorSnapshot, forbidden }
@@ -26,15 +26,17 @@ describe("tokenless gateway acceptance readiness", () => {
     expect(f.forbidden).not.toHaveBeenCalled()
   })
 
-  it.each(["missing", "open", "health", "cursor", "getMe", "identity", "stop"])("fails %s closed with no secret in caller guidance", async (kind) => {
+  it.each(["missing", "open", "health", "cursor", "getMe", "identity", "username", "pin", "stop"])("fails %s closed with no secret in caller guidance", async (kind) => {
     const f = fixture()
-    const secret = "8541786263:must-never-escape"
+    const secret = "1000000001:must-never-escape"
     if (kind === "missing") Object.assign(f.deps, { gateway: undefined })
     if (kind === "open") Object.assign(f.deps, { gateway: () => { throw new Error(secret) } })
     if (kind === "health") f.refresh.mockResolvedValue(false)
     if (kind === "cursor") f.cursorSnapshot.mockRejectedValue(new Error(secret))
     if (kind === "getMe") f.request.mockRejectedValue(new Error(secret))
     if (kind === "identity") f.request.mockResolvedValue({ id: 123, username: secret })
+    if (kind === "username") f.request.mockResolvedValue({ id: 1000000001, username: secret })
+    if (kind === "pin") f.gateway.credentials.botId = "not-a-bot-id"
     if (kind === "stop") f.stop.mockImplementation(() => { throw new Error(secret) })
     const error = await executeSanctuaryAcceptanceAdapter({ operation: "telegram_readiness" }, f.deps).catch((error: Error) => error)
     expect(error).toBeInstanceOf(Error)

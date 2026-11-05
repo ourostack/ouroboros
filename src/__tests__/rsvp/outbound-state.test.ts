@@ -47,11 +47,11 @@ describe("RSVP outbound baseline state", () => {
     agentRoot = fs.mkdtempSync(path.join(os.tmpdir(), "rsvp-outbound-state-"))
     emitNervesEvent.mockReset()
     previous = snapshot("16:00", {
-      "guest-1": { first_name: "Ari", last_name: "Mendelow", attending_status: "attending" },
+      "guest-1": { first_name: "Alex", last_name: "Example", attending_status: "attending" },
       "guest-2": { first_name: "Debra", last_name: "Edelson", attending_status: null },
     })
     current = snapshot("17:00", {
-      "guest-1": { first_name: "Ari", last_name: "Mendelow", attending_status: "attending" },
+      "guest-1": { first_name: "Alex", last_name: "Example", attending_status: "attending" },
       "guest-2": { first_name: "Debra", last_name: "Edelson", attending_status: "declined" },
     })
   })
