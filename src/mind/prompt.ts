@@ -59,12 +59,32 @@ interface PsycheText {
   house: string;
 }
 
-// Lazy-loaded psyche text cache, scoped by agent root. The daemon can host
-// multiple agents, so identity text must never be cached process-wide.
-let _psycheCache: {
-  agentRoot: string;
-  psyche: PsycheText;
-} | null = null;
+// Psyche text cache, one entry per agent root (the daemon can host several agents). An entry is good only while
+// the files it was read from are unchanged: every load compares a stat fingerprint of those files, so an edit by
+// the agent, its owner or a sync pull takes effect on the very next prompt build.
+const _psycheCache = new Map<string, { fingerprint: string; psyche: PsycheText }>();
+
+const PSYCHE_SOURCE_FILES = [
+  ["psyche", "SOUL.md"],
+  ["psyche", "IDENTITY.md"],
+  ["psyche", "LORE.md"],
+  ["psyche", "TACIT.md"],
+  ["psyche", "ASPIRATIONS.md"],
+  ["house", "HOUSE.md"],
+  ["house", "house.json"],
+] as const;
+
+/** A cheap identity for the files the psyche is read from: inode, size and mtime in ns for each, "-" when absent. */
+function psycheFingerprint(agentRoot: string): string {
+  return PSYCHE_SOURCE_FILES.map((parts) => {
+    try {
+      const stat = fs.statSync(path.join(agentRoot, ...parts), { bigint: true });
+      return `${stat.ino}:${stat.size}:${stat.mtimeNs}`;
+    } catch {
+      return "-";
+    }
+  }).join("|");
+}
 
 // A household install names its owner, its Butler and its home in house/house.json,
 // a file the package never overwrites. The packaged psyche writes {{owner}}, {{butler}}
@@ -110,9 +130,11 @@ function loadHouseFile(agentRoot: string, names: Record<string, string>): string
   }
 }
 
-function loadPsyche(): PsycheText {
-  const agentRoot = getAgentRoot();
-  if (_psycheCache?.agentRoot === agentRoot) return _psycheCache.psyche;
+/** The psyche for one agent root, reread whenever any of its files changed since the last load. */
+export function loadPsycheAt(agentRoot: string): PsycheText {
+  const fingerprint = psycheFingerprint(agentRoot);
+  const cached = _psycheCache.get(agentRoot);
+  if (cached?.fingerprint === fingerprint) return cached.psyche;
   const names = loadHouseNames(agentRoot);
   const psyche = {
     soul: loadPsycheFile(agentRoot, "SOUL.md", names),
@@ -122,12 +144,16 @@ function loadPsyche(): PsycheText {
     aspirations: loadPsycheFile(agentRoot, "ASPIRATIONS.md", names),
     house: loadHouseFile(agentRoot, names),
   };
-  _psycheCache = { agentRoot, psyche };
+  _psycheCache.set(agentRoot, { fingerprint, psyche });
   return psyche;
 }
 
+function loadPsyche(): PsycheText {
+  return loadPsycheAt(getAgentRoot());
+}
+
 export function resetPsycheCache(): void {
-  _psycheCache = null;
+  _psycheCache.clear();
 }
 
 export type { Channel }
