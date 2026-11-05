@@ -2,6 +2,12 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.979",
+      "changes": [
+        "The Butler's psyche now belongs to the install: releases no longer overwrite or lock it, and a fresh install is seeded with the starter psyche once."
+      ]
+    },
+    {
       "version": "0.1.0-alpha.978",
       "changes": [
         "Psyche edits now take effect on the next turn for every agent. Each prompt build compares the content of the psyche and house files with the cached copy and rereads on any change, so an edit by the agent, its owner or a sync pull no longer waits for a restart. Content is compared rather than mtimes, which FUSE shares such as Unraid's do not always update."
