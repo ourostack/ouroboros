@@ -2051,9 +2051,9 @@ await_post_audit_health`
 
   it("locks deployment and credential rotation to the canonical bot and exact key IDs", () => {
     const runbook = fs.readFileSync("deploy/unraid/README.txt", "utf8")
-    expect(runbook).toContain("Mendelow Cloud Butler")
-    expect(runbook).toContain("MendelowCloudButlerBot")
-    expect(runbook).toContain("8541786263")
+    expect(runbook).toContain("<butler-display-name>")
+    expect(runbook).toContain("<butler-bot-username>")
+    expect(runbook).toContain("<numeric-bot-id>")
     expect(runbook).not.toContain("Sanctuary Butler")
     expect(runbook).toMatch(/exact immutable\s+ID/u)
     expect(runbook).toContain("proves each old credential receives a 401 or 403")
@@ -2942,7 +2942,7 @@ if audit_registered_dockerman_template "$IMAGE_ID" "$VERSION_IMAGE" canonical-pr
     expect(template).toContain(`<Repository>ghcr.io/ourostack/ouroboros-butler:${JSON.parse(fs.readFileSync("package.json", "utf8")).version}</Repository>`)
     expect(template).toContain('Default="/boot/config/custom/ouro-events/spool" Mode="ro"')
     expect(template).not.toContain('Default="/mnt/user/appdata/sabnzbd/sabnzbd.ini"')
-    expect(runbook).toContain("Mendelow Cloud Butler operator runbook")
+    expect(runbook).toContain("Ouro Butler operator runbook")
     expect(runbook).toContain("/mnt/user/appdata/ouro-butler/runtime/.ouro-cli")
     expect(runbook).toContain("/mnt/user/appdata/ouro-butler/agent/sanctuary.ouro")
     expect(runbook).toContain("docker image inspect --format '{{.Id}}'")

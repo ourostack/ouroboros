@@ -1,4 +1,4 @@
-Mendelow Cloud Butler operator runbook
+Ouro Butler operator runbook
 
 The production container is ouro-butler. It runs as UID/GID 10001, publishes no ports, uses host networking only so its loopback-only Unraid GraphQL client can reach 127.0.0.1, mounts the runtime and sanctuary.ouro bundle read-write, the bundle psyche folder read-only over it so the Butler can neither edit nor replace its psyche, plus the privileged event spool read-only, and uses restart policy unless-stopped. The canonical-gateway image appends /run/ouro-authority -> /run/ouro-authority, readonly, rprivate, and the psyche mount (<bundle>/psyche -> /home/ouro/AgentBundles/sanctuary.ouro/psyche, readonly, rprivate) and the operator trust mount (/mnt/user/appdata/ouro-butler/trust/sanctuary -> /etc/ouro/trust/sanctuary, readonly, rprivate), a root-owned directory outside the bundle that holds the grants the Butler honours. The pinned alpha.816 predecessor has only the first three mounts. Root token, issuer, package and authority state are never mounted into the resident.
 
@@ -22,7 +22,7 @@ Packaged desired states and grants remain empty. Build and installation create n
 
 A standing restart requires the intersection of an applied owner-stated positive desired state, an applied owner-stated grant and a fresh authorized request or exact current health event. Values on, always_on and expected_on permit either request-driven or event-driven evaluation; on_demand permits current owner or household requests only. Active off, disabled, paused, intentionally_off or intentionally_paused states deny mutation and make an unchanged expected health condition quiet. Missing, expired, inferred, unaudited, conflicted or mismatched positive state cannot authorize a standing restart. Installation provenance is not owner-stated authority.
 
-Provision only after the policy-aware image is healthy and its package and running-image identities agree. Ari must supply a fresh authenticated owner Telegram message after installation. This runbook, old messages, agent-written setup text and installation records are not that authorization. The approved setup terms are container:jellyfin=on with no desired-state expiry; grant key unraid.restart:jellyfin, action unraid.container.restart, target jellyfin, 2 attempts per 1800000 ms, verificationRequired=true, exclusions=[], provenance=stated, and grant expiry exactly 365 days after authorization.
+Provision only after the policy-aware image is healthy and its package and running-image identities agree. The owner must supply a fresh authenticated owner Telegram message after installation. This runbook, old messages, agent-written setup text and installation records are not that authorization. The approved setup terms are container:jellyfin=on with no desired-state expiry; grant key unraid.restart:jellyfin, action unraid.container.restart, target jellyfin, 2 attempts per 1800000 ms, verificationRequired=true, exclusions=[], provenance=stated, and grant expiry exactly 365 days after authorization.
 
 Use the existing steward_policy_manage actions sequentially: set_desired_state -> read -> grant_routine_action -> read. Carry the current readback version into each write. The first write must be applied and read back before the grant; desired state alone cannot authorize action. The final read must show both exact keys and versions, the stated provenance, rate, verification requirement, exclusions and calculated expiry. The two writes must have two linked applied v2 rows in state/policy/policy-audit.ndjson. Do not edit policy files directly or fabricate the authorizing event.
 
@@ -2147,7 +2147,7 @@ Update:
   The DockerMan transaction binds Jellyfin's container ID, image ID, state, and restart count. Update, rollback and recovery must preserve that checkpoint.
   For this authority migration, only the exact pinned alpha.816 predecessor may become rollback. The legacy-alpha742 digest remains supported for historical source audits, not a policy-weak authority rollback. Preserve one exact stopped alpha.816 predecessor, Jellyfin and every policy/history byte. Staging must be absent and production must be the only running resident. Capture the non-secret reviewed bot/owner/epoch inputs; OWNER_ID is the already authenticated private Telegram user/chat, never inferred from resident-written prose:
     AUTHORITY_EPOCH_ID=<new-reviewed-epoch-id>
-    AUTHORITY_BOT_ID=8541786263
+    AUTHORITY_BOT_ID=<reviewed-numeric-bot-id>
     AUTHORITY_OWNER_ID=<reviewed-private-owner-user-and-chat-id>
     install -d -m 0700 -o 0 -g 0 /mnt/user/appdata/ouro-authority
   Disable every Butler name in Unraid's array-autostart file before authority-install freezes the resident. First resolve and validate the exact known-good image while it is still running:
@@ -2200,7 +2200,7 @@ Update:
       /usr/local/bin/node "$STAGED_DOCKERMAN_TRANSACTION" rollback >/dev/null
       (exit "$PRECUTOVER_QUIESCENCE_STATUS")
     fi
-  Only after pinned stopped-image readiness, full-package preparation, durable transaction preparation and autostart disabling pass, the human rotates MendelowCloudButlerBot's token for that same numeric bot and uses the hidden root-terminal input helper. Do not echo the token, put it in argv/environment/history, copy it into the resident, or replace retained incoming-token during recovery. A failed or interrupted paste must be reconciled by the human before retry; retain the journal and disabled autostart, and do not invent a token:
+  Only after pinned stopped-image readiness, full-package preparation, durable transaction preparation and autostart disabling pass, the human rotates the canonical Butler bot's token for that same numeric bot and uses the hidden root-terminal input helper. Do not echo the token, put it in argv/environment/history, copy it into the resident, or replace retained incoming-token during recovery. A failed or interrupted paste must be reconciled by the human before retry; retain the journal and disabled autostart, and do not invent a token:
     receive_sanctuary_authority_token
     test "$(stat -c '%u:%g:%a' /mnt/user/appdata/ouro-authority/incoming-token)" = 0:0:600
   Gateway installation and its tokenless readiness belong inside the stopped-resident transaction, never in the old live precheck. A failure attempts retirement and exact old-image restoration; failure of either keeps autostart disabled and the journals/root inputs intact:
@@ -2351,7 +2351,7 @@ ouro-butler-rollback
     trap - EXIT
   Keep ouro-butler-rollback stopped until the new production container is proven or the explicit rollback arm restores it. The rollback arm first retires root registrations and executions, stops the gateway, ends the epoch and restores the current valid token/cursor. Only then does it restore the prior bundle and rename the untouched three-mount alpha.816 container. start_only_butler_for_recovery invokes authority-restore while the authority journal exists; it cannot bypass retirement with docker start. Never create production from a mutable tag, a bare tag, or a bare local image ID.
   Docker tab Update, Force Update, Edit/Apply, Update All, and CA Action Centre updates remain visible but are unsupported because stock recreation deletes reviewed rollback evidence. Visibility, start, stop, and autostart remain supported; use only this reviewed version-tag transaction for updates.
-  Community Apps determines installed state from the DockerMan template plus the live container name and image. The helper proves that same relationship without calling the endpoint that refreshes Community Apps' UI cache; the later live UI smoke confirms what Ari sees.
+  Community Apps determines installed state from the DockerMan template plus the live container name and image. The helper proves that same relationship without calling the endpoint that refreshes Community Apps' UI cache; the later live UI smoke confirms what the owner sees.
 
 Execution-only primitive refresh:
 
@@ -2678,8 +2678,8 @@ Restore:
   failure for operator repair or a verified restore retry.
 
 Credential recovery:
-  The one canonical Telegram identity is display name `Mendelow Cloud Butler`,
-  username `MendelowCloudButlerBot`, numeric bot ID `8541786263`. Treat any
+  The one canonical Telegram identity is the display name `<butler-display-name>`,
+  username `<butler-bot-username>`, numeric bot ID `<numeric-bot-id>` recorded at installation. Treat any
   different display name, username, numeric ID, or fallback handle as a hard
   preflight failure; do not start polling or send a test message.
   Run `bootstrap_sanctuary_vault "$IMAGE_ID"` interactively before installing
