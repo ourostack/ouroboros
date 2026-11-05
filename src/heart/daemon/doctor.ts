@@ -255,7 +255,7 @@ function senseFreshnessOverride(deps: DoctorDeps, agentDir: string, sense: strin
 
 export interface SenseInboundDeliveryInput {
   deps: DoctorDeps
-  /** Bundle directory name, e.g. `slugger.ouro`. */
+  /** Bundle directory name, e.g. `my-agent.ouro`. */
   agentDir: string
   /** Sense key as it appears under `senses` in `agent.json`. */
   sense: string

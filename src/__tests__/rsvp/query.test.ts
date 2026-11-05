@@ -14,7 +14,7 @@ function sampleSnapshot(): RsvpSnapshot {
     },
     guests: {
       "1": { first_name: "Ari", last_name: "Mendelow", group_id: 7, attending_status: "attending" },
-      "2": { first_name: "Rachel", last_name: "Example", group_id: 7, attending_status: null },
+      "2": { first_name: "Sam", last_name: "Example", group_id: 7, attending_status: null },
       "3": { first_name: "Debra", last_name: "Edelson", group_id: 8, attending_status: "declined" },
       "4": { first_name: "", last_name: "", group_id: 7, attending_status: null },
       "5": { first_name: "Mystery", last_name: "Guest", group_id: 9, attending_status: "maybe" },
@@ -51,8 +51,8 @@ describe("RSVP snapshot query", () => {
       status: "pending",
       count: 2,
       total: 5,
-      names: ["Rachel Example", "Unnamed guest (via Ari Mendelow)"],
-      text: "Pending (2/5): Rachel Example; Unnamed guest (via Ari Mendelow)",
+      names: ["Sam Example", "Unnamed guest (via Ari Mendelow)"],
+      text: "Pending (2/5): Sam Example; Unnamed guest (via Ari Mendelow)",
     })
   })
 
@@ -71,11 +71,11 @@ describe("RSVP snapshot query", () => {
       text: "Unknown (1/5): Mystery Guest",
     })
 
-    expect(queryRsvpSnapshot(sampleSnapshot(), { query: "rachel" })).toMatchObject({
+    expect(queryRsvpSnapshot(sampleSnapshot(), { query: "sam" })).toMatchObject({
       ok: true,
       status: "all",
-      names: ["Rachel Example"],
-      text: "Matching guests (1/5): Rachel Example [pending]",
+      names: ["Sam Example"],
+      text: "Matching guests (1/5): Sam Example [pending]",
     })
   })
 
@@ -94,7 +94,7 @@ describe("RSVP snapshot query", () => {
     })
     expect(queryRsvpSnapshot(sampleSnapshot(), { status: "pending", query: "ignored name" })).toMatchObject({
       status: "pending",
-      names: ["Rachel Example", "Unnamed guest (via Ari Mendelow)"],
+      names: ["Sam Example", "Unnamed guest (via Ari Mendelow)"],
     })
     expect(queryRsvpSnapshot(sampleSnapshot(), { query: "not-a-real-guest" })).toMatchObject({
       status: "all",

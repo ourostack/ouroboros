@@ -120,7 +120,7 @@ export const COMMAND_REGISTRY: Record<string, CommandHelp & { category: CommandC
     category: "Agents",
     description: "Make this machine the agent's home, the one machine that runs it. The move is recorded in the agent's synced bundle, and the old home stops running it.",
     usage: "ouro move <agent> here",
-    example: "ouro move slugger here",
+    example: "ouro move my-agent here",
   },
   whoami: {
     category: "Agents",
@@ -132,7 +132,7 @@ export const COMMAND_REGISTRY: Record<string, CommandHelp & { category: CommandC
     category: "Agents",
     description: "Join a call on this Mac through the BlackHole audio devices, or leave it",
     usage: "ouro voice join --agent <name> [--friend <id>] [--participants <text>] [--occasion <text>] [--mode conversation] | ouro voice leave --agent <name> | ouro voice status --agent <name>",
-    example: "ouro voice join --agent slugger --participants \"Ari and Sam\" --occasion \"podcast prep\"",
+    example: "ouro voice join --agent my-agent --participants \"Ari and Sam\" --occasion \"podcast prep\"",
     subcommands: ["join", "leave", "status"],
   },
   shepherd: {
@@ -172,7 +172,7 @@ export const COMMAND_REGISTRY: Record<string, CommandHelp & { category: CommandC
     category: "Tasks",
     description: "Submit an external event or apply a reviewed receipt-repair manifest through the owning daemon",
     usage: "ouro event submit --agent <agent> --source <source> --type <event-type> --id <provider-id> [--summary <text>] [--evidence <path>] [--payload <path>] [--priority high|normal|low] [--no-wake] | ouro event repair --manifest <path>",
-    example: "ouro event submit --agent slugger --source app-store-connect --type feedback.created --id evt_123 --evidence /tmp/feedback",
+    example: "ouro event submit --agent my-agent --source app-store-connect --type feedback.created --id evt_123 --evidence /tmp/feedback",
     subcommands: ["submit", "repair"],
   },
   poke: {
@@ -225,34 +225,34 @@ export const COMMAND_REGISTRY: Record<string, CommandHelp & { category: CommandC
     category: "Tasks",
     description: "Show durable Arc work state, recovery Sentinel state, or run the context-loss gauntlet.",
     usage: "ouro work card|gauntlet|sentinel [refresh] [--agent <name>] [--format text|json|--json]",
-    example: "ouro work sentinel --agent slugger --format json",
+    example: "ouro work sentinel --agent my-agent --format json",
     subcommands: ["card", "gauntlet", "sentinel"],
   },
   "nerves-review": {
     category: "Internal",
     description: `Read-only review of recent nerves events from one agent log stream (default: ${DEFAULT_NERVES_PROCESS})`,
     usage: "ouro nerves-review [--agent <name>] [--process <name>] [--component <substr>] [--event <substr>] [--level <level>] [--since <duration>] [--limit <n>] [--json]",
-    example: "ouro nerves-review --agent slugger --component daemon --event habit --since 30m --json",
+    example: "ouro nerves-review --agent my-agent --component daemon --event habit --since 30m --json",
   },
   "work card": {
     category: "Tasks",
     description: "Show the agent's durable Work Card compiled from arc records.",
     usage: "ouro work card [--agent <name>] [--format text|json|--json]",
-    example: "ouro work card --agent slugger --format json",
+    example: "ouro work card --agent my-agent --format json",
     hidden: true,
   },
   "work gauntlet": {
     category: "Tasks",
     description: "Score whether durable Arc, flight recorder, and Desk state can recover after context loss.",
     usage: "ouro work gauntlet [--agent <name>] [--format text|json|--json]",
-    example: "ouro work gauntlet --agent slugger --format json",
+    example: "ouro work gauntlet --agent my-agent --format json",
     hidden: true,
   },
   "work sentinel": {
     category: "Tasks",
     description: "Show read-only Arc Sentinel recovery state, or explicitly refresh it.",
     usage: "ouro work sentinel [refresh] [--agent <name>] [--format text|json|--json]",
-    example: "ouro work sentinel refresh --agent slugger --format json",
+    example: "ouro work sentinel refresh --agent my-agent --format json",
     hidden: true,
   },
   "migrate-to-desk": {
@@ -421,7 +421,7 @@ export const COMMAND_REGISTRY: Record<string, CommandHelp & { category: CommandC
       "ouro bluebubbles context-smoke [--agent <name>] --message-guid <guid> [--persist] [--json]",
       "ouro bluebubbles host <install|status|repair|remove|collect> [--username <name> --uid <uid> --home <path>] [--request-id <id>] [--json]",
     ].join("\n"),
-    example: "ouro bluebubbles context-smoke --agent slugger --message-guid abc123 --persist --json",
+    example: "ouro bluebubbles context-smoke --agent my-agent --message-guid abc123 --persist --json",
     subcommands: ["replay", "context-smoke", "host"],
   },
 }
@@ -430,12 +430,12 @@ const SUBCOMMAND_HELP: Record<string, CommandHelp> = {
   "habit probe": {
     description: "Probe one habit through its real dispatch path with an irrevocable no-send boundary; it cannot send and reports zero transport invocations",
     usage: "ouro habit probe --agent <name> --habit <name> --no-send [--json]",
-    example: "ouro habit probe --agent slugger --habit report-name --no-send --json",
+    example: "ouro habit probe --agent my-agent --habit report-name --no-send --json",
   },
   "habit cancel": {
     description: "Cancel a habit offline from a previously verified evidence bridge",
     usage: "ouro habit cancel --agent <name> --habit <name> --evidence <bridge-id>",
-    example: "ouro habit cancel --agent slugger --habit report-name --evidence pre-v1-bluebubbles-event-id",
+    example: "ouro habit cancel --agent my-agent --habit report-name --evidence pre-v1-bluebubbles-event-id",
   },
   "private decisions": {
     description: "Read recent private-runtime allow/deny decisions from the policy ledger",
@@ -490,7 +490,7 @@ const SUBCOMMAND_HELP: Record<string, CommandHelp> = {
   "mcp doctor": {
     description: "Run a bounded direct MCP bridge check. Use `--host-stall-observed` only when the host app was independently observed stalled; `host-stall-unexplained` preserves that evidence but does not prove a host-app cause.",
     usage: "ouro mcp doctor --agent <name> [--socket <path>] [--host-stall-observed] [--json]",
-    example: "ouro mcp doctor --agent slugger --json",
+    example: "ouro mcp doctor --agent my-agent --json",
   },
   "connect mail": {
     description: "Provision portable Agent Mail / Mailroom access and enable the Mail sense",
@@ -540,7 +540,7 @@ const SUBCOMMAND_HELP: Record<string, CommandHelp> = {
   "habit summary": {
     description: "Read a habit run summary from receipts and session artifacts without contacting the daemon",
     usage: "ouro habit summary [--agent <name>] (--run-id <id>|--habit <name>|--operation-id <id>) [--which latest|previous|latest-success|latest-failure] [--json]",
-    example: "ouro habit summary --agent slugger --operation-id habit:standup --which latest --json",
+    example: "ouro habit summary --agent my-agent --operation-id habit:standup --which latest --json",
   },
   "rsvp doctor": {
     description: "Check native RSVP configuration, credentials, BlueBubbles attachment, ledgers, receipts, and migration readiness without sending messages; use --json --strict in triage",

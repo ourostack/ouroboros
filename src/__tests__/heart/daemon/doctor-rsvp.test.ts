@@ -33,7 +33,7 @@ import { checkHabits, checkRsvp, runDoctorChecks } from "../../../heart/daemon/d
 import { RSVP_CONFIG_POLICY_VERSION, rsvpConfigPath } from "../../../rsvp/config"
 
 const tempRoots: string[] = []
-const legacyLabel = "com.arimendelow.rsvp-tracker"
+const legacyLabel = "com.owner.rsvp-tracker"
 const forbiddenLegacyChatGuid = "any;+;legacy-secret-chat-guid"
 const forbiddenLegacyServerUrl = "http://127.0.0.1:1234"
 const forbiddenLegacySecret = "legacy-shared-bluebubbles-password"

@@ -21,7 +21,7 @@ import type { MailroomRegistry } from "../mailroom/core"
  * trustworthy answer (registry unreadable, vault read unavailable, registry
  * declares nothing to check). Collapsing it into `absent` would cry wolf on
  * every locked vault; collapsing it into `covered` would reproduce the silence
- * that let `mail_slugger-hey_6e7b4bfa34c0b826` go unnoticed for 23 hours.
+ * that let `mail_my-agent-hey_0000000000000000` go unnoticed for 23 hours.
  */
 export type MailKeyCoverageStatus = "covered" | "absent" | "could-not-verify"
 
@@ -189,7 +189,7 @@ async function computeMailKeyCoverage(input: {
 /**
  * Coverage has to push, not wait to be asked. `ouro doctor` is on-demand — it
  * has no scheduled invocation — so a doctor line alone leaves a gap invisible
- * until someone happens to run it, which is how `mail_slugger-hey_6e7b4bfa34c0b826`
+ * until someone happens to run it, which is how `mail_my-agent-hey_0000000000000000`
  * stayed unnoticed for 23 hours while mail encrypted to it piled up unreadable.
  */
 function emitMailKeyCoverageEvents(agentName: string, coverage: MailKeyCoverage): void {

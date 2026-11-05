@@ -678,7 +678,7 @@ const groupOrientationPayload = {
         displayName: "Synthetic Orientation Group",
         participants: [
           { address: "ari@example.test" },
-          { address: "rachel@example.test" },
+          { address: "sam@example.test" },
         ],
       },
     ],
@@ -1302,7 +1302,7 @@ describe("BlueBubbles sense runtime", () => {
         {
           role: "group_participant_only",
           provider: "imessage-handle",
-          externalId: "rachel@example.test",
+          externalId: "sam@example.test",
         },
       ],
     })
@@ -1335,9 +1335,9 @@ describe("BlueBubbles sense runtime", () => {
       fromMe: true,
       sender: {
         ...event.sender,
-        externalId: "rachel@example.test",
-        rawId: "rachel@example.test",
-        displayName: "Rachel",
+        externalId: "sam@example.test",
+        rawId: "sam@example.test",
+        displayName: "Sam",
       },
     }))
     const bluebubbles = await import("../../../senses/bluebubbles")
@@ -1354,7 +1354,7 @@ describe("BlueBubbles sense runtime", () => {
         },
         participants: [{
           role: "group_participant_only",
-          externalId: "rachel@example.test",
+          externalId: "sam@example.test",
         }],
       },
     })
@@ -3882,7 +3882,7 @@ describe("BlueBubbles sense runtime", () => {
 
   it("refuses webhook messages, and starts no work, when the server runs under another account", async () => {
     const verifyHostAccount = vi.fn(async () => {
-      throw new Error('the BlueBubbles server runs under macOS account "arimendelow"')
+      throw new Error('the BlueBubbles server runs under macOS account "owner"')
     })
     const bluebubbles = await import("../../../senses/bluebubbles")
     const handler = bluebubbles.createBlueBubblesWebhookHandler({ verifyHostAccount })
@@ -3909,7 +3909,7 @@ describe("BlueBubbles sense runtime", () => {
     expect(JSON.parse(res.getBody())).toEqual({
       handled: false,
       notifiedAgent: false,
-      error: 'the BlueBubbles server runs under macOS account "arimendelow"',
+      error: 'the BlueBubbles server runs under macOS account "owner"',
     })
     await flushAsyncWork()
     expect(mocks.runAgent).not.toHaveBeenCalled()
@@ -9160,7 +9160,7 @@ describe("BlueBubbles sense runtime", () => {
       data: { ...dmTopLevelPayload.data, guid: "queued-host-refused-guid", text: "queued while refused" },
     })
     const verifyHostAccount = vi.fn(async () => {
-      throw 'the BlueBubbles server runs under macOS account "arimendelow"'
+      throw 'the BlueBubbles server runs under macOS account "owner"'
     })
     const createClient = vi.fn()
 
@@ -9172,7 +9172,7 @@ describe("BlueBubbles sense runtime", () => {
     expect(mocks.runAgent).not.toHaveBeenCalled()
     expect(mocks.emitNervesEvent).toHaveBeenCalledWith(expect.objectContaining({
       event: "senses.bluebubbles_recovery_host_refused",
-      meta: { pendingRecoveryCount: 1, reason: 'the BlueBubbles server runs under macOS account "arimendelow"' },
+      meta: { pendingRecoveryCount: 1, reason: 'the BlueBubbles server runs under macOS account "owner"' },
     }))
     await expect(bluebubbles.recoverQueuedBlueBubblesMessages({
       verifyHostAccount: async () => { throw new Error("could not confirm the server's account") },
@@ -10551,7 +10551,7 @@ describe("BlueBubbles sense runtime", () => {
       messageGuid: "verified-rsvp-predecessor",
       timestamp: dmTopLevelPayload.data.dateCreated - 1_000,
       fromMe: true,
-      textForAgent: "RSVP Update — Ari & Rachel\nNo changes since last check.",
+      textForAgent: "RSVP Update — Ari & Sam\nNo changes since last check.",
     })
     const older = makeCatchUpMessage({
       messageGuid: "older-context-row",
@@ -10605,7 +10605,7 @@ describe("BlueBubbles sense runtime", () => {
     expect(Object.isFrozen(required.verifiedPredecessorMessage)).toBe(true)
     expect(required.verifiedPredecessorMessage.content).toContain("shared-account outbound")
     expect(required.verifiedPredecessorMessage.content).toContain('"agentAuthorship":"unverified"')
-    expect(required.verifiedPredecessorMessage.content).not.toMatch(/Rachel (said|read|saw|was seeing|is at)/i)
+    expect(required.verifiedPredecessorMessage.content).not.toMatch(/Sam (said|read|saw|was seeing|is at)/i)
     expect(providerMessages.filter((message) => message === required.currentUserMessage)).toHaveLength(1)
     expect(providerMessages.filter((message) => message === required.verifiedPredecessorMessage)).toHaveLength(1)
     expect(providerOptions.promptOnlyEvidenceMessages).toHaveLength(1)

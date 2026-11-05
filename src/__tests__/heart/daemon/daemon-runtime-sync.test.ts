@@ -96,13 +96,13 @@ describe("ensureCurrentDaemonRuntime", () => {
       socketPath: "/tmp/ouro-test.sock",
       localVersion: "0.1.0-alpha.20",
       localLastUpdated: "2026-03-09T11:00:00.000Z",
-      localRepoRoot: "/Users/arimendelow/Projects/ouroboros-agent-harness-bb-health-status",
+      localRepoRoot: "/Users/owner/Projects/ouroboros-agent-harness-bb-health-status",
       localConfigFingerprint: "cfg-local",
       fetchRunningVersion: vi.fn(async () => "0.1.0-alpha.20"),
       fetchRunningRuntimeMetadata: vi.fn(async () => ({
         version: "0.1.0-alpha.20",
         lastUpdated: "2026-03-09T11:00:00.000Z",
-        repoRoot: "/Users/arimendelow/Projects/ouroboros-agent-harness-cross-chat-bridge-orchestration",
+        repoRoot: "/Users/owner/Projects/ouroboros-agent-harness-cross-chat-bridge-orchestration",
         configFingerprint: "cfg-local",
       })),
       stopDaemon: vi.fn(async () => {}),
@@ -117,7 +117,7 @@ describe("ensureCurrentDaemonRuntime", () => {
     expect(result.startedPid).toBe(777)
     expect(result.message).toContain("runtime drift")
     expect(result.message).toContain("code path")
-    expect(result.message).not.toContain("/Users/arimendelow/Projects")
+    expect(result.message).not.toContain("/Users/owner/Projects")
     expect(deps.stopDaemon).toHaveBeenCalledTimes(1)
     expect(deps.cleanupStaleSocket).toHaveBeenCalledWith("/tmp/ouro-test.sock")
     expect(deps.startDaemonProcess).toHaveBeenCalledWith("/tmp/ouro-test.sock")
@@ -128,13 +128,13 @@ describe("ensureCurrentDaemonRuntime", () => {
       socketPath: "/tmp/ouro-test.sock",
       localVersion: "0.1.0-alpha.20",
       localLastUpdated: "2026-03-09T11:00:00.000Z",
-      localRepoRoot: "/Users/arimendelow/Projects/ouroboros-agent-harness-bb-health-status",
+      localRepoRoot: "/Users/owner/Projects/ouroboros-agent-harness-bb-health-status",
       localConfigFingerprint: "cfg-local",
       fetchRunningVersion: vi.fn(async () => "0.1.0-alpha.20"),
       fetchRunningRuntimeMetadata: vi.fn(async () => ({
         version: "0.1.0-alpha.20",
         lastUpdated: "2026-03-09T11:00:00.000Z",
-        repoRoot: "/Users/arimendelow/Projects/ouroboros-agent-harness-bb-health-status",
+        repoRoot: "/Users/owner/Projects/ouroboros-agent-harness-bb-health-status",
         configFingerprint: "cfg-running",
       })),
       stopDaemon: vi.fn(async () => {}),
@@ -157,14 +157,14 @@ describe("ensureCurrentDaemonRuntime", () => {
       socketPath: "/tmp/ouro-test.sock",
       localVersion: "0.1.0-alpha.20",
       localLastUpdated: "2026-03-09T11:00:00.000Z",
-      localRepoRoot: "/Users/arimendelow/Projects/ouroboros-agent-harness-bb-health-status",
+      localRepoRoot: "/Users/owner/Projects/ouroboros-agent-harness-bb-health-status",
       localConfigFingerprint: "cfg-local",
       localManagedAgents: "slugger",
       fetchRunningVersion: vi.fn(async () => "0.1.0-alpha.20"),
       fetchRunningRuntimeMetadata: vi.fn(async () => ({
         version: "0.1.0-alpha.20",
         lastUpdated: "2026-03-09T11:00:00.000Z",
-        repoRoot: "/Users/arimendelow/Projects/ouroboros-agent-harness-bb-health-status",
+        repoRoot: "/Users/owner/Projects/ouroboros-agent-harness-bb-health-status",
         configFingerprint: "cfg-local",
         managedAgents: "ouroboros,slugger",
       })),
@@ -235,11 +235,11 @@ describe("ensureCurrentDaemonRuntime", () => {
     const deps = {
       socketPath: "/tmp/ouro-test.sock",
       localVersion: "0.1.0-alpha.20",
-      localRepoRoot: "/Users/arimendelow/Projects/ouroboros-agent-harness-bb-health-status",
+      localRepoRoot: "/Users/owner/Projects/ouroboros-agent-harness-bb-health-status",
       fetchRunningVersion: vi.fn(async () => "0.1.0-alpha.20"),
       fetchRunningRuntimeMetadata: vi.fn(async () => ({
         version: "0.1.0-alpha.20",
-        repoRoot: "/Users/arimendelow/Projects/ouroboros-agent-harness-cross-chat-bridge-orchestration",
+        repoRoot: "/Users/owner/Projects/ouroboros-agent-harness-cross-chat-bridge-orchestration",
       })),
       stopDaemon: vi.fn(async () => {}),
       cleanupStaleSocket: vi.fn(),
@@ -427,11 +427,11 @@ describe("ensureCurrentDaemonRuntime", () => {
     const deps = {
       socketPath: "/tmp/ouro-test.sock",
       localVersion: "0.1.0-alpha.20",
-      localRepoRoot: "/Users/arimendelow/Projects/ouroboros-agent-harness-bb-health-status",
+      localRepoRoot: "/Users/owner/Projects/ouroboros-agent-harness-bb-health-status",
       fetchRunningVersion: vi.fn(async () => "0.1.0-alpha.20"),
       fetchRunningRuntimeMetadata: vi.fn(async () => ({
         version: "0.1.0-alpha.20",
-        repoRoot: "/Users/arimendelow/Projects/ouroboros-agent-harness-cross-chat-bridge-orchestration",
+        repoRoot: "/Users/owner/Projects/ouroboros-agent-harness-cross-chat-bridge-orchestration",
       })),
       stopDaemon: vi.fn(async () => {
         throw new Error("permission denied")

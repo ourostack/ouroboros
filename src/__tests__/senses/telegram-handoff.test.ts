@@ -14,7 +14,7 @@ const event = (role: string, content: string, observedAt: string | null = new Da
 
 describe("ownerChatHandedOff", () => {
   it("is on within the window after Ari hands the chat over, and off after it", () => {
-    const events = [event("user", "hello pal! I’m going to hand you to my wife, Rachel."), event("user", "i want something silly")]
+    const events = [event("user", "hello pal! I’m going to hand you to my wife, Sam."), event("user", "i want something silly")]
     expect(ownerChatHandedOff(events, at + 60_000)).toBe(true)
     expect(ownerChatHandedOff(events, at + OWNER_CHAT_HANDOFF_MS)).toBe(false)
     expect(ownerChatHandedOff([event("user", "say hi to her!", null)], at + 60_000)).toBe(true)
@@ -24,7 +24,7 @@ describe("ownerChatHandedOff", () => {
 
   it("stays on while the handed-off conversation keeps going, and goes off two hours after its last message", () => {
     const later = new Date(at + OWNER_CHAT_HANDOFF_MS).toISOString()
-    const events = [event("user", "say hi to her!"), event("assistant", "Hi Rachel!", later), event("user", "something silly please", later)]
+    const events = [event("user", "say hi to her!"), event("assistant", "Hi Sam!", later), event("user", "something silly please", later)]
     expect(ownerChatHandedOff(events, at + OWNER_CHAT_HANDOFF_MS + 60_000)).toBe(true)
     expect(ownerChatHandedOff(events, at + 2 * OWNER_CHAT_HANDOFF_MS)).toBe(false)
     expect(ownerChatHandedOff([event("user", "say hi to her!", null, "not a date")], at)).toBe(false)

@@ -8242,7 +8242,7 @@ describe("provider CLI command execution", () => {
   })
 
   for (const [label, declaredHost, typedHost, expected] of [
-    ["a typed account that differs from the declared host", "clawdbot", "arimendelow", 'BlueBubbles host setup refused for macOS account "arimendelow"'],
+    ["a typed account that differs from the declared host", "clawdbot", "owner", 'BlueBubbles host setup refused for macOS account "owner"'],
     ["a blank account with no declared host", undefined, "", "BlueBubbles host account cannot be blank"],
   ] as const) {
     it(`refuses BlueBubbles setup for ${label} before touching the host`, async () => {

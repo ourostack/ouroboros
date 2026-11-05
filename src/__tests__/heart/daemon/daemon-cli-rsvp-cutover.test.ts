@@ -11,7 +11,7 @@ import {
 } from "../../../heart/daemon/daemon-cli"
 
 const tempRoots: string[] = []
-const legacyLabel = "com.arimendelow.rsvp-tracker"
+const legacyLabel = "com.owner.rsvp-tracker"
 
 function createMockDeps(overrides: Partial<OuroCliDeps> = {}): OuroCliDeps {
   return {
@@ -98,14 +98,14 @@ describe("ouro rsvp cutover CLI", () => {
       "--agent",
       "slugger",
       "--legacy-root",
-      "/Users/arimendelow/Projects/rsvp-tracker",
+      "/Users/owner/Projects/rsvp-tracker",
       "--action",
       "check",
       "--json",
     ])).toEqual({
       kind: "rsvp.cutover",
       agent: "slugger",
-      legacyRoot: "/Users/arimendelow/Projects/rsvp-tracker",
+      legacyRoot: "/Users/owner/Projects/rsvp-tracker",
       action: "check",
       json: true,
     })
@@ -116,7 +116,7 @@ describe("ouro rsvp cutover CLI", () => {
       "--agent",
       "slugger",
       "--legacy-root",
-      "/Users/arimendelow/Projects/rsvp-tracker",
+      "/Users/owner/Projects/rsvp-tracker",
       "--action",
       "retire-legacy-send-config",
       "--yes",
@@ -124,7 +124,7 @@ describe("ouro rsvp cutover CLI", () => {
     ])).toEqual({
       kind: "rsvp.cutover",
       agent: "slugger",
-      legacyRoot: "/Users/arimendelow/Projects/rsvp-tracker",
+      legacyRoot: "/Users/owner/Projects/rsvp-tracker",
       action: "retire-legacy-send-config",
       yes: true,
       json: true,
@@ -136,14 +136,14 @@ describe("ouro rsvp cutover CLI", () => {
       "--agent",
       "slugger",
       "--legacy-root",
-      "/Users/arimendelow/Projects/rsvp-tracker",
+      "/Users/owner/Projects/rsvp-tracker",
       "--action",
       "quarantine-launchd",
       "--yes",
     ])).toEqual({
       kind: "rsvp.cutover",
       agent: "slugger",
-      legacyRoot: "/Users/arimendelow/Projects/rsvp-tracker",
+      legacyRoot: "/Users/owner/Projects/rsvp-tracker",
       action: "quarantine-launchd",
       yes: true,
     })

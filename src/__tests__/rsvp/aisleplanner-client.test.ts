@@ -79,7 +79,7 @@ describe("AislePlanner RSVP read adapter", () => {
       .mockResolvedValueOnce(cookieResponse("XSRF-TOKEN=token%2Btwo; Path=/; HttpOnly, ap_session=session-two; Path=/; HttpOnly"))
       .mockResolvedValueOnce(jsonResponse([
         { id: 1, first_name: "Ari", last_name: "Mendelow", group_id: 7 },
-        { id: 2, first_name: "Rachel", last_name: "Example", group_id: 7 },
+        { id: 2, first_name: "Sam", last_name: "Example", group_id: 7 },
         { id: 3, first_name: "Unassigned", last_name: "Guest", group_id: 9 },
       ]))
       .mockResolvedValueOnce(jsonResponse([
@@ -95,11 +95,11 @@ describe("AislePlanner RSVP read adapter", () => {
       fetchedAt: "2026-07-09T17:30:00.000Z",
       guests: {
         "1": { first_name: "Ari", last_name: "Mendelow", group_id: 7, attending_status: "attending" },
-        "2": { first_name: "Rachel", last_name: "Example", group_id: 7, attending_status: null },
+        "2": { first_name: "Sam", last_name: "Example", group_id: 7, attending_status: null },
       },
       allGuests: {
         "1": { first_name: "Ari", last_name: "Mendelow", group_id: 7 },
-        "2": { first_name: "Rachel", last_name: "Example", group_id: 7 },
+        "2": { first_name: "Sam", last_name: "Example", group_id: 7 },
         "3": { first_name: "Unassigned", last_name: "Guest", group_id: 9 },
       },
     })

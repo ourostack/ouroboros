@@ -220,7 +220,7 @@ function seedLegacyCutoverRoot(options: { sendEnabled?: boolean } = {}): string 
 function cutoverDeps(options: { launchAgentLoaded?: boolean; processRunning?: boolean; nativeHealthy?: boolean } = {}): NonNullable<OuroCliDeps["rsvpCutoverDeps"]> {
   return {
     getLaunchAgentState: vi.fn(async () => ({
-      label: "com.arimendelow.rsvp-tracker",
+      label: "com.owner.rsvp-tracker",
       loaded: options.launchAgentLoaded === true,
       source: "injected" as const,
     })),
@@ -239,7 +239,7 @@ function cutoverDeps(options: { launchAgentLoaded?: boolean; processRunning?: bo
 function defaultCredentialCutoverDeps(): NonNullable<OuroCliDeps["rsvpCutoverDeps"]> {
   return {
     getLaunchAgentState: vi.fn(async () => ({
-      label: "com.arimendelow.rsvp-tracker",
+      label: "com.owner.rsvp-tracker",
       loaded: false,
       source: "injected" as const,
     })),

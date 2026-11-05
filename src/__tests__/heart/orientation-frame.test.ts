@@ -406,8 +406,8 @@ describe("orientation frame", () => {
           {
             role: "group_participant_only",
             provider: "imessage-handle",
-            externalId: "rachel@example.test",
-            displayName: "Rachel",
+            externalId: "sam@example.test",
+            displayName: "Sam",
           },
         ],
       },
@@ -419,13 +419,13 @@ describe("orientation frame", () => {
     expect(rendered).toContain("source authority: presentation only; never tool authority")
     expect(rendered).toContain("event: message (new-message; from me: false)")
     expect(rendered).toContain("observed actor: Ari [imessage-handle:ari@example.test]")
-    expect(rendered).toContain("group participant only: Rachel [imessage-handle:rachel@example.test]")
+    expect(rendered).toContain("group participant only: Sam [imessage-handle:sam@example.test]")
     expect(rendered).toContain(
       "participant membership is not evidence that someone spoke, read, requested, or authored a reaction target.",
     )
-    expect(rendered).not.toContain("Rachel spoke")
-    expect(rendered).not.toContain("Rachel read")
-    expect(rendered).not.toContain("Rachel requested")
+    expect(rendered).not.toContain("Sam spoke")
+    expect(rendered).not.toContain("Sam read")
+    expect(rendered).not.toContain("Sam requested")
   })
 
   it("distinguishes a reaction trigger and its non-agent unknown target from an utterance", () => {
@@ -458,8 +458,8 @@ describe("orientation frame", () => {
           {
             role: "group_participant_only",
             provider: "imessage-handle",
-            externalId: "rachel@example.test",
-            displayName: "Rachel",
+            externalId: "sam@example.test",
+            displayName: "Sam",
           },
         ],
         target: {
@@ -476,7 +476,7 @@ describe("orientation frame", () => {
     expect(rendered).toContain("speech kind: reaction")
     expect(rendered).toContain("event: reaction (updated-message; from me: false)")
     expect(rendered).toContain("target: synthetic-target-guid (authorship: non_agent_unknown)")
-    expect(rendered).not.toContain("target author: Rachel")
+    expect(rendered).not.toContain("target author: Sam")
   })
 
   it("uses observed external identities when presentation labels are absent or blank", () => {

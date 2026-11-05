@@ -152,7 +152,7 @@ describe("evolution tools", () => {
       desiredBehavior: "Desk search should report semantic fallback clearly and keep working.",
       originKind: "desk",
       originLabel: "desk-plugin/semantic-search-fallback",
-      originLocator: "/Users/arimendelow/desk/desk-plugin/semantic-search-fallback/task.md",
+      originLocator: "/Users/owner/desk/desk-plugin/semantic-search-fallback/task.md",
       budgetProfile: "capture",
       evidenceKind: "desk_doc",
       evidenceLocator: "desk-plugin/semantic-search-fallback/task.md",

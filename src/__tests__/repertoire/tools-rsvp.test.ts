@@ -30,7 +30,7 @@ function snapshot(): RsvpSnapshot {
     },
     guests: {
       "1": { first_name: "Ari", last_name: "Mendelow", group_id: 7, attending_status: "attending" },
-      "2": { first_name: "Rachel", last_name: "Example", group_id: 7, attending_status: null },
+      "2": { first_name: "Sam", last_name: "Example", group_id: 7, attending_status: null },
     },
     allGuests: {},
     provenance: { kind: "live-fetch", fetchedBy: "unit-test" },
@@ -62,7 +62,7 @@ describe("RSVP repertoire tools", () => {
       query: "who is pending?",
     }, { summarize } as never)
 
-    expect(result).toBe("Pending (1/2): Rachel Example")
+    expect(result).toBe("Pending (1/2): Sam Example")
     expect(summarize).not.toHaveBeenCalled()
   })
 
