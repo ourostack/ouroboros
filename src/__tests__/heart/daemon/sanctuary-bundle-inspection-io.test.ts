@@ -38,6 +38,7 @@ import * as fs from "node:fs"
 import {
   SANCTUARY_BUNDLE_ROLLBACK_FILE,
   SANCTUARY_PACKAGE_MANAGED_FILES,
+  SANCTUARY_STARTER_PSYCHE_FILES,
   ensureSanctuaryPackageManagedBundle,
   inspectSanctuaryPackageManagedBundle,
 } from "../../../heart/daemon/sanctuary-bundle-migration"
@@ -63,6 +64,10 @@ function makeLayout(): { packageRoot: string; agentRoot: string } {
     write(agentRoot, relative, `${relative}\n`)
     fs.chmodSync(path.join(agentRoot, relative), 0o600)
   }
+  for (const relative of SANCTUARY_STARTER_PSYCHE_FILES) {
+    write(packageRoot, relative, `${relative}\n`)
+    write(agentRoot, relative, `${relative}\n`)
+  }
   const metadata = { runtimeVersion: "v", bundleSchemaVersion: 3, lastUpdated: "2026-09-05T00:00:00.000Z" }
   write(packageRoot, "bundle-meta.json", metadata)
   write(agentRoot, "bundle-meta.json", metadata)
@@ -86,7 +91,7 @@ describe("Sanctuary bundle inspection I/O failures", () => {
     if (fault === "root") faults.lstat = packageRoot
     if (fault === "nested path") faults.lstat = path.join(packageRoot, "habits")
     if (fault === "JSON read") faults.read = path.join(packageRoot, "bundle-meta.json")
-    if (fault === "stage enumeration") faults.readdir = path.join(agentRoot, "psyche")
+    if (fault === "stage enumeration") faults.readdir = path.join(agentRoot, "habits")
     if (fault === "journal stat" || fault === "journal read") {
       const journalPath = path.join(agentRoot, SANCTUARY_BUNDLE_ROLLBACK_FILE)
       fs.writeFileSync(journalPath, "{}\n", { mode: 0o600 })
@@ -98,6 +103,18 @@ describe("Sanctuary bundle inspection I/O failures", () => {
       ok: false,
       error: { code: "inspection_unavailable", message: "Sanctuary install state is unavailable", degraded: true, repair: { actor: "human-required", action: "run_verified_update_recovery" } },
     })
+  })
+
+  it("maps an unexpected psyche stat failure during startup seeding to the bounded unavailable result", () => {
+    const { packageRoot, agentRoot } = makeLayout()
+    const before = fs.readdirSync(agentRoot).sort()
+    faults.lstat = path.join(agentRoot, "psyche")
+
+    expect(ensureSanctuaryPackageManagedBundle({ packageRoot, agentRoot, runtimePackageVersion: "v" })).toEqual({
+      ok: false,
+      error: { code: "inspection_unavailable", message: "Sanctuary install state is unavailable", degraded: true, repair: { actor: "human-required", action: "run_verified_update_recovery" } },
+    })
+    expect(fs.readdirSync(agentRoot).sort()).toEqual(before)
   })
 
   it("fails package activation closed when filesystem identity inspection fails", () => {

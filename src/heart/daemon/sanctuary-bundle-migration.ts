@@ -9,12 +9,12 @@ export const SANCTUARY_PACKAGE_MANAGED_FILES = [
   "mcp/media-mcp.mjs",
   "habits/sanctuary-health.md",
   "awaiting/house-care-sweep.md",
-  "psyche/ASPIRATIONS.md",
-  "psyche/IDENTITY.md",
-  "psyche/LORE.md",
-  "psyche/SOUL.md",
-  "psyche/TACIT.md",
 ] as const
+
+// The psyche belongs to the install: it is seeded from these files only when `psyche/` is absent, and no release touches it again.
+export const SANCTUARY_STARTER_PSYCHE_FILES = ["psyche/ASPIRATIONS.md", "psyche/IDENTITY.md", "psyche/LORE.md", "psyche/SOUL.md", "psyche/TACIT.md"] as const
+
+const PSYCHE_SEED_STAGE_PREFIX = ".psyche-seed."
 
 export const SANCTUARY_BUNDLE_ROLLBACK_FILE = ".sanctuary-package-managed-rollback.json"
 const SANCTUARY_BUNDLE_COMMITTING_FILE = `${SANCTUARY_BUNDLE_ROLLBACK_FILE}.committing`
@@ -60,8 +60,8 @@ export interface SanctuaryDirectoryIdentity {
 }
 
 class SanctuaryInspectionFault extends Error {
-  constructor(readonly code: SanctuaryInstallErrorCode) {
-    super(code)
+  constructor(readonly code: SanctuaryInstallErrorCode, message: string = code) {
+    super(message)
   }
 }
 
@@ -488,8 +488,10 @@ export function inspectSanctuaryPackageManagedBundle(input: { packageRoot: strin
 
 export function ensureSanctuaryPackageManagedBundle(
   input: { packageRoot: string; agentRoot: string; runtimePackageVersion: string },
-  deps: { inspect?: typeof inspectSanctuaryPackageManagedBundle; migrate?: typeof migrateSanctuaryPackageManagedBundle; commit?: typeof commitSanctuaryPackageManagedBundle } = {},
+  deps: { inspect?: typeof inspectSanctuaryPackageManagedBundle; migrate?: typeof migrateSanctuaryPackageManagedBundle; commit?: typeof commitSanctuaryPackageManagedBundle; seed?: typeof seedSanctuaryPsycheIfAbsent } = {},
 ): SanctuaryPackageManagedBundleInspection {
+  const seedFailure = seedLivePsyche(input, deps.seed ?? seedSanctuaryPsycheIfAbsent)
+  if (seedFailure) return seedFailure
   const inspect = deps.inspect ?? inspectSanctuaryPackageManagedBundle
   const before = inspect(input)
   if (!before.ok) {
@@ -512,6 +514,82 @@ export function ensureSanctuaryPackageManagedBundle(
   if (!after.ok || !after.data.ready) return after
   if (after.data.parity !== "exact" || after.data.journalState !== "absent") throw new Error("Sanctuary package-managed bundle did not converge")
   return after
+}
+
+// A live root that is not a canonical directory is left for inspection to report as invalid_live_root.
+function seedLivePsyche(input: { packageRoot: string; agentRoot: string }, seed: typeof seedSanctuaryPsycheIfAbsent): SanctuaryPackageManagedBundleInspection | null {
+  try {
+    if (!inspectStandaloneSanctuaryDirectory(input.agentRoot)) return null
+    const seeded = seed({ packageRoot: input.packageRoot, agentRoot: input.agentRoot })
+    return seeded.ok ? null : inspectionError(seeded.code)
+  } catch (error) {
+    return inspectionError(error instanceof SanctuaryInspectionFault ? error.code : "inspection_unavailable")
+  }
+}
+
+function psycheState(agentRoot: string): "absent" | "directory" | "invalid" {
+  let stat: fs.Stats
+  try { stat = fs.lstatSync(path.join(agentRoot, "psyche")) } catch (error) {
+    if (isMissing(error)) return "absent"
+    throw error
+  }
+  return stat.isDirectory() ? "directory" : "invalid"
+}
+
+// A seed interrupted before its rename leaves a staging folder of plain files that never became the psyche.
+// Only real directories with the stage prefix are ours; anything else under that name is left alone.
+function cleanupInterruptedPsycheSeeds(agentRoot: string): void {
+  let removed = false
+  for (const name of fs.readdirSync(agentRoot).filter((entry) => entry.startsWith(PSYCHE_SEED_STAGE_PREFIX)).sort()) {
+    const stage = path.join(agentRoot, name)
+    if (!fs.lstatSync(stage).isDirectory()) continue
+    const entries = fs.readdirSync(stage)
+    if (entries.some((entry) => !fs.lstatSync(path.join(stage, entry)).isFile())) throw new SanctuaryInspectionFault("invalid_live_bundle", `interrupted psyche seed stage contains unexpected entries: ${name}`)
+    for (const entry of entries) fs.unlinkSync(path.join(stage, entry))
+    fs.rmdirSync(stage)
+    removed = true
+  }
+  if (removed) syncDirectory(agentRoot)
+}
+
+export function seedSanctuaryPsycheIfAbsent(
+  input: { packageRoot: string; agentRoot: string },
+  deps: { writeFile?: (fd: number, content: Buffer) => void } = {},
+): { ok: true; seeded: boolean } | { ok: false; code: "invalid_live_bundle" } {
+  validateAgentRoot(input.agentRoot)
+  cleanupInterruptedPsycheSeeds(input.agentRoot)
+  const state = psycheState(input.agentRoot)
+  if (state === "directory") return { ok: true, seeded: false }
+  if (state === "invalid") return { ok: false, code: "invalid_live_bundle" }
+
+  const sources = SANCTUARY_STARTER_PSYCHE_FILES.map((relative) => {
+    if (!inspectRelativeFile(input.packageRoot, relative, "invalid_package_source")) throw new SanctuaryInspectionFault("invalid_package_source", `starter psyche source is missing: ${relative}`)
+    return { name: path.basename(relative), content: fs.readFileSync(path.join(input.packageRoot, relative)) }
+  })
+  const writeFile = deps.writeFile ?? ((fd: number, content: Buffer) => fs.writeFileSync(fd, content))
+  const stage = fs.mkdtempSync(path.join(input.agentRoot, PSYCHE_SEED_STAGE_PREFIX))
+  for (const source of sources) {
+    const fd = fs.openSync(path.join(stage, source.name), "wx", 0o600)
+    try {
+      writeFile(fd, source.content)
+      fs.fchmodSync(fd, 0o600)
+      fs.fsyncSync(fd)
+    } finally {
+      fs.closeSync(fd)
+    }
+  }
+  const directory = fs.openSync(stage, fs.constants.O_RDONLY | fs.constants.O_DIRECTORY | fs.constants.O_NOFOLLOW)
+  try {
+    fs.fchmodSync(directory, 0o755)
+    fs.fsyncSync(directory)
+  } finally {
+    fs.closeSync(directory)
+  }
+  if (psycheState(input.agentRoot) !== "absent") throw new SanctuaryInspectionFault("invalid_live_bundle", "psyche appeared while the starter psyche was staged")
+  fs.renameSync(stage, path.join(input.agentRoot, "psyche"))
+  syncDirectory(input.agentRoot)
+  emitNervesEvent({ component: "daemon", event: "daemon.sanctuary_psyche_seeded", message: "seeded the starter psyche into a bundle that had none", meta: { agentRoot: input.agentRoot, files: sources.length } })
+  return { ok: true, seeded: true }
 }
 
 export function inspectSanctuaryPackageManagedBundleRollback(agentRoot: string): { rollbackImageId: string; targetImageId: string; state: "rollback" | "committing" } | null {
@@ -626,6 +704,8 @@ export function migrateSanctuaryPackageManagedBundle(input: { packageRoot: strin
       const meta = fs.openSync(metaPath, fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW)
       try { fs.fsyncSync(meta) } finally { fs.closeSync(meta) }
     }
+
+    if (!seedSanctuaryPsycheIfAbsent({ packageRoot: input.packageRoot, agentRoot: input.agentRoot }).ok) throw new Error("psyche must be a real directory, not a symlink or file")
 
     const result = { managedFilesUpdated }
     emitNervesEvent({ component: "daemon", event: "daemon.sanctuary_bundle_migration_end", message: "completed Sanctuary package-managed bundle migration", meta: result })
