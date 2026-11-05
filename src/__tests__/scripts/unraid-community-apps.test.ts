@@ -43,10 +43,10 @@ describe("Ouro Butler Community Apps release", () => {
 
     expect(template.match(/<Name>[^<]+<\/Name>/gu)).toEqual(["<Name>ouro-butler</Name>"])
     expect(template.match(/<Repository>[^<]+<\/Repository>/gu)).toEqual([`<Repository>ghcr.io/ourostack/ouroboros-butler:${packageVersion.version}</Repository>`])
-    expect(template.match(/<Config\b/gu)).toHaveLength(6)
+    expect(template.match(/<Config\b/gu)).toHaveLength(5)
     expect(template).toContain('Target="/run/ouro-authority"')
     expect(template).toContain('Default="/run/ouro-authority" Mode="ro"')
-    expect(template).toContain('Target="/home/ouro/AgentBundles/sanctuary.ouro/psyche" Default="/mnt/user/appdata/ouro-butler/agent/sanctuary.ouro/psyche" Mode="ro"')
+    expect(template).not.toContain("sanctuary.ouro/psyche")
     expect(template).toContain('Target="/etc/ouro/trust/sanctuary" Default="/mnt/user/appdata/ouro-butler/trust/sanctuary" Mode="ro"')
     expect(template).toContain("<Category>Tools:Utilities</Category>")
     expect(template).toContain("<Beta>true</Beta>")
@@ -275,11 +275,17 @@ describe("Ouro Butler Community Apps release", () => {
     expect(verifiedModes).toEqual(Array(5).fill("0:0:600"))
   })
 
-  it("documents the exact two read-write and three read-only gateway production mounts", () => {
+  it("documents the exact two read-write and three read-only gateway production mounts, with no separate psyche mount", () => {
     const runbook = fs.readFileSync("deploy/unraid/README.txt", "utf8")
 
-    expect(runbook).toContain("mounts the runtime and sanctuary.ouro bundle read-write, the bundle psyche folder read-only over it so the Butler can neither edit nor replace its psyche, plus the privileged event spool read-only")
-    expect(runbook).toContain("appends /run/ouro-authority -> /run/ouro-authority, readonly, rprivate, and the psyche mount (<bundle>/psyche -> /home/ouro/AgentBundles/sanctuary.ouro/psyche, readonly, rprivate)")
+    expect(runbook).toContain("mounts the runtime and sanctuary.ouro bundle read-write, plus the privileged event spool read-only")
+    expect(runbook).toContain("appends /run/ouro-authority -> /run/ouro-authority, readonly, rprivate, and the operator trust mount")
+    expect(runbook).not.toContain("dst=/home/ouro/AgentBundles/sanctuary.ouro/psyche")
+    expect(runbook).not.toContain("and the psyche mount (<bundle>/psyche")
+    expect(runbook).toContain("authority-activate starts the exact five-mount target")
+    expect(runbook).toContain("recreate the resident once by hand with the five-mount create")
+    expect(runbook.match(/six-mount/gu)).toEqual(["six-mount"])
+    expect(runbook).toContain("every audit still accepts that six-mount shape")
     expect(runbook).not.toContain("SAB configuration read-only")
     expect(runbook).not.toContain("SAB readiness")
     expect(runbook).not.toContain("Confirm Config.Image equals the exact reviewed local image ID")

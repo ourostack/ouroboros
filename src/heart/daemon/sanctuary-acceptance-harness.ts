@@ -464,7 +464,8 @@ export function validateSanctuaryUnit16EvidenceAssertions(label: SanctuaryUnit16
       integer(value.auditRecordCount, `${label} auditRecordCount`, 2)
       integer(value.auditLifecyclePairCount, `${label} auditLifecyclePairCount`, 1)
       if (text(value.containerUser, `${label} containerUser`) !== "10001:10001" || text(value.liveProcessUser, `${label} liveProcessUser`) !== "10001:10001" || text(value.networkMode, `${label} networkMode`) !== "host") throw new Error(`${label} container identity or network is invalid`)
-      requiredInteger(value, "mountCount", 6, label)
+      // Five mounts now; six for alpha.978 and earlier (and a rollback to one), which add the read-only psyche mount. mountsExact pins the set.
+      if (![5, 6].includes(integer(value.mountCount, `${label} mountCount`))) throw new Error(`${label} mountCount must equal 5 or 6`)
       requiredInteger(value, "typedWriteExecutorCount", 1, label)
       allTrue(["writeApprovalPolicyExact", "mountsExact", "securityExact", "updaterDisabled"])
       break

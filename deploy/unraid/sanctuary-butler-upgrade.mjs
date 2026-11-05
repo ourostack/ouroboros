@@ -50,6 +50,7 @@ import { execFileSync, spawn, spawnSync } from "node:child_process"
 import { createHash } from "node:crypto"
 import { mkdtempSync, rmSync, writeFileSync, readFileSync, existsSync, statSync, lstatSync, chmodSync, realpathSync, readdirSync } from "node:fs"
 import { fileURLToPath } from "node:url"
+import { createRequire } from "node:module"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 
@@ -58,6 +59,7 @@ const BUNDLE = "/mnt/user/appdata/ouro-butler/agent/sanctuary.ouro"
 const RUNTIME = "/mnt/user/appdata/ouro-butler/runtime/.ouro-cli"
 const CONTAINER = "ouro-butler"
 const TEMPLATE = "/boot/config/plugins/dockerMan/templates-user/my-ouro-butler.xml"
+const PSYCHE_TARGET = "/home/ouro/AgentBundles/sanctuary.ouro/psyche"
 const JOURNAL = "/boot/config/custom/ouro-butler/docker-man-template-transaction.json"
 const POLICY = `${BUNDLE}/state/policy/steward.json`
 const PRIMITIVES = ["/usr/local/bin/node", "/bin/sh", "/usr/bin/prlimit", "/usr/bin/setsid"]
@@ -471,11 +473,6 @@ function enableResidentAutostart() {
 // verify-install and the final commit proof are all satisfied. The container is created
 // stopped; start-resident starts it. #target asserts: target image, user 10001:10001, no
 // token env, exactly one read-only /run/ouro-authority mount, no docker.sock/${ROOT} mounts.
-// The psyche folder is mounted read-only over the writable bundle mount, so its files cannot be edited and the folder cannot be
-// renamed, removed or swapped from inside the container. The files stay owned by the resident at mode 0600 because the
-// resident's boot check requires exactly that. On a normal boot the files already match the package, so the check writes
-// nothing; if they ever drift, its repair write fails with EROFS and startup fails loudly rather than silently rewriting psyche.
-export const PSYCHE_MOUNT = `${BUNDLE}/psyche:/home/ouro/AgentBundles/sanctuary.ouro/psyche:ro`
 // Operator-set grants (delegated commands, escalation) live outside the bundle, in a root-owned host directory mounted
 // read-only at /etc/ouro/trust/sanctuary. The bundle's recursive chown cannot reach it, and the resident cannot write it.
 export const TRUST_HOST_DIR = "/mnt/user/appdata/ouro-butler/trust/sanctuary"
@@ -546,7 +543,6 @@ function recreateResident(version) {
     "-v", "/mnt/user/appdata/ouro-butler/agent/sanctuary.ouro:/home/ouro/AgentBundles/sanctuary.ouro:rw",
     "-v", "/boot/config/custom/ouro-events/spool:/run/ouro-events:ro",
     "-v", "/run/ouro-authority:/run/ouro-authority:ro",
-    "-v", PSYCHE_MOUNT,
     "-v", TRUST_MOUNT,
     image(version)])
   const ref = docker(["inspect", CONTAINER, "--format", "{{.Config.Image}}"]).trim()
@@ -583,10 +579,9 @@ export function restoreReplayRoot(bundle = BUNDLE, { lstat = lstatSync, realpath
   chmod(dir, 0o755)
   rm(`${dir}/window.json`, { force: true, recursive: true })
 }
-// The psyche files are package-managed: the resident's own boot check (prepareSanctuaryPackageManagedBundle) requires every one
-// to be exactly mode 0600, so they must stay owned by the resident (uid 10001) at 0600. What stops the resident editing or
-// replacing them is the read-only bind mount of psyche/ (PSYCHE_MOUNT), not file ownership. The recursive chown above already
-// handed them to 10001; this puts the modes back (directories 0755, files 0600) and is the state psycheProblems checks.
+// The psyche files stay owned by the resident (uid 10001) at exactly mode 0600: alpha.978's boot check
+// (prepareSanctuaryPackageManagedBundle) requires that, and a rollback may start that release again. The recursive chown above
+// already handed them to 10001; this puts the modes back (directories 0755, files 0600) and is the state psycheProblems checks.
 export function restorePsycheModes(dir, { lstat = lstatSync, readdir = readdirSync, chmod = chmodSync } = {}) {
   const walk = (current) => {
     const stat = lstat(current)
@@ -618,11 +613,13 @@ export function psycheProblems(dir, { lstat = lstatSync, readdir = readdirSync }
   walk(dir)
   return problems
 }
-/** What is wrong with the resident's psyche mount, from `docker inspect` Mounts, or null when it is mounted read-only. */
+/**
+ * What is wrong with the resident's psyche mount, from `docker inspect` Mounts, or null for a supported shape: no separate psyche
+ * mount (current releases), or a read-only one (alpha.978 and earlier, which a rollback recreates).
+ */
 export function psycheMountIssue(mounts) {
-  const mount = (Array.isArray(mounts) ? mounts : []).find((entry) => entry?.Destination === "/home/ouro/AgentBundles/sanctuary.ouro/psyche")
-  if (!mount) return "psyche is not mounted separately in the resident, so it could be renamed or replaced"
-  return mount.RW === false ? null : "psyche is mounted read-write in the resident"
+  const mount = (Array.isArray(mounts) ? mounts : []).find((entry) => entry?.Destination === PSYCHE_TARGET)
+  return !mount || mount.RW === false ? null : "psyche is mounted read-write as a separate mount in the resident"
 }
 
 function migrateBundle(version, rollbackImage) {
@@ -1076,12 +1073,33 @@ function resumeSupervision() {
   installGatewaySupervisor()
 }
 
-// Keep Unraid's DockerMan template (what the UI's Apply/Update uses) on the live image.
+/**
+ * The template text without its psyche `<Config>` (Target exactly PSYCHE_TARGET), so a DockerMan Apply cannot put the old read-only
+ * psyche mount back. The element is removed with the whitespace that starts its line and the newline that ends it; every other byte
+ * is kept. `parse` is docker-man-template-xml.cjs's parseDockerManTemplateXml: a template it cannot read, or one without exactly one
+ * such Config, comes back unchanged, as does one where the textual match does not remove exactly that element.
+ */
+export function withoutPsycheConfig(text, parse) {
+  const psycheConfigs = (document) => document?.children.filter((child) => child.name === "Config" && child.attributes.Target === PSYCHE_TARGET).length
+  const before = parse(text)
+  if (psycheConfigs(before) !== 1) return text
+  const next = text.replace(new RegExp(`[ \\t]*<Config\\b[^<>]*\\sTarget="${PSYCHE_TARGET.replace(/[.]/gu, "\\.")}"[^<>]*(?:/>|>[^<]*</Config>)[ \\t]*\\r?\\n?`, "u"), "")
+  const after = parse(next)
+  return after && psycheConfigs(after) === 0 && after.children.length === before.children.length - 1 ? next : text
+}
+
+// Keep Unraid's DockerMan template (what the UI's Apply/Update uses) on the live image, without the old psyche mount.
+// Runs after the commit, so the parser comes from the installed package (this script is staged on its own, without siblings).
 function pinTemplate(version) {
   if (!existsSync(TEMPLATE)) { console.log("  note: no DockerMan template to update"); return }
   const text = readFileSync(TEMPLATE, "utf8")
-  const next = text.replace(/<Repository>ghcr\.io\/ourostack\/ouroboros-butler:[^<]+<\/Repository>/u, `<Repository>${image(version)}</Repository>`)
+  let next = text.replace(/<Repository>ghcr\.io\/ourostack\/ouroboros-butler:[^<]+<\/Repository>/u, `<Repository>${image(version)}</Repository>`)
   if (!next.includes(`<Repository>${image(version)}</Repository>`)) { console.log("  WARN: DockerMan template Repository not recognised; left unchanged"); return }
+  try {
+    const { parseDockerManTemplateXml } = createRequire(import.meta.url)(`${ROOT}/package/deploy/unraid/docker-man-template-xml.cjs`)
+    next = withoutPsycheConfig(next, parseDockerManTemplateXml)
+  } catch (error) { console.log(`  WARN: could not load the DockerMan template parser (${error.message}); psyche Config left in place`) }
+  if (next.includes(`Target="${PSYCHE_TARGET}"`)) console.log("  WARN: DockerMan template still has a psyche Config; remove it before the next DockerMan Apply")
   if (next !== text) { writeFileSync(`${TEMPLATE}.prev`, text); writeFileSync(TEMPLATE, next) }
   ok(`DockerMan template pins ${image(version)}`)
 }
@@ -1293,7 +1311,10 @@ function verify(withGate = false) {
   auth === 0 ? ok("no Telegram auth failures in the last 2m") : bad(`${auth} 401s in the last 2m`)
   existsSync(POLICY) ? ok(`steward policy ${sha12(POLICY)}`) : installedRequest()?.predecessorContract === "none" ? ok("no steward policy yet") : bad("steward policy missing")
   const psycheMount = JSON.parse(docker(["inspect", CONTAINER, "--format", "{{json .Mounts}}"]) || "[]")
-  psycheMountIssue(psycheMount) === null ? ok("psyche is mounted read-only in the resident") : bad(psycheMountIssue(psycheMount))
+  psycheMountIssue(psycheMount) === null ? ok("psyche mount is in a supported shape") : bad(psycheMountIssue(psycheMount))
+  existsSync(TEMPLATE) && readFileSync(TEMPLATE, "utf8").includes(`Target="${PSYCHE_TARGET}"`)
+    ? bad("installed DockerMan template still mounts the psyche read-only; a DockerMan Apply would restore it")
+    : ok("installed DockerMan template has no separate psyche mount")
   const trustMount = JSON.parse(docker(["inspect", CONTAINER, "--format", "{{json .Mounts}}"]) || "[]")
   trustMountIssue(trustMount) === null ? ok("the operator trust directory is mounted read-only in the resident") : bad(trustMountIssue(trustMount))
   const trustIssue = existsSync(TRUST_HOST_DIR) ? trustDirIssue(lstatSync(TRUST_HOST_DIR)) : `${TRUST_HOST_DIR} is missing`
@@ -1303,7 +1324,7 @@ function verify(withGate = false) {
   const psycheDir = `${BUNDLE}/psyche`
   if (existsSync(psycheDir)) {
     const psycheIssues = psycheProblems(psycheDir)
-    psycheIssues.length === 0 ? ok("psyche files are resident-owned 0600 (read-only through the mount)") : bad(`psyche files do not match what the resident boot check requires: ${psycheIssues.slice(0, 3).join("; ")}`)
+    psycheIssues.length === 0 ? ok("psyche files are resident-owned 0600") : bad(`psyche files do not match what the resident boot check requires: ${psycheIssues.slice(0, 3).join("; ")}`)
   } else bad("psyche folder missing from the bundle")
   ok(containerExists("jellyfin") ? `jellyfin ${docker(["inspect", "jellyfin", "--format", "{{.State.Status}} restarts={{.RestartCount}}"]).trim()}` : "no jellyfin container")
   if (withGate) {

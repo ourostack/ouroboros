@@ -58,6 +58,8 @@ interface PsycheText {
   aspirations: string;
   /** The owner's own facts about their home, from house/HOUSE.md. */
   house: string;
+  /** The packaged product's standing rules, from product/PRODUCT.md. */
+  product: string;
 }
 
 // Psyche text cache, one entry per agent root (the daemon can host several agents). An entry is good only while
@@ -73,6 +75,7 @@ const PSYCHE_SOURCE_FILES = {
   tacitKnowledge: ["psyche", "TACIT.md"],
   aspirations: ["psyche", "ASPIRATIONS.md"],
   house: ["house", "HOUSE.md"],
+  product: ["product", "PRODUCT.md"],
   houseNames: ["house", "house.json"],
 } as const;
 
@@ -139,6 +142,7 @@ export function loadPsycheAt(agentRoot: string): PsycheText {
     tacitKnowledge: fillHouseNames(sources.tacitKnowledge, names),
     aspirations: fillHouseNames(sources.aspirations, names),
     house: fillHouseNames(sources.house, names),
+    product: fillHouseNames(sources.product, names),
   };
   _psycheCache.set(agentRoot, { fingerprint, psyche });
   return psyche;
@@ -252,6 +256,12 @@ function houseSection(): string {
   const text = loadPsyche().house;
   if (!text) return "";
   return `## my house\n${text}`;
+}
+
+function productSection(): string {
+  const text = loadPsyche().product;
+  if (!text) return "";
+  return `## my standing rules\n${text}`;
 }
 
 function peerCoordinationGuidance(channel: Channel): string {
@@ -1748,6 +1758,7 @@ export async function buildSystem(channel: Channel = "cli", options?: BuildSyste
         authorizedPsyche ? houseSection() : "",
         relationshipFriendContextSection(context),
         trustContextSection(context),
+        productSection(),
         "# my tools",
         toolsSection(channel, options, context),
         toolRestrictionSection(context),
@@ -1775,6 +1786,7 @@ export async function buildSystem(channel: Channel = "cli", options?: BuildSyste
     runtimeInfoSection(channel, options),
     channelNatureSection(getChannelCapabilities(channel)),
     providerSection(channel, options),
+    productSection(),
 
     // Group 3: my tools & capabilities
     "# my tools & capabilities",

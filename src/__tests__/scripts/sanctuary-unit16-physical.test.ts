@@ -128,7 +128,7 @@ beforeEach(() => {
   originalArgv = process.argv
   originalExitCode = process.exitCode
   originalSignals = new Map(signals.map((signal) => [signal, new Set(process.listeners(signal))]))
-  spec = sanctuaryContainerInspectFixture(true)
+  spec = sanctuaryContainerInspectFixture(true, { psycheMount: true })
   state.inspection = {
     containerId: "0".repeat(64), imageId: spec.Image, running: true, pid: 4242,
     startedAt: "2026-09-10T00:00:00.000Z", health: "healthy", user: spec.Config.User,
@@ -206,6 +206,18 @@ describe("native Sanctuary physical evidence producer", () => {
       mountCount: 6, readOnlyRoot: false, mountsExact: true, securityExact: true,
       publishedPortCount: 0, networkMode: "host", updaterDisabled: true, writableKeyExposure: false,
     })
+  })
+
+  it("matches the current five-mount resident with no separate psyche mount through the auditor and the broker", async () => {
+    spec = sanctuaryContainerInspectFixture(true)
+    state.inspection.mounts = spec.Mounts.map((mount) => ({ ...mount, Mode: "" }))
+    expect(auditSanctuaryContainerSpec(spec, {
+      mountContract: "canonical-gateway",
+      expectedImage: spec.Image, expectedEnvironment: spec.Config.Env,
+      expectedImageReference: spec.Config.Image, expectedIcon: spec.Config.Labels["net.unraid.docker.icon"],
+    })).toEqual({ ok: true, violations: [] })
+    const dependencies = await launchBroker()
+    expect(await dependencies.hostRequest!({ operation: "container_snapshot", targetId: "sanctuary" })).toMatchObject({ mountCount: 5, mountsExact: true })
   })
 
   it.each([undefined, null, 0, "false", [], {}].map((readOnlyRoot) => ({ readOnlyRoot })))("fails before a receipt for non-boolean root mode $readOnlyRoot", async ({ readOnlyRoot }) => {

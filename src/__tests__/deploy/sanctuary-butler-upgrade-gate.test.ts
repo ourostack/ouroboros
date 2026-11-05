@@ -250,11 +250,10 @@ describe("the replay root restore", () => {
 
 describe("the operator trust directory", () => {
   const dest = "/etc/ouro/trust/sanctuary"
-  it("is mounted read-only by docker create, after the psyche mount", () => {
+  it("is mounted read-only by docker create", () => {
     expect(upgrade.TRUST_MOUNT).toBe("/mnt/user/appdata/ouro-butler/trust/sanctuary:/etc/ouro/trust/sanctuary:ro")
     const recreate = source.slice(source.indexOf("function recreateResident("), source.indexOf("export function psycheProblems"))
     expect(recreate).toContain('"-v", TRUST_MOUNT')
-    expect(recreate.indexOf('"-v", PSYCHE_MOUNT')).toBeLessThan(recreate.indexOf('"-v", TRUST_MOUNT'))
     expect(recreate.indexOf('"-v", TRUST_MOUNT')).toBeLessThan(recreate.indexOf("image(version)])"))
     expect(recreate.indexOf("ensureTrustHostDir()")).toBeLessThan(recreate.indexOf('docker(["create"'))
   })
@@ -473,7 +472,7 @@ describe("checkTelegramBeforePause", () => {
   })
 })
 
-describe("the psyche folder is resident-owned 0600 and read-only through the mount", () => {
+describe("the psyche folder is resident-owned 0600", () => {
   const node = (uid: number, mode: number, kind: "dir" | "file" | "link", children: Record<string, ReturnType<typeof node>> = {}) => ({ uid, mode, kind, children })
   const fsFor = (tree: ReturnType<typeof node>) => {
     const find = (p: string) => p.split("/").filter(Boolean).slice(1).reduce((cur, part) => cur.children[part]!, tree)
@@ -524,30 +523,77 @@ describe("the psyche folder is resident-owned 0600 and read-only through the mou
   })
 })
 
-describe("the resident mounts psyche read-only over the writable bundle", () => {
+describe("the resident's psyche mount", () => {
   const dest = "/home/ouro/AgentBundles/sanctuary.ouro/psyche"
-  it("passes the mount argument to docker create", () => {
-    expect(upgrade.PSYCHE_MOUNT).toMatch(/\/psyche:\/home\/ouro\/AgentBundles\/sanctuary\.ouro\/psyche:ro$/)
-    const recreate = source.slice(source.indexOf("function recreateResident("), source.indexOf("export function psycheProblems"))
-    expect(recreate).toContain('"-v", PSYCHE_MOUNT')
-    expect(recreate.indexOf('"-v", PSYCHE_MOUNT')).toBeLessThan(recreate.indexOf("image(version)])"))
+  it("is no longer passed to docker create", () => {
+    expect(upgrade.PSYCHE_MOUNT).toBeUndefined()
+    const recreate = source.slice(source.indexOf("function recreateResident("), source.indexOf("// Migrate the agent bundle"))
+    expect(recreate).toContain('docker(["create"')
+    expect(recreate).not.toContain("psyche")
   })
-  it("reports nothing for a read-only psyche mount", () => {
+  it("accepts the old shape: a separate read-only psyche mount", () => {
     expect(upgrade.psycheMountIssue([{ Destination: dest, RW: false }, { Destination: "/other", RW: true }])).toBeNull()
   })
-  it("reports a read-write psyche mount", () => {
-    expect(upgrade.psycheMountIssue([{ Destination: dest, RW: true }])).toBe("psyche is mounted read-write in the resident")
+  it("accepts the new shape: no separate psyche mount, including for malformed input", () => {
+    expect(upgrade.psycheMountIssue([{ Destination: "/other", RW: false }])).toBeNull()
+    expect(upgrade.psycheMountIssue([])).toBeNull()
+    expect(upgrade.psycheMountIssue(null)).toBeNull()
+    expect(upgrade.psycheMountIssue([null, undefined])).toBeNull()
   })
-  it("reports a missing mount, including for malformed input", () => {
-    const missing = "psyche is not mounted separately in the resident, so it could be renamed or replaced"
-    expect(upgrade.psycheMountIssue([{ Destination: "/other", RW: false }])).toBe(missing)
-    expect(upgrade.psycheMountIssue([])).toBe(missing)
-    expect(upgrade.psycheMountIssue(null)).toBe(missing)
-    expect(upgrade.psycheMountIssue([null, undefined])).toBe(missing)
+  it("reports a separate read-write psyche mount", () => {
+    expect(upgrade.psycheMountIssue([{ Destination: dest, RW: true }])).toBe("psyche is mounted read-write as a separate mount in the resident")
   })
   it("is checked by verify", () => {
     const verifyBody = source.slice(source.indexOf("function verify("), source.indexOf("function fail("))
     expect(verifyBody).toContain("psycheMountIssue(psycheMount)")
-    expect(verifyBody).toContain("psyche is mounted read-only in the resident")
+    expect(verifyBody).toContain('ok("psyche mount is in a supported shape")')
+    expect(verifyBody).toContain('"psyche files are resident-owned 0600"')
+  })
+  it("has verify report whether the installed DockerMan template still carries the psyche Config", () => {
+    const verifyBody = source.slice(source.indexOf("function verify("), source.indexOf("function fail("))
+    const check = verifyBody.slice(verifyBody.indexOf("existsSync(TEMPLATE)"))
+    expect(check).toMatch(/^existsSync\(TEMPLATE\) && readFileSync\(TEMPLATE, "utf8"\)\.includes\(`Target="\$\{PSYCHE_TARGET\}"`\)/u)
+    expect(check).toContain('? bad("installed DockerMan template still mounts the psyche read-only; a DockerMan Apply would restore it")')
+    expect(check).toContain(': ok("installed DockerMan template has no separate psyche mount")')
+  })
+})
+
+describe("the installed DockerMan template loses its psyche Config", () => {
+  // eslint-disable-next-line @typescript-eslint/no-require-imports
+  const { parseDockerManTemplateXml } = require("../../../deploy/unraid/docker-man-template-xml.cjs")
+  const psycheLine = '  <Config Name="Psyche (read-only)" Target="/home/ouro/AgentBundles/sanctuary.ouro/psyche" Default="/mnt/user/appdata/ouro-butler/agent/sanctuary.ouro/psyche" Mode="ro" Description="psyche" Type="Path" Display="always" Required="true" Mask="false">/mnt/user/appdata/ouro-butler/agent/sanctuary.ouro/psyche</Config>\n'
+  const installed = (psyche: boolean) => [
+    '<?xml version="1.0"?>\n',
+    '<Container version="2">\n',
+    "  <Name>ouro-butler</Name>\n",
+    "  <Repository>ghcr.io/ourostack/ouroboros-butler:0.1.0-alpha.978</Repository>\n",
+    '  <Config Name="Bundle" Target="/home/ouro/AgentBundles/sanctuary.ouro" Default="/mnt/user/appdata/ouro-butler/agent/sanctuary.ouro" Mode="rw" Type="Path">/mnt/user/appdata/ouro-butler/agent/sanctuary.ouro</Config>\n',
+    '  <Config Name="Authority socket" Target="/run/ouro-authority" Mode="ro" Type="Path">/run/ouro-authority</Config>\n',
+    psyche ? psycheLine : "",
+    '  <Config Name="Trust" Target="/etc/ouro/trust/sanctuary" Mode="ro" Type="Path">/mnt/user/appdata/ouro-butler/trust/sanctuary</Config>\n',
+    "</Container>\n",
+  ].join("")
+  it("removes the psyche Config and leaves every other byte unchanged", () => {
+    const before = installed(true)
+    expect(parseDockerManTemplateXml(before)).not.toBeNull()
+    const after = upgrade.withoutPsycheConfig(before, parseDockerManTemplateXml)
+    expect(after).toBe(installed(false))
+    expect(after).toBe(before.replace(psycheLine, ""))
+  })
+  it("leaves a template without the psyche Config unchanged", () => {
+    expect(upgrade.withoutPsycheConfig(installed(false), parseDockerManTemplateXml)).toBe(installed(false))
+  })
+  it("leaves a template the parser cannot read unchanged", () => {
+    const broken = installed(true).replace("</Container>\n", "")
+    expect(upgrade.withoutPsycheConfig(broken, parseDockerManTemplateXml)).toBe(broken)
+  })
+  it("leaves a Config hidden in a comment unchanged", () => {
+    const commented = installed(false).replace("</Container>", `<!-- ${psycheLine.trim()} -->\n</Container>`)
+    expect(upgrade.withoutPsycheConfig(commented, parseDockerManTemplateXml)).toBe(commented)
+  })
+  it("is applied by pinTemplate with the installed package's parser", () => {
+    const pin = source.slice(source.indexOf("function pinTemplate("), source.indexOf("// Every release pulls"))
+    expect(pin).toContain("withoutPsycheConfig(")
+    expect(pin).toContain("${ROOT}/package/deploy/unraid/docker-man-template-xml.cjs")
   })
 })

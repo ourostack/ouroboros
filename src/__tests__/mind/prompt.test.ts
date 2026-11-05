@@ -626,6 +626,49 @@ describe("buildSystem", () => {
     expect(result).toContain("## my house\nSam keeps the books at the household.")
   })
 
+  describe("product standing rules", () => {
+    const withProduct = (product: string) => vi.mocked(fs.readFileSync).mockImplementation((filePath: any) => {
+      const p = String(filePath)
+      if (p.endsWith("PRODUCT.md")) return product
+      if (p.endsWith("package.json")) return MOCK_PACKAGE_JSON
+      if (p.endsWith("secrets.json")) return JSON.stringify({})
+      return ""
+    })
+    const scopedContext = { friend: { id: "f", name: "F", trustLevel: "family", externalIds: [], tenantMemberships: [], toolPreferences: {}, notes: {}, totalTokens: 0, createdAt: "", updatedAt: "", schemaVersion: 1 }, channel: { channel: "telegram", senseType: "chat", isRemote: true, isGroup: false, availableIntegrations: [], supportsAttachments: false, supportsReactions: false, chatStyle: true, supportsStreaming: false, supportsRichCards: true, maxMessageLength: 4096 } } as never
+    const load = async () => {
+      const { patchRuntimeConfig, resetConfigCache } = await import("../../heart/config")
+      resetConfigCache()
+      patchRuntimeConfig({ providers: { minimax: { apiKey: "test-key" } } })
+      const mod = await import("../../mind/prompt")
+      mod.resetPsycheCache()
+      return mod
+    }
+
+    it("places the section last in the body group of the general prompt", async () => {
+      withProduct("never do X")
+      const { buildSystem, flattenSystemPrompt } = await load()
+      const result = flattenSystemPrompt(await buildSystem())
+      const at = result.indexOf("## my standing rules\nnever do X")
+      expect(at).toBeGreaterThan(result.indexOf("# my body & environment"))
+      expect(at).toBeLessThan(result.indexOf("# my tools & capabilities"))
+      expect(result.slice(at)).toMatch(/^## my standing rules\nnever do X\n\n# my tools & capabilities/)
+    })
+
+    it("places the section just before the tools heading in the relationship-scoped prompt, without psyche authorization", async () => {
+      withProduct("never do X")
+      const { buildSystem, flattenSystemPrompt } = await load()
+      const result = flattenSystemPrompt(await buildSystem("telegram", { relationshipContextScopes: ["own_requests"] }, scopedContext))
+      expect(result).toContain("## my standing rules\nnever do X\n\n# my tools")
+    })
+
+    it("has no section when there is no PRODUCT.md", async () => {
+      withProduct("")
+      const { buildSystem, flattenSystemPrompt } = await load()
+      expect(flattenSystemPrompt(await buildSystem())).not.toContain("## my standing rules")
+      expect(flattenSystemPrompt(await buildSystem("telegram", { relationshipContextScopes: ["own_requests"] }, scopedContext))).not.toContain("## my standing rules")
+    })
+  })
+
   it("uses generic names and no house section when the household has no house files", async () => {
     vi.mocked(fs.readFileSync).mockImplementation((filePath: any) => {
       const p = String(filePath)

@@ -19,7 +19,8 @@ const EXPECTED_BINDS = [
   "/mnt/user/appdata/ouro-butler/agent/sanctuary.ouro:/home/ouro/AgentBundles/sanctuary.ouro:rw",
   "/boot/config/custom/ouro-events/spool:/run/ouro-events:ro",
   "/run/ouro-authority:/run/ouro-authority:ro",
-  // The psyche folder, read-only inside the Butler: a read-only mount point cannot be renamed or removed from inside the container.
+  // The psyche folder read-only over the bundle. Releases up to alpha.978 create it, and a rollback to one recreates it,
+  // so canonical-gateway accepts these binds with or without this row (GATEWAY_*_WITHOUT_PSYCHE).
   "/mnt/user/appdata/ouro-butler/agent/sanctuary.ouro/psyche:/home/ouro/AgentBundles/sanctuary.ouro/psyche:ro",
   // Operator-set grants, root-owned on the host and read-only inside the Butler (the Butler honours a grant only from here).
   "/mnt/user/appdata/ouro-butler/trust/sanctuary:/etc/ouro/trust/sanctuary:ro",
@@ -34,6 +35,10 @@ const EXPECTED_MOUNTS = [
   ["/mnt/user/appdata/ouro-butler/trust/sanctuary", "/etc/ouro/trust/sanctuary", false, "rprivate"],
 ] as const
 
+const PSYCHE_TARGET = "/home/ouro/AgentBundles/sanctuary.ouro/psyche"
+/** The current resident shape: the canonical-gateway set without the separate read-only psyche mount. */
+const GATEWAY_BINDS_WITHOUT_PSYCHE = EXPECTED_BINDS.filter((bind) => !bind.includes(`:${PSYCHE_TARGET}:`))
+const GATEWAY_MOUNTS_WITHOUT_PSYCHE = EXPECTED_MOUNTS.filter((mount) => mount[1] !== PSYCHE_TARGET)
 const PRE_GATEWAY_BINDS = EXPECTED_BINDS.slice(0, 3)
 const PRE_GATEWAY_MOUNTS = EXPECTED_MOUNTS.slice(0, 3)
 const LEGACY_ALPHA742_IMAGE = "sha256:681449ad47a2621705cd339b481e6339236b31dc65e195b1cf5025d0f2191d7d"
@@ -108,7 +113,7 @@ export function auditSanctuaryContainerSpec(
     const mountContract = options.mountContract
     if (mountContract !== "canonical-pre-gateway" && mountContract !== "canonical-gateway" && mountContract !== "legacy-alpha742") violations.push("unsupported mount contract")
     if (mountContract === "legacy-alpha742" && options.expectedImage !== LEGACY_ALPHA742_IMAGE) violations.push("legacy mount exception requires the pinned alpha.742 image ID")
-    const expectedMounts = mountContract === "legacy-alpha742" ? LEGACY_ALPHA742_MOUNTS : mountContract === "canonical-pre-gateway" ? PRE_GATEWAY_MOUNTS : EXPECTED_MOUNTS
+    const acceptedMounts = mountContract === "legacy-alpha742" ? [LEGACY_ALPHA742_MOUNTS] : mountContract === "canonical-pre-gateway" ? [PRE_GATEWAY_MOUNTS] : [EXPECTED_MOUNTS, GATEWAY_MOUNTS_WITHOUT_PSYCHE]
     const expectedArgs = mountContract !== "legacy-alpha742" ? PACKAGE_DAEMON_ARGS : LEGACY_DAEMON_ARGS
     const expectedEntrypoint = mountContract !== "legacy-alpha742" ? PACKAGE_ENTRYPOINT : LEGACY_ENTRYPOINT
     if (root.Image !== options.expectedImage) violations.push("image does not match the reviewed exact local Docker image ID")
@@ -151,8 +156,9 @@ export function auditSanctuaryContainerSpec(
         ? [item.Source, item.Destination, item.RW, item.Propagation]
         : null
     })
+    const actualMounts = JSON.stringify(normalizedMounts.sort())
     if (normalizedMounts.some((mount) => mount === null)
-      || JSON.stringify(normalizedMounts.sort()) !== JSON.stringify(expectedMounts.map((mount) => [...mount]).sort())) {
+      || !acceptedMounts.some((expectedMounts) => actualMounts === JSON.stringify(expectedMounts.map((mount) => [...mount]).sort()))) {
       violations.push("effective mounts do not match the selected Sanctuary mount contract")
     }
   }
@@ -189,7 +195,7 @@ function singleTextChild(document: DockerManTemplateDocument | null, name: strin
 function auditTemplate(input: { templateXml: string | Uint8Array; runtimePolicyText: string; mountContract: SanctuaryContainerAuditOptions["mountContract"] }, expectedRepository: string, repositoryIsValid: boolean, repositoryViolation: string): string[] {
   const violations: string[] = []
   if (input.mountContract !== "canonical-pre-gateway" && input.mountContract !== "canonical-gateway") violations.push("unsupported template mount contract")
-  const expectedBinds = input.mountContract === "canonical-pre-gateway" ? PRE_GATEWAY_BINDS : EXPECTED_BINDS
+  const acceptedBinds = input.mountContract === "canonical-pre-gateway" ? [PRE_GATEWAY_BINDS] : [EXPECTED_BINDS, GATEWAY_BINDS_WITHOUT_PSYCHE]
   const template = parseDockerManTemplateXml(input.templateXml)
   if (!template) violations.push("canonical DockerMan XML structure is invalid")
   let runtimePolicy: unknown
@@ -207,10 +213,8 @@ function auditTemplate(input: { templateXml: string | Uint8Array; runtimePolicyT
     const { Type: type, Target: target, Mode: mode } = entry.attributes
     return entry.form === "text" && type === "Path" && target && mode ? `${entry.text}:${target}:${mode}` : "invalid"
   })
-  if (
-    configEntries.length !== expectedBinds.length
-    || JSON.stringify([...pathConfigs].sort()) !== JSON.stringify([...expectedBinds].sort())
-  ) {
+  const actualBinds = JSON.stringify([...pathConfigs].sort())
+  if (!acceptedBinds.some((expectedBinds) => configEntries.length === expectedBinds.length && actualBinds === JSON.stringify([...expectedBinds].sort()))) {
     violations.push("template Config entries must equal the canonical path binds")
   }
   const postArgs = directChildren(template, "PostArgs")

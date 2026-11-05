@@ -1638,16 +1638,35 @@ describe("in-place authority upgrade", () => {
     expect(programs.map((name) => fs.readFileSync(f.p(`${rootPath}/package/${name}`), "utf8"))).toEqual(programs.map(next))
   })
 
-  it("recreates the resident with the psyche folder mounted read-only over the bundle", async () => {
+  function createMounts(): string[][] {
+    return host.exec.mock.calls.filter(([file, args]) => file === "/usr/bin/docker" && (args as string[])[0] === "create")
+      .map(([, args]) => args as string[]).map((args) => args.flatMap((arg, index) => (arg === "-v" ? [args[index + 1]!] : [])))
+  }
+  const psycheBind = "/mnt/user/appdata/ouro-butler/agent/sanctuary.ouro/psyche:/home/ouro/AgentBundles/sanctuary.ouro/psyche:ro"
+
+  it("recreates the upgraded resident without a separate psyche mount", async () => {
     const f = await upgradeFixture()
     await f.lifecycle.upgrade({ targetImageId: digest("next-image"), imageReference: nextReference })
-    const creates = host.exec.mock.calls.filter(([file, args]) => file === "/usr/bin/docker" && (args as string[])[0] === "create").map(([, args]) => args as string[])
+    const creates = createMounts()
     expect(creates.length).toBeGreaterThan(0)
-    const args = creates[creates.length - 1]!
-    const mounts = args.flatMap((arg, index) => (arg === "-v" ? [args[index + 1]!] : []))
-    expect(mounts).toContain("/mnt/user/appdata/ouro-butler/agent/sanctuary.ouro/psyche:/home/ouro/AgentBundles/sanctuary.ouro/psyche:ro")
+    const mounts = creates[creates.length - 1]!
+    expect(mounts.some((mount) => mount.includes("/sanctuary.ouro/psyche"))).toBe(false)
+    expect(mounts).toContain("/mnt/user/appdata/ouro-butler/agent/sanctuary.ouro:/home/ouro/AgentBundles/sanctuary.ouro:rw")
     expect(mounts).toContain("/mnt/user/appdata/ouro-butler/trust/sanctuary:/etc/ouro/trust/sanctuary:ro")
-    expect(mounts.indexOf("/mnt/user/appdata/ouro-butler/agent/sanctuary.ouro:/home/ouro/AgentBundles/sanctuary.ouro:rw")).toBeLessThan(mounts.findIndex((m) => m.endsWith("/psyche:ro")))
+  })
+
+  it("recreates the rolled-back predecessor with the read-only psyche mount its release expects", async () => {
+    const f = await upgradeFixture()
+    await f.lifecycle.upgrade({ targetImageId: digest("next-image"), imageReference: nextReference, holdCommit: true })
+    const upgraded = createMounts().length
+    await expect(f.lifecycleFor().rollbackUpgrade()).resolves.toBe(true)
+    const creates = createMounts()
+    expect(creates.length).toBe(upgraded + 1)
+    const mounts = creates[creates.length - 1]!
+    expect(mounts).toContain(psycheBind)
+    expect(mounts.indexOf("/mnt/user/appdata/ouro-butler/agent/sanctuary.ouro:/home/ouro/AgentBundles/sanctuary.ouro:rw")).toBeLessThan(mounts.indexOf(psycheBind))
+    expect(mounts.indexOf(psycheBind)).toBeLessThan(mounts.indexOf("/mnt/user/appdata/ouro-butler/trust/sanctuary:/etc/ouro/trust/sanctuary:ro"))
+    expect(f.resident).toMatchObject({ image: digest("new-image"), reference: currentReference, running: true })
   })
 
   describe("cgroup keep child (D-026)", () => {

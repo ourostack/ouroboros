@@ -375,6 +375,10 @@ describe("Sanctuary acceptance harness", () => {
     expect(() => validateSanctuaryUnit16EvidenceAssertions("unit-16e-containment-audit", { ...validAssertions("unit-16e-containment-audit"), profileBoundaries: missing })).toThrow()
   })
 
+  it.each([5, 6])("accepts a containment audit of a %i-mount resident (with or without the old read-only psyche mount)", (mountCount) => {
+    expect(validateSanctuaryUnit16EvidenceAssertions("unit-16e-containment-audit", { ...validAssertions("unit-16e-containment-audit"), mountCount })).toMatchObject({ mountCount })
+  })
+
   it("rejects every material semantic failure instead of accepting self-attestation", () => {
     const reject = (label: string, patch: Record<string, unknown>, pattern: RegExp) => expect(() => validateSanctuaryUnit16EvidenceAssertions(
       label as Parameters<typeof validateSanctuaryUnit16EvidenceAssertions>[0],
@@ -402,8 +406,10 @@ describe("Sanctuary acceptance harness", () => {
     reject("unit-16e-containment-audit", { liveProcessUser: "0:0" }, /identity/u)
     reject("unit-16e-containment-audit", { writableKeyExposure: true }, /must be false/u)
     reject("unit-16e-containment-audit", { networkMode: "bridge" }, /network/u)
-    reject("unit-16e-containment-audit", { mountCount: 2 }, /must equal 6/u)
-    reject("unit-16e-containment-audit", { mountCount: 3 }, /must equal 6/u)
+    reject("unit-16e-containment-audit", { mountCount: 2 }, /must equal 5 or 6/u)
+    reject("unit-16e-containment-audit", { mountCount: 4 }, /must equal 5 or 6/u)
+    reject("unit-16e-containment-audit", { mountCount: 7 }, /must equal 5 or 6/u)
+    reject("unit-16e-containment-audit", { mountCount: "5" }, /safe integer/u)
     reject("unit-16e-containment-audit", { readOnlyRoot: true }, /readOnlyRoot must be false/u)
     for (const readOnlyRoot of [null, undefined, 0, "false"]) {
       reject("unit-16e-containment-audit", { readOnlyRoot }, /readOnlyRoot must be boolean/u)
