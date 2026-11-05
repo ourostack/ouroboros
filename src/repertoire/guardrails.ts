@@ -14,6 +14,10 @@ export interface GuardContext {
   friendId?: string
   senseType?: string
   isGroupChat?: boolean
+  /** Whether the friend in this conversation is a human or another agent. */
+  friendKind?: "human" | "agent"
+  /** The channel this conversation arrived on (telegram, bluebubbles, teams, a2a, cli, inner, mail, ...). */
+  channel?: string
   /** For first-class MCP tools: the server this tool belongs to. */
   mcpServerName?: string
 }
@@ -29,7 +33,6 @@ const REASONS = {
   readBeforeEdit: "i need to read that file first before i can edit it.",
   readBeforeOverwrite: "i need to read that file first before i can overwrite it.",
   protectedPath: "that path is protected — i can read it but not modify it.",
-  psychePath: "my psyche files ship from the repository through a pull request and the replay gate; i can read them but not change them. i file the change request with Claude Code instead.",
   destructiveCommand: "that command is too dangerous to run — it could cause irreversible damage.",
   // Trust reasons (vary by relationship)
   needsTrust: "i'd need a closer friend to vouch for you before i can do that.",
@@ -114,7 +117,59 @@ export function insideAgentFolder(p: string, agentRoot: string, folder: "psyche"
   return canonicalTarget(p, agentRoot).some((target) => folders.some((dir) => target === dir || target.startsWith(`${dir}${path.sep}`)))
 }
 
-/** The agent's psyche folder ships only from the repository (a pull request and the replay gate), so no tool writes into it. The shell check uses this lexical form; the file tools use `insideAgentFolder`. */
+// --- the psyche belongs to the agent ---
+// Every agent writes its own TACIT.md: what it learns about how its house works. The rest of its psyche (who it is) changes only
+// when a family human asks it directly, one to one, on a channel that proves who they are.
+
+export const PSYCHE_REFUSAL = "that file is part of me; I don't change it from this conversation."
+
+const PSYCHE_IDENTITY_CHANNELS = new Set(["telegram", "bluebubbles", "teams"])
+
+/** `tacit` for the agent's psyche/TACIT.md, `identity` for anything else in psyche/ (the folder and new files included), `null` outside it. */
+export function psycheFileClass(filePath: string, agentRoot: string | undefined): "tacit" | "identity" | null {
+  if (!filePath || !agentRoot || !insideAgentFolder(filePath, agentRoot, "psyche")) return null
+  const lexicalFolder = path.resolve(agentRoot, "psyche")
+  const tacits = [lexicalFolder, canonicalize(lexicalFolder)].map((folder) => path.join(folder, "TACIT.md"))
+  return canonicalTarget(filePath, agentRoot).some((target) => tacits.includes(target)) ? "tacit" : "identity"
+}
+
+/** True when `p` is a symlink; false when it does not exist; throws on any other lookup failure. */
+function isSymlink(p: string): boolean {
+  try {
+    return fs.lstatSync(p).isSymbolicLink()
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return false
+    throw error
+  }
+}
+
+/** Whether the person in this conversation may have the agent write this psyche file. */
+export function psycheWriteAllowed(fileClass: "tacit" | "identity", _filePath: string, context: GuardContext): boolean {
+  const agentRoot = context.agentRoot
+  /* v8 ignore next -- a file is only classed as psyche when there is an agent root @preserve */
+  if (!agentRoot) return false
+  try {
+    if (isSymlink(path.join(agentRoot, "psyche"))) return false
+    if (fileClass === "tacit") {
+      if (isSymlink(path.join(agentRoot, "psyche", "TACIT.md"))) return false
+      if (context.friendId === undefined) return true
+      return context.trustLevel === undefined || context.trustLevel === "friend" || context.trustLevel === "family"
+    }
+  } catch {
+    return false
+  }
+  return context.friendKind === "human"
+    && context.trustLevel === "family"
+    && context.channel !== undefined && PSYCHE_IDENTITY_CHANNELS.has(context.channel)
+    && context.isGroupChat !== true
+}
+
+/** The line a successful write to an identity file carries back to the agent. */
+export function psycheEditNote(file: string): string {
+  return `psyche edit: I changed psyche/${file}. I tell my owner in one line which file changed and why.`
+}
+
+/** The agent's psyche folder, in the lexical form the shell check uses; the file tools classify with `psycheFileClass`. */
 function isPsychePath(filePath: string, agentRoot: string): boolean {
   const psyche = path.resolve(agentRoot, "psyche")
   const target = path.resolve(agentRoot, filePath)
@@ -179,9 +234,9 @@ function shellWritesToProtectedPath(command: string): boolean {
 }
 
 // --- the psyche folder in shell commands ---
-// The psyche folder is mounted read-only into the resident at the OS level (the upgrade recreates the container that way). This is the
-// defence in depth in front of that: a shell command that mentions the psyche folder at all runs only if every part of it is
-// a read-only command, because enumerating the ways to write a file (>, >>, tee, cp, mv, sed -i, node -e, python, cd then
+// The agent changes its own psyche through write_file and edit_file, where the trust gate below decides who may ask for it.
+// The shell never writes there, for anyone: a shell command that mentions the psyche folder at all runs only if every part of
+// it is a read-only command, because enumerating the ways to write a file (>, >>, tee, cp, mv, sed -i, node -e, python, cd then
 // redirect) is a list the model can always step around.
 const PSYCHE_READ_ONLY_COMMANDS = new Set(["cat", "ls", "head", "tail", "grep", "wc", "sha256sum", "stat", "cd", "pwd"])
 const SEGMENT_OPERATORS = new Set(["&&", "||", ";", "|"])
@@ -319,7 +374,8 @@ function checkProtectedPaths(toolName: string, args: Record<string, string>, con
     const agentRoot = filePath ? context.agentRoot : undefined
     if (agentRoot) {
       try {
-        if (insideAgentFolder(filePath, agentRoot, "psyche")) return deny(REASONS.psychePath)
+        const psycheClass = psycheFileClass(filePath, agentRoot)
+        if (psycheClass) return psycheWriteAllowed(psycheClass, filePath, context) ? allow : deny(PSYCHE_REFUSAL)
         if (insideAgentFolder(filePath, agentRoot, "friends")) return deny(REASONS.protectedPath)
       } catch {
         return deny(REASONS.protectedPath)
@@ -330,7 +386,7 @@ function checkProtectedPaths(toolName: string, args: Record<string, string>, con
 
   if (toolName === "shell") {
     const command = args.command || ""
-    if (psycheShellWriteRefused(command, context.agentRoot)) return deny(REASONS.psychePath)
+    if (psycheShellWriteRefused(command, context.agentRoot)) return deny(PSYCHE_REFUSAL)
     if (friendsShellWriteRefused(command, context.agentRoot)) return deny(REASONS.protectedPath)
     if (shellWritesToProtectedPath(command)) return deny(REASONS.protectedPath)
   }

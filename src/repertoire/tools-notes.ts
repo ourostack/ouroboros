@@ -26,7 +26,7 @@ function bundleRelativeLocator(filePath: string, ctx?: ToolContext): string {
 }
 
 // A friend note is a fact or preference about a person. The agent's own personality, voice and psyche are not facts
-// about the person: they live in the bundle's psyche folder, which ships from the repo and is changed by pull request.
+// about the person: they live in the bundle's psyche folder, which the agent itself keeps.
 const OWN_PERSONA_NOTE = /\b(?:your|my|the\s+(?:agent|butler|bot|assistant)(?:['\u2019]s)?)\s+(?:own\s+)?(?:personality|persona|psyche|soul|identity|character|voice|self[- ]concept)\b|\b(?:channel|embody|role-?play|act\s+like|talk\s+like|sound\s+like|be\s+more)\b[^.\n]{0,40}\b(?:energy|vibe|character|persona)\b|\b(?:act|behave)\s+like\s+(?:a|an|the)\b/i;
 
 const PERSONA_KEY = /^\s*(?:persona|personality|psyche|soul)\s*$/i;
@@ -36,7 +36,7 @@ export function isOwnPersonaNote(key: string | undefined, content: string | unde
 }
 
 export const OWN_PERSONA_NOTE_REFUSAL =
-  "that note is about my own personality or voice, not about the person, so it does not belong in a friend note. my psyche lives in the bundle's psyche folder and ships from the repo; i do not edit it live. a personality change goes to Claude Code as a request (over A2A, or as a failure or feature report), and it ships by pull request through the replay gate. this is a guardrail on persona content, not on the person: a note about the person themselves (their facts, preferences, voice, character in a game) is fine and saves normally. friend notes hold facts and preferences about this person only.";
+  "that note is about my own personality or voice, not about this person, so it belongs in my psyche, not in a friend note. what i learn about how the house works goes into psyche/TACIT.md, and the rest of my psyche changes when my owner asks me directly. a note about the person themselves (their facts, preferences, voice, a character in a game) saves normally.";
 
 export const notesToolDefinitions: ToolDefinition[] = [
   {
