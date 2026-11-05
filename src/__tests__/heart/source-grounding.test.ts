@@ -414,4 +414,8 @@ describe("addHouseVocabulary", () => {
     addHouseVocabulary(["Quorvath", "Quorvath Hollow Butler"])
     expect(candidateNames(text)).toEqual([])
   })
+
+  it("ignores a house name with no letters in it", () => {
+    expect(() => addHouseVocabulary(["2024", ""])).not.toThrow()
+  })
 })
