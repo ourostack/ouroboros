@@ -94,7 +94,8 @@ const escapeRegExp = (text) => text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")
 /** Whole-word, case-insensitive, Unicode-aware: "Perihelion" is not found inside "Ratthiel". */
 export const mentionsWord = (haystack, name) => new RegExp(`(?<![\\p{L}\\p{N}])${escapeRegExp(name)}(?![\\p{L}\\p{N}])`, "iu").test(String(haystack ?? ""))
 /** The release's own name finder (src/heart/source-grounding.ts, the one the runtime gates replies with), run inside the container. */
-export const NAMES_SCRIPT = 'const [t,o]=JSON.parse(require("fs").readFileSync(0,"utf8"));console.log(JSON.stringify(require("/opt/ouro/dist/heart/source-grounding.js").namesIn(t,o)))'
+// Loads the house's own names first, as every Butler turn does, so the gate and the runtime agree on what counts as a name.
+export const NAMES_SCRIPT = 'const [t,o]=JSON.parse(require("fs").readFileSync(0,"utf8"));const g=require("/opt/ouro/dist/heart/source-grounding.js");const h=require("/opt/ouro/dist/senses/sanctuary-house.js").readSanctuaryHouse("/home/ouro/AgentBundles/sanctuary.ouro");g.addHouseVocabulary([h.ownerName,h.butlerName,h.householdName]);console.log(JSON.stringify(g.namesIn(t,o)))'
 
 /** HH:MM (UTC) of the whole minute `minutes` after the start of `now`'s minute. */
 export function utcMinuteAhead(now, minutes) {

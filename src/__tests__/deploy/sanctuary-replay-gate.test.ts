@@ -894,6 +894,8 @@ describe("provision and the real host", () => {
     expect(calls[0]![1]).toEqual(["exec", "-i", "-u", gate.BUTLER_USER, gate.CONTAINER, "node", "-e", gate.NAMES_SCRIPT])
     expect(JSON.parse(String(calls[0]![2].input))).toEqual(["**Ziel** fits", { strict: true }])
     expect(gate.NAMES_SCRIPT).toContain("/opt/ouro/dist/heart/source-grounding.js")
+    expect(gate.NAMES_SCRIPT).toContain("addHouseVocabulary")
+    expect(gate.NAMES_SCRIPT).toContain("/opt/ouro/dist/senses/sanctuary-house.js")
   })
   it("writes the root-owned replay list into the trust directory, keeps earlier entries, and never lets a symlink stand in for it", () => {
     fs.mkdirSync(trust, { recursive: true })

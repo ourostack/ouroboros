@@ -728,10 +728,19 @@ describe("Sanctuary runtime tool context", () => {
 })
 
 describe("Sanctuary Jellyfin device id", () => {
+  it("prefers an explicit jellyfin.deviceId from machine config over the derived slug", () => {
+    runtimeMocks.readMachineRuntimeCredentialConfig.mockReturnValueOnce(configured({ jellyfin: { userId: " bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb ", accessToken: " aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa ", folderIds: " library-a, library-b ", deviceId: "pinned-device-id" } }))
+    createSanctuaryToolContext("sanctuary")
+    expect(runtimeMocks.createSanctuaryMediaOptimizationClient).toHaveBeenLastCalledWith(expect.objectContaining({ jellyfinDeviceId: "pinned-device-id" }))
+  })
+
   it("derives the pinned device id from the house's Butler name", () => {
     // An existing install keeps the device id its restricted Jellyfin user was created with: it was this same slug.
     expect(sanctuaryJellyfinDeviceId("Example Cloud Butler")).toBe("example-cloud-butler-sanctuary")
     expect(sanctuaryJellyfinDeviceId("the Butler")).toBe("the-butler-sanctuary")
+    expect(sanctuaryJellyfinDeviceId("Café Butler")).toBe("cafe-butler-sanctuary")
+    expect(sanctuaryJellyfinDeviceId("x".repeat(300))).toMatch(/^[a-z0-9][a-z0-9-]{2,127}$/u)
+    expect(sanctuaryJellyfinDeviceId("執事")).toBe("the-butler-sanctuary")
     expect(sanctuaryJellyfinDeviceId("  Café  Butler! ")).toBe("cafe-butler-sanctuary")
     expect(sanctuaryJellyfinDeviceId("???")).toBe("the-butler-sanctuary")
   })

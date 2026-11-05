@@ -92,17 +92,27 @@ function requiredPair(config: Record<string, unknown>, field: string): [string, 
   return [values[0]!, values[1]!]
 }
 
+const JELLYFIN_DEVICE_ID = /^[a-z0-9][a-z0-9-]{2,127}$/u
+
 /** The Jellyfin device id the restricted user is pinned to: the house's Butler name as a slug, plus "-sanctuary". */
 export function sanctuaryJellyfinDeviceId(butlerName: string): string {
-  const slug = butlerName.normalize("NFKD").toLowerCase().replace(/[^a-z0-9]+/gu, "-").replace(/^-+|-+$/gu, "")
+  const slug = butlerName.normalize("NFKD").replace(/\p{M}+/gu, "").toLowerCase()
+    .replace(/[^a-z0-9]+/gu, "-").replace(/^-+|-+$/gu, "").slice(0, 118).replace(/-+$/u, "")
   return `${slug || "the-butler"}-sanctuary`
+}
+
+/** An explicit `jellyfin.deviceId` in machine config wins, so the pin never depends on the house name alone. */
+function jellyfinDeviceId(jellyfin: Record<string, unknown>, butlerName: string): string {
+  const explicit = jellyfin.deviceId
+  if (typeof explicit === "string" && JELLYFIN_DEVICE_ID.test(explicit)) return explicit
+  return sanctuaryJellyfinDeviceId(butlerName)
 }
 
 function optionalJellyfin(config: Record<string, unknown>, butlerName: string) {
   if (config.jellyfin === undefined) return {}
   const jellyfin = requiredObject(config, "jellyfin")
   return {
-    jellyfinDeviceId: sanctuaryJellyfinDeviceId(butlerName),
+    jellyfinDeviceId: jellyfinDeviceId(jellyfin, butlerName),
     jellyfinUserId: required(jellyfin, "userId"),
     jellyfinAccessToken: required(jellyfin, "accessToken"),
     jellyfinFolderIds: requiredPair(jellyfin, "folderIds"),
