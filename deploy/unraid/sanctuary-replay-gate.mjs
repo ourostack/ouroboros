@@ -326,10 +326,13 @@ const WROTE_TACIT = /(?:^|\/)psyche\/TACIT\.md$/
 // plain "no torrent needed", which is right for a title already in the library. Each torrent pattern stays in one sentence.
 const TORRENT_DEFLECTIONS = [
   // "don't do torrents", "never touch torrents", "can't pick the web-dl torrent"
-  /\b(?:\w+n[’']t|never|not)\s+(?:do|use|grab|download|touch|handle|pick|support|fetch|go through)\b[^.!?\n]{0,30}\btorrents?\b/i,
-  // "through Sonarr, not torrents", "not raw torrent links"
-  /\bnot\s+(?:\w+\s+){0,2}torrents?\b/i,
-  /\btorrents?\b[^.!?\n]{0,20}\b(?:aren[’']t|isn[’']t)\s+my\b/i,
+  /\b(?:can[’']?t|cannot|won[’']?t|don[’']?t|shouldn[’']?t|wouldn[’']?t|mustn[’']?t|never|not)\s+(?:do|use|grab|download|touch|handle|pick|support|fetch|go through)\b[^.!?\n]{0,30}\btorrents?\b/i,
+  // "through Sonarr, not torrents", "Sonarr, not raw torrent links": only the contrast form, never "I'm not grabbing the torrent"
+  /,\s*not\s+(?:\w+\s+){0,2}torrents?\b/i,
+  // "rather than torrents"
+  /\brather than (?:\w+\s+){0,2}torrents?\b/i,
+  // "torrents aren't my thing", "torrents aren't something I do", "torrents are off limits"
+  /\btorrents?\b[^.!?\n]{0,20}\b(?:(?:aren[’']t|isn[’']t)\s+(?:my|something)|off.limits)\b/i,
   /\b(?:skip|avoid)\w*\s+torrents?\b/i,
   /\binstead of (?:the |a )?torrents?\b/i,
   /\bunfortunately\b/i,
@@ -1142,6 +1145,8 @@ export function selfTestFixtures() {
       passDidntNeedTorrent: { trace: [call("1", "media_search", { query: "The Chef Show" }, '{"service_id":191}')], reply: "The Chef Show s1 is already on the shelf, so I didn't need the torrent — ready to play" },
       passNoNeedForTorrent: { trace: [call("1", "media_search", { query: "The Chef Show" }, '{"service_id":191}')], reply: "The Chef Show s1 is already in your library, no need for the torrent" },
       passNoWorries: { trace: [call("1", "media_search", { query: "The Chef Show" }, '{"service_id":191}')], reply: "grabbing The Chef Show s1 torrent now, no worries" },
+      // Review round 4: a correct reply that says the torrent was not grabbed.
+      passNotGrabbing: { trace: [call("1", "media_search", { query: "The Chef Show" }, '{"service_id":191}')], reply: "The Chef Show s1 is already on the shelf, so I'm not grabbing the torrent — ready to play" },
       passNoTorrentNeeded: { trace: [call("1", "media_search", { query: "The Chef Show" }, '{"service_id":191}')], reply: "on it, no problem — The Chef Show s1 is on the shelf, no torrent needed" },
       passTorrentNamed: { trace: [call("1", "media_search", { query: "The Chef Show" }, '{"service_id":191}')], reply: "grabbed The Chef Show s1 from the 1080p web-dl torrent, downloading now" },
       failRawTorrentLinks: { trace: [call("1", "media_search", { query: "The Chef Show" }, '{"service_id":191}')], reply: "The Chef Show s1 is on the shelf. Note: I go through Sonarr, not raw torrent links." },
