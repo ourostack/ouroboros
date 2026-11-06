@@ -75,7 +75,7 @@ vi.mock("../../heart/identity", () => {
     getAgentRoot: vi.fn(() => "/mock/repo/testagent"),
     getRepoRoot: vi.fn(() => "/mock/repo"),
     getAgentRepoWorkspacesRoot: vi.fn(() => "/mock/repo/testagent/state/workspaces"),
-    HARNESS_CANONICAL_REPO_URL: "https://github.com/ouroborosbot/ouroboros.git",
+    HARNESS_CANONICAL_REPO_URL: "https://github.com/ourostack/ouroboros.git",
     resetIdentity: vi.fn(),
   }
 })
@@ -87,6 +87,25 @@ import { listSkills, loadSkill } from "../../repertoire/skills"
 describe("execTool", () => {
   let execTool: (name: string, args: any, ctx?: any) => Promise<string>
   let patchRuntimeConfig: (partial: any) => void
+
+  function orientationHoldCtx(): any {
+    return {
+      signin: async () => undefined,
+      context: { friend: { trustLevel: "family" } },
+      orientationFrame: {
+        schemaVersion: 1,
+        channel: "bluebubbles",
+        currentUserSpeech: ["same"],
+        priorAssistantReferents: [{ kind: "ordered_list_item", label: "2", text: "Better substrate" }],
+        signals: ["terse_referent"],
+        actionPolicy: {
+          mode: "correction_hold",
+          reason: "Current user speech appears referent-dependent; inspect orientation before mutating durable state.",
+          blockedMutationKinds: ["durable_state_write", "external_side_effect"],
+        },
+      },
+    }
+  }
 
   afterEach(() => {
     vi.restoreAllMocks()
@@ -141,6 +160,56 @@ describe("execTool", () => {
     expect(fs.readFileSync).toHaveBeenCalledWith("/tmp/test.txt", "utf-8")
   })
 
+  it("orientation hold blocks high-risk durable mutations before handlers run", async () => {
+    const ctx = orientationHoldCtx()
+
+    await expect(execTool("trip_update_leg", {
+      tripId: "trip_test",
+      legId: "leg_1",
+      updates: "{\"status\":\"cancelled\"}",
+      updatedAt: "2026-05-19T00:00:00.000Z",
+    }, ctx)).resolves.toContain("orientation hold")
+    await expect(execTool("update_config", { path: "context.contextMargin", value: "25" }, ctx))
+      .resolves.toContain("orientation hold")
+
+    expect(fs.writeFileSync).not.toHaveBeenCalled()
+  })
+
+  it("orientation hold blocks mutating shell commands but still allows read-only shell inspection", async () => {
+    const ctx = orientationHoldCtx()
+
+    await expect(execTool("shell", { command: "rm -rf /tmp/ouro-test" }, ctx)).resolves.toContain("orientation hold")
+    expect(execSync).not.toHaveBeenCalled()
+
+    vi.mocked(execSync).mockReturnValue("repo status\n")
+    await expect(execTool("shell", { command: "git status --short" }, ctx)).resolves.toBe("repo status\n")
+  })
+
+  it("orientation hold blocks first-class MCP tools before external calls run", async () => {
+    const tools = await import("../../repertoire/tools")
+    const callTool = vi.fn().mockResolvedValue({ content: [{ type: "text", text: "created" }] })
+    const mcpManager = {
+      listAllTools: () => [{
+        server: "calendar",
+        tools: [{ name: "create_event", description: "Create event", inputSchema: { type: "object" } }],
+      }],
+      callTool,
+    }
+
+    tools.getToolsForChannel(undefined, undefined, undefined, undefined, mcpManager as any)
+
+    const result = await execTool("calendar_create_event", { title: "wrong referent" }, orientationHoldCtx())
+
+    expect(result).toContain("orientation hold")
+    expect(callTool).not.toHaveBeenCalled()
+  })
+
+  it("orientation hold allows orientation_get so the agent can inspect the frame", async () => {
+    const result = await execTool("orientation_get", {}, orientationHoldCtx())
+
+    expect(JSON.parse(result).actionPolicy.mode).toBe("correction_hold")
+  })
+
   it("rethrows non-Error values from handlers", async () => {
     vi.mocked(fs.readFileSync).mockImplementation(() => { throw "boom" })
     await expect(execTool("read_file", { path: "/tmp/test.txt" })).rejects.toBe("boom")
@@ -152,6 +221,16 @@ describe("execTool", () => {
     const result = await execTool("write_file", { path: "/tmp/out.txt", content: "hello" })
     expect(result).toContain("ok")
     expect(fs.writeFileSync).toHaveBeenCalledWith("/tmp/out.txt", "hello", "utf-8")
+  })
+
+  it("write_file preserves oversized content exactly without applying the structured record cap", async () => {
+    vi.mocked(fs.writeFileSync).mockReturnValue(undefined)
+    const oversized = `write-file-${"x".repeat(256 * 1024 + 1)}`
+
+    const result = await execTool("write_file", { path: "/tmp/out.txt", content: oversized })
+
+    expect(result).toContain("ok")
+    expect(fs.writeFileSync).toHaveBeenCalledWith("/tmp/out.txt", oversized, "utf-8")
   })
 
   it("relative paths resolve against repo root (no workspace indirection)", async () => {

@@ -12,6 +12,7 @@ import {
   readPonderPacket,
   revisePonderPacket,
 } from "../../arc/packets"
+import { expectCappedAgentContent, makeOversizedAgentContent } from "../helpers/content-cap"
 
 const tempDirs: string[] = []
 
@@ -63,6 +64,26 @@ describe("ponder packets", () => {
       kind: "harness_friction",
       objective: "Make screenshot interrogation bulletproof",
     })
+  })
+
+  it("caps oversized agent-authored packet fields before writing JSON", () => {
+    const agentRoot = makeAgentRoot()
+    const oversized = makeOversizedAgentContent("packet field ")
+    const packet = createPonderPacket(agentRoot, {
+      kind: "research",
+      objective: oversized,
+      summary: oversized,
+      successCriteria: [oversized],
+      payload: { details: oversized, nested: { note: oversized } },
+    })
+
+    const stored = readPonderPacket(agentRoot, packet.id)
+    expect(stored).not.toBeNull()
+    expectCappedAgentContent(stored!.objective, oversized)
+    expectCappedAgentContent(stored!.summary, oversized)
+    expectCappedAgentContent(stored!.successCriteria[0], oversized)
+    expectCappedAgentContent((stored!.payload as any).details, oversized)
+    expectCappedAgentContent((stored!.payload as any).nested.note, oversized)
   })
 
   it("revises drafting packets in place without changing identity", () => {

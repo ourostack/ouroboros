@@ -1,8 +1,9 @@
-import { execFileSync } from "child_process"
+import { execFile, execFileSync } from "child_process"
 import * as fs from "fs"
 import * as path from "path"
 import { emitNervesEvent } from "../nerves/runtime"
 import type { SyncConfig } from "./config"
+import type { SyncClassification } from "./sync-classification"
 
 export interface SyncResult {
   ok: boolean
@@ -16,11 +17,18 @@ export interface SyncResult {
  *
  * Backward compat: readers should tolerate entries without `classification`
  * or `conflictFiles` (pre-alpha.289 schema) — they fall back to "unknown".
+ *
+ * Layer 2 extension: `classification` now widens to the full
+ * `SyncClassification` union from `sync-classification.ts`. The legacy
+ * three-variant set (`push_rejected | pull_rebase_conflict | unknown`)
+ * is still emitted by `postTurnPush`'s existing call sites — adding
+ * the new variants is additive, so existing readers keep working as
+ * long as a producer doesn't hand them a Layer-2-only variant.
  */
 export interface PendingSyncRecord {
   error: string
   failedAt: string
-  classification: "push_rejected" | "pull_rebase_conflict" | "unknown"
+  classification: SyncClassification
   conflictFiles: string[]
 }
 
@@ -343,4 +351,130 @@ export function postTurnPush(agentRoot: string, config: SyncConfig): SyncResult 
 
     return { ok: false, error }
   }
+}
+
+/**
+ * Layer 2 — async, signal-aware sibling of `preTurnPull`.
+ *
+ * Used by `runBootSyncProbe` (the `ouro up` boot orchestrator) to perform
+ * the pre-flight pull with end-to-end `AbortSignal` propagation. The
+ * underlying `child_process.execFile` accepts the signal and kills the git
+ * child process when it aborts, so a hung remote (DNS hole, slow server)
+ * can be cut by the boot timeout wrapper rather than hanging the whole
+ * boot.
+ *
+ * The legacy sync `preTurnPull` is preserved unchanged for the per-turn
+ * pipeline at `src/senses/pipeline.ts:522`. The two functions share the
+ * same `.git` and remote-availability gates — the only difference is the
+ * pull itself: `execFileSync` (no signal) vs `execFile` + `{ signal }`.
+ *
+ * Honour-the-signal contract:
+ *   - If `options.signal` is already aborted at call time, the pull is
+ *     skipped and the result is `{ ok: false, error: "aborted" }`.
+ *   - If `options.signal` aborts mid-fetch, the child receives `SIGTERM`
+ *     via Node's built-in AbortSignal handling, and the result is
+ *     `{ ok: false, error: <abort message> }`.
+ *   - With no signal supplied, behaviour matches the sync version (subject
+ *     to the small differences listed above — same git-repo / no-remote
+ *     gates and same nerves events).
+ */
+export function preTurnPullAsync(
+  agentRoot: string,
+  config: SyncConfig,
+  options: { signal?: AbortSignal } = {},
+): Promise<SyncResult> {
+  emitNervesEvent({
+    component: "heart",
+    event: "heart.sync_pull_start",
+    message: "pre-turn pull starting (async)",
+    meta: { agentRoot, remote: config.remote },
+  })
+
+  // Bail early when the caller has already aborted — saves a git invocation
+  // and signals failure consistently.
+  if (options.signal?.aborted) {
+    emitNervesEvent({
+      level: "warn",
+      component: "heart",
+      event: "heart.sync_pull_aborted",
+      message: "pre-turn pull skipped: signal already aborted",
+      meta: { agentRoot },
+    })
+    return Promise.resolve({ ok: false, error: "aborted before pull started" })
+  }
+
+  // Same .git presence check as the sync version.
+  const repoCheck = ensureGitRepo(agentRoot)
+  if (!repoCheck.ok) {
+    emitNervesEvent({
+      level: "warn",
+      component: "heart",
+      event: "heart.sync_not_a_repo",
+      message: "pre-turn pull failed: bundle is not a git repo (async)",
+      meta: { agentRoot },
+    })
+    return Promise.resolve(repoCheck)
+  }
+
+  // Remote-presence check stays sync — it's a fast local op and doesn't
+  // need cancellation. The hangable op is the actual pull.
+  try {
+    const remoteOutput = execFileSync("git", ["remote"], {
+      cwd: agentRoot,
+      stdio: "pipe",
+      timeout: 5000,
+    }).toString().trim()
+
+    if (remoteOutput.length === 0) {
+      emitNervesEvent({
+        component: "heart",
+        event: "heart.sync_pull_end",
+        message: "pre-turn pull skipped: no remote configured (async)",
+        meta: { agentRoot },
+      })
+      return Promise.resolve({ ok: true })
+    }
+  } catch (err) {
+    const error = err instanceof Error ? err.message : String(err)
+    emitNervesEvent({
+      component: "heart",
+      event: "heart.sync_pull_error",
+      message: "pre-turn pull failed: git remote check failed (async)",
+      meta: { agentRoot, error },
+    })
+    return Promise.resolve({ ok: false, error })
+  }
+
+  // The hangable op. `execFile` accepts `{ signal }` and kills the child
+  // when the signal aborts — that's the whole point of the async path.
+  const execOptions: Parameters<typeof execFile>[2] = {
+    cwd: agentRoot,
+    timeout: 30000,
+  }
+  if (options.signal) {
+    execOptions.signal = options.signal
+  }
+
+  return new Promise<SyncResult>((resolve) => {
+    execFile("git", ["pull", config.remote], execOptions, (err) => {
+      if (err) {
+        const error = err instanceof Error ? err.message : String(err)
+        emitNervesEvent({
+          component: "heart",
+          event: "heart.sync_pull_error",
+          message: "pre-turn pull failed (async)",
+          meta: { agentRoot, error },
+        })
+        resolve({ ok: false, error })
+        return
+      }
+      emitNervesEvent({
+        component: "heart",
+        event: "heart.sync_pull_end",
+        message: "pre-turn pull complete (async)",
+        meta: { agentRoot },
+      })
+      resolve({ ok: true })
+    })
+  })
 }

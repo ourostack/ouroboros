@@ -24,6 +24,13 @@ describe("ouro mcp CLI parsing", () => {
     expect(parseOuroCommand(["mcp", "list"])).toEqual({ kind: "mcp.list" })
   })
 
+  it("parses 'mcp list' with agent context", () => {
+    expect(parseOuroCommand(["mcp", "list", "--agent", "slugger"])).toEqual({
+      kind: "mcp.list",
+      agent: "slugger",
+    })
+  })
+
   it("parses 'mcp call' with server, tool, and args", () => {
     expect(
       parseOuroCommand(["mcp", "call", "ado", "get_work_items", "--args", '{"query":"..."}'])
@@ -40,6 +47,15 @@ describe("ouro mcp CLI parsing", () => {
       kind: "mcp.call",
       server: "ado",
       tool: "get_work_items",
+    })
+  })
+
+  it("parses 'mcp call' with agent context", () => {
+    expect(parseOuroCommand(["mcp", "call", "spoonjoy", "health", "--agent", "slugger"])).toEqual({
+      kind: "mcp.call",
+      server: "spoonjoy",
+      tool: "health",
+      agent: "slugger",
     })
   })
 
@@ -93,6 +109,18 @@ describe("ouro mcp CLI execution (daemon-routed)", () => {
     expect(result).toContain("send_mail")
   })
 
+  it("'mcp list --agent' carries the agent through the daemon socket", async () => {
+    sendCommand.mockResolvedValue({ ok: true, data: [] })
+    const deps = createMockDeps({ sendCommand })
+
+    await runOuroCli(["mcp", "list", "--agent", "slugger"], deps)
+
+    expect(sendCommand).toHaveBeenCalledWith("/tmp/ouro-test.sock", {
+      kind: "mcp.list",
+      agent: "slugger",
+    })
+  })
+
   it("'mcp call' sends command through daemon socket and prints result", async () => {
     sendCommand.mockResolvedValue({
       ok: true,
@@ -111,6 +139,23 @@ describe("ouro mcp CLI execution (daemon-routed)", () => {
       args: '{"query":"test"}',
     })
     expect(result).toContain("tool result here")
+  })
+
+  it("'mcp call --agent' carries the agent through the daemon socket", async () => {
+    sendCommand.mockResolvedValue({
+      ok: true,
+      data: { content: [{ type: "text", text: "healthy" }] },
+    })
+    const deps = createMockDeps({ sendCommand })
+
+    await runOuroCli(["mcp", "call", "spoonjoy", "health", "--agent", "slugger"], deps)
+
+    expect(sendCommand).toHaveBeenCalledWith("/tmp/ouro-test.sock", {
+      kind: "mcp.call",
+      server: "spoonjoy",
+      tool: "health",
+      agent: "slugger",
+    })
   })
 
   it("'mcp call' without args sends command without args field", async () => {
