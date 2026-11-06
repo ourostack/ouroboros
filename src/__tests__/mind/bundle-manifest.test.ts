@@ -105,6 +105,37 @@ describe("bundle-manifest", () => {
   it("accepts bundle-meta.json as a canonical path", () => {
     expect(isCanonicalBundlePath("bundle-meta.json")).toBe(true)
   })
+
+  it("includes plugins/ in canonical manifest (W5.1 plugin support)", () => {
+    const paths = CANONICAL_BUNDLE_MANIFEST.map((e) => e.path)
+    expect(paths).toContain("plugins")
+    const entry = CANONICAL_BUNDLE_MANIFEST.find((e) => e.path === "plugins")
+    expect(entry?.kind).toBe("dir")
+  })
+
+  it("includes desk/ in canonical manifest (W5.1 plugin support)", () => {
+    const paths = CANONICAL_BUNDLE_MANIFEST.map((e) => e.path)
+    expect(paths).toContain("desk")
+    const entry = CANONICAL_BUNDLE_MANIFEST.find((e) => e.path === "desk")
+    expect(entry?.kind).toBe("dir")
+  })
+
+  it("accepts plugins/ and desk/ as canonical paths", () => {
+    expect(isCanonicalBundlePath("plugins")).toBe(true)
+    expect(isCanonicalBundlePath("plugins/")).toBe(true)
+    expect(isCanonicalBundlePath("desk")).toBe(true)
+    expect(isCanonicalBundlePath("desk/")).toBe(true)
+  })
+
+  it("accepts paths nested under plugins/ and desk/ as canonical", () => {
+    // Plugin code lives at ~/.ouro-cli/plugins/<id>/; bundle's plugins/
+    // directory may hold bundle-local plugin metadata (future use).
+    expect(isCanonicalBundlePath("plugins/some-plugin")).toBe(true)
+    // desk/ holds the agent's work-organization workspace
+    // ($DESK/<track>/<task>/<iteration>/<doc>.md).
+    expect(isCanonicalBundlePath("desk/some-track")).toBe(true)
+    expect(isCanonicalBundlePath("desk/some-track/some-task/2026-05-18-x/planning.md")).toBe(true)
+  })
 })
 
 describe("getPackageVersion", () => {

@@ -60,7 +60,7 @@ describe("first-class MCP tool trust gating", () => {
     expect(result.allowed).toBe(true)
   })
 
-  // --- non-browser MCP tools: default pass-through ---
+  // --- non-browser MCP tools: default friend-level trust ---
 
   it("non-browser MCP tool (duffel) allowed with no special trust rules", () => {
     const result = guardInvocation(
@@ -71,14 +71,14 @@ describe("first-class MCP tool trust gating", () => {
     expect(result.allowed).toBe(true)
   })
 
-  it("non-browser MCP tool allowed for acquaintance (no MCP trust entry)", () => {
+  it("non-browser MCP tool blocked for acquaintance by default", () => {
     const result = guardInvocation(
       "duffel_search_flights",
       {},
       { readPaths: new Set(), trustLevel: "acquaintance", mcpServerName: "duffel" },
     )
-    // No trust rules for duffel — allowed at any trust level
-    expect(result.allowed).toBe(true)
+    expect(result.allowed).toBe(false)
+    if (!result.allowed) expect(result.reason).toContain("vouch")
   })
 
   // --- non-MCP tools: behavior unchanged ---

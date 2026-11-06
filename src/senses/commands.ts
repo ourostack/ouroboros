@@ -146,7 +146,7 @@ export function registerDefaultCommands(registry: CommandRegistry): void {
   registry.register({
     name: "debug",
     description: "toggle debug mode — see more detail about what I'm doing",
-    channels: ["cli", "teams", "bluebubbles", "mcp"],
+    channels: ["cli", "teams", "bluebubbles", "mail", "mcp"],
     handler: () => {
       _debugMode = !_debugMode
       return {

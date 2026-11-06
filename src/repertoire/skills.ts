@@ -2,6 +2,11 @@ import * as fs from "fs";
 import * as path from "path";
 import { getAgentRoot, getRepoRoot } from "../heart/identity";
 import { emitNervesEvent } from "../nerves/runtime";
+import {
+  listEnabledPlugins,
+  listPluginSkills,
+  loadPluginSkill,
+} from "./plugins";
 
 // Skills live in {agentRoot}/skills/ directory
 export function getSkillsDir(): string {
@@ -40,10 +45,14 @@ export function listSkills(): string[] {
   const baseSkills = listMarkdownBasenames(getSkillsDir());
   const protocolMirrors = listMarkdownBasenames(getProtocolMirrorDir());
   const harnessSkills = listMarkdownBasenames(getHarnessSkillsDir());
+  const pluginSkills = listPluginSkills(listEnabledPlugins());
 
-  // Agent skills (base + protocol) come first; harness skills are fallback.
-  // Set deduplicates by name — agent overrides harness.
-  const skills = [...new Set([...baseSkills, ...protocolMirrors, ...harnessSkills])].sort();
+  // Agent skills (base + protocol) come first; harness skills are fallback;
+  // plugin skills surface after harness skills. Set deduplicates by name —
+  // agent overrides harness overrides plugins.
+  const skills = [
+    ...new Set([...baseSkills, ...protocolMirrors, ...harnessSkills, ...pluginSkills]),
+  ].sort();
   emitNervesEvent({
     event: "repertoire.load_end",
     component: "repertoire",
@@ -77,6 +86,31 @@ export function loadSkill(skillName: string): string {
   // 3) Harness-level skill (ships with npm package).
   else if (fs.existsSync(harnessSkillPath)) {
     resolvedPath = harnessSkillPath;
+  }
+
+  // 4) Plugin skill fallback. Iterate enabled plugins; first match wins.
+  if (!resolvedPath) {
+    for (const plugin of listEnabledPlugins()) {
+      try {
+        const content = loadPluginSkill(plugin.id, skillName);
+        if (!loadedSkills.includes(skillName)) {
+          loadedSkills.push(skillName);
+        }
+        emitNervesEvent({
+          event: "repertoire.load_end",
+          component: "repertoire",
+          message: "loaded skill",
+          meta: {
+            operation: "loadSkill",
+            skill: skillName,
+            path: `plugin:${plugin.id}`,
+          },
+        });
+        return content;
+      } catch {
+        // try next plugin
+      }
+    }
   }
 
   if (!resolvedPath) {

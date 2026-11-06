@@ -65,6 +65,7 @@ export const continuityToolDefinitions: ToolDefinition[] = [
       emitNervesEvent({ component: "repertoire", event: "repertoire.capture_episode", message: `captured episode ${episode.id}`, meta: { id: episode.id } });
       return JSON.stringify(episode, null, 2);
     },
+    riskProfile: { mutates: "durable_state_write", risk: "high", reason: "writes continuity episode state" },
   },
   {
     tool: {
@@ -156,6 +157,7 @@ export const continuityToolDefinitions: ToolDefinition[] = [
       emitNervesEvent({ component: "repertoire", event: "repertoire.care_manage", message: `care ${a.action}`, meta: { action: a.action, id: a.id } });
       return JSON.stringify(result, null, 2);
     },
+    riskProfile: { mutates: "durable_state_write", risk: "high", reason: "creates or updates care state" },
   },
   {
     tool: {
@@ -210,6 +212,7 @@ export const continuityToolDefinitions: ToolDefinition[] = [
       emitNervesEvent({ component: "repertoire", event: "repertoire.intention_capture", message: `captured intention ${intention.id}`, meta: { id: intention.id } });
       return JSON.stringify(intention, null, 2);
     },
+    riskProfile: { mutates: "durable_state_write", risk: "high", reason: "writes intention state" },
   },
   {
     tool: {
@@ -235,5 +238,6 @@ export const continuityToolDefinitions: ToolDefinition[] = [
       emitNervesEvent({ component: "repertoire", event: "repertoire.intention_manage", message: `intention ${a.action}: ${a.id}`, meta: { action: a.action, id: a.id } });
       return JSON.stringify(result, null, 2);
     },
+    riskProfile: { mutates: "durable_state_write", risk: "high", reason: "updates intention state" },
   },
 ]

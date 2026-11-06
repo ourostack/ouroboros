@@ -17,6 +17,28 @@ class MockChild extends EventEmitter {
   send = vi.fn((_message: unknown, _callback?: (error: Error | null) => void) => true)
 }
 
+type AgentRuntimeStateForTest = {
+  snapshot: {
+    errorReason: string | null
+    fixHint: string | null
+  }
+  crashTimestamps: number[]
+  orchestratedRestartTimestamps: number[]
+  respawnLoopTripped: boolean
+  restartTimer: unknown | null
+  cooldownTimer: unknown | null
+  cooldownRetryCount: number
+  fastCrashCount: number
+}
+
+function createDeferred<T>(): { promise: Promise<T>; resolve: (value: T | PromiseLike<T>) => void } {
+  let resolve!: (value: T | PromiseLike<T>) => void
+  const promise = new Promise<T>((res) => {
+    resolve = res
+  })
+  return { promise, resolve }
+}
+
 describe("daemon process manager", () => {
   const spawn = vi.fn()
   const now = vi.fn()
@@ -65,6 +87,69 @@ describe("daemon process manager", () => {
     expect(manager.getAgentSnapshot("ouroboros")?.status).toBe("stopped")
   })
 
+  it("triggers autoStart agents without awaiting worker startup", async () => {
+    const child = new MockChild()
+    spawn.mockReturnValue(child)
+    now.mockReturnValue(1_000)
+
+    const manager = new DaemonProcessManager({
+      agents,
+      spawn,
+      now,
+      setTimeoutFn,
+      clearTimeoutFn,
+    })
+
+    manager.triggerAutoStartAgents()
+    await Promise.resolve()
+
+    expect(spawn).toHaveBeenCalledTimes(1)
+    expect(manager.getAgentSnapshot("slugger")?.status).toBe("running")
+    expect(manager.getAgentSnapshot("ouroboros")?.status).toBe("stopped")
+  })
+
+  it("contains thrown trigger startup failures per autoStart agent", async () => {
+    const onSnapshotChange = vi.fn()
+    spawn
+      .mockImplementationOnce(() => {
+        throw new Error("spawn exploded")
+      })
+      .mockImplementationOnce(() => {
+        throw "raw spawn failure"
+      })
+    now.mockReturnValue(1_000)
+
+    const first = new DaemonProcessManager({
+      agents,
+      spawn,
+      now,
+      setTimeoutFn,
+      clearTimeoutFn,
+      statusWriter: () => {},
+      onSnapshotChange,
+    })
+    const second = new DaemonProcessManager({
+      agents,
+      spawn,
+      now,
+      setTimeoutFn,
+      clearTimeoutFn,
+      statusWriter: () => {},
+      onSnapshotChange,
+    })
+
+    first.triggerAutoStartAgents()
+    second.triggerAutoStartAgents()
+    await Promise.resolve()
+
+    expect(first.getAgentSnapshot("slugger")?.status).toBe("crashed")
+    expect(first.getAgentSnapshot("slugger")?.errorReason).toContain("spawn exploded")
+    expect(second.getAgentSnapshot("slugger")?.status).toBe("crashed")
+    expect(second.getAgentSnapshot("slugger")?.errorReason).toContain("raw spawn failure")
+    expect(first.getAgentSnapshot("ouroboros")?.status).toBe("stopped")
+    expect(onSnapshotChange).toHaveBeenCalled()
+  })
+
   it("notifies onSnapshotChange after startAgent succeeds", async () => {
     const child = new MockChild()
     spawn.mockReturnValue(child)
@@ -88,6 +173,196 @@ describe("daemon process manager", () => {
     const lastCall = onSnapshotChange.mock.calls[onSnapshotChange.mock.calls.length - 1]
     expect(lastCall?.[0].name).toBe("slugger")
     expect(lastCall?.[0].status).toBe("running")
+  })
+
+  it("sends runtime credential bootstrap over IPC after spawning", async () => {
+    const child = new MockChild()
+    spawn.mockReturnValue(child)
+    now.mockReturnValue(1_000)
+
+    const manager = new DaemonProcessManager({
+      agents: [{
+        name: "slugger:bluebubbles",
+        agentArg: "slugger",
+        entry: "senses/bluebubbles/entry.js",
+        channel: "bluebubbles",
+        autoStart: true,
+        getRuntimeCredentialBootstrap: () => ({
+          agentName: "slugger",
+          runtimeConfig: { mailroom: { mailboxAddress: "slugger@ouro.bot" } },
+          machineRuntimeConfig: { bluebubbles: { serverUrl: "http://localhost:1234", password: "pw" } },
+          machineId: "machine_test",
+          providerCredentialRecords: [{
+            provider: "openai-codex",
+            revision: "vault_test",
+            updatedAt: "2026-04-14T12:00:00.000Z",
+            credentials: { oauthAccessToken: "codex-token" },
+            config: {},
+            provenance: { source: "auth-flow", updatedAt: "2026-04-14T12:00:00.000Z" },
+          }],
+        }),
+      }],
+      spawn,
+      now,
+      setTimeoutFn,
+      clearTimeoutFn,
+    })
+
+    await manager.startAgent("slugger:bluebubbles")
+
+    expect(child.send).toHaveBeenCalledWith({
+      type: "ouro.runtimeCredentialBootstrap",
+      agentName: "slugger",
+      runtimeConfig: { mailroom: { mailboxAddress: "slugger@ouro.bot" } },
+      machineRuntimeConfig: { bluebubbles: { serverUrl: "http://localhost:1234", password: "pw" } },
+      machineId: "machine_test",
+      providerCredentialRecords: [{
+        provider: "openai-codex",
+        revision: "vault_test",
+        updatedAt: "2026-04-14T12:00:00.000Z",
+        credentials: { oauthAccessToken: "codex-token" },
+        config: {},
+        provenance: { source: "auth-flow", updatedAt: "2026-04-14T12:00:00.000Z" },
+      }],
+    })
+  })
+
+  it("continues startup when runtime credential bootstrap IPC send throws", async () => {
+    const child = new MockChild()
+    child.send.mockImplementation(() => {
+      throw "ipc closed"
+    })
+    spawn.mockReturnValue(child)
+    now.mockReturnValue(1_000)
+
+    const manager = new DaemonProcessManager({
+      agents: [{
+        name: "slugger:bluebubbles",
+        agentArg: "slugger",
+        entry: "senses/bluebubbles/entry.js",
+        channel: "bluebubbles",
+        autoStart: true,
+        getRuntimeCredentialBootstrap: () => ({
+          agentName: "slugger",
+          machineRuntimeConfig: { bluebubbles: { serverUrl: "http://localhost:1234", password: "pw" } },
+        }),
+      }],
+      spawn,
+      now,
+      setTimeoutFn,
+      clearTimeoutFn,
+    })
+
+    await expect(manager.startAgent("slugger:bluebubbles")).resolves.not.toThrow()
+
+    expect(child.send).toHaveBeenCalled()
+    expect(manager.getAgentSnapshot("slugger:bluebubbles")?.status).toBe("running")
+  })
+
+  it("sends runtime credential bootstrap without provider records", async () => {
+    const child = new MockChild()
+    spawn.mockReturnValue(child)
+    now.mockReturnValue(1_000)
+
+    const manager = new DaemonProcessManager({
+      agents: [{
+        name: "slugger:bluebubbles",
+        agentArg: "slugger",
+        entry: "senses/bluebubbles/entry.js",
+        channel: "bluebubbles",
+        autoStart: true,
+        getRuntimeCredentialBootstrap: () => ({
+          agentName: "slugger",
+          machineRuntimeConfig: { bluebubbles: { serverUrl: "http://localhost:1234", password: "pw" } },
+        }),
+      }],
+      spawn,
+      now,
+      setTimeoutFn,
+      clearTimeoutFn,
+    })
+
+    await manager.startAgent("slugger:bluebubbles")
+
+    expect(child.send).toHaveBeenCalledWith({
+      type: "ouro.runtimeCredentialBootstrap",
+      agentName: "slugger",
+      machineRuntimeConfig: { bluebubbles: { serverUrl: "http://localhost:1234", password: "pw" } },
+    })
+    expect(manager.getAgentSnapshot("slugger:bluebubbles")?.status).toBe("running")
+  })
+
+  it("sends provider credential bootstrap without unrelated runtime fields", async () => {
+    const child = new MockChild()
+    spawn.mockReturnValue(child)
+    now.mockReturnValue(1_000)
+
+    const providerCredentialRecords = [{
+      provider: "openai-codex" as const,
+      revision: "vault_test",
+      updatedAt: "2026-04-14T12:00:00.000Z",
+      credentials: { oauthAccessToken: "codex-token" },
+      config: {},
+      provenance: { source: "auth-flow" as const, updatedAt: "2026-04-14T12:00:00.000Z" },
+    }]
+
+    const manager = new DaemonProcessManager({
+      agents: [{
+        name: "slugger:mail",
+        agentArg: "slugger",
+        entry: "senses/mail-entry.js",
+        channel: "mail",
+        autoStart: true,
+        getRuntimeCredentialBootstrap: () => ({
+          agentName: "slugger",
+          providerCredentialRecords,
+        }),
+      }],
+      spawn,
+      now,
+      setTimeoutFn,
+      clearTimeoutFn,
+    })
+
+    await manager.startAgent("slugger:mail")
+
+    expect(child.send).toHaveBeenCalledWith({
+      type: "ouro.runtimeCredentialBootstrap",
+      agentName: "slugger",
+      providerCredentialRecords,
+    })
+  })
+
+  it("records Error details when runtime credential bootstrap IPC send throws an Error", async () => {
+    const child = new MockChild()
+    child.send.mockImplementation(() => {
+      throw new Error("ipc closed")
+    })
+    spawn.mockReturnValue(child)
+    now.mockReturnValue(1_000)
+
+    const manager = new DaemonProcessManager({
+      agents: [{
+        name: "slugger:bluebubbles",
+        agentArg: "slugger",
+        entry: "senses/bluebubbles/entry.js",
+        channel: "bluebubbles",
+        autoStart: true,
+        getRuntimeCredentialBootstrap: () => ({
+          agentName: "slugger",
+          machineRuntimeConfig: { bluebubbles: { serverUrl: "http://localhost:1234", password: "pw" } },
+        }),
+      }],
+      spawn,
+      now,
+      setTimeoutFn,
+      clearTimeoutFn,
+    })
+
+    await expect(manager.startAgent("slugger:bluebubbles")).resolves.not.toThrow()
+
+    expect(child.send).toHaveBeenCalled()
+    expect(manager.getAgentSnapshot("slugger:bluebubbles")?.status).toBe("running")
   })
 
   it("notifies onSnapshotChange when configCheck fails (sets errorReason and fixHint)", async () => {
@@ -117,6 +392,246 @@ describe("daemon process manager", () => {
     expect(snap?.status).toBe("crashed")
     expect(snap?.errorReason).toBe("missing github-copilot creds")
     expect(snap?.fixHint).toContain("ouro auth")
+  })
+
+  it("does not start duplicate config checks while an agent is already starting", async () => {
+    const deferred = createDeferred<{ ok: boolean }>()
+    const configCheck = vi.fn(() => deferred.promise)
+    const child = new MockChild()
+    spawn.mockReturnValue(child)
+    now.mockReturnValue(1_000)
+
+    const manager = new DaemonProcessManager({
+      agents,
+      spawn,
+      now,
+      setTimeoutFn,
+      clearTimeoutFn,
+      configCheck,
+      statusWriter: () => {},
+    })
+
+    const firstStart = manager.startAgent("slugger")
+    await Promise.resolve()
+    await manager.startAgent("slugger")
+
+    expect(configCheck).toHaveBeenCalledTimes(1)
+    expect(spawn).not.toHaveBeenCalled()
+    expect(manager.getAgentSnapshot("slugger")?.status).toBe("starting")
+
+    deferred.resolve({ ok: true })
+    await firstStart
+
+    expect(spawn).toHaveBeenCalledTimes(1)
+    expect(manager.getAgentSnapshot("slugger")?.status).toBe("running")
+  })
+
+  it("does not cancel a pending startup when restartAgent is called during config check", async () => {
+    const deferred = createDeferred<{ ok: boolean }>()
+    const configCheck = vi.fn(() => deferred.promise)
+    const child = new MockChild()
+    spawn.mockReturnValue(child)
+    now.mockReturnValue(1_000)
+
+    const manager = new DaemonProcessManager({
+      agents,
+      spawn,
+      now,
+      setTimeoutFn,
+      clearTimeoutFn,
+      configCheck,
+      statusWriter: () => {},
+    })
+
+    const start = manager.startAgent("slugger")
+    await Promise.resolve()
+    await manager.restartAgent("slugger")
+
+    expect(configCheck).toHaveBeenCalledTimes(1)
+    expect(spawn).not.toHaveBeenCalled()
+    expect(manager.getAgentSnapshot("slugger")?.status).toBe("starting")
+
+    deferred.resolve({ ok: true })
+    await start
+
+    expect(spawn).toHaveBeenCalledTimes(1)
+    expect(manager.getAgentSnapshot("slugger")?.status).toBe("running")
+  })
+
+  it("recovers a stale pending startup without letting the old check spawn later", async () => {
+    const staleCheck = createDeferred<{ ok: boolean }>()
+    const freshChild = new MockChild()
+    const configCheck = vi.fn()
+      .mockReturnValueOnce(staleCheck.promise)
+      .mockReturnValueOnce({ ok: true })
+    spawn.mockReturnValue(freshChild)
+    now
+      .mockReturnValueOnce(1_000)
+      .mockReturnValueOnce(2_500)
+      .mockReturnValueOnce(2_500)
+
+    const manager = new DaemonProcessManager({
+      agents,
+      spawn,
+      now,
+      setTimeoutFn,
+      clearTimeoutFn,
+      configCheck,
+      startupStaleAfterMs: 1_000,
+      statusWriter: () => {},
+    })
+
+    const originalStart = manager.startAgent("slugger")
+    await Promise.resolve()
+    await manager.restartAgent("slugger")
+
+    expect(configCheck).toHaveBeenCalledTimes(2)
+    expect(spawn).toHaveBeenCalledTimes(1)
+    expect(manager.getAgentSnapshot("slugger")?.status).toBe("running")
+
+    staleCheck.resolve({ ok: true })
+    await originalStart
+
+    expect(spawn).toHaveBeenCalledTimes(1)
+    expect(manager.getAgentSnapshot("slugger")?.pid).toBe(freshChild.pid)
+  })
+
+  it("does not spawn after stopAgent is called during a pending config check", async () => {
+    const deferred = createDeferred<{ ok: boolean }>()
+    const configCheck = vi.fn(() => deferred.promise)
+    now.mockReturnValue(1_000)
+
+    const manager = new DaemonProcessManager({
+      agents,
+      spawn,
+      now,
+      setTimeoutFn,
+      clearTimeoutFn,
+      configCheck,
+      statusWriter: () => {},
+    })
+
+    const start = manager.startAgent("slugger")
+    await Promise.resolve()
+    await manager.stopAgent("slugger")
+    deferred.resolve({ ok: true })
+    await start
+
+    expect(configCheck).toHaveBeenCalledTimes(1)
+    expect(spawn).not.toHaveBeenCalled()
+    expect(manager.getAgentSnapshot("slugger")?.status).toBe("stopped")
+  })
+
+  it("terminates a child spawned by a startup attempt that became stale", async () => {
+    const staleChild = new MockChild()
+    staleChild.kill.mockImplementation(() => {
+      throw new Error("sigterm denied")
+    })
+    const freshChild = new MockChild()
+    let manager!: DaemonProcessManager
+    let restartPromise: Promise<void> | null = null
+    let spawnCount = 0
+    spawn.mockImplementation(() => {
+      spawnCount += 1
+      if (spawnCount === 1) {
+        restartPromise = manager.restartAgent("slugger")
+        return staleChild
+      }
+      return freshChild
+    })
+    now
+      .mockReturnValueOnce(1_000)
+      .mockReturnValue(3_000)
+
+    manager = new DaemonProcessManager({
+      agents,
+      spawn,
+      now,
+      setTimeoutFn,
+      clearTimeoutFn,
+      configCheck: vi.fn(() => ({ ok: true })),
+      startupStaleAfterMs: 1_000,
+      statusWriter: () => {},
+    })
+
+    await manager.startAgent("slugger")
+    await restartPromise
+
+    expect(staleChild.kill).toHaveBeenCalledWith("SIGTERM")
+    expect(spawn).toHaveBeenCalledTimes(2)
+    expect(manager.getAgentSnapshot("slugger")?.pid).toBe(freshChild.pid)
+  })
+
+  it("does not spawn when stopAgent is requested after config validation but before spawn", async () => {
+    now.mockReturnValue(1_000)
+    let manager!: DaemonProcessManager
+    const existsSync = vi.fn(() => {
+      void manager.stopAgent("slugger")
+      return true
+    })
+
+    manager = new DaemonProcessManager({
+      agents,
+      spawn,
+      now,
+      setTimeoutFn,
+      clearTimeoutFn,
+      existsSync,
+      configCheck: vi.fn(() => ({ ok: true })),
+      statusWriter: () => {},
+    })
+
+    await manager.startAgent("slugger")
+
+    expect(existsSync).toHaveBeenCalled()
+    expect(spawn).not.toHaveBeenCalled()
+    expect(manager.getAgentSnapshot("slugger")?.status).toBe("stopped")
+  })
+
+  it("records thrown string config check failures as agent-local crashes", async () => {
+    const configCheck = vi.fn().mockRejectedValue("raw config failure")
+
+    const manager = new DaemonProcessManager({
+      agents,
+      spawn,
+      now,
+      setTimeoutFn,
+      clearTimeoutFn,
+      configCheck,
+      statusWriter: () => {},
+    })
+
+    await manager.startAgent("slugger")
+
+    expect(spawn).not.toHaveBeenCalled()
+    const snap = manager.getAgentSnapshot("slugger")
+    expect(snap?.status).toBe("crashed")
+    expect(snap?.errorReason).toContain("raw config failure")
+    expect(manager.getAgentSnapshot("ouroboros")?.status).toBe("stopped")
+  })
+
+  it("turns thrown config checks into per-agent crashed snapshots", async () => {
+    const onSnapshotChange = vi.fn()
+    const manager = new DaemonProcessManager({
+      agents,
+      spawn,
+      now,
+      setTimeoutFn,
+      clearTimeoutFn,
+      configCheck: async () => {
+        throw new Error("provider vault read hung up")
+      },
+      statusWriter: () => {},
+      onSnapshotChange,
+    })
+
+    await expect(manager.startAgent("slugger")).resolves.not.toThrow()
+
+    expect(spawn).not.toHaveBeenCalled()
+    expect(manager.getAgentSnapshot("slugger")?.status).toBe("crashed")
+    expect(manager.getAgentSnapshot("slugger")?.errorReason).toContain("provider vault read hung up")
+    expect(manager.getAgentSnapshot("ouroboros")?.status).toBe("stopped")
+    expect(onSnapshotChange).toHaveBeenCalled()
   })
 
   it("leaves an agent stopped when configCheck asks to skip startup", async () => {
@@ -421,6 +936,48 @@ describe("daemon process manager", () => {
     })
 
     await expect(manager.startAgent("ghost")).rejects.toThrow("Unknown managed agent 'ghost'.")
+  })
+
+  it("resets cooldown, crash, and respawn-loop state for operator sense revive", () => {
+    const cooldownTimer = { kind: "cooldown" }
+    const restartTimer = { kind: "restart" }
+    const senseAgents: DaemonManagedAgent[] = [
+      { name: "slugger", entry: "heart/agent-entry.js", channel: "cli", autoStart: false },
+      { name: "slugger:bluebubbles", entry: "heart/sense-entry.js", channel: "bluebubbles", autoStart: false },
+    ]
+    const manager = new DaemonProcessManager({
+      agents: senseAgents,
+      spawn,
+      now,
+      setTimeoutFn,
+      clearTimeoutFn,
+    })
+    const states = (manager as unknown as { agents: Map<string, AgentRuntimeStateForTest> }).agents
+    const state = states.get("slugger:bluebubbles")
+    if (!state) throw new Error("missing bluebubbles state")
+    state.cooldownRetryCount = 3
+    state.crashTimestamps = [1_000, 2_000]
+    state.fastCrashCount = 2
+    state.respawnLoopTripped = true
+    state.restartTimer = restartTimer
+    state.cooldownTimer = cooldownTimer
+    state.orchestratedRestartTimestamps = [3_000, 4_000]
+    state.snapshot.errorReason = "respawn loop detected: refusing further restarts"
+    state.snapshot.fixHint = "investigate the root cause then run `ouro up` to resume"
+
+    manager.resetAgentFailureState("slugger:bluebubbles")
+
+    expect(clearTimeoutFn).toHaveBeenCalledWith(cooldownTimer)
+    expect(clearTimeoutFn).toHaveBeenCalledWith(restartTimer)
+    expect(state.cooldownRetryCount).toBe(0)
+    expect(state.crashTimestamps).toEqual([])
+    expect(state.fastCrashCount).toBe(0)
+    expect(state.respawnLoopTripped).toBe(false)
+    expect(state.restartTimer).toBeNull()
+    expect(state.cooldownTimer).toBeNull()
+    expect(state.orchestratedRestartTimestamps).toEqual([])
+    expect(manager.getAgentSnapshot("slugger:bluebubbles")?.errorReason).toBeNull()
+    expect(manager.getAgentSnapshot("slugger:bluebubbles")?.fixHint).toBeNull()
   })
 
   it("does not spawn again when startAgent is called while already running", async () => {
@@ -921,5 +1478,175 @@ describe("daemon process manager", () => {
     const snapshot = manager.getAgentSnapshot("slugger")
     expect(snapshot?.lastExitCode).toBeNull()
     expect(snapshot?.lastSignal).toBeNull()
+  })
+
+  /**
+   * Respawn-loop guard — regression coverage for the 2026-05-11 incident.
+   *
+   * The HTTP health probe was misfiring during BB sense's legitimate long
+   * operations (VLM image describe). Every minute it triggered
+   * `restartAgent` via `senseManager.restartSense`. Slugger's BB sense was
+   * SIGTERM'd mid-work ~60 times per hour. The recovery loop re-injected
+   * the same user message into the BB session every cycle — Ari saw his
+   * messages echoed back to Slugger 76+ times.
+   *
+   * The aggressive HTTP probe is gone (see sense-manager.ts), but the
+   * guard remains as defense-in-depth: any future cause of a tight
+   * restart loop is bounded at MAX restarts in WINDOW.
+   */
+  describe("respawn-loop guard", () => {
+    it("allows normal restart cadence (under the threshold)", async () => {
+      let t = 1_000
+      now.mockImplementation(() => (t += 1_000))
+      const child = new MockChild()
+      spawn.mockReturnValue(child)
+
+      const manager = new DaemonProcessManager({
+        agents,
+        spawn,
+        now,
+        setTimeoutFn,
+        clearTimeoutFn,
+      })
+      await manager.startAutoStartAgents()
+
+      // 4 restarts in quick succession — under the 5/window threshold.
+      for (let i = 0; i < 4; i++) {
+        spawn.mockReturnValue(new MockChild())
+        await manager.restartAgent("slugger")
+      }
+
+      const snapshot = manager.getAgentSnapshot("slugger")
+      expect(snapshot?.errorReason).toBeNull()
+      // 1 initial start + 4 restarts = 5 spawn calls
+      expect(spawn.mock.calls.length).toBeGreaterThanOrEqual(4)
+    })
+
+    it("trips after MAX restarts in WINDOW and refuses further restarts", async () => {
+      let t = 1_000
+      now.mockImplementation(() => (t += 1_000))
+      spawn.mockImplementation(() => new MockChild())
+
+      const manager = new DaemonProcessManager({
+        agents,
+        spawn,
+        now,
+        setTimeoutFn,
+        clearTimeoutFn,
+      })
+      await manager.startAutoStartAgents()
+
+      // 5 restarts → fills the window; 6th must trip the guard.
+      for (let i = 0; i < 5; i++) {
+        await manager.restartAgent("slugger")
+      }
+      const spawnsBeforeTrip = spawn.mock.calls.length
+
+      // 6th call: guard trips, no further spawns.
+      await manager.restartAgent("slugger")
+      // The guard refuses to spawn — count must not increase.
+      expect(spawn.mock.calls.length).toBe(spawnsBeforeTrip)
+
+      const snapshot = manager.getAgentSnapshot("slugger")
+      expect(snapshot?.errorReason).toMatch(/respawn loop/i)
+      expect(snapshot?.fixHint).toMatch(/ouro up/i)
+    })
+
+    it("after tripping, subsequent restartAgent calls are no-ops", async () => {
+      let t = 1_000
+      now.mockImplementation(() => (t += 1_000))
+      spawn.mockImplementation(() => new MockChild())
+
+      const manager = new DaemonProcessManager({
+        agents,
+        spawn,
+        now,
+        setTimeoutFn,
+        clearTimeoutFn,
+      })
+      await manager.startAutoStartAgents()
+
+      for (let i = 0; i < 6; i++) {
+        await manager.restartAgent("slugger")
+      }
+      const spawnsAfterTrip = spawn.mock.calls.length
+
+      // Repeated restart attempts after trip don't spawn anything more.
+      for (let i = 0; i < 5; i++) {
+        await manager.restartAgent("slugger")
+      }
+      // Count is unchanged — the guard rejects every call.
+      expect(spawn.mock.calls.length).toBe(spawnsAfterTrip)
+    })
+
+    it("startAgent bypasses the guard — operator can resume after a trip via ouro down + ouro up", async () => {
+      let t = 1_000
+      now.mockImplementation(() => (t += 1_000))
+      spawn.mockImplementation(() => new MockChild())
+
+      const manager = new DaemonProcessManager({
+        agents,
+        spawn,
+        now,
+        setTimeoutFn,
+        clearTimeoutFn,
+      })
+      await manager.startAutoStartAgents()
+
+      // Trip the guard.
+      for (let i = 0; i < 6; i++) {
+        await manager.restartAgent("slugger")
+      }
+
+      // Operator flow: `ouro down` then `ouro up`. Neither call is gated by
+      // the respawn-loop guard; the guard only blocks restartAgent.
+      await manager.stopAgent("slugger")
+      const spawnsBeforeUp = spawn.mock.calls.length
+      await manager.startAgent("slugger")
+
+      expect(spawn.mock.calls.length).toBeGreaterThan(spawnsBeforeUp)
+      const snapshot = manager.getAgentSnapshot("slugger")
+      expect(snapshot?.status).toBe("running")
+    })
+
+    it("trip clears automatically once all timestamps age out of the window", async () => {
+      let t = 0
+      now.mockImplementation(() => t)
+      spawn.mockImplementation(() => new MockChild())
+
+      const manager = new DaemonProcessManager({
+        agents,
+        spawn,
+        now,
+        setTimeoutFn,
+        clearTimeoutFn,
+      })
+      t = 1_000
+      await manager.startAutoStartAgents()
+
+      // 6 quick restarts — trips the guard.
+      for (let i = 0; i < 6; i++) {
+        t += 1_000
+        await manager.restartAgent("slugger")
+      }
+      const trippedSnap = manager.getAgentSnapshot("slugger")
+      expect(trippedSnap?.errorReason).toMatch(/respawn loop/i)
+
+      // Jump forward past the window — old timestamps age out, trip self-clears.
+      t += 12 * 60_000
+
+      // First restartAgent call after the window detects the empty array and
+      // clears the trip. Without something else to spawn, expect status update.
+      await manager.restartAgent("slugger")
+      const clearedSnap = manager.getAgentSnapshot("slugger")
+      expect(clearedSnap?.errorReason).toBeNull()
+
+      // Subsequent restarts work normally again, up to the threshold.
+      for (let i = 0; i < 3; i++) {
+        t += 1_000
+        await manager.restartAgent("slugger")
+      }
+      expect(manager.getAgentSnapshot("slugger")?.errorReason).toBeNull()
+    })
   })
 })

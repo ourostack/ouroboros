@@ -59,6 +59,32 @@ describe("cli entrypoint", () => {
     argvSpy.mockRestore()
   })
 
+  it("starts the CLI sense without waiting for runtime config refresh", async () => {
+    vi.resetModules()
+
+    const main = vi.fn()
+    const refreshRuntimeCredentialConfig = vi.fn(() => new Promise(() => undefined))
+    vi.doMock("../../senses/cli", () => ({ main }))
+    vi.doMock("../../heart/runtime-credentials", () => ({
+      refreshRuntimeCredentialConfig,
+    }))
+
+    const argvSpy = vi.spyOn(process, "argv", "get").mockReturnValue([
+      "node",
+      "cli-entry.js",
+      "--agent",
+      "slugger",
+    ])
+
+    await import("../../senses/cli-entry")
+
+    await vi.waitFor(() => {
+      expect(refreshRuntimeCredentialConfig).toHaveBeenCalledWith("slugger", { preserveCachedOnFailure: true })
+      expect(main).toHaveBeenCalledTimes(1)
+    })
+    argvSpy.mockRestore()
+  })
+
   it("fails fast when --agent is missing", async () => {
     vi.resetModules()
 

@@ -540,16 +540,6 @@ describe("pipeline integration — full UX/AX scenarios", () => {
       expect(cmd).toEqual({ kind: "friend.show", friendId: "abc-123", agent: "slugger" })
     })
 
-    it("parses task board --agent slugger", () => {
-      const cmd = parseOuroCommand(["task", "board", "--agent", "slugger"])
-      expect(cmd).toEqual({ kind: "task.board", agent: "slugger" })
-    })
-
-    it("parses task board <status> --agent slugger", () => {
-      const cmd = parseOuroCommand(["task", "board", "processing", "--agent", "slugger"])
-      expect(cmd).toEqual({ kind: "task.board", status: "processing", agent: "slugger" })
-    })
-
     it("parses session list --agent slugger", () => {
       const cmd = parseOuroCommand(["session", "list", "--agent", "slugger"])
       expect(cmd).toEqual({ kind: "session.list", agent: "slugger" })
@@ -564,11 +554,6 @@ describe("pipeline integration — full UX/AX scenarios", () => {
     it("parses friend create --name Bob --trust friend --agent slugger", () => {
       const cmd = parseOuroCommand(["friend", "create", "--name", "Bob", "--trust", "friend", "--agent", "slugger"])
       expect(cmd).toEqual({ kind: "friend.create", name: "Bob", trustLevel: "friend", agent: "slugger" })
-    })
-
-    it("parses task create --agent slugger", () => {
-      const cmd = parseOuroCommand(["task", "create", "My Task", "--agent", "slugger"])
-      expect(cmd).toEqual({ kind: "task.create", title: "My Task", agent: "slugger" })
     })
   })
 
