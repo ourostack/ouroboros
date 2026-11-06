@@ -162,8 +162,10 @@ describe("daemon entry error boundary — per-agent habit setup isolation", () =
     vi.spyOn(process, "argv", "get").mockReturnValue(["node", "daemon-entry.js"])
 
     await import("../../../heart/daemon/daemon-entry")
-    // Allow the .then() to resolve
-    await new Promise((r) => setTimeout(r, 50))
+    await vi.waitFor(() => {
+      expect(habitSchedulerStartMock).toHaveBeenCalledTimes(2)
+      expect(habitSchedulerWatchMock).toHaveBeenCalledTimes(2)
+    })
 
     // alpha and charlie should have had their schedulers started
     expect(habitSchedulerStartMock).toHaveBeenCalledTimes(2)
@@ -200,7 +202,10 @@ describe("daemon entry error boundary — per-agent habit setup isolation", () =
     vi.spyOn(process, "argv", "get").mockReturnValue(["node", "daemon-entry.js"])
 
     await import("../../../heart/daemon/daemon-entry")
-    await new Promise((r) => setTimeout(r, 50))
+    await vi.waitFor(() => {
+      expect(habitSchedulerStartMock).toHaveBeenCalledTimes(1)
+      expect(habitSchedulerWatchMock).toHaveBeenCalledTimes(1)
+    })
 
     // bravo should still have its scheduler started
     expect(habitSchedulerStartMock).toHaveBeenCalledTimes(1)
@@ -236,7 +241,10 @@ describe("daemon entry error boundary — per-agent habit setup isolation", () =
     vi.spyOn(process, "argv", "get").mockReturnValue(["node", "daemon-entry.js"])
 
     await import("../../../heart/daemon/daemon-entry")
-    await new Promise((r) => setTimeout(r, 50))
+    await vi.waitFor(() => {
+      expect(habitSchedulerStartMock).toHaveBeenCalledTimes(2)
+      expect(habitSchedulerWatchMock).toHaveBeenCalledTimes(1)
+    })
 
     // Both agents had their constructors called, both had start() called
     expect(habitSchedulerStartMock).toHaveBeenCalledTimes(2)
@@ -268,7 +276,20 @@ describe("daemon entry error boundary — per-agent habit setup isolation", () =
     vi.spyOn(process, "argv", "get").mockReturnValue(["node", "daemon-entry.js"])
 
     await import("../../../heart/daemon/daemon-entry")
-    await new Promise((r) => setTimeout(r, 50))
+    await vi.waitFor(() => {
+      expect(emitNervesEvent).toHaveBeenCalledWith(
+        expect.objectContaining({
+          level: "error",
+          component: "daemon",
+          event: "daemon.habit_setup_error",
+          message: expect.stringContaining("failbot"),
+          meta: expect.objectContaining({
+            agent: "failbot",
+            error: "scheduler kaboom",
+          }),
+        }),
+      )
+    })
 
     expect(emitNervesEvent).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -308,7 +329,10 @@ describe("daemon entry error boundary — per-agent habit setup isolation", () =
     vi.spyOn(process, "argv", "get").mockReturnValue(["node", "daemon-entry.js"])
 
     await import("../../../heart/daemon/daemon-entry")
-    await new Promise((r) => setTimeout(r, 50))
+    await vi.waitFor(() => {
+      expect(habitSchedulerStartMock).toHaveBeenCalledTimes(3)
+      expect(habitSchedulerWatchMock).toHaveBeenCalledTimes(2)
+    })
 
     // a1 and a4 should have watchForChanges called (a2 failed at migration, a3 failed at start)
     expect(habitSchedulerWatchMock).toHaveBeenCalledTimes(2)
@@ -336,7 +360,19 @@ describe("daemon entry error boundary — per-agent habit setup isolation", () =
     vi.spyOn(process, "argv", "get").mockReturnValue(["node", "daemon-entry.js"])
 
     await import("../../../heart/daemon/daemon-entry")
-    await new Promise((r) => setTimeout(r, 50))
+    await vi.waitFor(() => {
+      expect(emitNervesEvent).toHaveBeenCalledWith(
+        expect.objectContaining({
+          level: "error",
+          component: "daemon",
+          event: "daemon.habit_setup_error",
+          meta: expect.objectContaining({
+            agent: "stringbot",
+            error: "raw string failure",
+          }),
+        }),
+      )
+    })
 
     expect(emitNervesEvent).toHaveBeenCalledWith(
       expect.objectContaining({

@@ -120,11 +120,36 @@ describe("MCP tool schemas", () => {
     expect(askSchema).toBeDefined()
     expect(askSchema!.inputSchema.properties.question).toBeDefined()
     expect(askSchema!.inputSchema.required).toContain("question")
+    expect(askSchema!.description).toContain("full conversation turn")
+    expect(askSchema!.description).toContain("search_notes")
 
     emitNervesEvent({
       component: "daemon",
       event: "daemon.mcp_schema_test_end",
       message: "ask tool schema test complete",
+      meta: {},
+    })
+  })
+
+  it("keeps note lookup distinct from full conversation tools", () => {
+    emitNervesEvent({
+      component: "daemon",
+      event: "daemon.mcp_schema_test_start",
+      message: "testing conversation vs lookup schema descriptions",
+      meta: {},
+    })
+
+    const schemas = getToolSchemas()
+    const searchSchema = schemas.find((s) => s.name === "search_notes")
+    const guidanceSchema = schemas.find((s) => s.name === "check_guidance")
+    expect(searchSchema?.description).toContain("Read-only note search")
+    expect(searchSchema?.description).toContain("without running an agent turn")
+    expect(guidanceSchema?.description).toContain("full conversation turn")
+
+    emitNervesEvent({
+      component: "daemon",
+      event: "daemon.mcp_schema_test_end",
+      message: "conversation vs lookup schema descriptions test complete",
       meta: {},
     })
   })

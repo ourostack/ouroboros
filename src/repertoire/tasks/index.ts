@@ -56,8 +56,10 @@ function removeRuntimeFrontmatter(frontmatter: Record<string, unknown>): Record<
 }
 
 class FileTaskModule implements TaskModule {
+  constructor(private readonly root: string = getTaskRoot()) {}
+
   scan(): TaskIndex {
-    return scanTasks(getTaskRoot())
+    return scanTasks(this.root)
   }
 
   getBoard(): BoardResult {
@@ -89,7 +91,7 @@ class FileTaskModule implements TaskModule {
     const collection = canonicalCollectionForTaskType(type)
     const stem = `${formatStemTimestamp()}-${slugify(input.title).slice(0, 64) || "task"}`
     const filename = `${stem}.md`
-    const root = getTaskRoot()
+    const root = this.root
     const filePath = path.join(root, collection, filename)
     const today = formatDate()
 
@@ -208,7 +210,7 @@ class FileTaskModule implements TaskModule {
   }
 
   fix(options: FixOptions): FixResult {
-    return applyFixes(options, getTaskRoot())
+    return applyFixes(options, this.root)
   }
 
   detectStale(thresholdDays: number): TaskFile[] {
@@ -236,9 +238,13 @@ class FileTaskModule implements TaskModule {
 
 let taskModule: TaskModule | null = null
 
+export function createTaskModule(root = getTaskRoot()): TaskModule {
+  return new FileTaskModule(root)
+}
+
 export function getTaskModule(): TaskModule {
   if (!taskModule) {
-    taskModule = new FileTaskModule()
+    taskModule = createTaskModule()
   }
   return taskModule
 }

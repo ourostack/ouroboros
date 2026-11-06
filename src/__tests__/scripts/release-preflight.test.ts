@@ -1,18 +1,30 @@
 import * as path from "path"
+import * as fs from "fs"
+import * as os from "os"
 
 import { describe, expect, it } from "vitest"
 
 const {
+  assessChangelogFreshness,
   assessWrapperPublishSync,
+  collectChangedFiles,
+  pathRequiresChangelogFreshness,
   runReleasePreflight,
   versionBumpRequired,
   wrapperPackageChanged,
 } = require(path.resolve(__dirname, "../../../scripts/release-preflight.cjs"))
+const {
+  REQUIRED_PACKAGE_ASSET_PATHS,
+} = require(path.resolve(__dirname, "../../../scripts/package-assets.cjs"))
 
 type ExecResponse = {
   changedFiles?: string[]
+  workingTreeChangedFiles?: string[]
+  untrackedFiles?: string[]
   publishedCliVersion?: string
   publishedWrapperVersion?: string
+  latestCommits?: Record<string, string>
+  ancestorChecks?: Record<string, boolean>
 }
 
 type ReadResponse = {
@@ -24,8 +36,31 @@ type ReadResponse = {
 
 function makeExecSyncImpl(response: ExecResponse = {}) {
   return (command: string): string => {
-    if (command.startsWith('git diff --name-only "origin/main...HEAD"')) {
+    if (command.startsWith('git diff --name-only "') && command.includes("...HEAD")) {
       return (response.changedFiles ?? []).join("\n")
+    }
+
+    if (command === "git diff --name-only HEAD") {
+      return (response.workingTreeChangedFiles ?? []).join("\n")
+    }
+
+    if (command === "git ls-files --others --exclude-standard") {
+      return (response.untrackedFiles ?? []).join("\n")
+    }
+
+    if (command.startsWith("git log --format=%H --max-count=1")) {
+      const file = command.match(/ -- '([^']+)'$/)?.[1]
+      return file ? `${response.latestCommits?.[file] ?? ""}\n` : ""
+    }
+
+    if (command.startsWith("git merge-base --is-ancestor")) {
+      const commits = Array.from(command.matchAll(/'([^']+)'/g)).map((match) => match[1])
+      const key = `${commits[0]}..${commits[1]}`
+      const result = response.ancestorChecks?.[key]
+      if (result === false) {
+        throw new Error("not ancestor")
+      }
+      return ""
     }
 
     if (command.includes("@ouro.bot/cli@")) {
@@ -71,11 +106,35 @@ function makeReadFileSyncImpl(response: ReadResponse = {}) {
   }
 }
 
+function makePackageRootWithRequiredAssets(): string {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "ouro-release-preflight-assets-"))
+  for (const relativePath of REQUIRED_PACKAGE_ASSET_PATHS) {
+    const filePath = path.join(root, relativePath)
+    fs.mkdirSync(path.dirname(filePath), { recursive: true })
+    fs.writeFileSync(filePath, "ok")
+  }
+  return root
+}
+
 describe("release-preflight", () => {
   it("flags releasable source and packaged skill changes but ignores src test churn", () => {
     expect(versionBumpRequired(["src/heart/daemon/daemon-cli.ts"])).toBe(true)
     expect(versionBumpRequired(["skills/work-planner/SKILL.md"])).toBe(true)
+    expect(versionBumpRequired(["package.json"])).toBe(true)
+    expect(versionBumpRequired(["scripts/package-assets.cjs"])).toBe(true)
+    expect(versionBumpRequired(["scripts/package-e2e.cjs"])).toBe(true)
+    expect(versionBumpRequired(["scripts/release-preflight.cjs"])).toBe(true)
+    expect(versionBumpRequired(["scripts/release-smoke.cjs"])).toBe(true)
     expect(versionBumpRequired(["src/__tests__/scripts/changelog-gate.test.ts"])).toBe(false)
+  })
+
+  it("flags implementation paths that require a fresh changelog entry", () => {
+    expect(pathRequiresChangelogFreshness("src/heart/daemon/daemon-cli.ts")).toBe(true)
+    expect(pathRequiresChangelogFreshness("scripts/release-preflight.cjs")).toBe(true)
+    expect(pathRequiresChangelogFreshness("skills/work-planner/SKILL.md")).toBe(true)
+    expect(pathRequiresChangelogFreshness("packages/ouro.bot/index.js")).toBe(true)
+    expect(pathRequiresChangelogFreshness("packages/ouro.bot/package.json")).toBe(false)
+    expect(pathRequiresChangelogFreshness("src/__tests__/scripts/release-preflight.test.ts")).toBe(false)
   })
 
   it("detects wrapper package changes separately from general release bumps", () => {
@@ -83,7 +142,23 @@ describe("release-preflight", () => {
     expect(wrapperPackageChanged(["src/heart/daemon/daemon-cli.ts"])).toBe(false)
   })
 
+  it("collects committed, working-tree, and untracked changes for local preflight runs", () => {
+    const changedFiles = collectChangedFiles("origin/main", makeExecSyncImpl({
+      changedFiles: ["docs/agent-mail-setup.md", "src/heart/daemon/daemon-cli.ts"],
+      workingTreeChangedFiles: ["src/heart/daemon/daemon-cli.ts", "src/mailroom/core.ts"],
+      untrackedFiles: ["skills/mail/SKILL.md"],
+    }))
+
+    expect(changedFiles).toEqual([
+      "docs/agent-mail-setup.md",
+      "skills/mail/SKILL.md",
+      "src/heart/daemon/daemon-cli.ts",
+      "src/mailroom/core.ts",
+    ])
+  })
+
   it("passes when only docs changed and the changelog entry exists", () => {
+    const packageRoot = makePackageRootWithRequiredAssets()
     const result = runReleasePreflight(
       {},
       {
@@ -91,13 +166,34 @@ describe("release-preflight", () => {
           changedFiles: ["docs/auth-and-providers.md"],
         }),
         readFileSyncImpl: makeReadFileSyncImpl(),
+        packageRoot,
       },
     )
+    fs.rmSync(packageRoot, { recursive: true, force: true })
 
     expect(result.ok).toBe(true)
     expect(result.messages).toContain("No releasable src/ or packaged skills changes detected — version bump not required")
     expect(result.messages).toContain("changelog gate: pass (0.1.0-alpha.407)")
     expect(result.messages).toContain("wrapper package unchanged")
+    expect(result.messages).toContain("package assets verified")
+  })
+
+  it("fails when release preflight package assets are missing", () => {
+    const packageRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ouro-release-preflight-assets-"))
+    const result = runReleasePreflight(
+      {},
+      {
+        execSyncImpl: makeExecSyncImpl({
+          changedFiles: ["docs/auth-and-providers.md"],
+        }),
+        readFileSyncImpl: makeReadFileSyncImpl(),
+        packageRoot,
+      },
+    )
+    fs.rmSync(packageRoot, { recursive: true, force: true })
+
+    expect(result.ok).toBe(false)
+    expect(result.errors.join("\n")).toContain("missing required package assets")
   })
 
   it("fails when releasable changes reuse an already-published cli version", () => {
@@ -114,6 +210,121 @@ describe("release-preflight", () => {
 
     expect(result.ok).toBe(false)
     expect(result.errors[0]).toContain("@ouro.bot/cli@0.1.0-alpha.407 is already published on npm.")
+  })
+
+  it("fails when package-truth changes reuse an already-published cli version", () => {
+    const packageRoot = makePackageRootWithRequiredAssets()
+    const result = runReleasePreflight(
+      {},
+      {
+        execSyncImpl: makeExecSyncImpl({
+          changedFiles: ["scripts/package-assets.cjs"],
+          publishedCliVersion: "0.1.0-alpha.407",
+        }),
+        readFileSyncImpl: makeReadFileSyncImpl(),
+        packageRoot,
+      },
+    )
+    fs.rmSync(packageRoot, { recursive: true, force: true })
+
+    expect(result.ok).toBe(false)
+    expect(result.errors[0]).toContain("@ouro.bot/cli@0.1.0-alpha.407 is already published on npm.")
+  })
+
+  it("requires a release bump when releasable changes are only in the working tree", () => {
+    const result = runReleasePreflight(
+      {},
+      {
+        execSyncImpl: makeExecSyncImpl({
+          changedFiles: ["docs/agent-mail-setup.md"],
+          workingTreeChangedFiles: ["src/mailroom/core.ts", "changelog.json"],
+        }),
+        readFileSyncImpl: makeReadFileSyncImpl(),
+      },
+    )
+
+    expect(result.ok).toBe(true)
+    expect(result.changedFiles).toContain("src/mailroom/core.ts")
+    expect(result.releasableChanged).toBe(true)
+    expect(result.messages).toContain("@ouro.bot/cli@0.1.0-alpha.407 is not yet published — ready to merge and publish")
+  })
+
+  it("fails when releasable implementation changes do not touch the changelog", () => {
+    const result = assessChangelogFreshness({
+      baseRef: "origin/main",
+      changedFiles: ["src/senses/voice/twilio-phone.ts"],
+      currentVersion: "0.1.0-alpha.407",
+      changelog: {
+        versions: [{ version: "0.1.0-alpha.407", changes: ["old voice tuning"] }],
+      },
+      execSyncImpl: makeExecSyncImpl(),
+    })
+
+    expect(result).toEqual({
+      ok: false,
+      message:
+        "changelog.json must be updated alongside releasable implementation changes: src/senses/voice/twilio-phone.ts",
+    })
+  })
+
+  it("fails when the current version is not the top changelog entry for releasable changes", () => {
+    const result = assessChangelogFreshness({
+      baseRef: "origin/main",
+      changedFiles: ["scripts/release-preflight.cjs", "changelog.json"],
+      currentVersion: "0.1.0-alpha.407",
+      changelog: {
+        versions: [
+          { version: "0.1.0-alpha.406", changes: ["older entry"] },
+          { version: "0.1.0-alpha.407", changes: ["release metadata aligned"] },
+        ],
+      },
+      execSyncImpl: makeExecSyncImpl(),
+    })
+
+    expect(result.ok).toBe(false)
+    expect(result.message).toContain("must be the top changelog entry")
+  })
+
+  it("passes when the changelog is updated in the working tree with releasable working-tree changes", () => {
+    const result = assessChangelogFreshness({
+      baseRef: "origin/main",
+      changedFiles: ["src/mailroom/core.ts", "changelog.json"],
+      currentVersion: "0.1.0-alpha.407",
+      changelog: {
+        versions: [{ version: "0.1.0-alpha.407", changes: ["mailroom runtime update"] }],
+      },
+      execSyncImpl: makeExecSyncImpl({
+        workingTreeChangedFiles: ["src/mailroom/core.ts", "changelog.json"],
+      }),
+    })
+
+    expect(result).toEqual({ ok: true, message: "changelog freshness: pass" })
+  })
+
+  it("fails when the changelog commit is older than a releasable implementation commit", () => {
+    const result = assessChangelogFreshness({
+      baseRef: "origin/main",
+      changedFiles: ["src/senses/voice/twilio-phone.ts", "changelog.json"],
+      currentVersion: "0.1.0-alpha.407",
+      changelog: {
+        versions: [{ version: "0.1.0-alpha.407", changes: ["old voice tuning"] }],
+      },
+      execSyncImpl: makeExecSyncImpl({
+        latestCommits: {
+          "changelog.json": "older",
+          "src/senses/voice/twilio-phone.ts": "newer",
+        },
+        ancestorChecks: {
+          "newer..older": false,
+        },
+      }),
+    })
+
+    expect(result).toEqual({
+      ok: false,
+      message:
+        "changelog.json is older than releasable implementation changes; update it after touching: src/senses/voice/twilio-phone.ts",
+    })
   })
 
   it("fails when the current version is missing from the changelog", () => {
