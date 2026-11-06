@@ -1461,4 +1461,12 @@ describe("media MCP — the tool rules live in the tool descriptions", () => {
     expect(description("media_diagnose_and_fix")).not.toMatch(/refuses|cannot help/iu)
     expect(description("media_release_grab")).not.toMatch(/is refused/iu)
   })
+
+  it("no tool description refuses, asks permission or offers instead of doing", async () => {
+    const mod: any = await import("../../../deploy/unraid/sanctuary.ouro/mcp/media-mcp.mjs")
+    for (const tool of mod.TOOLS) {
+      const texts = [tool.description, ...Object.values(tool.inputSchema.properties ?? {}).map((p: any) => p.description ?? "")]
+      for (const text of texts) expect(text, tool.name).not.toMatch(/refus|won't|permission|ask (?:him|the owner)|(?<!never )\boffer (?:to|retry)/iu)
+    }
+  })
 })
