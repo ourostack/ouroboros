@@ -432,6 +432,23 @@ describe("runAgent tool loop guard", () => {
     await setupMinimax()
   })
 
+  it("fits a huge tool result to the model's budget instead of overflowing the turn", async () => {
+    const { resolveToolDefinition } = await import("../../repertoire/tools")
+    const { TOOL_OUTPUT_MAX_CHARS } = await import("../../heart/tool-output-budget")
+    const listing = Array.from({ length: 200_000 }, (_, i) => `.backup/obligation-${i}.json`).join("\n")
+    mockCreate.mockReturnValueOnce(makeStream([makeChunk(undefined, [{ index: 0, id: "call_glob", function: { name: "glob", arguments: JSON.stringify({ pattern: "**/*" }) } }])]))
+    mockCreate.mockReturnValueOnce(makeStream([makeChunk(undefined, [{ index: 0, id: "call_settle", function: { name: "settle", arguments: JSON.stringify({ answer: "done", intent: "complete" }) } }])]))
+    const { runAgent } = await import("../../heart/core")
+    const result = await runAgent([{ role: "user", content: "what is in my home?" }], makeCallbacks(), "cli", undefined, {
+      tools: [resolveToolDefinition("glob")!.tool], execTool: vi.fn(async () => listing), toolContext: { signin: async () => undefined },
+    })
+    expect(result.outcome).toBe("settled")
+    const toolMessage = mockCreate.mock.calls[1][0].messages.find((message: any) => message.role === "tool" && message.tool_call_id === "call_glob")
+    expect(toolMessage.content.length).toBeLessThanOrEqual(TOOL_OUTPUT_MAX_CHARS + 400)
+    expect(toolMessage.content).toContain("glob returned")
+    expect(toolMessage.content).toContain(".backup/obligation-199999.json")
+  })
+
   it("isChatStyleChannel returns true for live conversational channels, false otherwise", async () => {
     const { isChatStyleChannel } = await import("../../heart/core")
     expect(isChatStyleChannel("cli")).toBe(true)
