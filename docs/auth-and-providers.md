@@ -2,7 +2,7 @@
 
 This is the locked runtime contract for credentials, provider selection, repair, and hatch bootstrap.
 
-The short version: each agent owns one vault. Provider/model choice is local to each machine. The daemon loads credentials into memory and reuses them. Humans own browser login, MFA, provider dashboards, vault unlock secrets, and raw secret entry. Agents can diagnose, refresh, verify, and explain without ever seeing raw secrets.
+The short version: each agent owns one vault. Provider/model choice lives in the agent bundle. The daemon loads credentials into memory and reuses them. Humans own browser login, MFA, provider dashboards, vault unlock secrets, and raw secret entry. Agents can diagnose, refresh, verify, and explain without ever seeing raw secrets.
 
 The mental model is simple: an agent needs a password manager in the same way a human does. The agent vault is that password manager. Most items are just the agent's stored credentials for tools and services; a few well-known items are harness-readable because Ouro must use them on the agent's behalf, such as model providers, Perplexity search, Teams, and local sense attachments.
 
@@ -11,10 +11,10 @@ The mental model is simple: an agent needs a password manager in the same way a 
 | Concept | Source Of Truth | Notes |
 | --- | --- | --- |
 | Agent identity, phrases, senses, context, vault coordinates | `~/AgentBundles/<agent>.ouro/agent.json` | Vault coordinates are not secrets. |
-| Provider/model selection on this machine | `~/AgentBundles/<agent>.ouro/state/providers.json` | Two lanes: `outward` and `inner`. There is no silent fallback between lanes. |
-| Provider credentials | The agent's Bitwarden/Vaultwarden vault item `providers/<provider>` | One vault per agent. No machine-wide provider credential pool. |
-| Portable runtime/integration credentials | The agent's Bitwarden/Vaultwarden vault item `runtime/config` | Teams, OAuth connection names, Perplexity, embeddings, and similar credentials that should travel with the agent. |
-| Local sense attachments on this machine | The agent's Bitwarden/Vaultwarden vault item `runtime/machines/<machine-id>/config` | BlueBubbles server URL/password/listener config and other local-only attachments. Missing local attachments are `not_attached`, not broken. |
+| Provider/model selection | `~/AgentBundles/<agent>.ouro/agent.json` | Two lanes: `outward` and `inner`. Legacy `humanFacing`/`agentFacing` fields are compatibility aliases only. There is no silent fallback between lanes. |
+| Provider credentials | The agent's Bitwarden/Vaultwarden vault item `providers/<provider>` | One vault per agent. No shared machine credential pool. |
+| Portable runtime/integration credentials | The agent's Bitwarden/Vaultwarden vault item `runtime/config` | Teams, OAuth connection names, Perplexity, embeddings, ElevenLabs TTS, and similar credentials that should travel with the agent. |
+| Local sense attachments on this machine | The agent's Bitwarden/Vaultwarden vault item `runtime/machines/<machine-id>/config` | BlueBubbles server URL/password/listener config, Whisper.cpp CLI/model paths, and other local-only attachments. Missing local attachments are `not_attached`, not broken. |
 | Travel/tool credentials | Ordinary items in the agent's Bitwarden/Vaultwarden vault | Examples: `duffel.com`, `stripe.com`, or other service domains. |
 | Vault unlock material on this machine | Local unlock store | Prefer macOS Keychain, Windows DPAPI, or Linux Secret Service. Plaintext fallback is allowed only by explicit human choice. |
 | Hot runtime | Process memory | Loaded from vault at defined refresh points, never fetched from the remote vault per request. |
@@ -25,9 +25,9 @@ Do not introduce a second credential source of truth. Raw credentials belong in 
 
 ## Provider Selection
 
-Every agent has two local provider lanes:
+Every agent has two provider lanes in `agent.json`:
 
-- `outward`: CLI, Teams, BlueBubbles, and other human-facing senses.
+- `outward`: CLI, Teams, BlueBubbles, Mail, Voice, and other human-facing senses.
 - `inner`: inner dialogue and agent-facing model calls.
 
 Both lanes must be complete on each machine:
@@ -37,9 +37,7 @@ ouro use --agent <agent> --lane outward --provider <provider> --model <model>
 ouro use --agent <agent> --lane inner --provider <provider> --model <model>
 ```
 
-`ouro use` changes the machine-local provider/model choice. It does not create or update credentials.
-
-`agent.json` may bootstrap missing local state during setup, but once local provider state exists, `state/providers.json` is authoritative for that machine.
+`ouro use` changes the provider/model choice in `agent.json`. It does not create or update credentials.
 
 ## Credentials
 
@@ -64,7 +62,7 @@ Provider credential refresh is explicit and also participates in retry:
 ouro provider refresh --agent <agent>
 ```
 
-Refresh means: read the latest provider credential snapshot from the agent vault, update the daemon's in-memory credential cache, and rebuild provider runtime objects only when the credential revision or provider/model binding changed.
+Refresh means: read the latest provider credential records from the agent vault, update the daemon's in-memory credential cache, and rebuild provider runtime objects only when the credential revision or provider/model binding changed.
 
 Guided integration and local-sense setup starts with:
 
@@ -75,19 +73,26 @@ ouro connect perplexity --agent <agent>
 ouro connect embeddings --agent <agent>
 ouro connect teams --agent <agent>
 ouro connect bluebubbles --agent <agent>
+ouro connect voice --agent <agent>
 ```
 
-`ouro connect` opens the connect bay: one short menu that shows which capabilities are already ready, missing, locked, or machine-local.
+`ouro connect` opens the connect bay as a shared wizard: one recommended next step, separate sections for providers, portable capabilities, and machine-local attachments, and a prompt that lets the human choose by number or name instead of remembering subcommands first. Every time the root connect bay opens, Ouro uses the shared provider credential read and live ping machinery, but with an orientation policy: one live attempt, a short hard timeout, and no provider-lane mutation. That keeps the menu truthful without spending the full startup retry budget before the human can choose a setup task. `ouro up`, `ouro check`, `ouro auth verify`, and chat startup still own full provider retry behavior. Portable capabilities with saved keys, such as Perplexity search and memory embeddings, are live-checked there too. Before the menu appears, Ouro prints a short `checking current connections` progress step while it verifies providers and reads portable and machine-local runtime settings. If a provider is slow, that step says which provider/model is being checked and then routes the quick failure into the menu as `needs attention` instead of leaving the terminal looking dead.
+
+Guided connectors open with a short capability guide that answers three questions up front: what this unlocks, what the human needs, and where the credential will live. They close with the same shared outcome guide language used by auth, vault, and hatch: a calm title, `What changed`, and `Next moves`.
+
+When a human runs bare `ouro` in a TTY, Ouro opens the same command family from the home deck instead of silently behaving like `ouro up`. The home deck routes into `ouro up`, `ouro connect`, `ouro repair`, `ouro chat`, `ouro hatch`, and help without requiring the human to remember exact command names first.
 
 `ouro connect providers` routes into the same provider auth flow as `ouro auth`, but from the connect bay instead of making the human remember the auth command first.
 
-`ouro connect perplexity` connects Perplexity search. It prompts for the API key without echoing it and stores `integrations.perplexityApiKey` in `runtime/config`.
+`ouro connect perplexity` connects Perplexity search. It prompts for the API key without echoing it, stores `integrations.perplexityApiKey` in `runtime/config`, and runs a live Perplexity probe before claiming the capability is ready.
 
-`ouro connect embeddings` connects memory embeddings. It prompts for the OpenAI embeddings API key without echoing it and stores `integrations.openaiEmbeddingsApiKey` in `runtime/config`.
+`ouro connect embeddings` connects memory embeddings. It prompts for the OpenAI embeddings API key without echoing it, stores `integrations.openaiEmbeddingsApiKey` in `runtime/config`, and runs a live embeddings probe before claiming the capability is ready.
 
 `ouro connect teams` connects the Teams sense. It prompts for `teams.clientId`, `teams.clientSecret`, `teams.tenantId`, and optional `teams.managedIdentityClientId`, stores them in `runtime/config`, and enables `senses.teams.enabled` in `agent.json`.
 
-`ouro connect bluebubbles` attaches this machine to BlueBubbles. It prompts for the local server URL, app password, webhook listener settings, stores them in `runtime/machines/<machine-id>/config`, and enables `senses.bluebubbles.enabled` in `agent.json`. It does not make that local Mac Messages bridge portable to every machine.
+`ouro connect bluebubbles` attaches this machine to BlueBubbles. It prompts for the local server URL, app password, webhook listener settings, stores them in `runtime/machines/<machine-id>/config`, and enables `senses.bluebubbles.enabled` in `agent.json`. If Ouro is already running, the connector recycles the daemon once so the local listener starts with the freshly saved machine attachment; if Ouro is not running, the next `ouro up` loads it. It does not make that local Mac Messages bridge portable to every machine.
+
+`ouro connect voice` describes the current voice foundation and the required config fields. Voice is one sense with multiple transports. Spoken voice belongs to the agent's identity, but the product should expose one coherent current phone voice rather than asking people to reconcile multiple provider voices. `voice.openaiRealtimeVoice` is the current native Realtime phone voice, `voice.openaiRealtimeVoiceStyle` is the spoken identity target applied from the first audible greeting, and `voice.openaiRealtimeVoiceSpeed` is a small cadence nudge. ElevenLabs TTS credentials (`integrations.elevenLabsApiKey` and `integrations.elevenLabsVoiceId`) remain portable runtime config for the legacy cascade path, not a second canonical phone identity. Whisper.cpp STT uses this machine's `voice.whisperCliPath` and `voice.whisperModelPath` in `runtime/machines/<machine-id>/config`. Enabling `senses.voice.enabled` gives the agent first-class `voice` sessions; those sessions are transcript-first and appear in Ouro Mailbox as text. Meeting links have URL intake plus BlackHole/Multi-Output readiness checks. The managed Twilio phone transport attaches to the Voice entrypoint when this machine has `voice.twilioPublicUrl`; its default managed route is `/voice/agents/<agent>/twilio/incoming`. `voice.twilioTransportMode=record-play` keeps the conservative Twilio Record -> Whisper.cpp -> voice session -> tool-delivered `speak`/`settle` text -> ElevenLabs -> Twilio Play path. `voice.twilioTransportMode=media-stream` can run the cascade stream path or `voice.twilioConversationEngine=openai-realtime`. Native Realtime paths route Twilio audio through OpenAI Realtime speech-to-speech, use a compact voice-native identity prompt with recent transcript instead of the full general prompt, expose action tools plus `voice_end_call` and `voice_play_audio`, and keep turn detection separate from permission to speak by using Ouro floor-control over manual `response.create`. That floor-control contract is replayable: trace fixtures can assert floor-state and speech-policy events before a transport change reaches a live call. `voice.twilioConversationEngine=openai-sip` is the preferred low-latency inbound phone path when a phone-number transport can speak SIP: Twilio answers the existing number and returns `<Dial><Sip>` to OpenAI's project SIP endpoint, OpenAI sends `realtime.call.incoming` webhooks to Ouro at `/voice/agents/<agent>/sip/openai`, and Ouro verifies, accepts, monitors, transcripts, tools, and hangs up the call while keeping the same stable voice session. When SIP is paired with `media-stream`, outbound defaults to native OpenAI Realtime Media Streams to avoid the current Twilio outbound `<Dial><Sip>` post-pickup ringback; `voice.twilioOutboundConversationEngine` may override that default. Voice phone transports resolve known callers through the canonical friend record, preferring an existing explicit friend id and otherwise matching normalized phone numbers with `imessage-handle`, so trust and tool permissions stay consistent with text and mail. SIP exposes `voice_end_call` and model-rendered `voice_play_audio` tone cues; arbitrary URL/file clip bytes still need a media bridge such as a Twilio Conference/SIP mixer before the transport can inject raw audio while keeping the Realtime leg alive. Twilio phone sessions are keyed to the stable phone voice channel (friend/caller plus dialed line when available), while CallSid/OpenAI call id stay transport metadata for per-call artifacts. `voice.twilioPlaybackMode=buffered` remains available for local Record/Play compatibility testing. Live browser join/injection remains a handoff edge until provider automation lands.
 
 When a CLI auth/connect/vault repair command mutates the bundle, such as writing vault coordinates or enabling BlueBubbles in `agent.json`, Ouro runs the existing bundle sync path if `sync.enabled` is true. A successful command stays successful even if the bundle push fails, but the output includes a compact `bundle sync` line so the human and agent know whether the bundle change reached the remote.
 
@@ -97,9 +102,80 @@ Low-level runtime fields can still be stored directly:
 ouro vault config set --agent <agent> --key teams.clientSecret
 ouro vault config set --agent <agent> --key integrations.perplexityApiKey
 ouro vault config set --agent <agent> --key bluebubbles.password --scope machine
+ouro vault config set --agent <agent> --key integrations.elevenLabsApiKey
+ouro vault config set --agent <agent> --key integrations.elevenLabsVoiceId
+ouro vault config set --agent <agent> --key voice.openaiRealtimeVoice
+ouro vault config set --agent <agent> --key voice.openaiRealtimeVoiceStyle
+ouro vault config set --agent <agent> --key voice.openaiRealtimeVoiceSpeed
+ouro vault config set --agent <agent> --scope machine --key voice.openaiRealtimeVadSilenceDurationMs
+ouro vault config set --agent <agent> --key voice.whisperCliPath --scope machine
+ouro vault config set --agent <agent> --key voice.whisperModelPath --scope machine
+ouro vault config set --agent <agent> --key voice.twilioAccountSid
+ouro vault config set --agent <agent> --key voice.twilioAuthToken
+ouro vault config set --agent <agent> --key voice.twilioPublicUrl --scope machine
+ouro vault config set --agent <agent> --key voice.twilioBasePath --value /voice/agents/<agent>/twilio --scope machine
+ouro vault config set --agent <agent> --key voice.twilioPort --value 18910 --scope machine
+ouro vault config set --agent <agent> --key voice.twilioTransportMode --value media-stream --scope machine
+ouro vault config set --agent <agent> --key voice.twilioPlaybackMode --value stream --scope machine
+ouro vault config set --agent <agent> --key voice.twilioGreetingPrebufferMs --value 12000 --scope machine
+ouro vault config set --agent <agent> --key voice.twilioConversationEngine --value openai-sip --scope machine
+ouro vault config set --agent <agent> --key voice.twilioOutboundConversationEngine --value openai-realtime --scope machine
+ouro vault config set --agent <agent> --key voice.openaiSipProjectId
+ouro vault config set --agent <agent> --key voice.openaiSipWebhookSecret
+ouro vault config set --agent <agent> --key voice.openaiSipWebhookPath --value /voice/agents/<agent>/sip/openai --scope machine
 ```
 
 The values are written into the selected vault item and are not printed back. Prefer `ouro connect` for guided setup when it exists; use `vault config set` for fields that do not have a guided connector yet.
+
+## Vault Items, Managed Workflows, And Bindings
+
+The primitive is a vault item / credential: a private record in the owning agent vault with a stable item name/path, hidden secret material, optional public fields, freeform notes, folder-ish organization, timestamps/provenance, and no assumed use.
+
+Everything else lives outside that item.
+
+### Managed workflow
+
+`ouro connect` is not a generic password-manager entry tool. It is reserved for harness-managed workflows whose runtime behavior Ouro owns: model providers, portable integrations, local sense attachments, and Agent Mail. A credential should get an `ouro connect <name>` flow only when the harness can explain the capability, store it in a known runtime location, verify it, repair it, and apply the resulting runtime state.
+
+### Freeform vault item
+
+Use freeform vault items when an agent or human needs to store a credential or secret without teaching Ouro a new capability:
+
+```bash
+ouro vault item set --agent <agent> --item <path> --secret-field <name> [--public-field <key=value>] [--note <text>]
+ouro vault item set --agent <agent> --item <path> --template porkbun-api
+ouro vault item status --agent <agent> --item <path>
+ouro vault item list --agent <agent> [--prefix <path-prefix>]
+```
+
+Templates are convenience only. A template may shape hidden prompts and field names, but it does not create a new credential species. `--template porkbun-api` stores an ordinary vault item with hidden `apiKey` and `secretApiKey` fields.
+
+Notes are for humans and agents. Code must not parse meaning out of notes. Notes can explain what the item is, what not to assume, how it was obtained, who can rotate it, and recovery hints. If a workflow needs machine-readable facts, put them in explicit workflow binding fields or committed non-secret run config, not prose.
+
+### Binding / run config
+
+A binding is non-secret configuration that says a workflow should use a specific vault item for a specific task.
+
+For example, a DNS workflow binding may say:
+
+```yaml
+domain: ouro.bot
+driver: porkbun
+credentialItem: ops/registrars/porkbun/accounts/ari@mendelow.me
+resourceAllowlist:
+  - ouro.bot
+```
+
+That binding does not make the referenced vault item a DNS credential, provider credential, ops credential, or authority. It only says this workflow plans to use that ordinary item through this driver and allowlist.
+
+The older Porkbun helper remains as a deprecated compatibility alias:
+
+```bash
+ouro vault ops porkbun set --agent <agent> --account <porkbun-account>
+ouro vault ops porkbun status --agent <agent> --account <porkbun-account>
+```
+
+It should store and report an ordinary vault item, then point humans and agents toward `ouro vault item set --template porkbun-api`.
 
 ## Human CLI Progress
 
@@ -108,10 +184,13 @@ Human-facing commands must not turn into a wall of text or a silent blinking cur
 The checklist contract is:
 
 - start with the fewest words that orient a non-terminal user
-- print or animate the active step when work may take more than a few seconds
+- print or animate the active step when work may take more than about three seconds
 - show changed substeps such as `reading vault items`, `storing openai-codex credentials`, or `opening credential vault`
-- complete with a compact success/failure summary and one next action
+- for daemon replacement, say that Ouro is replacing the running background service and keep the step unresolved until the replacement is actually answering
+- complete with a compact success/failure summary, `What changed`, and a `Next moves` landing
 - never print raw secrets, OAuth tokens, provider API keys, vault unlock secrets, or machine-local passwords
+
+TTY help/readiness surfaces should share one visual language instead of every command inventing its own transcript. The shared board layer is the intended human surface for `ouro`, `ouro up`, `ouro connect`, `ouro auth verify`, `ouro repair`, `ouro help`, `ouro whoami`, `ouro versions`, and the `ouro hatch` welcome shell. Non-TTY and automation paths should stay compact plain text.
 
 Agent-runnable shortcuts may stay compact when they are intended for automation and already return structured results. Human-choice and human-required flows should choose friendliness over terseness.
 
@@ -153,7 +232,7 @@ The retry ladder is:
 1. A provider request fails.
 2. Classify the failure, but still treat it as eligible for bounded retry because failures can be misleading.
 3. Clear the provider runtime cache for the affected lane.
-4. Refresh the provider credential snapshot from the agent vault.
+4. Refresh provider credentials from the agent vault into the daemon's in-memory credential cache.
 5. If the credential revision or provider/model binding changed, rebuild the provider runtime.
 6. Retry the request within the bounded retry policy.
 7. If it still fails, mark the lane degraded and surface exact repair guidance.
@@ -203,12 +282,12 @@ Agents need compact live operational truth, not a long tutorial in every prompt.
 The system prompt should render a small provider section from current runtime state:
 
 ```text
-runtime uses local provider bindings for this machine:
+runtime uses provider bindings from agent.json:
 - outward: minimax / MiniMax-M2.5 [ready; credentials: vault]
 - inner: openai-codex / gpt-5.4 [failed: auth; repair: ouro auth --agent slugger --provider openai-codex]
 ```
 
-When provider state is degraded, prompt guidance should include:
+When provider readiness is degraded, prompt guidance should include:
 
 ```text
 If my provider is degraded, I can run agent-runnable repair commands when I have tool access.
@@ -270,7 +349,7 @@ ouro auth verify --agent <agent>
 ouro vault config status --agent <agent>
 ```
 
-Start the daemon when the vault and provider state are ready:
+Start the daemon when the vault and provider lanes are ready:
 
 ```bash
 ouro up
@@ -295,6 +374,10 @@ There is no hidden recovery path for a lost vault unlock secret.
 For an existing agent with no vault locator, run `ouro vault create --agent <agent>`. The command prompts twice for a human-chosen vault unlock secret without echoing it, writes vault coordinates to `agent.json`, and stores local unlock material for this machine. New unlock secrets must be at least 8 characters and include uppercase and lowercase letters, one number, and one special character. The human must keep that unlock secret outside Ouro; Ouro will not print it, write a portable copy into the bundle, or store it inside the vault.
 
 For an existing agent with a vault locator and a saved unlock secret, run `ouro vault unlock --agent <agent>` on each new machine and enter the saved agent vault unlock secret from the human/operator who controls that vault. Ouro stores only local unlock material for that machine.
+
+`ouro vault unlock` verifies the typed unlock secret against the agent vault before replacing this machine's saved local unlock material. A failed validation must not overwrite a previously working Keychain/DPAPI/Secret Service/plaintext entry.
+
+When previously saved local unlock material is later rejected by the vault, Ouro clears that local entry and reports a human-required unlock/replace path instead of repeatedly retrying a known-bad machine cache. Legacy local unlock entries may be read for compatibility, but they are copied to canonical vault coordinates only after a successful vault login.
 
 For an existing agent whose `agent.json` already has vault coordinates but whose unlock secret was not saved or is lost, Ouro cannot recover it from the remote vault or expose it from Keychain, DPAPI, Secret Service, or plaintext fallback. The repair is to create a replacement agent vault and re-auth/re-enter credentials into it.
 
@@ -372,9 +455,10 @@ Use this checklist for any existing agent that predates the vault-backed credent
    ouro connect embeddings --agent <agent>
    ouro connect teams --agent <agent>
    ouro connect bluebubbles --agent <agent>
+   ouro connect voice --agent <agent>
    ```
 
-   Use `ouro connect` when a guided connector exists. Use `vault config set` only for fields that do not have a guided connector yet. BlueBubbles is a local attachment; run `ouro connect bluebubbles` separately on each machine that should bridge iMessage.
+   Use `ouro connect` when a guided connector exists. Use `vault config set` only for fields that do not have a guided connector yet. BlueBubbles and Voice transports are local attachments; run their connectors separately on each machine that should bridge iMessage, local audio, Twilio phone calls, or browser meeting audio.
 
 7. Choose this machine's provider/model lanes.
 
@@ -407,12 +491,19 @@ ouro vault recover --agent <agent> --from <json> [--from <json> ...]
 ouro vault config set --agent <agent> --key <field>
 ouro vault config set --agent <agent> --key <field> --scope machine
 ouro vault config status --agent <agent> [--scope agent|machine|all]
+ouro vault item set --agent <agent> --item <path> --secret-field <field> [--public-field <key=value>] [--note <text>]
+ouro vault item set --agent <agent> --item <path> --template porkbun-api
+ouro vault item status --agent <agent> --item <path>
+ouro vault item list --agent <agent> [--prefix <path-prefix>]
+ouro vault ops porkbun set --agent <agent> --account <account>
+ouro vault ops porkbun status --agent <agent> [--account <account>]
 ouro connect --agent <agent>
 ouro connect providers --agent <agent>
 ouro connect perplexity --agent <agent>
 ouro connect embeddings --agent <agent>
 ouro connect teams --agent <agent>
 ouro connect bluebubbles --agent <agent>
+ouro connect voice --agent <agent>
 ouro auth --agent <agent> --provider <provider>
 ouro auth verify --agent <agent> [--provider <provider>]
 ouro repair --agent <agent>

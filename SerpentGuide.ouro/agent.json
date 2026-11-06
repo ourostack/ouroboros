@@ -1,6 +1,7 @@
 {
   "version": 2,
   "enabled": false,
+  "kind": "library",
   "humanFacing": { "provider": "anthropic", "model": "claude-opus-4-6" },
   "agentFacing": { "provider": "anthropic", "model": "claude-opus-4-6" },
   "context": {
