@@ -2,6 +2,11 @@ import { describe, it, expect, vi, beforeEach } from "vitest"
 import * as path from "path"
 import * as nodeFs from "node:fs"
 
+const tripStoreMocks = vi.hoisted(() => ({
+  listTripIds: vi.fn((): string[] => []),
+  readTripRecord: vi.fn(),
+}))
+
 vi.mock("fs", () => ({
   existsSync: vi.fn(),
   readFileSync: vi.fn(),
@@ -37,6 +42,8 @@ vi.mock("../../repertoire/tasks", () => ({
     getBoard: mockGetBoard,
   }),
 }))
+
+vi.mock("../../trips/store", () => tripStoreMocks)
 
 vi.mock("../../heart/identity", () => {
   const DEFAULT_AGENT_CONTEXT = {
@@ -158,6 +165,8 @@ describe("buildSystem", () => {
   beforeEach(() => {
     vi.resetModules()
     setAgentProvider("minimax")
+    tripStoreMocks.listTripIds.mockReset().mockReturnValue([])
+    tripStoreMocks.readTripRecord.mockReset()
     mockGetBoard.mockReset().mockReturnValue({
       compact: "",
       full: "",
@@ -633,6 +642,8 @@ describe("buildSystem", () => {
         cli: { enabled: true },
         teams: { enabled: true },
         bluebubbles: { enabled: false },
+        mail: { enabled: true },
+        voice: { enabled: true },
       },
       phrases: {
         thinking: ["working"],
@@ -654,6 +665,9 @@ describe("buildSystem", () => {
     resetConfigCache()
     patchRuntimeConfig({
       teams: { clientId: "cid", clientSecret: "secret", tenantId: "tenant" },
+      mailroom: { mailboxAddress: "slugger@ouro.bot", privateKeys: { mail_slugger_primary: "secret" } },
+      integrations: { elevenLabsApiKey: "eleven-key", elevenLabsVoiceId: "voice_123" },
+      voice: { whisperCliPath: "/opt/whisper.cpp/main", whisperModelPath: "/models/ggml-base.en.bin" },
       providers: { minimax: { apiKey: "test-key" } },
     })
     const { buildSystem, flattenSystemPrompt, resetPsycheCache } = await import("../../mind/prompt")
@@ -666,6 +680,156 @@ describe("buildSystem", () => {
     expect(result).toContain("CLI: interactive")
     expect(result).toContain("Teams: ready")
     expect(result).toContain("BlueBubbles: disabled")
+    expect(result).toContain("Mail: ready")
+    expect(result).toContain("Voice: ready")
+  })
+
+  it("marks Voice ready when the ElevenLabs voice id is stored in voice config", async () => {
+    setupReadFileSync()
+    vi.mocked(identity.loadAgentConfig).mockReturnValue({
+      name: "testagent",
+      provider: "minimax",
+      humanFacing: { provider: "minimax", model: "minimax-text-01" },
+      agentFacing: { provider: "minimax", model: "minimax-text-01" },
+      context: { maxTokens: 80000, contextMargin: 20 },
+      senses: {
+        cli: { enabled: true },
+        teams: { enabled: false },
+        bluebubbles: { enabled: false },
+        mail: { enabled: false },
+        voice: { enabled: true },
+      },
+      phrases: {
+        thinking: ["working"],
+        tool: ["running tool"],
+        followup: ["processing"],
+      },
+    })
+    const { patchRuntimeConfig, resetConfigCache } = await import("../../heart/config")
+    resetConfigCache()
+    patchRuntimeConfig({
+      integrations: { elevenLabsApiKey: "eleven-key" },
+      voice: {
+        elevenLabsVoiceId: "voice_123",
+        whisperCliPath: "/opt/whisper.cpp/main",
+        whisperModelPath: "/models/ggml-base.en.bin",
+      },
+      providers: { minimax: { apiKey: "test-key" } },
+    })
+    const { buildSystem, flattenSystemPrompt, resetPsycheCache } = await import("../../mind/prompt")
+    resetPsycheCache()
+
+    const result = flattenSystemPrompt(await buildSystem("cli"))
+
+    expect(result).toContain("Voice: ready")
+  })
+
+  it("uses cached vault runtime credentials for Mail sense status when local config is stale", async () => {
+    setupReadFileSync()
+    vi.mocked(identity.loadAgentConfig).mockReturnValue({
+      name: "testagent",
+      provider: "minimax",
+      humanFacing: { provider: "minimax", model: "minimax-text-01" },
+      agentFacing: { provider: "minimax", model: "minimax-text-01" },
+      context: { maxTokens: 80000, contextMargin: 20 },
+      senses: {
+        cli: { enabled: true },
+        teams: { enabled: false },
+        bluebubbles: { enabled: false },
+        mail: { enabled: true },
+      },
+      phrases: {
+        thinking: ["working"],
+        tool: ["running tool"],
+        followup: ["processing"],
+      },
+    })
+    const { patchRuntimeConfig, resetConfigCache } = await import("../../heart/config")
+    const { cacheRuntimeCredentialConfig } = await import("../../heart/runtime-credentials")
+    resetConfigCache()
+    patchRuntimeConfig({ providers: { minimax: { apiKey: "test-key" } } })
+    cacheRuntimeCredentialConfig("testagent", {
+      mailroom: {
+        mailboxAddress: "slugger@ouro.bot",
+        privateKeys: { mail_slugger_primary: "secret" },
+      },
+    })
+    const { buildSystem, flattenSystemPrompt, resetPsycheCache } = await import("../../mind/prompt")
+    resetPsycheCache()
+
+    const result = flattenSystemPrompt(await buildSystem("cli"))
+
+    expect(result).toContain("Mail: ready")
+  })
+
+  it("marks the Voice sense as needs_config when enabled without STT/TTS config", async () => {
+    setupReadFileSync()
+    vi.mocked(identity.loadAgentConfig).mockReturnValue({
+      name: "testagent",
+      provider: "minimax",
+      humanFacing: { provider: "minimax", model: "minimax-text-01" },
+      agentFacing: { provider: "minimax", model: "minimax-text-01" },
+      context: { maxTokens: 80000, contextMargin: 20 },
+      senses: {
+        cli: { enabled: true },
+        teams: { enabled: false },
+        bluebubbles: { enabled: false },
+        mail: { enabled: false },
+        voice: { enabled: true },
+      },
+      phrases: {
+        thinking: ["working"],
+        tool: ["running tool"],
+        followup: ["processing"],
+      },
+    })
+    const { patchRuntimeConfig, resetConfigCache } = await import("../../heart/config")
+    resetConfigCache()
+    patchRuntimeConfig({ providers: { minimax: { apiKey: "test-key" } } })
+    const { buildSystem, flattenSystemPrompt, resetPsycheCache } = await import("../../mind/prompt")
+    resetPsycheCache()
+
+    const result = flattenSystemPrompt(await buildSystem("cli"))
+
+    expect(result).toContain("Voice: needs_config")
+  })
+
+  it("uses cached machine runtime credentials for BlueBubbles sense status when local config is stale", async () => {
+    setupReadFileSync()
+    vi.mocked(identity.loadAgentConfig).mockReturnValue({
+      name: "testagent",
+      provider: "minimax",
+      humanFacing: { provider: "minimax", model: "minimax-text-01" },
+      agentFacing: { provider: "minimax", model: "minimax-text-01" },
+      context: { maxTokens: 80000, contextMargin: 20 },
+      senses: {
+        cli: { enabled: true },
+        teams: { enabled: false },
+        bluebubbles: { enabled: true },
+        mail: { enabled: false },
+      },
+      phrases: {
+        thinking: ["working"],
+        tool: ["running tool"],
+        followup: ["processing"],
+      },
+    })
+    const { patchRuntimeConfig, resetConfigCache } = await import("../../heart/config")
+    const { cacheMachineRuntimeCredentialConfig } = await import("../../heart/runtime-credentials")
+    resetConfigCache()
+    patchRuntimeConfig({ providers: { minimax: { apiKey: "test-key" } } })
+    cacheMachineRuntimeCredentialConfig("testagent", {
+      bluebubbles: {
+        serverUrl: "http://127.0.0.1:18789",
+        password: "secret",
+      },
+    }, new Date("2026-04-28T00:00:00.000Z"), "test-machine")
+    const { buildSystem, flattenSystemPrompt, resetPsycheCache } = await import("../../mind/prompt")
+    resetPsycheCache()
+
+    const result = flattenSystemPrompt(await buildSystem("cli"))
+
+    expect(result).toContain("BlueBubbles: ready")
   })
 
   it("includes sense-state meanings and truthful setup guidance", async () => {
@@ -680,6 +844,7 @@ describe("buildSystem", () => {
         cli: { enabled: true },
         teams: { enabled: false },
         bluebubbles: { enabled: true },
+        mail: { enabled: true },
       },
       phrases: {
         thinking: ["working"],
@@ -711,7 +876,35 @@ describe("buildSystem", () => {
     expect(result).toContain("disabled = turned off in agent.json")
     expect(result).toContain("needs_config = enabled but missing required vault runtime/config values")
     expect(result).toContain("not_attached = enabled globally but no local-machine attachment is configured here")
+    expect(result).toContain("Mail: needs_config")
     expect(result).toContain("bluebubbles setup truth: run `ouro connect bluebubbles --agent <agent>`")
+    expect(result).toContain("mail setup AX: if a human asks me to set up email, I do not hand them a terminal checklist.")
+    expect(result).toContain("I guide the flow end-to-end")
+    expect(result).toContain("mail setup hard rule: never tell the human to run `ouro account ensure`, `ouro connect mail`, `ouro mail import-mbox`, `ouro status`, or `ouro doctor` for setup.")
+    expect(result).toContain("If my current surface cannot run shell/tools, I ask for a tool-capable Ouro setup session or companion to continue")
+    expect(result).toContain("mail setup truth: Agent Mail uses Mailroom, not HEY OAuth/IMAP.")
+    expect(result).toContain("ouro account ensure --agent <agent> --owner-email <email> --source hey")
+    expect(result).toContain("ouro connect mail --agent <agent> --owner-email <email> --source hey")
+    expect(result).toContain("--no-delegated-source")
+    expect(result).toContain("docs/agent-mail-setup.md")
+    expect(result).toContain("ouro mail import-mbox --discover --owner-email <email> --source hey --agent <agent>")
+    expect(result).toContain("If discovery cannot find a unique file")
+    expect(result).toContain("ouro mail import-mbox --file <path> --owner-email <email> --source hey --agent <agent>")
+    expect(result).toContain("I should not offload path-discovery ceremony to the human")
+    expect(result).toContain("do not invent `ouro doctor --agent <agent>`")
+    expect(result).toContain("mail validation answer shape: when a human asks for Agent Mail golden paths, answer with only these four named paths before claiming setup works:")
+    expect(result).toContain("golden path 1, HEY archive to work object")
+    expect(result).toContain("golden path 2, native mail and Screener")
+    expect(result).toContain("golden path 3, cross-sense reaction")
+    expect(result).toContain("golden path 4, Ouro Mailbox audit")
+    expect(result).toContain("mail validation question discipline: if a human asks a hypothetical")
+    expect(result).toContain("answer that hypothetical first")
+    expect(result).toContain("Do not replace the answer with current access logs")
+    expect(result).toContain("mail validation diagnostics: health checks, bounded mail tools, access logs, and UI inspection can support validation")
+    expect(result).toContain("not additional paths")
+    expect(result).toContain("do not include diagnostic commands, tool names, or status checks in the answer")
+    expect(result).toContain("mail diagnostic naming: `ouro doctor` is installation-wide")
+    expect(result).toContain("mail setup boundaries: do not invent `ouro auth verify --provider mail`, HEY OAuth, HEY IMAP")
     expect(result).toContain("If asked how to enable another sense, I explain the relevant agent.json senses entry and required agent-vault runtime/config fields instead of guessing.")
   })
 
@@ -1188,6 +1381,14 @@ describe("buildSystem", () => {
     expect(result).toContain("`settle` must be the only tool call in that turn")
   })
 
+  it("voice channel includes mid-turn speak guidance", async () => {
+    const { speakSopsSection } = await import("../../mind/prompt")
+    const result = speakSopsSection("voice")
+    expect(result).toContain("## speaking mid-turn")
+    expect(result).toContain("i have a `speak` tool")
+    expect(result).toContain("i don't narrate individual tool calls")
+  })
+
   it("outward channel tool behavior includes autonomous execution guidance", async () => {
     setupReadFileSync()
     const { patchRuntimeConfig, resetConfigCache } = await import("../../heart/config")
@@ -1616,6 +1817,7 @@ describe("psyche loading", () => {
     vi.resetModules()
     vi.mocked(fs.existsSync).mockReset()
     vi.mocked(fs.readdirSync).mockReset()
+    vi.mocked(identity.getAgentRoot).mockReturnValue("/mock/repo/testagent")
     setAgentProvider("minimax")
   })
 
@@ -1670,6 +1872,37 @@ describe("psyche loading", () => {
       .slice(callCount1)
       .filter(c => String(c[0]).includes("psyche"))
     expect(psycheCallsAfterFirst.length).toBe(0)
+  })
+
+  it("reloads psyche text when the active agent root changes", async () => {
+    let activeRoot = "/mock/repo/alpha"
+    vi.mocked(identity.getAgentRoot).mockImplementation(() => activeRoot)
+    vi.mocked(fs.readFileSync).mockImplementation((filePath: any, _encoding?: any) => {
+      const p = String(filePath)
+      if (p.endsWith("SOUL.md")) return p.includes("/alpha/") ? "alpha soul" : "beta soul"
+      if (p.endsWith("IDENTITY.md")) return p.includes("/alpha/") ? "alpha identity" : "beta identity"
+      if (p.endsWith("LORE.md")) return ""
+      if (p.endsWith("TACIT.md")) return ""
+      if (p.endsWith("ASPIRATIONS.md")) return ""
+      if (p.endsWith("secrets.json")) return JSON.stringify({})
+      if (p.endsWith("package.json")) return MOCK_PACKAGE_JSON
+      return ""
+    })
+    const { patchRuntimeConfig, resetConfigCache } = await import("../../heart/config")
+    resetConfigCache()
+    patchRuntimeConfig({ providers: { minimax: { apiKey: "test-key" } } })
+    const { buildSystem, flattenSystemPrompt, resetPsycheCache } = await import("../../mind/prompt")
+    resetPsycheCache()
+
+    const alphaPrompt = flattenSystemPrompt(await buildSystem())
+    activeRoot = "/mock/repo/beta"
+    const betaPrompt = flattenSystemPrompt(await buildSystem())
+
+    expect(alphaPrompt).toContain("alpha soul")
+    expect(alphaPrompt).toContain("alpha identity")
+    expect(betaPrompt).toContain("beta soul")
+    expect(betaPrompt).toContain("beta identity")
+    expect(betaPrompt).not.toContain("alpha identity")
   })
 
   it("resetPsycheCache clears cached psyche text", async () => {
@@ -3658,7 +3891,7 @@ describe("providerSection facing derivation from channel", () => {
             status: "configured",
             provider: "minimax",
             model: "MiniMax-M2.5",
-            source: "local",
+            source: "agent.json",
             readiness: { status: "ready", checkedAt: "2026-04-12T23:22:00.000Z" },
             credential: { status: "present", source: "auth-flow", revision: "cred_mm" },
             warnings: [],
@@ -3668,7 +3901,7 @@ describe("providerSection facing derivation from channel", () => {
             status: "configured",
             provider: "openai-codex",
             model: "gpt-5.4",
-            source: "local",
+            source: "agent.json",
             readiness: { status: "failed", error: "400 status code" },
             credential: { status: "present", source: "manual", revision: "cred_codex" },
             warnings: [],
@@ -3913,7 +4146,7 @@ describe("rhythmStatusSection", () => {
       const p = String(filePath)
       if (p.endsWith("daemon-health.json")) {
         return JSON.stringify({
-          status: "running",
+          status: "healthy",
           mode: "prod",
           pid: 1234,
           startedAt: new Date(Date.now() - 3600000).toISOString(),
@@ -3941,7 +4174,9 @@ describe("rhythmStatusSection", () => {
       const p = String(filePath)
       if (p.endsWith("daemon-health.json")) {
         return JSON.stringify({
-          status: "running",
+          // partial: bootstrap-degraded component, but agent surface is healthy
+          // (no agents in this fixture).
+          status: "partial",
           mode: "prod",
           pid: 1234,
           startedAt: new Date(Date.now() - 3600000).toISOString(),
@@ -3983,7 +4218,7 @@ describe("rhythmStatusSection", () => {
       const p = String(filePath)
       if (p.endsWith("daemon-health.json")) {
         return JSON.stringify({
-          status: "running",
+          status: "healthy",
           mode: "prod",
           pid: 1234,
           startedAt: new Date().toISOString(),
@@ -4009,7 +4244,7 @@ describe("rhythmStatusSection", () => {
       const p = String(filePath)
       if (p.endsWith("daemon-health.json")) {
         return JSON.stringify({
-          status: "running",
+          status: "healthy",
           mode: "prod",
           pid: 1234,
           startedAt: new Date().toISOString(),
@@ -4390,6 +4625,25 @@ describe("pendingMessagesSection (Unit 1.4)", () => {
     } as any))
     expect(result).toContain("- from inner-dialog: coding session finished")
     expect(result).toContain("- from bridge-1: Ari says hi")
+  })
+
+  it("pending messages section frames pending items as fresh work for this turn", async () => {
+    setupReadFileSync()
+    vi.mocked(fs.existsSync).mockReturnValue(false)
+    vi.mocked(fs.readdirSync).mockReturnValue([])
+    const { patchRuntimeConfig, resetConfigCache } = await import("../../heart/config")
+    resetConfigCache()
+    patchRuntimeConfig({ providers: { minimax: { apiKey: "test-key" } } })
+    const { buildSystem, flattenSystemPrompt, resetPsycheCache } = await import("../../mind/prompt")
+    resetPsycheCache()
+
+    const result = flattenSystemPrompt(await buildSystem("inner", {
+      pendingMessages: [
+        { from: "mailroom", content: "[Mail Import Ready]" },
+      ],
+    } as any))
+    expect(result).toContain("these are fresh work items that arrived for me this turn")
+    expect(result).toContain("before i rest")
   })
 
   it("pending messages section appears inside '# dynamic state for this turn' group", async () => {
@@ -4956,5 +5210,205 @@ describe("pre-implementation scrutiny", () => {
     expect(workspaceDisciplineIdx).toBeGreaterThan(-1)
     expect(scrutinyIdx).toBeGreaterThan(-1)
     expect(scrutinyIdx).toBeGreaterThan(workspaceDisciplineIdx)
+  })
+
+  describe("trip ledger truth", () => {
+    const tripRecord = {
+      tripId: "trip_summer-2026-europe-trip_82bdea2a9d088cbe",
+      agentId: "testagent",
+      ownerEmail: "ari@example.com",
+      name: "Summer 2026 Europe Trip",
+      status: "planning",
+      startDate: "2026-07-31",
+      endDate: "2026-08-15",
+      travellers: [],
+      legs: [
+        {
+          legId: "flight_lh489_sea_muc_2026-07-31",
+          kind: "flight",
+          status: "confirmed",
+          evidence: [],
+          createdAt: "2026-04-30T07:00:00.000Z",
+          updatedAt: "2026-04-30T07:00:00.000Z",
+        },
+      ],
+      createdAt: "2026-04-30T07:00:00.000Z",
+      updatedAt: "2026-04-30T07:33:06.000Z",
+    }
+
+    async function render(channel: string, context?: unknown): Promise<string> {
+      setupReadFileSync()
+      const { patchRuntimeConfig, resetConfigCache } = await import("../../heart/config")
+      resetConfigCache()
+      patchRuntimeConfig({ providers: { minimax: { apiKey: "test-key" } } })
+      const { buildSystem, flattenSystemPrompt, resetPsycheCache } = await import("../../mind/prompt")
+      resetPsycheCache()
+      return flattenSystemPrompt(await buildSystem(channel as any, {}, context as any))
+    }
+
+    async function renderTripTruth(channel: string, context?: unknown): Promise<string> {
+      const { tripLedgerTruthSection } = await import("../../mind/prompt")
+      return tripLedgerTruthSection(channel as any, context as any)
+    }
+
+    it("orients local channels to the trip ledger before stale notes or memory", async () => {
+      tripStoreMocks.listTripIds.mockReturnValue([tripRecord.tripId])
+      tripStoreMocks.readTripRecord.mockReturnValue(tripRecord)
+
+      const result = await render("mcp")
+
+      expect(result).toContain("## trip ledger truth")
+      expect(result).toContain("canonical structured source for travel plans")
+      expect(result).toContain("trip_status")
+      expect(result).toContain("trip_get")
+      expect(result).toContain("trip_calendar")
+      expect(result).toContain("friend notes, old handoffs, and memory")
+      expect(result).toContain("trip_summer-2026-europe-trip_82bdea2a9d088cbe")
+      expect(result).toContain("Summer 2026 Europe Trip")
+      expect(result).toContain("legs: 1")
+    })
+
+    it("does not render private trip facts to untrusted remote contexts", async () => {
+      tripStoreMocks.listTripIds.mockReturnValue([tripRecord.tripId])
+      tripStoreMocks.readTripRecord.mockReturnValue(tripRecord)
+      const context = makeOnboardingContext()
+      context.friend.trustLevel = "stranger"
+      tripStoreMocks.listTripIds.mockClear()
+      tripStoreMocks.readTripRecord.mockClear()
+
+      const result = await render("teams", context)
+
+      expect(result).not.toContain("## trip ledger truth")
+      expect(result).not.toContain("Summer 2026 Europe Trip")
+      expect(tripStoreMocks.listTripIds).not.toHaveBeenCalled()
+    })
+
+    it("renders private trip facts to trusted remote contexts", async () => {
+      tripStoreMocks.listTripIds.mockReturnValue([tripRecord.tripId])
+      tripStoreMocks.readTripRecord.mockReturnValue(tripRecord)
+      const context = makeOnboardingContext()
+      context.friend.trustLevel = "friend"
+
+      const result = await render("teams", context)
+
+      expect(result).toContain("## trip ledger truth")
+      expect(result).toContain("Summer 2026 Europe Trip")
+    })
+
+    it("stays quiet when the ledger cannot list trips", async () => {
+      tripStoreMocks.listTripIds.mockImplementation(() => {
+        throw new Error("ledger unavailable")
+      })
+
+      const result = await renderTripTruth("mcp")
+
+      expect(result).toBe("")
+    })
+
+    it("renders partial and undated trip records without turning them into gaps", async () => {
+      tripStoreMocks.listTripIds.mockReturnValue(["start-only", "end-only", "undated"])
+      tripStoreMocks.readTripRecord.mockImplementation((_agentId: string, tripId: string) => {
+        if (tripId === "start-only") {
+          return { ...tripRecord, tripId, name: "Start Only", endDate: undefined }
+        }
+        if (tripId === "end-only") {
+          return { ...tripRecord, tripId, name: "End Only", startDate: undefined }
+        }
+        return { ...tripRecord, tripId, name: "Undated", startDate: undefined, endDate: undefined }
+      })
+
+      const result = await renderTripTruth("mcp")
+
+      expect(result).toContain('start-only :: "Start Only" [planning; 2026-07-31; legs: 1')
+      expect(result).toContain('end-only :: "End Only" [planning; 2026-08-15; legs: 1')
+      expect(result).toContain('undated :: "Undated" [planning; undated; legs: 1')
+    })
+
+    it("keeps unreadable trip records visible with an explicit tool recovery path", async () => {
+      tripStoreMocks.listTripIds.mockReturnValue(["trip-bad"])
+      tripStoreMocks.readTripRecord.mockImplementation(() => {
+        throw new Error("bad trip record")
+      })
+
+      const result = await renderTripTruth("mcp")
+
+      expect(result).toContain("trip-bad :: unreadable right now; use trip_get before reasoning from it.")
+    })
+
+    it("summarizes overflow trips instead of silently hiding them", async () => {
+      const tripIds = Array.from({ length: 9 }, (_unused, index) => `trip-${index + 1}`)
+      tripStoreMocks.listTripIds.mockReturnValue(tripIds)
+      tripStoreMocks.readTripRecord.mockImplementation((_agentId: string, tripId: string) => ({
+        ...tripRecord,
+        tripId,
+        name: `Trip ${tripId}`,
+      }))
+
+      const result = await renderTripTruth("mcp")
+
+      expect(result).toContain('trip-8 :: "Trip trip-8"')
+      expect(result).not.toContain('trip-9 :: "Trip trip-9"')
+      expect(result).toContain("1 more trip(s); use trip_status for the full list.")
+    })
+  })
+
+  // ── Unit 9a: speak system prompt nudge ─────────────────────────────────────
+  describe("speak system prompt nudge", () => {
+    async function renderFor(channel: string): Promise<string> {
+      setupReadFileSync()
+      const { patchRuntimeConfig, resetConfigCache } = await import("../../heart/config")
+      resetConfigCache()
+      patchRuntimeConfig({ providers: { minimax: { apiKey: "test-key" } } })
+      const { buildSystem, flattenSystemPrompt, resetPsycheCache } = await import("../../mind/prompt")
+      resetPsycheCache()
+      return flattenSystemPrompt(await buildSystem(channel as any))
+    }
+
+    it("includes 'speaking mid-turn' for channel='cli'", async () => {
+      const result = await renderFor("cli")
+      expect(result).toContain("speaking mid-turn")
+    })
+
+    it("includes 'speaking mid-turn' for channel='teams'", async () => {
+      const result = await renderFor("teams")
+      expect(result).toContain("speaking mid-turn")
+    })
+
+    it("includes 'speaking mid-turn' for channel='bluebubbles'", async () => {
+      const result = await renderFor("bluebubbles")
+      expect(result).toContain("speaking mid-turn")
+    })
+
+    it("does NOT include 'speaking mid-turn' for channel='inner'", async () => {
+      const result = await renderFor("inner")
+      expect(result).not.toContain("speaking mid-turn")
+    })
+
+    it("does NOT include 'speaking mid-turn' for channel='mcp'", async () => {
+      const result = await renderFor("mcp")
+      expect(result).not.toContain("speaking mid-turn")
+    })
+
+    it("does NOT include 'speaking mid-turn' for channel='mail'", async () => {
+      const result = await renderFor("mail")
+      expect(result).not.toContain("speaking mid-turn")
+    })
+
+    it("contains the three rule-line markers verbatim", async () => {
+      const result = await renderFor("cli")
+      expect(result).toContain("if my next step depends on a reply, i settle")
+      expect(result).toContain("phase boundaries during heavy work")
+      expect(result).toContain("speak is progress, not invitation")
+    })
+
+    it("anti-hedging: section between 'speaking mid-turn' heading and next '##' has no may/should/prefer/if-relevant", async () => {
+      const result = await renderFor("cli")
+      const headingIdx = result.indexOf("## speaking mid-turn")
+      expect(headingIdx).toBeGreaterThan(-1)
+      const after = result.slice(headingIdx + "## speaking mid-turn".length)
+      const nextHeadingIdx = after.indexOf("\n## ")
+      const section = nextHeadingIdx === -1 ? after : after.slice(0, nextHeadingIdx)
+      expect(/(\b(may|should|prefer)\b|if relevant)/i.test(section)).toBe(false)
+    })
   })
 })

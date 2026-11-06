@@ -20,6 +20,28 @@ describe("HealthMonitor", () => {
     ])
   })
 
+  it("keeps a defensive copy of the latest health results", async () => {
+    const monitor = new HealthMonitor({
+      processManager: {
+        listAgentSnapshots: () => [{ name: "slugger", status: "running" }],
+      },
+      scheduler: {
+        listJobs: () => [{ id: "daily-review", lastRun: "2026-03-07T00:00:00.000Z" }],
+      },
+    })
+
+    const results = await monitor.runChecks()
+    results[0]!.status = "critical"
+    const latest = monitor.getLastResults()
+    latest[0]!.status = "warn"
+
+    expect(monitor.getLastResults()[0]).toEqual({
+      name: "agent-processes",
+      status: "ok",
+      message: "all managed agents running",
+    })
+  })
+
   it("reports warnings for never-run jobs and high disk without paging alerts", async () => {
     const alertSink = vi.fn(async () => undefined)
     const monitor = new HealthMonitor({
@@ -353,12 +375,15 @@ describe("HealthMonitor", () => {
 
     it("includes critical result and calls alertSink for a probe that returns ok: false", async () => {
       const alertSink = vi.fn(async () => undefined)
+      const onCriticalSense = vi.fn()
       const monitor = new HealthMonitor({
         ...createBaseOptions(),
         alertSink,
+        onCriticalSense,
         senseProbes: [
           {
             name: "bluebubbles",
+            managedName: "slugger:bluebubbles",
             check: async () => ({ ok: false, detail: "connection refused" }),
           },
         ],
@@ -374,6 +399,7 @@ describe("HealthMonitor", () => {
       expect(alertSink).toHaveBeenCalledWith(
         "[critical] sense-probe:bluebubbles: bluebubbles failed: connection refused",
       )
+      expect(onCriticalSense).toHaveBeenCalledWith("slugger:bluebubbles", "bluebubbles")
     })
 
     it("includes results from multiple probes", async () => {
@@ -398,14 +424,68 @@ describe("HealthMonitor", () => {
       expect(teamsResult?.status).toBe("critical")
     })
 
+    it("includes probes discovered at check time", async () => {
+      const monitor = new HealthMonitor({
+        ...createBaseOptions(),
+        senseProbeProvider: () => [
+          {
+            name: "bluebubbles:slugger",
+            check: async () => ({ ok: true }),
+          },
+        ],
+      })
+
+      const results = await monitor.runChecks()
+      expect(results.find((r) => r.name === "sense-probe:bluebubbles:slugger")).toEqual({
+        name: "sense-probe:bluebubbles:slugger",
+        status: "ok",
+        message: "bluebubbles:slugger healthy",
+      })
+    })
+
+    it("keeps the daemon healthy when dynamic sense probe discovery fails", async () => {
+      const monitor = new HealthMonitor({
+        ...createBaseOptions(),
+        senseProbeProvider: () => {
+          throw new Error("vault temporarily locked")
+        },
+      })
+
+      const results = await monitor.runChecks()
+      expect(results.find((r) => r.name === "sense-probes")).toEqual({
+        name: "sense-probes",
+        status: "warn",
+        message: "sense probe discovery failed: vault temporarily locked",
+      })
+    })
+
+    it("stringifies non-Error dynamic sense probe discovery failures", async () => {
+      const monitor = new HealthMonitor({
+        ...createBaseOptions(),
+        senseProbeProvider: () => {
+          throw "vault unavailable"
+        },
+      })
+
+      const results = await monitor.runChecks()
+      expect(results.find((r) => r.name === "sense-probes")).toEqual({
+        name: "sense-probes",
+        status: "warn",
+        message: "sense probe discovery failed: vault unavailable",
+      })
+    })
+
     it("treats a throwing probe as critical with error message as detail", async () => {
       const alertSink = vi.fn(async () => undefined)
+      const onCriticalSense = vi.fn()
       const monitor = new HealthMonitor({
         ...createBaseOptions(),
         alertSink,
+        onCriticalSense,
         senseProbes: [
           {
             name: "bluebubbles",
+            managedName: "slugger:bluebubbles",
             check: async () => {
               throw new Error("ECONNREFUSED")
             },
@@ -423,6 +503,46 @@ describe("HealthMonitor", () => {
       expect(alertSink).toHaveBeenCalledWith(
         "[critical] sense-probe:bluebubbles: bluebubbles error: ECONNREFUSED",
       )
+      expect(onCriticalSense).toHaveBeenCalledWith("slugger:bluebubbles", "bluebubbles")
+    })
+
+    it("does not restart a sense probe when no managed sense mapping is provided", async () => {
+      const onCriticalSense = vi.fn()
+      const monitor = new HealthMonitor({
+        ...createBaseOptions(),
+        onCriticalSense,
+        senseProbes: [
+          {
+            name: "external-proof-only",
+            check: async () => ({ ok: false, detail: "reverse path blocked" }),
+          },
+        ],
+      })
+
+      await monitor.runChecks()
+
+      expect(onCriticalSense).not.toHaveBeenCalled()
+    })
+
+    it("uses a default no-op sense recovery callback when no handler is configured", async () => {
+      const monitor = new HealthMonitor({
+        ...createBaseOptions(),
+        senseProbes: [
+          {
+            name: "bluebubbles",
+            managedName: "slugger:bluebubbles",
+            check: async () => ({ ok: false, detail: "listener down" }),
+          },
+        ],
+      })
+
+      const results = await monitor.runChecks()
+
+      expect(results.find((r) => r.name === "sense-probe:bluebubbles")).toEqual({
+        name: "sense-probe:bluebubbles",
+        status: "critical",
+        message: "bluebubbles failed: listener down",
+      })
     })
 
     it("uses 'unknown' when a failed probe omits detail", async () => {

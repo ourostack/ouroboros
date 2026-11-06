@@ -1,4 +1,4 @@
-import { McpClient } from "./mcp-client"
+import { McpClient, isMcpTransportError } from "./mcp-client"
 import type { McpToolInfo } from "./mcp-client"
 import { loadAgentConfig, type McpServerConfig } from "../heart/identity"
 import { emitNervesEvent } from "../nerves/runtime"
@@ -46,16 +46,60 @@ export class McpManager {
     tool: string,
     args: Record<string, unknown>,
   ): Promise<{ content: Array<{ type: string; text: string }> }> {
-    const entry = this.servers.get(server)
+    let entry = this.servers.get(server)
     if (!entry) {
       throw new Error(`Unknown server: ${server}`)
     }
 
     if (!entry.client.isConnected()) {
-      throw new Error(`Server "${server}" is disconnected`)
+      await this.recoverStaleTransport(server, "pre-call disconnected")
+      entry = this.servers.get(server)
+      if (!entry?.client.isConnected()) {
+        throw new Error(`Server "${server}" is disconnected`)
+      }
     }
 
-    return entry.client.callTool(tool, args)
+    try {
+      return await entry.client.callTool(tool, args)
+    } catch (error) {
+      if (!isMcpTransportError(error)) {
+        throw error
+      }
+      const reason = error instanceof Error ? error.message : String(error)
+      await this.recoverStaleTransport(server, reason)
+      const recovered = this.servers.get(server)
+      if (!recovered?.client.isConnected()) {
+        throw new Error(`Server "${server}" is disconnected after recovery: ${reason}`)
+      }
+      return recovered.client.callTool(tool, args)
+    }
+  }
+
+  async runCanaries(): Promise<Array<{ server: string; ok: boolean; detail: string }>> {
+    const results: Array<{ server: string; ok: boolean; detail: string }> = []
+    for (const [server, entry] of [...this.servers]) {
+      try {
+        if (!entry.client.isConnected()) {
+          await this.recoverStaleTransport(server, "canary disconnected")
+        }
+        const current = this.servers.get(server)
+        if (!current?.client.isConnected()) {
+          results.push({ server, ok: false, detail: "disconnected after recovery attempt" })
+          continue
+        }
+        const tools = await current.client.refreshTools()
+        current.cachedTools = tools
+        current.consecutiveFailures = 0
+        results.push({ server, ok: true, detail: `${tools.length} tools listed` })
+      } catch (error) {
+        const reason = error instanceof Error ? error.message : String(error)
+        if (isMcpTransportError(error)) {
+          await this.recoverStaleTransport(server, reason)
+        }
+        results.push({ server, ok: false, detail: reason })
+      }
+    }
+    return results
   }
 
   /* v8 ignore start — reconcile: dynamic MCP server management, tested via integration @preserve */
@@ -261,6 +305,7 @@ export class McpManager {
 
     // Remove old entry and reconnect
     this.servers.delete(name)
+    entry.client.shutdown()
     await this.connectServer(name, entry.config)
 
     // Preserve failure count
@@ -270,6 +315,17 @@ export class McpManager {
     }
   }
   /* v8 ignore stop */
+
+  private async recoverStaleTransport(name: string, reason: string): Promise<void> {
+    emitNervesEvent({
+      level: "warn",
+      event: "mcp.transport_recovery",
+      component: "repertoire",
+      message: `recovering stale MCP transport: ${name}`,
+      meta: { server: name, reason },
+    })
+    await this.restartServer(name)
+  }
 }
 
 let _sharedManager: McpManager | null = null

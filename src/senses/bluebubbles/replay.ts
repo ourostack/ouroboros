@@ -1,6 +1,8 @@
 import { renderAttachmentBlock } from "../../heart/attachments/render"
 import { buildBlueBubblesAttachmentRecord } from "../../heart/attachments/sources/bluebubbles"
+import { loadOrCreateMachineIdentity } from "../../heart/machine-identity"
 import { resetIdentity, setAgentName } from "../../heart/identity"
+import { refreshMachineRuntimeCredentialConfig } from "../../heart/runtime-credentials"
 import { emitNervesEvent } from "../../nerves/runtime"
 import { createBlueBubblesClient, type BlueBubblesClient } from "./client"
 import { normalizeBlueBubblesEvent, type BlueBubblesNormalizedEvent } from "./model"
@@ -28,6 +30,8 @@ interface BlueBubblesReplayDeps {
   normalizeEvent?: typeof normalizeBlueBubblesEvent
   setAgentName?: typeof setAgentName
   resetIdentity?: typeof resetIdentity
+  loadMachineId?: () => string
+  refreshMachineRuntimeConfig?: typeof refreshMachineRuntimeCredentialConfig
 }
 
 function buildReplayHint(
@@ -61,6 +65,8 @@ export async function replayBlueBubblesMessage(
   const setReplayAgentName = deps.setAgentName ?? setAgentName
   const resetReplayIdentity = deps.resetIdentity ?? resetIdentity
   const normalizeEvent = deps.normalizeEvent ?? normalizeBlueBubblesEvent
+  const loadMachineId = deps.loadMachineId ?? (() => loadOrCreateMachineIdentity().machineId)
+  const refreshMachineRuntimeConfig = deps.refreshMachineRuntimeConfig ?? refreshMachineRuntimeCredentialConfig
 
   emitNervesEvent({
     component: "senses",
@@ -76,6 +82,10 @@ export async function replayBlueBubblesMessage(
   setReplayAgentName(agentName)
 
   try {
+    if (!deps.createClient) {
+      const machineId = loadMachineId()
+      await refreshMachineRuntimeConfig(agentName, machineId, { preserveCachedOnFailure: true })
+    }
     const client = deps.createClient ? deps.createClient() : createBlueBubblesClient()
     const probe = normalizeEvent({
       type: eventType,

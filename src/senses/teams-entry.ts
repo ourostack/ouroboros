@@ -23,7 +23,7 @@ emitNervesEvent({
 
 import("../heart/runtime-credentials")
   .then(async ({ refreshRuntimeCredentialConfig }) => {
-    await refreshRuntimeCredentialConfig(agentName, { preserveCachedOnFailure: true }).catch(() => undefined)
+    void refreshRuntimeCredentialConfig(agentName, { preserveCachedOnFailure: true }).catch(() => undefined)
     const { startTeamsApp } = await import("./teams")
     startTeamsApp()
   })
