@@ -2,13 +2,14 @@ import * as http from "node:http"
 import type { AddressInfo } from "node:net"
 import { afterEach, beforeAll, describe, expect, it, vi } from "vitest"
 import { ready, didKeyIdentityFromEd25519, type DidKeyIdentity, type Sodium } from "@ouro.bot/friends/a2a-client"
-import { FileFriendStore, upsertAgentPeer, type FriendRecord, type SenseType } from "@ouro.bot/friends"
+import { FileFriendStore, recordMission, upsertAgentPeer, type FriendRecord, type SenseType } from "@ouro.bot/friends"
 import { createTmpBundle, type TmpBundleHandle } from "../test-helpers/tmpdir-bundle"
 import { startFakeRelay, type FakeRelay } from "../test-helpers/fake-relay"
 import { startA2AServer, type A2AServerHandle } from "../../a2a/server"
 import { cacheMachineRuntimeCredentialConfig } from "../../heart/runtime-credentials"
 import { readRelayContact, writeRelayContact } from "../../a2a/relay-contacts"
 import { a2aToolDefinitions } from "../../repertoire/tools-a2a"
+import { delegationStoresFor } from "../../a2a/delegation-stores"
 import type { ToolContext } from "../../repertoire/tools-base"
 import type { A2AIdentity } from "../../a2a/identity"
 
@@ -29,8 +30,12 @@ afterEach(async () => {
   tmp = null
 })
 
+function tool(name: string) {
+  return a2aToolDefinitions.find((entry) => entry.tool.function.name === name)!.handler
+}
+
 function sendMessage() {
-  return a2aToolDefinitions.find((entry) => entry.tool.function.name === "a2a_send_message")!.handler
+  return tool("a2a_send_message")
 }
 
 function mintIdentity(): DidKeyIdentity {
@@ -166,5 +171,42 @@ describe("a2a_send_message falls back to the peer's relay", () => {
     // The peer runs no relay, so the answer is cached as "no relay" (asked again tomorrow).
     await vi.waitFor(() => expect(readRelayContact(tmp!.agentRoot, peer.did)).toMatchObject({ did: peer.did }), { timeout: 5000 })
     expect(readRelayContact(tmp.agentRoot, peer.did)?.contact).toBeUndefined()
+  })
+})
+
+describe("coordinate and send_result fall back to the peer's relay", () => {
+  it("coordinate says the delegation is queued at the peer's relay", async () => {
+    tmp = createTmpBundle({ agentName: "relay-fallback-coordinate" })
+    seedSelfIdentity(tmp.agentName)
+    relay = await startFakeRelay()
+    const peer = mintIdentity()
+    const store = new FileFriendStore(`${tmp.agentRoot}/friends`)
+    const record = await peerRecord(store, peer, await closedPortUrl())
+    writeRelayContact(tmp.agentRoot, { did: peer.did, fetchedAt: new Date().toISOString(), contact: await registerAtRelay(relay, peer.did) })
+
+    const out = await tool("coordinate")({ friend_id: record.id, mission_key: "mk-relay", mission_title: "Relay", task_summary: "do it later" }, localCtx(tmp.agentRoot, store))
+    expect(out).toMatch(/^coordinated: delegated "do it later" to Peer on mission mk-relay \(requestId [^)]+\)\. /)
+    expect(out).toContain(`Peer (${peer.did}) is not reachable directly; the delegation is queued at Peer's relay and is delivered when Peer comes back online.`)
+    expect(relay.inbox.get("peer-inbox")).toHaveLength(1)
+  })
+
+  it("send_result says the result is queued at the delegator's relay", async () => {
+    tmp = createTmpBundle({ agentName: "relay-fallback-result" })
+    seedSelfIdentity(tmp.agentName)
+    relay = await startFakeRelay()
+    const delegator = mintIdentity()
+    const store = new FileFriendStore(`${tmp.agentRoot}/friends`)
+    await peerRecord(store, delegator, await closedPortUrl())
+    writeRelayContact(tmp.agentRoot, { did: delegator.did, fetchedAt: new Date().toISOString(), contact: await registerAtRelay(relay, delegator.did) })
+    const { missionStore } = delegationStoresFor(tmp.agentRoot)
+    const mission = await recordMission(missionStore, { missionKey: "mk-result", title: "Result" })
+    await missionStore.put(mission.id, {
+      ...mission,
+      importedDelegations: { [delegator.did]: { "req-1": { task: { requestId: "req-1", summary: "build it" }, provenance: { assertedBy: { agentId: delegator.did, displayName: "Peer" }, assertedAt: new Date().toISOString(), origin: "imported" } } } },
+    })
+
+    const out = await tool("send_result")({ request_id: "req-1", summary: "built" }, localCtx(tmp.agentRoot, store))
+    expect(out).toBe(`Peer (${delegator.did}) is not reachable directly; the result is queued at Peer's relay and is delivered when Peer comes back online. (requestId req-1)`)
+    expect(relay.inbox.get("peer-inbox")).toHaveLength(1)
   })
 })

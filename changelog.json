@@ -2,6 +2,15 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.990",
+      "changes": [
+        "An agent can now reach a friend that is offline. A sealed A2A message goes direct first; if the friend does not answer, the same sealed message is queued at the friend's friends-relay inbox and the friend handles it when it comes back, through the same checks as a direct message. The relay only holds ciphertext.",
+        "An agent learns where to queue mail for a friend by asking it over a sealed call after a direct message goes through; only active friend or family peers get the answer. The tools say when a message, delegation or result was queued rather than delivered, and when a failed direct attempt may still have arrived.",
+        "To make an agent reachable while offline, set `a2a.relay.url` and `a2a.relay.inviteToken` in its machine vault config and restart; the A2A sense registers, keeps the registration in the vault and polls the inbox. See docs/a2a-relay.md.",
+        "Compatibility: agents without a relay behave as before. A peer on an older harness refuses the contact request; that is cached as no relay and asked again a day later."
+      ]
+    },
+    {
       "version": "0.1.0-alpha.989",
       "changes": [
         "Agents now use friends 0.1.0-alpha.17. Every signed message is bound to its recipient, kind, a message id and its time, and a message without that binding is refused, so an old message cannot be replayed or resealed to another agent. A message counts as received only once its signature checks out, so a delivery that fails before that can be sent again.",
