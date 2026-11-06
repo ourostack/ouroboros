@@ -2,6 +2,7 @@ import * as fs from "fs";
 import * as path from "path";
 import { randomUUID } from "crypto";
 import { getAgentRoot } from "../heart/identity";
+import { capStructuredRecordString } from "../heart/session-events";
 import { emitNervesEvent } from "../nerves/runtime";
 import { cosineSimilarity } from "./note-search";
 import { detectSuspiciousContent } from "./diary-integrity";
@@ -172,12 +173,16 @@ export interface AppendEntriesOptions {
 
 export function appendEntriesWithDedup(stores: DiaryStorePaths, incoming: DiaryEntry[], options?: AppendEntriesOptions): DiaryWriteResult {
   const existing = readExistingEntries(stores.factsPath);
+  const cappedIncoming = incoming.map((fact) => ({
+    ...fact,
+    text: capStructuredRecordString(fact.text),
+  }));
   const all = [...existing];
   let added = 0;
   let skipped = 0;
   const semanticThreshold = options?.semanticThreshold;
 
-  for (const fact of incoming) {
+  for (const fact of cappedIncoming) {
     const duplicate = all.some((prior) => {
       if (overlapScore(prior.text, fact.text) > DEDUP_THRESHOLD) return true;
       if (

@@ -83,6 +83,25 @@ describe("pruneDaemonLogs", () => {
     expect(zlib.gunzipSync(fs.readFileSync(gz)).toString("utf-8")).toBe(payload)
   })
 
+  it("rotates + gzips an oversized legacy launchd .log file", () => {
+    const filePath = path.join(dir, "ouro-daemon-stderr.log")
+    const payload = "stderr\n".repeat(80)
+    fs.writeFileSync(filePath, payload, "utf-8")
+
+    const result = pruneDaemonLogs({
+      logsDir: dir,
+      maxSizeBytes: 100,
+      maxGenerations: 3,
+    })
+
+    expect(result.filesCompacted).toBe(1)
+    expect(result.bytesFreed).toBe(Buffer.byteLength(payload))
+    expect(fs.existsSync(filePath)).toBe(false)
+    const gz = path.join(dir, "ouro-daemon-stderr.log.1.gz")
+    expect(fs.existsSync(gz)).toBe(true)
+    expect(zlib.gunzipSync(fs.readFileSync(gz)).toString("utf-8")).toBe(payload)
+  })
+
   it("rotates multiple over-threshold files and sums bytes freed", () => {
     const a = path.join(dir, "daemon.ndjson")
     const b = path.join(dir, "ouro.ndjson")
@@ -148,8 +167,10 @@ describe("pruneDaemonLogs", () => {
     expect(second.bytesFreed).toBe(0)
   })
 
-  it("skips non-.ndjson files like .ndjson.gz and random text files", () => {
+  it("skips historical, compressed, and unrelated files", () => {
     fs.writeFileSync(path.join(dir, "daemon.1.ndjson.gz"), zlib.gzipSync(Buffer.from("historic")))
+    fs.writeFileSync(path.join(dir, "daemon.1.log"), "old stderr\n".repeat(80), "utf-8")
+    fs.writeFileSync(path.join(dir, "ouro-daemon-stderr.log.1.gz"), zlib.gzipSync(Buffer.from("old stderr")))
     fs.writeFileSync(path.join(dir, "notes.txt"), "some notes", "utf-8")
 
     const result = pruneDaemonLogs({
@@ -162,6 +183,8 @@ describe("pruneDaemonLogs", () => {
     expect(result.bytesFreed).toBe(0)
     // nothing should have moved
     expect(fs.existsSync(path.join(dir, "daemon.1.ndjson.gz"))).toBe(true)
+    expect(fs.existsSync(path.join(dir, "daemon.1.log"))).toBe(true)
+    expect(fs.existsSync(path.join(dir, "ouro-daemon-stderr.log.1.gz"))).toBe(true)
     expect(fs.existsSync(path.join(dir, "notes.txt"))).toBe(true)
   })
 

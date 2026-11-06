@@ -5,6 +5,7 @@ import * as path from "path"
 import * as os from "os"
 import { FileFriendStore } from "../../../mind/friends/store-file"
 import type { FriendRecord } from "../../../mind/friends/types"
+import { expectCappedAgentContent, makeOversizedAgentContent } from "../../helpers/content-cap"
 
 let tmpDir: string
 let friendsPath: string
@@ -168,6 +169,21 @@ describe("FileFriendStore", () => {
       expect(saved.role).toBe("partner")
       expect(saved.trustLevel).toBe("friend")
       expect(saved.connections).toEqual([{ name: "Ari", relationship: "teammate" }])
+    })
+
+    it("caps oversized agent-authored friend note values before writing JSON", async () => {
+      const store = new FileFriendStore(friendsPath)
+      const oversized = makeOversizedAgentContent("friend note ")
+      const friend = makeFriend({
+        notes: {
+          context: { value: oversized, savedAt: "2026-05-13T00:00:00.000Z" },
+        },
+      })
+
+      await store.put("uuid-1", friend)
+
+      const saved = JSON.parse(await fs.readFile(path.join(friendsPath, "uuid-1.json"), "utf-8")) as FriendRecord
+      expectCappedAgentContent(saved.notes.context.value, oversized)
     })
   })
 

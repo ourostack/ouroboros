@@ -1,0 +1,28 @@
+{
+  "schemaVersion": 1,
+  "traceId": "floor-interruption-tool-running",
+  "scenarioId": "floor-interruption-tool-running",
+  "expectedOutcome": "pass",
+  "expectation": {
+    "maxFirstAssistantAudioMs": 500,
+    "maxUserTurnResponseMs": 300,
+    "maxToolPresenceMs": 300,
+    "maxBargeInClearMs": 100,
+    "maxBargeInTruncateMs": 120
+  },
+  "events": [
+    { "atMs": 0, "event": "call.connected", "source": { "transport": "voice-eval", "id": "floor-tool" } },
+    { "atMs": 80, "event": "assistant.audio.started", "correlationId": "greeting", "source": { "transport": "voice-eval", "id": "floor-tool" } },
+    { "atMs": 120, "event": "assistant.audio.done", "correlationId": "greeting", "source": { "transport": "voice-eval", "id": "floor-tool" } },
+    { "atMs": 180, "event": "user.transcript.done", "correlationId": "turn-1", "text": "Research that quickly.", "source": { "transport": "voice-eval", "id": "floor-tool" } },
+    { "atMs": 260, "event": "response.requested", "correlationId": "turn-1", "source": { "transport": "voice-eval", "id": "floor-tool" } },
+    { "atMs": 300, "event": "tool.call.started", "correlationId": "research-1", "toolName": "search", "source": { "transport": "voice-eval", "id": "floor-tool" } },
+    { "atMs": 430, "event": "tool.holding.started", "correlationId": "research-1", "text": "Checking now.", "source": { "transport": "voice-eval", "id": "floor-tool" } },
+    { "atMs": 520, "event": "barge_in.detected", "source": { "transport": "voice-eval", "id": "floor-tool" } },
+    { "atMs": 540, "event": "transport.playback_cleared", "source": { "transport": "voice-eval", "id": "floor-tool" } },
+    { "atMs": 560, "event": "response.truncated", "source": { "transport": "voice-eval", "id": "floor-tool" } },
+    { "atMs": 570, "event": "floor.state.changed", "floorPhase": "caller-speaking", "floorOwner": "caller", "pendingToolCallIds": ["research-1"], "interruptionTurnId": "turn-2", "source": { "transport": "voice-eval", "id": "floor-tool" } },
+    { "atMs": 700, "event": "tool.result.ready", "correlationId": "research-1", "toolName": "search", "source": { "transport": "voice-eval", "id": "floor-tool" } },
+    { "atMs": 710, "event": "speech.policy.decision", "speechDecision": "delay", "decisionReason": "caller_has_floor", "correlationId": "research-1", "source": { "transport": "voice-eval", "id": "floor-tool" } }
+  ]
+}
