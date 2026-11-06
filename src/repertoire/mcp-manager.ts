@@ -1,8 +1,12 @@
-import { McpClient } from "./mcp-client"
+import { McpClient, isMcpTransportError } from "./mcp-client"
 import type { McpToolInfo } from "./mcp-client"
 import { loadAgentConfig, type McpServerConfig } from "../heart/identity"
 import { emitNervesEvent } from "../nerves/runtime"
 import { getCredentialStore } from "./credential-access"
+import {
+  listPluginMcpServers,
+  pluginMcpServerToConfig,
+} from "./plugin-mcp"
 
 interface ServerEntry {
   name: string
@@ -10,6 +14,13 @@ interface ServerEntry {
   client: McpClient
   cachedTools: McpToolInfo[]
   consecutiveFailures: number
+  /**
+   * If this server came from a plugin's `.mcp.json`, the plugin id is stored
+   * here. Downstream (`mcpToolsAsDefinitions`) uses this to namespace the
+   * surfaced tool names as `mcp__<server>__<tool>` per the Anthropic public
+   * naming convention. Builtin (agent.json mcpServers) entries leave it unset.
+   */
+  pluginId?: string
 }
 
 const MAX_RESTART_RETRIES = 5
@@ -19,24 +30,30 @@ export class McpManager {
   private servers = new Map<string, ServerEntry>()
   private shuttingDown = false
 
-  async start(servers: Record<string, McpServerConfig>): Promise<void> {
+  async start(
+    servers: Record<string, McpServerConfig>,
+    pluginOrigins: Record<string, string> = {},
+  ): Promise<void> {
     emitNervesEvent({
       event: "mcp.manager_start",
       component: "repertoire",
       message: "starting MCP manager",
-      meta: { serverCount: Object.keys(servers).length },
+      meta: {
+        serverCount: Object.keys(servers).length,
+        pluginServerCount: Object.keys(pluginOrigins).length,
+      },
     })
 
     const entries = Object.entries(servers)
     for (const [name, config] of entries) {
-      await this.connectServer(name, config)
+      await this.connectServer(name, config, pluginOrigins[name])
     }
   }
 
-  listAllTools(): Array<{ server: string; tools: McpToolInfo[] }> {
-    const result: Array<{ server: string; tools: McpToolInfo[] }> = []
+  listAllTools(): Array<{ server: string; tools: McpToolInfo[]; pluginId?: string }> {
+    const result: Array<{ server: string; tools: McpToolInfo[]; pluginId?: string }> = []
     for (const [name, entry] of this.servers) {
-      result.push({ server: name, tools: entry.cachedTools })
+      result.push({ server: name, tools: entry.cachedTools, pluginId: entry.pluginId })
     }
     return result
   }
@@ -46,16 +63,60 @@ export class McpManager {
     tool: string,
     args: Record<string, unknown>,
   ): Promise<{ content: Array<{ type: string; text: string }> }> {
-    const entry = this.servers.get(server)
+    let entry = this.servers.get(server)
     if (!entry) {
       throw new Error(`Unknown server: ${server}`)
     }
 
     if (!entry.client.isConnected()) {
-      throw new Error(`Server "${server}" is disconnected`)
+      await this.recoverStaleTransport(server, "pre-call disconnected")
+      entry = this.servers.get(server)
+      if (!entry?.client.isConnected()) {
+        throw new Error(`Server "${server}" is disconnected`)
+      }
     }
 
-    return entry.client.callTool(tool, args)
+    try {
+      return await entry.client.callTool(tool, args)
+    } catch (error) {
+      if (!isMcpTransportError(error)) {
+        throw error
+      }
+      const reason = error instanceof Error ? error.message : String(error)
+      await this.recoverStaleTransport(server, reason)
+      const recovered = this.servers.get(server)
+      if (!recovered?.client.isConnected()) {
+        throw new Error(`Server "${server}" is disconnected after recovery: ${reason}`)
+      }
+      return recovered.client.callTool(tool, args)
+    }
+  }
+
+  async runCanaries(): Promise<Array<{ server: string; ok: boolean; detail: string }>> {
+    const results: Array<{ server: string; ok: boolean; detail: string }> = []
+    for (const [server, entry] of [...this.servers]) {
+      try {
+        if (!entry.client.isConnected()) {
+          await this.recoverStaleTransport(server, "canary disconnected")
+        }
+        const current = this.servers.get(server)
+        if (!current?.client.isConnected()) {
+          results.push({ server, ok: false, detail: "disconnected after recovery attempt" })
+          continue
+        }
+        const tools = await current.client.refreshTools()
+        current.cachedTools = tools
+        current.consecutiveFailures = 0
+        results.push({ server, ok: true, detail: `${tools.length} tools listed` })
+      } catch (error) {
+        const reason = error instanceof Error ? error.message : String(error)
+        if (isMcpTransportError(error)) {
+          await this.recoverStaleTransport(server, reason)
+        }
+        results.push({ server, ok: false, detail: reason })
+      }
+    }
+    return results
   }
 
   /* v8 ignore start — reconcile: dynamic MCP server management, tested via integration @preserve */
@@ -132,6 +193,12 @@ export class McpManager {
     env: Record<string, string>,
   ): Promise<Record<string, string>> {
     const resolved = { ...env }
+    // Short-circuit: only spin up a credential store if at least one env value
+    // actually requests vault resolution. Plugin MCP servers commonly ship with
+    // `env: {}` or pure-string envs, and we shouldn't pay the credential-store
+    // boot cost (or fail in test envs that have no vault) for those cases.
+    const hasVaultRef = Object.values(resolved).some((v) => /^vault:/.test(v))
+    if (!hasVaultRef) return resolved
     const store = getCredentialStore()
 
     for (const [key, value] of Object.entries(resolved)) {
@@ -158,7 +225,11 @@ export class McpManager {
     return resolved
   }
 
-  private async connectServer(name: string, config: McpServerConfig): Promise<void> {
+  private async connectServer(
+    name: string,
+    config: McpServerConfig,
+    pluginId?: string,
+  ): Promise<void> {
     // Resolve vault: references in env before spawning
     let resolvedConfig = config
     if (config.env) {
@@ -187,6 +258,7 @@ export class McpManager {
       client,
       cachedTools: [],
       consecutiveFailures: 0,
+      pluginId,
     }
 
     this.servers.set(name, entry)
@@ -261,6 +333,7 @@ export class McpManager {
 
     // Remove old entry and reconnect
     this.servers.delete(name)
+    entry.client.shutdown()
     await this.connectServer(name, entry.config)
 
     // Preserve failure count
@@ -270,6 +343,17 @@ export class McpManager {
     }
   }
   /* v8 ignore stop */
+
+  private async recoverStaleTransport(name: string, reason: string): Promise<void> {
+    emitNervesEvent({
+      level: "warn",
+      event: "mcp.transport_recovery",
+      component: "repertoire",
+      message: `recovering stale MCP transport: ${name}`,
+      meta: { server: name, reason },
+    })
+    await this.restartServer(name)
+  }
 }
 
 let _sharedManager: McpManager | null = null
@@ -296,11 +380,29 @@ export async function getSharedMcpManager(): Promise<McpManager | null> {
   _sharedManagerPromise = (async () => {
     try {
       const config = loadAgentConfig()
-      const servers = config.mcpServers
-      if (!servers || Object.keys(servers).length === 0) return null
+      const builtinServers = config.mcpServers ?? {}
+
+      // W6 Unit 9: every enabled plugin can declare its own MCP servers in
+      // `<plugin-root>/.mcp.json` (Anthropic public spec shape). Merge those
+      // into the start() call so they spawn alongside agent.json mcpServers.
+      // Builtin entries win on name collision (deterministic + reproducible —
+      // operator's explicit agent.json overrides plugin defaults).
+      const pluginServers = listPluginMcpServers()
+      const mergedServers: Record<string, McpServerConfig> = {}
+      const pluginOrigins: Record<string, string> = {}
+      for (const p of pluginServers) {
+        if (builtinServers[p.serverName] !== undefined) continue
+        mergedServers[p.serverName] = pluginMcpServerToConfig(p)
+        pluginOrigins[p.serverName] = p.pluginId
+      }
+      for (const [name, cfg] of Object.entries(builtinServers)) {
+        mergedServers[name] = cfg
+      }
+
+      if (Object.keys(mergedServers).length === 0) return null
 
       const manager = new McpManager()
-      await manager.start(servers)
+      await manager.start(mergedServers, pluginOrigins)
       _sharedManager = manager
       return manager
     } catch (error) {

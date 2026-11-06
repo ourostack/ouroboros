@@ -40,6 +40,8 @@ describe("task lifecycle", () => {
     expect(isTaskStatus("mystery")).toBe(false)
     expect(normalizeTaskStatus("CANCELLED")).toBe("cancelled")
     expect(normalizeTaskStatus("mystery")).toBeNull()
+    expect(normalizeTaskStatus(null)).toBeNull()
+    expect(normalizeTaskStatus(undefined)).toBeNull()
   })
 
   it("preserves the expected transition matrix", () => {

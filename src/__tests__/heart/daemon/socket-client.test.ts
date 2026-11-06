@@ -88,6 +88,31 @@ describe("daemon socket client", () => {
     await expect(sendDaemonCommand("/tmp/daemon.sock", { kind: "daemon.status" } as any)).rejects.toThrow("socket broke")
   })
 
+  it("rejects socket commands when the daemon never responds", async () => {
+    class MockConnection extends EventEmitter {
+      setTimeout = vi.fn((_timeoutMs: number, callback: () => void) => {
+        queueMicrotask(callback)
+        return this
+      })
+      destroy = vi.fn()
+    }
+
+    const createConnection = vi.fn(() => new MockConnection())
+
+    vi.doMock("fs", () => ({
+      existsSync: vi.fn(() => true),
+    }))
+    vi.doMock("net", () => ({ createConnection }))
+    vi.doMock("../../../nerves/runtime", () => ({ emitNervesEvent: vi.fn() }))
+
+    const { sendDaemonCommand } = await import("../../../heart/daemon/socket-client")
+
+    await expect(sendDaemonCommand("/tmp/daemon.sock", { kind: "agent.status", agent: "slugger" } as any, { timeoutMs: 25 }))
+      .rejects.toThrow("timed out after 25ms")
+    const connection = createConnection.mock.results[0]?.value as MockConnection
+    expect(connection.destroy).toHaveBeenCalled()
+  })
+
   it("stringifies non-Error JSON parse failures from daemon responses", async () => {
     class MockConnection extends EventEmitter {
       write = vi.fn(() => {

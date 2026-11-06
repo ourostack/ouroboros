@@ -55,9 +55,6 @@ const mockTaskModule = {
   boardSessions: vi.fn(),
 }
 
-vi.mock("../../repertoire/tasks", () => ({
-  getTaskModule: () => mockTaskModule,
-}))
 
 vi.mock("../../heart/identity", () => {
   const DEFAULT_AGENT_CONTEXT = {
@@ -75,7 +72,7 @@ vi.mock("../../heart/identity", () => {
     getAgentRoot: vi.fn(() => "/mock/repo/testagent"),
     getRepoRoot: vi.fn(() => "/mock/repo"),
     getAgentRepoWorkspacesRoot: vi.fn(() => "/mock/repo/testagent/state/workspaces"),
-    HARNESS_CANONICAL_REPO_URL: "https://github.com/ouroborosbot/ouroboros.git",
+    HARNESS_CANONICAL_REPO_URL: "https://github.com/ourostack/ouroboros.git",
     resetIdentity: vi.fn(),
   }
 })
@@ -87,6 +84,25 @@ import { listSkills, loadSkill } from "../../repertoire/skills"
 describe("execTool", () => {
   let execTool: (name: string, args: any, ctx?: any) => Promise<string>
   let patchRuntimeConfig: (partial: any) => void
+
+  function orientationHoldCtx(blockedMutationKinds = ["durable_state_write", "external_side_effect"]): any {
+    return {
+      signin: async () => undefined,
+      context: { friend: { trustLevel: "family" } },
+      orientationFrame: {
+        schemaVersion: 1,
+        channel: "bluebubbles",
+        currentUserSpeech: ["same"],
+        priorAssistantReferents: [{ kind: "ordered_list_item", label: "2", text: "Better substrate" }],
+        signals: ["terse_referent"],
+        actionPolicy: {
+          mode: "correction_hold",
+          reason: "Current user speech appears referent-dependent; inspect orientation before mutating durable state.",
+          blockedMutationKinds,
+        },
+      },
+    }
+  }
 
   afterEach(() => {
     vi.restoreAllMocks()
@@ -141,6 +157,269 @@ describe("execTool", () => {
     expect(fs.readFileSync).toHaveBeenCalledWith("/tmp/test.txt", "utf-8")
   })
 
+  it("orientation hold blocks high-risk durable mutations before handlers run", async () => {
+    const ctx = orientationHoldCtx()
+
+    await expect(execTool("trip_update_leg", {
+      tripId: "trip_test",
+      legId: "leg_1",
+      updates: "{\"status\":\"cancelled\"}",
+      updatedAt: "2026-05-19T00:00:00.000Z",
+    }, ctx)).resolves.toContain("orientation hold")
+    await expect(execTool("update_config", { path: "context.contextMargin", value: "25" }, ctx))
+      .resolves.toContain("orientation hold")
+
+    expect(fs.writeFileSync).not.toHaveBeenCalled()
+  })
+
+  it("orientation hold blocks representative real mutation tools across surfaces before handlers run", async () => {
+    const ctx = orientationHoldCtx()
+    const cases: Array<[string, Record<string, string>]> = [
+      ["write_file", { path: "/tmp/out.txt", content: "wrong referent" }],
+      ["diary_write", { entry: "wrong referent" }],
+      ["save_friend_note", { type: "note", key: "preference", content: "wrong referent" }],
+      ["note", { title: "wrong referent", body: "wrong referent" }],
+      ["update_config", { path: "context.contextMargin", value: "25" }],
+      ["bridge_manage", { action: "begin", objective: "wrong referent" }],
+      ["care_manage", { action: "create", label: "wrong referent" }],
+      ["intention_capture", { content: "wrong referent" }],
+      ["credential_store", { domain: "example.com", username: "ari", password: "secret" }],
+      ["user_profile_store", { fields: "{\"legalName\":{\"first\":\"Wrong\",\"last\":\"Referent\"}}" }],
+      ["send_message", { friendId: "self", channel: "inner", content: "wrong referent" }],
+      ["coding_spawn", { runner: "codex", workdir: "/mock/repo", prompt: "wrong referent", taskRef: "wrong" }],
+      ["stripe_create_card", { type: "single_use", spend_limit: "500", currency: "usd" }],
+      ["flight_book", { offer_id: "off_123", amount: "100", currency: "usd" }],
+      ["mail_send", { draft_id: "draft_123", reason: "wrong referent" }],
+      ["await_condition", { name: "wrong", condition: "wrong referent", cadence: "5m" }],
+      ["let_go", { id: "wrong-obligation" }],
+      ["restart_runtime", { reason: "wrong referent" }],
+      ["bluebubbles_set_reply_target", { target: "top_level" }],
+      ["surface", { content: "wrong referent" }],
+      ["graph_mutate", { method: "POST", path: "/me/sendMail", body: "{}" }],
+      ["ado_create_epic", { title: "wrong referent" }],
+      ["file_ouroboros_bug", { title: "wrong referent" }],
+      ["bundle_push", {}],
+      ["voice_play_audio", { source: "tone" }],
+    ]
+
+    for (const [toolName, args] of cases) {
+      const result = await execTool(toolName, args, ctx)
+      expect(result, toolName).toContain("orientation hold")
+      expect(result, toolName).toContain("Available: orientation_get")
+    }
+
+    expect(fs.writeFileSync).not.toHaveBeenCalled()
+    expect(execSync).not.toHaveBeenCalled()
+  })
+
+  it("orientation hold respects blockedMutationKinds instead of blocking every high-risk tool", async () => {
+    const tools = await import("../../repertoire/tools")
+    const callTool = vi.fn().mockResolvedValue({ content: [{ type: "text", text: "created" }] })
+    const mcpManager = {
+      listAllTools: () => [{
+        server: "calendar",
+        tools: [{ name: "create_event", description: "Create event", inputSchema: { type: "object" } }],
+      }],
+      callTool,
+    }
+
+    tools.getToolsForChannel(undefined, undefined, undefined, undefined, mcpManager as any)
+
+    const result = await execTool(
+      "calendar_create_event",
+      { title: "external write allowed by this narrow policy" },
+      orientationHoldCtx(["durable_state_write"]),
+    )
+
+    expect(result).toBe("created")
+    expect(callTool).toHaveBeenCalledWith("calendar", "create_event", { title: "external write allowed by this narrow policy" })
+  })
+
+  it("obvious mutation tool definitions declare high-risk correction-hold metadata", async () => {
+    const [
+      toolsBase,
+      bluebubbles,
+      teams,
+      adoSemantic,
+      github,
+      bundle,
+      voice,
+      surface,
+    ] = await Promise.all([
+      import("../../repertoire/tools-base"),
+      import("../../repertoire/tools-bluebubbles"),
+      import("../../repertoire/tools-teams"),
+      import("../../repertoire/ado-semantic"),
+      import("../../repertoire/tools-github"),
+      import("../../repertoire/tools-bundle"),
+      import("../../repertoire/tools-voice"),
+      import("../../repertoire/tools-surface"),
+    ])
+    const definitions = [
+      ...toolsBase.baseToolDefinitions,
+      ...bluebubbles.bluebubblesToolDefinitions,
+      ...teams.teamsToolDefinitions,
+      ...adoSemantic.adoSemanticToolDefinitions,
+      ...github.githubToolDefinitions,
+      ...bundle.bundleToolDefinitions,
+      ...voice.voiceToolDefinitions,
+      surface.surfaceToolDefinition,
+    ]
+    const byName = new Map(definitions.map((definition) => [definition.tool.function.name, definition]))
+    const expected = new Map<string, string[]>([
+      ["write_file", ["durable_state_write"]],
+      ["edit_file", ["durable_state_write"]],
+      ["diary_write", ["durable_state_write"]],
+      ["save_friend_note", ["durable_state_write"]],
+      ["note", ["durable_state_write"]],
+      ["update_config", ["durable_state_write"]],
+      ["trip_ensure_ledger", ["durable_state_write"]],
+      ["trip_upsert", ["durable_state_write"]],
+      ["trip_attach_evidence", ["durable_state_write"]],
+      ["trip_update_leg", ["durable_state_write"]],
+      ["trip_remove_leg", ["durable_state_write"]],
+      ["bridge_manage", ["durable_state_write"]],
+      ["capture_episode", ["durable_state_write"]],
+      ["care_manage", ["durable_state_write"]],
+      ["intention_capture", ["durable_state_write"]],
+      ["intention_manage", ["durable_state_write"]],
+      ["credential_store", ["durable_state_write"]],
+      ["credential_delete", ["durable_state_write"]],
+      ["user_profile_store", ["durable_state_write"]],
+      ["user_profile_delete", ["durable_state_write"]],
+      ["send_message", ["durable_state_write", "external_side_effect"]],
+      ["coding_spawn", ["durable_state_write", "external_side_effect"]],
+      ["coding_send_input", ["external_side_effect"]],
+      ["coding_kill", ["external_side_effect"]],
+      ["stripe_create_card", ["external_side_effect"]],
+      ["stripe_deactivate_card", ["external_side_effect"]],
+      ["flight_hold", ["external_side_effect"]],
+      ["flight_book", ["external_side_effect"]],
+      ["flight_cancel", ["external_side_effect"]],
+      ["mail_compose", ["durable_state_write"]],
+      ["mail_send", ["durable_state_write", "external_side_effect"]],
+      ["mail_decide", ["durable_state_write", "external_side_effect"]],
+      ["await_condition", ["durable_state_write"]],
+      ["resolve_await", ["durable_state_write", "external_side_effect"]],
+      ["cancel_await", ["durable_state_write"]],
+      ["let_go", ["durable_state_write"]],
+      ["restart_runtime", ["external_side_effect"]],
+      ["revive_sense", ["external_side_effect"]],
+      ["bluebubbles_set_reply_target", ["external_side_effect"]],
+      ["surface", ["durable_state_write", "external_side_effect"]],
+      ["graph_mutate", ["external_side_effect"]],
+      ["ado_mutate", ["external_side_effect"]],
+      ["teams_send_message", ["external_side_effect"]],
+      ["ado_create_epic", ["external_side_effect"]],
+      ["ado_create_issue", ["external_side_effect"]],
+      ["ado_move_items", ["external_side_effect"]],
+      ["ado_restructure_backlog", ["external_side_effect"]],
+      ["ado_batch_update", ["external_side_effect"]],
+      ["file_ouroboros_bug", ["external_side_effect"]],
+      ["bundle_init_git", ["durable_state_write"]],
+      ["bundle_add_remote", ["durable_state_write"]],
+      ["bundle_do_first_commit", ["durable_state_write"]],
+      ["bundle_push", ["external_side_effect"]],
+      ["bundle_pull_rebase", ["durable_state_write", "external_side_effect"]],
+      ["voice_play_audio", ["external_side_effect"]],
+    ])
+
+    for (const [toolName, mutationKinds] of expected) {
+      const definition = byName.get(toolName)
+      expect(definition, toolName).toBeDefined()
+      const rawProfile = typeof definition!.riskProfile === "function"
+        ? definition!.riskProfile({ action: "begin", verdict: "yes" })
+        : definition!.riskProfile
+      expect(rawProfile?.risk, toolName).toBe("high")
+      const rawKinds = rawProfile?.mutates
+      const actualKinds = Array.isArray(rawKinds) ? rawKinds : [rawKinds]
+      expect(actualKinds, toolName).toEqual(expect.arrayContaining(mutationKinds))
+      expect(rawProfile?.reason, toolName).toEqual(expect.any(String))
+      expect(rawProfile?.reason?.trim().length, toolName).toBeGreaterThan(0)
+    }
+
+    const bridgeStatusProfile = byName.get("bridge_manage")?.riskProfile
+    expect(typeof bridgeStatusProfile).toBe("function")
+    expect((bridgeStatusProfile as (args: Record<string, string>) => unknown)({ action: "status" }))
+      .toMatchObject({ mutates: "none", risk: "low" })
+  })
+
+  it("orientation hold blocks mutating shell commands but still allows read-only shell inspection", async () => {
+    const ctx = orientationHoldCtx()
+
+    await expect(execTool("shell", { command: "rm -rf /tmp/ouro-test" }, ctx)).resolves.toContain("orientation hold")
+    expect(execSync).not.toHaveBeenCalled()
+
+    vi.mocked(execSync).mockReturnValue("repo status\n")
+    await expect(execTool("shell", { command: "git status --short" }, ctx)).resolves.toBe("repo status\n")
+  })
+
+  it("orientation hold blocks fake Ouro runtime shell commands and points at the first-class tool", async () => {
+    const ctx = orientationHoldCtx()
+
+    const result = await execTool("shell", {
+      command: "ouro restart_runtime --agent slugger --reason \"switching human-facing lane\"",
+    }, ctx)
+
+    expect(result).toContain("orientation hold")
+    expect(result).toContain("restart_runtime tool")
+    expect(execSync).not.toHaveBeenCalled()
+  })
+
+  it("orientation hold blocks risky Ouro lifecycle/config shell commands", async () => {
+    const ctx = orientationHoldCtx()
+
+    for (const command of [
+      "ouro",
+      "ouro stop",
+      "ouro use --agent slugger --lane outward --provider openai-codex --model gpt-5.5",
+      "ouro provider refresh --agent slugger",
+      "ouro vault unlock --agent slugger",
+    ]) {
+      await expect(execTool("shell", { command }, ctx)).resolves.toContain("orientation hold")
+    }
+    expect(execSync).not.toHaveBeenCalled()
+  })
+
+  it("orientation hold allows read-only Ouro shell inspection commands", async () => {
+    const ctx = orientationHoldCtx()
+    vi.mocked(execSync).mockImplementation((command: string) => `ran ${command}\n`)
+
+    await expect(execTool("shell", { command: "ouro status" }, ctx)).resolves.toBe("ran ouro status\n")
+    await expect(execTool("shell", { command: "ouro --help" }, ctx)).resolves.toBe("ran ouro --help\n")
+    await expect(execTool("shell", { command: "ouro whoami --agent slugger" }, ctx)).resolves.toBe("ran ouro whoami --agent slugger\n")
+    await expect(execTool("shell", { command: "ouro versions" }, ctx)).resolves.toBe("ran ouro versions\n")
+    await expect(execTool("shell", { command: "ouro mcp list" }, ctx)).resolves.toBe("ran ouro mcp list\n")
+    await expect(execTool("shell", { command: "ouro vault item list --agent slugger" }, ctx)).resolves.toBe("ran ouro vault item list --agent slugger\n")
+  })
+
+  it("orientation hold blocks first-class MCP tools before external calls run", async () => {
+    const tools = await import("../../repertoire/tools")
+    const callTool = vi.fn().mockResolvedValue({ content: [{ type: "text", text: "created" }] })
+    const mcpManager = {
+      listAllTools: () => [{
+        server: "calendar",
+        tools: [{ name: "create_event", description: "Create event", inputSchema: { type: "object" } }],
+      }],
+      callTool,
+    }
+
+    tools.getToolsForChannel(undefined, undefined, undefined, undefined, mcpManager as any)
+
+    const result = await execTool("calendar_create_event", { title: "wrong referent" }, orientationHoldCtx())
+
+    expect(result).toContain("orientation hold")
+    expect(callTool).not.toHaveBeenCalled()
+  })
+
+  it("orientation hold allows orientation_get so the agent can inspect the frame", async () => {
+    const result = await execTool("orientation_get", {}, orientationHoldCtx())
+    const frame = JSON.parse(result)
+
+    expect(frame.actionPolicy.mode).toBe("correction_hold")
+    expect(frame.actionPolicy.blockedMutationKinds).toEqual(["durable_state_write", "external_side_effect"])
+  })
+
   it("rethrows non-Error values from handlers", async () => {
     vi.mocked(fs.readFileSync).mockImplementation(() => { throw "boom" })
     await expect(execTool("read_file", { path: "/tmp/test.txt" })).rejects.toBe("boom")
@@ -152,6 +431,16 @@ describe("execTool", () => {
     const result = await execTool("write_file", { path: "/tmp/out.txt", content: "hello" })
     expect(result).toContain("ok")
     expect(fs.writeFileSync).toHaveBeenCalledWith("/tmp/out.txt", "hello", "utf-8")
+  })
+
+  it("write_file preserves oversized content exactly without applying the structured record cap", async () => {
+    vi.mocked(fs.writeFileSync).mockReturnValue(undefined)
+    const oversized = `write-file-${"x".repeat(256 * 1024 + 1)}`
+
+    const result = await execTool("write_file", { path: "/tmp/out.txt", content: oversized })
+
+    expect(result).toContain("ok")
+    expect(fs.writeFileSync).toHaveBeenCalledWith("/tmp/out.txt", oversized, "utf-8")
   })
 
   it("relative paths resolve against repo root (no workspace indirection)", async () => {
@@ -237,9 +526,38 @@ describe("execTool", () => {
     expect(result).toBe("claude response")
     expect(spawnSync).toHaveBeenCalledWith(
       "claude",
-      ["-p", "--no-session-persistence", "--dangerously-skip-permissions", "--add-dir", "."],
+      [
+        "-p",
+        "--no-session-persistence",
+        "--permission-mode",
+        "plan",
+        "--tools",
+        "Read,Grep,Glob,LS",
+        "--add-dir",
+        ".",
+      ],
       expect.objectContaining({ input: "What is 2+2?" })
     )
+  })
+
+  it("claude remains available during orientation hold because it is mechanically read-only", async () => {
+    vi.mocked(spawnSync).mockReturnValue({ stdout: "read-only review", stderr: "", status: 0 } as any)
+
+    const result = await execTool("claude", { prompt: "Review the current diff" }, orientationHoldCtx())
+
+    expect(result).toBe("read-only review")
+    expect(spawnSync).toHaveBeenCalled()
+  })
+
+  it("claude declares a low-risk read-only contract", async () => {
+    const { baseToolDefinitions } = await import("../../repertoire/tools-base")
+    const definition = baseToolDefinitions.find((tool) => tool.tool.function.name === "claude")
+
+    expect(definition?.riskProfile).toMatchObject({
+      mutates: "none",
+      risk: "low",
+      reason: expect.stringContaining("read/search/list tools"),
+    })
   })
 
   it("claude returns error on spawn failure", async () => {

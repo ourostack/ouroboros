@@ -3,6 +3,7 @@
 
 import * as fs from "fs"
 import * as path from "path"
+import { parseSessionEnvelope, projectProviderMessages } from "../session-events"
 import { emitNervesEvent } from "../../nerves/runtime"
 import type { PendingMessage } from "../../mind/pending"
 
@@ -368,6 +369,72 @@ function extractSettleAnswer(messages: Array<{ role: string; tool_calls?: unknow
   return ""
 }
 
+function parseToolArguments(argumentsValue: string | undefined): Record<string, unknown> {
+  if (!argumentsValue) return {}
+  try {
+    const parsed = JSON.parse(argumentsValue) as unknown
+    return parsed && typeof parsed === "object" && !Array.isArray(parsed)
+      ? parsed as Record<string, unknown>
+      : {}
+  } catch {
+    return {}
+  }
+}
+
+function toolArgumentText(args: Record<string, unknown>, keys: string[]): string {
+  for (const key of keys) {
+    const value = args[key]
+    if (typeof value === "string" && value.trim()) {
+      return value.trim()
+    }
+  }
+  return ""
+}
+
+function truncateToolSummary(summary: string): string {
+  if (summary.length <= 220) return summary
+  return `${summary.slice(0, 217)}...`
+}
+
+function summarizeToolAction(name: string | undefined, argumentsValue: string | undefined): string | null {
+  if (!name) return null
+  const args = parseToolArguments(argumentsValue)
+  if (name === "surface") {
+    const message = toolArgumentText(args, ["message", "text", "content"])
+    return message ? `surfaced: ${message}` : null
+  }
+  if (name === "ponder") {
+    const thought = toolArgumentText(args, ["summary", "question", "topic", "prompt"])
+    return thought ? `pondered: ${thought}` : null
+  }
+  if (name === "diary_write") {
+    const note = toolArgumentText(args, ["text", "content", "note", "entry"])
+    return note ? `diary: ${note}` : null
+  }
+  if (name === "let_go") {
+    const reason = toolArgumentText(args, ["reason", "note", "status"])
+    return reason ? `let go: ${reason}` : null
+  }
+  if (name === "rest") {
+    const note = toolArgumentText(args, ["note", "status"])
+    return note ? `rested: ${note}` : null
+  }
+  return null
+}
+
+function extractToolActionSummary(messages: Array<{ role: string; tool_calls?: unknown[] }>): string {
+  for (let k = messages.length - 1; k >= 0; k--) {
+    const msg = messages[k]
+    if (msg.role !== "assistant" || !Array.isArray(msg.tool_calls)) continue
+    for (let i = msg.tool_calls.length - 1; i >= 0; i--) {
+      const toolFunction = extractToolFunction(msg.tool_calls[i])
+      const summary = summarizeToolAction(toolFunction?.name, toolFunction?.arguments)
+      if (summary) return truncateToolSummary(summary)
+    }
+  }
+  return ""
+}
+
 export function extractThoughtResponseFromMessages(
   messages: Array<{ role: string; content?: unknown; tool_calls?: unknown[] }>,
 ): string {
@@ -375,7 +442,7 @@ export function extractThoughtResponseFromMessages(
   const lastAssistant = assistantMsgs.reverse().find((message) => contentToText(message.content).trim().length > 0)
   return lastAssistant
     ? contentToText(lastAssistant.content).trim()
-    : extractSettleAnswer(messages)
+    : extractSettleAnswer(messages) || extractToolActionSummary(messages)
 }
 
 export function parseInnerDialogSession(sessionPath: string): ThoughtTurn[] {
@@ -393,22 +460,51 @@ export function parseInnerDialogSession(sessionPath: string): ThoughtTurn[] {
     return []
   }
 
-  let data: { version: number; messages: Array<{ role: string; content?: unknown; tool_calls?: Array<{ function?: { name?: string } }> }> }
+  let parsedRaw: unknown
   try {
-    data = JSON.parse(raw)
+    parsedRaw = JSON.parse(raw)
   } catch {
     return []
   }
 
-  if (data.version !== 1 || !Array.isArray(data.messages)) return []
+  const legacyRecord = parsedRaw && typeof parsedRaw === "object"
+    ? parsedRaw as {
+      version?: number
+      messages?: Array<{
+        role: string
+        content?: unknown
+        tool_calls?: Array<{ function?: { name?: string; arguments?: string } }>
+      }>
+    }
+    : null
+
+  const messages = legacyRecord?.version === 1 && Array.isArray(legacyRecord.messages)
+    ? legacyRecord.messages
+    : (() => {
+        const envelope = parseSessionEnvelope(parsedRaw, {
+          recordedAt: new Date().toISOString(),
+        })
+        if (!envelope) return null
+        return projectProviderMessages(envelope) as Array<{
+          role: string
+          content?: unknown
+          tool_calls?: Array<{ function?: { name?: string; arguments?: string } }>
+        }>
+      })()
+
+  if (!messages) return []
+
+  const normalizedMessages = messages as Array<{
+    role: string
+    content?: unknown
+    tool_calls?: Array<{ function?: { name?: string; arguments?: string } }>
+  }>
 
   const turns: ThoughtTurn[] = []
-  const messages = data.messages
-
   // Walk messages, pairing user → (tool calls) → assistant sequences
   let i = 0
-  while (i < messages.length) {
-    const msg = messages[i]
+  while (i < normalizedMessages.length) {
+    const msg = normalizedMessages[i]
     if (msg.role === "system") {
       i++
       continue
@@ -422,10 +518,10 @@ export function parseInnerDialogSession(sessionPath: string): ThoughtTurn[] {
     const classification = classifyTurn(userText)
 
     // Collect all messages until the next user message (or end)
-    const turnMessages: typeof messages = []
+    const turnMessages: typeof normalizedMessages = []
     let j = i + 1
-    while (j < messages.length && messages[j].role !== "user") {
-      turnMessages.push(messages[j])
+    while (j < normalizedMessages.length && normalizedMessages[j].role !== "user") {
+      turnMessages.push(normalizedMessages[j])
       j++
     }
 

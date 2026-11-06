@@ -31,7 +31,6 @@ function makeFrame(overrides: Partial<ActiveWorkFrame> = {}): ActiveWorkFrame {
     centerOfGravity: "local-turn",
     inner: { status: "idle", hasPending: false, job: makeIdleJob() },
     bridges: [],
-    taskPressure: { compactBoard: "", liveTaskNames: [], activeBridges: [] },
     friendActivity: { freshestForCurrentFriend: null, otherLiveSessionsForCurrentFriend: [] },
     bridgeSuggestion: null,
     ...overrides,
@@ -78,7 +77,7 @@ describe("commitmentsSection", () => {
     expect(result).toContain("- fulfill my outstanding obligations")
     expect(result).toContain("## what i can let go of")
     expect(result).toContain("- no shared work to coordinate")
-    expect(result).toContain("- no active tasks to track")
+    // W6 Unit 8a: "- no active tasks to track" removed with taskPressure.
   })
 
   it("surfaces obligation with status, surface, and derived completion criteria", () => {
@@ -105,15 +104,16 @@ describe("commitmentsSection", () => {
     expect(result).toContain("## what i can let go of")
   })
 
-  it("includes bridge and task commitments with their completion criteria", () => {
+  it("includes bridge commitments with their completion criteria", () => {
+    // W6 Unit 8a: removed task-tracking assertion — the `taskPressure` field
+    // and its `i'm tracking: <name>` rendering went away with the built-in
+    // task module. Bridges remain.
     const result = commitmentsSection({
       activeWorkFrame: makeFrame({
         bridges: [{ id: "b-1", summary: "align on naming", objective: "naming obj", sessions: [], createdAt: "" }] as any,
-        taskPressure: { compactBoard: "", liveTaskNames: ["deploy auth service"], activeBridges: [] },
       }),
     })
     expect(result).toContain("- i have shared work: align on naming")
-    expect(result).toContain("- i'm tracking: deploy auth service")
     expect(result).toContain("- keep shared work aligned across sessions")
   })
 
@@ -130,5 +130,33 @@ describe("commitmentsSection", () => {
 
   it("emits nerves event reference", () => {
     expect(emitNervesEvent).toBeDefined()
+  })
+
+  it("renders 'what i'm waiting on' when pendingAwaits is provided", () => {
+    const nowMs = new Date("2026-05-10T20:30:00.000Z").getTime()
+    const _ = nowMs
+    const result = commitmentsSection({
+      activeWorkFrame: makeFrame(),
+      pendingAwaits: [
+        {
+          name: "hey_export",
+          condition: "HEY export download visible",
+          checkedCount: 2,
+          lastCheckedAt: null,
+          lastObservation: null,
+        },
+      ],
+    })
+    expect(result).toContain("## my commitments")
+    expect(result).toContain("## what i'm waiting on")
+    expect(result).toContain("- hey_export: HEY export download visible")
+  })
+
+  it("returns empty string when no commitments and pendingAwaits is empty array", () => {
+    const result = commitmentsSection({
+      activeWorkFrame: makeFrame(),
+      pendingAwaits: [],
+    })
+    expect(result).toBe("")
   })
 })

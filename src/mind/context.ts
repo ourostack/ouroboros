@@ -1,7 +1,6 @@
 import type OpenAI from "openai"
 import { getContextConfig } from "../heart/config"
 import {
-  annotateMessageTimestamps,
   appendEvictedToArchive,
   appendSyntheticAssistantEvent,
   buildCanonicalSessionEnvelope,
@@ -12,12 +11,13 @@ import {
   type SessionEnvelope,
   type SessionEvent,
 } from "../heart/session-events"
+import type { StructuredOutput } from "../heart/structured-output"
 import { emitNervesEvent } from "../nerves/runtime"
 import * as fs from "fs"
 import * as path from "path"
 import { estimateTokensForMessages } from "./token-estimate"
 
-export { migrateToolNames, repairSessionMessages, validateSessionMessages } from "../heart/session-events"
+export { detectDuplicateToolCallIds, migrateToolNames, repairSessionMessages, validateSessionMessages } from "../heart/session-events"
 
 export interface UsageData {
   input_tokens: number
@@ -34,6 +34,7 @@ export interface SessionContinuityState {
 export interface SessionData {
   messages: OpenAI.ChatCompletionMessageParam[]
   events: SessionEvent[]
+  structuredOutputs: StructuredOutput[]
   lastUsage?: UsageData
   state?: SessionContinuityState
 }
@@ -46,6 +47,8 @@ type MessageBlock = {
   indices: number[]
   estimatedTokens: number
 }
+
+const IDLE_REST_ONLY_KEEP_TURNS = 20
 
 function buildTrimmableBlocks(messages: OpenAI.ChatCompletionMessageParam[]): MessageBlock[] {
   const blocks: MessageBlock[] = []
@@ -93,6 +96,95 @@ function getSystemMessageIndices(messages: OpenAI.ChatCompletionMessageParam[]):
 
 function buildTrimmedMessages(messages: OpenAI.ChatCompletionMessageParam[], kept: Set<number>): OpenAI.ChatCompletionMessageParam[] {
   return messages.filter((m, idx) => m.role === "system" || kept.has(idx))
+}
+
+function messageContentToText(content: unknown): string {
+  if (typeof content === "string") return content
+  if (!Array.isArray(content)) return ""
+  return content
+    .map((part) => {
+      if (part && typeof part === "object" && "text" in part && typeof part.text === "string") {
+        return part.text
+      }
+      return ""
+    })
+    .join("\n")
+}
+
+function toolCallName(toolCall: unknown): string {
+  return (toolCall as { function: { name: string } }).function.name
+}
+
+function toolCallId(toolCall: unknown): string {
+  return (toolCall as { id: string }).id
+}
+
+function isIdleHeartbeatRestUserMessage(message: OpenAI.ChatCompletionMessageParam): boolean {
+  if (message.role !== "user") return false
+  const text = messageContentToText(message.content)
+  return text.includes("...time passing. anything stirring?")
+    && !text.includes("[pending from ")
+    && !text.includes("## task:")
+}
+
+function isEmptyRestOnlyAssistantMessage(message: OpenAI.ChatCompletionMessageParam): string | null {
+  if (message.role !== "assistant") return null
+  if (messageContentToText(message.content).trim()) return null
+  if (!Array.isArray(message.tool_calls) || message.tool_calls.length !== 1) return null
+  const onlyToolCall = message.tool_calls[0]
+  if (toolCallName(onlyToolCall) !== "rest") return null
+  return toolCallId(onlyToolCall)
+}
+
+function isMatchingToolResult(message: OpenAI.ChatCompletionMessageParam, toolId: string): boolean {
+  return (message as { tool_call_id?: string }).tool_call_id === toolId
+}
+
+function compactIdleRestOnlyTurns(
+  messages: OpenAI.ChatCompletionMessageParam[],
+  keepTurns = IDLE_REST_ONLY_KEEP_TURNS,
+): OpenAI.ChatCompletionMessageParam[] {
+  const blocks: Array<{ start: number; end: number }> = []
+  let i = 0
+  while (i < messages.length - 2) {
+    const userMessage = messages[i]
+    const assistantMessage = messages[i + 1]
+    const toolMessage = messages[i + 2]
+    const restToolId = isIdleHeartbeatRestUserMessage(userMessage)
+      ? isEmptyRestOnlyAssistantMessage(assistantMessage)
+      : null
+
+    if (restToolId && isMatchingToolResult(toolMessage, restToolId)) {
+      blocks.push({ start: i, end: i + 2 })
+      i += 3
+      continue
+    }
+    i++
+  }
+
+  if (blocks.length <= keepTurns) return messages
+
+  const drop = new Set<number>()
+  for (const block of blocks.slice(0, blocks.length - keepTurns)) {
+    for (let index = block.start; index <= block.end; index++) {
+      drop.add(index)
+    }
+  }
+
+  const compacted = messages.filter((_message, index) => !drop.has(index))
+  emitNervesEvent({
+    component: "mind",
+    event: "mind.session_idle_rest_compaction",
+    message: "compacted old idle rest-only inner turns",
+    meta: {
+      removedTurns: blocks.length - keepTurns,
+      keptTurns: keepTurns,
+      removedMessages: drop.size,
+      originalCount: messages.length,
+      finalCount: compacted.length,
+    },
+  })
+  return compacted
 }
 
 export function trimMessages(
@@ -266,8 +358,9 @@ export function loadSession(filePath: string): SessionData | null {
     const envelope = loadSessionEnvelopeFile(filePath)
     if (!envelope) return null
     return {
-      messages: annotateMessageTimestamps(envelope, projectProviderMessages(envelope)),
+      messages: sanitizeProviderMessages(projectProviderMessages(envelope)),
       events: envelope.events,
+      structuredOutputs: envelope.structuredOutputs ?? [],
       lastUsage: envelope.lastUsage ?? undefined,
       state: denormalizeContinuityState(envelope.state),
     }
@@ -325,9 +418,10 @@ export function postTurnTrim(
     }
   }
   const { maxTokens, contextMargin } = getContextConfig()
-  const currentIngressTimes = messages.map(getIngressTime)
   const currentMessages = sanitizeProviderMessages(messages)
-  const trimmedMessages = trimMessages(currentMessages, maxTokens, contextMargin, usage?.input_tokens)
+  const currentIngressTimes = currentMessages.map(getIngressTime)
+  const tokenTrimmedMessages = trimMessages(currentMessages, maxTokens, contextMargin, usage?.input_tokens)
+  const trimmedMessages = compactIdleRestOnlyTurns(tokenTrimmedMessages)
   messages.splice(0, messages.length, ...trimmedMessages)
   return { currentMessages, trimmedMessages, currentIngressTimes, maxTokens, contextMargin }
 }
@@ -364,8 +458,42 @@ export function postTurnPersist(
 }
 
 /**
- * Deferred persist: same as postTurnPersist but runs on the next event loop tick.
- * Returns a promise that resolves when the persist completes.
+ * Per-sessPath serialization queue. Without this, two concurrent
+ * `deferPostTurnPersist` calls (e.g. two BlueBubbles webhooks for the same
+ * chat firing back-to-back, or a CLI postTurn racing the inner-dialog turn
+ * for the same MCP session) would each load the envelope, both compute the
+ * same "next sequence", and write events with colliding ids. The session
+ * file would silently accumulate duplicates and replay would diverge from
+ * what was actually sent on the wire.
+ *
+ * The queue is in-process only — it does not protect against multiple Node
+ * processes writing to the same file. The dedup-on-load behaviour in
+ * parseSessionEnvelope keeps cross-process races from leaving permanent
+ * corruption; this serializer just keeps the common (single-process) case
+ * race-free in the first place.
+ */
+const sessionPersistQueues = new Map<string, Promise<unknown>>()
+
+function enqueueSessionPersist<T>(sessPath: string, fn: () => Promise<T>): Promise<T> {
+  const previous = sessionPersistQueues.get(sessPath) ?? Promise.resolve()
+  // Chain on the previous tail. fn runs whether previous resolved or rejected,
+  // so one failed turn cannot block subsequent turns on the same session.
+  const next: Promise<T> = previous.then(fn, fn)
+  // Save a swallowed-rejection sentinel as the new tail so the next caller's
+  // `previous.then(fn, fn)` sees a clean resolution; the original `next` still
+  // propagates rejection to its own caller as expected.
+  /* v8 ignore start -- the swallow only matters when fn rejects, which is the failure path covered separately */
+  const sentinel = next.then(() => undefined, () => undefined)
+  /* v8 ignore stop */
+  sessionPersistQueues.set(sessPath, sentinel)
+  return next
+}
+
+/**
+ * Deferred persist: same as postTurnPersist but runs on the next event loop
+ * tick AND serializes against any other deferred persist for the same
+ * sessPath, so concurrent turns cannot race and produce duplicate event ids
+ * in the saved session.
  */
 export function deferPostTurnPersist(
   sessPath: string,
@@ -373,7 +501,7 @@ export function deferPostTurnPersist(
   usage?: UsageData,
   state?: SessionContinuityState,
 ): Promise<SessionEvent[]> {
-  return new Promise((resolve) => {
+  return enqueueSessionPersist(sessPath, () => new Promise<SessionEvent[]>((resolve) => {
     setImmediate(() => {
       try {
         const events = postTurnPersist(sessPath, prepared, usage, state)
@@ -389,7 +517,7 @@ export function deferPostTurnPersist(
         resolve([])
       }
     })
-  })
+  }))
 }
 
 export function deleteSession(filePath: string): void {
