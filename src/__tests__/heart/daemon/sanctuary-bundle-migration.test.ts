@@ -1220,6 +1220,27 @@ describe("Sanctuary starter psyche", () => {
     fs.symlinkSync(path.join(elsewhere, "house.json"), path.join(linked, "house", "house.json"))
     expect(seedSanctuaryPsycheIfAbsent({ packageRoot, agentRoot: linked })).toEqual({ ok: true, seeded: true })
     expectStarterPsyche(packageRoot, linked)
+
+    const unreadable = makeRoot("sanctuary-unreadable-house-seed")
+    write(unreadable, "house/house.json", { ownerName: "Mallory" })
+    fs.chmodSync(path.join(unreadable, "house", "house.json"), 0o000)
+    try {
+      expect(seedSanctuaryPsycheIfAbsent({ packageRoot, agentRoot: unreadable })).toEqual({ ok: true, seeded: true })
+      expectStarterPsyche(packageRoot, unreadable)
+    } finally {
+      fs.chmodSync(path.join(unreadable, "house", "house.json"), 0o600)
+    }
+
+    const swapped = makeRoot("sanctuary-swapped-house-seed")
+    write(swapped, "house/house.json", { ownerName: "Mallory" })
+    const realFstat = fs.fstatSync
+    const fstat = vi.spyOn(fs, "fstatSync").mockImplementationOnce((fd: number) => ({ ...realFstat(fd), isFile: () => false }) as fs.Stats)
+    try {
+      expect(seedSanctuaryPsycheIfAbsent({ packageRoot, agentRoot: swapped })).toEqual({ ok: true, seeded: true })
+      expectStarterPsyche(packageRoot, swapped)
+    } finally {
+      fstat.mockRestore()
+    }
   })
 
   it("seeds the real packaged starter psyche byte for byte", () => {

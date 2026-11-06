@@ -586,12 +586,18 @@ function cleanupInterruptedPsycheSeeds(agentRoot: string): void {
 /** The names in the install's own house/house.json, read only as a plain, non-symlinked file; anything else gives none. */
 function seedHouseNames(agentRoot: string): Partial<Record<HouseNameKey, string>> {
   const relative = path.join("house", "house.json")
+  let fd: number | undefined
   try {
     if (!inspectRelativeFile(agentRoot, relative, "invalid_live_bundle")) return {}
+    // Opened without following a link and re-checked on the descriptor, so a swap after the check reads nothing.
+    fd = fs.openSync(path.join(agentRoot, relative), fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW)
+    if (!fs.fstatSync(fd).isFile()) return {}
+    return houseNameFields(fs.readFileSync(fd, "utf8"))
   } catch {
     return {}
+  } finally {
+    if (fd !== undefined) fs.closeSync(fd)
   }
-  return houseNameFields(fs.readFileSync(path.join(agentRoot, relative), "utf8"))
 }
 
 export function seedSanctuaryPsycheIfAbsent(

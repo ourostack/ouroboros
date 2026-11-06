@@ -95,7 +95,6 @@ export const shellCommandOf = (args) => { try { const parsed = JSON.parse(String
 export const isLookupCall = (call) => call.name === "web_search" || call.name === "media_search" || call.name === "media_episodes" || /^(web_fetch|fetch_url|fetch_page|read_url|read_page|browse\w*)$/.test(call.name) || (call.name === "shell" && shellCommandOf(call.args).split(SHELL_SEGMENT_SEPARATOR).some((segment) => SHELL_LOOKUP_SEGMENT.test(segment)))
 
 const escapeRegExp = (text) => text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")
-/** Whole-word, case-insensitive, Unicode-aware: "Perihelion" is not found inside "Ratthiel". */
 // Words a Butler reply about a media ask never needs: a lecture, a refusal or a hedge. The psyche list is stricter,
 // because the psyche states who the Butler is and carries no conditions at all; it may say "This is not piracy".
 export const REPLY_HEDGE_TERMS = [
@@ -128,6 +127,7 @@ export function findHedges(text, terms) {
   return hits
 }
 
+/** Whole-word, case-insensitive, Unicode-aware: "Perihelion" is not found inside "Ratthiel". */
 export const mentionsWord = (haystack, name) => new RegExp(`(?<![\\p{L}\\p{N}])${escapeRegExp(name)}(?![\\p{L}\\p{N}])`, "iu").test(String(haystack ?? ""))
 /** The release's own name finder (src/heart/source-grounding.ts, the one the runtime gates replies with), run inside the container. */
 // Loads the house's own names first, as every Butler turn does, so the gate and the runtime agree on what counts as a name.
