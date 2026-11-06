@@ -95,6 +95,8 @@ describe("readAgentConfigForAgent structural contract", () => {
         cli: { enabled: true },
         teams: { enabled: false },
         bluebubbles: { enabled: false },
+        mail: { enabled: false },
+        voice: { enabled: false },
       })
     } finally {
       tmp.cleanup()

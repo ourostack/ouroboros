@@ -119,7 +119,7 @@ describe("buildPulseState", () => {
             status: "configured",
             provider: "minimax",
             model: "MiniMax-M2.5",
-            source: "local",
+            source: "agent.json",
             readiness: { status: "ready" },
             credential: { status: "present", source: "auth-flow", revision: "cred_mm" },
             warnings: [],
