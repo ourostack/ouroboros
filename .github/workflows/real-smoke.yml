@@ -1,0 +1,45 @@
+name: real-smoke
+
+on:
+  schedule:
+    - cron: "17 11 * * *"
+  workflow_dispatch:
+
+jobs:
+  real-smoke:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: Setup Node
+        uses: actions/setup-node@v6
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Install Dependencies
+        run: npm ci
+
+      - name: Materialize real smoke secrets file
+        id: secrets
+        env:
+          OURO_REAL_SMOKE_SECRETS_JSON: ${{ secrets.OURO_REAL_SMOKE_SECRETS_JSON }}
+        run: |
+          if [ -z "$OURO_REAL_SMOKE_SECRETS_JSON" ]; then
+            echo "::notice::Skipping real smoke because repo secret OURO_REAL_SMOKE_SECRETS_JSON is not configured yet."
+            echo "configured=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          umask 077
+          REAL_SMOKE_FILE="$RUNNER_TEMP/ouro-real-smoke-secrets.json"
+          printf '%s' "$OURO_REAL_SMOKE_SECRETS_JSON" > "$REAL_SMOKE_FILE"
+          echo "configured=true" >> "$GITHUB_OUTPUT"
+          echo "secrets_file=$REAL_SMOKE_FILE" >> "$GITHUB_OUTPUT"
+
+      - name: Run real external smoke lane
+        if: steps.secrets.outputs.configured == 'true'
+        run: npm run test:e2e:real-smoke -- --secrets-file "${{ steps.secrets.outputs.secrets_file }}"

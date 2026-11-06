@@ -1,0 +1,22 @@
+{
+  "schemaVersion": 1,
+  "traceId": "duplicate-late-provider-event",
+  "scenarioId": "duplicate-late-provider-event",
+  "expectedOutcome": "pass",
+  "expectationProfile": "voice-phone-default",
+  "events": [
+    { "atMs": 0, "event": "twilio.media.start", "source": { "transport": "twilio-media-stream", "id": "stream-dup" } },
+    { "atMs": 60, "event": "voice.context.injected", "friendId": "friend-ari", "sessionKey": "twilio-phone-friend-ari-via-ouro", "text": "Resolved voice friend: Ari (friendId=friend-ari, trust=family).", "source": { "transport": "voice-eval" } },
+    { "atMs": 90, "event": "openai.realtime.session.updated", "session": { "turnDetection": { "createResponse": false, "interruptResponse": false } }, "source": { "transport": "openai-realtime-control", "id": "ws-dup" } },
+    { "atMs": 120, "event": "openai.realtime.response.create.sent", "correlationId": "greeting", "source": { "transport": "openai-realtime-control", "id": "ws-dup" } },
+    { "atMs": 600, "event": "openai.realtime.output_audio.delta", "correlationId": "greeting", "source": { "transport": "openai-sip", "id": "sip-dup" } },
+    { "atMs": 620, "event": "openai.realtime.output_audio.delta", "correlationId": "greeting", "ignored": true, "ignoreReason": "duplicate audio delta after first start marker", "source": { "transport": "openai-sip", "id": "sip-dup" } },
+    { "atMs": 640, "event": "openai.realtime.rate_limits.updated", "ignored": true, "ignoreReason": "provider bookkeeping", "source": { "transport": "openai-realtime-control", "id": "ws-dup" } },
+    { "atMs": 900, "event": "openai.realtime.output_audio_transcript.done", "correlationId": "greeting", "text": "I am checking the weather now.", "source": { "transport": "openai-realtime-control", "id": "ws-dup" } },
+    { "atMs": 1200, "event": "openai.realtime.input_audio_transcription.completed", "correlationId": "user-1", "text": "Weather please.", "source": { "transport": "openai-realtime-control", "id": "ws-dup" } },
+    { "atMs": 1450, "event": "openai.realtime.response.create.sent", "correlationId": "user-1", "source": { "transport": "openai-realtime-control", "id": "ws-dup" } },
+    { "atMs": 2200, "event": "voice.hangup.requested", "source": { "transport": "openai-realtime-control", "id": "ws-dup" } },
+    { "atMs": 2300, "event": "openai.sip.call.ended", "source": { "transport": "openai-sip", "id": "sip-dup" } },
+    { "atMs": 2600, "event": "openai.realtime.response.done", "ignored": true, "ignoreReason": "late provider done after call end", "source": { "transport": "openai-realtime-control", "id": "ws-dup" } }
+  ]
+}
