@@ -3,6 +3,7 @@ import { Badge } from "../../catalyst/badge"
 import { fetchJson, relTime, truncate } from "../../api"
 import { classifyToolCall } from "../../tools"
 import { useNavigate } from "../../navigation"
+import { useStickyScroll } from "../../hooks/use-sticky-scroll"
 import type {
   OutlookAgentView,
   OutlookHabitItem,
@@ -191,15 +192,12 @@ export function InnerTab({ agentName, view, refreshGeneration }: { agentName: st
 function InnerTranscriptView({ messages }: { messages: TranscriptMessage[] }) {
   const conversation = messages.filter((m) => m.role !== "system" && m.role !== "tool")
   const [showAll, setShowAll] = useState(false)
-  const containerRef = useRef<HTMLDivElement>(null)
 
   const RECENT = 30
   const visible = showAll ? conversation : conversation.slice(-RECENT)
   const hiddenCount = conversation.length - visible.length
-
-  useEffect(() => {
-    if (containerRef.current) containerRef.current.scrollTop = containerRef.current.scrollHeight
-  }, [visible.length])
+  const latestVisibleId = visible[visible.length - 1]?.id ?? null
+  const { ref: containerRef, onScroll, preserveScroll } = useStickyScroll<HTMLDivElement>(latestVisibleId)
 
   // Extract landmarks for navigation
   const landmarks: Array<{ index: number; kind: string; label: string }> = []
@@ -226,7 +224,11 @@ function InnerTranscriptView({ messages }: { messages: TranscriptMessage[] }) {
           {landmarks.map((lm, i) => (
             <button
               key={i}
-              onClick={() => { setShowAll(true); setTimeout(() => scrollToMessage(lm.index), 100) }}
+              onClick={() => {
+                preserveScroll()
+                setShowAll(true)
+                setTimeout(() => scrollToMessage(lm.index), 100)
+              }}
               className={`rounded-md px-2 py-0.5 text-[10px] font-mono ring-1 transition-colors ${
                 lm.kind === "surfaced" ? "bg-ouro-scale/10 text-ouro-glow ring-ouro-scale/20 hover:ring-ouro-glow/30"
                   : lm.kind === "resting" ? "bg-ouro-void/40 text-ouro-shadow ring-ouro-moss/10"
@@ -239,10 +241,18 @@ function InnerTranscriptView({ messages }: { messages: TranscriptMessage[] }) {
         </div>
       )}
 
-      <div ref={containerRef} className="max-h-[60vh] overflow-y-auto rounded-lg bg-ouro-void/60 p-3 ring-1 ring-ouro-moss/15 space-y-1">
+      <div
+        ref={containerRef}
+        data-testid="inner-transcript-scroll"
+        onScroll={onScroll}
+        className="max-h-[60vh] overflow-y-auto rounded-lg bg-ouro-void/60 p-3 ring-1 ring-ouro-moss/15 space-y-1"
+      >
       {hiddenCount > 0 && (
         <button
-          onClick={() => setShowAll(true)}
+          onClick={() => {
+            preserveScroll()
+            setShowAll(true)
+          }}
           className="w-full rounded-lg px-3 py-2 text-center font-mono text-xs text-ouro-shadow hover:text-ouro-mist ring-1 ring-ouro-moss/10 hover:ring-ouro-moss/20 transition-colors mb-2"
         >
           Load {hiddenCount} earlier messages

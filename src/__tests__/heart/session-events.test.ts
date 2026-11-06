@@ -309,6 +309,90 @@ describe("session events", () => {
     expect(parsed?.events[0]?.attachments).toEqual(["attachment:one", "attachment:two"])
   })
 
+  it("strips synthetic relative-time prefixes from parsed user and assistant events", async () => {
+    const { parseSessionEnvelope, projectProviderMessages } = await import("../../heart/session-events")
+
+    const parsed = parseSessionEnvelope({
+      version: 2,
+      events: [
+        {
+          id: "evt-000001",
+          sequence: 1,
+          role: "user",
+          content: "[just now] [-34m] hello",
+          name: null,
+          toolCallId: null,
+          toolCalls: [],
+          attachments: [],
+          time: {
+            authoredAt: null,
+            authoredAtSource: "unknown",
+            observedAt: "2026-04-24T03:00:00.000Z",
+            observedAtSource: "ingest",
+            recordedAt: "2026-04-24T03:00:00.000Z",
+            recordedAtSource: "save",
+          },
+          relations: {
+            replyToEventId: null,
+            threadRootEventId: null,
+            references: [],
+            toolCallId: null,
+            supersedesEventId: null,
+            redactsEventId: null,
+          },
+          provenance: { captureKind: "live", legacyVersion: null, sourceMessageIndex: null },
+        },
+        {
+          id: "evt-000002",
+          sequence: 2,
+          role: "assistant",
+          content: "[just now] reply",
+          name: null,
+          toolCallId: null,
+          toolCalls: [],
+          attachments: [],
+          time: {
+            authoredAt: "2026-04-24T03:01:00.000Z",
+            authoredAtSource: "local",
+            observedAt: "2026-04-24T03:01:00.000Z",
+            observedAtSource: "local",
+            recordedAt: "2026-04-24T03:01:00.000Z",
+            recordedAtSource: "save",
+          },
+          relations: {
+            replyToEventId: null,
+            threadRootEventId: null,
+            references: [],
+            toolCallId: null,
+            supersedesEventId: null,
+            redactsEventId: null,
+          },
+          provenance: { captureKind: "live", legacyVersion: null, sourceMessageIndex: null },
+        },
+      ],
+      projection: {
+        eventIds: ["evt-000001", "evt-000002"],
+        trimmed: false,
+        maxTokens: null,
+        contextMargin: null,
+        inputTokens: null,
+        projectedAt: "2026-04-24T03:01:00.000Z",
+      },
+      lastUsage: null,
+      state: { mustResolveBeforeHandoff: false, lastFriendActivityAt: null },
+    }, {
+      recordedAt: "2026-04-24T03:01:00.000Z",
+      fileMtimeAt: "2026-04-24T03:01:00.000Z",
+    })
+
+    expect(parsed?.events[0]?.content).toBe("hello")
+    expect(parsed?.events[1]?.content).toBe("reply")
+    expect(projectProviderMessages(parsed!)).toEqual([
+      { role: "user", content: "hello" },
+      { role: "assistant", content: "reply" },
+    ])
+  })
+
   it("drops malformed lastUsage payloads instead of preserving partial numeric garbage", async () => {
     const { parseSessionEnvelope } = await import("../../heart/session-events")
 
@@ -417,10 +501,259 @@ describe("session events", () => {
         tool_call_id: "",
       },
       {
+        role: "tool",
+        content: "error: this tool call's result was lost — the previous turn ended before the tool finished (provider rejection, daemon interrupt, or the tool itself errored). if the work needs to be done, retry the tool call now.",
+        tool_call_id: "tc-custom",
+      },
+      {
         role: "user",
         content: "",
         name: "Ari",
       },
+    ])
+  })
+
+  it("canonicalizes duplicate system prompts down to one leading system message", async () => {
+    const { sanitizeProviderMessages } = await import("../../heart/session-events")
+
+    const sanitized = sanitizeProviderMessages([
+      { role: "system", content: "fresh system" },
+      { role: "user", content: "hello" },
+      { role: "assistant", content: "hi" },
+      { role: "system", content: "stale system" },
+    ] as any)
+
+    expect(sanitized).toEqual([
+      { role: "system", content: "fresh system" },
+      { role: "user", content: "hello" },
+      { role: "assistant", content: "hi" },
+    ])
+  })
+
+  it("injects synthetic tool results for assistant tool calls missing their outputs", async () => {
+    const { sanitizeProviderMessages } = await import("../../heart/session-events")
+
+    const sanitized = sanitizeProviderMessages([
+      { role: "system", content: "fresh system" },
+      {
+        role: "assistant",
+        content: null,
+        tool_calls: [
+          {
+            id: "call-1",
+            type: "function",
+            function: { name: "query_active_work", arguments: "{}" },
+          },
+        ],
+      },
+      { role: "user", content: "next" },
+    ] as any)
+
+    expect(sanitized).toEqual([
+      { role: "system", content: "fresh system" },
+      {
+        role: "assistant",
+        content: null,
+        tool_calls: [
+          {
+            id: "call-1",
+            type: "function",
+            function: { name: "query_active_work", arguments: "{}" },
+          },
+        ],
+      },
+      {
+        role: "tool",
+        tool_call_id: "call-1",
+        content: "error: this tool call's result was lost — the previous turn ended before the tool finished (provider rejection, daemon interrupt, or the tool itself errored). if the work needs to be done, retry the tool call now.",
+      },
+      { role: "user", content: "next" },
+    ])
+  })
+
+  it("stops synthetic tool-result backfill at the next assistant message", async () => {
+    const { sanitizeProviderMessages } = await import("../../heart/session-events")
+
+    const sanitized = sanitizeProviderMessages([
+      { role: "system", content: "fresh system" },
+      {
+        role: "assistant",
+        content: null,
+        tool_calls: [
+          {
+            id: "call-1",
+            type: "function",
+            function: { name: "query_active_work", arguments: "{}" },
+          },
+        ],
+      },
+      { role: "assistant", content: "moving on" },
+      { role: "tool", tool_call_id: "call-1", content: "late result" },
+    ] as any)
+
+    expect(sanitized).toEqual([
+      { role: "system", content: "fresh system" },
+      {
+        role: "assistant",
+        content: null,
+        tool_calls: [
+          {
+            id: "call-1",
+            type: "function",
+            function: { name: "query_active_work", arguments: "{}" },
+          },
+        ],
+      },
+      {
+        role: "tool",
+        tool_call_id: "call-1",
+        content: "error: this tool call's result was lost — the previous turn ended before the tool finished (provider rejection, daemon interrupt, or the tool itself errored). if the work needs to be done, retry the tool call now.",
+      },
+      { role: "assistant", content: "moving on" },
+      { role: "tool", tool_call_id: "call-1", content: "late result" },
+    ])
+  })
+
+  it("stops collecting tool results once a later assistant message begins a new turn", async () => {
+    const { sanitizeProviderMessages } = await import("../../heart/session-events")
+
+    const sanitized = sanitizeProviderMessages([
+      { role: "system", content: "fresh system" },
+      {
+        role: "assistant",
+        content: null,
+        tool_calls: [
+          {
+            id: "call-1",
+            type: "function",
+            function: { name: "query_active_work", arguments: "{}" },
+          },
+          {
+            id: "call-2",
+            type: "function",
+            function: { name: "query_session", arguments: "{}" },
+          },
+        ],
+      },
+      { role: "tool", tool_call_id: "call-1", content: "active work" },
+      { role: "assistant", content: "starting a fresh thought" },
+    ] as any)
+
+    expect(sanitized).toEqual([
+      { role: "system", content: "fresh system" },
+      {
+        role: "assistant",
+        content: null,
+        tool_calls: [
+          {
+            id: "call-1",
+            type: "function",
+            function: { name: "query_active_work", arguments: "{}" },
+          },
+          {
+            id: "call-2",
+            type: "function",
+            function: { name: "query_session", arguments: "{}" },
+          },
+        ],
+      },
+      { role: "tool", tool_call_id: "call-1", content: "active work" },
+      {
+        role: "tool",
+        tool_call_id: "call-2",
+        content: "error: this tool call's result was lost — the previous turn ended before the tool finished (provider rejection, daemon interrupt, or the tool itself errored). if the work needs to be done, retry the tool call now.",
+      },
+      { role: "assistant", content: "starting a fresh thought" },
+    ])
+  })
+
+  it("stops collecting tool results once a later user message begins a new turn", async () => {
+    const { sanitizeProviderMessages } = await import("../../heart/session-events")
+
+    const sanitized = sanitizeProviderMessages([
+      { role: "system", content: "fresh system" },
+      {
+        role: "assistant",
+        content: null,
+        tool_calls: [
+          {
+            id: "call-1",
+            type: "function",
+            function: { name: "query_active_work", arguments: "{}" },
+          },
+          {
+            id: "call-2",
+            type: "function",
+            function: { name: "query_session", arguments: "{}" },
+          },
+        ],
+      },
+      { role: "tool", tool_call_id: "call-1", content: "active work" },
+      { role: "user", content: "new question" },
+    ] as any)
+
+    expect(sanitized).toEqual([
+      { role: "system", content: "fresh system" },
+      {
+        role: "assistant",
+        content: null,
+        tool_calls: [
+          {
+            id: "call-1",
+            type: "function",
+            function: { name: "query_active_work", arguments: "{}" },
+          },
+          {
+            id: "call-2",
+            type: "function",
+            function: { name: "query_session", arguments: "{}" },
+          },
+        ],
+      },
+      { role: "tool", tool_call_id: "call-1", content: "active work" },
+      {
+        role: "tool",
+        tool_call_id: "call-2",
+        content: "error: this tool call's result was lost — the previous turn ended before the tool finished (provider rejection, daemon interrupt, or the tool itself errored). if the work needs to be done, retry the tool call now.",
+      },
+      { role: "user", content: "new question" },
+    ])
+  })
+
+  it("keeps collecting tool results across non-turn messages that are neither assistant nor user", async () => {
+    const { sanitizeProviderMessages } = await import("../../heart/session-events")
+
+    const sanitized = sanitizeProviderMessages([
+      { role: "system", content: "fresh system" },
+      {
+        role: "assistant",
+        content: null,
+        tool_calls: [
+          {
+            id: "call-1",
+            type: "function",
+            function: { name: "query_active_work", arguments: "{}" },
+          },
+        ],
+      },
+      { role: "system", content: "mid-stream metadata" },
+      { role: "tool", tool_call_id: "call-1", content: "active work" },
+    ] as any)
+
+    expect(sanitized).toEqual([
+      { role: "system", content: "fresh system" },
+      {
+        role: "assistant",
+        content: null,
+        tool_calls: [
+          {
+            id: "call-1",
+            type: "function",
+            function: { name: "query_active_work", arguments: "{}" },
+          },
+        ],
+      },
+      { role: "tool", tool_call_id: "call-1", content: "active work" },
     ])
   })
 
@@ -1890,6 +2223,283 @@ describe("session events", () => {
       try { fs.unlinkSync(sessPath) } catch { /* */ }
       try { fs.unlinkSync(archivePath) } catch { /* */ }
       try { fs.rmdirSync(tmpDir) } catch { /* */ }
+    })
+  })
+
+  describe("duplicate-event-id self-healing", () => {
+    // Real corruption found in slugger.ouro/state/sessions: concurrent writers
+    // each loaded the envelope, both computed the same `events.length + 1`
+    // sequence, and wrote events with colliding ids. parseSessionEnvelope
+    // must collapse those to a single per-id entry, last-occurrence-wins, so
+    // the next save heals the file and downstream replay does not see the
+    // same outbound message twice.
+    it("collapses duplicate event ids on parse, keeping the last occurrence", async () => {
+      const { parseSessionEnvelope } = await import("../../heart/session-events")
+      const stamp = "2026-04-25T07:00:00.000Z"
+      const baseEvent = (id: string, content: string, role: string = "assistant") => ({
+        id,
+        sequence: parseInt(id.replace("evt-", ""), 10),
+        role,
+        content,
+        name: null,
+        toolCallId: null,
+        toolCalls: [],
+        attachments: [],
+        time: { authoredAt: null, authoredAtSource: "local", observedAt: null, observedAtSource: "local", recordedAt: stamp, recordedAtSource: "save" },
+        relations: { replyToEventId: null, threadRootEventId: null, references: [], toolCallId: null, supersedesEventId: null, redactsEventId: null },
+        provenance: { captureKind: "live", legacyVersion: null, sourceMessageIndex: null },
+      })
+      const parsed = parseSessionEnvelope({
+        version: 2,
+        events: [
+          baseEvent("evt-000130", "first version of evt-130"),
+          baseEvent("evt-000131", "evt-131 only copy"),
+          baseEvent("evt-000130", "second version of evt-130"),
+          baseEvent("evt-000132", "evt-132 only copy"),
+          baseEvent("evt-000130", "third version of evt-130"),
+        ],
+        projection: { eventIds: [], trimmed: false, maxTokens: null, contextMargin: null, inputTokens: null, projectedAt: stamp },
+      })
+
+      expect(parsed).not.toBeNull()
+      const ids = parsed!.events.map((e) => e.id)
+      expect(ids).toEqual(["evt-000131", "evt-000132", "evt-000130"])
+      const evt130 = parsed!.events.find((e) => e.id === "evt-000130")
+      // last-occurrence-wins: the third version is the survivor
+      expect((evt130!.content as { type: string; text: string }[])?.[0]?.text ?? evt130!.content).toContain("third version")
+    })
+
+    it("buildCanonicalSessionEnvelope assigns the next sequence as max(existing)+1, not events.length+1", async () => {
+      const { buildCanonicalSessionEnvelope } = await import("../../heart/session-events")
+
+      // Existing envelope after self-heal: 3 events with sequences 1, 2, 130.
+      // The naive `events.length + 1` would produce sequence 4 (collision once
+      // we hit existing sequence 4 in the future). The robust max(...)+1 must
+      // produce 131 instead.
+      const existing = {
+        version: 2 as const,
+        events: [
+          { id: "evt-000001", sequence: 1, role: "user" as const, content: "u1", name: null, toolCallId: null, toolCalls: [], attachments: [], time: { authoredAt: null, authoredAtSource: "local" as const, observedAt: null, observedAtSource: "local" as const, recordedAt: "2026-04-25T00:00:00.000Z", recordedAtSource: "save" as const }, relations: { replyToEventId: null, threadRootEventId: null, references: [], toolCallId: null, supersedesEventId: null, redactsEventId: null }, provenance: { captureKind: "live" as const, legacyVersion: null, sourceMessageIndex: null } },
+          { id: "evt-000002", sequence: 2, role: "assistant" as const, content: "a1", name: null, toolCallId: null, toolCalls: [], attachments: [], time: { authoredAt: null, authoredAtSource: "local" as const, observedAt: null, observedAtSource: "local" as const, recordedAt: "2026-04-25T00:00:00.000Z", recordedAtSource: "save" as const }, relations: { replyToEventId: null, threadRootEventId: null, references: [], toolCallId: null, supersedesEventId: null, redactsEventId: null }, provenance: { captureKind: "live" as const, legacyVersion: null, sourceMessageIndex: null } },
+          { id: "evt-000130", sequence: 130, role: "assistant" as const, content: "a-late", name: null, toolCallId: null, toolCalls: [], attachments: [], time: { authoredAt: null, authoredAtSource: "local" as const, observedAt: null, observedAtSource: "local" as const, recordedAt: "2026-04-25T00:00:00.000Z", recordedAtSource: "save" as const }, relations: { replyToEventId: null, threadRootEventId: null, references: [], toolCallId: null, supersedesEventId: null, redactsEventId: null }, provenance: { captureKind: "live" as const, legacyVersion: null, sourceMessageIndex: null } },
+        ],
+        projection: { eventIds: ["evt-000001", "evt-000002", "evt-000130"], trimmed: false, maxTokens: null, contextMargin: null, inputTokens: null, projectedAt: "2026-04-25T00:00:00.000Z" },
+        lastUsage: null,
+        state: { mustResolveBeforeHandoff: false, lastFriendActivityAt: null },
+      }
+
+      const previousMessages = [
+        { role: "user" as const, content: "u1" },
+        { role: "assistant" as const, content: "a1" },
+        { role: "assistant" as const, content: "a-late" },
+      ] as OpenAI.ChatCompletionMessageParam[]
+
+      const currentMessages: OpenAI.ChatCompletionMessageParam[] = [
+        ...previousMessages,
+        { role: "user", content: "u-fresh" },
+      ]
+
+      const result = buildCanonicalSessionEnvelope({
+        existing,
+        previousMessages,
+        currentMessages,
+        trimmedMessages: currentMessages,
+        recordedAt: "2026-04-25T00:01:00.000Z",
+        lastUsage: null,
+        state: null,
+        projectionBasis: { maxTokens: null, contextMargin: null, inputTokens: null },
+      })
+
+      const newEvent = result.envelope.events.find((e) => (e.content as { type: string; text: string }[])?.[0]?.text === "u-fresh" || e.content === "u-fresh")
+      expect(newEvent).toBeDefined()
+      expect(newEvent!.sequence).toBe(131)
+      expect(newEvent!.id).toBe("evt-000131")
+    })
+  })
+
+  describe("inline-reasoning replay repair (MiniMax 2013 fix)", () => {
+    // The bug Slugger surfaced: MiniMax-M2.7 emits assistant messages with
+    // inline <think>...</think> content AND tool_calls. Replaying that
+    // combination triggers MiniMax error 2013 ("tool result's tool id not
+    // found") and stalls the session — every subsequent turn fails.
+    //
+    // The fix has two halves:
+    // (a) Strip the <think> blocks from the assistant content so replays
+    //     are valid.
+    // (b) The synthetic tool-result message is an EXPLANATORY one (not the
+    //     generic "interrupted") so the agent has full awareness of what
+    //     happened and what to do — strip-and-stay-silent would be bad AX.
+    it("strips inline <think> blocks from assistant messages with tool_calls and surfaces an explanatory tool-result", async () => {
+      const { sanitizeProviderMessages } = await import("../../heart/session-events")
+      const sanitized = sanitizeProviderMessages([
+        { role: "user", content: "what's up?" },
+        {
+          role: "assistant",
+          content: "<think>doing some reasoning that the provider can't replay</think>",
+          tool_calls: [{ id: "call_xyz", type: "function" as const, function: { name: "settle", arguments: "{\"answer\":\"ok\"}" } }],
+        },
+        // Note: NO matching tool result for call_xyz — repairToolCallSequences will synthesize one.
+        { role: "user", content: "next message" },
+      ])
+
+      const assistant = sanitized.find((m) => m.role === "assistant") as any
+      expect(assistant).toBeDefined()
+      // <think> stripped from persisted content (or content set to null if the
+      // strip leaves nothing).
+      const content = assistant.content
+      const contentText = typeof content === "string" ? content : ""
+      expect(contentText).not.toContain("<think>")
+      expect(contentText).not.toContain("</think>")
+      // The tool_call survives (so the API replay reconstructs correctly).
+      expect(assistant.tool_calls).toHaveLength(1)
+      expect(assistant.tool_calls[0].id).toBe("call_xyz")
+
+      // The synthesized tool-result is the EXPLANATORY one (not the generic
+      // "result was lost" — that one is for tool calls whose parent didn't
+      // have stripped reasoning).
+      const synthetic = sanitized.find((m) => m.role === "tool" && (m as any).tool_call_id === "call_xyz") as any
+      expect(synthetic).toBeDefined()
+      expect(synthetic.content).toContain("inline `<think>")
+      expect(synthetic.content).toContain("MiniMax")
+      expect(synthetic.content).toContain("retry the tool call")
+    })
+
+    it("keeps the generic 'result was lost' message for orphaned tool_calls whose parent did NOT have stripped reasoning", async () => {
+      const { sanitizeProviderMessages } = await import("../../heart/session-events")
+      const sanitized = sanitizeProviderMessages([
+        { role: "user", content: "hi" },
+        {
+          role: "assistant",
+          content: "no inline reasoning here, just plain content",
+          tool_calls: [{ id: "call_plain", type: "function" as const, function: { name: "read_file", arguments: "{}" } }],
+        },
+        // Orphan: no matching tool result.
+        { role: "user", content: "next" },
+      ])
+      const synthetic = sanitized.find((m) => m.role === "tool" && (m as any).tool_call_id === "call_plain") as any
+      expect(synthetic).toBeDefined()
+      expect(synthetic.content).toContain("result was lost")
+      expect(synthetic.content).not.toContain("inline `<think>")
+    })
+
+    it("handles an unclosed <think> tag (open without close) by dropping everything from <think> onward", async () => {
+      const { sanitizeProviderMessages } = await import("../../heart/session-events")
+      const sanitized = sanitizeProviderMessages([
+        { role: "user", content: "hi" },
+        {
+          role: "assistant",
+          content: "early text<think>started thinking but stream was cut",
+          tool_calls: [{ id: "call_truncated", type: "function" as const, function: { name: "settle", arguments: "{}" } }],
+        },
+        { role: "user", content: "next" },
+      ])
+      const assistant = sanitized.find((m) => m.role === "assistant") as any
+      const content = typeof assistant.content === "string" ? assistant.content : ""
+      // Everything from <think> to end of string is dropped; the early text survives.
+      expect(content).toBe("early text")
+      expect(content).not.toContain("<think>")
+    })
+
+    it("removes a tool result that appears BEFORE its matching assistant tool_call (position-aware orphan check)", async () => {
+      // Real bug observed in slugger.ouro/state/sessions/.../mcp/c11a7ba8-...:
+      // After session pruning, a synthetic tool result lived at seq 86
+      // referencing call_function_utqogadgqp5h_1, but the assistant message
+      // that defines that tool_call_id was at seq 88 — AFTER the tool result.
+      // The previous orphan check used a global Set so this looked valid,
+      // but MiniMax rejected with error 2013 because tool results must
+      // follow their matching assistant.
+      const { sanitizeProviderMessages } = await import("../../heart/session-events")
+      const sanitized = sanitizeProviderMessages([
+        { role: "user", content: "early" },
+        // Tool result referencing a tool_call_id that doesn't exist YET
+        // in the conversation
+        { role: "tool", content: "stale or misplaced result", tool_call_id: "call_xyz_1" } as any,
+        { role: "user", content: "middle" },
+        // The assistant that defines call_xyz_1 — appears AFTER the tool result above
+        {
+          role: "assistant",
+          content: null,
+          tool_calls: [{ id: "call_xyz_1", type: "function" as const, function: { name: "settle", arguments: "{\"answer\":\"ok\",\"intent\":\"complete\"}" } }],
+        },
+        // Valid following tool result for the assistant
+        { role: "tool", content: "(delivered)", tool_call_id: "call_xyz_1" } as any,
+      ])
+
+      // The misplaced tool result before the assistant is removed
+      const toolMsgs = sanitized.filter((m) => m.role === "tool") as any[]
+      expect(toolMsgs.find((m) => m.content === "stale or misplaced result")).toBeUndefined()
+
+      // The valid one (after the assistant) survives
+      expect(toolMsgs.find((m) => m.content === "(delivered)")).toBeDefined()
+
+      // The order is sane: assistant comes before its tool result
+      const assistantIdx = sanitized.findIndex((m) => m.role === "assistant" && (m as any).tool_calls)
+      const validToolIdx = sanitized.findIndex((m) => m.role === "tool" && (m as any).content === "(delivered)")
+      expect(assistantIdx).toBeLessThan(validToolIdx)
+    })
+
+    it("end-to-end: a Slugger-shaped poisoned session produces a valid replay shape after sanitize", async () => {
+      // Reproduces the exact pattern observed in
+      // ~/AgentBundles/slugger.ouro/state/sessions/.../mcp/c11a7ba8-...json:
+      // assistant with <think>...</think> + settle tool_call, no matching
+      // tool_result, then a stack of new user messages. After sanitize, the
+      // shape MiniMax sees should be: clean assistant (no think tags), the
+      // tool_call survives, an explanatory tool-result is inserted, and the
+      // user messages follow normally — no replay violation.
+      const { sanitizeProviderMessages } = await import("../../heart/session-events")
+      const sanitized = sanitizeProviderMessages([
+        { role: "user", content: "earlier user message" },
+        {
+          role: "assistant",
+          content: "<think>thinking through the answer</think>",
+          tool_calls: [{ id: "call_function_utqogadgqp5h_1", type: "function" as const, function: { name: "settle", arguments: "{\"answer\":\"the actual answer slugger wanted to deliver\",\"intent\":\"direct_reply\"}" } }],
+        },
+        // No tool_result for call_function_utqogadgqp5h_1 — the original
+        // session was saved before the result was written
+        { role: "user", content: "follow-up message 1" },
+        { role: "user", content: "follow-up message 2" },
+        { role: "user", content: "follow-up message 3 (now what?)" },
+      ])
+
+      // Find the assistant — it should NOT have <think> tags anymore
+      const assistant = sanitized.find((m) => m.role === "assistant") as any
+      expect(typeof assistant.content === "string" ? assistant.content : "").not.toContain("<think>")
+
+      // The tool_call survives so the API can match the tool_result
+      expect(assistant.tool_calls).toHaveLength(1)
+      expect(assistant.tool_calls[0].id).toBe("call_function_utqogadgqp5h_1")
+
+      // A synthetic tool-result was inserted with the explanatory message
+      const toolResult = sanitized.find((m) => m.role === "tool" && (m as any).tool_call_id === "call_function_utqogadgqp5h_1") as any
+      expect(toolResult).toBeDefined()
+      expect(toolResult.content).toContain("MiniMax")
+      expect(toolResult.content).toContain("retry the tool call")
+
+      // The user messages follow normally
+      const userMsgs = sanitized.filter((m) => m.role === "user").map((m) => m.content)
+      expect(userMsgs).toContain("earlier user message")
+      expect(userMsgs).toContain("follow-up message 1")
+      expect(userMsgs).toContain("follow-up message 2")
+      expect(userMsgs).toContain("follow-up message 3 (now what?)")
+
+      // The order is correct: assistant before its synthetic tool-result,
+      // and follow-up users come after the tool-result.
+      const assistantIdx = sanitized.findIndex((m) => m.role === "assistant")
+      const toolResultIdx = sanitized.findIndex((m) => m.role === "tool")
+      const firstFollowUpIdx = sanitized.findIndex((m) => m.role === "user" && m.content === "follow-up message 1")
+      expect(assistantIdx).toBeLessThan(toolResultIdx)
+      expect(toolResultIdx).toBeLessThan(firstFollowUpIdx)
+    })
+
+    it("leaves an assistant message with <think> but no tool_calls untouched (think tags are fine on their own)", async () => {
+      const { sanitizeProviderMessages } = await import("../../heart/session-events")
+      const sanitized = sanitizeProviderMessages([
+        { role: "user", content: "hi" },
+        { role: "assistant", content: "<think>just thinking</think>final answer here" },
+      ])
+      const assistant = sanitized.find((m) => m.role === "assistant") as any
+      // No tool_calls means no replay-rejection risk; we don't strip.
+      expect(assistant.content).toContain("<think>")
     })
   })
 })

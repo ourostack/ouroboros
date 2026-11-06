@@ -19,6 +19,7 @@ import { checkAgentConfig, checkAgentConfigWithProviderHealth } from "../../../h
 
 const mockReadFileSync = vi.mocked(fs.readFileSync)
 const mockExistsSync = vi.mocked(fs.existsSync)
+const mockWriteFileSync = vi.mocked(fs.writeFileSync)
 
 const BUNDLES = "/bundles"
 
@@ -224,6 +225,10 @@ describe("checkAgentConfigWithProviderHealth", () => {
     const result = await checkAgentConfigWithProviderHealth("myagent", BUNDLES, { pingProvider })
 
     expect(result).toEqual({ ok: true })
+    expect(refreshProviderCredentialPoolMock).toHaveBeenCalledWith("myagent", expect.objectContaining({
+      providers: ["anthropic", "github-copilot"],
+      skipCache: true,
+    }))
     expect(pingProvider).toHaveBeenCalledTimes(2)
     expect(pingProvider).toHaveBeenCalledWith("anthropic", { setupToken: "tok" }, expect.objectContaining({ model: "claude-opus-4-6" }))
     expect(pingProvider).toHaveBeenCalledWith("github-copilot", { githubToken: "gh", baseUrl: "https://copilot.example" }, expect.objectContaining({ model: "claude-sonnet-4.6" }))
@@ -236,8 +241,84 @@ describe("checkAgentConfigWithProviderHealth", () => {
     const result = await checkAgentConfigWithProviderHealth("myagent", BUNDLES, { pingProvider })
 
     expect(result).toEqual({ ok: true })
+    expect(refreshProviderCredentialPoolMock).toHaveBeenCalledWith("myagent", expect.objectContaining({
+      providers: ["anthropic"],
+      skipCache: true,
+    }))
     expect(pingProvider).toHaveBeenCalledOnce()
     expect(pingProvider).toHaveBeenCalledWith("anthropic", { setupToken: "tok" }, expect.objectContaining({ model: "claude-opus-4-6" }))
+  })
+
+  it("passes caller-specified provider ping options to the shared live check", async () => {
+    const pingProvider = vi.fn(async () => ({ ok: true }) as const)
+
+    const result = await checkAgentConfigWithProviderHealth("myagent", BUNDLES, {
+      pingProvider,
+      providerPingOptions: {
+        attemptPolicy: { maxAttempts: 1, baseDelayMs: 0, backoffMultiplier: 2 },
+        timeoutMs: 5_000,
+      },
+    })
+
+    expect(result).toEqual({ ok: true })
+    expect(pingProvider).toHaveBeenCalledWith("anthropic", { setupToken: "tok" }, expect.objectContaining({
+      model: "claude-opus-4-6",
+      attemptPolicy: { maxAttempts: 1, baseDelayMs: 0, backoffMultiplier: 2 },
+      timeoutMs: 5_000,
+    }))
+  })
+
+  it("starts distinct live provider checks in parallel", async () => {
+    let releaseFirst!: () => void
+    const firstPingGate = new Promise<void>((resolve) => {
+      releaseFirst = resolve
+    })
+    const started: string[] = []
+    mockAgentAndProviderState({
+      agentConfig: agentJson({
+        humanFacing: { provider: "anthropic", model: "claude-opus-4-6" },
+        agentFacing: { provider: "github-copilot", model: "claude-sonnet-4.6" },
+      }),
+      providerState: providerStateJson({
+        lanes: {
+          outward: {
+            provider: "anthropic",
+            model: "claude-opus-4-6",
+            source: "bootstrap",
+            updatedAt: "2026-04-12T22:30:00.000Z",
+          },
+          inner: {
+            provider: "github-copilot",
+            model: "claude-sonnet-4.6",
+            source: "local",
+            updatedAt: "2026-04-12T22:30:00.000Z",
+          },
+        },
+      }),
+    })
+    refreshProviderCredentialPoolMock.mockResolvedValue(credentialPool({
+      anthropic: providerRecord("anthropic", { credentials: { setupToken: "tok" } }),
+      "github-copilot": providerRecord("github-copilot", {
+        credentials: { githubToken: "gh" },
+        config: { baseUrl: "https://copilot.example" },
+      }),
+    }))
+    const pingProvider = vi.fn(async (provider: string) => {
+      started.push(provider)
+      if (provider === "anthropic") {
+        await firstPingGate
+      }
+      return { ok: true } as const
+    })
+
+    const resultPromise = checkAgentConfigWithProviderHealth("myagent", BUNDLES, { pingProvider })
+    await Promise.resolve()
+    await Promise.resolve()
+
+    expect(started).toEqual(["anthropic", "github-copilot"])
+
+    releaseFirst()
+    await expect(resultPromise).resolves.toEqual({ ok: true })
   })
 
   it("uses the default live provider ping when no ping dependency is supplied", async () => {
@@ -428,7 +509,43 @@ describe("checkAgentConfigWithProviderHealth", () => {
     expect(result.ok).toBe(false)
     expect(result.error).toContain("outward provider anthropic")
     expect(result.error).toContain("quota exceeded")
-    expect(result.fix).toBe("Run 'ouro auth --agent myagent --provider anthropic' to refresh credentials.")
+    expect(result.fix).toBe(
+      "This usually means anthropic hit a usage limit. Restore quota, then run 'ouro up' again. Or run 'ouro use --agent myagent --lane outward --provider <provider> --model <model>' to choose another provider/model for this lane.",
+    )
+  })
+
+  it("still recommends provider auth when the live ping says credentials are invalid", async () => {
+    const pingProvider = vi.fn(async () => ({
+      ok: false,
+      classification: "auth-failure",
+      message: "401 invalid API key",
+    }) as const)
+
+    const result = await checkAgentConfigWithProviderHealth("myagent", BUNDLES, { pingProvider })
+
+    expect(result.ok).toBe(false)
+    expect(result.error).toContain("401 invalid API key")
+    expect(result.fix).toBe(
+      "Run 'ouro auth --agent myagent --provider anthropic' to refresh credentials, or run 'ouro use --agent myagent --lane outward --provider <provider> --model <model>' to choose another provider/model for this lane.",
+    )
+  })
+
+  it("can live-check without recording readiness for orientation-only probes", async () => {
+    const pingProvider = vi.fn(async () => ({
+      ok: false,
+      classification: "network-error",
+      message: "provider ping timed out after 5000ms",
+      attempts: [],
+    }) as const)
+
+    const result = await checkAgentConfigWithProviderHealth("myagent", BUNDLES, {
+      pingProvider,
+      recordReadiness: false,
+    })
+
+    expect(result.ok).toBe(false)
+    expect(result.error).toContain("provider ping timed out after 5000ms")
+    expect(mockWriteFileSync).not.toHaveBeenCalled()
   })
 
   it("returns structural config errors before live health checks", async () => {
@@ -449,11 +566,23 @@ describe("checkAgentConfigWithProviderHealth", () => {
     const result = await checkAgentConfigWithProviderHealth("myagent", BUNDLES, { pingProvider, onProgress })
 
     expect(result).toEqual({ ok: true })
-    // Verify refreshProviderCredentialPool was called with options containing onProgress
-    expect(refreshProviderCredentialPoolMock).toHaveBeenCalledWith(
-      "myagent",
-      expect.objectContaining({ onProgress }),
-    )
+    const callArgs = refreshProviderCredentialPoolMock.mock.calls[0]
+    expect(callArgs?.[0]).toBe("myagent")
+    expect(callArgs?.[1]).toEqual(expect.objectContaining({
+      onProgress: expect.any(Function),
+      providers: ["anthropic"],
+      skipCache: true,
+    }))
+
+    const refreshProgress = callArgs?.[1]?.onProgress as ((message: string) => void) | undefined
+    expect(refreshProgress).toBeDefined()
+    refreshProgress?.("reading vault items for myagent...")
+    refreshProgress?.("reading anthropic credentials...")
+    refreshProgress?.("parsing provider credentials...")
+
+    expect(onProgress).toHaveBeenCalledWith("myagent: opening saved provider credentials in the vault")
+    expect(onProgress).toHaveBeenCalledWith("myagent: reading saved anthropic credentials")
+    expect(onProgress).toHaveBeenCalledWith("myagent: organizing saved provider credentials")
   })
 
   it("does not pass onProgress when not provided in deps (backward compat)", async () => {

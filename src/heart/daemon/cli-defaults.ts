@@ -9,11 +9,12 @@ import { spawn } from "child_process"
 import * as fs from "fs"
 import * as os from "os"
 import * as path from "path"
-import { getAgentBundlesRoot, getAgentDaemonLogsDir, getAgentName, getAgentRoot, getRepoRoot, PROVIDER_CREDENTIALS, type AgentProvider } from "../identity"
+import { getAgentBundlesRoot, getAgentDaemonLogsDir, getAgentRoot, getRepoRoot, PROVIDER_CREDENTIALS, type AgentProvider } from "../identity"
 import { emitNervesEvent } from "../../nerves/runtime"
 import { installOuroCommand as defaultInstallOuroCommand } from "../versioning/ouro-path-installer"
 import { registerOuroBundleUti as defaultRegisterOuroBundleUti } from "../versioning/ouro-uti"
 import { getCurrentVersion, getPreviousVersion, listInstalledVersions, installVersion, activateVersion, ensureLayout, getOuroCliHome, pruneOldVersions } from "../versioning/ouro-version-manager"
+import { CLI_UPDATE_CHECK_TIMEOUT_MS } from "../versioning/update-checker"
 import { ensureSkillManagement as defaultEnsureSkillManagement } from "./skill-management-installer"
 import {
   runHatchFlow as defaultRunHatchFlow,
@@ -32,7 +33,7 @@ import { getPackageVersion } from "../../mind/bundle-manifest"
 import { syncGlobalOuroBotWrapper as defaultSyncGlobalOuroBotWrapper } from "../versioning/ouro-bot-global-installer"
 import { pruneDaemonLogs as defaultPruneDaemonLogs } from "./logs-prune"
 import { readHealth, getDefaultHealthPath } from "./daemon-health"
-import { discoverLogFiles, formatLogLine, readLastLines } from "./log-tailer"
+import { discoverLogFiles, formatLogLine, readLastLines, tailLogs as defaultTailLogs } from "./log-tailer"
 import { writeLaunchAgentPlist } from "./launchd"
 import { DEFAULT_DAEMON_SOCKET_PATH, sendDaemonCommand, checkDaemonSocketAlive } from "./socket-client"
 import { listSessionActivity } from "../session-activity"
@@ -123,8 +124,40 @@ function defaultReadRecentDaemonLogLines(lines = 10): string[] {
   return recentLines.slice(-lines).map((line) => formatLogLine(line))
 }
 
+/* v8 ignore start -- CLI npm registry fetch wrapper: integration code @preserve */
+async function defaultFetchCliRegistryJson(timeoutMs: number): Promise<unknown> {
+  const controller = new AbortController()
+  const timeoutId = setTimeout(() => {
+    controller.abort()
+  }, timeoutMs)
+
+  try {
+    const res = await fetch("https://registry.npmjs.org/@ouro.bot/cli", {
+      signal: controller.signal,
+    })
+    return res.json()
+  } catch (error) {
+    if (error instanceof Error && error.name === "AbortError") {
+      throw new Error(`update check timed out after ${Math.max(1, Math.round(timeoutMs / 1000))}s`)
+    }
+    throw error
+  } finally {
+    clearTimeout(timeoutId)
+  }
+}
+/* v8 ignore stop */
+
 function defaultSleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms))
+}
+
+function defaultSpawnBackgroundCli(argv: string[]): Promise<{ pid: number | null }> {
+  const child = spawn(process.execPath, argv, {
+    detached: true,
+    stdio: "ignore",
+  })
+  child.unref()
+  return Promise.resolve({ pid: child.pid ?? null })
 }
 
 function defaultFallbackPendingMessage(command: Extract<import("./daemon").DaemonCommand, { kind: "message.send" }>): string {
@@ -511,20 +544,27 @@ export function createDefaultOuroCliDeps(socketPath = DEFAULT_DAEMON_SOCKET_PATH
     sendCommand: sendDaemonCommand,
     startDaemonProcess: defaultStartDaemonProcess,
     writeStdout: defaultWriteStdout,
+    setExitCode: (code: number) => {
+      const current = typeof process.exitCode === "number" ? process.exitCode : 0
+      process.exitCode = Math.max(current, code)
+    },
     writeRaw: defaultWriteRaw,
     isTTY: process.stdout.isTTY === true,
     checkSocketAlive: checkDaemonSocketAlive,
     cleanupStaleSocket: defaultCleanupStaleSocket,
     fallbackPendingMessage: defaultFallbackPendingMessage,
+    tailLogs: (options) => defaultTailLogs(options),
     healthFilePath: getDefaultHealthPath(),
     readHealthState: readHealth,
     readHealthUpdatedAt: defaultReadHealthUpdatedAt,
     readRecentDaemonLogLines: defaultReadRecentDaemonLogLines,
     sleep: defaultSleep,
+    spawnBackgroundCli: defaultSpawnBackgroundCli,
     now: () => Date.now(),
+    updateCheckTimeoutMs: CLI_UPDATE_CHECK_TIMEOUT_MS,
     startupPollIntervalMs: 250,
     startupStabilityWindowMs: 1_500,
-    startupTimeoutMs: 10_000,
+    startupTimeoutMs: 60_000,
     startupRetryLimit: 1,
     listDiscoveredAgents: defaultListDiscoveredAgents,
     runHatchFlow: defaultRunHatchFlow,
@@ -560,10 +600,7 @@ export function createDefaultOuroCliDeps(socketPath = DEFAULT_DAEMON_SOCKET_PATH
     checkForCliUpdate: async () => {
       const { checkForUpdate } = await import("../versioning/update-checker")
       return checkForUpdate(getPackageVersion(), {
-        fetchRegistryJson: async () => {
-          const res = await fetch("https://registry.npmjs.org/@ouro.bot/cli")
-          return res.json()
-        },
+        fetchRegistryJson: () => defaultFetchCliRegistryJson(CLI_UPDATE_CHECK_TIMEOUT_MS),
         distTag: "latest",
       })
     },
@@ -607,8 +644,7 @@ export function createDefaultOuroCliDeps(socketPath = DEFAULT_DAEMON_SOCKET_PATH
       const { main } = await import("../../senses/cli")
       await main(agentName)
     },
-    scanSessions: async () => {
-      const agentName = getAgentName()
+    scanSessions: async (agentName: string) => {
       const agentRoot = getAgentRoot(agentName)
       return listSessionActivity({
         sessionsDir: path.join(agentRoot, "state", "sessions"),
