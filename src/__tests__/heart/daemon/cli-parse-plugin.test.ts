@@ -6,11 +6,11 @@ describe("parsePluginCommand — install", () => {
     const cmd = parseOuroCommand([
       "plugin",
       "install",
-      "github:ourostack/ouroboros-skills:plugins/desk",
+      "github:ourostack/desk:plugins/desk",
     ])
     expect(cmd.kind).toBe("plugin.install")
     if (cmd.kind === "plugin.install") {
-      expect(cmd.source).toBe("github:ourostack/ouroboros-skills:plugins/desk")
+      expect(cmd.source).toBe("github:ourostack/desk:plugins/desk")
       expect(cmd.agent).toBeUndefined()
       expect(cmd.version).toBeUndefined()
     }
@@ -20,7 +20,7 @@ describe("parsePluginCommand — install", () => {
     const cmd = parseOuroCommand([
       "plugin",
       "install",
-      "github:ourostack/ouroboros-skills:plugins/desk",
+      "github:ourostack/desk:plugins/desk",
       "--agent",
       "slugger",
       "--version",
@@ -28,7 +28,7 @@ describe("parsePluginCommand — install", () => {
     ])
     expect(cmd.kind).toBe("plugin.install")
     if (cmd.kind === "plugin.install") {
-      expect(cmd.source).toBe("github:ourostack/ouroboros-skills:plugins/desk")
+      expect(cmd.source).toBe("github:ourostack/desk:plugins/desk")
       expect(cmd.agent).toBe("slugger")
       expect(cmd.version).toBe("0.1.0")
     }

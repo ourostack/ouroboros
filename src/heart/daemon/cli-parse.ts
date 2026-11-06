@@ -2139,7 +2139,7 @@ function parsePluginCommand(args: string[]): OuroCliCommand {
     const source = positional[0]
     if (!source) {
       throw new Error(
-        "plugin install requires a source (e.g. github:ourostack/ouroboros-skills:plugins/desk)",
+        "plugin install requires a source (e.g. github:ourostack/desk:plugins/desk)",
       )
     }
     return {
