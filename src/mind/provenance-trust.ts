@@ -1,5 +1,5 @@
 import type { DiaryEntryProvenance } from "./diary"
-import { isTrustedLevel, type TrustLevel } from "./friends/types"
+import { isTrustedLevel, type TrustLevel } from "@ouro.bot/friends"
 
 export type ProvenanceTrust = "self" | "trusted" | "external"
 

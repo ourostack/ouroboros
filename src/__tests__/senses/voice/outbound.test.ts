@@ -2,7 +2,7 @@ import * as fs from "fs/promises"
 import * as os from "os"
 import * as path from "path"
 import { beforeEach, describe, expect, it, vi } from "vitest"
-import type { FriendRecord } from "../../../mind/friends/types"
+import type { FriendRecord } from "@ouro.bot/friends"
 
 const { placeConfiguredTwilioPhoneCall } = vi.hoisted(() => ({
   placeConfiguredTwilioPhoneCall: vi.fn(),

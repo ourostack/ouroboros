@@ -74,7 +74,7 @@ describe("describe_image tool", () => {
     it("is available for BlueBubbles on non-vision models", async () => {
       emitTestEvent("describe_image bluebubbles non-vision")
       const { getToolsForChannel } = await import("../../repertoire/tools")
-      const { getChannelCapabilities } = await import("../../mind/friends/channel")
+      const { getChannelCapabilities } = await import("@ouro.bot/friends")
       const tools = getToolsForChannel(
         getChannelCapabilities("bluebubbles"),
         undefined,
@@ -89,7 +89,7 @@ describe("describe_image tool", () => {
     it("stays available for BlueBubbles on vision-capable models", async () => {
       emitTestEvent("describe_image bluebubbles vision")
       const { getToolsForChannel } = await import("../../repertoire/tools")
-      const { getChannelCapabilities } = await import("../../mind/friends/channel")
+      const { getChannelCapabilities } = await import("@ouro.bot/friends")
       const tools = getToolsForChannel(
         getChannelCapabilities("bluebubbles"),
         undefined,
@@ -104,7 +104,7 @@ describe("describe_image tool", () => {
     it("is also available on non-BlueBubbles channels because attachment handling is cross-sense", async () => {
       emitTestEvent("describe_image teams")
       const { getToolsForChannel } = await import("../../repertoire/tools")
-      const { getChannelCapabilities } = await import("../../mind/friends/channel")
+      const { getChannelCapabilities } = await import("@ouro.bot/friends")
       const tools = getToolsForChannel(
         getChannelCapabilities("teams"),
         undefined,

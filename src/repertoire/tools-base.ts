@@ -1,6 +1,5 @@
 import type OpenAI from "openai";
-import type { Integration, ResolvedContext } from "../mind/friends/types";
-import type { FriendStore } from "../mind/friends/store";
+import type { Integration, ResolvedContext, FriendStore } from "@ouro.bot/friends"
 import type { BridgeRecord, BridgeSessionRef } from "../heart/bridges/store";
 import type { ActiveWorkFrame } from "../heart/active-work";
 import type { FlightRecorderProducedRef, HabitPermissionEnvelope, HabitSurfaceAttempt, HabitToolPolicy } from "../arc/flight-recorder";

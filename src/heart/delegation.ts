@@ -1,4 +1,4 @@
-import type { Channel } from "../mind/friends/types"
+import type { Channel } from "@ouro.bot/friends"
 import { emitNervesEvent } from "../nerves/runtime"
 import type { ActiveWorkFrame } from "./active-work"
 

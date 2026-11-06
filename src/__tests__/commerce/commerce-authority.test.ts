@@ -22,7 +22,7 @@ import {
 import { guardInvocation } from "../../repertoire/guardrails"
 import { commerceToolDefinitions } from "../../repertoire/tools-commerce"
 import type { ToolContext } from "../../repertoire/tools-base"
-import type { FriendRecord } from "../../mind/friends/types"
+import type { FriendRecord } from "@ouro.bot/friends"
 
 let tmp: TmpBundleHandle | null = null
 

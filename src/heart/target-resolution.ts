@@ -1,8 +1,7 @@
-import type { FriendStore } from "../mind/friends/store"
-import type { Channel, FriendRecord } from "../mind/friends/types"
+import { describeTrustContext, type TrustExplanation } from "@ouro.bot/friends"
+import type { FriendStore, Channel, FriendRecord } from "@ouro.bot/friends"
 import { summarizeSessionTail, type SessionTailOptions } from "./session-transcript"
 import { listSessionActivity } from "./session-activity"
-import { describeTrustContext, type TrustExplanation } from "../mind/friends/trust-explanation"
 import { emitNervesEvent } from "../nerves/runtime"
 
 export interface TargetSessionCandidate {

@@ -48,24 +48,26 @@ vi.mock("../../../mind/context", () => ({
   deleteSession: vi.fn(),
 }))
 
-vi.mock("../../../mind/friends/tokens", () => ({
-  accumulateFriendTokens: vi.fn(),
-}))
-
-vi.mock("../../../mind/friends/store-file", () => ({
-  FileFriendStore: vi.fn(function (this: any) {
-    this.get = vi.fn()
-    this.put = vi.fn()
-    this.listAll = vi.fn().mockResolvedValue([])
-    this.findByExternalId = vi.fn().mockResolvedValue(null)
-  }),
-}))
-
-vi.mock("../../../mind/friends/resolver", () => ({
-  FriendResolver: vi.fn(function (this: any) {
-    this.resolve = vi.fn()
-  }),
-}))
+// Friends now lives in the @ouro.bot/friends package (a single barrel module).
+// The previously separate tokens/store-file/resolver/channel mocks merge into one
+// package mock that spreads the real barrel and overrides the four used symbols.
+vi.mock("@ouro.bot/friends", async () => {
+  const actual = await vi.importActual<typeof import("@ouro.bot/friends")>("@ouro.bot/friends")
+  return {
+    ...actual,
+    accumulateFriendTokens: vi.fn(),
+    getChannelCapabilities: vi.fn(),
+    FileFriendStore: vi.fn(function (this: any) {
+      this.get = vi.fn()
+      this.put = vi.fn()
+      this.listAll = vi.fn().mockResolvedValue([])
+      this.findByExternalId = vi.fn().mockResolvedValue(null)
+    }),
+    FriendResolver: vi.fn(function (this: any) {
+      this.resolve = vi.fn()
+    }),
+  }
+})
 
 vi.mock("../../../heart/identity", () => ({
   getAgentName: vi.fn().mockReturnValue("testagent"),
@@ -100,10 +102,6 @@ vi.mock("node:http", () => ({
 
 vi.mock("../../../senses/pipeline", () => ({
   handleInboundTurn: vi.fn(),
-}))
-
-vi.mock("../../../mind/friends/channel", () => ({
-  getChannelCapabilities: vi.fn(),
 }))
 
 vi.mock("../../../mind/pending", () => ({

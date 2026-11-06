@@ -4,7 +4,7 @@ import * as os from "node:os"
 import * as path from "node:path"
 import { execTool, getToolsForChannel } from "../../repertoire/tools"
 import type { ToolContext } from "../../repertoire/tools"
-import { getChannelCapabilities } from "../../mind/friends/channel"
+import { getChannelCapabilities } from "@ouro.bot/friends"
 
 describe("guardrails integration — full flow", () => {
   it("acquaintance: ouro whoami passes guardrails (reaches handler)", async () => {

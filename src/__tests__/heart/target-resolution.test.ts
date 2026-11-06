@@ -3,8 +3,7 @@ import * as fs from "node:fs"
 import * as os from "node:os"
 import * as path from "node:path"
 
-import type { FriendStore } from "../../mind/friends/store"
-import type { FriendRecord } from "../../mind/friends/types"
+import type { FriendStore, FriendRecord } from "@ouro.bot/friends"
 
 type TargetResolutionModule = typeof import("../../heart/target-resolution")
 

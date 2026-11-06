@@ -89,10 +89,6 @@ vi.mock("../../heart/provider-failover", () => ({
   handleFailoverReply: vi.fn(),
 }))
 
-vi.mock("../../mind/friends/store", () => ({
-  makeFriendStore: vi.fn(),
-}))
-
 describe("start-of-turn packet prompt section", () => {
   beforeEach(() => {
     vi.resetModules()

@@ -4,7 +4,7 @@ import { listSkills, loadSkill } from "./skills";
 import { getIntegrationsConfig } from "../heart/config";
 import { emitNervesEvent } from "../nerves/runtime";
 import { getAgentRoot } from "../heart/identity";
-import type { FriendRecord } from "../mind/friends/types";
+import type { FriendRecord } from "@ouro.bot/friends"
 import { readDiaryEntries, saveDiaryEntry, searchDiaryEntries, type DiaryEntryProvenance } from "../mind/diary";
 import { resolveRecordDiaryRoot } from "../mind/record-paths";
 import { classifyProvenanceTrust } from "../mind/provenance-trust";

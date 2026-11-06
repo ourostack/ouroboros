@@ -1,4 +1,4 @@
-import type { TrustLevel } from "../mind/friends/types"
+import type { TrustLevel } from "@ouro.bot/friends"
 import { emitNervesEvent } from "../nerves/runtime"
 import {
   bestEventTimestamp,

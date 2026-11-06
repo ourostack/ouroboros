@@ -29,7 +29,7 @@ vi.mock("../../heart/provider-credentials", () => ({
 
 import { getToolsForChannel } from "../../repertoire/tools"
 import { attachmentToolDefinitions } from "../../repertoire/tools-attachments"
-import { getChannelCapabilities } from "../../mind/friends/channel"
+import { getChannelCapabilities } from "@ouro.bot/friends"
 import { cacheRecentAttachment } from "../../heart/attachments/store"
 import { buildCliLocalFileAttachmentRecord } from "../../heart/attachments/sources/cli-local-file"
 import * as materializeModule from "../../heart/attachments/materialize"

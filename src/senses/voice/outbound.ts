@@ -1,6 +1,6 @@
 import * as fs from "fs"
 import * as path from "path"
-import { isTrustedLevel, type FriendRecord } from "../../mind/friends/types"
+import { isTrustedLevel, type FriendRecord } from "@ouro.bot/friends"
 import { emitNervesEvent } from "../../nerves/runtime"
 import { normalizeTwilioE164PhoneNumber } from "./phone"
 import type { VoiceCallAudioRequest } from "../../repertoire/tools-base"

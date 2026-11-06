@@ -73,9 +73,15 @@ vi.mock("../../heart/habits/habit-session-summary", () => ({
   readHabitSessionSummary: (...args: any[]) => mockReadHabitSessionSummary(...args),
 }))
 
-vi.mock("../../mind/friends/store-file", () => ({
-  FileFriendStore: MockFileFriendStore,
-}))
+// Friends now lives in the @ouro.bot/friends package (a single barrel module).
+// Mock the package, spreading the real barrel and overriding FileFriendStore.
+vi.mock("@ouro.bot/friends", async () => {
+  const actual = await vi.importActual<typeof import("@ouro.bot/friends")>("@ouro.bot/friends")
+  return {
+    ...actual,
+    FileFriendStore: MockFileFriendStore,
+  }
+})
 
 vi.mock("../../arc/flight-recorder", () => ({
   createHabitRunId: (...args: any[]) => mockCreateHabitRunId(...args),

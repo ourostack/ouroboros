@@ -1,7 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from "vitest"
 import type { ChatCompletionMessageParam } from "openai/resources/chat/completions"
 import type { ChannelCallbacks } from "../../heart/core"
-import type { FriendRecord, ResolvedContext, Channel, ChannelCapabilities } from "../../mind/friends/types"
+import type { FriendRecord, ResolvedContext, Channel, ChannelCapabilities } from "@ouro.bot/friends"
 import type { InboundTurnResult } from "../../senses/pipeline"
 
 // ── Mocks ──────────────────────────────────────────────────────
@@ -94,23 +94,7 @@ const mockGetChannelCapabilities = vi.fn().mockReturnValue({
   maxMessageLength: Infinity,
 })
 
-vi.mock("../../mind/friends/channel", async () => {
-  const actual = await vi.importActual<typeof import("../../mind/friends/channel")>("../../mind/friends/channel")
-  return {
-    ...actual,
-    getChannelCapabilities: (...args: any[]) => mockGetChannelCapabilities(...args),
-  }
-})
-
 const mockFriendResolve = vi.fn()
-
-vi.mock("../../mind/friends/resolver", async () => {
-  const actual = await vi.importActual<typeof import("../../mind/friends/resolver")>("../../mind/friends/resolver")
-  return {
-    ...actual,
-    FriendResolver: vi.fn().mockImplementation(function () { return { resolve: (...args: any[]) => mockFriendResolve(...args) } }),
-  }
-})
 
 const mockStoreInstance = {
   get: vi.fn().mockResolvedValue(null),
@@ -121,10 +105,15 @@ const mockStoreInstance = {
   listAll: vi.fn().mockResolvedValue([]),
 }
 
-vi.mock("../../mind/friends/store-file", async () => {
-  const actual = await vi.importActual<typeof import("../../mind/friends/store-file")>("../../mind/friends/store-file")
+// The friend model now lives in the @ouro.bot/friends package, which exposes a
+// single module (the barrel). The previously separate channel/resolver/store-file
+// mocks are merged into one mock of the package, overriding the same three symbols.
+vi.mock("@ouro.bot/friends", async () => {
+  const actual = await vi.importActual<typeof import("@ouro.bot/friends")>("@ouro.bot/friends")
   return {
     ...actual,
+    getChannelCapabilities: (...args: any[]) => mockGetChannelCapabilities(...args),
+    FriendResolver: vi.fn().mockImplementation(function () { return { resolve: (...args: any[]) => mockFriendResolve(...args) } }),
     FileFriendStore: vi.fn().mockImplementation(function () { return mockStoreInstance }),
   }
 })
@@ -379,7 +368,7 @@ describe("runSenseTurn", () => {
     const caps = { ...makeMcpCapabilities(), channel: "a2a", senseType: "open" } as ChannelCapabilities
     mockGetChannelCapabilities.mockReturnValueOnce(caps)
     mockFriendResolve.mockResolvedValueOnce({ friend: makeFriend({ kind: "agent" }), channel: caps })
-    const { FriendResolver } = await import("../../mind/friends/resolver")
+    const { FriendResolver } = await import("@ouro.bot/friends")
     const { runSenseTurn } = await import("../../senses/shared-turn")
     await runSenseTurn({
       agentName: "test-agent",
@@ -407,7 +396,7 @@ describe("runSenseTurn", () => {
     const caps = { ...makeMcpCapabilities(), channel: "a2a", senseType: "open" } as ChannelCapabilities
     mockGetChannelCapabilities.mockReturnValueOnce(caps)
     mockFriendResolve.mockResolvedValueOnce({ friend: makeFriend({ kind: "agent" }), channel: caps })
-    const { FriendResolver } = await import("../../mind/friends/resolver")
+    const { FriendResolver } = await import("@ouro.bot/friends")
     const { runSenseTurn } = await import("../../senses/shared-turn")
     await runSenseTurn({
       agentName: "test-agent",

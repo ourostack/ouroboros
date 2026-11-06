@@ -6,7 +6,7 @@ import { emitNervesEvent } from "../../nerves/runtime"
 import { getAgentBundlesRoot, normalizeSenses, PROVIDER_CREDENTIALS, type AgentConfig, type AgentProvider } from "../identity"
 import { migrateAgentConfigV1ToV2 } from "../migrate-config"
 import { resolveModelForProviderSelection } from "../provider-models"
-import type { Facing } from "../../mind/friends/channel"
+import type { Facing } from "@ouro.bot/friends"
 import type { HatchCredentialsInput } from "../hatch/hatch-flow"
 import {
   providerCredentialItemName,

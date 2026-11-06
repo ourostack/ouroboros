@@ -19,7 +19,7 @@ import {
   type HabitRunSummarySnapshot,
 } from "../arc/flight-recorder"
 import { readHabitSessionSummary } from "../heart/habits/habit-session-summary"
-import { FileFriendStore } from "../mind/friends/store-file"
+import { FileFriendStore } from "@ouro.bot/friends"
 import { baseToolDefinitions, type HabitSessionToolContext, type ToolDefinition, type ToolRiskProfile } from "../repertoire/tools-base"
 import { surfaceToolDefinition } from "../repertoire/tools-surface"
 import { riskProfileForTool } from "../repertoire/tools"

@@ -29,23 +29,27 @@ vi.mock("../../heart/identity", () => ({
   })),
 }))
 
-vi.mock("../../mind/friends/store-file", () => ({
-  FileFriendStore: vi.fn(function (this: any) {
-    this.get = vi.fn()
-    this.put = vi.fn()
-    this.delete = vi.fn()
-    this.findByExternalId = vi.fn()
-  }),
-}))
-
-vi.mock("../../mind/friends/resolver", () => ({
-  FriendResolver: vi.fn(function (this: any) {
-    this.resolve = vi.fn()
-  }),
-}))
+// Friends now lives in the @ouro.bot/friends package (a single barrel module).
+// The previously separate store-file/resolver mocks merge into one package mock
+// that spreads the real barrel and overrides FileFriendStore + FriendResolver.
+vi.mock("@ouro.bot/friends", async () => {
+  const actual = await vi.importActual<typeof import("@ouro.bot/friends")>("@ouro.bot/friends")
+  return {
+    ...actual,
+    FileFriendStore: vi.fn(function (this: any) {
+      this.get = vi.fn()
+      this.put = vi.fn()
+      this.delete = vi.fn()
+      this.findByExternalId = vi.fn()
+    }),
+    FriendResolver: vi.fn(function (this: any) {
+      this.resolve = vi.fn()
+    }),
+  }
+})
 
 import { emitNervesEvent } from "../../nerves/runtime"
-import { FileFriendStore } from "../../mind/friends/store-file"
+import { FileFriendStore } from "@ouro.bot/friends"
 
 const tempDirs: string[] = []
 const teamsPromise = import("../../senses/teams")

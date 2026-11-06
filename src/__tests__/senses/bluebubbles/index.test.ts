@@ -146,32 +146,34 @@ vi.mock("../../../mind/context", () => ({
   deleteSession: vi.fn(),
 }))
 
-vi.mock("../../../mind/friends/tokens", () => ({
-  accumulateFriendTokens: (...args: any[]) => mocks.accumulateFriendTokens(...args),
-}))
-
-vi.mock("../../../mind/friends/store-file", () => ({
-  FileFriendStore: vi.fn(function (this: any, root: string) {
-    mocks.storeCtor(root)
-    mocks.lastStoreInstance = this
-    this.get = vi.fn()
-    this.put = vi.fn()
-    this.delete = vi.fn()
-    this.findByExternalId = (...args: any[]) => mocks.findByExternalId(...args)
-    this.hasAnyFriends = vi.fn().mockResolvedValue(true)
-    Object.defineProperty(this, "listAll", {
-      get: () => mocks.listAll ? (...args: any[]) => mocks.listAll(...args) : undefined,
-      configurable: true,
-    })
-  }),
-}))
-
-vi.mock("../../../mind/friends/resolver", () => ({
-  FriendResolver: vi.fn(function (this: any, store: unknown, params: unknown) {
-    mocks.resolverCtor(store, params)
-    this.resolve = (...args: any[]) => mocks.resolveContext(...args)
-  }),
-}))
+// Friends now lives in the @ouro.bot/friends package (a single barrel module).
+// The previously separate tokens/store-file/resolver/channel mocks merge into one
+// package mock that spreads the real barrel and overrides the four used symbols.
+vi.mock("@ouro.bot/friends", async () => {
+  const actual = await vi.importActual<typeof import("@ouro.bot/friends")>("@ouro.bot/friends")
+  return {
+    ...actual,
+    accumulateFriendTokens: (...args: any[]) => mocks.accumulateFriendTokens(...args),
+    getChannelCapabilities: (...args: any[]) => mocks.getChannelCapabilities(...args),
+    FileFriendStore: vi.fn(function (this: any, root: string) {
+      mocks.storeCtor(root)
+      mocks.lastStoreInstance = this
+      this.get = vi.fn()
+      this.put = vi.fn()
+      this.delete = vi.fn()
+      this.findByExternalId = (...args: any[]) => mocks.findByExternalId(...args)
+      this.hasAnyFriends = vi.fn().mockResolvedValue(true)
+      Object.defineProperty(this, "listAll", {
+        get: () => mocks.listAll ? (...args: any[]) => mocks.listAll(...args) : undefined,
+        configurable: true,
+      })
+    }),
+    FriendResolver: vi.fn(function (this: any, store: unknown, params: unknown) {
+      mocks.resolverCtor(store, params)
+      this.resolve = (...args: any[]) => mocks.resolveContext(...args)
+    }),
+  }
+})
 
 vi.mock("../../../heart/identity", () => ({
   getAgentName: mocks.getAgentName,
@@ -215,10 +217,6 @@ vi.mock("node:http", () => ({
 
 vi.mock("../../../senses/pipeline", () => ({
   handleInboundTurn: (...args: any[]) => mocks.handleInboundTurn(...args),
-}))
-
-vi.mock("../../../mind/friends/channel", () => ({
-  getChannelCapabilities: (...args: any[]) => mocks.getChannelCapabilities(...args),
 }))
 
 vi.mock("../../../mind/pending", () => ({

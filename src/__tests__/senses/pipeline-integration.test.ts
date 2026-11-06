@@ -8,19 +8,13 @@ import * as path from "path"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import type { ChatCompletionMessageParam } from "openai/resources/chat/completions"
 import type { ChannelCallbacks, RunAgentOptions } from "../../heart/core"
-import type {
-  Channel,
-  ChannelCapabilities,
-  FriendRecord,
-  ResolvedContext,
-} from "../../mind/friends/types"
-import type { FriendStore } from "../../mind/friends/store"
+import { getChannelCapabilities } from "@ouro.bot/friends"
+import type { Channel, ChannelCapabilities, FriendRecord, ResolvedContext, FriendStore } from "@ouro.bot/friends"
 import type { UsageData } from "../../mind/context"
 import type { PendingMessage } from "../../mind/pending"
 import { handleInboundTurn } from "../../senses/pipeline"
 import type { InboundTurnInput } from "../../senses/pipeline"
 import { enforceTrustGate, STRANGER_AUTO_REPLY } from "../../senses/trust-gate"
-import { getChannelCapabilities } from "../../mind/friends/channel"
 import { getToolsForChannel } from "../../repertoire/tools"
 import { parseOuroCommand } from "../../heart/daemon/daemon-cli"
 import { getAgentRoot, resetIdentity, setAgentName } from "../../heart/identity"

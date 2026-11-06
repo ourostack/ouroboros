@@ -4,7 +4,7 @@ import * as os from "node:os"
 import * as path from "node:path"
 import { baseToolDefinitions, editFileReadTracker } from "../../repertoire/tools-base"
 import { getToolsForChannel } from "../../repertoire/tools"
-import { getChannelCapabilities } from "../../mind/friends/channel"
+import { getChannelCapabilities } from "@ouro.bot/friends"
 import { makeOversizedAgentContent } from "../helpers/content-cap"
 
 describe("edit_file tool", () => {

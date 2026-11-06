@@ -1,6 +1,6 @@
 import * as fs from "node:fs"
 import * as path from "node:path"
-import { isTrustedLevel, type TrustLevel } from "../mind/friends/types"
+import { isTrustedLevel, type TrustLevel } from "@ouro.bot/friends"
 import { emitNervesEvent } from "../nerves/runtime"
 import { validateCommerceAuthority } from "../commerce/store"
 
