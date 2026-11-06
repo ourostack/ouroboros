@@ -128,6 +128,10 @@ const RM_RECURSIVE_ALLOWLIST: Array<{ file: string; why: string }> = [
     file: "src/heart/daemon/stale-bundle-prune.ts",
     why: "Stale ephemeral bundle pruning: removes .ouro directories that have no agent.json during `ouro up`. Not agent-callable — runs inside the daemon.up handler before ensureDaemonRunning.",
   },
+  {
+    file: "src/heart/daemon/plugin-cli.ts",
+    why: "Plugin install/remove CLI infrastructure: removes plugin directories under ~/.ouro-cli/plugins/<id>/ during `ouro plugin install` rollback and `ouro plugin remove`. Not agent-callable — runs inside operator-invoked `ouro plugin` commands; the plugin install is a transaction (clone → verify manifest → rollback on failure).",
+  },
 ]
 
 // Files that are themselves the enforcement layer for the rm-rf rule
@@ -184,12 +188,12 @@ const OURO_DAEMON_INSTANTIATION_ALLOWLIST = new Set<string>([
   // emission is inside the daemon's own error path. Uses mode: "dev" to
   // skip update checker and a processManager that throws synthetically.
   "src/__tests__/nerves/pairing-regression.test.ts",
-  // Exercises the Outlook HTTP server lifecycle via the injected
-  // outlookServerFactory seam. The real factory binds port 6876 which
+  // Exercises the Mailbox HTTP server lifecycle via the injected
+  // mailboxServerFactory seam. The real factory binds port 6876 which
   // a running production daemon holds; DI lets tests use an process-local
   // stub and cover the try/catch/stop branches that were previously
   // v8-ignored.
-  "src/__tests__/heart/daemon/daemon-outlook-lifecycle.test.ts",
+  "src/__tests__/heart/daemon/daemon-mailbox-lifecycle.test.ts",
 ])
 
 const TESTS_ROOT = join(process.cwd(), "src", "__tests__")
@@ -238,7 +242,6 @@ const ACTIVE_SURFACE_ENTRIES = [
   "AGENTS.md",
   "README.md",
   "docs",
-  "lobster-research.md",
   "packages",
   "src",
 ]

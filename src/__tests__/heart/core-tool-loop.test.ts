@@ -142,6 +142,73 @@ describe("runAgent tool loop guard", () => {
     await setupMinimax()
   })
 
+  it("isChatStyleChannel returns true for live conversational channels, false otherwise", async () => {
+    const { isChatStyleChannel } = await import("../../heart/core")
+    expect(isChatStyleChannel("cli")).toBe(true)
+    expect(isChatStyleChannel("teams")).toBe(true)
+    expect(isChatStyleChannel("bluebubbles")).toBe(true)
+    expect(isChatStyleChannel("voice")).toBe(true)
+    expect(isChatStyleChannel("inner")).toBe(false)
+    expect(isChatStyleChannel("mcp")).toBe(false)
+    expect(isChatStyleChannel("mail")).toBe(false)
+    expect(isChatStyleChannel("anything-else")).toBe(false)
+  })
+
+  it("activeTools includes speakTool for channel='cli' and excludes for channel='inner'", async () => {
+    // Capture the tools passed to the provider in two runs
+    let capturedToolsByCall: Array<Array<{ function: { name: string } }>> = []
+    mockCreate.mockImplementation((req: any) => {
+      capturedToolsByCall.push(req.tools as any)
+      return makeStream([
+        makeChunk(undefined, [
+          {
+            index: 0,
+            id: "call_settle",
+            function: { name: "settle", arguments: '{"answer":"done"}' },
+          },
+        ]),
+      ])
+    })
+
+    const { runAgent } = await import("../../heart/core")
+    const execTool = vi.fn().mockResolvedValue("ok")
+
+    // CLI channel: speak should be included
+    await runAgent([{ role: "system", content: "test" }], makeCallbacks(), "cli", undefined, {
+      toolChoiceRequired: true,
+      execTool,
+      toolContext: { signin: async () => undefined },
+    })
+    const cliToolNames = capturedToolsByCall[0]?.map((t) => t.function.name) ?? []
+    expect(cliToolNames).toContain("speak")
+    expect(cliToolNames).toContain("settle")
+
+    // Reset capture; mock now needs another stream for the inner run
+    capturedToolsByCall = []
+    mockCreate.mockImplementation((req: any) => {
+      capturedToolsByCall.push(req.tools as any)
+      return makeStream([
+        makeChunk(undefined, [
+          {
+            index: 0,
+            id: "call_rest",
+            function: { name: "rest", arguments: "{}" },
+          },
+        ]),
+      ])
+    })
+
+    await runAgent([{ role: "system", content: "test" }], makeCallbacks(), "inner", undefined, {
+      toolChoiceRequired: true,
+      execTool,
+      toolContext: { signin: async () => undefined },
+    })
+    const innerToolNames = capturedToolsByCall[0]?.map((t) => t.function.name) ?? []
+    expect(innerToolNames).not.toContain("speak")
+    expect(innerToolNames).not.toContain("settle")
+    expect(innerToolNames).toContain("rest")
+  })
+
   it("blocks repeated no-progress polling and lets the model recover with settle", async () => {
     let callCount = 0
     mockCreate.mockImplementation(() => {
@@ -202,5 +269,58 @@ describe("runAgent tool loop guard", () => {
     )
     expect(loopGuardMessage?.content).toContain("stop polling")
     expect(callbacks.onToolEnd).toHaveBeenCalledWith("coding_status", "sessionId=coding-001", false)
+  })
+
+  it("passes a run-level orientation frame into tool execution even without an existing tool context", async () => {
+    mockCreate
+      .mockReturnValueOnce(makeStream([
+        makeChunk(undefined, [
+          {
+            index: 0,
+            id: "call_orientation",
+            function: {
+              name: "orientation_get",
+              arguments: "{}",
+            },
+          },
+        ]),
+      ]))
+      .mockReturnValueOnce(makeStream([
+        makeChunk(undefined, [
+          {
+            index: 0,
+            id: "call_final",
+            function: {
+              name: "settle",
+              arguments: '{"answer":"checked orientation"}',
+            },
+          },
+        ]),
+      ]))
+
+    const { runAgent } = await import("../../heart/core")
+    const orientationFrame = {
+      schemaVersion: 1 as const,
+      channel: "bluebubbles",
+      currentUserSpeech: ["same"],
+      priorAssistantReferents: [],
+      signals: ["terse_referent" as const],
+      actionPolicy: {
+        mode: "correction_hold" as const,
+        reason: "Current user speech appears referent-dependent; inspect orientation before mutating durable state.",
+        blockedMutationKinds: ["durable_state_write", "external_side_effect"],
+      },
+    }
+    const execTool = vi.fn().mockResolvedValue(JSON.stringify(orientationFrame))
+    const callbacks = makeCallbacks()
+
+    const result = await runAgent([{ role: "user", content: "same" }], callbacks, undefined, undefined, {
+      toolChoiceRequired: true,
+      execTool,
+      orientationFrame,
+    })
+
+    expect(execTool).toHaveBeenCalledWith("orientation_get", {}, expect.objectContaining({ orientationFrame }))
+    expect(result.completion).toMatchObject({ answer: "checked orientation" })
   })
 })

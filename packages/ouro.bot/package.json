@@ -1,13 +1,13 @@
 {
   "name": "ouro.bot",
-  "version": "0.1.0-alpha.424",
+  "version": "0.1.0-alpha.630",
   "description": "npx-friendly wrapper for @ouro.bot/cli",
   "bin": {
     "ouro.bot": "index.js"
   },
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/ouroborosbot/ouroboros.git"
+    "url": "git+https://github.com/ourostack/ouroboros.git"
   },
   "license": "MIT"
 }

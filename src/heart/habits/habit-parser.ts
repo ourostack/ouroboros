@@ -1,5 +1,5 @@
 import * as path from "path"
-import { parseFrontmatter } from "../../repertoire/tasks/parser"
+import { parseFrontmatter } from "../../util/frontmatter"
 import { emitNervesEvent } from "../../nerves/runtime"
 
 export type HabitStatus = "active" | "paused"
@@ -86,7 +86,7 @@ export function parseHabitFile(content: string, filePath: string): HabitFile {
   const status: HabitStatus =
     typeof rawStatus === "string" && isHabitStatus(rawStatus) ? rawStatus : "active"
 
-  const rawLastRun = frontmatter.lastRun
+  const rawLastRun = frontmatter.lastRun ?? frontmatter.last_run
   const lastRun = typeof rawLastRun === "string" && rawLastRun.length > 0 ? rawLastRun : null
 
   const rawCreated = frontmatter.created

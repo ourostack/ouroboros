@@ -104,7 +104,9 @@ describe("ouro status with health file fallback", () => {
     const healthPath = path.join(dir, "daemon-health.json")
     const writer = new DaemonHealthWriter(healthPath)
     writer.writeHealth({
-      status: "running",
+      // healthy at the daemon-rollup level; the cached `degraded` list is
+      // the surface this test exercises (not the rollup state).
+      status: "healthy",
       mode: "prod",
       pid: 12345,
       startedAt: "2026-03-29T10:00:00.000Z",
@@ -130,6 +132,30 @@ describe("ouro status with health file fallback", () => {
     expect(result).toContain("daemon not running")
   })
 
+  it("ouro status --json stays parseable when the daemon is unavailable", async () => {
+    const deps = makeUnavailableDeps({ healthFilePath: "/tmp/nonexistent/daemon-health.json" } as any)
+    const result = await runOuroCli(["status", "--json"], deps)
+
+    expect(JSON.parse(result)).toEqual({
+      ok: false,
+      error: "daemon unavailable",
+      socketPath: "/tmp/ouro-test.sock",
+      healthFilePath: "/tmp/nonexistent/daemon-health.json",
+    })
+    expect(result).not.toContain("daemon not running")
+  })
+
+  it("ouro status --json omits health file context when no health path is configured", async () => {
+    const deps = makeUnavailableDeps()
+    const result = await runOuroCli(["status", "--json"], deps)
+
+    expect(JSON.parse(result)).toEqual({
+      ok: false,
+      error: "daemon unavailable",
+      socketPath: "/tmp/ouro-test.sock",
+    })
+  })
+
   it("ouro status falls back to the default health path when no explicit path is provided", async () => {
     const dir = makeTmpDir()
     const originalHome = process.env.HOME
@@ -139,7 +165,7 @@ describe("ouro status with health file fallback", () => {
       const healthPath = getDefaultHealthPath()
       const writer = new DaemonHealthWriter(healthPath)
       writer.writeHealth({
-        status: "running",
+        status: "healthy",
         mode: "prod",
         pid: 2468,
         startedAt: "2026-03-29T08:00:00.000Z",
@@ -153,7 +179,7 @@ describe("ouro status with health file fallback", () => {
       const deps = makeUnavailableDeps()
       const result = await runOuroCli(["status"], deps)
 
-      expect(result).toContain("Last known status: running (pid 2468, uptime 99s)")
+      expect(result).toContain("Last known status: healthy (pid 2468, uptime 99s)")
     } finally {
       process.env.HOME = originalHome
     }
@@ -164,7 +190,7 @@ describe("ouro status with health file fallback", () => {
     const healthPath = path.join(dir, "daemon-health.json")
     const writer = new DaemonHealthWriter(healthPath)
     writer.writeHealth({
-      status: "running",
+      status: "healthy",
       mode: "prod",
       pid: 54321,
       startedAt: "2026-03-29T08:00:00.000Z",

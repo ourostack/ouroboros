@@ -31,11 +31,6 @@ vi.mock("../../repertoire/skills", () => ({
 }))
 
 const mockGetBoard = vi.fn()
-vi.mock("../../repertoire/tasks", () => ({
-  getTaskModule: () => ({
-    getBoard: mockGetBoard,
-  }),
-}))
 
 vi.mock("../../heart/identity", () => {
   const DEFAULT_AGENT_CONTEXT = {
@@ -55,7 +50,7 @@ vi.mock("../../heart/identity", () => {
     getAgentRoot: vi.fn(() => "/mock/repo/testagent"),
     getRepoRoot: vi.fn(() => "/mock/repo"),
     getAgentRepoWorkspacesRoot: vi.fn(() => "/mock/repo/testagent/state/workspaces"),
-    HARNESS_CANONICAL_REPO_URL: "https://github.com/ouroborosbot/ouroboros.git",
+    HARNESS_CANONICAL_REPO_URL: "https://github.com/ourostack/ouroboros.git",
     resetIdentity: vi.fn(),
   }
 })
@@ -152,6 +147,41 @@ describe("start-of-turn packet prompt section", () => {
     const { buildSystem, flattenSystemPrompt } = await import("../../mind/prompt")
     const system = flattenSystemPrompt(await buildSystem("cli", { startOfTurnPacket: "**Owed:** deploy fix" }))
     expect(system).toContain("**Owed:** deploy fix")
+  })
+
+  it("buildSystem includes orientation frame when provided", async () => {
+    const fs = await import("fs")
+    const fsMock = vi.mocked(fs)
+    fsMock.existsSync.mockReturnValue(false)
+    fsMock.readFileSync.mockImplementation((filePath: any) => {
+      const p = String(filePath)
+      if (p.endsWith("package.json")) return JSON.stringify({ version: "0.0.0-test" })
+      return ""
+    })
+    fsMock.readdirSync.mockReturnValue([])
+
+    const { buildSystem, flattenSystemPrompt } = await import("../../mind/prompt")
+    const system = flattenSystemPrompt(await buildSystem("bluebubbles", {
+      orientationFrame: {
+        schemaVersion: 1,
+        channel: "bluebubbles",
+        currentUserSpeech: ["same"],
+        priorAssistantReferents: [{ kind: "ordered_list_item", label: "2", text: "Better substrate" }],
+        signals: ["terse_referent"],
+        actionPolicy: {
+          mode: "correction_hold",
+          reason: "Current user speech appears referent-dependent; inspect orientation before mutating durable state.",
+          blockedMutationKinds: ["durable_state_write", "external_side_effect"],
+        },
+        source: { kind: "bluebubbles", lane: "thread", defaultReplyTarget: "current_lane" },
+      },
+    }))
+
+    expect(system).toContain("## orientation frame")
+    expect(system).toContain("current user speech:")
+    expect(system).toContain("- same")
+    expect(system).toContain("2. Better substrate")
+    expect(system).toContain("action policy: correction_hold")
   })
 
   it("buildSystem omits start-of-turn packet section when none provided", async () => {

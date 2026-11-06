@@ -1,0 +1,22 @@
+{
+  "schemaVersion": 1,
+  "traceId": "floor-tool-result-while-caller-talking",
+  "scenarioId": "floor-tool-result-while-caller-talking",
+  "expectedOutcome": "expected-fail",
+  "expectation": {
+    "maxFirstAssistantAudioMs": 500,
+    "maxUserTurnResponseMs": 300,
+    "maxToolPresenceMs": 300,
+    "maxBargeInClearMs": 100,
+    "maxBargeInTruncateMs": 120
+  },
+  "events": [
+    { "atMs": 0, "event": "call.connected", "source": { "transport": "voice-eval", "id": "floor-caller-tool" } },
+    { "atMs": 70, "event": "assistant.audio.started", "correlationId": "greeting", "source": { "transport": "voice-eval", "id": "floor-caller-tool" } },
+    { "atMs": 120, "event": "tool.call.started", "correlationId": "weather-1", "toolName": "weather_lookup", "source": { "transport": "voice-eval", "id": "floor-caller-tool" } },
+    { "atMs": 220, "event": "tool.holding.started", "correlationId": "weather-1", "text": "Checking now.", "source": { "transport": "voice-eval", "id": "floor-caller-tool" } },
+    { "atMs": 320, "event": "floor.state.changed", "floorPhase": "caller-speaking", "floorOwner": "caller", "pendingToolCallIds": ["weather-1"], "interruptionTurnId": "turn-2", "decisionReason": "caller_has_floor", "source": { "transport": "voice-eval", "id": "floor-caller-tool" } },
+    { "atMs": 360, "event": "tool.result.ready", "correlationId": "weather-1", "toolName": "weather_lookup", "source": { "transport": "voice-eval", "id": "floor-caller-tool" } },
+    { "atMs": 370, "event": "tool.result.spoken", "correlationId": "weather-1", "toolName": "weather_lookup", "source": { "transport": "voice-eval", "id": "floor-caller-tool" } }
+  ]
+}

@@ -44,7 +44,7 @@ vi.mock("../../heart/identity", () => ({
     context: { maxTokens: 80000, contextMargin: 20 },
   })),
   DEFAULT_AGENT_CONTEXT: { maxTokens: 80000, contextMargin: 20 },
-  HARNESS_CANONICAL_REPO_URL: "https://github.com/ouroborosbot/ouroboros.git",
+  HARNESS_CANONICAL_REPO_URL: "https://github.com/ourostack/ouroboros.git",
   resetIdentity: vi.fn(),
 }))
 
@@ -58,12 +58,6 @@ vi.mock("../../nerves/runtime", () => ({
 
 vi.mock("../../repertoire/skills", () => ({
   listSkills: vi.fn(() => []),
-}))
-
-vi.mock("../../repertoire/tasks", () => ({
-  getTaskModule: () => ({
-    getBoard: vi.fn(() => ({ compact: "" })),
-  }),
 }))
 
 vi.mock("../../mind/friends/channel", () => ({

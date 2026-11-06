@@ -44,11 +44,6 @@ vi.mock("../../repertoire/skills", () => ({
   listSkills: vi.fn(() => []),
 }))
 
-vi.mock("../../repertoire/tasks", () => ({
-  getTaskModule: () => ({
-    getBoard: vi.fn(() => ({ compact: "" })),
-  }),
-}))
 
 vi.mock("../../nerves/runtime", () => ({
   emitNervesEvent: vi.fn(),
