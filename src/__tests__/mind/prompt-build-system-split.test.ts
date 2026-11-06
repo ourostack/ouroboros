@@ -50,7 +50,7 @@ vi.mock("../../heart/identity", () => {
     getAgentRoot: vi.fn(() => "/mock/repo/testagent"),
     getRepoRoot: vi.fn(() => "/mock/repo"),
     getAgentRepoWorkspacesRoot: vi.fn(() => "/mock/repo/testagent/state/workspaces"),
-    HARNESS_CANONICAL_REPO_URL: "https://github.com/ouroborosbot/ouroboros.git",
+    HARNESS_CANONICAL_REPO_URL: "https://github.com/ourostack/ouroboros.git",
     resetIdentity: vi.fn(),
   }
 })
@@ -251,7 +251,7 @@ describe("buildSystem returns SystemPrompt", () => {
     // Group 8: friend context
     expect(result.volatile).toContain("# friend context")
 
-    // Group 9: task context
-    expect(result.volatile).toContain("# task context")
+    // Group 9: desk
+    expect(result.volatile).toContain("# desk")
   })
 })

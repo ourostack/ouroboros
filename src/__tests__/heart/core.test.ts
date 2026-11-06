@@ -3,7 +3,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from "vitest"
 // Default readFileSync: return psyche file stubs so prompt.ts module-level loads work
 function defaultReadFileSync(filePath: any, _encoding?: any): string {
   const p = String(filePath)
-  if (p.endsWith("/state/providers.json")) {
+  if (p.endsWith("/agent.json")) {
     const error = new Error(`ENOENT: no such file or directory, open '${p}'`) as NodeJS.ErrnoException
     error.code = "ENOENT"
     throw error
@@ -19,7 +19,7 @@ function defaultReadFileSync(filePath: any, _encoding?: any): string {
 function readFileSyncReturning(content: string): (filePath: any, encoding?: any) => string {
   return (filePath: any, encoding?: any) => {
     const p = String(filePath)
-    if (p.endsWith("/state/providers.json")) return defaultReadFileSync(filePath, encoding)
+    if (p.endsWith("/agent.json")) return defaultReadFileSync(filePath, encoding)
     return content
   }
 }
@@ -432,24 +432,15 @@ describe("getProviderDisplayLabel", () => {
     expect(getProviderDisplayLabel()).toBe("openai codex (gpt-5-codex)")
   })
 
-  it("uses local provider state for provider and model labels when it exists", async () => {
+  it("uses agent.json provider selection for provider and model labels", async () => {
     vi.resetModules()
     await setupConfig({ provider: "minimax", humanFacingModel: "config-model", providers: { minimax: { apiKey: "minimax-key" } } })
-    vi.mocked(fs.existsSync).mockImplementation((filePath: any) => String(filePath).endsWith("/state/providers.json"))
-    vi.mocked(fs.readFileSync).mockImplementation((filePath: any, encoding?: any) => {
-      if (String(filePath).endsWith("/state/providers.json")) {
-        return JSON.stringify({
-          schemaVersion: 1,
-          machineId: "machine_core_local_state",
-          updatedAt: "2026-04-13T12:00:00.000Z",
-          lanes: {
-            outward: { provider: "anthropic", model: "claude-local", source: "local", updatedAt: "2026-04-13T12:00:00.000Z" },
-            inner: { provider: "github-copilot", model: "gpt-local", source: "local", updatedAt: "2026-04-13T12:00:00.000Z" },
-          },
-          readiness: {},
-        })
-      }
-      return defaultReadFileSync(filePath, encoding)
+    vi.mocked(identity.loadAgentConfig).mockReturnValue({
+      version: 2,
+      enabled: true,
+      humanFacing: { provider: "anthropic", model: "claude-local" },
+      agentFacing: { provider: "github-copilot", model: "gpt-local" },
+      phrases: { thinking: [], tool: [], followup: [] },
     })
 
     const core = await import("../../heart/core")
@@ -459,24 +450,20 @@ describe("getProviderDisplayLabel", () => {
     expect(core.getModel("human")).toBe("claude-local")
     expect(core.getProviderDisplayLabel("agent")).toBe("github copilot (gpt-local)")
 
-    vi.mocked(fs.existsSync).mockReturnValue(false)
-    vi.mocked(fs.readFileSync).mockImplementation(defaultReadFileSync)
+    await setupMinimax()
   })
 
-  it("fails fast when local provider state is invalid", async () => {
+  it("fails fast when agent.json provider selection is invalid", async () => {
     vi.resetModules()
-    vi.mocked(fs.existsSync).mockImplementation((filePath: any) => String(filePath).endsWith("/state/providers.json"))
-    vi.mocked(fs.readFileSync).mockImplementation((filePath: any, encoding?: any) => {
-      if (String(filePath).endsWith("/state/providers.json")) return "{not-json"
-      return defaultReadFileSync(filePath, encoding)
+    vi.mocked(identity.loadAgentConfig).mockImplementation(() => {
+      throw new Error("Cannot parse agent.json at /mock/repo/testagent/agent.json - invalid JSON")
     })
 
     const core = await import("../../heart/core")
 
-    expect(() => core.getProvider("human")).toThrow("provider state for testagent is invalid")
+    expect(() => core.getProvider("human")).toThrow()
 
-    vi.mocked(fs.existsSync).mockReturnValue(false)
-    vi.mocked(fs.readFileSync).mockImplementation(defaultReadFileSync)
+    await setupMinimax()
   })
 
   it.each([
@@ -615,7 +602,7 @@ describe("runAgent", () => {
     expect(followUps).toEqual(["follow-up 1", "follow-up 2"])
   })
 
-  it("rebases openai-codex provider state from messages at each runAgent turn", async () => {
+  it("rebases openai-codex agent provider selection from messages at each runAgent turn", async () => {
     vi.resetModules()
     vi.mocked(fs.readFileSync).mockImplementation(defaultReadFileSync)
     await setupConfig({
@@ -831,7 +818,10 @@ describe("runAgent", () => {
       onError: () => {},
     }
 
-    await runAgent([{ role: "system", content: "test" }], callbacks)
+    // toolChoiceRequired:false isolates this test from the no-tool-call retry
+    // — we're verifying think-tag stream routing here, not the retry path
+    // (which has dedicated tests in core-rest.test.ts).
+    await runAgent([{ role: "system", content: "test" }], callbacks, undefined, undefined, { toolChoiceRequired: false })
     expect(reasoningChunks.join("")).toBe("only thinking")
     expect(textChunks).toEqual([])
   })
@@ -977,7 +967,8 @@ describe("runAgent", () => {
       onError: () => {},
     }
 
-    await runAgent([{ role: "system", content: "test" }], callbacks)
+    // toolChoiceRequired:false isolates this test from the no-tool-call retry.
+    await runAgent([{ role: "system", content: "test" }], callbacks, undefined, undefined, { toolChoiceRequired: false })
     expect(reasoningChunks.join("")).toBe("unterminated reasoning")
     expect(textChunks).toEqual([])
   })
@@ -1027,7 +1018,8 @@ describe("runAgent", () => {
       onError: () => {},
     }
 
-    await runAgent([{ role: "system", content: "test" }], callbacks)
+    // toolChoiceRequired:false isolates this test from the no-tool-call retry.
+    await runAgent([{ role: "system", content: "test" }], callbacks, undefined, undefined, { toolChoiceRequired: false })
     // "reasoning" is emitted during chunked processing, "</" is flushed at end as reasoning
     expect(reasoningChunks.join("")).toBe("reasoning</")
     expect(textChunks).toEqual([])
@@ -1260,6 +1252,55 @@ describe("runAgent", () => {
     expect(toolResultMsg).toBeDefined()
     expect(toolResultMsg.tool_call_id).toBe("call_1")
     expect(toolResultMsg.content).toBe("contents")
+  })
+
+  it("strips inline <think> blocks from persisted assistant content (MiniMax replay-rejection fix)", async () => {
+    // Regression for the actual bug Slugger surfaced: MiniMax-M2.7 emits
+    // assistant messages with BOTH <think>...</think> content AND a settle
+    // tool_call. When that message is replayed in the next turn, MiniMax
+    // rejects with error 2013 \"tool result's tool id not found\" because
+    // it can't reconcile reasoning content with tool_calls in the same
+    // assistant message. Stripping <think> at persist time keeps replays
+    // valid while preserving the reasoning trace via _inline_reasoning.
+    let callCount = 0
+    mockCreate.mockImplementation(() => {
+      callCount++
+      if (callCount === 1) {
+        return makeStream([
+          // Mimic MiniMax: think content streams as d.content with inline <think> tags
+          makeChunk("<think>reasoning that should not persist</think>"),
+          makeChunk(undefined, [
+            { index: 0, id: "call_settle_1", function: { name: "settle", arguments: JSON.stringify({ answer: "the actual answer", intent: "complete" }) } },
+          ]),
+        ])
+      }
+      return makeStream([makeChunk("done")])
+    })
+
+    const callbacks: ChannelCallbacks = {
+      onModelStart: () => {},
+      onModelStreamStart: () => {},
+      onTextChunk: () => {},
+      onReasoningChunk: () => {},
+      onToolStart: () => {},
+      onToolEnd: () => {},
+      onError: () => {},
+      onClearText: () => {},
+    }
+
+    const messages: any[] = [{ role: "system", content: "test" }]
+    await runAgent(messages, callbacks, "mcp")
+
+    const assistantMsg = messages.find((m: any) => m.role === "assistant" && m.tool_calls)
+    expect(assistantMsg).toBeDefined()
+    // The persisted content must NOT contain <think> blocks.
+    expect(assistantMsg.content ?? "").not.toContain("<think>")
+    expect(assistantMsg.content ?? "").not.toContain("</think>")
+    // The original reasoning trace is preserved on _inline_reasoning for audit.
+    expect((assistantMsg as any)._inline_reasoning).toContain("<think>")
+    expect((assistantMsg as any)._inline_reasoning).toContain("reasoning that should not persist")
+    // The tool_call survives.
+    expect(assistantMsg.tool_calls[0].function.name).toBe("settle")
   })
 
   it("does NOT push user message (adapter responsibility)", async () => {
@@ -2855,7 +2896,10 @@ describe("runAgent", () => {
     await vi.advanceTimersByTimeAsync(100)
     await promise
 
-    expect(refreshProviderCredentialPool).toHaveBeenCalledWith("testagent", { preserveCachedOnFailure: true })
+    expect(refreshProviderCredentialPool).toHaveBeenCalledWith("testagent", {
+      preserveCachedOnFailure: true,
+      providers: ["minimax"],
+    })
     expect(callCount).toBe(3)
     expect(chunks).toContain("recovered after refresh miss")
     expect(errors[0].severity).toBe("transient")
@@ -3248,6 +3292,19 @@ describe("runAgent", () => {
     expect(mockKeptNotesJudge).toHaveBeenCalledWith({ query: "hello", candidates: [] })
   })
 
+  it("skips kept notes injection when a live sense asks for the latency fast lane", async () => {
+    mockCreate.mockReturnValue(makeStream([makeChunk("hi")]))
+
+    const messages: any[] = [
+      { role: "system", content: "stale old prompt" },
+      { role: "user", content: "hello" },
+    ]
+    await runAgent(messages, noopCallbacks, "voice", undefined, { skipKeptNotes: true })
+
+    expect(mockInjectKeptNotes).not.toHaveBeenCalled()
+    expect(mockCreate).toHaveBeenCalled()
+  })
+
   it("refreshes system prompt for teams channel", async () => {
     mockCreate.mockReturnValue(makeStream([makeChunk("hi")]))
 
@@ -3475,6 +3532,64 @@ describe("runAgent", () => {
     expect(toolMsg?.content).toBe("custom result")
   })
 
+  it("creates a tool context when only orientationFrame is provided", async () => {
+    const customExecTool = vi.fn(async (_name: string, _args: Record<string, string>, ctx?: any) => {
+      await ctx?.signin?.()
+      return "orientation result"
+    })
+    const orientationFrame = {
+      schemaVersion: 1,
+      channel: "bluebubbles",
+      currentUserSpeech: ["same"],
+      priorAssistantReferents: [],
+      signals: ["terse_referent"],
+      actionPolicy: {
+        mode: "correction_hold",
+        reason: "Current user speech appears referent-dependent; inspect orientation before mutating durable state.",
+        blockedMutationKinds: ["durable_state_write", "external_side_effect"],
+      },
+    }
+
+    mockCreate
+      .mockReturnValueOnce(makeStream([
+        makeChunk(undefined, [
+          { index: 0, id: "call_1", function: { name: "orientation_get", arguments: "{}" } },
+        ]),
+      ]))
+      .mockReturnValueOnce(makeStream([makeChunk("done")]))
+
+    const callbacks: ChannelCallbacks = {
+      onModelStart: () => {},
+      onModelStreamStart: () => {},
+      onTextChunk: () => {},
+      onReasoningChunk: () => {},
+      onToolStart: () => {},
+      onToolEnd: () => {},
+      onError: () => {},
+    }
+
+    const messages: any[] = [{ role: "user", content: "hello" }]
+    await runAgent(messages, callbacks, undefined, undefined, {
+      tools: [{
+        type: "function",
+        function: {
+          name: "orientation_get",
+          description: "test",
+          parameters: { type: "object", properties: {} },
+        },
+      }],
+      execTool: customExecTool,
+      orientationFrame,
+      toolChoiceRequired: false,
+    } as any)
+
+    expect(customExecTool).toHaveBeenCalledWith(
+      "orientation_get",
+      {},
+      expect.objectContaining({ orientationFrame }),
+    )
+  })
+
   it("uses default tools and execTool when overrides are not provided", async () => {
     // This is the existing behavior -- just verify it still works
     mockCreate.mockReturnValue(makeStream([makeChunk("hello")]))
@@ -3541,7 +3656,7 @@ describe("getClient", () => {
       // Expected -- process.exit throws
     }
 
-    expect(fatal.mockExit).toHaveBeenCalledWith(1)
+    expect(fatal.mockExit).not.toHaveBeenCalled()
     expect(fatal.mockError).toHaveBeenCalledWith(expect.stringContaining("[fatal]"))
     expect(fatal.mockError).toHaveBeenCalledWith(expect.stringContaining("has no credentials for testagent"))
     expect(fatal.mockError).toHaveBeenCalledWith(expect.stringContaining("ouro auth --agent testagent --provider minimax"))
@@ -3584,7 +3699,7 @@ describe("getClient", () => {
 
     try {
       const core = await import("../../heart/core")
-      await expect(core.runAgent([], noopCallbacks)).rejects.toThrow("process.exit called")
+      await expect(core.runAgent([], noopCallbacks)).rejects.toThrow()
       expect(fatal.mockError).toHaveBeenCalledWith(expect.stringContaining("[fatal]"))
       expect(fatal.mockError).toHaveBeenCalledWith(expect.stringContaining("azure endpoint/deployment is incomplete in the agent vault"))
       expect(emitNervesEvent).toHaveBeenCalledWith(expect.objectContaining({
@@ -3771,7 +3886,7 @@ describe("getClient config integration", () => {
     expect(messages[1].content).toBe("just text")
   })
 
-  it("exits when neither provider configured in config", async () => {
+  it("throws when neither provider configured in config", async () => {
     vi.resetModules()
     vi.mocked(fs.readFileSync).mockImplementation(defaultReadFileSync)
     // Empty config -- no providers at all (defaults have empty strings)
@@ -3795,10 +3910,10 @@ describe("getClient config integration", () => {
       }
       await core.runAgent([], callbacks).catch(() => {})
     } catch {
-      // Expected -- process.exit throws
+      // Expected -- provider init throws.
     }
 
-    expect(mockExit).toHaveBeenCalledWith(1)
+    expect(mockExit).not.toHaveBeenCalled()
     mockExit.mockRestore()
     mockError.mockRestore()
   })
@@ -3921,7 +4036,7 @@ describe("provider abstraction contract", () => {
       vi.spyOn(core as any, "createProviderRegistry").mockReturnValue({
         resolve: () => null,
       } as any)
-      await expect(core.runAgent([], noopCallbacks)).rejects.toThrow("process.exit called")
+      await expect(core.runAgent([], noopCallbacks)).rejects.toThrow()
       expect(emitNervesEvent).toHaveBeenCalledWith(expect.objectContaining({
         level: "error",
         event: "engine.provider_init_error",
@@ -3948,7 +4063,7 @@ describe("provider abstraction contract", () => {
 
     try {
       const core = await import("../../heart/core")
-      await expect(core.runAgent([], noopCallbacks)).rejects.toThrow("process.exit called")
+      await expect(core.runAgent([], noopCallbacks)).rejects.toThrow()
       expect(fatal.mockError).toHaveBeenCalledWith(expect.stringContaining("[fatal]"))
       expect(fatal.mockError).toHaveBeenCalledWith(expect.stringContaining("provider exploded"))
       expect(emitNervesEvent).toHaveBeenCalledWith(expect.objectContaining({
@@ -4035,7 +4150,7 @@ describe("anthropic setup-token provider contract", () => {
 
     try {
       const core = await import("../../heart/core")
-      await expect(core.runAgent([], noopCallbacks)).rejects.toThrow("process.exit called")
+      await expect(core.runAgent([], noopCallbacks)).rejects.toThrow()
       expect(fatal.mockError).toHaveBeenCalledWith(expect.stringContaining("[fatal]"))
       expect(fatal.mockError).toHaveBeenCalledWith(expect.stringContaining("expected prefix sk-ant-oat01-"))
       expect(emitNervesEvent).toHaveBeenCalledWith(expect.objectContaining({
@@ -4065,7 +4180,7 @@ describe("anthropic setup-token provider contract", () => {
 
     try {
       const core = await import("../../heart/core")
-      await expect(core.runAgent([], noopCallbacks)).rejects.toThrow("process.exit called")
+      await expect(core.runAgent([], noopCallbacks)).rejects.toThrow()
       expect(fatal.mockError).toHaveBeenCalledWith(expect.stringContaining("[fatal]"))
       expect(fatal.mockError).toHaveBeenCalledWith(expect.stringContaining("too short"))
       expect(emitNervesEvent).toHaveBeenCalledWith(expect.objectContaining({
@@ -4095,7 +4210,7 @@ describe("anthropic setup-token provider contract", () => {
 
     try {
       const core = await import("../../heart/core")
-      await expect(core.runAgent([], noopCallbacks)).rejects.toThrow("process.exit called")
+      await expect(core.runAgent([], noopCallbacks)).rejects.toThrow()
       expect(fatal.mockError).toHaveBeenCalledWith(expect.stringContaining("[fatal]"))
       expect(fatal.mockError).toHaveBeenCalledWith(expect.stringContaining("anthropic.setupToken is missing in the agent vault"))
       const msg = emitNervesEvent.mock.calls.find(
@@ -4127,8 +4242,8 @@ describe("anthropic setup-token provider contract", () => {
 
     try {
       const core = await import("../../heart/core")
-      await expect(core.runAgent([], noopCallbacks)).rejects.toThrow("process.exit called")
-      expect(fatal.mockExit).toHaveBeenCalledWith(1)
+      await expect(core.runAgent([], noopCallbacks)).rejects.toThrow()
+      expect(fatal.mockExit).not.toHaveBeenCalled()
       expect(fatal.mockError).toHaveBeenCalledWith(expect.stringContaining("[fatal]"))
       expect(fatal.mockError).toHaveBeenCalledWith(expect.stringContaining("anthropic.setupToken is missing in the agent vault"))
       const msg = emitNervesEvent.mock.calls.find(
@@ -4759,7 +4874,7 @@ describe("anthropic setup-token provider contract", () => {
 
     try {
       const core = await import("../../heart/core")
-      await expect(core.runAgent([], noopCallbacks)).rejects.toThrow("process.exit called")
+      await expect(core.runAgent([], noopCallbacks)).rejects.toThrow()
       expect(fatal.mockError).toHaveBeenCalledWith(expect.stringContaining("[fatal]"))
       expect(fatal.mockError).toHaveBeenCalledWith(expect.stringContaining("anthropic.setupToken is missing in the agent vault"))
       expect(emitNervesEvent).toHaveBeenCalledWith(expect.objectContaining({
@@ -4909,7 +5024,7 @@ describe("anthropic setup-token provider contract", () => {
 
     try {
       const core = await import("../../heart/core")
-      await expect(core.runAgent([], noopCallbacks)).rejects.toThrow("process.exit called")
+      await expect(core.runAgent([], noopCallbacks)).rejects.toThrow()
       expect(fatal.mockError).toHaveBeenCalledWith(expect.stringContaining("[fatal]"))
       expect(fatal.mockError).toHaveBeenCalledWith(expect.stringContaining("config-exploded"))
       expect(emitNervesEvent).toHaveBeenCalledWith(expect.objectContaining({
@@ -4983,7 +5098,7 @@ describe("openai-codex oauth provider contract", () => {
 
     try {
       const core = await import("../../heart/core")
-      await expect(core.runAgent([], noopCallbacks)).rejects.toThrow("process.exit called")
+      await expect(core.runAgent([], noopCallbacks)).rejects.toThrow()
       expect(fatal.mockError).toHaveBeenCalledWith(expect.stringContaining("[fatal]"))
       expect(fatal.mockError).toHaveBeenCalledWith(expect.stringContaining("openai-codex.oauthAccessToken is missing in the agent vault"))
       const msg = emitNervesEvent.mock.calls.find(
@@ -5105,13 +5220,13 @@ describe("openai-codex oauth provider contract", () => {
         }
         if (testCase.expectedRepair) {
           expect(terminal?.error.message).toContain(testCase.expectedRepair)
-          expect(terminal?.error.message).toContain("ouro config model --agent testagent --facing human gpt-5.4")
-          expect(terminal?.error.message).toContain("ouro config model --agent testagent --facing agent gpt-5.4")
+          expect(terminal?.error.message).toContain("ouro use --agent testagent --lane outward --provider openai-codex --model gpt-5.4")
+          expect(terminal?.error.message).toContain("ouro use --agent testagent --lane inner --provider openai-codex --model gpt-5.4")
         } else {
           expect(terminal?.error.message).not.toContain("Config warning:")
         }
         expect(terminal?.error.message).toContain("ouro auth --agent testagent --provider openai-codex")
-        expect(terminal?.error.message).toContain("ouro auth switch --agent testagent --provider <provider>")
+        expect(terminal?.error.message).toContain("ouro use --agent testagent --lane <outward|inner> --provider <provider> --model <model>")
       }
     } finally {
       vi.useRealTimers()
@@ -5169,7 +5284,7 @@ describe("openai-codex oauth provider contract", () => {
 
     try {
       const core = await import("../../heart/core")
-      await expect(core.runAgent([], noopCallbacks)).rejects.toThrow("process.exit called")
+      await expect(core.runAgent([], noopCallbacks)).rejects.toThrow()
       expect(fatal.mockError).toHaveBeenCalledWith(expect.stringContaining("[fatal]"))
       expect(fatal.mockError).toHaveBeenCalledWith(expect.stringContaining("openai-codex.oauthAccessToken is missing in the agent vault"))
       const msg = emitNervesEvent.mock.calls.find(
@@ -5199,7 +5314,7 @@ describe("openai-codex oauth provider contract", () => {
 
     try {
       const core = await import("../../heart/core")
-      await expect(core.runAgent([], noopCallbacks)).rejects.toThrow("process.exit called")
+      await expect(core.runAgent([], noopCallbacks)).rejects.toThrow()
       expect(fatal.mockError).toHaveBeenCalledWith(expect.stringContaining("[fatal]"))
       expect(fatal.mockError).toHaveBeenCalledWith(expect.stringContaining("chatgpt_account_id"))
       const msg = emitNervesEvent.mock.calls.find(
@@ -5231,7 +5346,7 @@ describe("openai-codex oauth provider contract", () => {
 
     try {
       const core = await import("../../heart/core")
-      await expect(core.runAgent([], noopCallbacks)).rejects.toThrow("process.exit called")
+      await expect(core.runAgent([], noopCallbacks)).rejects.toThrow()
       expect(fatal.mockError).toHaveBeenCalledWith(expect.stringContaining("[fatal]"))
       expect(fatal.mockError).toHaveBeenCalledWith(expect.stringContaining("chatgpt_account_id"))
       const msg = emitNervesEvent.mock.calls.find(
@@ -5261,7 +5376,7 @@ describe("openai-codex oauth provider contract", () => {
 
     try {
       const core = await import("../../heart/core")
-      await expect(core.runAgent([], noopCallbacks)).rejects.toThrow("process.exit called")
+      await expect(core.runAgent([], noopCallbacks)).rejects.toThrow()
       expect(fatal.mockError).toHaveBeenCalledWith(expect.stringContaining("[fatal]"))
       expect(fatal.mockError).toHaveBeenCalledWith(expect.stringContaining("chatgpt_account_id"))
       expect(emitNervesEvent).toHaveBeenCalledWith(expect.objectContaining({
@@ -5292,7 +5407,7 @@ describe("openai-codex oauth provider contract", () => {
 
     try {
       const core = await import("../../heart/core")
-      await expect(core.runAgent([], noopCallbacks)).rejects.toThrow("process.exit called")
+      await expect(core.runAgent([], noopCallbacks)).rejects.toThrow()
       expect(fatal.mockError).toHaveBeenCalledWith(expect.stringContaining("[fatal]"))
       expect(fatal.mockError).toHaveBeenCalledWith(expect.stringContaining("chatgpt_account_id"))
       expect(emitNervesEvent).toHaveBeenCalledWith(expect.objectContaining({
@@ -5323,7 +5438,7 @@ describe("openai-codex oauth provider contract", () => {
 
     try {
       const core = await import("../../heart/core")
-      await expect(core.runAgent([], noopCallbacks)).rejects.toThrow("process.exit called")
+      await expect(core.runAgent([], noopCallbacks)).rejects.toThrow()
       expect(fatal.mockError).toHaveBeenCalledWith(expect.stringContaining("[fatal]"))
       expect(fatal.mockError).toHaveBeenCalledWith(expect.stringContaining("chatgpt_account_id"))
       expect(emitNervesEvent).toHaveBeenCalledWith(expect.objectContaining({
@@ -8438,7 +8553,7 @@ describe("repairOrphanedToolCalls", () => {
     expect(messages.length).toBe(4)
     expect(messages[2].role).toBe("tool")
     expect(messages[2].tool_call_id).toBe("tc-1")
-    expect(messages[2].content).toContain("interrupted")
+    expect(messages[2].content).toContain("result was lost")
   })
 
   it("removes orphaned tool results that have no matching tool_calls", async () => {
@@ -8512,7 +8627,7 @@ describe("repairOrphanedToolCalls", () => {
     expect(messages.length).toBe(5)
     expect(messages[4].role).toBe("tool")
     expect(messages[4].tool_call_id).toBe("tc-2")
-    expect(messages[4].content).toContain("interrupted")
+    expect(messages[4].content).toContain("result was lost")
   })
 
   it("skips system messages between tool calls when scanning for results", async () => {
@@ -8581,7 +8696,39 @@ describe("repairOrphanedToolCalls", () => {
     expect(messages[2].tool_call_id).toBe("tc-a")
     expect(messages[2].content).toBe("ok")
     expect(messages[3].tool_call_id).toBe("tc-b")
-    expect(messages[3].content).toContain("interrupted")
+    expect(messages[3].content).toContain("result was lost")
+  })
+
+  it("removes a tool result that appears BEFORE its matching assistant tool_call (position-aware)", async () => {
+    // Same-shape regression as the fix in session-events.ts. MiniMax-M2.7
+    // reuses canonical tool_call_ids across turns; after pruning, a stale
+    // synthetic tool result can end up referencing an id that's redefined
+    // by a later assistant message. The previous global-Set check kept
+    // the misordered tool result; the position-aware walk drops it.
+    vi.resetModules()
+    const { repairOrphanedToolCalls } = await import("../../heart/core")
+    const messages: any[] = [
+      { role: "user", content: "early" },
+      // Misplaced tool result: appears before any assistant defines the id
+      { role: "tool", tool_call_id: "call_xyz_1", content: "stale or misplaced result" },
+      { role: "user", content: "middle" },
+      // Assistant defines call_xyz_1 here — AFTER the tool result above
+      { role: "assistant", content: null, tool_calls: [{ id: "call_xyz_1", type: "function", function: { name: "settle", arguments: "{}" } }] },
+      { role: "tool", tool_call_id: "call_xyz_1", content: "(delivered)" },
+    ]
+
+    repairOrphanedToolCalls(messages)
+
+    // The misplaced one is removed
+    const stale = messages.find((m: any) => m.content === "stale or misplaced result")
+    expect(stale).toBeUndefined()
+    // The correctly-ordered one survives
+    const valid = messages.find((m: any) => m.content === "(delivered)")
+    expect(valid).toBeDefined()
+    // Order invariant holds: assistant before its tool result
+    const assistantIdx = messages.findIndex((m: any) => m.role === "assistant" && m.tool_calls)
+    const toolIdx = messages.findIndex((m: any) => m.role === "tool" && m.content === "(delivered)")
+    expect(assistantIdx).toBeLessThan(toolIdx)
   })
 })
 

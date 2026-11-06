@@ -1,6 +1,5 @@
 import type { Channel } from "../mind/friends/types"
 import { emitNervesEvent } from "../nerves/runtime"
-import type { BoardResult } from "../repertoire/tasks/types"
 import type { CodingSession } from "../repertoire/coding/types"
 import type { ReturnObligation } from "../arc/obligations"
 import { bridgeStateLabel } from "./bridges/state-machine"
@@ -10,6 +9,7 @@ import { isOpenObligation, isOpenObligationStatus, type Obligation, type Obligat
 import type { SessionActivityRecord } from "./session-activity"
 import { formatTargetSessionCandidates, type TargetSessionCandidate } from "./target-resolution"
 import { sanitizeKey } from "./config"
+import type { BackgroundOperationRecord } from "./background-operations"
 
 export type CenterOfGravityMode = "local-turn" | "inward-work" | "shared-work"
 
@@ -67,17 +67,13 @@ export interface ActiveWorkFrame {
     job: InnerJob
   }
   bridges: BridgeRecord[]
-  taskPressure: {
-    compactBoard: string
-    liveTaskNames: string[]
-    activeBridges: string[]
-  }
   friendActivity: {
     freshestForCurrentFriend: SessionActivityRecord | null
     otherLiveSessionsForCurrentFriend: SessionActivityRecord[]
     allOtherLiveSessions?: SessionActivityRecord[]
   }
   codingSessions: CodingSession[]
+  backgroundOperations?: BackgroundOperationRecord[]
   otherCodingSessions?: CodingSession[]
   pendingObligations: Obligation[]
   targetCandidates?: TargetSessionCandidate[]
@@ -94,9 +90,9 @@ interface BuildActiveWorkFrameInput {
   inner: ActiveWorkFrame["inner"]
   bridges: BridgeRecord[]
   codingSessions?: CodingSession[]
+  backgroundOperations?: BackgroundOperationRecord[]
   otherCodingSessions?: CodingSession[]
   pendingObligations?: Obligation[]
-  taskBoard: BoardResult
   friendActivity: SessionActivityRecord[]
   targetCandidates?: TargetSessionCandidate[]
   innerReturnObligations?: ReturnObligation[]
@@ -108,7 +104,6 @@ export interface BridgeSuggestionInput {
   mustResolveBeforeHandoff: boolean
   bridges: BridgeRecord[]
   pendingObligations?: Obligation[]
-  taskBoard: BoardResult
   targetCandidates?: TargetSessionCandidate[]
 }
 
@@ -122,22 +117,12 @@ function compareActivity(a: SessionActivityRecord, b: SessionActivityRecord): nu
   return b.lastActivityMs - a.lastActivityMs
 }
 
-function summarizeLiveTasks(taskBoard: BoardResult): string[] {
-  const live = [
-    ...taskBoard.byStatus.processing,
-    ...taskBoard.byStatus.validating,
-    ...taskBoard.byStatus.collaborating,
-  ]
-  return [...new Set(live)]
-}
-
 function isActiveBridge(bridge: BridgeRecord): boolean {
   return bridge.lifecycle === "active"
 }
 
-function hasSharedObligationPressure(input: Pick<BuildActiveWorkFrameInput, "mustResolveBeforeHandoff" | "taskBoard" | "pendingObligations">): boolean {
+function hasSharedObligationPressure(input: Pick<BuildActiveWorkFrameInput, "mustResolveBeforeHandoff" | "pendingObligations">): boolean {
   return input.mustResolveBeforeHandoff
-    || summarizeLiveTasks(input.taskBoard).length > 0
     || activeObligationCount(input.pendingObligations) > 0
 }
 
@@ -366,6 +351,126 @@ function formatObligationContentNextAction(obligation: Obligation | null): strin
   return `work on "${content}" and bring back a concrete artifact`
 }
 
+function backgroundOperationPriority(operation: BackgroundOperationRecord): number {
+  switch (operation.status) {
+    case "failed": return 0
+    case "queued": return 1
+    case "running": return 2
+    case "succeeded": return 3
+  }
+}
+
+function backgroundOperationSpecText(spec: Record<string, unknown> | undefined, key: string): string {
+  const value = spec?.[key]
+  return typeof value === "string" ? value.trim() : ""
+}
+
+function selectPrimaryBackgroundOperation(frame: ActiveWorkFrame): BackgroundOperationRecord | null {
+  const operations = frame.backgroundOperations ?? []
+  if (operations.length === 0) return null
+  return [...operations].sort((left, right) => {
+    const priorityDiff = backgroundOperationPriority(left) - backgroundOperationPriority(right)
+    if (priorityDiff !== 0) return priorityDiff
+    return Date.parse(right.updatedAt) - Date.parse(left.updatedAt)
+  })[0] ?? null
+}
+
+function formatBackgroundOperationNextAction(operation: BackgroundOperationRecord): string {
+  if (operation.kind === "mail.import-discovered") {
+    return "inspect the import-ready archive and start the matching mail import"
+  }
+  if (operation.kind === "mail.import-mbox") {
+    switch (operation.status) {
+      case "failed":
+        switch (operation.failure?.class?.trim()) {
+          case "transient-storage-read":
+            return "retry-safe once the transient storage/network issue clears"
+          case "mailroom-auth":
+          case "mailroom-config":
+            return "repair mail auth/config access, then retry"
+          case "source-grant-missing":
+          case "source-grant-ambiguous":
+            return "repair the delegated owner/source lane, then retry"
+          case "archive-discovery":
+          case "archive-ambiguity":
+          case "archive-missing":
+          case "archive-access":
+            return "materialize or point at the correct local archive, then retry"
+        }
+        if (operation.failure?.retryDisposition === "retry-safe") {
+          return "retry the failed mail import once the transient issue clears or the dependency answers again"
+        }
+        if (operation.failure?.retryDisposition === "investigate-first") {
+          return "inspect the failed mail import carefully, confirm the root cause, and then decide whether to retry"
+        }
+        return "inspect the failed mail import, fix the issue, and retry it"
+      case "queued":
+        return "queued — no action unless it stalls or i need live status"
+      case "running":
+        return "in flight — no action unless it stalls or i need live status"
+      case "succeeded":
+        return "caught up — no rerun needed unless a newer archive appears"
+    }
+  }
+  switch (operation.status) {
+    case "failed": return `repair the failed ${operation.title} operation and retry it`
+    case "queued": return `let the queued ${operation.title} operation start, then re-check progress`
+    case "running": return `monitor the ${operation.title} operation and react when it changes`
+    case "succeeded": return `review the completed ${operation.title} operation and continue`
+  }
+}
+
+function formatMailImportRecoveryUniverse(operation: BackgroundOperationRecord): string | null {
+  const failureClass = operation.failure?.class?.trim()
+  if (!failureClass) return null
+  switch (failureClass) {
+    case "transient-storage-read":
+      return "transient dependency/read issue — safe to retry once storage/network answers again"
+    case "mailroom-auth":
+    case "mailroom-config":
+      return "mail auth/config issue — repair mail access or runtime config before retrying"
+    case "source-grant-missing":
+    case "source-grant-ambiguous":
+      return "delegated lane/registry issue — inspect owner/source linking before retrying"
+    case "archive-discovery":
+    case "archive-ambiguity":
+    case "archive-missing":
+    case "archive-access":
+      return "local archive/file issue — materialize or point at the right archive before retrying"
+    default:
+      return "unclassified import issue — inspect the recorded error before retrying"
+  }
+}
+
+function formatBackgroundOperationMeta(operation: BackgroundOperationRecord): string[] {
+  const lines: string[] = [`operation: ${operation.id}`]
+  const filePath = backgroundOperationSpecText(operation.spec, "filePath")
+    || backgroundOperationSpecText(operation.spec, "newestCandidatePath")
+  if (filePath) lines.push(`file: ${filePath}`)
+  const originLabel = backgroundOperationSpecText(operation.spec, "fileOriginLabel")
+    || backgroundOperationSpecText(operation.spec, "newestCandidateOriginLabel")
+  if (originLabel) lines.push(`origin: ${originLabel}`)
+  const ownerEmail = backgroundOperationSpecText(operation.spec, "ownerEmail")
+  const source = backgroundOperationSpecText(operation.spec, "source")
+  if (ownerEmail || source) {
+    lines.push(`owner/source: ${ownerEmail || "unknown"} / ${source || "unknown"}`)
+  }
+  if (operation.failure?.class?.trim()) lines.push(`failure class: ${operation.failure.class}`)
+  if (operation.failure?.retryDisposition?.trim()) lines.push(`retry: ${operation.failure.retryDisposition}`)
+  if (operation.failure?.hint?.trim()) lines.push(`recovery: ${operation.failure.hint}`)
+  const recoveryUniverse = operation.kind === "mail.import-mbox" ? formatMailImportRecoveryUniverse(operation) : null
+  if (recoveryUniverse) lines.push(`recovery universe: ${recoveryUniverse}`)
+  if (operation.startedAt?.trim()) lines.push(`started: ${operation.startedAt}`)
+  if (operation.finishedAt?.trim()) lines.push(`finished: ${operation.finishedAt}`)
+  else if (operation.updatedAt?.trim()) lines.push(`updated: ${operation.updatedAt}`)
+  const nextAction = formatBackgroundOperationNextAction(operation)
+  if (nextAction.trim().length > 0) lines.push(`next: ${nextAction}`)
+  if (operation.remediation?.length) {
+    lines.push(...operation.remediation.map((step) => `remediation: ${step}`))
+  }
+  return lines
+}
+
 function formatNextAction(frame: ActiveWorkFrame, obligation: Obligation | null): string | null {
   const obligationHasConcreteArtifact = Boolean(obligation?.currentArtifact?.trim())
     || obligation?.currentSurface?.kind === "merge"
@@ -391,6 +496,10 @@ function formatNextAction(frame: ActiveWorkFrame, obligation: Obligation | null)
   if (obligation?.nextAction?.trim()) return obligation.nextAction.trim()
   if (obligation) {
     return formatObligationContentNextAction(obligation) || "continue the active loop and bring the result back here"
+  }
+  const backgroundOperation = selectPrimaryBackgroundOperation(frame)
+  if (backgroundOperation) {
+    return formatBackgroundOperationNextAction(backgroundOperation)
   }
   if (frame.mustResolveBeforeHandoff) {
     return "finish what i started here before moving on"
@@ -579,7 +688,6 @@ export function suggestBridgeForActiveWork(input: BridgeSuggestionInput): Bridge
     })
   if (!hasSharedObligationPressure({
     mustResolveBeforeHandoff: input.mustResolveBeforeHandoff,
-    taskBoard: input.taskBoard,
     pendingObligations: input.pendingObligations,
   }) || targetCandidates.length === 0) {
     return null
@@ -672,7 +780,6 @@ export function buildActiveWorkFrame(input: BuildActiveWorkFrameInput): ActiveWo
       .sort(compareActivity)
     : []
 
-  const liveTaskNames = summarizeLiveTasks(input.taskBoard)
   const activeBridgePresent = input.bridges.some(isActiveBridge)
   const liveCodingSessions = input.codingSessions ?? []
   const allOtherLiveSessions = [...input.friendActivity].sort(compareActivity)
@@ -695,17 +802,13 @@ export function buildActiveWorkFrame(input: BuildActiveWorkFrameInput): ActiveWo
     centerOfGravity,
     inner: input.inner,
     bridges: input.bridges,
-    taskPressure: {
-      compactBoard: input.taskBoard.compact,
-      liveTaskNames,
-      activeBridges: input.taskBoard.activeBridges,
-    },
     friendActivity: {
       freshestForCurrentFriend: friendSessions[0] ?? null,
       otherLiveSessionsForCurrentFriend: friendSessions,
       allOtherLiveSessions,
     },
     codingSessions: liveCodingSessions,
+    backgroundOperations: input.backgroundOperations ?? [],
     otherCodingSessions,
     pendingObligations,
     targetCandidates: input.targetCandidates ?? [],
@@ -716,7 +819,6 @@ export function buildActiveWorkFrame(input: BuildActiveWorkFrameInput): ActiveWo
       mustResolveBeforeHandoff: input.mustResolveBeforeHandoff,
       bridges: input.bridges,
       pendingObligations,
-      taskBoard: input.taskBoard,
       targetCandidates: input.targetCandidates,
     }),
     primaryObligation,
@@ -731,7 +833,6 @@ export function buildActiveWorkFrame(input: BuildActiveWorkFrameInput): ActiveWo
       centerOfGravity: frame.centerOfGravity,
       friendId: frame.currentSession?.friendId ?? null,
       bridges: frame.bridges.length,
-      liveTasks: frame.taskPressure.liveTaskNames.length,
       liveSessions: frame.friendActivity.otherLiveSessionsForCurrentFriend.length,
       codingSessions: frame.codingSessions.length,
       otherLiveSessions: allOtherLiveSessions.length,
@@ -839,16 +940,36 @@ export function formatActiveWorkFrame(frame: ActiveWorkFrame, options?: { obliga
     }
   }
 
+  const backgroundOperations = frame.backgroundOperations ?? []
+  if (backgroundOperations.length > 0) {
+    lines.push("")
+    lines.push("## background operations")
+    for (const operation of backgroundOperations) {
+      let line = `- [${operation.status}] ${operation.title}`
+      if (operation.summary.trim().length > 0) {
+        line += `: ${operation.summary}`
+      }
+      line += `\n  ${formatBackgroundOperationMeta(operation).join("\n  ")}`
+      if (operation.detail?.trim()) {
+        line += `\n  ${operation.detail.trim()}`
+      }
+      if (operation.progress) {
+        const current = typeof operation.progress.current === "number" ? String(operation.progress.current) : "?"
+        const total = typeof operation.progress.total === "number" ? String(operation.progress.total) : null
+        const unit = operation.progress.unit?.trim() ? ` ${operation.progress.unit.trim()}` : ""
+        line += `\n  progress: ${total ? `${current}/${total}` : current}${unit}`
+      }
+      if (operation.error?.message?.trim()) {
+        line += `\n  error: ${operation.error.message.trim()}`
+      }
+      lines.push(line)
+    }
+  }
+
   if (otherActiveSessions.length > 0) {
     lines.push("")
     lines.push("## other active sessions")
     lines.push(...otherActiveSessions)
-  }
-
-  // Task pressure
-  if ((frame.taskPressure?.liveTaskNames ?? []).length > 0) {
-    lines.push("")
-    lines.push(`i'm also tracking: ${frame.taskPressure.liveTaskNames.join(", ")}.`)
   }
 
   // Bridges

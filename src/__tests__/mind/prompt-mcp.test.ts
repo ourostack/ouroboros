@@ -120,26 +120,30 @@ describe("MCP system prompt — first-class tools (no mcpToolsSection)", () => {
   })
 
   describe("bodyMapSection auth entries", () => {
-    it("includes ouro auth, ouro auth verify, and ouro auth switch in body map", () => {
+    it("includes provider auth and use guidance without deprecated switch commands", () => {
       const result = bodyMapSection("testagent")
       expect(result).toContain("ouro auth --agent testagent --provider")
       expect(result).toContain("ouro auth verify --agent testagent")
-      expect(result).toContain("ouro auth switch --agent testagent --provider")
+      expect(result).toContain("ouro use --agent testagent --lane outward --provider <provider> --model <model>")
+      expect(result).toContain("ouro use --agent testagent --lane inner --provider <provider> --model <model>")
+      expect(result).not.toContain("ouro auth switch --agent testagent --provider")
     })
   })
 
   describe("bodyMapSection config models entry", () => {
-    it("includes ouro config models in body map", () => {
+    it("does not teach deprecated config model commands", () => {
       const result = bodyMapSection("testagent")
-      expect(result).toContain("ouro config models --agent testagent")
+      expect(result).not.toContain("ouro config model --agent testagent")
+      expect(result).not.toContain("ouro config models --agent testagent")
     })
   })
 
   describe("bodyMapSection auto-refresh note", () => {
-    it("includes note that model/provider changes take effect automatically", () => {
+    it("includes note that provider lane changes take effect automatically", () => {
       const result = bodyMapSection("testagent")
       expect(result).toContain("take effect on the next turn automatically")
       expect(result).toContain("no restart needed")
+      expect(result).toContain("provider/model changes via `ouro use`")
     })
   })
 })

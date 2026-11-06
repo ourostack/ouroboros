@@ -1,5 +1,6 @@
 import * as fs from "fs"
 import * as path from "path"
+import { capStructuredRecordString, capStructuredRecordStringLeaves } from "../heart/session-events"
 import { emitNervesEvent } from "../nerves/runtime"
 
 export type EpisodeKind =
@@ -41,11 +42,11 @@ export function emitEpisode(
     id,
     timestamp: now,
     kind: input.kind,
-    summary: input.summary,
-    whyItMattered: input.whyItMattered,
+    summary: capStructuredRecordString(input.summary),
+    whyItMattered: capStructuredRecordString(input.whyItMattered),
     relatedEntities: input.relatedEntities,
     salience: input.salience,
-    ...(input.meta ? { meta: input.meta } : {}),
+    ...(input.meta ? { meta: capStructuredRecordStringLeaves(input.meta) } : {}),
   }
 
   const dir = episodesDir(agentRoot)

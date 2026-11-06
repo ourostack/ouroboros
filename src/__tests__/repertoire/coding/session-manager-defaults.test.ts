@@ -1,4 +1,6 @@
 import { describe, expect, it, vi } from "vitest"
+import { EVENT_CONTENT_MAX_CHARS } from "../../../heart/session-events"
+import { expectedCappedContent, expectedTruncationMarker, makeOversizedAgentContent } from "../../helpers/content-cap"
 
 class FakeProcess {
   readonly pid: number | undefined
@@ -68,6 +70,53 @@ describe("coding session manager defaults", () => {
       expect.any(String),
       "utf-8",
     )
+  })
+
+  it("caps oversized coding state and artifact strings before writing", async () => {
+    vi.resetModules()
+
+    vi.doMock("../../../heart/identity", () => ({
+      getAgentName: vi.fn(() => "slugger"),
+      getAgentRoot: vi.fn((agentName = "slugger") => `/mock/AgentBundles/${agentName}.ouro`),
+    }))
+    vi.doMock("../../../repertoire/coding/spawner", () => ({
+      spawnCodingProcess: vi.fn(() => ({
+        process: new FakeProcess(321),
+        command: "codex",
+        args: ["exec"],
+        prompt: "hello",
+      })),
+    }))
+
+    const oversized = makeOversizedAgentContent("coding prompt ")
+    const writeFileSync = vi.fn()
+
+    const { CodingSessionManager } = await import("../../../repertoire/coding/manager")
+    const manager = new CodingSessionManager({
+      existsSync: () => false,
+      readFileSync: () => "",
+      writeFileSync,
+      mkdirSync: vi.fn(),
+      nowIso: () => "2026-05-13T00:00:00.000Z",
+    })
+
+    await manager.spawnSession({
+      runner: "codex",
+      workdir: "/Users/test/AgentWorkspaces/ouroboros",
+      prompt: oversized,
+      taskRef: "task-cap",
+    })
+
+    const stateCall = writeFileSync.mock.calls.find((call) => String(call[0]).endsWith("sessions.json"))
+    const artifactCall = writeFileSync.mock.calls.find((call) => String(call[0]).endsWith(".md"))
+    expect(stateCall).toBeTruthy()
+    expect(artifactCall).toBeTruthy()
+    const state = JSON.parse(stateCall![1] as string)
+    expect(state.records[0].request.prompt.length).toBeLessThanOrEqual(EVENT_CONTENT_MAX_CHARS)
+    expect(state.records[0].request.prompt).toContain(expectedTruncationMarker(oversized))
+    expect(state.records[0].request.prompt).toBe(expectedCappedContent(oversized))
+    expect(artifactCall![1]).toContain(expectedTruncationMarker(oversized))
+    expect(artifactCall![1]).toContain(expectedCappedContent(oversized))
   })
 
   it("uses default fs helpers when persistence overrides are omitted", async () => {

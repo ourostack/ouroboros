@@ -18,7 +18,7 @@ export const PROVIDER_CREDENTIALS: Record<AgentProvider, {
   minimax:          { required: ["apiKey"],                             envVars: { MINIMAX_API_KEY: "apiKey" },                                                                                              promptLabels: { apiKey: "MiniMax API key" } },
   "github-copilot": { required: ["githubToken", "baseUrl"],             envVars: { GH_TOKEN: "githubToken", GITHUB_TOKEN: "githubToken" },                                                                   promptLabels: { githubToken: "GitHub token" } },
 }
-export type SenseName = "cli" | "teams" | "bluebubbles"
+export type SenseName = "cli" | "teams" | "bluebubbles" | "mail" | "voice"
 
 export type LogLevel = "debug" | "info" | "warn" | "error"
 export type LogSinkType = "terminal" | "ndjson"
@@ -30,6 +30,8 @@ export interface AgentSensesConfig {
   cli: AgentSenseConfig
   teams: AgentSenseConfig
   bluebubbles: AgentSenseConfig
+  mail: AgentSenseConfig
+  voice: AgentSenseConfig
 }
 
 export interface McpServerConfig {
@@ -77,6 +79,25 @@ export interface AgentConfig {
     enabled?: boolean
     remote?: string
   }
+  /**
+   * Plugins this agent has enabled. Plugins are machine-installed at
+   * ~/.ouro-cli/plugins/<plugin-id>/ via `ouro plugin install`; this list
+   * declares which of them apply to this agent. Added 2026-05-18 for
+   * worker-generalization W5 plugin support. desk plugin is the first
+   * use-case.
+   */
+  plugins?: PluginConfig[]
+}
+
+export interface PluginConfig {
+  /** Plugin identifier; matches the directory name under ~/.ouro-cli/plugins/. */
+  id: string
+  /** When false, the plugin is installed-but-disabled for this agent. */
+  enabled: boolean
+  /** Plugin source URL (e.g. github:ourostack/ouroboros-skills:plugins/desk). Optional; informational. */
+  source?: string
+  /** Plugin version this agent expects. Optional. */
+  version?: string
 }
 
 export const DEFAULT_AGENT_CONTEXT = {
@@ -90,7 +111,46 @@ export const DEFAULT_AGENT_PHRASES: AgentConfig["phrases"] = {
   followup: ["processing"],
 }
 
-export const DEFAULT_VAULT_SERVER_URL = "https://vault.ouroboros.bot"
+export const DEFAULT_VAULT_SERVER_URL = "https://vault.ouro.bot"
+export const LEGACY_VAULT_SERVER_URL_ALIASES = [
+  "https://vault.ouroboros.bot",
+  "https://ouro-vault.gentleflower-74452a1e.eastus2.azurecontainerapps.io",
+] as const
+
+export function normalizeVaultServerUrl(serverUrl: string): string {
+  const trimmed = serverUrl.trim()
+  const withoutTrailingSlash = trimmed.replace(/\/+$/, "")
+  if (!withoutTrailingSlash) {
+    return DEFAULT_VAULT_SERVER_URL
+  }
+  if (LEGACY_VAULT_SERVER_URL_ALIASES.includes(withoutTrailingSlash as typeof LEGACY_VAULT_SERVER_URL_ALIASES[number])) {
+    return DEFAULT_VAULT_SERVER_URL
+  }
+  return withoutTrailingSlash
+}
+
+export function getVaultServerUrlCandidates(serverUrl: string): string[] {
+  const raw = serverUrl.trim()
+  const withoutTrailingSlash = raw.replace(/\/+$/, "")
+  const normalized = normalizeVaultServerUrl(serverUrl)
+  const candidates = [normalized]
+
+  for (const candidate of [withoutTrailingSlash, raw]) {
+    if (candidate && !candidates.includes(candidate)) {
+      candidates.push(candidate)
+    }
+  }
+
+  if (normalized === DEFAULT_VAULT_SERVER_URL) {
+    for (const alias of LEGACY_VAULT_SERVER_URL_ALIASES) {
+      if (!candidates.includes(alias)) {
+        candidates.push(alias)
+      }
+    }
+  }
+
+  return candidates
+}
 
 export function defaultStableVaultEmail(agentName: string): string {
   const local = agentName
@@ -107,7 +167,7 @@ export function defaultStableVaultEmail(agentName: string): string {
 export function resolveVaultConfig(agentName: string, config?: AgentConfig["vault"]): { email: string; serverUrl: string } {
   return {
     email: config?.email ?? defaultStableVaultEmail(agentName),
-    serverUrl: config?.serverUrl ?? DEFAULT_VAULT_SERVER_URL,
+    serverUrl: normalizeVaultServerUrl(config?.serverUrl ?? DEFAULT_VAULT_SERVER_URL),
   }
 }
 
@@ -115,6 +175,8 @@ export const DEFAULT_AGENT_SENSES: AgentSensesConfig = {
   cli: { enabled: true },
   teams: { enabled: false },
   bluebubbles: { enabled: false },
+  mail: { enabled: false },
+  voice: { enabled: false },
 }
 
 export function normalizeSenses(value: unknown, configFile: string): AgentSensesConfig {
@@ -122,6 +184,8 @@ export function normalizeSenses(value: unknown, configFile: string): AgentSenses
     cli: { ...DEFAULT_AGENT_SENSES.cli },
     teams: { ...DEFAULT_AGENT_SENSES.teams },
     bluebubbles: { ...DEFAULT_AGENT_SENSES.bluebubbles },
+    mail: { ...DEFAULT_AGENT_SENSES.mail },
+    voice: { ...DEFAULT_AGENT_SENSES.voice },
   }
 
   if (value === undefined) {
@@ -139,7 +203,7 @@ export function normalizeSenses(value: unknown, configFile: string): AgentSenses
   }
 
   const raw = value as Record<string, unknown>
-  const senseNames: SenseName[] = ["cli", "teams", "bluebubbles"]
+  const senseNames: SenseName[] = ["cli", "teams", "bluebubbles", "mail", "voice"]
   for (const senseName of senseNames) {
     const rawSense = raw[senseName]
     if (rawSense === undefined) {
@@ -183,6 +247,8 @@ export function buildDefaultAgentTemplate(_agentName: string): AgentConfig {
       cli: { ...DEFAULT_AGENT_SENSES.cli },
       teams: { ...DEFAULT_AGENT_SENSES.teams },
       bluebubbles: { ...DEFAULT_AGENT_SENSES.bluebubbles },
+      mail: { ...DEFAULT_AGENT_SENSES.mail },
+      voice: { ...DEFAULT_AGENT_SENSES.voice },
     },
     phrases: {
       thinking: [...DEFAULT_AGENT_PHRASES.thinking],
@@ -202,12 +268,6 @@ let _agentConfigOverride: AgentConfig | null = null
  */
 export function getAgentName(): string {
   if (_cachedAgentName) {
-    emitNervesEvent({
-      event: "identity.resolve",
-      component: "config/identity",
-      message: "resolved agent name from cache",
-      meta: { source: "cache" },
-    })
     return _cachedAgentName
   }
 
@@ -268,7 +328,7 @@ export function getAgentStateRoot(agentName?: string): string {
   return path.join(getAgentRoot(resolveOptionalAgentName(agentName)), "state")
 }
 
-export const HARNESS_CANONICAL_REPO_URL = "https://github.com/ouroborosbot/ouroboros.git"
+export const HARNESS_CANONICAL_REPO_URL = "https://github.com/ourostack/ouroboros.git"
 
 export function getAgentRepoWorkspacesRoot(agentName?: string): string {
   return path.join(getAgentStateRoot(resolveOptionalAgentName(agentName)), "workspaces")
@@ -288,6 +348,10 @@ export function getAgentDaemonLoggingConfigPath(agentName?: string): string {
 
 export function getAgentMessagesRoot(agentName?: string): string {
   return path.join(getAgentStateRoot(resolveOptionalAgentName(agentName)), "messages")
+}
+
+export function getAgentMailroomRoot(agentName?: string): string {
+  return path.join(getAgentStateRoot(resolveOptionalAgentName(agentName)), "mailroom")
 }
 
 export function getAgentToolsRoot(agentName?: string): string {

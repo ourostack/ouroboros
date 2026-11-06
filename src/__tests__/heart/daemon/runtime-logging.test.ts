@@ -23,6 +23,16 @@ function waitFor(predicate: () => boolean): Promise<void> {
   })
 }
 
+async function waitForLogContent(filePath: string, needle: string): Promise<string> {
+  let body = ""
+  await waitFor(() => {
+    if (!fs.existsSync(filePath)) return false
+    body = fs.readFileSync(filePath, "utf-8")
+    return body.includes(needle)
+  })
+  return body
+}
+
 describe("daemon runtime logging", () => {
   let tmpRoot = ""
 
@@ -59,8 +69,7 @@ describe("daemon runtime logging", () => {
     })
 
     const logFile = path.join(tmpRoot, "AgentBundles", "slugger.ouro", "state", "daemon", "logs", "daemon.ndjson")
-    await waitFor(() => fs.existsSync(logFile))
-    const body = fs.readFileSync(logFile, "utf-8")
+    const body = await waitForLogContent(logFile, "\"event\":\"daemon.custom_event\"")
     expect(body).toContain("\"event\":\"daemon.custom_event\"")
     expect(stderrChunks.join("")).not.toContain("INFO [daemon] ndjson only")
   })
@@ -84,8 +93,7 @@ describe("daemon runtime logging", () => {
     })
 
     const logFile = path.join(tmpRoot, "AgentBundles", "slugger.ouro", "state", "daemon", "logs", "ouro.ndjson")
-    await waitFor(() => fs.existsSync(logFile))
-    const body = fs.readFileSync(logFile, "utf-8")
+    const body = await waitForLogContent(logFile, "\"event\":\"daemon.default_sink_test\"")
     expect(body).toContain("\"event\":\"daemon.default_sink_test\"")
     expect(stderrChunks.join("")).not.toContain("INFO [daemon] default sinks")
 
@@ -118,8 +126,7 @@ describe("daemon runtime logging", () => {
     })
 
     const logFile = path.join(tmpRoot, "AgentBundles", "slugger.ouro", "state", "daemon", "logs", "ouro.ndjson")
-    await waitFor(() => fs.existsSync(logFile))
-    const body = fs.readFileSync(logFile, "utf-8")
+    const body = await waitForLogContent(logFile, "\"event\":\"daemon.legacy_shared_default\"")
     expect(body).toContain("\"event\":\"daemon.legacy_shared_default\"")
     expect(stderrChunks.join("")).not.toContain("INFO [daemon] legacy shared default")
   })
@@ -145,8 +152,8 @@ describe("daemon runtime logging", () => {
     })
 
     const logFile = path.join(tmpRoot, "AgentBundles", "slugger.ouro", "state", "daemon", "logs", "daemon.ndjson")
-    await waitFor(() => fs.existsSync(logFile))
-    expect(fs.readFileSync(logFile, "utf-8")).toContain("\"event\":\"daemon.non_object_config\"")
+    expect(await waitForLogContent(logFile, "\"event\":\"daemon.non_object_config\""))
+      .toContain("\"event\":\"daemon.non_object_config\"")
     expect(stderrChunks.join("")).toContain("INFO [daemon] non-object config fallback")
   })
 
@@ -204,8 +211,7 @@ describe("daemon runtime logging", () => {
     })
 
     const logFile = path.join(tmpRoot, "AgentBundles", "slugger.ouro", "state", "daemon", "logs", "daemon.ndjson")
-    await waitFor(() => fs.existsSync(logFile))
-    const body = fs.readFileSync(logFile, "utf-8")
+    const body = await waitForLogContent(logFile, "\"event\":\"daemon.non_array_sinks\"")
     expect(body).toContain("\"event\":\"daemon.level_debug\"")
     expect(body).toContain("\"event\":\"daemon.level_warn\"")
     expect(body).toContain("\"event\":\"daemon.level_error\"")
@@ -274,8 +280,8 @@ describe("daemon runtime logging", () => {
     })
 
     const logFile = path.join(logsDir, "daemon.ndjson")
-    await waitFor(() => fs.existsSync(logFile))
-    expect(fs.readFileSync(logFile, "utf-8")).toContain("\"event\":\"daemon.identity_default_paths\"")
+    expect(await waitForLogContent(logFile, "\"event\":\"daemon.identity_default_paths\""))
+      .toContain("\"event\":\"daemon.identity_default_paths\"")
   })
 
   it("supports BlueBubbles runtime logging defaults and writes to a dedicated process log", async () => {
@@ -297,8 +303,8 @@ describe("daemon runtime logging", () => {
     })
 
     const logFile = path.join(tmpRoot, "AgentBundles", "slugger.ouro", "state", "daemon", "logs", "bluebubbles.ndjson")
-    await waitFor(() => fs.existsSync(logFile))
-    expect(fs.readFileSync(logFile, "utf-8")).toContain("\"event\":\"daemon.bluebubbles_runtime_default\"")
+    expect(await waitForLogContent(logFile, "\"event\":\"daemon.bluebubbles_runtime_default\""))
+      .toContain("\"event\":\"daemon.bluebubbles_runtime_default\"")
     expect(stderrChunks.join("")).toContain("WARN [daemon] bluebubbles logger default")
   })
 })

@@ -31,7 +31,6 @@ function makeMinimalFrame(overrides: Partial<ActiveWorkFrame> = {}): ActiveWorkF
     centerOfGravity: "local-turn",
     inner: { status: "idle", hasPending: false, job: makeIdleJob() },
     bridges: [],
-    taskPressure: { compactBoard: "", liveTaskNames: [], activeBridges: [] },
     friendActivity: { freshestForCurrentFriend: null, otherLiveSessionsForCurrentFriend: [] },
     codingSessions: [],
     bridgeSuggestion: null,
