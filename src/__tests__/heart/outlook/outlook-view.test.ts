@@ -6,7 +6,7 @@ describe("outlook machine view", () => {
 
     const view = buildOutlookMachineView({
       machine: {
-        productName: "Ouro Outlook",
+        productName: "Ouro Mailbox",
         observedAt: "2026-03-30T07:35:00.000Z",
         runtime: {
           version: "0.1.0-alpha.109",
@@ -67,7 +67,7 @@ describe("outlook machine view", () => {
     })
 
     expect(view.overview).toEqual(expect.objectContaining({
-      productName: "Ouro Outlook",
+      productName: "Ouro Mailbox",
       primaryEntryPoint: "http://127.0.0.1:4310/outlook",
       daemon: expect.objectContaining({
         status: "running",
@@ -94,8 +94,8 @@ describe("outlook machine view", () => {
         blockedCodingAgents: 1,
       },
       entrypoints: [
-        { kind: "web", label: "Open Outlook", target: "http://127.0.0.1:4310/outlook" },
-        { kind: "cli", label: "CLI JSON", target: "ouro outlook --json" },
+        { kind: "web", label: "Open Mailbox", target: "http://127.0.0.1:4310/outlook" },
+        { kind: "cli", label: "CLI JSON", target: "ouro mailbox --json" },
       ],
     }))
 
@@ -113,7 +113,7 @@ describe("outlook machine view", () => {
 
     const view = buildOutlookMachineView({
       machine: {
-        productName: "Ouro Outlook",
+        productName: "Ouro Mailbox",
         observedAt: "2026-03-30T07:35:00.000Z",
         runtime: {
           version: "0.1.0-alpha.109",
@@ -174,7 +174,7 @@ describe("outlook machine view", () => {
 
     const view = buildOutlookMachineView({
       machine: {
-        productName: "Ouro Outlook",
+        productName: "Ouro Mailbox",
         observedAt: "2026-03-30T07:35:00.000Z",
         runtime: {
           version: "0.1.0-alpha.109",
@@ -232,7 +232,7 @@ describe("outlook agent view", () => {
 
     const view = buildOutlookAgentView({
       agent: {
-        productName: "Ouro Outlook",
+        productName: "Ouro Mailbox",
         agentName: "slugger",
         agentRoot: "/mock/slugger.ouro",
         enabled: true,
@@ -378,7 +378,7 @@ describe("outlook agent view", () => {
 
     const view = buildOutlookAgentView({
       agent: {
-        productName: "Ouro Outlook",
+        productName: "Ouro Mailbox",
         agentName: "slugger",
         agentRoot: "/mock/slugger.ouro",
         enabled: true,
@@ -463,7 +463,7 @@ describe("outlook agent view", () => {
 
     const view = buildOutlookAgentView({
       agent: {
-        productName: "Ouro Outlook",
+        productName: "Ouro Mailbox",
         agentName: "slugger",
         agentRoot: "/mock/slugger.ouro",
         enabled: true,
@@ -604,7 +604,7 @@ describe("outlook agent view", () => {
 
     const view = buildOutlookAgentView({
       agent: {
-        productName: "Ouro Outlook",
+        productName: "Ouro Mailbox",
         agentName: "slugger",
         agentRoot: "/mock/slugger.ouro",
         enabled: true,

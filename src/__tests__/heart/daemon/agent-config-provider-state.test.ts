@@ -207,7 +207,7 @@ describe("checkAgentConfigWithProviderHealth provider state integration", () => 
 
     const result = await checkAgentConfigWithProviderHealth("slugger", bundlesRoot, { homeDir, pingProvider })
 
-    expect(result).toEqual({ ok: true })
+    expect(result).toMatchObject({ ok: true })
     const stateResult = readProviderState(agentRoot)
     expect(stateResult.ok).toBe(true)
     if (!stateResult.ok) throw new Error(stateResult.error)
@@ -259,7 +259,7 @@ describe("checkAgentConfigWithProviderHealth provider state integration", () => 
 
     const result = await checkAgentConfigWithProviderHealth("slugger", bundlesRoot, { homeDir, pingProvider })
 
-    expect(result).toEqual({ ok: true })
+    expect(result).toMatchObject({ ok: true })
     const expectedModel = getDefaultModelForProvider("minimax")
     const stateResult = readProviderState(agentRoot)
     expect(stateResult.ok).toBe(true)
@@ -326,7 +326,7 @@ describe("checkAgentConfigWithProviderHealth provider state integration", () => 
 
     const result = await checkAgentConfigWithProviderHealth("slugger", bundlesRoot, { homeDir, pingProvider })
 
-    expect(result).toEqual({ ok: true })
+    expect(result).toMatchObject({ ok: true })
     expect(fs.existsSync(getProviderStatePath(agentRoot))).toBe(false)
     expect(pingProvider).not.toHaveBeenCalled()
   })
@@ -371,7 +371,7 @@ describe("checkAgentConfigWithProviderHealth provider state integration", () => 
 
     const result = await checkAgentConfigWithProviderHealth("slugger", bundlesRoot, { homeDir, pingProvider })
 
-    expect(result).toEqual({ ok: true })
+    expect(result).toMatchObject({ ok: true })
     expect(pingProvider).toHaveBeenCalledTimes(1)
     expect(pingProvider).toHaveBeenCalledWith(
       "minimax",
@@ -518,7 +518,7 @@ describe("checkAgentConfigWithProviderHealth provider state integration", () => 
       if (provider === "openai-codex") {
         return {
           ok: false,
-          classification: "provider-error",
+          classification: "auth-failure",
           message: "400 status code (no body)",
           attempts: [{ attempt: 1 }, { attempt: 2 }, { attempt: 3 }],
         } as const
@@ -533,7 +533,9 @@ describe("checkAgentConfigWithProviderHealth provider state integration", () => 
     expect(result.error).toContain("openai-codex")
     expect(result.error).toContain("gpt-5.4")
     expect(result.error).toContain("400 status code (no body)")
-    expect(result.fix).toBe("Run 'ouro auth --agent slugger --provider openai-codex' to refresh credentials.")
+    expect(result.fix).toBe(
+      "Run 'ouro auth --agent slugger --provider openai-codex' to refresh credentials, or run 'ouro use --agent slugger --lane inner --provider <provider> --model <model>' to choose another provider/model for this lane.",
+    )
     expect(result.issue).toMatchObject({
       kind: "provider-live-check-failed",
       severity: "blocked",

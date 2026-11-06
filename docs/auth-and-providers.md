@@ -77,17 +77,21 @@ ouro connect teams --agent <agent>
 ouro connect bluebubbles --agent <agent>
 ```
 
-`ouro connect` opens the connect bay: one short menu that shows which capabilities are already ready, missing, locked, or machine-local.
+`ouro connect` opens the connect bay as a shared wizard: one recommended next step, separate sections for providers, portable capabilities, and machine-local attachments, and a prompt that lets the human choose by number or name instead of remembering subcommands first. Every time the root connect bay opens, Ouro uses the shared provider credential read and live ping machinery, but with an orientation policy: one live attempt, a short hard timeout, and no durable readiness write. That keeps the menu truthful without spending the full startup retry budget before the human can choose a setup task. `ouro up`, `ouro check`, `ouro auth verify`, and chat startup still own full provider retry behavior and lasting provider readiness updates. Portable capabilities with saved keys, such as Perplexity search and memory embeddings, are live-checked there too. Before the menu appears, Ouro prints a short `checking current connections` progress step while it verifies providers and reads portable and machine-local runtime settings. If a provider is slow, that step says which provider/model is being checked and then routes the quick failure into the menu as `needs attention` instead of leaving the terminal looking dead.
+
+Guided connectors open with a short capability guide that answers three questions up front: what this unlocks, what the human needs, and where the credential will live. They close with the same shared outcome guide language used by auth, vault, and hatch: a calm title, `What changed`, and `Next moves`.
+
+When a human runs bare `ouro` in a TTY, Ouro opens the same command family from the home deck instead of silently behaving like `ouro up`. The home deck routes into `ouro up`, `ouro connect`, `ouro repair`, `ouro chat`, `ouro hatch`, and help without requiring the human to remember exact command names first.
 
 `ouro connect providers` routes into the same provider auth flow as `ouro auth`, but from the connect bay instead of making the human remember the auth command first.
 
-`ouro connect perplexity` connects Perplexity search. It prompts for the API key without echoing it and stores `integrations.perplexityApiKey` in `runtime/config`.
+`ouro connect perplexity` connects Perplexity search. It prompts for the API key without echoing it, stores `integrations.perplexityApiKey` in `runtime/config`, and runs a live Perplexity probe before claiming the capability is ready.
 
-`ouro connect embeddings` connects memory embeddings. It prompts for the OpenAI embeddings API key without echoing it and stores `integrations.openaiEmbeddingsApiKey` in `runtime/config`.
+`ouro connect embeddings` connects memory embeddings. It prompts for the OpenAI embeddings API key without echoing it, stores `integrations.openaiEmbeddingsApiKey` in `runtime/config`, and runs a live embeddings probe before claiming the capability is ready.
 
 `ouro connect teams` connects the Teams sense. It prompts for `teams.clientId`, `teams.clientSecret`, `teams.tenantId`, and optional `teams.managedIdentityClientId`, stores them in `runtime/config`, and enables `senses.teams.enabled` in `agent.json`.
 
-`ouro connect bluebubbles` attaches this machine to BlueBubbles. It prompts for the local server URL, app password, webhook listener settings, stores them in `runtime/machines/<machine-id>/config`, and enables `senses.bluebubbles.enabled` in `agent.json`. It does not make that local Mac Messages bridge portable to every machine.
+`ouro connect bluebubbles` attaches this machine to BlueBubbles. It prompts for the local server URL, app password, webhook listener settings, stores them in `runtime/machines/<machine-id>/config`, and enables `senses.bluebubbles.enabled` in `agent.json`. If Ouro is already running, the connector recycles the daemon once so the local listener starts with the freshly saved machine attachment; if Ouro is not running, the next `ouro up` loads it. It does not make that local Mac Messages bridge portable to every machine.
 
 When a CLI auth/connect/vault repair command mutates the bundle, such as writing vault coordinates or enabling BlueBubbles in `agent.json`, Ouro runs the existing bundle sync path if `sync.enabled` is true. A successful command stays successful even if the bundle push fails, but the output includes a compact `bundle sync` line so the human and agent know whether the bundle change reached the remote.
 
@@ -101,6 +105,56 @@ ouro vault config set --agent <agent> --key bluebubbles.password --scope machine
 
 The values are written into the selected vault item and are not printed back. Prefer `ouro connect` for guided setup when it exists; use `vault config set` for fields that do not have a guided connector yet.
 
+## Vault Items, Managed Workflows, And Bindings
+
+The primitive is a vault item / credential: a private record in the owning agent vault with a stable item name/path, hidden secret material, optional public fields, freeform notes, folder-ish organization, timestamps/provenance, and no assumed use.
+
+Everything else lives outside that item.
+
+### Managed workflow
+
+`ouro connect` is not a generic password-manager entry tool. It is reserved for harness-managed workflows whose runtime behavior Ouro owns: model providers, portable integrations, local sense attachments, and Agent Mail. A credential should get an `ouro connect <name>` flow only when the harness can explain the capability, store it in a known runtime location, verify it, repair it, and apply the resulting runtime state.
+
+### Freeform vault item
+
+Use freeform vault items when an agent or human needs to store a credential or secret without teaching Ouro a new capability:
+
+```bash
+ouro vault item set --agent <agent> --item <path> --secret-field <name> [--public-field <key=value>] [--note <text>]
+ouro vault item set --agent <agent> --item <path> --template porkbun-api
+ouro vault item status --agent <agent> --item <path>
+ouro vault item list --agent <agent> [--prefix <path-prefix>]
+```
+
+Templates are convenience only. A template may shape hidden prompts and field names, but it does not create a new credential species. `--template porkbun-api` stores an ordinary vault item with hidden `apiKey` and `secretApiKey` fields.
+
+Notes are for humans and agents. Code must not parse meaning out of notes. Notes can explain what the item is, what not to assume, how it was obtained, who can rotate it, and recovery hints. If a workflow needs machine-readable facts, put them in explicit workflow binding fields or committed non-secret run config, not prose.
+
+### Binding / run config
+
+A binding is non-secret configuration that says a workflow should use a specific vault item for a specific task.
+
+For example, a DNS workflow binding may say:
+
+```yaml
+domain: ouro.bot
+driver: porkbun
+credentialItem: ops/registrars/porkbun/accounts/ari@mendelow.me
+resourceAllowlist:
+  - ouro.bot
+```
+
+That binding does not make the referenced vault item a DNS credential, provider credential, ops credential, or authority. It only says this workflow plans to use that ordinary item through this driver and allowlist.
+
+The older Porkbun helper remains as a deprecated compatibility alias:
+
+```bash
+ouro vault ops porkbun set --agent <agent> --account <porkbun-account>
+ouro vault ops porkbun status --agent <agent> --account <porkbun-account>
+```
+
+It should store and report an ordinary vault item, then point humans and agents toward `ouro vault item set --template porkbun-api`.
+
 ## Human CLI Progress
 
 Human-facing commands must not turn into a wall of text or a silent blinking cursor. Any command that may wait on browser login, vault IO, daemon startup, daemon restart, provider live checks, or guided connector setup should use the shared checklist progress surface.
@@ -108,10 +162,13 @@ Human-facing commands must not turn into a wall of text or a silent blinking cur
 The checklist contract is:
 
 - start with the fewest words that orient a non-terminal user
-- print or animate the active step when work may take more than a few seconds
+- print or animate the active step when work may take more than about three seconds
 - show changed substeps such as `reading vault items`, `storing openai-codex credentials`, or `opening credential vault`
-- complete with a compact success/failure summary and one next action
+- for daemon replacement, say that Ouro is replacing the running background service and keep the step unresolved until the replacement is actually answering
+- complete with a compact success/failure summary, `What changed`, and a `Next moves` landing
 - never print raw secrets, OAuth tokens, provider API keys, vault unlock secrets, or machine-local passwords
+
+TTY help/readiness surfaces should share one visual language instead of every command inventing its own transcript. The shared board layer is the intended human surface for `ouro`, `ouro up`, `ouro connect`, `ouro auth verify`, `ouro repair`, `ouro help`, `ouro whoami`, `ouro versions`, and the `ouro hatch` welcome shell. Non-TTY and automation paths should stay compact plain text.
 
 Agent-runnable shortcuts may stay compact when they are intended for automation and already return structured results. Human-choice and human-required flows should choose friendliness over terseness.
 
@@ -407,6 +464,12 @@ ouro vault recover --agent <agent> --from <json> [--from <json> ...]
 ouro vault config set --agent <agent> --key <field>
 ouro vault config set --agent <agent> --key <field> --scope machine
 ouro vault config status --agent <agent> [--scope agent|machine|all]
+ouro vault item set --agent <agent> --item <path> --secret-field <field> [--public-field <key=value>] [--note <text>]
+ouro vault item set --agent <agent> --item <path> --template porkbun-api
+ouro vault item status --agent <agent> --item <path>
+ouro vault item list --agent <agent> [--prefix <path-prefix>]
+ouro vault ops porkbun set --agent <agent> --account <account>
+ouro vault ops porkbun status --agent <agent> [--account <account>]
 ouro connect --agent <agent>
 ouro connect providers --agent <agent>
 ouro connect perplexity --agent <agent>

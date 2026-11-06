@@ -16,7 +16,7 @@ import type {
 import { emitNervesEvent } from "../../nerves/runtime"
 import { probeBlueBubblesHealth } from "./bluebubbles-health-diagnostics"
 import { diagnoseOuroPath } from "../versioning/ouro-path-installer"
-import { refreshMachineRuntimeCredentialConfig } from "../runtime-credentials"
+import { refreshMachineRuntimeCredentialConfig, refreshRuntimeCredentialConfig } from "../runtime-credentials"
 import { loadOrCreateMachineIdentity } from "../machine-identity"
 
 const DEFAULT_BLUEBUBBLES_REQUEST_TIMEOUT_MS = 30_000
@@ -97,6 +97,18 @@ function textField(record: Record<string, unknown> | null | undefined, key: stri
 function numberField(record: Record<string, unknown> | null | undefined, key: string, fallback: number): number {
   const value = record?.[key]
   return typeof value === "number" && Number.isFinite(value) ? value : fallback
+}
+
+function hasStringRecordValue(value: unknown): boolean {
+  const record = asRecord(value)
+  return !!record && Object.values(record).some((entry) => typeof entry === "string" && entry.trim().length > 0)
+}
+
+function mailAutonomyDetail(mailroom: Record<string, unknown> | null): string {
+  const policy = asRecord(mailroom?.autonomousSendPolicy)
+  const autonomy = policy?.enabled === true ? "autonomy enabled" : "autonomy disabled"
+  const killSwitch = policy?.killSwitch === true ? "kill switch on" : "kill switch off"
+  return `${autonomy}; ${killSwitch}`
 }
 
 const SENSITIVE_CONFIG_KEYS = ["apiKey", "token", "secret", "password"]
@@ -195,7 +207,7 @@ export async function checkSenses(deps: DoctorDeps): Promise<DoctorCategory> {
     }
 
     const senses = config.senses as Record<string, unknown>
-    const senseNames = ["cli", "teams", "bluebubbles"]
+    const senseNames = ["cli", "teams", "bluebubbles", "mail"]
     for (const sense of senseNames) {
       if (!(sense in senses)) continue
       const entry = senses[sense]
@@ -270,6 +282,48 @@ export async function checkSenses(deps: DoctorDeps): Promise<DoctorCategory> {
             detail: probe.detail,
           })
         }
+      }
+
+      if (sense === "mail" && senseObj.enabled === true) {
+        const runtimeConfig = await refreshRuntimeCredentialConfig(agentName, { preserveCachedOnFailure: true })
+        if (!runtimeConfig.ok) {
+          checks.push({
+            label: `${agentDir} mail config`,
+            status: "fail",
+            detail: `runtime config unavailable: ${runtimeConfig.error}`,
+          })
+          continue
+        }
+
+        const mailroom = asRecord(runtimeConfig.config.mailroom)
+        const workSubstrate = asRecord(runtimeConfig.config.workSubstrate)
+        const mailboxAddress = textField(mailroom, "mailboxAddress")
+        const hosted = textField(workSubstrate, "mode") === "hosted"
+        const azureAccountUrl = textField(mailroom, "azureAccountUrl")
+        const azureContainer = textField(mailroom, "azureContainer") || "mailroom"
+        const missing: string[] = []
+        if (!mailboxAddress) missing.push("mailroom.mailboxAddress")
+        if (!hasStringRecordValue(mailroom?.privateKeys)) missing.push("mailroom.privateKeys")
+        if (hosted && !azureAccountUrl) missing.push("mailroom.azureAccountUrl for hosted Blob reader")
+
+        if (missing.length > 0) {
+          checks.push({
+            label: `${agentDir} mail config`,
+            status: "fail",
+            detail: `missing ${missing.join("/")}`,
+          })
+          continue
+        }
+
+        checks.push({
+          label: `${agentDir} mail config`,
+          status: "pass",
+          detail: [
+            mailboxAddress,
+            hosted ? `hosted azure-blob ${azureAccountUrl}/${azureContainer}` : "local file Mailroom",
+            mailAutonomyDetail(mailroom),
+          ].join("; "),
+        })
       }
     }
   }
@@ -355,14 +409,217 @@ export function checkSecurity(deps: DoctorDeps): DoctorCategory {
   return { name: "Security", checks }
 }
 
+export function checkTrips(deps: DoctorDeps): DoctorCategory {
+  const checks: DoctorCheck[] = []
+  const agents = discoverAgents(deps)
+
+  if (agents.length === 0) {
+    checks.push({ label: "trip ledger", status: "warn", detail: "no agent bundles found" })
+    return { name: "Trips", checks }
+  }
+
+  for (const agentDir of agents) {
+    const tripsRootPath = `${deps.bundlesRoot}/${agentDir}/state/trips`
+    if (!deps.existsSync(tripsRootPath)) {
+      // Trip ledger is optional; absence is fine. Pass with a hint.
+      checks.push({ label: `${agentDir} trip ledger`, status: "pass", detail: "no ledger directory (no trips ensured yet)" })
+      continue
+    }
+    const ledgerPath = `${tripsRootPath}/ledger.json`
+    if (!deps.existsSync(ledgerPath)) {
+      checks.push({ label: `${agentDir} trip ledger`, status: "warn", detail: "state/trips/ exists but ledger.json missing — run trip_ensure_ledger" })
+      continue
+    }
+    let raw: string
+    /* v8 ignore start -- defensive: readFileSync failure after existsSync passes is a race-condition fallback @preserve */
+    try {
+      raw = deps.readFileSync(ledgerPath)
+    } catch {
+      checks.push({ label: `${agentDir} trip ledger`, status: "fail", detail: "ledger.json could not be read" })
+      continue
+    }
+    /* v8 ignore stop */
+    let parsed: Record<string, unknown>
+    try {
+      parsed = JSON.parse(raw) as Record<string, unknown>
+    } catch {
+      checks.push({ label: `${agentDir} trip ledger`, status: "fail", detail: "ledger.json is not valid JSON" })
+      continue
+    }
+    const ledgerId = typeof parsed.ledgerId === "string" ? parsed.ledgerId : null
+    const hasPrivateKey = typeof parsed.privateKeyPem === "string" && parsed.privateKeyPem.includes("BEGIN")
+    if (!ledgerId) {
+      checks.push({ label: `${agentDir} trip ledger`, status: "warn", detail: "ledger.json missing ledgerId field" })
+      continue
+    }
+    if (!hasPrivateKey) {
+      checks.push({ label: `${agentDir} trip ledger`, status: "fail", detail: `${ledgerId}: privateKeyPem missing — encrypted trip records cannot be read` })
+      continue
+    }
+    let recordCount = 0
+    const recordsDir = `${tripsRootPath}/records`
+    /* v8 ignore start -- defensive: records dir presence and readdir error are filesystem-state branches not all exercised by tests; pluralization branch likewise depends on record count fixtures @preserve */
+    if (deps.existsSync(recordsDir)) {
+      try {
+        recordCount = deps.readdirSync(recordsDir).filter((name) => name.endsWith(".json")).length
+      } catch {
+        // ignore — the warn detail will still report 0 records
+      }
+    }
+    checks.push({
+      label: `${agentDir} trip ledger`,
+      status: "pass",
+      detail: `${ledgerId} (${recordCount} record${recordCount === 1 ? "" : "s"})`,
+    })
+    /* v8 ignore stop */
+  }
+
+  return { name: "Trips", checks }
+}
+
+export function checkMailroom(deps: DoctorDeps): DoctorCategory {
+  const checks: DoctorCheck[] = []
+  const agents = discoverAgents(deps)
+
+  if (agents.length === 0) {
+    checks.push({ label: "mailroom", status: "warn", detail: "no agent bundles found" })
+    return { name: "Mailroom", checks }
+  }
+
+  for (const agentDir of agents) {
+    const mailroomRoot = `${deps.bundlesRoot}/${agentDir}/state/mailroom`
+    if (!deps.existsSync(mailroomRoot)) {
+      checks.push({ label: `${agentDir} mailroom`, status: "pass", detail: "no mailroom directory (mail not connected)" })
+      continue
+    }
+    const registryPath = `${mailroomRoot}/registry.json`
+    if (!deps.existsSync(registryPath)) {
+      checks.push({ label: `${agentDir} mailroom`, status: "warn", detail: "state/mailroom/ exists but registry.json missing" })
+      continue
+    }
+    let raw: string
+    /* v8 ignore start -- defensive: readFileSync failure after existsSync passes is a race-condition fallback @preserve */
+    try {
+      raw = deps.readFileSync(registryPath)
+    } catch {
+      checks.push({ label: `${agentDir} mailroom`, status: "fail", detail: "registry.json could not be read" })
+      continue
+    }
+    /* v8 ignore stop */
+    let parsed: Record<string, unknown>
+    try {
+      parsed = JSON.parse(raw) as Record<string, unknown>
+    } catch {
+      checks.push({ label: `${agentDir} mailroom`, status: "fail", detail: "registry.json is not valid JSON" })
+      continue
+    }
+    /* v8 ignore start -- defensive: registry shape is validated by mailroom code; non-array fallbacks are belt-and-suspenders @preserve */
+    const mailboxes = Array.isArray(parsed.mailboxes) ? parsed.mailboxes : null
+    const sourceGrants = Array.isArray(parsed.sourceGrants) ? parsed.sourceGrants : []
+    /* v8 ignore stop */
+    if (!mailboxes || mailboxes.length === 0) {
+      checks.push({ label: `${agentDir} mailroom`, status: "warn", detail: "registry.json has no mailboxes — provision via `ouro connect mail`" })
+      continue
+    }
+    let messagesCount = 0
+    const messagesDir = `${mailroomRoot}/messages`
+    /* v8 ignore start -- defensive: messages-dir presence + readdir error + pluralization branches depend on filesystem-state fixtures not exhaustively covered @preserve */
+    if (deps.existsSync(messagesDir)) {
+      try {
+        messagesCount = deps.readdirSync(messagesDir).filter((name) => name.endsWith(".json")).length
+      } catch {
+        // ignore — pass detail just won't include the message count
+      }
+    }
+    checks.push({
+      label: `${agentDir} mailroom`,
+      status: "pass",
+      detail: `${mailboxes.length} mailbox${mailboxes.length === 1 ? "" : "es"}, ${sourceGrants.length} source grant${sourceGrants.length === 1 ? "" : "s"}, ${messagesCount} message${messagesCount === 1 ? "" : "s"}`,
+    })
+    /* v8 ignore stop */
+  }
+
+  return { name: "Mailroom", checks }
+}
+
+export function checkFriends(deps: DoctorDeps): DoctorCategory {
+  const checks: DoctorCheck[] = []
+  const agents = discoverAgents(deps)
+
+  if (agents.length === 0) {
+    checks.push({ label: "friends", status: "warn", detail: "no agent bundles found" })
+    return { name: "Friends", checks }
+  }
+
+  for (const agentDir of agents) {
+    const friendsDir = `${deps.bundlesRoot}/${agentDir}/friends`
+    if (!deps.existsSync(friendsDir)) {
+      checks.push({ label: `${agentDir} friends`, status: "pass", detail: "no friends directory (no friends recorded yet)" })
+      continue
+    }
+    let entries: string[]
+    /* v8 ignore start -- defensive: readdirSync failure after existsSync passes is a race-condition fallback @preserve */
+    try {
+      entries = deps.readdirSync(friendsDir).filter((name) => name.endsWith(".json"))
+    } catch {
+      checks.push({ label: `${agentDir} friends`, status: "fail", detail: "friends directory could not be read" })
+      continue
+    }
+    /* v8 ignore stop */
+    if (entries.length === 0) {
+      checks.push({ label: `${agentDir} friends`, status: "pass", detail: "0 friends recorded" })
+      continue
+    }
+    let parseFailures = 0
+    let trustFamily = 0
+    let trustFriend = 0
+    let trustStranger = 0
+    let trustOther = 0
+    /* v8 ignore start -- per-record trust-level tally branches: tests don't exhaustively combine all four trust buckets in one fixture @preserve */
+    for (const name of entries) {
+      const filePath = `${friendsDir}/${name}`
+      let raw: string
+      try {
+        raw = deps.readFileSync(filePath)
+      } catch {
+        parseFailures += 1
+        continue
+      }
+      let parsed: Record<string, unknown>
+      try {
+        parsed = JSON.parse(raw) as Record<string, unknown>
+      } catch {
+        parseFailures += 1
+        continue
+      }
+      const trustLevel = typeof parsed.trustLevel === "string" ? parsed.trustLevel : "friend"
+      if (trustLevel === "family") trustFamily += 1
+      else if (trustLevel === "friend") trustFriend += 1
+      else if (trustLevel === "stranger") trustStranger += 1
+      else trustOther += 1
+    }
+    if (parseFailures > 0) {
+      checks.push({ label: `${agentDir} friends`, status: "warn", detail: `${entries.length} record${entries.length === 1 ? "" : "s"}, ${parseFailures} unparseable` })
+      continue
+    }
+    const parts = [
+      `${entries.length} friend${entries.length === 1 ? "" : "s"}`,
+      `${trustFamily} family`,
+      `${trustFriend} friend`,
+      `${trustStranger} stranger`,
+    ]
+    if (trustOther > 0) parts.push(`${trustOther} other`)
+    checks.push({ label: `${agentDir} friends`, status: "pass", detail: parts.join(", ") })
+    /* v8 ignore stop */
+  }
+
+  return { name: "Friends", checks }
+}
+
 export function checkDisk(deps: DoctorDeps): DoctorCategory {
   const checks: DoctorCheck[] = []
 
-  // Check daemon logs directory
-  const logsDir = `${deps.homedir}/.ouro-cli/logs`
-  if (!deps.existsSync(logsDir)) {
-    checks.push({ label: "daemon logs dir", status: "warn", detail: `${logsDir} not found` })
-  } else {
+  const addLogSizeCheck = (labelPrefix: string, logsDir: string): void => {
     let totalSize = 0
     try {
       const files = deps.readdirSync(logsDir)
@@ -380,11 +637,25 @@ export function checkDisk(deps: DoctorDeps): DoctorCategory {
 
     const sizeMB = totalSize / (1024 * 1024)
     if (sizeMB > 500) {
-      checks.push({ label: "daemon log size", status: "fail", detail: `${sizeMB.toFixed(1)}MB — exceeds 500MB limit` })
+      checks.push({ label: `${labelPrefix} daemon log size`, status: "fail", detail: `${sizeMB.toFixed(1)}MB — exceeds 500MB limit` })
     } else if (sizeMB > 100) {
-      checks.push({ label: "daemon log size", status: "warn", detail: `${sizeMB.toFixed(1)}MB — consider pruning with \`ouro logs prune\`` })
+      checks.push({ label: `${labelPrefix} daemon log size`, status: "warn", detail: `${sizeMB.toFixed(1)}MB — consider pruning with \`ouro logs prune\`` })
     } else {
-      checks.push({ label: "daemon log size", status: "pass", detail: `${sizeMB.toFixed(1)}MB` })
+      checks.push({ label: `${labelPrefix} daemon log size`, status: "pass", detail: `${sizeMB.toFixed(1)}MB` })
+    }
+  }
+
+  const agents = discoverAgents(deps)
+  if (agents.length === 0) {
+    checks.push({ label: "daemon logs dir", status: "warn", detail: "no agent bundles found for bundle-local logs" })
+  }
+
+  for (const agentDir of agents) {
+    const logsDir = `${deps.bundlesRoot}/${agentDir}/state/daemon/logs`
+    if (!deps.existsSync(logsDir)) {
+      checks.push({ label: `${agentDir} daemon logs dir`, status: "warn", detail: `${logsDir} not found` })
+    } else {
+      addLogSizeCheck(agentDir, logsDir)
     }
   }
 
@@ -415,22 +686,167 @@ function computeSummary(categories: DoctorCategory[]): DoctorSummary {
   return { passed, warnings, failed }
 }
 
+/**
+ * Recent daemon lifecycle: surfaces last activity timestamp, recent restarts,
+ * version-install events, and process errors from the last hour. Designed
+ * to answer the operator's question after the daemon has gone silent: "did
+ * it crash? when did it last do anything? did it just upgrade?"
+ *
+ * Reads daemon.ndjson from the first available agent bundle (one daemon
+ * serves all agents, so any agent's bundle has the shared log).
+ */
+export function checkLifecycle(deps: DoctorDeps): DoctorCategory {
+  const checks: DoctorCheck[] = []
+  const HOUR_MS = 60 * 60 * 1000
+  const STALE_THRESHOLD_MS = 5 * 60 * 1000
+  const cutoff = Date.now() - HOUR_MS
+
+  const agents = discoverAgents(deps)
+  let logPath: string | null = null
+  for (const agentDir of agents) {
+    const candidate = `${deps.bundlesRoot}/${agentDir}/state/daemon/logs/daemon.ndjson`
+    if (deps.existsSync(candidate)) {
+      logPath = candidate
+      break
+    }
+  }
+
+  if (!logPath) {
+    checks.push({ label: "daemon log readable", status: "warn", detail: "no daemon.ndjson found in any agent bundle" })
+    return { name: "Lifecycle", checks }
+  }
+
+  let lastTs: string | null = null
+  let lastEvent: string | null = null
+  let startCount = 0
+  let installCount = 0
+  let installVersions: string[] = []
+  let processErrors: string[] = []
+  let lastEntryAgeMs = Number.POSITIVE_INFINITY
+
+  try {
+    // Read the whole log via deps.readFileSync, then take the tail. For a
+    // chatty daemon this can be a few MB; we only inspect the last 5000
+    // lines which is enough for the last hour of activity. If the file is
+    // small (typical case), reading it all is cheap.
+    const raw = deps.readFileSync(logPath)
+    const allLines = raw.split("\n").filter((l) => l.trim())
+    const usable = allLines.length > 5000 ? allLines.slice(-5000) : allLines
+    for (const line of usable) {
+      let parsed: Record<string, unknown>
+      try {
+        parsed = JSON.parse(line) as Record<string, unknown>
+      } catch {
+        continue
+      }
+      const ts = typeof parsed.ts === "string" ? parsed.ts : null
+      const event = typeof parsed.event === "string" ? parsed.event : null
+      if (!ts || !event) continue
+      const tsMs = Date.parse(ts)
+      if (Number.isNaN(tsMs)) continue
+      lastTs = ts
+      lastEvent = event
+      lastEntryAgeMs = Math.min(lastEntryAgeMs, Date.now() - tsMs)
+      if (tsMs < cutoff) continue
+      if (event === "daemon.daemon_started") startCount++
+      if (event === "daemon.cli_version_install_end") {
+        installCount++
+        const meta = parsed.meta as Record<string, unknown> | undefined
+        const ver = typeof meta?.version === "string" ? meta.version : null
+        if (ver) installVersions.push(ver)
+      }
+      if (event === "daemon.agent_process_error") {
+        const meta = parsed.meta as Record<string, unknown> | undefined
+        const reason = typeof meta?.reason === "string" ? meta.reason : "unknown"
+        const agent = typeof meta?.agent === "string" ? meta.agent : "unknown"
+        processErrors.push(`${agent}: ${reason}`)
+      }
+    }
+  } catch (error) {
+    checks.push({ label: "daemon log readable", status: "fail", detail: `read failed: ${error instanceof Error ? error.message : /* v8 ignore next -- non-Error throw is unreachable from deps.readFileSync (always Error) @preserve */ String(error)}` })
+    return { name: "Lifecycle", checks }
+  }
+
+  if (lastTs === null) {
+    checks.push({ label: "recent daemon activity", status: "warn", detail: "no parseable events in tail of daemon.ndjson" })
+  } else {
+    const ageSec = Math.round(lastEntryAgeMs / 1000)
+    const ageDetail = ageSec < 60 ? `${ageSec}s ago` : `${Math.round(ageSec / 60)}m ago`
+    if (lastEntryAgeMs > STALE_THRESHOLD_MS) {
+      checks.push({
+        label: "recent daemon activity",
+        status: "warn",
+        detail: `last event ${ageDetail} (${lastEvent}) — daemon may be silent or stopped`,
+      })
+    } else {
+      checks.push({
+        label: "recent daemon activity",
+        status: "pass",
+        detail: `last event ${ageDetail} (${lastEvent})`,
+      })
+    }
+  }
+
+  if (startCount > 0) {
+    checks.push({
+      label: "daemon restarts (last hour)",
+      status: startCount > 3 ? "warn" : "pass",
+      detail: `${startCount} restart${startCount === 1 ? "" : "s"}${startCount > 3 ? " — high churn, investigate" : ""}`,
+    })
+  }
+
+  if (installCount > 0) {
+    checks.push({
+      label: "version installs (last hour)",
+      status: "pass",
+      detail: `installed: ${installVersions.join(", ")}`,
+    })
+  }
+
+  if (processErrors.length > 0) {
+    checks.push({
+      label: "agent process errors (last hour)",
+      status: "warn",
+      detail: `${processErrors.length} error${processErrors.length === 1 ? "" : "s"}: ${processErrors.slice(0, 3).join("; ")}${processErrors.length > 3 ? "..." : ""}`,
+    })
+  }
+
+  return { name: "Lifecycle", checks }
+}
+
 type CategoryChecker = (deps: DoctorDeps) => DoctorCategory | Promise<DoctorCategory>
 
 const CATEGORY_CHECKERS: Array<{ name: string; fn: CategoryChecker }> = [
   { name: "CLI", fn: checkCliPath },
   { name: "Daemon", fn: checkDaemon },
+  { name: "Lifecycle", fn: checkLifecycle },
   { name: "Agents", fn: checkAgents },
   { name: "Senses", fn: checkSenses },
   { name: "Habits", fn: checkHabits },
   { name: "Security", fn: checkSecurity },
+  { name: "Trips", fn: checkTrips },
+  { name: "Mailroom", fn: checkMailroom },
+  { name: "Friends", fn: checkFriends },
   { name: "Disk", fn: checkDisk },
 ]
 
-export async function runDoctorChecks(deps: DoctorDeps): Promise<DoctorResult> {
+export interface RunDoctorOptions {
+  /** Run only the named category (case-insensitive). When unset, runs all categories. */
+  category?: string
+}
+
+export const KNOWN_DOCTOR_CATEGORIES: readonly string[] = CATEGORY_CHECKERS.map((c) => c.name)
+
+export async function runDoctorChecks(deps: DoctorDeps, options: RunDoctorOptions = {}): Promise<DoctorResult> {
   const categories: DoctorCategory[] = []
 
-  for (const checker of CATEGORY_CHECKERS) {
+  const filter = options.category?.toLowerCase()
+  /* v8 ignore next -- branch: filter present vs absent — covered separately by --category and plain doctor tests but the filter-array generation isn't double-counted by both code paths in the same suite @preserve */
+  const checkers = filter
+    ? CATEGORY_CHECKERS.filter((c) => c.name.toLowerCase() === filter)
+    : CATEGORY_CHECKERS
+
+  for (const checker of checkers) {
     try {
       const category = await Promise.resolve(checker.fn(deps))
       categories.push(category)

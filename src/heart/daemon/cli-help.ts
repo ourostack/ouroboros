@@ -29,7 +29,7 @@ export type CommandCategory =
 export const COMMAND_REGISTRY: Record<string, CommandHelp & { category: CommandCategory }> = {
   up: {
     category: "Lifecycle",
-    description: "Start the ouro daemon (default command). Use --no-repair to skip interactive repair when agents are degraded.",
+    description: "Start and check Ouro: bring up the background runtime, refresh what this machine needs, and show anything that still needs attention. In a human TTY, bare `ouro` opens the home screen instead; noninteractive shells still route bare `ouro` to `ouro up`.",
     usage: "ouro [up] [--no-repair]",
     example: "ouro up --no-repair",
   },
@@ -47,7 +47,7 @@ export const COMMAND_REGISTRY: Record<string, CommandHelp & { category: CommandC
   },
   status: {
     category: "Lifecycle",
-    description: "Show daemon status",
+    description: "Show Ouro status for this machine",
     usage: "ouro status",
     example: "ouro status",
   },
@@ -94,9 +94,15 @@ export const COMMAND_REGISTRY: Record<string, CommandHelp & { category: CommandC
     usage: "ouro doctor",
     example: "ouro doctor",
   },
+  mailbox: {
+    category: "Agents",
+    description: "Show the agent's current mailbox overview",
+    usage: "ouro mailbox [--json]",
+    example: "ouro mailbox --json",
+  },
   outlook: {
     category: "Agents",
-    description: "Show the agent's current outlook",
+    description: "Deprecated alias for `ouro mailbox`",
     usage: "ouro outlook [--json]",
     example: "ouro outlook --json",
   },
@@ -178,12 +184,26 @@ export const COMMAND_REGISTRY: Record<string, CommandHelp & { category: CommandC
     example: "ouro auth",
     subcommands: ["verify", "switch"],
   },
+  account: {
+    category: "Auth",
+    description: "Ensure the agent's vault-backed work substrate account, including Mailroom setup",
+    usage: "ouro account ensure [--agent <name>]",
+    example: "ouro account ensure --agent slugger",
+    subcommands: ["ensure"],
+  },
   connect: {
     category: "Auth",
-    description: "Connect providers, portable integrations, and local senses from one guided bay",
-    usage: "ouro connect [providers|perplexity|embeddings|teams|bluebubbles] [--agent <name>]",
+    description: "Set up providers, portable integrations, and local senses from one guided screen",
+    usage: "ouro connect [providers|perplexity|embeddings|teams|bluebubbles|mail] [--agent <name>]",
     example: "ouro connect",
-    subcommands: ["providers", "perplexity", "embeddings", "teams", "bluebubbles"],
+    subcommands: ["providers", "perplexity", "embeddings", "teams", "bluebubbles", "mail"],
+  },
+  mail: {
+    category: "Auth",
+    description: "Import delegated mail and repair hosted Mailroom mailbox indexes",
+    usage: "ouro mail <import-mbox|backfill-indexes> [--agent <name>]",
+    example: "ouro mail import-mbox --discover --owner-email ari@mendelow.me --source hey --agent slugger",
+    subcommands: ["import-mbox", "backfill-indexes"],
   },
   use: {
     category: "Auth",
@@ -213,9 +233,9 @@ export const COMMAND_REGISTRY: Record<string, CommandHelp & { category: CommandC
   vault: {
     category: "Auth",
     description: "Create, replace, recover, unlock, inspect, and populate the agent credential vault",
-    usage: "ouro vault <create|replace|recover|unlock|status|config> [--agent <name>]",
+    usage: "ouro vault <create|replace|recover|unlock|status|config|item|ops> [--agent <name>]",
     example: "ouro vault status",
-    subcommands: ["create", "replace", "recover", "unlock", "status", "config set", "config status"],
+    subcommands: ["create", "replace", "recover", "unlock", "status", "config set", "config status", "vault item set", "vault item status", "vault item list", "vault ops porkbun set", "vault ops porkbun status"],
   },
   thoughts: {
     category: "Internal",
@@ -289,29 +309,49 @@ const SUBCOMMAND_HELP: Record<string, CommandHelp> = {
     example: "ouro auth switch --provider minimax",
   },
   "connect perplexity": {
-    description: "Connect Perplexity search for this agent",
+    description: "Connect portable Perplexity search that travels with this agent",
     usage: "ouro connect perplexity [--agent <name>]",
     example: "ouro connect perplexity",
   },
   "connect providers": {
-    description: "Open provider auth from the connect bay without remembering the auth command",
+    description: "Open provider setup from the connections screen without remembering the auth command",
     usage: "ouro connect providers [--agent <name>]",
     example: "ouro connect providers",
   },
   "connect embeddings": {
-    description: "Connect memory embeddings for this agent",
+    description: "Connect portable memory embeddings that travel with this agent",
     usage: "ouro connect embeddings [--agent <name>]",
     example: "ouro connect embeddings",
   },
   "connect teams": {
-    description: "Connect Microsoft Teams credentials and enable the Teams sense",
+    description: "Connect portable Microsoft Teams credentials and enable the Teams sense",
     usage: "ouro connect teams [--agent <name>]",
     example: "ouro connect teams",
   },
   "connect bluebubbles": {
-    description: "Attach BlueBubbles iMessage to this machine only",
+    description: "Attach BlueBubbles iMessage to this machine only; it does not travel with the agent",
     usage: "ouro connect bluebubbles [--agent <name>]",
     example: "ouro connect bluebubbles",
+  },
+  "connect mail": {
+    description: "Provision portable Agent Mail / Mailroom access and enable the Mail sense",
+    usage: "ouro connect mail [--agent <name>] [--owner-email <email> --source <label>|--no-delegated-source] [--rotate-missing-mail-keys]",
+    example: "ouro connect mail --agent slugger --owner-email ari@mendelow.me --source hey",
+  },
+  "account ensure": {
+    description: "Idempotently prepare an agent's vault-backed work substrate account and private Mailroom mailbox",
+    usage: "ouro account ensure [--agent <name>] [--owner-email <email> --source <label>|--no-delegated-source] [--rotate-missing-mail-keys]",
+    example: "ouro account ensure --agent slugger --owner-email ari@mendelow.me --source hey",
+  },
+  "mail import-mbox": {
+    description: "Import a HEY or other MBOX export into an existing delegated Mailroom source grant",
+    usage: "ouro mail import-mbox (--file <path>|--discover) [--owner-email <email>] [--source <label>] [--agent <name>] [--foreground]",
+    example: "ouro mail import-mbox --discover --owner-email ari@mendelow.me --source hey --agent slugger",
+  },
+  "mail backfill-indexes": {
+    description: "Rebuild hosted blob mailbox indexes for faster recent-mail reads after large legacy imports or drift repair.",
+    usage: "ouro mail backfill-indexes [--agent <name>] [--foreground]",
+    example: "ouro mail backfill-indexes --agent slugger",
   },
   "provider refresh": {
     description: "Reload this agent's provider credentials from its vault into daemon memory",
@@ -352,6 +392,31 @@ const SUBCOMMAND_HELP: Record<string, CommandHelp> = {
     description: "List runtime configuration keys stored in the agent credential vault",
     usage: "ouro vault config status [--agent <name>] [--scope agent|machine|all]",
     example: "ouro vault config status --scope all",
+  },
+  "vault item set": {
+    description: "Store an ordinary vault item / credential with no assumed use. Prompts for hidden secret fields, stores optional public fields and notes, and secret values are not printed.",
+    usage: "ouro vault item set [--agent <name>] --item <path> (--secret-field <name>...|--template <template>) [--public-field <key=value>] [--note <text>]",
+    example: "ouro vault item set --agent slugger --item ops/porkbun/ari@mendelow.me --template porkbun-api",
+  },
+  "vault item status": {
+    description: "Show metadata for an ordinary vault item without printing secret values",
+    usage: "ouro vault item status [--agent <name>] --item <path>",
+    example: "ouro vault item status --agent slugger --item ops/porkbun/ari@mendelow.me",
+  },
+  "vault item list": {
+    description: "List ordinary vault item names and metadata without printing secret values",
+    usage: "ouro vault item list [--agent <name>] [--prefix <path-prefix>]",
+    example: "ouro vault item list --agent slugger --prefix ops/",
+  },
+  "vault ops porkbun set": {
+    description: "deprecated compatibility alias for `ouro vault item set --template porkbun-api`; stores an ordinary vault item, not a special credential kind",
+    usage: "ouro vault ops porkbun set [--agent <name>] --account <account>",
+    example: "ouro vault ops porkbun set --agent slugger --account ari@mendelow.me",
+  },
+  "vault ops porkbun status": {
+    description: "deprecated compatibility alias for checking the ordinary vault item used by the Porkbun API template",
+    usage: "ouro vault ops porkbun status [--agent <name>] [--account <account>]",
+    example: "ouro vault ops porkbun status --agent slugger --account ari@mendelow.me",
   },
 }
 

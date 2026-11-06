@@ -4,6 +4,7 @@ import { describe, expect, it } from "vitest"
 
 const {
   assessWrapperPublishSync,
+  collectChangedFiles,
   runReleasePreflight,
   versionBumpRequired,
   wrapperPackageChanged,
@@ -11,6 +12,8 @@ const {
 
 type ExecResponse = {
   changedFiles?: string[]
+  workingTreeChangedFiles?: string[]
+  untrackedFiles?: string[]
   publishedCliVersion?: string
   publishedWrapperVersion?: string
 }
@@ -24,8 +27,16 @@ type ReadResponse = {
 
 function makeExecSyncImpl(response: ExecResponse = {}) {
   return (command: string): string => {
-    if (command.startsWith('git diff --name-only "origin/main...HEAD"')) {
+    if (command.startsWith('git diff --name-only "') && command.includes("...HEAD")) {
       return (response.changedFiles ?? []).join("\n")
+    }
+
+    if (command === "git diff --name-only HEAD") {
+      return (response.workingTreeChangedFiles ?? []).join("\n")
+    }
+
+    if (command === "git ls-files --others --exclude-standard") {
+      return (response.untrackedFiles ?? []).join("\n")
     }
 
     if (command.includes("@ouro.bot/cli@")) {
@@ -83,6 +94,21 @@ describe("release-preflight", () => {
     expect(wrapperPackageChanged(["src/heart/daemon/daemon-cli.ts"])).toBe(false)
   })
 
+  it("collects committed, working-tree, and untracked changes for local preflight runs", () => {
+    const changedFiles = collectChangedFiles("origin/main", makeExecSyncImpl({
+      changedFiles: ["docs/agent-mail-setup.md", "src/heart/daemon/daemon-cli.ts"],
+      workingTreeChangedFiles: ["src/heart/daemon/daemon-cli.ts", "src/mailroom/core.ts"],
+      untrackedFiles: ["skills/mail/SKILL.md"],
+    }))
+
+    expect(changedFiles).toEqual([
+      "docs/agent-mail-setup.md",
+      "skills/mail/SKILL.md",
+      "src/heart/daemon/daemon-cli.ts",
+      "src/mailroom/core.ts",
+    ])
+  })
+
   it("passes when only docs changed and the changelog entry exists", () => {
     const result = runReleasePreflight(
       {},
@@ -114,6 +140,24 @@ describe("release-preflight", () => {
 
     expect(result.ok).toBe(false)
     expect(result.errors[0]).toContain("@ouro.bot/cli@0.1.0-alpha.407 is already published on npm.")
+  })
+
+  it("requires a release bump when releasable changes are only in the working tree", () => {
+    const result = runReleasePreflight(
+      {},
+      {
+        execSyncImpl: makeExecSyncImpl({
+          changedFiles: ["docs/agent-mail-setup.md"],
+          workingTreeChangedFiles: ["src/mailroom/core.ts"],
+        }),
+        readFileSyncImpl: makeReadFileSyncImpl(),
+      },
+    )
+
+    expect(result.ok).toBe(true)
+    expect(result.changedFiles).toContain("src/mailroom/core.ts")
+    expect(result.releasableChanged).toBe(true)
+    expect(result.messages).toContain("@ouro.bot/cli@0.1.0-alpha.407 is not yet published — ready to merge and publish")
   })
 
   it("fails when the current version is missing from the changelog", () => {
