@@ -1974,7 +1974,7 @@ const TOOL_LIST = [
   },
   {
     name: "media_request",
-    description: "Request a film or series so it gets downloaded. Give tmdb_id when known (from media_search), otherwise title plus optional year. Idempotent: if it was already requested you get approval_state 'already_requested' and duplicate_of, never a duplicate. Returns the downstream sonarr_id/radarr_id so media_request_status needs no re-resolution. The owner asking is the request: call this and say what happened. Never send anyone to Jellyseerr or another screen to ask for it themselves.",
+    description: "Request a film or series so it gets downloaded. Give tmdb_id when known (from media_search), otherwise title plus optional year. Idempotent: if it was already requested you get approval_state 'already_requested' and duplicate_of, never a duplicate. Returns the downstream sonarr_id/radarr_id so media_request_status needs no re-resolution. Someone asking is the request: call this and say what happened. Never send anyone to Jellyseerr or another screen to ask for it themselves.",
     inputSchema: { type: "object", properties: {
       tmdb_id: { type: "number" },
       title: { type: "string" },

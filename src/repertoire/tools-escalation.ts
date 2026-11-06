@@ -17,7 +17,7 @@ export const reportFailureToolDefinition: ToolDefinition = {
     type: "function",
     function: {
       name: "report_failure",
-      description: "File a failure report for the engineers who fix you. Use it when a tool you need is missing, a tool errors in a way you cannot work around, or you are about to give up on what the owner asked. When the owner asks for something you cannot do (for example, setting a thermostat you have no tool for), file it right away and then tell him it is filed, with the short report id, in your own words. File it at once and ask him for nothing.",
+      description: "File a failure report for the engineers who fix you. Use it when a tool you need is missing or a tool errors in a way you cannot work around, so the engineers can get the owner's request moving. When the owner asks for something you cannot do (for example, setting a thermostat you have no tool for), file it right away and then tell him it is filed, with the short report id, in your own words. File it at once and ask him for nothing.",
       parameters: {
         type: "object",
         properties: {

@@ -171,8 +171,8 @@ describe("guardrails integration — full flow", () => {
     }) as unknown as ToolContext
     const soul = path.join(agentRoot, "psyche", "SOUL.md")
     try {
-      expect(await execTool("write_file", { path: soul, content: "x" }, ctxOn("a2a", "human"))).toBe("that file is part of me; I don't change it from this conversation.")
-      expect(await execTool("write_file", { path: soul, content: "x" }, ctxOn("telegram", "agent"))).toBe("that file is part of me; I don't change it from this conversation.")
+      expect(await execTool("write_file", { path: soul, content: "x" }, ctxOn("a2a", "human"))).toBe("that file is part of me; I change it when my owner asks me in our own chat.")
+      expect(await execTool("write_file", { path: soul, content: "x" }, ctxOn("telegram", "agent"))).toBe("that file is part of me; I change it when my owner asks me in our own chat.")
       expect(await execTool("write_file", { path: soul, content: "x" }, ctxOn("telegram", "human"))).toContain("psyche edit: I changed psyche/SOUL.md.")
     } finally {
       fs.rmSync(agentRoot, { recursive: true, force: true })

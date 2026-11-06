@@ -142,7 +142,7 @@ describe("package asset validation", () => {
     for (const [name, expected] of Object.entries({
       "ASPIRATIONS.md": "d12f65caf25f0d9600687a284e8111b2bde4ae22af1d0967fa9693e7c95c05ea",
       "IDENTITY.md": "95a15bdf36227f1770feca244017a1d2cf565dc93b535b057625f0ae9327525d",
-      "LORE.md": "7fb26a6af130993504bceb20b67e0c8f99e663abad97a1b590f6c80364fa5d0b",
+      "LORE.md": "3d29482c2edc30197032d5355c6f501353ae502afa9ad608775a50ad7c02e7cc",
       "SOUL.md": "5e80c5b4979e66d3d315eec93944d5c2c163ea529cfcff02155ef2997f61d6fb",
       "TACIT.md": "5d3356ebfb1bcdca0735b205548d77a482ec037ad8cbe66992590b777c4d0adf",
     })) expect(createHash("sha256").update(fs.readFileSync(path.join(root, "sanctuary.ouro/psyche", name))).digest("hex")).toBe(expected)

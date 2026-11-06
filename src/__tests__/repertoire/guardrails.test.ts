@@ -1368,7 +1368,7 @@ describe("OURO_CLI_TRUST_MANIFEST — rollback and versions", () => {
   })
 
   describe("the psyche belongs to the agent, gated by trust", () => {
-    const REFUSAL = "that file is part of me; I don't change it from this conversation."
+    const REFUSAL = "that file is part of me; I change it when my owner asks me in our own chat."
     const family = (channel: string, over: Record<string, unknown> = {}) => ({ friendId: "f1", friendKind: "human" as const, trustLevel: "family" as const, channel, ...over })
     const ctx = (target: string, over: Record<string, unknown> = {}) => ({ readPaths: new Set([target]), agentRoot: "/bundle", ...over })
     const IDENTITY_FILES = ["SOUL.md", "IDENTITY.md", "LORE.md", "ASPIRATIONS.md"]

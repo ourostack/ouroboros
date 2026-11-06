@@ -121,7 +121,7 @@ export function insideAgentFolder(p: string, agentRoot: string, folder: "psyche"
 // Every agent writes its own TACIT.md: what it learns about how its house works. The rest of its psyche (who it is) changes only
 // when a family human asks it directly, one to one, on a channel that proves who they are.
 
-export const PSYCHE_REFUSAL = "that file is part of me; I don't change it from this conversation."
+export const PSYCHE_REFUSAL = "that file is part of me; I change it when my owner asks me in our own chat."
 
 const PSYCHE_IDENTITY_CHANNELS = new Set(["telegram", "bluebubbles", "teams"])
 
