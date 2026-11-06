@@ -243,6 +243,128 @@ describe("bundle sync merges and never rebases or stashes", () => {
     expect(read(agent, "psyche/TACIT.md")).toBe(tacitWith({ 5: "owner 5" }))
   })
 
+  it("repair after a stranded rebase keeps edits made since", () => {
+    const { owner, agent } = setup()
+    ownerCommitAndPush(owner, { "psyche/TACIT.md": tacitWith({ 5: "owner 5" }) })
+    write(agent, "psyche/TACIT.md", tacitWith({ 5: "agent 5" }))
+    write(agent, "other.md", "uncommitted before rebase\n")
+    git(agent, [...OWNER, "commit", "-q", "-m", "agent edit", "--", "psyche/TACIT.md"])
+    git(agent, ["fetch", "-q", "origin", "main"])
+    expect(() => git(agent, [...OWNER, "rebase", "--autostash", "origin/main"])).toThrow()
+    write(agent, "other.md", "rewritten during the stranded rebase\n")
+    write(agent, "journal/new.md", "brand new file\n")
+
+    expect(integrateFetched(agent, CONFIG, AGENT)).toEqual({ ok: true })
+    expect(read(agent, "other.md")).toBe("rewritten during the stranded rebase\n")
+    expect(read(agent, "journal/new.md")).toBe("brand new file\n")
+    expect(git(agent, ["show", "HEAD:other.md"])).toBe("rewritten during the stranded rebase")
+    expect(git(agent, ["symbolic-ref", "--short", "HEAD"])).toBe("main")
+    expect(git(agent, ["for-each-ref", "--format=%(refname)", "refs/ouro-sync/repair/"])).toMatch(/^refs\/ouro-sync\/repair\/\d{4}-\d{2}-\d{2}T/)
+    expect(git(agent, ["status", "--porcelain"])).toBe("")
+  })
+
+  it("repair keeps a commit made on the rebase's detached HEAD", () => {
+    const { owner, agent } = setup()
+    ownerCommitAndPush(owner, { "psyche/TACIT.md": tacitWith({ 5: "owner 5" }) })
+    write(agent, "psyche/TACIT.md", tacitWith({ 5: "agent 5" }))
+    git(agent, [...OWNER, "commit", "-q", "-am", "agent edit"])
+    git(agent, ["fetch", "-q", "origin", "main"])
+    expect(() => git(agent, [...OWNER, "rebase", "origin/main"])).toThrow()
+    // What the old postTurnPush did while a rebase stayed stranded.
+    write(agent, "journal/turn.md", "a whole turn of memories\n")
+    git(agent, [...OWNER, "add", "-A"])
+    git(agent, [...OWNER, "commit", "-q", "-m", "sync: post-turn update"])
+    const stranded = git(agent, ["rev-parse", "HEAD"])
+
+    expect(integrateFetched(agent, CONFIG, AGENT)).toEqual({ ok: true })
+    expect(read(agent, "journal/turn.md")).toBe("a whole turn of memories\n")
+    expect(git(agent, ["show", "HEAD:journal/turn.md"])).toBe("a whole turn of memories")
+    expect(git(agent, ["for-each-ref", "--contains", stranded, "--format=%(refname)", "refs/ouro-sync/repair/"])).not.toBe("")
+  })
+
+  it("repair after a stranded merge keeps an edit to the conflicted file in a recoverable ref", async () => {
+    const { owner, agent } = setup()
+    ownerCommitAndPush(owner, { "psyche/TACIT.md": tacitWith({ 5: "owner 5" }), "other.md": "owner other\n" })
+    write(agent, "psyche/TACIT.md", tacitWith({ 5: "agent 5" }))
+    git(agent, [...OWNER, "commit", "-q", "-am", "agent edit"])
+    git(agent, ["fetch", "-q", "origin", "main"])
+    expect(() => git(agent, [...OWNER, "merge", "origin/main"])).toThrow()
+    write(agent, "psyche/TACIT.md", tacitWith({ 5: "agent 5", 15: "agent wrote line 15 while merge stranded" }))
+    write(agent, "notes.md", "agent notes while stranded\n")
+
+    expect(integrateFetched(agent, CONFIG, AGENT)).toEqual({ ok: true })
+    await new Promise((r) => setImmediate(r))
+    expect(read(agent, "notes.md")).toBe("agent notes while stranded\n")
+    expect(read(agent, "psyche/TACIT.md")).toBe(tacitWith({ 5: "owner 5" }))
+    const ref = git(agent, ["for-each-ref", "--format=%(refname)", "refs/ouro-sync/repair/"])
+    expect(git(agent, ["show", `${ref}:psyche/TACIT.md`])).toContain("agent wrote line 15 while merge stranded")
+    expect(pendingSync(agent)).toMatchObject({ conflictFiles: ["psyche/TACIT.md"], error: expect.stringContaining(ref) })
+    const repairNotices = notices.filter((n) => n.notice.noticeId.startsWith("sync-repair:"))
+    expect(repairNotices).toHaveLength(1)
+    expect(repairNotices[0].notice.text).toContain(ref)
+    expect(repairNotices[0].notice.text).toContain("psyche/TACIT.md")
+  })
+
+  it("repair succeeds when a merged file was edited after the merge stranded", () => {
+    const { owner, agent } = setup()
+    ownerCommitAndPush(owner, { "psyche/TACIT.md": tacitWith({ 5: "owner 5" }), "other.md": "owner other\n" })
+    write(agent, "psyche/TACIT.md", tacitWith({ 5: "agent 5" }))
+    git(agent, [...OWNER, "commit", "-q", "-am", "agent edit"])
+    git(agent, ["fetch", "-q", "origin", "main"])
+    expect(() => git(agent, [...OWNER, "merge", "origin/main"])).toThrow()
+    write(agent, "other.md", "agent edited a file the merge had staged\n")
+
+    // `merge --abort` and `reset --merge` both refuse here ("not uptodate"); repair must not wedge.
+    const result = integrateFetched(agent, CONFIG, AGENT)
+    expect(events.find((e) => e.event === "heart.sync_repaired")?.meta).toMatchObject({ abortedWith: "reset --hard" })
+    expect(fs.existsSync(path.join(agent, ".git", "MERGE_HEAD"))).toBe(false)
+    expect(read(agent, "other.md")).toBe("agent edited a file the merge had staged\n")
+    expect(git(agent, ["show", "HEAD:other.md"])).toBe("agent edited a file the merge had staged")
+    // The kept edit and the owner's other.md now genuinely conflict: the normal conflict path, not a wedge.
+    expect(result).toEqual({ ok: false, error: expect.stringContaining("conflicts in other.md") })
+    expect(pendingSync(agent)).toMatchObject({ classification: "pull_rebase_conflict" })
+    expect(postTurnPush(agent, CONFIG, AGENT).ok).toBe(true)
+  })
+
+  it("repair falls back to reset --merge when merge --abort refuses", () => {
+    const { owner, agent } = setup()
+    ownerCommitAndPush(owner, { "notes.md": "owner notes\n" })
+    write(agent, "notes.md", "agent notes\n")
+    git(agent, [...OWNER, "commit", "-q", "-am", "agent edit"])
+    git(agent, ["fetch", "-q", "origin", "main"])
+    expect(() => git(agent, [...OWNER, "merge", "origin/main"])).toThrow()
+    write(agent, "journal.md", "kept\n")
+    // No real git refuses `merge --abort` and then accepts `reset --merge`; simulate the refusal.
+    __testHooks.mergeAbortArgs = ["merge", "--abort", "--no-such-option"]
+    try {
+      integrateFetched(agent, CONFIG, AGENT)
+    } finally {
+      __testHooks.mergeAbortArgs = undefined
+    }
+    expect(events.find((e) => e.event === "heart.sync_repaired")?.meta).toMatchObject({ abortedWith: "reset --merge" })
+    expect(fs.existsSync(path.join(agent, ".git", "MERGE_HEAD"))).toBe(false)
+    expect(git(agent, ["show", "HEAD:journal.md"])).toBe("kept")
+    expect(read(agent, "notes.md")).toBe("agent notes\n")
+  })
+
+  it("postTurnPush repairs a stranded merge before it commits", async () => {
+    const { owner, agent } = setup()
+    ownerCommitAndPush(owner, { "notes.md": "owner notes\n" })
+    write(agent, "notes.md", "agent notes\n")
+    git(agent, [...OWNER, "commit", "-q", "-am", "agent edit"])
+    git(agent, ["fetch", "-q", "origin", "main"])
+    expect(() => git(agent, [...OWNER, "merge", "origin/main"])).toThrow()
+    write(agent, "journal.md", "a turn while stranded\n")
+
+    const post = postTurnPush(agent, CONFIG, AGENT)
+    expect(post.ok).toBe(true)
+    await post.push
+    expect(fs.existsSync(path.join(agent, ".git", "MERGE_HEAD"))).toBe(false)
+    expect(git(agent, ["show", "HEAD:journal.md"])).toBe("a turn while stranded")
+    expect(git(agent, ["log", "--format=%B"])).not.toContain("<<<<<<<")
+    expect(read(agent, "notes.md")).toBe("agent notes\n")
+  })
+
   it("an unpushed owner-wins merge, then the remote advances: integrate merges again with no replayed conflict", async () => {
     const { owner, agent } = setup()
     ownerCommitAndPush(owner, { "psyche/TACIT.md": tacitWith({ 2: "owner 2" }) })

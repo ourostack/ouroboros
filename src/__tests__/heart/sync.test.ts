@@ -36,6 +36,7 @@ let root: string
 let events: LogEvent[]
 let unregister: () => void
 let notices: SyncOwnerNotice[]
+let savedGlobal: string | undefined
 
 function git(cwd: string, args: string[]): string {
   return execFileSync("git", [...ID, ...args], { cwd, stdio: "pipe" }).toString().trim()
@@ -104,6 +105,7 @@ function emitted(event: string): LogEvent[] {
 
 beforeEach(() => {
   root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "sync-edges-")))
+  savedGlobal = process.env.GIT_CONFIG_GLOBAL
   events = []
   unregister = registerGlobalLogSink((entry) => { events.push(entry) })
   notices = []
@@ -116,6 +118,9 @@ afterEach(() => {
   __testHooks.fetchTimeoutMs = undefined
   __testHooks.pushTimeoutMs = undefined
   __testHooks.preTurnLockWaitMs = undefined
+  __testHooks.extraGitConfig = undefined
+  if (savedGlobal === undefined) delete process.env.GIT_CONFIG_GLOBAL
+  else process.env.GIT_CONFIG_GLOBAL = savedGlobal
   vi.doUnmock("../../senses/telegram")
   fs.chmodSync(root, 0o755)
   for (const dir of [path.join(root, `${AGENT}.ouro`, ".git")]) if (fs.existsSync(dir)) fs.chmodSync(dir, 0o755)
@@ -385,6 +390,7 @@ describe("integrate", () => {
     ownerPush(owner, "owner.md", "o\n")
     write(bundle, "agent.md", "a\n")
     fs.writeFileSync(path.join(bundle, ".git", "hooks", "pre-merge-commit"), "#!/bin/sh\nexit 1\n", { mode: 0o755 })
+    __testHooks.extraGitConfig = ["-c", `core.hooksPath=${path.join(bundle, ".git", "hooks")}`]
     git(bundle, ["fetch", "-q"])
     const result = integrateFetched(bundle, CONFIG, AGENT)
     expect(result.ok).toBe(false)
@@ -397,6 +403,7 @@ describe("integrate", () => {
     ownerPush(owner, "psyche/TACIT.md", "a\nOWNER\nc\nd\ne\nf\n")
     write(bundle, "psyche/TACIT.md", "a\nAGENT\nc\nd\ne\nf\n")
     fs.writeFileSync(path.join(bundle, ".git", "hooks", "pre-merge-commit"), "#!/bin/sh\nexit 1\n", { mode: 0o755 })
+    __testHooks.extraGitConfig = ["-c", `core.hooksPath=${path.join(bundle, ".git", "hooks")}`]
     git(bundle, ["fetch", "-q"])
     const result = integrateFetched(bundle, CONFIG, AGENT)
     expect(result.ok).toBe(false)
@@ -415,6 +422,7 @@ describe("integrate", () => {
     git(bundle, ["fetch", "-q"])
     // The hook also blocks the local commit, so commit first with hooks off.
     git(bundle, ["-c", "core.hooksPath=/dev/null", "commit", "-q", "-am", "agent edit"])
+    __testHooks.extraGitConfig = ["-c", `core.hooksPath=${path.join(bundle, ".git", "hooks")}`]
     expect(integrateFetched(bundle, CONFIG, AGENT).ok).toBe(false)
     expect(fs.existsSync(path.join(bundle, ".git", "MERGE_HEAD"))).toBe(false)
   })
@@ -556,6 +564,98 @@ describe("owner notices", () => {
     await preTurnPull(bundle, CONFIG)
     await vi.waitFor(() => expect(emitted("heart.sync_owner_notice_error")).toHaveLength(1))
     expect(emitted("heart.sync_owner_notice_error")[0].meta).toMatchObject({ error: "offline" })
+  })
+})
+
+describe("fix round 1", () => {
+  it("a global merge.autoStash=true has no effect", async () => {
+    const { bundle, owner } = bundleWithRemote()
+    ownerPush(owner, "big.jsonl", "{}\n")
+    expect(await preTurnPull(bundle, CONFIG)).toEqual({ ok: true })
+    ownerPush(owner, "big.jsonl", "{\"owner\":1}\n")
+    sparse(bundle, "big.jsonl", SYNC_FILE_SIZE_LIMIT_BYTES + 1)
+    const global = path.join(root, "global.gitconfig")
+    fs.writeFileSync(global, `[user]\n\tname = T\n\temail = t@example.invalid\n[merge]\n\tautoStash = true\n`)
+    process.env.GIT_CONFIG_GLOBAL = global
+
+    const result = await preTurnPull(bundle, CONFIG)
+    expect(result.ok).toBe(false)
+    expect(result.error).toContain("would be overwritten")
+    expect(git(bundle, ["stash", "list"])).toBe("")
+    expect(fs.statSync(path.join(bundle, "big.jsonl")).size).toBe(SYNC_FILE_SIZE_LIMIT_BYTES + 1)
+  })
+
+  it("repository hooks do not run during sync", () => {
+    const bundle = localBundle()
+    fs.writeFileSync(path.join(bundle, ".git", "hooks", "pre-commit"), "#!/bin/sh\nexit 1\n", { mode: 0o755 })
+    write(bundle, "notes.md", "hi\n")
+    expect(commitLocalChanges(bundle, AGENT, "m").committed).toBe(true)
+  })
+
+  it("a pause written while preTurnPull or syncNow waits for the lock is honoured", async () => {
+    const bundle = localBundle()
+    const expiresAt = new Date(Date.now() + 3_600_000).toISOString()
+    for (const run of [() => preTurnPull(bundle, CONFIG), () => syncNow(bundle, CONFIG, AGENT, 5000)]) {
+      const handle = lock(bundle)
+      const pendingRun = run()
+      await new Promise((r) => setTimeout(r, 150))
+      write(bundle, "state/sync-paused", JSON.stringify({ startedAt: new Date().toISOString(), expiresAt }))
+      handle.release()
+      expect(await pendingRun).toEqual({ ok: true, paused: true, pausedUntil: expiresAt })
+      fs.rmSync(path.join(bundle, "state", "sync-paused"))
+    }
+    // Neither run committed the untracked .gitignore: HEAD is still unborn.
+    expect(() => git(bundle, ["rev-parse", "--verify", "-q", "HEAD"])).toThrow()
+  })
+
+  it("a pause longer than 24 hours is garbage", async () => {
+    const bundle = localBundle()
+    const now = Date.now()
+    const hours = (h: number): string => new Date(now + h * 3_600_000).toISOString()
+    for (const marker of [{ startedAt: hours(0), expiresAt: hours(25) }, { expiresAt: hours(25) }, { startedAt: "not a date", expiresAt: hours(25) }]) {
+      write(bundle, "state/sync-paused", JSON.stringify(marker))
+      expect(await preTurnPull(bundle, CONFIG)).toEqual({ ok: true })
+      expect(fs.existsSync(path.join(bundle, "state", "sync-paused"))).toBe(false)
+    }
+    write(bundle, "state/sync-paused", JSON.stringify({ startedAt: hours(-20), expiresAt: hours(3) }))
+    expect((await preTurnPull(bundle, CONFIG)).paused).toBe(true)
+  })
+
+  it("a stale pause marker that cannot be removed is logged and sync goes on", () => {
+    const bundle = localBundle()
+    write(bundle, "state/sync-paused", JSON.stringify({ expiresAt: "2026-01-01T00:00:00.000Z" }))
+    write(bundle, "notes.md", "hi\n")
+    fs.chmodSync(path.join(bundle, "state"), 0o555)
+    try {
+      const result = postTurnPush(bundle, CONFIG)
+      expect(result.ok).toBe(true)
+    } finally {
+      fs.chmodSync(path.join(bundle, "state"), 0o755)
+    }
+    expect(emitted("heart.sync_pause_clear_failed")).toHaveLength(1)
+    expect(git(bundle, ["log", "--oneline"]).split("\n")).toHaveLength(1)
+  })
+
+  it("syncNow on an unborn HEAD with a remote has nothing to push", async () => {
+    const bundle = path.join(root, "empty.ouro")
+    git(root, ["init", "-q", "-b", "main", bundle])
+    const remote = path.join(root, "empty-remote.git")
+    git(root, ["init", "-q", "--bare", "-b", "main", remote])
+    git(bundle, ["remote", "add", "origin", remote])
+    expect(await syncNow(bundle, CONFIG, AGENT, 0)).toEqual({ ok: true })
+    expect(pending(bundle)).toBeNull()
+  })
+
+  it("the conflict branch is pushed again only when HEAD has moved", async () => {
+    const { bundle, owner } = bundleWithRemote()
+    ownerPush(owner, "notes.md", "owner\n")
+    write(bundle, "notes.md", "agent\n")
+    for (let i = 0; i < 4; i++) await preTurnPull(bundle, CONFIG)
+    expect(emitted("heart.sync_conflict_branch_pushed")).toHaveLength(1)
+    write(bundle, "journal.md", "new turn\n")
+    await preTurnPull(bundle, CONFIG)
+    expect(emitted("heart.sync_conflict_branch_pushed")).toHaveLength(2)
+    expect(JSON.parse(fs.readFileSync(path.join(bundle, "state", "sync-conflict.json"), "utf-8")).branchPushedHead).toBe(git(bundle, ["rev-parse", "HEAD"]))
   })
 })
 

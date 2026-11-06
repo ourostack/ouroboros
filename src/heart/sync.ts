@@ -118,7 +118,18 @@ export const PRE_TURN_LOCK_WAIT_MS = 5_000
  * Test seams.
  * @internal Not part of the public API; production code must not set these.
  */
-export const __testHooks: { fetchTimeoutMs?: number; pushTimeoutMs?: number; preTurnLockWaitMs?: number } = {}
+export const __testHooks: {
+  fetchTimeoutMs?: number
+  pushTimeoutMs?: number
+  preTurnLockWaitMs?: number
+  /** Appended after sync's own `-c` flags, so a test can re-enable hooks. */
+  extraGitConfig?: string[]
+  /** Replaces `merge --abort` in repair; no real git refuses it and then accepts `reset --merge`. */
+  mergeAbortArgs?: string[]
+} = {}
+
+/** A pause marker longer than this is garbage: a crashed pauser must not stop sync for good. */
+export const SYNC_PAUSE_MAX_MS = 24 * 60 * 60 * 1000
 
 export function pendingSyncPath(agentRoot: string): string {
   return path.join(agentRoot, "state", "pending-sync.json")
@@ -156,19 +167,33 @@ interface GitRun {
   stderr: string
 }
 
-/** Identity flags go on every call: a container or an empty HOME has no gitconfig. */
+/**
+ * Flags on every call. The identity: a container or an empty HOME has no
+ * gitconfig. The rest: the owner's global gitconfig on the Mac must not
+ * stash, replay recorded resolutions, run hooks or demand signatures.
+ */
 function identityArgs(agentName: string): string[] {
-  return ["-c", `user.name=${agentName}`, "-c", `user.email=${agentName}@ouro.local`, "-c", "commit.gpgsign=false"]
+  return [
+    "-c", `user.name=${agentName}`,
+    "-c", `user.email=${agentName}@ouro.local`,
+    "-c", "commit.gpgsign=false",
+    "-c", "merge.autoStash=false",
+    "-c", "rerere.enabled=false",
+    "-c", "core.hooksPath=/dev/null",
+    "-c", "merge.verifySignatures=false",
+    ...(__testHooks.extraGitConfig ?? []),
+  ]
 }
 
-function gitEnv(): NodeJS.ProcessEnv {
-  return { ...process.env, GIT_TERMINAL_PROMPT: "0" }
+/** git's messages are matched in English, so the locale is pinned. */
+function gitEnv(extra: NodeJS.ProcessEnv = {}): NodeJS.ProcessEnv {
+  return { ...process.env, GIT_TERMINAL_PROMPT: "0", LC_ALL: "C", LANG: "C", ...extra }
 }
 
-function runGit(agentRoot: string, agentName: string, args: string[]): GitRun {
+function runGit(agentRoot: string, agentName: string, args: string[], env?: NodeJS.ProcessEnv): GitRun {
   const run = spawnSync("git", [...identityArgs(agentName), ...args], {
     cwd: agentRoot,
-    env: gitEnv(),
+    env: gitEnv(env),
     stdio: ["ignore", "pipe", "pipe"],
     timeout: SYNC_GIT_TIMEOUT_MS,
     maxBuffer: SYNC_GIT_MAX_BUFFER_BYTES,
@@ -183,8 +208,8 @@ function gitFailure(args: string[], run: GitRun): Error {
 }
 
 /** Run git and return stdout; throw with git's message on a non-zero exit. */
-function git(agentRoot: string, agentName: string, args: string[]): string {
-  const run = runGit(agentRoot, agentName, args)
+function git(agentRoot: string, agentName: string, args: string[], env?: NodeJS.ProcessEnv): string {
+  const run = runGit(agentRoot, agentName, args, env)
   if (run.status !== 0) throw gitFailure(args, run)
   return run.stdout
 }
@@ -367,6 +392,8 @@ interface SyncConflictState {
   paths: string[]
   /** The owner has been told that the agent's side is on `sync-conflict/<agent>`. */
   branchNoticeSent?: boolean
+  /** HEAD at the last successful push of `sync-conflict/<agent>`. */
+  branchPushedHead?: string
 }
 
 function readConflictState(agentRoot: string): SyncConflictState | null {
@@ -445,15 +472,30 @@ function activePause(agentRoot: string): string | null {
   } catch {
     return null
   }
-  let expiresAt: unknown
+  let marker: Partial<SyncPauseMarker> | null
   try {
-    expiresAt = (JSON.parse(raw) as Partial<SyncPauseMarker> | null)?.expiresAt
+    marker = JSON.parse(raw) as Partial<SyncPauseMarker> | null
   } catch {
-    expiresAt = undefined
+    marker = null
   }
+  const expiresAt: unknown = marker?.expiresAt
   const expiresMs = typeof expiresAt === "string" ? Date.parse(expiresAt) : Number.NaN
-  if (Number.isFinite(expiresMs) && expiresMs > Date.now()) return expiresAt as string
-  fs.rmSync(markerPath, { force: true })
+  const startedMs = typeof marker?.startedAt === "string" ? Date.parse(marker.startedAt) : Number.NaN
+  const now = Date.now()
+  const longestEnd = (Number.isFinite(startedMs) ? startedMs : now) + SYNC_PAUSE_MAX_MS
+  if (Number.isFinite(expiresMs) && expiresMs > now && expiresMs <= longestEnd) return expiresAt as string
+  try {
+    fs.rmSync(markerPath, { force: true })
+  } catch (err) {
+    emitNervesEvent({
+      level: "warn",
+      component: "heart",
+      event: "heart.sync_pause_clear_failed",
+      message: "sync: could not remove an expired or unreadable pause marker",
+      meta: { agentRoot, error: errorText(err) },
+    })
+    return null
+  }
   emitNervesEvent({
     component: "heart",
     event: "heart.sync_pause_expired",
@@ -639,19 +681,75 @@ function ensureGitRepo(agentRoot: string, step: string): SyncResult {
   return { ok: false, error: `bundle is not a git repo; run \`git init\` inside ${agentRoot} to enable sync (or disable sync in agent.json)` }
 }
 
-/** Abort a rebase or merge that a killed git left in progress. */
+/**
+ * Commit the whole working tree, as it is now, to `refs/ouro-sync/repair/<ts>`
+ * without touching the real index. Its parent is the current HEAD, which for a
+ * stranded rebase is the detached HEAD, so commits made there stay reachable.
+ */
+function snapshotWorkingTree(agentRoot: string, agentName: string): string {
+  const indexFile = gitDirEntry(agentRoot, `ouro-sync-repair-${process.pid}.index`)
+  const env = { GIT_INDEX_FILE: indexFile }
+  let commit: string
+  try {
+    // Seed from HEAD so tracked files that match an ignore rule are kept.
+    git(agentRoot, agentName, ["read-tree", "HEAD"], env)
+    git(agentRoot, agentName, ["add", "-A"], env)
+    const tree = git(agentRoot, agentName, ["write-tree"], env).trim()
+    commit = git(agentRoot, agentName, ["commit-tree", tree, "-p", "HEAD", "-m", "sync: repair snapshot"]).trim()
+  } finally {
+    fs.rmSync(indexFile, { force: true })
+  }
+  // A refname may not contain ":".
+  const ref = `refs/ouro-sync/repair/${new Date().toISOString().replace(/:/g, "-")}`
+  git(agentRoot, agentName, ["update-ref", ref, commit])
+  return ref
+}
+
+/** `merge --abort`, else `reset --merge`, else `reset --hard HEAD` (the snapshot restores the rest). */
+function abortMergeThoroughly(agentRoot: string, agentName: string): string {
+  if (runGit(agentRoot, agentName, __testHooks.mergeAbortArgs ?? ["merge", "--abort"]).status === 0) return "merge --abort"
+  if (runGit(agentRoot, agentName, ["reset", "-q", "--merge"]).status === 0) return "reset --merge"
+  git(agentRoot, agentName, ["reset", "-q", "--hard", "HEAD"])
+  return "reset --hard"
+}
+
+/** Put back every path that differs from the snapshot, except the ones the stranded operation conflicted on. */
+function restoreFromSnapshot(agentRoot: string, agentName: string, ref: string, conflicted: string[]): void {
+  const skip = new Set(conflicted)
+  const changed = git(agentRoot, agentName, ["diff", "--name-only", "--no-renames", "-z", "HEAD", ref])
+    .split("\0")
+    .filter((p) => p.length > 0 && !skip.has(p))
+  if (changed.length > 0) git(agentRoot, agentName, ["--literal-pathspecs", "restore", `--source=${ref}`, "--worktree", "--", ...changed])
+}
+
+/**
+ * Abort a rebase or merge left in progress, keeping the work done since. The
+ * working tree is snapshotted first; after the abort, every path the operation
+ * did not conflict on is restored from it. Conflicted paths keep HEAD's
+ * version, and their edits stay in the snapshot ref, which the owner is told about.
+ */
 function repairInterrupted(agentRoot: string, agentName: string): void {
   const rebase = fs.existsSync(gitDirEntry(agentRoot, "rebase-merge")) || fs.existsSync(gitDirEntry(agentRoot, "rebase-apply"))
-  if (rebase) git(agentRoot, agentName, ["rebase", "--abort"])
   const merge = fs.existsSync(gitDirEntry(agentRoot, "MERGE_HEAD"))
-  if (merge) git(agentRoot, agentName, ["merge", "--abort"])
   if (!rebase && !merge) return
+  const conflicted = unmergedPaths(agentRoot, agentName)
+  const ref = snapshotWorkingTree(agentRoot, agentName)
+  let abortedWith = "rebase --abort"
+  if (rebase) git(agentRoot, agentName, ["rebase", "--abort"])
+  else abortedWith = abortMergeThoroughly(agentRoot, agentName)
+  restoreFromSnapshot(agentRoot, agentName, ref, conflicted)
   emitNervesEvent({
     level: "warn",
     component: "heart",
     event: "heart.sync_repaired",
     message: "sync: aborted a rebase or merge left in progress",
-    meta: { agentRoot, rebase, merge },
+    meta: { agentRoot, rebase, merge, ref, conflicted, abortedWith },
+  })
+  if (conflicted.length === 0) return
+  recordPendingSync(agentRoot, `an interrupted ${rebase ? "rebase" : "merge"} was aborted; edits to ${conflicted.join(", ")} are kept in ${ref}`, "unknown", conflicted)
+  tellOwner(agentRoot, agentName, {
+    noticeId: `sync-repair:${agentName}:${ref.slice("refs/ouro-sync/repair/".length)}`,
+    text: `Sync found an interrupted ${rebase ? "rebase" : "merge"} in ${agentName}'s bundle and aborted it. Edits to ${conflicted.join(", ")} made since are kept in ${ref}.`,
   })
 }
 
@@ -698,7 +796,7 @@ function conflictHash(paths: string[]): string {
 interface IntegrateOutcome {
   result: SyncResult
   /** The same non-psyche conflict recurred: push HEAD to `sync-conflict/<agent>`. */
-  conflictBranch?: boolean
+  conflictBranch?: SyncConflictState
 }
 
 function handleNonPsycheConflict(
@@ -720,7 +818,7 @@ function handleNonPsycheConflict(
     meta: { agentRoot, conflictFiles: sorted, hash },
   })
   const previous = readConflictState(agentRoot)
-  if (previous?.hash === hash) return { result: { ok: false, error }, conflictBranch: true }
+  if (previous?.hash === hash) return { result: { ok: false, error }, conflictBranch: previous }
   writeConflictState(agentRoot, { hash, paths: sorted })
   tellOwner(agentRoot, agentName, {
     noticeId: `sync-conflict:${agentName}:${hash}`,
@@ -886,8 +984,11 @@ export async function pushAsync(agentRoot: string, config: SyncConfig, handle: S
 }
 
 /** The same conflict recurred: put the agent's side where the owner can merge it from the Mac. */
-async function pushConflictBranch(agentRoot: string, config: SyncConfig, agentName: string, signal?: AbortSignal): Promise<void> {
+async function pushConflictBranch(agentRoot: string, config: SyncConfig, agentName: string, state: SyncConflictState, signal?: AbortSignal): Promise<void> {
   const branch = `sync-conflict/${agentName}`
+  const head = git(agentRoot, agentName, ["rev-parse", "HEAD"]).trim()
+  // Pushed already, and nothing new since: skip the network.
+  if (state.branchPushedHead === head) return
   const timeoutMs = __testHooks.pushTimeoutMs ?? SYNC_PUSH_TIMEOUT_MS
   const run = await runGitAsync(agentRoot, agentName, ["push", config.remote, `HEAD:refs/heads/${branch}`], timeoutMs, signal)
   if (run.status !== 0) {
@@ -906,13 +1007,19 @@ async function pushConflictBranch(agentRoot: string, config: SyncConfig, agentNa
     message: "sync: pushed the agent's side of a conflict",
     meta: { agentRoot, branch },
   })
-  const state = readConflictState(agentRoot)
-  if (!state || state.branchNoticeSent) return
-  writeConflictState(agentRoot, { ...state, branchNoticeSent: true })
+  writeConflictState(agentRoot, { ...state, branchNoticeSent: true, branchPushedHead: head })
+  if (state.branchNoticeSent) return
   tellOwner(agentRoot, agentName, {
     noticeId: `sync-conflict-branch:${agentName}:${state.hash}`,
     text: `My side of the sync conflict in ${state.paths.join(", ")} is on branch ${branch} in ${config.remote}. Merging it into ${branchOf(config)} from the Mac resumes sync.`,
   })
+}
+
+/** An unborn HEAD (nothing ever committed) has nothing to push. */
+function pushIfBorn(agentRoot: string, config: SyncConfig, agentName: string): Promise<SyncResult> {
+  if (refExists(agentRoot, agentName, "HEAD")) return pushUnlocked(agentRoot, config, agentName)
+  clearPendingSync(agentRoot)
+  return Promise.resolve({ ok: true })
 }
 
 /** Fetch then integrate. The caller holds the lock. */
@@ -928,7 +1035,7 @@ async function pullUnlocked(agentRoot: string, config: SyncConfig, agentName: st
     if (!fetched.ok) return fetched
   }
   const outcome = integrateCore(agentRoot, config, agentName)
-  if (outcome.conflictBranch) await pushConflictBranch(agentRoot, config, agentName, signal)
+  if (outcome.conflictBranch) await pushConflictBranch(agentRoot, config, agentName, outcome.conflictBranch, signal)
   return outcome.result
 }
 
@@ -984,6 +1091,9 @@ export async function preTurnPull(agentRoot: string, config: SyncConfig, options
     return { ok: true, busy: true }
   }
   try {
+    // A pause written while this waited for the lock still wins.
+    const pausedNow = pausedResult(agentRoot, "pre-turn pull")
+    if (pausedNow) return pausedNow
     const result = await pullUnlocked(agentRoot, config, agentName, options.signal)
     if (result.ok) {
       emitNervesEvent({ component: "heart", event: "heart.sync_pull_end", message: "pre-turn pull complete", meta: { agentRoot } })
@@ -1013,8 +1123,6 @@ export function postTurnPush(agentRoot: string, config: SyncConfig, agentName: s
     message: "post-turn push starting",
     meta: { agentRoot, remote: config.remote, branch: branchOf(config) },
   })
-  const paused = pausedResult(agentRoot, "post-turn push")
-  if (paused) return paused
   const repoCheck = ensureGitRepo(agentRoot, "post-turn push")
   if (!repoCheck.ok) return repoCheck
 
@@ -1031,6 +1139,10 @@ export function postTurnPush(agentRoot: string, config: SyncConfig, agentName: s
 
   let release = true
   try {
+    // Checked under the lock, so a pauser that saw the lock free sees no git after it.
+    const paused = pausedResult(agentRoot, "post-turn push")
+    if (paused) return paused
+    repairInterrupted(agentRoot, agentName)
     commitLocalChanges(agentRoot, agentName, "sync: post-turn update")
     const remote = hasRemote(agentRoot, agentName, config)
     if (remote && readPreviousFailure(agentRoot)?.classification === "pull_rebase_conflict") {
@@ -1101,8 +1213,10 @@ export async function syncNow(agentRoot: string, config: SyncConfig, agentName: 
     return { ok: false, busy: true, error }
   }
   try {
+    const pausedNow = pausedResult(agentRoot, "sync now")
+    if (pausedNow) return pausedNow
     const pulled = await pullUnlocked(agentRoot, config, agentName)
-    const result = pulled.ok ? await pushUnlocked(agentRoot, config, agentName) : pulled
+    const result = pulled.ok ? await pushIfBorn(agentRoot, config, agentName) : pulled
     if (result.ok) {
       emitNervesEvent({ component: "heart", event: "heart.sync_now_end", message: "sync now complete", meta: { agentRoot } })
     } else {
