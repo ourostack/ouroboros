@@ -8,6 +8,7 @@ import { readPeerPresence, readPresence } from "../../../arc/presence"
 import { scanTasks } from "../../../repertoire/tasks/scanner"
 import { detectActiveWorkChanges, formatActiveWorkChanges, type ActiveWorkSnapshot } from "../../active-work"
 import { listSessionActivity } from "../../session-activity"
+import { readObligationSummary } from "./agent-machine"
 import {
   type OutlookChangesView,
   type OutlookContinuityView,
@@ -162,6 +163,9 @@ export function readObligationDetailView(agentRoot: string): OutlookObligationDe
   const openObligations = obligations.filter(isOpenObligation)
   const sorted = sortOpenObligations(openObligations)
   const primary = sorted[0] ?? null
+  const normalizedSummary = new Map(
+    readObligationSummary(agentRoot).items.map((item) => [item.id, item.currentSurface] as const),
+  )
 
   const items: OutlookObligationDetailItem[] = openObligations.map((ob) => ({
     id: ob.id,
@@ -170,7 +174,9 @@ export function readObligationDetailView(agentRoot: string): OutlookObligationDe
     updatedAt: ob.updatedAt ?? ob.createdAt,
     nextAction: ob.nextAction ?? null,
     origin: ob.origin ?? null,
-    currentSurface: ob.currentSurface ? { kind: ob.currentSurface.kind, label: ob.currentSurface.label } : null,
+    currentSurface: normalizedSummary.has(ob.id)
+      ? (normalizedSummary.get(ob.id) ?? null)
+      : (ob.currentSurface ? { kind: ob.currentSurface.kind, label: ob.currentSurface.label } : null),
     meaning: ob.meaning ? { waitingOn: ob.meaning.waitingOn?.detail ?? null } : null,
     isPrimary: ob.id === primary!.id,
   }))

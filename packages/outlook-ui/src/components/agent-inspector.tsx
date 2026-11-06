@@ -3,6 +3,7 @@ import { Badge } from "../catalyst/badge"
 import { buildHash, NavigationContext, type NavigateTarget, type RouteState, type TabId } from "../navigation"
 import { useKeyboardShortcuts } from "../hooks/use-keyboard"
 import { OverviewTab } from "./tabs/overview"
+import { MailboxTab } from "./tabs/mailbox"
 import { SessionsTab } from "./tabs/sessions"
 import { WorkTab } from "./tabs/work"
 import { ConnectionsTab } from "./tabs/connections"
@@ -21,6 +22,7 @@ interface AgentInspectorProps {
 
 const TABS: Array<{ id: TabId; label: string }> = [
   { id: "overview", label: "Overview" },
+  { id: "mail", label: "Mailbox" },
   { id: "sessions", label: "Sessions" },
   { id: "work", label: "Work" },
   { id: "connections", label: "Connections" },
@@ -40,17 +42,24 @@ export function AgentInspector({ agentName, view, deskPrefs, refreshGeneration, 
   const [activeTab, setActiveTab] = useState<TabId>(initialRoute?.tab ?? "overview")
   const [focusTarget, setFocusTarget] = useState<string | undefined>(initialRoute?.focus)
   const initialConsumed = useRef(false)
+  const previousAgent = useRef(agentName)
 
   useEffect(() => {
+    const agentChanged = previousAgent.current !== agentName
+    previousAgent.current = agentName
+
     if (initialRoute?.agent === agentName && !initialConsumed.current) {
       initialConsumed.current = true
       setActiveTab(initialRoute.tab)
       setFocusTarget(initialRoute.focus)
-    } else {
+      return
+    }
+
+    if (agentChanged) {
       setActiveTab("overview")
       setFocusTarget(undefined)
     }
-  }, [agentName])
+  }, [agentName, initialRoute?.agent, initialRoute?.focus, initialRoute?.tab])
 
   const navigate = useCallback((target: NavigateTarget) => {
     setActiveTab(target.tab)
@@ -66,7 +75,7 @@ export function AgentInspector({ agentName, view, deskPrefs, refreshGeneration, 
 
   const consumeFocus = useCallback(() => setFocusTarget(undefined), [])
 
-  // Keyboard shortcuts: 1-7 for tabs, Esc to collapse
+  // Keyboard shortcuts: 1-8 for tabs, Esc to collapse
   useKeyboardShortcuts(navigate)
 
   if (!view || !agentName) {
@@ -125,6 +134,7 @@ export function AgentInspector({ agentName, view, deskPrefs, refreshGeneration, 
         {/* Tab content */}
         <div className="mt-6">
           {activeTab === "overview" && <OverviewTab view={view} deskPrefs={deskPrefs} refreshGeneration={refreshGeneration} />}
+          {activeTab === "mail" && <MailboxTab agentName={agentName} focus={focusTarget} onFocusConsumed={consumeFocus} refreshGeneration={refreshGeneration} />}
           {activeTab === "sessions" && <SessionsTab agentName={agentName} focus={focusTarget} onFocusConsumed={consumeFocus} deskPrefs={deskPrefs} refreshGeneration={refreshGeneration} />}
           {activeTab === "work" && <WorkTab agentName={agentName} view={view} focus={focusTarget} onFocusConsumed={consumeFocus} refreshGeneration={refreshGeneration} />}
           {activeTab === "connections" && <ConnectionsTab agentName={agentName} focus={focusTarget} onFocusConsumed={consumeFocus} refreshGeneration={refreshGeneration} />}

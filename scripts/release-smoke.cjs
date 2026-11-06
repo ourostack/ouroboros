@@ -39,16 +39,40 @@ function buildNpmExecArgs(prefixDir, packageRef, command, args = []) {
   ]
 }
 
-function runNpmExec(deps, prefixDir, packageRef, command, args = []) {
-  return deps.execFileSync(
-    "npm",
-    buildNpmExecArgs(prefixDir, packageRef, command, args),
-    {
-      cwd: prefixDir,
-      encoding: "utf-8",
-      stdio: ["ignore", "pipe", "pipe"],
-    },
+function npmExecErrorText(error) {
+  return [
+    error && error.message,
+    error && error.stderr,
+    error && Array.isArray(error.output) ? error.output.join("\n") : "",
+  ].filter(Boolean).join("\n")
+}
+
+function isRetryableNpmExecError(error) {
+  return /\b(ECONNRESET|ETIMEDOUT|EAI_AGAIN|ENOTFOUND|ECONNREFUSED|ERR_SOCKET_TIMEOUT)\b|Invalid response body|fetch failed|network.*aborted/i.test(
+    npmExecErrorText(error),
   )
+}
+
+function runNpmExec(deps, prefixDir, packageRef, command, args = []) {
+  const maxAttempts = 3
+  for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+    try {
+      return deps.execFileSync(
+        "npm",
+        buildNpmExecArgs(prefixDir, packageRef, command, args),
+        {
+          cwd: prefixDir,
+          encoding: "utf-8",
+          stdio: ["ignore", "pipe", "pipe"],
+        },
+      )
+    } catch (error) {
+      if (attempt === maxAttempts || !isRetryableNpmExecError(error)) throw error
+      deps.sleepSync(5000)
+    }
+  }
+
+  throw new Error("unreachable npm exec retry state")
 }
 
 function runPublishedBinResolutionSmoke(input, deps = defaultDeps()) {
@@ -82,7 +106,8 @@ function runPublishedBinResolutionSmoke(input, deps = defaultDeps()) {
 }
 
 function runPublishedBinVersionSmoke(input, deps = defaultDeps()) {
-  const packageRef = `${input.packageName}@${input.version}`
+  const packageRef = input.packageRef ?? `${input.packageName}@${input.version}`
+  const expectedVersion = input.expectedVersion ?? input.version
   const prefixDir = deps.mkdtempSync(path.join(deps.tmpdir(), "ouro-release-smoke-"))
 
   try {
@@ -100,14 +125,14 @@ function runPublishedBinVersionSmoke(input, deps = defaultDeps()) {
 
     const output = runNpmExec(deps, prefixDir, packageRef, input.binName, ["--version"])
     const actualVersion = lastNonEmptyLine(output)
-    if (actualVersion !== input.version) {
+    if (actualVersion !== expectedVersion) {
       return {
         ok: false,
         packageRef,
         binName: input.binName,
         resolvedPath,
         output,
-        message: `${packageRef} ${input.binName} reported ${actualVersion || "no version"}, expected ${input.version}`,
+        message: `${packageRef} ${input.binName} reported ${actualVersion || "no version"}, expected ${expectedVersion}`,
       }
     }
 
@@ -117,7 +142,7 @@ function runPublishedBinVersionSmoke(input, deps = defaultDeps()) {
       binName: input.binName,
       resolvedPath,
       output,
-      message: `${packageRef} ${input.binName} verified at ${input.version}`,
+      message: `${packageRef} ${input.binName} verified at ${expectedVersion}`,
     }
   } finally {
     deps.rmSync(prefixDir, { recursive: true, force: true })
@@ -127,7 +152,11 @@ function runPublishedBinVersionSmoke(input, deps = defaultDeps()) {
 function runReleaseSmokeSuite(version, deps = defaultDeps()) {
   return [
     runPublishedBinVersionSmoke({ packageName: "@ouro.bot/cli", binName: "ouro", version }, deps),
-    runPublishedBinResolutionSmoke({ packageName: "ouro.bot", binName: "ouro.bot", version }, deps),
+    runPublishedBinVersionSmoke({
+      packageRef: "ouro.bot@latest",
+      binName: "ouro.bot",
+      expectedVersion: version,
+    }, deps),
   ]
 }
 
@@ -136,6 +165,9 @@ function defaultDeps() {
     execFileSync: childProcess.execFileSync,
     mkdtempSync: fs.mkdtempSync,
     rmSync: fs.rmSync,
+    sleepSync(ms) {
+      Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms)
+    },
     tmpdir: os.tmpdir,
   }
 }
@@ -162,6 +194,7 @@ if (require.main === module) {
 module.exports = {
   buildNpmExecArgs,
   isNpmExecBinPath,
+  isRetryableNpmExecError,
   lastNonEmptyLine,
   runPublishedBinResolutionSmoke,
   runPublishedBinVersionSmoke,

@@ -9,6 +9,8 @@ import {
   readFriendView,
   readHabitView,
   readLogView,
+  readMailMessageView,
+  readMailView,
   readNoteDecisionView,
   readNotesView,
   readNeedsMeView,
@@ -30,6 +32,8 @@ import type {
   OutlookFriendView,
   OutlookHabitView,
   OutlookLogView,
+  OutlookMailMessageView,
+  OutlookMailView,
   OutlookNoteDecisionView,
   OutlookNotesView,
   OutlookNeedsMeView,
@@ -58,6 +62,8 @@ export interface OutlookHttpReadHookOptions {
   readAgentSelfFix?: (agentName: string) => OutlookSelfFixView
   readAgentNoteDecisions?: (agentName: string) => OutlookNoteDecisionView
   readAgentHabits?: (agentName: string) => OutlookHabitView
+  readAgentMail?: (agentName: string) => Promise<OutlookMailView> | OutlookMailView
+  readAgentMailMessage?: (agentName: string, messageId: string) => Promise<OutlookMailMessageView> | OutlookMailMessageView
   readDaemonHealth?: () => OutlookDaemonHealthDeep | null
   readLogs?: () => OutlookLogView
 }
@@ -78,6 +84,8 @@ export interface OutlookHttpReadHooks {
   readAgentSelfFix(agentName: string): OutlookSelfFixView
   readAgentNoteDecisions(agentName: string): OutlookNoteDecisionView
   readAgentHabits(agentName: string): OutlookHabitView
+  readAgentMail(agentName: string): Promise<OutlookMailView> | OutlookMailView
+  readAgentMailMessage(agentName: string, messageId: string): Promise<OutlookMailMessageView> | OutlookMailMessageView
   readDaemonHealth(): OutlookDaemonHealthDeep | null
   readLogs(): OutlookLogView
   readDeskPrefs(agentName: string): OutlookDeskPrefs
@@ -105,6 +113,8 @@ export function createOutlookHttpReadHooks(options: OutlookHttpReadHookOptions):
     readAgentSelfFix: options.readAgentSelfFix ?? ((agentName: string) => readSelfFixView(agentRoot(agentName))),
     readAgentNoteDecisions: options.readAgentNoteDecisions ?? ((agentName: string) => readNoteDecisionView(agentRoot(agentName))),
     readAgentHabits: options.readAgentHabits ?? ((agentName: string) => readHabitView(agentRoot(agentName))),
+    readAgentMail: options.readAgentMail ?? ((agentName: string) => readMailView(agentName)),
+    readAgentMailMessage: options.readAgentMailMessage ?? ((agentName: string, messageId: string) => readMailMessageView(agentName, messageId)),
     readDaemonHealth: options.readDaemonHealth ?? (() => readDaemonHealthDeep(options.healthPath)),
     readLogs: options.readLogs ?? (() => readLogView(options.logPath ?? null)),
     readDeskPrefs: (agentName: string) => readDeskPrefs(agentRoot(agentName)),

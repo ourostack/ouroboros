@@ -142,6 +142,72 @@ describe("runAgent tool loop guard", () => {
     await setupMinimax()
   })
 
+  it("isChatStyleChannel returns true for cli/teams/bluebubbles, false otherwise", async () => {
+    const { isChatStyleChannel } = await import("../../heart/core")
+    expect(isChatStyleChannel("cli")).toBe(true)
+    expect(isChatStyleChannel("teams")).toBe(true)
+    expect(isChatStyleChannel("bluebubbles")).toBe(true)
+    expect(isChatStyleChannel("inner")).toBe(false)
+    expect(isChatStyleChannel("mcp")).toBe(false)
+    expect(isChatStyleChannel("mail")).toBe(false)
+    expect(isChatStyleChannel("anything-else")).toBe(false)
+  })
+
+  it("activeTools includes speakTool for channel='cli' and excludes for channel='inner'", async () => {
+    // Capture the tools passed to the provider in two runs
+    let capturedToolsByCall: Array<Array<{ function: { name: string } }>> = []
+    mockCreate.mockImplementation((req: any) => {
+      capturedToolsByCall.push(req.tools as any)
+      return makeStream([
+        makeChunk(undefined, [
+          {
+            index: 0,
+            id: "call_settle",
+            function: { name: "settle", arguments: '{"answer":"done"}' },
+          },
+        ]),
+      ])
+    })
+
+    const { runAgent } = await import("../../heart/core")
+    const execTool = vi.fn().mockResolvedValue("ok")
+
+    // CLI channel: speak should be included
+    await runAgent([{ role: "system", content: "test" }], makeCallbacks(), "cli", undefined, {
+      toolChoiceRequired: true,
+      execTool,
+      toolContext: { signin: async () => undefined },
+    })
+    const cliToolNames = capturedToolsByCall[0]?.map((t) => t.function.name) ?? []
+    expect(cliToolNames).toContain("speak")
+    expect(cliToolNames).toContain("settle")
+
+    // Reset capture; mock now needs another stream for the inner run
+    capturedToolsByCall = []
+    mockCreate.mockImplementation((req: any) => {
+      capturedToolsByCall.push(req.tools as any)
+      return makeStream([
+        makeChunk(undefined, [
+          {
+            index: 0,
+            id: "call_rest",
+            function: { name: "rest", arguments: "{}" },
+          },
+        ]),
+      ])
+    })
+
+    await runAgent([{ role: "system", content: "test" }], makeCallbacks(), "inner", undefined, {
+      toolChoiceRequired: true,
+      execTool,
+      toolContext: { signin: async () => undefined },
+    })
+    const innerToolNames = capturedToolsByCall[0]?.map((t) => t.function.name) ?? []
+    expect(innerToolNames).not.toContain("speak")
+    expect(innerToolNames).not.toContain("settle")
+    expect(innerToolNames).toContain("rest")
+  })
+
   it("blocks repeated no-progress polling and lets the model recover with settle", async () => {
     let callCount = 0
     mockCreate.mockImplementation(() => {

@@ -2,7 +2,7 @@
 
 This is the operator smoke guide for the current runtime. It focuses on the real user path:
 
-`npx ouro.bot` -> `ouro up` -> `ouro status` -> `ouro chat` / daemon senses -> `ouro stop`
+`npx ouro.bot@latest` -> `ouro up` -> `ouro status` -> `ouro chat` / daemon senses -> `ouro stop`
 
 For local development: `npm run dev` (builds and starts daemon from local repo) or `ouro dev` (if the `ouro` binary is current).
 
@@ -12,15 +12,22 @@ Run this from outside the repo so you exercise the published bootstrap path rath
 
 ```bash
 cd ~
-npx ouro.bot -v
-npx ouro.bot up
+npx ouro.bot@latest -v
+npx ouro.bot@latest up
 ouro -v
 ouro status
 ```
 
 Expected:
 
-- `npx ouro.bot -v` and `ouro -v` report the same version.
+- `npx ouro.bot@latest -v` and `ouro -v` report the same version.
+- `ouro up` opens the shared boot checklist instead of a raw transcript wall:
+  - the full startup path is visible up front
+  - the current step keeps live detail while work is happening
+  - provider verification names the selected providers Ouro is checking right now
+  - daemon boot waits keep narrating real startup progress instead of leaving a blinking cursor while the service is still warming up
+  - startup does not claim success unless the daemon survives the final handoff check
+  - if startup fails, the command exits non-zero and `ouro logs` shows the live daemon log tail that the diagnosis points to
 - `ouro status` shows:
   - daemon overview
   - version
@@ -98,6 +105,13 @@ Expected:
 - `ouro auth --agent Hatchling` reauths the provider already selected for Hatchling's outward lane
 - `--provider <provider>` authenticates that provider in the owning agent's vault without switching a lane
 - auth, provider refresh, and guided connectors show a visible progress checklist while waiting on browser login, vault reads/writes, daemon reload, and verification
+- `ouro logs` now tails the daemon/agent logs from the installed runtime path instead of falling back to a socket help message
+- bare `ouro` in a human TTY opens the shared home deck instead of silently meaning `ouro up`
+- root `ouro connect --agent <agent>` prints a short `checking current connections` preflight, verifies the currently selected providers through the shared live check path with a bounded one-attempt orientation policy, and opens the shared connect wizard without spending the full startup retry budget
+- a failed or timed-out root `ouro connect` orientation probe can mark the current menu as `needs attention`, but it must not overwrite durable provider readiness; `ouro up`, `ouro check`, `ouro auth verify`, and chat startup own lasting readiness writes
+- auth, vault, hatch, and guided connector completions land on the shared guide language with `What changed` and `Next moves` instead of raw transcript walls
+- `ouro up` replacement paths say they are replacing the running background service and do not mark `starting daemon` complete before replacement readiness is known
+- if the background service dies after startup work but before handoff is complete, `ouro up` fails with a daemon diagnosis instead of printing a false-ready board
 - provider state remains in `~/AgentBundles/Hatchling.ouro/state/providers.json`
 - use `ouro use --agent <agent> --lane <outward|inner> --provider <provider> --model <model>` to switch a lane after credentials exist and the provider/model check passes
 - use `ouro provider refresh --agent <agent>` to refresh the daemon's in-memory credential snapshot from the vault
@@ -131,6 +145,7 @@ If BlueBubbles is enabled and attached on this machine:
 
 - `ouro status` should show `BlueBubbles` as `ready` or `running`
 - inbound iMessages should create or continue the correct chat trunk
+- the inbound sidecar under `state/senses/bluebubbles/inbound/` is capture truth, not completion truth; handled-message truth lives under `state/senses/bluebubbles/processed/`
 - typing and read behavior should feel immediate
 
 If BlueBubbles is enabled but not attached here, `ouro status` should show `not_attached`, not degrade daemon startup. Attach it with:
@@ -166,6 +181,9 @@ For human-facing CLI changes, especially auth, repair, startup, and connector fl
 
 - any wait that may last more than a few seconds should have a current step on screen
 - output should be a short checklist, not a repeated wall of repair text
+- TTY surfaces should render through the shared Ouro board family rather than each command inventing its own ad hoc transcript
+- `ouro`, `ouro up`, `ouro connect`, `ouro auth verify`, and `ouro repair` should agree on provider/vault truth for the same machine state
+- `ouro help`, `ouro whoami`, `ouro versions`, and the `ouro hatch` welcome shell should visually read like the same CLI family
 - secret prompts must not echo or print the secret later
 - success output should include where the credential/config was stored and the next action
 - failure output should keep the last visible progress context and give one useful repair path
@@ -180,19 +198,61 @@ For runtime code changes inside the repo:
 npm test
 npx tsc --noEmit
 npm run test:coverage
+npm run test:integration
+npm run test:e2e:package
+npm run test:e2e:real-smoke -- --secrets-file /absolute/path/to/ouro-real-smoke.json
 ```
 
-All three should pass before merge.
+The first five should pass before merge when the change touches runtime, daemon, provider, auth, or package-install behavior. The real-smoke lane is the live external check for sacrificial credentials; run it when you are working on provider auth, portable capability onboarding, or live verification behavior and you have the secrets file available.
+
+What each lane proves:
+
+- `npm test`: fast in-process behavior coverage
+- `npm run test:coverage`: enforced 100% coverage + nerves audit
+- `npm run test:integration`: built runtime in child processes against a hermetic fake machine (temp `HOME`, temp bundles, fake vault CLI/unlock store, fake provider server)
+- `npm run test:e2e:package`: locally packed npm tarball installed into a fresh prefix, then the installed `ouro` binary is executed for both version truth and a human-facing help surface
+- `npm run test:e2e:real-smoke -- --secrets-file /absolute/path/to/ouro-real-smoke.json`: real external provider/capability smoke with sacrificial credentials, using the same provider ping implementation as `ouro up`, `ouro auth verify`, and the connect bay while preserving each command's retry policy
+
+CI now mirrors that split on pull requests:
+
+- coverage gate
+- hermetic integration lane
+- local package e2e lane
+
+`main` also keeps:
+
+- the published-package smoke after `npm publish`
+- a scheduled `real-smoke` workflow that runs the live external lane whenever repo secret `OURO_REAL_SMOKE_SECRETS_JSON` is configured
+
+Recommended `OURO_REAL_SMOKE_SECRETS_JSON` shape:
+
+```json
+{
+  "providerCheck": {
+    "provider": "minimax",
+    "model": "MiniMax-M2.5",
+    "config": {
+      "apiKey": "replace-me"
+    }
+  },
+  "portableChecks": {
+    "perplexityApiKey": "replace-me",
+    "openaiEmbeddingsApiKey": "replace-me"
+  }
+}
+```
+
+The workflow writes that secret into a temp file with restrictive permissions, runs the shared real-smoke script, and never prints the raw JSON or the secret values.
 
 ## Troubleshooting
 
-### `ouro` and `npx ouro.bot` disagree on version
+### `ouro` and `npx ouro.bot@latest` disagree on version
 
 Run:
 
 ```bash
 cd ~
-npx ouro.bot up
+npx ouro.bot@latest up
 ouro -v
 ```
 

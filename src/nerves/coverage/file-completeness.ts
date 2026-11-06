@@ -56,12 +56,14 @@ const DISPATCH_EXEMPT_PATTERNS = [
   "repertoire/tools-config",
   "repertoire/tools-base",
   // CLI sub-modules: cli-exec.ts is the router with emitNervesEvent calls;
-  // cli-parse, cli-render, and cli-help are pure functions/data with no side effects.
+  // cli-parse, cli-render, cli-help, and their small helpers are pure functions/data with no side effects.
   "daemon/cli-parse",
   "daemon/cli-render",
   "daemon/cli-help",
+  "daemon/vault-items",
   // Shared utility modules: pure helpers consumed by modules that own observability.
   "arc/json-store",
+  "heart/mail-import-discovery",
   "repertoire/api-client",
   "repertoire/github-client",
   "mind/embedding-provider",
@@ -82,6 +84,22 @@ const DISPATCH_EXEMPT_PATTERNS = [
   // HTTP health probe: pure HTTP utility factory. The HealthMonitor caller
   // owns observability via daemon.health_result events.
   "daemon/http-health-probe",
+  // Rollup decision function: pure decision tree mapping per-agent
+  // snapshots + bootstrap-degraded entries + safe-mode flag to a
+  // RollupStatus. No side effects. The caller (daemon-entry.ts
+  // buildDaemonHealthState → DaemonHealthWriter) owns observability via
+  // daemon.health_written when the rolled-up state is persisted.
+  "daemon/daemon-rollup",
+  // Drift comparator + thin I/O loader: `detectProviderBindingDrift`
+  // is a pure intent-vs-observed comparator with no side effects;
+  // `loadDriftInputsForAgent` is a small fs-read wrapper that returns
+  // `null` on missing/invalid state rather than emitting. The caller
+  // (daemon-entry.ts buildDaemonHealthState's per-agent drift probe)
+  // owns observability — drift findings ride along through
+  // `daemon.health_written` as part of the rolled-up state, and
+  // `agent-config-check.ts` carries `driftFindings` through its
+  // existing instrumentation. Same pattern as `daemon-rollup`.
+  "daemon/drift-detection",
   // Attachment helper modules: generic file-path/extension utilities and the
   // source registry are pure support seams. The orchestrator/adapters that
   // call them own the observability.
@@ -92,6 +110,17 @@ const DISPATCH_EXEMPT_PATTERNS = [
   // consumed by server readers and the UI. Outlook read/render modules own
   // the observability for these projections.
   "heart/outlook/outlook-types",
+  // Mail search relevance scorer: pure heuristic function (regex + counter
+  // arithmetic). The caller (search-cache.ts searchMailSearchCache) owns
+  // observability via senses.mail_search_cache_upserted and friends.
+  "mailroom/search-relevance",
+  // Mail thread reconstruction: pure graph-walk over decrypted message
+  // metadata. Consumers (tools-mail.ts mail_thread handler) own observability.
+  "mailroom/thread",
+  // Trip ledger crypto helpers: pure RSA/AES envelope construction + slug
+  // hashing. The caller (trips/store.ts) owns observability via
+  // trips.ledger_created and trips.evidence_attached.
+  "trips/core",
   // Outlook HTTP helper modules: route/static/transport/hook seams are
   // dispatched by outlook-http.ts, whose server lifecycle owns observability.
   "heart/outlook/outlook-http-transport",
@@ -99,6 +128,24 @@ const DISPATCH_EXEMPT_PATTERNS = [
   "heart/outlook/outlook-http-hooks",
   "heart/outlook/outlook-http-routes",
   "heart/outlook/outlook-http-response",
+  // Session playback: read-only debugging CLI for sanitize-pipeline replay.
+  // No side effects on the runtime; output is human-readable diagnostics only.
+  "heart/session-playback-cli-main",
+  "heart/session-playback-cli",
+  "heart/session-playback",
+  // Nerves review: read-only NDJSON tail/filter CLI for debugging.
+  // Diagnostics-only utility; the running daemon owns observability.
+  "nerves/review/cli-main",
+  "nerves/review/cli",
+  "nerves/review/core",
+  // Mail body cache: in-process LRU helper. Cache hit/miss observability
+  // lives at the caller (tools-mail.ts mail_body handler) which fires
+  // repertoire.mail_body_cache_hit on cache reuse.
+  "mailroom/body-cache",
+  // Session stats: read-only session.json analyzer CLI for debugging.
+  // Diagnostics-only utility; output is human-readable summary.
+  "heart/session-stats-cli-main",
+  "heart/session-stats",
 ]
 
 function isDispatchExempt(filePath: string): boolean {
