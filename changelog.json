@@ -2,6 +2,12 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.671",
+      "changes": [
+        "Consolidate friend-domain record logic into @ouro.bot/friends: re-pin the git dependency and route save_friend_note, the friend update/link/unlink CLI commands, and A2A peer onboarding through the package's applyFriendNote/setFriendTrust/linkExternalId/unlinkExternalId/upsertAgentPeer helpers, removing the duplicated in-harness record-mutation logic while keeping the MCP tool wrappers, CLI framing, and A2A HTTP card-fetch glue."
+      ]
+    },
+    {
       "version": "0.1.0-alpha.670",
       "changes": [
         "Depend on the extracted @ouro.bot/friends package (git dependency) and remove the in-tree src/mind/friends/ copy; wire the package's observability seam into harness nerves."
