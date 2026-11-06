@@ -2,6 +2,12 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.986",
+      "changes": [
+        "A huge tool result (a glob over a whole folder, a long log) no longer overflows the agent's context and kills the turn: the model sees its start and end with a line saying how big it was and how to narrow it."
+      ]
+    },
+    {
       "version": "0.1.0-alpha.985",
       "changes": [
         "The Butler's release check cleans up after itself, and he knows where his TACIT lives."

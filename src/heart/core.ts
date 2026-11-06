@@ -68,6 +68,7 @@ import { createObligation, createReturnObligation, generateObligationId, readRet
 import { createToolLoopState, detectToolLoop, hasRecordedToolCall, recordToolOutcome } from "./tool-loop";
 import { advancePonderPacket, createPonderPacket, findHarnessFrictionPacket, revisePonderPacket, type PonderPacket, type PonderPacketKind } from "../arc/packets";
 import { createToolFrictionLedger, rewriteToolResultForModel } from "./tool-friction";
+import { fitToolOutputForModel } from "./tool-output-budget";
 import { shieldDelegatedBanner } from "../a2a/delegated-command";
 import { getDefaultModelForProvider, getProviderModelMismatchMessage } from "./provider-models";
 import {
@@ -3053,7 +3054,7 @@ export async function runAgent(
           }
           if (invoked && requiredToolCallNames.includes(tc.name) && !options?.requiredToolCalls?.requireSuccessfulResults) dispatchedRequiredToolCalls.add(tc.name);
           turnToolRecords.push({ name: tc.name, args, result: toolResult });
-          const modelResult = shieldDelegatedBanner(rewriteToolResultForModel(tc.name, toolResult, toolFrictionLedger));
+          const modelResult = shieldDelegatedBanner(fitToolOutputForModel(tc.name, rewriteToolResultForModel(tc.name, toolResult, toolFrictionLedger)));
           pushGenerated({ role: "tool", tool_call_id: tc.id, content: modelResult });
           providerRuntime.appendToolOutput(tc.id, modelResult);
           if (!success) augmentedToolContext?.habitSession?.recordError?.(toolResult);
