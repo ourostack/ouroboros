@@ -1,3 +1,4 @@
+import { execFileSync } from "child_process"
 import { randomBytes } from "crypto"
 import * as fs from "fs"
 import * as path from "path"
@@ -21,16 +22,25 @@ interface LockContent {
   procStart: string | null
 }
 
-/** Test seams. Not part of the public API. */
+/**
+ * Test seams.
+ * @internal Not part of the public API; production code must not set these.
+ */
 export const __testHooks: {
-  /** Runs while a reclaimer holds the reclaim file, after it judged the lock stale and before it unlinks. */
+  /** Runs while a reclaimer holds the guard, after it judged the lock stale and before it unlinks. */
   beforeUnlink?: () => void
   /** Replaces the read of `/proc/<pid>/stat`. */
   readProcStat?: (pid: number) => string | null
+  /** Replaces the `ps -o lstart=` start-time read. */
+  readPsStart?: (pid: number) => string | null
   /** Runs at the start of every lock read. */
   beforeRead?: () => void
-  /** Runs before the reclaim file is inspected after an exclusive-create collision. */
+  /** Runs before the guard is inspected after an exclusive-create collision. */
   beforeReclaimStat?: () => void
+  /** Runs just before and just after a stale guard is renamed aside. */
+  guardRace?: (phase: "beforeRename" | "afterRename") => void
+  /** Runs before the lock content is written. */
+  beforeLockWrite?: () => void
 } = {}
 
 const heldTokens = new Set<string>()
@@ -48,14 +58,38 @@ function readProcStat(pid: number): string | null {
   }
 }
 
-/** Field 22 of `/proc/<pid>/stat`. The command name (field 2) may hold spaces and parens, so parse past the last `)`. */
+function readPsStart(pid: number): string | null {
+  if (__testHooks.readPsStart) return __testHooks.readPsStart(pid)
+  try {
+    const out = execFileSync("ps", ["-o", "lstart=", "-p", String(pid)], {
+      encoding: "utf8",
+      timeout: 2000,
+      stdio: ["ignore", "pipe", "ignore"],
+    }).trim()
+    return out === "" ? null : out
+  } catch {
+    return null
+  }
+}
+
+/**
+ * Process start time as an opaque string, or null when unknown. Linux: field 22
+ * of `/proc/<pid>/stat` (the command name, field 2, may hold spaces and parens,
+ * so parse past the last `)`). Elsewhere, or when /proc is unreadable: the
+ * trimmed output of `ps -o lstart=`.
+ */
 function processStartTime(pid: number): string | null {
   const stat = readProcStat(pid)
-  if (stat === null) return null
-  const rest = stat.slice(stat.lastIndexOf(")") + 2).split(" ")
-  // `rest` begins at field 3.
-  return rest[22 - 3] ?? null
+  if (stat !== null) {
+    // `rest` begins at field 3.
+    const field = stat.slice(stat.lastIndexOf(")") + 2).split(" ")[22 - 3]
+    if (field !== undefined) return field
+  }
+  return readPsStart(pid)
 }
+
+/** /proc ticks are all digits; `ps` lstart never is. Values of different formats cannot be compared. */
+const isProcFormat = (value: string): boolean => /^\d+$/.test(value)
 
 function pidAlive(pid: number): boolean {
   try {
@@ -68,7 +102,12 @@ function pidAlive(pid: number): boolean {
 
 function isStale(content: LockContent): boolean {
   if (!pidAlive(content.pid)) return true
-  if (content.procStart !== null && content.procStart !== processStartTime(content.pid)) return true
+  if (content.procStart !== null) {
+    // Stale only when both start times are known, in the same format, and differ.
+    // An unreadable start time means unknown, and a live pid with unknown start is live.
+    const now = processStartTime(content.pid)
+    if (now !== null && isProcFormat(now) === isProcFormat(content.procStart) && now !== content.procStart) return true
+  }
   return content.pid === process.pid && !heldTokens.has(content.token)
 }
 
@@ -94,7 +133,8 @@ function readLock(lockPath: string): ReadResult {
   } catch {
     // fall through to malformed
   }
-  // A writer may be between create and write; age decides whether it is abandoned.
+  // Corrupt-lock rule: a lock that does not parse is busy while fresh, because a writer may be
+  // between create and write. Once its mtime is older than 30 s it is stale and may be reclaimed.
   let ageMs = 0
   try {
     ageMs = Date.now() - fs.statSync(lockPath).mtimeMs
@@ -131,65 +171,130 @@ function createLock(lockPath: string): SyncLockHandle | null {
     throw err
   }
   try {
+    __testHooks.beforeLockWrite?.()
     fs.writeSync(fd, JSON.stringify(content))
-  } finally {
+  } catch (err) {
+    // Do not leave an empty lock that would read as busy until it ages out.
     fs.closeSync(fd)
+    fs.rmSync(lockPath, { force: true })
+    throw err
   }
+  fs.closeSync(fd)
   heldTokens.add(token)
   return makeHandle(lockPath, token)
 }
 
+const guardPathOf = (lockPath: string): string => `${lockPath}.reclaim`
+
+function guardOwned(guardPath: string, token: string): boolean {
+  try {
+    return fs.readFileSync(guardPath, "utf8") === token
+  } catch {
+    return false
+  }
+}
+
+/** Create the guard with O_EXCL, holding a random token, and fsync it. Returns null if it exists. */
+function createGuard(guardPath: string): string | null {
+  const token = randomBytes(16).toString("hex")
+  let fd: number
+  try {
+    fd = fs.openSync(guardPath, "wx")
+  } catch (err) {
+    /* v8 ignore next -- only a collision is expected; other errors are real faults @preserve */
+    if ((err as NodeJS.ErrnoException).code !== "EEXIST") throw err
+    return null
+  }
+  try {
+    fs.writeSync(fd, token)
+    fs.fsyncSync(fd)
+  } finally {
+    fs.closeSync(fd)
+  }
+  return token
+}
+
 /**
- * Take over a stale lock. One reclaim file (O_EXCL) guards the whole
- * sequence, so two reclaimers cannot both move a lock.
+ * Clear a guard older than 30 s without ever deleting a guard that is not the one judged stale:
+ * rename it aside, read the renamed file's token, delete only on a match, otherwise put it back.
+ */
+function clearStaleGuard(guardPath: string): "busy" | "cleared" | "gone" {
+  let judgedToken: string
+  let ageMs: number
+  try {
+    __testHooks.beforeReclaimStat?.()
+    ageMs = Date.now() - fs.statSync(guardPath).mtimeMs
+    judgedToken = fs.readFileSync(guardPath, "utf8")
+  } catch {
+    return "gone"
+  }
+  if (ageMs <= RECLAIM_STALE_MS) return "busy"
+  const moved = `${guardPath}.stale.${randomBytes(8).toString("hex")}`
+  __testHooks.guardRace?.("beforeRename")
+  try {
+    fs.renameSync(guardPath, moved)
+  } catch {
+    return "gone"
+  }
+  __testHooks.guardRace?.("afterRename")
+  if (fs.readFileSync(moved, "utf8") === judgedToken) {
+    fs.rmSync(moved, { force: true })
+    return "cleared"
+  }
+  // We moved a guard that is not the one we judged. Put it back if the path is still free.
+  try {
+    fs.linkSync(moved, guardPath)
+  } catch {
+    // The path is taken again; that guard's owner will notice at its next ownership check.
+  }
+  fs.rmSync(moved, { force: true })
+  return "busy"
+}
+
+/**
+ * Take over a stale lock. One guard file (O_EXCL, holding our token) guards the whole
+ * sequence, so two reclaimers cannot both move a lock. Ownership of the guard is checked
+ * before the unlink and after the create; a reclaimer that lost its guard gives up.
  */
 function reclaim(lockPath: string, staleRaw: string): SyncLockHandle | SyncLockBusy | "retry" {
-  const reclaimPath = `${lockPath}.reclaim`
-  for (let attempt = 0; ; attempt++) {
-    try {
-      fs.closeSync(fs.openSync(reclaimPath, "wx"))
-      break
-    } catch (err) {
-      /* v8 ignore next -- only a collision is expected; other errors are real faults @preserve */
-      if ((err as NodeJS.ErrnoException).code !== "EEXIST") throw err
-      let ageMs: number
-      try {
-        __testHooks.beforeReclaimStat?.()
-        ageMs = Date.now() - fs.statSync(reclaimPath).mtimeMs
-      } catch {
-        return "retry"
-      }
-      if (ageMs <= RECLAIM_STALE_MS || attempt > 0) return { busy: true, holderPid: null }
-      fs.rmSync(reclaimPath, { force: true })
-    }
+  const guardPath = guardPathOf(lockPath)
+  let guard = createGuard(guardPath)
+  if (guard === null) {
+    const cleared = clearStaleGuard(guardPath)
+    if (cleared === "gone") return "retry"
+    if (cleared === "busy") return { busy: true, holderPid: null }
+    guard = createGuard(guardPath)
+    if (guard === null) return { busy: true, holderPid: null }
   }
+  const token = guard
   try {
     const current = readLock(lockPath)
     if (current.kind === "missing") return "retry"
     const verdict = judge(current)
     if (!verdict.stale || current.raw !== staleRaw) return { busy: true, holderPid: verdict.holderPid }
     __testHooks.beforeUnlink?.()
+    if (!guardOwned(guardPath, token)) return { busy: true, holderPid: null }
     fs.rmSync(lockPath, { force: true })
     const handle = createLock(lockPath)
-    if (handle) {
-      emitNervesEvent({
-        component: "heart",
-        event: "heart.sync_lock_reclaimed",
-        message: "reclaimed a stale bundle sync lock",
-        meta: { lockPath, previousPid: verdict.holderPid },
-      })
-      return handle
+    /* v8 ignore next -- the guard excludes other reclaimers; only a fresh acquirer could win the race @preserve */
+    if (!handle) return "retry"
+    if (!guardOwned(guardPath, token)) {
+      handle.release()
+      return { busy: true, holderPid: null }
     }
-    /* v8 ignore next -- the reclaim file excludes other reclaimers; only a fresh acquirer could win the race @preserve */
-    return "retry"
+    emitNervesEvent({
+      component: "heart",
+      event: "heart.sync_lock_reclaimed",
+      message: "reclaimed a stale bundle sync lock",
+      meta: { lockPath, previousPid: verdict.holderPid },
+    })
+    return handle
   } finally {
-    fs.rmSync(reclaimPath, { force: true })
+    if (guardOwned(guardPath, token)) fs.rmSync(guardPath, { force: true })
   }
 }
 
-/** One synchronous attempt. */
-export function tryAcquireSyncLockSync(agentRoot: string): SyncLockHandle | SyncLockBusy {
-  const lockPath = lockFilePath(agentRoot)
+function attemptOnce(lockPath: string): SyncLockHandle | SyncLockBusy {
   let busy: SyncLockBusy = { busy: true, holderPid: null }
   for (let i = 0; i < 3; i++) {
     const created = createLock(lockPath)
@@ -202,11 +307,15 @@ export function tryAcquireSyncLockSync(agentRoot: string): SyncLockHandle | Sync
     const outcome = reclaim(lockPath, existing.raw)
     if (outcome === "retry") continue
     if ("busy" in outcome) {
-      busy = { busy: true, holderPid: outcome.holderPid ?? busy.holderPid }
+      busy = outcome
       break
     }
     return outcome
   }
+  return busy
+}
+
+function emitBusy(lockPath: string, busy: SyncLockBusy): void {
   emitNervesEvent({
     level: "warn",
     component: "heart",
@@ -214,15 +323,27 @@ export function tryAcquireSyncLockSync(agentRoot: string): SyncLockHandle | Sync
     message: "bundle sync lock is held",
     meta: { lockPath, holderPid: busy.holderPid },
   })
-  return busy
 }
 
-/** Polls every 100 ms for up to `waitMs`. */
+/** One synchronous attempt. */
+export function tryAcquireSyncLockSync(agentRoot: string): SyncLockHandle | SyncLockBusy {
+  const lockPath = lockFilePath(agentRoot)
+  const result = attemptOnce(lockPath)
+  if ("busy" in result) emitBusy(lockPath, result)
+  return result
+}
+
+/** Polls every 100 ms for up to `waitMs` (a non-finite or negative value means a single attempt). */
 export async function acquireSyncLock(agentRoot: string, waitMs: number): Promise<SyncLockHandle | SyncLockBusy> {
-  const deadline = Date.now() + waitMs
+  const lockPath = lockFilePath(agentRoot)
+  const deadline = Date.now() + (Number.isFinite(waitMs) ? waitMs : 0)
   for (;;) {
-    const result = tryAcquireSyncLockSync(agentRoot)
-    if (!("busy" in result) || Date.now() >= deadline) return result
+    const result = attemptOnce(lockPath)
+    if (!("busy" in result)) return result
+    if (Date.now() >= deadline) {
+      emitBusy(lockPath, result)
+      return result
+    }
     await new Promise((resolve) => setTimeout(resolve, Math.min(POLL_MS, Math.max(1, deadline - Date.now()))))
   }
 }
