@@ -1585,6 +1585,53 @@ describe("OURO_CLI_TRUST_MANIFEST — rollback and versions", () => {
         vi.mocked(fs.existsSync).mockReturnValue(true)
         expect(guardInvocation("shell", { command }, ctx({ readPaths: new Set() }))).toEqual({ allowed: true })
       })
+      it("refuses home, $HOME and cd-relative paths into the psyche and the friends store, and still allows reading them", async () => {
+        // The final M1b review: the body map gives the model ~/AgentBundles/<agent>.ouro/, so those literal forms must count.
+        const { guardInvocation } = await import("../../repertoire/guardrails")
+        vi.mocked(fs.existsSync).mockReturnValue(true)
+        const home = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "psyche-home-")))
+        const root = path.join(home, "AgentBundles", "x.ouro")
+        fs.mkdirSync(path.join(root, "psyche"), { recursive: true })
+        fs.mkdirSync(path.join(root, "friends"), { recursive: true })
+        const savedHome = process.env.HOME
+        process.env.HOME = home
+        try {
+          const who = ctx({ agentRoot: root, readPaths: new Set() })
+          for (const command of [
+            "echo x > ~/AgentBundles/x.ouro/psyche/SOUL.md",
+            "echo x > $HOME/AgentBundles/x.ouro/psyche/SOUL.md",
+            "cd ~/AgentBundles && cp /tmp/a x.ouro/psyche/SOUL.md",
+            `cd ${path.join(home, "AgentBundles")} && cp /tmp/a x.ouro/psyche/SOUL.md`,
+            "cd ~/AgentBundles/x.ouro && ln psyche/SOUL.md state/policy/p.json",
+          ]) {
+            const result = guardInvocation("shell", { command }, who)
+            expect(result, command).toMatchObject({ allowed: false })
+            expect((result as { reason: string }).reason, command).toContain("part of me")
+          }
+          expect(guardInvocation("shell", { command: "cd ~/AgentBundles && cp /tmp/a x.ouro/friends/f.json" }, who)).toMatchObject({ allowed: false })
+          expect(guardInvocation("shell", { command: "cd ~/AgentBundles && cat x.ouro/psyche/SOUL.md" }, who)).toEqual({ allowed: true })
+          expect(guardInvocation("shell", { command: "cd ~/AgentBundles && cat x.ouro/friends/f.json" }, who)).toEqual({ allowed: true })
+          // Another bundle's psyche or friends folder is not this agent's.
+          expect(guardInvocation("shell", { command: "cd ~/AgentBundles && cp /tmp/a other.ouro/psyche/SOUL.md" }, who)).toEqual({ allowed: true })
+        } finally {
+          process.env.HOME = savedHome
+          fs.rmSync(home, { recursive: true, force: true })
+        }
+      })
+
+      it("refuses a psyche or friends shell write when the filesystem cannot say where it lands", async () => {
+        const { guardInvocation } = await import("../../repertoire/guardrails")
+        vi.mocked(fs.existsSync).mockReturnValue(true)
+        const realpath = vi.spyOn(fs.realpathSync, "native").mockImplementation(() => { throw Object.assign(new Error("EACCES"), { code: "EACCES" }) })
+        try {
+          const who = ctx({ agentRoot: "/bundle", readPaths: new Set() })
+          expect(guardInvocation("shell", { command: "cd / && cat bundle/psyche/SOUL.md" }, who)).toMatchObject({ allowed: false })
+          expect(guardInvocation("shell", { command: "cd / && cat bundle/friends/f.json" }, who)).toMatchObject({ allowed: false })
+        } finally {
+          realpath.mockRestore()
+        }
+      })
+
       it("leaves commands that never mention the folder, and agents with no root, alone", async () => {
         const { guardInvocation } = await import("../../repertoire/guardrails")
         const root = fs.mkdtempSync(path.join(os.tmpdir(), "psyche-guard-"))

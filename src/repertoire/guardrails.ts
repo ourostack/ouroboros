@@ -286,7 +286,9 @@ function commandMentionsPsyche(command: string, words: readonly string[], agentR
   if (command.includes(psyche) || words.some((word) => word.includes(psyche))) return true
   if (words.some((word) => word === "psyche" || isPsychePath(word, agentRoot))) return true
   // A relative "psyche/..." inside code or a quoted argument, when this agent has such a folder.
-  return /(?:^|[\s'"=(])psyche\//.test(command) && fs.existsSync(psyche)
+  if (/(?:^|[\s'"=(])psyche\//.test(command) && fs.existsSync(psyche)) return true
+  // ~/..., $HOME/... and paths relative to a cd or -C target that land in this agent's psyche/.
+  return commandMentionsAgentFolder(command, words, agentRoot, "psyche")
 }
 
 /**
@@ -317,7 +319,12 @@ function protectedFolderShellWriteRefused(command: string, mentions: (words: rea
 
 function psycheShellWriteRefused(command: string, agentRoot: string | undefined): boolean {
   if (!agentRoot) return false
-  return protectedFolderShellWriteRefused(command, (words) => commandMentionsPsyche(command, words, agentRoot))
+  try {
+    return protectedFolderShellWriteRefused(command, (words) => commandMentionsPsyche(command, words, agentRoot))
+  } catch {
+    // The filesystem could not say where a path that names psyche/ lands: refuse rather than guess.
+    return true
+  }
 }
 
 // --- the friends store in shell commands ---
@@ -337,31 +344,39 @@ function commandMentionsFriendsStore(command: string, words: readonly string[], 
   if (/\$[({A-Za-z_]|`/.test(command) && /(?:^|[\/\s'"=])friends(?:$|[\/\s'"])/.test(command)) return true
   // An absolute or relative path inside code or a quoted argument, such as node -e "...'/bundle/friends/x.json'...".
   const store = path.resolve(agentRoot, "friends")
-  return command.includes(store) || /(?:^|[\s'"=(])friends\//.test(command)
+  if (command.includes(store) || /(?:^|[\s'"=(])friends\//.test(command)) return true
+  // Paths relative to a cd or -C target that land in this agent's friends/.
+  return commandMentionsAgentFolder(command, words, agentRoot, "friends")
 }
 
 function friendsShellWriteRefused(command: string, agentRoot: string | undefined): boolean {
   if (!agentRoot) return false
-  return protectedFolderShellWriteRefused(command, (words) => commandMentionsFriendsStore(command, words, agentRoot))
+  try {
+    return protectedFolderShellWriteRefused(command, (words) => commandMentionsFriendsStore(command, words, agentRoot))
+  } catch {
+    // The filesystem could not say where a path that names friends/ lands: refuse rather than guess.
+    return true
+  }
 }
 
-// --- the product rules in shell commands ---
-// product/PRODUCT.md is the package's standing rules for this agent; releases replace it, and nothing in a conversation does.
-// Unlike the friends store, a bare relative "product/" is an ordinary project folder almost everywhere, so it counts as this
-// agent's only when the command is plainly working in the agent root.
-/** Words of a shell command that name a path whose part is exactly `product`, wherever they sit (code and quotes included). */
-function productWords(command: string): string[] {
-  return command.split(/[\s'"=();|&<>`]+/).filter((token) => /(?:^|\/)product(?:\/|$)/.test(token))
+// --- where a path in a shell command lands ---
+// A command can name one of this agent's folders by an absolute path, by ~/ or $HOME/, or relative to wherever it cd's (or
+// git -C's) first. Each word whose path has a part exactly `<name>` is resolved against every directory the command could be
+// working in, lexically and canonically, and counts when it lands in this agent's <name>/.
+/** Words of a shell command that name a path whose part is exactly `name`, wherever they sit (code and quotes included). */
+function namedFolderWords(command: string, name: string): string[] {
+  const part = new RegExp(`(?:^|/)${name}(?:/|$)`)
+  return command.split(/[\s'"=();|&<>`]+/).filter((token) => part.test(token))
 }
 
-function commandMentionsProduct(command: string, words: readonly string[], agentRoot: string): boolean {
-  const lexicalProduct = path.resolve(agentRoot, "product")
-  if (globOrExpansionCouldReach(command, lexicalProduct, agentRoot)) return true
-  const candidates = productWords(command)
+function commandMentionsAgentFolder(command: string, words: readonly string[], agentRoot: string, name: string): boolean {
+  const lexicalFolder = path.resolve(agentRoot, name)
+  if (globOrExpansionCouldReach(command, lexicalFolder, agentRoot)) return true
+  const candidates = namedFolderWords(command, name)
   if (candidates.length === 0) return false
-  // A variable in front of the path ($HOME/.../product/x): where it lands is the shell's to say, so it counts.
+  // A variable in front of the path ($HOME/.../<name>/x): where it lands is the shell's to say, so it counts.
   if (candidates.some((candidate) => candidate.includes("$"))) return true
-  const folders = [lexicalProduct, path.join(canonicalize(path.resolve(agentRoot)), "product")]
+  const folders = [lexicalFolder, path.join(canonicalize(path.resolve(agentRoot)), name)]
   // Every directory the command could be working in: where the shell starts, and each cd target, from each earlier one.
   const cwds = [process.cwd()]
   for (const [index, word] of words.entries()) {
@@ -378,10 +393,14 @@ function commandMentionsProduct(command: string, words: readonly string[], agent
   })
 }
 
+// --- the product rules in shell commands ---
+// product/PRODUCT.md is the package's standing rules for this agent; releases replace it, and nothing in a conversation does.
+// Unlike the friends store, a bare relative "product/" is an ordinary project folder almost everywhere, so it counts as this
+// agent's only when the command is plainly working in the agent root.
 function productShellWriteRefused(command: string, agentRoot: string | undefined): boolean {
   if (!agentRoot) return false
   try {
-    return protectedFolderShellWriteRefused(command, (words) => commandMentionsProduct(command, words, agentRoot))
+    return protectedFolderShellWriteRefused(command, (words) => commandMentionsAgentFolder(command, words, agentRoot, "product"))
   } catch {
     // The filesystem could not say where a path that names product/ lands: refuse rather than guess.
     return true
