@@ -6263,6 +6263,8 @@ describe("specialist integration (zero agents -> serpent guide)", () => {
   })
 
   it("falls back to old hatch flow for explicit ouro hatch command even when specialist dep exists", async () => {
+    const mockHealthCheck = checkAgentConfigWithProviderHealth as ReturnType<typeof vi.fn>
+    mockHealthCheck.mockClear()
     const runSerpentGuide = vi.fn(async () => "ShouldNotBeUsed")
     const runHatchFlow = vi.fn(async () => ({
       bundleRoot: "/tmp/AgentBundles/ExplicitBot.ouro",
@@ -6299,6 +6301,93 @@ describe("specialist integration (zero agents -> serpent guide)", () => {
     expect(runHatchFlow).toHaveBeenCalled()
     expect(result).toContain("hatched ExplicitBot")
     expect(result).not.toContain("vault unlock secret")
+    expect(mockHealthCheck).not.toHaveBeenCalled()
+  })
+
+  it("checks provider readiness before starting chat after an explicit hatch", async () => {
+    const mockHealthCheck = checkAgentConfigWithProviderHealth as ReturnType<typeof vi.fn>
+    mockHealthCheck.mockClear()
+    mockHealthCheck.mockResolvedValueOnce({ ok: true })
+    const runHatchFlow = vi.fn(async () => ({
+      bundleRoot: "/tmp/AgentBundles/ExplicitBot.ouro",
+      selectedIdentity: "python.md",
+    }))
+    const startChat = vi.fn(async () => {})
+    const deps: OuroCliDeps = {
+      socketPath: "/tmp/ouro-test.sock",
+      sendCommand: vi.fn(async () => ({ ok: true })),
+      startDaemonProcess: vi.fn(async () => ({ pid: 33 })),
+      writeStdout: vi.fn(),
+      checkSocketAlive: vi.fn().mockResolvedValueOnce(false).mockResolvedValue(true),
+      cleanupStaleSocket: vi.fn(),
+      fallbackPendingMessage: vi.fn(() => "/tmp/pending.jsonl"),
+      bundlesRoot: "/tmp/AgentBundles",
+      registerOuroBundleType: vi.fn(async () => ({ attempted: true, registered: true })),
+      runHatchFlow,
+      startChat,
+    }
+
+    const result = await runOuroCli([
+      "hatch",
+      "--agent",
+      "ExplicitBot",
+      "--human",
+      "Ari",
+      "--provider",
+      "anthropic",
+      "--setup-token",
+      "sk-ant-oat01-test-token",
+    ], deps)
+
+    expect(mockHealthCheck).toHaveBeenCalledWith("ExplicitBot", "/tmp/AgentBundles")
+    expect(startChat).toHaveBeenCalledWith("ExplicitBot")
+    expect(result).toBe("")
+  })
+
+  it("returns provider repair guidance without starting chat after an explicit hatch", async () => {
+    const mockHealthCheck = checkAgentConfigWithProviderHealth as ReturnType<typeof vi.fn>
+    mockHealthCheck.mockClear()
+    mockHealthCheck.mockResolvedValueOnce({
+      ok: false,
+      error: "provider token expired",
+      fix: "run ouro auth --agent ExplicitBot --provider anthropic",
+    })
+    const runHatchFlow = vi.fn(async () => ({
+      bundleRoot: "/tmp/AgentBundles/ExplicitBot.ouro",
+      selectedIdentity: "python.md",
+    }))
+    const startChat = vi.fn(async () => {})
+    const deps: OuroCliDeps = {
+      socketPath: "/tmp/ouro-test.sock",
+      sendCommand: vi.fn(async () => ({ ok: true })),
+      startDaemonProcess: vi.fn(async () => ({ pid: 33 })),
+      writeStdout: vi.fn(),
+      checkSocketAlive: vi.fn().mockResolvedValueOnce(false).mockResolvedValue(true),
+      cleanupStaleSocket: vi.fn(),
+      fallbackPendingMessage: vi.fn(() => "/tmp/pending.jsonl"),
+      bundlesRoot: "/tmp/AgentBundles",
+      registerOuroBundleType: vi.fn(async () => ({ attempted: true, registered: true })),
+      runHatchFlow,
+      startChat,
+    }
+
+    const result = await runOuroCli([
+      "hatch",
+      "--agent",
+      "ExplicitBot",
+      "--human",
+      "Ari",
+      "--provider",
+      "anthropic",
+      "--setup-token",
+      "sk-ant-oat01-test-token",
+    ], deps)
+
+    expect(runHatchFlow).toHaveBeenCalled()
+    expect(mockHealthCheck).toHaveBeenCalledWith("ExplicitBot", "/tmp/AgentBundles")
+    expect(startChat).not.toHaveBeenCalled()
+    expect(result).toContain("provider token expired")
+    expect(result).toContain("run ouro auth --agent ExplicitBot --provider anthropic")
   })
 
   it("renders a shared hatch completion board in TTY mode for explicit hatch flows", async () => {
