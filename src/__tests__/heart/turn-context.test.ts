@@ -10,7 +10,7 @@ vi.mock("../../nerves/runtime", () => ({
 const mockGetAgentRoot = vi.fn().mockReturnValue("/mock/agent-root")
 const mockGetAgentName = vi.fn().mockReturnValue("test-agent")
 const mockLoadAgentConfig = vi.fn().mockReturnValue({
-  senses: { cli: { enabled: true }, teams: { enabled: false }, bluebubbles: { enabled: false } },
+  senses: { cli: { enabled: true }, teams: { enabled: false }, bluebubbles: { enabled: false }, mail: { enabled: false }, voice: { enabled: false } },
 })
 
 vi.mock("../../heart/identity", () => ({
@@ -115,6 +115,23 @@ vi.mock("../../heart/config", () => ({
   loadConfig: () => mockLoadConfig(),
 }))
 
+const mockReadRuntimeCredentialConfig = vi.fn().mockReturnValue({
+  ok: false,
+  reason: "missing",
+  itemPath: "vault:test-agent:runtime/config",
+  error: "missing runtime config",
+})
+const mockReadMachineRuntimeCredentialConfig = vi.fn().mockReturnValue({
+  ok: false,
+  reason: "missing",
+  itemPath: "vault:test-agent:runtime/machines/<this-machine>/config",
+  error: "missing machine runtime config",
+})
+vi.mock("../../heart/runtime-credentials", () => ({
+  readRuntimeCredentialConfig: (...args: any[]) => mockReadRuntimeCredentialConfig(...args),
+  readMachineRuntimeCredentialConfig: (...args: any[]) => mockReadMachineRuntimeCredentialConfig(...args),
+}))
+
 const mockReadHealth = vi.fn().mockReturnValue(null)
 const mockGetDefaultHealthPath = vi.fn().mockReturnValue("/mock/health.json")
 vi.mock("../../heart/daemon/daemon-health", () => ({
@@ -125,6 +142,11 @@ vi.mock("../../heart/daemon/daemon-health", () => ({
 const mockReadJournalFiles = vi.fn().mockReturnValue([])
 vi.mock("../../mind/prompt", () => ({
   readJournalFiles: (...args: any[]) => mockReadJournalFiles(...args),
+}))
+
+const mockListVisibleBackgroundOperations = vi.fn().mockReturnValue([])
+vi.mock("../../heart/mail-import-discovery", () => ({
+  listVisibleBackgroundOperations: (...args: any[]) => mockListVisibleBackgroundOperations(...args),
 }))
 
 const mockExistsSync = vi.fn().mockReturnValue(false)
@@ -189,8 +211,21 @@ describe("buildTurnContext", () => {
     mockReadActiveCares.mockReturnValue([])
     mockGetSyncConfig.mockReturnValue({ enabled: false, remote: "origin" })
     mockLoadConfig.mockReturnValue({ teams: {}, bluebubbles: {} })
+    mockReadRuntimeCredentialConfig.mockReturnValue({
+      ok: false,
+      reason: "missing",
+      itemPath: "vault:test-agent:runtime/config",
+      error: "missing runtime config",
+    })
+    mockReadMachineRuntimeCredentialConfig.mockReturnValue({
+      ok: false,
+      reason: "missing",
+      itemPath: "vault:test-agent:runtime/machines/<this-machine>/config",
+      error: "missing machine runtime config",
+    })
     mockReadHealth.mockReturnValue(null)
     mockReadJournalFiles.mockReturnValue([])
+    mockListVisibleBackgroundOperations.mockReturnValue([])
     mockReadInnerDialogRawData.mockReturnValue({
       pendingMessages: [],
       turns: [],
@@ -222,6 +257,7 @@ describe("buildTurnContext", () => {
     expect(ctx.pendingObligations).toEqual([])
     expect(ctx.codingSessions).toEqual([])
     expect(ctx.otherCodingSessions).toEqual([])
+    expect(ctx.backgroundOperations).toEqual([])
     expect(ctx.innerWorkState.status).toBe("idle")
     expect(ctx.innerWorkState.hasPending).toBe(false)
     expect(ctx.taskBoard.compact).toBe("")
@@ -253,6 +289,31 @@ describe("buildTurnContext", () => {
         }),
       }),
     )
+  })
+
+  it("includes visible background operations in the returned context", async () => {
+    mockListVisibleBackgroundOperations.mockReturnValue([
+      {
+        schemaVersion: 1,
+        id: "ambient_mail_import_ready",
+        agentName: "test-agent",
+        kind: "mail.import-discovered",
+        title: "mail import ready",
+        status: "queued",
+        summary: "recent MBOX archive ready for import",
+        createdAt: "2026-04-23T20:08:17.000Z",
+        updatedAt: "2026-04-23T20:08:17.000Z",
+      },
+    ])
+
+    const ctx = await buildTurnContext(makeInput())
+
+    expect(ctx.backgroundOperations).toEqual([
+      expect.objectContaining({
+        id: "ambient_mail_import_ready",
+        kind: "mail.import-discovered",
+      }),
+    ])
   })
 
   it("populates bridges from bridge manager", async () => {
@@ -426,11 +487,14 @@ describe("buildTurnContext", () => {
 
   it("detects configured senses from runtime config and enabled config", async () => {
     mockLoadAgentConfig.mockReturnValue({
-      senses: { cli: { enabled: true }, teams: { enabled: true }, bluebubbles: { enabled: true } },
+      senses: { cli: { enabled: true }, teams: { enabled: true }, bluebubbles: { enabled: true }, mail: { enabled: true }, voice: { enabled: true } },
     })
     mockLoadConfig.mockReturnValue({
       teams: { clientId: "cid", clientSecret: "csecret", tenantId: "tid" },
       bluebubbles: { serverUrl: "http://bb", password: "pass" },
+      mailroom: { mailboxAddress: "slugger@ouro.bot", privateKeys: { mail_slugger_primary: "secret" } },
+      integrations: { elevenLabsApiKey: "eleven-key", elevenLabsVoiceId: "voice_123" },
+      voice: { whisperCliPath: "/opt/whisper", whisperModelPath: "/models/ggml-base.bin" },
     })
 
     const ctx = await buildTurnContext(makeInput())
@@ -438,12 +502,132 @@ describe("buildTurnContext", () => {
       "- CLI: interactive",
       "- Teams: ready",
       "- BlueBubbles: ready",
+      "- Mail: ready",
+      "- Voice: ready",
+    ])
+  })
+
+  it("detects Voice as ready when the ElevenLabs voice id is stored in voice config", async () => {
+    mockLoadAgentConfig.mockReturnValue({
+      senses: { cli: { enabled: true }, teams: { enabled: false }, bluebubbles: { enabled: false }, mail: { enabled: false }, voice: { enabled: true } },
+    })
+    mockLoadConfig.mockReturnValue({
+      integrations: { elevenLabsApiKey: "eleven-key" },
+      voice: {
+        elevenLabsVoiceId: "voice_123",
+        whisperCliPath: "/opt/whisper",
+        whisperModelPath: "/models/ggml-base.bin",
+      },
+    })
+
+    const ctx = await buildTurnContext(makeInput())
+    expect(ctx.senseStatusLines).toEqual([
+      "- CLI: interactive",
+      "- Teams: disabled",
+      "- BlueBubbles: disabled",
+      "- Mail: disabled",
+      "- Voice: ready",
+    ])
+  })
+
+  it("detects Voice as ready when SIP-native phone voice is configured", async () => {
+    mockLoadAgentConfig.mockReturnValue({
+      senses: { cli: { enabled: true }, teams: { enabled: false }, bluebubbles: { enabled: false }, mail: { enabled: false }, voice: { enabled: true } },
+    })
+    mockLoadConfig.mockReturnValue({})
+    mockReadRuntimeCredentialConfig.mockReturnValue({
+      ok: true,
+      config: {
+        integrations: { openaiApiKey: "openai-key" },
+        voice: {
+          openaiSipProjectId: "proj_test",
+          openaiSipWebhookSecret: "whsec_test",
+        },
+      },
+      itemPath: "vault:test-agent:runtime/config",
+      updatedAt: new Date(0),
+    })
+    mockReadMachineRuntimeCredentialConfig.mockReturnValue({
+      ok: true,
+      config: {
+        voice: {
+          twilioConversationEngine: "openai-sip",
+          twilioPublicUrl: "https://voice.example.test",
+        },
+      },
+      itemPath: "vault:test-agent:runtime/machines/machine_test/config",
+      updatedAt: new Date(0),
+    })
+
+    const ctx = await buildTurnContext(makeInput())
+    expect(ctx.senseStatusLines).toEqual([
+      "- CLI: interactive",
+      "- Teams: disabled",
+      "- BlueBubbles: disabled",
+      "- Mail: disabled",
+      "- Voice: ready",
+    ])
+  })
+
+  it("detects mail from cached vault runtime credentials when local config is stale", async () => {
+    mockLoadAgentConfig.mockReturnValue({
+      senses: { cli: { enabled: true }, teams: { enabled: false }, bluebubbles: { enabled: false }, mail: { enabled: true } },
+    })
+    mockLoadConfig.mockReturnValue({})
+    mockReadRuntimeCredentialConfig.mockReturnValue({
+      ok: true,
+      itemPath: "vault:test-agent:runtime/config",
+      revision: "runtime_mail",
+      updatedAt: "2026-04-28T00:00:00.000Z",
+      config: {
+        mailroom: {
+          mailboxAddress: "slugger@ouro.bot",
+          privateKeys: { mail_slugger_primary: "secret" },
+        },
+      },
+    })
+
+    const ctx = await buildTurnContext(makeInput())
+    expect(ctx.senseStatusLines).toEqual([
+      "- CLI: interactive",
+      "- Teams: disabled",
+      "- BlueBubbles: disabled",
+      "- Mail: ready",
+      "- Voice: disabled",
+    ])
+  })
+
+  it("detects BlueBubbles from cached machine runtime credentials when local config is stale", async () => {
+    mockLoadAgentConfig.mockReturnValue({
+      senses: { cli: { enabled: true }, teams: { enabled: false }, bluebubbles: { enabled: true }, mail: { enabled: false } },
+    })
+    mockLoadConfig.mockReturnValue({})
+    mockReadMachineRuntimeCredentialConfig.mockReturnValue({
+      ok: true,
+      itemPath: "vault:test-agent:runtime/machines/test-machine/config",
+      revision: "runtime_bluebubbles",
+      updatedAt: "2026-04-28T00:00:00.000Z",
+      config: {
+        bluebubbles: {
+          serverUrl: "http://127.0.0.1:18789",
+          password: "secret",
+        },
+      },
+    })
+
+    const ctx = await buildTurnContext(makeInput())
+    expect(ctx.senseStatusLines).toEqual([
+      "- CLI: interactive",
+      "- Teams: disabled",
+      "- BlueBubbles: ready",
+      "- Mail: disabled",
+      "- Voice: disabled",
     ])
   })
 
   it("detects needs_config when senses enabled but runtime config is incomplete", async () => {
     mockLoadAgentConfig.mockReturnValue({
-      senses: { cli: { enabled: true }, teams: { enabled: true }, bluebubbles: { enabled: true } },
+      senses: { cli: { enabled: true }, teams: { enabled: true }, bluebubbles: { enabled: true }, mail: { enabled: true }, voice: { enabled: true } },
     })
     mockLoadConfig.mockReturnValue({ teams: {}, bluebubbles: {} })
 
@@ -452,6 +636,8 @@ describe("buildTurnContext", () => {
       "- CLI: interactive",
       "- Teams: needs_config",
       "- BlueBubbles: not_attached",
+      "- Mail: needs_config",
+      "- Voice: needs_config",
     ])
   })
 
@@ -463,6 +649,8 @@ describe("buildTurnContext", () => {
       "- CLI: interactive",
       "- Teams: disabled",
       "- BlueBubbles: disabled",
+      "- Mail: disabled",
+      "- Voice: disabled",
     ])
   })
 

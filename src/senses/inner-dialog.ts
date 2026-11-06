@@ -35,6 +35,7 @@ import { sendProactiveBlueBubblesMessageToSession } from "./bluebubbles"
 import { buildHabitTurnMessage } from "./habit-turn-message"
 import { indexJournalFiles } from "../mind/journal-index"
 import { parseHabitFile } from "../heart/habits/habit-parser"
+import { applyHabitRuntimeState } from "../heart/habits/habit-runtime-state"
 import { parseCadenceToMs } from "../heart/daemon/cadence"
 import { readHealth, getDefaultHealthPath } from "../heart/daemon/daemon-health"
 
@@ -198,20 +199,19 @@ export function deriveResumeCheckpoint(messages: OpenAI.ChatCompletionMessagePar
   const assistantText = contentToText(lastAssistant.content)
   if (!assistantText) return "no prior checkpoint recorded"
 
-  const explicitCheckpoint = assistantText
+  const cleanedLines = assistantText
     .split("\n")
-    .map((line) => line.trim())
+    .map((line) => line.replace(/<\/?think>/gi, "").trim())
+    .filter((line) => line.length > 0)
+
+  const explicitCheckpoint = cleanedLines
     .find((line) => /^checkpoint\s*:/i.test(line))
   if (explicitCheckpoint) {
     const parsed = explicitCheckpoint.replace(/^checkpoint\s*:\s*/i, "").trim()
     return parsed || "no prior checkpoint recorded"
   }
 
-  const firstLine = assistantText
-    .split("\n")
-    .map((line) => line.trim())
-    .find((line) => line.length > 0)
-  /* v8 ignore next -- unreachable: contentToText().trim() guarantees a non-empty line @preserve */
+  const firstLine = cleanedLines[0]
   if (!firstLine) return "no prior checkpoint recorded"
   if (firstLine.length <= 220) return firstLine
   return `${firstLine.slice(0, 217)}...`
@@ -545,7 +545,7 @@ function buildAlsoDueLine(agentRoot: string, currentHabitName: string, now: () =
 
     try {
       const content = fs.readFileSync(path.join(habitsDir, file), "utf-8")
-      const habit = parseHabitFile(content, path.join(habitsDir, file))
+      const habit = applyHabitRuntimeState(agentRoot, parseHabitFile(content, path.join(habitsDir, file)))
       if (habit.status !== "active" || !habit.cadence) continue
 
       const cadenceMs = parseCadenceToMs(habit.cadence)
@@ -624,7 +624,7 @@ export async function runInnerDialogTurn(options?: RunInnerDialogTurnOptions): P
       let habitLastRun: string | null = null
       try {
         const habitContent = fs.readFileSync(habitFilePath, "utf-8")
-        const parsed = parseHabitFile(habitContent, habitFilePath)
+        const parsed = applyHabitRuntimeState(agentRoot, parseHabitFile(habitContent, habitFilePath))
         habitBody = parsed.body || undefined
         habitTitle = parsed.title || habitName
         habitLastRun = parsed.lastRun

@@ -2,6 +2,16 @@ import { spawn as nodeSpawn, type ChildProcess } from "child_process"
 import * as path from "path"
 import { getRepoRoot } from "../identity"
 import { emitNervesEvent } from "../../nerves/runtime"
+import type { RuntimeCredentialBootstrapMessage, RuntimeCredentialConfig } from "../runtime-credentials"
+import type { ProviderCredentialRecord } from "../provider-credentials"
+
+export interface RuntimeCredentialBootstrap {
+  agentName: string
+  runtimeConfig?: RuntimeCredentialConfig
+  machineRuntimeConfig?: RuntimeCredentialConfig
+  machineId?: string
+  providerCredentialRecords?: ProviderCredentialRecord[]
+}
 
 export interface DaemonManagedAgent {
   name: string
@@ -11,6 +21,7 @@ export interface DaemonManagedAgent {
   autoStart: boolean
   args?: string[]
   env?: Record<string, string>
+  getRuntimeCredentialBootstrap?: () => RuntimeCredentialBootstrap | null
 }
 
 export interface DaemonAgentSnapshot {
@@ -43,6 +54,7 @@ export interface DaemonProcessManagerOptions {
   maxBackoffMs?: number
   cooldownRecoveryMs?: number
   maxCooldownRetries?: number
+  startupStaleAfterMs?: number
   spawn?: (command: string, args: string[], options: Record<string, unknown>) => ChildProcess
   now?: () => number
   setTimeoutFn?: (cb: () => void, delay: number) => unknown
@@ -64,6 +76,9 @@ interface AgentRuntimeState {
   config: DaemonManagedAgent
   snapshot: DaemonAgentSnapshot
   process: ChildProcess | null
+  startInFlight: boolean
+  startAttemptedAtMs: number | null
+  startAttemptId: number
   restartTimer: unknown | null
   crashTimestamps: number[]
   stopRequested: boolean
@@ -88,6 +103,7 @@ export class DaemonProcessManager {
   private readonly clearTimeoutFn: (timer: unknown) => void
   private readonly cooldownRecoveryMs: number
   private readonly maxCooldownRetries: number
+  private readonly startupStaleAfterMs: number
   private readonly existsSyncFn: ((p: string) => boolean) | null
   private readonly configCheckFn: ((agent: string) => { ok: boolean; error?: string; fix?: string; skip?: boolean } | Promise<{ ok: boolean; error?: string; fix?: string; skip?: boolean }>) | null
   private readonly statusWriterFn: (text: string) => void
@@ -133,6 +149,38 @@ export class DaemonProcessManager {
     }
   }
 
+  private currentTimeMs(): number {
+    const value = this.now()
+    return Number.isFinite(value) ? value : Date.now()
+  }
+
+  private isStartAttemptCurrent(state: AgentRuntimeState, attemptId: number): boolean {
+    return state.startAttemptId === attemptId
+  }
+
+  private markConfigCheckFailed(
+    state: AgentRuntimeState,
+    errorReason: string,
+    fixHint: string | null,
+  ): void {
+    const agent = state.config.name
+    state.snapshot.status = "crashed"
+    state.snapshot.errorReason = errorReason
+    state.snapshot.fixHint = fixHint
+    emitNervesEvent({
+      level: "error",
+      component: "daemon",
+      event: "daemon.agent_config_invalid",
+      message: errorReason,
+      meta: { agent, fix: fixHint },
+    })
+    this.writeStatus(agent,
+      `[daemon] ${agent}: ${errorReason}\n` +
+      (fixHint ? `  Fix: ${fixHint}\n` : ""),
+    )
+    this.notifySnapshotChange(state.snapshot)
+  }
+
   constructor(options: DaemonProcessManagerOptions) {
     this.maxRestartsPerHour = options.maxRestartsPerHour ?? 10
     this.stabilityThresholdMs = options.stabilityThresholdMs ?? 60_000
@@ -140,6 +188,7 @@ export class DaemonProcessManager {
     this.maxBackoffMs = options.maxBackoffMs ?? 60_000
     this.cooldownRecoveryMs = options.cooldownRecoveryMs ?? 5 * 60 * 1_000
     this.maxCooldownRetries = options.maxCooldownRetries ?? 3
+    this.startupStaleAfterMs = options.startupStaleAfterMs ?? 45_000
     this.spawnFn = options.spawn ?? ((command, args, spawnOptions) => nodeSpawn(command, args, spawnOptions))
     this.now = options.now ?? (() => Date.now())
     this.setTimeoutFn = options.setTimeoutFn ?? ((cb, delay) => setTimeout(cb, delay))
@@ -155,6 +204,9 @@ export class DaemonProcessManager {
       this.agents.set(agent.name, {
         config: agent,
         process: null,
+        startInFlight: false,
+        startAttemptedAtMs: null,
+        startAttemptId: 0,
         restartTimer: null,
         crashTimestamps: [],
         stopRequested: false,
@@ -187,117 +239,204 @@ export class DaemonProcessManager {
     }
   }
 
+  triggerAutoStartAgents(): void {
+    for (const state of this.agents.values()) {
+      if (!state.config.autoStart) continue
+      void this.startAgent(state.config.name).catch((error) => {
+        const errorReason = error instanceof Error ? error.message : String(error)
+        this.markConfigCheckFailed(
+          state,
+          `agent startup threw before the worker could run: ${errorReason}`,
+          "Run 'ouro doctor' for diagnostics, then retry 'ouro up'.",
+        )
+      })
+    }
+  }
+
   async startAgent(agent: string): Promise<void> {
     const state = this.requireAgent(agent)
-    if (state.process) return
+    if (state.process || state.startInFlight) return
 
-    this.clearRestartTimer(state)
-    state.stopRequested = false
-    state.snapshot.status = "starting"
+    const attemptId = state.startAttemptId + 1
+    state.startAttemptId = attemptId
+    state.startInFlight = true
+    state.startAttemptedAtMs = this.currentTimeMs()
+    try {
+      this.clearRestartTimer(state)
+      state.stopRequested = false
+      state.snapshot.status = "starting"
 
-    if (this.configCheckFn) {
-      const result = await this.configCheckFn(agent)
-      if (result.skip) {
-        state.snapshot.status = "stopped"
+      if (this.configCheckFn) {
+        let result: { ok: boolean; error?: string; fix?: string; skip?: boolean }
+        try {
+          result = await this.configCheckFn(agent)
+        } catch (error) {
+          const errorReason = error instanceof Error ? error.message : String(error)
+          this.markConfigCheckFailed(
+            state,
+            `agent config validation threw: ${errorReason}`,
+            "Run 'ouro doctor' for diagnostics, then retry 'ouro up'.",
+          )
+          return
+        }
+        if (!this.isStartAttemptCurrent(state, attemptId)) return
+        if (state.stopRequested) {
+          state.snapshot.status = "stopped"
+          state.snapshot.pid = null
+          this.notifySnapshotChange(state.snapshot)
+          return
+        }
+        if (result.skip) {
+          state.snapshot.status = "stopped"
+          state.snapshot.errorReason = null
+          state.snapshot.fixHint = null
+          emitNervesEvent({
+            component: "daemon",
+            event: "daemon.agent_config_skipped",
+            message: result.error ?? "agent start skipped by config check",
+            meta: { agent, fix: result.fix ?? null },
+          })
+          this.notifySnapshotChange(state.snapshot)
+          return
+        }
+        if (!result.ok) {
+          this.markConfigCheckFailed(
+            state,
+            result.error ?? "agent config validation failed",
+            result.fix ?? null,
+          )
+          return
+        }
+        /* v8 ignore next -- defensive duplicate stale-start guard before spawn preparation @preserve */
+        if (!this.isStartAttemptCurrent(state, attemptId)) return
+        // Config check passed — clear any prior error so the pulse stops
+        // reporting the broken state. This is the recovery path: the user
+        // fixed their secrets/config, the next startAgent attempt sees a
+        // valid config, and the pulse goes quiet.
         state.snapshot.errorReason = null
         state.snapshot.fixHint = null
-        emitNervesEvent({
-          component: "daemon",
-          event: "daemon.agent_config_skipped",
-          message: result.error ?? "agent start skipped by config check",
-          meta: { agent, fix: result.fix ?? null },
-        })
-        this.notifySnapshotChange(state.snapshot)
-        return
       }
-      if (!result.ok) {
+
+      const runCwd = getRepoRoot()
+      const entryScript = path.join(getRepoRoot(), "dist", state.config.entry)
+
+      if (this.existsSyncFn && !this.existsSyncFn(entryScript)) {
         state.snapshot.status = "crashed"
-        // Surface the error and fix to the snapshot so sibling agents can
-        // read it via the pulse. Without this, the diagnosis stayed
-        // trapped in the nerves event and stderr — visible to humans
-        // running `ouro status` or grepping logs, but invisible to
-        // peer agents trying to coordinate around the broken state.
-        state.snapshot.errorReason = result.error ?? "agent config validation failed"
-        state.snapshot.fixHint = result.fix ?? null
         emitNervesEvent({
           level: "error",
           component: "daemon",
-          event: "daemon.agent_config_invalid",
-          message: result.error ?? "agent config validation failed",
-          meta: { agent, fix: result.fix ?? null },
+          event: "daemon.agent_entry_missing",
+          message: "agent entry script does not exist — cannot spawn. Run 'ouro daemon install' from the correct location.",
+          meta: { agent, entryScript },
         })
-        this.writeStatus(agent,
-          `[daemon] ${agent}: ${result.error}\n` +
-          (result.fix ? `  Fix: ${result.fix}\n` : ""),
-        )
         this.notifySnapshotChange(state.snapshot)
         return
       }
-      // Config check passed — clear any prior error so the pulse stops
-      // reporting the broken state. This is the recovery path: the user
-      // fixed their secrets/config, the next startAgent attempt sees a
-      // valid config, and the pulse goes quiet.
-      state.snapshot.errorReason = null
-      state.snapshot.fixHint = null
-    }
 
-    const runCwd = getRepoRoot()
-    const entryScript = path.join(getRepoRoot(), "dist", state.config.entry)
+      /* v8 ignore next -- defensive duplicate stale-start guard immediately before spawn @preserve */
+      if (!this.isStartAttemptCurrent(state, attemptId)) return
+      if (state.stopRequested) {
+        state.snapshot.status = "stopped"
+        state.snapshot.pid = null
+        this.notifySnapshotChange(state.snapshot)
+        return
+      }
 
-    if (this.existsSyncFn && !this.existsSyncFn(entryScript)) {
-      state.snapshot.status = "crashed"
+      const args = [entryScript, "--agent", state.config.agentArg ?? agent, ...(state.config.args ?? [])]
+      const child = this.spawnFn("node", args, {
+        cwd: runCwd,
+        env: state.config.env ? { ...process.env, ...state.config.env } : process.env,
+        stdio: ["ignore", "ignore", "ignore", "ipc"],
+      })
+
+      /* v8 ignore next 7 -- defensive: spawn should always return a ChildProcess @preserve */
+      if (!child) {
+        state.snapshot.status = "crashed"
+        emitNervesEvent({ level: "error", component: "daemon", event: "daemon.agent_spawn_failed", message: "spawn returned null", meta: { agent } })
+        return
+      }
+      if (!this.isStartAttemptCurrent(state, attemptId)) {
+        try {
+          child.kill("SIGTERM")
+        } catch {
+          emitNervesEvent({
+            level: "warn",
+            component: "daemon",
+            event: "daemon.agent_stop_error",
+            message: "failed to stop stale managed agent startup",
+            meta: { agent },
+          })
+        }
+        return
+      }
+      state.process = child
+      state.snapshot.status = "running"
+      state.snapshot.pid = child.pid ?? null
+      state.snapshot.startedAt = new Date(this.currentTimeMs()).toISOString()
+
+      const bootstrap = state.config.getRuntimeCredentialBootstrap?.() ?? null
+      if (bootstrap) {
+        const message: RuntimeCredentialBootstrapMessage = {
+          type: "ouro.runtimeCredentialBootstrap",
+          agentName: bootstrap.agentName,
+        }
+        if (bootstrap.runtimeConfig) message.runtimeConfig = bootstrap.runtimeConfig
+        if (bootstrap.machineRuntimeConfig) message.machineRuntimeConfig = bootstrap.machineRuntimeConfig
+        if (bootstrap.machineId) message.machineId = bootstrap.machineId
+        if (bootstrap.providerCredentialRecords) message.providerCredentialRecords = bootstrap.providerCredentialRecords
+        try {
+          child.send?.(message)
+          emitNervesEvent({
+            component: "daemon",
+            event: "daemon.agent_runtime_credentials_bootstrap_sent",
+            message: "sent runtime credential bootstrap to managed agent process",
+            meta: {
+              agent,
+              runtimeConfig: !!bootstrap.runtimeConfig,
+              machineRuntimeConfig: !!bootstrap.machineRuntimeConfig,
+              providerCredentialRecords: bootstrap.providerCredentialRecords?.length ?? 0,
+            },
+          })
+        } catch (error) {
+          emitNervesEvent({
+            level: "warn",
+            component: "daemon",
+            event: "daemon.agent_ipc_send_error",
+            message: "failed to send runtime credential bootstrap to managed agent process",
+            meta: { agent, error: error instanceof Error ? error.message : String(error) },
+          })
+        }
+      }
+
       emitNervesEvent({
-        level: "error",
         component: "daemon",
-        event: "daemon.agent_entry_missing",
-        message: "agent entry script does not exist — cannot spawn. Run 'ouro daemon install' from the correct location.",
-        meta: { agent, entryScript },
+        event: "daemon.agent_started",
+        message: "daemon started managed agent process",
+        meta: { agent, pid: child.pid ?? null, cwd: runCwd },
       })
       this.notifySnapshotChange(state.snapshot)
-      return
-    }
 
-    const args = [entryScript, "--agent", state.config.agentArg ?? agent, ...(state.config.args ?? [])]
-    const child = this.spawnFn("node", args, {
-      cwd: runCwd,
-      env: state.config.env ? { ...process.env, ...state.config.env } : process.env,
-      stdio: ["ignore", "ignore", "ignore", "ipc"],
-    })
-
-    /* v8 ignore next 7 -- defensive: spawn should always return a ChildProcess @preserve */
-    if (!child) {
-      state.snapshot.status = "crashed"
-      emitNervesEvent({ level: "error", component: "daemon", event: "daemon.agent_spawn_failed", message: "spawn returned null", meta: { agent } })
-      return
-    }
-    state.process = child
-    state.snapshot.status = "running"
-    state.snapshot.pid = child.pid ?? null
-    state.snapshot.startedAt = new Date(this.now()).toISOString()
-
-    emitNervesEvent({
-      component: "daemon",
-      event: "daemon.agent_started",
-      message: "daemon started managed agent process",
-      meta: { agent, pid: child.pid ?? null, cwd: runCwd },
-    })
-    this.notifySnapshotChange(state.snapshot)
-
-    /* v8 ignore start — child process error handler; requires real spawn to trigger */
-    child.on("error", (err) => {
-      emitNervesEvent({
-        level: "warn",
-        component: "daemon",
-        event: "daemon.agent_process_error",
-        message: "managed agent process emitted error",
-        meta: { agent, error: err.message },
+      /* v8 ignore start — child process error handler; requires real spawn to trigger */
+      child.on("error", (err) => {
+        emitNervesEvent({
+          level: "warn",
+          component: "daemon",
+          event: "daemon.agent_process_error",
+          message: "managed agent process emitted error",
+          meta: { agent, error: err.message },
+        })
       })
-    })
-    /* v8 ignore stop */
+      /* v8 ignore stop */
 
-    child.once("exit", (code, signal) => {
-      this.onExit(state, code, signal)
-    })
+      child.once("exit", (code, signal) => {
+        this.onExit(state, code, signal)
+      })
+    } finally {
+      if (this.isStartAttemptCurrent(state, attemptId)) {
+        state.startInFlight = false
+        state.startAttemptedAtMs = null
+      }
+    }
   }
 
   async stopAgent(agent: string): Promise<void> {
@@ -333,6 +472,31 @@ export class DaemonProcessManager {
   }
 
   async restartAgent(agent: string): Promise<void> {
+    const state = this.requireAgent(agent)
+    if (state.startInFlight && !state.process) {
+      const startedAt = state.startAttemptedAtMs
+      /* v8 ignore next -- defensive: startInFlight always records a start timestamp @preserve */
+      const elapsedMs = startedAt === null ? 0 : this.currentTimeMs() - startedAt
+      if (elapsedMs < this.startupStaleAfterMs) {
+        emitNervesEvent({
+          component: "daemon",
+          event: "daemon.agent_restart_deferred",
+          message: "managed agent restart skipped while startup is already in flight",
+          meta: { agent, elapsedMs, startupStaleAfterMs: this.startupStaleAfterMs },
+        })
+        return
+      }
+      emitNervesEvent({
+        level: "warn",
+        component: "daemon",
+        event: "daemon.agent_startup_stale_recovered",
+        message: "managed agent startup was stale; clearing the pending attempt before restart",
+        meta: { agent, elapsedMs, startupStaleAfterMs: this.startupStaleAfterMs },
+      })
+      state.startAttemptId += 1
+      state.startInFlight = false
+      state.startAttemptedAtMs = null
+    }
     await this.stopAgent(agent)
     await this.startAgent(agent)
   }
@@ -370,12 +534,14 @@ export class DaemonProcessManager {
   private onExit(state: AgentRuntimeState, code: number | null, signal: NodeJS.Signals | null): void {
     if (!state.process) return
     state.process = null
+    state.startInFlight = false
+    state.startAttemptedAtMs = null
     state.snapshot.pid = null
     state.snapshot.lastExitCode = code
     state.snapshot.lastSignal = signal
 
     const crashed = !state.stopRequested && code !== 0
-    const now = this.now()
+    const now = this.currentTimeMs()
     const startedAt = state.snapshot.startedAt ? Date.parse(state.snapshot.startedAt) : now
     const runDuration = Math.max(0, now - startedAt)
 

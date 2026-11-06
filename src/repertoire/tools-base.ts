@@ -19,8 +19,10 @@ import { userProfileToolDefinitions } from "./tools-user-profile";
 import { stripeToolDefinitions } from "./tools-stripe";
 import { flightToolDefinitions } from "./tools-flight";
 import { attachmentToolDefinitions } from "./tools-attachments";
+import { mailToolDefinitions } from "./tools-mail"
+import { tripToolDefinitions } from "./tools-trip"
 // Re-export flow tools for consumers that import them from tools-base
-export { ponderTool, observeTool, settleTool, restTool } from "./tools-flow";
+export { ponderTool, observeTool, settleTool, restTool, speakTool } from "./tools-flow";
 
 // Re-export renderInnerProgressStatus for consumers
 export { renderInnerProgressStatus } from "./tools-session";
@@ -36,6 +38,26 @@ export type BlueBubblesReplyTargetSelection =
 
 export interface BlueBubblesReplyTargetController {
   setSelection: (selection: BlueBubblesReplyTargetSelection) => string;
+}
+
+export interface VoiceCallAudioRequest {
+  source?: "tone" | "url" | "file";
+  url?: string;
+  path?: string;
+  label?: string;
+  toneHz?: number;
+  durationMs?: number;
+}
+
+export interface VoiceCallAudioResult {
+  label: string;
+  durationMs: number;
+  toolResult?: string;
+}
+
+export interface VoiceCallControl {
+  requestEnd: (reason?: string) => Promise<void> | void;
+  playAudio?: (request: VoiceCallAudioRequest) => Promise<VoiceCallAudioResult> | VoiceCallAudioResult;
 }
 
 export interface ToolContext {
@@ -62,6 +84,7 @@ export interface ToolContext {
   supportedReasoningEfforts?: readonly string[];
   setReasoningEffort?: (level: string) => void;
   delegatedOrigins?: import("../arc/attention-types").AttentionItem[];
+  voiceCall?: VoiceCallControl;
 }
 
 export type ToolHandler = (args: Record<string, string>, ctx?: ToolContext) => string | Promise<string>;
@@ -98,9 +121,10 @@ export const baseToolDefinitions: ToolDefinition[] = [
   ...stripeToolDefinitions,
   ...flightToolDefinitions,
   ...attachmentToolDefinitions,
+  ...mailToolDefinitions,
+  ...tripToolDefinitions,
 ];
 
 // Convenience array of just the tool schemas (no handler/integration metadata).
 // Used by consumers that need the OpenAI function-tool format.
 export const tools: OpenAI.ChatCompletionFunctionTool[] = baseToolDefinitions.map((d) => d.tool);
-
