@@ -31,7 +31,8 @@ describe("report_failure tool", () => {
   it("tells the model to file at once when asked for something it cannot do, never to ask permission first", () => {
     const description = reportFailureToolDefinition.tool.function.description
     expect(description).toMatch(/file it right away/i)
-    expect(description).toMatch(/do not ask his permission before filing/i)
+    expect(description).toMatch(/file it at once and ask him for nothing/i)
+    expect(description).not.toMatch(/permission/i)
   })
 
   it("needs an agent runtime", async () => {

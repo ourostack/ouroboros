@@ -1960,7 +1960,7 @@ const TOOL_LIST = [
   {
     name: "media_search",
     annotations: { readOnlyHint: true },
-    description: "Search or browse the household media catalogue. Use `query` for a title lookup: partial and misspelled titles are matched against the library first (Sonarr, Radarr, Jellyfin) and returned as `library_matches` with their kind and service id, and when nothing in the library matches, `lookup_candidates` (TVDB/TMDB) cover titles not in the library. Never say a title does not exist without reading both; use `genres`/`keywords`/`year_range` to browse by vibe (e.g. keywords ['autumn','thanksgiving'] for cozy fall films). `on_shelf: true` restricts to what is already downloaded, `false` to what is not, omit for both. Every item says whether it is on the shelf and carries its tmdb_id so a follow-up media_request needs no second lookup.",
+    description: "Search or browse the household media catalogue. Use `query` for a title lookup: partial and misspelled titles are matched against the library first (Sonarr, Radarr, Jellyfin) and returned as `library_matches` with their kind and service id, and when nothing in the library matches, `lookup_candidates` (TVDB/TMDB) cover titles not in the library. Whether a title is on the shelf, or does not exist, comes only from a lookup made this turn, never from memory or an earlier reply; never say a title does not exist without reading both. Use `genres`/`keywords`/`year_range` to browse by mood (e.g. keywords ['autumn','thanksgiving'] for cozy fall films). `on_shelf: true` restricts to what is already downloaded, `false` to what is not, omit for both. Every item says whether it is on the shelf and carries its tmdb_id so a follow-up media_request needs no second lookup.",
     inputSchema: { type: "object", properties: {
       query: { type: "string", description: "Title or free text. Omit to browse by filters." },
       kind: { type: "string", enum: ["movie", "series", "any"], description: "Default any." },
@@ -1974,7 +1974,7 @@ const TOOL_LIST = [
   },
   {
     name: "media_request",
-    description: "Request a film or series so it gets downloaded. Give tmdb_id when known (from media_search), otherwise title plus optional year. Idempotent: if it was already requested you get approval_state 'already_requested' and duplicate_of, never a duplicate. Returns the downstream sonarr_id/radarr_id so media_request_status needs no re-resolution.",
+    description: "Request a film or series so it gets downloaded. Give tmdb_id when known (from media_search), otherwise title plus optional year. Idempotent: if it was already requested you get approval_state 'already_requested' and duplicate_of, never a duplicate. Returns the downstream sonarr_id/radarr_id so media_request_status needs no re-resolution. The owner asking is the request: call this and say what happened. Never send anyone to Jellyseerr or another screen to ask for it themselves.",
     inputSchema: { type: "object", properties: {
       tmdb_id: { type: "number" },
       title: { type: "string" },
@@ -1995,7 +1995,7 @@ const TOOL_LIST = [
   },
   {
     name: "media_diagnose_and_fix",
-    description: "Act on a stuck request. Omit `action` to apply the fix that media_request_status already identified, including 'blocklist_and_research' for a release that has stalled at zero bytes. Refuses to act (result 'rejected_fix_unsafe') when the acquisition chain itself is down, because re-searching cannot help then. Use dry_run to preview.",
+    description: "Act on a stuck request. Omit `action` to apply the fix that media_request_status already identified, including 'blocklist_and_research' for a release that has stalled at zero bytes. Returns 'rejected_fix_unsafe' without acting when the acquisition chain itself is down, because re-searching does nothing then. Use dry_run to preview.",
     inputSchema: { type: "object", properties: {
       request_id: { type: "string" }, tmdb_id: { type: "number" }, title: { type: "string" },
       action: { type: "string", enum: ["rescan", "enable_monitoring", "force_import_scan", "blocklist_and_research", "report_only"] },
@@ -2005,7 +2005,7 @@ const TOOL_LIST = [
   {
     name: "media_chain_health",
     annotations: { readOnlyHint: true },
-    description: "Health of the whole acquisition chain: Prowlarr indexers, their failure state, and whether Prowlarr is syncing to Sonarr/Radarr. Call this when several things are stuck at once, or before telling anyone a specific title is the problem — a dead chain blocks everything and is the single most likely cause.",
+    description: "Health of the whole acquisition chain: Prowlarr indexers, their failure state, and whether Prowlarr is syncing to Sonarr/Radarr. Call this when several things are stuck at once, or before telling anyone a specific title is the problem — a dead chain blocks everything and is the single most likely cause. An empty queue is not evidence that all is well; check the chain before blaming a title or the indexer provider's credit.",
     inputSchema: { type: "object", properties: {} },
   },
   {
@@ -2017,7 +2017,7 @@ const TOOL_LIST = [
   },
   {
     name: "media_queue",
-    description: "Read-only view of the Sonarr/Radarr download queue, torrent and usenet alike: for each row the title, status, trackedDownloadState, percent, timeleft, size left, download client and whether it is stalled. Use this to see whether a series or movie download is progressing (this is the tool for torrent downloads; sanctuary_get_download_queue only sees the usenet/SABnzbd queue). Give service_id, tmdb_id or title for one item, or omit them for the whole queue of that kind. It grabs, removes and blocklists nothing. Seeders and peers are not reported by Sonarr/Radarr; use media_indexer_search for a release's seeders.",
+    description: "Read-only view of the Sonarr/Radarr download queue, torrent and usenet alike: for each row the title, status, trackedDownloadState, percent, timeleft, size left, download client and whether it is stalled. Use this to see whether a series or movie download is progressing (this is the tool for torrent downloads; sanctuary_get_download_queue only sees the usenet/SABnzbd queue). Give service_id, tmdb_id or title for one item, or omit them for the whole queue of that kind. It grabs, removes and blocklists nothing. Seeders and peers are not reported by Sonarr/Radarr; use media_indexer_search for a release's seeders. While a watched download is still alive, answer each ticking check with resolve_await verdict 'no' until media_fill_missing reports goal_met.",
     inputSchema: { type: "object", properties: {
       kind: { type: "string", enum: ["series", "movie"] },
       service_id: { type: "number", description: "Sonarr series id or Radarr movie id." },
@@ -2049,7 +2049,7 @@ const TOOL_LIST = [
   {
     name: "media_fill_missing",
     _meta: { [TIMEOUT_META_KEY]: 240_000 },
-    description: "Get a series' missing episodes, start to finish, in one call. Use this first whenever the owner asks why episodes are missing or asks to get them. It re-reads Sonarr, finds the monitored aired episodes without files, searches the indexers, matches releases to episodes by episode title and air year as well as Sonarr's parse (so streaming-volume numbering cannot fool it), prefers seeded releases, skips packs of episodes already on the shelf, grabs with the right episode mapping, imports finished downloads by title, and replaces a stalled download when a usable alternative exists. Returns on_shelf, in_flight, not_found, actions, indexer_evidence, summary and next_step. Safe to call again: it never grabs what is already in flight. When goal_met is true, stop. Report summary and next_step as they are; do not redo its steps by hand.",
+    description: "Get a series' missing episodes, start to finish, in one call. Use this first whenever the owner asks why episodes are missing or asks to get them. It re-reads Sonarr, finds the monitored aired episodes without files, searches the indexers, matches releases to episodes by episode title and air year as well as Sonarr's parse (so streaming-volume numbering cannot fool it), prefers seeded releases, skips packs of episodes already on the shelf, grabs with the right episode mapping, imports finished downloads by title, and replaces a stalled download when a usable alternative exists. Returns on_shelf, in_flight, not_found, actions, indexer_evidence, summary and next_step. Safe to call again: it never grabs what is already in flight. When goal_met is true, stop. Relay summary and follow next_step as they are; do not redo its steps by hand. Never offer to clear, cancel or blocklist a stalled download it chose to keep. When the owner says yes to more, call it again. When blocklisted_matches comes back, offer retry_blocklisted.",
     inputSchema: { type: "object", properties: {
       series: { type: "string", description: "Series title as the owner said it." },
       service_id: { type: "number", description: "Sonarr series id, when known." },
@@ -2060,7 +2060,7 @@ const TOOL_LIST = [
   {
     name: "media_episodes",
     annotations: { readOnlyHint: true },
-    description: "List a Sonarr series' episodes (optionally one season): episode_id, SxxEyy code, scene_code (the numbering release names use, when Sonarr has a mapping), title, air date, has_file. Use it to see what the TVDB numbering calls each episode before searching for releases by hand.",
+    description: "List a Sonarr series' episodes (optionally one season): episode_id, SxxEyy code, scene_code (the numbering release names use, when Sonarr has a mapping), title, air date, has_file. Use it to see what the TVDB numbering calls each episode before searching for releases by hand. Episode state comes from this tool this turn, not from an earlier reply.",
     inputSchema: { type: "object", properties: {
       service_id: { type: "number", description: "Sonarr series id." },
       season_number: { type: "number" },
@@ -2080,7 +2080,7 @@ const TOOL_LIST = [
     name: "media_release_search",
     annotations: { readOnlyHint: true },
     _meta: { [TIMEOUT_META_KEY]: 240_000 },
-    description: "Interactive release search for a series or movie already in the library: what the indexers offer and how Sonarr/Radarr parsed each release (full_season, parsed_season, parsed_episodes, mapped_episodes), whether it is rejected and why, and whether it is blocklisted. Series: give season_number or episode_ids. Can take a minute or more. `query` filters returned titles. Use it when the automatic search found nothing, then grab with media_release_grab.",
+    description: "Interactive release search for a series or movie already in the library: what the indexers offer and how Sonarr/Radarr parsed each release (full_season, parsed_season, parsed_episodes, mapped_episodes), whether it is rejected and why, and whether it is blocklisted. Series: give season_number or episode_ids. Can take a minute or more. `query` filters returned titles. Use it when the automatic search found nothing: compare each release title with its parse, the scene_code from media_episodes and the blocklist, then grab with media_release_grab.",
     inputSchema: { type: "object", properties: {
       kind: { type: "string", enum: ["series", "movie"] },
       service_id: { type: "number", description: "Sonarr series id or Radarr movie id." },
@@ -2092,7 +2092,7 @@ const TOOL_LIST = [
   },
   {
     name: "media_release_grab",
-    description: "Grab one release from the last media_release_search by guid and indexer_id. For a release Sonarr mis-parsed (streaming numbering vs TVDB), pass series_id plus episode_ids to override the mapping; episode_ids must belong to the series. Without episode_ids, a season pack that Sonarr parsed as a different season than season_number is refused ('season_pack_mismatch'). Returns the exact request sent and Sonarr's answer.",
+    description: "Grab one release from the last media_release_search by guid and indexer_id. For a release Sonarr mis-parsed (streaming numbering vs TVDB), pass series_id plus episode_ids to override the mapping; episode_ids must belong to the series. Without episode_ids, a season pack that Sonarr parsed as a different season than season_number returns 'season_pack_mismatch'. A release with zero seeders may still be grabbed; say plainly that it will not download until it has seeders. Returns the exact request sent and Sonarr's answer.",
     inputSchema: { type: "object", properties: {
       kind: { type: "string", enum: ["series", "movie"] },
       guid: { type: "string" },
@@ -2114,7 +2114,7 @@ const TOOL_LIST = [
   },
   {
     name: "media_quality_profile",
-    description: "Read and change the Radarr/Sonarr quality profiles that decide whether a better release may replace a file ('Quality Profile does not allow upgrades'). This is a normal API, never a settings screen the owner has to click through. action read (default) lists the profiles for the kind with their cutoff, upgrade flag and ordered qualities, or one profile with profile_id; add service_id to also see which profile a movie or series is on. action set_upgrade changes upgrade_allowed and/or the cutoff (a quality id from the profile, or cutoff_name) of profile_id. action assign puts the movie or series service_id on profile_id. Both writes are a dry run that shows before and after and changes nothing until dry_run is false; a change to a shared profile affects every title on it, so prefer assign to move one title when the owner asked about one title. Applying needs owner_words, the owner's exact words asking for the change, and only the owner can apply; every applied change is written to an audit log. After an applied change, call media_search_now so the upgrade is searched for.",
+    description: "Read and change the Radarr/Sonarr quality profiles that decide whether a better release may replace a file ('Quality Profile does not allow upgrades'). This is a normal API, never a settings screen the owner has to click through. action read (default) lists the profiles for the kind with their cutoff, upgrade flag and ordered qualities, or one profile with profile_id; add service_id to also see which profile a movie or series is on. action set_upgrade changes upgrade_allowed and/or the cutoff (a quality id from the profile, or cutoff_name) of profile_id. action assign puts the movie or series service_id on profile_id. Both writes are a dry run that shows before and after and changes nothing until dry_run is false; a change to a shared profile affects every title on it, so prefer assign to move one title when the owner asked about one title, and tell the owner the before and after in one line. Applying needs owner_words, the owner's exact words asking for the change, and only the owner can apply; every applied change is written to an audit log. After an applied change, call media_search_now so the upgrade is searched for.",
     inputSchema: { type: "object", properties: {
       kind: { type: "string", enum: ["movie", "series"], description: "movie = Radarr, series = Sonarr." },
       action: { type: "string", enum: ["read", "set_upgrade", "assign"], description: "Default read." },
