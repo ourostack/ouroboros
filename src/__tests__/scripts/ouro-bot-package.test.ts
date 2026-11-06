@@ -5,6 +5,8 @@ import * as os from "os"
 import * as path from "path"
 
 const wrapperPath = path.resolve(__dirname, "../../../packages/ouro.bot/index.js")
+const wrapperPackagePath = path.resolve(__dirname, "../../../packages/ouro.bot/package.json")
+const wrapperPackageVersion = JSON.parse(fs.readFileSync(wrapperPackagePath, "utf8")).version as string
 
 function writeFakeNpm(binDir: string, version: string): void {
   const fakeNpmPath = path.join(binDir, "npm")
@@ -23,14 +25,19 @@ const fs = require("fs")
 const path = require("path")
 
 const args = process.argv.slice(2)
-if (args[0] === "view" && args[1] === "@ouro.bot/cli@latest" && args[2] === "version") {
-  process.stdout.write(${JSON.stringify(`${version}\n`)})
-  process.exit(0)
+if (args[0] === "view") {
+  process.stderr.write("wrapper must not query npm view during bootstrap: " + JSON.stringify(args) + "\\n")
+  process.exit(1)
 }
 
 if (args[0] === "install") {
   const prefixIndex = args.indexOf("--prefix")
   const prefix = args[prefixIndex + 1]
+  const packageRef = args.find((arg) => arg.startsWith("@ouro.bot/cli@"))
+  if (packageRef !== ${JSON.stringify(`@ouro.bot/cli@${version}`)}) {
+    process.stderr.write("unexpected cli package ref: " + JSON.stringify(packageRef) + "\\n")
+    process.exit(1)
+  }
   const entry = path.join(prefix, "node_modules", "@ouro.bot", "cli", "dist", "heart", "daemon", "ouro-entry.js")
   fs.mkdirSync(path.dirname(entry), { recursive: true })
   fs.writeFileSync(entry, ${JSON.stringify(installedEntry)})
@@ -45,7 +52,7 @@ process.exit(1)
 }
 
 function runWrapper(args: string[], options: { version?: string; shell?: string } = {}) {
-  const { version = "0.1.0-alpha.328", shell = "/bin/zsh" } = options
+  const { version = wrapperPackageVersion, shell = "/bin/zsh" } = options
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "ouro-bot-package-test-"))
   const home = path.join(root, "home")
   const binDir = path.join(root, "bin")
@@ -74,7 +81,7 @@ describe("ouro.bot package bootstrap", () => {
     const result = runWrapper(["--version"])
     try {
       expect(result.status, result.stderr).toBe(0)
-      expect(result.stdout).toBe("0.1.0-alpha.328\n")
+      expect(result.stdout).toBe(`${wrapperPackageVersion}\n`)
       expect(result.stderr).toContain("ouro is ready")
     } finally {
       result.cleanup()

@@ -1,0 +1,158 @@
+import * as fs from "node:fs"
+import * as path from "node:path"
+import { describe, expect, it } from "vitest"
+
+function readGuide(): string {
+  return fs.readFileSync(path.resolve(process.cwd(), "docs", "agent-mail-setup.md"), "utf-8")
+}
+
+function readDoc(fileName: string): string {
+  return fs.readFileSync(path.resolve(process.cwd(), "docs", fileName), "utf-8")
+}
+
+describe("agent mail setup documentation contract", () => {
+  it("documents the all-agent signup path and storage boundaries", () => {
+    const guide = readGuide()
+
+    expect(guide).toContain("ouro account ensure --agent <agent>")
+    expect(guide).toContain("ouro account ensure --agent <agent> --owner-email <email> --source hey")
+    expect(guide).toContain("ouro account ensure --agent <agent> --owner-email <email> --source hey --rotate-missing-mail-keys")
+    expect(guide).toContain("ouro account ensure --agent <agent> --no-delegated-source")
+    expect(guide).toContain("ouro connect mail --agent <agent>")
+    expect(guide).toContain("ouro connect mail --agent <agent> --owner-email <email> --source hey")
+    expect(guide).toContain("ouro status")
+    expect(guide).toContain("ouro doctor")
+    expect(guide).not.toContain("ouro doctor --agent")
+    expect(guide).toContain("Mail row is ready/running")
+    expect(guide).toContain("<agent>@ouro.bot")
+    expect(guide).toContain("runtime/config")
+    expect(guide).toContain("~/AgentBundles/<agent>.ouro/state/mailroom/")
+    expect(guide).toContain("Vault coupling")
+    expect(guide).toContain("Bundle state")
+    expect(guide).toContain("ourostack/ouro-work-substrate")
+    expect(guide).toContain("Hosted service source")
+  })
+
+  it("locks setup as an agent-guided workflow instead of a human CLI checklist", () => {
+    const guide = readGuide()
+
+    expect(guide).toContain("The human should not be the CLI operator for Agent Mail setup")
+    expect(guide).toContain("Do not turn this into a terminal checklist for the human")
+    expect(guide).toContain("the agent must not tell the human to run `ouro account ensure`, `ouro connect mail`, `ouro mail import-mbox`, `ouro status`, or `ouro doctor` for setup")
+    expect(guide).toContain("the next step is a tool-capable Ouro setup session or companion, not shifting CLI operation to the human")
+    expect(guide).toContain("The agent runs agent-runnable commands itself")
+    expect(guide).toContain("The agent verifies each step before asking for the next one")
+    expect(guide).toContain("Preferred agent command after a browser download")
+    expect(guide).toContain("The discovery path searches the current repo's `.playwright-mcp`")
+    expect(guide).toContain("browser sandbox (.playwright-mcp)")
+    expect(guide).toContain("query_active_work")
+    expect(guide).toContain("the exact operation id")
+    expect(guide).toContain("failure class")
+    expect(guide).toContain("retry")
+    expect(guide).toContain("recovery")
+    expect(guide).toContain("freshness: current")
+    expect(guide).toContain("freshness: current older snapshot")
+    expect(guide).toContain("freshness: stale-risky")
+    expect(guide).toContain("The delegated owner/source comes from the explicit import lane, not from the local filename")
+    expect(guide).toContain("Only if discovery cannot find a unique file")
+    expect(guide).toContain("Fallback agent command after the human provides the file path")
+  })
+
+  it("keeps native agent mail, delegated human mail, and trust provenance distinct", () => {
+    const guide = readGuide()
+
+    expect(guide).toContain("Agent native mailbox")
+    expect(guide).toContain("Delegated human-mail alias")
+    expect(guide).toContain("family/friend/stranger remains the trust model")
+    expect(guide).toContain("A friend may send email to the agent")
+    expect(guide).toContain("a friend cannot create their own human-mail source")
+    expect(guide).toContain("Delegated human mail requires family trust")
+  })
+
+  it("documents Screener recovery, human-only external actions, and Mailbox audit expectations", () => {
+    const guide = readGuide()
+
+    expect(guide).toContain("mail_status")
+    expect(guide).toContain("discard")
+    expect(guide).toContain("persist a discard policy for that sender")
+    expect(guide).toContain("Discard does not reject, bounce, or return mail to sender")
+    expect(guide).toContain("retained recovery drawer")
+    expect(guide).toContain("Verify the current `ouro.bot` DNS/MX state")
+    expect(guide).toContain("HEY browser export")
+    expect(guide).toContain("confirmation=CONFIRM_SEND")
+    expect(guide).toContain("Ouro Mailbox should feel like logging into the agent's mailbox")
+    expect(guide).toContain("mail_access_log")
+    expect(guide).toContain("warning: skipped N malformed file-backed mail access log line(s)")
+    expect(guide).toContain("N mail message(s) could not be decrypted")
+    expect(guide).toContain("No matching mail.")
+  })
+
+  it("keeps HEY forwarding as an agent-managed browser workflow with explicit delegated alias recovery", () => {
+    const guide = readGuide()
+
+    expect(guide).toContain("The agent drives the browser-automation portion")
+    expect(guide).toContain("The human remains at the keyboard for HEY login, MFA, CAPTCHA, export download, and final forwarding confirmation")
+    expect(guide).toContain("<source-label>.<agent>@ouro.bot")
+    expect(guide).toContain("Do not forward the human's HEY mailbox to the agent's native `<agent>@ouro.bot`")
+    expect(guide).toContain("sourceFreshThrough")
+    expect(guide).toContain("Archive imports are historical backfill")
+    expect(guide).toContain("Forwarding status can be `blocked_by_human`, `pending_propagation`, `ready`, or `failed_recoverable`")
+  })
+
+  it("documents guarded native autonomous sending instead of a blended or always-disabled outbound story", () => {
+    const guide = readGuide()
+
+    expect(guide).toContain("autonomous native-agent sending is policy-governed")
+    expect(guide).toContain("mailroom.autonomousSendPolicy")
+    expect(guide).toContain("kill switch")
+    expect(guide).toContain("allowed recipients or domains")
+    expect(guide).toContain("recipient and rate limits")
+    expect(guide).toContain("new or risky recipients fall back to `CONFIRM_SEND`")
+    expect(guide).toContain("Delegated human mail still never grants send-as-human authority")
+  })
+
+  it("links current production recovery guidance without stale MX proof language", () => {
+    const guide = readGuide()
+    const recovery = readDoc("agent-mail-recovery.md")
+
+    expect(guide).toContain("docs/agent-mail-recovery.md")
+    expect(guide).toContain("Current production proof state as of April 23, 2026")
+    expect(guide).toContain("mx1.ouro.bot:25")
+    expect(guide).not.toContain("Current proof state as of April 21, 2026")
+    expect(guide).not.toContain("did not prove public port `25`")
+    expect(guide).not.toContain("Do not publish production MX records")
+
+    for (const term of [
+      "Agent-runnable",
+      "mail_status",
+      "import state is unclear",
+      "Human-required",
+      "DNS/MX drift",
+      "HEY forwarding missing or stale",
+      "daemon stopped or worker state stale",
+      "malformed file-backed access log",
+      "hosted registry/vault key drift",
+      "ouro account ensure --rotate-missing-mail-keys",
+      "rotation cannot recover mail already encrypted to a lost private key",
+      "Blob reader or decryption failure",
+      "delivery event missing",
+      "autonomy kill switch",
+      "wrong mailbox provenance",
+      "failure class",
+      "retry",
+      "ready (newer than last import via <op>)",
+      "freshness: current",
+      "freshness: current older snapshot",
+      "freshness: stale-risky",
+      "owner/source mapping note",
+      "warning: skipped N malformed file-backed mail access log line(s)",
+      "mail message(s) could not be decrypted",
+      "No matching mail.",
+      "could not be decrypted",
+      "Do not parse vault item notes",
+      "Treat cached `runtime.json` files as hints, not truth.",
+    ]) {
+      expect(recovery).toContain(term)
+    }
+  })
+})

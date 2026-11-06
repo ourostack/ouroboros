@@ -67,6 +67,8 @@ export interface ProviderCredentialPoolSummary {
 export interface RefreshProviderCredentialPoolOptions {
   preserveCachedOnFailure?: boolean
   onProgress?: (message: string) => void
+  providers?: AgentProvider[]
+  skipCache?: boolean
 }
 
 interface ProviderCredentialVaultPayload {
@@ -85,6 +87,7 @@ interface ProviderCredentialVaultPayload {
 const VALID_PROVIDERS: AgentProvider[] = ["azure", "minimax", "anthropic", "openai-codex", "github-copilot"]
 const VALID_PROVENANCE_SOURCES: ProviderCredentialProvenanceSource[] = ["auth-flow", "manual"]
 const VAULT_ITEM_PREFIX = "providers/"
+export const PROVIDER_CREDENTIAL_POOL_NOT_LOADED_ERROR = "provider credentials have not been loaded from vault"
 
 const PROVIDER_FIELD_SPLITS: Record<AgentProvider, { credentials: string[]; config: string[] }> = {
   anthropic: {
@@ -92,7 +95,7 @@ const PROVIDER_FIELD_SPLITS: Record<AgentProvider, { credentials: string[]; conf
     config: [],
   },
   "openai-codex": {
-    credentials: ["oauthAccessToken"],
+    credentials: ["oauthAccessToken", "refreshToken", "expiresAt"],
     config: [],
   },
   azure: {
@@ -131,6 +134,12 @@ function isPresentCredentialValue(value: unknown): value is string | number {
   if (!isCredentialValue(value)) return false
   if (typeof value === "string") return value.trim().length > 0
   return Number.isFinite(value) && value !== 0
+}
+
+function isMissingProviderCredentialError(message: string, itemName: string): boolean {
+  const normalized = message.toLowerCase()
+  return normalized.includes(itemName.toLowerCase())
+    && (normalized.includes("no credential found") || normalized.includes("missing") || normalized.includes("not found"))
 }
 
 function copyKnownFields(
@@ -235,7 +244,7 @@ function recordFromPayload(payload: ProviderCredentialVaultPayload): ProviderCre
   }
 }
 
-function missingPool(agentName: string, error = "provider credentials have not been loaded from vault"): ProviderCredentialPoolReadResult {
+function missingPool(agentName: string, error = PROVIDER_CREDENTIAL_POOL_NOT_LOADED_ERROR): ProviderCredentialPoolReadResult {
   return {
     ok: false,
     reason: "missing",
@@ -244,9 +253,20 @@ function missingPool(agentName: string, error = "provider credentials have not b
   }
 }
 
+export function isProviderCredentialPoolNotLoaded(result: ProviderCredentialPoolReadResult): boolean {
+  return !result.ok
+    && result.reason === "missing"
+    && result.error === PROVIDER_CREDENTIAL_POOL_NOT_LOADED_ERROR
+}
+
 function cacheResult(agentName: string, result: ProviderCredentialPoolReadResult): ProviderCredentialPoolReadResult {
   cachedPools.set(agentName, result)
   return result
+}
+
+function selectedProviders(providers?: AgentProvider[]): AgentProvider[] {
+  if (!providers || providers.length === 0) return [...VALID_PROVIDERS]
+  return [...new Set(providers)]
 }
 
 function resultForProvider(
@@ -274,19 +294,24 @@ export async function refreshProviderCredentialPool(
   agentName: string,
   options: RefreshProviderCredentialPoolOptions = {},
 ): Promise<ProviderCredentialPoolReadResult> {
+  const providersToRead = selectedProviders(options.providers)
   try {
     const store = getCredentialStore(agentName)
     options.onProgress?.(`reading vault items for ${agentName}...`)
-    const items = await store.list()
     const providers: Partial<Record<AgentProvider, ProviderCredentialRecord>> = {}
     let updatedAt = new Date(0).toISOString()
 
-    for (const item of items) {
-      if (!item.domain.startsWith(VAULT_ITEM_PREFIX)) continue
-      const provider = item.domain.slice(VAULT_ITEM_PREFIX.length)
-      if (!isAgentProvider(provider)) continue
+    for (const provider of providersToRead) {
+      const itemName = providerCredentialItemName(provider)
       options.onProgress?.(`reading ${provider} credentials...`)
-      const raw = await store.getRawSecret(item.domain, "password")
+      let raw: string
+      try {
+        raw = await store.getRawSecret(itemName, "password")
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error)
+        if (isMissingProviderCredentialError(message, itemName)) continue
+        throw error
+      }
       const payload = validateProviderCredentialPayload(JSON.parse(raw) as unknown, provider)
       const record = recordFromPayload(payload)
       providers[provider] = record
@@ -303,9 +328,19 @@ export async function refreshProviderCredentialPool(
       component: "config/identity",
       event: "config.provider_credentials_loaded",
       message: "loaded provider credentials from vault",
-      meta: { agentName, providerCount: Object.keys(providers).length },
+      meta: {
+        agentName,
+        providerCount: Object.keys(providers).length,
+        requestedProviderCount: providersToRead.length,
+        cacheSkipped: options.skipCache === true,
+      },
     })
-    return cacheResult(agentName, { ok: true, poolPath: providerCredentialsVaultPath(agentName), pool })
+    const result: ProviderCredentialPoolReadResult = {
+      ok: true,
+      poolPath: providerCredentialsVaultPath(agentName),
+      pool,
+    }
+    return options.skipCache ? result : cacheResult(agentName, result)
   } catch (error) {
     const cached = cachedPools.get(agentName)
     const result: ProviderCredentialPoolReadResult = {
@@ -322,7 +357,7 @@ export async function refreshProviderCredentialPool(
       meta: { agentName, reason: result.reason, poolPath: result.poolPath },
     })
     if (options.preserveCachedOnFailure && cached?.ok) return cached
-    return cacheResult(agentName, result)
+    return options.skipCache ? result : cacheResult(agentName, result)
   }
 }
 
@@ -376,7 +411,7 @@ export async function readProviderCredentialRecord(
 ): Promise<ProviderCredentialRecordReadResult> {
   const cached = readCachedProviderCredentialRecord(agentName, provider)
   if (cached.ok || options.refreshIfMissing === false) return cached
-  return resultForProvider(await refreshProviderCredentialPool(agentName), provider)
+  return resultForProvider(await refreshProviderCredentialPool(agentName, { providers: [provider] }), provider)
 }
 
 export async function upsertProviderCredential(input: ProviderCredentialUpsertInput): Promise<ProviderCredentialRecord> {
@@ -402,13 +437,14 @@ export async function upsertProviderCredential(input: ProviderCredentialUpsertIn
     password: JSON.stringify(payload),
     notes: "Ouro provider credentials. The vault item password is a versioned JSON payload.",
   })
-  input.onProgress?.(`refreshing local provider snapshot from ${input.agentName}'s vault...`)
+  input.onProgress?.(`refreshing in-memory provider credential pool from ${input.agentName}'s vault...`)
   const refreshResult = await refreshProviderCredentialPool(input.agentName, {
+    providers: [input.provider],
     onProgress: input.onProgress,
   })
   if (!refreshResult.ok) {
     throw new Error(
-      `credential stored in vault, but the local provider snapshot could not be refreshed: ${refreshResult.error}. ` +
+      `credential stored in vault, but the in-memory provider credential pool could not be refreshed: ${refreshResult.error}. ` +
       `Run 'ouro provider refresh --agent ${input.agentName}' after fixing vault access, then run 'ouro auth verify --agent ${input.agentName}'.`,
     )
   }

@@ -1,0 +1,26 @@
+{
+  "schemaVersion": 1,
+  "traceId": "floor-stale-tool-result-suppressed",
+  "scenarioId": "floor-stale-tool-result-suppressed",
+  "expectedOutcome": "pass",
+  "expectation": {
+    "maxFirstAssistantAudioMs": 500,
+    "maxUserTurnResponseMs": 300,
+    "maxToolPresenceMs": 300,
+    "maxBargeInClearMs": 100,
+    "maxBargeInTruncateMs": 120
+  },
+  "events": [
+    { "atMs": 0, "event": "call.connected", "source": { "transport": "voice-eval", "id": "floor-stale" } },
+    { "atMs": 80, "event": "assistant.audio.started", "correlationId": "greeting", "source": { "transport": "voice-eval", "id": "floor-stale" } },
+    { "atMs": 110, "event": "assistant.audio.done", "correlationId": "greeting", "source": { "transport": "voice-eval", "id": "floor-stale" } },
+    { "atMs": 120, "event": "user.transcript.done", "correlationId": "turn-1", "text": "Research it.", "source": { "transport": "voice-eval", "id": "floor-stale" } },
+    { "atMs": 180, "event": "response.requested", "correlationId": "turn-1", "source": { "transport": "voice-eval", "id": "floor-stale" } },
+    { "atMs": 220, "event": "tool.call.started", "correlationId": "research-1", "toolName": "search", "source": { "transport": "voice-eval", "id": "floor-stale" } },
+    { "atMs": 340, "event": "tool.holding.started", "correlationId": "research-1", "text": "Checking now.", "source": { "transport": "voice-eval", "id": "floor-stale" } },
+    { "atMs": 460, "event": "user.transcript.done", "correlationId": "turn-2", "text": "Actually make it shorter.", "source": { "transport": "voice-eval", "id": "floor-stale" } },
+    { "atMs": 540, "event": "tool.result.ready", "correlationId": "research-1", "toolName": "search", "source": { "transport": "voice-eval", "id": "floor-stale" } },
+    { "atMs": 550, "event": "floor.state.changed", "floorPhase": "suppressing", "floorOwner": "none", "staleToolCallIds": ["research-1"], "decisionReason": "newer_user_turn_started", "source": { "transport": "voice-eval", "id": "floor-stale" } },
+    { "atMs": 560, "event": "speech.policy.decision", "speechDecision": "suppress", "decisionReason": "newer_user_turn_started", "correlationId": "research-1", "source": { "transport": "voice-eval", "id": "floor-stale" } }
+  ]
+}

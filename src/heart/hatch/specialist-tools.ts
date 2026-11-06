@@ -21,7 +21,7 @@ const completeAdoptionTool: OpenAI.ChatCompletionFunctionTool = {
       properties: {
         name: {
           type: "string",
-          description: "the PascalCase name for the new agent (e.g. 'Slugger')",
+          description: "the PascalCase name for the new agent (e.g. 'MyAgent')",
         },
         handoff_message: {
           type: "string",
@@ -139,7 +139,7 @@ async function execCompleteAdoption(
   }
 
   if (!isPascalCase(name)) {
-    return `error: name '${name}' must be PascalCase (e.g. 'Slugger', 'MyAgent')`
+    return `error: name '${name}' must be PascalCase (e.g. 'MyAgent', 'Hatchling')`
   }
 
   // Validate psyche files exist

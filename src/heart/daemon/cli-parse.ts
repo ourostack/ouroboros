@@ -6,14 +6,25 @@
  */
 
 import type { AgentProvider } from "../identity"
-import type { ProviderLane } from "../provider-state"
+import type { ProviderLane } from "../provider-lanes"
 import type { VaultUnlockStoreKind } from "../../repertoire/vault-unlock"
 import { isIdentityProvider } from "../../mind/friends/types"
 import type { Facing } from "../../mind/friends/channel"
 import type { TrustLevel } from "../../mind/friends/types"
 import type { HatchCredentialsInput } from "../hatch/hatch-flow"
-import type { OuroCliCommand } from "./cli-types"
+import type { DnsWorkflowAction, OuroCliCommand } from "./cli-types"
+import type { VaultItemTemplate } from "./vault-items"
 import { suggestCommand } from "./cli-help"
+import { parseDeskCommand, parseTaskAliasCommand } from "./cli-desk"
+import {
+  isVaultItemTemplate,
+  normalizePorkbunOpsAccount,
+  normalizeVaultItemFieldName,
+  normalizeVaultItemName,
+  PORKBUN_OPS_COMPATIBILITY_ALIAS,
+  PORKBUN_OPS_CREDENTIAL_PREFIX,
+  porkbunOpsCredentialItemName,
+} from "./vault-items"
 
 // ── Shared helpers ──
 
@@ -80,14 +91,14 @@ export function usage(): string {
     "  ouro check [--agent <name>] --lane outward|inner",
     "  ouro repair [--agent <name>]",
     "  ouro provider refresh [--agent <name>]",
-    "  ouro outlook [--json]",
+    "  ouro mailbox [--json]",
     "  ouro -v|--version",
-    "  ouro config model [--agent <name>] <model-name>",
-    "  ouro config models [--agent <name>]",
     "  ouro auth [--agent <name>] [--provider <provider>]",
-    "  ouro connect [providers|perplexity|embeddings|teams|bluebubbles] [--agent <name>]",
+    "  ouro account ensure [--agent <name>] [--owner-email <email> --source <label>|--no-delegated-source] [--rotate-missing-mail-keys]",
+    "  ouro connect [providers|perplexity|embeddings|teams|bluebubbles|mail|voice] [--agent <name>] [--owner-email <email> --source <label>|--no-delegated-source] [--rotate-missing-mail-keys]",
+    "  ouro mail import-mbox --file <path> [--owner-email <email>] [--source <label>] [--agent <name>] [--foreground]",
+    "  ouro mail backfill-indexes [--agent <name>] [--foreground]",
     "  ouro auth verify [--agent <name>] [--provider <provider>]",
-    "  ouro auth switch [--agent <name>] --provider <provider>",
     "  ouro vault create [--agent <name>] --email <email> [--server <url>] [--store <store>]",
     "  ouro vault replace [--agent <name>] [--email <email>] [--server <url>] [--store <store>]",
     "  ouro vault recover [--agent <name>] --from <json> [--from <json>] [--email <email>] [--server <url>] [--store <store>]",
@@ -95,6 +106,12 @@ export function usage(): string {
     "  ouro vault status [--agent <name>] [--store auto|macos-keychain|windows-dpapi|linux-secret-service|plaintext-file]",
     "  ouro vault config set [--agent <name>] --key <path> [--value <value>] [--scope agent|machine]",
     "  ouro vault config status [--agent <name>] [--scope agent|machine|all]",
+    "  ouro vault item set [--agent <name>] --item <path> --secret-field <name> [--public-field <key=value>] [--note <text>]",
+    "  ouro vault item status [--agent <name>] --item <path>",
+    "  ouro vault item list [--agent <name>] [--prefix <path-prefix>]",
+    "  ouro vault ops porkbun set [--agent <name>] --account <account>",
+    "  ouro vault ops porkbun status [--agent <name>] [--account <account>]",
+    "  ouro dns backup|plan|apply|verify|rollback|certificate [--agent <name>] --binding <path> [--output <path>] [--backup <path>] [--yes]",
     "  ouro chat <agent>",
     "  ouro msg --to <agent> [--session <id>] [--task <ref>] <message>",
     "  ouro poke <agent> --task <task-id>",
@@ -103,13 +120,6 @@ export function usage(): string {
     "  ouro habit create [--agent <name>] <name> [--cadence <interval>]",
     "  ouro link <agent> --friend <id> --provider <provider> --external-id <external-id>",
     "  ouro bluebubbles replay [--agent <name>] --message-guid <guid> [--event-type new-message|updated-message] [--json]",
-    "  ouro task board [<status>] [--agent <name>]",
-    "  ouro task create <title> [--type <type>] [--agent <name>]",
-    "  ouro task update <id> <status> [--agent <name>]",
-    "  ouro task show <id> [--agent <name>]",
-    "  ouro task fix [--safe|--all] [<id> [--option <N>]] [--agent <name>]",
-    "  ouro task actionable|deps|sessions [--agent <name>]",
-    "  ouro reminder create <title> --body <body> [--at <iso>] [--cadence <interval>] [--category <category>] [--agent <name>]",
     "  ouro friend list [--agent <name>]",
     "  ouro friend show <id> [--agent <name>]",
     "  ouro friend create --name <name> [--trust <level>] [--agent <name>]",
@@ -176,6 +186,7 @@ function parsePokeCommand(args: string[]): OuroCliCommand {
 
   let taskId: string | undefined
   let habitName: string | undefined
+  let awaitName: string | undefined
   for (let i = 1; i < args.length; i += 1) {
     if (args[i] === "--task") {
       taskId = args[i + 1]
@@ -185,9 +196,14 @@ function parsePokeCommand(args: string[]): OuroCliCommand {
       habitName = args[i + 1]
       i += 1
     }
+    if (args[i] === "--await") {
+      awaitName = args[i + 1]
+      i += 1
+    }
   }
 
-  // --habit takes priority over --task
+  // Priority order: --await > --habit > --task
+  if (awaitName) return { kind: "await.poke", agent, awaitName }
   if (habitName) return { kind: "habit.poke", agent, habitName }
   if (!taskId) throw new Error(`Usage\n${usage()}`)
   return { kind: "task.poke", agent, taskId }
@@ -339,80 +355,6 @@ function parseHatchCommand(args: string[]): OuroCliCommand {
   }
 }
 
-function parseTaskCommand(args: string[]): OuroCliCommand {
-  const { agent, rest: cleaned } = extractAgentFlag(args)
-  const [sub, ...rest] = cleaned
-  if (!sub) throw new Error(`Usage\n${usage()}`)
-
-  if (sub === "board") {
-    const status = rest[0]
-    return status
-      ? { kind: "task.board", status, ...(agent ? { agent } : {}) }
-      : { kind: "task.board", ...(agent ? { agent } : {}) }
-  }
-
-  if (sub === "create") {
-    const title = rest[0]
-    if (!title) throw new Error(`Usage\n${usage()}`)
-    let type: string | undefined
-    for (let i = 1; i < rest.length; i++) {
-      if (rest[i] === "--type" && rest[i + 1]) {
-        type = rest[i + 1]
-        i += 1
-      }
-    }
-    return type
-      ? { kind: "task.create", title, type, ...(agent ? { agent } : {}) }
-      : { kind: "task.create", title, ...(agent ? { agent } : {}) }
-  }
-
-  if (sub === "update") {
-    const id = rest[0]
-    const status = rest[1]
-    if (!id || !status) throw new Error(`Usage\n${usage()}`)
-    return { kind: "task.update", id, status, ...(agent ? { agent } : {}) }
-  }
-
-  if (sub === "show") {
-    const id = rest[0]
-    if (!id) throw new Error(`Usage\n${usage()}`)
-    return { kind: "task.show", id, ...(agent ? { agent } : {}) }
-  }
-
-  if (sub === "actionable") return { kind: "task.actionable", ...(agent ? { agent } : {}) }
-  if (sub === "deps") return { kind: "task.deps", ...(agent ? { agent } : {}) }
-  if (sub === "sessions") return { kind: "task.sessions", ...(agent ? { agent } : {}) }
-
-  if (sub === "fix") {
-    // fix --safe | fix --all | fix <id> [--option N] | fix (dry-run)
-    if (rest.length === 0) return { kind: "task.fix", mode: "dry-run", ...(agent ? { agent } : {}) }
-
-    const first = rest[0]
-    if (first === "--safe" || first === "--all") {
-      return { kind: "task.fix", mode: "safe", ...(agent ? { agent } : {}) }
-    }
-
-    // first arg is an issue ID (contains a colon, e.g. schema-missing-kind:one-shots/foo.md)
-    const issueId = first
-    let option: number | undefined
-    for (let i = 1; i < rest.length; i++) {
-      if (rest[i] === "--option" && rest[i + 1]) {
-        option = parseInt(rest[i + 1], 10)
-        i += 1
-      }
-    }
-    return {
-      kind: "task.fix",
-      mode: "single",
-      issueId,
-      ...(option !== undefined ? { option } : {}),
-      ...(agent ? { agent } : {}),
-    }
-  }
-
-  throw new Error(`Usage\n${usage()}`)
-}
-
 function parseAuthCommand(args: string[]): OuroCliCommand {
   const first = args[0]
   // Support both positional (`auth switch`) and flag (`auth --switch`) forms
@@ -472,6 +414,8 @@ function isVaultUnlockStoreKind(value: unknown): value is VaultUnlockStoreKind {
 function parseVaultCommand(args: string[]): OuroCliCommand {
   const sub = args[0]
   if (sub === "config") return parseVaultConfigCommand(args.slice(1))
+  if (sub === "item") return parseVaultItemCommand(args.slice(1))
+  if (sub === "ops") return parseVaultOpsCommand(args.slice(1))
   const { agent, rest } = extractAgentFlag(args.slice(1))
   let email: string | undefined
   let serverUrl: string | undefined
@@ -560,6 +504,207 @@ function parseVaultCommand(args: string[]): OuroCliCommand {
   return { kind: "vault.status", ...(agent ? { agent } : {}), ...(store ? { store } : {}) }
 }
 
+function parseVaultItemCommand(args: string[]): OuroCliCommand {
+  const action = args[0]
+  if (action !== "set" && action !== "status" && action !== "list") {
+    throw new Error("Usage: ouro vault item set|status|list [--agent <name>] --item <path>")
+  }
+
+  const { agent, rest } = extractAgentFlag(args.slice(1))
+  let item: string | undefined
+  let prefix: string | undefined
+  let template: VaultItemTemplate | undefined
+  let note: string | undefined
+  const secretFields: string[] = []
+  const publicFields: string[] = []
+
+  for (let i = 0; i < rest.length; i += 1) {
+    const token = rest[i]
+    if (token === "--item") {
+      item = normalizeVaultItemName(rest[i + 1])
+      i += 1
+      continue
+    }
+    if (token === "--prefix") {
+      const value = rest[i + 1]?.trim() ?? ""
+      if (!value || /[\r\n\t]/.test(value) || value.startsWith("/")) {
+        throw new Error("Vault item prefix must be non-empty, relative, and free of control characters.")
+      }
+      prefix = value
+      i += 1
+      continue
+    }
+    if (token === "--template") {
+      const value = rest[i + 1]
+      if (!isVaultItemTemplate(value)) {
+        throw new Error("vault item --template must be porkbun-api")
+      }
+      template = value
+      i += 1
+      continue
+    }
+    if (token === "--secret-field") {
+      secretFields.push(normalizeVaultItemFieldName(rest[i + 1]))
+      i += 1
+      continue
+    }
+    if (token === "--public-field") {
+      const value = rest[i + 1]?.trim() ?? ""
+      const separator = value.indexOf("=")
+      if (separator <= 0 || separator === value.length - 1) {
+        throw new Error("vault item --public-field must be key=value")
+      }
+      normalizeVaultItemFieldName(value.slice(0, separator))
+      publicFields.push(value)
+      i += 1
+      continue
+    }
+    if (token === "--note") {
+      note = rest[i + 1] ?? ""
+      i += 1
+      continue
+    }
+    throw new Error(`Usage: ouro vault item ${action} [--agent <name>] --item <path>`)
+  }
+
+  if (action === "list") {
+    return { kind: "vault.item.list", ...(agent ? { agent } : {}), ...(prefix ? { prefix } : {}) }
+  }
+  if (!item) throw new Error(`Usage: ouro vault item ${action} [--agent <name>] --item <path>`)
+  if (action === "status") {
+    return { kind: "vault.item.status", ...(agent ? { agent } : {}), item }
+  }
+  if (!template && secretFields.length === 0) {
+    throw new Error("ouro vault item set requires --secret-field or --template")
+  }
+  return {
+    kind: "vault.item.set",
+    ...(agent ? { agent } : {}),
+    item,
+    ...(template ? { template } : {}),
+    ...(secretFields.length > 0 ? { secretFields } : {}),
+    ...(publicFields.length > 0 ? { publicFields } : {}),
+    ...(note !== undefined ? { note } : {}),
+  }
+}
+
+function parseVaultOpsCommand(args: string[]): OuroCliCommand {
+  const provider = args[0]
+  const action = args[1]
+  if (provider !== "porkbun") {
+    throw new Error("Usage: ouro vault ops porkbun set|status [--agent <name>] [--account <account>]")
+  }
+  if (action !== "set" && action !== "status") {
+    throw new Error("Usage: ouro vault ops porkbun set|status [--agent <name>] [--account <account>]")
+  }
+
+  const { agent, rest } = extractAgentFlag(args.slice(2))
+  let account: string | undefined
+  for (let i = 0; i < rest.length; i += 1) {
+    const token = rest[i]
+    if (token === "--account") {
+      account = normalizePorkbunOpsAccount(rest[i + 1])
+      i += 1
+      continue
+    }
+    throw new Error(`Usage: ouro vault ops porkbun ${action} [--agent <name>] [--account <account>]`)
+  }
+
+  if (action === "set") {
+    if (!account) throw new Error("Usage: ouro vault ops porkbun set [--agent <name>] --account <account>")
+    return {
+      kind: "vault.item.set",
+      ...(agent ? { agent } : {}),
+      item: porkbunOpsCredentialItemName(account),
+      template: "porkbun-api",
+      compatibilityAlias: PORKBUN_OPS_COMPATIBILITY_ALIAS,
+    }
+  }
+  if (account) {
+    return {
+      kind: "vault.item.status",
+      ...(agent ? { agent } : {}),
+      item: porkbunOpsCredentialItemName(account),
+      compatibilityAlias: PORKBUN_OPS_COMPATIBILITY_ALIAS,
+    }
+  }
+  return {
+    kind: "vault.item.list",
+    ...(agent ? { agent } : {}),
+    prefix: PORKBUN_OPS_CREDENTIAL_PREFIX,
+    compatibilityAlias: PORKBUN_OPS_COMPATIBILITY_ALIAS,
+  }
+}
+
+function isDnsWorkflowAction(value: unknown): value is DnsWorkflowAction {
+  return value === "backup" || value === "plan" || value === "apply" || value === "verify" || value === "rollback" || value === "certificate"
+}
+
+function normalizeWorkflowPath(value: string | undefined, label: string): string {
+  const trimmed = value?.trim() ?? ""
+  if (!trimmed || /[\r\n\t]/.test(trimmed)) {
+    throw new Error(`${label} must be a non-empty path without control characters.`)
+  }
+  return trimmed
+}
+
+function parseDnsCommand(args: string[]): OuroCliCommand {
+  const action = args[0]
+  if (!isDnsWorkflowAction(action)) {
+    throw new Error("Usage: ouro dns backup|plan|apply|verify|rollback|certificate [--agent <name>] --binding <path>")
+  }
+  const { agent, rest } = extractAgentFlag(args.slice(1))
+  let bindingPath: string | undefined
+  let outputPath: string | undefined
+  let backupPath: string | undefined
+  let yes = false
+  for (let i = 0; i < rest.length; i += 1) {
+    const token = rest[i]
+    if (token === "--binding") {
+      bindingPath = normalizeWorkflowPath(rest[i + 1], "dns --binding")
+      i += 1
+      continue
+    }
+    if (token === "--output") {
+      outputPath = normalizeWorkflowPath(rest[i + 1], "dns --output")
+      i += 1
+      continue
+    }
+    if (token === "--backup") {
+      backupPath = normalizeWorkflowPath(rest[i + 1], "dns --backup")
+      i += 1
+      continue
+    }
+    if (token === "--yes") {
+      yes = true
+      continue
+    }
+    if (token === "--credential-item") {
+      throw new Error("credential item belongs in the DNS workflow binding")
+    }
+    throw new Error(`Usage: ouro dns ${action} [--agent <name>] --binding <path>`)
+  }
+  if (!bindingPath) {
+    throw new Error(`Usage: ouro dns ${action} [--agent <name>] --binding <path>`)
+  }
+  if (action === "apply" && !yes) {
+    throw new Error("dns apply requires --yes after a reviewed dry-run")
+  }
+  if (action === "rollback") {
+    if (!backupPath) throw new Error("dns rollback requires --backup <path>")
+    if (!yes) throw new Error("dns rollback requires --yes after choosing a backup")
+  }
+  return {
+    kind: "dns.workflow",
+    action,
+    ...(agent ? { agent } : {}),
+    bindingPath,
+    ...(outputPath ? { outputPath } : {}),
+    ...(backupPath ? { backupPath } : {}),
+    ...(yes ? { yes: true } : {}),
+  }
+}
+
 function parseVaultConfigCommand(args: string[]): OuroCliCommand {
   const sub = args[0]
   const { agent, rest } = extractAgentFlag(args.slice(1))
@@ -607,21 +752,194 @@ function parseVaultConfigCommand(args: string[]): OuroCliCommand {
   return { kind: "vault.config.set", ...(agent ? { agent } : {}), key, ...(value !== undefined ? { value } : {}), ...(scope ? { scope } : {}) }
 }
 
-function normalizeConnectTarget(value: string | undefined): "providers" | "perplexity" | "embeddings" | "teams" | "bluebubbles" | undefined {
+function normalizeConnectTarget(value: string | undefined): "providers" | "perplexity" | "embeddings" | "teams" | "bluebubbles" | "mail" | "voice" | undefined {
   if (!value) return undefined
   if (value === "providers" || value === "provider" || value === "auth") return "providers"
   if (value === "perplexity" || value === "perplexity-search") return "perplexity"
   if (value === "embeddings" || value === "embedding" || value === "memory" || value === "note-search" || value === "notes") return "embeddings"
   if (value === "teams" || value === "msteams" || value === "microsoft-teams") return "teams"
   if (value === "bluebubbles" || value === "imessage" || value === "messages") return "bluebubbles"
-  throw new Error("Usage: ouro connect [providers|perplexity|embeddings|teams|bluebubbles] [--agent <name>]")
+  if (value === "mail" || value === "email" || value === "mailroom") return "mail"
+  if (value === "voice" || value === "audio" || value === "speech") return "voice"
+  throw new Error("Usage: ouro connect [providers|perplexity|embeddings|teams|bluebubbles|mail|voice] [--agent <name>]")
+}
+
+interface MailSourceFlagParse {
+  rest: string[]
+  ownerEmail?: string
+  source?: string
+  noDelegatedSource?: boolean
+  rotateMissingMailKeys?: boolean
+  hasMailSourceFlags: boolean
+}
+
+function extractMailSourceFlags(args: string[], usageText: string): MailSourceFlagParse {
+  const rest: string[] = []
+  let ownerEmail: string | undefined
+  let source: string | undefined
+  let noDelegatedSource = false
+  let rotateMissingMailKeys = false
+  let hasMailSourceFlags = false
+
+  for (let i = 0; i < args.length; i += 1) {
+    const token = args[i]
+    if (token === "--owner-email") {
+      if (args[i + 1] === undefined) throw new Error(usageText)
+      ownerEmail = args[++i]
+      hasMailSourceFlags = true
+      continue
+    }
+    if (token === "--source") {
+      if (args[i + 1] === undefined) throw new Error(usageText)
+      source = args[++i]
+      hasMailSourceFlags = true
+      continue
+    }
+    if (token === "--no-delegated-source") {
+      noDelegatedSource = true
+      hasMailSourceFlags = true
+      continue
+    }
+    if (token === "--rotate-missing-mail-keys") {
+      rotateMissingMailKeys = true
+      hasMailSourceFlags = true
+      continue
+    }
+    rest.push(token)
+  }
+
+  if (noDelegatedSource && (ownerEmail !== undefined || source !== undefined)) {
+    throw new Error("--no-delegated-source cannot be combined with --owner-email or --source")
+  }
+  if (source !== undefined && ownerEmail === undefined) {
+    throw new Error("--source requires --owner-email")
+  }
+  return {
+    rest,
+    ...(ownerEmail !== undefined ? { ownerEmail } : {}),
+    ...(source !== undefined ? { source } : {}),
+    ...(noDelegatedSource ? { noDelegatedSource: true } : {}),
+    ...(rotateMissingMailKeys ? { rotateMissingMailKeys: true } : {}),
+    hasMailSourceFlags,
+  }
 }
 
 function parseConnectCommand(args: string[]): OuroCliCommand {
-  const { agent, rest } = extractAgentFlag(args)
-  if (rest.length > 1) throw new Error("Usage: ouro connect [providers|perplexity|embeddings|teams|bluebubbles] [--agent <name>]")
-  const target = normalizeConnectTarget(rest[0])
-  return { kind: "connect", ...(agent ? { agent } : {}), ...(target ? { target } : {}) }
+  const usageText = "Usage: ouro connect [providers|perplexity|embeddings|teams|bluebubbles|mail|voice] [--agent <name>] [--owner-email <email> --source <label>|--no-delegated-source] [--rotate-missing-mail-keys]"
+  const { agent, rest: afterAgent } = extractAgentFlag(args)
+  const mailFlags = extractMailSourceFlags(afterAgent, usageText)
+  if (mailFlags.rest.length > 1) throw new Error(usageText)
+  const target = normalizeConnectTarget(mailFlags.rest[0])
+  if (mailFlags.hasMailSourceFlags && target !== "mail") {
+    throw new Error("Mail source flags require `ouro connect mail`.")
+  }
+  return {
+    kind: "connect",
+    ...(agent ? { agent } : {}),
+    ...(target ? { target } : {}),
+    ...(mailFlags.ownerEmail !== undefined ? { ownerEmail: mailFlags.ownerEmail } : {}),
+    ...(mailFlags.source !== undefined ? { source: mailFlags.source } : {}),
+    ...(mailFlags.noDelegatedSource ? { noDelegatedSource: true } : {}),
+    ...(mailFlags.rotateMissingMailKeys ? { rotateMissingMailKeys: true } : {}),
+  }
+}
+
+function parseMailCommand(args: string[]): OuroCliCommand {
+  const [sub, ...subArgs] = args
+  const usageText = "Usage: ouro mail import-mbox (--file <path>|--discover) [--owner-email <email>] [--source <label>] [--agent <name>] [--foreground]\n       ouro mail backfill-indexes [--agent <name>] [--foreground]"
+  if (sub === "backfill-indexes") {
+    const { agent, rest } = extractAgentFlag(subArgs)
+    let foreground = false
+    let operationId: string | undefined
+    for (let i = 0; i < rest.length; i += 1) {
+      const token = rest[i]
+      if (token === "--foreground") {
+        foreground = true
+        continue
+      }
+      if (token === "--operation-id" && rest[i + 1]) {
+        operationId = rest[++i]
+        continue
+      }
+      throw new Error(usageText)
+    }
+    return {
+      kind: "mail.backfill-indexes",
+      ...(agent ? { agent } : {}),
+      ...(foreground ? { foreground: true } : {}),
+      ...(operationId ? { operationId } : {}),
+    }
+  }
+  if (sub !== "import-mbox") {
+    throw new Error(usageText)
+  }
+  const { agent, rest } = extractAgentFlag(subArgs)
+  let filePath: string | undefined
+  let discover = false
+  let ownerEmail: string | undefined
+  let source: string | undefined
+  let foreground = false
+  let operationId: string | undefined
+  for (let i = 0; i < rest.length; i += 1) {
+    const token = rest[i]
+    if (token === "--file" && rest[i + 1]) {
+      filePath = rest[++i]
+      continue
+    }
+    if (token === "--discover") {
+      discover = true
+      continue
+    }
+    if (token === "--owner-email" && rest[i + 1]) {
+      ownerEmail = rest[++i]
+      continue
+    }
+    if (token === "--source" && rest[i + 1]) {
+      source = rest[++i]
+      continue
+    }
+    if (token === "--foreground") {
+      foreground = true
+      continue
+    }
+    if (token === "--operation-id" && rest[i + 1]) {
+      operationId = rest[++i]
+      continue
+    }
+    throw new Error(usageText)
+  }
+  if ((filePath ? 1 : 0) + (discover ? 1 : 0) !== 1) {
+    throw new Error(usageText)
+  }
+  return {
+    kind: "mail.import-mbox",
+    ...(agent ? { agent } : {}),
+    ...(filePath ? { filePath } : {}),
+    ...(discover ? { discover: true } : {}),
+    ...(ownerEmail ? { ownerEmail } : {}),
+    ...(source ? { source } : {}),
+    ...(foreground ? { foreground: true } : {}),
+    ...(operationId ? { operationId } : {}),
+  }
+}
+
+function parseAccountCommand(args: string[]): OuroCliCommand {
+  const [sub, ...subArgs] = args
+  const usageText = "Usage: ouro account ensure [--agent <name>] [--owner-email <email> --source <label>|--no-delegated-source] [--rotate-missing-mail-keys]"
+  if (sub !== "ensure") {
+    throw new Error(usageText)
+  }
+  const { agent, rest: afterAgent } = extractAgentFlag(subArgs)
+  const mailFlags = extractMailSourceFlags(afterAgent, usageText)
+  if (mailFlags.rest.length > 0) throw new Error(usageText)
+  return {
+    kind: "account.ensure",
+    ...(agent ? { agent } : {}),
+    ...(mailFlags.ownerEmail !== undefined ? { ownerEmail: mailFlags.ownerEmail } : {}),
+    ...(mailFlags.source !== undefined ? { source: mailFlags.source } : {}),
+    ...(mailFlags.noDelegatedSource ? { noDelegatedSource: true } : {}),
+    ...(mailFlags.rotateMissingMailKeys ? { rotateMissingMailKeys: true } : {}),
+  }
 }
 
 function parseProviderUseCommand(args: string[]): OuroCliCommand {
@@ -691,58 +1009,6 @@ function parseProviderCommand(args: string[]): OuroCliCommand {
     return { kind: "provider.refresh", ...(agent ? { agent } : {}) }
   }
   throw new Error("Usage: ouro provider refresh [--agent <name>]")
-}
-
-function parseReminderCommand(args: string[]): OuroCliCommand {
-  const { agent, rest: cleaned } = extractAgentFlag(args)
-  const [sub, ...rest] = cleaned
-  if (!sub) throw new Error(`Usage\n${usage()}`)
-
-  if (sub === "create") {
-    const title = rest[0]
-    if (!title) throw new Error(`Usage\n${usage()}`)
-
-    let body: string | undefined
-    let scheduledAt: string | undefined
-    let cadence: string | undefined
-    let category: string | undefined
-    let requester: string | undefined
-
-    for (let i = 1; i < rest.length; i++) {
-      if (rest[i] === "--body" && rest[i + 1]) {
-        body = rest[i + 1]
-        i += 1
-      } else if (rest[i] === "--at" && rest[i + 1]) {
-        scheduledAt = rest[i + 1]
-        i += 1
-      } else if (rest[i] === "--cadence" && rest[i + 1]) {
-        cadence = rest[i + 1]
-        i += 1
-      } else if (rest[i] === "--category" && rest[i + 1]) {
-        category = rest[i + 1]
-        i += 1
-      } else if (rest[i] === "--requester" && rest[i + 1]) {
-        requester = rest[i + 1]
-        i += 1
-      }
-    }
-
-    if (!body) throw new Error(`Usage\n${usage()}`)
-    if (!scheduledAt && !cadence) throw new Error(`Usage\n${usage()}`)
-
-    return {
-      kind: "reminder.create" as const,
-      title,
-      body,
-      ...(scheduledAt ? { scheduledAt } : {}),
-      ...(cadence ? { cadence } : {}),
-      ...(category ? { category } : {}),
-      ...(requester ? { requester } : {}),
-      ...(agent ? { agent } : {}),
-    }
-  }
-
-  throw new Error(`Usage\n${usage()}`)
 }
 
 function parseSessionCommand(args: string[]): OuroCliCommand {
@@ -856,6 +1122,7 @@ function parseConfigCommand(args: string[]): OuroCliCommand {
   if (sub === "model") {
     const modelName = rest[0]
     if (!modelName) throw new Error("Usage: ouro config model [--agent <name>] <model-name>")
+    if (modelName.startsWith("-")) throw new Error("config model requires a model name, not another flag.")
     return {
       kind: "config.model",
       ...(agent ? { agent } : {}),
@@ -872,10 +1139,11 @@ function parseConfigCommand(args: string[]): OuroCliCommand {
 }
 
 function parseMcpCommand(args: string[]): OuroCliCommand {
-  const [sub, ...rest] = args
+  const { agent, rest: cleaned } = extractAgentFlag(args)
+  const [sub, ...rest] = cleaned
   if (!sub) throw new Error(`Usage\n${usage()}`)
 
-  if (sub === "list") return { kind: "mcp.list" }
+  if (sub === "list") return { kind: "mcp.list", ...(agent ? { agent } : {}) }
 
   if (sub === "call") {
     const server = rest[0]
@@ -885,7 +1153,35 @@ function parseMcpCommand(args: string[]): OuroCliCommand {
     const argsIdx = rest.indexOf("--args")
     const mcpArgs = argsIdx !== -1 && rest[argsIdx + 1] ? rest[argsIdx + 1] : undefined
 
-    return { kind: "mcp.call", server, tool, ...(mcpArgs ? { args: mcpArgs } : {}) }
+    return { kind: "mcp.call", server, tool, ...(mcpArgs ? { args: mcpArgs } : {}), ...(agent ? { agent } : {}) }
+  }
+
+  if (sub === "canary") {
+    let socketOverride: string | undefined
+    let json = false
+    const requiredSenses: string[] = []
+    for (let i = 0; i < rest.length; i++) {
+      if (rest[i] === "--socket" && rest[i + 1]) {
+        socketOverride = rest[++i]
+        continue
+      }
+      if (rest[i] === "--require-sense" && rest[i + 1]) {
+        requiredSenses.push(rest[++i])
+        continue
+      }
+      if (rest[i] === "--json") {
+        json = true
+        continue
+      }
+    }
+    if (!agent) throw new Error("mcp canary requires --agent <name>")
+    return {
+      kind: "mcp.canary",
+      agent,
+      ...(socketOverride ? { socketOverride } : {}),
+      ...(requiredSenses.length > 0 ? { requiredSenses } : {}),
+      ...(json ? { json: true } : {}),
+    }
   }
 
   throw new Error(`Usage\n${usage()}`)
@@ -955,6 +1251,97 @@ function parseSetupCommand(args: string[]): OuroCliCommand {
   if (!tool) throw new Error("setup requires --tool (claude-code | codex)")
   if (tool !== "claude-code" && tool !== "codex") throw new Error(`Unknown tool: ${tool}. Supported: claude-code, codex`)
   return { kind: "setup", tool, ...(agent ? { agent } : {}) }
+}
+
+function parsePluginCommand(args: string[]): OuroCliCommand {
+  const subcommand = args[0]
+  if (!subcommand) {
+    throw new Error(
+      "plugin requires a subcommand: install <source> | list | remove <pluginId>",
+    )
+  }
+  let agent: string | undefined
+  let version: string | undefined
+  const positional: string[] = []
+  for (let i = 1; i < args.length; i++) {
+    if (args[i] === "--agent" && args[i + 1]) { agent = args[++i]; continue }
+    if (args[i] === "--version" && args[i + 1]) { version = args[++i]; continue }
+    positional.push(args[i])
+  }
+  if (subcommand === "install") {
+    const source = positional[0]
+    if (!source) {
+      throw new Error(
+        "plugin install requires a source (e.g. github:ourostack/ouroboros-skills:plugins/desk)",
+      )
+    }
+    return {
+      kind: "plugin.install",
+      source,
+      ...(agent ? { agent } : {}),
+      ...(version ? { version } : {}),
+    }
+  }
+  if (subcommand === "list") {
+    return { kind: "plugin.list", ...(agent ? { agent } : {}) }
+  }
+  if (subcommand === "remove") {
+    const pluginId = positional[0]
+    if (!pluginId) {
+      throw new Error("plugin remove requires a plugin id")
+    }
+    return {
+      kind: "plugin.remove",
+      pluginId,
+      ...(agent ? { agent } : {}),
+    }
+  }
+  throw new Error(
+    `Unknown plugin subcommand: ${subcommand}. Supported: install | list | remove`,
+  )
+}
+
+function parseMigrateToDeskCommand(args: string[]): OuroCliCommand {
+  let agent: string | undefined
+  let root: string | undefined
+  let force = false
+  let dryRun = false
+
+  for (let i = 0; i < args.length; i += 1) {
+    const token = args[i]
+    if (token === "--agent" && args[i + 1]) {
+      agent = args[++i]
+      continue
+    }
+    if (token === "--root" && args[i + 1]) {
+      root = args[++i]
+      continue
+    }
+    if (token === "--force") {
+      force = true
+      continue
+    }
+    if (token === "--dry-run") {
+      dryRun = true
+      continue
+    }
+    throw new Error(
+      "Usage: ouro migrate-to-desk --agent <name> [--root <path>] [--force] [--dry-run]",
+    )
+  }
+
+  if (!agent) {
+    throw new Error(
+      "Usage: ouro migrate-to-desk --agent <name> [--root <path>] [--force] [--dry-run]",
+    )
+  }
+  return {
+    kind: "migrate-to-desk",
+    agent,
+    ...(root ? { root } : {}),
+    ...(force ? { force: true } : {}),
+    ...(dryRun ? { dryRun: true } : {}),
+  }
 }
 
 function parseBlueBubblesCommand(args: string[]): OuroCliCommand {
@@ -1058,11 +1445,14 @@ export function parseOuroCommand(args: string[]): OuroCliCommand {
   if (head === "stop" || head === "down") return { kind: "daemon.stop" }
   if (head === "status") {
     const { agent, rest } = extractAgentFlag(args.slice(1))
+    const json = rest.includes("--json")
+    const unknown = rest.filter((token) => token !== "--json")
     if (agent) {
-      if (rest.length > 0) throw new Error("Usage: ouro status --agent <name>")
+      if (unknown.length > 0 || json) throw new Error("Usage: ouro status [--json] OR ouro status --agent <name>")
       return { kind: "provider.status", agent }
     }
-    return { kind: "daemon.status" }
+    if (unknown.length > 0) throw new Error("Usage: ouro status [--json] OR ouro status --agent <name>")
+    return { kind: "daemon.status", ...(json ? { json: true } : {}) }
   }
   if (head === "use") return parseProviderUseCommand(args.slice(1))
   if (head === "check") return parseProviderCheckCommand(args.slice(1))
@@ -1072,18 +1462,22 @@ export function parseOuroCommand(args: string[]): OuroCliCommand {
     return agent ? { kind: "repair", agent } : { kind: "repair" }
   }
   if (head === "provider") return parseProviderCommand(args.slice(1))
+  if (head === "mail") return parseMailCommand(args.slice(1))
+  if (head === "dns") return parseDnsCommand(args.slice(1))
   if (head === "logs") {
     if (second === "prune") return { kind: "daemon.logs.prune" }
     return { kind: "daemon.logs" }
   }
-  if (head === "outlook") return { kind: "outlook", ...(args.includes("--json") ? { json: true } : {}) }
+  if (head === "mailbox" || head === "outlook") return { kind: "mailbox", ...(args.includes("--json") ? { json: true } : {}) }
   if (head === "hatch") return parseHatchCommand(args.slice(1))
   if (head === "auth") return parseAuthCommand(args.slice(1))
+  if (head === "account") return parseAccountCommand(args.slice(1))
   if (head === "connect") return parseConnectCommand(args.slice(1))
   if (head === "vault") return parseVaultCommand(args.slice(1))
-  if (head === "task") return parseTaskCommand(args.slice(1))
-  if (head === "reminder") return parseReminderCommand(args.slice(1))
   if (head === "habit") return parseHabitCommand(args.slice(1))
+  if (head === "desk") return parseDeskCommand(args.slice(1))
+  if (head === "task") return parseTaskAliasCommand(args.slice(1))
+  if (head === "migrate-to-desk") return parseMigrateToDeskCommand(args.slice(1))
   if (head === "friend") return parseFriendCommand(args.slice(1))
   if (head === "config") return parseConfigCommand(args.slice(1))
   if (head === "mcp") return parseMcpCommand(args.slice(1))
@@ -1117,8 +1511,30 @@ export function parseOuroCommand(args: string[]): OuroCliCommand {
   if (head === "link") return parseLinkCommand(args.slice(1))
   if (head === "mcp-serve") return parseMcpServeCommand(args.slice(1))
   if (head === "setup") return parseSetupCommand(args.slice(1))
+  if (head === "plugin") return parsePluginCommand(args.slice(1))
   if (head === "clone") return parseCloneCommand(args.slice(1))
-  if (head === "doctor") return { kind: "doctor" }
+  if (head === "doctor") {
+    const tail = args.slice(1)
+    const json = tail.includes("--json")
+    const hasCategoryFlag = tail.includes("--category")
+    const hasStrictFlag = tail.includes("--strict")
+    let category: string | undefined
+    let strict = false
+    for (let i = 0; i < tail.length; i++) {
+      if (tail[i] === "--category" && typeof tail[i + 1] === "string") {
+        category = tail[i + 1]
+      } else if (tail[i] === "--strict") {
+        strict = true
+      }
+    }
+    const command: Extract<OuroCliCommand, { kind: "doctor" }> = { kind: "doctor" }
+    if (category !== undefined) command.category = category
+    if (strict) command.strict = true
+    // --json default is only emitted for "plain" doctor invocations.
+    // CI variants (--strict, --category) omit it; consumers go through doctorResult directly.
+    if (!hasCategoryFlag && !hasStrictFlag) command.json = json
+    return command
+  }
   if (head === "bluebubbles") return parseBlueBubblesCommand(args.slice(1))
 
   const suggestion = suggestCommand(head)

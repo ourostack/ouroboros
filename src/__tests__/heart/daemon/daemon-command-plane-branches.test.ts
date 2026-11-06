@@ -27,12 +27,17 @@ function sendRaw(socketPath: string, payload: string): Promise<string> {
 }
 
 describe("daemon command plane branches", () => {
-  const make = (socketPath: string, bundlesRoot?: string) => {
+  const make = (
+    socketPath: string,
+    bundlesRoot?: string,
+    options?: { onStopCommandComplete?: () => void },
+  ) => {
     const processManager = {
       listAgentSnapshots: vi.fn(() => []),
       startAutoStartAgents: vi.fn(async () => undefined),
       stopAll: vi.fn(async () => undefined),
       startAgent: vi.fn(async () => undefined),
+      resetAgentFailureState: vi.fn(),
       sendToAgent: vi.fn(),
     }
 
@@ -45,6 +50,8 @@ describe("daemon command plane branches", () => {
 
     const healthMonitor = {
       runChecks: vi.fn(async () => [{ name: "agent-processes", status: "ok" as const, message: "good" }]),
+      getLastResults: vi.fn(() => []),
+      stopPeriodicChecks: vi.fn(),
     }
 
     const router = {
@@ -56,6 +63,7 @@ describe("daemon command plane branches", () => {
       startAutoStartSenses: vi.fn(async () => undefined),
       stopAll: vi.fn(async () => undefined),
       listSenseRows: vi.fn(() => []),
+      reviveSense: vi.fn(),
     }
 
     const daemon = new OuroDaemon({
@@ -66,10 +74,11 @@ describe("daemon command plane branches", () => {
       router,
       bundlesRoot,
       senseManager,
-      outlookServerFactory: vi.fn(async () => ({
+      mailboxServerFactory: vi.fn(async () => ({
         url: "http://127.0.0.1:6876",
         stop: async () => undefined,
       })),
+      onStopCommandComplete: options?.onStopCommandComplete,
     } as any)
     return { daemon, processManager, scheduler, healthMonitor, router, senseManager }
   }
@@ -82,7 +91,8 @@ describe("daemon command plane branches", () => {
     const socketPath = tmpSocketPath("daemon-start-stop")
     fs.writeFileSync(socketPath, "stale", "utf-8")
 
-    const { daemon, processManager, senseManager } = make(socketPath)
+    const onStopCommandComplete = vi.fn()
+    const { daemon, processManager, senseManager, healthMonitor } = make(socketPath, undefined, { onStopCommandComplete })
 
     const started = await daemon.handleCommand({ kind: "daemon.start" })
     expect(started).toEqual({ ok: true, message: "daemon started" })
@@ -94,7 +104,204 @@ describe("daemon command plane branches", () => {
     expect(stopped).toEqual({ ok: true, message: "daemon stopped" })
     expect(processManager.stopAll).toHaveBeenCalled()
     expect(senseManager.stopAll).toHaveBeenCalled()
+    expect(healthMonitor.stopPeriodicChecks).toHaveBeenCalledTimes(1)
+    expect(onStopCommandComplete).toHaveBeenCalledTimes(1)
     expect(fs.existsSync(socketPath)).toBe(false)
+  })
+
+  it("daemon.restart runs the stop pathway with a restart-requested audit log; launchctl respawn implied", async () => {
+    const socketPath = tmpSocketPath("daemon-restart")
+    const onStopCommandComplete = vi.fn()
+    const { daemon, processManager, senseManager } = make(socketPath, undefined, { onStopCommandComplete })
+
+    await daemon.handleCommand({ kind: "daemon.start" })
+    const restarted = await daemon.handleCommand({
+      kind: "daemon.restart",
+      reason: "bluebubbles recovery queue wedged",
+      requestedBy: "slugger",
+    })
+
+    expect(restarted).toEqual({
+      ok: true,
+      message: "daemon restarting — launchctl will respawn",
+    })
+    // Stop pathway exercised — same shutdown semantics as daemon.stop.
+    expect(processManager.stopAll).toHaveBeenCalled()
+    expect(senseManager.stopAll).toHaveBeenCalled()
+    expect(onStopCommandComplete).toHaveBeenCalledTimes(1)
+  })
+
+  it("daemon.restart tolerates missing reason + requestedBy (both optional in audit log)", async () => {
+    const socketPath = tmpSocketPath("daemon-restart-no-reason")
+    const { daemon } = make(socketPath, undefined, { onStopCommandComplete: vi.fn() })
+    await daemon.handleCommand({ kind: "daemon.start" })
+
+    const restarted = await daemon.handleCommand({ kind: "daemon.restart" })
+    expect(restarted.ok).toBe(true)
+    expect(restarted.message).toContain("daemon restarting")
+  })
+
+  it("opens the command socket even when autostart workers are still blocked", async () => {
+    const socketPath = tmpSocketPath("daemon-start-before-autostart")
+    const { daemon, processManager, senseManager } = make(socketPath)
+    processManager.startAutoStartAgents.mockImplementation(() => new Promise<void>(() => {}))
+    senseManager.startAutoStartSenses.mockImplementation(() => new Promise<void>(() => {}))
+
+    await daemon.start()
+
+    expect(processManager.startAutoStartAgents).toHaveBeenCalledTimes(1)
+    expect(senseManager.startAutoStartSenses).toHaveBeenCalledTimes(1)
+    const raw = await sendRaw(socketPath, JSON.stringify({ kind: "daemon.status" }))
+    expect(JSON.parse(raw)).toEqual(expect.objectContaining({ ok: true }))
+
+    await daemon.stop()
+  })
+
+  it("uses nonblocking autostart trigger hooks when managers provide them", async () => {
+    const socketPath = tmpSocketPath("daemon-start-trigger-hooks")
+    const { daemon, processManager, senseManager } = make(socketPath)
+    ;(processManager as any).triggerAutoStartAgents = vi.fn()
+    ;(senseManager as any).triggerAutoStartSenses = vi.fn()
+
+    await daemon.start()
+
+    expect((processManager as any).triggerAutoStartAgents).toHaveBeenCalledTimes(1)
+    expect((senseManager as any).triggerAutoStartSenses).toHaveBeenCalledTimes(1)
+    expect(processManager.startAutoStartAgents).not.toHaveBeenCalled()
+    expect(senseManager.startAutoStartSenses).not.toHaveBeenCalled()
+
+    await daemon.stop()
+  })
+
+  it("waits to autostart senses until agent startup has settled", async () => {
+    vi.useFakeTimers()
+    const socketPath = tmpSocketPath("daemon-start-senses-after-agents")
+    const { daemon, processManager, senseManager } = make(socketPath)
+    let agentStatus = "starting"
+    processManager.listAgentSnapshots.mockImplementation(() => [{
+      name: "slugger",
+      channel: "inner-dialog",
+      status: agentStatus,
+      pid: null,
+      restartCount: 0,
+      startedAt: null,
+      lastCrashAt: null,
+      backoffMs: 1000,
+      errorReason: null,
+      fixHint: null,
+    }])
+
+    try {
+      await daemon.start()
+
+      expect(processManager.startAutoStartAgents).toHaveBeenCalledTimes(1)
+      expect(senseManager.startAutoStartSenses).not.toHaveBeenCalled()
+
+      agentStatus = "running"
+      await vi.advanceTimersByTimeAsync(250)
+
+      expect(senseManager.startAutoStartSenses).toHaveBeenCalledTimes(1)
+    } finally {
+      await daemon.stop()
+      vi.useRealTimers()
+    }
+  })
+
+  it("cancels deferred sense autostart when the daemon stops first", async () => {
+    vi.useFakeTimers()
+    const socketPath = tmpSocketPath("daemon-start-senses-cancelled")
+    const { daemon, processManager, senseManager } = make(socketPath)
+    processManager.listAgentSnapshots.mockImplementation(() => [{
+      name: "slugger",
+      channel: "inner-dialog",
+      status: "starting",
+      pid: null,
+      restartCount: 0,
+      startedAt: null,
+      lastCrashAt: null,
+      backoffMs: 1000,
+      errorReason: null,
+      fixHint: null,
+    }])
+
+    try {
+      await daemon.start()
+      await daemon.stop()
+      await vi.advanceTimersByTimeAsync(250)
+
+      expect(senseManager.startAutoStartSenses).not.toHaveBeenCalled()
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it("contains fallback autostart errors after opening the command socket", async () => {
+    const firstSocketPath = tmpSocketPath("daemon-start-autostart-error-a")
+    const first = make(firstSocketPath)
+    first.processManager.startAutoStartAgents.mockRejectedValueOnce(new Error("agent start boom"))
+    first.senseManager.startAutoStartSenses.mockRejectedValueOnce("sense start raw")
+
+    try {
+      await first.daemon.start()
+      await Promise.resolve()
+      await Promise.resolve()
+      expect(first.processManager.startAutoStartAgents).toHaveBeenCalledTimes(1)
+    } finally {
+      await first.daemon.stop()
+    }
+
+    const secondSocketPath = tmpSocketPath("daemon-start-autostart-error-b")
+    const second = make(secondSocketPath)
+    second.processManager.startAutoStartAgents.mockRejectedValueOnce("agent start raw")
+    second.senseManager.startAutoStartSenses.mockRejectedValueOnce(new Error("sense start boom"))
+
+    try {
+      await second.daemon.start()
+      await Promise.resolve()
+      await Promise.resolve()
+      expect(second.processManager.startAutoStartAgents).toHaveBeenCalledTimes(1)
+    } finally {
+      await second.daemon.stop()
+    }
+  })
+
+  it("starts cleanly when no sense manager is installed", async () => {
+    const socketPath = tmpSocketPath("daemon-start-no-sense-manager")
+    const processManager = {
+      listAgentSnapshots: vi.fn(() => []),
+      startAutoStartAgents: vi.fn(async () => undefined),
+      stopAll: vi.fn(async () => undefined),
+      startAgent: vi.fn(async () => undefined),
+      sendToAgent: vi.fn(),
+    }
+    const daemon = new OuroDaemon({
+      socketPath,
+      processManager,
+      scheduler: {
+        listJobs: vi.fn(() => []),
+        triggerJob: vi.fn(async () => ({ ok: true, message: "triggered" })),
+        reconcile: vi.fn(async () => undefined),
+        recordTaskRun: vi.fn(async () => undefined),
+      },
+      healthMonitor: {
+        runChecks: vi.fn(async () => []),
+      },
+      router: {
+        send: vi.fn(async () => ({ id: "msg-1", queuedAt: "2026-03-05T23:00:00.000Z" })),
+        pollInbox: vi.fn(() => []),
+      },
+      mailboxServerFactory: vi.fn(async () => ({
+        url: "http://127.0.0.1:6876",
+        stop: async () => undefined,
+      })),
+    } as any)
+
+    try {
+      await daemon.start()
+      expect(processManager.startAutoStartAgents).toHaveBeenCalledTimes(1)
+    } finally {
+      await daemon.stop()
+    }
   })
 
   it("returns structured status data with separate senses and workers", async () => {
@@ -110,7 +317,7 @@ describe("daemon command plane branches", () => {
         daemon: "running",
         workerCount: 0,
         senseCount: 0,
-        outlookUrl: expect.stringMatching(/^http:\/\/127\.0\.0\.1:\d+$/),
+        mailboxUrl: expect.stringMatching(/^http:\/\/127\.0\.0\.1:\d+$/),
         entryPath: expect.any(String),
         mode: expect.stringMatching(/^(dev|production)$/),
       }),
@@ -133,6 +340,55 @@ describe("daemon command plane branches", () => {
 
     const disabledOnlyStatus = await daemon.handleCommand({ kind: "daemon.status" })
     expect(disabledOnlyStatus.summary).toBe("daemon=running\tworkers=0\tsenses=1\thealth=ok")
+
+    senseManager.listSenseRows.mockReturnValueOnce([
+      {
+        agent: "slugger",
+        sense: "bluebubbles",
+        label: "BlueBubbles",
+        enabled: true,
+        status: "not_attached",
+        detail: "not attached on this machine",
+      },
+    ])
+
+    const notAttachedStatus = await daemon.handleCommand({ kind: "daemon.status" })
+    expect(notAttachedStatus.summary).toContain("health=ok")
+    expect(notAttachedStatus.summary).toContain("items=slugger/bluebubbles:not_attached")
+
+    senseManager.listSenseRows.mockReturnValueOnce([
+      {
+        agent: "slugger",
+        sense: "bluebubbles",
+        label: "BlueBubbles",
+        enabled: true,
+        status: "error",
+        detail: "listener unreachable",
+      },
+    ])
+
+    const unhealthySenseStatus = await daemon.handleCommand({ kind: "daemon.status" })
+    expect(unhealthySenseStatus.summary).toBe(
+      "daemon=running\tworkers=0\tsenses=1\thealth=warn\tdegraded=sense:slugger/bluebubbles:error",
+    )
+    expect(unhealthySenseStatus.data).toEqual(expect.objectContaining({
+      overview: expect.objectContaining({ health: "warn" }),
+    }))
+
+    senseManager.listSenseRows.mockReturnValueOnce([
+      {
+        agent: "slugger",
+        sense: "mail",
+        label: "Mail",
+        enabled: true,
+        status: "ready",
+        detail: "configured but worker has no proof yet",
+      },
+    ])
+
+    const readyOnlySenseStatus = await daemon.handleCommand({ kind: "daemon.status" })
+    expect(readyOnlySenseStatus.summary).toContain("health=warn")
+    expect(readyOnlySenseStatus.summary).toContain("sense:slugger/mail:ready")
 
     processManager.listAgentSnapshots.mockReturnValueOnce([
       {
@@ -181,7 +437,7 @@ describe("daemon command plane branches", () => {
         daemon: "running",
         workerCount: 1,
         senseCount: 3,
-        outlookUrl: expect.stringMatching(/^http:\/\/127\.0\.0\.1:\d+$/),
+        mailboxUrl: expect.stringMatching(/^http:\/\/127\.0\.0\.1:\d+$/),
       }),
       workers: [
         expect.objectContaining({
@@ -201,6 +457,28 @@ describe("daemon command plane branches", () => {
     })
   })
 
+  it("rolls last health monitor canary failures into daemon status", async () => {
+    const socketPath = tmpSocketPath("daemon-status-health-checks")
+    const isolatedBundles = path.join(os.tmpdir(), `daemon-status-health-bundles-${Date.now()}-${Math.random().toString(16).slice(2)}`)
+    fs.mkdirSync(isolatedBundles, { recursive: true })
+    const { daemon, healthMonitor } = make(socketPath, isolatedBundles)
+    const canaryFailure = {
+      name: "sense-probe:mcp-canary:slugger",
+      status: "critical" as const,
+      message: "mcp canary failed: transport closed",
+    }
+    healthMonitor.getLastResults.mockReturnValueOnce([canaryFailure])
+
+    const status = await daemon.handleCommand({ kind: "daemon.status" })
+
+    expect(status.summary).toContain("health=warn")
+    expect(status.summary).toContain("health-check:sense-probe:mcp-canary:slugger:critical")
+    expect(status.data).toEqual(expect.objectContaining({
+      overview: expect.objectContaining({ health: "warn" }),
+      healthChecks: [canaryFailure],
+    }))
+  })
+
   it("includes provider rows in status when bundle agents exist", async () => {
     const socketPath = tmpSocketPath("daemon-status-providers")
     const isolatedBundles = path.join(os.tmpdir(), `daemon-status-provider-bundles-${Date.now()}-${Math.random().toString(16).slice(2)}`)
@@ -217,16 +495,20 @@ describe("daemon command plane branches", () => {
           expect.objectContaining({
             agent: "slugger",
             lane: "outward",
-            provider: "unconfigured",
-            model: "-",
-            detail: "ouro use --agent slugger --lane outward --provider <provider> --model <model>",
+            provider: "anthropic",
+            model: "claude-opus-4-6",
+            source: "agent.json",
+            readiness: "unknown",
+            credential: "checked previously",
           }),
           expect.objectContaining({
             agent: "slugger",
             lane: "inner",
-            provider: "unconfigured",
-            model: "-",
-            detail: "ouro use --agent slugger --lane inner --provider <provider> --model <model>",
+            provider: "anthropic",
+            model: "claude-opus-4-6",
+            source: "agent.json",
+            readiness: "unknown",
+            credential: "checked previously",
           }),
         ],
       })
@@ -265,7 +547,14 @@ describe("daemon command plane branches", () => {
       sessionId: "session-1",
       taskRef: "task-7",
     }))
-    expect(processManager.sendToAgent).toHaveBeenCalledWith("ouroboros", { type: "message" })
+    // Regression guard (2026-05-11 wake-storm fix): message.send is now
+    // queue-only. The handler MUST NOT auto-start or auto-wake the recipient.
+    // Callers that want immediate processing must send `inner.wake`
+    // separately. The previous behavior — calling startAgent + sendToAgent
+    // here — defeated the post-tool-use hook's intentional "queue-only,
+    // don't wake on every tool call" design and burned ~$50 in API cost.
+    expect(processManager.startAgent).not.toHaveBeenCalledWith("ouroboros")
+    expect(processManager.sendToAgent).not.toHaveBeenCalledWith("ouroboros", { type: "message" })
 
     const polled = await daemon.handleCommand({ kind: "message.poll", agent: "ouroboros" })
     expect(polled.summary).toBe("1 messages")
@@ -282,7 +571,195 @@ describe("daemon command plane branches", () => {
 
     const hatch = await daemon.handleCommand({ kind: "hatch.start" })
     expect(hatch.ok).toBe(true)
-    expect(hatch.message).toContain("Gate 6")
+    expect(hatch.message).toContain("hatch flow is stubbed")
+  })
+
+  it("revives a managed sense by resetting failure state, starting it, and returning its fresh snapshot", async () => {
+    const socketPath = tmpSocketPath("daemon-sense-revive")
+    const { daemon, processManager } = make(socketPath)
+    const revivedSnapshot = {
+      name: "slugger:bluebubbles",
+      channel: "bluebubbles",
+      status: "running",
+      pid: 18790,
+      restartCount: 0,
+      startedAt: "2026-05-14T10:00:00.000Z",
+      lastCrashAt: null,
+      backoffMs: 1000,
+      lastExitCode: null,
+      lastSignal: null,
+      errorReason: null,
+      fixHint: null,
+    }
+    processManager.listAgentSnapshots
+      .mockReturnValueOnce([
+        {
+          ...revivedSnapshot,
+          status: "crashed",
+          pid: null,
+          startedAt: null,
+          errorReason: "respawn loop detected",
+          fixHint: "investigate the root cause then run `ouro up` to resume",
+        },
+      ])
+      .mockReturnValueOnce([revivedSnapshot])
+    processManager.resetAgentFailureState = vi.fn()
+
+    const response = await daemon.handleCommand({
+      kind: "daemon.sense_revive",
+      agent: "slugger",
+      sense: "bluebubbles",
+      reason: "manual recovery after fixing BlueBubbles credentials",
+    } as never)
+
+    expect(processManager.resetAgentFailureState).toHaveBeenCalledWith("slugger:bluebubbles")
+    expect(processManager.startAgent).toHaveBeenCalledWith("slugger:bluebubbles")
+    expect(response).toEqual({
+      ok: true,
+      message: "revived slugger/bluebubbles",
+      data: revivedSnapshot,
+    })
+  })
+
+  it("revives live sense-manager senses when worker snapshots do not contain sense processes", async () => {
+    const socketPath = tmpSocketPath("daemon-sense-revive-sense-manager")
+    const { daemon, processManager, senseManager } = make(socketPath)
+    const revivedRow = {
+      agent: "slugger",
+      sense: "bluebubbles",
+      label: "BlueBubbles",
+      enabled: true,
+      status: "running",
+      detail: ":18789 /bluebubbles-webhook",
+    }
+    processManager.listAgentSnapshots.mockReturnValue([])
+    senseManager.reviveSense.mockResolvedValue(revivedRow)
+
+    const response = await daemon.handleCommand({
+      kind: "daemon.sense_revive",
+      agent: "slugger",
+      sense: "bluebubbles",
+      reason: "final-validation",
+    } as never)
+
+    expect(senseManager.reviveSense).toHaveBeenCalledWith("slugger", "bluebubbles")
+    expect(processManager.resetAgentFailureState).not.toHaveBeenCalled()
+    expect(processManager.startAgent).not.toHaveBeenCalled()
+    expect(response).toEqual({
+      ok: true,
+      message: "revived slugger/bluebubbles",
+      data: revivedRow,
+    })
+  })
+
+  it("returns the matched revive target when no fresh snapshot is available after restart", async () => {
+    const socketPath = tmpSocketPath("daemon-sense-revive-stale-snapshot")
+    const { daemon, processManager } = make(socketPath)
+    const matchedSnapshot = {
+      name: "slugger:bluebubbles",
+      channel: "bluebubbles",
+      status: "crashed",
+      pid: null,
+      restartCount: 3,
+      startedAt: null,
+      lastCrashAt: "2026-05-14T09:59:00.000Z",
+      backoffMs: 1000,
+      lastExitCode: 1,
+      lastSignal: null,
+      errorReason: "respawn loop detected",
+      fixHint: "investigate the root cause then run `ouro up` to resume",
+    }
+    processManager.listAgentSnapshots
+      .mockReturnValueOnce([matchedSnapshot])
+      .mockReturnValueOnce([])
+    processManager.resetAgentFailureState = vi.fn()
+
+    const response = await daemon.handleCommand({
+      kind: "daemon.sense_revive",
+      agent: "slugger",
+      sense: "bluebubbles",
+      reason: "manual recovery after fixing BlueBubbles credentials",
+    } as never)
+
+    expect(processManager.resetAgentFailureState).toHaveBeenCalledWith("slugger:bluebubbles")
+    expect(processManager.startAgent).toHaveBeenCalledWith("slugger:bluebubbles")
+    expect(response).toEqual({
+      ok: true,
+      message: "revived slugger/bluebubbles",
+      data: matchedSnapshot,
+    })
+  })
+
+  it("returns a friendly error for unknown sense revive targets without throwing or starting anything", async () => {
+    const socketPath = tmpSocketPath("daemon-sense-revive-unknown")
+    const { daemon, processManager } = make(socketPath)
+    processManager.listAgentSnapshots.mockReturnValue([
+      {
+        name: "slugger:mail",
+        channel: "mail",
+        status: "running",
+        pid: 4321,
+        restartCount: 0,
+        startedAt: "2026-05-14T10:00:00.000Z",
+        lastCrashAt: null,
+        backoffMs: 1000,
+        lastExitCode: null,
+        lastSignal: null,
+        errorReason: null,
+        fixHint: null,
+      },
+    ])
+    processManager.resetAgentFailureState = vi.fn()
+
+    await expect(daemon.handleCommand({
+      kind: "daemon.sense_revive",
+      agent: "slugger",
+      sense: "bluebubbles",
+      reason: "try missing sense",
+    } as never)).resolves.toEqual({
+      ok: false,
+      error: "No managed sense 'bluebubbles' is registered for agent 'slugger'.",
+    })
+
+    await expect(daemon.handleCommand({
+      kind: "daemon.sense_revive",
+      agent: "ghost",
+      sense: "bluebubbles",
+      reason: "try missing agent",
+    } as never)).resolves.toEqual({
+      ok: false,
+      error: "No managed agent 'ghost' is registered with daemon-managed senses.",
+    })
+    expect(processManager.resetAgentFailureState).not.toHaveBeenCalled()
+    expect(processManager.startAgent).not.toHaveBeenCalled()
+  })
+
+  it("returns a friendly invalid-payload response for malformed sense revive commands", async () => {
+    const socketPath = tmpSocketPath("daemon-sense-revive-invalid-payload")
+    const { daemon, processManager } = make(socketPath)
+
+    await expect(daemon.handleCommand({
+      kind: "daemon.sense_revive",
+      agent: "slugger",
+      reason: "try malformed payload",
+    } as never)).resolves.toEqual({
+      ok: false,
+      error: "Invalid daemon.sense_revive payload: expected string fields 'agent', 'sense', and 'reason'.",
+    })
+
+    await expect(daemon.handleCommand({
+      kind: "daemon.sense_revive",
+      agent: 12,
+      sense: "bluebubbles",
+      reason: "try non-string agent",
+    } as never)).resolves.toEqual({
+      ok: false,
+      error: "Invalid daemon.sense_revive payload: expected string fields 'agent', 'sense', and 'reason'.",
+    })
+
+    expect(processManager.listAgentSnapshots).not.toHaveBeenCalled()
+    expect(processManager.resetAgentFailureState).not.toHaveBeenCalled()
+    expect(processManager.startAgent).not.toHaveBeenCalled()
   })
 
   it("starts the managed agent and wakes inner dialog via direct IPC", async () => {

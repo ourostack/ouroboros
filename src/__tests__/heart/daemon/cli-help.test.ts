@@ -23,15 +23,24 @@ describe("COMMAND_REGISTRY", () => {
   })
 
   it("contains all top-level commands from parseOuroCommand", () => {
+    // W6 Unit 8b retired the legacy `task` and `reminder` umbrella verbs
+    // alongside the built-in task module; W6 Unit 10 restored `task` as
+    // an alias that routes through the desk MCP server (verb-and-router
+    // layer — no business logic in the harness).
     const expectedCommands = [
       "up", "stop", "down", "status", "logs", "dev", "hatch", "rollback", "versions",
-      "doctor", "outlook", "whoami", "config", "changelog", "chat", "msg", "task",
-      "reminder", "habit", "poke", "friend", "link", "auth", "thoughts", "inner",
+      "doctor", "mailbox", "outlook", "whoami", "config", "changelog", "chat", "msg",
+      "habit", "poke", "friend", "link", "auth", "thoughts", "inner",
       "attention", "session", "mcp", "mcp-serve", "setup", "hook", "connect", "bluebubbles",
+      // desk umbrella CLI + task alias
+      "desk", "task",
+      // legacy-tasks-to-desk migrator
+      "migrate-to-desk",
     ]
     for (const cmd of expectedCommands) {
       expect(COMMAND_REGISTRY).toHaveProperty(cmd)
     }
+    expect(COMMAND_REGISTRY).not.toHaveProperty("reminder")
   })
 
   it("each entry has required fields", () => {
@@ -53,8 +62,9 @@ describe("COMMAND_REGISTRY", () => {
   })
 
   it("entries with subcommands have a non-empty array", () => {
-    // task, friend, habit, auth, attention, mcp should have subcommands
-    const commandsWithSubcommands = ["task", "friend", "habit", "auth", "attention", "mcp"]
+    // friend, habit, auth, attention, mcp, desk, task should have subcommands
+    // (legacy task umbrella retired in W6 Unit 8b; restored as alias in W6 Unit 10)
+    const commandsWithSubcommands = ["friend", "habit", "auth", "attention", "mcp", "desk", "task"]
     for (const cmd of commandsWithSubcommands) {
       const entry = COMMAND_REGISTRY[cmd]
       expect(entry.subcommands).toBeDefined()
@@ -99,11 +109,19 @@ describe("getGroupedHelp()", () => {
     expect(result).toContain("stop")
     // chat should appear in the Chat section
     expect(result).toContain("chat")
-    // task should appear in the Tasks section
-    expect(result).toContain("task")
+    // poke should appear in the Tasks section
+    expect(result).toContain("poke")
     // connect should appear in the Auth section
     expect(result).toContain("connect")
-    expect(result).toContain("Connect providers, portable integrations, and local senses from one guided bay")
+    expect(result).toContain("Set up providers, portable integrations, and local senses from one guided screen")
+    expect(result).toContain("mailbox")
+    expect(result).not.toContain("outlook")
+  })
+
+  it("keeps deprecated aliases out of grouped help", () => {
+    const result = getGroupedHelp()
+    expect(COMMAND_REGISTRY["outlook"].hidden).toBe(true)
+    expect(result).not.toContain("outlook")
   })
 
   it("includes a Usage header line", () => {
@@ -141,15 +159,34 @@ describe("getCommandHelp()", () => {
     expect(result).toContain(COMMAND_REGISTRY["up"].description)
   })
 
+  it("returns help for the deprecated outlook alias when asked directly", () => {
+    const result = getCommandHelp("outlook")
+    expect(result).toContain("Deprecated alias")
+    expect(result).toContain("ouro outlook [--json]")
+  })
+
+  it("describes `up` in plain language instead of leaning on house metaphor", () => {
+    expect(COMMAND_REGISTRY["up"].description).toContain("Start and check Ouro")
+  })
+
+  it("describes connect subcommands in terms of what travels with the agent versus this machine", () => {
+    expect(COMMAND_REGISTRY["connect"].description).toContain("guided screen")
+    expect(getCommandHelp("connect perplexity")).toContain("portable")
+    expect(getCommandHelp("connect embeddings")).toContain("portable")
+    expect(getCommandHelp("connect teams")).toContain("portable")
+    expect(getCommandHelp("connect bluebubbles")).toContain("this machine only")
+    expect(getCommandHelp("connect mail")).toContain("portable")
+  })
+
   it("includes usage for known command", () => {
-    const result = getCommandHelp("task")!
-    expect(result).toContain(COMMAND_REGISTRY["task"].usage)
+    const result = getCommandHelp("friend")!
+    expect(result).toContain(COMMAND_REGISTRY["friend"].usage)
   })
 
   it("includes subcommands when present", () => {
-    const result = getCommandHelp("task")!
-    const taskEntry = COMMAND_REGISTRY["task"]
-    for (const sub of taskEntry.subcommands!) {
+    const result = getCommandHelp("friend")!
+    const friendEntry = COMMAND_REGISTRY["friend"]
+    for (const sub of friendEntry.subcommands!) {
       expect(result).toContain(sub)
     }
   })
@@ -193,16 +230,45 @@ describe("getCommandHelp()", () => {
     expect(result).not.toContain("--generate-unlock-secret")
   })
 
+  it("shows generic vault item help before compatibility aliases", () => {
+    const result = getCommandHelp("vault")
+
+    expect(result).not.toBeNull()
+    expect(result).toContain("vault item set")
+    expect(result).toContain("vault item status")
+    expect(result).toContain("vault item list")
+    expect(result).toContain("vault ops porkbun set")
+    expect(result!.indexOf("vault item set")).toBeLessThan(result!.indexOf("vault ops porkbun set"))
+
+    expect(getCommandHelp("vault item set")).toContain("ordinary vault item")
+    expect(getCommandHelp("vault item set")).toContain("no assumed use")
+    expect(getCommandHelp("vault item set")).toContain("notes")
+    expect(getCommandHelp("vault item set")).toContain("secret values are not printed")
+
+    expect(getCommandHelp("vault ops porkbun set")).toContain("deprecated compatibility alias")
+    expect(getCommandHelp("vault ops porkbun set")).toContain("ouro vault item set --template porkbun-api")
+    expect(getCommandHelp("vault ops porkbun set")).not.toContain("ops vault item")
+  })
+
   it("returns focused help for connect", () => {
     const result = getCommandHelp("connect")
 
     expect(result).not.toBeNull()
-    expect(result).toContain("ouro connect [providers|perplexity|embeddings|teams|bluebubbles] [--agent <name>]")
+    expect(result).toContain("ouro connect [providers|perplexity|embeddings|teams|bluebubbles|mail] [--agent <name>]")
     expect(result).toContain("providers")
     expect(result).toContain("perplexity")
     expect(result).toContain("embeddings")
     expect(result).toContain("teams")
     expect(result).toContain("bluebubbles")
+    expect(result).toContain("mail")
+  })
+
+  it("returns focused help for mail import-mbox", () => {
+    const result = getCommandHelp("mail import-mbox")
+
+    expect(result).not.toBeNull()
+    expect(result).toContain("ouro mail import-mbox (--file <path>|--discover)")
+    expect(result).toContain("--owner-email <email>")
   })
 })
 
@@ -348,6 +414,8 @@ describe("runOuroCli help execution", () => {
     const deps = makeDeps()
     const result = await runOuroCli(["-h"], deps)
     expect(result).toContain("Lifecycle")
+    expect(result).not.toContain("config model")
+    expect(result).not.toContain("auth switch")
   })
 
   it("ouro help outputs grouped help via command routing", async () => {

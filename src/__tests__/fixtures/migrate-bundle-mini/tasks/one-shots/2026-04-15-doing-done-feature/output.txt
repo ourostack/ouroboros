@@ -1,0 +1,2 @@
+non-markdown artifact under a terminal task dir.
+inherits terminal from parent.

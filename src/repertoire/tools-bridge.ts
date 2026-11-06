@@ -155,5 +155,8 @@ export const bridgeToolDefinitions: ToolDefinition[] = [
       return `unknown bridge action: ${action}`
     },
     summaryKeys: ["action", "bridgeId", "objective", "friendId", "channel", "key"],
+    riskProfile: (args) => args.action === "status"
+      ? { mutates: "none", risk: "low", reason: "bridge status is read-only" }
+      : { mutates: "durable_state_write", risk: "high", reason: "creates or updates live-work bridge state" },
   },
 ]

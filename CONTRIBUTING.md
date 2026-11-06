@@ -21,8 +21,6 @@ This file is the practical companion, not the source of truth.
 
 Use an agent-specific branch:
 
-- `ouroboros/<slug>`
-- `slugger/<slug>`
 - `<agent>/<slug>`
 
 Do not work directly on `main`.
@@ -33,7 +31,7 @@ Planning and doing docs live in the owning bundle, not in this repo:
 
 `~/AgentBundles/<agent>.ouro/tasks/one-shots/`
 
-Do not create new repo-local task directories like `slugger/tasks/`.
+Do not create new repo-local task directories like `<agent>/tasks/`.
 
 ## Commits
 
@@ -55,7 +53,7 @@ Useful scopes in the current codebase include:
 - `heart` — core engine, providers, identity, config
 - `mind` — prompt, sessions, diary, journal, phrases, friends
 - `repertoire` — tools, coding, tasks, skills, integration clients
-- `senses` — CLI, Teams, BlueBubbles, MCP, inner dialog
+- `senses` — CLI, Teams, BlueBubbles, Mail, inner dialog (MCP is a bridge, not a sense — `src/heart/mcp/`)
 - `nerves` — events, logging, audit coverage
 - `docs` — documentation
 
@@ -85,7 +83,7 @@ PR-based merge policy, conflict resolution, and retry rules live in:
 
 - `docs/sync-and-merge-conventions.md`
 
-The implemented workflow helpers have moved to [ouroboros-skills](https://github.com/ouroborosbot/ouroboros-skills). Install via the skill-management skill.
+The implemented workflow helpers have moved to [ouroboros-skills](https://github.com/ourostack/ouroboros-skills). Install via the skill-management skill.
 
 ## Dev Mode
 

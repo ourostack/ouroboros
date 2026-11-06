@@ -63,6 +63,7 @@ export const teamsToolDefinitions: ToolDefinition[] = [
     },
     integration: "graph",
     summaryKeys: ["method", "path"],
+    riskProfile: { mutates: "external_side_effect", risk: "high", reason: "mutates Microsoft Graph resources" },
   },
   // -- Generic ADO tools --
   {
@@ -124,6 +125,7 @@ export const teamsToolDefinitions: ToolDefinition[] = [
     },
     integration: "ado",
     summaryKeys: ["method", "organization", "path"],
+    riskProfile: { mutates: "external_side_effect", risk: "high", reason: "mutates Azure DevOps resources" },
   },
   // -- Convenience aliases (backward compat) --
   {
@@ -235,6 +237,7 @@ export const teamsToolDefinitions: ToolDefinition[] = [
     },
     /* v8 ignore stop */
     summaryKeys: ["user_name", "user_id"],
+    riskProfile: { mutates: "external_side_effect", risk: "high", reason: "sends a proactive Teams message" },
   },
   // -- Documentation tools --
   {

@@ -65,7 +65,7 @@ export function discoverLogFiles(options: Pick<TailLogsOptions, "homeDir" | "age
   /* v8 ignore stop */
 
   const logDir = options.homeDir
-    ? path.join(options.homeDir, "AgentBundles", `${options.agentName ?? "slugger"}.ouro`, "state", "daemon", "logs")
+    ? path.join(options.homeDir, "AgentBundles", `${options.agentName ?? "default"}.ouro`, "state", "daemon", "logs")
     : getAgentDaemonLogsDir(options.agentName)
   const entries: Array<{ name: string; parsed: { streamBase: string; rank: number } }> = []
 

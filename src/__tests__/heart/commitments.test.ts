@@ -31,9 +31,13 @@ function makeFrame(overrides: Partial<ActiveWorkFrame> = {}): ActiveWorkFrame {
     centerOfGravity: "local-turn",
     inner: { status: "idle", hasPending: false, job: makeIdleJob() },
     bridges: [],
-    taskPressure: { compactBoard: "", liveTaskNames: [], activeBridges: [] },
     friendActivity: { freshestForCurrentFriend: null, otherLiveSessionsForCurrentFriend: [] },
     bridgeSuggestion: null,
+    codingSessions: [],
+    pendingObligations: [],
+    innerReturnObligations: [],
+    primaryObligation: null,
+    resumeHandle: null,
     ...overrides,
   }
 }
@@ -52,7 +56,6 @@ describe("deriveCommitments", () => {
     expect(result.completionCriteria).toEqual(["just be present in this conversation"])
     expect(result.safeToIgnore).toContain("no private thinking in progress")
     expect(result.safeToIgnore).toContain("no shared work to coordinate")
-    expect(result.safeToIgnore).toContain("no active tasks to track")
   })
 
   it("does not treat raw current-turn text as a persisted commitment", () => {
@@ -108,14 +111,6 @@ describe("deriveCommitments", () => {
     expect(result.completionCriteria).toContain("keep shared work aligned across sessions")
   })
 
-  it("includes live tasks in committedTo", () => {
-    const result = deriveCommitments(
-      makeFrame({ taskPressure: { compactBoard: "", liveTaskNames: ["daily-standup"], activeBridges: [] } }),
-      makeIdleJob(),
-    )
-    expect(result.committedTo).toContain("i'm tracking: daily-standup")
-  })
-
   it("includes pending obligation in completionCriteria with origin name", () => {
     const result = deriveCommitments(
       makeFrame(),
@@ -138,11 +133,10 @@ describe("deriveCommitments", () => {
           updatedAt: "",
           attachedSessions: [],
         }],
-        taskPressure: { compactBoard: "", liveTaskNames: ["task-1"], activeBridges: [] },
       }),
       makeIdleJob({ status: "running", content: "thinking" }),
     )
-    expect(result.committedTo.length).toBeGreaterThanOrEqual(3)
+    expect(result.committedTo.length).toBeGreaterThanOrEqual(2)
     expect(result.completionCriteria.length).toBeGreaterThanOrEqual(2)
   })
 
@@ -179,13 +173,6 @@ describe("deriveCommitments", () => {
       makeIdleJob({ obligationStatus: "pending", origin: null }),
     )
     expect(result.completionCriteria).toContain("bring my answer back to them")
-  })
-
-  it("no taskPressure property uses empty fallback", () => {
-    const frame = makeFrame()
-    delete (frame as any).taskPressure
-    const result = deriveCommitments(frame, makeIdleJob())
-    expect(result.safeToIgnore).toContain("no active tasks to track")
   })
 
   it("emits nerves event reference", () => {
@@ -319,6 +306,145 @@ describe("formatCommitments", () => {
     expect(result).toContain("free to be present")
     expect(result).not.toContain("## what i'm holding right now")
     expect(result).toContain("## what \"done\" looks like")
+  })
+
+  it("omits 'what i'm waiting on' when awaiting is empty or undefined", () => {
+    const empty = formatCommitments({
+      committedTo: [],
+      completionCriteria: ["x"],
+      safeToIgnore: ["y"],
+      awaiting: [],
+    })
+    expect(empty).not.toContain("what i'm waiting on")
+    const omitted = formatCommitments({
+      committedTo: [],
+      completionCriteria: ["x"],
+      safeToIgnore: ["y"],
+    })
+    expect(omitted).not.toContain("what i'm waiting on")
+  })
+
+  it("renders 'what i'm waiting on' with checked count, age, and observation", () => {
+    const nowMs = new Date("2026-05-10T20:30:00.000Z").getTime()
+    const result = formatCommitments(
+      {
+        committedTo: [],
+        completionCriteria: ["x"],
+        safeToIgnore: ["y"],
+        awaiting: [
+          {
+            name: "hey_export",
+            condition: "HEY export download visible",
+            checkedCount: 3,
+            lastCheckedAt: "2026-05-10T20:25:00.000Z",
+            lastObservation: "no download yet",
+          },
+        ],
+      },
+      () => new Date(nowMs),
+    )
+    expect(result).toContain("## what i'm waiting on")
+    expect(result).toContain("- hey_export: HEY export download visible")
+    expect(result).toContain("(checked 3x, last 5m ago: \"no download yet\")")
+  })
+
+  it("formats awaiting with never-checked when lastCheckedAt is null", () => {
+    const result = formatCommitments({
+      committedTo: [],
+      completionCriteria: ["x"],
+      safeToIgnore: ["y"],
+      awaiting: [
+        {
+          name: "a",
+          condition: "c",
+          checkedCount: 0,
+          lastCheckedAt: null,
+          lastObservation: null,
+        },
+      ],
+    })
+    expect(result).toContain("(checked 0x, last never checked)")
+  })
+
+  it("formats awaiting with invalid lastCheckedAt as never-checked", () => {
+    const result = formatCommitments({
+      committedTo: [],
+      completionCriteria: ["x"],
+      safeToIgnore: ["y"],
+      awaiting: [
+        { name: "a", condition: "c", checkedCount: 1, lastCheckedAt: "garbage", lastObservation: null },
+      ],
+    })
+    expect(result).toContain("(checked 1x, last never checked)")
+  })
+
+  it("formats awaiting age with hour/day/sub-minute units", () => {
+    const base = new Date("2026-05-10T20:30:00.000Z").getTime()
+    const cases: Array<{ checkedAt: string; expected: string }> = [
+      { checkedAt: new Date(base - 30_000).toISOString(), expected: "<1m ago" },
+      { checkedAt: new Date(base - 90 * 60_000).toISOString(), expected: "1h ago" },
+      { checkedAt: new Date(base - 2 * 24 * 60 * 60 * 1000).toISOString(), expected: "2d ago" },
+    ]
+    for (const c of cases) {
+      const result = formatCommitments(
+        {
+          committedTo: [],
+          completionCriteria: ["x"],
+          safeToIgnore: ["y"],
+          awaiting: [{ name: "a", condition: "c", checkedCount: 1, lastCheckedAt: c.checkedAt, lastObservation: null }],
+        },
+        () => new Date(base),
+      )
+      expect(result).toContain(c.expected)
+    }
+  })
+
+  it("uses default now when not provided (smoke)", () => {
+    const result = formatCommitments({
+      committedTo: [],
+      completionCriteria: ["x"],
+      safeToIgnore: ["y"],
+      awaiting: [{ name: "a", condition: "c", checkedCount: 1, lastCheckedAt: new Date().toISOString(), lastObservation: null }],
+    })
+    expect(result).toContain("## what i'm waiting on")
+  })
+
+  it("trims whitespace-only observation to empty (no quoted suffix)", () => {
+    const nowMs = new Date("2026-05-10T20:30:00.000Z").getTime()
+    const result = formatCommitments(
+      {
+        committedTo: [],
+        completionCriteria: ["x"],
+        safeToIgnore: ["y"],
+        awaiting: [
+          { name: "a", condition: "c", checkedCount: 1, lastCheckedAt: new Date(nowMs - 60_000).toISOString(), lastObservation: "   " },
+        ],
+      },
+      () => new Date(nowMs),
+    )
+    expect(result).toMatch(/\(checked 1x, last 1m ago\)/)
+  })
+})
+
+describe("deriveCommitments awaiting wiring", () => {
+  let deriveCommitments: typeof import("../../heart/commitments").deriveCommitments
+  beforeAll(async () => {
+    const mod = await import("../../heart/commitments")
+    deriveCommitments = mod.deriveCommitments
+  })
+
+  it("threads pendingAwaits into the returned frame", () => {
+    const result = deriveCommitments(makeFrame(), makeIdleJob(), undefined, [
+      { name: "a", condition: "c", checkedCount: 0, lastCheckedAt: null, lastObservation: null },
+    ])
+    expect(result.awaiting).toEqual([
+      { name: "a", condition: "c", checkedCount: 0, lastCheckedAt: null, lastObservation: null },
+    ])
+  })
+
+  it("defaults awaiting to empty when not provided", () => {
+    const result = deriveCommitments(makeFrame(), makeIdleJob())
+    expect(result.awaiting).toEqual([])
   })
 })
 
