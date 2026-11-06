@@ -15,7 +15,20 @@ vi.mock("../../heart/identity", () => ({
   getRepoRoot: vi.fn(() => "/mock/harness"),
 }))
 
+// Mock plugins so each skills test runs in isolation; tests that exercise
+// the plugin integration override these per-test.
+vi.mock("../../repertoire/plugins", () => ({
+  listEnabledPlugins: vi.fn(() => []),
+  listPluginSkills: vi.fn(() => []),
+  loadPluginSkill: vi.fn(),
+}))
+
 import * as fs from "fs"
+import {
+  listEnabledPlugins as mockedListEnabledPlugins,
+  listPluginSkills as mockedListPluginSkills,
+  loadPluginSkill as mockedLoadPluginSkill,
+} from "../../repertoire/plugins"
 
 describe("skills - getSkillsDir", () => {
   beforeEach(() => {
@@ -397,5 +410,96 @@ describe("skills observability contract", () => {
       event: "repertoire.load_start",
       component: "repertoire",
     }))
+  })
+})
+
+describe("skills - plugin integration (W5.4)", () => {
+  beforeEach(() => {
+    vi.resetModules()
+    vi.mocked(fs.existsSync).mockReset()
+    vi.mocked(fs.readdirSync).mockReset()
+    vi.mocked(fs.readFileSync).mockReset()
+    vi.mocked(mockedListEnabledPlugins).mockReset()
+    vi.mocked(mockedListPluginSkills).mockReset()
+    vi.mocked(mockedLoadPluginSkill).mockReset()
+  })
+
+  it("listSkills merges plugin skills with bundle skills (dedup + sort)", async () => {
+    vi.mocked(fs.existsSync).mockReturnValue(true)
+    vi.mocked(fs.readdirSync).mockReturnValue(["alpha.md", "shared.md"] as never)
+    vi.mocked(mockedListEnabledPlugins).mockReturnValue([
+      { id: "desk", enabled: true },
+    ])
+    vi.mocked(mockedListPluginSkills).mockReturnValue([
+      "task-lifecycle",
+      "shared", // duplicate of bundle skill — dedup'd
+    ])
+    const { listSkills } = await import("../../repertoire/skills")
+    expect(listSkills()).toEqual(["alpha", "shared", "task-lifecycle"])
+  })
+
+  it("listSkills returns only bundle skills when no plugins enabled", async () => {
+    vi.mocked(fs.existsSync).mockReturnValue(true)
+    vi.mocked(fs.readdirSync).mockReturnValue(["alpha.md"] as never)
+    vi.mocked(mockedListEnabledPlugins).mockReturnValue([])
+    vi.mocked(mockedListPluginSkills).mockReturnValue([])
+    const { listSkills } = await import("../../repertoire/skills")
+    expect(listSkills()).toEqual(["alpha"])
+  })
+
+  it("loadSkill falls back to plugin skill when not in bundle paths", async () => {
+    vi.mocked(fs.existsSync).mockReturnValue(false) // no bundle paths match
+    vi.mocked(mockedListEnabledPlugins).mockReturnValue([
+      { id: "desk", enabled: true },
+    ])
+    vi.mocked(mockedLoadPluginSkill).mockReturnValue("# plugin skill body")
+    const { loadSkill } = await import("../../repertoire/skills")
+    expect(loadSkill("task-lifecycle")).toBe("# plugin skill body")
+    expect(mockedLoadPluginSkill).toHaveBeenCalledWith("desk", "task-lifecycle")
+  })
+
+  it("loadSkill tries each enabled plugin in order until one succeeds", async () => {
+    vi.mocked(fs.existsSync).mockReturnValue(false)
+    vi.mocked(mockedListEnabledPlugins).mockReturnValue([
+      { id: "first-plugin", enabled: true },
+      { id: "desk", enabled: true },
+    ])
+    vi.mocked(mockedLoadPluginSkill).mockImplementation(
+      (pluginId: string) => {
+        if (pluginId === "first-plugin") {
+          throw new Error("skill not in this plugin")
+        }
+        return "# from desk"
+      },
+    )
+    const { loadSkill } = await import("../../repertoire/skills")
+    expect(loadSkill("task-lifecycle")).toBe("# from desk")
+  })
+
+  it("loadSkill throws when skill is in neither bundle nor any plugin", async () => {
+    vi.mocked(fs.existsSync).mockReturnValue(false)
+    vi.mocked(mockedListEnabledPlugins).mockReturnValue([
+      { id: "desk", enabled: true },
+    ])
+    vi.mocked(mockedLoadPluginSkill).mockImplementation(() => {
+      throw new Error("not found in plugin")
+    })
+    const { loadSkill } = await import("../../repertoire/skills")
+    expect(() => loadSkill("nonexistent")).toThrow(/not found/)
+  })
+
+  it("loadSkill prefers bundle direct skill over plugin (bundle has precedence)", async () => {
+    vi.mocked(fs.existsSync).mockImplementation((p: fs.PathLike) =>
+      String(p).endsWith("/skills/task-lifecycle.md"),
+    )
+    vi.mocked(fs.readFileSync).mockReturnValue("# bundle direct" as never)
+    vi.mocked(mockedListEnabledPlugins).mockReturnValue([
+      { id: "desk", enabled: true },
+    ])
+    vi.mocked(mockedLoadPluginSkill).mockReturnValue("# from plugin")
+    const { loadSkill } = await import("../../repertoire/skills")
+    expect(loadSkill("task-lifecycle")).toBe("# bundle direct")
+    // plugin loader should NOT have been consulted
+    expect(mockedLoadPluginSkill).not.toHaveBeenCalled()
   })
 })

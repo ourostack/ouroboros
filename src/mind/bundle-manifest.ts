@@ -35,6 +35,13 @@ export const CANONICAL_BUNDLE_MANIFEST: readonly BundleManifestEntry[] = [
   { path: "skills", kind: "dir" },
   { path: "senses", kind: "dir" },
   { path: "senses/teams", kind: "dir" },
+  // Plugin support — added 2026-05-18 for worker-generalization W5.1
+  // Bundles may declare `plugins: []` in agent.json + install plugin code
+  // into ~/.ouro-cli/plugins/<plugin-id>/. The bundle's `desk/` directory
+  // holds the agent's work-organization (tracks → tasks → iterations),
+  // separate from the legacy `tasks/one-shots/` flat layout.
+  { path: "plugins", kind: "dir" },
+  { path: "desk", kind: "dir" },
 ]
 
 export function getChangelogPath(): string {

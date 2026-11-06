@@ -5,6 +5,7 @@ import { spawnSync } from "child_process"
 
 import { formatLiveWorldStateCheckpoint, type ActiveWorkFrame } from "../../heart/active-work"
 import { getAgentName, getAgentRoot } from "../../heart/identity"
+import { capStructuredRecordString } from "../../heart/session-events"
 import { emitNervesEvent } from "../../nerves/runtime"
 import { emitEpisode } from "../../arc/episodes"
 import { listSkills } from "../skills"
@@ -253,7 +254,7 @@ function buildScopeContent(
     `obligationId: ${request.obligationId ?? "none"}`,
     "",
     "## Prompt",
-    request.prompt,
+    capStructuredRecordString(request.prompt),
     "",
     "## Session Contract",
     "- This is a focused coding lane opened by the parent Ouro agent.",
@@ -297,7 +298,7 @@ function buildStateContent(
     `agent: ${request.parentAgent ?? agentName}`,
     formatOrigin(request),
     `obligationId: ${request.obligationId ?? "none"}`,
-    ...(startOfTurnPacket ? ["", "## Continuity", startOfTurnPacket] : []),
+    ...(startOfTurnPacket ? ["", "## Continuity", capStructuredRecordString(startOfTurnPacket)] : []),
     "",
     formatIdentitySection(identityPacket),
     "",

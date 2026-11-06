@@ -55,7 +55,7 @@ Useful scopes in the current codebase include:
 - `heart` — core engine, providers, identity, config
 - `mind` — prompt, sessions, diary, journal, phrases, friends
 - `repertoire` — tools, coding, tasks, skills, integration clients
-- `senses` — CLI, Teams, BlueBubbles, MCP, inner dialog
+- `senses` — CLI, Teams, BlueBubbles, Mail, inner dialog (MCP is a bridge, not a sense — `src/heart/mcp/`)
 - `nerves` — events, logging, audit coverage
 - `docs` — documentation
 
@@ -85,7 +85,7 @@ PR-based merge policy, conflict resolution, and retry rules live in:
 
 - `docs/sync-and-merge-conventions.md`
 
-The implemented workflow helpers have moved to [ouroboros-skills](https://github.com/ouroborosbot/ouroboros-skills). Install via the skill-management skill.
+The implemented workflow helpers have moved to [ouroboros-skills](https://github.com/ourostack/ouroboros-skills). Install via the skill-management skill.
 
 ## Dev Mode
 

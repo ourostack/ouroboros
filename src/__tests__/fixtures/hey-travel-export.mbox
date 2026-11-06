@@ -1,0 +1,22 @@
+From bookings@exampleair.test Mon Apr 20 09:00:00 2026
+From: Example Air <bookings@exampleair.test>
+To: Ari <ari@mendelow.me>
+Subject: Flight to London confirmed
+Date: Mon, 20 Apr 2026 09:00:00 -0700
+
+Your flight EA 432 is confirmed.
+Route: SFO -> LHR
+Departure: May 14, 2026 8:15 AM
+Arrival: May 15, 2026 2:30 AM
+Confirmation code: LDN42A
+
+From hotel@examplelodging.test Mon Apr 20 09:05:00 2026
+From: Example Lodging <hotel@examplelodging.test>
+To: Ari <ari@mendelow.me>
+Subject: Hotel booking confirmed for London
+Date: Mon, 20 Apr 2026 09:05:00 -0700
+
+Hotel: The Agent House London
+Check-in: May 15, 2026
+Check-out: May 19, 2026
+Confirmation code: HTL900
