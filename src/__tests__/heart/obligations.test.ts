@@ -10,6 +10,7 @@ import {
   findPendingObligationForOrigin,
   advanceObligation,
 } from "../../arc/obligations"
+import { expectCappedAgentContent, makeOversizedAgentContent } from "../helpers/content-cap"
 
 describe("obligations store", () => {
   let tmpDir: string
@@ -43,6 +44,18 @@ describe("obligations store", () => {
       const stored = JSON.parse(fs.readFileSync(filePath, "utf-8"))
       expect(stored.id).toBe(obligation.id)
       expect(stored.status).toBe("pending")
+    })
+
+    it("caps oversized agent-authored obligation content before writing JSON", () => {
+      const oversized = makeOversizedAgentContent("obligation ")
+      const obligation = createObligation(tmpDir, {
+        origin: sampleOrigin,
+        content: oversized,
+      })
+
+      const filePath = path.join(tmpDir, "arc", "obligations", `${obligation.id}.json`)
+      const stored = JSON.parse(fs.readFileSync(filePath, "utf-8"))
+      expectCappedAgentContent(stored.content, oversized)
     })
 
     it("includes bridgeId when provided", () => {
@@ -119,6 +132,24 @@ describe("obligations store", () => {
       expect(pending).toHaveLength(1)
       expect(pending[0].status).toBe("investigating")
       expect(pending[0].currentSurface).toEqual({ kind: "coding", label: "codex coding-001" })
+    })
+
+    it("caps oversized agent-authored obligation progress fields before writing JSON", () => {
+      const oversized = makeOversizedAgentContent("obligation progress ")
+      const obligation = createObligation(tmpDir, { origin: sampleOrigin, content: "short" })
+
+      advanceObligation(tmpDir, obligation.id, {
+        status: "investigating",
+        currentArtifact: oversized,
+        nextAction: oversized,
+        latestNote: oversized,
+      })
+
+      const filePath = path.join(tmpDir, "arc", "obligations", `${obligation.id}.json`)
+      const stored = JSON.parse(fs.readFileSync(filePath, "utf-8"))
+      expectCappedAgentContent(stored.currentArtifact, oversized)
+      expectCappedAgentContent(stored.nextAction, oversized)
+      expectCappedAgentContent(stored.latestNote, oversized)
     })
 
     it("returns empty array when all are fulfilled", () => {

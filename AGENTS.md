@@ -16,6 +16,8 @@ This harness is built for the agent inhabiting it. Two principles guide everythi
 - Use feature branches and pull requests for every logical change.
 - Keep commits atomic and descriptive.
 - Never force-push or rewrite history for shared branches.
+- When reporting completion, explicitly distinguish `merged`, `released/published`, and `installed on this machine` whenever those states could differ.
+- Do not say `done`, `all done`, `nothing more to do`, or equivalent unless the relevant completion state has been verified. If a state is unknown, say it is unverified.
 - Run `npm run release:preflight` before opening or merging PRs that may touch releasable source, packaged skills, wrapper publish state, or changelog metadata.
 - Keep `npm test` green.
 - Keep `npx tsc --noEmit` green.
@@ -40,6 +42,12 @@ This harness is built for the agent inhabiting it. Two principles guide everythi
 ### Harness Purpose
 
 - Ouroboros is not primarily a coding agent. It is a general-purpose way to build executive-assistant and purpose-oriented agents that can execute real-world work.
+- Model the default agent-human relationship as a person and their executive assistant. For private systems like email, calendars, documents, payments, and accounts, prefer delegated, revocable live access over bulk export or shadow ownership. Exports are appropriate for migration, archive bootstrap, recovery, legal/discovery-style review, or explicit human handoff; they are not the default shape of day-to-day assistance.
+- Treat vault, mail, calendars, files, tasks, contacts, conversations, the diary, policy, and audit as coupled parts of an agent-first work substrate. Ouro is not trying to copy human office suites; it is building what those suites become when the primary user is an agent with an identity, a vault, durable state, scoped tools, and accountable access.
+- Keep the brand and repo boundary clear: **Ouroboros** is the harness/local runtime; **Ouro** is the hosted agentic work substrate. Hosted mail/vault service code lives in `github.com/ourostack/ouro-work-substrate`; this repo keeps the local runtime, senses, CLI, and Ouro Mailbox.
+- Represent work-substrate surfaces that the agent perceives over time as senses. Mail is a sense, not merely a tool namespace; bounded read tools are how the mail sense inspects specific messages and threads without turning the inbox into an unfiltered prompt stream.
+- When a human asks an agent to set up email, follow [Agent Mail Setup](docs/agent-mail-setup.md): provision Mailroom with `ouro connect mail --agent <agent>`, keep private keys in the agent vault, import explicit MBOX handoffs with `ouro mail import-mbox`, and treat DNS, HEY export/forwarding, production MX, and autonomous sending as human-confirmed steps.
+- Treat the generic secret primitive as a vault item / credential with no assumed use. Managed workflows and workflow bindings may reference ordinary vault items, but notes are human/agent orientation and code must not parse notes as authority or configuration.
 - Optimize for orientation and capability: agents should stay grounded, act instead of narrate, answer ad-hoc questions well, and return cleanly to unfinished work.
 - Build tooling and harness behavior that you, as a current or future inhabitant of this harness, would genuinely enjoy using and trust to keep you sharp for hours.
 - Prefer durable orientation primitives over brittle prompt theater. If an agent keeps getting confused, add truth-bearing state, clearer return loops, and better execution discipline.
@@ -110,13 +118,13 @@ Hook events are fire-and-forget — they never block the dev tool. If the daemon
 - **Codex app**: Use skills by name: `$work-planner`, `$work-doer`, and `$work-merger`.
   - Skills are turn-scoped in practice, so re-invoke `$work-planner` on each planning/conversion turn.
   - `work-planner` already enforces `NEEDS_REVIEW` and hard-stop behavior during default operation; a direct human override may waive that gate for the current task.
-- **Claude Code**: Skills are installed from `github.com/ouroborosbot/ouroboros-skills` into `~/.claude/skills/` (`work-planner`, `work-doer`, `work-merger`).
+- **Claude Code**: Skills are installed from `github.com/ourostack/ouroboros-skills` into `~/.claude/skills/` (`work-planner`, `work-doer`, `work-merger`).
 
 ### Skill Freshness
 
 Before starting work, check that locally installed skills are up to date:
 
-1. Fetch the manifest from `https://raw.githubusercontent.com/ouroborosbot/ouroboros-skills/main/manifest.json`.
+1. Fetch the manifest from `https://raw.githubusercontent.com/ourostack/ouroboros-skills/main/manifest.json`.
 2. Compare the manifest against `_registry.json` in each active local skills directory.
 3. If `_registry.json` is missing, run the `skill-management` "Bootstrap or Repair a Missing Registry" workflow first so installed skills get explicit provenance before freshness comparison continues.
 4. If any non-local skill's commit SHA is stale, update it using the skill-management workflow before proceeding.
@@ -162,12 +170,12 @@ These gates are defaults for autonomous operation. The human may shorten or skip
 
 - The full auth/provider contract is locked in `docs/auth-and-providers.md`. Keep code, tests, prompt rendering, CLI errors, and docs aligned with that file.
 - `agent.json` is the source of truth for agent identity, phrases, enabled senses, vault coordinates, and context settings. Vault coordinates are not secrets.
-- Provider selection uses local provider state under `~/AgentBundles/<agent>.ouro/state/providers.json`, with `agent.json` used only to bootstrap missing local state. Human-facing maps to the `outward` lane; agent-facing maps to the `inner` lane. Both lanes must be complete; there is no silent fallback between them.
+- Provider selection lives in `~/AgentBundles/<agent>.ouro/agent.json`. Human-facing maps to the `outward` lane; agent-facing maps to the `inner` lane. Both lanes must be complete; there is no silent fallback between them and no second local provider config.
 - All raw credentials live in the owning agent's Bitwarden/Vaultwarden vault: the agent's password manager. Provider credentials use `providers/<provider>`, portable runtime/integration credentials use `runtime/config`, local sense attachments use `runtime/machines/<machine-id>/config`, and travel/tool credentials use ordinary vault credential items. There is one vault per agent and no machine-wide credential pool.
 - The only Ouro-owned durable credential locations are the bundle and the agent vault. Local unlock material is a machine-local cache, not a credential source of truth.
 - The only local secret is vault unlock material stored in macOS Keychain, Windows DPAPI, Linux Secret Service, or an explicit human-approved plaintext fallback under ignored local state.
 - New vault unlock secret flows must use hidden terminal prompts, require confirmation, and enforce minimum strength: at least 8 characters, uppercase and lowercase letters, one number, and one special character.
-- `ouro auth --agent <agent> --provider <provider>` writes provider credentials to that agent's vault. `ouro connect --agent <agent>` guides integration and local-sense setup. `ouro use --agent <agent> --lane <outward|inner> --provider <provider> --model <model>` chooses what this machine uses. `ouro provider refresh --agent <agent>` refreshes the daemon's in-memory credential snapshot from the vault.
+- `ouro auth --agent <agent> --provider <provider>` writes provider credentials to that agent's vault. `ouro connect --agent <agent>` guides integration and local-sense setup. `ouro use --agent <agent> --lane <outward|inner> --provider <provider> --model <model>` writes provider selection to `agent.json`. `ouro provider refresh --agent <agent>` refreshes the daemon's in-memory provider credential cache from the vault.
 - CLI commands that mutate bundle config after auth/connect/vault repair must run the existing bundle sync path when `sync.enabled` is true and must surface a compact `bundle sync:` success/failure line.
 - Provider and runtime credentials are cached in process memory after refresh/startup/auth/unlock. Do not read the remote vault on every model/tool/sense request and do not add a local credential cache on disk.
 - Repair guidance must include the actor: `agent-runnable`, `human-required`, or `human-choice`. Agents may run checks/refreshes, but browser login, MFA, provider dashboards, API-token creation, and secret entry are human-required.

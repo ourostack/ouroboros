@@ -14,6 +14,9 @@ import { getAgentRoot } from "../heart/identity";
 import { surfaceToolDefinition } from "./tools-surface";
 import type { McpManager } from "./mcp-manager";
 import { mcpToolsAsDefinitions } from "./mcp-tools";
+import { voiceToolDefinitions } from "./tools-voice";
+import { detectDestructivePatterns } from "./shell-sessions";
+import type { ToolRiskProfile } from "./tools-base";
 
 function safeGetAgentRoot(): string | undefined {
   try {
@@ -24,14 +27,14 @@ function safeGetAgentRoot(): string | undefined {
 }
 
 // Re-export types and constants used by the rest of the codebase
-export { tools, settleTool, observeTool, ponderTool, restTool } from "./tools-base";
+export { tools, settleTool, observeTool, ponderTool, restTool, speakTool } from "./tools-base";
 export type { ToolContext, ToolHandler, ToolDefinition } from "./tools-base";
 
 // Re-export surface tool schema for consumers (e.g. heart/core.ts)
 export { surfaceToolDef } from "./tools-surface";
 
 // All tool definitions in a single registry
-const allDefinitions: ToolDefinition[] = [...baseToolDefinitions, ...bluebubblesToolDefinitions, ...teamsToolDefinitions, ...adoSemanticToolDefinitions, ...githubToolDefinitions, ...bundleToolDefinitions, surfaceToolDefinition];
+const allDefinitions: ToolDefinition[] = [...baseToolDefinitions, ...bluebubblesToolDefinitions, ...teamsToolDefinitions, ...adoSemanticToolDefinitions, ...githubToolDefinitions, ...bundleToolDefinitions, ...voiceToolDefinitions, surfaceToolDefinition];
 
 // MCP tool definitions — populated each time getToolsForChannel() is called with an mcpManager.
 // Kept separate from allDefinitions so execTool can find them.
@@ -89,11 +92,14 @@ export function getToolsForChannel(
   const bluebubblesTools = capabilities?.channel === "bluebubbles"
     ? bluebubblesToolDefinitions.map((d) => d.tool)
     : [];
+  const voiceTools = capabilities?.channel === "voice"
+    ? voiceToolDefinitions.map((d) => d.tool)
+    : [];
 
   let result: OpenAI.ChatCompletionFunctionTool[];
 
   if (!capabilities || capabilities.availableIntegrations.length === 0) {
-    result = [...baseTools, ...bluebubblesTools];
+    result = [...baseTools, ...bluebubblesTools, ...voiceTools];
   } else {
     const available = new Set(capabilities.availableIntegrations);
     const channelDefs = [...teamsToolDefinitions, ...adoSemanticToolDefinitions, ...githubToolDefinitions];
@@ -103,7 +109,7 @@ export function getToolsForChannel(
     );
 
     if (!toolPreferences || Object.keys(toolPreferences).length === 0) {
-      result = [...baseTools, ...bluebubblesTools, ...integrationDefs.map((d) => d.tool)];
+      result = [...baseTools, ...bluebubblesTools, ...voiceTools, ...integrationDefs.map((d) => d.tool)];
     } else {
       // Build a map of integration -> preference text for fast lookup
       const prefMap = new Map<string, string>();
@@ -118,7 +124,7 @@ export function getToolsForChannel(
         return pref ? applyPreference(d.tool, pref) : d.tool;
       });
 
-      result = [...baseTools, ...bluebubblesTools, ...enrichedIntegrationTools];
+      result = [...baseTools, ...bluebubblesTools, ...voiceTools, ...enrichedIntegrationTools];
     }
   }
 
@@ -142,6 +148,32 @@ function normalizeGuardArgs(_name: string, args: Record<string, string>): Record
   return args
 }
 
+function shellRiskProfile(args: Record<string, string>): ToolRiskProfile {
+  const command = String(args.command)
+  const destructive = detectDestructivePatterns(command)
+  if (destructive.length > 0) {
+    return { mutates: "external_side_effect", risk: "high", reason: `destructive shell pattern: ${destructive.join(", ")}` }
+  }
+  if (/(^|\s)(rm|mv|cp|touch|mkdir|rmdir)\b/.test(command)
+    || /(^|\s)(npm|pnpm|yarn)\s+(install|add|remove|update|upgrade)\b/.test(command)
+    || /(^|\s)git\s+(add|apply|checkout|clean|commit|merge|pull|push|rebase|reset|restore|switch)\b/.test(command)
+    || /(^|\s)(sed\s+-i|perl\s+-pi)\b/.test(command)
+    || /(^|\s)(tee|truncate)\b/.test(command)
+    || /(^|[^<])>>?\s*\S+/.test(command)) {
+    return { mutates: "external_side_effect", risk: "high", reason: "shell command appears to mutate files, packages, git state, or external state" }
+  }
+  return { mutates: "none", risk: "low" }
+}
+
+function riskProfileForTool(def: ToolDefinition, name: string, args: Record<string, string>): ToolRiskProfile {
+  if (name === "shell") return shellRiskProfile(args)
+  return def.riskProfile ?? { mutates: "none", risk: "low" }
+}
+
+function orientationHoldMessage(name: string, profile: Extract<ToolRiskProfile, { risk: "high" }>, reason: string): string {
+  return `orientation hold: ${reason} Call orientation_get, resolve the referent/correction, then retry ${name} if the write is still correct. Blocked ${profile.mutates}. ${profile.reason}.`
+}
+
 export async function execTool(name: string, args: Record<string, string>, ctx?: ToolContext): Promise<string> {
   emitNervesEvent({
     event: "tool.start",
@@ -161,6 +193,22 @@ export async function execTool(name: string, args: Record<string, string>, ctx?:
       meta: { name },
     });
     return `unknown: ${name}`;
+  }
+
+  const riskProfile = riskProfileForTool(def, name, args)
+  const orientationPolicy = ctx?.orientationFrame?.actionPolicy
+  if (orientationPolicy?.mode === "correction_hold"
+    && riskProfile.risk === "high") {
+    const reason = orientationPolicy.reason
+    const message = orientationHoldMessage(name, riskProfile, reason)
+    emitNervesEvent({
+      level: "warn",
+      event: "tool.orientation_hold_block",
+      component: "tools",
+      message: "orientation hold blocked high-risk tool execution",
+      meta: { name, mutates: riskProfile.mutates, reason },
+    });
+    return message
   }
 
   // Guardrail check: structural + trust-level

@@ -3,6 +3,7 @@ import type { DaemonHealthResult } from "./daemon"
 
 export interface SenseProbe {
   name: string
+  managedName?: string
   check: () => Promise<{ ok: boolean; detail?: string }>
 }
 
@@ -21,7 +22,9 @@ export interface HealthMonitorOptions {
   alertSink?: (message: string) => Promise<void> | void
   diskUsagePercent?: () => number
   onCriticalAgent?: (agentName: string) => void
+  onCriticalSense?: (managedName: string, probeName: string) => void
   senseProbes?: SenseProbe[]
+  senseProbeProvider?: () => SenseProbe[]
 }
 
 export class HealthMonitor {
@@ -30,8 +33,11 @@ export class HealthMonitor {
   private readonly alertSink: (message: string) => Promise<void> | void
   private readonly diskUsagePercent: () => number
   private readonly onCriticalAgent: (agentName: string) => void
+  private readonly onCriticalSense: (managedName: string, probeName: string) => void
   private readonly senseProbes: SenseProbe[]
+  private readonly senseProbeProvider: () => SenseProbe[]
   private intervalHandle: ReturnType<typeof setInterval> | null = null
+  private lastResults: DaemonHealthResult[] = []
 
   constructor(options: HealthMonitorOptions) {
     this.processManager = options.processManager
@@ -39,7 +45,29 @@ export class HealthMonitor {
     this.alertSink = options.alertSink ?? (() => undefined)
     this.diskUsagePercent = options.diskUsagePercent ?? (() => 0)
     this.onCriticalAgent = options.onCriticalAgent ?? (() => undefined)
+    this.onCriticalSense = options.onCriticalSense ?? (() => undefined)
     this.senseProbes = options.senseProbes ?? []
+    this.senseProbeProvider = options.senseProbeProvider ?? (() => [])
+  }
+
+  private triggerSenseRecovery(probe: SenseProbe, detail: string): void {
+    if (!probe.managedName) return
+    try {
+      emitNervesEvent({
+        level: "warn",
+        component: "daemon",
+        event: "daemon.health_check_sense_recovery_attempted",
+        message: "triggering recovery restart for failed sense probe",
+        meta: {
+          probeName: probe.name,
+          managedName: probe.managedName,
+          detail,
+        },
+      })
+      this.onCriticalSense(probe.managedName, probe.name)
+    } catch {
+      // Recovery is best-effort -- callback errors must not crash runChecks
+    }
   }
 
   startPeriodicChecks(intervalMs: number): void {
@@ -136,7 +164,18 @@ export class HealthMonitor {
       })
     }
 
-    for (const probe of this.senseProbes) {
+    const senseProbes = [...this.senseProbes]
+    try {
+      senseProbes.push(...this.senseProbeProvider())
+    } catch (error) {
+      results.push({
+        name: "sense-probes",
+        status: "warn",
+        message: `sense probe discovery failed: ${error instanceof Error ? error.message : String(error)}`,
+      })
+    }
+
+    for (const probe of senseProbes) {
       try {
         const outcome = await probe.check()
         if (outcome.ok) {
@@ -146,6 +185,7 @@ export class HealthMonitor {
             message: `${probe.name} healthy`,
           })
         } else {
+          this.triggerSenseRecovery(probe, outcome.detail ?? "unknown")
           results.push({
             name: `sense-probe:${probe.name}`,
             status: "critical",
@@ -153,6 +193,7 @@ export class HealthMonitor {
           })
         }
       } catch (error) {
+        this.triggerSenseRecovery(probe, error instanceof Error ? error.message : String(error))
         results.push({
           name: `sense-probe:${probe.name}`,
           status: "critical",
@@ -160,6 +201,8 @@ export class HealthMonitor {
         })
       }
     }
+
+    this.lastResults = results.map((result) => ({ ...result }))
 
     for (const result of results) {
       emitNervesEvent({
@@ -175,5 +218,9 @@ export class HealthMonitor {
     }
 
     return results
+  }
+
+  getLastResults(): DaemonHealthResult[] {
+    return this.lastResults.map((result) => ({ ...result }))
   }
 }
