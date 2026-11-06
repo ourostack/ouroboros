@@ -1694,10 +1694,11 @@ describe("the gate reads names with the release's own finder", () => {
   })
 })
 
-describe("the butler's LORE describes the psyche protection accurately", () => {
-  it("says the files are read-only to it and the runtime refuses edits, without claiming more", () => {
+describe("the butler's LORE describes its psyche accurately", () => {
+  it("says the psyche is its own: TACIT it writes as it learns, the rest changes when the owner asks", () => {
     const lore = fs.readFileSync(path.resolve(__dirname, "../../../deploy/unraid/sanctuary.ouro/psyche/LORE.md"), "utf8")
-    expect(lore).toContain("The folder is mounted read-only into my container and the runtime refuses edits.")
+    expect(lore).toContain("My psyche is mine. I write what I learn into TACIT, and I change the rest when {{owner}} asks.")
+    expect(lore).not.toContain("read-only")
     expect(lore).not.toContain("I must not edit them")
   })
 })

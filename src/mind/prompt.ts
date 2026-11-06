@@ -1,3 +1,4 @@
+import { fillHouseNames, houseNameFields, type HouseNameKey } from "./house-names";
 import * as fs from "fs";
 import * as path from "path";
 import { createHash } from "crypto";
@@ -101,31 +102,14 @@ function psycheFingerprint(sources: PsycheSources): string {
   return hash.digest("hex");
 }
 
-// A household install names its owner, its Butler and its home in house/house.json,
-// a file the package never overwrites. The packaged psyche writes {{owner}}, {{butler}}
-// and {{household}} where those names go, so one psyche serves every household.
-const HOUSE_NAME_DEFAULTS: Record<string, string> = {
+const HOUSE_NAME_DEFAULTS: Record<HouseNameKey, string> = {
   owner: "the owner",
   butler: "the Butler",
   household: "the household",
 }
 
-function parseHouseNames(text: string | null): Record<string, string> {
-  const names: Record<string, string> = { ...HOUSE_NAME_DEFAULTS }
-  try {
-    const parsed = JSON.parse(text ?? "") as Record<string, unknown>
-    for (const [key, field] of [["owner", "ownerName"], ["butler", "butlerName"], ["household", "householdName"]] as const) {
-      const value = parsed[field]
-      if (typeof value === "string" && value.trim()) names[key] = value.trim()
-    }
-  } catch {
-    // no house.json, or not JSON: the defaults stand
-  }
-  return names
-}
-
-function fillHouseNames(text: string | null, names: Record<string, string>): string {
-  return (text ?? "").trim().replace(/\{\{(owner|butler|household)\}\}/gu, (_match, key: string) => names[key]!)
+function fillPsycheText(text: string | null, names: Record<HouseNameKey, string>): string {
+  return fillHouseNames((text ?? "").trim(), names)
 }
 
 /** The psyche for one agent root. Each call reads its files once and rebuilds only when their content changed. */
@@ -134,15 +118,15 @@ export function loadPsycheAt(agentRoot: string): PsycheText {
   const fingerprint = psycheFingerprint(sources);
   const cached = _psycheCache.get(agentRoot);
   if (cached?.fingerprint === fingerprint) return cached.psyche;
-  const names = parseHouseNames(sources.houseNames);
+  const names = { ...HOUSE_NAME_DEFAULTS, ...houseNameFields(sources.houseNames) };
   const psyche = {
-    soul: fillHouseNames(sources.soul, names),
-    identity: fillHouseNames(sources.identity, names),
-    lore: fillHouseNames(sources.lore, names),
-    tacitKnowledge: fillHouseNames(sources.tacitKnowledge, names),
-    aspirations: fillHouseNames(sources.aspirations, names),
-    house: fillHouseNames(sources.house, names),
-    product: fillHouseNames(sources.product, names),
+    soul: fillPsycheText(sources.soul, names),
+    identity: fillPsycheText(sources.identity, names),
+    lore: fillPsycheText(sources.lore, names),
+    tacitKnowledge: fillPsycheText(sources.tacitKnowledge, names),
+    aspirations: fillPsycheText(sources.aspirations, names),
+    house: fillPsycheText(sources.house, names),
+    product: fillPsycheText(sources.product, names),
   };
   _psycheCache.set(agentRoot, { fingerprint, psyche });
   return psyche;

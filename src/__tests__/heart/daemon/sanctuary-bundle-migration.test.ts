@@ -206,7 +206,7 @@ describe("Sanctuary package-managed bundle migration", () => {
     profiles.profiles["sanctuary-owner"].toolNames = profiles.profiles["sanctuary-owner"].toolNames.filter((name: string) => name !== "sanctuary_host_execute" && !SANCTUARY_OWNER_ADDITIONS.includes(name))
     write(agentRoot, "tool-profiles.json", profiles)
     const identity = fs.readFileSync(path.join(agentRoot, "psyche/IDENTITY.md"), "utf8")
-    write(agentRoot, "psyche/IDENTITY.md", identity.replace("I use the typed Unraid GraphQL repertoire for server operations and owner-authorized native tools for resident work inside my existing container boundary.", "My primary server interface is the typed Unraid GraphQL repertoire, never shell."))
+    write(agentRoot, "psyche/IDENTITY.md", identity.replace("I live on the server I look after, and I use my tools to do the work myself.", "I live on the server I look after, and I use the typed Unraid GraphQL repertoire for it."))
     const ownedIdentity = fs.readFileSync(path.join(agentRoot, "psyche/IDENTITY.md"), "utf8")
     write(agentRoot, "bundle-meta.json", { runtimeVersion: "old", bundleSchemaVersion: 2, operatorNote: "keep" })
     write(agentRoot, "state/policy/steward.json", emptyPackagedPolicy())
@@ -1197,6 +1197,29 @@ describe("Sanctuary starter psyche", () => {
     expect(ensure(packageRoot, agentRoot)).toMatchObject({ ok: true, data: { parity: "exact", ready: true } })
     expectStarterPsyche(packageRoot, agentRoot)
     expect(seedLeftovers(agentRoot)).toEqual([])
+  })
+
+  it("seeds the starter psyche with house names filled in", () => {
+    const packageRoot = path.resolve("deploy/unraid/sanctuary.ouro")
+    const named = makeRoot("sanctuary-named-seed")
+    write(named, "house/house.json", { ownerName: "Ada", butlerName: "Jeeves" })
+    expect(seedSanctuaryPsycheIfAbsent({ packageRoot, agentRoot: named })).toEqual({ ok: true, seeded: true })
+    const identity = fs.readFileSync(path.join(named, "psyche/IDENTITY.md"), "utf8")
+    expect(identity).toContain("Ada")
+    expect(identity).toContain("Jeeves")
+    expect(identity).toContain("{{household}}")
+
+    const bare = makeRoot("sanctuary-unnamed-seed")
+    expect(seedSanctuaryPsycheIfAbsent({ packageRoot, agentRoot: bare })).toEqual({ ok: true, seeded: true })
+    expectStarterPsyche(packageRoot, bare)
+
+    const linked = makeRoot("sanctuary-linked-house-seed")
+    const elsewhere = makeRoot("sanctuary-elsewhere-house")
+    write(elsewhere, "house.json", { ownerName: "Mallory" })
+    fs.mkdirSync(path.join(linked, "house"))
+    fs.symlinkSync(path.join(elsewhere, "house.json"), path.join(linked, "house", "house.json"))
+    expect(seedSanctuaryPsycheIfAbsent({ packageRoot, agentRoot: linked })).toEqual({ ok: true, seeded: true })
+    expectStarterPsyche(packageRoot, linked)
   })
 
   it("seeds the real packaged starter psyche byte for byte", () => {

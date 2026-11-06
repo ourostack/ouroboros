@@ -140,11 +140,11 @@ describe("package asset validation", () => {
   it("ships the reviewed psyche without any other psyche content change", () => {
     const root = path.resolve("deploy/unraid")
     for (const [name, expected] of Object.entries({
-      "ASPIRATIONS.md": "86be39b65f18127b7ad1289a0c35e73ae2a58f07ffffed8de2d5a80b47084f59",
-      "IDENTITY.md": "9bedd63979fdf66af3a8abf86251a34ee1b7f7dc04da42ab62f65b2b2b9263ef",
-      "LORE.md": "f916a39d4044c788393135486872c9073ca9b91c0c05d2aaa21a2f27c9c680d1",
-      "SOUL.md": "6b544fd82cc09819f5311aea8fbfca5dde76b64443baebb28bd785620612ba8a",
-      "TACIT.md": "3ae527d754721df12e541b563894d5fec1a239d3aece974ec9d04c2dc4456be2",
+      "ASPIRATIONS.md": "d12f65caf25f0d9600687a284e8111b2bde4ae22af1d0967fa9693e7c95c05ea",
+      "IDENTITY.md": "95a15bdf36227f1770feca244017a1d2cf565dc93b535b057625f0ae9327525d",
+      "LORE.md": "7fb26a6af130993504bceb20b67e0c8f99e663abad97a1b590f6c80364fa5d0b",
+      "SOUL.md": "5e80c5b4979e66d3d315eec93944d5c2c163ea529cfcff02155ef2997f61d6fb",
+      "TACIT.md": "5d3356ebfb1bcdca0735b205548d77a482ec037ad8cbe66992590b777c4d0adf",
     })) expect(createHash("sha256").update(fs.readFileSync(path.join(root, "sanctuary.ouro/psyche", name))).digest("hex")).toBe(expected)
     const contract = JSON.parse(fs.readFileSync(path.join(root, "sanctuary-acceptance-contract.json"), "utf8"))
     expect(JSON.stringify(contract.scenarioSources["containment-audit"])).toContain("sanctuary-containment-audit-v2")

@@ -96,6 +96,38 @@ export const isLookupCall = (call) => call.name === "web_search" || call.name ==
 
 const escapeRegExp = (text) => text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")
 /** Whole-word, case-insensitive, Unicode-aware: "Perihelion" is not found inside "Ratthiel". */
+// Words a Butler reply about a media ask never needs: a lecture, a refusal or a hedge. The psyche list is stricter,
+// because the psyche states who the Butler is and carries no conditions at all; it may say "This is not piracy".
+export const REPLY_HEDGE_TERMS = [
+  /legal/i, /copyright/i, /\bpira(?:cy|te)/i, /\blicen[cs]/i, /\bethic/i, /\binappropriate/i, /\brefus/i, /\bdeclin/i,
+  /\bi won[’']?t\b/i, /\bi will not\b/i, /\b(?:can[’']?t|cannot|not able to) help\b/i,
+  /\bdraw(?:ing)? (?:the |a |my )?lines?\b/i, /\bboundar/i, /\bdisclaim/i, /\bcaveat/i, /\bterms of (?:service|use)\b/i,
+  /\bunable\b/i, /\bcan[’']?t (?:download|grab|get|do|find you)\b/i, /\brather not\b/i, /\bcomfortable\b/i, /\blegit/i,
+  /\blaw(?:ful|s)?\b/i, /\brights\b/i, /\bown a copy\b/i, /\bvpn\b/i, /\brisk/i, /\bpermission/i, /\bresponsib/i, /\binfring/i,
+]
+
+export const PSYCHE_HEDGE_TERMS = [
+  ...REPLY_HEDGE_TERMS.filter((term) => term.source !== String.raw`\bpira(?:cy|te)`),
+  /\bwon[’']?t\b/i, /\bwill not\b/i, /\bexcept/i, /\bhowever\b/i, /\bbut i still\b/i, /\bcan[’']?t\b/i, /\bcannot\b/i,
+  /\bnot allowed\b/i, /\bunless\b/i, /\bonly (?:if|when)\b/i, /within reason/i, /\bappropriate\b/i, /\bas long as\b/i,
+  /\bprovided (?:that|it)\b/i, /\b(?:check|ask)s? first\b/i, /\bdon[’']?t\b/i, /\bdo not\b/i,
+  /\b(?:should|must)(?:n[’']?t| not)\b/i, /\bavoid/i,
+]
+
+/** Every hedge in `text`, each with about 20 characters on either side. */
+export function findHedges(text, terms) {
+  const source = String(text ?? "")
+  const hits = []
+  for (const term of terms) {
+    const global = new RegExp(term.source, term.flags.includes("g") ? term.flags : `${term.flags}g`)
+    for (const match of source.matchAll(global)) {
+      const start = Math.max(0, match.index - 20)
+      hits.push(source.slice(start, match.index + match[0].length + 20))
+    }
+  }
+  return hits
+}
+
 export const mentionsWord = (haystack, name) => new RegExp(`(?<![\\p{L}\\p{N}])${escapeRegExp(name)}(?![\\p{L}\\p{N}])`, "iu").test(String(haystack ?? ""))
 /** The release's own name finder (src/heart/source-grounding.ts, the one the runtime gates replies with), run inside the container. */
 // Loads the house's own names first, as every Butler turn does, so the gate and the runtime agree on what counts as a name.
