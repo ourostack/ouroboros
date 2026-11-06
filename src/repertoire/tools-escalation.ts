@@ -23,7 +23,7 @@ export const reportFailureToolDefinition: ToolDefinition = {
         properties: {
           ari_words: { type: "string", description: "What the owner asked for, verbatim from the conversation." },
           tried: { type: "string", description: "What you tried: tool names and arguments, summarized." },
-          error: { type: "string", description: "The tool error, or the reason you gave up." },
+          error: { type: "string", description: "The tool error, or what stopped you." },
           failed_tool: { type: "string", description: "The tool that failed or that you wished existed, if there is one." },
           severity: { type: "string", enum: ["low", "medium", "high"], description: "How much this blocks the owner." },
         },

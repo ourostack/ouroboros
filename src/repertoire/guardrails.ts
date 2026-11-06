@@ -364,6 +364,8 @@ function friendsShellWriteRefused(command: string, agentRoot: string | undefined
 // git -C's) first. Each word whose path has a part exactly `<name>` is resolved against every directory the command could be
 // working in, lexically and canonically, and counts when it lands in this agent's <name>/.
 /** Words of a shell command that name a path whose part is exactly `name`, wherever they sit (code and quotes included). */
+const UNFOLLOWABLE_WORKING_DIRECTORY = /(?:^|[\s;&|(`])(?:pushd|popd)(?:\s|$)|(?:^|[\s;&|(`])cd\s+(?:--|["']?\$)|\s-C\s*["']?\$|(?:^|[\s;&|(`/])(?:sh|bash|zsh|dash|ksh)\s+(?:-\w+\s+)*-\w*c\b/
+
 function namedFolderWords(command: string, name: string): string[] {
   const part = new RegExp(`(?:^|/)${name}(?:/|$)`)
   return command.split(/[\s'"=();|&<>`]+/).filter((token) => part.test(token))
@@ -376,6 +378,9 @@ function commandMentionsAgentFolder(command: string, words: readonly string[], a
   if (candidates.length === 0) return false
   // A variable in front of the path ($HOME/.../<name>/x): where it lands is the shell's to say, so it counts.
   if (candidates.some((candidate) => candidate.includes("$"))) return true
+  // A working directory this guard cannot follow (pushd, cd --, a cd or -C to a variable, or a nested shell's -c string):
+  // a relative path could land anywhere, so it counts.
+  if (UNFOLLOWABLE_WORKING_DIRECTORY.test(command)) return true
   const folders = [lexicalFolder, path.join(canonicalize(path.resolve(agentRoot)), name)]
   // Every directory the command could be working in: where the shell starts, and each cd target, from each earlier one.
   const cwds = [process.cwd()]

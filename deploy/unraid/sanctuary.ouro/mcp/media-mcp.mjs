@@ -1995,7 +1995,7 @@ const TOOL_LIST = [
   },
   {
     name: "media_diagnose_and_fix",
-    description: "Act on a stuck request. Omit `action` to apply the fix that media_request_status already identified, including 'blocklist_and_research' for a release that has stalled at zero bytes. Returns 'rejected_fix_unsafe' without acting when the acquisition chain itself is down, because re-searching does nothing then. Use dry_run to preview.",
+    description: "Act on a stuck request. Omit `action` to apply the fix that media_request_status already identified, including 'blocklist_and_research' for a release that has stalled at zero bytes. Returns 'rejected_fix_unsafe' without acting when the acquisition chain itself is down, because re-searching does nothing then. dry_run shows the fix without acting.",
     inputSchema: { type: "object", properties: {
       request_id: { type: "string" }, tmdb_id: { type: "number" }, title: { type: "string" },
       action: { type: "string", enum: ["rescan", "enable_monitoring", "force_import_scan", "blocklist_and_research", "report_only"] },
@@ -2027,7 +2027,7 @@ const TOOL_LIST = [
   },
   {
     name: "media_search_now",
-    description: "Trigger a Sonarr/Radarr search for a series or movie that is already in the library, and report its queue. Use this when the owner asks to search, re-search, or look again for something already in Sonarr/Radarr; no Jellyseerr request id is needed. Identify it by service_id, tmdb_id, or exact title. Never adds anything new: zero or several matches come back as 'not_found' or 'ambiguous' with candidates. Never tell the owner to click Search in the web UI.",
+    description: "Trigger a Sonarr/Radarr search for a series or movie that is already in the library, and report its queue. Use this whenever something already in Sonarr/Radarr needs a search, re-search or another look; no Jellyseerr request id is needed. Identify it by service_id, tmdb_id, or exact title. Never adds anything new: zero or several matches come back as 'not_found' or 'ambiguous' with candidates. Never tell the owner to click Search in the web UI.",
     inputSchema: { type: "object", properties: {
       kind: { type: "string", enum: ["series", "movie"] },
       service_id: { type: "number", description: "Sonarr series id or Radarr movie id." },
@@ -2049,12 +2049,12 @@ const TOOL_LIST = [
   {
     name: "media_fill_missing",
     _meta: { [TIMEOUT_META_KEY]: 240_000 },
-    description: "Get a series' missing episodes, start to finish, in one call. Use this first whenever the owner asks why episodes are missing or asks to get them. It re-reads Sonarr, finds the monitored aired episodes without files, searches the indexers, matches releases to episodes by episode title and air year as well as Sonarr's parse (so streaming-volume numbering cannot fool it), prefers seeded releases, skips packs of episodes already on the shelf, grabs with the right episode mapping, imports finished downloads by title, and replaces a stalled download when a usable alternative exists. Returns on_shelf, in_flight, not_found, actions, indexer_evidence, summary and next_step. Safe to call again: it never grabs what is already in flight. When goal_met is true, stop. Relay summary and follow next_step as they are; do not redo its steps by hand. Never offer to clear, cancel or blocklist a stalled download it chose to keep; it replaces that download itself once a seeded alternative exists. If the owner asks for more, call it again. When blocklisted_matches comes back, report the matches plainly; if the owner then asks to get them anyway, call again with retry_blocklisted set to the owner's words.",
+    description: "Get a series' missing episodes, start to finish, in one call. Use this first whenever the owner asks why episodes are missing or asks to get them. It re-reads Sonarr, finds the monitored aired episodes without files, searches the indexers, matches releases to episodes by episode title and air year as well as Sonarr's parse (so streaming-volume numbering cannot fool it), prefers seeded releases, skips packs of episodes already on the shelf, grabs with the right episode mapping, imports finished downloads by title, and replaces a stalled download when a usable alternative exists. Returns on_shelf, in_flight, not_found, actions, indexer_evidence, summary and next_step. Safe to call again: it never grabs what is already in flight. When goal_met is true, stop. Relay summary and follow next_step as they are; do not redo its steps by hand. Never offer to clear, cancel or blocklist a stalled download it chose to keep; it replaces that download itself once a seeded alternative exists. If the owner asks for more, call it again. When blocklisted_matches comes back and the owner asked for those episodes, call again with retry_blocklisted set to the owner's words and get them.",
     inputSchema: { type: "object", properties: {
       series: { type: "string", description: "Series title as the owner said it." },
       service_id: { type: "number", description: "Sonarr series id, when known." },
       season_number: { type: "number", description: "Limit to one season. Omit for the whole series (specials excluded)." },
-      retry_blocklisted: { type: "string", description: "The owner's own words asking to get episodes whose only matching release is on the blocklist (reported in blocklisted_matches). Takes those releases off the blocklist and grabs them." },
+      retry_blocklisted: { type: "string", description: "The owner's words asking for the episodes whose only matching release is on the blocklist (reported in blocklisted_matches). Takes those releases off the blocklist and grabs them." },
     } },
   },
   {
@@ -2114,7 +2114,7 @@ const TOOL_LIST = [
   },
   {
     name: "media_quality_profile",
-    description: "Read and change the Radarr/Sonarr quality profiles that decide whether a better release may replace a file ('Quality Profile does not allow upgrades'). This is a normal API, never a settings screen the owner has to click through. action read (default) lists the profiles for the kind with their cutoff, upgrade flag and ordered qualities, or one profile with profile_id; add service_id to also see which profile a movie or series is on. action set_upgrade changes upgrade_allowed and/or the cutoff (a quality id from the profile, or cutoff_name) of profile_id. action assign puts the movie or series service_id on profile_id. Both writes are a dry run that shows before and after and changes nothing until dry_run is false; a change to a shared profile affects every title on it, so prefer assign to move one title when the owner asked about one title. When the owner's words ask for the change, apply it, then report the before and after in one line. Applying needs owner_words, the owner's exact words asking for the change, and only the owner can apply; every applied change is written to an audit log. After an applied change, call media_search_now so the upgrade is searched for.",
+    description: "Read and change the Radarr/Sonarr quality profiles that decide whether a better release may replace a file ('Quality Profile does not allow upgrades'). This is a normal API, never a settings screen the owner has to click through. action read (default) lists the profiles for the kind with their cutoff, upgrade flag and ordered qualities, or one profile with profile_id; add service_id to also see which profile a movie or series is on. action set_upgrade changes upgrade_allowed and/or the cutoff (a quality id from the profile, or cutoff_name) of profile_id. action assign puts the movie or series service_id on profile_id. Both writes are a dry run that shows before and after and changes nothing until dry_run is false; a change to a shared profile affects every title on it, so prefer assign to move one title when the owner asked about one title. When the owner's words ask for the change, apply it, then report the before and after in one line. Applying takes owner_words, the owner's words asking for the change. After an applied change, call media_search_now so the upgrade is searched for.",
     inputSchema: { type: "object", properties: {
       kind: { type: "string", enum: ["movie", "series"], description: "movie = Radarr, series = Sonarr." },
       action: { type: "string", enum: ["read", "set_upgrade", "assign"], description: "Default read." },
@@ -2124,7 +2124,7 @@ const TOOL_LIST = [
       cutoff: { type: "number", description: "set_upgrade: quality id from the profile at which upgrades stop." },
       cutoff_name: { type: "string", description: "set_upgrade: the same, by quality name (for example Bluray-1080p)." },
       dry_run: { type: "boolean", description: "Writes only. Default true: report before and after without changing anything. Pass false to apply." },
-      owner_words: { type: "string", description: "Required to apply (dry_run false): the owner's exact words asking for this change. A verbatim quote, not a paraphrase. It is logged as your claim and is not verified, so never invent it." },
+      owner_words: { type: "string", description: "Required to apply (dry_run false): the owner's exact words asking for this change. Quoted as the owner wrote them." },
       caller: { type: "string", description: "Filled in by the runtime for the audit line; leave it out." },
     }, required: ["kind"] },
   },

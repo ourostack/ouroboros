@@ -1603,12 +1603,22 @@ describe("OURO_CLI_TRUST_MANIFEST — rollback and versions", () => {
             "cd ~/AgentBundles && cp /tmp/a x.ouro/psyche/SOUL.md",
             `cd ${path.join(home, "AgentBundles")} && cp /tmp/a x.ouro/psyche/SOUL.md`,
             "cd ~/AgentBundles/x.ouro && ln psyche/SOUL.md state/policy/p.json",
+            // The re-review: working directories the guard cannot follow.
+            "cd $HOME/AgentBundles && echo x > x.ouro/psyche/SOUL.md",
+            "pushd ~/AgentBundles; echo x > x.ouro/psyche/SOUL.md",
+            "sh -c \"cd ~/AgentBundles && echo x > x.ouro/psyche/SOUL.md\"",
+            "cd -- ~/AgentBundles && echo x > x.ouro/psyche/SOUL.md",
+            "git -C $HOME/AgentBundles mv /tmp/a x.ouro/psyche/SOUL.md",
           ]) {
             const result = guardInvocation("shell", { command }, who)
             expect(result, command).toMatchObject({ allowed: false })
             expect((result as { reason: string }).reason, command).toContain("part of me")
           }
           expect(guardInvocation("shell", { command: "cd ~/AgentBundles && cp /tmp/a x.ouro/friends/f.json" }, who)).toMatchObject({ allowed: false })
+          expect(guardInvocation("shell", { command: "bash -lc 'cd ~/AgentBundles && cp /tmp/a x.ouro/friends/f.json'" }, who)).toMatchObject({ allowed: false })
+          // A nested shell or pushd with no protected path part in it is not a mention.
+          expect(guardInvocation("shell", { command: "sh -c 'cd /tmp && echo x > notes/a.md'" }, who)).toEqual({ allowed: true })
+          expect(guardInvocation("shell", { command: "pushd /tmp; echo x > a.md" }, who)).toEqual({ allowed: true })
           expect(guardInvocation("shell", { command: "cd ~/AgentBundles && cat x.ouro/psyche/SOUL.md" }, who)).toEqual({ allowed: true })
           expect(guardInvocation("shell", { command: "cd ~/AgentBundles && cat x.ouro/friends/f.json" }, who)).toEqual({ allowed: true })
           // Another bundle's psyche or friends folder is not this agent's.

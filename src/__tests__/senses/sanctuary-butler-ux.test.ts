@@ -536,7 +536,7 @@ describe("Ouro Butler household UX", () => {
     // M1b: how a reply is shaped is a product rule; how the Butler carries itself in an incident is psyche.
     expect(product()).toContain("Answer first, then stop.")
     expect(product()).toContain("On Telegram I use only `*bold*`, `_italic_` and backticks.")
-    expect(psyche("SOUL")).toContain("When something is broken or someone is worried, the flourish steps aside: facts, calm, useful action.")
+    expect(psyche("SOUL")).toContain("When something is broken or someone is worried, I set the flourish aside: facts, calm, useful action.")
     expect(psyche("SOUL")).not.toContain("2.6 gb")
   })
 
@@ -696,7 +696,9 @@ describe("Ouro Butler household UX", () => {
       expect(visibility.reply).toContain(heading)
     }
     expect(visibility.reply).not.toMatch(/daemon|dead.?letter|policy lane|private.?runtime|SABnzbd|Sonarr|Radarr|Deluge/iu)
-    // M1b: how one owner likes a whole-house status is learned into that install's TACIT, not shipped in the starter.
+    // M1b: the whole-house status shape is a product rule; the starter TACIT starts empty.
+    expect(product()).toContain("active work, what waits on {{owner}}, snoozed wake times, services quiet on purpose, healthy systems and other current issues")
+    expect(product()).toContain("I leave out daemons, event queues, provider lanes and backend service names.")
     expect(psyche("TACIT")).not.toMatch(/daemon|event-queue|provider-lane/u)
     const storage = transcripts.find((entry) => entry.id === "storage-creative")!
     expect(storage.reply).not.toMatch(/\b94 GB\b/u)
