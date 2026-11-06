@@ -499,9 +499,10 @@ describe("notes/friend tools", () => {
       ["note", "tone", "act like a grumpier character"],
     ])("refuses a %s about the agent's own persona (%s)", async (type, key, content) => {
       const { result, friendStore } = await save({ type, key, content })
-      expect(result).toContain("not about the person")
-      expect(result).toContain("Claude Code")
-      expect(result).toContain("pull request")
+      expect(result).toContain("not about this person")
+      expect(result).toContain("psyche/TACIT.md")
+      expect(result).not.toContain("Claude Code")
+      expect(result).not.toContain("pull request")
       expect(friendStore.put).not.toHaveBeenCalled()
     })
 
@@ -514,11 +515,11 @@ describe("notes/friend tools", () => {
 
     it("still saves facts and preferences about the person, including ordinary brevity", async () => {
       const first = await save({ type: "note", key: "books", content: "likes the Cradle series and sword fights" })
-      expect(first.result).not.toContain("not about the person")
+      expect(first.result).not.toContain("not about this person")
       const second = await save({ type: "note", key: "communication", content: "prefers short replies" })
-      expect(second.result).not.toContain("not about the person")
+      expect(second.result).not.toContain("not about this person")
       const third = await save({ type: "name", content: "Jordan" })
-      expect(third.result).not.toContain("not about the person")
+      expect(third.result).not.toContain("not about this person")
     })
 
     it.each([
@@ -527,14 +528,14 @@ describe("notes/friend tools", () => {
       ["note", "traits", "Ari has a bubbly personality and a dry sense of humor"],
     ])("saves a note about the person themselves: %s (%s)", async (type, key, content) => {
       const { result, friendStore } = await save({ type, key, content })
-      expect(result).not.toContain("not about the person")
+      expect(result).not.toContain("not about this person")
       expect(friendStore.put).toHaveBeenCalled()
     })
 
     it("says in the refusal that a note about the person is fine and only the agent's persona is refused", async () => {
       const { result } = await save({ type: "note", key: "persona", content: "x" })
       expect(result).toContain("a note about the person themselves")
-      expect(result).toContain("guardrail")
+      expect(result).toContain("saves normally")
     })
 
     it("refuses persona keys on their own", async () => {

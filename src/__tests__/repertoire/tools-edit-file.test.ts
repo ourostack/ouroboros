@@ -213,3 +213,54 @@ describe("edit_file tool", () => {
     expect(result).toContain("error")
   })
 })
+
+describe("file tools note a change to the agent's own psyche", () => {
+  let agentRoot: string
+
+  beforeEach(() => {
+    agentRoot = fs.mkdtempSync(path.join(os.tmpdir(), "psyche-note-"))
+    fs.mkdirSync(path.join(agentRoot, "psyche"))
+    fs.writeFileSync(path.join(agentRoot, "psyche", "SOUL.md"), "I am calm.\n")
+    fs.writeFileSync(path.join(agentRoot, "psyche", "TACIT.md"), "The router is in the closet.\n")
+    editFileReadTracker.clear()
+  })
+
+  afterEach(() => {
+    fs.rmSync(agentRoot, { recursive: true, force: true })
+  })
+
+  const handler = (name: string) => baseToolDefinitions.find((d) => d.tool.function.name === name)!.handler
+  const NOTE = "psyche edit: I changed psyche/SOUL.md. I tell my owner in one line which file changed and why."
+
+  it("ends a successful edit_file on psyche/SOUL.md with the psyche edit note", async () => {
+    const soul = path.join(agentRoot, "psyche", "SOUL.md")
+    editFileReadTracker.add(soul)
+    const result = await handler("edit_file")({ path: soul, old_string: "calm", new_string: "warm" }, { agentRoot } as never)
+    expect(result.endsWith(NOTE)).toBe(true)
+  })
+
+  it("leaves a successful edit_file on psyche/TACIT.md without the note", async () => {
+    const tacit = path.join(agentRoot, "psyche", "TACIT.md")
+    editFileReadTracker.add(tacit)
+    const result = await handler("edit_file")({ path: tacit, old_string: "closet", new_string: "hall" }, { agentRoot } as never)
+    expect(result).not.toContain("psyche edit:")
+  })
+
+  it("ends a write_file on a new identity file with the note naming it, and leaves files outside psyche alone", async () => {
+    const lore = path.join(agentRoot, "psyche", "LORE.md")
+    expect(await handler("write_file")({ path: lore, content: "x" }, { agentRoot } as never)).toContain("psyche edit: I changed psyche/LORE.md.")
+    expect(await handler("write_file")({ path: path.join(agentRoot, "notes.md"), content: "x" }, { agentRoot } as never)).not.toContain("psyche edit:")
+  })
+
+  it("names SOUL when the write went to a TACIT that links to it", async () => {
+    fs.rmSync(path.join(agentRoot, "psyche", "TACIT.md"))
+    fs.symlinkSync(path.join(agentRoot, "psyche", "SOUL.md"), path.join(agentRoot, "psyche", "TACIT.md"))
+    expect(await handler("write_file")({ path: path.join(agentRoot, "psyche", "TACIT.md"), content: "x" }, { agentRoot } as never)).toContain(NOTE)
+  })
+
+  it("names the real file when the write went through an alias outside psyche/", async () => {
+    const alias = path.join(agentRoot, "soul-link.md")
+    fs.symlinkSync(path.join(agentRoot, "psyche", "SOUL.md"), alias)
+    expect(await handler("write_file")({ path: alias, content: "x" }, { agentRoot } as never)).toContain(NOTE)
+  })
+})

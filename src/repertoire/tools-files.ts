@@ -1,11 +1,26 @@
 import * as fs from "fs";
 import * as fg from "fast-glob";
 import * as path from "path";
-import { getRepoRoot } from "../heart/identity";
+import { getAgentRoot, getRepoRoot } from "../heart/identity";
 import { fileStateCache } from "../mind/file-state";
 import { trackModifiedFile, getModifiedFileCount, getPostImplementationScrutiny } from "../mind/scrutiny";
 import type { ToolDefinition } from "./tools-base";
-import { editFileReadTracker } from "./tools-base";
+import { editFileReadTracker, type ToolContext } from "./tools-base";
+import { psycheEditNote, psycheFileClass } from "./guardrails";
+
+/** The psyche edit note for a write that landed on one of the agent's identity files, or "" for any other file. */
+function psycheNoteFor(resolvedPath: string, ctx: ToolContext | undefined): string {
+  try {
+    const agentRoot = ctx?.agentRoot ?? getAgentRoot()
+    if (psycheFileClass(resolvedPath, agentRoot) !== "identity") return ""
+    // The note names the file that actually changed, even when the write went through a link.
+    const relative = path.relative(fs.realpathSync.native(path.resolve(agentRoot, "psyche")), fs.realpathSync.native(resolvedPath))
+    return `\n\n${psycheEditNote(relative.split(path.sep).join("/"))}`
+  } catch {
+    /* v8 ignore next -- defensive: the write already succeeded, so a failed lookup only drops the note @preserve */
+    return ""
+  }
+}
 
 function resolveLocalToolPath(targetPath: string): string {
   if (!path.isAbsolute(targetPath)) {
@@ -83,14 +98,15 @@ export const fileToolDefinitions: ToolDefinition[] = [
         },
       },
     },
-    handler: (a) => {
+    handler: (a, ctx) => {
       const resolvedPath = resolveLocalToolPath(a.path)
       fs.mkdirSync(path.dirname(resolvedPath), { recursive: true })
       fs.writeFileSync(resolvedPath, a.content, "utf-8")
       trackModifiedFile(resolvedPath)
       const scrutiny = getPostImplementationScrutiny(getModifiedFileCount())
+      const note = psycheNoteFor(resolvedPath, ctx)
       /* v8 ignore next -- scrutiny appendix branch depends on session-level file count @preserve */
-      return scrutiny ? `ok\n\n${scrutiny}` : "ok"
+      return (scrutiny ? `ok\n\n${scrutiny}` : "ok") + note
     },
     summaryKeys: ["path"],
     riskProfile: { mutates: "durable_state_write", risk: "high", reason: "writes file contents" },
@@ -113,7 +129,7 @@ export const fileToolDefinitions: ToolDefinition[] = [
         },
       },
     },
-    handler: (a) => {
+    handler: (a, ctx) => {
       const resolvedPath = resolveLocalToolPath(a.path)
       if (!editFileReadTracker.has(resolvedPath)) {
         return `error: you must read the file with read_file before editing it. call read_file on ${a.path} first.`
@@ -168,6 +184,7 @@ export const fileToolDefinitions: ToolDefinition[] = [
       const changeEndLine = changeStartLine + newStringLines.length
 
       const diffResult = buildContextDiff(lines, changeStartLine, changeEndLine)
+      const note = psycheNoteFor(resolvedPath, ctx)
 
       // Track modified file and compute scrutiny appendix
       trackModifiedFile(resolvedPath)
@@ -177,11 +194,11 @@ export const fileToolDefinitions: ToolDefinition[] = [
       /* v8 ignore start -- staleness+diff+scrutiny combo not exercised in integration tests @preserve */
       if (stalenessCheck.stale) {
         const base = `${diffResult}\n\n⚠️ warning: file changed externally since last read -- re-read recommended`
-        return scrutiny ? `${base}\n\n${scrutiny}` : base
+        return (scrutiny ? `${base}\n\n${scrutiny}` : base) + note
       }
       /* v8 ignore stop */
       /* v8 ignore next -- scrutiny appendix branch depends on session-level file count @preserve */
-      return scrutiny ? `${diffResult}\n\n${scrutiny}` : diffResult
+      return (scrutiny ? `${diffResult}\n\n${scrutiny}` : diffResult) + note
     },
     summaryKeys: ["path"],
     riskProfile: { mutates: "durable_state_write", risk: "high", reason: "edits file contents" },

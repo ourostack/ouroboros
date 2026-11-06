@@ -158,6 +158,27 @@ describe("guardrails integration — full flow", () => {
     expect(result).not.toContain("closer relationship")
   })
 
+  it("the guard sees who is asking and on which channel before a psyche write", async () => {
+    const agentRoot = fs.mkdtempSync(path.join(os.tmpdir(), "psyche-gate-"))
+    fs.mkdirSync(path.join(agentRoot, "psyche"))
+    const ctxOn = (channel: "telegram" | "a2a", kind: "human" | "agent") => ({
+      signin: async () => undefined,
+      agentRoot,
+      context: {
+        friend: { id: "f1", name: "Owner", kind, trustLevel: "family", externalIds: [], tenantMemberships: [], toolPreferences: {}, notes: {}, createdAt: new Date().toISOString(), updatedAt: new Date().toISOString(), schemaVersion: 1 },
+        channel: getChannelCapabilities(channel),
+      },
+    }) as unknown as ToolContext
+    const soul = path.join(agentRoot, "psyche", "SOUL.md")
+    try {
+      expect(await execTool("write_file", { path: soul, content: "x" }, ctxOn("a2a", "human"))).toBe("that file is part of me; I change it when my owner asks me in our own chat.")
+      expect(await execTool("write_file", { path: soul, content: "x" }, ctxOn("telegram", "agent"))).toBe("that file is part of me; I change it when my owner asks me in our own chat.")
+      expect(await execTool("write_file", { path: soul, content: "x" }, ctxOn("telegram", "human"))).toContain("psyche edit: I changed psyche/SOUL.md.")
+    } finally {
+      fs.rmSync(agentRoot, { recursive: true, force: true })
+    }
+  })
+
   it("getToolsForChannel always returns all base tools regardless of channel/context", () => {
     const localTools = ["shell", "read_file", "write_file", "edit_file", "glob", "grep"]
 

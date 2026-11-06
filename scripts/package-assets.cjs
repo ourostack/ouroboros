@@ -45,6 +45,7 @@ const REQUIRED_PACKAGE_ASSET_PATHS = [
   "deploy/unraid/sanctuary.ouro/arc/README.md",
   "deploy/unraid/sanctuary.ouro/habits/sanctuary-health.md",
   "deploy/unraid/sanctuary.ouro/awaiting/house-care-sweep.md",
+  "deploy/unraid/sanctuary.ouro/product/PRODUCT.md",
   "deploy/unraid/sanctuary.ouro/psyche/ASPIRATIONS.md",
   "deploy/unraid/sanctuary.ouro/psyche/IDENTITY.md",
   "deploy/unraid/sanctuary.ouro/psyche/LORE.md",

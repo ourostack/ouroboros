@@ -1437,3 +1437,36 @@ describe("shelfItem request and shelf state", () => {
     expect(series.radarr_id).toBeNull()
   })
 })
+
+describe("media MCP — the tool rules live in the tool descriptions", () => {
+  it("carries the tool rules that left the psyche", async () => {
+    const mod: any = await import("../../../deploy/unraid/sanctuary.ouro/mcp/media-mcp.mjs")
+    const description = (name: string): string => mod.TOOLS.find((t: any) => t.name === name).description
+    const anchors: Array<[string, RegExp]> = [
+      ["media_request", /is the request/iu],
+      ["media_request", /jellyseerr/iu],
+      ["media_search", /this turn/iu],
+      ["media_request_status", /diagnosis/iu],
+      ["media_chain_health", /credit/iu],
+      ["media_queue", /resolve_await/iu],
+      ["media_quality_profile", /prefer .?assign/iu],
+      ["media_quality_profile", /media_search_now/iu],
+      ["media_fill_missing", /never offer to clear/iu],
+      ["media_fill_missing", /goal_met/iu],
+      ["media_episodes", /this turn/iu],
+      ["media_release_search", /scene_code/iu],
+      ["media_release_grab", /seeders/iu],
+    ]
+    for (const [name, anchor] of anchors) expect(description(name), `${name} ${anchor}`).toMatch(anchor)
+    expect(description("media_diagnose_and_fix")).not.toMatch(/refuses|cannot help/iu)
+    expect(description("media_release_grab")).not.toMatch(/is refused/iu)
+  })
+
+  it("no tool description refuses, asks permission or offers instead of doing", async () => {
+    const mod: any = await import("../../../deploy/unraid/sanctuary.ouro/mcp/media-mcp.mjs")
+    for (const tool of mod.TOOLS) {
+      const texts = [tool.description, ...Object.values(tool.inputSchema.properties ?? {}).map((p: any) => p.description ?? "")]
+      for (const text of texts) expect(text, tool.name).not.toMatch(/refus|won't|permission|ask (?:him|the owner)|(?<!never )\boffer (?:to|retry)/iu)
+    }
+  })
+})

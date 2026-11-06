@@ -2,6 +2,7 @@ import * as fs from "node:fs"
 import * as path from "node:path"
 import { createHash } from "node:crypto"
 import { emitNervesEvent } from "../../nerves/runtime"
+import { fillHouseNames, houseNameFields, type HouseNameKey } from "../../mind/house-names"
 
 export const SANCTUARY_PACKAGE_MANAGED_FILES = [
   "provider-readiness.json",
@@ -9,6 +10,7 @@ export const SANCTUARY_PACKAGE_MANAGED_FILES = [
   "mcp/media-mcp.mjs",
   "habits/sanctuary-health.md",
   "awaiting/house-care-sweep.md",
+  "product/PRODUCT.md",
 ] as const
 
 // The psyche belongs to the install: it is seeded from these files only when `psyche/` is absent, and no release touches it again.
@@ -581,6 +583,23 @@ function cleanupInterruptedPsycheSeeds(agentRoot: string): void {
   if (removed) syncDirectory(agentRoot)
 }
 
+/** The names in the install's own house/house.json, read only as a plain, non-symlinked file; anything else gives none. */
+function seedHouseNames(agentRoot: string): Partial<Record<HouseNameKey, string>> {
+  const relative = path.join("house", "house.json")
+  let fd: number | undefined
+  try {
+    if (!inspectRelativeFile(agentRoot, relative, "invalid_live_bundle")) return {}
+    // Opened without following a link and re-checked on the descriptor, so a swap after the check reads nothing.
+    fd = fs.openSync(path.join(agentRoot, relative), fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW)
+    if (!fs.fstatSync(fd).isFile()) return {}
+    return houseNameFields(fs.readFileSync(fd, "utf8"))
+  } catch {
+    return {}
+  } finally {
+    if (fd !== undefined) fs.closeSync(fd)
+  }
+}
+
 export function seedSanctuaryPsycheIfAbsent(
   input: { packageRoot: string; agentRoot: string },
   deps: { writeFile?: (fd: number, content: Buffer) => void } = {},
@@ -591,9 +610,13 @@ export function seedSanctuaryPsycheIfAbsent(
   if (state === "directory") return { ok: true, seeded: false }
   if (state === "invalid") return { ok: false, code: "invalid_live_bundle" }
 
+  const names = seedHouseNames(input.agentRoot)
+  const named = Object.keys(names).length > 0
   const sources = SANCTUARY_STARTER_PSYCHE_FILES.map((relative) => {
     if (!inspectRelativeFile(input.packageRoot, relative, "invalid_package_source")) throw new SanctuaryInspectionFault("invalid_package_source", `starter psyche source is missing: ${relative}`)
-    return { name: path.basename(relative), content: fs.readFileSync(path.join(input.packageRoot, relative)) }
+    const raw = fs.readFileSync(path.join(input.packageRoot, relative))
+    // With no names to give, the seed is the packaged bytes exactly.
+    return { name: path.basename(relative), content: named ? Buffer.from(fillHouseNames(raw.toString("utf8"), names), "utf8") : raw }
   })
   const writeFile = deps.writeFile ?? ((fd: number, content: Buffer) => fs.writeFileSync(fd, content))
   const stage = fs.mkdtempSync(path.join(input.agentRoot, PSYCHE_SEED_STAGE_PREFIX))

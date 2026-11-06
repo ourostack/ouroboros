@@ -452,6 +452,7 @@ export async function preflightToolCall(name: string, args: Record<string, strin
     const guardContext = {
       readPaths: editFileReadTracker, trustLevel: ctx?.context?.friend?.trustLevel,
       agentRoot: ctx?.agentRoot ?? safeGetAgentRoot(), friendId: ctx?.context?.friend?.id,
+      friendKind: ctx?.context?.friend?.kind, channel: ctx?.context?.channel?.channel,
       ...(def?.mcpServer ? { mcpServerName: def.mcpServer } : {}),
       ...(typeof group === "boolean" ? { isGroupChat: group } : {}),
     }

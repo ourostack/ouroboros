@@ -3,7 +3,7 @@ import * as fs from "node:fs"
 import * as os from "node:os"
 import * as path from "node:path"
 import { afterEach, describe, expect, it, vi } from "vitest"
-import { SANCTUARY_KEEPER_BOOT_LINES, SanctuaryAuthorityRootLifecycle, recordSanctuaryRootLifecycleFailure, runSanctuaryAuthorityRootCli } from "../../../heart/daemon/sanctuary-authority-root-lifecycle"
+import { SANCTUARY_KEEPER_BOOT_LINES, SanctuaryAuthorityRootLifecycle, predecessorExpectsPsycheMount, recordSanctuaryRootLifecycleFailure, runSanctuaryAuthorityRootCli } from "../../../heart/daemon/sanctuary-authority-root-lifecycle"
 import { withSessionTurnLease } from "../../../mind/session-transaction"
 import { createLogger, type LogEvent } from "../../../nerves"
 import { setRuntimeLogger } from "../../../nerves/runtime"
@@ -1655,8 +1655,9 @@ describe("in-place authority upgrade", () => {
     expect(mounts).toContain("/mnt/user/appdata/ouro-butler/trust/sanctuary:/etc/ouro/trust/sanctuary:ro")
   })
 
-  it("recreates the rolled-back predecessor with the read-only psyche mount its release expects", async () => {
+  it("recreates a rolled-back predecessor up to alpha.978 with the read-only psyche mount its release expects", async () => {
     const f = await upgradeFixture()
+    f.resident.reference = "ghcr.io/ourostack/ouroboros-butler:0.1.0-alpha.978"
     await f.lifecycle.upgrade({ targetImageId: digest("next-image"), imageReference: nextReference, holdCommit: true })
     const upgraded = createMounts().length
     await expect(f.lifecycleFor().rollbackUpgrade()).resolves.toBe(true)
@@ -1666,7 +1667,33 @@ describe("in-place authority upgrade", () => {
     expect(mounts).toContain(psycheBind)
     expect(mounts.indexOf("/mnt/user/appdata/ouro-butler/agent/sanctuary.ouro:/home/ouro/AgentBundles/sanctuary.ouro:rw")).toBeLessThan(mounts.indexOf(psycheBind))
     expect(mounts.indexOf(psycheBind)).toBeLessThan(mounts.indexOf("/mnt/user/appdata/ouro-butler/trust/sanctuary:/etc/ouro/trust/sanctuary:ro"))
-    expect(f.resident).toMatchObject({ image: digest("new-image"), reference: currentReference, running: true })
+    expect(f.resident).toMatchObject({ image: digest("new-image"), reference: "ghcr.io/ourostack/ouroboros-butler:0.1.0-alpha.978", running: true })
+  })
+
+  for (const release of ["0.1.0-alpha.979", "0.1.0-alpha.981"]) {
+    it(`recreates a rolled-back M1a-or-later predecessor (${release}) with no psyche mount`, async () => {
+      const f = await upgradeFixture()
+      f.resident.reference = `ghcr.io/ourostack/ouroboros-butler:${release}`
+      await f.lifecycle.upgrade({ targetImageId: digest("next-image"), imageReference: nextReference, holdCommit: true })
+      await expect(f.lifecycleFor().rollbackUpgrade()).resolves.toBe(true)
+      const mounts = createMounts().at(-1)!
+      expect(mounts.some((mount) => mount.includes("/sanctuary.ouro/psyche"))).toBe(false)
+      expect(mounts).toContain("/mnt/user/appdata/ouro-butler/agent/sanctuary.ouro:/home/ouro/AgentBundles/sanctuary.ouro:rw")
+      expect(f.resident).toMatchObject({ image: digest("new-image"), reference: `ghcr.io/ourostack/ouroboros-butler:${release}`, running: true })
+    })
+  }
+
+  describe("predecessorExpectsPsycheMount", () => {
+    const ref = (tag: string) => `ghcr.io/ourostack/ouroboros-butler:${tag}`
+    it("is true only for an alpha release numbered 978 or lower", () => {
+      for (const tag of ["0.1.0-alpha.978", "0.1.0-alpha.877", "0.1.0-alpha.97"]) expect(predecessorExpectsPsycheMount(ref(tag)), tag).toBe(true)
+      for (const tag of ["0.1.0-alpha.979", "0.1.0-alpha.981", "0.1.0-alpha.1000"]) expect(predecessorExpectsPsycheMount(ref(tag)), tag).toBe(false)
+    })
+    it("is false for any other tag shape", () => {
+      for (const tag of ["0.2.0", "0.1.0-alpha.978.1", "latest", ""]) expect(predecessorExpectsPsycheMount(ref(tag)), tag).toBe(false)
+      expect(predecessorExpectsPsycheMount("no-tag-here")).toBe(false)
+      expect(predecessorExpectsPsycheMount("registry:5000/ouroboros-butler:0.1.0-alpha.900")).toBe(true)
+    })
   })
 
   describe("cgroup keep child (D-026)", () => {

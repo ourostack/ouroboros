@@ -14,6 +14,10 @@ export interface GuardContext {
   friendId?: string
   senseType?: string
   isGroupChat?: boolean
+  /** Whether the friend in this conversation is a human or another agent. */
+  friendKind?: "human" | "agent"
+  /** The channel this conversation arrived on (telegram, bluebubbles, teams, a2a, cli, inner, mail, ...). */
+  channel?: string
   /** For first-class MCP tools: the server this tool belongs to. */
   mcpServerName?: string
 }
@@ -29,7 +33,6 @@ const REASONS = {
   readBeforeEdit: "i need to read that file first before i can edit it.",
   readBeforeOverwrite: "i need to read that file first before i can overwrite it.",
   protectedPath: "that path is protected — i can read it but not modify it.",
-  psychePath: "my psyche files ship from the repository through a pull request and the replay gate; i can read them but not change them. i file the change request with Claude Code instead.",
   destructiveCommand: "that command is too dangerous to run — it could cause irreversible damage.",
   // Trust reasons (vary by relationship)
   needsTrust: "i'd need a closer friend to vouch for you before i can do that.",
@@ -114,7 +117,66 @@ export function insideAgentFolder(p: string, agentRoot: string, folder: "psyche"
   return canonicalTarget(p, agentRoot).some((target) => folders.some((dir) => target === dir || target.startsWith(`${dir}${path.sep}`)))
 }
 
-/** The agent's psyche folder ships only from the repository (a pull request and the replay gate), so no tool writes into it. The shell check uses this lexical form; the file tools use `insideAgentFolder`. */
+// --- the psyche belongs to the agent ---
+// Every agent writes its own TACIT.md: what it learns about how its house works. The rest of its psyche (who it is) changes only
+// when a family human asks it directly, one to one, on a channel that proves who they are.
+
+export const PSYCHE_REFUSAL = "that file is part of me; I change it when my owner asks me in our own chat."
+
+const PSYCHE_IDENTITY_CHANNELS = new Set(["telegram", "bluebubbles", "teams"])
+
+/** `tacit` for the agent's psyche/TACIT.md, `identity` for anything else in psyche/ (the folder and new files included), `null` outside it. */
+export function psycheFileClass(filePath: string, agentRoot: string | undefined): "tacit" | "identity" | null {
+  if (!filePath || !agentRoot || !insideAgentFolder(filePath, agentRoot, "psyche")) return null
+  const lexicalFolder = path.resolve(agentRoot, "psyche")
+  const folders = [lexicalFolder, canonicalize(lexicalFolder)]
+  const tacits = folders.map((folder) => path.join(folder, "TACIT.md"))
+  // Every form of the path that lands in psyche/ must be TACIT: a link that sends one form of it to SOUL makes it identity.
+  const inPsyche = canonicalTarget(filePath, agentRoot).filter((target) => folders.some((dir) => target === dir || target.startsWith(`${dir}${path.sep}`)))
+  return inPsyche.every((target) => tacits.includes(target)) ? "tacit" : "identity"
+}
+
+/** The lstat of `p`, or null when it does not exist; throws on any other lookup failure. */
+function lstatIfPresent(p: string): fs.Stats | null {
+  try {
+    return fs.lstatSync(p)
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return null
+    throw error
+  }
+}
+
+/** Whether the person in this conversation may have the agent write this psyche file. */
+export function psycheWriteAllowed(fileClass: "tacit" | "identity", _filePath: string, context: GuardContext): boolean {
+  const agentRoot = context.agentRoot
+  /* v8 ignore next -- a file is only classed as psyche when there is an agent root @preserve */
+  if (!agentRoot) return false
+  try {
+    if (lstatIfPresent(path.join(agentRoot, "psyche"))?.isSymbolicLink()) return false
+    if (fileClass === "tacit") {
+      // A symlink or a hard link would carry the write to some other file.
+      const tacit = lstatIfPresent(path.join(agentRoot, "psyche", "TACIT.md"))
+      if (tacit && (tacit.isSymbolicLink() || tacit.nlink > 1)) return false
+      if (context.friendId === undefined) return true
+      return context.trustLevel === undefined || context.trustLevel === "friend" || context.trustLevel === "family"
+    }
+  } catch {
+    return false
+  }
+  return context.friendKind === "human"
+    && context.trustLevel === "family"
+    && context.channel !== undefined && PSYCHE_IDENTITY_CHANNELS.has(context.channel)
+    && context.isGroupChat !== true
+    // Teams does not yet tell the turn whether it is a group chat, so there only an explicit one-to-one counts.
+    && (context.channel !== "teams" || context.isGroupChat === false)
+}
+
+/** The line a successful write to an identity file carries back to the agent. */
+export function psycheEditNote(file: string): string {
+  return `psyche edit: I changed psyche/${file}. I tell my owner in one line which file changed and why.`
+}
+
+/** The agent's psyche folder, in the lexical form the shell check uses; the file tools classify with `psycheFileClass`. */
 function isPsychePath(filePath: string, agentRoot: string): boolean {
   const psyche = path.resolve(agentRoot, "psyche")
   const target = path.resolve(agentRoot, filePath)
@@ -179,9 +241,9 @@ function shellWritesToProtectedPath(command: string): boolean {
 }
 
 // --- the psyche folder in shell commands ---
-// The psyche folder is mounted read-only into the resident at the OS level (the upgrade recreates the container that way). This is the
-// defence in depth in front of that: a shell command that mentions the psyche folder at all runs only if every part of it is
-// a read-only command, because enumerating the ways to write a file (>, >>, tee, cp, mv, sed -i, node -e, python, cd then
+// The agent changes its own psyche through write_file and edit_file, where the trust gate below decides who may ask for it.
+// The shell never writes there, for anyone: a shell command that mentions the psyche folder at all runs only if every part of
+// it is a read-only command, because enumerating the ways to write a file (>, >>, tee, cp, mv, sed -i, node -e, python, cd then
 // redirect) is a list the model can always step around.
 const PSYCHE_READ_ONLY_COMMANDS = new Set(["cat", "ls", "head", "tail", "grep", "wc", "sha256sum", "stat", "cd", "pwd"])
 const SEGMENT_OPERATORS = new Set(["&&", "||", ";", "|"])
@@ -224,7 +286,9 @@ function commandMentionsPsyche(command: string, words: readonly string[], agentR
   if (command.includes(psyche) || words.some((word) => word.includes(psyche))) return true
   if (words.some((word) => word === "psyche" || isPsychePath(word, agentRoot))) return true
   // A relative "psyche/..." inside code or a quoted argument, when this agent has such a folder.
-  return /(?:^|[\s'"=(])psyche\//.test(command) && fs.existsSync(psyche)
+  if (/(?:^|[\s'"=(])psyche\//.test(command) && fs.existsSync(psyche)) return true
+  // ~/..., $HOME/... and paths relative to a cd or -C target that land in this agent's psyche/.
+  return commandMentionsAgentFolder(command, words, agentRoot, "psyche")
 }
 
 /**
@@ -255,7 +319,12 @@ function protectedFolderShellWriteRefused(command: string, mentions: (words: rea
 
 function psycheShellWriteRefused(command: string, agentRoot: string | undefined): boolean {
   if (!agentRoot) return false
-  return protectedFolderShellWriteRefused(command, (words) => commandMentionsPsyche(command, words, agentRoot))
+  try {
+    return protectedFolderShellWriteRefused(command, (words) => commandMentionsPsyche(command, words, agentRoot))
+  } catch {
+    // The filesystem could not say where a path that names psyche/ lands: refuse rather than guess.
+    return true
+  }
 }
 
 // --- the friends store in shell commands ---
@@ -275,12 +344,77 @@ function commandMentionsFriendsStore(command: string, words: readonly string[], 
   if (/\$[({A-Za-z_]|`/.test(command) && /(?:^|[\/\s'"=])friends(?:$|[\/\s'"])/.test(command)) return true
   // An absolute or relative path inside code or a quoted argument, such as node -e "...'/bundle/friends/x.json'...".
   const store = path.resolve(agentRoot, "friends")
-  return command.includes(store) || /(?:^|[\s'"=(])friends\//.test(command)
+  if (command.includes(store) || /(?:^|[\s'"=(])friends\//.test(command)) return true
+  // Paths relative to a cd or -C target that land in this agent's friends/.
+  return commandMentionsAgentFolder(command, words, agentRoot, "friends")
 }
 
 function friendsShellWriteRefused(command: string, agentRoot: string | undefined): boolean {
   if (!agentRoot) return false
-  return protectedFolderShellWriteRefused(command, (words) => commandMentionsFriendsStore(command, words, agentRoot))
+  try {
+    return protectedFolderShellWriteRefused(command, (words) => commandMentionsFriendsStore(command, words, agentRoot))
+  } catch {
+    // The filesystem could not say where a path that names friends/ lands: refuse rather than guess.
+    return true
+  }
+}
+
+// --- where a path in a shell command lands ---
+// A command can name one of this agent's folders by an absolute path, by ~/ or $HOME/, or relative to wherever it cd's (or
+// git -C's) first. Each word whose path has a part exactly `<name>` is resolved against every directory the command could be
+// working in, lexically and canonically, and counts when it lands in this agent's <name>/.
+const UNFOLLOWABLE_WORKING_DIRECTORY = /(?:^|[\s;&|(`])(?:pushd|popd)(?:\s|$)|(?:^|[\s;&|(`])cd\s+(?:--|["']?\$)|\s-C\s*["']?\$|(?:^|[\s;&|(`/])(?:sh|bash|zsh|dash|ksh)\s+(?:-\w+\s+)*-\w*c\b/
+
+/** Words of a shell command that name a path whose part is exactly `name`, wherever they sit (code and quotes included). */
+function namedFolderWords(command: string, name: string): string[] {
+  const part = new RegExp(`(?:^|/)${name}(?:/|$)`)
+  return command.split(/[\s'"=();|&<>`]+/).filter((token) => part.test(token))
+}
+
+function commandMentionsAgentFolder(command: string, words: readonly string[], agentRoot: string, name: string): boolean {
+  const lexicalFolder = path.resolve(agentRoot, name)
+  if (globOrExpansionCouldReach(command, lexicalFolder, agentRoot)) return true
+  const candidates = namedFolderWords(command, name)
+  if (candidates.length === 0) return false
+  // A variable in front of the path ($HOME/.../<name>/x): where it lands is the shell's to say, so it counts.
+  if (candidates.some((candidate) => candidate.includes("$"))) return true
+  // A working directory this guard cannot follow (pushd, cd --, a cd or -C to a variable, or a nested shell's -c string):
+  // a relative path could land anywhere, so it counts.
+  if (UNFOLLOWABLE_WORKING_DIRECTORY.test(command)) return true
+  // A path that names this bundle's own folder (x.ouro/psyche) or a glob just above the folder (*/psyche) is this agent's
+  // wherever the command works from, so eval, a piped shell, env --chdir, find -path and code that chdir's all count.
+  const bundle = path.basename(path.resolve(agentRoot)).replace(/[.*+?^${}()|[\]\\]/g, "\\$&")
+  const anchored = new RegExp(`(?:^|/)(?:${bundle}|[^/]*[*?[][^/]*)/${name}(?:/|$)`)
+  if (candidates.some((candidate) => anchored.test(candidate))) return true
+  const folders = [lexicalFolder, path.join(canonicalize(path.resolve(agentRoot)), name)]
+  // Every directory the command could be working in: where the shell starts, and each cd target, from each earlier one.
+  const cwds = [process.cwd()]
+  for (const [index, word] of words.entries()) {
+    // `git -C <dir>` works in <dir> just as `cd <dir>` does.
+    if (words[index - 1] !== "cd" && words[index - 1] !== "-C") continue
+    const target = expandHome(word)
+    cwds.push(...(path.isAbsolute(target) ? [target] : cwds.map((cwd) => path.resolve(cwd, target))))
+  }
+  return candidates.some((candidate) => {
+    const word = expandHome(candidate)
+    const lexicals = path.isAbsolute(word) ? [path.resolve(word)] : cwds.map((cwd) => path.resolve(cwd, word))
+    return lexicals.flatMap((lexical) => [lexical, canonicalize(lexical)])
+      .some((target) => folders.some((dir) => target === dir || target.startsWith(`${dir}${path.sep}`)))
+  })
+}
+
+// --- the product rules in shell commands ---
+// product/PRODUCT.md is the package's standing rules for this agent; releases replace it, and nothing in a conversation does.
+// Unlike the friends store, a bare relative "product/" is an ordinary project folder almost everywhere, so it counts as this
+// agent's only when the command is plainly working in the agent root.
+function productShellWriteRefused(command: string, agentRoot: string | undefined): boolean {
+  if (!agentRoot) return false
+  try {
+    return protectedFolderShellWriteRefused(command, (words) => commandMentionsAgentFolder(command, words, agentRoot, "product"))
+  } catch {
+    // The filesystem could not say where a path that names product/ lands: refuse rather than guess.
+    return true
+  }
 }
 
 // --- structural guardrail checks (always on, all trust levels) ---
@@ -319,8 +453,12 @@ function checkProtectedPaths(toolName: string, args: Record<string, string>, con
     const agentRoot = filePath ? context.agentRoot : undefined
     if (agentRoot) {
       try {
-        if (insideAgentFolder(filePath, agentRoot, "psyche")) return deny(REASONS.psychePath)
+        const psycheClass = psycheFileClass(filePath, agentRoot)
+        if (psycheClass && !psycheWriteAllowed(psycheClass, filePath, context)) return deny(PSYCHE_REFUSAL)
         if (insideAgentFolder(filePath, agentRoot, "friends")) return deny(REASONS.protectedPath)
+        if (insideAgentFolder(filePath, agentRoot, "product")) return deny(REASONS.protectedPath)
+        // A link can carry a write that reads as harmless to a protected file (state/policy, agent.json).
+        if (canonicalTarget(filePath, agentRoot).some(isProtectedPath)) return deny(REASONS.protectedPath)
       } catch {
         return deny(REASONS.protectedPath)
       }
@@ -330,8 +468,9 @@ function checkProtectedPaths(toolName: string, args: Record<string, string>, con
 
   if (toolName === "shell") {
     const command = args.command || ""
-    if (psycheShellWriteRefused(command, context.agentRoot)) return deny(REASONS.psychePath)
+    if (psycheShellWriteRefused(command, context.agentRoot)) return deny(PSYCHE_REFUSAL)
     if (friendsShellWriteRefused(command, context.agentRoot)) return deny(REASONS.protectedPath)
+    if (productShellWriteRefused(command, context.agentRoot)) return deny(REASONS.protectedPath)
     if (shellWritesToProtectedPath(command)) return deny(REASONS.protectedPath)
   }
 

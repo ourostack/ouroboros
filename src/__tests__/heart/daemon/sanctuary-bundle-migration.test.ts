@@ -206,7 +206,7 @@ describe("Sanctuary package-managed bundle migration", () => {
     profiles.profiles["sanctuary-owner"].toolNames = profiles.profiles["sanctuary-owner"].toolNames.filter((name: string) => name !== "sanctuary_host_execute" && !SANCTUARY_OWNER_ADDITIONS.includes(name))
     write(agentRoot, "tool-profiles.json", profiles)
     const identity = fs.readFileSync(path.join(agentRoot, "psyche/IDENTITY.md"), "utf8")
-    write(agentRoot, "psyche/IDENTITY.md", identity.replace("I use the typed Unraid GraphQL repertoire for server operations and owner-authorized native tools for resident work inside my existing container boundary.", "My primary server interface is the typed Unraid GraphQL repertoire, never shell."))
+    write(agentRoot, "psyche/IDENTITY.md", identity.replace("I live on the server I look after, and I use my tools to do the work myself.", "I live on the server I look after, and I use the typed Unraid GraphQL repertoire for it."))
     const ownedIdentity = fs.readFileSync(path.join(agentRoot, "psyche/IDENTITY.md"), "utf8")
     write(agentRoot, "bundle-meta.json", { runtimeVersion: "old", bundleSchemaVersion: 2, operatorNote: "keep" })
     write(agentRoot, "state/policy/steward.json", emptyPackagedPolicy())
@@ -1199,6 +1199,50 @@ describe("Sanctuary starter psyche", () => {
     expect(seedLeftovers(agentRoot)).toEqual([])
   })
 
+  it("seeds the starter psyche with house names filled in", () => {
+    const packageRoot = path.resolve("deploy/unraid/sanctuary.ouro")
+    const named = makeRoot("sanctuary-named-seed")
+    write(named, "house/house.json", { ownerName: "Ada", butlerName: "Jeeves" })
+    expect(seedSanctuaryPsycheIfAbsent({ packageRoot, agentRoot: named })).toEqual({ ok: true, seeded: true })
+    const identity = fs.readFileSync(path.join(named, "psyche/IDENTITY.md"), "utf8")
+    expect(identity).toContain("Ada")
+    expect(identity).toContain("Jeeves")
+    expect(identity).toContain("{{household}}")
+
+    const bare = makeRoot("sanctuary-unnamed-seed")
+    expect(seedSanctuaryPsycheIfAbsent({ packageRoot, agentRoot: bare })).toEqual({ ok: true, seeded: true })
+    expectStarterPsyche(packageRoot, bare)
+
+    const linked = makeRoot("sanctuary-linked-house-seed")
+    const elsewhere = makeRoot("sanctuary-elsewhere-house")
+    write(elsewhere, "house.json", { ownerName: "Mallory" })
+    fs.mkdirSync(path.join(linked, "house"))
+    fs.symlinkSync(path.join(elsewhere, "house.json"), path.join(linked, "house", "house.json"))
+    expect(seedSanctuaryPsycheIfAbsent({ packageRoot, agentRoot: linked })).toEqual({ ok: true, seeded: true })
+    expectStarterPsyche(packageRoot, linked)
+
+    const unreadable = makeRoot("sanctuary-unreadable-house-seed")
+    write(unreadable, "house/house.json", { ownerName: "Mallory" })
+    fs.chmodSync(path.join(unreadable, "house", "house.json"), 0o000)
+    try {
+      expect(seedSanctuaryPsycheIfAbsent({ packageRoot, agentRoot: unreadable })).toEqual({ ok: true, seeded: true })
+      expectStarterPsyche(packageRoot, unreadable)
+    } finally {
+      fs.chmodSync(path.join(unreadable, "house", "house.json"), 0o600)
+    }
+
+    const swapped = makeRoot("sanctuary-swapped-house-seed")
+    write(swapped, "house/house.json", { ownerName: "Mallory" })
+    const realFstat = fs.fstatSync
+    const fstat = vi.spyOn(fs, "fstatSync").mockImplementationOnce((fd: number) => ({ ...realFstat(fd), isFile: () => false }) as fs.Stats)
+    try {
+      expect(seedSanctuaryPsycheIfAbsent({ packageRoot, agentRoot: swapped })).toEqual({ ok: true, seeded: true })
+      expectStarterPsyche(packageRoot, swapped)
+    } finally {
+      fstat.mockRestore()
+    }
+  })
+
   it("seeds the real packaged starter psyche byte for byte", () => {
     const packageRoot = path.resolve("deploy/unraid/sanctuary.ouro")
     const agentRoot = makeRoot("sanctuary-real-seed")
@@ -1430,5 +1474,32 @@ describe("Sanctuary starter psyche", () => {
     const relatives = [...record.files, ...record.directories].map((entry: { relative: string }) => entry.relative)
     expect(relatives.length).toBeGreaterThan(0)
     expect(relatives.filter((relative: string) => relative === "psyche" || relative.startsWith("psyche/"))).toEqual([])
+  })
+})
+
+describe("Sanctuary product rules", () => {
+  it("seeds and repairs product/PRODUCT.md like any managed file", () => {
+    expect(SANCTUARY_PACKAGE_MANAGED_FILES).toContain("product/PRODUCT.md")
+    const packageRoot = makePackageRoot()
+    const agentRoot = makeRoot("sanctuary-product-rules")
+    write(agentRoot, "bundle-meta.json", { runtimeVersion: "old", bundleSchemaVersion: 2, lastUpdated: "old" })
+    migrateSanctuaryPackageManagedBundle({ packageRoot, agentRoot })
+    const product = path.join(agentRoot, "product", "PRODUCT.md")
+    expect(fs.readFileSync(product, "utf8")).toBe("packaged:product/PRODUCT.md\n")
+    fs.writeFileSync(product, "talked into a new rule\n")
+    expect(migrateSanctuaryPackageManagedBundle({ packageRoot, agentRoot })).toEqual({ managedFilesUpdated: 1 })
+    expect(fs.readFileSync(product, "utf8")).toBe("packaged:product/PRODUCT.md\n")
+  })
+
+  it("rollback removes product/PRODUCT.md when the snapshot had none", () => {
+    const packageRoot = makePackageRoot()
+    const agentRoot = makeRoot("sanctuary-product-rollback")
+    write(agentRoot, "bundle-meta.json", { runtimeVersion: "old", bundleSchemaVersion: 2, lastUpdated: "old" })
+    migrateSanctuaryPackageManagedBundle({ packageRoot, agentRoot, retainRollback: true, rollbackImageId: `sha256:${"1".repeat(64)}`, targetImageId: `sha256:${"9".repeat(64)}` })
+    expect(fs.existsSync(path.join(agentRoot, "product", "PRODUCT.md"))).toBe(true)
+    expect(rollbackSanctuaryPackageManagedBundle(agentRoot)).toBe(true)
+    expect(fs.existsSync(path.join(agentRoot, "product", "PRODUCT.md"))).toBe(false)
+    // The folder the release created goes too, so a rollback to 979 leaves no non-canonical entry behind.
+    expect(fs.existsSync(path.join(agentRoot, "product"))).toBe(false)
   })
 })

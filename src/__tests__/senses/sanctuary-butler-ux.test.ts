@@ -58,6 +58,10 @@ type VoiceMode = "casual" | "recommendation" | "incident"
 
 type Transcript = { id: string; voice: VoiceMode; audience: "owner" | "family"; user: string; reply: string; tools: string[]; evidence?: { pending?: number; opportunities?: number; queueError?: string; notifications?: string[] } }
 
+function product(): string {
+  return fs.readFileSync(path.join(bundleRoot, "product", "PRODUCT.md"), "utf8")
+}
+
 function psyche(name: string): string {
   return fs.readFileSync(path.join(bundleRoot, "psyche", `${name}.md`), "utf8")
 }
@@ -498,9 +502,10 @@ describe("Ouro Butler household UX", () => {
     // The packaged psyche names no household: the Butler's and owner's names come from house/house.json at prompt time.
     expect(psyche("IDENTITY")).toContain("{{butler}}")
     expect(psyche("IDENTITY")).not.toContain(TEST_HOUSE.householdName)
-    expect(psyche("IDENTITY")).toContain("approved household members")
-    expect(psyche("IDENTITY")).toContain("People do not need to say Sanctuary")
-    expect(psyche("IDENTITY")).not.toContain("serve one trusted operator")
+    // M1b: every person keeps their own conversation, and nobody needs to know which service does what.
+    expect(psyche("IDENTITY")).toContain("Every other person I talk to has their own conversation and preferences")
+    expect(psyche("IDENTITY")).toContain("People never need to know which service does what")
+    expect(psyche("IDENTITY")).not.toContain("Sanctuary")
     const agentConfig = JSON.parse(fs.readFileSync(path.join(bundleRoot, "agent.json"), "utf8")) as { phrases: Record<string, string[]> }
     expect(agentConfig.phrases).toMatchObject({
       thinking: expect.arrayContaining(["consulting the household machinery"]),
@@ -517,48 +522,34 @@ describe("Ouro Butler household UX", () => {
     }
   })
 
-  it("has a playful, perceptive personality that names its Cradle voice reference once and borrows no other names", () => {
+  it("has a warm, dry personality and leaves any borrowed voice to the household's own psyche", () => {
+    // M1b: the starter SOUL is the generic Butler. A household's voice reference (the owner's own Cradle borrowing,
+    // say) is written into that install's psyche, not shipped to every install.
     const soul = psyche("SOUL")
-    expect(soul).toContain("wry")
-    expect(soul).toContain("unflappable")
-    expect(soul).toContain("dry little aside")
-    expect(soul).toContain("majordomo")
-    expect(soul).toContain("mischievous systems-gremlin")
-    expect(soul).toContain("curious")
-    expect(soul).toContain("quietly delighted by a clever fix")
-    expect(soul).toContain("mock grandeur")
-    expect(soul).toContain("kind, never smug")
-    expect(soul).toContain("skip ontology disclaimers unless they materially affect the answer")
-    expect(soul).toContain("Dross from Will Wight's Cradle books")
-    expect(soul).toContain("look him up before quoting him and borrow only what I've verified")
-    expect(soul.match(/\bDross\b/gu)).toHaveLength(1)
-    expect(soul).not.toMatch(/\b(?:Lindon|Eithan|Abidan|Monarch)\b/u)
+    expect(soul).toContain("calm, precise, warm and a little dry")
+    expect(soul).toContain("A clever fix quietly delights me")
+    expect(soul).toContain("a small aside, never in the way")
+    expect(soul).not.toMatch(/\b(?:Dross|Lindon|Eithan|Abidan|Monarch|Cradle)\b/u)
   })
 
-  it("encodes casual and incident voice as executable examples rather than adjectives alone", () => {
-    const soul = psyche("SOUL")
-
-    expect(soul).toContain("Replies are lowercase, usually without terminal punctuation, incidents too")
-    expect(soul).toContain("- **casual**: `house is quiet. suspiciously quiet`")
-    expect(soul).toContain("- **delight**: `oh, that worked beautifully`")
-    expect(soul).toContain("- **self-title**: `fixed. the omni-majordomo strikes again`")
-    expect(soul).toContain("- **done**: `imported, checked on disk. i would like it noted that it was elegant`")
-    expect(soul).toContain("- **wrong**: `wrong, that one's mine. fixed`")
-    expect(soul).toContain("- **plan**: `on it: grabbing the better copy and watching the queue`")
-    expect(soul).toContain("- **incident**: `downloads are paused to protect your prepaid credit. top up the account, then tell me; i’ll resume them and verify one finishes.`")
-    expect(soul).not.toContain("2.6 gb")
+  it("keeps reply shape in the product rules and the incident tone in the psyche", () => {
+    // M1b: how a reply is shaped is a product rule; how the Butler carries itself in an incident is psyche.
+    expect(product()).toContain("Answer first, then stop.")
+    expect(product()).toContain("On Telegram I use only `*bold*`, `_italic_` and backticks.")
+    expect(psyche("SOUL")).toContain("When something is broken or someone is worried, I set the flourish aside: facts, calm, useful action.")
+    expect(psyche("SOUL")).not.toContain("2.6 gb")
   })
 
-  it("keeps safety and duty content intact beside the brevity rules", () => {
-    const soul = psyche("SOUL")
-    expect(soul).toContain("Never trimmed: uncertainty and unverified disclosures, what tools returned and each step's evidence, may-never-finish caveats, owner notices, confirmation before destructive or irreversible actions, offers that need their answer, and necessary multi-part questions.")
-    expect(soul).toContain("Money, credentials, and irreversible or restricted actions stay with {{owner}}")
-    expect(soul).toContain("a promised follow-up needs a filed watch")
-    expect(soul).toContain("A missing tool goes to `report_failure` in one line, never to {{owner}} as a UI click.")
-    expect(soul).toContain("For reversible choices within standing policy")
-    expect(soul).toContain("Facts follow the primary-source rule")
-    expect(soul).toContain("all flourish steps aside")
-    expect(soul).toContain("technical detail when it helps or someone asks")
+  it("keeps the duty rules in the product rules, not the psyche", () => {
+    // M1b: duties ship as product/PRODUCT.md, which changes only by release; the psyche carries none of them.
+    for (const duty of [
+      "comes from a tool I called this turn",
+      "When no tool reaches the source, I say it is unverified.",
+      "A promise to follow up is a watch.",
+      "I call `report_failure` with the asker's words",
+      "When I change SOUL, IDENTITY, LORE or ASPIRATIONS, I tell {{owner}} in one line",
+    ]) expect(product(), duty).toContain(duty)
+    for (const name of ["SOUL", "IDENTITY", "LORE", "TACIT", "ASPIRATIONS"]) expect(psyche(name), name).not.toContain("report_failure")
   })
 
   it("describes health as agent-owned transition work without retired digests or sender-only tooling", () => {
@@ -569,11 +560,10 @@ describe("Ouro Butler household UX", () => {
   })
 
   it("acts under typed standing policy instead of demanding approval for every reversible restart", () => {
-    const tacit = psyche("TACIT")
-    expect(tacit).toContain("standing policy")
-    expect(tacit).toContain("verify the outcome")
-    expect(tacit).toContain("request-bound")
-    expect(tacit).not.toContain("after a durable Telegram approval")
+    // M1b: TACIT starts empty and learns; the standing-policy rule lives on the restart tool itself.
+    expect(psyche("TACIT")).not.toContain("standing policy")
+    const unraid = fs.readFileSync(path.resolve("src/repertoire/tools-unraid.ts"), "utf8")
+    expect(unraid).toContain("when standing policy allows")
   })
 
   it("ships relationship capability profiles as one typed registry rather than tool-only arrays", () => {
@@ -678,7 +668,6 @@ describe("Ouro Butler household UX", () => {
     // Which containers are Books and how its tool is used are one household's facts, so they live in that house's
     // house/HOUSE.md, not in the packaged lore every install shares.
     const lore = psyche("LORE")
-    expect(lore).toContain("Jellyfin is the household media shelf")
     expect(lore).not.toMatch(/calibre|PocketBook|\bAri\b/u)
     expect(expectedOff.tools).toEqual(["steward_policy_manage"])
     const reminder = transcripts.find((entry) => entry.id === "specified-snooze")!
@@ -707,9 +696,10 @@ describe("Ouro Butler household UX", () => {
       expect(visibility.reply).toContain(heading)
     }
     expect(visibility.reply).not.toMatch(/daemon|dead.?letter|policy lane|private.?runtime|SABnzbd|Sonarr|Radarr|Deluge/iu)
-    expect(psyche("TACIT")).toContain("For {{owner}}'s whole-household status questions")
-    expect(psyche("TACIT")).toContain("active work, waiting on {{owner}}, snoozed wake times, intentionally quiet services, healthy systems, and other current issues")
-    expect(psyche("TACIT")).toContain("Do not narrate daemon, event-queue, provider-lane, or backend service internals")
+    // M1b: the whole-house status shape is a product rule; the starter TACIT starts empty.
+    expect(product()).toContain("active work, what waits on {{owner}}, snoozed wake times, services quiet on purpose, healthy systems and other current issues")
+    expect(product()).toContain("I leave out daemons, event queues, provider lanes and backend service names.")
+    expect(psyche("TACIT")).not.toMatch(/daemon|event-queue|provider-lane/u)
     const storage = transcripts.find((entry) => entry.id === "storage-creative")!
     expect(storage.reply).not.toMatch(/\b94 GB\b/u)
     expect(storage.reply).toContain("largest shares")

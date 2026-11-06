@@ -22,6 +22,7 @@ export const CANONICAL_BUNDLE_MANIFEST: readonly BundleManifestEntry[] = [
   { path: "psyche/LORE.md", kind: "file" },
   { path: "psyche/TACIT.md", kind: "file" },
   { path: "psyche/ASPIRATIONS.md", kind: "file" },
+  { path: "product/PRODUCT.md", kind: "file" },
   { path: "arc", kind: "dir" },
   { path: "arc/episodes", kind: "dir" },
   { path: "arc/obligations", kind: "dir" },

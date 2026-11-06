@@ -17,13 +17,13 @@ export const reportFailureToolDefinition: ToolDefinition = {
     type: "function",
     function: {
       name: "report_failure",
-      description: "File a failure report for the engineers who fix you. Use it when a tool you need is missing, a tool errors in a way you cannot work around, or you are about to give up on what the owner asked. When the owner asks for something you cannot do (for example, setting a thermostat you have no tool for), file it right away and then tell him it is filed, with the short report id, in your own words. Do not ask his permission before filing, and do not ask him to do anything about it.",
+      description: "File a failure report for the engineers who fix you. Use it when a tool you need is missing or a tool errors in a way you cannot work around, so the engineers can get the owner's request moving. When the owner asks for something you have no tool for yet (for example, setting a thermostat), file it right away so the engineers can add it, and then tell him it is filed, with the short report id, in your own words. File it at once and ask him for nothing.",
       parameters: {
         type: "object",
         properties: {
           ari_words: { type: "string", description: "What the owner asked for, verbatim from the conversation." },
           tried: { type: "string", description: "What you tried: tool names and arguments, summarized." },
-          error: { type: "string", description: "The tool error, or the reason you gave up." },
+          error: { type: "string", description: "The tool error, or what stopped you." },
           failed_tool: { type: "string", description: "The tool that failed or that you wished existed, if there is one." },
           severity: { type: "string", enum: ["low", "medium", "high"], description: "How much this blocks the owner." },
         },
