@@ -7,11 +7,12 @@
 
 import * as os from "os"
 import * as path from "path"
+import * as fs from "fs"
 import type { ChatCompletionMessageParam } from "openai/resources/chat/completions"
 import type { ChannelCallbacks } from "../heart/core"
 import { runAgent } from "../heart/core"
 import { getAgentRoot } from "../heart/identity"
-import { sessionPath } from "../heart/config"
+import { sanitizeKey } from "../heart/config"
 import { stampIngressTime } from "../heart/session-events"
 import { loadSession } from "../mind/context"
 import { buildSystem, flattenSystemPrompt } from "../mind/prompt"
@@ -29,6 +30,116 @@ import { getSharedMcpManager } from "../repertoire/mcp-manager"
 import { emitNervesEvent } from "../nerves/runtime"
 
 const RESPONSE_CAP = 50_000
+const DELIVERY_TOOL_ACKS = new Map([
+  ["settle", "(delivered)"],
+  ["speak", "(spoken)"],
+])
+
+/**
+ * Strip MiniMax-style `<think>...</think>` reasoning blocks from a response
+ * string. Handles unclosed open tags (treats everything from `<think>` to
+ * end of string as reasoning) and multiple blocks in sequence. Returns the
+ * trimmed remainder.
+ */
+export function stripThinkBlocks(input: string): string {
+  let out = input
+  // Closed blocks first (greedy match removed by repeatedly slicing the leftmost pair).
+  for (;;) {
+    const open = out.indexOf("<think>")
+    if (open === -1) break
+    const close = out.indexOf("</think>", open + "<think>".length)
+    if (close === -1) {
+      // Unclosed — drop everything from <think> onward.
+      out = out.slice(0, open)
+      break
+    }
+    out = out.slice(0, open) + out.slice(close + "</think>".length)
+  }
+  return out.trim()
+}
+
+function assistantContentText(content: unknown): string | null {
+  if (typeof content !== "string") return null
+  const trimmed = content.trim()
+  return trimmed ? trimmed : null
+}
+
+function parseToolStringArg(toolCall: unknown, toolName: string, argName: string): string | null {
+  if (!toolCall || typeof toolCall !== "object") return null
+  const fn = (toolCall as { function?: { name?: unknown; arguments?: unknown } }).function
+  if (fn?.name !== toolName || typeof fn.arguments !== "string") return null
+
+  try {
+    const parsed = JSON.parse(fn.arguments) as unknown
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return null
+    const value = (parsed as Record<string, unknown>)[argName]
+    if (typeof value !== "string") return null
+    const trimmed = value.trim()
+    return trimmed ? trimmed : null
+  } catch {
+    return null
+  }
+}
+
+function hasDeliveredToolResult(
+  messages: ChatCompletionMessageParam[],
+  assistantIndex: number,
+  toolCallId: unknown,
+  toolName: "settle" | "speak",
+): boolean {
+  if (typeof toolCallId !== "string" || !toolCallId.trim()) return false
+  const expectedAck = DELIVERY_TOOL_ACKS.get(toolName)!
+
+  for (let index = assistantIndex + 1; index < messages.length; index++) {
+    const message = messages[index] as ChatCompletionMessageParam & { tool_call_id?: unknown }
+    if (message.role !== "tool") return false
+    if (
+      message.tool_call_id === toolCallId
+      && typeof message.content === "string"
+      && message.content.trim() === expectedAck
+    ) {
+      return true
+    }
+  }
+
+  return false
+}
+
+function deliveredTextFromAssistantTools(
+  messages: ChatCompletionMessageParam[],
+  assistantIndex: number,
+): string | null {
+  const assistant = messages[assistantIndex] as ChatCompletionMessageParam & { tool_calls?: unknown }
+  if (!Array.isArray(assistant.tool_calls)) return null
+
+  const delivered: string[] = []
+  for (let index = 0; index < assistant.tool_calls.length; index++) {
+    const toolCall = assistant.tool_calls[index]
+    const toolCallId = toolCall && typeof toolCall === "object"
+      ? (toolCall as { id?: unknown }).id
+      : undefined
+    const settleAnswer = parseToolStringArg(toolCall, "settle", "answer")
+    if (settleAnswer && hasDeliveredToolResult(messages, assistantIndex, toolCallId, "settle")) {
+      delivered.push(settleAnswer)
+      continue
+    }
+
+    const spokenMessage = parseToolStringArg(toolCall, "speak", "message")
+    if (spokenMessage && hasDeliveredToolResult(messages, assistantIndex, toolCallId, "speak")) {
+      delivered.push(spokenMessage)
+    }
+  }
+
+  return delivered.length > 0 ? delivered.join("\n") : null
+}
+
+function responseFromSessionMessages(messages: ChatCompletionMessageParam[]): string | null {
+  const assistantIndex = messages.findLastIndex((message) => message.role === "assistant")
+  if (assistantIndex < 0) return null
+  const assistant = messages[assistantIndex]
+  return assistantContentText(assistant.content)
+    ?? deliveredTextFromAssistantTools(messages, assistantIndex)
+}
 
 export interface RunSenseTurnOptions {
   /** Agent name (bundle name). */
@@ -100,7 +211,9 @@ export async function runSenseTurn(options: RunSenseTurnOptions): Promise<RunSen
   const mcpManager = await getSharedMcpManager() ?? undefined
 
   // Session path and loading
-  const sessPath = sessionPath(friendId, channel, sessionKey)
+  const sessionDir = path.join(agentRoot, "state", "sessions", friendId, channel)
+  fs.mkdirSync(sessionDir, { recursive: true })
+  const sessPath = path.join(sessionDir, `${sanitizeKey(sessionKey)}.json`)
   const existing = loadSession(sessPath)
   let sessionState = existing?.state
   let persistPromise: Promise<unknown> | undefined
@@ -174,17 +287,33 @@ export async function runSenseTurn(options: RunSenseTurnOptions): Promise<RunSen
     if (persistPromise) await persistPromise
     const postTurnSession = loadSession(sessPath)
     if (postTurnSession?.messages) {
-      const lastAssistant = [...postTurnSession.messages].reverse().find(m => m.role === "assistant")
-      if (lastAssistant && typeof lastAssistant.content === "string" && lastAssistant.content.trim()) {
-        finalResponse = lastAssistant.content
-      } else {
-        finalResponse = "(agent responded but response was empty)"
-      }
+      finalResponse = responseFromSessionMessages(postTurnSession.messages)
+        ?? "(agent responded but response was empty)"
     } else {
       finalResponse = "(agent responded but response was empty)"
     }
   } else {
     finalResponse = responseText
+  }
+
+  // Strip MiniMax-style <think>...</think> blocks from the final response.
+  // When a reasoning-style model emits only a think block and no final answer
+  // (no settle tool call, no post-think text), the readback path above
+  // surfaces the raw saved assistant content — which includes the think tags
+  // and renders as empty (or as raw reasoning) on MCP/CLI clients. Strip
+  // here so the caller sees the actual delivered text. If only reasoning
+  // came through and nothing else, surface a clear diagnostic message
+  // instead of a blank response so the operator knows what happened.
+  finalResponse = stripThinkBlocks(finalResponse)
+  if (finalResponse.length === 0) {
+    emitNervesEvent({
+      level: "warn",
+      component: "senses",
+      event: "senses.shared_turn_only_reasoning",
+      message: "agent produced only <think> reasoning with no final answer — likely a model that closed the think tag without continuing",
+      meta: { agentName, channel, sessionKey, friendId },
+    })
+    finalResponse = "(agent produced reasoning but no final answer this turn — try again, or check the session transcript for the trace)"
   }
 
   // Cap response length

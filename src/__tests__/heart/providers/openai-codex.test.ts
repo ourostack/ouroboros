@@ -64,11 +64,13 @@ vi.mock("openai", () => {
 const mockStreamResponsesApi = vi.fn()
 const mockToResponsesInput = vi.fn().mockReturnValue({ instructions: "sys", input: [] })
 const mockToResponsesTools = vi.fn().mockReturnValue([])
+const mockTruncateResponsesFunctionCallOutput = vi.fn((output: string) => output)
 
 vi.mock("../../../heart/streaming", () => ({
   streamResponsesApi: (...args: any[]) => mockStreamResponsesApi(...args),
   toResponsesInput: (...args: any[]) => mockToResponsesInput(...args),
   toResponsesTools: (...args: any[]) => mockToResponsesTools(...args),
+  truncateResponsesFunctionCallOutput: (...args: any[]) => mockTruncateResponsesFunctionCallOutput(...args),
 }))
 
 function buildToken(accountId: string): string {
@@ -108,6 +110,7 @@ describe("createOpenAICodexProviderRuntime", () => {
     mockStreamResponsesApi.mockReset()
     mockToResponsesInput.mockReset().mockReturnValue({ instructions: "sys", input: [] })
     mockToResponsesTools.mockReset().mockReturnValue([])
+    mockTruncateResponsesFunctionCallOutput.mockReset().mockImplementation((output: string) => output)
     const config = await import("../../../heart/config")
     config.resetConfigCache()
   })
@@ -250,6 +253,45 @@ describe("createOpenAICodexProviderRuntime", () => {
         reasoning: { effort: "medium", summary: "detailed" },
       }),
       callbacks,
+      undefined,
+      false,
+    )
+  })
+
+  it("appendToolOutput truncates oversized function_call_output before storing turn state", async () => {
+    await setupConfig()
+    mockToResponsesInput.mockReturnValue({
+      instructions: "sys-turn",
+      input: [{ role: "user", content: "hello" }],
+    })
+    mockTruncateResponsesFunctionCallOutput.mockReturnValue("[truncated output]")
+    mockStreamResponsesApi.mockResolvedValue({ content: "done", toolCalls: [], outputItems: [] })
+
+    const { createOpenAICodexProviderRuntime } = await import("../../../heart/providers/openai-codex")
+    const runtime = createOpenAICodexProviderRuntime("gpt-5.4")
+    runtime.resetTurnState([{ role: "user", content: "hello" } as any])
+    runtime.appendToolOutput("call-1", "x".repeat(250000))
+
+    expect(mockTruncateResponsesFunctionCallOutput).toHaveBeenCalledWith("x".repeat(250000))
+    await runtime.streamTurn({
+      messages: [{ role: "user", content: "hello" } as any],
+      callbacks: createCallbacks(),
+      signal: undefined,
+      eagerSettleStreaming: false,
+      activeTools: [],
+      toolChoiceRequired: false,
+      reasoningEffort: undefined,
+    })
+
+    expect(mockStreamResponsesApi).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        input: [
+          { role: "user", content: "hello" },
+          { type: "function_call_output", call_id: "call-1", output: "[truncated output]" },
+        ],
+      }),
+      expect.anything(),
       undefined,
       false,
     )

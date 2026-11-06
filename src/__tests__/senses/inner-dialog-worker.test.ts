@@ -6,10 +6,7 @@ const mockGetAgentName = vi.fn(() => "slugger")
 const mockGetAgentRoot = vi.fn(() => "/bundles/slugger.ouro")
 const mockGetInnerDialogPendingDir = vi.fn(() => "/mock/pending/self/inner/dialog")
 const mockHasPendingMessages = vi.fn(() => false)
-const mockParseHabitFile = vi.fn()
-const mockRenderHabitFile = vi.fn()
-const mockReadFileSync = vi.fn()
-const mockWriteFileSync = vi.fn()
+const mockRecordHabitRun = vi.fn()
 
 vi.mock("../../senses/inner-dialog", () => ({
   runInnerDialogTurn: (...args: any[]) => mockRunInnerDialogTurn(...args),
@@ -29,19 +26,9 @@ vi.mock("../../mind/pending", () => ({
   hasPendingMessages: (...args: any[]) => mockHasPendingMessages(...args),
 }))
 
-vi.mock("../../heart/habits/habit-parser", () => ({
-  parseHabitFile: (...args: any[]) => mockParseHabitFile(...args),
-  renderHabitFile: (...args: any[]) => mockRenderHabitFile(...args),
+vi.mock("../../heart/habits/habit-runtime-state", () => ({
+  recordHabitRun: (...args: any[]) => mockRecordHabitRun(...args),
 }))
-
-vi.mock("fs", async () => {
-  const actual = await vi.importActual("fs")
-  return {
-    ...actual,
-    readFileSync: (...args: any[]) => mockReadFileSync(...args),
-    writeFileSync: (...args: any[]) => mockWriteFileSync(...args),
-  }
-})
 
 import { createInnerDialogWorker, startInnerDialogWorker } from "../../senses/inner-dialog-worker"
 
@@ -51,10 +38,7 @@ describe("inner-dialog-worker", () => {
     mockGetAgentName.mockReset().mockReturnValue("slugger")
     mockGetAgentRoot.mockReset().mockReturnValue("/bundles/slugger.ouro")
     mockGetInnerDialogPendingDir.mockReset().mockReturnValue("/mock/pending/self/inner/dialog")
-    mockParseHabitFile.mockReset()
-    mockRenderHabitFile.mockReset()
-    mockReadFileSync.mockReset()
-    mockWriteFileSync.mockReset()
+    mockRecordHabitRun.mockReset()
     mockEmitNervesEvent.mockReset()
   })
 
@@ -340,79 +324,44 @@ describe("inner-dialog-worker", () => {
     }
   })
 
-  // ── lastRun update tests ──────────────────────────────────────────
+  // ── lastRun runtime-state tests ───────────────────────────────────
 
   describe("lastRun update after habit turn", () => {
-    it("reads habit file, updates lastRun, and writes back after a habit turn", async () => {
-      const habitContent = "---\ntitle: Heartbeat\ncadence: 30m\nstatus: active\nlastRun: 2026-03-27T10:00:00.000Z\ncreated: 2026-03-01\n---\n\nCheck in."
-      mockReadFileSync.mockReturnValueOnce(habitContent)
-      mockParseHabitFile.mockReturnValueOnce({
-        name: "heartbeat",
-        title: "Heartbeat",
-        cadence: "30m",
-        status: "active",
-        lastRun: "2026-03-27T10:00:00.000Z",
-        created: "2026-03-01",
-        body: "Check in.",
-      })
-      mockRenderHabitFile.mockReturnValueOnce("---\ntitle: Heartbeat\ncadence: 30m\nstatus: active\nlastRun: 2026-03-27T12:00:00.000Z\ncreated: 2026-03-01\n---\n\nCheck in.\n")
-
+    it("records habit lastRun in runtime state after a habit turn", async () => {
       const runTurn = vi.fn().mockResolvedValue(undefined)
       const worker = createInnerDialogWorker(runTurn)
 
       await worker.run("habit", undefined, "heartbeat")
 
-      expect(mockReadFileSync).toHaveBeenCalledWith("/bundles/slugger.ouro/habits/heartbeat.md", "utf-8")
-      expect(mockParseHabitFile).toHaveBeenCalled()
-      expect(mockRenderHabitFile).toHaveBeenCalledWith(
-        expect.objectContaining({ lastRun: expect.any(String) }),
-        "Check in.",
-      )
-      expect(mockWriteFileSync).toHaveBeenCalledWith(
-        "/bundles/slugger.ouro/habits/heartbeat.md",
+      expect(mockRecordHabitRun).toHaveBeenCalledWith(
+        "/bundles/slugger.ouro",
+        "heartbeat",
         expect.any(String),
-        "utf-8",
+        { definitionPath: "/bundles/slugger.ouro/habits/heartbeat.md" },
       )
 
-      // Verify lastRun is an ISO timestamp
-      const renderCall = mockRenderHabitFile.mock.calls[0]
-      const updatedFrontmatter = renderCall[0] as Record<string, unknown>
-      const lastRun = updatedFrontmatter.lastRun as string
+      const lastRun = mockRecordHabitRun.mock.calls[0]?.[2] as string
       expect(new Date(lastRun).toISOString()).toBe(lastRun)
     })
 
-    it("updates lastRun AFTER the turn completes (not before)", async () => {
+    it("records lastRun AFTER the turn completes (not before)", async () => {
       const callOrder: string[] = []
 
       const runTurn = vi.fn().mockImplementation(async () => {
         callOrder.push("runTurn")
       })
-      mockReadFileSync.mockImplementation(() => {
-        callOrder.push("readFile")
-        return "---\ntitle: Test\ncadence: 30m\nstatus: active\nlastRun: null\ncreated: 2026-03-01\n---\n\nBody."
-      })
-      mockParseHabitFile.mockReturnValue({
-        name: "heartbeat",
-        title: "Test",
-        cadence: "30m",
-        status: "active",
-        lastRun: null,
-        created: "2026-03-01",
-        body: "Body.",
-      })
-      mockRenderHabitFile.mockReturnValue("rendered")
-      mockWriteFileSync.mockImplementation(() => {
-        callOrder.push("writeFile")
+      mockRecordHabitRun.mockImplementation(() => {
+        callOrder.push("recordHabitRun")
       })
 
       const worker = createInnerDialogWorker(runTurn)
       await worker.run("habit", undefined, "heartbeat")
 
-      expect(callOrder).toEqual(["runTurn", "readFile", "writeFile"])
+      expect(callOrder).toEqual(["runTurn", "recordHabitRun"])
     })
 
-    it("skips lastRun update gracefully if habit file was deleted during turn", async () => {
-      mockReadFileSync.mockImplementation(() => {
+    it("skips lastRun update gracefully if runtime-state recording fails", async () => {
+      mockRecordHabitRun.mockImplementation(() => {
         throw new Error("ENOENT: no such file or directory")
       })
 
@@ -422,7 +371,7 @@ describe("inner-dialog-worker", () => {
       // Should not throw
       await worker.run("habit", undefined, "heartbeat")
 
-      expect(mockWriteFileSync).not.toHaveBeenCalled()
+      expect(mockRecordHabitRun).toHaveBeenCalledTimes(1)
     })
 
     it("does not update lastRun for non-habit turns", async () => {
@@ -432,33 +381,184 @@ describe("inner-dialog-worker", () => {
       await worker.run("instinct")
       await worker.run("boot")
 
-      expect(mockReadFileSync).not.toHaveBeenCalled()
-      expect(mockWriteFileSync).not.toHaveBeenCalled()
+      expect(mockRecordHabitRun).not.toHaveBeenCalled()
     })
 
     it("updates lastRun with ISO timestamp from current time", async () => {
-      mockReadFileSync.mockReturnValueOnce("content")
-      mockParseHabitFile.mockReturnValueOnce({
-        name: "daily-reflection",
-        title: "Daily Reflection",
-        cadence: "1d",
-        status: "active",
-        lastRun: null,
-        created: "2026-03-01",
-        body: "Reflect.",
-      })
-      mockRenderHabitFile.mockReturnValueOnce("rendered")
-
       const runTurn = vi.fn().mockResolvedValue(undefined)
       const worker = createInnerDialogWorker(runTurn)
 
       await worker.run("habit", undefined, "daily-reflection")
 
-      const renderCall = mockRenderHabitFile.mock.calls[0]
-      const updatedFrontmatter = renderCall[0] as Record<string, unknown>
-      const lastRun = updatedFrontmatter.lastRun as string
+      const lastRun = mockRecordHabitRun.mock.calls[0]?.[2] as string
       // Should be a valid ISO date string
       expect(lastRun).toMatch(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}/)
+    })
+  })
+
+  describe("instinct-loop cap (rest-detection backstop)", () => {
+    // Real harness friction: a tool that writes to the inner-dialog pending
+    // dir during a turn (e.g. a surface tool routing a response) puts the
+    // worker into a self-sustaining loop where the next turn's drain produces
+    // another write, ad infinitum. The cap breaks the loop after a small
+    // number of consecutive instinct turns without external input.
+    it("caps consecutive instinct chaining when hasPendingWork keeps returning true", async () => {
+      // Always say "fresh work arrived" — simulates the self-sustaining write.
+      const runTurn = vi.fn().mockResolvedValue(undefined)
+      const hasPendingWork = vi.fn().mockReturnValue(true)
+      const worker = createInnerDialogWorker(runTurn, hasPendingWork)
+
+      await worker.run("habit", undefined, "heartbeat")
+
+      // Heartbeat turn (1) + 3 instinct follow-ups + cap = 4 total turns
+      expect(runTurn).toHaveBeenCalledTimes(4)
+      expect(runTurn.mock.calls[0]?.[0]).toEqual(expect.objectContaining({ reason: "habit", habitName: "heartbeat" }))
+      for (let i = 1; i <= 3; i++) {
+        expect(runTurn.mock.calls[i]?.[0]).toEqual(expect.objectContaining({ reason: "instinct" }))
+      }
+      // Cap event was emitted exactly once
+      const capEvents = mockEmitNervesEvent.mock.calls.filter(([event]) => (event as any).event === "senses.inner_dialog_worker_instinct_loop_capped")
+      expect(capEvents).toHaveLength(1)
+      expect(capEvents[0]?.[0]).toEqual(expect.objectContaining({
+        level: "warn",
+        meta: expect.objectContaining({
+          consecutiveInstinctTurns: 3,
+          cap: 3,
+          lastReason: "instinct",
+        }),
+      }))
+    })
+
+    it("counts the initial instinct entry against the cap", async () => {
+      const runTurn = vi.fn().mockResolvedValue(undefined)
+      const hasPendingWork = vi.fn().mockReturnValue(true)
+      const worker = createInnerDialogWorker(runTurn, hasPendingWork)
+
+      await worker.run("instinct")
+
+      // Initial instinct counts as 1, plus 2 follow-ups, then cap fires
+      expect(runTurn).toHaveBeenCalledTimes(3)
+    })
+
+    it("resets the instinct counter when an externally-queued message arrives between turns", async () => {
+      const runTurn = vi.fn().mockImplementation(async () => {
+        // Simulate an external poke arriving during the first turn's runtime.
+        if (runTurn.mock.calls.length === 1) {
+          void worker.handleMessage({ type: "poke", taskId: "external-poke" })
+        }
+      })
+      const hasPendingWork = vi.fn().mockReturnValue(true)
+      const worker = createInnerDialogWorker(runTurn, hasPendingWork)
+
+      await worker.run("habit", undefined, "heartbeat")
+
+      // Sequence: heartbeat (1) → poke arrived (queued) → poke runs as instinct (counter resets to 1)
+      // → 2 more instinct via hasPendingWork → cap at 3 instinct chain
+      // Total turns: 1 (heartbeat) + 1 (poke) + 2 (chained instinct) = 4
+      expect(runTurn).toHaveBeenCalledTimes(4)
+      // The second turn was the externally-poked one
+      expect(runTurn.mock.calls[1]?.[0]).toEqual(expect.objectContaining({ reason: "instinct", taskId: "external-poke" }))
+    })
+
+    it("does not cap when no follow-on work is detected (single happy-path turn)", async () => {
+      const runTurn = vi.fn().mockResolvedValue(undefined)
+      const hasPendingWork = vi.fn().mockReturnValue(false)
+      const worker = createInnerDialogWorker(runTurn, hasPendingWork)
+
+      await worker.run("habit", undefined, "heartbeat")
+
+      expect(runTurn).toHaveBeenCalledTimes(1)
+      const capEvents = mockEmitNervesEvent.mock.calls.filter(([event]) => (event as any).event === "senses.inner_dialog_worker_instinct_loop_capped")
+      expect(capEvents).toHaveLength(0)
+    })
+  })
+
+  describe("habit recursion detection", () => {
+    it("emits a warn event when two heartbeats arrive within the min-interval window", async () => {
+      const runTurn = vi.fn().mockResolvedValue(undefined)
+      const hasPendingWork = vi.fn().mockReturnValue(false)
+      let now = 1_000_000
+      const nowSource = () => now
+      const worker = createInnerDialogWorker(runTurn, hasPendingWork, nowSource)
+
+      await worker.handleMessage({ type: "heartbeat" })
+      now += 1_500
+      await worker.handleMessage({ type: "heartbeat" })
+
+      const recursionEvents = mockEmitNervesEvent.mock.calls.filter(([event]) => (event as any).event === "senses.habit_recursion_suspected")
+      expect(recursionEvents).toHaveLength(1)
+      expect(recursionEvents[0]?.[0]).toEqual(expect.objectContaining({
+        level: "warn",
+        meta: expect.objectContaining({ habitName: "heartbeat", intervalMs: 1_500 }),
+      }))
+    })
+
+    it("does not emit when heartbeats are spaced beyond the min-interval window", async () => {
+      const runTurn = vi.fn().mockResolvedValue(undefined)
+      const hasPendingWork = vi.fn().mockReturnValue(false)
+      let now = 2_000_000
+      const nowSource = () => now
+      const worker = createInnerDialogWorker(runTurn, hasPendingWork, nowSource)
+
+      await worker.handleMessage({ type: "heartbeat" })
+      now += 30_000
+      await worker.handleMessage({ type: "heartbeat" })
+
+      const recursionEvents = mockEmitNervesEvent.mock.calls.filter(([event]) => (event as any).event === "senses.habit_recursion_suspected")
+      expect(recursionEvents).toHaveLength(0)
+    })
+
+    it("emits a burst event when the configured threshold of habits arrive within the burst window", async () => {
+      const runTurn = vi.fn().mockResolvedValue(undefined)
+      const hasPendingWork = vi.fn().mockReturnValue(false)
+      let now = 3_000_000
+      const nowSource = () => now
+      const worker = createInnerDialogWorker(runTurn, hasPendingWork, nowSource)
+
+      for (let i = 0; i < 5; i++) {
+        await worker.handleMessage({ type: "habit", habitName: "heartbeat" })
+        now += 6_000
+      }
+
+      const burstEvents = mockEmitNervesEvent.mock.calls.filter(([event]) => (event as any).event === "senses.habit_recursion_burst")
+      expect(burstEvents.length).toBeGreaterThanOrEqual(1)
+      expect(burstEvents[0]?.[0]).toEqual(expect.objectContaining({
+        level: "warn",
+        meta: expect.objectContaining({ count: 5, lastHabitName: "heartbeat" }),
+      }))
+    })
+
+    it("trims old fires outside the burst window and does not falsely escalate", async () => {
+      const runTurn = vi.fn().mockResolvedValue(undefined)
+      const hasPendingWork = vi.fn().mockReturnValue(false)
+      let now = 4_000_000
+      const nowSource = () => now
+      const worker = createInnerDialogWorker(runTurn, hasPendingWork, nowSource)
+
+      for (let i = 0; i < 4; i++) {
+        await worker.handleMessage({ type: "habit", habitName: "heartbeat" })
+        now += 6_000
+      }
+      now += 90_000
+      await worker.handleMessage({ type: "habit", habitName: "heartbeat" })
+
+      const burstEvents = mockEmitNervesEvent.mock.calls.filter(([event]) => (event as any).event === "senses.habit_recursion_burst")
+      expect(burstEvents).toHaveLength(0)
+    })
+
+    it("tracks per-habit-name independently — two distinct habits firing close together do not trip the min-interval warning", async () => {
+      const runTurn = vi.fn().mockResolvedValue(undefined)
+      const hasPendingWork = vi.fn().mockReturnValue(false)
+      let now = 5_000_000
+      const nowSource = () => now
+      const worker = createInnerDialogWorker(runTurn, hasPendingWork, nowSource)
+
+      await worker.handleMessage({ type: "habit", habitName: "heartbeat" })
+      now += 1_000
+      await worker.handleMessage({ type: "habit", habitName: "morning-review" })
+
+      const recursionEvents = mockEmitNervesEvent.mock.calls.filter(([event]) => (event as any).event === "senses.habit_recursion_suspected")
+      expect(recursionEvents).toHaveLength(0)
     })
   })
 })

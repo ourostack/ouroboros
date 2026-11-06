@@ -111,9 +111,12 @@ describe("MCP send_message tool", () => {
     })
   })
 
-  afterEach(() => {
+  afterEach(async () => {
     stdin.destroy()
     stdout.destroy()
+    const serverModule = await import("../../../heart/mcp/mcp-server")
+    serverModule._setSenseTurnCommandTimeoutMs(serverModule.SENSE_TURN_COMMAND_TIMEOUT_MS)
+    serverModule._setSenseTurnRetryDelays([1000, 2000, 4000])
   })
 
   it("send_message tool is listed in tools/list", async () => {
@@ -293,6 +296,44 @@ describe("MCP send_message tool", () => {
     const response = parseResponse(output)
     expect(response.result.content[0].text).toContain("agent exploded")
     expect(response.result.isError).toBe(true)
+  })
+
+  it("send_message times out instead of hanging forever when the daemon never replies", async () => {
+    const { _setSenseTurnCommandTimeoutMs } = await import("../../../heart/mcp/mcp-server")
+    _setSenseTurnCommandTimeoutMs(25)
+    mockSendDaemonCommand.mockImplementation(() => new Promise(() => undefined))
+
+    const { createMcpServer } = await import("../../../heart/mcp/mcp-server")
+    const server = createMcpServer({
+      agent: "test-agent",
+      friendId: "friend-1",
+      socketPath: "/tmp/test.sock",
+      stdin,
+      stdout,
+    })
+
+    const outputPromise = collectOutput(stdout)
+    server.start()
+
+    writeJsonRpc(stdin, {
+      jsonrpc: "2.0",
+      id: 1,
+      method: "tools/call",
+      params: {
+        name: "send_message",
+        arguments: { message: "this daemon call never resolves" },
+      },
+    })
+
+    await new Promise((r) => setTimeout(r, 120))
+    const output = await outputPromise
+    server.stop()
+    _setSenseTurnCommandTimeoutMs(10 * 60 * 1000)
+
+    const response = parseResponse(output)
+    expect(response.result.isError).toBe(true)
+    expect(response.result.content[0].text).toContain("timed out")
+    expect(response.result.content[0].text).toContain("command status is unknown")
   })
 
   it("multi-turn: session key is consistent across calls", async () => {

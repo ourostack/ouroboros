@@ -431,6 +431,23 @@ describe("send_message tool", () => {
     expect(fs.writeFileSync).not.toHaveBeenCalled()
   })
 
+  it("returns a blocked result without queuing when bluebubbles reports blocked_meta_content", async () => {
+    const { baseToolDefinitions } = await import("../../repertoire/tools-base")
+    const tool = baseToolDefinitions.find(d => d.tool.function.name === "send_message")!
+    mockSendProactiveBlueBubblesMessageToSession.mockResolvedValue({ delivered: false, reason: "blocked_meta_content" })
+
+    const result = await tool.handler({
+      friendId: "group-uuid",
+      channel: "bluebubbles",
+      key: "chat:any;+;project-group-123",
+      content: "[surfaced from inner dialog] should not leak",
+    }, makeTrustedBlueBubblesTurnContext())
+
+    expect(result.toLowerCase()).toContain("blocked")
+    expect(result).toContain("blocked: contains internal meta markers")
+    expect(fs.writeFileSync).not.toHaveBeenCalled()
+  })
+
   it("reports a failed result when bluebubbles live send errors", async () => {
     const { baseToolDefinitions } = await import("../../repertoire/tools-base")
     const tool = baseToolDefinitions.find(d => d.tool.function.name === "send_message")!

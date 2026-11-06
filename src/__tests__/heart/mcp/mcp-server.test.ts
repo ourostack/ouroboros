@@ -12,7 +12,7 @@ vi.mock("../../../heart/daemon/socket-client", () => ({
 
 // Mock agent-service
 vi.mock("../../../heart/daemon/agent-service", () => ({
-  handleAgentStatus: vi.fn(async () => ({ ok: true, message: "Agent test-agent status", data: { agent: "test-agent", status: "active" } })),
+  handleAgentStatus: vi.fn(async () => ({ ok: true, message: "agent=test-agent\tinnerStatus=idle\ndaemon=running\thealth=ok", data: { agent: "test-agent", status: "active" } })),
   handleAgentAsk: vi.fn(async () => ({ ok: true, message: "Test response" })),
   handleAgentCatchup: vi.fn(async () => ({ ok: true, message: "Catchup" })),
   handleAgentDelegate: vi.fn(async () => ({ ok: true, message: "Delegated" })),
@@ -256,6 +256,7 @@ describe("MCP server protocol layer", () => {
     // Tool calls go through agent-service directly, not daemon socket
     const { handleAgentStatus } = await import("../../../heart/daemon/agent-service")
     expect(handleAgentStatus).toHaveBeenCalled()
+    expect(handleAgentStatus).toHaveBeenCalledWith(expect.objectContaining({ socketPath: "/tmp/test.sock" }))
 
     emitNervesEvent({
       component: "daemon",
