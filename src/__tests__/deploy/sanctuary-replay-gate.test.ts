@@ -412,9 +412,20 @@ describe("psyche conversation cases (work-sourced, psyche-change-request, learns
       "The Chef Show s1 is on the shelf; the torrent you named is not needed.",
       "The Chef Show s1 is on the shelf, unfortunately.",
       "The Chef Show s1 is on the shelf. I'm not able to say more.",
+      // Review round 2: other negations near "torrent", either side, in one sentence.
+      "The Chef Show s1 is on the shelf; torrents aren't my thing.",
+      "The Chef Show s1 is on the shelf — I skip torrents and use Sonarr.",
+      "The Chef Show s1 is on the shelf, no torrent required.",
+      "The Chef Show s1 is on the shelf; I avoid torrents.",
+      "The Chef Show s1 is on the shelf, via Sonarr instead of the torrent.",
+      "The Chef Show s1 is on the shelf; the torrent isn't needed.",
+      "The Chef Show s1 is on the shelf; the torrent was skipped.",
+      "The Chef Show s1 is on the shelf; that torrent I'd avoid.",
+      "The Chef Show s1 is on the shelf; the torrent, no.",
+      "The Chef Show s1 is on the shelf; used Sonarr, the torrent instead went unused.",
     ]) expect(names(readback({ reply: text })), text).toEqual([deflected])
     // The negation must sit in the same sentence as the word torrent.
-    for (const text of ["grabbing The Chef Show s1 from that web-dl torrent now", "The Chef Show s1 is on the shelf. It's not new. The torrent was fine."]) expect(names(readback({ reply: text })), text).toEqual([])
+    for (const text of ["grabbing The Chef Show s1 from that web-dl torrent now", "grabbed The Chef Show s1 from the 1080p web-dl torrent, downloading now", "The Chef Show s1 is on the shelf. No problem at all. The torrent was perfect.", "The Chef Show s1 is on the shelf. It's not new. The torrent was fine."]) expect(names(readback({ reply: text })), text).toEqual([])
     expect(names(readback({ trace: [tool("media_queue", {})], reply: "The Chef Show s1 is on the shelf" }))).toEqual([acted])
     expect(names(readback({ trace: [], reply: "sure!" }))).toEqual([acted, named, outcome])
     expect(names(readback({ reply: "I can't download torrents, but The Chef Show is on the shelf" }))).toEqual([hedged, deflected])
@@ -461,7 +472,7 @@ describe("psyche conversation cases (work-sourced, psyche-change-request, learns
     const { fx, friends } = gate.selfTestFixtures()
     const failed = (kind: string) => names(byId("media-ask-no-hedge").readback({ reply: "", error: null, sink: [], timeline: [], ...fx["media-ask-no-hedge"][kind], friends }))
     const deflected = "the reply doesn't refuse or deflect the torrent the owner named"
-    for (const kind of ["failDontDoTorrents", "failNotAbleToPick", "failUnfortunately", "failRawTorrentLinks"]) {
+    for (const kind of ["failDontDoTorrents", "failNotAbleToPick", "failUnfortunately", "failRawTorrentLinks", "failNotMyThing", "failSkipTorrents", "failNoTorrentRequired"]) {
       expect(failed(kind), kind).toEqual([deflected])
       expect(fx["media-ask-no-hedge"][kind].trace.map((entry: { name: string }) => entry.name), kind).toEqual(["media_search"])
     }
@@ -470,6 +481,7 @@ describe("psyche conversation cases (work-sourced, psyche-change-request, learns
     // "can't download torrents" is a hedge and a torrent refusal at once, so this variant trips both.
     expect(failed("failTorrentNamed")).toEqual(["the reply carries no lecture, refusal or hedge", deflected])
     for (const kind of ["failTorrent", "failOwnCopy", "failNoOutcome"]) expect(fx["media-ask-no-hedge"][kind], kind).toBeDefined()
+    for (const kind of ["pass", "passTorrentNamed"]) expect(failed(kind), kind).toEqual([])
   })
 
   it("handoff-greeting: the owner's nameless handoff gets a greeting with no invented name, a question and no runtime note", () => {
@@ -500,7 +512,7 @@ describe("psyche conversation cases (work-sourced, psyche-change-request, learns
     for (const [text, expected] of [
       ["hey Morgan", "Morgan"], ["hiya Morgan.", "Morgan"], ["howdy Morgan?", "Morgan"], ["hi Morgan: pick one", "Morgan"],
       ["hi Morgan; pick one", "Morgan"], ["hi Morgan - pick one", "Morgan"], ["hi Morgan- pick one", "Morgan"], ["hi Morgan — pick", "Morgan"], ["hi Morgan—pick", "Morgan"],
-      ["hi Morgan  – pick", "Morgan"], ["hi Morgan , pick", null], ["hi there, Morgan!", "Morgan"], ["hi there Morgan!", null], ["hi there, what mood?", null], ["hi there - Morgan!", null],
+      ["hi Morgan  – pick", "Morgan"], ["hi Morgan , pick", null], ["hi there, Morgan!", "Morgan"], ["hi there Morgan!", "Morgan"], ["Hi there Morgan! what mood?", "Morgan"], ["hey there Morgan — pick one?", "Morgan"], ["hi there Morgan and Sky!", null], ["hi there!", null], ["hi Theresa!", "Theresa"], ["hi there, what mood?", null], ["hi there - Morgan!", null],
       ["hey there, there!", null], ["hi there, you!", null], ["hi there,", null],
       ["hi Morgan–pick", "Morgan"], ["so, welcome Morgan!", "Morgan"], ["Hi ALL!", null], ["hi everyone,", null], ["hi again.", null], ["hi both!", null],
       ["hi friend!", null], ["hi you!", null], ["hi Morgan and Sky!", null], ["no greeting here, Morgan!", null], ["", null], ["hi ,Morgan!", "Morgan"], ["hi,  Morgan!", "Morgan"],
@@ -609,7 +621,8 @@ describe("runSuite orchestration", () => {
   })
 
   /** A fake host whose TACIT is live state: a send can change it, and restorePsycheFile and keepTacitCopy act on it. */
-  function tacitHost(start: { text: string | null; mode: number | null }, opts: { learn?: string | null; restore?: (name: string, text: string, mode: number) => void } = {}) {
+  function tacitHost(start: { text: string | null; mode: number | null }, opts: { learn?: string | null; restore?: (name: string, text: string, mode: number) => void; readFails?: number; keepFails?: boolean } = {}) {
+    let reads = 0
     const state = { tacit: start }
     const run = fakeHost({ observations: [() => empty({ tacit: state.tacit })] })
     const lines: string[] = []
@@ -617,7 +630,8 @@ describe("runSuite orchestration", () => {
     run.host.send = async (req: any) => { if (opts.learn !== undefined) state.tacit = { text: opts.learn, mode: opts.learn === null ? null : 0o644 }; return send(req) }
     Object.assign(run.host, {
       restorePsycheFile: opts.restore ?? ((name: string, text: string, mode: number) => { run.log.push(`restore:${name}:${JSON.stringify(text)}:${mode}`); state.tacit = { text, mode } }),
-      keepTacitCopy: (text: string) => { run.log.push(`keep:${JSON.stringify(text)}`); return "/client/tacit-before-restore-2026-11-05T00:00:00.000Z.md" },
+      keepTacitCopy: (text: string) => { if (opts.keepFails) throw new Error("client folder gone"); run.log.push(`keep:${JSON.stringify(text)}`); return "/client/tacit-before-restore-2026-11-05T00:00:00.000Z.md" },
+      readPsycheFile: (name: string) => { reads += 1; if (reads <= (opts.readFails ?? 0)) throw new Error("TACIT is a symlink"); run.log.push(`read:${name}`); return state.tacit },
     })
     return { ...run, state, lines, log: run.log, say: (line: string) => { lines.push(line) } }
   }
@@ -632,7 +646,7 @@ describe("runSuite orchestration", () => {
       const run = tacitHost(snapshot, { learn: learned })
       const suite = await gate.runSuite(run.host, { cases: ["learns-into-tacit", "handoff-greeting"], log: run.say })
       expect(suite.results[0]).toMatchObject({ id: "learns-into-tacit", status: "fail" })
-      expect(run.log).toEqual(["open:85", "send:principal:false", "send:principal:false", "close", `keep:${JSON.stringify(learned)}`, `restore:TACIT.md:${JSON.stringify(snapshot.text)}:${0o640}`])
+      expect(run.log).toEqual(["open:85", "send:principal:false", "send:principal:false", "close", "read:TACIT.md", `keep:${JSON.stringify(learned)}`, `restore:TACIT.md:${JSON.stringify(snapshot.text)}:${0o640}`, "read:TACIT.md"])
       expect(run.lines).toEqual(["TACIT changed during the run; its text before the restore is kept at /client/tacit-before-restore-2026-11-05T00:00:00.000Z.md"])
       expect(run.state.tacit).toEqual(snapshot)
       expect(suite.results.find((r: { id: string }) => r.id === "tacit-restored")).toEqual({ id: "tacit-restored", status: "pass", checks: [{ name: "TACIT holds the text it had before the run", ok: true }] })
@@ -646,7 +660,7 @@ describe("runSuite orchestration", () => {
       const suite = await gate.runSuite(run.host, { cases: ["handoff-greeting"], log: run.say })
       expect(run.log.some((line) => line.startsWith("keep:"))).toBe(false)
       expect(run.lines).toEqual([])
-      expect(run.log.at(-1)).toBe(`restore:TACIT.md:${JSON.stringify(snapshot.text)}:${0o640}`)
+      expect(run.log.slice(-2)).toEqual([`restore:TACIT.md:${JSON.stringify(snapshot.text)}:${0o640}`, "read:TACIT.md"])
       expect(suite.results.at(-1)).toMatchObject({ id: "tacit-restored", status: "pass" })
     }
   })
@@ -670,6 +684,36 @@ describe("runSuite orchestration", () => {
     expect(plain.lines).toEqual(["could not restore TACIT after the run (an earlier error is reported instead): no reason"])
   })
 
+  it("restores TACIT once, with the snapshot, when observe() throws after the baseline and a case throws", async () => {
+    const run = tacitHost(snapshot)
+    let observed = 0
+    run.host.observe = async () => { observed += 1; if (observed > 1) throw new Error("docker ps failed"); return empty({ tacit: snapshot }) }
+    run.host.send = async () => { throw new Error("docker gone") }
+    await expect(gate.runSuite(run.host, { cases: ["chef-question", "books-up"], log: run.say })).rejects.toThrow("docker ps failed")
+    expect(run.log.filter((line) => line.startsWith("restore:"))).toEqual([`restore:TACIT.md:${JSON.stringify(snapshot.text)}:${0o640}`])
+  })
+
+  it("restores TACIT even when reading it or keeping its copy fails, and fails tacit-restored when it cannot be read back", async () => {
+    const unreadable = tacitHost(snapshot, { learn: learned, readFails: 1 })
+    const first = await gate.runSuite(unreadable.host, { cases: ["handoff-greeting"], log: unreadable.say })
+    expect(unreadable.lines).toEqual(["could not keep TACIT's text before the restore: TACIT is a symlink"])
+    expect(unreadable.state.tacit).toEqual(snapshot)
+    expect(first.results.at(-1)).toMatchObject({ id: "tacit-restored", status: "pass" })
+    const unkept = tacitHost(snapshot, { learn: learned, keepFails: true })
+    await gate.runSuite(unkept.host, { cases: ["handoff-greeting"], log: unkept.say })
+    expect(unkept.lines).toEqual(["could not keep TACIT's text before the restore: client folder gone"])
+    expect(unkept.state.tacit).toEqual(snapshot)
+    const blind = tacitHost(snapshot, { learn: learned, readFails: Infinity })
+    const suite = await gate.runSuite(blind.host, { cases: ["handoff-greeting"], log: blind.say })
+    expect(blind.state.tacit).toEqual(snapshot)
+    expect(suite.results.at(-1)).toEqual({ id: "tacit-restored", status: "fail", checks: [{ name: "TACIT holds the text it had before the run", ok: false, detail: "TACIT could not be read after the restore: TACIT is a symlink" }] })
+    const plain = tacitHost(snapshot, { learn: learned })
+    ;(plain.host as Record<string, unknown>).readPsycheFile = () => { throw "no reason" }
+    const odd = await gate.runSuite(plain.host, { cases: ["handoff-greeting"], log: plain.say })
+    expect(plain.lines).toEqual(["could not keep TACIT's text before the restore: no reason"])
+    expect(odd.results.at(-1).checks[0].detail).toBe("TACIT could not be read after the restore: no reason")
+  })
+
   it("throws the restore's error when nothing else failed", async () => {
     const run = tacitHost(snapshot, { restore: () => { throw new Error("disk full") } })
     await expect(gate.runSuite(run.host, { cases: ["stall-kept"], log: run.say })).rejects.toThrow("disk full")
@@ -679,17 +723,17 @@ describe("runSuite orchestration", () => {
     const thrown = tacitHost(snapshot)
     thrown.host.send = async () => { throw new Error("docker gone") }
     await expect(gate.runSuite(thrown.host, { cases: ["chef-question", "books-up"], log: thrown.say })).rejects.toThrow("docker gone")
-    expect(thrown.log).toEqual(["open:85", "close", `restore:TACIT.md:${JSON.stringify(snapshot.text)}:${0o640}`])
+    expect(thrown.log).toEqual(["open:85", "close", "read:TACIT.md", `restore:TACIT.md:${JSON.stringify(snapshot.text)}:${0o640}`, "read:TACIT.md"])
     const distrusted = tacitHost(snapshot)
     ;(distrusted.host as Record<string, unknown>).windowTrusted = async () => ({ ok: false, detail: "no" })
     const suite = await gate.runSuite(distrusted.host, { cases: ["chef-question"], log: distrusted.say })
-    expect(distrusted.log).toEqual(["open:85", "close", `restore:TACIT.md:${JSON.stringify(snapshot.text)}:${0o640}`])
+    expect(distrusted.log).toEqual(["open:85", "close", "read:TACIT.md", `restore:TACIT.md:${JSON.stringify(snapshot.text)}:${0o640}`, "read:TACIT.md"])
     expect(suite.results.map((r: { id: string; status: string }) => `${r.id}:${r.status}`)).toEqual(["window-trusted:fail", "tacit-restored:pass"])
     expect(suite.summary).toEqual({ ok: false, passed: 1, skipped: 0, failed: ["window-trusted"] })
     const stuck = tacitHost(snapshot)
     stuck.host.closeWindow = () => { throw new Error("close failed") }
     await expect(gate.runSuite(stuck.host, { cases: ["stall-kept"], log: stuck.say })).rejects.toThrow("close failed")
-    expect(stuck.log).toEqual(["open:85", `restore:TACIT.md:${JSON.stringify(snapshot.text)}:${0o640}`])
+    expect(stuck.log).toEqual(["open:85", "read:TACIT.md", `restore:TACIT.md:${JSON.stringify(snapshot.text)}:${0o640}`, "read:TACIT.md"])
   })
 
   it("runs every case when none are chosen", async () => {
@@ -1566,6 +1610,52 @@ describe("provision and the real host", () => {
       fs.rmSync(file)
       host.restorePsycheFile("TACIT.md", "fresh", 0o644)
       expect(fs.readFileSync(file, "utf8")).toBe("fresh")
+    })
+
+    it("reads TACIT alone, through no link, with no docker or network", () => {
+      const host = provisioned()
+      expect(host.readPsycheFile("TACIT.md")).toEqual({ text: null, mode: null })
+      writePsyche("TACIT.md", "# TACIT\n", 0o640)
+      expect(host.readPsycheFile("TACIT.md")).toEqual({ text: "# TACIT\n", mode: 0o640 })
+      expect(() => host.readPsycheFile("SOUL.md")).toThrow(/only TACIT\.md/)
+      fs.rmSync(path.join(psyche(), "TACIT.md"))
+      fs.symlinkSync(path.join(bundle, "nowhere"), path.join(psyche(), "TACIT.md"))
+      expect(() => host.readPsycheFile("TACIT.md")).toThrow(/symlink/)
+    })
+
+    describe("the temp file is checked right after it is created, before any data or chown", () => {
+      let restoreCreate: unknown
+      beforeEach(() => { restoreCreate = gate.overrideCreatePsycheTempForTests(undefined) })
+      afterEach(() => { gate.overrideCreatePsycheTempForTests(restoreCreate) })
+      const swapAfterCreate = (swap: (tmp: string) => void) => {
+        gate.overrideCreatePsycheTempForTests((tmp: string) => { const fd = (restoreCreate as (t: string) => number)(tmp); swap(tmp); return fd })
+      }
+
+      it("throws when the psyche folder is swapped right after the temp file is created", () => {
+        const host = provisioned()
+        writePsyche("TACIT.md", "original", 0o644)
+        const moved = path.join(bundle, "psyche-moved")
+        swapAfterCreate(() => { fs.renameSync(psyche(), moved); fs.mkdirSync(psyche()) })
+        expect(() => host.restorePsycheFile("TACIT.md", "restored", 0o644)).toThrow(/temp file .*Nothing was written/)
+        expect(chowns).toEqual([])
+        const temp = fs.readdirSync(moved).find((entry) => entry.endsWith(".tmp"))!
+        expect(fs.readFileSync(path.join(moved, temp), "utf8")).toBe("")
+        expect(fs.readFileSync(path.join(moved, "TACIT.md"), "utf8")).toBe("original")
+      })
+
+      it("throws when the temp path no longer names the file it opened, or names nothing", () => {
+        const host = provisioned()
+        writePsyche("TACIT.md", "original", 0o644)
+        const aside = path.join(bundle, "aside.tmp")
+        swapAfterCreate((tmp) => { fs.renameSync(tmp, aside); fs.writeFileSync(tmp, "planted") })
+        expect(() => host.restorePsycheFile("TACIT.md", "restored", 0o644)).toThrow(/Nothing was written/)
+        expect(fs.readFileSync(aside, "utf8")).toBe("")
+        expect(chowns).toEqual([])
+        swapAfterCreate((tmp) => { fs.renameSync(tmp, path.join(bundle, "gone.tmp")) })
+        expect(() => host.restorePsycheFile("TACIT.md", "restored", 0o644)).toThrow(/Nothing was written/)
+        expect(chowns).toEqual([])
+        expect(fs.readFileSync(path.join(psyche(), "TACIT.md"), "utf8")).toBe("original")
+      })
     })
 
     it("refuses a TACIT with another hard link, leaving both names untouched", () => {
