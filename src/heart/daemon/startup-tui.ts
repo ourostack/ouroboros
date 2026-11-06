@@ -13,12 +13,14 @@
 import { parseStatusPayload, type StatusPayload } from "./cli-render"
 import type { DaemonCommand, DaemonResponse } from "./daemon"
 import { emitNervesEvent } from "../../nerves/runtime"
+import { renderOverwriteFrame } from "./terminal-ui"
 
 // ── Constants ──
 
 const SPINNER_FRAMES = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"
 const STABILITY_THRESHOLD_MS = 5_000
 const POLL_INTERVAL_MS = 500
+const STARTUP_POLL_TIMEOUT_MS = 180_000
 
 // ── ANSI helpers ──
 
@@ -61,6 +63,8 @@ export interface PollDaemonStartupDeps {
   onProgress?: (message: string) => void
   /** Whether this poller should render its own TUI. Defaults to true. */
   render?: boolean
+  /** Maximum time to wait before reporting unresolved startup state. */
+  maxWaitMs?: number
 }
 
 export interface StartupRenderOptions {
@@ -147,10 +151,11 @@ export function renderWaitingForDaemon(
   const spinner = SPINNER_FRAMES[frameIndex]
   const lines: string[] = []
   lines.push(isTTY
-    ? `${spinner} ${BOLD}waiting for daemon${RESET} ${DIM}(${elapsedSec}s)${RESET}`
-    : `${spinner} waiting for daemon (${elapsedSec}s)`)
+    ? `${spinner} ${BOLD}starting background service${RESET} ${DIM}(${elapsedSec}s)${RESET}`
+    : `${spinner} starting background service (${elapsedSec}s)`)
   if (latestEvent) {
-    lines.push(isTTY ? `  ${DIM}${latestEvent}${RESET}` : `  ${latestEvent}`)
+    const detail = `latest daemon event: ${latestEvent}`
+    lines.push(isTTY ? `  ${DIM}${detail}${RESET}` : `  ${detail}`)
   }
   return renderStartupLines(lines, prevLineCount, isTTY)
 }
@@ -189,6 +194,7 @@ function renderFinalSummary(result: StartupResult, isTTY: boolean): string {
  */
 export async function pollDaemonStartup(deps: PollDaemonStartupDeps): Promise<StartupResult> {
   const startTime = deps.now()
+  const maxWaitMs = deps.maxWaitMs ?? STARTUP_POLL_TIMEOUT_MS
   let prevLineCount = 0
   const isTTY = deps.isTTY ?? true
   const isAlive = deps.isProcessAlive ?? defaultIsProcessAlive
@@ -239,9 +245,34 @@ export async function pollDaemonStartup(deps: PollDaemonStartupDeps): Promise<St
         }
       }
 
-      // Show what the daemon is doing from its log
       const latestEvent = deps.readLatestDaemonEvent?.() ?? null
-      reportProgress(latestEvent ?? "waiting for daemon")
+      if (elapsed >= maxWaitMs) {
+        const errorMsg = latestEvent
+          ? `daemon did not answer within ${(maxWaitMs / 1000).toFixed(0)}s; latest event: ${latestEvent}`
+          : `daemon did not answer within ${(maxWaitMs / 1000).toFixed(0)}s`
+        const result = {
+          stable: [],
+          degraded: [{ agent: "daemon", errorReason: errorMsg, fixHint: "check daemon logs or run `ouro doctor`" }],
+        }
+        if (shouldRender) {
+          const summary = renderFinalSummary(result, isTTY)
+          deps.writeRaw(summary)
+        }
+        emitNervesEvent({
+          level: "error",
+          component: "daemon",
+          event: "daemon.startup_poll_timeout",
+          message: "daemon startup polling timed out before the daemon answered",
+          meta: { socketPath: deps.socketPath, daemonPid: deps.daemonPid, elapsedMs: elapsed, maxWaitMs, lastEvent: latestEvent },
+        })
+        return result
+      }
+
+      // Show what the daemon is doing from its log
+      reportProgress([
+        "waiting for Ouro to answer",
+        latestEvent ? `- latest daemon event: ${latestEvent}` : "- background service is still starting",
+      ].join("\n"))
       if (shouldRender) {
         const output = renderWaitingForDaemon(elapsed, latestEvent, prevLineCount, { isTTY })
         deps.writeRaw(output)
@@ -280,16 +311,75 @@ export async function pollDaemonStartup(deps: PollDaemonStartupDeps): Promise<St
         })
         return result
       }
+      if (elapsed >= maxWaitMs) {
+        const result = buildTimedOutStartupResult(payload, assessment, maxWaitMs)
+        if (shouldRender) {
+          const summary = renderFinalSummary(result, isTTY)
+          deps.writeRaw(summary)
+        }
+
+        emitNervesEvent({
+          level: "error",
+          component: "daemon",
+          event: "daemon.startup_poll_timeout",
+          message: "daemon startup polling timed out with unresolved workers",
+          meta: {
+            socketPath: deps.socketPath,
+            daemonPid: deps.daemonPid,
+            elapsedMs: elapsed,
+            maxWaitMs,
+            stableCount: result.stable.length,
+            degradedCount: result.degraded.length,
+          },
+        })
+        return result
+      }
     }
 
     await deps.sleep(POLL_INTERVAL_MS)
   }
 }
 
+function buildTimedOutStartupResult(
+  payload: StatusPayload,
+  assessment: StabilityAssessment,
+  maxWaitMs: number,
+): StartupResult {
+  const stable = [...assessment.stable]
+  const degraded = [...assessment.degraded]
+  const stableAgents = new Set(stable)
+  const degradedAgents = new Set<string>()
+  for (const worker of degraded) degradedAgents.add(worker.agent)
+  const seconds = (maxWaitMs / 1000).toFixed(0)
+
+  for (const worker of payload.workers) {
+    if (stableAgents.has(worker.agent) || degradedAgents.has(worker.agent)) continue
+    degraded.push({
+      agent: worker.agent,
+      errorReason: `startup timed out after ${seconds}s while worker was ${worker.status}`,
+      fixHint: worker.errorReason
+        ? worker.fixHint ?? "check daemon logs"
+        : "run `ouro status` or `ouro doctor` for current worker details; the daemon is still answering",
+    })
+  }
+
+  return { stable, degraded }
+}
+
+function formatStartupWorkerLine(payload: StatusPayload["workers"][number]): string {
+  const base = `- ${payload.agent}/${payload.worker}: ${payload.status}`
+  if (payload.status === "crashed" && payload.errorReason) {
+    return `${base} (${payload.errorReason})`
+  }
+  return base
+}
+
 function formatStartupProgressDetail(payload: StatusPayload): string {
-  if (payload.workers.length === 0) return "daemon answered"
-  const workers = payload.workers.map((worker) => `${worker.agent}/${worker.worker} ${worker.status}`).join(", ")
-  return `waiting for agents: ${workers}`
+  if (payload.workers.length === 0) return "Ouro answered"
+  return [
+    "Ouro answered",
+    ...payload.workers.map((worker) => formatStartupWorkerLine(worker)),
+  ].join("\n")
 }
 
 function colorStatus(status: string): string {
@@ -300,16 +390,7 @@ function colorStatus(status: string): string {
 }
 
 function renderStartupLines(lines: string[], prevLineCount: number, isTTY: boolean): string {
-  if (!isTTY) return lines.join("\n") + "\n"
-
-  let output = ""
-  if (prevLineCount > 0) {
-    output += `\x1b[${prevLineCount}A`
-  }
-  for (const line of lines) {
-    output += `\x1b[2K${line}\n`
-  }
-  return output
+  return renderOverwriteFrame(lines, prevLineCount, isTTY)
 }
 
 /* v8 ignore start -- process liveness check: uses real process.kill(0), tested via deployment @preserve */

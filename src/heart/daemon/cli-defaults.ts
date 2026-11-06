@@ -5,15 +5,16 @@
  * process bindings. Tests inject mocks for all of these.
  */
 
-import { spawn } from "child_process"
+import { spawn, execSync } from "child_process"
 import * as fs from "fs"
 import * as os from "os"
 import * as path from "path"
-import { getAgentBundlesRoot, getAgentDaemonLogsDir, getAgentName, getAgentRoot, getRepoRoot, PROVIDER_CREDENTIALS, type AgentProvider } from "../identity"
+import { getAgentBundlesRoot, getAgentDaemonLogsDir, getAgentRoot, getRepoRoot, PROVIDER_CREDENTIALS, type AgentProvider } from "../identity"
 import { emitNervesEvent } from "../../nerves/runtime"
 import { installOuroCommand as defaultInstallOuroCommand } from "../versioning/ouro-path-installer"
 import { registerOuroBundleUti as defaultRegisterOuroBundleUti } from "../versioning/ouro-uti"
 import { getCurrentVersion, getPreviousVersion, listInstalledVersions, installVersion, activateVersion, ensureLayout, getOuroCliHome, pruneOldVersions } from "../versioning/ouro-version-manager"
+import { CLI_UPDATE_CHECK_TIMEOUT_MS, CLI_UPDATE_DIST_TAG } from "../versioning/update-checker"
 import { ensureSkillManagement as defaultEnsureSkillManagement } from "./skill-management-installer"
 import {
   runHatchFlow as defaultRunHatchFlow,
@@ -32,8 +33,8 @@ import { getPackageVersion } from "../../mind/bundle-manifest"
 import { syncGlobalOuroBotWrapper as defaultSyncGlobalOuroBotWrapper } from "../versioning/ouro-bot-global-installer"
 import { pruneDaemonLogs as defaultPruneDaemonLogs } from "./logs-prune"
 import { readHealth, getDefaultHealthPath } from "./daemon-health"
-import { discoverLogFiles, formatLogLine, readLastLines } from "./log-tailer"
-import { writeLaunchAgentPlist } from "./launchd"
+import { discoverLogFiles, formatLogLine, readLastLines, tailLogs as defaultTailLogs } from "./log-tailer"
+import { DAEMON_PLIST_LABEL, bootoutLaunchAgentByLabel, writeLaunchAgentPlist } from "./launchd"
 import { DEFAULT_DAEMON_SOCKET_PATH, sendDaemonCommand, checkDaemonSocketAlive } from "./socket-client"
 import { listSessionActivity } from "../session-activity"
 import {
@@ -52,19 +53,22 @@ import {
 
 // ── Default implementations ──
 
-export function defaultStartDaemonProcess(socketPath: string): Promise<{ pid: number | null }> {
+export async function defaultStartDaemonProcess(socketPath: string): Promise<{ pid: number | null }> {
+  const launchdStarted = await startDaemonProcessViaLaunchd(socketPath)
+  if (launchdStarted) return launchdStarted
+
   const entry = path.join(getRepoRoot(), "dist", "heart", "daemon", "daemon-entry.js")
   // Redirect stdio to /dev/null via file descriptors — using 'ignore' causes EPIPE
   // when the daemon's logging system writes to stderr after the parent exits.
   const outFd = fs.openSync(os.devNull, "w")
   const errFd = fs.openSync(os.devNull, "w")
-  const child = spawn("node", [entry, "--socket", socketPath], {
+  const child = spawn(process.execPath, [entry, "--socket", socketPath], {
     detached: true,
     stdio: ["ignore", outFd, errFd],
   })
   child.unref()
   // Don't close fds — the child process needs them. They'll be cleaned up when the parent exits.
-  return Promise.resolve({ pid: child.pid ?? null })
+  return { pid: child.pid ?? null }
 }
 
 function defaultWriteStdout(text: string): void {
@@ -76,6 +80,17 @@ function defaultWriteRaw(text: string): void {
   process.stdout.write(text)
 }
 /* v8 ignore stop */
+
+function resolveDaemonBootEntryPath(homeDir: string): string {
+  const repoRoot = getRepoRoot()
+  const versionManagerRootMarker = `${path.sep}.ouro-cli${path.sep}versions${path.sep}`
+
+  if (detectRuntimeMode(repoRoot) === "production" && repoRoot.includes(versionManagerRootMarker)) {
+    return path.join(getOuroCliHome(homeDir), "CurrentVersion", "node_modules", "@ouro.bot", "cli", "dist", "heart", "daemon", "daemon-entry.js")
+  }
+
+  return path.join(repoRoot, "dist", "heart", "daemon", "daemon-entry.js")
+}
 
 /**
  * Read the runtimeVersion from the first .ouro bundle's bundle-meta.json.
@@ -123,8 +138,40 @@ function defaultReadRecentDaemonLogLines(lines = 10): string[] {
   return recentLines.slice(-lines).map((line) => formatLogLine(line))
 }
 
+/* v8 ignore start -- CLI npm registry fetch wrapper: integration code @preserve */
+async function defaultFetchCliRegistryJson(timeoutMs: number): Promise<unknown> {
+  const controller = new AbortController()
+  const timeoutId = setTimeout(() => {
+    controller.abort()
+  }, timeoutMs)
+
+  try {
+    const res = await fetch("https://registry.npmjs.org/@ouro.bot/cli", {
+      signal: controller.signal,
+    })
+    return res.json()
+  } catch (error) {
+    if (error instanceof Error && error.name === "AbortError") {
+      throw new Error(`update check timed out after ${Math.max(1, Math.round(timeoutMs / 1000))}s`)
+    }
+    throw error
+  } finally {
+    clearTimeout(timeoutId)
+  }
+}
+/* v8 ignore stop */
+
 function defaultSleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms))
+}
+
+function defaultSpawnBackgroundCli(argv: string[]): Promise<{ pid: number | null }> {
+  const child = spawn(process.execPath, argv, {
+    detached: true,
+    stdio: "ignore",
+  })
+  child.unref()
+  return Promise.resolve({ pid: child.pid ?? null })
 }
 
 function defaultFallbackPendingMessage(command: Extract<import("./daemon").DaemonCommand, { kind: "message.send" }>): string {
@@ -157,11 +204,15 @@ function defaultFallbackPendingMessage(command: Extract<import("./daemon").Daemo
   return pendingPath
 }
 
-function defaultEnsureDaemonBootPersistence(socketPath: string): void {
-  if (process.platform !== "darwin") {
-    return
-  }
+function currentUserUid(): number {
+  return process.getuid?.() ?? 0
+}
 
+function launchAgentDomain(userUid = currentUserUid()): string {
+  return `gui/${userUid}`
+}
+
+function writeDaemonBootPlist(socketPath: string): string {
   const homeDir = os.homedir()
   const writeDeps = {
     writeFile: (filePath: string, content: string) => fs.writeFileSync(filePath, content, "utf-8"),
@@ -169,7 +220,7 @@ function defaultEnsureDaemonBootPersistence(socketPath: string): void {
     homeDir,
   }
 
-  const entryPath = path.join(getRepoRoot(), "dist", "heart", "daemon", "daemon-entry.js")
+  const entryPath = resolveDaemonBootEntryPath(homeDir)
 
   /* v8 ignore next -- covered via mock in daemon-cli-defaults.test.ts; v8 on CI attributes the real fs.existsSync branch to the non-mock load @preserve */
   if (!fs.existsSync(entryPath)) {
@@ -182,20 +233,160 @@ function defaultEnsureDaemonBootPersistence(socketPath: string): void {
     })
   }
 
-  const logDir = getAgentDaemonLogsDir()
-
-  // Write plist only — do NOT launchctl bootstrap.
-  // The daemon is already running (started by ouro up). Bootstrapping would
-  // start a SECOND daemon via launchd's RunAtLoad, causing a race where
-  // killOrphanProcesses kills the first daemon and both end up dead.
-  // The plist on disk is sufficient: launchd picks it up on login.
-  writeLaunchAgentPlist(writeDeps, {
+  return writeLaunchAgentPlist(writeDeps, {
     nodePath: process.execPath,
     entryPath,
     socketPath,
-    logDir,
+    logDir: getAgentDaemonLogsDir(),
     envPath: process.env.PATH,
   })
+}
+
+interface LaunchAgentLoadedDeps {
+  exec: (cmd: string) => void
+  userUid?: number
+}
+
+export function isDaemonLaunchAgentLoaded(deps?: LaunchAgentLoadedDeps): boolean {
+  const userUid = deps?.userUid ?? currentUserUid()
+  const exec = deps?.exec ?? ((cmd: string) => { execSync(cmd, { stdio: "ignore" }) })
+  try {
+    exec(`launchctl print ${launchAgentDomain(userUid)}/${DAEMON_PLIST_LABEL}`)
+    return true
+  } catch {
+    return false
+  }
+}
+
+function readDaemonLaunchAgentPid(): number | null {
+  try {
+    const output = execSync(`launchctl print ${launchAgentDomain()}/${DAEMON_PLIST_LABEL}`, { encoding: "utf-8" })
+    const match = output.match(/^\s*pid = (\d+)/m)
+    return match ? Number(match[1]) : null
+  } catch {
+    return null
+  }
+}
+
+interface BootstrappedSocketWaitDeps {
+  checkSocketAlive?: (socketPath: string) => Promise<boolean>
+  now?: () => number
+  sleep?: (ms: number) => Promise<void>
+  timeoutMs?: number
+  initialSettleMs?: number
+  pollIntervalMs?: number
+  requiredConsecutiveAliveChecks?: number
+}
+
+export async function waitForBootstrappedDaemonSocket(
+  socketPath: string,
+  deps: BootstrappedSocketWaitDeps = {},
+): Promise<void> {
+  const checkSocketAlive = deps.checkSocketAlive ?? checkDaemonSocketAlive
+  const now = deps.now ?? Date.now
+  const sleep = deps.sleep ?? ((ms) => new Promise((resolve) => setTimeout(resolve, ms)))
+  const timeoutMs = deps.timeoutMs ?? 30_000
+  const initialSettleMs = deps.initialSettleMs ?? 1_000
+  const pollIntervalMs = deps.pollIntervalMs ?? 250
+  const requiredConsecutiveAliveChecks = deps.requiredConsecutiveAliveChecks ?? 2
+  const deadline = now() + timeoutMs
+  const firstTrustworthyCheckAt = now() + initialSettleMs
+  let consecutiveAliveChecks = 0
+
+  while (now() < deadline) {
+    await sleep(pollIntervalMs)
+    if (now() < firstTrustworthyCheckAt) continue
+
+    if (await checkSocketAlive(socketPath)) {
+      consecutiveAliveChecks += 1
+      if (consecutiveAliveChecks >= requiredConsecutiveAliveChecks) return
+    } else {
+      consecutiveAliveChecks = 0
+    }
+  }
+
+  emitNervesEvent({
+    level: "warn",
+    component: "daemon",
+    event: "daemon.launchd_bootstrap_socket_wait_timeout",
+    message: "launchd bootstrap finished but daemon socket did not settle before timeout",
+    meta: { socketPath },
+  })
+}
+
+async function startDaemonProcessViaLaunchd(socketPath: string): Promise<{ pid: number | null } | null> {
+  if (process.platform !== "darwin") {
+    return null
+  }
+
+  const plistPath = writeDaemonBootPlist(socketPath)
+  const userUid = currentUserUid()
+  const domain = launchAgentDomain(userUid)
+
+  try {
+    emitNervesEvent({
+      component: "daemon",
+      event: "daemon.launchd_bootstrap_start",
+      message: "starting daemon launch agent for current login session",
+      meta: { plistPath, label: DAEMON_PLIST_LABEL },
+    })
+    if (isDaemonLaunchAgentLoaded({ exec: (cmd: string) => { execSync(cmd, { stdio: "ignore" }) }, userUid })) {
+      execSync(`launchctl kickstart -k ${domain}/${DAEMON_PLIST_LABEL}`, { stdio: "ignore" })
+    } else {
+      execSync(`launchctl bootstrap ${domain} "${plistPath}"`, { stdio: "ignore" })
+    }
+    emitNervesEvent({
+      component: "daemon",
+      event: "daemon.launchd_bootstrap_end",
+      message: "daemon launch agent started for current login session",
+      meta: { plistPath, label: DAEMON_PLIST_LABEL },
+    })
+    await waitForBootstrappedDaemonSocket(socketPath)
+    return { pid: readDaemonLaunchAgentPid() }
+  } catch (error) {
+    emitNervesEvent({
+      level: "warn",
+      component: "daemon",
+      event: "daemon.launchd_bootstrap_error",
+      message: "failed to start daemon launch agent for current login session",
+      meta: { plistPath, label: DAEMON_PLIST_LABEL, error: error instanceof Error ? error.message : String(error) },
+    })
+    return null
+  }
+}
+
+async function defaultEnsureDaemonBootPersistence(socketPath: string): Promise<void> {
+  if (process.platform !== "darwin") {
+    return
+  }
+
+  const plistPath = writeDaemonBootPlist(socketPath)
+
+  const userUid = currentUserUid()
+  if (isDaemonLaunchAgentLoaded({ exec: (cmd: string) => { execSync(cmd, { stdio: "ignore" }) }, userUid })) {
+    emitNervesEvent({
+      component: "daemon",
+      event: "daemon.launchd_bootstrap_skipped_loaded",
+      message: "daemon launch agent already loaded",
+      meta: { plistPath, label: DAEMON_PLIST_LABEL },
+    })
+    return
+  }
+}
+
+function defaultPrepareDaemonRuntimeReplacement(): void {
+  if (process.platform !== "darwin") {
+    return
+  }
+
+  bootoutLaunchAgentByLabel({
+    exec: (cmd: string) => { execSync(cmd, { stdio: "ignore" }) },
+    userUid: process.getuid?.() ?? 0,
+  })
+  // launchctl bootout may return before the old daemon's SIGTERM cleanup has
+  // finished unlinking its Unix socket. Give that cleanup a short chance to
+  // settle before the replacement daemon binds the same socket path.
+  execSync("/bin/sleep 1", { stdio: "ignore" })
 }
 
 async function defaultPromptInput(question: string): Promise<string> {
@@ -415,7 +606,10 @@ export async function defaultRunSerpentGuide(): Promise<string | null> {
     setRuntimeLogger(createLogger({ level: "error" }))
 
     // Configure runtime: set agent identity + config override so runAgent
-    // doesn't try to read from ~/AgentBundles/SerpentGuide.ouro/
+    // doesn't try to read from ~/AgentBundles/SerpentGuide.ouro/. (As of
+    // Layer 3, SerpentGuide identities live in-repo only — the
+    // `~/AgentBundles/SerpentGuide.ouro/psyche/identities` override path
+    // was removed. The override path is no longer read or honored.)
     setAgentName("SerpentGuide")
     // Build specialist system prompt
     const soulText = loadSoulText(bundleSourceDir)
@@ -511,20 +705,27 @@ export function createDefaultOuroCliDeps(socketPath = DEFAULT_DAEMON_SOCKET_PATH
     sendCommand: sendDaemonCommand,
     startDaemonProcess: defaultStartDaemonProcess,
     writeStdout: defaultWriteStdout,
+    setExitCode: (code: number) => {
+      const current = typeof process.exitCode === "number" ? process.exitCode : 0
+      process.exitCode = Math.max(current, code)
+    },
     writeRaw: defaultWriteRaw,
     isTTY: process.stdout.isTTY === true,
     checkSocketAlive: checkDaemonSocketAlive,
     cleanupStaleSocket: defaultCleanupStaleSocket,
     fallbackPendingMessage: defaultFallbackPendingMessage,
+    tailLogs: (options) => defaultTailLogs(options),
     healthFilePath: getDefaultHealthPath(),
     readHealthState: readHealth,
     readHealthUpdatedAt: defaultReadHealthUpdatedAt,
     readRecentDaemonLogLines: defaultReadRecentDaemonLogLines,
     sleep: defaultSleep,
+    spawnBackgroundCli: defaultSpawnBackgroundCli,
     now: () => Date.now(),
+    updateCheckTimeoutMs: CLI_UPDATE_CHECK_TIMEOUT_MS,
     startupPollIntervalMs: 250,
     startupStabilityWindowMs: 1_500,
-    startupTimeoutMs: 10_000,
+    startupTimeoutMs: 60_000,
     startupRetryLimit: 1,
     listDiscoveredAgents: defaultListDiscoveredAgents,
     runHatchFlow: defaultRunHatchFlow,
@@ -560,11 +761,8 @@ export function createDefaultOuroCliDeps(socketPath = DEFAULT_DAEMON_SOCKET_PATH
     checkForCliUpdate: async () => {
       const { checkForUpdate } = await import("../versioning/update-checker")
       return checkForUpdate(getPackageVersion(), {
-        fetchRegistryJson: async () => {
-          const res = await fetch("https://registry.npmjs.org/@ouro.bot/cli")
-          return res.json()
-        },
-        distTag: "latest",
+        fetchRegistryJson: () => defaultFetchCliRegistryJson(CLI_UPDATE_CHECK_TIMEOUT_MS),
+        distTag: CLI_UPDATE_DIST_TAG,
       })
     },
     installCliVersion: async (version: string) => { installVersion(version, {}) },
@@ -588,6 +786,7 @@ export function createDefaultOuroCliDeps(socketPath = DEFAULT_DAEMON_SOCKET_PATH
     syncGlobalOuroBotWrapper: defaultSyncGlobalOuroBotWrapper,
     pruneDaemonLogs: defaultPruneDaemonLogs,
     ensureSkillManagement: defaultEnsureSkillManagement,
+    prepareDaemonRuntimeReplacement: defaultPrepareDaemonRuntimeReplacement,
     ensureDaemonBootPersistence: defaultEnsureDaemonBootPersistence,
     /* v8 ignore start -- dev-mode defaults: tests inject mocks for mode detection and binary resolution @preserve */
     detectMode: () => detectRuntimeMode(getRepoRoot()),
@@ -607,8 +806,7 @@ export function createDefaultOuroCliDeps(socketPath = DEFAULT_DAEMON_SOCKET_PATH
       const { main } = await import("../../senses/cli")
       await main(agentName)
     },
-    scanSessions: async () => {
-      const agentName = getAgentName()
+    scanSessions: async (agentName: string) => {
       const agentRoot = getAgentRoot(agentName)
       return listSessionActivity({
         sessionsDir: path.join(agentRoot, "state", "sessions"),

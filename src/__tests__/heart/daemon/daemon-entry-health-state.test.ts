@@ -209,9 +209,16 @@ describe("daemon entry health state wiring", () => {
     return { emitNervesEvent }
   }
 
-  it("captures an ok health snapshot when no components are degraded", async () => {
+  it("captures a healthy snapshot when an enabled agent is running and no components are degraded", async () => {
     vi.resetModules()
-    const { emitNervesEvent } = setupDaemonMocks()
+    // Layer 1 rollup change: "no degraded entries" no longer means
+    // "healthy" — empty inventory is now classified as degraded
+    // (zero enabled agents serving). Seed a running agent so the
+    // rollup correctly reports healthy.
+    listEnabledBundleAgentsMock.mockReturnValue(["solo"])
+    const { emitNervesEvent } = setupDaemonMocks([
+      { name: "solo", channel: "inner-dialog", status: "running", pid: 100, restartCount: 0, lastCrashAt: null, errorReason: null, fixHint: null },
+    ])
     vi.spyOn(process, "argv", "get").mockReturnValue(["node", "daemon-entry.js"])
 
     await import("../../../heart/daemon/daemon-entry")
@@ -223,7 +230,7 @@ describe("daemon entry health state wiring", () => {
 
     expect(capturedHealthStates).toHaveLength(1)
     expect(capturedHealthStates[0]).toMatchObject({
-      status: "ok",
+      status: "healthy",
       pid: process.pid,
       safeMode: null,
       degraded: [],

@@ -47,15 +47,27 @@ describe("syncGlobalOuroBotWrapper", () => {
   })
 
   it("skips when the current wrapper version already owns the global ouro.bot binary", () => {
-    files["/opt/homebrew/lib/node_modules/ouro.bot/package.json"] = JSON.stringify({ version: "0.1.0-alpha.21" })
+    files["/opt/homebrew/lib/node_modules/ouro.bot/package.json"] = JSON.stringify({ version: "0.1.0-alpha.29" })
     files["/opt/homebrew/bin/ouro.bot"] = "/opt/homebrew/lib/node_modules/ouro.bot/index.js"
 
     const result = syncGlobalOuroBotWrapper(makeDeps())
 
     expect(result.installed).toBe(false)
-    expect(result.installedVersion).toBe("0.1.0-alpha.21")
+    expect(result.installedVersion).toBe("0.1.0-alpha.29")
     expect(result.executableOwner).toBe("wrapper")
     expect(installedCommands).toHaveLength(0)
+  })
+
+  it("repairs a wrapper-owned binary when the installed wrapper version is stale", () => {
+    files["/opt/homebrew/lib/node_modules/ouro.bot/package.json"] = JSON.stringify({ version: "0.1.0-alpha.21" })
+    files["/opt/homebrew/bin/ouro.bot"] = "/opt/homebrew/lib/node_modules/ouro.bot/index.js"
+
+    const result = syncGlobalOuroBotWrapper(makeDeps())
+
+    expect(result.installed).toBe(true)
+    expect(result.installedVersion).toBe("0.1.0-alpha.21")
+    expect(result.executableOwner).toBe("wrapper")
+    expect(installedCommands).toEqual([["install", "-g", "--force", "ouro.bot@0.1.0-alpha.29"]])
   })
 
   it("force-installs the wrapper when a stale CLI package owns the ouro.bot binary", () => {
@@ -66,7 +78,7 @@ describe("syncGlobalOuroBotWrapper", () => {
 
     expect(result.installed).toBe(true)
     expect(result.executableOwner).toBe("cli")
-    expect(installedCommands).toEqual([["install", "-g", "--force", "ouro.bot@latest"]])
+    expect(installedCommands).toEqual([["install", "-g", "--force", "ouro.bot@0.1.0-alpha.29"]])
   })
 
   it("installs the wrapper when it is missing entirely", () => {
@@ -75,7 +87,7 @@ describe("syncGlobalOuroBotWrapper", () => {
     expect(result.installed).toBe(true)
     expect(result.installedVersion).toBeNull()
     expect(result.executableOwner).toBeNull()
-    expect(installedCommands).toEqual([["install", "-g", "--force", "ouro.bot@latest"]])
+    expect(installedCommands).toEqual([["install", "-g", "--force", "ouro.bot@0.1.0-alpha.29"]])
   })
 
   it("normalizes buffer output from npm commands", () => {
@@ -92,7 +104,7 @@ describe("syncGlobalOuroBotWrapper", () => {
     }))
 
     expect(result.installed).toBe(true)
-    expect(installedCommands).toEqual([["install", "-g", "--force", "ouro.bot@latest"]])
+    expect(installedCommands).toEqual([["install", "-g", "--force", "ouro.bot@0.1.0-alpha.29"]])
   })
 
   it("treats unreadable wrapper package metadata as missing and repairs forward", () => {
@@ -104,7 +116,7 @@ describe("syncGlobalOuroBotWrapper", () => {
     expect(result.installed).toBe(true)
     expect(result.installedVersion).toBeNull()
     expect(result.executableOwner).toBe("cli")
-    expect(installedCommands).toEqual([["install", "-g", "--force", "ouro.bot@latest"]])
+    expect(installedCommands).toEqual([["install", "-g", "--force", "ouro.bot@0.1.0-alpha.29"]])
   })
 
   it("repairs when the ouro.bot binary exists but its target cannot be resolved", () => {
@@ -118,7 +130,7 @@ describe("syncGlobalOuroBotWrapper", () => {
     expect(result.installed).toBe(true)
     expect(result.installedVersion).toBe("0.1.0-alpha.29")
     expect(result.executableOwner).toBe("unknown")
-    expect(installedCommands).toEqual([["install", "-g", "--force", "ouro.bot@latest"]])
+    expect(installedCommands).toEqual([["install", "-g", "--force", "ouro.bot@0.1.0-alpha.29"]])
   })
 
   it("repairs when another package owns the ouro.bot binary", () => {
@@ -130,7 +142,7 @@ describe("syncGlobalOuroBotWrapper", () => {
     expect(result.installed).toBe(true)
     expect(result.installedVersion).toBe("0.1.0-alpha.29")
     expect(result.executableOwner).toBe("other")
-    expect(installedCommands).toEqual([["install", "-g", "--force", "ouro.bot@latest"]])
+    expect(installedCommands).toEqual([["install", "-g", "--force", "ouro.bot@0.1.0-alpha.29"]])
   })
 
   it("repairs when wrapper metadata lacks a usable version string", () => {
@@ -142,7 +154,7 @@ describe("syncGlobalOuroBotWrapper", () => {
     expect(result.installed).toBe(true)
     expect(result.installedVersion).toBeNull()
     expect(result.executableOwner).toBe("cli")
-    expect(installedCommands).toEqual([["install", "-g", "--force", "ouro.bot@latest"]])
+    expect(installedCommands).toEqual([["install", "-g", "--force", "ouro.bot@0.1.0-alpha.29"]])
   })
 
   it("uses the windows global bin path when evaluating ownership", () => {
@@ -153,6 +165,6 @@ describe("syncGlobalOuroBotWrapper", () => {
 
     expect(result.installed).toBe(true)
     expect(result.executableOwner).toBe("cli")
-    expect(installedCommands).toEqual([["install", "-g", "--force", "ouro.bot@latest"]])
+    expect(installedCommands).toEqual([["install", "-g", "--force", "ouro.bot@0.1.0-alpha.29"]])
   })
 })
