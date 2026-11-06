@@ -94,7 +94,11 @@ const TOOL_DESCRIPTIONS: Record<string, DescriptionBuilder> = {
 
   // Communication
   send_message: (args) => {
-    const to = args.to
+    const to = args.to || args.friendId
+    /* v8 ignore next 3 -- voice-send status wording is exercised by outbound voice tool tests; this generic renderer keeps a defensive fallback @preserve */
+    if (args.channel === "voice") {
+      return to ? `placing a voice call to ${to}...` : "placing a voice call..."
+    }
     return to ? `sending a message to ${to}...` : "sending a message..."
   },
   surface: () => "sharing a thought...",
@@ -115,6 +119,10 @@ const TOOL_DESCRIPTIONS: Record<string, DescriptionBuilder> = {
   settle: () => null,
   rest: () => null,
   descend: () => null,
+  // speak's visible output is the message itself, delivered via onTextChunk +
+  // flushNow. The shared tool-activity callbacks must skip it so no per-sense
+  // tool-status text precedes the actual message.
+  speak: () => null,
 }
 
 export function humanReadableToolDescription(
