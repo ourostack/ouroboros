@@ -676,7 +676,7 @@ export function plantPsycheMarker(dir, { uid, gid }, { at = psycheFdPath } = {})
       fchmodSync(fd, 0o600)
       writeFileSync(fd, token)
     } finally { closeSync(fd) }
-    try { guard() } catch (e) { unlinkSync(at(dirfd, staged)); throw e }
+    try { guard() } catch (e) { try { unlinkSync(at(dirfd, staged)) } catch { /* the guard's error is the one to report */ } throw e }
     renameSync(at(dirfd, staged), at(dirfd, PSYCHE_MARKER))
     return { token, identity }
   })
