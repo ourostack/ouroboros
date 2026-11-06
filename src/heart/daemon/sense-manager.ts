@@ -9,10 +9,14 @@ import {
   refreshMachineRuntimeCredentialConfig,
   refreshRuntimeCredentialConfig,
   type RuntimeCredentialConfigReadResult,
+  type RuntimeCredentialConfig,
 } from "../runtime-credentials"
+import { readProviderCredentialPool, type ProviderCredentialRecord } from "../provider-credentials"
 import { getSenseInventory, type SenseRuntimeInfo, type SenseStatus } from "../sense-truth"
 import { loadOrCreateMachineIdentity } from "../machine-identity"
 import { DaemonProcessManager } from "./process-manager"
+import { createHttpHealthProbe } from "./http-health-probe"
+import type { SenseProbe } from "./health-monitor"
 
 export interface DaemonSenseRow {
   agent: string
@@ -25,8 +29,10 @@ export interface DaemonSenseRow {
 
 export interface DaemonSenseManagerLike {
   startAutoStartSenses(): Promise<void>
+  triggerAutoStartSenses?(): void
   stopAll(): Promise<void>
   listSenseRows(): DaemonSenseRow[]
+  listHealthProbes?(): SenseProbe[]
   listManagedPids?(): number[]
 }
 
@@ -35,6 +41,8 @@ export interface DaemonSenseManagerOptions {
   bundlesRoot?: string
   processManager?: {
     startAutoStartAgents(): Promise<void>
+    triggerAutoStartAgents?(): void
+    startAgent?(agent: string): Promise<void>
     stopAll(): Promise<void>
     listAgentSnapshots(): Array<{ name: string; status: string; pid?: number | null }>
   }
@@ -66,6 +74,7 @@ function defaultSenses(): AgentSensesConfig {
     cli: { ...DEFAULT_AGENT_SENSES.cli },
     teams: { ...DEFAULT_AGENT_SENSES.teams },
     bluebubbles: { ...DEFAULT_AGENT_SENSES.bluebubbles },
+    mail: { ...DEFAULT_AGENT_SENSES.mail },
   }
 }
 
@@ -94,7 +103,7 @@ function readAgentSenses(agentJsonPath: string): AgentSensesConfig {
     return defaults
   }
 
-  for (const sense of ["cli", "teams", "bluebubbles"] as SenseName[]) {
+  for (const sense of ["cli", "teams", "bluebubbles", "mail"] as SenseName[]) {
     const rawSense = (rawSenses as Record<string, unknown>)[sense]
     if (!rawSense || typeof rawSense !== "object" || Array.isArray(rawSense)) {
       continue
@@ -146,6 +155,7 @@ function senseFactsFromRuntimeConfig(
     cli: { configured: true, detail: "local interactive terminal" },
     teams: { configured: false, detail: "not enabled in agent.json" },
     bluebubbles: { configured: false, detail: "not enabled in agent.json" },
+    mail: { configured: false, detail: "not enabled in agent.json" },
   }
 
   const payload = runtimeConfig.ok ? runtimeConfig.config : {}
@@ -155,6 +165,7 @@ function senseFactsFromRuntimeConfig(
   const machinePayload = machineRuntimeConfig.ok ? machineRuntimeConfig.config : {}
   const bluebubbles = machinePayload.bluebubbles as Record<string, unknown> | undefined
   const bluebubblesChannel = machinePayload.bluebubblesChannel as Record<string, unknown> | undefined
+  const mailroom = payload.mailroom as Record<string, unknown> | undefined
 
   if (senses.teams.enabled) {
     const missing: string[] = []
@@ -196,12 +207,33 @@ function senseFactsFromRuntimeConfig(
         }
   }
 
+  if (senses.mail.enabled) {
+    const privateKeys = mailroom?.privateKeys
+    const hasPrivateKeys = !!privateKeys && typeof privateKeys === "object" && !Array.isArray(privateKeys) && Object.values(privateKeys).some((value) => typeof value === "string" && value.trim().length > 0)
+    const mailboxAddress = textField(mailroom, "mailboxAddress")
+    const missing: string[] = []
+    if (!mailboxAddress) missing.push("mailroom.mailboxAddress")
+    if (!hasPrivateKeys) missing.push("mailroom.privateKeys")
+
+    base.mail = missing.length === 0
+      ? { configured: true, detail: mailboxAddress }
+      : {
+          configured: false,
+          detail: runtimeConfig.ok
+            ? `missing ${missing.join("/")}`
+            : unavailableDetail,
+        }
+  }
+
   return base
 }
 
 function senseRepairHint(agent: string, sense: SenseName): string {
   if (sense === "teams") {
     return `Run 'ouro vault config set --agent ${agent} --key teams.clientId', teams.clientSecret, and teams.tenantId; then run 'ouro up' again.`
+  }
+  if (sense === "mail") {
+    return `Agent-runnable: provision Mailroom access with 'ouro connect mail --agent ${agent}', then restart with 'ouro up'.`
   }
   return `Run 'ouro connect bluebubbles --agent ${agent}' to attach BlueBubbles on this machine; then run 'ouro up' again.`
 }
@@ -214,13 +246,44 @@ function parseSenseSnapshotName(name: string): { agent: string; sense: SenseName
   const parts = name.split(":")
   if (parts.length !== 2) return null
   const [agent, sense] = parts
-  if (sense !== "teams" && sense !== "bluebubbles") return null
+  if (sense !== "teams" && sense !== "bluebubbles" && sense !== "mail") return null
   return { agent, sense }
 }
 
 function runtimeInfoFor(status: string): SenseRuntimeInfo {
   if (status === "running") return { runtime: "running" }
   return { runtime: "error" }
+}
+
+function managedSenseEntry(sense: Exclude<SenseName, "cli">): string {
+  if (sense === "teams") return "senses/teams-entry.js"
+  if (sense === "bluebubbles") return "senses/bluebubbles/entry.js"
+  return "senses/mail-entry.js"
+}
+
+function runtimeCredentialBootstrapFor(agent: string, sense: Exclude<SenseName, "cli">): {
+  agentName: string
+  runtimeConfig?: RuntimeCredentialConfig
+  machineRuntimeConfig?: RuntimeCredentialConfig
+  machineId?: string
+  providerCredentialRecords?: ProviderCredentialRecord[]
+} | null {
+  const runtime = readRuntimeCredentialConfig(agent)
+  const machineId = sense === "bluebubbles" ? currentMachineId() : undefined
+  const machine = sense === "bluebubbles" ? readMachineRuntimeCredentialConfig(agent) : null
+  const providerPool = readProviderCredentialPool(agent)
+  const providerCredentialRecords = providerPool.ok
+    ? Object.values(providerPool.pool.providers).filter((record): record is ProviderCredentialRecord => !!record)
+    : []
+  const bootstrap = {
+    agentName: agent,
+    runtimeConfig: runtime.ok ? runtime.config : undefined,
+    machineRuntimeConfig: machine?.ok ? machine.config : undefined,
+    machineId,
+    providerCredentialRecords: providerCredentialRecords.length > 0 ? providerCredentialRecords : undefined,
+  }
+  if (!bootstrap.runtimeConfig && !bootstrap.machineRuntimeConfig && !bootstrap.providerCredentialRecords) return null
+  return bootstrap
 }
 
 function blueBubblesRuntimeStateIsFresh(lastCheckedAt?: string, now = Date.now()): boolean {
@@ -299,6 +362,7 @@ function readBlueBubblesRuntimeFacts(
 export class DaemonSenseManager implements DaemonSenseManagerLike {
   private readonly processManager: NonNullable<DaemonSenseManagerOptions["processManager"]>
   private readonly contexts: Map<string, AgentSenseContext>
+  private readonly pendingConfigRefreshes = new Set<string>()
   private readonly bundlesRoot: string
 
   constructor(options: DaemonSenseManagerOptions) {
@@ -313,14 +377,15 @@ export class DaemonSenseManager implements DaemonSenseManagerLike {
     )
 
     const managedSenseAgents = [...this.contexts.entries()].flatMap(([agent, context]) => {
-      return (["teams", "bluebubbles"] as SenseName[])
+      return (["teams", "bluebubbles", "mail"] as Exclude<SenseName, "cli">[])
         .filter((sense) => context.senses[sense].enabled)
         .map((sense) => ({
           name: `${agent}:${sense}`,
           agentArg: agent,
-          entry: sense === "teams" ? "senses/teams-entry.js" : "senses/bluebubbles/entry.js",
+          entry: managedSenseEntry(sense),
           channel: sense,
           autoStart: true,
+          getRuntimeCredentialBootstrap: () => runtimeCredentialBootstrapFor(agent, sense),
         }))
     })
 
@@ -331,13 +396,15 @@ export class DaemonSenseManager implements DaemonSenseManagerLike {
         if (!parsed) return { ok: true }
         const context = this.contexts.get(parsed.agent)
         if (!context) return { ok: true }
-        const refreshed = await refreshRuntimeCredentialConfig(parsed.agent, { preserveCachedOnFailure: true })
-        const machineRefreshed = parsed.sense === "bluebubbles"
-          ? await refreshMachineRuntimeCredentialConfig(parsed.agent, currentMachineId(), { preserveCachedOnFailure: true })
-          : readMachineRuntimeCredentialConfig(parsed.agent)
-        context.facts = senseFactsFromRuntimeConfig(parsed.agent, context.senses, refreshed, machineRefreshed)
+        context.facts = senseFactsFromRuntimeConfig(
+          parsed.agent,
+          context.senses,
+          readRuntimeCredentialConfig(parsed.agent),
+          readMachineRuntimeCredentialConfig(parsed.agent),
+        )
         const fact = context.facts[parsed.sense]
         if (fact.configured) return { ok: true }
+        this.scheduleSenseConfigRefresh(name, parsed)
         if (fact.optional) {
           return {
             ok: false,
@@ -347,6 +414,7 @@ export class DaemonSenseManager implements DaemonSenseManagerLike {
         }
         return {
           ok: false,
+          skip: true,
           error: `${parsed.sense} is enabled for ${parsed.agent} but runtime credentials are not ready: ${fact.detail}`,
           fix: senseRepairHint(parsed.agent, parsed.sense),
         }
@@ -364,8 +432,67 @@ export class DaemonSenseManager implements DaemonSenseManagerLike {
     })
   }
 
+  private scheduleSenseConfigRefresh(name: string, parsed: { agent: string; sense: SenseName }): void {
+    if (this.pendingConfigRefreshes.has(name)) return
+    this.pendingConfigRefreshes.add(name)
+    void this.refreshSenseConfigAndRetry(name, parsed)
+  }
+
+  private async refreshSenseConfigAndRetry(name: string, parsed: { agent: string; sense: SenseName }): Promise<void> {
+    try {
+      const refreshed = await refreshRuntimeCredentialConfig(parsed.agent, { preserveCachedOnFailure: true })
+      const machineRefreshed = parsed.sense === "bluebubbles"
+        ? await refreshMachineRuntimeCredentialConfig(parsed.agent, currentMachineId(), { preserveCachedOnFailure: true })
+        : readMachineRuntimeCredentialConfig(parsed.agent)
+      const context = this.contexts.get(parsed.agent)
+      /* v8 ignore next -- defensive: config refreshes are only scheduled for known agent contexts @preserve */
+      if (!context) return
+      context.facts = senseFactsFromRuntimeConfig(parsed.agent, context.senses, refreshed, machineRefreshed)
+      if (!context.facts[parsed.sense].configured) return
+      setTimeout(() => {
+        void this.processManager.startAgent?.(name).catch((error) => {
+          emitNervesEvent({
+            level: "error",
+            component: "channels",
+            event: "channel.daemon_sense_autostart_error",
+            message: "sense autostart failed",
+            /* v8 ignore next -- defensive: process manager rejects with Error instances in normal use @preserve */
+            meta: { error: error instanceof Error ? error.message : String(error) },
+          })
+        })
+      }, 0)
+    } catch (error) {
+      emitNervesEvent({
+        level: "error",
+        component: "channels",
+        event: "channel.daemon_sense_autostart_error",
+        message: "sense config refresh failed",
+        /* v8 ignore next -- defensive: runtime credential refresh rejects with Error instances in normal use @preserve */
+        meta: { error: error instanceof Error ? error.message : String(error) },
+      })
+    } finally {
+      this.pendingConfigRefreshes.delete(name)
+    }
+  }
+
   async startAutoStartSenses(): Promise<void> {
     await this.processManager.startAutoStartAgents()
+  }
+
+  triggerAutoStartSenses(): void {
+    if (this.processManager.triggerAutoStartAgents) {
+      this.processManager.triggerAutoStartAgents()
+      return
+    }
+    void this.processManager.startAutoStartAgents().catch((error) => {
+        emitNervesEvent({
+          level: "error",
+          component: "channels",
+          event: "channel.daemon_sense_autostart_error",
+          message: "sense autostart failed",
+          meta: { error: error instanceof Error ? error.message : String(error) },
+        })
+      })
   }
 
   async stopAll(): Promise<void> {
@@ -379,6 +506,24 @@ export class DaemonSenseManager implements DaemonSenseManagerLike {
       .filter((pid): pid is number => pid !== null && pid !== undefined)
   }
   /* v8 ignore stop */
+
+  listHealthProbes(): SenseProbe[] {
+    const probes: SenseProbe[] = []
+    for (const [agent, context] of this.contexts.entries()) {
+      const runtimeConfig = readRuntimeCredentialConfig(agent)
+      const machineRuntimeConfig = readMachineRuntimeCredentialConfig(agent)
+      context.facts = senseFactsFromRuntimeConfig(agent, context.senses, runtimeConfig, machineRuntimeConfig)
+      if (!context.senses.bluebubbles.enabled || !context.facts.bluebubbles.configured || !machineRuntimeConfig.ok) {
+        continue
+      }
+
+      const machinePayload = machineRuntimeConfig.config
+      const bluebubblesChannel = machinePayload.bluebubblesChannel as Record<string, unknown> | undefined
+      const port = numberField(bluebubblesChannel, "port", DEFAULT_BLUEBUBBLES_PORT)
+      probes.push(createHttpHealthProbe(`bluebubbles:${agent}`, port))
+    }
+    return probes
+  }
 
   listSenseRows(): DaemonSenseRow[] {
     const runtime = new Map<string, Partial<Record<SenseName, SenseRuntimeInfo>>>()
@@ -403,6 +548,10 @@ export class DaemonSenseManager implements DaemonSenseManagerLike {
           configured: context.facts.bluebubbles.configured,
           optional: context.facts.bluebubbles.optional,
           ...blueBubblesRuntimeFacts,
+        },
+        mail: {
+          configured: context.facts.mail.configured,
+          ...(runtime.get(agent)?.mail ?? {}),
         },
       }
       const inventory = getSenseInventory({ senses: context.senses }, runtimeInfo)

@@ -139,3 +139,153 @@ describe("BlueBubbles tool callbacks via createToolActivityCallbacks", () => {
     })
   })
 })
+
+describe("BlueBubbles createBlueBubblesCallbacks - flushNow (speak tool)", () => {
+  beforeEach(() => {
+    vi.resetModules()
+  })
+
+  async function setup() {
+    const indexModule = await import("../../../senses/bluebubbles")
+    const { createBlueBubblesCallbacks } = indexModule
+    const sendText = vi.fn(async () => ({ messageGuid: "sent-guid" }))
+    const setTyping = vi.fn(async () => {})
+    const markChatRead = vi.fn(async () => {})
+    const editMessage = vi.fn(async () => {})
+    const checkHealth = vi.fn(async () => {})
+    const repairEvent = vi.fn(async (e: any) => e)
+    const getMessageText = vi.fn(async () => null)
+    const client = {
+      sendText,
+      editMessage,
+      setTyping,
+      markChatRead,
+      checkHealth,
+      repairEvent,
+      getMessageText,
+    }
+    const chat = { chatGuid: "chat-1", participants: [] } as any
+    const replyTarget = {
+      getReplyToMessageGuid: vi.fn(() => "reply-guid-xyz"),
+      setSelection: vi.fn(() => "ok"),
+    }
+    const callbacks = createBlueBubblesCallbacks(client as any, chat, replyTarget as any, false)
+    return { callbacks, sendText, setTyping, markChatRead, replyTarget }
+  }
+
+  it("exposes flushNow on the callbacks object", async () => {
+    const { callbacks } = await setup()
+    expect(typeof (callbacks as any).flushNow).toBe("function")
+  })
+
+  it("flushNow after onTextChunk sends accumulated buffer via client.sendText with replyToMessageGuid", async () => {
+    const { callbacks, sendText } = await setup()
+    callbacks.onTextChunk("hello")
+    await (callbacks as any).flushNow()
+    expect(sendText).toHaveBeenCalledTimes(1)
+    expect(sendText).toHaveBeenCalledWith({
+      chat: expect.objectContaining({ chatGuid: "chat-1" }),
+      text: "hello",
+      replyToMessageGuid: "reply-guid-xyz",
+    })
+  })
+
+  it("flushNow returns a Promise that resolves after sendText completes", async () => {
+    const { callbacks, sendText } = await setup()
+    callbacks.onTextChunk("hi there")
+    const p = (callbacks as any).flushNow()
+    expect(p).toBeInstanceOf(Promise)
+    await p
+    expect(sendText).toHaveBeenCalled()
+  })
+
+  it("after flushNow, the next end-of-turn flush() does NOT re-send the same text", async () => {
+    const { callbacks, sendText } = await setup()
+    callbacks.onTextChunk("once only")
+    await (callbacks as any).flushNow()
+    expect(sendText).toHaveBeenCalledTimes(1)
+    // After flushNow drained the buffer, end-of-turn flush() should not resend
+    await (callbacks as any).flush()
+    expect(sendText).toHaveBeenCalledTimes(1)
+  })
+
+  it("after flushNow, client.setTyping(chat, false) is NOT called — typing stays active", async () => {
+    const { callbacks, setTyping } = await setup()
+    // Trigger typing start by calling onModelStart (1:1 path)
+    callbacks.onModelStart()
+    callbacks.onTextChunk("status")
+    await (callbacks as any).flushNow()
+    // Verify setTyping was never called with `false` during flushNow
+    const stopCalls = setTyping.mock.calls.filter(([_, on]) => on === false)
+    expect(stopCalls).toHaveLength(0)
+  })
+
+  it("flushNow with empty buffer is a safe noop — no sendText, no error", async () => {
+    const { callbacks, sendText } = await setup()
+    // No onTextChunk called yet — buffer is empty
+    await expect((callbacks as any).flushNow()).resolves.not.toThrow()
+    expect(sendText).not.toHaveBeenCalled()
+  })
+
+  it("onToolStart('speak', ...) is INVISIBLE — no statusBatcher/sendStatus tool-activity message", async () => {
+    const indexModule = await import("../../../senses/bluebubbles")
+    const { createBlueBubblesCallbacks } = indexModule
+    const sendText = vi.fn(async () => ({ messageGuid: "g" }))
+    const setTyping = vi.fn(async () => {})
+    const markChatRead = vi.fn(async () => {})
+    const editMessage = vi.fn(async () => {})
+    const checkHealth = vi.fn(async () => {})
+    const repairEvent = vi.fn(async (e: any) => e)
+    const getMessageText = vi.fn(async () => null)
+    const client = { sendText, editMessage, setTyping, markChatRead, checkHealth, repairEvent, getMessageText }
+    const chat = { chatGuid: "chat-1", participants: [] } as any
+    const replyTarget = { getReplyToMessageGuid: vi.fn(() => "reply-guid"), setSelection: vi.fn(() => "ok") }
+    const callbacks = createBlueBubblesCallbacks(client as any, chat, replyTarget as any, false)
+
+    // Calling onToolStart for "speak" must NOT enqueue any sendText for status.
+    // (sendText for the actual speak message goes through flushNow, not onToolStart.)
+    callbacks.onToolStart("speak", { message: "hi friend" })
+    // Wait briefly to let any micro-task queue settle (sendStatus uses enqueue/queue).
+    await new Promise((r) => setTimeout(r, 50))
+    expect(sendText).not.toHaveBeenCalled()
+  })
+
+  it("onToolEnd('speak', ...) is INVISIBLE — no failure status sent on success", async () => {
+    const indexModule = await import("../../../senses/bluebubbles")
+    const { createBlueBubblesCallbacks } = indexModule
+    const sendText = vi.fn(async () => ({ messageGuid: "g" }))
+    const setTyping = vi.fn(async () => {})
+    const markChatRead = vi.fn(async () => {})
+    const editMessage = vi.fn(async () => {})
+    const checkHealth = vi.fn(async () => {})
+    const repairEvent = vi.fn(async (e: any) => e)
+    const getMessageText = vi.fn(async () => null)
+    const client = { sendText, editMessage, setTyping, markChatRead, checkHealth, repairEvent, getMessageText }
+    const chat = { chatGuid: "chat-1", participants: [] } as any
+    const replyTarget = { getReplyToMessageGuid: vi.fn(() => "reply-guid"), setSelection: vi.fn(() => "ok") }
+    const callbacks = createBlueBubblesCallbacks(client as any, chat, replyTarget as any, false)
+
+    callbacks.onToolStart("speak", { message: "hi" })
+    callbacks.onToolEnd("speak", "message=hi", true)
+    await new Promise((r) => setTimeout(r, 50))
+    expect(sendText).not.toHaveBeenCalled()
+  })
+
+  it("flushNow PROPAGATES rejection when client.sendText rejects (hard delivery failure)", async () => {
+    const indexModule = await import("../../../senses/bluebubbles")
+    const { createBlueBubblesCallbacks } = indexModule
+    const sendText = vi.fn(async () => { throw new Error("bb network down") })
+    const setTyping = vi.fn(async () => {})
+    const markChatRead = vi.fn(async () => {})
+    const editMessage = vi.fn(async () => {})
+    const checkHealth = vi.fn(async () => {})
+    const repairEvent = vi.fn(async (e: any) => e)
+    const getMessageText = vi.fn(async () => null)
+    const client = { sendText, editMessage, setTyping, markChatRead, checkHealth, repairEvent, getMessageText }
+    const chat = { chatGuid: "chat-1", participants: [] } as any
+    const replyTarget = { getReplyToMessageGuid: vi.fn(() => "reply-guid"), setSelection: vi.fn(() => "ok") }
+    const callbacks = createBlueBubblesCallbacks(client as any, chat, replyTarget as any, false)
+    callbacks.onTextChunk("hello will fail")
+    await expect((callbacks as any).flushNow()).rejects.toThrow(/bb network down/)
+  })
+})

@@ -135,6 +135,8 @@ describe("provider module boundary contract", () => {
 
 describe("toResponsesInput", () => {
   let toResponsesInput: (messages: any[]) => { instructions: string; input: any[] }
+  let truncateResponsesFunctionCallOutput: (output: string, maxChars?: number) => string
+  let RESPONSES_FUNCTION_CALL_OUTPUT_CAP: number
 
   beforeEach(async () => {
     vi.resetModules()
@@ -143,6 +145,8 @@ describe("toResponsesInput", () => {
     config.patchRuntimeConfig({ providers: { azure: { apiKey: "" }, minimax: { apiKey: "test-key" } } })
     const core = await import("../../heart/streaming")
     toResponsesInput = core.toResponsesInput
+    truncateResponsesFunctionCallOutput = core.truncateResponsesFunctionCallOutput
+    RESPONSES_FUNCTION_CALL_OUTPUT_CAP = core.RESPONSES_FUNCTION_CALL_OUTPUT_CAP
   })
 
   it("extracts system message content into instructions", () => {
@@ -209,6 +213,26 @@ describe("toResponsesInput", () => {
     expect(result.input).toEqual([
       { type: "function_call_output", call_id: "tc1", output: "file contents" },
     ])
+  })
+
+  it("truncates oversized function_call_output items before rebuilding Responses input", () => {
+    const oversized = "A".repeat(RESPONSES_FUNCTION_CALL_OUTPUT_CAP + 5000)
+    const result = toResponsesInput([{ role: "tool", tool_call_id: "tc1", content: oversized }])
+    expect(result.input).toHaveLength(1)
+    const output = result.input[0]?.output
+    expect(typeof output).toBe("string")
+    expect(output.length).toBeLessThanOrEqual(RESPONSES_FUNCTION_CALL_OUTPUT_CAP)
+    expect(output).toContain("[truncated — function_call_output exceeded")
+    expect(output.startsWith("AAAA")).toBe(true)
+    expect(output.endsWith("AAAA")).toBe(true)
+  })
+
+  it("preserves both the leading and trailing edge when truncating oversized function_call_output", () => {
+    const output = truncateResponsesFunctionCallOutput(`${"A".repeat(5000)}${"B".repeat(5000)}`, 4000)
+    expect(output.length).toBeLessThanOrEqual(4000)
+    expect(output.startsWith("AAAA")).toBe(true)
+    expect(output).toContain("[truncated — function_call_output exceeded 4000 chars; original length 10000 chars]")
+    expect(output.endsWith("BBBB")).toBe(true)
   })
 
   it("returns empty instructions when no system message", () => {

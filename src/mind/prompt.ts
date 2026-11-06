@@ -5,8 +5,9 @@ import { getProviderDisplayLabel } from "../heart/core";
 import { buildChangelogCommand } from "../heart/versioning/ouro-version-manager";
 import { getToolsForChannel, observeTool, ponderTool, restTool, settleTool, surfaceToolDef } from "../repertoire/tools";
 import { listSkills } from "../repertoire/skills";
-import { getAgentRoot, getAgentName, getRepoRoot, loadAgentConfig, type SenseName } from "../heart/identity";
+import { getAgentRoot, getAgentName, getRepoRoot, loadAgentConfig, type AgentSensesConfig, type SenseName } from "../heart/identity";
 import { loadConfig } from "../heart/config";
+import { readMachineRuntimeCredentialConfig, readRuntimeCredentialConfig } from "../heart/runtime-credentials";
 import { detectRuntimeMode } from "../heart/daemon/runtime-mode";
 import { isTrustedLevel, type Channel, type ChannelCapabilities, type ResolvedContext } from "./friends/types";
 import { describeTrustContext } from "./friends/trust-explanation";
@@ -44,7 +45,6 @@ let _psycheCache: {
   tacitKnowledge: string;
   aspirations: string;
 } | null = null;
-let _senseStatusLinesCache: string[] | null = null;
 
 function loadPsycheFile(name: string): string {
   try {
@@ -75,7 +75,6 @@ function loadPsyche(): {
 
 export function resetPsycheCache(): void {
   _psycheCache = null;
-  _senseStatusLinesCache = null;
 }
 
 export type { Channel }
@@ -331,6 +330,7 @@ const PROCESS_TYPE_LABELS: Record<Channel, string> = {
   inner: "inner session",
   teams: "teams handler",
   bluebubbles: "bluebubbles handler",
+  mail: "mail handler",
   mcp: "mcp bridge",
 }
 
@@ -417,23 +417,34 @@ function hasTextField(record: Record<string, unknown> | undefined, key: string):
   return typeof record?.[key] === "string" && record[key].trim().length > 0
 }
 
+function recordOrUndefined(value: unknown): Record<string, unknown> | undefined {
+  return !!value && typeof value === "object" && !Array.isArray(value) ? (value as Record<string, unknown>) : undefined
+}
+
 function localSenseStatusLines(): string[] {
-  if (_senseStatusLinesCache) {
-    return [..._senseStatusLinesCache]
-  }
   const config = loadAgentConfig()
-  const senses = config.senses ?? {
-    cli: { enabled: true },
-    teams: { enabled: false },
-    bluebubbles: { enabled: false },
+  const configuredSenses = config.senses ?? {} as Partial<AgentSensesConfig>
+  const senses: AgentSensesConfig = {
+    ...configuredSenses,
+    cli: configuredSenses.cli ?? { enabled: true },
+    teams: configuredSenses.teams ?? { enabled: false },
+    bluebubbles: configuredSenses.bluebubbles ?? { enabled: false },
+    mail: configuredSenses.mail ?? { enabled: false },
   }
   const payload = loadConfig() as unknown as Record<string, unknown>
-  const teams = payload.teams as Record<string, unknown> | undefined
-  const bluebubbles = payload.bluebubbles as Record<string, unknown> | undefined
+  const runtimeConfig = readRuntimeCredentialConfig(getAgentName())
+  const machineRuntimeConfig = readMachineRuntimeCredentialConfig(getAgentName())
+  const runtimePayload = runtimeConfig.ok ? runtimeConfig.config : {}
+  const machinePayload = machineRuntimeConfig.ok ? machineRuntimeConfig.config : {}
+  const teams = recordOrUndefined(runtimePayload.teams) ?? recordOrUndefined(payload.teams)
+  const bluebubbles = recordOrUndefined(machinePayload.bluebubbles) ?? recordOrUndefined(payload.bluebubbles)
+  const mailroom = recordOrUndefined(runtimePayload.mailroom) ?? recordOrUndefined(payload.mailroom)
+  const privateKeys = mailroom?.privateKeys
   const configured: Record<SenseName, boolean> = {
     cli: true,
     teams: hasTextField(teams, "clientId") && hasTextField(teams, "clientSecret") && hasTextField(teams, "tenantId"),
     bluebubbles: hasTextField(bluebubbles, "serverUrl") && hasTextField(bluebubbles, "password"),
+    mail: hasTextField(mailroom, "mailboxAddress") && !!privateKeys && typeof privateKeys === "object" && !Array.isArray(privateKeys),
   }
 
   const rows: Array<{ label: string; status: string }> = [
@@ -446,10 +457,13 @@ function localSenseStatusLines(): string[] {
       label: "BlueBubbles",
       status: !senses.bluebubbles.enabled ? "disabled" : configured.bluebubbles ? "ready" : "not_attached",
     },
+    {
+      label: "Mail",
+      status: !senses.mail.enabled ? "disabled" : configured.mail ? "ready" : "needs_config",
+    },
   ]
 
-  _senseStatusLinesCache = rows.map((row) => `- ${row.label}: ${row.status}`)
-  return [..._senseStatusLinesCache]
+  return rows.map((row) => `- ${row.label}: ${row.status}`)
 }
 
 function senseRuntimeGuidance(channel: Channel, preReadStatusLines?: string[]): string[] {
@@ -466,6 +480,24 @@ function senseRuntimeGuidance(channel: Channel, preReadStatusLines?: string[]): 
   lines.push("If asked how to enable another sense, I explain the relevant agent.json senses entry and required agent-vault runtime/config fields instead of guessing.")
   lines.push("teams setup truth: run `ouro connect teams --agent <agent>` from the connect bay; it stores Teams runtime/config fields and enables `senses.teams.enabled`.")
   lines.push("bluebubbles setup truth: run `ouro connect bluebubbles --agent <agent>` from the connect bay; it stores this machine's BlueBubbles URL/password/listener config in the agent vault machine runtime item.")
+  lines.push("mail setup AX: if a human asks me to set up email, I do not hand them a terminal checklist. I guide the flow end-to-end: name the current phase, run agent-runnable commands myself with shell/tools when available, ask the human only for human-required facts or browser actions, wait for their reply, verify the result, then continue.")
+  lines.push("mail setup hard rule: never tell the human to run `ouro account ensure`, `ouro connect mail`, `ouro mail import-mbox`, `ouro status`, or `ouro doctor` for setup. Say what I am about to run, run it myself, and report the result. If my current surface cannot run shell/tools, I ask for a tool-capable Ouro setup session or companion to continue; I do not offload CLI operation to the human.")
+  lines.push("mail setup truth: Agent Mail uses Mailroom, not HEY OAuth/IMAP. For the full work substrate account, the agent-runnable command is `ouro account ensure --agent <agent> --owner-email <email> --source hey`; use `ouro connect mail --agent <agent> --owner-email <email> --source hey` for mail-only repair/provisioning, or `--no-delegated-source` for native-only mail. The detailed runbook is `docs/agent-mail-setup.md`.")
+  lines.push("mail setup truth: HEY archive bootstrap still depends on HEY's browser-only export, but I should not offload path-discovery ceremony to the human. If browser MCP/Playwright downloaded the archive, I first try `ouro mail import-mbox --discover --owner-email <email> --source hey --agent <agent>` so Ouro can find the sandboxed copy in a repo/worktree `.playwright-mcp`, the home `.playwright-mcp`, or Downloads. If discovery cannot find a unique file, then I ask the human for the local MBOX path and run `ouro mail import-mbox --file <path> --owner-email <email> --source hey --agent <agent>` myself.")
+  lines.push("mail setup truth: an empty Mailroom result is not proof the human's HEY inbox is empty. If `mail_recent`/`mail_search` reports no visible mail or no delegated mail, I treat onboarding/import/forwarding as unverified and guide the setup/import flow before reasoning from the absence of messages.")
+  lines.push("mail validation answer shape: when a human asks for Agent Mail golden paths, answer with only these four named paths before claiming setup works:")
+  lines.push("- golden path 1, HEY archive to work object: import the human-provided HEY MBOX and use delegated mail to update a real work object, such as travel plans.")
+  lines.push("- golden path 2, native mail and Screener: send and receive agent-native mail, confirm unknown senders enter Screener, get family authorization for allow/discard, verify sender policy, and confirm discarded mail is recoverable.")
+  lines.push(
+    channel === "mcp"
+      ? "- golden path 3, cross-sense reaction: use a mail-derived update or decision to trigger another configured sense when available."
+      : "- golden path 3, cross-sense reaction: use a mail-derived update or decision to trigger another configured sense, such as texting the family member on iMessage when BlueBubbles is available."
+  )
+  lines.push("- golden path 4, Ouro Mailbox audit: inspect the read-only mailbox UI for imported mail, native inbound, Screener decisions, outbound draft/send records, and mail access logs.")
+  lines.push("mail validation question discipline: if a human asks a hypothetical such as 'if mail tools return No visible mail yet, what should you infer and what golden paths should you validate?', answer that hypothetical first. Do not replace the answer with current access logs, current mailbox status, or a claim that setup is already working unless the human separately asks for current state.")
+  lines.push("mail validation diagnostics: health checks, bounded mail tools, access logs, and UI inspection can support validation, but they are evidence inside those paths, not additional paths. If asked to name golden paths, do not include diagnostic commands, tool names, or status checks in the answer.")
+  lines.push("mail diagnostic naming: `ouro doctor` is installation-wide; do not invent `ouro doctor --agent <agent>`.")
+  lines.push("mail setup boundaries: do not invent `ouro auth verify --provider mail`, HEY OAuth, HEY IMAP, `ouro mcp call mail ...`, policy flags, autonomous sending, destructive mail actions, or production MX/DNS/forwarding changes. HEY export, HEY forwarding, DNS, MX cutover, sending, and destructive actions require explicit human confirmation.")
   if (channel === "cli") {
     lines.push("cli is interactive: it is available when the user opens it, not something `ouro up` daemonizes.")
   }
@@ -752,7 +784,10 @@ function liveWorldStateSection(options?: BuildSystemOptions): string {
 function pendingMessagesSection(options?: BuildSystemOptions): string {
   const pending = options?.pendingMessages
   if (!pending || pending.length === 0) return ""
-  const lines = ["## pending messages"]
+  const lines = [
+    "## pending messages",
+    "these are fresh work items that arrived for me this turn. if one needs action, i take the next concrete step before i rest or call the queue clear.",
+  ]
   for (const msg of pending) {
     lines.push(`- from ${msg.from}: ${msg.content}`)
   }
@@ -1060,6 +1095,20 @@ export function ponderPacketSopsSection(): string {
 - reflection: ordinary private thinking with no engineering workflow implied.`
 }
 
+export function speakSopsSection(channel: string): string {
+  const isChatStyle = channel === "cli" || channel === "teams" || channel === "bluebubbles"
+  if (!isChatStyle) return ""
+  return [
+    "## speaking mid-turn",
+    "",
+    "i have a `speak` tool that sends words to my friend without ending my turn. i use it to keep my friend in the loop while i'm doing real work.",
+    "",
+    "- if my next step depends on a reply, i settle. otherwise, i speak.",
+    "- i speak at phase boundaries during heavy work — after acking a heavy ask, after hitting a major constraint, before switching strategy, before a long externally-visible step. i don't narrate individual tool calls.",
+    "- speak is progress, not invitation. my friend won't steer me mid-turn after i speak — if i need steering, i settle.",
+  ].join("\n")
+}
+
 export function contextSection(context?: ResolvedContext, options?: BuildSystemOptions): string {
   if (!context) return ""
 
@@ -1146,8 +1195,10 @@ when i'm done thinking and the attention queue is clear, i rest.
 my habits live at habits/ — they're my autonomous rhythms. heartbeat
 is my breathing, other habits are patterns i choose. i can read, create,
 and modify them with read_file/write_file. the format is simple
-frontmatter (title, cadence, status, lastRun, created) plus a body
+frontmatter (title, cadence, status, created) plus a body
 that says what i do when the rhythm fires.
+runtime timestamps like lastRun live under state/habits/ so my tracked
+habit files stay declarative.
 
 \`ouro habit list\` shows my current habits. \`ouro habit create\` makes
 a new one. the cadence is personal — how often do i want each rhythm
@@ -1397,6 +1448,7 @@ export async function buildSystem(channel: Channel = "cli", options?: BuildSyste
     "# how i work",
     workspaceDisciplineSection(),
     ponderPacketSopsSection(),
+    speakSopsSection(channel),
     preImplementationScrutinySection(channelHasCodingTools(channel, options?.providerCapabilities)),
     toolRestrictionSection(context),
     loopOrientationSection(channel),

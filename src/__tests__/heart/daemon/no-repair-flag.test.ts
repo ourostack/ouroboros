@@ -43,10 +43,29 @@ const PACKAGE_VERSION = JSON.parse(
 function makeDeps(overrides?: Partial<OuroCliDeps>): OuroCliDeps {
   return {
     socketPath: "/tmp/ouro-test.sock",
-    sendCommand: vi.fn(async () => ({ ok: true, data: {} })),
+    sendCommand: vi.fn(async (_socketPath, command) => {
+      if (command.kind === "daemon.status") {
+        return {
+          ok: true,
+          data: {
+            overview: {
+              daemon: "running",
+              health: "ok",
+              socketPath: "/tmp/ouro-test.sock",
+              version: PACKAGE_VERSION.version,
+              workerCount: 0,
+              senseCount: 0,
+            },
+            senses: [],
+            workers: [],
+          },
+        }
+      }
+      return { ok: true, data: {} }
+    }),
     startDaemonProcess: vi.fn(async () => ({ pid: 123 })),
     writeStdout: vi.fn(),
-    checkSocketAlive: vi.fn().mockResolvedValueOnce(false).mockResolvedValue(true),
+    checkSocketAlive: vi.fn().mockResolvedValueOnce(false).mockResolvedValueOnce(false).mockResolvedValue(true),
     cleanupStaleSocket: vi.fn(),
     listDiscoveredAgents: vi.fn(async () => []),
     fallbackPendingMessage: vi.fn(() => "/tmp/pending.jsonl"),
@@ -79,20 +98,23 @@ describe("--no-repair flag: daemon.up handler", () => {
   it("ouro up --no-repair with all agents healthy exits cleanly, no repair prompts", async () => {
     emitNervesEvent({ component: "daemon", event: "daemon.no_repair_healthy_test", message: "test" })
     const promptInput = vi.fn(async () => "y")
+    const setExitCode = vi.fn()
     mocks.pollDaemonStartup.mockResolvedValueOnce({ stable: ["agent1"], degraded: [] })
 
-    const deps = makeDeps({ promptInput })
+    const deps = makeDeps({ promptInput, setExitCode })
 
     await runOuroCli(["up", "--no-repair"], deps)
 
     // No repair prompts issued
     expect(promptInput).not.toHaveBeenCalled()
+    expect(setExitCode).not.toHaveBeenCalled()
   })
 
   it("ouro up --no-repair with degraded agents skips repair and writes degraded summary", async () => {
     emitNervesEvent({ component: "daemon", event: "daemon.no_repair_degraded_test", message: "test" })
     const promptInput = vi.fn(async () => "y")
     const writeStdout = vi.fn()
+    const setExitCode = vi.fn()
     mocks.pollDaemonStartup.mockResolvedValueOnce({
       stable: [],
       degraded: [
@@ -101,7 +123,7 @@ describe("--no-repair flag: daemon.up handler", () => {
       ],
     })
 
-    const deps = makeDeps({ promptInput, writeStdout })
+    const deps = makeDeps({ promptInput, writeStdout, setExitCode })
 
     await runOuroCli(["up", "--no-repair"], deps)
 
@@ -115,12 +137,14 @@ describe("--no-repair flag: daemon.up handler", () => {
     expect(allOutput).toContain("Provider checks need attention")
     expect(allOutput).toContain("Provider checks need attention\n\nslugger: missing credentials")
     expect(allOutput).toContain("\n\nhelper: stopped")
+    expect(setExitCode).toHaveBeenCalledWith(1)
   })
 
   it("ouro up --no-repair reports degraded agents when the daemon is already running", async () => {
     emitNervesEvent({ component: "daemon", event: "daemon.no_repair_existing_degraded_test", message: "test" })
     const promptInput = vi.fn(async () => "y")
     const writeStdout = vi.fn()
+    const setExitCode = vi.fn()
     mocks.pollDaemonStartup.mockResolvedValueOnce({
       stable: ["slugger"],
       degraded: [
@@ -131,6 +155,7 @@ describe("--no-repair flag: daemon.up handler", () => {
     const deps = makeDeps({
       promptInput,
       writeStdout,
+      setExitCode,
       checkSocketAlive: vi.fn(async () => true),
       sendCommand: vi.fn(async () => ({
         ok: true,
@@ -166,6 +191,7 @@ describe("--no-repair flag: daemon.up handler", () => {
     expect(allOutput).toContain("\u2713 starting daemon \u2014 already running")
     expect(allOutput).toContain("ouroboros: missing github-copilot provider")
     expect(allOutput).toContain("next: run ouro auth ouroboros")
+    expect(setExitCode).toHaveBeenCalledWith(1)
   })
 
   it("ouro up (no flag) with degraded agents enters interactive repair", async () => {

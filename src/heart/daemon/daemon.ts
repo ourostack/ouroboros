@@ -31,6 +31,7 @@ import { OUTLOOK_DEFAULT_PORT } from "../outlook/outlook-types"
 import { readOutlookAgentState, readOutlookMachineState } from "../outlook/outlook-read"
 import { buildOutlookAgentView, buildOutlookMachineView } from "../outlook/outlook-view"
 import { buildAgentProviderVisibility, providerVisibilityStatusRows, type ProviderStatusRow } from "../provider-visibility"
+import { DEFAULT_DAEMON_SOCKET_PATH } from "./socket-client"
 
 const PIDFILE_PATH = path.join(os.homedir(), ".ouro-cli", "daemon.pids")
 
@@ -169,7 +170,21 @@ function runPsCheck(pids: number[]): string | null {
  * manual cleanup). The scope is narrow on purpose — see parseOrphanPidsFromPs.
  */
 /* v8 ignore start -- process lifecycle: uses kill/ps, tested via deployment @preserve */
-export function killOrphanProcesses(): void {
+function isProductionDaemonSocketPath(socketPath: string): boolean {
+  return socketPath === DEFAULT_DAEMON_SOCKET_PATH
+}
+
+export function killOrphanProcesses(socketPath = DEFAULT_DAEMON_SOCKET_PATH): void {
+  if (!isProductionDaemonSocketPath(socketPath)) {
+    emitNervesEvent({
+      level: "warn",
+      component: "daemon",
+      event: "daemon.orphan_cleanup_nonproduction_blocked",
+      message: "blocked orphan cleanup for non-production daemon socket",
+      meta: { socketPath, pidfilePath: PIDFILE_PATH },
+    })
+    return
+  }
   if (isVitestProcess()) {
     emitNervesEvent({
       level: "warn",
@@ -234,7 +249,17 @@ export function killOrphanProcesses(): void {
  * Write all managed PIDs (daemon + children) to the pidfile.
  * Called after all agents and senses are spawned.
  */
-export function writePidfile(extraPids: number[] = []): void {
+export function writePidfile(extraPids: number[] = [], socketPath = DEFAULT_DAEMON_SOCKET_PATH): void {
+  if (!isProductionDaemonSocketPath(socketPath)) {
+    emitNervesEvent({
+      level: "warn",
+      component: "daemon",
+      event: "daemon.write_pidfile_nonproduction_blocked",
+      message: "blocked production pidfile write for non-production daemon socket",
+      meta: { socketPath, pidfilePath: PIDFILE_PATH, attemptedPids: extraPids.length },
+    })
+    return
+  }
   if (isVitestProcess()) {
     emitNervesEvent({
       level: "warn",
@@ -272,6 +297,7 @@ export interface DaemonMessageReceipt {
 
 export interface DaemonProcessManagerLike {
   startAutoStartAgents(): Promise<void>
+  triggerAutoStartAgents?(): void
   stopAll(): Promise<void>
   startAgent(agent: string): Promise<void>
   stopAgent?(agent: string): Promise<void>
@@ -540,6 +566,7 @@ export class OuroDaemon {
   private server: net.Server | null = null
   private outlookServer: OutlookHttpServerHandle | null = null
   private socketIdentity: SocketIdentity | null = null
+  private senseAutostartTimer: ReturnType<typeof setTimeout> | null = null
   private readonly outlookServerFactory: () => Promise<OutlookHttpServerHandle>
 
   constructor(options: OuroDaemonOptions) {
@@ -736,16 +763,17 @@ export class OuroDaemon {
     // (daemon manages multiple agents; agent identity must be set before loading MCP config)
 
     /* v8 ignore start -- orphan cleanup + pidfile: calls process management functions @preserve */
-    killOrphanProcesses()
+    killOrphanProcesses(this.socketPath)
     /* v8 ignore stop */
-    await this.processManager.startAutoStartAgents()
-    await this.senseManager?.startAutoStartSenses()
+    await this.openCommandSocket()
+    this.triggerAutoStartAgents()
+    this.triggerAutoStartSensesWhenAgentsSettled()
 
     // Write all managed PIDs to disk so the next daemon can clean up
     /* v8 ignore start -- pidfile write: collects PIDs from process managers @preserve */
     const agentPids = this.processManager.listAgentSnapshots().map((s) => s.pid).filter((p): p is number => p !== null)
     const sensePids = this.senseManager?.listManagedPids?.() ?? []
-    writePidfile([...agentPids, ...sensePids])
+    writePidfile([...agentPids, ...sensePids], this.socketPath)
     /* v8 ignore stop */
 
     this.scheduler.start?.()
@@ -766,7 +794,57 @@ export class OuroDaemon {
         meta: { port: OUTLOOK_DEFAULT_PORT },
       })
     }
+  }
 
+  private triggerAutoStartAgents(): void {
+    if (this.processManager.triggerAutoStartAgents) {
+      this.processManager.triggerAutoStartAgents()
+      return
+    }
+    void this.processManager.startAutoStartAgents().catch((error) => {
+      emitNervesEvent({
+        level: "error",
+        component: "daemon",
+        event: "daemon.agent_autostart_error",
+        message: "agent autostart failed after daemon socket opened",
+        meta: { error: error instanceof Error ? error.message : String(error) },
+      })
+    })
+  }
+
+  private triggerAutoStartSenses(): void {
+    /* v8 ignore next -- defensive: callers already check senseManager before delegating here @preserve */
+    if (!this.senseManager) return
+    if (this.senseManager.triggerAutoStartSenses) {
+      this.senseManager.triggerAutoStartSenses()
+      return
+    }
+    void this.senseManager.startAutoStartSenses().catch((error) => {
+      emitNervesEvent({
+        level: "error",
+        component: "daemon",
+        event: "daemon.sense_autostart_error",
+        message: "sense autostart failed after daemon socket opened",
+        meta: { error: error instanceof Error ? error.message : String(error) },
+      })
+    })
+  }
+
+  private triggerAutoStartSensesWhenAgentsSettled(): void {
+    if (!this.senseManager) return
+    const waitingOnAgents = this.processManager.listAgentSnapshots()
+      .some((snapshot) => snapshot.status === "starting")
+    if (!waitingOnAgents) {
+      this.triggerAutoStartSenses()
+      return
+    }
+    this.senseAutostartTimer = setTimeout(() => {
+      this.senseAutostartTimer = null
+      this.triggerAutoStartSensesWhenAgentsSettled()
+    }, 250)
+  }
+
+  private async openCommandSocket(): Promise<void> {
     if (fs.existsSync(this.socketPath)) {
       fs.unlinkSync(this.socketPath)
     }
@@ -1007,6 +1085,10 @@ export class OuroDaemon {
     stopUpdateChecker()
     shutdownSharedMcpManager()
     this.scheduler.stop?.()
+    if (this.senseAutostartTimer) {
+      clearTimeout(this.senseAutostartTimer)
+      this.senseAutostartTimer = null
+    }
     await this.processManager.stopAll()
     await this.senseManager?.stopAll()
 

@@ -30,6 +30,29 @@ import { emitNervesEvent } from "../nerves/runtime"
 
 const RESPONSE_CAP = 50_000
 
+/**
+ * Strip MiniMax-style `<think>...</think>` reasoning blocks from a response
+ * string. Handles unclosed open tags (treats everything from `<think>` to
+ * end of string as reasoning) and multiple blocks in sequence. Returns the
+ * trimmed remainder.
+ */
+export function stripThinkBlocks(input: string): string {
+  let out = input
+  // Closed blocks first (greedy match removed by repeatedly slicing the leftmost pair).
+  for (;;) {
+    const open = out.indexOf("<think>")
+    if (open === -1) break
+    const close = out.indexOf("</think>", open + "<think>".length)
+    if (close === -1) {
+      // Unclosed — drop everything from <think> onward.
+      out = out.slice(0, open)
+      break
+    }
+    out = out.slice(0, open) + out.slice(close + "</think>".length)
+  }
+  return out.trim()
+}
+
 export interface RunSenseTurnOptions {
   /** Agent name (bundle name). */
   agentName: string
@@ -185,6 +208,26 @@ export async function runSenseTurn(options: RunSenseTurnOptions): Promise<RunSen
     }
   } else {
     finalResponse = responseText
+  }
+
+  // Strip MiniMax-style <think>...</think> blocks from the final response.
+  // When a reasoning-style model emits only a think block and no final answer
+  // (no settle tool call, no post-think text), the readback path above
+  // surfaces the raw saved assistant content — which includes the think tags
+  // and renders as empty (or as raw reasoning) on MCP/CLI clients. Strip
+  // here so the caller sees the actual delivered text. If only reasoning
+  // came through and nothing else, surface a clear diagnostic message
+  // instead of a blank response so the operator knows what happened.
+  finalResponse = stripThinkBlocks(finalResponse)
+  if (finalResponse.length === 0) {
+    emitNervesEvent({
+      level: "warn",
+      component: "senses",
+      event: "senses.shared_turn_only_reasoning",
+      message: "agent produced only <think> reasoning with no final answer — likely a model that closed the think tag without continuing",
+      meta: { agentName, channel, sessionKey, friendId },
+    })
+    finalResponse = "(agent produced reasoning but no final answer this turn — try again, or check the session transcript for the trace)"
   }
 
   // Cap response length

@@ -398,6 +398,57 @@ describe("HealthMonitor", () => {
       expect(teamsResult?.status).toBe("critical")
     })
 
+    it("includes probes discovered at check time", async () => {
+      const monitor = new HealthMonitor({
+        ...createBaseOptions(),
+        senseProbeProvider: () => [
+          {
+            name: "bluebubbles:slugger",
+            check: async () => ({ ok: true }),
+          },
+        ],
+      })
+
+      const results = await monitor.runChecks()
+      expect(results.find((r) => r.name === "sense-probe:bluebubbles:slugger")).toEqual({
+        name: "sense-probe:bluebubbles:slugger",
+        status: "ok",
+        message: "bluebubbles:slugger healthy",
+      })
+    })
+
+    it("keeps the daemon healthy when dynamic sense probe discovery fails", async () => {
+      const monitor = new HealthMonitor({
+        ...createBaseOptions(),
+        senseProbeProvider: () => {
+          throw new Error("vault temporarily locked")
+        },
+      })
+
+      const results = await monitor.runChecks()
+      expect(results.find((r) => r.name === "sense-probes")).toEqual({
+        name: "sense-probes",
+        status: "warn",
+        message: "sense probe discovery failed: vault temporarily locked",
+      })
+    })
+
+    it("stringifies non-Error dynamic sense probe discovery failures", async () => {
+      const monitor = new HealthMonitor({
+        ...createBaseOptions(),
+        senseProbeProvider: () => {
+          throw "vault unavailable"
+        },
+      })
+
+      const results = await monitor.runChecks()
+      expect(results.find((r) => r.name === "sense-probes")).toEqual({
+        name: "sense-probes",
+        status: "warn",
+        message: "sense probe discovery failed: vault unavailable",
+      })
+    })
+
     it("treats a throwing probe as critical with error message as detail", async () => {
       const alertSink = vi.fn(async () => undefined)
       const monitor = new HealthMonitor({

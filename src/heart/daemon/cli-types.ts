@@ -18,10 +18,13 @@ import type { FriendStore } from "../../mind/friends/store"
 import type { CheckForUpdateResult } from "../versioning/update-checker"
 import type { DaemonHealthState } from "./daemon-health"
 import type { VaultUnlockStoreKind } from "../../repertoire/vault-unlock"
+import type { AgentReadinessIssue } from "./readiness-repair"
+import type { VaultItemCompatibilityAlias, VaultItemTemplate } from "./vault-items"
 
 export type RuntimeConfigScope = "agent" | "machine"
 export type RuntimeConfigStatusScope = RuntimeConfigScope | "all"
-export type ConnectTarget = "providers" | "perplexity" | "embeddings" | "teams" | "bluebubbles"
+export type ConnectTarget = "providers" | "perplexity" | "embeddings" | "teams" | "bluebubbles" | "mail"
+export type DnsWorkflowAction = "backup" | "plan" | "apply" | "verify" | "rollback" | "certificate"
 
 export type OuroCliCommand =
   | { kind: "daemon.up"; noRepair?: boolean }
@@ -42,7 +45,14 @@ export type OuroCliCommand =
   | { kind: "vault.status"; agent?: string; store?: VaultUnlockStoreKind }
   | { kind: "vault.config.set"; agent?: string; key: string; value?: string; scope?: RuntimeConfigScope }
   | { kind: "vault.config.status"; agent?: string; scope?: RuntimeConfigStatusScope }
-  | { kind: "connect"; agent?: string; target?: ConnectTarget }
+  | { kind: "vault.item.set"; agent?: string; item: string; template?: VaultItemTemplate; secretFields?: string[]; publicFields?: string[]; note?: string; compatibilityAlias?: VaultItemCompatibilityAlias }
+  | { kind: "vault.item.status"; agent?: string; item: string; compatibilityAlias?: VaultItemCompatibilityAlias }
+  | { kind: "vault.item.list"; agent?: string; prefix?: string; compatibilityAlias?: VaultItemCompatibilityAlias }
+  | { kind: "dns.workflow"; action: DnsWorkflowAction; agent?: string; bindingPath: string; outputPath?: string; backupPath?: string; yes?: boolean }
+  | { kind: "connect"; agent?: string; target?: ConnectTarget; ownerEmail?: string; source?: string; noDelegatedSource?: boolean; rotateMissingMailKeys?: boolean }
+  | { kind: "account.ensure"; agent?: string; ownerEmail?: string; source?: string; noDelegatedSource?: boolean; rotateMissingMailKeys?: boolean }
+  | { kind: "mail.import-mbox"; agent?: string; filePath?: string; discover?: boolean; ownerEmail?: string; source?: string; foreground?: boolean; operationId?: string }
+  | { kind: "mail.backfill-indexes"; agent?: string; foreground?: boolean; operationId?: string }
   | { kind: "auth.run"; agent?: string; provider?: AgentProvider }
   | { kind: "auth.verify"; agent?: string; provider?: AgentProvider }
   | { kind: "auth.switch"; agent?: string; provider: AgentProvider; facing?: Facing }
@@ -86,7 +96,7 @@ export type OuroCliCommand =
   | { kind: "habit.list"; agent?: string }
   | { kind: "habit.create"; agent?: string; name: string; cadence?: string }
   | { kind: "habit.poke"; agent: string; habitName: string }
-  | { kind: "doctor" }
+  | { kind: "doctor"; json?: boolean; category?: string; strict?: boolean }
   | { kind: "bluebubbles.replay"; agent?: string; messageGuid: string; eventType: "new-message" | "updated-message"; json?: boolean }
   | { kind: "clone"; remote: string; agent?: string }
   | { kind: "help"; command?: string }
@@ -96,10 +106,13 @@ export interface OuroCliDeps {
   sendCommand: (socketPath: string, command: DaemonCommand) => Promise<DaemonResponse>
   startDaemonProcess: (socketPath: string) => Promise<{ pid: number | null }>
   writeStdout: (text: string) => void
+  setExitCode?: (code: number) => void
   /** Raw terminal output. Does not append a newline. Use for in-place TTY renderers. */
   writeRaw?: (text: string) => void
   /** Whether stdout supports interactive cursor-control rendering. */
   isTTY?: boolean
+  /** Terminal width override for width-aware command renderers in tests or alternate hosts. */
+  stdoutColumns?: number
   checkSocketAlive: (socketPath: string) => Promise<boolean>
   cleanupStaleSocket: (socketPath: string) => void
   fallbackPendingMessage: (command: Extract<DaemonCommand, { kind: "message.send" }>) => string
@@ -121,10 +134,11 @@ export interface OuroCliDeps {
   taskModule?: TaskModule
   friendStore?: FriendStore
   whoamiInfo?: () => { agentName: string; homePath: string; bonesVersion: string }
-  scanSessions?: () => Promise<SessionEntry[]>
+  scanSessions?: (agentName: string) => Promise<SessionEntry[]>
   getChangelogPath?: () => string
   fetchImpl?: typeof fetch
   checkForCliUpdate?: () => Promise<CheckForUpdateResult>
+  updateCheckTimeoutMs?: number
   installCliVersion?: (version: string) => Promise<void>
   activateCliVersion?: (version: string) => void
   getCurrentCliVersion?: () => string | null
@@ -153,12 +167,19 @@ export interface OuroCliDeps {
   readHealthUpdatedAt?: (healthPath: string) => number | null
   readRecentDaemonLogLines?: (lines?: number) => string[]
   sleep?: (ms: number) => Promise<void>
+  spawnBackgroundCli?: (argv: string[]) => Promise<{ pid: number | null }>
   now?: () => number
   startupPollIntervalMs?: number
   startupStabilityWindowMs?: number
   startupTimeoutMs?: number
   startupRetryLimit?: number
   reportDaemonStartupPhase?: (text: string) => void
+  /**
+   * Layer 2 boot sync probe injection — when set, called instead of the
+   * real `runBootSyncProbe`. Tests inject a no-op stub so they don't trigger
+   * real `git pull` invocations against the developer's home bundles.
+   */
+  runBootSyncProbeImpl?: typeof import("./boot-sync-probe").runBootSyncProbe
 }
 
 export interface SessionEntry {
@@ -169,13 +190,15 @@ export interface SessionEntry {
 }
 
 export interface EnsureDaemonResult {
+  ok: boolean
   alreadyRunning: boolean
   message: string
   verifyStartupStatus?: boolean
   startedPid?: number | null
+  startupFailureReason?: string | null
   stability?: {
     stable: string[]
-    degraded: Array<{ agent: string; errorReason: string; fixHint: string }>
+    degraded: Array<{ agent: string; errorReason: string; fixHint: string; issue?: AgentReadinessIssue }>
   }
 }
 
@@ -216,7 +239,8 @@ export type AuthVerifyCliCommand = Extract<OuroCliCommand, { kind: "auth.verify"
 export type AuthSwitchCliCommand = Extract<OuroCliCommand, { kind: "auth.switch" }>
 export type ProviderCliCommand = Extract<OuroCliCommand, { kind: "provider.use" } | { kind: "provider.check" } | { kind: "provider.status" } | { kind: "provider.refresh" }>
 export type RepairCliCommand = Extract<OuroCliCommand, { kind: "repair" }>
-export type VaultCliCommand = Extract<OuroCliCommand, { kind: "vault.create" } | { kind: "vault.replace" } | { kind: "vault.recover" } | { kind: "vault.unlock" } | { kind: "vault.status" } | { kind: "vault.config.set" } | { kind: "vault.config.status" }>
+export type VaultCliCommand = Extract<OuroCliCommand, { kind: "vault.create" } | { kind: "vault.replace" } | { kind: "vault.recover" } | { kind: "vault.unlock" } | { kind: "vault.status" } | { kind: "vault.config.set" } | { kind: "vault.config.status" } | { kind: "vault.item.set" } | { kind: "vault.item.status" } | { kind: "vault.item.list" }>
+export type DnsCliCommand = Extract<OuroCliCommand, { kind: "dns.workflow" }>
 export type ChangelogCliCommand = Extract<OuroCliCommand, { kind: "changelog" }>
 export type ConfigModelCliCommand = Extract<OuroCliCommand, { kind: "config.model" }>
 export type ConfigModelsCliCommand = Extract<OuroCliCommand, { kind: "config.models" }>

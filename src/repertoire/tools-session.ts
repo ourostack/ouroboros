@@ -32,6 +32,7 @@ import { createReturnObligation, generateObligationId, createObligation, readPen
 import { buildProgressStory, renderProgressStory } from "../heart/progress-story";
 import { deliverCrossChatMessage, type CrossChatDeliveryResult } from "../heart/cross-chat-delivery";
 import type { ToolContext, ToolDefinition } from "./tools-base";
+import { listVisibleBackgroundOperations } from "../heart/mail-import-discovery";
 
 const NO_SESSION_FOUND_MESSAGE = "no session found for that friend/channel/key combination."
 const EMPTY_SESSION_MESSAGE = "session exists but has no non-system messages."
@@ -262,6 +263,14 @@ async function buildToolActiveWorkFrame(ctx?: ToolContext): Promise<ActiveWorkFr
       && obligation.origin.key === currentSession.key,
     )?.content ?? null
     : null
+  const backgroundOperations = listVisibleBackgroundOperations({
+    agentName: getAgentName(),
+    agentRoot,
+    repoRoot: process.cwd(),
+    homeDir: process.env.HOME,
+    nowMs: Date.now(),
+    limit: 5,
+  })
 
   return buildActiveWorkFrame({
     currentSession,
@@ -270,6 +279,7 @@ async function buildToolActiveWorkFrame(ctx?: ToolContext): Promise<ActiveWorkFr
     inner: readActiveWorkInnerState(),
     bridges,
     codingSessions,
+    backgroundOperations,
     otherCodingSessions,
     pendingObligations,
     taskBoard: (() => {
@@ -424,6 +434,7 @@ export const sessionToolDefinitions: ToolDefinition[] = [
         messageCount: count,
         trustLevel: ctx?.context?.friend?.trustLevel,
         summarize: ctx?.summarize,
+        archiveFallback: true,
       })
 
       if (sessionTail.kind === "missing") {

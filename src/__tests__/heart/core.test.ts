@@ -831,7 +831,10 @@ describe("runAgent", () => {
       onError: () => {},
     }
 
-    await runAgent([{ role: "system", content: "test" }], callbacks)
+    // toolChoiceRequired:false isolates this test from the no-tool-call retry
+    // — we're verifying think-tag stream routing here, not the retry path
+    // (which has dedicated tests in core-rest.test.ts).
+    await runAgent([{ role: "system", content: "test" }], callbacks, undefined, undefined, { toolChoiceRequired: false })
     expect(reasoningChunks.join("")).toBe("only thinking")
     expect(textChunks).toEqual([])
   })
@@ -977,7 +980,8 @@ describe("runAgent", () => {
       onError: () => {},
     }
 
-    await runAgent([{ role: "system", content: "test" }], callbacks)
+    // toolChoiceRequired:false isolates this test from the no-tool-call retry.
+    await runAgent([{ role: "system", content: "test" }], callbacks, undefined, undefined, { toolChoiceRequired: false })
     expect(reasoningChunks.join("")).toBe("unterminated reasoning")
     expect(textChunks).toEqual([])
   })
@@ -1027,7 +1031,8 @@ describe("runAgent", () => {
       onError: () => {},
     }
 
-    await runAgent([{ role: "system", content: "test" }], callbacks)
+    // toolChoiceRequired:false isolates this test from the no-tool-call retry.
+    await runAgent([{ role: "system", content: "test" }], callbacks, undefined, undefined, { toolChoiceRequired: false })
     // "reasoning" is emitted during chunked processing, "</" is flushed at end as reasoning
     expect(reasoningChunks.join("")).toBe("reasoning</")
     expect(textChunks).toEqual([])
@@ -1260,6 +1265,55 @@ describe("runAgent", () => {
     expect(toolResultMsg).toBeDefined()
     expect(toolResultMsg.tool_call_id).toBe("call_1")
     expect(toolResultMsg.content).toBe("contents")
+  })
+
+  it("strips inline <think> blocks from persisted assistant content (MiniMax replay-rejection fix)", async () => {
+    // Regression for the actual bug Slugger surfaced: MiniMax-M2.7 emits
+    // assistant messages with BOTH <think>...</think> content AND a settle
+    // tool_call. When that message is replayed in the next turn, MiniMax
+    // rejects with error 2013 \"tool result's tool id not found\" because
+    // it can't reconcile reasoning content with tool_calls in the same
+    // assistant message. Stripping <think> at persist time keeps replays
+    // valid while preserving the reasoning trace via _inline_reasoning.
+    let callCount = 0
+    mockCreate.mockImplementation(() => {
+      callCount++
+      if (callCount === 1) {
+        return makeStream([
+          // Mimic MiniMax: think content streams as d.content with inline <think> tags
+          makeChunk("<think>reasoning that should not persist</think>"),
+          makeChunk(undefined, [
+            { index: 0, id: "call_settle_1", function: { name: "settle", arguments: JSON.stringify({ answer: "the actual answer", intent: "complete" }) } },
+          ]),
+        ])
+      }
+      return makeStream([makeChunk("done")])
+    })
+
+    const callbacks: ChannelCallbacks = {
+      onModelStart: () => {},
+      onModelStreamStart: () => {},
+      onTextChunk: () => {},
+      onReasoningChunk: () => {},
+      onToolStart: () => {},
+      onToolEnd: () => {},
+      onError: () => {},
+      onClearText: () => {},
+    }
+
+    const messages: any[] = [{ role: "system", content: "test" }]
+    await runAgent(messages, callbacks, "mcp")
+
+    const assistantMsg = messages.find((m: any) => m.role === "assistant" && m.tool_calls)
+    expect(assistantMsg).toBeDefined()
+    // The persisted content must NOT contain <think> blocks.
+    expect(assistantMsg.content ?? "").not.toContain("<think>")
+    expect(assistantMsg.content ?? "").not.toContain("</think>")
+    // The original reasoning trace is preserved on _inline_reasoning for audit.
+    expect((assistantMsg as any)._inline_reasoning).toContain("<think>")
+    expect((assistantMsg as any)._inline_reasoning).toContain("reasoning that should not persist")
+    // The tool_call survives.
+    expect(assistantMsg.tool_calls[0].function.name).toBe("settle")
   })
 
   it("does NOT push user message (adapter responsibility)", async () => {
@@ -2855,7 +2909,10 @@ describe("runAgent", () => {
     await vi.advanceTimersByTimeAsync(100)
     await promise
 
-    expect(refreshProviderCredentialPool).toHaveBeenCalledWith("testagent", { preserveCachedOnFailure: true })
+    expect(refreshProviderCredentialPool).toHaveBeenCalledWith("testagent", {
+      preserveCachedOnFailure: true,
+      providers: ["minimax"],
+    })
     expect(callCount).toBe(3)
     expect(chunks).toContain("recovered after refresh miss")
     expect(errors[0].severity).toBe("transient")
@@ -3541,7 +3598,7 @@ describe("getClient", () => {
       // Expected -- process.exit throws
     }
 
-    expect(fatal.mockExit).toHaveBeenCalledWith(1)
+    expect(fatal.mockExit).not.toHaveBeenCalled()
     expect(fatal.mockError).toHaveBeenCalledWith(expect.stringContaining("[fatal]"))
     expect(fatal.mockError).toHaveBeenCalledWith(expect.stringContaining("has no credentials for testagent"))
     expect(fatal.mockError).toHaveBeenCalledWith(expect.stringContaining("ouro auth --agent testagent --provider minimax"))
@@ -3584,7 +3641,7 @@ describe("getClient", () => {
 
     try {
       const core = await import("../../heart/core")
-      await expect(core.runAgent([], noopCallbacks)).rejects.toThrow("process.exit called")
+      await expect(core.runAgent([], noopCallbacks)).rejects.toThrow()
       expect(fatal.mockError).toHaveBeenCalledWith(expect.stringContaining("[fatal]"))
       expect(fatal.mockError).toHaveBeenCalledWith(expect.stringContaining("azure endpoint/deployment is incomplete in the agent vault"))
       expect(emitNervesEvent).toHaveBeenCalledWith(expect.objectContaining({
@@ -3771,7 +3828,7 @@ describe("getClient config integration", () => {
     expect(messages[1].content).toBe("just text")
   })
 
-  it("exits when neither provider configured in config", async () => {
+  it("throws when neither provider configured in config", async () => {
     vi.resetModules()
     vi.mocked(fs.readFileSync).mockImplementation(defaultReadFileSync)
     // Empty config -- no providers at all (defaults have empty strings)
@@ -3795,10 +3852,10 @@ describe("getClient config integration", () => {
       }
       await core.runAgent([], callbacks).catch(() => {})
     } catch {
-      // Expected -- process.exit throws
+      // Expected -- provider init throws.
     }
 
-    expect(mockExit).toHaveBeenCalledWith(1)
+    expect(mockExit).not.toHaveBeenCalled()
     mockExit.mockRestore()
     mockError.mockRestore()
   })
@@ -3921,7 +3978,7 @@ describe("provider abstraction contract", () => {
       vi.spyOn(core as any, "createProviderRegistry").mockReturnValue({
         resolve: () => null,
       } as any)
-      await expect(core.runAgent([], noopCallbacks)).rejects.toThrow("process.exit called")
+      await expect(core.runAgent([], noopCallbacks)).rejects.toThrow()
       expect(emitNervesEvent).toHaveBeenCalledWith(expect.objectContaining({
         level: "error",
         event: "engine.provider_init_error",
@@ -3948,7 +4005,7 @@ describe("provider abstraction contract", () => {
 
     try {
       const core = await import("../../heart/core")
-      await expect(core.runAgent([], noopCallbacks)).rejects.toThrow("process.exit called")
+      await expect(core.runAgent([], noopCallbacks)).rejects.toThrow()
       expect(fatal.mockError).toHaveBeenCalledWith(expect.stringContaining("[fatal]"))
       expect(fatal.mockError).toHaveBeenCalledWith(expect.stringContaining("provider exploded"))
       expect(emitNervesEvent).toHaveBeenCalledWith(expect.objectContaining({
@@ -4035,7 +4092,7 @@ describe("anthropic setup-token provider contract", () => {
 
     try {
       const core = await import("../../heart/core")
-      await expect(core.runAgent([], noopCallbacks)).rejects.toThrow("process.exit called")
+      await expect(core.runAgent([], noopCallbacks)).rejects.toThrow()
       expect(fatal.mockError).toHaveBeenCalledWith(expect.stringContaining("[fatal]"))
       expect(fatal.mockError).toHaveBeenCalledWith(expect.stringContaining("expected prefix sk-ant-oat01-"))
       expect(emitNervesEvent).toHaveBeenCalledWith(expect.objectContaining({
@@ -4065,7 +4122,7 @@ describe("anthropic setup-token provider contract", () => {
 
     try {
       const core = await import("../../heart/core")
-      await expect(core.runAgent([], noopCallbacks)).rejects.toThrow("process.exit called")
+      await expect(core.runAgent([], noopCallbacks)).rejects.toThrow()
       expect(fatal.mockError).toHaveBeenCalledWith(expect.stringContaining("[fatal]"))
       expect(fatal.mockError).toHaveBeenCalledWith(expect.stringContaining("too short"))
       expect(emitNervesEvent).toHaveBeenCalledWith(expect.objectContaining({
@@ -4095,7 +4152,7 @@ describe("anthropic setup-token provider contract", () => {
 
     try {
       const core = await import("../../heart/core")
-      await expect(core.runAgent([], noopCallbacks)).rejects.toThrow("process.exit called")
+      await expect(core.runAgent([], noopCallbacks)).rejects.toThrow()
       expect(fatal.mockError).toHaveBeenCalledWith(expect.stringContaining("[fatal]"))
       expect(fatal.mockError).toHaveBeenCalledWith(expect.stringContaining("anthropic.setupToken is missing in the agent vault"))
       const msg = emitNervesEvent.mock.calls.find(
@@ -4127,8 +4184,8 @@ describe("anthropic setup-token provider contract", () => {
 
     try {
       const core = await import("../../heart/core")
-      await expect(core.runAgent([], noopCallbacks)).rejects.toThrow("process.exit called")
-      expect(fatal.mockExit).toHaveBeenCalledWith(1)
+      await expect(core.runAgent([], noopCallbacks)).rejects.toThrow()
+      expect(fatal.mockExit).not.toHaveBeenCalled()
       expect(fatal.mockError).toHaveBeenCalledWith(expect.stringContaining("[fatal]"))
       expect(fatal.mockError).toHaveBeenCalledWith(expect.stringContaining("anthropic.setupToken is missing in the agent vault"))
       const msg = emitNervesEvent.mock.calls.find(
@@ -4759,7 +4816,7 @@ describe("anthropic setup-token provider contract", () => {
 
     try {
       const core = await import("../../heart/core")
-      await expect(core.runAgent([], noopCallbacks)).rejects.toThrow("process.exit called")
+      await expect(core.runAgent([], noopCallbacks)).rejects.toThrow()
       expect(fatal.mockError).toHaveBeenCalledWith(expect.stringContaining("[fatal]"))
       expect(fatal.mockError).toHaveBeenCalledWith(expect.stringContaining("anthropic.setupToken is missing in the agent vault"))
       expect(emitNervesEvent).toHaveBeenCalledWith(expect.objectContaining({
@@ -4909,7 +4966,7 @@ describe("anthropic setup-token provider contract", () => {
 
     try {
       const core = await import("../../heart/core")
-      await expect(core.runAgent([], noopCallbacks)).rejects.toThrow("process.exit called")
+      await expect(core.runAgent([], noopCallbacks)).rejects.toThrow()
       expect(fatal.mockError).toHaveBeenCalledWith(expect.stringContaining("[fatal]"))
       expect(fatal.mockError).toHaveBeenCalledWith(expect.stringContaining("config-exploded"))
       expect(emitNervesEvent).toHaveBeenCalledWith(expect.objectContaining({
@@ -4983,7 +5040,7 @@ describe("openai-codex oauth provider contract", () => {
 
     try {
       const core = await import("../../heart/core")
-      await expect(core.runAgent([], noopCallbacks)).rejects.toThrow("process.exit called")
+      await expect(core.runAgent([], noopCallbacks)).rejects.toThrow()
       expect(fatal.mockError).toHaveBeenCalledWith(expect.stringContaining("[fatal]"))
       expect(fatal.mockError).toHaveBeenCalledWith(expect.stringContaining("openai-codex.oauthAccessToken is missing in the agent vault"))
       const msg = emitNervesEvent.mock.calls.find(
@@ -5169,7 +5226,7 @@ describe("openai-codex oauth provider contract", () => {
 
     try {
       const core = await import("../../heart/core")
-      await expect(core.runAgent([], noopCallbacks)).rejects.toThrow("process.exit called")
+      await expect(core.runAgent([], noopCallbacks)).rejects.toThrow()
       expect(fatal.mockError).toHaveBeenCalledWith(expect.stringContaining("[fatal]"))
       expect(fatal.mockError).toHaveBeenCalledWith(expect.stringContaining("openai-codex.oauthAccessToken is missing in the agent vault"))
       const msg = emitNervesEvent.mock.calls.find(
@@ -5199,7 +5256,7 @@ describe("openai-codex oauth provider contract", () => {
 
     try {
       const core = await import("../../heart/core")
-      await expect(core.runAgent([], noopCallbacks)).rejects.toThrow("process.exit called")
+      await expect(core.runAgent([], noopCallbacks)).rejects.toThrow()
       expect(fatal.mockError).toHaveBeenCalledWith(expect.stringContaining("[fatal]"))
       expect(fatal.mockError).toHaveBeenCalledWith(expect.stringContaining("chatgpt_account_id"))
       const msg = emitNervesEvent.mock.calls.find(
@@ -5231,7 +5288,7 @@ describe("openai-codex oauth provider contract", () => {
 
     try {
       const core = await import("../../heart/core")
-      await expect(core.runAgent([], noopCallbacks)).rejects.toThrow("process.exit called")
+      await expect(core.runAgent([], noopCallbacks)).rejects.toThrow()
       expect(fatal.mockError).toHaveBeenCalledWith(expect.stringContaining("[fatal]"))
       expect(fatal.mockError).toHaveBeenCalledWith(expect.stringContaining("chatgpt_account_id"))
       const msg = emitNervesEvent.mock.calls.find(
@@ -5261,7 +5318,7 @@ describe("openai-codex oauth provider contract", () => {
 
     try {
       const core = await import("../../heart/core")
-      await expect(core.runAgent([], noopCallbacks)).rejects.toThrow("process.exit called")
+      await expect(core.runAgent([], noopCallbacks)).rejects.toThrow()
       expect(fatal.mockError).toHaveBeenCalledWith(expect.stringContaining("[fatal]"))
       expect(fatal.mockError).toHaveBeenCalledWith(expect.stringContaining("chatgpt_account_id"))
       expect(emitNervesEvent).toHaveBeenCalledWith(expect.objectContaining({
@@ -5292,7 +5349,7 @@ describe("openai-codex oauth provider contract", () => {
 
     try {
       const core = await import("../../heart/core")
-      await expect(core.runAgent([], noopCallbacks)).rejects.toThrow("process.exit called")
+      await expect(core.runAgent([], noopCallbacks)).rejects.toThrow()
       expect(fatal.mockError).toHaveBeenCalledWith(expect.stringContaining("[fatal]"))
       expect(fatal.mockError).toHaveBeenCalledWith(expect.stringContaining("chatgpt_account_id"))
       expect(emitNervesEvent).toHaveBeenCalledWith(expect.objectContaining({
@@ -5323,7 +5380,7 @@ describe("openai-codex oauth provider contract", () => {
 
     try {
       const core = await import("../../heart/core")
-      await expect(core.runAgent([], noopCallbacks)).rejects.toThrow("process.exit called")
+      await expect(core.runAgent([], noopCallbacks)).rejects.toThrow()
       expect(fatal.mockError).toHaveBeenCalledWith(expect.stringContaining("[fatal]"))
       expect(fatal.mockError).toHaveBeenCalledWith(expect.stringContaining("chatgpt_account_id"))
       expect(emitNervesEvent).toHaveBeenCalledWith(expect.objectContaining({
@@ -8438,7 +8495,7 @@ describe("repairOrphanedToolCalls", () => {
     expect(messages.length).toBe(4)
     expect(messages[2].role).toBe("tool")
     expect(messages[2].tool_call_id).toBe("tc-1")
-    expect(messages[2].content).toContain("interrupted")
+    expect(messages[2].content).toContain("result was lost")
   })
 
   it("removes orphaned tool results that have no matching tool_calls", async () => {
@@ -8512,7 +8569,7 @@ describe("repairOrphanedToolCalls", () => {
     expect(messages.length).toBe(5)
     expect(messages[4].role).toBe("tool")
     expect(messages[4].tool_call_id).toBe("tc-2")
-    expect(messages[4].content).toContain("interrupted")
+    expect(messages[4].content).toContain("result was lost")
   })
 
   it("skips system messages between tool calls when scanning for results", async () => {
@@ -8581,7 +8638,39 @@ describe("repairOrphanedToolCalls", () => {
     expect(messages[2].tool_call_id).toBe("tc-a")
     expect(messages[2].content).toBe("ok")
     expect(messages[3].tool_call_id).toBe("tc-b")
-    expect(messages[3].content).toContain("interrupted")
+    expect(messages[3].content).toContain("result was lost")
+  })
+
+  it("removes a tool result that appears BEFORE its matching assistant tool_call (position-aware)", async () => {
+    // Same-shape regression as the fix in session-events.ts. MiniMax-M2.7
+    // reuses canonical tool_call_ids across turns; after pruning, a stale
+    // synthetic tool result can end up referencing an id that's redefined
+    // by a later assistant message. The previous global-Set check kept
+    // the misordered tool result; the position-aware walk drops it.
+    vi.resetModules()
+    const { repairOrphanedToolCalls } = await import("../../heart/core")
+    const messages: any[] = [
+      { role: "user", content: "early" },
+      // Misplaced tool result: appears before any assistant defines the id
+      { role: "tool", tool_call_id: "call_xyz_1", content: "stale or misplaced result" },
+      { role: "user", content: "middle" },
+      // Assistant defines call_xyz_1 here — AFTER the tool result above
+      { role: "assistant", content: null, tool_calls: [{ id: "call_xyz_1", type: "function", function: { name: "settle", arguments: "{}" } }] },
+      { role: "tool", tool_call_id: "call_xyz_1", content: "(delivered)" },
+    ]
+
+    repairOrphanedToolCalls(messages)
+
+    // The misplaced one is removed
+    const stale = messages.find((m: any) => m.content === "stale or misplaced result")
+    expect(stale).toBeUndefined()
+    // The correctly-ordered one survives
+    const valid = messages.find((m: any) => m.content === "(delivered)")
+    expect(valid).toBeDefined()
+    // Order invariant holds: assistant before its tool result
+    const assistantIdx = messages.findIndex((m: any) => m.role === "assistant" && m.tool_calls)
+    const toolIdx = messages.findIndex((m: any) => m.role === "tool" && m.content === "(delivered)")
+    expect(assistantIdx).toBeLessThan(toolIdx)
   })
 })
 

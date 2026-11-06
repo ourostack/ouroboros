@@ -42,6 +42,24 @@ function readEntries(filePath: string): BlueBubblesInboundLogEntry[] {
   }
 }
 
+export function listRecordedBlueBubblesInbound(agentName: string): BlueBubblesInboundLogEntry[] {
+  const inboundDir = path.join(
+    getAgentRoot(agentName),
+    "state",
+    "senses",
+    "bluebubbles",
+    "inbound",
+  )
+  try {
+    const files = fs.readdirSync(inboundDir)
+      .filter((name) => name.endsWith(".ndjson"))
+      .sort()
+    return files.flatMap((name) => readEntries(path.join(inboundDir, name)))
+  } catch {
+    return []
+  }
+}
+
 export function hasRecordedBlueBubblesInbound(
   agentName: string,
   sessionKey: string,
