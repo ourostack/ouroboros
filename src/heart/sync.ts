@@ -17,6 +17,8 @@ export interface SyncResult {
   pausedUntil?: string
   /** Another sync held the bundle lock, so this one did nothing. */
   busy?: boolean
+  /** When `busy`: the pid holding the lock, or null when unknown. */
+  holderPid?: number | null
 }
 
 /** `postTurnPush` returns after the commit; the push runs on, holding the lock. */
@@ -261,10 +263,12 @@ function runGitAsync(
     let timedOut = false
     let aborted = false
     let settled = false
+    const pid = child.pid as number
+    inFlightChildren.add(pid)
     child.stderr.on("data", (chunk: Buffer) => { stderr += chunk.toString() })
     const killGroup = (): void => {
       try {
-        process.kill(-(child.pid as number), "SIGKILL")
+        process.kill(-pid, "SIGKILL")
       } catch {
         // The group is already gone.
       }
@@ -282,6 +286,7 @@ function runGitAsync(
       /* v8 ignore next -- only a spawn error followed by close settles twice @preserve */
       if (settled) return
       settled = true
+      inFlightChildren.delete(pid)
       clearTimeout(timer)
       signal?.removeEventListener("abort", onAbort)
       resolve({ status, stderr: extra + stderr, timedOut, aborted })
@@ -291,6 +296,91 @@ function runGitAsync(
     child.on("close", (code) => finish(code))
     if (signal?.aborted) onAbort()
   })
+}
+
+// ---------- termination ----------
+
+/** Process groups of the network git children now running. */
+const inFlightChildren = new Set<number>()
+/** Sync locks this module holds, wrapped by `trackLock`. */
+const heldLocks = new Set<SyncLockHandle>()
+
+const TERMINATION_SIGNALS = ["SIGTERM", "SIGINT"] as const
+type TerminationSignal = (typeof TERMINATION_SIGNALS)[number]
+const terminationListeners: Record<TerminationSignal, () => void> = {
+  SIGTERM: () => onTerminationSignal("SIGTERM"),
+  SIGINT: () => onTerminationSignal("SIGINT"),
+}
+let guardInstalled = false
+
+/**
+ * Kill every network git child's process group and release every sync lock
+ * this process holds. The daemon's SIGTERM handler calls it; so do the guard
+ * listeners below, for processes (the agent worker) with no handler of their own.
+ */
+export function abortInFlightSync(): void {
+  const children = inFlightChildren.size
+  const locks = heldLocks.size
+  if (children === 0 && locks === 0) return
+  for (const pid of inFlightChildren) {
+    try {
+      process.kill(-pid, "SIGKILL")
+    } catch {
+      // The group is already gone.
+    }
+  }
+  inFlightChildren.clear()
+  for (const handle of [...heldLocks]) handle.release()
+  emitNervesEvent({
+    level: "warn",
+    component: "heart",
+    event: "heart.sync_aborted",
+    message: "sync: killed in-flight git and released the bundle lock",
+    meta: { children, locks },
+  })
+}
+
+function onTerminationSignal(signal: TerminationSignal): void {
+  // Alone, this listener replaced the signal's default action, which is to exit.
+  const alone = process.listenerCount(signal) === 1
+  abortInFlightSync()
+  removeTerminationGuard()
+  /* v8 ignore next -- re-raising ends the process; the SIGTERM child-process test covers it @preserve */
+  if (alone) process.kill(process.pid, signal)
+}
+
+function installTerminationGuard(): void {
+  if (guardInstalled) return
+  guardInstalled = true
+  for (const signal of TERMINATION_SIGNALS) process.on(signal, terminationListeners[signal])
+  process.on("exit", abortInFlightSync)
+}
+
+function removeTerminationGuard(): void {
+  if (!guardInstalled) return
+  guardInstalled = false
+  for (const signal of TERMINATION_SIGNALS) process.removeListener(signal, terminationListeners[signal])
+  process.removeListener("exit", abortInFlightSync)
+}
+
+/** While any lock is held, a signal or an exit kills sync's children and releases the lock. */
+function trackLock(handle: SyncLockHandle): SyncLockHandle {
+  let released = false
+  const tracked: SyncLockHandle = {
+    release() {
+      if (released) return
+      released = true
+      heldLocks.delete(tracked)
+      try {
+        handle.release()
+      } finally {
+        if (heldLocks.size === 0) removeTerminationGuard()
+      }
+    },
+  }
+  heldLocks.add(tracked)
+  installTerminationGuard()
+  return tracked
 }
 
 function describeAsyncFailure(step: string, run: AsyncGitRun, timeoutMs: number): string {
@@ -468,14 +558,38 @@ function clearConflictState(agentRoot: string): void {
 
 let ownerNotifier: SyncOwnerNotifier | null = null
 
-/** Replace how sync tells the owner (null restores the default, the Telegram owner notice). */
+/**
+ * Replace how sync tells the owner. Null restores the default: the notice goes
+ * to the agent's private-runtime pending queue, which reaches the owner through
+ * whatever sense the agent has, and also to Telegram when the agent has it.
+ */
 export function setSyncOwnerNotifier(notifier: SyncOwnerNotifier | null): void {
   ownerNotifier = notifier
 }
 
-async function defaultOwnerNotifier(agentName: string, notice: SyncOwnerNotice): Promise<void> {
-  const { sendTelegramOwnerNotice } = await import("../senses/telegram")
-  await sendTelegramOwnerNotice(agentName, { ...notice, signal: AbortSignal.timeout(30_000) })
+async function defaultOwnerNotifier(agentRoot: string, agentName: string, notice: SyncOwnerNotice): Promise<void> {
+  const { getPrivateRuntimePendingDir, queuePendingMessageOnce } = await import("../mind/pending")
+  queuePendingMessageOnce(getPrivateRuntimePendingDir(agentName, agentRoot), {
+    from: agentName,
+    friendId: "self",
+    channel: "inner",
+    key: "dialog",
+    content: `a notice for my owner: ${notice.text}`,
+    timestamp: Date.now(),
+    packetId: notice.noticeId,
+  })
+  try {
+    const { sendTelegramOwnerNotice } = await import("../senses/telegram")
+    await sendTelegramOwnerNotice(agentName, { ...notice, signal: AbortSignal.timeout(30_000) })
+  } catch (err) {
+    // Not every agent has Telegram; the pending queue already holds the notice.
+    emitNervesEvent({
+      component: "heart",
+      event: "heart.sync_owner_notice_telegram_skipped",
+      message: "sync: owner notice queued; Telegram did not send it",
+      meta: { agentRoot, noticeId: notice.noticeId, error: errorText(err) },
+    })
+  }
 }
 
 /** Fire and forget: a turn never waits on a notice. */
@@ -486,7 +600,7 @@ function tellOwner(agentRoot: string, agentName: string, notice: SyncOwnerNotice
     message: "sync: telling the owner",
     meta: { agentRoot, noticeId: notice.noticeId },
   })
-  const send = ownerNotifier ?? defaultOwnerNotifier
+  const send: SyncOwnerNotifier = ownerNotifier ?? ((name, body) => defaultOwnerNotifier(agentRoot, name, body))
   void Promise.resolve()
     .then(() => send(agentName, notice))
     .catch((err: unknown) => {
@@ -506,13 +620,18 @@ function tellOwner(agentRoot: string, agentName: string, notice: SyncOwnerNotice
  * The pause marker's `expiresAt` while it is in force, else null. An expired or
  * unparseable marker is deleted, so a crashed pauser cannot stop sync for good.
  */
-function activePause(agentRoot: string): string | null {
-  const markerPath = syncPausedPath(agentRoot)
+type PauseMarkerState =
+  | { kind: "none" }
+  | { kind: "active"; expiresAt: string }
+  | { kind: "garbage"; expiresAt: unknown }
+
+/** Read the pause marker without changing anything. */
+function readPauseMarker(agentRoot: string): PauseMarkerState {
   let raw: string
   try {
-    raw = fs.readFileSync(markerPath, "utf-8")
+    raw = fs.readFileSync(syncPausedPath(agentRoot), "utf-8")
   } catch {
-    return null
+    return { kind: "none" }
   }
   let marker: Partial<SyncPauseMarker> | null
   try {
@@ -525,7 +644,16 @@ function activePause(agentRoot: string): string | null {
   const startedMs = typeof marker?.startedAt === "string" ? Date.parse(marker.startedAt) : Number.NaN
   const now = Date.now()
   const longestEnd = (Number.isFinite(startedMs) ? startedMs : now) + SYNC_PAUSE_MAX_MS
-  if (Number.isFinite(expiresMs) && expiresMs > now && expiresMs <= longestEnd) return expiresAt as string
+  if (Number.isFinite(expiresMs) && expiresMs > now && expiresMs <= longestEnd) return { kind: "active", expiresAt: expiresAt as string }
+  return { kind: "garbage", expiresAt }
+}
+
+function activePause(agentRoot: string): string | null {
+  const markerPath = syncPausedPath(agentRoot)
+  const state = readPauseMarker(agentRoot)
+  if (state.kind === "none") return null
+  if (state.kind === "active") return state.expiresAt
+  const expiresAt = state.expiresAt
   try {
     fs.rmSync(markerPath, { force: true })
   } catch (err) {
@@ -711,6 +839,8 @@ export function commitLocalChanges(
  * Check whether the bundle is initialized as a git repo. The error reaches the
  * agent's start-of-turn packet as a sync warning.
  */
+export const NOT_A_REPO_ERROR = "my bundle is not a git repository"
+
 function ensureGitRepo(agentRoot: string, step: string): SyncResult {
   if (fs.existsSync(path.join(agentRoot, ".git"))) return { ok: true }
   emitNervesEvent({
@@ -720,7 +850,7 @@ function ensureGitRepo(agentRoot: string, step: string): SyncResult {
     message: `${step} failed: bundle is not a git repo`,
     meta: { agentRoot },
   })
-  return { ok: false, error: `bundle is not a git repo; run \`git init\` inside ${agentRoot} to enable sync (or disable sync in agent.json)` }
+  return { ok: false, error: NOT_A_REPO_ERROR }
 }
 
 const REPAIR_REF_PREFIX = "refs/ouro-sync/repair/"
@@ -973,12 +1103,12 @@ function settleIntegrated(agentRoot: string, config: SyncConfig, agentName: stri
   if (pending.classification === "pull_rebase_conflict" || commitsAhead(agentRoot, agentName, config) === 0) settlePendingSync(agentRoot)
 }
 
-function integrateCore(agentRoot: string, config: SyncConfig, agentName: string): IntegrateOutcome {
+function integrateCore(agentRoot: string, config: SyncConfig, agentName: string, commitMessage = "sync: pre-turn update"): IntegrateOutcome {
   // Outside the try: its catch aborts a merge, which must never run before a snapshot.
   const repairFailure = repairInterrupted(agentRoot, agentName)
   if (repairFailure) return { result: repairFailure }
   try {
-    commitLocalChanges(agentRoot, agentName, "sync: pre-turn update")
+    commitLocalChanges(agentRoot, agentName, commitMessage)
     const ref = remoteTrackingRef(config)
     if (!refExists(agentRoot, agentName, ref)) {
       settleIntegrated(agentRoot, config, agentName)
@@ -1163,7 +1293,7 @@ function pushIfBorn(agentRoot: string, config: SyncConfig, agentName: string): P
 }
 
 /** Fetch then integrate. The caller holds the lock. */
-async function pullUnlocked(agentRoot: string, config: SyncConfig, agentName: string, signal?: AbortSignal): Promise<SyncResult> {
+async function pullUnlocked(agentRoot: string, config: SyncConfig, agentName: string, signal?: AbortSignal, commitMessage?: string): Promise<SyncResult> {
   let remote: boolean
   try {
     remote = hasRemote(agentRoot, agentName, config)
@@ -1174,12 +1304,57 @@ async function pullUnlocked(agentRoot: string, config: SyncConfig, agentName: st
     const fetched = await fetchUnlocked(agentRoot, config, agentName, signal)
     if (!fetched.ok) return fetched
   }
-  const outcome = integrateCore(agentRoot, config, agentName)
+  const outcome = integrateCore(agentRoot, config, agentName, commitMessage)
   if (outcome.conflictBranch) await pushConflictBranch(agentRoot, config, agentName, outcome.conflictBranch, signal)
   return outcome.result
 }
 
+/** Commits on each side of HEAD and the last fetched remote branch. */
+function aheadBehind(agentRoot: string, agentName: string, config: SyncConfig): { ahead: number; behind: number } {
+  const ahead = commitsAhead(agentRoot, agentName, config)
+  const ref = remoteTrackingRef(config)
+  if (!refExists(agentRoot, agentName, ref)) return { ahead, behind: 0 }
+  const range = refExists(agentRoot, agentName, "HEAD") ? `HEAD..${ref}` : ref
+  return { ahead, behind: Number.parseInt(git(agentRoot, agentName, ["rev-list", "--count", range]).trim(), 10) }
+}
+
 // ---------- public entry points ----------
+
+export interface SyncProbeResult extends SyncResult {
+  /** Commits HEAD has that the remote branch lacks. Absent without a remote. */
+  ahead?: number
+  /** Commits the remote branch has that HEAD lacks. Absent without a remote. */
+  behind?: number
+}
+
+/**
+ * The boot probe: fetch the remote branch and count commits ahead and behind.
+ * It takes the lock without waiting, never merges, commits or pushes, and
+ * writes nothing under `state/` (an expired pause marker is left for the next
+ * sync to remove).
+ */
+export async function probeSync(agentRoot: string, config: SyncConfig, signal?: AbortSignal): Promise<SyncProbeResult> {
+  const agentName = agentNameFromRoot(agentRoot)
+  const pause = readPauseMarker(agentRoot)
+  if (pause.kind === "active") return { ok: true, paused: true, pausedUntil: pause.expiresAt }
+  const repoCheck = ensureGitRepo(agentRoot, "boot probe")
+  if (!repoCheck.ok) return repoCheck
+  try {
+    const acquired = tryAcquireSyncLockSync(agentRoot)
+    if ("busy" in acquired) return { ok: true, busy: true, holderPid: acquired.holderPid }
+    const lock = trackLock(acquired)
+    try {
+      if (!hasRemote(agentRoot, agentName, config)) return { ok: true }
+      const fetched = await fetchUnlocked(agentRoot, config, agentName, signal)
+      if (!fetched.ok) return fetched
+      return { ok: true, ...aheadBehind(agentRoot, agentName, config) }
+    } finally {
+      lock.release()
+    }
+  } catch (err) {
+    return { ok: false, error: errorText(err) }
+  }
+}
 
 export interface PreTurnPullOptions {
   /** Defaults to the bundle directory's name without `.ouro`. */
@@ -1215,21 +1390,22 @@ export async function preTurnPull(agentRoot: string, config: SyncConfig, options
     return { ok: false, error: "aborted before pull started" }
   }
 
-  let lock: Awaited<ReturnType<typeof acquireSyncLock>>
+  let acquired: Awaited<ReturnType<typeof acquireSyncLock>>
   try {
-    lock = await acquireSyncLock(agentRoot, __testHooks.preTurnLockWaitMs ?? PRE_TURN_LOCK_WAIT_MS, options.signal)
+    acquired = await acquireSyncLock(agentRoot, __testHooks.preTurnLockWaitMs ?? PRE_TURN_LOCK_WAIT_MS, options.signal)
   } catch (err) {
     return { ok: false, error: `aborted while waiting for the sync lock: ${errorText(err)}` }
   }
-  if ("busy" in lock) {
+  if ("busy" in acquired) {
     emitNervesEvent({
       component: "heart",
       event: "heart.sync_pull_end",
       message: "pre-turn pull skipped: sync lock busy",
-      meta: { agentRoot, holderPid: lock.holderPid },
+      meta: { agentRoot, holderPid: acquired.holderPid },
     })
-    return { ok: true, busy: true }
+    return { ok: true, busy: true, holderPid: acquired.holderPid }
   }
+  const lock = trackLock(acquired)
   try {
     // A pause written while this waited for the lock still wins.
     const pausedNow = pausedResult(agentRoot, "pre-turn pull")
@@ -1246,7 +1422,7 @@ export async function preTurnPull(agentRoot: string, config: SyncConfig, options
   }
 }
 
-/** The signal-aware pre-turn pull used by the boot sync probe. Same as `preTurnPull`. */
+/** Same as `preTurnPull`, kept for older callers. */
 export function preTurnPullAsync(agentRoot: string, config: SyncConfig, options: PreTurnPullOptions = {}): Promise<SyncResult> {
   return preTurnPull(agentRoot, config, options)
 }
@@ -1266,16 +1442,17 @@ export function postTurnPush(agentRoot: string, config: SyncConfig, agentName: s
   const repoCheck = ensureGitRepo(agentRoot, "post-turn push")
   if (!repoCheck.ok) return repoCheck
 
-  const lock = tryAcquireSyncLockSync(agentRoot)
-  if ("busy" in lock) {
+  const acquired = tryAcquireSyncLockSync(agentRoot)
+  if ("busy" in acquired) {
     emitNervesEvent({
       component: "heart",
       event: "heart.sync_push_end",
       message: "post-turn push skipped: sync lock busy",
-      meta: { agentRoot, holderPid: lock.holderPid },
+      meta: { agentRoot, holderPid: acquired.holderPid },
     })
-    return { ok: true, busy: true }
+    return { ok: true, busy: true, holderPid: acquired.holderPid }
   }
+  const lock = trackLock(acquired)
 
   let release = true
   try {
@@ -1341,9 +1518,9 @@ export async function syncNow(agentRoot: string, config: SyncConfig, agentName: 
   const repoCheck = ensureGitRepo(agentRoot, "sync now")
   if (!repoCheck.ok) return repoCheck
 
-  const lock = await acquireSyncLock(agentRoot, waitMs)
-  if ("busy" in lock) {
-    const error = `bundle sync lock is held${lock.holderPid === null ? "" : ` by pid ${lock.holderPid}`}`
+  const acquired = await acquireSyncLock(agentRoot, waitMs)
+  if ("busy" in acquired) {
+    const error = `bundle sync lock is held${acquired.holderPid === null ? "" : ` by pid ${acquired.holderPid}`}`
     emitNervesEvent({
       level: "warn",
       component: "heart",
@@ -1351,12 +1528,13 @@ export async function syncNow(agentRoot: string, config: SyncConfig, agentName: 
       message: "sync now: lock busy",
       meta: { agentRoot, error },
     })
-    return { ok: false, busy: true, error }
+    return { ok: false, busy: true, holderPid: acquired.holderPid, error }
   }
+  const lock = trackLock(acquired)
   try {
     const pausedNow = pausedResult(agentRoot, "sync now")
     if (pausedNow) return pausedNow
-    const pulled = await pullUnlocked(agentRoot, config, agentName)
+    const pulled = await pullUnlocked(agentRoot, config, agentName, undefined, "sync: update")
     const result = pulled.ok ? await pushIfBorn(agentRoot, config, agentName) : pulled
     if (result.ok) {
       emitNervesEvent({ component: "heart", event: "heart.sync_now_end", message: "sync now complete", meta: { agentRoot } })

@@ -73,7 +73,8 @@ import { getDefaultModelForProvider, getProviderModelMismatchMessage, resolveMod
 import { getOuroCliHome, buildChangelogCommand } from "../versioning/ouro-version-manager"
 import type { VersionIntent } from "../versioning/version-intent"
 import { CLI_UPDATE_CHECK_TIMEOUT_MS, type CheckForUpdateResult } from "../versioning/update-checker"
-import { postTurnPush } from "../sync"
+import { syncNow } from "../sync"
+import type { SyncConfig } from "../config"
 import { ensureMailboxRegistry, type MailroomRegistry } from "../../mailroom/core"
 import { importMboxFileToStore } from "../../mailroom/mbox-import"
 import { parseMailroomConfig, readMailroomRegistry, resolveHostedMailAuthority, resolveMailroomReader, type MailroomRuntimeConfig } from "../../mailroom/reader"
@@ -136,6 +137,7 @@ import type {
   SessionCliCommand,
   ThoughtsCliCommand,
   CloneCliCommand,
+  SyncCliCommand,
   DoctorCliCommand,
   RsvpCliCommand,
   HelpCliCommand,
@@ -211,7 +213,7 @@ import { recordProviderLaneReadiness } from "../provider-readiness-cache"
 import { listAllBundleAgents, listBundleSyncRows, listEnabledBundleAgents, listHomeBundleAgents } from "./agent-discovery"
 import { machineDisplayName, moveAgentHomeHere } from "./agent-home"
 import { listPrunableAgentBundles } from "./prunable-bundle"
-import { runBootSyncProbe, type BootSyncProbeFinding } from "./boot-sync-probe"
+import { runBootSyncProbe, type BootSyncProbeFinding, type BootSyncProbeStatus } from "./boot-sync-probe"
 import { connectEntryNeedsAttention, renderConnectBay, summarizeProvidersForConnect, type ConnectMenuEntry } from "./connect-bay"
 import {
   verifyEmbeddingsCapability,
@@ -657,6 +659,7 @@ type MissingAgentResolvableKind =
   | "a2a.serve"
   | "a2a.escalation"
   | "a2a.delegatedCommands"
+  | "sync"
 
 type ResolvedAgentCommand<T extends { agent?: string }> = Omit<T, "agent"> & { agent: string }
 type MissingAgentResolvableCommand = Extract<OuroCliCommand, { kind: MissingAgentResolvableKind }>
@@ -775,6 +778,7 @@ function agentResolutionFailureMode(command: OuroCliCommand): AgentResolutionFai
     case "setup":
     case "bluebubbles.replay":
     case "bluebubbles.context-smoke":
+    case "sync":
       return "throw"
     default:
       return undefined
@@ -997,6 +1001,14 @@ export function writeSyncProbeSummary(
     lines.push(`  [${severity}] ${finding.agent}: ${finding.classification} — ${finding.error.split("\n")[0]}`)
   }
   deps.writeStdout(lines.join("\n"))
+}
+
+/** What the boot probe saw in each bundle: paused, busy, or commits ahead and behind. */
+export function writeSyncProbeStatuses(
+  deps: Pick<OuroCliDeps, "writeStdout">,
+  statuses: readonly BootSyncProbeStatus[],
+): void {
+  deps.writeStdout(["sync status:", ...statuses.map((status) => `  ${status.agent}: ${status.text}`)].join("\n"))
 }
 
 function bootPhasePlan(_daemonAlive: boolean): readonly string[] {
@@ -1965,7 +1977,7 @@ export async function checkManualCloneBundles(deps: ManualCloneCheckDeps): Promi
 // ── toDaemonCommand ──
 
 function toDaemonCommand(command: Exclude<OuroCliCommand, import("../shepherd/operations").ShepherdOperation | { kind: "shepherd.chat" }
- | { kind: "daemon.up" } | { kind: "daemon.dev" } | { kind: "daemon.logs.prune" } | { kind: "mailbox" } | { kind: "hatch.start" } | AuthCliCommand | AuthVerifyCliCommand | AuthSwitchCliCommand | ProviderCliCommand | RepairCliCommand | VaultCliCommand | DnsCliCommand | FriendCliCommand | A2ACliCommand | GatewayServeCliCommand | A2AClientCliCommand | WhoamiCliCommand | VoiceCliCommand | SessionCliCommand | ThoughtsCliCommand | ChangelogCliCommand | ConfigModelCliCommand | ConfigModelsCliCommand | RollbackCliCommand | VersionsCliCommand | SelfUpdateCliCommand | AttentionCliCommand | PrivateDecisionsCliCommand | PrivateStatusCliCommand | WorkCardCliCommand | WorkGauntletCliCommand | WorkSentinelCliCommand | NervesReviewCliCommand | McpServeCliCommand | AcpServeCliCommand | McpCanaryCliCommand | McpDoctorCliCommand | SetupCliCommand | HookCliCommand | HabitLocalCliCommand | DeskCliCommand | DeskAdminCliCommand | MigrateToDeskCliCommand | DoctorCliCommand | RsvpCliCommand | CloneCliCommand | HelpCliCommand | { kind: "bluebubbles.replay" } | { kind: "bluebubbles.context-smoke" } | { kind: "bluebubbles.host" } | { kind: "bluebubbles.host.collect" } | { kind: "connect" } | { kind: "account.ensure" } | { kind: "mail.import-mbox" } | { kind: "mail.backfill-indexes" } | { kind: "mail.sync-cache" } | { kind: "plugin.install" } | { kind: "plugin.list" } | { kind: "plugin.remove" } | { kind: "agent.move" }>): DaemonCommand {
+ | { kind: "daemon.up" } | { kind: "daemon.dev" } | { kind: "daemon.logs.prune" } | { kind: "mailbox" } | { kind: "hatch.start" } | AuthCliCommand | AuthVerifyCliCommand | AuthSwitchCliCommand | ProviderCliCommand | RepairCliCommand | VaultCliCommand | DnsCliCommand | FriendCliCommand | A2ACliCommand | GatewayServeCliCommand | A2AClientCliCommand | WhoamiCliCommand | VoiceCliCommand | SessionCliCommand | ThoughtsCliCommand | ChangelogCliCommand | ConfigModelCliCommand | ConfigModelsCliCommand | RollbackCliCommand | VersionsCliCommand | SelfUpdateCliCommand | AttentionCliCommand | PrivateDecisionsCliCommand | PrivateStatusCliCommand | WorkCardCliCommand | WorkGauntletCliCommand | WorkSentinelCliCommand | NervesReviewCliCommand | McpServeCliCommand | AcpServeCliCommand | McpCanaryCliCommand | McpDoctorCliCommand | SetupCliCommand | HookCliCommand | HabitLocalCliCommand | DeskCliCommand | DeskAdminCliCommand | MigrateToDeskCliCommand | DoctorCliCommand | RsvpCliCommand | CloneCliCommand | SyncCliCommand | HelpCliCommand | { kind: "bluebubbles.replay" } | { kind: "bluebubbles.context-smoke" } | { kind: "bluebubbles.host" } | { kind: "bluebubbles.host.collect" } | { kind: "connect" } | { kind: "account.ensure" } | { kind: "mail.import-mbox" } | { kind: "mail.backfill-indexes" } | { kind: "mail.sync-cache" } | { kind: "plugin.install" } | { kind: "plugin.list" } | { kind: "plugin.remove" } | { kind: "agent.move" }>): DaemonCommand {
   if (command.kind === "habit.probe") {
     return {
       kind: "habit.probe",
@@ -2060,30 +2072,67 @@ function providerCliNow(deps: OuroCliDeps): Date {
   return new Date((deps.now ?? Date.now)())
 }
 
-function readAgentSyncConfigForCliMutation(agent: string, deps: OuroCliDeps): { enabled: boolean; remote: string } {
+function readAgentSyncConfigForCliMutation(agent: string, deps: OuroCliDeps): SyncConfig {
   try {
     const configPath = path.join(providerCliAgentRoot({ agent }, deps), "agent.json")
-    const parsed = JSON.parse(fs.readFileSync(configPath, "utf-8")) as { sync?: { enabled?: unknown; remote?: unknown } }
+    const parsed = JSON.parse(fs.readFileSync(configPath, "utf-8")) as { sync?: { enabled?: unknown; remote?: unknown; branch?: unknown } }
     return {
       enabled: parsed.sync?.enabled === true,
       remote: typeof parsed.sync?.remote === "string" && parsed.sync.remote.trim() ? parsed.sync.remote : "origin",
+      branch: typeof parsed.sync?.branch === "string" && parsed.sync.branch.trim() ? parsed.sync.branch : "main",
     }
   } catch {
     /* v8 ignore next -- defensive: post-mutation sync should not break an already-successful CLI repair if agent.json becomes unreadable @preserve */
-    return { enabled: false, remote: "origin" }
+    return { enabled: false, remote: "origin", branch: "main" }
   }
 }
 
-function pushAgentBundleAfterCliMutation(agent: string, deps: OuroCliDeps): string | null {
+/** How long a CLI command waits for the bundle sync lock before reporting busy. */
+const CLI_SYNC_LOCK_WAIT_MS = 60_000
+
+/**
+ * Sync the bundle after a CLI change and report what actually happened. The
+ * sync is awaited: a one-shot CLI that exits explicitly would otherwise kill a
+ * push it had already reported.
+ */
+async function pushAgentBundleAfterCliMutation(agent: string, deps: OuroCliDeps): Promise<string | null> {
   const sync = readAgentSyncConfigForCliMutation(agent, deps)
   if (!sync.enabled) return null
 
   const agentRoot = providerCliAgentRoot({ agent }, deps)
-  const result = postTurnPush(agentRoot, { enabled: true, remote: sync.remote })
+  const result = await syncNow(agentRoot, sync, agent, deps.syncLockWaitMs ?? CLI_SYNC_LOCK_WAIT_MS)
+  if (result.paused) return `bundle sync: paused until ${result.pausedUntil}; nothing pushed`
   if (result.ok) {
     return `bundle sync: ran post-change sync (remote: ${sync.remote})`
   }
   return `bundle sync: could not push bundle changes (${result.error})`
+}
+
+function bundleHasRemote(agentRoot: string, remote: string): boolean {
+  try {
+    return execFileSync("git", ["remote"], { cwd: agentRoot, stdio: "pipe" }).toString().split("\n").map((line) => line.trim()).includes(remote)
+  } catch {
+    /* v8 ignore next -- syncNow just ran git in this bundle; this only words the success line @preserve */
+    return false
+  }
+}
+
+/** `ouro sync`: one fetch, merge and push, reported as it happened. Exits 1 unless the bundle synced. */
+async function executeSync(agent: string, deps: OuroCliDeps): Promise<string> {
+  const sync = readAgentSyncConfigForCliMutation(agent, deps)
+  if (!sync.enabled) return returnCliFailure(deps, `sync is off for ${agent}: agent.json has no "sync": { "enabled": true }`)
+  const agentRoot = providerCliAgentRoot({ agent }, deps)
+  const result = await syncNow(agentRoot, sync, agent, deps.syncLockWaitMs ?? CLI_SYNC_LOCK_WAIT_MS)
+  if (result.paused) return returnCliFailure(deps, `sync paused until ${result.pausedUntil}`)
+  if (result.busy) {
+    return returnCliFailure(deps, `sync busy: another sync holds the lock${result.holderPid == null ? "" : ` (pid ${result.holderPid})`}`)
+  }
+  if (!result.ok) return returnCliFailure(deps, `sync failed for ${agent}: ${result.error}`)
+  const message = bundleHasRemote(agentRoot, sync.remote)
+    ? `synced ${agent}: up to date with ${sync.remote}/${sync.branch}`
+    : `synced ${agent}: committed locally; no remote "${sync.remote}"`
+  deps.writeStdout(message)
+  return message
 }
 
 function writeAgentVaultConfig(
@@ -2437,7 +2486,7 @@ async function executeVaultCreate(
   }
   /* v8 ignore next -- defensive: success path assigns store before continuing @preserve */
   if (!store) throw new Error(`vault create failed for ${command.agent}: local unlock material was not saved`)
-  const syncSummary = pushAgentBundleAfterCliMutation(command.agent, deps)
+  const syncSummary = await pushAgentBundleAfterCliMutation(command.agent, deps)
   const fallbackLines = [
     `vault created for ${command.agent}`,
     `vault: ${email} at ${serverUrl}`,
@@ -2514,7 +2563,7 @@ async function executeVaultReplace(
   /* v8 ignore next -- defensive: createRepairVaultForAgent either returns or throws @preserve */
   if (!repair) throw new Error(`vault replace failed for ${command.agent}: no vault repair result`)
   if (!repair.ok) return repair.message
-  const syncSummary = pushAgentBundleAfterCliMutation(command.agent, deps)
+  const syncSummary = await pushAgentBundleAfterCliMutation(command.agent, deps)
   const fallbackLines = [
     `vault replaced for ${command.agent}`,
     `vault: ${email} at ${serverUrl}`,
@@ -2635,7 +2684,7 @@ async function executeVaultRecover(
     progress.end()
   }
   const providerList = [...importedProviders].sort()
-  const syncSummary = pushAgentBundleAfterCliMutation(command.agent, deps)
+  const syncSummary = await pushAgentBundleAfterCliMutation(command.agent, deps)
   const fallbackLines = [
     `vault recovered for ${command.agent}`,
     `vault: ${email} at ${serverUrl}`,
@@ -4410,7 +4459,7 @@ async function executeConnectTeams(agent: string, deps: OuroCliDeps): Promise<st
   } finally {
     progress.end()
   }
-  const syncSummary = pushAgentBundleAfterCliMutation(agent, deps)
+  const syncSummary = await pushAgentBundleAfterCliMutation(agent, deps)
   return writeCapabilityOutcome(deps, {
     subtitle: `${agent}'s Teams sense is configured.`,
     summary: `Teams is ready for ${agent}.`,
@@ -4645,7 +4694,7 @@ async function executeConnectBlueBubbles(agent: string, deps: OuroCliDeps): Prom
     progress.end()
     throw error
   }
-  const syncSummary = pushAgentBundleAfterCliMutation(agent, deps)
+  const syncSummary = await pushAgentBundleAfterCliMutation(agent, deps)
   return writeCapabilityOutcome(deps, {
     subtitle: `${agent}'s local bridge is attached.`,
     summary: `BlueBubbles is attached on this machine for ${agent}.`,
@@ -5058,7 +5107,7 @@ async function ensureAgentMailroom(
   }
   /* v8 ignore next -- defensive: successful setup always stores before leaving the guarded block. @preserve */
   if (!stored) throw new Error("Mailroom setup did not store runtime credentials")
-  const syncSummary = pushAgentBundleAfterCliMutation(agent, deps)
+  const syncSummary = await pushAgentBundleAfterCliMutation(agent, deps)
   return { mailboxAddress, sourceAlias, mode, registryPath, storePath, hostedControlUrl, blobStoreLabel, stored, syncSummary }
 }
 
@@ -6094,7 +6143,7 @@ async function executeConnectVoice(agent: string, deps: OuroCliDeps): Promise<st
 async function executeConnectA2A(agent: string, deps: OuroCliDeps, bind: { host?: string; port?: number; publicUrl?: string } = {}): Promise<string> {
   const { defaultA2APort } = await import("../../a2a/config")
   enableAgentSense(agent, "a2a", deps)
-  const syncSummary = pushAgentBundleAfterCliMutation(agent, deps)
+  const syncSummary = await pushAgentBundleAfterCliMutation(agent, deps)
   // Bind address, port and advertised URL are per machine (D-038): a tailnet IP on one
   // host means nothing on another, so they live in this machine's runtime config.
   const a2a = {
@@ -6172,7 +6221,7 @@ async function executeConnectTelegram(agent: string, deps: OuroCliDeps): Promise
   } finally {
     progress.end()
   }
-  const syncSummary = pushAgentBundleAfterCliMutation(agent, deps)
+  const syncSummary = await pushAgentBundleAfterCliMutation(agent, deps)
   return writeCapabilityOutcome(deps, {
     subtitle: `${agent}'s private Telegram sense is configured.`,
     summary: `Telegram is ready for ${agent}.`,
@@ -6200,7 +6249,7 @@ async function executeConnectTelegram(agent: string, deps: OuroCliDeps): Promise
 async function executeConnectWorkbench(agent: string, deps: OuroCliDeps): Promise<string> {
   const { workbenchMcpCommand, workbenchHasStaleBundleEntry } = readConnectBaySenseFlags(agent, deps)
   const changed = removeWorkbenchMcpRegistration(agent, deps)
-  const syncSummary = changed ? pushAgentBundleAfterCliMutation(agent, deps) : ""
+  const syncSummary = changed ? await pushAgentBundleAfterCliMutation(agent, deps) : ""
   const executablePath = findInstalledWorkbenchMcp(deps, workbenchMcpCommand)
   if (!executablePath) {
     throw new Error([
@@ -6363,8 +6412,8 @@ function writeAgentProviderBinding(input: {
   })
 }
 
-function appendBundleSyncSummary(message: string, agent: string, deps: OuroCliDeps): string {
-  const syncSummary = pushAgentBundleAfterCliMutation(agent, deps)
+async function appendBundleSyncSummary(message: string, agent: string, deps: OuroCliDeps): Promise<string> {
+  const syncSummary = await pushAgentBundleAfterCliMutation(agent, deps)
   return syncSummary ? [message, syncSummary].join("\n") : message
 }
 
@@ -6408,7 +6457,7 @@ async function executeProviderUse(
         model: command.model,
         deps,
       })
-      const message = appendBundleSyncSummary(
+      const message = await appendBundleSyncSummary(
         `forced ${command.agent} ${command.lane} to ${command.provider} / ${command.model}: failed (${credential.error})`,
         command.agent,
         deps,
@@ -6444,7 +6493,7 @@ async function executeProviderUse(
       model: command.model,
       deps,
     })
-    const message = appendBundleSyncSummary(
+    const message = await appendBundleSyncSummary(
       `${command.force ? "forced " : ""}${command.agent} ${command.lane} ${command.provider} / ${command.model}: ${status}`,
       command.agent,
       deps,
@@ -7042,7 +7091,7 @@ async function executeLegacyConfigModel(
     },
   }
   fs.writeFileSync(configPath, `${JSON.stringify(nextConfig, null, 2)}\n`, "utf-8")
-  const message = appendBundleSyncSummary(
+  const message = await appendBundleSyncSummary(
     `deprecated: updated ${command.agent} model in agent.json on ${lane}/${binding.provider}: ${binding.model} -> ${command.modelName}\nUse \`ouro use --agent ${command.agent} --lane ${lane} --provider ${binding.provider} --model ${command.modelName}\` next time.`,
     command.agent,
     deps,
@@ -8223,6 +8272,9 @@ export async function runOuroCli(args: string[], deps: OuroCliDeps = createDefau
       progress.completePhase("sync probe", summarizeSyncProbeFindings(syncProbeResult.findings))
       if (syncProbeResult.findings.length > 0) {
         writeSyncProbeSummary(deps, syncProbeResult.findings)
+      }
+      if (syncProbeResult.statuses && syncProbeResult.statuses.length > 0) {
+        writeSyncProbeStatuses(deps, syncProbeResult.statuses)
       }
     } catch (probeError) {
       const message = probeError instanceof Error ? probeError.message : String(probeError)
@@ -10245,6 +10297,11 @@ export async function runOuroCli(args: string[], deps: OuroCliDeps = createDefau
     return output
   }
 
+  // ── sync: fetch, merge and push one bundle now ──
+  if (command.kind === "sync") {
+    return executeSync(command.agent, deps)
+  }
+
   // ── clone: clone an agent bundle from a git remote ──
   if (command.kind === "clone") {
     emitNervesEvent({
@@ -10318,7 +10375,7 @@ export async function runOuroCli(args: string[], deps: OuroCliDeps = createDefau
 
     // 8. Output success message
     emitNervesEvent({ component: "daemon", event: "daemon.clone_complete", message: "clone complete", meta: { agentName, targetPath } })
-    const syncSummary = syncEnabled ? pushAgentBundleAfterCliMutation(agentName, deps) : null
+    const syncSummary = syncEnabled ? await pushAgentBundleAfterCliMutation(agentName, deps) : null
     const syncMsg = syncEnabled ? "\nsync enabled (remote: origin)" : "\nwarning: no agent.json found — this may not be a valid agent bundle"
     const syncPushMsg = syncSummary ? `\n${syncSummary}` : ""
     deps.writeStdout(`cloned ${agentName} to ${targetPath}${syncMsg}${syncPushMsg}`)

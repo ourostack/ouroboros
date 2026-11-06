@@ -114,12 +114,12 @@ describe("preTurnPullAsync (signal-aware)", () => {
     expect(result.error).toContain("aborted while waiting for the sync lock")
   })
 
-  it("returns an actionable error when the bundle is not a git repo", async () => {
+  it("says the bundle is not a git repository", async () => {
     const bundle = path.join(root, "plain.ouro")
     fs.mkdirSync(bundle)
     const result = await preTurnPullAsync(bundle, CONFIG)
     expect(result.ok).toBe(false)
-    expect(result.error).toContain("git init")
+    expect(result.error).toBe("my bundle is not a git repository")
   })
 
   it("a fetch failure is returned with git's message", async () => {

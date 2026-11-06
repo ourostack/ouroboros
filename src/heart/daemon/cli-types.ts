@@ -165,6 +165,7 @@ export type OuroCliCommand =
   | { kind: "rsvp.compare"; agent?: string; nativePath: string; legacyPath: string; json?: boolean; outputPath?: string }
   | { kind: "rsvp.smoke"; agent?: string; mode: RsvpSmokeMode; surface: RsvpSmokeSurface; question?: string; allowSend?: boolean; json?: boolean; outputPath?: string; replayOutputPath?: string }
   | { kind: "clone"; remote: string; agent?: string }
+  | { kind: "sync"; agent?: string }
   | { kind: "help"; command?: string }
 
 export interface OuroCliDeps {
@@ -285,6 +286,8 @@ export interface OuroCliDeps {
    * real `git pull` invocations against the developer's home bundles.
    */
   runBootSyncProbeImpl?: typeof import("./boot-sync-probe").runBootSyncProbe
+  /** How long `ouro sync` and post-change syncs wait for the bundle sync lock. Defaults to 60 s. */
+  syncLockWaitMs?: number
   /** Test/alternate-host injection for side-effect-safe RSVP legacy cutover probes. */
   rsvpCutoverDeps?: RsvpCutoverDeps
   /** Test/alternate-host injection for the durable RSVP send boundary. */
@@ -405,4 +408,5 @@ export type RsvpCliCommand = Extract<OuroCliCommand, { kind:
   | "rsvp.smoke"
 }>
 export type CloneCliCommand = Extract<OuroCliCommand, { kind: "clone" }>
+export type SyncCliCommand = Extract<OuroCliCommand, { kind: "sync" }>
 export type HelpCliCommand = Extract<OuroCliCommand, { kind: "help" }>

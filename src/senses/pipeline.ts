@@ -48,6 +48,7 @@ import { buildTemporalView } from "../heart/temporal-view"
 import { buildStartOfTurnPacket, renderStartOfTurnPacket, buildCapabilitiesSection } from "../heart/start-of-turn-packet"
 import { detectBundleState } from "../heart/bundle-state"
 import { preTurnPull, postTurnPush } from "../heart/sync"
+import type { SyncConfig } from "../heart/config"
 import { readAgentHomeElsewhere } from "../heart/daemon/agent-discovery"
 import { describeSyncFailure, parseBundleSyncFailure } from "../heart/sync-health"
 import { getSyncConfig } from "../heart/config"
@@ -704,6 +705,24 @@ function prepareInboundRunLedger(input: Omit<Parameters<typeof buildInboundRunLe
   } catch {
     return null
   }
+}
+
+/**
+ * Commit the turn's edits now, then let the push run without awaiting it, so
+ * the reply is not held for the network. A later edit is not in this commit;
+ * the next turn commits it whole.
+ */
+export function startPostTurnSync(agentRoot: string, config: SyncConfig): void {
+  const result = postTurnPush(agentRoot, config)
+  result.push?.catch((err: unknown) => {
+    emitNervesEvent({
+      level: "warn",
+      component: "senses",
+      event: "senses.post_turn_push_rejected",
+      message: "post-turn push rejected",
+      meta: { agentRoot, error: err instanceof Error ? err.message : String(err) },
+    })
+  })
 }
 
 export async function handleInboundTurn(input: InboundTurnInput): Promise<InboundTurnResult> {
@@ -1497,9 +1516,11 @@ async function handleInboundTurnExclusive(input: InboundTurnInput): Promise<Inbo
     ...(input.switchedProvider ? { switchedProvider: input.switchedProvider } : {}),
   }
   } finally {
-    // Step 6b: Post-turn sync push (opt-in, git-status-based discovery).
+    // Step 6b: Post-turn sync (opt-in). The commit is synchronous, so the
+    // turn's edits are recorded before the reply goes out; the push runs on
+    // without being awaited, holding the lock, and records its own failure.
     if (syncConfig.enabled && !liveLatencyMode && !declinedForHome) {
-      postTurnPush(getAgentRoot(), syncConfig)
+      startPostTurnSync(getAgentRoot(), syncConfig)
     }
   }
 }

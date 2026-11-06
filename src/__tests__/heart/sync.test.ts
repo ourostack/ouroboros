@@ -128,12 +128,12 @@ afterEach(() => {
 })
 
 describe("not a git repo", () => {
-  it("every entry point returns the actionable error", async () => {
+  it("every entry point says the bundle is not a git repository", async () => {
     const bundle = path.join(root, "plain.ouro")
     fs.mkdirSync(bundle)
     for (const result of [await preTurnPull(bundle, CONFIG), postTurnPush(bundle, CONFIG), await syncNow(bundle, CONFIG, AGENT, 0)]) {
       expect(result.ok).toBe(false)
-      expect(result.error).toContain("run `git init`")
+      expect(result.error).toBe("my bundle is not a git repository")
     }
     expect(emitted("heart.sync_not_a_repo")).toHaveLength(3)
   })
@@ -288,7 +288,7 @@ describe("postTurnPush", () => {
     const bundle = localBundle()
     const handle = lock(bundle)
     write(bundle, "notes.md", "hi\n")
-    expect(postTurnPush(bundle, CONFIG)).toEqual({ ok: true, busy: true })
+    expect(postTurnPush(bundle, CONFIG)).toEqual({ ok: true, busy: true, holderPid: process.pid })
     handle.release()
     expect(git(bundle, ["status", "--porcelain"])).toBe("?? .gitignore\n?? notes.md")
   })
@@ -493,13 +493,13 @@ describe("syncNow and the lock", () => {
     const handle = lock(bundle)
     const result = await syncNow(bundle, CONFIG, AGENT, 0)
     handle.release()
-    expect(result).toEqual({ ok: false, busy: true, error: `bundle sync lock is held by pid ${process.pid}` })
+    expect(result).toEqual({ ok: false, busy: true, holderPid: process.pid, error: `bundle sync lock is held by pid ${process.pid}` })
   })
 
   it("syncNow reports a busy lock whose holder is unknown", async () => {
     const bundle = localBundle()
     fs.writeFileSync(path.join(bundle, ".git", "ouro-sync.lock"), "")
-    expect(await syncNow(bundle, CONFIG, AGENT, 0)).toEqual({ ok: false, busy: true, error: "bundle sync lock is held" })
+    expect(await syncNow(bundle, CONFIG, AGENT, 0)).toEqual({ ok: false, busy: true, holderPid: null, error: "bundle sync lock is held" })
   })
 
   it("syncNow returns an integrate failure without pushing, and releases the lock", async () => {
@@ -516,7 +516,7 @@ describe("syncNow and the lock", () => {
     const bundle = localBundle()
     const handle = lock(bundle)
     __testHooks.preTurnLockWaitMs = 150
-    expect(await preTurnPull(bundle, CONFIG)).toEqual({ ok: true, busy: true })
+    expect(await preTurnPull(bundle, CONFIG)).toEqual({ ok: true, busy: true, holderPid: process.pid })
     handle.release()
   })
 })
@@ -544,6 +544,23 @@ describe("owner notices", () => {
     await preTurnPull(bundle, CONFIG)
     await vi.waitFor(() => expect(send).toHaveBeenCalledTimes(1))
     expect(send).toHaveBeenCalledWith(AGENT, expect.objectContaining({ noticeId: expect.stringMatching(/^sync-conflict:agent:/), signal: expect.any(AbortSignal) }))
+  })
+
+  it("default notice is queued for the agent to relay, with or without Telegram", async () => {
+    vi.doMock("../../senses/telegram", () => ({ sendTelegramOwnerNotice: async () => { throw new Error("no telegram for this agent") } }))
+    setSyncOwnerNotifier(null)
+    const { bundle, owner } = bundleWithRemote()
+    ownerPush(owner, "notes.md", "owner\n")
+    write(bundle, "notes.md", "agent\n")
+    await preTurnPull(bundle, CONFIG)
+    await vi.waitFor(() => expect(emitted("heart.sync_owner_notice_telegram_skipped")).toHaveLength(1))
+    const { getPrivateRuntimePendingDir } = await import("../../mind/pending")
+    const pendingDir = getPrivateRuntimePendingDir(AGENT, bundle)
+    const queued = fs.readdirSync(pendingDir).map((name) => JSON.parse(fs.readFileSync(path.join(pendingDir, name), "utf-8")) as Record<string, unknown>)
+    expect(queued).toHaveLength(1)
+    expect(queued[0]).toMatchObject({ from: AGENT, friendId: "self", channel: "inner", key: "dialog", packetId: expect.stringMatching(/^sync-conflict:agent:/) })
+    expect(String(queued[0].content)).toMatch(/^a notice for my owner: /)
+    expect(emitted("heart.sync_owner_notice_telegram_skipped")[0].meta).toMatchObject({ error: "no telegram for this agent" })
   })
 
   it("a notice that cannot be sent is logged", async () => {

@@ -97,6 +97,12 @@ export const COMMAND_REGISTRY: Record<string, CommandHelp & { category: CommandC
     usage: "ouro clone <remote> [--agent <name>]",
     example: "ouro clone https://github.com/user/myagent.ouro.git",
   },
+  sync: {
+    category: "Lifecycle",
+    description: "Sync an agent bundle with its git remote now: fetch, merge, push",
+    usage: "ouro sync [--agent <name>]",
+    example: "ouro sync --agent slugger",
+  },
   doctor: {
     category: "Lifecycle",
     description: "Run diagnostic checks on the ouro installation",

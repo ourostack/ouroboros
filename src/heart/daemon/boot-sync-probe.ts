@@ -1,10 +1,11 @@
 /**
  * Boot sync probe — Layer 2 orchestrator for `ouro up`.
  *
- * For each sync-enabled bundle, runs `preTurnPullAsync` wrapped in
- * `runWithTimeouts`, classifies failures via `classifySyncFailure`, and
- * returns aggregated findings. Findings surface in the boot stdout
- * summary written by `cli-exec.ts` after the probe phase.
+ * For each sync-enabled bundle, runs `probeSync` (fetch only, then count
+ * commits ahead and behind) wrapped in `runWithTimeouts`, classifies failures
+ * via `classifySyncFailure`, and returns aggregated findings plus one status
+ * per probed bundle. Both surface in the boot stdout summary written by
+ * `cli-exec.ts` after the probe phase.
  *
  * Layer 2 is intentionally a **boot-time preflight surface only** — it
  * does NOT feed into the running daemon's rollup state. `computeDaemonRollup`
@@ -14,6 +15,8 @@
  * dispatches the right diagnostic skill).
  *
  * The probe NEVER:
+ *   - Merges, commits or pushes: it fetches only.
+ *   - Waits for the bundle sync lock: a held lock is reported as busy.
  *   - Writes to `state/` (verified by Unit 7's grep gate).
  *   - Throws — every failure becomes a finding.
  *   - Hangs — `AbortSignal` from `runWithTimeouts` cuts hung remotes
@@ -40,7 +43,8 @@
  */
 
 import * as path from "path"
-import { preTurnPullAsync } from "../sync"
+import { NOT_A_REPO_ERROR, probeSync, type SyncProbeResult } from "../sync"
+import { clearOwnStaleSyncLock } from "../sync-lock"
 import type { SyncConfig } from "../config"
 import type { BundleSyncRow } from "./agent-discovery"
 import { classifySyncFailure, type SyncClassification } from "../sync-classification"
@@ -74,8 +78,16 @@ export interface BootSyncProbeFinding {
   advisory: boolean
 }
 
+/** One line per probed bundle for the boot summary: what the probe saw. */
+export interface BootSyncProbeStatus {
+  agent: string
+  text: string
+}
+
 export interface BootSyncProbeResult {
   findings: BootSyncProbeFinding[]
+  /** Absent from probes that predate it. */
+  statuses?: BootSyncProbeStatus[]
   durationMs: number
 }
 
@@ -116,6 +128,7 @@ export async function runBootSyncProbe(
   })
 
   const findings: BootSyncProbeFinding[] = []
+  const statuses: BootSyncProbeStatus[] = []
 
   for (const bundle of bundles) {
     if (!bundle.enabled) continue
@@ -128,7 +141,7 @@ export async function runBootSyncProbe(
       findings.push({
         agent: bundle.agent,
         classification: "unknown",
-        error: `bundle is not a git repo; run \`git init\` inside ${agentRoot} to enable sync (or disable sync in agent.json)`,
+        error: NOT_A_REPO_ERROR,
         conflictFiles: [],
         warnings: [],
         advisory: true,
@@ -138,13 +151,20 @@ export async function runBootSyncProbe(
 
     const syncConfig: SyncConfig = { enabled: bundle.enabled, remote: bundle.remote }
 
+    // A lock this pid left in an earlier life (PID 1 in the container) would read as busy forever.
+    try {
+      clearOwnStaleSyncLock(agentRoot)
+    } catch {
+      // An unreadable lock is reported by the probe's own attempt below.
+    }
+
     const outcome = await runWithTimeouts(
-      (signal) => preTurnPullAsync(agentRoot, syncConfig, { signal }),
+      (signal) => probeSync(agentRoot, syncConfig, signal),
       { softMs, hardMs, label: `boot-sync-probe ${bundle.agent}`, envKey: "GIT" },
     )
 
     // Hard timeout — the probe was aborted. Synthesise a finding from the
-    // outcome's classification (the underlying `preTurnPullAsync` may also
+    // outcome's classification (the underlying `probeSync` may also
     // have rejected with an AbortError, but the wrapper already swallowed
     // it).
     if (outcome.classification === "timeout-hard") {
@@ -190,6 +210,9 @@ export async function runBootSyncProbe(
       continue
     }
 
+    const status = describeProbeResult(result, syncConfig)
+    if (status) statuses.push({ agent: bundle.agent, text: status })
+
     // Probe succeeded. If the soft warning fired, surface it as an advisory
     // finding so the operator sees the slow-pull warning even on success.
     if (outcome.warnings.length > 0) {
@@ -207,6 +230,7 @@ export async function runBootSyncProbe(
   // Stable order — sort by agent name so renderers and tests see the same
   // sequence.
   findings.sort((a, b) => a.agent.localeCompare(b.agent))
+  statuses.sort((a, b) => a.agent.localeCompare(b.agent))
 
   const durationMs = Date.now() - startedAt
 
@@ -214,8 +238,16 @@ export async function runBootSyncProbe(
     component: "daemon",
     event: "daemon.boot_sync_probe_end",
     message: "boot sync probe complete",
-    meta: { findingCount: findings.length, durationMs },
+    meta: { findingCount: findings.length, statusCount: statuses.length, durationMs },
   })
 
-  return { findings, durationMs }
+  return { findings, statuses, durationMs }
+}
+
+/** The probe's view of one healthy bundle, or null when there is nothing to say (no remote). */
+function describeProbeResult(result: SyncProbeResult, config: SyncConfig): string | null {
+  if (result.paused) return `sync paused until ${result.pausedUntil}`
+  if (result.busy) return `sync busy: another sync holds the lock${result.holderPid == null ? "" : ` (pid ${result.holderPid})`}`
+  if (result.ahead === undefined || result.behind === undefined) return null
+  return `${result.ahead} ahead, ${result.behind} behind ${config.remote}/${config.branch ?? "main"}`
 }

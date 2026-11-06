@@ -65,6 +65,8 @@ import { consumeSanctuarySchedulerFire, readSanctuaryHealthCursor, recordSanctua
 import { verifySanctuarySchedulerFireCommand } from "./sanctuary-scheduler-origin"
 import { readOrCreateTelegramIdentityKey } from "../../senses/telegram"
 import { checkBundleSyncHealth } from "../sync-health"
+import { abortInFlightSync } from "../sync"
+import { clearOwnStaleSyncLock } from "../sync-lock"
 
 function parseSocketPath(argv: string[]): string {
   const socketIndex = argv.indexOf("--socket")
@@ -728,6 +730,20 @@ void startDaemonAfterContainerCredentialBootstrap({
   supercronicSupervisor?.start()
   const providerPreload = Promise.resolve()
   const bundlesRoot = getAgentBundlesRoot()
+  // The daemon is PID 1 on every container boot, so a lock an earlier boot left looks like ours.
+  // Clearing a lock never stops the boot; an unreadable one is judged again by the next sync.
+  try {
+    for (const row of listBundleSyncRows({ bundlesRoot })) {
+      if (!row.enabled || !row.gitInitialized) continue
+      try {
+        clearOwnStaleSyncLock(path.join(bundlesRoot, `${row.agent}.ouro`))
+      } catch {
+        // Next bundle.
+      }
+    }
+  } catch {
+    // The bundle list could not be read.
+  }
   const ouroPath = supercronicSupervisor
     ? "/usr/local/bin/node /opt/ouro/dist/heart/daemon/ouro-entry.js"
     : resolveOuroBinaryPath()
@@ -991,6 +1007,7 @@ process.on("SIGINT", () => {
   // daemon kept dying. Tombstones are informational — having a "sigint"
   // tombstone is strictly better than silence.
   _tombstoneWritten = true
+  abortInFlightSync()
   writeDaemonTombstone("sigint", new Error("daemon received SIGINT"))
   const forcedExit = setTimeout(() => process.exit(1), 12_000)
   forcedExit.unref()
@@ -1008,6 +1025,8 @@ process.on("SIGINT", () => {
 
 process.on("SIGTERM", () => {
   _tombstoneWritten = true
+  // Kill sync's git process groups and release the bundle locks before anything slower.
+  abortInFlightSync()
   writeDaemonTombstone("sigterm", new Error("daemon received SIGTERM"))
   const forcedExit = setTimeout(() => process.exit(1), 12_000)
   forcedExit.unref()

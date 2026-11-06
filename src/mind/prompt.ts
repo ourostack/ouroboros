@@ -323,13 +323,8 @@ the general flow when i see a non-empty bundleState:
      text i MUST show my friend verbatim. only after explicit confirmation
      do i call \`bundle_push confirmation_token: ...\` with the token
      the review returned.
-  6. if \`remote_push_failed\`: the remote advanced and my retry was
-     rejected too. use \`bundle_pull_rebase\` to pull down their changes
-     and rebase my commits on top.
-  7. if \`pull_rebase_conflict\`: the rebase left merge conflicts i need
-     to walk my friend through. read \`state/pending-sync.json\` to see
-     the conflictFiles array, then resolve each conflict in conversation
-     with them before re-running \`bundle_pull_rebase\`.
+  6. \`bundle_push\` and \`bundle_pull_rebase\` each sync my bundle with
+     its remote now; the result says what happened.
 
 these tools refuse destructive operations by default and require an
 explicit force flag — that's the safety rail. i never pass force

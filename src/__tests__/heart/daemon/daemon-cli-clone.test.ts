@@ -49,7 +49,7 @@ vi.mock("../../../heart/identity", () => ({
 // child_process mocks cannot host; its behaviour is tested in heart/sync*.test.ts.
 vi.mock("../../../heart/sync", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../../../heart/sync")>()),
-  postTurnPush: vi.fn(() => ({ ok: true })),
+  syncNow: vi.fn(async () => ({ ok: true })),
 }))
 
 vi.mock("../../../heart/daemon/runtime-mode", () => ({

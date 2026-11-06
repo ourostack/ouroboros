@@ -2,8 +2,9 @@
  * Agent-callable bundle management tools.
  *
  * These tools let the agent fix its own git state — initializing the
- * bundle as a repo, adding a remote, making the first commit, pushing,
- * and recovering from push rejections. The `bundleState` field in the
+ * bundle as a repo, adding a remote, making the first commit, and syncing
+ * with the remote (bundle_push and bundle_pull_rebase both run the shared
+ * merge-only `syncNow`; neither ever leaves a rebase, a merge or a stash). The `bundleState` field in the
  * start-of-turn packet (PR 5) points the agent at these tools whenever
  * it detects an unresolved git issue.
  *
@@ -19,8 +20,7 @@
  * ## Destructive-op refusal pattern (Directive B)
  *
  * Tools that could lose work (bundle_init_git on an existing repo,
- * bundle_add_remote on a configured remote, bundle_pull_rebase with
- * dirty tree, etc.) refuse by default and require an explicit `force`
+ * bundle_add_remote on a configured remote, etc.) refuse by default and require an explicit `force`
  * flag — mirroring Claude Code's `ExitWorktreeTool` safety pattern. The
  * refusal surface is the LLM's responsibility to bridge with the human:
  * when a tool refuses, the agent should ask the user for permission
@@ -42,7 +42,8 @@ import type { ToolDefinition, ToolHandler } from "./tools-base"
 import { emitNervesEvent } from "../nerves/runtime"
 import { getAgentRoot } from "../heart/identity"
 import { detectBundleState } from "../heart/bundle-state"
-import { clearPendingSync } from "../heart/sync"
+import { clearPendingSync, syncNow } from "../heart/sync"
+import type { SyncConfig } from "../heart/config"
 import { BUNDLE_GITIGNORE_TEMPLATE, PII_BUNDLE_DIRECTORIES } from "./bundle-templates"
 
 // ─── shared helpers ────────────────────────────────────────────────────
@@ -147,19 +148,16 @@ const checkSyncStatusHandler: ToolHandler = () => {
         .map((l) => l.trim())
         .filter((l) => l.length > 0).length
     }
-    /* v8 ignore start -- upstream tracking ahead/behind requires a live remote, not practical to cover in unit tests @preserve */
     if (hasRemote && firstCommitExists) {
-      // Best-effort ahead/behind from git rev-list if an upstream is tracked.
-      const counts = gitExec(bundleRoot, ["rev-list", "--left-right", "--count", "HEAD...@{upstream}"])
+      // Against the last fetched sync branch, named explicitly; no upstream config is assumed.
+      const config = bundleSyncConfig(bundleRoot, undefined)
+      const counts = gitExec(bundleRoot, ["rev-list", "--left-right", "--count", `HEAD...refs/remotes/${config.remote}/${config.branch}`])
       if (counts.code === 0) {
         const [a, b] = counts.stdout.trim().split("\t").map((n) => parseInt(n, 10))
-        if (!Number.isNaN(a) && !Number.isNaN(b)) {
-          ahead = a
-          behind = b
-        }
+        ahead = a
+        behind = b
       }
     }
-    /* v8 ignore stop */
   }
 
   const pendingSyncExists = fs.existsSync(path.join(bundleRoot, "state", "pending-sync.json"))
@@ -707,17 +705,7 @@ function makeFirstPushReviewHandler(deps: FirstPushReviewDeps = {}): ToolHandler
 
 const firstPushReviewHandler = makeFirstPushReviewHandler()
 
-// ─── tool: bundle_push ─────────────────────────────────────────────────
-
-/* v8 ignore start -- push error classification branches require mocking git stderr from each failure mode; covered by a single network-failure integration test in the suite @preserve */
-function classifyPushError(stderr: string): "rejected" | "network" | "auth" | "unknown" {
-  const lower = stderr.toLowerCase()
-  if (lower.includes("rejected") || lower.includes("non-fast-forward") || lower.includes("fetch first")) return "rejected"
-  if (lower.includes("could not resolve") || lower.includes("network") || lower.includes("connection") || lower.includes("timeout")) return "network"
-  if (lower.includes("authentication") || lower.includes("permission denied") || lower.includes("unauthorized") || lower.includes("403")) return "auth"
-  return "unknown"
-}
-/* v8 ignore stop */
+// ─── tools: bundle_push and bundle_pull_rebase ─────────────────────────
 
 /**
  * Detect whether this is a first push to the remote.
@@ -728,47 +716,82 @@ function classifyPushError(stderr: string): "rejected" | "network" | "auth" | "u
  * The token requirement is a security gate; if we can't verify the remote
  * state, we assume the worst and force the agent to get confirmation. An
  * unreachable remote should NOT be a bypass vector.
- */
-/**
+ *
+ * `branch` is the remote branch sync pushes to; without it, the current
+ * local branch is probed.
+ *
  * Exported for direct unit testing in bundle-push-first-push.test.ts.
- * The integration tests use unreachable remotes so they always hit the
- * network-failure branch. The unit tests mock child_process to exercise
- * the successful-probe branches (empty stdout = first push, non-empty
- * = subsequent push, symbolic-ref failure = conservative true).
  */
-export function isFirstPushToRemote(bundleRoot: string, remote: string): boolean {
-  const branchResult = gitExec(bundleRoot, ["symbolic-ref", "--short", "HEAD"])
-  if (branchResult.code !== 0) return true
-  const branch = branchResult.stdout.trim()
-  const lsRemote = gitExec(bundleRoot, ["ls-remote", "--heads", remote, branch], 10000)
+export function isFirstPushToRemote(bundleRoot: string, remote: string, branch?: string): boolean {
+  let target = branch
+  if (target === undefined) {
+    const branchResult = gitExec(bundleRoot, ["symbolic-ref", "--short", "HEAD"])
+    if (branchResult.code !== 0) return true
+    target = branchResult.stdout.trim()
+  }
+  const lsRemote = gitExec(bundleRoot, ["ls-remote", "--heads", remote, target], 10000)
   if (lsRemote.code !== 0) return true
   return lsRemote.stdout.trim().length === 0
 }
 
-function makePushHandler(deps: { now?: () => number } = {}): ToolHandler {
-  return (args) => {
+/** How long a bundle tool waits for the bundle sync lock before reporting busy. */
+const BUNDLE_TOOL_SYNC_WAIT_MS = 10_000
+
+/** The bundle's sync remote and branch from agent.json, with an explicit remote argument winning. */
+function bundleSyncConfig(bundleRoot: string, remoteArg: string | undefined): SyncConfig {
+  let remote = "origin"
+  let branch = "main"
+  try {
+    const parsed = JSON.parse(fs.readFileSync(path.join(bundleRoot, "agent.json"), "utf-8")) as { sync?: { remote?: unknown; branch?: unknown } }
+    if (typeof parsed.sync?.remote === "string" && parsed.sync.remote.length > 0) remote = parsed.sync.remote
+    if (typeof parsed.sync?.branch === "string" && parsed.sync.branch.length > 0) branch = parsed.sync.branch
+  } catch {
+    // No readable agent.json: the defaults.
+  }
+  return { enabled: true, remote: remoteArg ?? remote, branch }
+}
+
+/**
+ * Both tools sync the bundle through `syncNow`: commit, fetch, merge, push,
+ * under the bundle lock. A conflict is aborted and recorded by sync itself,
+ * so no tool call leaves a merge, a rebase or a stash behind.
+ */
+function makeSyncHandler(toolName: "bundle_push" | "bundle_pull_rebase", deps: { now?: () => number } = {}): ToolHandler {
+  return async (args) => {
     const bundleRoot = getAgentRoot()
-    const remote = typeof args.remote === "string" && args.remote.length > 0 ? args.remote : "origin"
+    const remoteArg = typeof args.remote === "string" && args.remote.length > 0 ? args.remote : undefined
     const confirmationToken = typeof (args as { confirmation_token?: unknown }).confirmation_token === "string"
       ? (args as { confirmation_token: string }).confirmation_token
       : undefined
     const now = deps.now ?? Date.now
+    const config = bundleSyncConfig(bundleRoot, remoteArg)
+    const remote = config.remote
 
     emitNervesEvent({
       component: "repertoire",
-      event: "repertoire.bundle_push_start",
-      message: "pushing bundle to remote",
-      meta: { bundleRoot, remote },
+      event: "repertoire.bundle_sync_tool_start",
+      message: "syncing bundle from a tool",
+      meta: { bundleRoot, tool: toolName, remote },
     })
 
     const finish = (ok: boolean, payload: Record<string, unknown>): string => {
       emitNervesEvent({
         component: "repertoire",
-        event: "repertoire.bundle_push_end",
-        message: "bundle_push finished",
-        meta: { bundleRoot, ok, ...payload },
+        event: "repertoire.bundle_sync_tool_end",
+        message: "bundle sync tool finished",
+        meta: { bundleRoot, tool: toolName, ok, ...payload },
       })
       return json({ ok, ...payload })
+    }
+    const refuse = (message: string, error: string): string => {
+      emitNervesEvent({
+        level: "warn",
+        component: "repertoire",
+        event: "repertoire.bundle_push_refused",
+        message,
+        meta: { bundleRoot, tool: toolName },
+      })
+      return finish(false, { error, kind: "confirmation_required" })
     }
 
     if (!isGitRepo(bundleRoot)) {
@@ -786,50 +809,21 @@ function makePushHandler(deps: { now?: () => number } = {}): ToolHandler {
     // previously called bundle_first_push_review and obtained a
     // confirmation token. This forces a PII-review gate between
     // "bundle built locally" and "bundle contents on the internet".
-    const isFirstPush = isFirstPushToRemote(bundleRoot, remote)
-    /* v8 ignore next -- the !isFirstPush branch (subsequent push path) requires a reachable remote to test end-to-end; the path itself falls through to the git push below which is covered by the network-failure test @preserve */
+    const isFirstPush = isFirstPushToRemote(bundleRoot, remote, config.branch)
     if (isFirstPush) {
       if (!confirmationToken) {
-        emitNervesEvent({
-          level: "warn",
-          component: "repertoire",
-          event: "repertoire.bundle_push_refused",
-          message: "bundle_push refused: first push requires confirmation token",
-          meta: { bundleRoot },
-        })
-        return finish(false, {
-          error: "refused: first push requires a confirmation token — call bundle_first_push_review, show the warning to the user, and pass the returned confirmationToken to bundle_push",
-          kind: "confirmation_required",
-        })
+        return refuse(
+          `${toolName} refused: first push requires confirmation token`,
+          `refused: first push requires a confirmation token — call bundle_first_push_review, show the warning to the user, and pass the returned confirmationToken to ${toolName}`,
+        )
       }
-      const currentTime = now()
-      pruneExpiredTokens(currentTime)
+      pruneExpiredTokens(now())
       const entry = _confirmationTokens.get(confirmationToken)
       if (!entry) {
-        emitNervesEvent({
-          level: "warn",
-          component: "repertoire",
-          event: "repertoire.bundle_push_refused",
-          message: "bundle_push refused: confirmation token invalid or expired",
-          meta: { bundleRoot },
-        })
-        return finish(false, {
-          error: "refused: confirmation token invalid or expired — call bundle_first_push_review again",
-          kind: "confirmation_required",
-        })
+        return refuse(`${toolName} refused: confirmation token invalid or expired`, "refused: confirmation token invalid or expired — call bundle_first_push_review again")
       }
       if (entry.bundleRoot !== bundleRoot) {
-        emitNervesEvent({
-          level: "warn",
-          component: "repertoire",
-          event: "repertoire.bundle_push_refused",
-          message: "bundle_push refused: confirmation token bound to a different bundle",
-          meta: { bundleRoot, tokenBundleRoot: entry.bundleRoot },
-        })
-        return finish(false, {
-          error: "refused: confirmation token was issued for a different bundle",
-          kind: "confirmation_required",
-        })
+        return refuse(`${toolName} refused: confirmation token bound to a different bundle`, "refused: confirmation token was issued for a different bundle")
       }
       emitNervesEvent({
         component: "repertoire",
@@ -841,100 +835,36 @@ function makePushHandler(deps: { now?: () => number } = {}): ToolHandler {
       _confirmationTokens.delete(confirmationToken)
     }
 
-    const push = gitExec(bundleRoot, ["push", remote, "HEAD"], 30000)
-    /* v8 ignore start -- push success branch requires a reachable remote, not practical to cover in unit tests; failure branch covered by network-failure test @preserve */
-    if (push.code === 0) {
-      clearPendingSync(bundleRoot)
-      return finish(true, { remote, firstPush: isFirstPush })
-    }
-    /* v8 ignore stop */
-    const kind = classifyPushError(push.stderr)
-    return finish(false, { error: push.stderr.trim(), kind })
-  }
-}
-
-const pushHandler = makePushHandler()
-
-// ─── tool: bundle_pull_rebase ──────────────────────────────────────────
-
-const pullRebaseHandler: ToolHandler = (args) => {
-  const bundleRoot = getAgentRoot()
-  const remote = typeof args.remote === "string" && args.remote.length > 0 ? args.remote : "origin"
-  const discardChanges = args.discard_changes === "true" || (args.discard_changes as unknown) === true
-
-  emitNervesEvent({
-    component: "repertoire",
-    event: "repertoire.bundle_pull_rebase_start",
-    message: "pulling with rebase",
-    meta: { bundleRoot, remote, discardChanges },
-  })
-
-  const finish = (ok: boolean, payload: Record<string, unknown>): string => {
-    emitNervesEvent({
-      component: "repertoire",
-      event: "repertoire.bundle_pull_rebase_end",
-      message: "bundle_pull_rebase finished",
-      meta: { bundleRoot, ok, ...payload },
-    })
-    return json({ ok, ...payload })
-  }
-
-  if (!isGitRepo(bundleRoot)) {
-    return finish(false, { error: "bundle is not a git repo" })
-  }
-  const remotes = listRemotes(bundleRoot)
-  if (!remotes.includes(remote)) {
-    return finish(false, { error: `remote "${remote}" not configured` })
-  }
-
-  // Uncommitted changes: refuse unless discard_changes was explicitly set.
-  // Even with discard_changes, we stash+rebase+pop rather than nuke — the
-  // user can manually `git stash drop` if they really want to discard.
-  const status = gitExec(bundleRoot, ["status", "--porcelain"])
-  const isDirty = status.stdout.trim().length > 0
-  const stashed = { value: false }
-  if (isDirty) {
-    if (!discardChanges) {
-      emitNervesEvent({
-        level: "warn",
-        component: "repertoire",
-        event: "repertoire.bundle_pull_rebase_refused",
-        message: "bundle_pull_rebase refused: uncommitted changes",
-        meta: { bundleRoot },
+    const agentName = path.basename(bundleRoot).replace(/\.ouro$/, "")
+    const result = await syncNow(bundleRoot, config, agentName, BUNDLE_TOOL_SYNC_WAIT_MS)
+    const where = { remote, branch: config.branch, firstPush: isFirstPush }
+    if (result.paused) return finish(false, { ...where, paused: true, pausedUntil: result.pausedUntil, error: `sync paused until ${result.pausedUntil}` })
+    if (result.busy) return finish(false, { ...where, busy: true, holderPid: result.holderPid, error: result.error })
+    if (!result.ok) {
+      const failure = readPendingFailure(bundleRoot)
+      return finish(false, {
+        ...where,
+        error: result.error,
+        ...(failure?.classification ? { kind: failure.classification } : {}),
+        ...(failure?.conflictFiles && failure.conflictFiles.length > 0 ? { conflictFiles: failure.conflictFiles } : {}),
       })
-      return finish(false, { error: "refused: bundle has uncommitted changes — commit them or pass discard_changes: true (stash+rebase+pop)" })
     }
-    /* v8 ignore start -- discardChanges=true stash path exercised in a dirty-tree test below but full rebase+pop requires reachable remote @preserve */
-    const stash = gitExec(bundleRoot, ["stash", "push", "-u", "-m", "bundle_pull_rebase stash"])
-    if (stash.code !== 0) {
-      return finish(false, { error: `git stash failed: ${stash.stderr}` })
-    }
-    stashed.value = true
-    /* v8 ignore stop */
+    clearPendingSync(bundleRoot)
+    return finish(true, where)
   }
-
-  const rebase = gitExec(bundleRoot, ["pull", "--rebase", remote], 30000)
-  /* v8 ignore start -- rebase success branch requires a reachable remote @preserve */
-  if (rebase.code === 0) {
-    if (stashed.value) {
-      const pop = gitExec(bundleRoot, ["stash", "pop"])
-      if (pop.code !== 0) {
-        return finish(false, { error: `git stash pop failed after successful rebase: ${pop.stderr}`, kind: "stash_conflict" })
-      }
-    }
-    return finish(true, { remote, stashed: stashed.value })
-  }
-  /* v8 ignore stop */
-
-  // Capture conflict files if the rebase left us mid-conflict.
-  const conflictStatus = gitExec(bundleRoot, ["status", "--porcelain=v1"])
-  const conflictFiles: string[] = []
-  for (const line of conflictStatus.stdout.split("\n")) {
-    /* v8 ignore next -- conflict marker extraction requires a real merge conflict, covered indirectly via the network-failure test which returns empty conflictStatus @preserve */
-    if (/^(UU|AA|DD|AU|UA|DU|UD) /.test(line)) conflictFiles.push(line.slice(3).trim())
-  }
-  return finish(false, { error: rebase.stderr.trim(), kind: "conflict", conflictFiles })
 }
+
+/** The pending-sync record sync wrote for this failure, when readable. */
+function readPendingFailure(bundleRoot: string): { classification?: string; conflictFiles?: string[] } | null {
+  try {
+    return JSON.parse(fs.readFileSync(path.join(bundleRoot, "state", "pending-sync.json"), "utf-8")) as { classification?: string; conflictFiles?: string[] }
+  } catch {
+    return null
+  }
+}
+
+const pushHandler = makeSyncHandler("bundle_push")
+const pullRebaseHandler = makeSyncHandler("bundle_pull_rebase")
 
 // ─── registry ──────────────────────────────────────────────────────────
 
@@ -1032,11 +962,11 @@ export const bundleToolDefinitions: ToolDefinition[] = [
       type: "function",
       function: {
         name: "bundle_push",
-        description: "Push my bundle's HEAD to the configured remote. On first push to a new remote, requires a confirmation_token from bundle_first_push_review (Directive D: human must acknowledge PII exposure before the bundle goes over the wire). Subsequent pushes ignore the token. Returns a structured error with kind: 'rejected' | 'network' | 'auth' | 'unknown' | 'confirmation_required' on failure. Does NOT auto-rebase on rejection — use bundle_pull_rebase explicitly when needed.",
+        description: "Sync my bundle with its remote now.",
         parameters: {
           type: "object",
           properties: {
-            remote: { type: "string", description: "Remote name. Defaults to 'origin'." },
+            remote: { type: "string", description: "Remote name. Defaults to agent.json's sync.remote, else 'origin'." },
             confirmation_token: { type: "string", description: "Opaque token from bundle_first_push_review. Required on the first push to a new remote; ignored on subsequent pushes." },
           },
         },
@@ -1050,12 +980,12 @@ export const bundleToolDefinitions: ToolDefinition[] = [
       type: "function",
       function: {
         name: "bundle_pull_rebase",
-        description: "Pull from the remote with --rebase. Refuses on uncommitted changes unless I pass discard_changes: true (stash + rebase + pop, NOT a hard discard). On conflict, returns conflictFiles so I can walk the user through resolution.",
+        description: "Sync my bundle with its remote now.",
         parameters: {
           type: "object",
           properties: {
-            remote: { type: "string", description: "Remote name. Defaults to 'origin'." },
-            discard_changes: { type: "boolean", description: "Stash + rebase + pop even if the working tree is dirty. Default false." },
+            remote: { type: "string", description: "Remote name. Defaults to agent.json's sync.remote, else 'origin'." },
+            confirmation_token: { type: "string", description: "Opaque token from bundle_first_push_review. Required on the first push to a new remote; ignored on subsequent pushes." },
           },
         },
       },
@@ -1064,7 +994,7 @@ export const bundleToolDefinitions: ToolDefinition[] = [
     riskProfile: {
       mutates: ["durable_state_write", "external_side_effect"] as const,
       risk: "high",
-      reason: "rebases bundle state from a remote",
+      reason: "syncs bundle state with a remote",
     },
   },
 ]
