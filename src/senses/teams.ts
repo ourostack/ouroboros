@@ -279,6 +279,26 @@ export function createTeamsCallbacks(
     }
   }
 
+  // Non-aborting awaitable emit — returns true on success, false on failure WITHOUT
+  // calling markStopped() / aborting the controller. Used by flushNow (speak) so a
+  // primary-stream failure followed by a successful sendMessage fallback does NOT
+  // poison the rest of the turn. tryEmit's abort-on-failure behavior is correct for
+  // end-of-turn flush() (no fallback path forward) but wrong for mid-turn speak,
+  // which has a sendMessage fallback that may still succeed. Caller (flushNow) is
+  // responsible for the `!stopped` precondition; no defensive guard here.
+  async function tryEmitNoAbort(text: string): Promise<boolean> {
+    try {
+      const result: unknown = stream.emit({ text, entities: aiLabelEntities(), channelData: { feedbackLoopEnabled: true } })
+      streamHasContent = true
+      if (result && typeof (result as { then?: Function }).then === "function") {
+        await (result as Promise<unknown>)
+      }
+      return true
+    } catch {
+      return false
+    }
+  }
+
   // Safely send a status update to the stream.
   // On error (e.g. 403 from Teams stop button), abort the controller.
   function safeUpdate(text: string): void {
@@ -405,6 +425,54 @@ export function createTeamsCallbacks(
     onClearText: () => {
       textBuffer = ""
     },
+    flushNow: async () => {
+      const trimmed = textBuffer.trim()
+      if (!trimmed) return
+      // Cancel pending periodic flush — we're delivering now.
+      stopFlushTimer()
+      // The actual speak message replaces any "thinking..." phrase cycling.
+      stopPhraseRotation()
+      // Bypass MIN_INITIAL_CHARS threshold — speak delivers immediately.
+      firstContentEmitted = true
+      textBuffer = ""
+      // Try the stream first via the NON-ABORTING variant; on failure, fall back
+      // to sendMessage. Critical: do NOT call markStopped() / abort the controller
+      // when only the primary stream fails — the sendMessage fallback may still
+      // deliver the speak, and a successful fallback must not poison the rest of
+      // the turn. Only abort when ALL delivery paths fail (handled below).
+      // Contract: throws if the message could not be delivered through any available path.
+      let delivered = false
+      let lastError: Error | null = null
+      if (!stopped) {
+        const ok = await tryEmitNoAbort(trimmed)
+        if (ok) delivered = true
+        else lastError = new Error("stream emit failed")
+      }
+      if (!delivered && sendMessage) {
+        try {
+          await sendMessage(trimmed)
+          delivered = true
+          lastError = null
+        } catch (err) {
+          lastError = err instanceof Error ? err : new Error(String(err))
+        }
+      }
+      emitNervesEvent({
+        component: "senses",
+        event: "teams.speak_flush",
+        message: "teams flushed mid-turn speak",
+        meta: { messageLength: trimmed.length, delivered },
+      })
+      if (!delivered) {
+        // All delivery paths exhausted — now it is correct to abort the turn.
+        // markStopped() halts further stream activity and aborts the controller
+        // so the engine catches up and ends the turn cleanly.
+        markStopped()
+        throw new Error(
+          `teams speak delivery failed: ${lastError?.message ?? "no fallback available"}`,
+        )
+      }
+    },
     ...(() => {
       const toolCbs = createToolActivityCallbacks({
         onDescription: (text) => safeUpdate(text),
@@ -416,6 +484,12 @@ export function createTeamsCallbacks(
       })
       return {
         onToolStart: (name: string, args: Record<string, string>) => {
+          // speak is flow-control: its visible output is the message itself
+          // (delivered via onTextChunk + flushNow). Do NOT stop phrase rotation
+          // here, do NOT emit the \u23f3 placeholder, do NOT post a tool-activity
+          // status update \u2014 all of those would create UI churn right before the
+          // actual speak content arrives.
+          if (name === "speak") return
           stopPhraseRotation()
           // Force-flush any accumulated text, bypassing MIN_INITIAL_CHARS threshold
           firstContentEmitted = true
@@ -430,6 +504,11 @@ export function createTeamsCallbacks(
           hadToolRun = true
         },
         onToolEnd: (name: string, summary: string, success: boolean) => {
+          // speak is flow-control: skip phrase-rotation stop and tool-activity end
+          // callback (no safeUpdate for \u2713/\u2717). The flushNow call inside the engine
+          // already emitted the actual message and stopped any rotation as part of
+          // tryEmit's first-content-emitted flag.
+          if (name === "speak") return
           stopPhraseRotation()
           toolCbs.onToolEnd(name, summary, success)
         },
