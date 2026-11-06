@@ -806,7 +806,8 @@ export async function startA2AServer(options: StartA2AServerOptions): Promise<A2
       did: inboundShareDeps.identity.did,
       agentName: options.agentName,
       handle: (rpc) => handleMessageSend(rpc),
-      seen: (nonce) => seen.has(nonce),
+      // Asked only after a handler throws: was this copy verified (and so recorded) before it failed?
+      seen: seen.has.bind(seen),
     })
   }
 
