@@ -33,8 +33,12 @@ import { createBridgeManager } from "../heart/bridges/manager"
 import { listSessionActivity, type SessionActivityRecord } from "../heart/session-activity"
 import { sendProactiveBlueBubblesMessageToSession } from "./bluebubbles"
 import { buildHabitTurnMessage } from "./habit-turn-message"
+import { buildAwaitTurnMessage } from "./await-turn-message"
+import { parseAwaitFile } from "../heart/awaiting/await-parser"
+import { applyAwaitRuntimeState, type AwaitRuntimeState } from "../heart/awaiting/await-runtime-state"
 import { indexJournalFiles } from "../mind/journal-index"
 import { parseHabitFile } from "../heart/habits/habit-parser"
+import { applyHabitRuntimeState } from "../heart/habits/habit-runtime-state"
 import { parseCadenceToMs } from "../heart/daemon/cadence"
 import { readHealth, getDefaultHealthPath } from "../heart/daemon/daemon-health"
 
@@ -57,9 +61,10 @@ export interface HabitParseErrorInfo {
 }
 
 export interface RunInnerDialogTurnOptions {
-  reason?: "boot" | "heartbeat" | "habit" | "instinct"
+  reason?: "boot" | "heartbeat" | "habit" | "instinct" | "await"
   taskId?: string
   habitName?: string
+  awaitName?: string
   parseErrors?: HabitParseErrorInfo[]
   instincts?: InnerDialogInstinct[]
   now?: () => Date
@@ -75,7 +80,7 @@ export interface InnerDialogTurnResult {
 
 interface InnerDialogRuntimeState {
   status: "idle" | "running"
-  reason?: "boot" | "heartbeat" | "habit" | "instinct"
+  reason?: "boot" | "heartbeat" | "habit" | "instinct" | "await"
   startedAt?: string
   lastCompletedAt?: string
 }
@@ -135,7 +140,7 @@ function displayCheckpoint(checkpoint?: string): string | undefined {
 
 export function buildInstinctUserMessage(
   instincts: InnerDialogInstinct[],
-  _reason: "boot" | "heartbeat" | "habit" | "instinct",
+  _reason: "boot" | "heartbeat" | "habit" | "instinct" | "await",
   state: InnerDialogState,
 ): string {
   const active = instincts.find((instinct) => instinct.enabled !== false) ?? DEFAULT_INNER_DIALOG_INSTINCTS[0]
@@ -198,20 +203,19 @@ export function deriveResumeCheckpoint(messages: OpenAI.ChatCompletionMessagePar
   const assistantText = contentToText(lastAssistant.content)
   if (!assistantText) return "no prior checkpoint recorded"
 
-  const explicitCheckpoint = assistantText
+  const cleanedLines = assistantText
     .split("\n")
-    .map((line) => line.trim())
+    .map((line) => line.replace(/<\/?think>/gi, "").trim())
+    .filter((line) => line.length > 0)
+
+  const explicitCheckpoint = cleanedLines
     .find((line) => /^checkpoint\s*:/i.test(line))
   if (explicitCheckpoint) {
     const parsed = explicitCheckpoint.replace(/^checkpoint\s*:\s*/i, "").trim()
     return parsed || "no prior checkpoint recorded"
   }
 
-  const firstLine = assistantText
-    .split("\n")
-    .map((line) => line.trim())
-    .find((line) => line.length > 0)
-  /* v8 ignore next -- unreachable: contentToText().trim() guarantees a non-empty line @preserve */
+  const firstLine = cleanedLines[0]
   if (!firstLine) return "no prior checkpoint recorded"
   if (firstLine.length <= 220) return firstLine
   return `${firstLine.slice(0, 217)}...`
@@ -545,7 +549,7 @@ function buildAlsoDueLine(agentRoot: string, currentHabitName: string, now: () =
 
     try {
       const content = fs.readFileSync(path.join(habitsDir, file), "utf-8")
-      const habit = parseHabitFile(content, path.join(habitsDir, file))
+      const habit = applyHabitRuntimeState(agentRoot, parseHabitFile(content, path.join(habitsDir, file)))
       if (habit.status !== "active" || !habit.cadence) continue
 
       const cadenceMs = parseCadenceToMs(habit.cadence)
@@ -624,7 +628,7 @@ export async function runInnerDialogTurn(options?: RunInnerDialogTurnOptions): P
       let habitLastRun: string | null = null
       try {
         const habitContent = fs.readFileSync(habitFilePath, "utf-8")
-        const parsed = parseHabitFile(habitContent, habitFilePath)
+        const parsed = applyHabitRuntimeState(agentRoot, parseHabitFile(habitContent, habitFilePath))
         habitBody = parsed.body || undefined
         habitTitle = parsed.title || habitName
         habitLastRun = parsed.lastRun
@@ -682,6 +686,43 @@ export async function runInnerDialogTurn(options?: RunInnerDialogTurnOptions): P
           // swallowed: indexing failure must never block habit turn
         })
         /* v8 ignore stop */
+      }
+    } else if (reason === "await" && options?.awaitName) {
+      const agentRoot = getAgentRoot()
+      const awaitName = options.awaitName
+      const awaitFilePath = path.join(agentRoot, "awaiting", `${awaitName}.md`)
+      let awaitBody: string | undefined
+      let condition: string | null = null
+      let lastCheckedAt: string | null = null
+      let lastObservation: string | null = null
+      let checkedCount = 0
+      let awaitFound = false
+      try {
+        const awaitContent = fs.readFileSync(awaitFilePath, "utf-8")
+        const parsed = applyAwaitRuntimeState(agentRoot, parseAwaitFile(awaitContent, awaitFilePath)) as ReturnType<typeof parseAwaitFile> & Partial<AwaitRuntimeState>
+        awaitFound = true
+        awaitBody = parsed.body || undefined
+        condition = parsed.condition
+        lastCheckedAt = parsed.last_checked ?? null
+        lastObservation = parsed.last_observation ?? null
+        checkedCount = parsed.checked_count ?? 0
+      } catch {
+        // file missing — fall through to error message
+      }
+
+      if (!awaitFound || !condition) {
+        userContent = `await "${awaitName}" could not be read (file not found or no condition). check awaiting/${awaitName}.md.`
+      } else {
+        userContent = buildAwaitTurnMessage({
+          awaitName,
+          condition,
+          body: awaitBody,
+          lastCheckedAt,
+          lastObservation,
+          checkedCount,
+          checkpoint: displayCheckpoint(state.checkpoint),
+          now,
+        })
       }
     } else {
       userContent = buildInstinctUserMessage(instincts, reason, state)

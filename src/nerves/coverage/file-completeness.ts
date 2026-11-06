@@ -56,12 +56,14 @@ const DISPATCH_EXEMPT_PATTERNS = [
   "repertoire/tools-config",
   "repertoire/tools-base",
   // CLI sub-modules: cli-exec.ts is the router with emitNervesEvent calls;
-  // cli-parse, cli-render, and cli-help are pure functions/data with no side effects.
+  // cli-parse, cli-render, cli-help, and their small helpers are pure functions/data with no side effects.
   "daemon/cli-parse",
   "daemon/cli-render",
   "daemon/cli-help",
+  "daemon/vault-items",
   // Shared utility modules: pure helpers consumed by modules that own observability.
   "arc/json-store",
+  "heart/mail-import-discovery",
   "repertoire/api-client",
   "repertoire/github-client",
   "mind/embedding-provider",
@@ -82,23 +84,67 @@ const DISPATCH_EXEMPT_PATTERNS = [
   // HTTP health probe: pure HTTP utility factory. The HealthMonitor caller
   // owns observability via daemon.health_result events.
   "daemon/http-health-probe",
+  // Rollup decision function: pure decision tree mapping per-agent
+  // snapshots + bootstrap-degraded entries + safe-mode flag to a
+  // RollupStatus. No side effects. The caller (daemon-entry.ts
+  // buildDaemonHealthState → DaemonHealthWriter) owns observability via
+  // daemon.health_written when the rolled-up state is persisted.
+  "daemon/daemon-rollup",
   // Attachment helper modules: generic file-path/extension utilities and the
   // source registry are pure support seams. The orchestrator/adapters that
   // call them own the observability.
   "heart/attachments/originals",
   "heart/attachments/sources/index",
   "heart/attachments/sources/cli-local-file",
-  // Browser-safe Outlook contract helpers: shared types/formatting helpers
-  // consumed by server readers and the UI. Outlook read/render modules own
+  // Browser-safe Mailbox contract helpers: shared types/formatting helpers
+  // consumed by server readers and the UI. Mailbox read/render modules own
   // the observability for these projections.
-  "heart/outlook/outlook-types",
-  // Outlook HTTP helper modules: route/static/transport/hook seams are
-  // dispatched by outlook-http.ts, whose server lifecycle owns observability.
-  "heart/outlook/outlook-http-transport",
-  "heart/outlook/outlook-http-static",
-  "heart/outlook/outlook-http-hooks",
-  "heart/outlook/outlook-http-routes",
-  "heart/outlook/outlook-http-response",
+  "heart/mailbox/mailbox-types",
+  // Mail search relevance scorer: pure heuristic function (regex + counter
+  // arithmetic). The caller (search-cache.ts searchMailSearchCache) owns
+  // observability via senses.mail_search_cache_upserted and friends.
+  "mailroom/search-relevance",
+  // Mail thread reconstruction: pure graph-walk over decrypted message
+  // metadata. Consumers (tools-mail.ts mail_thread handler) own observability.
+  "mailroom/thread",
+  // Trip ledger crypto helpers: pure RSA/AES envelope construction + slug
+  // hashing. The caller (trips/store.ts) owns observability via
+  // trips.ledger_created and trips.evidence_attached.
+  "trips/core",
+  // Mailbox HTTP helper modules: route/static/transport/hook seams are
+  // dispatched by mailbox-http.ts, whose server lifecycle owns observability.
+  "heart/mailbox/mailbox-http-transport",
+  "heart/mailbox/mailbox-http-static",
+  "heart/mailbox/mailbox-http-hooks",
+  "heart/mailbox/mailbox-http-routes",
+  "heart/mailbox/mailbox-http-response",
+  // Session playback: read-only debugging CLI for sanitize-pipeline replay.
+  // No side effects on the runtime; output is human-readable diagnostics only.
+  "heart/session-playback-cli-main",
+  "heart/session-playback-cli",
+  "heart/session-playback",
+  // Nerves review: read-only NDJSON tail/filter CLI for debugging.
+  // Diagnostics-only utility; the running daemon owns observability.
+  "nerves/review/cli-main",
+  "nerves/review/cli",
+  "nerves/review/core",
+  // Mail body cache: in-process LRU helper. Cache hit/miss observability
+  // lives at the caller (tools-mail.ts mail_body handler) which fires
+  // repertoire.mail_body_cache_hit on cache reuse.
+  "mailroom/body-cache",
+  // Session stats: read-only session.json analyzer CLI for debugging.
+  // Diagnostics-only utility; output is human-readable summary.
+  "heart/session-stats-cli-main",
+  "heart/session-stats",
+  // Layer 2 sync classifier: pure pattern-matcher mapping (error, context)
+  // to a SyncClassification. The orchestrator (boot-sync-probe.ts) owns
+  // observability via daemon.boot_sync_probe_start/end events; the
+  // post-turn push path (sync.ts) emits its own classification events.
+  "heart/sync-classification",
+  // Layer 2 timeout wrapper: pure soft/hard timeout abstraction over
+  // AbortController + setTimeout. Callers (boot-sync-probe.ts and any
+  // future consumer) own observability; the wrapper itself is mechanical.
+  "heart/timeouts",
 ]
 
 function isDispatchExempt(filePath: string): boolean {

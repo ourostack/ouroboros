@@ -7,7 +7,15 @@ export interface BlueBubblesRuntimeState {
   upstreamStatus: "unknown" | "ok" | "error"
   detail: string
   lastCheckedAt?: string
+  proofMethod?: string
   pendingRecoveryCount: number
+  failedRecoveryCount?: number
+  oldestPendingRecoveryAt?: string
+  oldestPendingRecoveryAgeMs?: number
+  activeTurnCount?: number
+  stalledTurnCount?: number
+  oldestActiveTurnStartedAt?: string
+  oldestActiveTurnAgeMs?: number
   lastRecoveredAt?: string
   lastRecoveredMessageGuid?: string
 }
@@ -33,6 +41,9 @@ export function readBlueBubblesRuntimeState(agentName: string, agentRoot?: strin
   try {
     const raw = fs.readFileSync(filePath, "utf-8")
     const parsed = JSON.parse(raw) as Partial<BlueBubblesRuntimeState>
+    const failedRecoveryCount = typeof parsed.failedRecoveryCount === "number" && Number.isFinite(parsed.failedRecoveryCount)
+      ? parsed.failedRecoveryCount
+      : undefined
     return {
       upstreamStatus: parsed.upstreamStatus === "ok" || parsed.upstreamStatus === "error"
         ? parsed.upstreamStatus
@@ -41,9 +52,31 @@ export function readBlueBubblesRuntimeState(agentName: string, agentRoot?: strin
         ? parsed.detail
         : DEFAULT_RUNTIME_STATE.detail,
       lastCheckedAt: typeof parsed.lastCheckedAt === "string" ? parsed.lastCheckedAt : undefined,
+      proofMethod: typeof parsed.proofMethod === "string" && parsed.proofMethod.trim()
+        ? parsed.proofMethod
+        : undefined,
       pendingRecoveryCount: typeof parsed.pendingRecoveryCount === "number" && Number.isFinite(parsed.pendingRecoveryCount)
         ? parsed.pendingRecoveryCount
         : 0,
+      ...(typeof failedRecoveryCount === "number" ? { failedRecoveryCount } : {}),
+      oldestPendingRecoveryAt: typeof parsed.oldestPendingRecoveryAt === "string"
+        ? parsed.oldestPendingRecoveryAt
+        : undefined,
+      oldestPendingRecoveryAgeMs: typeof parsed.oldestPendingRecoveryAgeMs === "number" && Number.isFinite(parsed.oldestPendingRecoveryAgeMs)
+        ? parsed.oldestPendingRecoveryAgeMs
+        : undefined,
+      activeTurnCount: typeof parsed.activeTurnCount === "number" && Number.isFinite(parsed.activeTurnCount)
+        ? parsed.activeTurnCount
+        : undefined,
+      stalledTurnCount: typeof parsed.stalledTurnCount === "number" && Number.isFinite(parsed.stalledTurnCount)
+        ? parsed.stalledTurnCount
+        : undefined,
+      oldestActiveTurnStartedAt: typeof parsed.oldestActiveTurnStartedAt === "string"
+        ? parsed.oldestActiveTurnStartedAt
+        : undefined,
+      oldestActiveTurnAgeMs: typeof parsed.oldestActiveTurnAgeMs === "number" && Number.isFinite(parsed.oldestActiveTurnAgeMs)
+        ? parsed.oldestActiveTurnAgeMs
+        : undefined,
       lastRecoveredAt: typeof parsed.lastRecoveredAt === "string" ? parsed.lastRecoveredAt : undefined,
       lastRecoveredMessageGuid: typeof parsed.lastRecoveredMessageGuid === "string"
         ? parsed.lastRecoveredMessageGuid
@@ -82,6 +115,9 @@ export function writeBlueBubblesRuntimeState(agentName: string, state: BlueBubbl
       agentName,
       upstreamStatus: state.upstreamStatus,
       pendingRecoveryCount: state.pendingRecoveryCount,
+      failedRecoveryCount: state.failedRecoveryCount ?? 0,
+      activeTurnCount: state.activeTurnCount ?? 0,
+      stalledTurnCount: state.stalledTurnCount ?? 0,
       path: filePath,
     },
   })

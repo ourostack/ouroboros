@@ -12,7 +12,7 @@ vi.mock("../../../heart/daemon/socket-client", () => ({
 
 // Mock agent-service
 vi.mock("../../../heart/daemon/agent-service", () => ({
-  handleAgentStatus: vi.fn(async () => ({ ok: true, message: "Agent test-agent status", data: { agent: "test-agent", status: "active" } })),
+  handleAgentStatus: vi.fn(async () => ({ ok: true, message: "agent=test-agent\tinnerStatus=idle\ndaemon=running\thealth=ok", data: { agent: "test-agent", status: "active" } })),
   handleAgentAsk: vi.fn(async () => ({ ok: true, message: "Test response" })),
   handleAgentCatchup: vi.fn(async () => ({ ok: true, message: "Catchup" })),
   handleAgentDelegate: vi.fn(async () => ({ ok: true, message: "Delegated" })),
@@ -256,6 +256,7 @@ describe("MCP server protocol layer", () => {
     // Tool calls go through agent-service directly, not daemon socket
     const { handleAgentStatus } = await import("../../../heart/daemon/agent-service")
     expect(handleAgentStatus).toHaveBeenCalled()
+    expect(handleAgentStatus).toHaveBeenCalledWith(expect.objectContaining({ socketPath: "/tmp/test.sock" }))
 
     emitNervesEvent({
       component: "daemon",
@@ -819,6 +820,61 @@ describe("MCP server protocol layer", () => {
       message: "send_message test complete",
       meta: {},
     })
+  })
+
+  it("routes ask through the same full conversation turn as send_message", async () => {
+    mockSendDaemonCommand.mockResolvedValueOnce({ ok: true, message: "answer from agent", data: { ponderDeferred: false } })
+
+    const { createMcpServer } = await import("../../../heart/mcp/mcp-server")
+    const localStdin = new PassThrough()
+    const localStdout = new PassThrough()
+    const server = createMcpServer({
+      agent: "test-agent",
+      friendId: "test-friend",
+      socketPath: "/tmp/test.sock",
+      stdin: localStdin,
+      stdout: localStdout,
+    })
+
+    const outputPromise = collectOutput(localStdout)
+    server.start()
+
+    writeJsonRpc(localStdin, {
+      jsonrpc: "2.0",
+      id: 63,
+      method: "tools/call",
+      params: {
+        name: "ask",
+        arguments: { question: "what is your voice preference?" },
+      },
+    })
+
+    await new Promise((r) => setTimeout(r, 200))
+    server.stop()
+    localStdin.end()
+
+    expect(mockSendDaemonCommand).toHaveBeenCalledWith(
+      "/tmp/test.sock",
+      expect.objectContaining({
+        kind: "agent.senseTurn",
+        agent: "test-agent",
+        friendId: "test-friend",
+        channel: "mcp",
+        sessionKey: "test-session-id",
+        message: "what is your voice preference?",
+      }),
+    )
+
+    const output = await outputPromise
+    const match = output.match(/\{.*\}/s)
+    expect(match).not.toBeNull()
+    const response = JSON.parse(match![0])
+    expect(response.id).toBe(63)
+    expect(response.result.isError).toBe(false)
+    expect(response.result.content[0].text).toBe("answer from agent")
+
+    localStdin.destroy()
+    localStdout.destroy()
   })
 
   it("returns error when send_message throws", async () => {

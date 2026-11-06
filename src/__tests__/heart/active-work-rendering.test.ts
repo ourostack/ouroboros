@@ -347,6 +347,110 @@ describe("formatActiveWorkFrame (selfhood framing)", () => {
     expect(checkpoint).toContain("- next action: finish the coding pass and bring the result back here")
   })
 
+  it("frames running background mail imports as wake-driven work instead of a polling loop", () => {
+    const result = formatActiveWorkFrame(makeFrame({
+      currentSession: null,
+      backgroundOperations: [
+        {
+          schemaVersion: 1,
+          id: "op-mail-import-1",
+          agentName: "slugger",
+          kind: "mail.import-mbox",
+          title: "mail import",
+          status: "running",
+          summary: "importing delegated mail",
+          detail: "scanned 500 messages",
+          progress: { current: 500, unit: "messages" },
+          createdAt: "2026-04-24T05:22:06.140Z",
+          startedAt: "2026-04-24T05:22:06.509Z",
+          updatedAt: "2026-04-24T05:22:30.000Z",
+        },
+      ],
+    }))
+
+    expect(result).toContain("## background operations")
+    expect(result).toContain("[running] mail import")
+    expect(result).toContain("- next action: in flight — no action unless it stalls or i need live status")
+  })
+
+  it("frames completed background mail imports as state to review instead of work to rerun", () => {
+    const result = formatActiveWorkFrame(makeFrame({
+      currentSession: null,
+      backgroundOperations: [
+        {
+          schemaVersion: 1,
+          id: "op-mail-import-done",
+          agentName: "slugger",
+          kind: "mail.import-mbox",
+          title: "mail import",
+          status: "succeeded",
+          summary: "imported delegated mail archive",
+          detail: "scanned 28352; imported 28352; duplicates 0",
+          progress: { current: 28352, unit: "messages" },
+          createdAt: "2026-04-24T05:22:06.140Z",
+          startedAt: "2026-04-24T05:22:06.509Z",
+          updatedAt: "2026-04-24T05:51:02.787Z",
+          finishedAt: "2026-04-24T05:51:02.787Z",
+        },
+      ],
+    }))
+
+    expect(result).toContain("- next action: caught up — no rerun needed unless a newer archive appears")
+  })
+
+  it("classifies mail import recovery universes by operator-relevant repair shape", () => {
+    const cases = [
+      {
+        failureClass: "transient-storage-read",
+        expected: "recovery universe: transient dependency/read issue — safe to retry once storage/network answers again",
+      },
+      {
+        failureClass: "mailroom-auth",
+        expected: "recovery universe: mail auth/config issue — repair mail access or runtime config before retrying",
+      },
+      {
+        failureClass: "source-grant-missing",
+        expected: "recovery universe: delegated lane/registry issue — inspect owner/source linking before retrying",
+      },
+      {
+        failureClass: "archive-missing",
+        expected: "recovery universe: local archive/file issue — materialize or point at the right archive before retrying",
+      },
+      {
+        failureClass: "unknown-mail-import-failure",
+        expected: "recovery universe: unclassified import issue — inspect the recorded error before retrying",
+      },
+    ] as const
+
+    for (const testCase of cases) {
+      const result = formatActiveWorkFrame(makeFrame({
+        currentSession: null,
+        backgroundOperations: [
+          {
+            schemaVersion: 1,
+            id: `op-${testCase.failureClass}`,
+            agentName: "slugger",
+            kind: "mail.import-mbox",
+            title: "mail import",
+            status: "failed",
+            summary: "mail import failed",
+            detail: "import failed",
+            createdAt: "2026-04-24T05:22:06.140Z",
+            updatedAt: "2026-04-24T05:24:00.000Z",
+            finishedAt: "2026-04-24T05:24:00.000Z",
+            failure: {
+              class: testCase.failureClass,
+              retryDisposition: "fix-before-retry",
+              hint: "repair guidance",
+            },
+          },
+        ],
+      }))
+
+      expect(result).toContain(testCase.expected)
+    }
+  })
+
   it("emits nerves event reference", () => {
     expect(emitNervesEvent).toBeDefined()
   })
