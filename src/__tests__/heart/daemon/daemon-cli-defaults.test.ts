@@ -100,6 +100,62 @@ describe("daemon CLI default dependency branches", () => {
     }
   })
 
+  it("uses detached default background CLI spawning", async () => {
+    vi.resetModules()
+
+    const unref = vi.fn()
+    const spawn = vi.fn(() => ({
+      pid: 54321,
+      unref,
+    }))
+
+    try {
+      vi.doMock("net", () => ({ createConnection: vi.fn() }))
+      vi.doMock("child_process", () => ({ spawn, execSync: vi.fn() }))
+      vi.doMock("../../../nerves/runtime", () => ({ emitNervesEvent: vi.fn() }))
+
+      const { createDefaultOuroCliDeps } = await import("../../../heart/daemon/daemon-cli")
+      const deps = createDefaultOuroCliDeps("/tmp/daemon.sock")
+
+      await expect(deps.spawnBackgroundCli?.(["mail", "backfill-indexes", "--agent", "Slugger"])).resolves.toEqual({
+        pid: 54321,
+      })
+      expect(spawn).toHaveBeenCalledWith(process.execPath, ["mail", "backfill-indexes", "--agent", "Slugger"], {
+        detached: true,
+        stdio: "ignore",
+      })
+      expect(unref).toHaveBeenCalledOnce()
+    } finally {
+      vi.doUnmock("../../../nerves/runtime")
+    }
+  })
+
+  it("returns a null pid when detached background launch does not expose one", async () => {
+    vi.resetModules()
+
+    const unref = vi.fn()
+    const spawn = vi.fn(() => ({
+      pid: undefined,
+      unref,
+    }))
+
+    try {
+      vi.doMock("net", () => ({ createConnection: vi.fn() }))
+      vi.doMock("child_process", () => ({ spawn, execSync: vi.fn() }))
+      vi.doMock("../../../nerves/runtime", () => ({ emitNervesEvent: vi.fn() }))
+
+      const { createDefaultOuroCliDeps } = await import("../../../heart/daemon/daemon-cli")
+      const deps = createDefaultOuroCliDeps("/tmp/daemon.sock")
+
+      await expect(deps.spawnBackgroundCli?.(["mail", "backfill-indexes", "--agent", "Slugger"])).resolves.toEqual({
+        pid: null,
+      })
+      expect(unref).toHaveBeenCalledOnce()
+    } finally {
+      vi.doUnmock("../../../nerves/runtime")
+    }
+  })
+
   it("persists a launch agent plist on darwin via default boot persistence", async () => {
     vi.resetModules()
 
@@ -460,7 +516,27 @@ describe("daemon CLI default dependency branches", () => {
 
     const result = await runOuroCli(["up"], {
       ...deps,
-      checkSocketAlive: vi.fn().mockResolvedValueOnce(false).mockResolvedValue(true),
+      sendCommand: vi.fn(async (_socketPath, command) => {
+        if (command.kind === "daemon.status") {
+          return {
+            ok: true,
+            data: {
+              overview: {
+                daemon: "running",
+                health: "ok",
+                socketPath: "/tmp/daemon.sock",
+                version: "9.9.9",
+                workerCount: 0,
+                senseCount: 0,
+              },
+              senses: [],
+              workers: [],
+            },
+          }
+        }
+        return { ok: true, data: {} }
+      }),
+      checkSocketAlive: vi.fn().mockResolvedValueOnce(false).mockResolvedValueOnce(false).mockResolvedValue(true),
       cleanupStaleSocket: vi.fn(),
       getCurrentCliVersion: () => null,
       detectMode: () => "production" as const,
@@ -503,6 +579,7 @@ describe("daemon CLI default dependency branches", () => {
     try {
       const { createDefaultOuroCliDeps } = await import("../../../heart/daemon/daemon-cli")
       const deps = createDefaultOuroCliDeps("/tmp/daemon.sock")
+      stdoutWrite.mockClear()
 
       deps.writeStdout("hello")
       deps.writeStdout("already-newlined\n")
@@ -1512,6 +1589,7 @@ describe("daemon CLI default dependency branches", () => {
     const discoverLogFiles = vi.fn(() => ["/tmp/daemon.ndjson"])
     const readLastLines = vi.fn(() => ['{"level":"warn","component":"daemon","event":"daemon.startup","message":"socket lost"}'])
     const formatLogLine = vi.fn((line: string) => `formatted:${line}`)
+    const tailLogs = vi.fn(() => vi.fn())
     const statSync = vi.fn(() => ({ mtimeMs: 4242 }))
 
     vi.doMock("net", () => ({ createConnection: vi.fn() }))
@@ -1534,6 +1612,7 @@ describe("daemon CLI default dependency branches", () => {
       discoverLogFiles,
       readLastLines,
       formatLogLine,
+      tailLogs,
     }))
     vi.doMock("../../../heart/identity", () => ({
       getRepoRoot: () => "/mock/repo",
@@ -1557,8 +1636,21 @@ describe("daemon CLI default dependency branches", () => {
     ])
     expect(deps.startupPollIntervalMs).toBe(250)
     expect(deps.startupStabilityWindowMs).toBe(1_500)
-    expect(deps.startupTimeoutMs).toBe(10_000)
+    expect(deps.startupTimeoutMs).toBe(60_000)
     expect(deps.startupRetryLimit).toBe(1)
+    expect(typeof deps.tailLogs).toBe("function")
+    expect(deps.tailLogs?.({ follow: true })).toEqual(expect.any(Function))
+    expect(tailLogs).toHaveBeenCalledWith({ follow: true })
+    const originalExitCode = process.exitCode
+    try {
+      process.exitCode = undefined
+      deps.setExitCode?.(2)
+      expect(process.exitCode).toBe(2)
+      deps.setExitCode?.(1)
+      expect(process.exitCode).toBe(2)
+    } finally {
+      process.exitCode = originalExitCode
+    }
     await expect(deps.sleep?.(0)).resolves.toBeUndefined()
   })
 

@@ -633,6 +633,7 @@ describe("buildSystem", () => {
         cli: { enabled: true },
         teams: { enabled: true },
         bluebubbles: { enabled: false },
+        mail: { enabled: true },
       },
       phrases: {
         thinking: ["working"],
@@ -654,6 +655,7 @@ describe("buildSystem", () => {
     resetConfigCache()
     patchRuntimeConfig({
       teams: { clientId: "cid", clientSecret: "secret", tenantId: "tenant" },
+      mailroom: { mailboxAddress: "slugger@ouro.bot", privateKeys: { mail_slugger_primary: "secret" } },
       providers: { minimax: { apiKey: "test-key" } },
     })
     const { buildSystem, flattenSystemPrompt, resetPsycheCache } = await import("../../mind/prompt")
@@ -666,6 +668,7 @@ describe("buildSystem", () => {
     expect(result).toContain("CLI: interactive")
     expect(result).toContain("Teams: ready")
     expect(result).toContain("BlueBubbles: disabled")
+    expect(result).toContain("Mail: ready")
   })
 
   it("includes sense-state meanings and truthful setup guidance", async () => {
@@ -680,6 +683,7 @@ describe("buildSystem", () => {
         cli: { enabled: true },
         teams: { enabled: false },
         bluebubbles: { enabled: true },
+        mail: { enabled: true },
       },
       phrases: {
         thinking: ["working"],
@@ -711,7 +715,35 @@ describe("buildSystem", () => {
     expect(result).toContain("disabled = turned off in agent.json")
     expect(result).toContain("needs_config = enabled but missing required vault runtime/config values")
     expect(result).toContain("not_attached = enabled globally but no local-machine attachment is configured here")
+    expect(result).toContain("Mail: needs_config")
     expect(result).toContain("bluebubbles setup truth: run `ouro connect bluebubbles --agent <agent>`")
+    expect(result).toContain("mail setup AX: if a human asks me to set up email, I do not hand them a terminal checklist.")
+    expect(result).toContain("I guide the flow end-to-end")
+    expect(result).toContain("mail setup hard rule: never tell the human to run `ouro account ensure`, `ouro connect mail`, `ouro mail import-mbox`, `ouro status`, or `ouro doctor` for setup.")
+    expect(result).toContain("If my current surface cannot run shell/tools, I ask for a tool-capable Ouro setup session or companion to continue")
+    expect(result).toContain("mail setup truth: Agent Mail uses Mailroom, not HEY OAuth/IMAP.")
+    expect(result).toContain("ouro account ensure --agent <agent> --owner-email <email> --source hey")
+    expect(result).toContain("ouro connect mail --agent <agent> --owner-email <email> --source hey")
+    expect(result).toContain("--no-delegated-source")
+    expect(result).toContain("docs/agent-mail-setup.md")
+    expect(result).toContain("ouro mail import-mbox --discover --owner-email <email> --source hey --agent <agent>")
+    expect(result).toContain("If discovery cannot find a unique file")
+    expect(result).toContain("ouro mail import-mbox --file <path> --owner-email <email> --source hey --agent <agent>")
+    expect(result).toContain("I should not offload path-discovery ceremony to the human")
+    expect(result).toContain("do not invent `ouro doctor --agent <agent>`")
+    expect(result).toContain("mail validation answer shape: when a human asks for Agent Mail golden paths, answer with only these four named paths before claiming setup works:")
+    expect(result).toContain("golden path 1, HEY archive to work object")
+    expect(result).toContain("golden path 2, native mail and Screener")
+    expect(result).toContain("golden path 3, cross-sense reaction")
+    expect(result).toContain("golden path 4, Ouro Mailbox audit")
+    expect(result).toContain("mail validation question discipline: if a human asks a hypothetical")
+    expect(result).toContain("answer that hypothetical first")
+    expect(result).toContain("Do not replace the answer with current access logs")
+    expect(result).toContain("mail validation diagnostics: health checks, bounded mail tools, access logs, and UI inspection can support validation")
+    expect(result).toContain("not additional paths")
+    expect(result).toContain("do not include diagnostic commands, tool names, or status checks in the answer")
+    expect(result).toContain("mail diagnostic naming: `ouro doctor` is installation-wide")
+    expect(result).toContain("mail setup boundaries: do not invent `ouro auth verify --provider mail`, HEY OAuth, HEY IMAP")
     expect(result).toContain("If asked how to enable another sense, I explain the relevant agent.json senses entry and required agent-vault runtime/config fields instead of guessing.")
   })
 
@@ -4392,6 +4424,25 @@ describe("pendingMessagesSection (Unit 1.4)", () => {
     expect(result).toContain("- from bridge-1: Ari says hi")
   })
 
+  it("pending messages section frames pending items as fresh work for this turn", async () => {
+    setupReadFileSync()
+    vi.mocked(fs.existsSync).mockReturnValue(false)
+    vi.mocked(fs.readdirSync).mockReturnValue([])
+    const { patchRuntimeConfig, resetConfigCache } = await import("../../heart/config")
+    resetConfigCache()
+    patchRuntimeConfig({ providers: { minimax: { apiKey: "test-key" } } })
+    const { buildSystem, flattenSystemPrompt, resetPsycheCache } = await import("../../mind/prompt")
+    resetPsycheCache()
+
+    const result = flattenSystemPrompt(await buildSystem("inner", {
+      pendingMessages: [
+        { from: "mailroom", content: "[Mail Import Ready]" },
+      ],
+    } as any))
+    expect(result).toContain("these are fresh work items that arrived for me this turn")
+    expect(result).toContain("before i rest")
+  })
+
   it("pending messages section appears inside '# dynamic state for this turn' group", async () => {
     setupReadFileSync()
     vi.mocked(fs.existsSync).mockReturnValue(false)
@@ -4956,5 +5007,65 @@ describe("pre-implementation scrutiny", () => {
     expect(workspaceDisciplineIdx).toBeGreaterThan(-1)
     expect(scrutinyIdx).toBeGreaterThan(-1)
     expect(scrutinyIdx).toBeGreaterThan(workspaceDisciplineIdx)
+  })
+
+  // ── Unit 9a: speak system prompt nudge ─────────────────────────────────────
+  describe("speak system prompt nudge", () => {
+    async function renderFor(channel: string): Promise<string> {
+      setupReadFileSync()
+      const { patchRuntimeConfig, resetConfigCache } = await import("../../heart/config")
+      resetConfigCache()
+      patchRuntimeConfig({ providers: { minimax: { apiKey: "test-key" } } })
+      const { buildSystem, flattenSystemPrompt, resetPsycheCache } = await import("../../mind/prompt")
+      resetPsycheCache()
+      return flattenSystemPrompt(await buildSystem(channel as any))
+    }
+
+    it("includes 'speaking mid-turn' for channel='cli'", async () => {
+      const result = await renderFor("cli")
+      expect(result).toContain("speaking mid-turn")
+    })
+
+    it("includes 'speaking mid-turn' for channel='teams'", async () => {
+      const result = await renderFor("teams")
+      expect(result).toContain("speaking mid-turn")
+    })
+
+    it("includes 'speaking mid-turn' for channel='bluebubbles'", async () => {
+      const result = await renderFor("bluebubbles")
+      expect(result).toContain("speaking mid-turn")
+    })
+
+    it("does NOT include 'speaking mid-turn' for channel='inner'", async () => {
+      const result = await renderFor("inner")
+      expect(result).not.toContain("speaking mid-turn")
+    })
+
+    it("does NOT include 'speaking mid-turn' for channel='mcp'", async () => {
+      const result = await renderFor("mcp")
+      expect(result).not.toContain("speaking mid-turn")
+    })
+
+    it("does NOT include 'speaking mid-turn' for channel='mail'", async () => {
+      const result = await renderFor("mail")
+      expect(result).not.toContain("speaking mid-turn")
+    })
+
+    it("contains the three rule-line markers verbatim", async () => {
+      const result = await renderFor("cli")
+      expect(result).toContain("if my next step depends on a reply, i settle")
+      expect(result).toContain("phase boundaries during heavy work")
+      expect(result).toContain("speak is progress, not invitation")
+    })
+
+    it("anti-hedging: section between 'speaking mid-turn' heading and next '##' has no may/should/prefer/if-relevant", async () => {
+      const result = await renderFor("cli")
+      const headingIdx = result.indexOf("## speaking mid-turn")
+      expect(headingIdx).toBeGreaterThan(-1)
+      const after = result.slice(headingIdx + "## speaking mid-turn".length)
+      const nextHeadingIdx = after.indexOf("\n## ")
+      const section = nextHeadingIdx === -1 ? after : after.slice(0, nextHeadingIdx)
+      expect(/(\b(may|should|prefer)\b|if relevant)/i.test(section)).toBe(false)
+    })
   })
 })

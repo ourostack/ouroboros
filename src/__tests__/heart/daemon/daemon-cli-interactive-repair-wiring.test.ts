@@ -108,12 +108,33 @@ import { getRuntimeMetadata } from "../../../heart/daemon/runtime-metadata"
 import { providerCredentialMissingIssue, vaultLockedIssue, type AgentReadinessIssue } from "../../../heart/daemon/readiness-repair"
 
 function makeDeps(overrides?: Partial<OuroCliDeps>): OuroCliDeps {
+  const runtime = currentRuntimeOverview()
   return {
     socketPath: "/tmp/ouro-test.sock",
-    sendCommand: vi.fn(),
+    sendCommand: vi.fn(async (_socketPath, command) => {
+      if (command.kind === "daemon.status") {
+        return {
+          ok: true,
+          summary: "running",
+          data: {
+            overview: {
+              daemon: "running",
+              health: "ok",
+              socketPath: "/tmp/ouro-test.sock",
+              workerCount: 0,
+              senseCount: 0,
+              ...runtime,
+            },
+            senses: [],
+            workers: [],
+          },
+        }
+      }
+      return { ok: true, summary: "ok" }
+    }),
     startDaemonProcess: vi.fn(async () => ({ pid: 123 })),
     writeStdout: vi.fn(),
-    checkSocketAlive: vi.fn().mockResolvedValueOnce(false).mockResolvedValue(true),
+    checkSocketAlive: vi.fn().mockResolvedValueOnce(false).mockResolvedValueOnce(false).mockResolvedValue(true),
     cleanupStaleSocket: vi.fn(),
     fallbackPendingMessage: vi.fn(() => "/tmp/pending.jsonl"),
     bundlesRoot: "/tmp/ouro-test-bundles-nonexistent",
@@ -191,6 +212,23 @@ describe("ouro up: interactive repair wiring", () => {
     })
   })
 
+  it("builds a degraded-only startup result when no prior stability snapshot exists", () => {
+    const result = mergeStartupStability(undefined, [{
+      agent: "test-agent",
+      errorReason: "provider failed",
+      fixHint: "Run 'ouro auth --agent test-agent --provider anthropic'.",
+    }])
+
+    expect(result).toEqual({
+      stable: [],
+      degraded: [{
+        agent: "test-agent",
+        errorReason: "provider failed",
+        fixHint: "Run 'ouro auth --agent test-agent --provider anthropic'.",
+      }],
+    })
+  })
+
   it("calls runInteractiveRepair when degraded agents are present", async () => {
     const degraded = [
       { agent: "test-agent", errorReason: "missing credentials", fixHint: "run ouro auth test-agent" },
@@ -213,6 +251,40 @@ describe("ouro up: interactive repair wiring", () => {
         runVaultUnlock: expect.any(Function),
       }),
     )
+  })
+
+  it("uses the guided readiness board instead of legacy interactive repair for typed degraded agents", async () => {
+    const degraded = [
+      {
+        agent: "test-agent",
+        errorReason: "missing credentials",
+        fixHint: "Run 'ouro auth --agent test-agent --provider anthropic'.",
+        issue: providerCredentialMissingIssue({
+          agentName: "test-agent",
+          lane: "outward",
+          provider: "anthropic",
+          model: "claude-opus-4-6",
+          credentialPath: "vault:test-agent:providers/*",
+        }),
+      },
+    ]
+    mocks.pollDaemonStartup.mockResolvedValueOnce({ stable: ["healthy-agent"], degraded })
+    mocks.runInteractiveRepair.mockClear()
+    const writeStdout = vi.fn()
+
+    await runOuroCli(["up"], makeDeps({
+      bundlesRoot: "/tmp/bundles",
+      isTTY: true,
+      stdoutColumns: 76,
+      writeStdout,
+      promptInput: vi.fn(async () => "3"),
+    }))
+
+    expect(mocks.runInteractiveRepair).not.toHaveBeenCalled()
+    const output = writeStdout.mock.calls.map((call: any[]) => call[0]).join("\n")
+    expect(output).toContain("Repair test-agent")
+    expect(output).toContain("Authenticate anthropic")
+    expect(output).toContain("Choose another provider/model")
   })
 
   it("checks selected providers before starting a stopped daemon and stops on declined typed repair", async () => {

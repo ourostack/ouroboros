@@ -10,6 +10,11 @@ export {
 } from "./readers/sessions"
 
 export {
+  readMailMessageView,
+  readMailView,
+} from "./readers/mail"
+
+export {
   readAttentionView,
   readBridgeInventory,
   readCodingDeep,

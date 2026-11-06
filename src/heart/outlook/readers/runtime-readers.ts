@@ -1,6 +1,8 @@
 import * as fs from "fs"
 import * as path from "path"
 import { emitNervesEvent } from "../../../nerves/runtime"
+import { parseHabitFile } from "../../habits/habit-parser"
+import { applyHabitRuntimeState } from "../../habits/habit-runtime-state"
 import { getAgentBundlesRoot } from "../../identity"
 import {
   type OutlookAttentionQueueItem,
@@ -488,9 +490,10 @@ export function readHabitView(agentRoot: string, options: OutlookReadOptions = {
   for (const file of safeReaddir(habitsDir)) {
     if (!file.endsWith(".md")) continue
     try {
-      const raw = fs.readFileSync(path.join(habitsDir, file), "utf-8")
-      const habit = parseHabitFrontmatter(raw)
-      if (!habit) continue
+      const filePath = path.join(habitsDir, file)
+      const raw = fs.readFileSync(filePath, "utf-8")
+      if (!/^---\r?\n[\s\S]*?\r?\n---/.test(raw)) continue
+      const habit = applyHabitRuntimeState(agentRoot, parseHabitFile(raw, filePath))
 
       const cadenceMs = parseCadenceMs(habit.cadence)
       let isOverdue = false
@@ -504,10 +507,10 @@ export function readHabitView(agentRoot: string, options: OutlookReadOptions = {
       }
 
       items.push({
-        name: habit.name ?? file.slice(0, -3),
-        title: habit.title ?? file.slice(0, -3),
+        name: habit.name,
+        title: habit.title,
         cadence: habit.cadence,
-        status: habit.status === "paused" ? "paused" : "active",
+        status: habit.status,
         lastRun: habit.lastRun,
         bodyExcerpt: truncateExcerpt(habit.body, 120),
         isDegraded: false,
@@ -533,37 +536,6 @@ export function readHabitView(agentRoot: string, options: OutlookReadOptions = {
     degradedCount: items.filter((h) => h.isDegraded).length,
     overdueCount: items.filter((h) => h.isOverdue).length,
     items,
-  }
-}
-
-interface ParsedHabitFrontmatter {
-  name: string | null
-  title: string | null
-  cadence: string | null
-  status: string | null
-  lastRun: string | null
-  body: string | null
-}
-
-function parseHabitFrontmatter(content: string): ParsedHabitFrontmatter | null {
-  const fmMatch = /^---\n([\s\S]*?)\n---/.exec(content)
-  if (!fmMatch) return null
-
-  const fm = fmMatch[1]!
-  const body = content.slice(fmMatch[0].length).trim() || null
-
-  function extract(key: string): string | null {
-    const match = new RegExp(`^${key}:\\s*(.+)$`, "m").exec(fm)
-    return match ? match[1]!.trim() : null
-  }
-
-  return {
-    name: extract("name"),
-    title: extract("title"),
-    cadence: extract("cadence"),
-    status: extract("status"),
-    lastRun: extract("lastRun") ?? extract("last_run"),
-    body,
   }
 }
 

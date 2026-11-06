@@ -193,6 +193,55 @@ describe("provider visibility", () => {
     expect(rows[1]).not.toHaveProperty("detail")
   })
 
+  it("does not turn a saved ready check into missing credentials when this process has not loaded the vault", async () => {
+    emitTestEvent("provider visibility preserves readiness when pool not loaded")
+    mockProviderCredentials.readProviderCredentialPool.mockReturnValue({
+      ok: false,
+      reason: "missing",
+      poolPath: "vault:slugger:providers/*",
+      error: "provider credentials have not been loaded from vault",
+    } satisfies ProviderCredentialPoolReadResult)
+    const agentRoot = path.join(makeTempDir("provider-visibility-not-loaded"), "slugger.ouro")
+    writeProviderState(agentRoot, providerState())
+
+    const { buildAgentProviderVisibility, formatAgentProviderVisibilityForPrompt, providerVisibilityStatusRows } = await import("../../heart/provider-visibility")
+    const visibility = buildAgentProviderVisibility({ agentName: "slugger", agentRoot })
+    const rendered = formatAgentProviderVisibilityForPrompt(visibility)
+    const rows = providerVisibilityStatusRows(visibility)
+
+    expect(visibility.lanes[0]).toMatchObject({
+      lane: "outward",
+      status: "configured",
+      readiness: { status: "ready" },
+      credential: { status: "not-loaded" },
+      warnings: [],
+    })
+    expect(visibility.lanes[1]).toMatchObject({
+      lane: "inner",
+      status: "configured",
+      readiness: { status: "failed", error: "400 status code" },
+      credential: { status: "not-loaded" },
+      warnings: [],
+    })
+    expect(rendered).toContain("credentials: checked previously")
+    expect(rendered).not.toContain("credentials: missing")
+    expect(rendered).not.toContain("repair: ouro auth")
+    expect(rows[0]).toMatchObject({
+      agent: "slugger",
+      lane: "outward",
+      readiness: "ready",
+      credential: "checked previously",
+    })
+    expect(rows[0]).not.toHaveProperty("detail")
+    expect(rows[1]).toMatchObject({
+      agent: "slugger",
+      lane: "inner",
+      readiness: "failed",
+      credential: "checked previously",
+      detail: "400 status code",
+    })
+  })
+
   it("omits absent readiness optional fields from built visibility", async () => {
     emitTestEvent("provider visibility absent readiness optionals")
     const agentRoot = path.join(makeTempDir("provider-visibility-optionals"), "slugger.ouro")
@@ -281,6 +330,16 @@ describe("provider visibility", () => {
       credential: { status: "present", source: "manual" },
       warnings: [],
     })).toContain("unknown")
+    expect(formatProviderVisibilityLine({
+      lane: "inner",
+      status: "configured",
+      provider: "azure",
+      model: "gpt-4o",
+      source: "local",
+      readiness: { status: "ready" },
+      credential: { status: "not-loaded" },
+      warnings: [],
+    })).toContain("credentials: checked previously")
 
     const rows = providerVisibilityStatusRows({
       agentName: "slugger",

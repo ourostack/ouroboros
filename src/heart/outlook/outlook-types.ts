@@ -10,7 +10,7 @@ import type { SessionEvent } from "../session-events"
 export type { UsageData } from "../../nerves/observation"
 export type { SessionEvent } from "../session-events"
 
-export const OUTLOOK_PRODUCT_NAME = "Ouro Outlook" as const
+export const OUTLOOK_PRODUCT_NAME = "Ouro Mailbox" as const
 export const OUTLOOK_RELEASE_INTERACTION_MODEL = "read-only" as const
 export const OUTLOOK_DEFAULT_INNER_VISIBILITY = "summary" as const
 export const OUTLOOK_DEFAULT_PORT = 6876 as const
@@ -365,6 +365,195 @@ export interface OutlookSessionTranscript {
   lastUsage: OutlookSessionUsage | null
   continuity: OutlookSessionContinuity | null
   messages: OutlookTranscriptMessage[]
+}
+
+// ---------------------------------------------------------------------------
+// Mail sense surface: read-only mailbox inspection
+// ---------------------------------------------------------------------------
+
+export type OutlookMailStatus = "ready" | "auth-required" | "misconfigured" | "not-found" | "error"
+
+export interface OutlookMailFolder {
+  id: string
+  label: string
+  count: number
+}
+
+export interface OutlookMailAttachmentSummary {
+  filename: string
+  contentType: string
+  size: number
+}
+
+export interface OutlookMailMessageSummary {
+  id: string
+  subject: string
+  from: string[]
+  to: string[]
+  cc: string[]
+  date: string | null
+  receivedAt: string
+  snippet: string
+  placement: "imbox" | "screener" | "discarded" | "quarantine" | "draft" | "sent"
+  compartmentKind: "native" | "delegated"
+  ownerEmail: string | null
+  source: string | null
+  recipient: string
+  attachmentCount: number
+  untrustedContentWarning: string
+  provenance: OutlookMailProvenance
+}
+
+export interface OutlookMailMessageDetail extends OutlookMailMessageSummary {
+  text: string
+  htmlAvailable: boolean
+  bodyTruncated: boolean
+  attachments: OutlookMailAttachmentSummary[]
+  access: {
+    tool: string
+    reason: string
+    accessedAt: string
+  }
+}
+
+export interface OutlookMailProvenance {
+  placement: "imbox" | "screener" | "discarded" | "quarantine" | "draft" | "sent"
+  compartmentKind: "native" | "delegated"
+  ownerEmail: string | null
+  source: string | null
+  recipient: string
+  mailboxId: string
+  grantId: string | null
+  trustReason: string
+}
+
+export interface OutlookMailScreenerCandidate {
+  id: string
+  messageId: string
+  senderEmail: string
+  senderDisplay: string
+  recipient: string
+  source: string | null
+  ownerEmail: string | null
+  status: "pending" | "allowed" | "discarded" | "quarantined" | "restored"
+  placement: "imbox" | "screener" | "discarded" | "quarantine" | "draft" | "sent"
+  trustReason: string
+  firstSeenAt: string
+  lastSeenAt: string
+  messageCount: number
+}
+
+export interface OutlookMailOutboundPolicyDecision {
+  allowed: boolean
+  mode: "autonomous" | "confirmation-required" | "blocked" | "confirmed"
+  code:
+    | "allowed"
+    | "explicit-confirmation"
+    | "autonomy-policy-disabled"
+    | "autonomy-kill-switch"
+    | "recipient-not-allowed"
+    | "recipient-limit-exceeded"
+    | "autonomous-rate-limit"
+    | "delegated-send-as-human-not-authorized"
+    | "agent-mismatch"
+    | "native-mailbox-mismatch"
+    | "draft-not-sendable"
+  reason: string
+  evaluatedAt: string
+  recipients: string[]
+  fallback: "CONFIRM_SEND" | "none"
+  policyId: string | null
+  remainingSendsInWindow: number | null
+}
+
+export interface OutlookMailOutboundDeliveryEvent {
+  provider: "local-sink" | "azure-communication-services"
+  providerEventId: string
+  providerMessageId: string
+  outcome: "accepted" | "delivered" | "bounced" | "suppressed" | "quarantined" | "spam-filtered" | "failed"
+  recipient: string | null
+  occurredAt: string
+  receivedAt: string
+  bodySafeSummary: string
+  providerStatus: string | null
+}
+
+export interface OutlookMailOutboundRecord {
+  id: string
+  status: "draft" | "sent" | "submitted" | "accepted" | "delivered" | "bounced" | "suppressed" | "quarantined" | "spam-filtered" | "failed"
+  mailboxRole: "agent-native-mailbox" | "delegated-human-mailbox"
+  sendAuthority: "agent-native"
+  ownerEmail: string | null
+  source: string | null
+  from: string
+  to: string[]
+  cc: string[]
+  bcc: string[]
+  subject: string
+  createdAt: string
+  updatedAt: string
+  sentAt: string | null
+  submittedAt: string | null
+  acceptedAt: string | null
+  deliveredAt: string | null
+  failedAt: string | null
+  sendMode: "confirmed" | "autonomous" | null
+  policyDecision: OutlookMailOutboundPolicyDecision | null
+  provider: string | null
+  providerMessageId: string | null
+  providerRequestId: string | null
+  operationLocation: string | null
+  deliveryEvents: OutlookMailOutboundDeliveryEvent[]
+  transport: string | null
+  reason: string
+}
+
+export interface OutlookMailRecoverySummary {
+  discardedCount: number
+  quarantineCount: number
+  undecryptableCount: number
+  missingKeyIds: string[]
+}
+
+export interface OutlookMailAccessEntry {
+  id: string
+  messageId: string | null
+  threadId: string | null
+  tool: string
+  reason: string
+  mailboxRole: "agent-native-mailbox" | "delegated-human-mailbox" | null
+  compartmentKind: "native" | "delegated" | null
+  ownerEmail: string | null
+  source: string | null
+  accessedAt: string
+}
+
+export interface OutlookMailView {
+  status: OutlookMailStatus
+  agentName: string
+  mailboxAddress: string | null
+  generatedAt: string
+  store: {
+    kind: "file" | "azure-blob"
+    label: string
+  } | null
+  folders: OutlookMailFolder[]
+  messages: OutlookMailMessageSummary[]
+  screener: OutlookMailScreenerCandidate[]
+  outbound: OutlookMailOutboundRecord[]
+  recovery: OutlookMailRecoverySummary
+  accessLog: OutlookMailAccessEntry[]
+  error: string | null
+}
+
+export interface OutlookMailMessageView {
+  status: OutlookMailStatus
+  agentName: string
+  mailboxAddress: string | null
+  generatedAt: string
+  message: OutlookMailMessageDetail | null
+  accessLog: OutlookMailAccessEntry[]
+  error: string | null
 }
 
 // ---------------------------------------------------------------------------

@@ -546,3 +546,91 @@ describe("runSenseTurn", () => {
     })).rejects.toThrow("pipeline explosion")
   })
 })
+
+describe("stripThinkBlocks", () => {
+  it("strips a single closed think block", async () => {
+    const { stripThinkBlocks } = await import("../../senses/shared-turn")
+    expect(stripThinkBlocks("<think>reasoning</think>actual answer")).toBe("actual answer")
+  })
+
+  it("strips an unclosed think block (drops everything from <think> onward)", async () => {
+    const { stripThinkBlocks } = await import("../../senses/shared-turn")
+    // This is the bug Slugger hit: minimax closes the think tag but emits no
+    // following text, OR the close tag never arrives. Either way we drop it.
+    expect(stripThinkBlocks("preamble<think>reasoning that never closes")).toBe("preamble")
+    expect(stripThinkBlocks("<think>only reasoning")).toBe("")
+  })
+
+  it("strips multiple sequential think blocks", async () => {
+    const { stripThinkBlocks } = await import("../../senses/shared-turn")
+    expect(stripThinkBlocks("a<think>r1</think>b<think>r2</think>c")).toBe("abc")
+  })
+
+  it("returns empty string when input is only a think block", async () => {
+    const { stripThinkBlocks } = await import("../../senses/shared-turn")
+    expect(stripThinkBlocks("<think>just reasoning</think>")).toBe("")
+  })
+
+  it("preserves text without think blocks unchanged (modulo trim)", async () => {
+    const { stripThinkBlocks } = await import("../../senses/shared-turn")
+    expect(stripThinkBlocks("just text")).toBe("just text")
+    expect(stripThinkBlocks("  just text  ")).toBe("just text")
+  })
+})
+
+describe("runSenseTurn — only-reasoning recovery", () => {
+  beforeEach(() => {
+    vi.resetModules()
+    mockHandleInboundTurn.mockReset()
+  })
+
+  it("returns a clear diagnostic when the agent emits only <think> reasoning with no settle", async () => {
+    mockHandleInboundTurn.mockImplementation(async ({ callbacks }: { callbacks: ChannelCallbacks }) => {
+      // Simulate a model that emits a closed think block but no final answer.
+      // The streaming layer would send the reasoning to onReasoningChunk and
+      // nothing to onTextChunk. The session readback sees the saved
+      // assistant content with the think tags.
+      callbacks.onReasoningChunk("turning the question over...")
+      // No onTextChunk — that's the bug shape.
+      return {} as InboundTurnResult
+    })
+    mockLoadSession.mockReturnValue({
+      messages: [
+        { role: "system", content: "system" },
+        { role: "user", content: "what's up?" },
+        { role: "assistant", content: "<think>turning the question over...</think>" },
+      ],
+      state: {},
+    })
+    const { runSenseTurn } = await import("../../senses/shared-turn")
+    const result = await runSenseTurn({
+      agentName: "test-agent",
+      channel: "mcp",
+      sessionKey: "session-only-think",
+      friendId: "friend-1",
+      userMessage: "hello",
+    })
+    // Pre-fix: result.response would be "<think>turning the question over...</think>"
+    // (raw think content surfaces to the MCP client, renders as empty/garbled)
+    expect(result.response).toContain("agent produced reasoning but no final answer")
+    expect(result.response).not.toContain("<think>")
+    expect(result.response).not.toContain("</think>")
+  })
+
+  it("strips think blocks from a normal settle response that happened to include reasoning", async () => {
+    mockHandleInboundTurn.mockImplementation(async ({ callbacks }: { callbacks: ChannelCallbacks }) => {
+      // Model emitted a think block followed by the actual answer through onTextChunk.
+      callbacks.onTextChunk("<think>thinking out loud</think>here is the actual answer")
+      return {} as InboundTurnResult
+    })
+    const { runSenseTurn } = await import("../../senses/shared-turn")
+    const result = await runSenseTurn({
+      agentName: "test-agent",
+      channel: "mcp",
+      sessionKey: "session-mixed",
+      friendId: "friend-1",
+      userMessage: "hello",
+    })
+    expect(result.response).toBe("here is the actual answer")
+  })
+})

@@ -118,6 +118,10 @@ function isBwConfigLogoutRequired(err: Error): boolean {
   return message.includes("logout") && message.includes("required")
 }
 
+function shouldPreferExactItemLookup(domain: string): boolean {
+  return domain.includes("/")
+}
+
 // ---------------------------------------------------------------------------
 // Cross-process bw CLI lock
 // ---------------------------------------------------------------------------
@@ -135,6 +139,9 @@ function isBwConfigLogoutRequired(err: Error): boolean {
 const BW_LOCK_FILENAME = ".ouro-bw.lock"
 const BW_LOCK_TIMEOUT_MS = 30_000
 const BW_LOCK_POLL_MS = 100
+const BW_DATA_FILENAME = "data.json"
+const BW_SYNC_MARKER_FILENAME = ".ouro-last-sync"
+const BW_SYNC_FRESH_MS = 60_000
 
 /** In-process async mutex keyed by appDataDir. */
 const inProcessLocks = new Map<string, Promise<void>>()
@@ -229,7 +236,7 @@ async function withBwLock<T>(appDataDir: string | undefined, fn: () => Promise<T
   }
 }
 
-function execBw(args: string[], sessionToken?: string, appDataDir?: string, stdin?: string): Promise<string> {
+function execBw(args: string[], sessionToken?: string, appDataDir?: string, stdin?: string, bwBinaryPath = "bw"): Promise<string> {
   const env = {
     ...process.env,
     ...(sessionToken ? { BW_SESSION: sessionToken } : {}),
@@ -238,7 +245,7 @@ function execBw(args: string[], sessionToken?: string, appDataDir?: string, stdi
 
   const runCommand = (): Promise<string> =>
     new Promise((resolve, reject) => {
-      const child = execFileCb("bw", args, { timeout: 30_000, env }, (err, stdout, stderr) => {
+      const child = execFileCb(bwBinaryPath, args, { timeout: 30_000, env }, (err, stdout, stderr) => {
         if (err) {
           if (isBwNotInstalled(err)) {
             reject(new Error("bw CLI not found. Install from https://bitwarden.com/help/cli/"))
@@ -261,7 +268,7 @@ function execBw(args: string[], sessionToken?: string, appDataDir?: string, stdi
 function isBwNotInstalled(err: Error): boolean {
   const msg = err.message.toLowerCase()
   const code = (err as NodeJS.ErrnoException).code
-  return code === "ENOENT" || msg.includes("enoent") || msg.includes("not found") || msg.includes("command not found")
+  return code === "ENOENT" || /\bspawn\b.*\benoent\b/.test(msg) || msg.includes("command not found")
 }
 
 /** Check if the error is transient (network/timeout) and worth retrying. */
@@ -387,6 +394,8 @@ export class BitwardenCredentialStore implements CredentialStore {
   private readonly masterPassword: string
   private readonly appDataDir?: string
   private sessionToken: string | null = null
+  private bwBinaryPath = "bw"
+  private structuredItemCache: Map<string, BwLoginItem> | null = null
 
   constructor(
     serverUrl: string,
@@ -404,6 +413,10 @@ export class BitwardenCredentialStore implements CredentialStore {
     return true
   }
 
+  private execBw(args: string[], sessionToken?: string, stdin?: string): Promise<string> {
+    return execBw(args, sessionToken, this.appDataDir, stdin, this.bwBinaryPath)
+  }
+
   /**
    * Ensure the bw CLI is authenticated and unlocked.
    * Handles three states: logged out → login, locked → unlock, already unlocked → no-op.
@@ -411,7 +424,7 @@ export class BitwardenCredentialStore implements CredentialStore {
    */
   async login(): Promise<void> {
     // Ensure bw CLI is installed before any bw commands
-    await ensureBwCli()
+    this.bwBinaryPath = await ensureBwCli()
     if (this.appDataDir) {
       fs.mkdirSync(this.appDataDir, { recursive: true, mode: 0o700 })
     }
@@ -454,7 +467,7 @@ export class BitwardenCredentialStore implements CredentialStore {
     // Check current status
     let status: { status?: string; serverUrl?: string; userEmail?: string } = {}
     try {
-      const raw = await execBw(["status"], undefined, this.appDataDir)
+      const raw = await this.execBw(["status"])
       status = JSON.parse(raw)
     } catch (err) {
       // If bw CLI is not installed or a transient error, propagate it for retry
@@ -467,7 +480,7 @@ export class BitwardenCredentialStore implements CredentialStore {
     // Configure server URL if needed (only works when logged out)
     if (status.status === "unauthenticated" || !status.serverUrl) {
       try {
-        await execBw(["config", "server", this.serverUrl], undefined, this.appDataDir)
+        await this.execBw(["config", "server", this.serverUrl])
       } catch (error) {
         const err = error as Error
         // "Logout required" means already logged in — that's fine, skip config.
@@ -479,11 +492,11 @@ export class BitwardenCredentialStore implements CredentialStore {
 
     if (status.status === "locked") {
       // Already logged in, just needs unlock
-      const unlockOutput = await execBw(["unlock", this.masterPassword, "--raw"], undefined, this.appDataDir)
+      const unlockOutput = await this.execBw(["unlock", this.masterPassword, "--raw"])
       this.sessionToken = unlockOutput.trim()
     } else if (status.status === "unauthenticated" || !status.status) {
       // Not logged in — full login
-      const loginOutput = await execBw(["login", this.email, this.masterPassword, "--raw"], undefined, this.appDataDir)
+      const loginOutput = await this.execBw(["login", this.email, this.masterPassword, "--raw"])
       try {
         const parsed = JSON.parse(loginOutput)
         this.sessionToken = parsed.access_token ?? loginOutput.trim()
@@ -492,13 +505,22 @@ export class BitwardenCredentialStore implements CredentialStore {
       }
     } else {
       // Status is "unlocked" — already good, just need the session token
-      const unlockOutput = await execBw(["unlock", this.masterPassword, "--raw"], undefined, this.appDataDir)
+      const unlockOutput = await this.execBw(["unlock", this.masterPassword, "--raw"])
       this.sessionToken = unlockOutput.trim()
     }
 
-    // Sync vault data after obtaining a fresh session token
-    /* v8 ignore next -- defensive: loginAttempt always sets sessionToken before sync @preserve */
-    await execBw(["sync"], this.sessionToken ?? undefined, this.appDataDir)
+    if (this.shouldSyncVaultAfterSession(status)) {
+      /* v8 ignore next -- defensive: loginAttempt always sets sessionToken before sync @preserve */
+      await this.execBw(["sync"], this.sessionToken ?? undefined)
+      this.writeSyncMarker()
+    } else {
+      emitNervesEvent({
+        event: "repertoire.bw_sync_skipped",
+        component: "repertoire",
+        message: "skipping bw sync because local vault cache is still fresh",
+        meta: { email: this.email, serverUrl: this.serverUrl, freshnessWindowMs: BW_SYNC_FRESH_MS },
+      })
+    }
   }
 
   private async ensureSession(): Promise<string | undefined> {
@@ -521,6 +543,7 @@ export class BitwardenCredentialStore implements CredentialStore {
           throw err
         }
         this.sessionToken = null
+        this.structuredItemCache = null
         attemptedFreshSession = true
       }
     }
@@ -646,13 +669,14 @@ export class BitwardenCredentialStore implements CredentialStore {
       }
 
       const encoded = Buffer.from(JSON.stringify(item)).toString("base64")
+      this.structuredItemCache = null
       let savedItem: BwLoginItem | null
       if (existing) {
-        const stdout = await execBw(["edit", "item", existing.id], session, this.appDataDir, encoded)
+        const stdout = await this.execBw(["edit", "item", existing.id], session, encoded)
         const savedItemId = parseBwItemId(stdout) ?? existing.id
         savedItem = await this.findItemById(savedItemId, session)
       } else {
-        const stdout = await execBw(["create", "item"], session, this.appDataDir, encoded)
+        const stdout = await this.execBw(["create", "item"], session, encoded)
         const savedItemId = parseBwItemId(stdout)
         savedItem = savedItemId
           ? await this.findItemById(savedItemId, session)
@@ -660,6 +684,7 @@ export class BitwardenCredentialStore implements CredentialStore {
       }
       this.assertStoredCredentialMatches(domain, data, savedItem)
     })
+    this.structuredItemCache = null
 
     emitNervesEvent({
       event: "repertoire.bw_credential_store_end",
@@ -678,7 +703,7 @@ export class BitwardenCredentialStore implements CredentialStore {
     })
 
     const stdout = await this.withTransientRetry(() =>
-      this.withSessionRetry((session) => execBw(["list", "items"], session, this.appDataDir)),
+      this.withSessionRetry((session) => this.execBw(["list", "items"], session)),
     )
     const items = parseBwItems(stdout, "bw list items")
 
@@ -719,7 +744,8 @@ export class BitwardenCredentialStore implements CredentialStore {
       return false
     }
 
-    await this.withSessionRetry((session) => execBw(["delete", "item", item.id], session, this.appDataDir))
+    await this.withSessionRetry((session) => this.execBw(["delete", "item", item.id], session))
+    this.structuredItemCache = null
 
     emitNervesEvent({
       event: "repertoire.bw_credential_delete_end",
@@ -734,15 +760,61 @@ export class BitwardenCredentialStore implements CredentialStore {
   // --- Private ---
 
   private async findItemByDomain(domain: string, session?: string): Promise<BwLoginItem | null> {
-    const stdout = await execBw(["list", "items", "--search", domain], session, this.appDataDir)
+    if (shouldPreferExactItemLookup(domain)) {
+      const items = await this.readStructuredItemCache(session)
+      return items.get(domain) ?? null
+    }
+
+    const stdout = await this.execBw(["list", "items", "--search", domain], session)
     const items = parseBwItems(stdout, "bw list items --search")
 
     // Find exact match by name
     return items.find((item) => item.name === domain) ?? null
   }
 
+  private shouldSyncVaultAfterSession(status: { status?: string; serverUrl?: string; userEmail?: string }): boolean {
+    if (status.status === "unauthenticated" || !status.status) return true
+    if (!this.appDataDir) return true
+    const freshnessTimestamp = this.latestLocalSyncTimestamp()
+    if (freshnessTimestamp !== null) {
+      return Date.now() - freshnessTimestamp > BW_SYNC_FRESH_MS
+    }
+    return true
+  }
+
+  private latestLocalSyncTimestamp(): number | null {
+    const files = [BW_SYNC_MARKER_FILENAME, BW_DATA_FILENAME]
+    let latest: number | null = null
+    for (const name of files) {
+      try {
+        const mtimeMs = fs.statSync(path.join(this.appDataDir!, name)).mtimeMs
+        latest = latest === null ? mtimeMs : Math.max(latest, mtimeMs)
+      } catch {
+        // Missing freshness file is fine; use any other available timestamp.
+      }
+    }
+    return latest
+  }
+
+  private writeSyncMarker(): void {
+    if (!this.appDataDir) return
+    try {
+      fs.writeFileSync(path.join(this.appDataDir, BW_SYNC_MARKER_FILENAME), `${Date.now()}\n`, { mode: 0o600 })
+    } catch {
+      // If the marker cannot be written, fall back to syncing next time.
+    }
+  }
+
+  private async readStructuredItemCache(session?: string): Promise<Map<string, BwLoginItem>> {
+    if (this.structuredItemCache) return this.structuredItemCache
+    const stdout = await this.execBw(["list", "items"], session)
+    const items = parseBwItems(stdout, "bw list items")
+    this.structuredItemCache = new Map(items.map((item) => [item.name, item]))
+    return this.structuredItemCache
+  }
+
   private async findItemById(id: string, session?: string): Promise<BwLoginItem> {
-    const stdout = await execBw(["get", "item", id], session, this.appDataDir)
+    const stdout = await this.execBw(["get", "item", id], session)
     return parseBwItem(stdout, "bw get item")
   }
 
