@@ -1493,9 +1493,11 @@ export function makeHost({ bundle = DEFAULT_BUNDLE, trustDir = DEFAULT_TRUST_DIR
       if (!stat) throw new Error(`refusing to restore ${file}: it does not exist`)
       if (stat.nlink > 1) throw new Error(`refusing: ${file} has another hard link. Nothing was changed.`)
       const record = readJsonNoFollow(file)
+      // Already what it was before the run: write nothing, so a write the Butler makes meanwhile cannot be lost.
+      if (learnedSig(learnedOf(record)) === learnedSig(learned)) return
       for (const field of LEARNED_FIELDS) { if (learned[field] === undefined) delete record[field]; else record[field] = learned[field] }
-      writeAtomic(file, `${JSON.stringify(record, null, 2)}\n`, 0o600)
-      handOverFile(file, { uid: stat.uid, gid: stat.gid, mode: 0o600 })
+      // Owner and mode are set on the temp file's descriptor before the rename; nothing touches the path afterwards.
+      writeFileAsRoot(path.dirname(file), path.basename(file), `${JSON.stringify(record, null, 2)}\n`, 0o600, { uid: stat.uid, gid: stat.gid }, "friends")
     },
     /** The principal's notes, toolPreferences and relationshipPolicy as the record holds them now, read through no link. Throws when unreadable. */
     readReplayFriendLearned() {
@@ -1758,6 +1760,11 @@ export function freshRootDirectoryInBundle(dir, mode, { rootUid = 0, rootGid = 0
  * temp file is written, or nothing is renamed; an existing file with another hard link is refused, since replacing it would leave that other name behind.
  */
 function writePsycheFileAsRoot(dir, name, text, mode, owner) {
+  writeFileAsRoot(dir, name, text, mode, owner, "psyche")
+}
+
+/** The same write for any folder the Butler's user can write; `label` names the folder in what it refuses (the psyche folder, the friends folder). */
+function writeFileAsRoot(dir, name, text, mode, owner, label) {
   const folder = refuseLinkOrWrongType(dir, "directory")
   const sameFolder = () => { const now = lstatOrNull(dir); return now !== null && !now.isSymbolicLink() && now.dev === folder.dev && now.ino === folder.ino }
   const file = path.join(dir, name)
@@ -1770,12 +1777,12 @@ function writePsycheFileAsRoot(dir, name, text, mode, owner) {
     // that file has no other name.
     const opened = fstatSync(fd)
     const named = lstatOrNull(tmp)
-    if (!sameFolder() || !named || named.dev !== opened.dev || named.ino !== opened.ino || opened.nlink !== 1) throw new Error(`refusing: the psyche folder or the temp file for ${name} changed as it was created. Nothing was written.`)
+    if (!sameFolder() || !named || named.dev !== opened.dev || named.ino !== opened.ino || opened.nlink !== 1) throw new Error(`refusing: the ${label} folder or the temp file for ${name} changed as it was created. Nothing was written.`)
     writeFileSync(fd, text)
     ops.fchown(fd, owner.uid, owner.gid)
     fchmodSync(fd, mode)
   } finally { closeSync(fd) }
-  if (!sameFolder()) throw new Error(`refusing: the psyche folder changed while ${name} was written. Nothing was renamed.`)
+  if (!sameFolder()) throw new Error(`refusing: the ${label} folder changed while ${name} was written. Nothing was renamed.`)
   renameSync(tmp, file)
 }
 

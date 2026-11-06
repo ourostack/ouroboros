@@ -567,6 +567,7 @@ describe("psyche conversation cases (work-sourced, psyche-change-request, learns
 type Observation = Record<string, unknown> | ((context: string) => Record<string, unknown>)
 function fakeHost(opts: { sessions?: Record<string, unknown>; replies?: (req: { text: string; who: string }) => { text?: string; error?: string; timedOut?: boolean }; observations?: Observation[]; clock?: { t: number } } = {}) {
   const log: string[] = []
+  const friendCalls: unknown[][] = []
   const clock = opts.clock ?? { t: 10_000 }
   let observeCalls = 0
   const contexts: string[] = []
@@ -577,13 +578,13 @@ function fakeHost(opts: { sessions?: Record<string, unknown>; replies?: (req: { 
     openWindow: (minutes: number) => { log.push(`open:${minutes}`) },
     closeWindow: () => { log.push("close") },
     restorePsycheFile: (name: string, text: string, mode: number) => { log.push(`restore:${name}:${JSON.stringify(text)}:${mode}`) },
-    restoreReplayFriendLearned: () => undefined,
+    restoreReplayFriendLearned: (...args: unknown[]) => { friendCalls.push(args) },
     readReplayFriendLearned: () => ({ notes: {}, toolPreferences: {}, relationshipPolicy: null }),
     send: async (req: { who: string; text: string; delegated: boolean; context: string }) => { contexts.push(req.context); log.push(`send:${req.who}:${req.delegated}`); return opts.replies ? opts.replies(req) : { text: "Books is up. Chef Show" } },
     readSession: async (context: string) => opts.sessions?.[context] ?? opts.sessions?.["*"] ?? null,
     observe: async () => { const o = opts.observations?.[Math.min(observeCalls, opts.observations.length - 1)] ?? empty(); observeCalls += 1; return typeof o === "function" ? o(contexts.at(-1) ?? "") : o },
   }
-  return { host, log, contexts, clock }
+  return { host, log, contexts, clock, friendCalls }
 }
 
 describe("runSuite orchestration", () => {
@@ -757,7 +758,7 @@ describe("runSuite orchestration", () => {
     const send = run.host.send
     run.host.send = async (req: any) => { if (opts.learn) state.learned = opts.learn; return send(req) }
     Object.assign(run.host, {
-      restoreReplayFriendLearned: opts.restore ?? ((l: Learned) => { run.log.push(`friend-restore:${sigOf(l)}`); state.learned = l }),
+      restoreReplayFriendLearned: (...args: unknown[]) => { run.friendCalls.push(args); return (opts.restore ?? ((l: Learned) => { run.log.push(`friend-restore:${sigOf(l)}`); state.learned = l }))(args[0] as Learned) },
       readReplayFriendLearned: () => { if (opts.readFails !== undefined) throw opts.readFails; run.log.push("friend-read"); return state.learned },
     })
     return { ...run, friend: state }
@@ -770,6 +771,7 @@ describe("runSuite orchestration", () => {
     const run = friendHost({ learn: changed })
     const suite = await gate.runSuite(run.host, { cases: ["handoff-greeting"], log: run.say })
     expect(run.friend.learned).toEqual(startLearned)
+    expect(run.friendCalls).toEqual([[startLearned]])
     expect(run.log.filter((line) => line.startsWith("friend-"))).toEqual([`friend-restore:${sigOf(startLearned)}`, "friend-read"])
     expect(friendOf(suite)).toEqual({ id: "replay-friend-restored", status: "pass", checks: [{ name: friendCheck, ok: true }] })
     expect(suite.results.map((r: { id: string }) => r.id).slice(-2)).toEqual(["tacit-restored", "replay-friend-restored"])
@@ -1858,6 +1860,85 @@ describe("provision and the real host", () => {
         host.restoreReplayFriendLearned({ notes: undefined, toolPreferences: undefined, relationshipPolicy: undefined })
         const after = read()
         expect(Object.keys(after).sort()).toEqual(["a2a", "id", "name", "trustLevel"])
+      })
+
+      it("writes nothing when the record already holds the snapshot's fields", () => {
+        const host = provisioned()
+        seed()
+        const bytes = fs.readFileSync(record(), "utf8")
+        const inode = fs.statSync(record()).ino
+        fs.chmodSync(record(), 0o644)
+        host.restoreReplayFriendLearned(learned)
+        expect(chowns).toEqual([])
+        expect(fs.readFileSync(record(), "utf8")).toBe(bytes)
+        expect(fs.statSync(record()).ino).toBe(inode)
+        expect(fs.statSync(record()).mode & 0o7777).toBe(0o644)
+        expect(fs.readdirSync(path.join(bundle, "friends")).sort()).toEqual(["friend-1.json", "friend-2.json", "friend-3.json"])
+      })
+
+      describe("the record is written the way TACIT is: descriptor first, folder checked, path never touched after the rename", () => {
+        const friends = () => path.join(bundle, "friends")
+        const stale = { notes: {}, toolPreferences: {}, relationshipPolicy: null }
+        let restoreCreate: unknown
+        beforeEach(() => { restoreCreate = gate.overrideCreatePsycheTempForTests(undefined) })
+        afterEach(() => { gate.overrideCreatePsycheTempForTests(restoreCreate) })
+        const swapAfterCreate = (swap: (tmp: string) => void) => {
+          gate.overrideCreatePsycheTempForTests((tmp: string) => { const fd = (restoreCreate as (t: string) => number)(tmp); swap(tmp); return fd })
+        }
+
+        it("sets owner and mode on the temp file's descriptor before the rename, and does nothing to the path after", () => {
+          const host = provisioned()
+          seed({ notes: { stray: "x" } })
+          const seen: string[] = []
+          gate.overrideFchownForTests((fd: number, uid: number, gid: number) => {
+            chowns.push([uid, gid])
+            seen.push(`${fs.fstatSync(fd).isFile()}:${read().notes.stray}:${fs.readdirSync(friends()).length}`)
+          })
+          host.restoreReplayFriendLearned(learned)
+          expect(seen).toEqual(["true:x:4"])
+          expect(read().notes).toEqual({ likes: "cosy" })
+          expect(chowns).toHaveLength(1)
+        })
+
+        it("throws, writing nothing, when the friends folder is swapped right after the temp file is created", () => {
+          const host = provisioned()
+          seed({ notes: { stray: "x" } })
+          const moved = path.join(bundle, "friends-moved")
+          swapAfterCreate(() => { fs.renameSync(friends(), moved); fs.mkdirSync(friends()) })
+          expect(() => host.restoreReplayFriendLearned(learned)).toThrow(/friends folder or the temp file .*Nothing was written/)
+          expect(chowns).toEqual([])
+          expect(JSON.parse(fs.readFileSync(path.join(moved, "friend-1.json"), "utf8")).notes).toEqual({ stray: "x" })
+        })
+
+        it("throws when the temp file gains a second hard link, or no longer names the file it opened", () => {
+          const host = provisioned()
+          seed({ notes: { stray: "x" } })
+          const second = path.join(bundle, "second-name")
+          swapAfterCreate((tmp) => { fs.linkSync(tmp, second) })
+          expect(() => host.restoreReplayFriendLearned(learned)).toThrow(/Nothing was written/)
+          expect(fs.readFileSync(second, "utf8")).toBe("")
+          swapAfterCreate((tmp) => { fs.renameSync(tmp, path.join(bundle, "aside.tmp")); fs.writeFileSync(tmp, "planted") })
+          expect(() => host.restoreReplayFriendLearned(learned)).toThrow(/Nothing was written/)
+          expect(chowns).toEqual([])
+          expect(read().notes).toEqual({ stray: "x" })
+        })
+
+        it("throws, renaming nothing, when the friends folder is swapped during the write", () => {
+          const host = provisioned()
+          seed({ notes: { stray: "x" } })
+          const moved = path.join(bundle, "friends-moved")
+          gate.overrideFchownForTests(() => { fs.renameSync(friends(), moved); fs.mkdirSync(friends()); fs.writeFileSync(record(), JSON.stringify({ id: "planted" })) })
+          expect(() => host.restoreReplayFriendLearned(learned)).toThrow(/friends folder changed .*Nothing was renamed/)
+          expect(read()).toEqual({ id: "planted" })
+          expect(JSON.parse(fs.readFileSync(path.join(moved, "friend-1.json"), "utf8")).notes).toEqual({ stray: "x" })
+        })
+
+        it("still restores when the record differs from a stale snapshot", () => {
+          const host = provisioned()
+          seed()
+          host.restoreReplayFriendLearned(stale)
+          expect(read().notes).toEqual({})
+        })
       })
 
       it("refuses a symlink, a hard link, a missing or non-file record and a friend that is not the principal, changing nothing", () => {
