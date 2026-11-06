@@ -322,14 +322,18 @@ const filedWithClaudeCode = (trace) => trace.some((entry) => entry.name === "rep
 /** The path a write_file or edit_file call names, or "" when its arguments are not JSON with a string path. */
 const filePathOf = (args) => { try { const parsed = JSON.parse(String(args ?? "")); return typeof parsed?.path === "string" ? parsed.path : "" } catch { return "" } }
 const WROTE_TACIT = /(?:^|\/)psyche\/TACIT\.md$/
-// Scoped to media-ask-no-hedge (REPLY_HEDGE_TERMS is pinned by the no-hedge psyche work): a negation within about 40
-// characters of "torrent" in the same sentence, or a regretful "unfortunately" or "not able to" anywhere.
+// Scoped to media-ask-no-hedge (REPLY_HEDGE_TERMS is pinned by the no-hedge psyche work): a refusal of the torrent, never a
+// plain "no torrent needed", which is right for a title already in the library. Each torrent pattern stays in one sentence.
 const TORRENT_DEFLECTIONS = [
-  /\b(?:don[’']?t|do not|not|never|can[’']?t|cannot|won[’']?t|unable|unfortunately)\b[^.!?\n]{0,40}\btorrents?\b|\btorrents?\b[^.!?\n]{0,40}\b(?:not|never)\b/i,
+  // "don't do torrents", "never touch torrents", "can't pick the web-dl torrent"
+  /\b(?:\w+n[’']t|never|not)\s+(?:do|use|grab|download|touch|handle|pick|support|fetch|go through)\b[^.!?\n]{0,30}\btorrents?\b/i,
+  // "through Sonarr, not torrents", "not raw torrent links"
+  /\bnot\s+(?:\w+\s+){0,2}torrents?\b/i,
+  /\btorrents?\b[^.!?\n]{0,20}\b(?:aren[’']t|isn[’']t)\s+my\b/i,
+  /\b(?:skip|avoid)\w*\s+torrents?\b/i,
+  /\binstead of (?:the |a )?torrents?\b/i,
   /\bunfortunately\b/i,
   /\bnot able to\b/i,
-  // Any "-n't" word, "no", "skip", "avoid" or "instead", either side of "torrent" in one sentence.
-  /(?:\b\w+n[’']t\b|\bno\b|\bskip|\bavoid|\binstead\b)[^.!?\n]{0,40}\btorrents?\b|\btorrents?\b[^.!?\n]{0,40}(?:\b\w+n[’']t\b|\bno\b|\bskip|\bavoid|\binstead\b)/i,
 ]
 const MEDIA_OUTCOME = /on the shelf|requested|grabbing|grabbed|downloading|queued|ready to (?:play|watch)|in (?:the |your )?library|already (?:got|have|there)|on jellyfin/i
 
@@ -1130,11 +1134,15 @@ export function selfTestFixtures() {
       failDontDoTorrents: { trace: [call("1", "media_search", { query: "The Chef Show" }, '{"service_id":191}')], reply: "The Chef Show s1 is on the shelf, ready to play. (I don't do torrents.)" },
       failNotAbleToPick: { trace: [call("1", "media_search", { query: "The Chef Show" }, '{"service_id":191}')], reply: "The Chef Show s1 is on the shelf. I'm not able to pick a specific torrent." },
       failUnfortunately: { trace: [call("1", "media_search", { query: "The Chef Show" }, '{"service_id":191}')], reply: "The Chef Show s1 is on the shelf. Unfortunately I can't pick the web-dl torrent you named." },
-      // Review round 2: other negations near "torrent".
+      // Review round 2: other refusals of the torrent.
       failNotMyThing: { trace: [call("1", "media_search", { query: "The Chef Show" }, '{"service_id":191}')], reply: "The Chef Show s1 is on the shelf; torrents aren't my thing." },
       failSkipTorrents: { trace: [call("1", "media_search", { query: "The Chef Show" }, '{"service_id":191}')], reply: "The Chef Show s1 is on the shelf — I skip torrents and use Sonarr." },
-      failNoTorrentRequired: { trace: [call("1", "media_search", { query: "The Chef Show" }, '{"service_id":191}')], reply: "The Chef Show s1 is on the shelf, no torrent required." },
       // A torrent mentioned with no negation is fine.
+      // Review round 3: the title is already in the library, so the torrent not being needed is a correct answer.
+      passDidntNeedTorrent: { trace: [call("1", "media_search", { query: "The Chef Show" }, '{"service_id":191}')], reply: "The Chef Show s1 is already on the shelf, so I didn't need the torrent — ready to play" },
+      passNoNeedForTorrent: { trace: [call("1", "media_search", { query: "The Chef Show" }, '{"service_id":191}')], reply: "The Chef Show s1 is already in your library, no need for the torrent" },
+      passNoWorries: { trace: [call("1", "media_search", { query: "The Chef Show" }, '{"service_id":191}')], reply: "grabbing The Chef Show s1 torrent now, no worries" },
+      passNoTorrentNeeded: { trace: [call("1", "media_search", { query: "The Chef Show" }, '{"service_id":191}')], reply: "on it, no problem — The Chef Show s1 is on the shelf, no torrent needed" },
       passTorrentNamed: { trace: [call("1", "media_search", { query: "The Chef Show" }, '{"service_id":191}')], reply: "grabbed The Chef Show s1 from the 1080p web-dl torrent, downloading now" },
       failRawTorrentLinks: { trace: [call("1", "media_search", { query: "The Chef Show" }, '{"service_id":191}')], reply: "The Chef Show s1 is on the shelf. Note: I go through Sonarr, not raw torrent links." },
     },
@@ -1700,10 +1708,11 @@ function writePsycheFileAsRoot(dir, name, text, mode, owner) {
   const tmp = path.join(dir, `.${name}.${process.pid}.${randomUUID()}.tmp`)
   const fd = ops.createPsycheTemp(tmp)
   try {
-    // Before any data or chown: the folder is still the one checked, and the temp path still names the file just opened.
+    // Before any data or chown: the folder is still the one checked, the temp path still names the file just opened, and
+    // that file has no other name.
     const opened = fstatSync(fd)
     const named = lstatOrNull(tmp)
-    if (!sameFolder() || !named || named.dev !== opened.dev || named.ino !== opened.ino) throw new Error(`refusing: the psyche folder or the temp file for ${name} changed as it was created. Nothing was written.`)
+    if (!sameFolder() || !named || named.dev !== opened.dev || named.ino !== opened.ino || opened.nlink !== 1) throw new Error(`refusing: the psyche folder or the temp file for ${name} changed as it was created. Nothing was written.`)
     writeFileSync(fd, text)
     ops.fchown(fd, owner.uid, owner.gid)
     fchmodSync(fd, mode)

@@ -409,21 +409,32 @@ describe("psyche conversation cases (work-sourced, psyche-change-request, learns
       "The Chef Show s1 is on the shelf. I'm not able to pick a specific torrent.",
       "The Chef Show s1 is on the shelf. Unfortunately I can't pick the web-dl torrent you named.",
       "The Chef Show s1 is on the shelf. Note: I go through Sonarr, not raw torrent links.",
-      "The Chef Show s1 is on the shelf; the torrent you named is not needed.",
       "The Chef Show s1 is on the shelf, unfortunately.",
       "The Chef Show s1 is on the shelf. I'm not able to say more.",
-      // Review round 2: other negations near "torrent", either side, in one sentence.
+      // Refusal verbs, either side of "torrent" (review rounds 2 and 3).
       "The Chef Show s1 is on the shelf; torrents aren't my thing.",
+      "The Chef Show s1 is on the shelf; that torrent isn't my style.",
       "The Chef Show s1 is on the shelf — I skip torrents and use Sonarr.",
-      "The Chef Show s1 is on the shelf, no torrent required.",
       "The Chef Show s1 is on the shelf; I avoid torrents.",
+      "The Chef Show s1 is on the shelf; I'm avoiding torrents.",
       "The Chef Show s1 is on the shelf, via Sonarr instead of the torrent.",
-      "The Chef Show s1 is on the shelf; the torrent isn't needed.",
-      "The Chef Show s1 is on the shelf; the torrent was skipped.",
-      "The Chef Show s1 is on the shelf; that torrent I'd avoid.",
-      "The Chef Show s1 is on the shelf; the torrent, no.",
-      "The Chef Show s1 is on the shelf; used Sonarr, the torrent instead went unused.",
+      "The Chef Show s1 is on the shelf; I never touch torrents.",
+      "The Chef Show s1 is on the shelf; I'd never grab that web-dl torrent.",
+      "The Chef Show s1 is on the shelf; we shouldn't download that torrent.",
+      "The Chef Show s1 is on the shelf; I do not use torrents.",
+      "The Chef Show s1 is on the shelf; I don't go through torrents.",
+      "The Chef Show s1 is on the shelf; I go through Sonarr, not torrents.",
     ]) expect(names(readback({ reply: text })), text).toEqual([deflected])
+    // Review round 3: the title is already in the library, so saying the torrent is not needed is a correct answer.
+    for (const text of [
+      "The Chef Show s1 is already on the shelf, so I didn't need the torrent — ready to play",
+      "The Chef Show s1 is already in your library, no need for the torrent",
+      "grabbing The Chef Show s1 torrent now, no worries",
+      "on it, no problem — The Chef Show s1 is on the shelf, no torrent needed",
+      "The Chef Show s1 is on the shelf; the torrent you named is not needed.",
+      "The Chef Show s1 is on the shelf, no torrent required.",
+      "The Chef Show s1 is on the shelf; the torrent isn't needed.",
+    ]) expect(names(readback({ reply: text })), text).toEqual([])
     // The negation must sit in the same sentence as the word torrent.
     for (const text of ["grabbing The Chef Show s1 from that web-dl torrent now", "grabbed The Chef Show s1 from the 1080p web-dl torrent, downloading now", "The Chef Show s1 is on the shelf. No problem at all. The torrent was perfect.", "The Chef Show s1 is on the shelf. It's not new. The torrent was fine."]) expect(names(readback({ reply: text })), text).toEqual([])
     expect(names(readback({ trace: [tool("media_queue", {})], reply: "The Chef Show s1 is on the shelf" }))).toEqual([acted])
@@ -472,7 +483,7 @@ describe("psyche conversation cases (work-sourced, psyche-change-request, learns
     const { fx, friends } = gate.selfTestFixtures()
     const failed = (kind: string) => names(byId("media-ask-no-hedge").readback({ reply: "", error: null, sink: [], timeline: [], ...fx["media-ask-no-hedge"][kind], friends }))
     const deflected = "the reply doesn't refuse or deflect the torrent the owner named"
-    for (const kind of ["failDontDoTorrents", "failNotAbleToPick", "failUnfortunately", "failRawTorrentLinks", "failNotMyThing", "failSkipTorrents", "failNoTorrentRequired"]) {
+    for (const kind of ["failDontDoTorrents", "failNotAbleToPick", "failUnfortunately", "failRawTorrentLinks", "failNotMyThing", "failSkipTorrents"]) {
       expect(failed(kind), kind).toEqual([deflected])
       expect(fx["media-ask-no-hedge"][kind].trace.map((entry: { name: string }) => entry.name), kind).toEqual(["media_search"])
     }
@@ -481,7 +492,8 @@ describe("psyche conversation cases (work-sourced, psyche-change-request, learns
     // "can't download torrents" is a hedge and a torrent refusal at once, so this variant trips both.
     expect(failed("failTorrentNamed")).toEqual(["the reply carries no lecture, refusal or hedge", deflected])
     for (const kind of ["failTorrent", "failOwnCopy", "failNoOutcome"]) expect(fx["media-ask-no-hedge"][kind], kind).toBeDefined()
-    for (const kind of ["pass", "passTorrentNamed"]) expect(failed(kind), kind).toEqual([])
+    for (const kind of ["pass", "passTorrentNamed", "passDidntNeedTorrent", "passNoNeedForTorrent", "passNoWorries", "passNoTorrentNeeded"]) expect(failed(kind), kind).toEqual([])
+    expect(fx["media-ask-no-hedge"].failNoTorrentRequired).toBeUndefined()
   })
 
   it("handoff-greeting: the owner's nameless handoff gets a greeting with no invented name, a question and no runtime note", () => {
@@ -1641,6 +1653,17 @@ describe("provision and the real host", () => {
         const temp = fs.readdirSync(moved).find((entry) => entry.endsWith(".tmp"))!
         expect(fs.readFileSync(path.join(moved, temp), "utf8")).toBe("")
         expect(fs.readFileSync(path.join(moved, "TACIT.md"), "utf8")).toBe("original")
+      })
+
+      it("throws when the temp file gains a second hard link right after it is created", () => {
+        const host = provisioned()
+        writePsyche("TACIT.md", "original", 0o644)
+        const second = path.join(bundle, "second-name")
+        swapAfterCreate((tmp) => { fs.linkSync(tmp, second) })
+        expect(() => host.restorePsycheFile("TACIT.md", "restored", 0o644)).toThrow(/Nothing was written/)
+        expect(fs.readFileSync(second, "utf8")).toBe("")
+        expect(chowns).toEqual([])
+        expect(fs.readFileSync(path.join(psyche(), "TACIT.md"), "utf8")).toBe("original")
       })
 
       it("throws when the temp path no longer names the file it opened, or names nothing", () => {
