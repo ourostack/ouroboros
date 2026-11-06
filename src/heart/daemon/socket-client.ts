@@ -4,6 +4,7 @@ import { emitNervesEvent } from "../../nerves/runtime"
 import type { DaemonCommand, DaemonResponse } from "./daemon"
 
 export const DEFAULT_DAEMON_SOCKET_PATH = "/tmp/ouroboros-daemon.sock"
+export const DEFAULT_DAEMON_COMMAND_TIMEOUT_MS = 10 * 60 * 1000
 
 /**
  * Defense-in-depth: detect if we're running under vitest. Tests that forget
@@ -70,7 +71,11 @@ function shouldSuppressSocketCall(socketPath: string): boolean {
   return (globalThis as Record<string, unknown>)[BYPASS_KEY] !== true
 }
 
-export function sendDaemonCommand(socketPath: string, command: DaemonCommand): Promise<DaemonResponse> {
+export function sendDaemonCommand(
+  socketPath: string,
+  command: DaemonCommand,
+  options: { timeoutMs?: number } = {},
+): Promise<DaemonResponse> {
   if (shouldSuppressSocketCall(socketPath)) {
     emitNervesEvent({
       level: "warn",
@@ -92,6 +97,42 @@ export function sendDaemonCommand(socketPath: string, command: DaemonCommand): P
   return new Promise((resolve, reject) => {
     const client = net.createConnection(socketPath)
     let raw = ""
+    let settled = false
+    const timeoutMs = options.timeoutMs ?? DEFAULT_DAEMON_COMMAND_TIMEOUT_MS
+
+	    const resolveOnce = (response: DaemonResponse) => {
+	      /* v8 ignore next -- duplicate settlement guard; callers also guard event handlers before reaching this helper @preserve */
+	      if (settled) return
+	      settled = true
+	      resolve(response)
+	    }
+
+	    const rejectOnce = (error: unknown) => {
+	      /* v8 ignore next -- duplicate timeout/error races should not re-reject the command promise @preserve */
+	      if (settled) return
+	      settled = true
+	      reject(error)
+    }
+
+    if ("setTimeout" in client && typeof client.setTimeout === "function") {
+      client.setTimeout(timeoutMs, () => {
+        const error = new Error(`Daemon command ${command.kind} timed out after ${timeoutMs}ms waiting for a response.`)
+        emitNervesEvent({
+          level: "error",
+          component: "daemon",
+          event: "daemon.socket_command_timeout",
+          message: "daemon socket command timed out",
+          meta: {
+            socketPath,
+            kind: command.kind,
+            timeoutMs,
+            error: error.message,
+          },
+        })
+        client.destroy()
+        rejectOnce(error)
+      })
+    }
 
     client.on("connect", () => {
       // Write the command + newline delimiter. DO NOT call client.end()
@@ -115,8 +156,10 @@ export function sendDaemonCommand(socketPath: string, command: DaemonCommand): P
     client.on("data", (chunk) => {
       raw += chunk.toString("utf-8")
     })
-    client.on("error", (error) => {
-      emitNervesEvent({
+	    client.on("error", (error) => {
+	      /* v8 ignore next -- duplicate post-settlement socket errors are ignored defensively @preserve */
+	      if (settled) return
+	      emitNervesEvent({
         level: "error",
         component: "daemon",
         event: "daemon.socket_command_error",
@@ -127,9 +170,11 @@ export function sendDaemonCommand(socketPath: string, command: DaemonCommand): P
           error: error.message,
         },
       })
-      reject(error)
-    })
-    client.on("end", () => {
+      rejectOnce(error)
+	    })
+	    client.on("end", () => {
+	      /* v8 ignore next -- duplicate post-settlement socket end events are ignored defensively @preserve */
+	      if (settled) return
       const trimmed = raw.trim()
       if (trimmed.length === 0 && command.kind === "daemon.stop") {
         emitNervesEvent({
@@ -138,7 +183,7 @@ export function sendDaemonCommand(socketPath: string, command: DaemonCommand): P
           message: "daemon socket command completed",
           meta: { socketPath, kind: command.kind, ok: true },
         })
-        resolve({ ok: true, message: "daemon stopped" })
+        resolveOnce({ ok: true, message: "daemon stopped" })
         return
       }
       if (trimmed.length === 0) {
@@ -154,7 +199,7 @@ export function sendDaemonCommand(socketPath: string, command: DaemonCommand): P
             error: error.message,
           },
         })
-        reject(error)
+        rejectOnce(error)
         return
       }
       try {
@@ -169,7 +214,7 @@ export function sendDaemonCommand(socketPath: string, command: DaemonCommand): P
             ok: parsed.ok,
           },
         })
-        resolve(parsed)
+        resolveOnce(parsed)
       } catch (error) {
         emitNervesEvent({
           level: "error",
@@ -182,7 +227,7 @@ export function sendDaemonCommand(socketPath: string, command: DaemonCommand): P
             error: error instanceof Error ? error.message : String(error),
           },
         })
-        reject(error)
+        rejectOnce(error)
       }
     })
   })

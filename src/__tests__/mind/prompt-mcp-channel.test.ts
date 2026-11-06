@@ -29,11 +29,6 @@ vi.mock("../../repertoire/skills", () => ({
   loadSkill: vi.fn(),
 }))
 
-vi.mock("../../repertoire/tasks", () => ({
-  getTaskModule: () => ({
-    getBoard: vi.fn().mockReturnValue({ compact: "", full: "", byStatus: {}, actionRequired: [], unresolvedDependencies: [], activeSessions: [], activeBridges: [] }),
-  }),
-}))
 
 vi.mock("../../heart/identity", () => {
   const DEFAULT_AGENT_CONTEXT = { maxTokens: 80000, contextMargin: 20 }
@@ -48,7 +43,7 @@ vi.mock("../../heart/identity", () => {
     getAgentRoot: vi.fn(() => "/mock/repo/testagent"),
     getRepoRoot: vi.fn(() => "/mock/repo"),
     getAgentRepoWorkspacesRoot: vi.fn(() => "/mock/repo/testagent/state/workspaces"),
-    HARNESS_CANONICAL_REPO_URL: "https://github.com/ouroborosbot/ouroboros.git",
+    HARNESS_CANONICAL_REPO_URL: "https://github.com/ourostack/ouroboros.git",
     resetIdentity: vi.fn(),
   }
 })
@@ -152,5 +147,21 @@ describe("runtimeInfoSection mcp channel", () => {
     const result = runtimeInfoSection("mcp")
     expect(result).not.toContain("Microsoft Teams")
     expect(result).not.toContain("iMessage")
+  })
+
+  it("voice channel includes conversational transcript guidance", async () => {
+    setupReadFileSync()
+    const { patchRuntimeConfig, resetConfigCache } = await import("../../heart/config")
+    resetConfigCache()
+    patchRuntimeConfig({ providers: { minimax: { apiKey: "test-key", model: "test-model" } } })
+    const { runtimeInfoSection, resetPsycheCache } = await import("../../mind/prompt")
+    resetPsycheCache()
+    const result = runtimeInfoSection("voice")
+    expect(result).toContain("live voice session")
+    expect(result).toContain("interruption-friendly")
+    expect(result).toContain("prioritize that newest utterance")
+    expect(result).toContain("one or two short sentences")
+    expect(result).toContain("use speak before any tool work")
+    expect(result).toContain("text transcript")
   })
 })

@@ -6,30 +6,32 @@
  */
 
 import type { AgentProvider } from "../identity"
-import type { ProviderLane } from "../provider-state"
+import type { ProviderLane } from "../provider-lanes"
 import type { Facing } from "../../mind/friends/channel"
 import type { TrustLevel } from "../../mind/friends/types"
 import type { DaemonCommand, DaemonResponse } from "./daemon"
 import type { HatchCredentialsInput, HatchFlowInput, HatchFlowResult } from "../hatch/hatch-flow"
 import type { RuntimeAuthInput, RuntimeAuthResult } from "../auth/auth-flow"
 import type { OuroPathInstallResult } from "../versioning/ouro-path-installer"
-import type { TaskModule } from "../../repertoire/tasks/types"
 import type { FriendStore } from "../../mind/friends/store"
 import type { CheckForUpdateResult } from "../versioning/update-checker"
 import type { DaemonHealthState } from "./daemon-health"
 import type { VaultUnlockStoreKind } from "../../repertoire/vault-unlock"
+import type { AgentReadinessIssue } from "./readiness-repair"
+import type { VaultItemCompatibilityAlias, VaultItemTemplate } from "./vault-items"
 
 export type RuntimeConfigScope = "agent" | "machine"
 export type RuntimeConfigStatusScope = RuntimeConfigScope | "all"
-export type ConnectTarget = "providers" | "perplexity" | "embeddings" | "teams" | "bluebubbles"
+export type ConnectTarget = "providers" | "perplexity" | "embeddings" | "teams" | "bluebubbles" | "mail" | "voice"
+export type DnsWorkflowAction = "backup" | "plan" | "apply" | "verify" | "rollback" | "certificate"
 
 export type OuroCliCommand =
   | { kind: "daemon.up"; noRepair?: boolean }
   | { kind: "daemon.stop" }
-  | { kind: "daemon.status" }
+  | { kind: "daemon.status"; json?: boolean }
   | { kind: "daemon.logs" }
   | { kind: "daemon.logs.prune" }
-  | { kind: "outlook"; json?: boolean }
+  | { kind: "mailbox"; json?: boolean }
   | { kind: "provider.use"; agent?: string; lane: ProviderLane; provider: AgentProvider; model: string; force?: boolean; legacyFacing?: Facing }
   | { kind: "provider.check"; agent?: string; lane: ProviderLane; legacyFacing?: Facing }
   | { kind: "provider.status"; agent?: string }
@@ -42,25 +44,23 @@ export type OuroCliCommand =
   | { kind: "vault.status"; agent?: string; store?: VaultUnlockStoreKind }
   | { kind: "vault.config.set"; agent?: string; key: string; value?: string; scope?: RuntimeConfigScope }
   | { kind: "vault.config.status"; agent?: string; scope?: RuntimeConfigStatusScope }
-  | { kind: "connect"; agent?: string; target?: ConnectTarget }
+  | { kind: "vault.item.set"; agent?: string; item: string; template?: VaultItemTemplate; secretFields?: string[]; publicFields?: string[]; note?: string; compatibilityAlias?: VaultItemCompatibilityAlias }
+  | { kind: "vault.item.status"; agent?: string; item: string; compatibilityAlias?: VaultItemCompatibilityAlias }
+  | { kind: "vault.item.list"; agent?: string; prefix?: string; compatibilityAlias?: VaultItemCompatibilityAlias }
+  | { kind: "dns.workflow"; action: DnsWorkflowAction; agent?: string; bindingPath: string; outputPath?: string; backupPath?: string; yes?: boolean }
+  | { kind: "connect"; agent?: string; target?: ConnectTarget; ownerEmail?: string; source?: string; noDelegatedSource?: boolean; rotateMissingMailKeys?: boolean }
+  | { kind: "account.ensure"; agent?: string; ownerEmail?: string; source?: string; noDelegatedSource?: boolean; rotateMissingMailKeys?: boolean }
+  | { kind: "mail.import-mbox"; agent?: string; filePath?: string; discover?: boolean; ownerEmail?: string; source?: string; foreground?: boolean; operationId?: string }
+  | { kind: "mail.backfill-indexes"; agent?: string; foreground?: boolean; operationId?: string }
   | { kind: "auth.run"; agent?: string; provider?: AgentProvider }
   | { kind: "auth.verify"; agent?: string; provider?: AgentProvider }
   | { kind: "auth.switch"; agent?: string; provider: AgentProvider; facing?: Facing }
   | { kind: "chat.connect"; agent: string }
   | { kind: "message.send"; from: string; to: string; content: string; sessionId?: string; taskRef?: string }
   | { kind: "task.poke"; agent: string; taskId: string }
-  | { kind: "task.board"; status?: string; agent?: string }
-  | { kind: "task.create"; title: string; type?: string; agent?: string }
-  | { kind: "task.update"; id: string; status: string; agent?: string }
-  | { kind: "task.show"; id: string; agent?: string }
-  | { kind: "task.actionable"; agent?: string }
-  | { kind: "task.deps"; agent?: string }
-  | { kind: "task.sessions"; agent?: string }
-  | { kind: "task.fix"; mode: "dry-run" | "safe" | "single"; issueId?: string; option?: number; agent?: string }
   | { kind: "whoami"; agent?: string }
   | { kind: "session.list"; agent?: string }
   | { kind: "thoughts"; agent?: string; last?: number; json?: boolean; follow?: boolean }
-  | { kind: "reminder.create"; title: string; body: string; scheduledAt?: string; cadence?: string; category?: string; requester?: string; agent?: string }
   | { kind: "friend.list"; agent?: string }
   | { kind: "friend.show"; friendId: string; agent?: string }
   | { kind: "friend.create"; name: string; trustLevel?: string; agent?: string }
@@ -68,8 +68,9 @@ export type OuroCliCommand =
   | { kind: "friend.link"; agent: string; friendId: string; provider: import("../../mind/friends/types").IdentityProvider; externalId: string }
   | { kind: "friend.unlink"; agent: string; friendId: string; provider: import("../../mind/friends/types").IdentityProvider; externalId: string }
   | { kind: "changelog"; from?: string; agent?: string }
-  | { kind: "mcp.list" }
-  | { kind: "mcp.call"; server: string; tool: string; args?: string }
+  | { kind: "mcp.list"; agent?: string }
+  | { kind: "mcp.call"; agent?: string; server: string; tool: string; args?: string }
+  | { kind: "mcp.canary"; agent: string; socketOverride?: string; requiredSenses?: string[]; json?: boolean }
   | { kind: "config.model"; agent?: string; modelName: string; facing?: Facing }
   | { kind: "config.models"; agent?: string }
   | { kind: "hatch.start"; agentName?: string; humanName?: string; provider?: AgentProvider; credentials?: HatchCredentialsInput; migrationPath?: string }
@@ -82,11 +83,17 @@ export type OuroCliCommand =
   | { kind: "inner.status"; agent?: string }
   | { kind: "mcp-serve"; agent: string; friendId?: string }
   | { kind: "setup"; tool: "claude-code" | "codex"; agent?: string }
+  | { kind: "plugin.install"; source: string; agent?: string; version?: string }
+  | { kind: "plugin.list"; agent?: string }
+  | { kind: "plugin.remove"; pluginId: string; agent?: string }
   | { kind: "hook"; event: string; agent: string }
   | { kind: "habit.list"; agent?: string }
   | { kind: "habit.create"; agent?: string; name: string; cadence?: string }
   | { kind: "habit.poke"; agent: string; habitName: string }
-  | { kind: "doctor" }
+  | { kind: "await.poke"; agent: string; awaitName: string }
+  | { kind: "desk"; agent?: string; tool: string; toolArgs: Record<string, unknown> }
+  | { kind: "migrate-to-desk"; agent: string; root?: string; force?: boolean; dryRun?: boolean }
+  | { kind: "doctor"; json?: boolean; category?: string; strict?: boolean }
   | { kind: "bluebubbles.replay"; agent?: string; messageGuid: string; eventType: "new-message" | "updated-message"; json?: boolean }
   | { kind: "clone"; remote: string; agent?: string }
   | { kind: "help"; command?: string }
@@ -96,10 +103,13 @@ export interface OuroCliDeps {
   sendCommand: (socketPath: string, command: DaemonCommand) => Promise<DaemonResponse>
   startDaemonProcess: (socketPath: string) => Promise<{ pid: number | null }>
   writeStdout: (text: string) => void
+  setExitCode?: (code: number) => void
   /** Raw terminal output. Does not append a newline. Use for in-place TTY renderers. */
   writeRaw?: (text: string) => void
   /** Whether stdout supports interactive cursor-control rendering. */
   isTTY?: boolean
+  /** Terminal width override for width-aware command renderers in tests or alternate hosts. */
+  stdoutColumns?: number
   checkSocketAlive: (socketPath: string) => Promise<boolean>
   cleanupStaleSocket: (socketPath: string) => void
   fallbackPendingMessage: (command: Extract<DaemonCommand, { kind: "message.send" }>) => string
@@ -114,17 +124,18 @@ export interface OuroCliDeps {
   ensureCurrentVersionInstalled?: () => void
   syncGlobalOuroBotWrapper?: () => Promise<unknown> | unknown
   ensureSkillManagement?: () => Promise<void>
+  prepareDaemonRuntimeReplacement?: () => Promise<void> | void
   ensureDaemonBootPersistence?: (socketPath: string) => Promise<void> | void
   startChat?: (agentName: string) => Promise<void>
   tailLogs?: (options?: { follow?: boolean; lines?: number; agentFilter?: string }) => () => void
   pruneDaemonLogs?: (options?: { logsDir?: string; agentName?: string }) => { filesCompacted: number; bytesFreed: number }
-  taskModule?: TaskModule
   friendStore?: FriendStore
   whoamiInfo?: () => { agentName: string; homePath: string; bonesVersion: string }
-  scanSessions?: () => Promise<SessionEntry[]>
+  scanSessions?: (agentName: string) => Promise<SessionEntry[]>
   getChangelogPath?: () => string
   fetchImpl?: typeof fetch
   checkForCliUpdate?: () => Promise<CheckForUpdateResult>
+  updateCheckTimeoutMs?: number
   installCliVersion?: (version: string) => Promise<void>
   activateCliVersion?: (version: string) => void
   getCurrentCliVersion?: () => string | null
@@ -153,12 +164,21 @@ export interface OuroCliDeps {
   readHealthUpdatedAt?: (healthPath: string) => number | null
   readRecentDaemonLogLines?: (lines?: number) => string[]
   sleep?: (ms: number) => Promise<void>
+  spawnBackgroundCli?: (argv: string[]) => Promise<{ pid: number | null }>
   now?: () => number
   startupPollIntervalMs?: number
   startupStabilityWindowMs?: number
   startupTimeoutMs?: number
   startupRetryLimit?: number
+  finalDaemonHealthSettleTimeoutMs?: number
+  finalDaemonHealthSettlePollIntervalMs?: number
   reportDaemonStartupPhase?: (text: string) => void
+  /**
+   * Layer 2 boot sync probe injection — when set, called instead of the
+   * real `runBootSyncProbe`. Tests inject a no-op stub so they don't trigger
+   * real `git pull` invocations against the developer's home bundles.
+   */
+  runBootSyncProbeImpl?: typeof import("./boot-sync-probe").runBootSyncProbe
 }
 
 export interface SessionEntry {
@@ -169,13 +189,15 @@ export interface SessionEntry {
 }
 
 export interface EnsureDaemonResult {
+  ok: boolean
   alreadyRunning: boolean
   message: string
   verifyStartupStatus?: boolean
   startedPid?: number | null
+  startupFailureReason?: string | null
   stability?: {
     stable: string[]
-    degraded: Array<{ agent: string; errorReason: string; fixHint: string }>
+    degraded: Array<{ agent: string; errorReason: string; fixHint: string; issue?: AgentReadinessIssue }>
   }
 }
 
@@ -194,19 +216,6 @@ export interface DiscoveredCredential {
 }
 
 // ── Command group type aliases (used in toDaemonCommand exclusion) ──
-
-export type TaskCliCommand = Extract<OuroCliCommand,
-  | { kind: "task.board" }
-  | { kind: "task.create" }
-  | { kind: "task.update" }
-  | { kind: "task.show" }
-  | { kind: "task.actionable" }
-  | { kind: "task.deps" }
-  | { kind: "task.sessions" }
-  | { kind: "task.fix" }
->
-
-export type ReminderCliCommand = Extract<OuroCliCommand, { kind: "reminder.create" }>
 export type FriendCliCommand = Extract<OuroCliCommand, { kind: "friend.list" } | { kind: "friend.show" } | { kind: "friend.create" } | { kind: "friend.update" } | { kind: "friend.link" } | { kind: "friend.unlink" }>
 export type WhoamiCliCommand = Extract<OuroCliCommand, { kind: "whoami" }>
 export type SessionCliCommand = Extract<OuroCliCommand, { kind: "session.list" }>
@@ -216,7 +225,8 @@ export type AuthVerifyCliCommand = Extract<OuroCliCommand, { kind: "auth.verify"
 export type AuthSwitchCliCommand = Extract<OuroCliCommand, { kind: "auth.switch" }>
 export type ProviderCliCommand = Extract<OuroCliCommand, { kind: "provider.use" } | { kind: "provider.check" } | { kind: "provider.status" } | { kind: "provider.refresh" }>
 export type RepairCliCommand = Extract<OuroCliCommand, { kind: "repair" }>
-export type VaultCliCommand = Extract<OuroCliCommand, { kind: "vault.create" } | { kind: "vault.replace" } | { kind: "vault.recover" } | { kind: "vault.unlock" } | { kind: "vault.status" } | { kind: "vault.config.set" } | { kind: "vault.config.status" }>
+export type VaultCliCommand = Extract<OuroCliCommand, { kind: "vault.create" } | { kind: "vault.replace" } | { kind: "vault.recover" } | { kind: "vault.unlock" } | { kind: "vault.status" } | { kind: "vault.config.set" } | { kind: "vault.config.status" } | { kind: "vault.item.set" } | { kind: "vault.item.status" } | { kind: "vault.item.list" }>
+export type DnsCliCommand = Extract<OuroCliCommand, { kind: "dns.workflow" }>
 export type ChangelogCliCommand = Extract<OuroCliCommand, { kind: "changelog" }>
 export type ConfigModelCliCommand = Extract<OuroCliCommand, { kind: "config.model" }>
 export type ConfigModelsCliCommand = Extract<OuroCliCommand, { kind: "config.models" }>
@@ -228,8 +238,11 @@ export type McpServeCliCommand = Extract<OuroCliCommand, { kind: "mcp-serve" }>
 export type SetupCliCommand = Extract<OuroCliCommand, { kind: "setup" }>
 export type HookCliCommand = Extract<OuroCliCommand, { kind: "hook" }>
 export type HabitLocalCliCommand = Extract<OuroCliCommand, { kind: "habit.list" } | { kind: "habit.create" }>
+export type DeskCliCommand = Extract<OuroCliCommand, { kind: "desk" }>
+export type MigrateToDeskCliCommand = Extract<OuroCliCommand, { kind: "migrate-to-desk" }>
 export type McpListCliCommand = Extract<OuroCliCommand, { kind: "mcp.list" }>
 export type McpCallCliCommand = Extract<OuroCliCommand, { kind: "mcp.call" }>
+export type McpCanaryCliCommand = Extract<OuroCliCommand, { kind: "mcp.canary" }>
 export type DoctorCliCommand = Extract<OuroCliCommand, { kind: "doctor" }>
 export type CloneCliCommand = Extract<OuroCliCommand, { kind: "clone" }>
 export type HelpCliCommand = Extract<OuroCliCommand, { kind: "help" }>

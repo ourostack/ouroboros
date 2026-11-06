@@ -59,9 +59,6 @@ const mockTaskModule = {
   boardSessions: vi.fn(),
 }
 
-vi.mock("../../repertoire/tasks", () => ({
-  getTaskModule: () => mockTaskModule,
-}))
 
 vi.mock("../../heart/identity", () => {
   const DEFAULT_AGENT_CONTEXT = {
@@ -79,7 +76,7 @@ vi.mock("../../heart/identity", () => {
     getAgentRoot: vi.fn(() => "/mock/repo/testagent"),
     getRepoRoot: vi.fn(() => "/mock/repo"),
     getAgentRepoWorkspacesRoot: vi.fn(() => "/mock/repo/testagent/state/workspaces"),
-    HARNESS_CANONICAL_REPO_URL: "https://github.com/ouroborosbot/ouroboros.git",
+    HARNESS_CANONICAL_REPO_URL: "https://github.com/ourostack/ouroboros.git",
     resetIdentity: vi.fn(),
   }
 })

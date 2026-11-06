@@ -90,6 +90,7 @@ export const stripeToolDefinitions: ToolDefinition[] = [
       }
     },
     summaryKeys: ["type", "spend_limit", "currency"],
+    riskProfile: { mutates: "external_side_effect", risk: "high", reason: "creates a virtual payment card" },
   },
 
   {
@@ -136,6 +137,7 @@ export const stripeToolDefinitions: ToolDefinition[] = [
       }
     },
     summaryKeys: ["card_id"],
+    riskProfile: { mutates: "external_side_effect", risk: "high", reason: "deactivates a virtual payment card" },
   },
 
   {

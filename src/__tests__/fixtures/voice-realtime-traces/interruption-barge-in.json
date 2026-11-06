@@ -1,0 +1,22 @@
+{
+  "schemaVersion": 1,
+  "traceId": "interruption-barge-in",
+  "scenarioId": "interruption-barge-in",
+  "expectedOutcome": "pass",
+  "expectationProfile": "voice-phone-default",
+  "events": [
+    { "atMs": 0, "event": "twilio.media.start", "source": { "transport": "twilio-media-stream", "id": "stream-barge" } },
+    { "atMs": 50, "event": "voice.context.injected", "friendId": "friend-ari", "sessionKey": "twilio-phone-friend-ari-via-ouro", "text": "Resolved voice friend: Ari (friendId=friend-ari, trust=family).", "source": { "transport": "voice-eval" } },
+    { "atMs": 80, "event": "openai.realtime.session.updated", "session": { "turnDetection": { "createResponse": false, "interruptResponse": false } }, "source": { "transport": "openai-realtime-control", "id": "ws-barge" } },
+    { "atMs": 120, "event": "openai.realtime.response.create.sent", "correlationId": "greeting", "source": { "transport": "openai-realtime-control", "id": "ws-barge" } },
+    { "atMs": 520, "event": "openai.realtime.output_audio.delta", "correlationId": "greeting", "source": { "transport": "openai-sip", "id": "sip-barge" } },
+    { "atMs": 700, "event": "openai.realtime.output_audio_transcript.done", "correlationId": "greeting", "text": "I am checking the weather and listening.", "source": { "transport": "openai-realtime-control", "id": "ws-barge" } },
+    { "atMs": 820, "event": "openai.realtime.input_audio_buffer.speech_started", "source": { "transport": "openai-realtime-control", "id": "ws-barge" } },
+    { "atMs": 860, "event": "twilio.media.clear.sent", "source": { "transport": "twilio-media-stream", "id": "stream-barge" } },
+    { "atMs": 900, "event": "openai.realtime.conversation.item.truncate.sent", "source": { "transport": "openai-realtime-control", "id": "ws-barge" } },
+    { "atMs": 1200, "event": "openai.realtime.input_audio_transcription.completed", "correlationId": "user-1", "text": "Wait, the weather first.", "source": { "transport": "openai-realtime-control", "id": "ws-barge" } },
+    { "atMs": 1420, "event": "openai.realtime.response.create.sent", "correlationId": "user-1", "source": { "transport": "openai-realtime-control", "id": "ws-barge" } },
+    { "atMs": 2000, "event": "voice.hangup.requested", "source": { "transport": "openai-realtime-control", "id": "ws-barge" } },
+    { "atMs": 2100, "event": "openai.sip.call.ended", "source": { "transport": "openai-sip", "id": "sip-barge" } }
+  ]
+}
