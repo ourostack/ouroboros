@@ -123,6 +123,29 @@ describe("McpManager vault env resolution", () => {
     manager.shutdown()
   })
 
+  it("leaves non-vault env entries untouched while resolving vault refs in the same env", async () => {
+    mockGetRawSecret.mockResolvedValueOnce("the-token")
+
+    const manager = new McpManager()
+    await manager.start({
+      mixed: {
+        command: "test",
+        env: {
+          TOKEN: "vault:service.com/token",
+          DEBUG: "true",
+          REGION: "us-west-2",
+        },
+      },
+    })
+
+    expect(mockGetRawSecret).toHaveBeenCalledTimes(1)
+    expect(clientInstances[0]._spawnedEnv?.TOKEN).toBe("the-token")
+    expect(clientInstances[0]._spawnedEnv?.DEBUG).toBe("true")
+    expect(clientInstances[0]._spawnedEnv?.REGION).toBe("us-west-2")
+
+    manager.shutdown()
+  })
+
   it("resolves multiple vault refs in same server config", async () => {
     mockGetRawSecret
       .mockResolvedValueOnce("key-1")

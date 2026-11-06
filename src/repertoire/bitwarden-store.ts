@@ -16,6 +16,7 @@ import { ensureBwCli } from "./bw-installer"
 
 const MAX_ERROR_DETAIL_LENGTH = 500
 const LONG_ENCODED_TOKEN_PATTERN = /[A-Za-z0-9+/=]{32,}/g
+const BW_PASSWORD_ENV = "OURO_BW_MASTER_PASSWORD"
 
 function uniqueSecrets(secrets: Array<string | undefined>): string[] {
   return [...new Set(
@@ -66,7 +67,11 @@ function isBwSessionUnavailableMessage(message: string): boolean {
 }
 
 function isBwInvalidUnlockSecretMessage(message: string): boolean {
-  return /invalid master password/i.test(message) || /saved vault unlock secret/i.test(message)
+  return (
+    /invalid master password/i.test(message) ||
+    /saved vault unlock secret/i.test(message) ||
+    /username or password is incorrect/i.test(message)
+  )
 }
 
 function isBwTimeoutError(err: Error): boolean {
@@ -118,6 +123,33 @@ function isBwConfigLogoutRequired(err: Error): boolean {
   return message.includes("logout") && message.includes("required")
 }
 
+function isBwAlreadyLoggedInError(err: Error): boolean {
+  return err.message.toLowerCase().includes("already logged in")
+}
+
+function isBwLoggedOutOrUnauthenticatedError(err: Error): boolean {
+  const message = err.message.toLowerCase()
+  return (
+    message.includes("not logged in") ||
+    message.includes("not authenticated") ||
+    message.includes("unauthenticated") ||
+    message.includes("local bitwarden session because it is locked, missing, or expired")
+  )
+}
+
+function shouldUseStructuredItemLookup(domain: string): boolean {
+  return domain.includes("/")
+}
+
+function shouldUseFullListForStructuredLookup(domain: string, appDataDir?: string): boolean {
+  return domain.includes("/") && !appDataDir
+}
+
+function isBwItemNotFoundError(error: Error): boolean {
+  const message = error.message.toLowerCase()
+  return message.includes("not found") || message.includes("no item")
+}
+
 // ---------------------------------------------------------------------------
 // Cross-process bw CLI lock
 // ---------------------------------------------------------------------------
@@ -135,6 +167,10 @@ function isBwConfigLogoutRequired(err: Error): boolean {
 const BW_LOCK_FILENAME = ".ouro-bw.lock"
 const BW_LOCK_TIMEOUT_MS = 30_000
 const BW_LOCK_POLL_MS = 100
+const BW_LOCK_STALE_MS = BW_LOCK_TIMEOUT_MS * 2
+const BW_DATA_FILENAME = "data.json"
+const BW_SYNC_MARKER_FILENAME = ".ouro-last-sync"
+const BW_SYNC_FRESH_MS = 60_000
 
 /** In-process async mutex keyed by appDataDir. */
 const inProcessLocks = new Map<string, Promise<void>>()
@@ -146,6 +182,51 @@ function isPidAlive(pid: number): boolean {
   } catch {
     return false
   }
+}
+
+type StaleBwLock = {
+  reason: "dead-pid" | "stale-age"
+  pid: number | undefined
+  ageMs: number
+}
+
+function parseBwLockPid(content: string): number | undefined {
+  const pid = Number.parseInt(content, 10)
+  return Number.isFinite(pid) ? pid : undefined
+}
+
+function getStaleBwLock(lockPath: string, content: string): StaleBwLock | undefined {
+  const pid = parseBwLockPid(content)
+  const ageMs = Date.now() - fs.statSync(lockPath).mtimeMs
+  if (pid !== undefined && !isPidAlive(pid)) {
+    return { reason: "dead-pid", pid, ageMs }
+  }
+  if (ageMs >= BW_LOCK_STALE_MS) {
+    return { reason: "stale-age", pid, ageMs }
+  }
+  return undefined
+}
+
+function reapStaleBwLock(lockPath: string, staleLock: StaleBwLock): void {
+  try {
+    fs.unlinkSync(lockPath)
+  } catch {
+    // Race with another process cleaning the same stale lock.
+    /* v8 ignore next -- race: another process may reap the same stale lock between stat and unlink @preserve */
+    return
+  }
+  emitNervesEvent({
+    level: "warn",
+    event: "repertoire.bw_lock_stale_reaped",
+    component: "repertoire",
+    message: "stale bw CLI lock reaped",
+    meta: {
+      lockPath,
+      reason: staleLock.reason,
+      pid: staleLock.pid === undefined ? "unknown" : String(staleLock.pid),
+      ageMs: String(Math.round(staleLock.ageMs)),
+    },
+  })
 }
 
 async function acquireFileLock(lockPath: string): Promise<void> {
@@ -165,10 +246,9 @@ async function acquireFileLock(lockPath: string): Promise<void> {
       // Lock file exists -- check for stale lock
       try {
         const existing = fs.readFileSync(lockPath, "utf8").trim()
-        const pid = parseInt(existing, 10)
-        if (!isNaN(pid) && !isPidAlive(pid)) {
-          // Stale lock -- remove and retry immediately
-          try { fs.unlinkSync(lockPath) } catch { /* race with another cleaner is fine */ }
+        const staleLock = getStaleBwLock(lockPath, existing)
+        if (staleLock) {
+          reapStaleBwLock(lockPath, staleLock)
           continue
         }
       } catch { /* v8 ignore next -- race: lock file disappeared between openSync and readFileSync @preserve */
@@ -229,16 +309,24 @@ async function withBwLock<T>(appDataDir: string | undefined, fn: () => Promise<T
   }
 }
 
-function execBw(args: string[], sessionToken?: string, appDataDir?: string, stdin?: string): Promise<string> {
+function execBw(
+  args: string[],
+  sessionToken?: string,
+  appDataDir?: string,
+  stdin?: string,
+  bwBinaryPath = "bw",
+  extraEnv: Record<string, string> = {},
+): Promise<string> {
   const env = {
     ...process.env,
     ...(sessionToken ? { BW_SESSION: sessionToken } : {}),
     ...(appDataDir ? { BITWARDENCLI_APPDATA_DIR: appDataDir } : {}),
+    ...extraEnv,
   }
 
   const runCommand = (): Promise<string> =>
     new Promise((resolve, reject) => {
-      const child = execFileCb("bw", args, { timeout: 30_000, env }, (err, stdout, stderr) => {
+      const child = execFileCb(bwBinaryPath, args, { timeout: 30_000, env }, (err, stdout, stderr) => {
         if (err) {
           if (isBwNotInstalled(err)) {
             reject(new Error("bw CLI not found. Install from https://bitwarden.com/help/cli/"))
@@ -261,7 +349,7 @@ function execBw(args: string[], sessionToken?: string, appDataDir?: string, stdi
 function isBwNotInstalled(err: Error): boolean {
   const msg = err.message.toLowerCase()
   const code = (err as NodeJS.ErrnoException).code
-  return code === "ENOENT" || msg.includes("enoent") || msg.includes("not found") || msg.includes("command not found")
+  return code === "ENOENT" || /\bspawn\b.*\benoent\b/.test(msg) || msg.includes("command not found")
 }
 
 /** Check if the error is transient (network/timeout) and worth retrying. */
@@ -377,6 +465,12 @@ interface BwLoginItem {
   revisionDate?: string
 }
 
+interface BwStatus {
+  status?: string
+  serverUrl?: string
+  userEmail?: string
+}
+
 // ---------------------------------------------------------------------------
 // BitwardenCredentialStore
 // ---------------------------------------------------------------------------
@@ -386,22 +480,68 @@ export class BitwardenCredentialStore implements CredentialStore {
   private readonly email: string
   private readonly masterPassword: string
   private readonly appDataDir?: string
+  private readonly onInvalidUnlockSecret?: (error: Error) => void | Promise<void>
+  private readonly onLoginSuccess?: () => void | Promise<void>
   private sessionToken: string | null = null
+  private terminalLoginError: Error | null = null
+  private bwBinaryPath = "bw"
+  private structuredItemCache: Map<string, BwLoginItem> | null = null
 
   constructor(
     serverUrl: string,
     email: string,
     masterPassword: string,
-    options: { appDataDir?: string } = {},
+    options: {
+      appDataDir?: string
+      onInvalidUnlockSecret?: (error: Error) => void | Promise<void>
+      onLoginSuccess?: () => void | Promise<void>
+    } = {},
   ) {
     this.serverUrl = serverUrl
     this.email = email
     this.masterPassword = masterPassword
     this.appDataDir = options.appDataDir
+    this.onInvalidUnlockSecret = options.onInvalidUnlockSecret
+    this.onLoginSuccess = options.onLoginSuccess
   }
 
   isReady(): boolean {
     return true
+  }
+
+  private execBw(args: string[], sessionToken?: string, stdin?: string): Promise<string> {
+    return execBw(args, sessionToken, this.appDataDir, stdin, this.bwBinaryPath)
+  }
+
+  private execBwWithPasswordEnv(args: string[]): Promise<string> {
+    return execBw(
+      [...args, "--passwordenv", BW_PASSWORD_ENV],
+      undefined,
+      this.appDataDir,
+      undefined,
+      this.bwBinaryPath,
+      { [BW_PASSWORD_ENV]: this.masterPassword },
+    )
+  }
+
+  private async notifyInvalidUnlockSecret(error: Error): Promise<void> {
+    if (!this.onInvalidUnlockSecret) return
+    try {
+      await this.onInvalidUnlockSecret(error)
+    } catch (callbackError) {
+      emitNervesEvent({
+        level: "warn",
+        event: "repertoire.bw_invalid_unlock_cleanup_failed",
+        component: "repertoire",
+        message: "failed to clean up rejected local vault unlock material",
+        meta: {
+          email: this.email,
+          serverUrl: this.serverUrl,
+          error: callbackError instanceof Error ? callbackError.message : String(callbackError),
+          originalError: error.message,
+        },
+      })
+    }
   }
 
   /**
@@ -410,8 +550,12 @@ export class BitwardenCredentialStore implements CredentialStore {
    * Retries transient failures (network/timeout) up to MAX_RETRIES with exponential backoff.
    */
   async login(): Promise<void> {
+    if (this.terminalLoginError) {
+      throw this.terminalLoginError
+    }
+
     // Ensure bw CLI is installed before any bw commands
-    await ensureBwCli()
+    this.bwBinaryPath = await ensureBwCli()
     if (this.appDataDir) {
       fs.mkdirSync(this.appDataDir, { recursive: true, mode: 0o700 })
     }
@@ -421,6 +565,7 @@ export class BitwardenCredentialStore implements CredentialStore {
     for (let attempt = 0; attempt < MAX_RETRIES; attempt++) {
       try {
         await this.loginAttempt()
+        await this.onLoginSuccess?.()
         return
       } catch (err) {
         /* v8 ignore next -- defensive: loginAttempt always throws Error instances @preserve */
@@ -428,6 +573,10 @@ export class BitwardenCredentialStore implements CredentialStore {
 
         // Don't retry non-transient errors (auth failures, bw not installed)
         if (!isTransientError(lastError)) {
+          this.terminalLoginError = lastError
+          if (isBwInvalidUnlockSecretMessage(lastError.message)) {
+            await this.notifyInvalidUnlockSecret(lastError)
+          }
           throw lastError
         }
 
@@ -445,60 +594,191 @@ export class BitwardenCredentialStore implements CredentialStore {
         await delay(backoffMs)
       }
     }
-
+    this.terminalLoginError = lastError!
+    /* v8 ignore next -- invalid unlock errors are non-transient and exit through the non-retry path above @preserve */
+    if (isBwInvalidUnlockSecretMessage(lastError!.message)) {
+      await this.notifyInvalidUnlockSecret(lastError!)
+    }
     throw lastError!
   }
 
   /** Single login attempt — called by login() retry loop. */
   private async loginAttempt(): Promise<void> {
-    // Check current status
-    let status: { status?: string; serverUrl?: string; userEmail?: string } = {}
-    try {
-      const raw = await execBw(["status"], undefined, this.appDataDir)
-      status = JSON.parse(raw)
-    } catch (err) {
-      // If bw CLI is not installed or a transient error, propagate it for retry
-      if (err instanceof Error && (isBwNotInstalled(err) || isTransientError(err))) {
-        throw err
-      }
-      // CLI not configured or broken — proceed with full setup
+    let status = await this.readStatus()
+
+    if (this.shouldRebuildLocalProfile(status)) {
+      await this.rebuildLocalProfile("local bw profile did not match requested vault", status)
+      status = { status: "unlocked", serverUrl: this.serverUrl, userEmail: this.email }
     }
 
     // Configure server URL if needed (only works when logged out)
     if (status.status === "unauthenticated" || !status.serverUrl) {
       try {
-        await execBw(["config", "server", this.serverUrl], undefined, this.appDataDir)
+        await this.execBw(["config", "server", this.serverUrl])
       } catch (error) {
         const err = error as Error
-        // "Logout required" means already logged in — that's fine, skip config.
-        if (!isBwConfigLogoutRequired(err)) {
-          throw err
-        }
+        if (!isBwConfigLogoutRequired(err)) throw err
+        // "Logout required" means bw already has local auth state; keep the
+        // existing behavior and proceed to login/unlock below.
       }
     }
 
-    if (status.status === "locked") {
-      // Already logged in, just needs unlock
-      const unlockOutput = await execBw(["unlock", this.masterPassword, "--raw"], undefined, this.appDataDir)
-      this.sessionToken = unlockOutput.trim()
-    } else if (status.status === "unauthenticated" || !status.status) {
-      // Not logged in — full login
-      const loginOutput = await execBw(["login", this.email, this.masterPassword, "--raw"], undefined, this.appDataDir)
-      try {
-        const parsed = JSON.parse(loginOutput)
-        this.sessionToken = parsed.access_token ?? loginOutput.trim()
-      } catch {
-        this.sessionToken = loginOutput.trim()
+    if (!this.sessionToken) {
+      if (status.status === "locked") {
+        // Already logged in, just needs unlock.
+        const unlockOutput = await this.execWithLocalProfileRebuild(
+          "unlock rejected saved local unlock material",
+          status,
+          () => this.execBwWithPasswordEnv(["unlock", "--raw"]),
+        )
+        this.sessionToken = unlockOutput.trim()
+      } else if (status.status === "unauthenticated" || !status.status) {
+        // Not logged in -- full login.
+        this.sessionToken = this.sessionTokenFromLoginOutput(await this.loginWithPassword())
+      } else {
+        // Status is "unlocked" -- already good, just need the session token.
+        const unlockOutput = await this.execWithLocalProfileRebuild(
+          "unlocked bw profile rejected saved local unlock material",
+          status,
+          () => this.execBwWithPasswordEnv(["unlock", "--raw"]),
+        )
+        this.sessionToken = unlockOutput.trim()
       }
+    }
+
+    if (this.shouldSyncVaultAfterSession(status)) {
+      /* v8 ignore next -- defensive: loginAttempt always sets sessionToken before sync @preserve */
+      await this.execBw(["sync"], this.sessionToken ?? undefined)
+      this.writeSyncMarker()
     } else {
-      // Status is "unlocked" — already good, just need the session token
-      const unlockOutput = await execBw(["unlock", this.masterPassword, "--raw"], undefined, this.appDataDir)
-      this.sessionToken = unlockOutput.trim()
+      emitNervesEvent({
+        event: "repertoire.bw_sync_skipped",
+        component: "repertoire",
+        message: "skipping bw sync because local vault cache is still fresh",
+        meta: { email: this.email, serverUrl: this.serverUrl, freshnessWindowMs: BW_SYNC_FRESH_MS },
+      })
     }
+    this.terminalLoginError = null
+  }
 
-    // Sync vault data after obtaining a fresh session token
-    /* v8 ignore next -- defensive: loginAttempt always sets sessionToken before sync @preserve */
-    await execBw(["sync"], this.sessionToken ?? undefined, this.appDataDir)
+  private async readStatus(): Promise<BwStatus> {
+    try {
+      const raw = await this.execBw(["status"])
+      const parsed = JSON.parse(raw) as unknown
+      if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return {}
+      const record = parsed as Record<string, unknown>
+      return {
+        ...(typeof record.status === "string" ? { status: record.status } : {}),
+        ...(typeof record.serverUrl === "string" ? { serverUrl: record.serverUrl } : {}),
+        ...(typeof record.userEmail === "string" ? { userEmail: record.userEmail } : {}),
+      }
+    } catch (err) {
+      // If bw CLI is not installed or a transient error, propagate it for retry.
+      if (err instanceof Error && (isBwNotInstalled(err) || isTransientError(err))) {
+        throw err
+      }
+      // CLI not configured or broken -- proceed with full setup.
+      return {}
+    }
+  }
+
+  private normalizedServerUrl(value: string): string {
+    return value.trim().replace(/\/+$/, "").toLowerCase()
+  }
+
+  private shouldRebuildLocalProfile(status: BwStatus): boolean {
+    if (status.status !== "locked" && status.status !== "unlocked") return false
+    if (status.serverUrl && this.normalizedServerUrl(status.serverUrl) !== this.normalizedServerUrl(this.serverUrl)) return true
+    if (status.userEmail && status.userEmail.trim().toLowerCase() !== this.email.trim().toLowerCase()) return true
+    return false
+  }
+
+  private sessionTokenFromLoginOutput(loginOutput: string): string {
+    try {
+      const parsed = JSON.parse(loginOutput) as { access_token?: unknown }
+      return typeof parsed.access_token === "string" && parsed.access_token.trim()
+        ? parsed.access_token.trim()
+        : loginOutput.trim()
+    } catch {
+      return loginOutput.trim()
+    }
+  }
+
+  private async loginWithPassword(): Promise<string> {
+    try {
+      return await this.execBwWithPasswordEnv(["login", this.email, "--raw"])
+    } catch (error) {
+      const err = error as Error
+      if (!isBwAlreadyLoggedInError(err)) throw err
+      return this.execBwWithPasswordEnv(["unlock", "--raw"])
+    }
+  }
+
+  private forgetLocalSyncMarker(): void {
+    if (!this.appDataDir) return
+    try {
+      fs.rmSync(path.join(this.appDataDir, BW_SYNC_MARKER_FILENAME), { force: true })
+    } catch {
+      // A stale sync marker is only a cache hint; failure to remove it should not block auth repair.
+    }
+  }
+
+  private async logoutLocalProfile(reason: string, status: BwStatus, cause?: unknown): Promise<void> {
+    this.sessionToken = null
+    this.structuredItemCache = null
+    this.forgetLocalSyncMarker()
+    emitNervesEvent({
+      level: "warn",
+      event: "repertoire.bw_local_profile_rebuild",
+      component: "repertoire",
+      message: "rebuilding local bw profile for agent vault",
+      meta: {
+        email: this.email,
+        serverUrl: this.serverUrl,
+        reason,
+        /* v8 ignore next -- defensive: every profile rebuild path starts from a locked/unlocked bw status @preserve */
+        previousStatus: status.status ?? "unknown",
+        previousServerUrl: status.serverUrl ?? null,
+        previousUserEmail: status.userEmail ?? null,
+        /* v8 ignore next -- defensive: internal rebuild callers pass Error or undefined causes @preserve */
+        error: cause instanceof Error ? cause.message : cause ? String(cause) : undefined,
+      },
+    })
+    try {
+      await this.execBw(["logout"])
+    } catch (error) {
+      const err = error as Error
+      if (isBwLoggedOutOrUnauthenticatedError(err)) return
+      emitNervesEvent({
+        level: "warn",
+        event: "repertoire.bw_local_profile_logout_failed",
+        component: "repertoire",
+        message: "failed to logout local bw profile before rebuild",
+        meta: { email: this.email, serverUrl: this.serverUrl, error: err.message },
+      })
+    }
+  }
+
+  private async rebuildLocalProfile(reason: string, status: BwStatus, cause?: unknown): Promise<void> {
+    await this.logoutLocalProfile(reason, status, cause)
+    await this.execBw(["config", "server", this.serverUrl])
+    this.sessionToken = this.sessionTokenFromLoginOutput(await this.loginWithPassword())
+  }
+
+  private async execWithLocalProfileRebuild(
+    reason: string,
+    status: BwStatus,
+    operation: () => Promise<string>,
+  ): Promise<string> {
+    try {
+      return await operation()
+    } catch (error) {
+      const err = error as Error
+      if (!isBwInvalidUnlockSecretMessage(err.message)) throw err
+      await this.rebuildLocalProfile(reason, status, err)
+      /* v8 ignore next -- defensive: rebuildLocalProfile always stores a string session token on success @preserve */
+      return this.sessionToken ?? ""
+    }
   }
 
   private async ensureSession(): Promise<string | undefined> {
@@ -521,6 +801,7 @@ export class BitwardenCredentialStore implements CredentialStore {
           throw err
         }
         this.sessionToken = null
+        this.structuredItemCache = null
         attemptedFreshSession = true
       }
     }
@@ -566,7 +847,7 @@ export class BitwardenCredentialStore implements CredentialStore {
     })
 
     const item = await this.withTransientRetry(() =>
-      this.withSessionRetry((session) => this.findItemByDomain(domain, session)),
+      this.withSessionRetry((session) => this.findItemByDomain(domain, session, { preferExactStructured: true })),
     )
 
     if (!item) {
@@ -596,7 +877,7 @@ export class BitwardenCredentialStore implements CredentialStore {
 
   async getRawSecret(domain: string, field: string): Promise<string> {
     const item = await this.withTransientRetry(() =>
-      this.withSessionRetry((session) => this.findItemByDomain(domain, session)),
+      this.withSessionRetry((session) => this.findItemByDomain(domain, session, { preferExactStructured: true })),
     )
 
     if (!item) {
@@ -646,13 +927,14 @@ export class BitwardenCredentialStore implements CredentialStore {
       }
 
       const encoded = Buffer.from(JSON.stringify(item)).toString("base64")
+      this.structuredItemCache = null
       let savedItem: BwLoginItem | null
       if (existing) {
-        const stdout = await execBw(["edit", "item", existing.id], session, this.appDataDir, encoded)
+        const stdout = await this.execBw(["edit", "item", existing.id], session, encoded)
         const savedItemId = parseBwItemId(stdout) ?? existing.id
         savedItem = await this.findItemById(savedItemId, session)
       } else {
-        const stdout = await execBw(["create", "item"], session, this.appDataDir, encoded)
+        const stdout = await this.execBw(["create", "item"], session, encoded)
         const savedItemId = parseBwItemId(stdout)
         savedItem = savedItemId
           ? await this.findItemById(savedItemId, session)
@@ -660,6 +942,7 @@ export class BitwardenCredentialStore implements CredentialStore {
       }
       this.assertStoredCredentialMatches(domain, data, savedItem)
     })
+    this.structuredItemCache = null
 
     emitNervesEvent({
       event: "repertoire.bw_credential_store_end",
@@ -678,7 +961,7 @@ export class BitwardenCredentialStore implements CredentialStore {
     })
 
     const stdout = await this.withTransientRetry(() =>
-      this.withSessionRetry((session) => execBw(["list", "items"], session, this.appDataDir)),
+      this.withSessionRetry((session) => this.execBw(["list", "items"], session)),
     )
     const items = parseBwItems(stdout, "bw list items")
 
@@ -719,7 +1002,8 @@ export class BitwardenCredentialStore implements CredentialStore {
       return false
     }
 
-    await this.withSessionRetry((session) => execBw(["delete", "item", item.id], session, this.appDataDir))
+    await this.withSessionRetry((session) => this.execBw(["delete", "item", item.id], session))
+    this.structuredItemCache = null
 
     emitNervesEvent({
       event: "repertoire.bw_credential_delete_end",
@@ -733,17 +1017,83 @@ export class BitwardenCredentialStore implements CredentialStore {
 
   // --- Private ---
 
-  private async findItemByDomain(domain: string, session?: string): Promise<BwLoginItem | null> {
-    const stdout = await execBw(["list", "items", "--search", domain], session, this.appDataDir)
+  private async findItemByDomain(
+    domain: string,
+    session?: string,
+    options: { preferExactStructured?: boolean } = {},
+  ): Promise<BwLoginItem | null> {
+    if (options.preferExactStructured && shouldUseStructuredItemLookup(domain)) {
+      return this.findStructuredItemByName(domain, session)
+    }
+    if (shouldUseFullListForStructuredLookup(domain, this.appDataDir)) {
+      const items = await this.readStructuredItemCache(session)
+      return items.get(domain) ?? null
+    }
+
+    const stdout = await this.execBw(["list", "items", "--search", domain], session)
     const items = parseBwItems(stdout, "bw list items --search")
 
     // Find exact match by name
     return items.find((item) => item.name === domain) ?? null
   }
 
+  private async findStructuredItemByName(domain: string, session?: string): Promise<BwLoginItem | null> {
+    try {
+      const stdout = await this.execBw(["get", "item", domain], session)
+      const item = parseBwItem(stdout, "bw get item")
+      return item.name === domain ? item : null
+    } catch (error) {
+      /* v8 ignore next -- defensive: execBw rejects with Error instances @preserve */
+      const err = error instanceof Error ? error : new Error(String(error))
+      if (isBwItemNotFoundError(err)) return null
+      throw err
+    }
+  }
+
+  private shouldSyncVaultAfterSession(status: { status?: string; serverUrl?: string; userEmail?: string }): boolean {
+    if (status.status === "unauthenticated" || !status.status) return true
+    if (!this.appDataDir) return true
+    const freshnessTimestamp = this.latestLocalSyncTimestamp()
+    if (freshnessTimestamp !== null) {
+      return Date.now() - freshnessTimestamp > BW_SYNC_FRESH_MS
+    }
+    return true
+  }
+
+  private latestLocalSyncTimestamp(): number | null {
+    const files = [BW_SYNC_MARKER_FILENAME, BW_DATA_FILENAME]
+    let latest: number | null = null
+    for (const name of files) {
+      try {
+        const mtimeMs = fs.statSync(path.join(this.appDataDir!, name)).mtimeMs
+        latest = latest === null ? mtimeMs : Math.max(latest, mtimeMs)
+      } catch {
+        // Missing freshness file is fine; use any other available timestamp.
+      }
+    }
+    return latest
+  }
+
+  private writeSyncMarker(): void {
+    if (!this.appDataDir) return
+    try {
+      fs.writeFileSync(path.join(this.appDataDir, BW_SYNC_MARKER_FILENAME), `${Date.now()}\n`, { mode: 0o600 })
+    } catch {
+      // If the marker cannot be written, fall back to syncing next time.
+    }
+  }
+
   private async findItemById(id: string, session?: string): Promise<BwLoginItem> {
-    const stdout = await execBw(["get", "item", id], session, this.appDataDir)
+    const stdout = await this.execBw(["get", "item", id], session)
     return parseBwItem(stdout, "bw get item")
+  }
+
+  private async readStructuredItemCache(session?: string): Promise<Map<string, BwLoginItem>> {
+    if (this.structuredItemCache) return this.structuredItemCache
+    const stdout = await this.execBw(["list", "items"], session)
+    const items = parseBwItems(stdout, "bw list items")
+    this.structuredItemCache = new Map(items.map((item) => [item.name, item]))
+    return this.structuredItemCache
   }
 
   private assertStoredCredentialMatches(

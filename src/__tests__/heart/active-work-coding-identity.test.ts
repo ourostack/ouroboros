@@ -56,7 +56,6 @@ function makeFrame(overrides: Partial<ActiveWorkFrame> = {}): ActiveWorkFrame {
     centerOfGravity: "inward-work",
     inner: { status: "idle", hasPending: false, job: makeIdleJob() },
     bridges: [],
-    taskPressure: { compactBoard: "", liveTaskNames: [], activeBridges: [] },
     friendActivity: { freshestForCurrentFriend: null, otherLiveSessionsForCurrentFriend: [] },
     codingSessions: [makeSession()],
     otherCodingSessions: [],

@@ -52,10 +52,10 @@ if [ -f "node_modules/@ouro.bot/cli/package.json" ]; then
   INSTALLED_VERSION=$(node -p "require('@ouro.bot/cli/package.json').version" 2>/dev/null || echo "")
 fi
 
-LATEST_VERSION=$(npm view "@ouro.bot/cli@latest" version 2>/dev/null || echo "")
+CHANNEL_VERSION=$(npm view "@ouro.bot/cli@latest" version 2>/dev/null || echo "")
 
-if [ -z "$INSTALLED_VERSION" ] || [ "$INSTALLED_VERSION" != "$LATEST_VERSION" ]; then
-  echo "Installing @ouro.bot/cli@latest (installed: ${INSTALLED_VERSION:-none}, latest: ${LATEST_VERSION:-unknown})"
+if [ -z "$INSTALLED_VERSION" ] || [ "$INSTALLED_VERSION" != "$CHANNEL_VERSION" ]; then
+  echo "Installing @ouro.bot/cli@latest (installed: ${INSTALLED_VERSION:-none}, latest: ${CHANNEL_VERSION:-unknown})"
   # Clean any stale npm state that causes "idealTree already exists" errors
   rm -rf package-lock.json node_modules
   npm cache clean --force 2>/dev/null || true

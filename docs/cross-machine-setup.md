@@ -19,20 +19,14 @@ If you're setting up on **Windows**, you also need:
 On **macOS or Linux** (or inside WSL on Windows):
 
 ```bash
-npx ouro.bot
+npx ouro.bot@latest
 ```
 
 On first run, this installs the `@ouro.bot/cli` package, creates the `ouro` command, and adds it to your PATH. Follow the shell hint it prints (`source ~/.zshrc`, `source ~/.bash_profile`, etc.) or open a new terminal.
 
 ## Step 2: Continue An Existing Agent Bundle
 
-On first run with no existing agents, the CLI offers a choice:
-
-```
-No agents found. Would you like to hatch a new agent or clone an existing one? (hatch/clone):
-```
-
-Pick **clone** and enter the git remote URL for the bundle:
+On first run with no existing agents in a human terminal, bare `ouro` opens the home deck and offers the first two moves: hatch a new agent or clone an existing bundle. Pick **clone** and enter the git remote URL for the bundle:
 
 ```
 Enter the git remote URL for the agent bundle: https://github.com/you/youragent.ouro.git
@@ -64,9 +58,15 @@ The agent name is inferred from the URL. Override with `--agent <name>` if neede
 
 **Guided flow:** After cloning, the CLI offers to continue with provider auth, daemon start, and dev tool setup — all inline. You can accept each step or skip it and run the commands yourself later.
 
+If you are not in an interactive terminal, run the direct command instead:
+
+```bash
+ouro clone <bundle-git-remote>
+```
+
 ## Step 3: Unlock the agent vault
 
-Each agent owns its own Bitwarden/Vaultwarden vault for provider credentials. Provider/model selection is per-machine (stored in `state/providers.json` inside the bundle). See [docs/auth-and-providers.md](auth-and-providers.md) for the full story.
+Each agent owns its own Bitwarden/Vaultwarden vault for provider credentials. Provider/model selection is stored in `agent.json` inside the bundle. See [docs/auth-and-providers.md](auth-and-providers.md) for the full story.
 
 If this is an existing bundle, unlock its vault on this machine before starting the daemon:
 
@@ -126,7 +126,7 @@ ouro connect teams --agent <agent>
 ouro connect bluebubbles --agent <agent>
 ```
 
-The connect bay is the easiest starting point when you do not remember the exact command. `providers`, `perplexity`, `embeddings`, and `teams` are portable agent runtime config. BlueBubbles is a local machine attachment; run the BlueBubbles connector only on machines that can reach the local BlueBubbles server. Guided connectors keep progress visible while they read/write the vault and reload the running agent, and they do not print the entered secret.
+The connect bay is the easiest starting point when you do not remember the exact command. `providers`, `perplexity`, `embeddings`, and `teams` are portable agent runtime config. BlueBubbles is a local machine attachment; run the BlueBubbles connector only on machines that can reach the local BlueBubbles server. Guided connectors now show a short `checking current connections` preflight while they verify the selected providers live, read portable and machine-local settings, keep progress visible while they read/write the vault and reload the running agent, and do not print the entered secret. The root bay is a framed, responsive board with a recommended next move so the human can scan `Provider core`, portable capabilities, and this-machine attachments separately without getting buried in status prose. Each guided connector also opens with a short `Unlocks / What you need / Where it lives` board and closes with `What changed / Next moves`, so the human can tell at a glance whether the capability travels with the agent or only lives on this machine.
 
 ## Step 4: Start the daemon
 
@@ -138,6 +138,8 @@ ouro up
 ```
 
 The daemon discovers your agent bundle, starts the inner dialog worker, and begins sync. You can now talk to your agent:
+
+If `ouro up` has to replace an older or drifted daemon, it now says that plainly and keeps showing replacement progress until the new background service is actually answering.
 
 ```bash
 ouro chat <name>
@@ -182,7 +184,7 @@ After setup, open Claude Code in PowerShell — the agent is there.
 | Syncs across machines | Per-machine (not synced) |
 |---|---|
 | Psyche (SOUL.md, IDENTITY.md, etc.) | Machine identity (`~/.ouro-cli/machine.json`) |
-| Diary, journal | Provider/model lane selection (`state/providers.json`) |
+| Diary, journal | Provider/model lane selection (`agent.json`) |
 | Habits | Daemon state (pids, health, logs) |
 | Friends | Dev tool registrations (MCP, hooks) |
 | Tasks | Vault unlock material (Keychain/DPAPI/Secret Service) |

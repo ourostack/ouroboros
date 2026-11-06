@@ -50,7 +50,7 @@ vi.mock("../../heart/identity", () => ({
     context: {},
   })),
   getAgentRepoWorkspacesRoot: vi.fn(() => "/mock/repo/ouroboros/state/workspaces"),
-  HARNESS_CANONICAL_REPO_URL: "https://github.com/ouroborosbot/ouroboros.git",
+  HARNESS_CANONICAL_REPO_URL: "https://github.com/ourostack/ouroboros.git",
 }))
 
 // Minimal mocks for tools-base dependencies
@@ -81,11 +81,6 @@ vi.mock("../../repertoire/skills", () => ({
   loadSkill: vi.fn().mockReturnValue(null),
 }))
 
-vi.mock("../../repertoire/tasks", () => ({
-  getTaskModule: () => ({
-    getBoard: vi.fn().mockReturnValue({ items: [] }),
-  }),
-}))
 
 vi.mock("../../heart/daemon/socket-client", () => ({
   requestInnerWake: vi.fn(async () => null),

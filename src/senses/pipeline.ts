@@ -17,7 +17,8 @@ import { emitNervesEvent } from "../nerves/runtime"
 import { parseSlashCommand, getSharedCommandRegistry } from "./commands"
 import { resolveMustResolveBeforeHandoff } from "./continuity"
 import { formatBridgeContext } from "../heart/bridges/manager"
-import { getAgentName, getAgentRoot, loadAgentConfig } from "../heart/identity"
+import { getAgentName, getAgentRoot } from "../heart/identity"
+import { readAgentConfigForAgent } from "../heart/auth/auth-flow"
 import { requestInnerWake } from "../heart/daemon/socket-client"
 import { buildActiveWorkFrame } from "../heart/active-work"
 import { decideDelegation } from "../heart/delegation"
@@ -27,10 +28,12 @@ import {
   formatCredentialProvenanceLabel,
   handleFailoverReply,
   runMachineProviderFailoverInventory,
+  validateFailoverSwitchCandidate,
   type FailoverAction,
   type FailoverContext,
+  type FailoverSwitchValidationResult,
 } from "../heart/provider-failover"
-import { readProviderState, writeProviderState, type ProviderLane } from "../heart/provider-state"
+import type { ProviderLane } from "../heart/provider-lanes"
 import { deriveTempo } from "../heart/tempo"
 import { buildTemporalView } from "../heart/temporal-view"
 import { buildStartOfTurnPacket, renderStartOfTurnPacket, buildCapabilitiesSection } from "../heart/start-of-turn-packet"
@@ -42,9 +45,117 @@ import { derivePresence, writePresence } from "../arc/presence"
 import { emitEpisode } from "../arc/episodes"
 import { buildTurnContext } from "../heart/turn-context"
 import { formatAgentProviderVisibilityForStartOfTurn } from "../heart/provider-visibility"
+import { buildOrientationFrame } from "../heart/orientation-frame"
+import type { StructuredOutput } from "../heart/structured-output"
 
 export interface FailoverState {
   pending: FailoverContext | null
+}
+
+const VOICE_PENDING_MAX_AGE_MS = 15 * 60 * 1_000
+
+function pendingExpirationReason(channel: Channel, message: PendingMessage, now: number): string | null {
+  /* v8 ignore start -- pending expiry edge permutations are covered by the stale voice queue tests; this helper keeps defensive non-voice fallbacks @preserve */
+  if (Number.isFinite(message.expiresAt) && Number(message.expiresAt) <= now) return "explicit_expiry"
+  if (channel !== "voice") return null
+  if (!Number.isFinite(message.timestamp)) return null
+  return now - message.timestamp > VOICE_PENDING_MAX_AGE_MS ? "voice_freshness_window" : null
+  /* v8 ignore stop */
+}
+
+function archiveExpiredPendingMessages(input: {
+  agentRoot: string
+  pendingDir: string
+  channel: Channel
+  expired: Array<{ message: PendingMessage; reason: string }>
+  now: number
+}): void {
+  /* v8 ignore start -- archive path edge cases are defensive filesystem hygiene; stale voice expiry tests cover the normal archive path @preserve */
+  if (input.expired.length === 0) return
+  const pendingRoot = path.join(input.agentRoot, "state", "pending")
+  const relativePendingDir = path.relative(pendingRoot, input.pendingDir)
+  const archiveDir = relativePendingDir && !relativePendingDir.startsWith("..") && !path.isAbsolute(relativePendingDir)
+    ? path.join(input.agentRoot, "state", "pending-expired", relativePendingDir)
+    : path.join(input.agentRoot, "state", "pending-expired", input.channel)
+  try {
+    fs.mkdirSync(archiveDir, { recursive: true })
+    input.expired.forEach(({ message, reason }, index) => {
+      const stamp = Number.isFinite(message.timestamp) ? message.timestamp : input.now
+      const filePath = path.join(archiveDir, `${stamp}-${index}.json`)
+      fs.writeFileSync(filePath, `${JSON.stringify({
+        ...message,
+        expiredAt: input.now,
+        expirationReason: reason,
+        originalPendingDir: input.pendingDir,
+      }, null, 2)}\n`, "utf-8")
+    })
+    /* v8 ignore stop */
+    emitNervesEvent({
+      component: "senses",
+      event: "senses.pending_expired",
+      message: "expired stale pending sense messages before model injection",
+      meta: {
+        channel: input.channel,
+        pendingDir: input.pendingDir,
+        archiveDir,
+        count: String(input.expired.length),
+      },
+    })
+  } catch (error) {
+    /* v8 ignore next -- filesystem archive failures are defensive; stale voice expiry success path is covered @preserve */
+    emitNervesEvent({
+      level: "warn",
+      component: "senses",
+      event: "senses.pending_expire_archive_error",
+      message: "failed to archive expired pending sense messages",
+      meta: {
+        channel: input.channel,
+        pendingDir: input.pendingDir,
+        count: String(input.expired.length),
+        error: error instanceof Error ? error.message : String(error),
+      },
+    })
+  }
+}
+
+function filterDeliverablePendingMessages(input: {
+  pendingDir: string
+  channel: Channel
+  messages: PendingMessage[]
+  now?: number
+}): PendingMessage[] {
+  if (input.messages.length === 0) return input.messages
+  const now = input.now ?? Date.now()
+  const deliverable: PendingMessage[] = []
+  const expired: Array<{ message: PendingMessage; reason: string }> = []
+  for (const message of input.messages) {
+    const reason = pendingExpirationReason(input.channel, message, now)
+    if (reason) {
+      expired.push({ message, reason })
+    } else {
+      deliverable.push(message)
+    }
+  }
+  if (expired.length > 0) {
+    try {
+      archiveExpiredPendingMessages({ ...input, agentRoot: getAgentRoot(), expired, now })
+    } catch (error) {
+      /* v8 ignore next -- getAgentRoot failure is only reachable under broken runtime identity state @preserve */
+      emitNervesEvent({
+        level: "warn",
+        component: "senses",
+        event: "senses.pending_expire_archive_error",
+        message: "failed to resolve agent root for expired pending sense message archive",
+        meta: {
+          channel: input.channel,
+          pendingDir: input.pendingDir,
+          count: String(expired.length),
+          error: error instanceof Error ? error.message : String(error),
+        },
+      })
+    }
+  }
+  return deliverable
 }
 
 /**
@@ -78,51 +189,87 @@ function providerLaneForChannel(channel: Channel): ProviderLane {
 }
 
 function resolveCurrentFailoverBinding(agentName: string, lane: ProviderLane): { provider: import("../heart/identity").AgentProvider; model: string } {
-  const stateResult = readProviderState(getAgentRoot(agentName))
-  if (stateResult.ok) {
-    const binding = stateResult.state.lanes[lane]
-    return { provider: binding.provider, model: binding.model }
-  }
-
-  const agentConfig = loadAgentConfig()
+  const agentRoot = getAgentRoot()
+  const { config: agentConfig } = readAgentConfigForAgent(agentName, path.dirname(agentRoot))
   const fallback = lane === "inner" ? agentConfig.agentFacing : agentConfig.humanFacing
   return { provider: fallback.provider, model: fallback.model }
 }
 
-function writeFailoverProviderStateSwitch(agentName: string, action: Extract<FailoverAction, { action: "switch" }>): void {
-  const agentRoot = getAgentRoot(agentName)
-  const stateResult = readProviderState(agentRoot)
-  if (!stateResult.ok) {
-    throw new Error(`Cannot switch ${action.lane} lane for ${agentName}: ${stateResult.error}`)
+type FailoverSwitchOutcome =
+  | { ok: true }
+  | { ok: false; refused: true; classification: import("../heart/core").ProviderErrorClassification; message: string }
+
+/**
+ * Apply an agent-driven failover switch to agent.json, but only after
+ * re-pinging the candidate. The inventory ping that produced the candidate
+ * may be stale by the time the agent replies — without this preflight, a
+ * "switch to <provider>" reply can move the lane onto an unreachable provider.
+ *
+ * Returns:
+ *   { ok: true }              — preflight passed, state mutated
+ *   { ok: false, refused }    — preflight failed, state untouched, caller should
+ *                                surface the refusal to the agent
+ * Throws on disk errors only (caught by caller as before).
+ */
+async function writeFailoverAgentConfigSwitch(
+  agentName: string,
+  action: Extract<FailoverAction, { action: "switch" }>,
+): Promise<FailoverSwitchOutcome> {
+  const validation: FailoverSwitchValidationResult = await validateFailoverSwitchCandidate(
+    agentName,
+    { provider: action.provider, model: action.model },
+  )
+  if (!validation.ok) {
+    return { ok: false, refused: true, classification: validation.classification, message: validation.message }
   }
 
-  const updatedAt = new Date().toISOString()
-  const lanes = { ...stateResult.state.lanes }
-  lanes[action.lane] = {
-    provider: action.provider,
-    model: action.model,
-    source: "local",
-    updatedAt,
+  const agentRoot = getAgentRoot()
+  const { configPath, config } = readAgentConfigForAgent(agentName, path.dirname(agentRoot))
+  const facingKey = action.lane === "inner" ? "agentFacing" : "humanFacing"
+  const nextConfig = {
+    ...config,
+    [facingKey]: {
+      ...config[facingKey],
+      provider: action.provider,
+      model: action.model,
+    },
   }
-  const readiness = { ...stateResult.state.readiness }
-  readiness[action.lane] = {
-    status: "ready",
-    provider: action.provider,
-    model: action.model,
-    checkedAt: updatedAt,
-    ...(action.credentialRevision ? { credentialRevision: action.credentialRevision } : {}),
-  }
-  writeProviderState(agentRoot, {
-    ...stateResult.state,
-    updatedAt,
-    lanes,
-    readiness,
-  })
+  fs.writeFileSync(configPath, `${JSON.stringify(nextConfig, null, 2)}\n`, "utf-8")
+  return { ok: true }
 }
 
 function formatFailoverSwitchLabel(action: Extract<FailoverAction, { action: "switch" }>): string {
   const provenance = formatCredentialProvenanceLabel(action)
   return `${action.provider} (${action.model}${provenance ? `; ${provenance}` : ""})`
+}
+
+/**
+ * Build the operational refusal context message handed back to the agent when
+ * a failover switch is rejected by the preflight ping. Slugger-tested format:
+ * lead with the refusal + reason, restate the lane that's still standing, then
+ * list remaining ready alternatives so the next turn doesn't have to re-enter
+ * discovery mode.
+ */
+function buildFailoverSwitchRefusedMessage(
+  pendingContext: FailoverContext,
+  refusedAction: Extract<FailoverAction, { action: "switch" }>,
+  refusal: { classification: import("../heart/core").ProviderErrorClassification; message: string },
+): string {
+  const refusedLabel = formatFailoverSwitchLabel(refusedAction)
+  const remaining = pendingContext.readyProviders.filter((candidate) => candidate.provider !== refusedAction.provider)
+  const alternativesLine = remaining.length > 0
+    ? `available verified alternatives right now: ${remaining.map((c) => `${c.provider} (${c.model})`).join(", ")}.`
+    : "no other verified alternatives are ready right now."
+  const nextMove = remaining.length > 0
+    ? `next move: reply "switch to <provider>" picking one of the alternatives above, or tell the user you cannot continue and why.`
+    : `next move: ask the operator to repair credentials for ${refusedAction.provider} (or another provider), or tell the user you cannot continue and why.`
+  return [
+    `[provider switch refused: tried to switch ${refusedAction.lane} lane to ${refusedLabel}.`,
+    `reason: preflight ping failed (${refusal.classification}: ${refusal.message}).`,
+    `current lane unchanged: ${pendingContext.currentProvider} / ${pendingContext.currentModel} on the ${pendingContext.currentLane} lane.`,
+    alternativesLine,
+    nextMove + "]",
+  ].join(" ")
 }
 
 
@@ -131,6 +278,8 @@ function formatFailoverSwitchLabel(action: Extract<FailoverAction, { action: "sw
 export interface InboundTurnInput {
   /** Which channel this turn arrives on (used for runAgent channel param). */
   channel: Channel
+  /** Latency profile for synchronous transports. Live turns keep durable local state but skip remote sync and kept-note judging. */
+  latencyMode?: "standard" | "live"
   /** Canonical session key for this inbound turn (defaults to "session"). */
   sessionKey?: string
   /** Capabilities of the channel (carries senseType). */
@@ -144,7 +293,7 @@ export interface InboundTurnInput {
   /** Resolves external identity into a FriendRecord + channel capabilities. */
   friendResolver: { resolve(): Promise<ResolvedContext> }
   /** Loads an existing session or creates a fresh one. */
-  sessionLoader: { loadOrCreate(): Promise<{ messages: ChatCompletionMessageParam[]; sessionPath: string; state?: SessionContinuityState; events?: SessionEvent[] }> }
+  sessionLoader: { loadOrCreate(): Promise<{ messages: ChatCompletionMessageParam[]; sessionPath: string; state?: SessionContinuityState; events?: SessionEvent[]; structuredOutputs?: StructuredOutput[] }> }
   /** Directory to drain pending messages from. */
   pendingDir: string
   /** Friend store used for token accumulation. */
@@ -278,10 +427,9 @@ export async function handleInboundTurn(input: InboundTurnInput): Promise<Inboun
     const failoverAgentName = pendingContext.agentName
     input.failoverState.pending = null // always clear before acting
     if (failoverAction.action === "switch") {
-      let switchSucceeded = false
+      let switchOutcome: FailoverSwitchOutcome | null = null
       try {
-        writeFailoverProviderStateSwitch(failoverAgentName, failoverAction)
-        switchSucceeded = true
+        switchOutcome = await writeFailoverAgentConfigSwitch(failoverAgentName, failoverAction)
       /* v8 ignore start -- defensive: write failure during provider switch @preserve */
       } catch (switchError) {
         emitNervesEvent({
@@ -293,8 +441,7 @@ export async function handleInboundTurn(input: InboundTurnInput): Promise<Inboun
         })
       }
       /* v8 ignore stop */
-      /* v8 ignore next -- false branch: write-failure fallthrough @preserve */
-      if (switchSucceeded) {
+      if (switchOutcome?.ok) {
         emitNervesEvent({
           component: "senses",
           event: "senses.failover_switch",
@@ -317,6 +464,28 @@ export async function handleInboundTurn(input: InboundTurnInput): Promise<Inboun
           content: `[provider switch: ${pendingContext.errorSummary}. switched ${failoverAction.lane} lane to ${newProviderLabel}. your conversation history is intact — respond to the user's last message.]`,
         }]
         input.switchedProvider = failoverAction.provider
+      } else if (switchOutcome && !switchOutcome.ok) {
+        // Preflight refused the switch — the candidate provider is not actually
+        // reachable right now. Keep the existing lane intact and tell the agent
+        // what happened so it can pick something else next turn.
+        emitNervesEvent({
+          level: "warn",
+          component: "senses",
+          event: "senses.failover_switch_refused",
+          message: `refused failover switch of ${failoverAction.lane} lane to ${failoverAction.provider}: ${switchOutcome.message}`,
+          meta: {
+            agentName: failoverAgentName,
+            lane: failoverAction.lane,
+            provider: failoverAction.provider,
+            model: failoverAction.model,
+            classification: switchOutcome.classification,
+            error: switchOutcome.message,
+          },
+        })
+        input.messages = [{
+          role: "user" as const,
+          content: buildFailoverSwitchRefusedMessage(pendingContext, failoverAction, switchOutcome),
+        }]
       }
       // Switch failed OR succeeded — either way, fall through to normal processing.
     }
@@ -433,13 +602,14 @@ export async function handleInboundTurn(input: InboundTurnInput): Promise<Inboun
   // so that obligations, episodes, cares, etc. reflect the latest remote state.
   let syncFailure: string | undefined
   let syncConfig: import("../heart/config").SyncConfig = { enabled: false, remote: "origin" }
+  const liveLatencyMode = input.latencyMode === "live"
   try { syncConfig = getSyncConfig() } catch { /* config not available */ }
 
   // Wrap the turn body in try/finally so postTurnPush always runs — even on
   // error or early-return failover paths.
   try {
   /* v8 ignore start -- sync-enabled branches tested in sync.test.ts, pipeline tests mock at module boundary @preserve */
-  if (syncConfig.enabled) {
+  if (syncConfig.enabled && !liveLatencyMode) {
     const pullResult = preTurnPull(getAgentRoot(), syncConfig)
     if (!pullResult.ok) {
       syncFailure = pullResult.error
@@ -468,7 +638,7 @@ export async function handleInboundTurn(input: InboundTurnInput): Promise<Inboun
   })
   // Propagate sync failure from pre-turn pull
   ctx.syncFailure = syncFailure
-  const { activeBridges, sessionActivity, pendingObligations, codingSessions, otherCodingSessions } = ctx
+  const { activeBridges, sessionActivity, pendingObligations, codingSessions, otherCodingSessions, backgroundOperations } = ctx
   const bridgeContext = formatBridgeContext(activeBridges) || undefined
   const activeWorkFrame = buildActiveWorkFrame({
     currentSession,
@@ -477,9 +647,9 @@ export async function handleInboundTurn(input: InboundTurnInput): Promise<Inboun
     inner: ctx.innerWorkState,
     bridges: activeBridges,
     codingSessions,
+    backgroundOperations,
     otherCodingSessions,
     pendingObligations,
-    taskBoard: ctx.taskBoard,
     friendActivity: sessionActivity,
     targetCandidates: ctx.targetCandidates,
     innerReturnObligations: ctx.returnObligations,
@@ -496,7 +666,11 @@ export async function handleInboundTurn(input: InboundTurnInput): Promise<Inboun
     ? []
     : (input.drainDeferredReturns?.(resolvedContext.friend.id) ?? [])
   const sessionPending = input.drainPending(input.pendingDir)
-  const pending = [...deferredReturns, ...sessionPending]
+  const pending = filterDeliverablePendingMessages({
+    pendingDir: input.pendingDir,
+    channel: input.channel,
+    messages: [...deferredReturns, ...sessionPending],
+  })
 
   // Assemble messages: session messages + pending + inbound user messages
   // NOTE: live world-state checkpoint and pending messages are rendered via buildSystem (system prompt sections)
@@ -511,6 +685,16 @@ export async function handleInboundTurn(input: InboundTurnInput): Promise<Inboun
     stampIngressTime(msg)
     sessionMessages.push(msg)
   }
+  const currentUserMessages = input.messages.filter((message) => message.role === "user")
+  const orientationFrame = input.runAgentOptions?.orientationFrame
+    ?? (currentUserMessages.length > 0
+      ? buildOrientationFrame({
+          channel: input.channel,
+          messages: sessionMessages,
+          currentUserMessages,
+          structuredOutputs: session.structuredOutputs ?? [],
+        })
+      : undefined)
 
   // Step 4b: Continuity pipeline — derive tempo, build start-of-turn packet, snapshot obligations
   let renderedStartOfTurnPacket: string | undefined
@@ -551,7 +735,7 @@ export async function handleInboundTurn(input: InboundTurnInput): Promise<Inboun
       startOfTurnPacket.syncFailure = syncFailure
     }
     if (ctx.providerVisibility) {
-      startOfTurnPacket.providerState = formatAgentProviderVisibilityForStartOfTurn(ctx.providerVisibility)
+      startOfTurnPacket.providerSelection = formatAgentProviderVisibilityForStartOfTurn(ctx.providerVisibility)
     }
     // Structured bundle state detection — surfaces discrete issues the
     // agent can remediate via the bundle_* tools. Runs independently of
@@ -590,6 +774,8 @@ export async function handleInboundTurn(input: InboundTurnInput): Promise<Inboun
   const existingToolContext = input.runAgentOptions?.toolContext
   const runAgentOptions: RunAgentOptions = {
     ...input.runAgentOptions,
+    ...(orientationFrame ? { orientationFrame } : {}),
+    ...(liveLatencyMode ? { skipKeptNotes: true } : {}),
     bridgeContext,
     activeWorkFrame,
     delegationDecision,
@@ -616,6 +802,7 @@ export async function handleInboundTurn(input: InboundTurnInput): Promise<Inboun
       friendStore: input.friendStore,
       currentSession,
       activeBridges,
+      ...(orientationFrame ? { orientationFrame } : {}),
     },
   }
 
@@ -728,7 +915,7 @@ export async function handleInboundTurn(input: InboundTurnInput): Promise<Inboun
   }
   } finally {
     // Step 6b: Post-turn sync push (opt-in, git-status-based discovery).
-    if (syncConfig.enabled) {
+    if (syncConfig.enabled && !liveLatencyMode) {
       postTurnPush(getAgentRoot(), syncConfig)
     }
   }

@@ -41,7 +41,7 @@ vi.mock("../../../heart/identity", () => ({
   getRepoRoot: vi.fn(() => "/mock/repo"),
   getAgentBundlesRoot: vi.fn(() => "/mock/bundles"),
   getAgentDaemonLogsDir: vi.fn(() => "/mock/logs"),
-  HARNESS_CANONICAL_REPO_URL: "https://github.com/ouroborosbot/ouroboros.git",
+  HARNESS_CANONICAL_REPO_URL: "https://github.com/ourostack/ouroboros.git",
   loadAgentConfig: vi.fn(() => ({
     name: "test-agent",
     provider: "anthropic",

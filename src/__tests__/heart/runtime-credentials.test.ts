@@ -45,6 +45,7 @@ vi.mock("../../nerves/runtime", () => ({
 import {
   MACHINE_RUNTIME_CONFIG_ITEM_PREFIX,
   RUNTIME_CONFIG_ITEM_NAME,
+  applyRuntimeCredentialBootstrapMessage,
   cacheMachineRuntimeCredentialConfig,
   cacheRuntimeCredentialConfig,
   machineRuntimeConfigItemName,
@@ -55,7 +56,13 @@ import {
   resetRuntimeCredentialConfigCache,
   upsertMachineRuntimeCredentialConfig,
   upsertRuntimeCredentialConfig,
+  waitForRuntimeCredentialBootstrap,
 } from "../../heart/runtime-credentials"
+import {
+  createProviderCredentialRecord,
+  readProviderCredentialPool,
+  resetProviderCredentialCache,
+} from "../../heart/provider-credentials"
 
 function emitTestEvent(testName: string): void {
   mockEmitNervesEvent({
@@ -81,6 +88,7 @@ describe("runtime credentials vault config", () => {
     mockCredentialStore.clearRawFailure()
     vi.clearAllMocks()
     resetRuntimeCredentialConfigCache()
+    resetProviderCredentialCache()
   })
 
   it("returns a redaction-safe missing result before runtime/config is loaded", () => {
@@ -111,6 +119,266 @@ describe("runtime credentials vault config", () => {
     expect(result.ok ? result.revision : "").toMatch(/^runtime_/)
     expect(readRuntimeCredentialConfig("slugger")).toEqual(result)
     expect(mockCredentialStore.store.getRawSecret).not.toHaveBeenCalled()
+  })
+
+  it("applies daemon IPC runtime credential bootstrap into process memory", () => {
+    emitTestEvent("runtime credentials daemon bootstrap")
+
+    const applied = applyRuntimeCredentialBootstrapMessage({
+      type: "ouro.runtimeCredentialBootstrap",
+      agentName: "slugger",
+      runtimeConfig: { mailroom: { mailboxAddress: "slugger@ouro.bot" } },
+      machineRuntimeConfig: { bluebubbles: { serverUrl: "http://localhost:1234", password: "bb-secret" } },
+      machineId: "machine_test",
+    })
+
+    expect(applied).toBe(true)
+    expect(readRuntimeCredentialConfig("slugger")).toMatchObject({
+      ok: true,
+      config: { mailroom: { mailboxAddress: "slugger@ouro.bot" } },
+    })
+    expect(readMachineRuntimeCredentialConfig("slugger")).toMatchObject({
+      ok: true,
+      itemPath: "vault:slugger:runtime/machines/machine_test/config",
+      config: { bluebubbles: { serverUrl: "http://localhost:1234", password: "bb-secret" } },
+    })
+    expect(mockCredentialStore.store.getRawSecret).not.toHaveBeenCalled()
+  })
+
+  it("applies daemon IPC provider credential bootstrap into process memory", () => {
+    emitTestEvent("runtime credentials daemon provider bootstrap")
+
+    const providerRecord = createProviderCredentialRecord({
+      provider: "openai-codex",
+      credentials: { oauthAccessToken: "codex-token", expiresAt: 123 },
+      config: { retryBudget: 1 },
+      provenance: { source: "auth-flow" },
+      now: new Date("2026-04-14T12:00:00.000Z"),
+    })
+
+    const applied = applyRuntimeCredentialBootstrapMessage({
+      type: "ouro.runtimeCredentialBootstrap",
+      agentName: "slugger",
+      providerCredentialRecords: [providerRecord],
+    })
+
+    expect(applied).toBe(true)
+    expect(readProviderCredentialPool("slugger")).toMatchObject({
+      ok: true,
+      pool: {
+        providers: {
+          "openai-codex": expect.objectContaining({
+            provider: "openai-codex",
+            credentials: { oauthAccessToken: "codex-token", expiresAt: 123 },
+            config: { retryBudget: 1 },
+          }),
+        },
+      },
+    })
+    expect(mockCredentialStore.store.getRawSecret).not.toHaveBeenCalled()
+  })
+
+  it("rejects malformed runtime credential bootstrap messages without touching cache", () => {
+    emitTestEvent("runtime credentials reject malformed daemon bootstrap")
+
+    for (const message of [
+      null,
+      [],
+      { type: "other", agentName: "slugger" },
+      { type: "ouro.runtimeCredentialBootstrap", agentName: "" },
+      { type: "ouro.runtimeCredentialBootstrap", agentName: "slugger", runtimeConfig: [] },
+      { type: "ouro.runtimeCredentialBootstrap", agentName: "slugger", machineRuntimeConfig: "bad" },
+      { type: "ouro.runtimeCredentialBootstrap", agentName: "slugger", machineId: "" },
+      { type: "ouro.runtimeCredentialBootstrap", agentName: "slugger", providerCredentialRecords: "bad" },
+      { type: "ouro.runtimeCredentialBootstrap", agentName: "slugger", providerCredentialRecords: [null] },
+      { type: "ouro.runtimeCredentialBootstrap", agentName: "slugger", providerCredentialRecords: [{ provider: 42 }] },
+      { type: "ouro.runtimeCredentialBootstrap", agentName: "slugger", providerCredentialRecords: [{ provider: "openai-codex" }] },
+      {
+        type: "ouro.runtimeCredentialBootstrap",
+        agentName: "slugger",
+        providerCredentialRecords: [{
+          provider: "openai-codex",
+          revision: "vault_test",
+          updatedAt: "",
+          credentials: {},
+          config: {},
+          provenance: { source: "auth-flow", updatedAt: "2026-04-14T12:00:00.000Z" },
+        }],
+      },
+      {
+        type: "ouro.runtimeCredentialBootstrap",
+        agentName: "slugger",
+        providerCredentialRecords: [{
+          provider: "openai-codex",
+          revision: "vault_test",
+          updatedAt: "2026-04-14T12:00:00.000Z",
+          credentials: "bad",
+          config: {},
+          provenance: { source: "auth-flow", updatedAt: "2026-04-14T12:00:00.000Z" },
+        }],
+      },
+      {
+        type: "ouro.runtimeCredentialBootstrap",
+        agentName: "slugger",
+        providerCredentialRecords: [{
+          provider: "openai-codex",
+          revision: "vault_test",
+          updatedAt: "2026-04-14T12:00:00.000Z",
+          credentials: { oauthAccessToken: false },
+          config: {},
+          provenance: { source: "auth-flow", updatedAt: "2026-04-14T12:00:00.000Z" },
+        }],
+      },
+      {
+        type: "ouro.runtimeCredentialBootstrap",
+        agentName: "slugger",
+        providerCredentialRecords: [{
+          provider: "openai-codex",
+          revision: "vault_test",
+          updatedAt: "2026-04-14T12:00:00.000Z",
+          credentials: {},
+          config: "bad",
+          provenance: { source: "auth-flow", updatedAt: "2026-04-14T12:00:00.000Z" },
+        }],
+      },
+      {
+        type: "ouro.runtimeCredentialBootstrap",
+        agentName: "slugger",
+        providerCredentialRecords: [{
+          provider: "openai-codex",
+          revision: "vault_test",
+          updatedAt: "2026-04-14T12:00:00.000Z",
+          credentials: {},
+          config: { retryBudget: false },
+          provenance: { source: "auth-flow", updatedAt: "2026-04-14T12:00:00.000Z" },
+        }],
+      },
+      {
+        type: "ouro.runtimeCredentialBootstrap",
+        agentName: "slugger",
+        providerCredentialRecords: [{
+          provider: "openai-codex",
+          revision: "vault_test",
+          updatedAt: "2026-04-14T12:00:00.000Z",
+          credentials: {},
+          config: {},
+          provenance: "bad",
+        }],
+      },
+      {
+        type: "ouro.runtimeCredentialBootstrap",
+        agentName: "slugger",
+        providerCredentialRecords: [{
+          provider: "openai-codex",
+          revision: "vault_test",
+          updatedAt: "2026-04-14T12:00:00.000Z",
+          credentials: {},
+          config: {},
+          provenance: { source: "other", updatedAt: "2026-04-14T12:00:00.000Z" },
+        }],
+      },
+      {
+        type: "ouro.runtimeCredentialBootstrap",
+        agentName: "slugger",
+        providerCredentialRecords: [{
+          provider: "openai-codex",
+          revision: "vault_test",
+          updatedAt: "2026-04-14T12:00:00.000Z",
+          credentials: {},
+          config: {},
+          provenance: { source: "auth-flow", updatedAt: "" },
+        }],
+      },
+    ]) {
+      expect(applyRuntimeCredentialBootstrapMessage(message)).toBe(false)
+    }
+
+    expect(readRuntimeCredentialConfig("slugger")).toEqual({
+      ok: false,
+      reason: "missing",
+      itemPath: "vault:slugger:runtime/config",
+      error: "no runtime credentials stored at vault:slugger:runtime/config",
+    })
+  })
+
+  it("uses this-machine when daemon IPC omits a machine id", () => {
+    emitTestEvent("runtime credentials daemon bootstrap default machine")
+
+    expect(applyRuntimeCredentialBootstrapMessage({
+      type: "ouro.runtimeCredentialBootstrap",
+      agentName: "slugger",
+      machineRuntimeConfig: { bluebubbles: { serverUrl: "http://localhost:1234", password: "bb-secret" } },
+    })).toBe(true)
+
+    expect(readMachineRuntimeCredentialConfig("slugger")).toMatchObject({
+      ok: true,
+      itemPath: "vault:slugger:runtime/machines/<this-machine>/config",
+      config: { bluebubbles: { serverUrl: "http://localhost:1234", password: "bb-secret" } },
+    })
+  })
+
+  it("accepts daemon IPC bootstrap messages that only include shared runtime config", () => {
+    emitTestEvent("runtime credentials daemon bootstrap runtime only")
+
+    expect(applyRuntimeCredentialBootstrapMessage({
+      type: "ouro.runtimeCredentialBootstrap",
+      agentName: "slugger",
+      runtimeConfig: { mailroom: { mailboxAddress: "slugger@ouro.bot" } },
+    })).toBe(true)
+
+    expect(readRuntimeCredentialConfig("slugger")).toMatchObject({
+      ok: true,
+      config: { mailroom: { mailboxAddress: "slugger@ouro.bot" } },
+    })
+    expect(readMachineRuntimeCredentialConfig("slugger")).toMatchObject({
+      ok: false,
+      reason: "missing",
+    })
+  })
+
+  it("waits briefly for daemon IPC runtime credential bootstrap", async () => {
+    emitTestEvent("runtime credentials wait for daemon bootstrap")
+
+    const waiting = waitForRuntimeCredentialBootstrap("slugger", { timeoutMs: 100 })
+    process.emit("message", {
+      type: "ouro.runtimeCredentialBootstrap",
+      agentName: "slugger",
+      machineRuntimeConfig: { bluebubbles: { serverUrl: "http://localhost:1234", password: "bb-secret" } },
+      machineId: "machine_test",
+    })
+
+    await expect(waiting).resolves.toBe(true)
+    expect(readMachineRuntimeCredentialConfig("slugger")).toMatchObject({
+      ok: true,
+      config: { bluebubbles: { serverUrl: "http://localhost:1234", password: "bb-secret" } },
+    })
+  })
+
+  it("ignores unrelated daemon IPC messages and resolves false on timeout", async () => {
+    emitTestEvent("runtime credentials daemon bootstrap timeout")
+    vi.useFakeTimers()
+
+    try {
+      const waiting = waitForRuntimeCredentialBootstrap("slugger")
+      process.emit("message", { type: "other", agentName: "slugger" })
+      process.emit("message", {
+        type: "ouro.runtimeCredentialBootstrap",
+        agentName: "ouroboros",
+        runtimeConfig: { mailroom: { mailboxAddress: "ouroboros@ouro.bot" } },
+      })
+
+      await vi.advanceTimersByTimeAsync(1_500)
+
+      await expect(waiting).resolves.toBe(false)
+      expect(readRuntimeCredentialConfig("slugger")).toEqual({
+        ok: false,
+        reason: "missing",
+        itemPath: "vault:slugger:runtime/config",
+        error: "no runtime credentials stored at vault:slugger:runtime/config",
+      })
+    } finally {
+      vi.useRealTimers()
+    }
   })
 
   it("upserts runtime/config into the agent vault and refreshes it back into cache", async () => {

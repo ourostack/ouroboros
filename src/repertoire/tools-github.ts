@@ -30,7 +30,7 @@ export const githubToolDefinitions: ToolDefinition[] = [
       if (!ctx?.githubToken) {
         return "AUTH_REQUIRED:github -- I need access to GitHub. Please sign in when prompted."
       }
-      const owner = "ouroborosbot"
+      const owner = "ourostack"
       const repo = "ouroboros"
       const payload: Record<string, unknown> = { title: args.title }
       if (args.body) payload.body = args.body
@@ -41,5 +41,6 @@ export const githubToolDefinitions: ToolDefinition[] = [
     },
     integration: "github",
     summaryKeys: ["title"],
+    riskProfile: { mutates: "external_side_effect", risk: "high", reason: "files a GitHub issue" },
   },
 ]

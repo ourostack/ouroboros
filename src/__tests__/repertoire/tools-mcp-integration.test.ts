@@ -56,17 +56,6 @@ vi.mock("../../repertoire/github-client", () => ({
   githubRequest: vi.fn(),
 }))
 
-vi.mock("../../repertoire/tasks", () => ({
-  getTaskModule: () => ({
-    getBoard: vi.fn().mockReturnValue({ compact: "", full: "", byStatus: {}, actionRequired: [], unresolvedDependencies: [], activeSessions: [] }),
-    createTask: vi.fn(),
-    updateStatus: vi.fn(),
-    boardStatus: vi.fn().mockReturnValue([]),
-    boardAction: vi.fn().mockReturnValue([]),
-    boardDeps: vi.fn().mockReturnValue([]),
-    boardSessions: vi.fn().mockReturnValue([]),
-  }),
-}))
 
 import type { McpManager } from "../../repertoire/mcp-manager"
 import { getToolsForChannel, execTool, summarizeArgs, resetMcpDefinitions } from "../../repertoire/tools"

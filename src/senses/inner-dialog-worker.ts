@@ -1,27 +1,28 @@
-import * as fs from "fs"
 import * as path from "path"
 import { runInnerDialogTurn } from "./inner-dialog"
 import { emitNervesEvent } from "../nerves/runtime"
 import { getAgentName, getAgentRoot } from "../heart/identity"
 import { getInnerDialogPendingDir, hasPendingMessages } from "../mind/pending"
-import { parseHabitFile, renderHabitFile } from "../heart/habits/habit-parser"
+import { recordHabitRun } from "../heart/habits/habit-runtime-state"
 
-export type InnerDialogWorkerReason = "boot" | "habit" | "instinct"
+export type InnerDialogWorkerReason = "boot" | "habit" | "instinct" | "await"
 
 export interface InnerDialogWorkerMessage {
-  type: "heartbeat" | "habit" | "shutdown" | "poke" | "chat" | "message" | string
+  type: "heartbeat" | "habit" | "await" | "shutdown" | "poke" | "chat" | "message" | string
   taskId?: string
   habitName?: string
+  awaitName?: string
 }
 
 export interface InnerDialogWorkerRunOptions {
   reason: InnerDialogWorkerReason
   taskId?: string
   habitName?: string
+  awaitName?: string
 }
 
 export interface InnerDialogWorkerController {
-  run(reason: InnerDialogWorkerReason, taskId?: string, habitName?: string): Promise<void>
+  run(reason: InnerDialogWorkerReason, taskId?: string, habitName?: string, awaitName?: string): Promise<void>
   handleMessage(message: unknown): Promise<void>
 }
 
@@ -29,18 +30,145 @@ interface QueueEntry {
   reason: InnerDialogWorkerReason
   taskId?: string
   habitName?: string
+  awaitName?: string
+}
+
+/**
+ * Cap on consecutive `instinct` follow-on turns triggered by `hasPendingWork()`
+ * with no externally-queued work in between. Without this cap, a turn that
+ * writes anything back into the inner-dialog pending dir as a side effect of
+ * processing (e.g. a surface tool routing a response) puts the worker into
+ * a self-sustaining loop where the next turn's drain produces another write,
+ * and so on. Real workflows rarely chain more than 2–3 instinct turns; an
+ * external trigger (habit, poke, chat) resets the counter so legitimate
+ * follow-on work is unaffected.
+ *
+ * Three feels right: legitimate cascading follow-ups (e.g. processing a
+ * batch of delegated returns) get through; a true self-loop caps fast.
+ */
+export const MAX_CONSECUTIVE_INSTINCT_TURNS = 3
+
+/**
+ * Habit recursion detector thresholds. The instinct cap above protects
+ * against pending-dir self-loops; this protects against the *external*
+ * IPC self-loop where heartbeat-shaped messages get re-issued faster
+ * than their cadence — e.g. a hook misconfigured to repost on every
+ * heartbeat, a daemon retry storm, or a stuck timer firing back-to-back.
+ *
+ * MIN_INTERVAL_MS — two of the same habit within this window is suspect
+ * regardless of cadence (no realistic habit fires every few seconds).
+ * BURST_THRESHOLD over BURST_WINDOW_MS catches slower runaways that stay
+ * just under MIN_INTERVAL_MS.
+ *
+ * Detection is observation-only: it emits warn-level nerves events, it
+ * does not drop the message. An operator (or follow-up auto-recovery)
+ * decides what to do with the signal.
+ */
+export const HABIT_RECURSION_MIN_INTERVAL_MS = 5_000
+export const HABIT_RECURSION_BURST_WINDOW_MS = 60_000
+export const HABIT_RECURSION_BURST_THRESHOLD = 5
+export const HEARTBEAT_OK_REST_SUPPRESSION_MS = 20 * 60_000
+
+function isHeartbeatOkRestResult(result: unknown): boolean {
+  if (!result || typeof result !== "object") return false
+  const maybeResult = result as { turnOutcome?: unknown; restStatus?: unknown }
+  return maybeResult.turnOutcome === "rested" && maybeResult.restStatus === "HEARTBEAT_OK"
 }
 
 export function createInnerDialogWorker(
   runTurn: (options: InnerDialogWorkerRunOptions) => Promise<unknown> = (options) => runInnerDialogTurn(options),
   hasPendingWork: () => boolean = () => hasPendingMessages(getInnerDialogPendingDir(getAgentName())),
+  nowSource: () => number = () => Date.now(),
 ): InnerDialogWorkerController {
   let running = false
   const queue: QueueEntry[] = []
+  const lastFireByHabit = new Map<string, number>()
+  const recentHabitFires: number[] = []
+  let heartbeatOkRestedAt: number | null = null
 
-  async function run(reason: InnerDialogWorkerReason, taskId?: string, habitName?: string): Promise<void> {
+  function recordHabitCompletion(habitName: string): void {
+    try {
+      const agentRoot = getAgentRoot()
+      recordHabitRun(agentRoot, habitName, new Date(nowSource()).toISOString(), {
+        definitionPath: path.join(agentRoot, "habits", `${habitName}.md`),
+      })
+    } catch {
+      // Habit file/state may be unavailable during the turn — skip gracefully
+    }
+  }
+
+  function clearHeartbeatRestShield(): void {
+    heartbeatOkRestedAt = null
+  }
+
+  function shouldReuseHeartbeatOkRest(habitName: string): boolean {
+    if (habitName !== "heartbeat" || heartbeatOkRestedAt === null) return false
+    if (nowSource() - heartbeatOkRestedAt > HEARTBEAT_OK_REST_SUPPRESSION_MS) return false
+    if (hasPendingWork()) {
+      clearHeartbeatRestShield()
+      return false
+    }
+    return true
+  }
+
+  function reuseHeartbeatOkRest(habitName: string): void {
+    recordHabitCompletion(habitName)
+    emitNervesEvent({
+      level: "info",
+      component: "senses",
+      event: "senses.heartbeat_ok_rest_reused",
+      message: "heartbeat skipped because previous HEARTBEAT_OK rest is still valid and no pending work exists",
+        meta: {
+          habitName,
+          quietWindowMs: HEARTBEAT_OK_REST_SUPPRESSION_MS,
+          restedAgoMs: nowSource() - heartbeatOkRestedAt!,
+        },
+      })
+  }
+
+  function recordHabitFireForRecursion(habitName: string): void {
+    const now = nowSource()
+    const previous = lastFireByHabit.get(habitName)
+    if (previous !== undefined) {
+      const intervalMs = now - previous
+      if (intervalMs < HABIT_RECURSION_MIN_INTERVAL_MS) {
+        emitNervesEvent({
+          level: "warn",
+          component: "senses",
+          event: "senses.habit_recursion_suspected",
+          message: "habit fired suspiciously fast after the previous fire — possible self-recursion or duplicate dispatch",
+          meta: {
+            habitName,
+            intervalMs,
+            thresholdMs: HABIT_RECURSION_MIN_INTERVAL_MS,
+          },
+        })
+      }
+    }
+    lastFireByHabit.set(habitName, now)
+    recentHabitFires.push(now)
+    while (recentHabitFires.length > 0 && now - recentHabitFires[0]! > HABIT_RECURSION_BURST_WINDOW_MS) {
+      recentHabitFires.shift()
+    }
+    if (recentHabitFires.length >= HABIT_RECURSION_BURST_THRESHOLD) {
+      emitNervesEvent({
+        level: "warn",
+        component: "senses",
+        event: "senses.habit_recursion_burst",
+        message: "habit messages arriving in a burst — possible runaway loop",
+        meta: {
+          count: recentHabitFires.length,
+          windowMs: HABIT_RECURSION_BURST_WINDOW_MS,
+          thresholdCount: HABIT_RECURSION_BURST_THRESHOLD,
+          lastHabitName: habitName,
+        },
+      })
+    }
+  }
+
+  async function run(reason: InnerDialogWorkerReason, taskId?: string, habitName?: string, awaitName?: string): Promise<void> {
     if (running) {
-      queue.push({ reason, taskId, habitName })
+      queue.push({ reason, taskId, habitName, awaitName })
       return
     }
 
@@ -49,11 +177,20 @@ export function createInnerDialogWorker(
       let nextReason = reason
       let nextTaskId = taskId
       let nextHabitName = habitName
+      let nextAwaitName = awaitName
+      let consecutiveInstinctTurns = reason === "instinct" ? 1 : 0
 
-      do {
+      runLoop: do {
+        const currentReason = nextReason
+        const currentHabitName = nextHabitName
+        if (!(currentReason === "habit" && currentHabitName === "heartbeat")) {
+          clearHeartbeatRestShield()
+        }
+        let turnResult: unknown
         try {
-          await runTurn({ reason: nextReason, taskId: nextTaskId, habitName: nextHabitName })
+          turnResult = await runTurn({ reason: nextReason, taskId: nextTaskId, habitName: nextHabitName, awaitName: nextAwaitName })
         } catch (error) {
+          clearHeartbeatRestShield()
           emitNervesEvent({
             level: "error",
             component: "senses",
@@ -65,42 +202,59 @@ export function createInnerDialogWorker(
             },
           })
         }
-
-        // Update lastRun in habit frontmatter after a habit turn
-        if (nextReason === "habit" && nextHabitName) {
-          try {
-            const agentRoot = getAgentRoot()
-            const habitFilePath = path.join(agentRoot, "habits", `${nextHabitName}.md`)
-            const content = fs.readFileSync(habitFilePath, "utf-8")
-            const parsed = parseHabitFile(content, habitFilePath)
-            const frontmatter: Record<string, unknown> = {
-              title: parsed.title,
-              cadence: parsed.cadence,
-              status: parsed.status,
-              lastRun: new Date().toISOString(),
-              created: parsed.created,
-            }
-            const rendered = renderHabitFile(frontmatter, parsed.body)
-            fs.writeFileSync(habitFilePath, rendered, "utf-8")
-          } catch {
-            // Habit file may have been deleted during the turn — skip gracefully
-          }
+        if (currentReason === "habit" && currentHabitName === "heartbeat") {
+          heartbeatOkRestedAt = isHeartbeatOkRestResult(turnResult) ? nowSource() : null
         }
 
-        // Drain queue first
-        if (queue.length > 0) {
+        // Record lastRun after a habit turn without dirtying the tracked habit file.
+        if (nextReason === "habit" && nextHabitName) {
+          recordHabitCompletion(nextHabitName)
+        }
+
+        // Drain queue first. Externally-queued work resets the instinct cap
+        // because a real outside trigger arrived between turns.
+        while (queue.length > 0) {
           const next = queue.shift()!
+          if (next.reason === "habit" && next.habitName === "heartbeat" && shouldReuseHeartbeatOkRest(next.habitName)) {
+            reuseHeartbeatOkRest(next.habitName)
+            continue
+          }
+          if (!(next.reason === "habit" && next.habitName === "heartbeat")) {
+            clearHeartbeatRestShield()
+          }
           nextReason = next.reason
           nextTaskId = next.taskId
           nextHabitName = next.habitName
-          continue
+          nextAwaitName = next.awaitName
+          consecutiveInstinctTurns = nextReason === "instinct" ? consecutiveInstinctTurns + 1 : 0
+          continue runLoop
         }
 
-        // Then check hasPendingWork fallback
+        // Then check hasPendingWork fallback. This is the loop site: any
+        // tool that writes to the inner-dialog pending dir during a turn
+        // would cause hasPendingWork() to be true here, producing a
+        // self-sustaining "instinct" loop with no external input. Cap it.
         if (hasPendingWork()) {
+          clearHeartbeatRestShield()
+          if (consecutiveInstinctTurns >= MAX_CONSECUTIVE_INSTINCT_TURNS) {
+            emitNervesEvent({
+              level: "warn",
+              component: "senses",
+              event: "senses.inner_dialog_worker_instinct_loop_capped",
+              message: "inner dialog worker stopped chaining instinct turns; pending work remains for next external trigger",
+              meta: {
+                consecutiveInstinctTurns,
+                cap: MAX_CONSECUTIVE_INSTINCT_TURNS,
+                lastReason: nextReason,
+              },
+            })
+            break
+          }
+          consecutiveInstinctTurns += 1
           nextReason = "instinct"
           nextTaskId = undefined
           nextHabitName = undefined
+          nextAwaitName = undefined
           continue
         }
 
@@ -115,15 +269,36 @@ export function createInnerDialogWorker(
     if (!message || typeof message !== "object") return
     const maybeMessage = message as Partial<InnerDialogWorkerMessage>
     if (maybeMessage.type === "habit") {
+      /* v8 ignore next -- defensive fallback: live habit dispatch always sets habitName @preserve */
+      const habitName = maybeMessage.habitName ?? "(unnamed)"
+      if (shouldReuseHeartbeatOkRest(habitName)) {
+        reuseHeartbeatOkRest(habitName)
+        return
+      }
+      recordHabitFireForRecursion(habitName)
       await run("habit", undefined, maybeMessage.habitName)
+      return
+    }
+    if (maybeMessage.type === "await") {
+      clearHeartbeatRestShield()
+      /* v8 ignore next -- defensive fallback: live await dispatch always sets awaitName @preserve */
+      const awaitName = maybeMessage.awaitName ?? "(unnamed)"
+      recordHabitFireForRecursion(`await:${awaitName}`)
+      await run("await", undefined, undefined, maybeMessage.awaitName)
       return
     }
     if (maybeMessage.type === "heartbeat") {
       // Backward compatibility: heartbeat -> habit/heartbeat
+      if (shouldReuseHeartbeatOkRest("heartbeat")) {
+        reuseHeartbeatOkRest("heartbeat")
+        return
+      }
+      recordHabitFireForRecursion("heartbeat")
       await run("habit", undefined, "heartbeat")
       return
     }
     if (maybeMessage.type === "poke") {
+      clearHeartbeatRestShield()
       await run("instinct", maybeMessage.taskId)
       return
     }
@@ -131,6 +306,7 @@ export function createInnerDialogWorker(
       maybeMessage.type === "chat" ||
       maybeMessage.type === "message"
     ) {
+      clearHeartbeatRestShield()
       await run("instinct")
       return
     }
