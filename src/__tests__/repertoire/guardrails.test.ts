@@ -1750,6 +1750,8 @@ describe("the product rules change only by release", () => {
     try {
       const ctx = { readPaths: new Set<string>(), agentRoot: "/bundle", trustLevel: "family" as const }
       expect(guardInvocation("shell", { command: "echo x > /bundle/product/PRODUCT.md" }, ctx)).toEqual({ allowed: false, reason: PROTECTED })
+      // A bundle-named path is refused before any lookup; a relative one has to be resolved, so this is the lookup failing.
+      expect(guardInvocation("shell", { command: "echo x > ./product/PRODUCT.md" }, ctx)).toEqual({ allowed: false, reason: PROTECTED })
       expect(guardInvocation("shell", { command: "echo hi" }, ctx)).toEqual({ allowed: true })
     } finally {
       vi.restoreAllMocks()
