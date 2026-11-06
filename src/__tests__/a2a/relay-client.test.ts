@@ -54,6 +54,11 @@ describe("relay client", () => {
     expect(calls[0].body).toEqual(message)
   })
 
+  it("refuses a 2xx answer that carries no queue id (a captive portal or proxy page)", async () => {
+    await expect(relaySend({ url: "https://r", handle: "h", sendCredential: "sc", message, fetchImpl: fakeFetch(200, {}) }))
+      .rejects.toThrow(/did not confirm the message was queued/)
+  })
+
   it("pulls the inbox and acks one message", async () => {
     const calls: Call[] = []
     const queued = [{ queueId: "q1", message }]

@@ -93,7 +93,7 @@ export async function refreshRelayContact(input: {
   const baseFetch = input.fetchImpl ?? fetch
   const fetchImpl = ((url: string | URL | Request, init?: RequestInit) => baseFetch(url, { ...init, signal: AbortSignal.timeout(RELAY_CONTACT_FETCH_TIMEOUT_MS) })) as typeof fetch
   try {
-    const result = await callOutboxMethod({ cardUrl: input.cardUrl, method: "relay/contact", params: {}, identity: input.identity, fetchImpl })
+    const result = await callOutboxMethod({ cardUrl: input.cardUrl, method: "relay/contact", params: {}, identity: input.identity, fetchImpl, expectedDid: input.peerDid })
     writeRelayContact(input.agentRoot, { did: input.peerDid, fetchedAt, ...(isContact(result.contact) ? { contact: { url: result.contact.url, handle: result.contact.handle, sendCredential: result.contact.sendCredential } } : {}) })
   } catch (error) {
     emitNervesEvent({ level: "warn", component: "channels", event: "channel.a2a_relay_contact_refresh_failed", message: "could not fetch a peer's relay contact", meta: { peerDid: input.peerDid, error: error instanceof Error ? error.message : /* v8 ignore next -- the outbox client only throws Error instances @preserve */ String(error) } })

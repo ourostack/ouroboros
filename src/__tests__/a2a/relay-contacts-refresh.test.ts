@@ -30,7 +30,7 @@ describe("refreshRelayContact", () => {
       return { contact: { ...contact, extra: "dropped" } }
     })
     await refreshRelayContact({ agentRoot: tmp.agentRoot, peerDid, cardUrl: "https://peer.example/card", identity, fetchImpl: fetchImpl as unknown as typeof fetch, now: NOW })
-    expect(callOutboxMethod).toHaveBeenCalledWith(expect.objectContaining({ cardUrl: "https://peer.example/card", method: "relay/contact", params: {}, identity }))
+    expect(callOutboxMethod).toHaveBeenCalledWith(expect.objectContaining({ cardUrl: "https://peer.example/card", method: "relay/contact", params: {}, identity, expectedDid: expect.any(String) }))
     const init = (fetchImpl.mock.calls[0] as unknown as [string, RequestInit])[1]
     expect(init.method).toBe("POST")
     expect(init.signal).toBeInstanceOf(AbortSignal)

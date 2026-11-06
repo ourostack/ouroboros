@@ -21,6 +21,12 @@ describe("callOutboxMethod refusals", () => {
     await expect(call(mint(), { card: card("did:key:zNotAKey") })).rejects.toThrow(/binding failed/)
   })
 
+  it("refuses a card that serves a DID other than the one the caller means to reach", async () => {
+    const other = mint()
+    await expect(callOutboxMethod({ cardUrl: "https://agent.example/card", method: "relay/contact", params: {}, identity: mint(), sodium, fetchImpl: fakeFetch({ card: card(other.did) }), expectedDid: mint().did }))
+      .rejects.toThrow(`A2A card https://agent.example/card serves ${other.did}, not `)
+  })
+
   it("surfaces the agent's JSON-RPC refusal and a missing reply", async () => {
     const agent = mint()
     await expect(call(mint(), { card: card(agent.did), rpc: { jsonrpc: "2.0", id: "1", error: { code: -32003, message: "nope" } } })).rejects.toThrow(/A2A error -32003: nope/)

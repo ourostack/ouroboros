@@ -21,10 +21,14 @@ function causeCodes(error: Error): string[] {
   return codes.filter((code): code is string => typeof code === "string")
 }
 
+/** Gateway answers that can come after the request reached the agent: a bad gateway after the agent failed mid-turn,
+ * a gateway timeout, and Cloudflare's origin errors and timeouts. */
+const MAY_HAVE_ARRIVED_STATUSES = new Set([502, 504, 520, 521, 522, 523, 524])
+
 /** True when the direct attempt certainly did not reach the agent: a refused or unroutable connection, or a reply from
- * something other than the agent (a tunnel or proxy page; a gateway timeout is excluded, the agent may have it). */
+ * something other than the agent (a tunnel or proxy page, except a gateway answer that can follow a delivery). */
 function certainlyNotArrived(error: unknown): boolean {
-  if (error instanceof A2AHttpStatusError) return error.status !== 504
+  if (error instanceof A2AHttpStatusError) return !MAY_HAVE_ARRIVED_STATUSES.has(error.status)
   if (error instanceof SyntaxError) return true
   /* v8 ignore next -- fetch only throws Error instances @preserve */
   if (!(error instanceof Error)) return false

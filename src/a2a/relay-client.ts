@@ -67,8 +67,10 @@ export async function relayRegister(input: RelayCall & { handle: string; did: st
 /** Queue `message` (already sealed and signed) in `handle`'s inbox. Returns the relay's queue id. */
 export async function relaySend(input: RelayCall & { handle: string; sendCredential: string; message: unknown }): Promise<string> {
   const result = await relayRequest({ ...input, method: "POST", path: `/a2a/${encodeURIComponent(input.handle)}`, bearer: input.sendCredential, body: input.message })
+  // Something other than the relay (a captive portal, a proxy) can answer 2xx; only a queue id means it was queued.
+  if (typeof result.taskId !== "string") throw new Error("the relay did not confirm the message was queued")
   emitNervesEvent({ component: "channels", event: "channel.a2a_relay_sent", message: "queued a sealed A2A message at the relay", meta: { relayUrl: input.url } })
-  return String(result.taskId)
+  return result.taskId
 }
 
 /** The queued messages in `handle`'s inbox (still sealed). */

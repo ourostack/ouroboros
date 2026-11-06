@@ -118,6 +118,15 @@ describe("ensureRelayRegistration", () => {
     expect(config.value).toEqual({ url: relay.url, registration, previousRegistration: old })
   })
 
+  it("does not move again while the relay before the current one still holds mail", async () => {
+    const current = { relayUrl: "https://b.example", handle: "b-h", inboxAuth: "b-ia", sendCredential: "b-sc" }
+    const previous = { relayUrl: "https://a.example", handle: "a-h", inboxAuth: "a-ia", sendCredential: "a-sc" }
+    const config = memoryConfig({ url: relay.url, inviteToken: "inv", registration: current, previousRegistration: previous })
+    expect(await ensureRelayRegistration({ config, did: DID, agentName: "me" })).toEqual(current)
+    expect(config.value).toEqual({ url: relay.url, inviteToken: "inv", registration: current, previousRegistration: previous })
+    expect(relay.registrations.size).toBe(0)
+  })
+
   it("returns null when a first registration fails", async () => {
     const config = memoryConfig({ url: relay.url })
     relay.failNext("register", 503, "busy")
@@ -234,6 +243,36 @@ describe("retirePreviousRegistration", () => {
     expect(handled).toEqual(["left-behind"])
     expect(relay.registrations.has("old")).toBe(false)
     expect(config.value).toEqual({})
+  })
+
+  it("drains more than one pass before deregistering, so nothing queued is deleted", async () => {
+    const previous = registered("old")
+    for (let i = 0; i < RELAY_MAX_PER_TICK + 5; i += 1) enqueue("old", sealedMessage(`m${i}`))
+    const config = memoryConfig({ previousRegistration: previous })
+    let handled = 0
+    await retirePreviousRegistration({ config, seen: () => false, handle: async (rpc) => { handled += 1; return ok(rpc.id) } })
+    expect(handled).toBe(RELAY_MAX_PER_TICK + 5)
+    expect(relay.registrations.has("old")).toBe(false)
+    expect(config.value).toEqual({})
+  })
+
+  it("keeps the old registration while it holds messages refused for now", async () => {
+    const previous = registered("old")
+    const kept = enqueue("old", sealedMessage("busy"))
+    const config = memoryConfig({ previousRegistration: previous })
+    await retirePreviousRegistration({ config, seen: () => false, handle: async (rpc) => refused(rpc.id, "result", "in_flight") })
+    expect(relay.inbox.get("old")!.map((m) => m.queueId)).toEqual([kept])
+    expect(relay.registrations.has("old")).toBe(true)
+    expect(config.value.previousRegistration).toEqual(previous)
+  })
+
+  it("keeps the old registration when a drain pass fails", async () => {
+    const previous = registered("old")
+    enqueue("old", sealedMessage("throws"))
+    const config = memoryConfig({ previousRegistration: previous })
+    await retirePreviousRegistration({ config, seen: () => false, handle: async () => { throw new Error("provider down") } })
+    expect(relay.registrations.has("old")).toBe(true)
+    expect(config.value.previousRegistration).toEqual(previous)
   })
 
   it("keeps the old registration when the drain or the deregistration fails", async () => {

@@ -60,6 +60,11 @@ export async function ensureRelayRegistration(input: {
   const current = config.registration
   if (!url) return null
   if (current && current.relayUrl === url && !config.inviteToken) return current
+  // One move at a time: while an older relay still holds mail, moving again would forget it.
+  if (current && current.relayUrl !== url && config.previousRegistration) {
+    emitNervesEvent({ level: "warn", component: "channels", event: "channel.a2a_relay_move_waiting", message: "not moving to the new relay yet: the relay before the current one is still being drained; restart once it is retired", meta: { relayUrl: url, current: current.relayUrl, previous: config.previousRegistration.relayUrl } })
+    return current
+  }
 
   const handle = config.pendingRegistration?.relayUrl === url
     ? config.pendingRegistration.handle
@@ -177,8 +182,20 @@ export async function retirePreviousRegistration(input: {
 }): Promise<void> {
   const previous = (await input.config.read()).previousRegistration
   if (!previous) return
-  if (await drainRelayInbox({ registration: previous, handle: input.handle, seen: input.seen, fetchImpl: input.fetchImpl }) !== "ok") return
+  const inbox = { url: previous.relayUrl, handle: previous.handle, inboxAuth: previous.inboxAuth, fetchImpl: input.fetchImpl }
   try {
+    // Deregistering deletes whatever is still queued, so drain until a pull comes back empty. A pass that leaves as
+    // many messages as before (refused for now) keeps the registration until the next start.
+    let left = (await relayPull(inbox)).length
+    while (left > 0) {
+      if (await drainRelayInbox({ registration: previous, handle: input.handle, seen: input.seen, fetchImpl: input.fetchImpl }) !== "ok") return
+      const after = (await relayPull(inbox)).length
+      if (after >= left) {
+        emitNervesEvent({ level: "warn", component: "channels", event: "channel.a2a_relay_previous_kept", message: "the previous relay still holds messages that cannot be handled yet; it is kept and retried at the next start", meta: { relayUrl: previous.relayUrl, queued: after } })
+        return
+      }
+      left = after
+    }
     await relayDeregister({ url: previous.relayUrl, handle: previous.handle, inboxAuth: previous.inboxAuth, fetchImpl: input.fetchImpl })
     await input.config.write({ previousRegistration: undefined })
     emitNervesEvent({ component: "channels", event: "channel.a2a_relay_previous_retired", message: "drained and removed the registration on the previous relay", meta: { relayUrl: previous.relayUrl } })

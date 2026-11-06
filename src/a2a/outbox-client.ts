@@ -20,12 +20,15 @@ export async function callOutboxMethod(input: {
   fetchImpl?: typeof fetch
   /** A durable seen ledger for replies (see `openChatMessage`). */
   seen?: SeenLedgerLike
+  /** The DID the caller means to reach; a card serving another DID (a reassigned hostname) is refused. */
+  expectedDid?: string
 }): Promise<Record<string, unknown>> {
   const fetchImpl = input.fetchImpl ?? fetch
   const sodium = input.sodium ?? await ready()
   const card = await fetchA2AAgentCard(input.cardUrl, fetchImpl)
   const peerDid = cardDid(card)
   if (!peerDid) throw new Error(`A2A card ${input.cardUrl} serves no DID; outbox calls need one`)
+  if (input.expectedDid && peerDid !== input.expectedDid) throw new Error(`A2A card ${input.cardUrl} serves ${peerDid}, not ${input.expectedDid}`)
   const parsed = parseDidKey(peerDid)
   if (!parsed || !verifyCardDidBinding({ card: { did: peerDid, url: input.cardUrl }, did: peerDid, didDoc: null })) {
     throw new Error(`A2A card↔DID binding failed for ${peerDid}`)
