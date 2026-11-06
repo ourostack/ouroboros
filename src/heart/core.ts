@@ -3,7 +3,7 @@ import {
   getContextConfig,
 } from "./config";
 import { loadAgentConfig } from "./identity";
-import { execTool, summarizeArgs, buildToolResultSummary, settleTool, observeTool, ponderTool, restTool, getToolsForChannel } from "../repertoire/tools";
+import { execTool, summarizeArgs, buildToolResultSummary, settleTool, observeTool, ponderTool, restTool, speakTool, getToolsForChannel } from "../repertoire/tools";
 import type { ToolContext } from "../repertoire/tools";
 import { getChannelCapabilities, channelToFacing, type Facing } from "../mind/friends/channel";
 import { surfaceToolDef } from "../repertoire/tools";
@@ -17,6 +17,7 @@ import type { SystemPrompt } from "../mind/prompt";
 import type { McpManager } from "../repertoire/mcp-manager";
 import type { Channel } from "../mind/prompt";
 import { createKeptNotesJudge, injectKeptNotes } from "./kept-notes";
+import { extractProviderErrorDetails, summarizeProviderError } from "./providers/error-classification";
 import { createAnthropicProviderRuntime } from "./providers/anthropic";
 import { createAzureProviderRuntime } from "./providers/azure";
 import { createMinimaxProviderRuntime } from "./providers/minimax";
@@ -190,7 +191,6 @@ async function getProviderRuntime(facing: Facing = "human"): Promise<ProviderRun
     // eslint-disable-next-line no-console -- pre-boot guard: provider init failure
     console.error(`\n[fatal] ${msg}\n`);
     process.exit(1);
-    throw new Error("unreachable");
   }
 
   if (!_providerRuntimes[facing]) {
@@ -202,7 +202,6 @@ async function getProviderRuntime(facing: Facing = "human"): Promise<ProviderRun
       meta: {},
     });
     process.exit(1);
-    throw new Error("unreachable");
   }
   return _providerRuntimes[facing]!.runtime;
 }
@@ -273,6 +272,17 @@ export interface ChannelCallbacks {
   // Clear any buffered text accumulated during streaming. Called before emitting
   // the settle answer so streamed noise (e.g. refusal text) is discarded.
   onClearText?(): void;
+  /** Deliver any buffered output to the friend now. Called by the `speak` tool
+   *  to push mid-turn messages immediately rather than waiting for the natural
+   *  end-of-turn flush. Senses with no buffering (e.g. CLI) implement as noop.
+   *
+   *  Contract: best-effort delivery. THROWS if the message could not be delivered
+   *  through any available path (e.g. Teams when both stream emit AND sendMessage
+   *  fallback fail; BlueBubbles when client.sendText rejects). The engine catches
+   *  these throws to mark the speak tool call as failed and tell the agent the
+   *  message did NOT reach the friend — preventing the agent from assuming
+   *  silent success when delivery actually failed. */
+  flushNow?(): void | Promise<void>;
 }
 
 export interface RunAgentOptions {
@@ -314,6 +324,38 @@ export interface RunAgentOptions {
   journalFiles?: import("../mind/prompt").JournalFileEntry[];
 }
 
+/**
+ * Strip <think>...</think> blocks for the violation-detection check at the
+ * end of a streaming turn. Used to tell legitimate text-only responses
+ * apart from the MiniMax-M2.7 "only thinking, no tool call" violation
+ * shape. Mirrors the more thorough stripThinkBlocks helper in
+ * senses/shared-turn.ts (which is for operator-facing output) — kept
+ * inline here to avoid pulling senses/ into the core module's import graph.
+ */
+function stripThinkBlocksForViolationCheck(input: string): string {
+  let out = input
+  for (;;) {
+    const open = out.indexOf("<think>")
+    if (open === -1) break
+    const close = out.indexOf("</think>", open + "<think>".length)
+    if (close === -1) {
+      out = out.slice(0, open)
+      break
+    }
+    out = out.slice(0, open) + out.slice(close + "</think>".length)
+  }
+  return out.trim()
+}
+
+function hasFreshPendingWork(options?: RunAgentOptions): boolean {
+  const pendingMessages = options?.pendingMessages
+  if (!Array.isArray(pendingMessages)) return false
+  return pendingMessages.some((message) =>
+    typeof message?.content === "string"
+    && message.content.trim().length > 0,
+  )
+}
+
 export type RunAgentOutcome =
   | "settled"
   | "blocked"
@@ -322,6 +364,13 @@ export type RunAgentOutcome =
   | "errored"
   | "observed"
   | "rested";
+
+/** Chat-style channels expose the `speak` tool — outer human-conversation channels
+ *  where mid-turn delivery is meaningful. Inner dialog has `ponder`. MCP returns
+ *  synchronously. Mail is batch. Anything else (unknown channel) treats as non-chat. */
+export function isChatStyleChannel(channel: string): boolean {
+  return channel === "cli" || channel === "teams" || channel === "bluebubbles";
+}
 
 // Sole-call tools must be the only tool call in a turn. When they appear
 // alongside other tools, the sole-call tool is rejected with this message.
@@ -518,28 +567,39 @@ const TOOL_SCAN_BOUNDARY_ROLES: ReadonlySet<string> = new Set(["assistant", "use
 // 1. If an assistant message has tool_calls but missing tool results, inject synthetic error results.
 // 2. If a tool result's tool_call_id doesn't match any tool_calls in a preceding assistant message, remove it.
 // This prevents 400 errors from the API after an aborted turn.
+//
+// Position-aware: a tool result is orphaned when its tool_call_id hasn't been
+// defined by an assistant message AT THIS POSITION yet. MiniMax-M2.7 reuses
+// canonical tool_call_ids across turns, so the global-set check that this
+// function used previously kept misordered tool results that MiniMax then
+// rejected with error 2013 ("tool result's tool id not found"). Walking
+// in order matches what MiniMax actually enforces.
 export function repairOrphanedToolCalls(
   messages: OpenAI.ChatCompletionMessageParam[],
 ): void {
-  // Pass 1: collect all valid tool_call IDs from assistant messages
-  const validCallIds = new Set<string>();
-  for (const msg of messages) {
+  // Pass 1: walk in order, accumulate seen tool_call_ids per-position, and
+  // mark tool results for removal if their id hasn't been defined yet.
+  const seenCallIds = new Set<string>();
+  const removeIndices: number[] = [];
+  for (let i = 0; i < messages.length; i++) {
+    const msg = messages[i];
     if (msg.role === "assistant") {
       const asst = msg as OpenAI.ChatCompletionAssistantMessageParam;
       if (asst.tool_calls) {
-        for (const tc of asst.tool_calls) validCallIds.add(tc.id);
+        for (const tc of asst.tool_calls) seenCallIds.add(tc.id);
+      }
+      continue;
+    }
+    if (msg.role === "tool") {
+      const toolMsg = msg as OpenAI.ChatCompletionToolMessageParam;
+      if (!seenCallIds.has(toolMsg.tool_call_id)) {
+        removeIndices.push(i);
       }
     }
   }
-
-  // Pass 2: remove orphaned tool results (tool_call_id not in any assistant's tool_calls)
-  for (let i = messages.length - 1; i >= 0; i--) {
-    if (messages[i].role === "tool") {
-      const toolMsg = messages[i] as OpenAI.ChatCompletionToolMessageParam;
-      if (!validCallIds.has(toolMsg.tool_call_id)) {
-        messages.splice(i, 1);
-      }
-    }
+  // Splice from the end so earlier indices stay valid.
+  for (let i = removeIndices.length - 1; i >= 0; i--) {
+    messages.splice(removeIndices[i]!, 1);
   }
 
   // Pass 3: inject synthetic results for tool_calls missing their tool results
@@ -562,10 +622,13 @@ export function repairOrphanedToolCalls(
 
     const missing = asst.tool_calls.filter((tc) => !resultIds.has(tc.id));
     if (missing.length > 0) {
+      // AX rule: the agent must see what happened. Don't say "interrupted"
+      // — that's vague. Tell them the result was lost, possible causes,
+      // and what to do next.
       const syntheticResults: OpenAI.ChatCompletionToolMessageParam[] = missing.map((tc) => ({
         role: "tool" as const,
         tool_call_id: tc.id,
-        content: "error: tool call was interrupted (previous turn timed out or was aborted)",
+        content: "error: this tool call's result was lost — the previous turn ended before the tool finished (provider rejection, daemon interrupt, or the tool itself errored). if the work needs to be done, retry the tool call now.",
       }));
       let insertAt = i + 1;
       while (insertAt < messages.length && messages[insertAt].role === "tool") insertAt++;
@@ -742,6 +805,21 @@ export async function runAgent(
   let sawQuerySession = false;
   let sawBridgeManage = false;
   let sawExternalStateQuery = false;
+  // Once-per-turn flag for the fresh-work rest gate. Without this, an agent
+  // that called rest, was told "fresh work arrived", processed the items,
+  // and called rest again would get the same message forever — the gate
+  // condition is read from the turn-start snapshot of pendingMessages,
+  // which doesn't update mid-turn. The agent only needs to be told once;
+  // after that, repeated rest attempts mean they've acknowledged.
+  let freshWorkGateFired = false;
+  // Counter for "no tool call returned despite tool_choice=required" violations.
+  // MiniMax reasoning models occasionally emit only a <think>...</think>
+  // block and stop, without any tool call — even when tool_choice is set to
+  // "required". This is a provider-level violation; the harness retries with
+  // a corrective nudge up to a small cap rather than silently accepting an
+  // empty turn.
+  let noToolCallRetries = 0;
+  const NO_TOOL_CALL_MAX_RETRIES = 2;
   const toolLoopState = createToolLoopState();
   const toolFrictionLedger = createToolFrictionLedger();
   const finishTerminalProviderError = (error: Error, classification: ProviderErrorClassification): void => {
@@ -763,6 +841,7 @@ export async function runAgent(
     }
     /* v8 ignore stop */
 
+    const errorDetails = extractProviderErrorDetails(terminalError);
     emitNervesEvent({
       level: "error",
       event: "engine.error",
@@ -773,6 +852,14 @@ export async function runAgent(
         provider: providerRuntime.id,
         model: providerRuntime.model,
         errorClassification: terminalErrorClassification,
+        ...(errorDetails.status !== undefined ? { httpStatus: errorDetails.status } : {}),
+        ...(errorDetails.bodyExcerpt ? { bodyExcerpt: errorDetails.bodyExcerpt } : {}),
+        summary: summarizeProviderError(
+          terminalError,
+          terminalErrorClassification,
+          providerRuntime.id,
+          providerRuntime.model,
+        ),
       },
     });
     stripLastToolCalls(messages);
@@ -825,6 +912,7 @@ export async function runAgent(
       ...(isInnerDialog ? [surfaceToolDef, restTool] : []),
       ...(!isInnerDialog ? [observeTool] : []),
       ...(!isInnerDialog ? [settleTool] : []),
+      ...(isChatStyleChannel(channel ?? "") ? [speakTool] : []),
     ];
     const steeringFollowUps = options?.drainSteeringFollowUps?.() ?? [];
     if (steeringFollowUps.length > 0) {
@@ -937,7 +1025,35 @@ export async function runAgent(
       const msg: OpenAI.ChatCompletionAssistantMessageParam = {
         role: "assistant",
       };
-      if (result.content) msg.content = result.content;
+      // Persist assistant content WITHOUT inline <think>...</think> blocks.
+      // Reasoning content already routed through onReasoningChunk for live
+      // surfacing and persisted separately as `_reasoning_items` for
+      // providers that support a reasoning channel; saving it inline AND
+      // alongside tool_calls causes MiniMax to reject the replayed turn
+      // with "tool result's tool id not found" (error code 2013) because
+      // it can't reconcile reasoning-with-tools in the same assistant
+      // message. Strip aggressively at persist so the next replay is
+      // clean; preserve the original reasoning trace on the message via
+      // `_inline_reasoning` so debug/audit paths can still see it.
+      if (result.content) {
+        const stripped = stripThinkBlocksForViolationCheck(result.content);
+        if (stripped.length > 0) msg.content = stripped;
+        if (stripped.length !== result.content.length) {
+          (msg as unknown as Record<string, unknown>)._inline_reasoning = result.content;
+          emitNervesEvent({
+            level: "info",
+            component: "engine",
+            event: "engine.inline_reasoning_stripped",
+            message: "stripped inline <think> blocks from persisted assistant message; preserved on _inline_reasoning",
+            meta: {
+              provider: providerRuntime.id,
+              model: providerRuntime.model,
+              originalLength: result.content.length,
+              strippedLength: stripped.length,
+            },
+          });
+        }
+      }
       if (result.toolCalls.length)
         msg.tool_calls = result.toolCalls.map((tc) => ({
           id: tc.id,
@@ -964,13 +1080,53 @@ export async function runAgent(
         (msg as AssistantMessageWithReasoning).phase = isSoleSettle ? "settle" : "commentary";
       }
 
+      // Detect the MiniMax "only-thinking, no tool call" violation: no tool
+      // calls returned, and the content is empty after stripping
+      // <think>...</think> blocks. This is a narrow check — legitimate
+      // content-only responses (text without think tags, or text outside
+      // think tags) still flow through the original "no tool calls →
+      // accept as-is" path so existing channels and tests are unaffected.
+      const onlyThinkContent = !result.toolCalls.length
+        && typeof result.content === "string"
+        && stripThinkBlocksForViolationCheck(result.content).length === 0
+        && result.content.length > 0;
+
       if (!result.toolCalls.length) {
-        // No tool calls — accept response as-is.
-        // (Kick detection disabled; tool_choice: required + settle
-        // is the primary loop control. See src/heart/kicks.ts to re-enable.)
+        if (onlyThinkContent && toolChoiceRequired && noToolCallRetries < NO_TOOL_CALL_MAX_RETRIES) {
+          // Provider-level violation: tool_choice was required, model emitted
+          // only a <think>...</think> block (or empty content) with no tool
+          // call. Retry with a corrective nudge up to NO_TOOL_CALL_MAX_RETRIES
+          // times. After cap, accept as-is (the readback path strips think
+          // tags and surfaces a clear diagnostic).
+          noToolCallRetries++;
+          emitNervesEvent({
+            level: "warn",
+            component: "engine",
+            event: "engine.no_tool_call_retry",
+            message: "model returned only <think> content with no tool call despite tool_choice=required; retrying with corrective nudge",
+            meta: {
+              attempt: noToolCallRetries,
+              cap: NO_TOOL_CALL_MAX_RETRIES,
+              provider: providerRuntime.id,
+              model: providerRuntime.model,
+              contentLength: result.content!.length,
+            },
+          });
+          messages.push(msg);
+          messages.push({
+            role: "user",
+            content: isInnerDialog
+              ? "no tool was called this turn. you must end every turn by calling rest (or surface, ponder, observe). emit the tool call now."
+              : "no tool was called this turn. you must end every turn by calling settle with your answer (or ponder/observe). emit the tool call now.",
+          });
+          continue;
+        }
+        // Legitimate text-only response, or cap reached — accept as-is.
         messages.push(msg);
         done = true;
       } else {
+        // Reset the retry counter on any successful tool call.
+        noToolCallRetries = 0;
         // Check for settle sole call: intercept before tool execution
         if (isSoleSettle) {
           /* v8 ignore next -- defensive: JSON.parse catch for malformed settle args @preserve */
@@ -1108,6 +1264,23 @@ export async function runAgent(
             continue;
           }
 
+          if (hasFreshPendingWork(options) && !freshWorkGateFired) {
+            freshWorkGateFired = true;
+            callbacks.onToolEnd("rest", summarizeArgs("rest", restArgs), false);
+            messages.push(msg);
+            const gateMessage = "fresh work arrived for me this turn — inspect the pending messages above and take the next concrete action before you rest.";
+            messages.push({ role: "tool", tool_call_id: result.toolCalls[0].id, content: gateMessage });
+            providerRuntime.appendToolOutput(result.toolCalls[0].id, gateMessage);
+            emitNervesEvent({
+              level: "info",
+              component: "engine",
+              event: "engine.fresh_work_gate_fired",
+              message: "rest deferred once because pending work arrived this turn; agent has been notified",
+              meta: { pendingCount: options!.pendingMessages!.length },
+            });
+            continue;
+          }
+
           callbacks.onToolEnd("rest", summarizeArgs("rest", restArgs), true);
           messages.push(msg);
           const ack = "(resting)";
@@ -1145,6 +1318,59 @@ export async function runAgent(
           }
           if (tc.name === "send_message" && args.friendId === "self") {
             sawSendMessageSelf = true;
+          }
+          if (tc.name === "speak") {
+            let speakArgs: { message?: unknown } = {};
+            try { speakArgs = JSON.parse(tc.arguments) as { message?: unknown }; } catch { /* malformed */ }
+            const speakMessage = typeof speakArgs.message === "string" ? speakArgs.message : "";
+            const argSummary = summarizeArgs("speak", { message: speakMessage });
+            callbacks.onToolStart("speak", { message: speakMessage });
+            if (speakMessage.trim().length === 0) {
+              const err = "speak requires a non-empty `message` string.";
+              callbacks.onToolEnd("speak", argSummary, false);
+              messages.push({ role: "tool", tool_call_id: tc.id, content: err });
+              providerRuntime.appendToolOutput(tc.id, err);
+              emitNervesEvent({
+                level: "warn",
+                component: "engine",
+                event: "engine.speak_invalid",
+                message: "speak rejected: missing or empty message",
+                meta: {},
+              });
+              continue;
+            }
+            callbacks.onTextChunk(speakMessage);
+            let speakDeliveryError: Error | null = null;
+            try {
+              await callbacks.flushNow?.();
+            } catch (err) {
+              speakDeliveryError = err instanceof Error ? err : new Error(String(err));
+            }
+            if (speakDeliveryError) {
+              callbacks.onToolEnd("speak", argSummary, false);
+              const failMsg = `speak delivery failed: ${speakDeliveryError.message}. the message did not reach your friend; do not assume they saw it.`;
+              messages.push({ role: "tool", tool_call_id: tc.id, content: failMsg });
+              providerRuntime.appendToolOutput(tc.id, failMsg);
+              emitNervesEvent({
+                level: "error",
+                component: "engine",
+                event: "engine.speak_delivery_failed",
+                message: "speak delivery failed",
+                meta: { error: speakDeliveryError.message, messageLength: speakMessage.length },
+              });
+              continue;
+            }
+            callbacks.onToolEnd("speak", argSummary, true);
+            const ack = "(spoken)";
+            messages.push({ role: "tool", tool_call_id: tc.id, content: ack });
+            providerRuntime.appendToolOutput(tc.id, ack);
+            emitNervesEvent({
+              component: "engine",
+              event: "engine.speak",
+              message: "agent spoke mid-turn",
+              meta: { messageLength: speakMessage.length },
+            });
+            continue;
           }
           if (tc.name === "ponder") {
             const parsedArgs = normalizeLegacyPonderArgs(parsePonderPayload(tc.arguments));

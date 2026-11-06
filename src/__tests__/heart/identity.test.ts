@@ -139,6 +139,7 @@ describe("agent paths", () => {
     const {
       getAgentDaemonLoggingConfigPath,
       getAgentDaemonLogsDir,
+      getAgentMailroomRoot,
       getAgentMessagesRoot,
       getAgentRepoWorkspacesRoot,
       getAgentToolsRoot,
@@ -150,6 +151,7 @@ describe("agent paths", () => {
     expect(HARNESS_CANONICAL_REPO_URL).toBe("https://github.com/ouroborosbot/ouroboros.git")
     expect(getAgentDaemonLoggingConfigPath()).toBe(path.join(os.homedir(), "AgentBundles", "slugger.ouro", "state", "daemon", "logging.json"))
     expect(getAgentDaemonLogsDir()).toBe(path.join(os.homedir(), "AgentBundles", "slugger.ouro", "state", "daemon", "logs"))
+    expect(getAgentMailroomRoot()).toBe(path.join(os.homedir(), "AgentBundles", "slugger.ouro", "state", "mailroom"))
     expect(getAgentMessagesRoot()).toBe(path.join(os.homedir(), "AgentBundles", "slugger.ouro", "state", "messages"))
     expect(getAgentRepoWorkspacesRoot()).toBe(path.join(os.homedir(), "AgentBundles", "slugger.ouro", "state", "workspaces"))
     expect(getAgentToolsRoot()).toBe(path.join(os.homedir(), "AgentBundles", "slugger.ouro", "state", "tools"))
@@ -184,6 +186,7 @@ describe("buildDefaultAgentTemplate", () => {
         cli: { enabled: true },
         teams: { enabled: false },
         bluebubbles: { enabled: false },
+        mail: { enabled: false },
       },
     })
     expect((template as any).name).toBeUndefined()
@@ -333,6 +336,7 @@ describe("loadAgentConfig", () => {
       cli: { enabled: true },
       teams: { enabled: true },
       bluebubbles: { enabled: false },
+      mail: { enabled: false },
     })
   })
 
@@ -355,6 +359,7 @@ describe("loadAgentConfig", () => {
       cli: { enabled: true },
       teams: { enabled: false },
       bluebubbles: { enabled: false },
+      mail: { enabled: false },
     })
   })
 
@@ -380,6 +385,7 @@ describe("loadAgentConfig", () => {
       cli: { enabled: true },
       teams: { enabled: true },
       bluebubbles: { enabled: false },
+      mail: { enabled: false },
     })
   })
 

@@ -2,7 +2,7 @@ import * as fs from "fs"
 import * as os from "os"
 import * as path from "path"
 import { execFileSync } from "child_process"
-import { afterEach, describe, expect, it, vi } from "vitest"
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { emitNervesEvent } from "../../../nerves/runtime"
 
 vi.mock("../../../heart/provider-ping", () => ({
@@ -46,8 +46,16 @@ const mockVaultDeps = vi.hoisted(() => ({
   })),
   resetCredentialStore: vi.fn(),
   credentialProbeGet: vi.fn(async () => null),
+  credentialProbeList: vi.fn(async () => []),
   rawSecrets: new Map<string, string>(),
+  storedItems: new Map<string, { username?: string; password: string; notes?: string }>(),
 }))
+
+const { fetchMock } = vi.hoisted(() => ({
+  fetchMock: vi.fn(),
+}))
+
+vi.stubGlobal("fetch", fetchMock)
 
 vi.mock("../../../heart/provider-credentials", async () => {
   const actual = await vi.importActual<typeof import("../../../heart/provider-credentials")>("../../../heart/provider-credentials")
@@ -88,10 +96,11 @@ vi.mock("../../../repertoire/credential-access", () => ({
       if (raw === undefined) throw new Error(`no credential found for domain "${domain}"`)
       return raw
     },
-    store: async (domain: string, data: { password: string }) => {
+    store: async (domain: string, data: { username?: string; password: string; notes?: string }) => {
       mockVaultDeps.rawSecrets.set(`${agentName}:${domain}`, data.password)
+      mockVaultDeps.storedItems.set(`${agentName}:${domain}`, data)
     },
-    list: async () => [],
+    list: (...args: unknown[]) => mockVaultDeps.credentialProbeList(...args),
     delete: async () => false,
     isReady: () => true,
   }),
@@ -102,22 +111,30 @@ import {
   runOuroCli,
   type OuroCliDeps,
 } from "../../../heart/daemon/daemon-cli"
+import { resolveMailImportFilePath } from "../../../heart/daemon/cli-exec"
+import * as agentConfigCheck from "../../../heart/daemon/agent-config-check"
+import * as sessionActivity from "../../../heart/session-activity"
 import { pingGithubCopilotModel, pingProvider } from "../../../heart/provider-ping"
 import type {
   ProviderCredentialPool,
   ProviderCredentialPoolReadResult,
 } from "../../../heart/provider-credentials"
+import * as mailroomReader from "../../../mailroom/reader"
 import {
   readProviderState,
   writeProviderState,
   type ProviderState,
 } from "../../../heart/provider-state"
+import * as runtimeCredentials from "../../../heart/runtime-credentials"
 import { resetRuntimeCredentialConfigCache } from "../../../heart/runtime-credentials"
+import { provisionMailboxRegistry } from "../../../mailroom/core"
 
 const NOW = "2026-04-12T20:10:00.000Z"
 const mockPingProvider = vi.mocked(pingProvider)
 const mockPingGithubCopilotModel = vi.mocked(pingGithubCopilotModel)
 const cleanup: string[] = []
+
+mockPingProvider.mockResolvedValue({ ok: true, message: "ok", attempts: [1] })
 
 function emitTestEvent(testName: string): void {
   emitNervesEvent({
@@ -132,6 +149,29 @@ function makeTempDir(prefix: string): string {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), `${prefix}-`))
   cleanup.push(dir)
   return dir
+}
+
+function writeJson(filePath: string, value: unknown): void {
+  fs.mkdirSync(path.dirname(filePath), { recursive: true })
+  fs.writeFileSync(filePath, `${JSON.stringify(value, null, 2)}\n`, "utf-8")
+}
+
+function readPendingMessages(
+  agentRootPath: string,
+  friendId: string,
+  channel: string,
+  key: string,
+): Array<{ content: string }> {
+  const pendingDir = path.join(agentRootPath, "state", "pending", friendId, channel, key)
+  if (!fs.existsSync(pendingDir)) return []
+  return fs.readdirSync(pendingDir)
+    .filter((entry) => entry.endsWith(".json"))
+    .sort()
+    .map((entry) => JSON.parse(fs.readFileSync(path.join(pendingDir, entry), "utf-8")) as { content: string })
+}
+
+function recentIso(minutesAgo: number): string {
+  return new Date(Date.now() - minutesAgo * 60 * 1000).toISOString()
 }
 
 function okCredentialPool(agentName: string, pool: ProviderCredentialPool): ProviderCredentialPoolReadResult {
@@ -210,6 +250,186 @@ function readProviderCredentialPool(_homeDir: string, agentName = "Slugger"): Pr
   return mockProviderCredentials.pools.get(agentName) ?? unavailableCredentialPool(agentName, "provider credentials have not been loaded from vault")
 }
 
+function mockJsonResponse(body: unknown, init: { ok?: boolean; status?: number; statusText?: string } = {}): Response {
+  return {
+    ok: init.ok ?? true,
+    status: init.status ?? 200,
+    statusText: init.statusText ?? "OK",
+    json: async () => body,
+  } as Response
+}
+
+const HOSTED_MAIL_CONTROL_URL = "https://mail-control.ouro.test"
+const HOSTED_MAIL_CONTROL_TOKEN = "hosted-control-secret"
+const HOSTED_BLOB_ACCOUNT_URL = "https://stourotest.blob.core.windows.net"
+const HOSTED_NATIVE_KEY = "hosted-native-private-key"
+const HOSTED_SOURCE_KEY = "hosted-source-private-key"
+const HOSTED_ROTATED_NATIVE_KEY = "hosted-rotated-native-private-key"
+const HOSTED_ROTATED_SOURCE_KEY = "hosted-rotated-source-private-key"
+
+function writeHostedWorkSubstrateConfig(agentName: string, mailroom?: Record<string, unknown>): void {
+  writeRuntimeConfig(agentName, {
+    workSubstrate: {
+      mode: "hosted",
+      mailControl: {
+        url: HOSTED_MAIL_CONTROL_URL,
+        token: HOSTED_MAIL_CONTROL_TOKEN,
+      },
+    },
+    ...(mailroom ? { mailroom } : {}),
+  })
+}
+
+function fetchRequestUrl(input: RequestInfo | URL): string {
+  return typeof input === "string"
+    ? input
+    : input instanceof URL
+      ? input.toString()
+      : input.url
+}
+
+function fetchHeader(init: RequestInit | undefined, key: string): string | undefined {
+  const headers = init?.headers
+  if (!headers) return undefined
+  if (headers instanceof Headers) return headers.get(key) ?? undefined
+  if (Array.isArray(headers)) {
+    const match = headers.find(([name]) => name.toLowerCase() === key.toLowerCase())
+    return match?.[1]
+  }
+  const record = headers as Record<string, string>
+  return record[key] ?? record[key.toLowerCase()] ?? record[key.toUpperCase()]
+}
+
+function expectHostedEnsureRequest(
+  input: RequestInfo | URL,
+  init: RequestInit | undefined,
+  expectedBody: Record<string, unknown>,
+): void {
+  expect(fetchRequestUrl(input)).toBe(`${HOSTED_MAIL_CONTROL_URL}/v1/mailboxes/ensure`)
+  expect(init?.method).toBe("POST")
+  expect(fetchHeader(init, "authorization")).toBe(`Bearer ${HOSTED_MAIL_CONTROL_TOKEN}`)
+  expect(fetchHeader(init, "content-type")).toBe("application/json")
+  expect(JSON.parse(String(init?.body))).toEqual(expectedBody)
+}
+
+function expectHostedRotateRequest(
+  input: RequestInfo | URL,
+  init: RequestInit | undefined,
+  expectedBody: Record<string, unknown>,
+): void {
+  expect(fetchRequestUrl(input)).toBe(`${HOSTED_MAIL_CONTROL_URL}/v1/mailboxes/rotate-keys`)
+  expect(init?.method).toBe("POST")
+  expect(fetchHeader(init, "authorization")).toBe(`Bearer ${HOSTED_MAIL_CONTROL_TOKEN}`)
+  expect(fetchHeader(init, "content-type")).toBe("application/json")
+  expect(JSON.parse(String(init?.body))).toEqual(expectedBody)
+}
+
+function hostedEnsureResponse(overrides: Partial<Record<string, unknown>> = {}): Record<string, unknown> {
+  return {
+    ok: true,
+    mailboxAddress: "slugger@ouro.bot",
+    sourceAlias: "me.mendelow.ari.slugger@ouro.bot",
+    addedMailbox: true,
+    addedSourceGrant: true,
+    generatedPrivateKeys: {
+      mail_slugger_native: HOSTED_NATIVE_KEY,
+      mail_slugger_hey: HOSTED_SOURCE_KEY,
+    },
+    mailbox: {
+      agentId: "slugger",
+      mailboxId: "mailbox_slugger",
+      canonicalAddress: "slugger@ouro.bot",
+      keyId: "mail_slugger_native",
+      defaultPlacement: "screener",
+    },
+    sourceGrant: {
+      grantId: "grant_slugger_hey_9f8b26a4",
+      agentId: "slugger",
+      ownerEmail: "ari@mendelow.me",
+      source: "hey",
+      aliasAddress: "me.mendelow.ari.slugger@ouro.bot",
+      keyId: "mail_slugger_hey",
+      defaultPlacement: "imbox",
+      enabled: true,
+    },
+    publicRegistry: {
+      kind: "azure-blob",
+      azureAccountUrl: HOSTED_BLOB_ACCOUNT_URL,
+      container: "mailroom",
+      blob: "registry/mailroom.json",
+      domain: "ouro.bot",
+      revision: "1:1:777",
+    },
+    blobStore: {
+      kind: "azure-blob",
+      azureAccountUrl: HOSTED_BLOB_ACCOUNT_URL,
+      container: "mailroom",
+    },
+    ...overrides,
+  }
+}
+
+function hostedRotateResponse(overrides: Partial<Record<string, unknown>> = {}): Record<string, unknown> {
+  return hostedEnsureResponse({
+    addedMailbox: false,
+    addedSourceGrant: false,
+    rotatedMailbox: true,
+    rotatedSourceGrant: true,
+    generatedPrivateKeys: {
+      mail_slugger_native_rotated: HOSTED_ROTATED_NATIVE_KEY,
+      mail_slugger_hey_rotated: HOSTED_ROTATED_SOURCE_KEY,
+    },
+    mailbox: {
+      agentId: "slugger",
+      mailboxId: "mailbox_slugger",
+      canonicalAddress: "slugger@ouro.bot",
+      keyId: "mail_slugger_native_rotated",
+      defaultPlacement: "screener",
+    },
+    sourceGrant: {
+      grantId: "grant_slugger_hey_9f8b26a4",
+      agentId: "slugger",
+      ownerEmail: "ari@mendelow.me",
+      source: "hey",
+      aliasAddress: "me.mendelow.ari.slugger@ouro.bot",
+      keyId: "mail_slugger_hey_rotated",
+      defaultPlacement: "imbox",
+      enabled: true,
+    },
+    publicRegistry: {
+      kind: "azure-blob",
+      azureAccountUrl: HOSTED_BLOB_ACCOUNT_URL,
+      container: "mailroom",
+      blob: "registry/mailroom.json",
+      domain: "ouro.bot",
+      revision: "1:1:900",
+    },
+    ...overrides,
+  })
+}
+
+function installDefaultCapabilityFetchMock(): void {
+  fetchMock.mockReset()
+  fetchMock.mockImplementation(async (input: RequestInfo | URL) => {
+    const url = typeof input === "string"
+      ? input
+      : input instanceof URL
+        ? input.toString()
+        : input.url
+    if (url.includes("api.perplexity.ai")) {
+      return mockJsonResponse({
+        results: [{ title: "ping", url: "https://example.com/ping", snippet: "pong" }],
+      })
+    }
+    if (url.includes("api.openai.com/v1/embeddings")) {
+      return mockJsonResponse({
+        data: [{ embedding: [0.1, 0.2, 0.3] }],
+      })
+    }
+    throw new Error(`unexpected fetch: ${url}`)
+  })
+}
+
 function makeCliDeps(homeDir: string, bundlesRoot: string, overrides: Partial<OuroCliDeps> = {}): OuroCliDeps {
   const output: string[] = []
   return {
@@ -225,6 +445,25 @@ function makeCliDeps(homeDir: string, bundlesRoot: string, overrides: Partial<Ou
     ...overrides,
     _output: output,
   } as OuroCliDeps & { _output: string[] }
+}
+
+function joinedPrompt(prompts: string[]): string {
+  return prompts.join("\n")
+}
+
+function stripAnsi(text: string): string {
+  return text.replace(/\x1b\[[0-9;]*m/g, "")
+}
+
+function expectConnectStatus(prompt: string, option: number, name: string, status: string): void {
+  const symbol = status === "ready" || status === "attached"
+    ? "●"
+    : status === "not attached"
+      ? "◌"
+      : "◆"
+  const plain = stripAnsi(prompt)
+  expect(plain).toContain(`${option}. ${name}`)
+  expect(plain).toContain(`${symbol} ${status}`)
 }
 
 function writeAgentConfig(bundlesRoot: string, agentName: string): void {
@@ -375,8 +614,14 @@ function writeAgentVaultLocator(
   fs.writeFileSync(agentConfigPath, `${JSON.stringify({ ...agentConfig, vault }, null, 2)}\n`, "utf-8")
 }
 
+beforeEach(() => {
+  installDefaultCapabilityFetchMock()
+})
+
 afterEach(() => {
+  installDefaultCapabilityFetchMock()
   mockPingProvider.mockReset()
+  mockPingProvider.mockResolvedValue({ ok: true, message: "ok", attempts: [1] })
   mockPingGithubCopilotModel.mockReset()
   mockPingGithubCopilotModel.mockResolvedValue({ ok: true })
   mockProviderCredentials.pools.clear()
@@ -396,7 +641,10 @@ afterEach(() => {
   mockVaultDeps.resetCredentialStore.mockClear()
   mockVaultDeps.credentialProbeGet.mockReset()
   mockVaultDeps.credentialProbeGet.mockResolvedValue(null)
+  mockVaultDeps.credentialProbeList.mockReset()
+  mockVaultDeps.credentialProbeList.mockResolvedValue([])
   mockVaultDeps.rawSecrets.clear()
+  mockVaultDeps.storedItems.clear()
   resetRuntimeCredentialConfigCache()
   while (cleanup.length > 0) {
     const entry = cleanup.pop()
@@ -564,6 +812,15 @@ describe("provider CLI command parsing", () => {
     })
     expect(parseOuroCommand([
       "vault",
+      "create",
+      "--email",
+      "operator@example.com",
+    ])).toEqual({
+      kind: "vault.create",
+      email: "operator@example.com",
+    })
+    expect(parseOuroCommand([
+      "vault",
       "replace",
       "--agent",
       "Slugger",
@@ -585,6 +842,9 @@ describe("provider CLI command parsing", () => {
     expect(parseOuroCommand(["vault", "replace", "--agent", "Slugger"])).toEqual({
       kind: "vault.replace",
       agent: "Slugger",
+    })
+    expect(parseOuroCommand(["vault", "replace"])).toEqual({
+      kind: "vault.replace",
     })
     expect(() => parseOuroCommand(["vault", "replace", "--agent", "Slugger", "--from", "/tmp/legacy-secrets.json"]))
       .toThrow("--from is only valid")
@@ -620,6 +880,10 @@ describe("provider CLI command parsing", () => {
     expect(parseOuroCommand(["vault", "recover", "--agent", "Slugger", "--from", "/tmp/legacy-secrets.json"])).toEqual({
       kind: "vault.recover",
       agent: "Slugger",
+      sources: ["/tmp/legacy-secrets.json"],
+    })
+    expect(parseOuroCommand(["vault", "recover", "--from", "/tmp/legacy-secrets.json"])).toEqual({
+      kind: "vault.recover",
       sources: ["/tmp/legacy-secrets.json"],
     })
     expect(parseOuroCommand(["vault", "unlock", "--agent", "Slugger", "--store", "auto"])).toEqual({
@@ -692,6 +956,116 @@ describe("provider CLI command parsing", () => {
       agent: "Slugger",
       scope: "all",
     })
+    expect(parseOuroCommand([
+      "vault", "item", "set",
+      "--agent", "Slugger",
+      "--item", "ops/porkbun/ari@mendelow.me",
+      "--template", "porkbun-api",
+      "--note", "human context",
+    ])).toEqual({
+      kind: "vault.item.set",
+      agent: "Slugger",
+      item: "ops/porkbun/ari@mendelow.me",
+      template: "porkbun-api",
+      note: "human context",
+    })
+    expect(parseOuroCommand([
+      "vault", "item", "set",
+      "--agent", "Slugger",
+      "--item", "ops/custom/service",
+      "--secret-field", "apiKey",
+      "--secret-field", "secretApiKey",
+      "--public-field", "account=ari@mendelow.me",
+    ])).toEqual({
+      kind: "vault.item.set",
+      agent: "Slugger",
+      item: "ops/custom/service",
+      secretFields: ["apiKey", "secretApiKey"],
+      publicFields: ["account=ari@mendelow.me"],
+    })
+    expect(parseOuroCommand(["vault", "item", "status", "--agent", "Slugger", "--item", "ops/custom/service"])).toEqual({
+      kind: "vault.item.status",
+      agent: "Slugger",
+      item: "ops/custom/service",
+    })
+    expect(parseOuroCommand(["vault", "item", "status", "--item", "ops/custom/service"])).toEqual({
+      kind: "vault.item.status",
+      item: "ops/custom/service",
+    })
+    expect(parseOuroCommand(["vault", "item", "list", "--agent", "Slugger", "--prefix", "ops/"])).toEqual({
+      kind: "vault.item.list",
+      agent: "Slugger",
+      prefix: "ops/",
+    })
+    expect(parseOuroCommand(["vault", "item", "list"])).toEqual({
+      kind: "vault.item.list",
+    })
+    expect(parseOuroCommand(["vault", "item", "set", "--item", "ops/custom/service", "--secret-field", "apiKey"])).toEqual({
+      kind: "vault.item.set",
+      item: "ops/custom/service",
+      secretFields: ["apiKey"],
+    })
+    expect(parseOuroCommand(["vault", "item", "set", "--item", "ops/custom/service", "--secret-field", "apiKey", "--note"])).toEqual({
+      kind: "vault.item.set",
+      item: "ops/custom/service",
+      secretFields: ["apiKey"],
+      note: "",
+    })
+    expect(() => parseOuroCommand(["vault", "item", "delete"])).toThrow("ouro vault item set|status|list")
+    expect(() => parseOuroCommand(["vault", "item", "status"])).toThrow("ouro vault item status")
+    expect(() => parseOuroCommand(["vault", "item", "set", "--item", "/ops/service", "--secret-field", "apiKey"]))
+      .toThrow("Vault item name/path")
+    expect(() => parseOuroCommand(["vault", "item", "list", "--prefix"]))
+      .toThrow("Vault item prefix")
+    expect(() => parseOuroCommand(["vault", "item", "list", "--prefix", ""]))
+      .toThrow("Vault item prefix")
+    expect(() => parseOuroCommand(["vault", "item", "list", "--prefix", "ops\tbad"]))
+      .toThrow("Vault item prefix")
+    expect(() => parseOuroCommand(["vault", "item", "list", "--prefix", "/ops"]))
+      .toThrow("Vault item prefix")
+    expect(() => parseOuroCommand(["vault", "item", "set", "--item", "ops/service", "--template", "aws"]))
+      .toThrow("vault item --template")
+    expect(() => parseOuroCommand(["vault", "item", "set", "--item", "ops/service", "--secret-field", "bad=field"]))
+      .toThrow("Vault item field names")
+    expect(() => parseOuroCommand(["vault", "item", "set", "--item", "ops/service", "--secret-field", "apiKey", "--public-field"]))
+      .toThrow("vault item --public-field")
+    expect(() => parseOuroCommand(["vault", "item", "set", "--item", "ops/service", "--secret-field", "apiKey", "--public-field", "bad"]))
+      .toThrow("vault item --public-field")
+    expect(() => parseOuroCommand(["vault", "item", "set", "--item", "ops/service", "--secret-field", "apiKey", "--public-field", "account="]))
+      .toThrow("vault item --public-field")
+    expect(() => parseOuroCommand(["vault", "item", "set", "--item", "ops/service", "--secret-field", "apiKey", "--bad"]))
+      .toThrow("Usage: ouro vault item set")
+    expect(() => parseOuroCommand(["vault", "item", "set", "--item", "ops/service"]))
+      .toThrow("requires --secret-field")
+    expect(parseOuroCommand(["vault", "ops", "porkbun", "set", "--agent", "Slugger", "--account", "ari@mendelow.me"])).toEqual({
+      kind: "vault.item.set",
+      agent: "Slugger",
+      item: "ops/registrars/porkbun/accounts/ari@mendelow.me",
+      template: "porkbun-api",
+      compatibilityAlias: "vault ops porkbun",
+    })
+    expect(parseOuroCommand(["vault", "ops", "porkbun", "set", "--account", "ari@mendelow.me"])).toEqual({
+      kind: "vault.item.set",
+      item: "ops/registrars/porkbun/accounts/ari@mendelow.me",
+      template: "porkbun-api",
+      compatibilityAlias: "vault ops porkbun",
+    })
+    expect(parseOuroCommand(["vault", "ops", "porkbun", "status", "--agent", "Slugger", "--account", "ari@mendelow.me"])).toEqual({
+      kind: "vault.item.status",
+      agent: "Slugger",
+      item: "ops/registrars/porkbun/accounts/ari@mendelow.me",
+      compatibilityAlias: "vault ops porkbun",
+    })
+    expect(parseOuroCommand(["vault", "ops", "porkbun", "status", "--account", "ari@mendelow.me"])).toEqual({
+      kind: "vault.item.status",
+      item: "ops/registrars/porkbun/accounts/ari@mendelow.me",
+      compatibilityAlias: "vault ops porkbun",
+    })
+    expect(parseOuroCommand(["vault", "ops", "porkbun", "status"])).toEqual({
+      kind: "vault.item.list",
+      prefix: "ops/registrars/porkbun/accounts",
+      compatibilityAlias: "vault ops porkbun",
+    })
     expect(() => parseOuroCommand(["vault", "config", "status", "--agent", "Slugger", "--key", "bluebubbles.password"]))
       .toThrow("ouro vault config status")
     expect(() => parseOuroCommand(["vault", "config", "set", "--agent", "Slugger"]))
@@ -704,12 +1078,88 @@ describe("provider CLI command parsing", () => {
       .toThrow("scope all is only valid for status")
     expect(() => parseOuroCommand(["vault", "config", "delete", "--agent", "Slugger"]))
       .toThrow("ouro vault config set")
+    expect(() => parseOuroCommand(["vault", "ops", "porkbun", "set", "--agent", "Slugger"]))
+      .toThrow("ouro vault ops porkbun set")
+    expect(() => parseOuroCommand(["vault", "ops", "porkbun", "set", "--agent", "Slugger", "--account", "ari/mendelow.me"]))
+      .toThrow("Porkbun account")
+    expect(() => parseOuroCommand(["vault", "ops", "porkbun", "status", "--account"]))
+      .toThrow("Porkbun account")
+    expect(() => parseOuroCommand(["vault", "ops", "dnsimple", "set", "--agent", "Slugger"]))
+      .toThrow("ouro vault ops porkbun")
+    expect(() => parseOuroCommand(["vault", "ops", "porkbun", "delete", "--agent", "Slugger"]))
+      .toThrow("ouro vault ops porkbun")
+    expect(() => parseOuroCommand(["vault", "ops", "porkbun", "status", "--bad"]))
+      .toThrow("ouro vault ops porkbun status")
     expect(() => parseOuroCommand(["vault", "unlock", "--agent", "Slugger", "--store", "bad"]))
       .toThrow("vault --store")
     expect(() => parseOuroCommand(["vault", "unlock", "--agent", "Slugger", "--bad"]))
       .toThrow("ouro vault create|replace|recover|unlock|status [--agent <name>]")
     expect(() => parseOuroCommand(["vault", "delete", "--agent", "Slugger"]))
       .toThrow("ouro vault create|replace|recover|unlock|status [--agent <name>]")
+  })
+
+  it("parses DNS workflow commands as binding-backed operations", () => {
+    emitTestEvent("provider cli parse dns workflow")
+    const bindingPath = "infra/dns/ouro.bot.binding.json"
+
+    expect(parseOuroCommand(["dns", "backup", "--agent", "Slugger", "--binding", bindingPath, "--output", "/tmp/dns-backup.json"])).toEqual({
+      kind: "dns.workflow",
+      action: "backup",
+      agent: "Slugger",
+      bindingPath,
+      outputPath: "/tmp/dns-backup.json",
+    })
+    expect(parseOuroCommand(["dns", "plan", "--agent", "Slugger", "--binding", bindingPath])).toEqual({
+      kind: "dns.workflow",
+      action: "plan",
+      agent: "Slugger",
+      bindingPath,
+    })
+    expect(parseOuroCommand(["dns", "apply", "--agent", "Slugger", "--binding", bindingPath, "--yes"])).toEqual({
+      kind: "dns.workflow",
+      action: "apply",
+      agent: "Slugger",
+      bindingPath,
+      yes: true,
+    })
+    expect(parseOuroCommand(["dns", "verify", "--binding", bindingPath])).toEqual({
+      kind: "dns.workflow",
+      action: "verify",
+      bindingPath,
+    })
+    expect(parseOuroCommand(["dns", "certificate", "--agent", "Slugger", "--binding", bindingPath, "--output", "/tmp/dns-cert.json"])).toEqual({
+      kind: "dns.workflow",
+      action: "certificate",
+      agent: "Slugger",
+      bindingPath,
+      outputPath: "/tmp/dns-cert.json",
+    })
+    expect(parseOuroCommand(["dns", "rollback", "--binding", bindingPath, "--backup", "/tmp/dns-backup.json", "--yes"])).toEqual({
+      kind: "dns.workflow",
+      action: "rollback",
+      bindingPath,
+      backupPath: "/tmp/dns-backup.json",
+      yes: true,
+    })
+
+    expect(() => parseOuroCommand(["dns", "apply", "--agent", "Slugger", "--binding", bindingPath]))
+      .toThrow("dns apply requires --yes after a reviewed dry-run")
+    expect(() => parseOuroCommand(["dns", "list", "--agent", "Slugger", "--binding", bindingPath]))
+      .toThrow("Usage: ouro dns backup|plan|apply|verify|rollback|certificate")
+    expect(() => parseOuroCommand(["dns", "plan", "--agent", "Slugger"]))
+      .toThrow("Usage: ouro dns plan [--agent <name>] --binding <path>")
+    expect(() => parseOuroCommand(["dns", "plan", "--agent", "Slugger", "--binding"]))
+      .toThrow("dns --binding must be a non-empty path without control characters")
+    expect(() => parseOuroCommand(["dns", "plan", "--agent", "Slugger", "--binding", " \t"]))
+      .toThrow("dns --binding must be a non-empty path without control characters")
+    expect(() => parseOuroCommand(["dns", "rollback", "--agent", "Slugger", "--binding", bindingPath]))
+      .toThrow("dns rollback requires --backup <path>")
+    expect(() => parseOuroCommand(["dns", "rollback", "--agent", "Slugger", "--binding", bindingPath, "--backup", "/tmp/dns-backup.json"]))
+      .toThrow("dns rollback requires --yes after choosing a backup")
+    expect(() => parseOuroCommand(["dns", "plan", "--agent", "Slugger", "--binding", bindingPath, "--bad"]))
+      .toThrow("Usage: ouro dns plan [--agent <name>] --binding <path>")
+    expect(() => parseOuroCommand(["dns", "plan", "--agent", "Slugger", "--binding", bindingPath, "--credential-item", "ops/registrars/porkbun/accounts/ari@mendelow.me"]))
+      .toThrow("credential item belongs in the DNS workflow binding")
   })
 
   it("parses connect commands for guided integration onboarding", () => {
@@ -756,8 +1206,108 @@ describe("provider CLI command parsing", () => {
       agent: "Slugger",
       target: "bluebubbles",
     })
-    expect(() => parseOuroCommand(["connect", "perplexity", "bluebubbles", "--agent", "Slugger"])).toThrow("providers|perplexity|embeddings|teams|bluebubbles")
-    expect(() => parseOuroCommand(["connect", "unknown", "--agent", "Slugger"])).toThrow("providers|perplexity|embeddings|teams|bluebubbles")
+    expect(parseOuroCommand(["connect", "mail", "--agent", "Slugger"])).toEqual({
+      kind: "connect",
+      agent: "Slugger",
+      target: "mail",
+    })
+    expect(parseOuroCommand(["connect", "mail", "--agent", "Slugger", "--owner-email", "ari@mendelow.me", "--source", "hey"])).toEqual({
+      kind: "connect",
+      agent: "Slugger",
+      target: "mail",
+      ownerEmail: "ari@mendelow.me",
+      source: "hey",
+    })
+    expect(parseOuroCommand(["connect", "mail", "--agent", "Slugger", "--owner-email", "ari@mendelow.me", "--source", "hey", "--rotate-missing-mail-keys"])).toEqual({
+      kind: "connect",
+      agent: "Slugger",
+      target: "mail",
+      ownerEmail: "ari@mendelow.me",
+      source: "hey",
+      rotateMissingMailKeys: true,
+    })
+    expect(parseOuroCommand(["connect", "mail", "--agent", "Slugger", "--no-delegated-source"])).toEqual({
+      kind: "connect",
+      agent: "Slugger",
+      target: "mail",
+      noDelegatedSource: true,
+    })
+    expect(parseOuroCommand(["mail", "import-mbox", "--file", "/tmp/hey.mbox", "--owner-email", "ari@mendelow.me", "--source", "hey", "--agent", "Slugger"])).toEqual({
+      kind: "mail.import-mbox",
+      agent: "Slugger",
+      filePath: "/tmp/hey.mbox",
+      ownerEmail: "ari@mendelow.me",
+      source: "hey",
+    })
+    expect(parseOuroCommand(["mail", "import-mbox", "--file", "/tmp/hey.mbox", "--foreground", "--operation-id", "op-123"])).toEqual({
+      kind: "mail.import-mbox",
+      filePath: "/tmp/hey.mbox",
+      foreground: true,
+      operationId: "op-123",
+    })
+    expect(parseOuroCommand(["mail", "import-mbox", "--file", "/tmp/hey.mbox"])).toEqual({
+      kind: "mail.import-mbox",
+      filePath: "/tmp/hey.mbox",
+    })
+    expect(parseOuroCommand(["mail", "import-mbox", "--discover", "--owner-email", "ari@mendelow.me", "--source", "hey"])).toEqual({
+      kind: "mail.import-mbox",
+      discover: true,
+      ownerEmail: "ari@mendelow.me",
+      source: "hey",
+    })
+    expect(parseOuroCommand(["mail", "backfill-indexes", "--agent", "Slugger"])).toEqual({
+      kind: "mail.backfill-indexes",
+      agent: "Slugger",
+    })
+    expect(parseOuroCommand(["mail", "backfill-indexes", "--foreground", "--operation-id", "op-456"])).toEqual({
+      kind: "mail.backfill-indexes",
+      foreground: true,
+      operationId: "op-456",
+    })
+    expect(parseOuroCommand(["mail", "backfill-indexes"])).toEqual({
+      kind: "mail.backfill-indexes",
+    })
+    expect(parseOuroCommand(["account", "ensure", "--agent", "Slugger"])).toEqual({
+      kind: "account.ensure",
+      agent: "Slugger",
+    })
+    expect(parseOuroCommand(["account", "ensure", "--agent", "Slugger", "--owner-email", "ari@mendelow.me", "--source", "hey"])).toEqual({
+      kind: "account.ensure",
+      agent: "Slugger",
+      ownerEmail: "ari@mendelow.me",
+      source: "hey",
+    })
+    expect(parseOuroCommand(["account", "ensure", "--agent", "Slugger", "--owner-email", "ari@mendelow.me", "--source", "hey", "--rotate-missing-mail-keys"])).toEqual({
+      kind: "account.ensure",
+      agent: "Slugger",
+      ownerEmail: "ari@mendelow.me",
+      source: "hey",
+      rotateMissingMailKeys: true,
+    })
+    expect(parseOuroCommand(["account", "ensure", "--agent", "Slugger", "--no-delegated-source"])).toEqual({
+      kind: "account.ensure",
+      agent: "Slugger",
+      noDelegatedSource: true,
+    })
+    expect(parseOuroCommand(["account", "ensure"])).toEqual({
+      kind: "account.ensure",
+    })
+    expect(() => parseOuroCommand(["connect", "perplexity", "bluebubbles", "--agent", "Slugger"])).toThrow("providers|perplexity|embeddings|teams|bluebubbles|mail")
+    expect(() => parseOuroCommand(["connect", "unknown", "--agent", "Slugger"])).toThrow("providers|perplexity|embeddings|teams|bluebubbles|mail")
+    expect(() => parseOuroCommand(["connect", "teams", "--agent", "Slugger", "--owner-email", "ari@mendelow.me"])).toThrow("Mail source flags require")
+    expect(() => parseOuroCommand(["connect", "mail", "--agent", "Slugger", "--owner-email"])).toThrow("ouro connect")
+    expect(() => parseOuroCommand(["connect", "mail", "--agent", "Slugger", "--source", "hey"])).toThrow("--source requires --owner-email")
+    expect(() => parseOuroCommand(["account", "ensure", "--agent", "Slugger", "--owner-email", "ari@mendelow.me", "--source"])).toThrow("ouro account ensure")
+    expect(() => parseOuroCommand(["account", "ensure", "--agent", "Slugger", "--no-delegated-source", "--owner-email", "ari@mendelow.me"])).toThrow("--no-delegated-source")
+    expect(() => parseOuroCommand(["mail"])).toThrow("ouro mail import-mbox")
+    expect(() => parseOuroCommand(["mail", "status"])).toThrow("ouro mail import-mbox")
+    expect(() => parseOuroCommand(["mail", "import-mbox", "--file"])).toThrow("ouro mail import-mbox")
+    expect(() => parseOuroCommand(["mail", "import-mbox", "--discover", "--file", "/tmp/hey.mbox"])).toThrow("ouro mail import-mbox")
+    expect(() => parseOuroCommand(["mail", "import-mbox", "--owner-email", "ari@mendelow.me"])).toThrow("ouro mail import-mbox")
+    expect(() => parseOuroCommand(["mail", "backfill-indexes", "extra"])).toThrow("ouro mail import-mbox")
+    expect(() => parseOuroCommand(["account"])).toThrow("ouro account ensure")
+    expect(() => parseOuroCommand(["account", "reset"])).toThrow("ouro account ensure")
+    expect(() => parseOuroCommand(["account", "ensure", "extra"])).toThrow("ouro account ensure")
   })
 
   it("rejects malformed provider command shapes with direct usage", () => {
@@ -781,6 +1331,3203 @@ describe("provider CLI command parsing", () => {
 })
 
 describe("provider CLI command execution", () => {
+  it("connects Mail as a vault-coupled portable agent sense", async () => {
+    emitTestEvent("provider cli connect mail")
+    const bundlesRoot = makeTempDir("provider-cli-connect-mail-bundles")
+    const homeDir = makeTempDir("provider-cli-connect-mail-home")
+    writeAgentConfig(bundlesRoot, "Slugger")
+    const answers = ["ari@mendelow.me", "hey"]
+
+    const result = await runOuroCli(["connect", "mail", "--agent", "Slugger"], makeCliDeps(homeDir, bundlesRoot, {
+      now: () => Date.parse(NOW),
+      promptInput: async () => answers.shift() ?? "",
+    }))
+
+    expect(result).toContain("Agent Mail connected for Slugger")
+    expect(result).toContain("mailbox: slugger@ouro.bot")
+    expect(result).toContain("delegated alias: me.mendelow.ari.slugger@ouro.bot")
+    expect(result).toContain("private mail keys were not printed")
+    expect(result).not.toContain("PRIVATE KEY")
+    const stored = readRuntimeSecret("Slugger")
+    expect(stored.config.mailroom).toEqual(expect.objectContaining({
+      mailboxAddress: "slugger@ouro.bot",
+      registryPath: path.join(agentRoot(bundlesRoot, "Slugger"), "state", "mailroom", "registry.json"),
+      storePath: path.join(agentRoot(bundlesRoot, "Slugger"), "state", "mailroom"),
+    }))
+    const privateKeys = (stored.config.mailroom as Record<string, unknown>).privateKeys as Record<string, string>
+    expect(Object.keys(privateKeys)).toEqual(expect.arrayContaining([
+      expect.stringMatching(/^mail_slugger-/),
+      expect.stringMatching(/^mail_slugger-native_/),
+    ]))
+    expect(Object.values(privateKeys).every((value) => value.includes("BEGIN PRIVATE KEY"))).toBe(true)
+    const registryPath = (stored.config.mailroom as Record<string, unknown>).registryPath as string
+    const registry = JSON.parse(fs.readFileSync(registryPath, "utf-8")) as { sourceGrants: Array<Record<string, unknown>> }
+    expect(registry.sourceGrants[0]).toMatchObject({
+      agentId: "slugger",
+      ownerEmail: "ari@mendelow.me",
+      source: "hey",
+      aliasAddress: "me.mendelow.ari.slugger@ouro.bot",
+    })
+    expect(readAgentConfig(bundlesRoot, "Slugger").senses).toMatchObject({
+      mail: { enabled: true },
+    })
+  })
+
+  it("connects Mail without a delegated source alias and preserves SerpentGuide as vaultless", async () => {
+    emitTestEvent("provider cli connect mail no delegated source")
+    const bundlesRoot = makeTempDir("provider-cli-connect-mail-no-source-bundles")
+    const homeDir = makeTempDir("provider-cli-connect-mail-no-source-home")
+    writeAgentConfig(bundlesRoot, "Slugger")
+    updateAgentConfig(bundlesRoot, "Slugger", (config) => {
+      config.sync = { enabled: true, remote: "origin" }
+    })
+
+    const result = await runOuroCli(["connect", "mail", "--agent", "Slugger"], makeCliDeps(homeDir, bundlesRoot, {
+      now: () => Date.parse(NOW),
+      promptInput: async () => "",
+    }))
+
+    expect(result).toContain("mailbox: slugger@ouro.bot")
+    expect(result).not.toContain("delegated alias:")
+    expect(result).toContain("bundle sync: could not push bundle changes")
+    await expect(runOuroCli(["connect", "mail", "--agent", "SerpentGuide"], makeCliDeps(homeDir, bundlesRoot, {
+      promptInput: async () => "",
+    }))).rejects.toThrow("SerpentGuide has no persistent runtime credentials")
+  })
+
+  it("routes Mail setup from the root connect bay", async () => {
+    emitTestEvent("provider cli connect menu mail")
+    const bundlesRoot = makeTempDir("provider-cli-connect-menu-mail-bundles")
+    const homeDir = makeTempDir("provider-cli-connect-menu-mail-home")
+    writeAgentConfig(bundlesRoot, "Slugger")
+    const answers = ["mail", ""]
+
+    const result = await runOuroCli(["connect", "--agent", "Slugger"], makeCliDeps(homeDir, bundlesRoot, {
+      now: () => Date.parse(NOW),
+      promptInput: async () => answers.shift() ?? "",
+    }))
+
+    expect(result).toContain("Agent Mail connected for Slugger")
+    expect(result).toContain("mailbox: slugger@ouro.bot")
+  })
+
+  it("lets agents run Mail setup non-interactively after collecting owner/source details", async () => {
+    emitTestEvent("provider cli connect mail noninteractive flags")
+    const bundlesRoot = makeTempDir("provider-cli-connect-mail-flags-bundles")
+    const homeDir = makeTempDir("provider-cli-connect-mail-flags-home")
+    writeAgentConfig(bundlesRoot, "Slugger")
+
+    const result = await runOuroCli([
+      "connect",
+      "mail",
+      "--agent",
+      "Slugger",
+      "--owner-email",
+      "ari@mendelow.me",
+      "--source",
+      "hey",
+    ], makeCliDeps(homeDir, bundlesRoot, {
+      now: () => Date.parse(NOW),
+    }))
+
+    expect(result).toContain("Agent Mail connected for Slugger")
+    expect(result).toContain("mailbox: slugger@ouro.bot")
+    expect(result).toContain("delegated alias: me.mendelow.ari.slugger@ouro.bot")
+    const stored = readRuntimeSecret("Slugger")
+    expect(stored.config.mailroom).toEqual(expect.objectContaining({
+      mailboxAddress: "slugger@ouro.bot",
+    }))
+  })
+
+  it("supports non-interactive Mail setup defaults for native-only and HEY source aliases", async () => {
+    emitTestEvent("provider cli connect mail noninteractive defaults")
+    const bundlesRoot = makeTempDir("provider-cli-connect-mail-defaults-bundles")
+    const homeDir = makeTempDir("provider-cli-connect-mail-defaults-home")
+    writeAgentConfig(bundlesRoot, "NativeOnly")
+    writeAgentConfig(bundlesRoot, "DefaultSource")
+    writeAgentConfig(bundlesRoot, "BlankSource")
+    writeAgentConfig(bundlesRoot, "BlankOwner")
+
+    const nativeOnly = await runOuroCli([
+      "account",
+      "ensure",
+      "--agent",
+      "NativeOnly",
+      "--no-delegated-source",
+    ], makeCliDeps(homeDir, bundlesRoot, {
+      now: () => Date.parse(NOW),
+    }))
+
+    expect(nativeOnly).toContain("mailbox: nativeonly@ouro.bot")
+    expect(nativeOnly).not.toContain("delegated alias:")
+
+    const defaultSource = await runOuroCli([
+      "account",
+      "ensure",
+      "--agent",
+      "DefaultSource",
+      "--owner-email",
+      "ari@mendelow.me",
+    ], makeCliDeps(homeDir, bundlesRoot, {
+      now: () => Date.parse(NOW),
+    }))
+
+    expect(defaultSource).toContain("mailbox: defaultsource@ouro.bot")
+    expect(defaultSource).toContain("delegated alias: me.mendelow.ari.defaultsource@ouro.bot")
+
+    const blankSource = await runOuroCli([
+      "account",
+      "ensure",
+      "--agent",
+      "BlankSource",
+      "--owner-email",
+      "ari@mendelow.me",
+      "--source",
+      "   ",
+    ], makeCliDeps(homeDir, bundlesRoot, {
+      now: () => Date.parse(NOW),
+    }))
+
+    expect(blankSource).toContain("mailbox: blanksource@ouro.bot")
+    expect(blankSource).toContain("delegated alias: me.mendelow.ari.blanksource@ouro.bot")
+
+    const blankOwner = await runOuroCli([
+      "account",
+      "ensure",
+      "--agent",
+      "BlankOwner",
+      "--owner-email",
+      "   ",
+    ], makeCliDeps(homeDir, bundlesRoot, {
+      now: () => Date.parse(NOW),
+    }))
+
+    expect(blankOwner).toContain("mailbox: blankowner@ouro.bot")
+    expect(blankOwner).not.toContain("delegated alias:")
+  })
+
+  it("preserves existing runtime config and defaults the delegated source label", async () => {
+    emitTestEvent("provider cli connect mail preserves runtime")
+    const bundlesRoot = makeTempDir("provider-cli-connect-mail-preserve-runtime-bundles")
+    const homeDir = makeTempDir("provider-cli-connect-mail-preserve-runtime-home")
+    writeAgentConfig(bundlesRoot, "Slugger")
+    writeRuntimeConfig("Slugger", {
+      integrations: {
+        perplexityApiKey: "pplx-secret",
+      },
+    })
+    const answers = ["ari@mendelow.me", ""]
+
+    const result = await runOuroCli(["connect", "mail", "--agent", "Slugger"], makeCliDeps(homeDir, bundlesRoot, {
+      now: () => Date.parse(NOW),
+      promptInput: async () => answers.shift() ?? "",
+    }))
+
+    expect(result).toContain("delegated alias: me.mendelow.ari.slugger@ouro.bot")
+    const stored = readRuntimeSecret("Slugger")
+    expect(stored.config.integrations).toEqual({ perplexityApiKey: "pplx-secret" })
+    const registryPath = (stored.config.mailroom as Record<string, unknown>).registryPath as string
+    const registry = JSON.parse(fs.readFileSync(registryPath, "utf-8")) as { sourceGrants: Array<Record<string, unknown>> }
+    expect(registry.sourceGrants[0]).toMatchObject({
+      source: "hey",
+      ownerEmail: "ari@mendelow.me",
+    })
+  })
+
+  it("keeps Mail setup idempotent across reruns and source-grant additions", async () => {
+    emitTestEvent("provider cli connect mail idempotent")
+    const bundlesRoot = makeTempDir("provider-cli-connect-mail-idempotent-bundles")
+    const homeDir = makeTempDir("provider-cli-connect-mail-idempotent-home")
+    writeAgentConfig(bundlesRoot, "Slugger")
+
+    const firstAnswers = ["", ""]
+    await runOuroCli(["connect", "mail", "--agent", "Slugger"], makeCliDeps(homeDir, bundlesRoot, {
+      now: () => Date.parse(NOW),
+      promptInput: async () => firstAnswers.shift() ?? "",
+    }))
+    const firstStored = readRuntimeSecret("Slugger")
+    const firstMailroom = firstStored.config.mailroom as Record<string, unknown>
+    const firstPrivateKeys = firstMailroom.privateKeys as Record<string, string>
+    const firstRegistryPath = firstMailroom.registryPath as string
+    const firstRegistry = JSON.parse(fs.readFileSync(firstRegistryPath, "utf-8")) as { mailboxes: Array<Record<string, unknown>>; sourceGrants: Array<Record<string, unknown>> }
+    expect(firstRegistry.sourceGrants).toHaveLength(0)
+
+    const secondAnswers = ["ari@mendelow.me", "hey"]
+    const second = await runOuroCli(["connect", "mail", "--agent", "Slugger"], makeCliDeps(homeDir, bundlesRoot, {
+      now: () => Date.parse(NOW),
+      promptInput: async () => secondAnswers.shift() ?? "",
+    }))
+    expect(second).toContain("Agent Mail connected for Slugger")
+    expect(second).toContain("mailbox: slugger@ouro.bot")
+    expect(second).toContain("delegated alias: me.mendelow.ari.slugger@ouro.bot")
+    const secondStored = readRuntimeSecret("Slugger")
+    const secondMailroom = secondStored.config.mailroom as Record<string, unknown>
+    expect(secondMailroom.registryPath).toBe(firstRegistryPath)
+    expect(secondMailroom.privateKeys).toEqual(expect.objectContaining(firstPrivateKeys))
+    const secondRegistry = JSON.parse(fs.readFileSync(firstRegistryPath, "utf-8")) as { mailboxes: Array<Record<string, unknown>>; sourceGrants: Array<Record<string, unknown>> }
+    expect(secondRegistry.mailboxes).toEqual(firstRegistry.mailboxes)
+    expect(secondRegistry.sourceGrants).toHaveLength(1)
+
+    const thirdAnswers = ["ari@mendelow.me", "hey"]
+    await runOuroCli(["connect", "mail", "--agent", "Slugger"], makeCliDeps(homeDir, bundlesRoot, {
+      now: () => Date.parse(NOW),
+      promptInput: async () => thirdAnswers.shift() ?? "",
+    }))
+    const thirdStored = readRuntimeSecret("Slugger")
+    const thirdMailroom = thirdStored.config.mailroom as Record<string, unknown>
+    const thirdRegistry = JSON.parse(fs.readFileSync(firstRegistryPath, "utf-8")) as { mailboxes: Array<Record<string, unknown>>; sourceGrants: Array<Record<string, unknown>> }
+    expect(thirdMailroom.privateKeys).toEqual(secondMailroom.privateKeys)
+    expect(thirdRegistry.sourceGrants).toHaveLength(1)
+  })
+
+  it("uses hosted Mail Control for production account setup and stores returned Blob coordinates", async () => {
+    emitTestEvent("provider cli hosted mail control account ensure")
+    const bundlesRoot = makeTempDir("provider-cli-hosted-account-ensure-bundles")
+    const homeDir = makeTempDir("provider-cli-hosted-account-ensure-home")
+    writeAgentConfig(bundlesRoot, "Slugger")
+    writeHostedWorkSubstrateConfig("Slugger")
+    fetchMock.mockImplementationOnce(async (input: RequestInfo | URL, init?: RequestInit) => {
+      expectHostedEnsureRequest(input, init, {
+        agentId: "Slugger",
+        ownerEmail: "ari@mendelow.me",
+        source: "hey",
+      })
+      return mockJsonResponse(hostedEnsureResponse())
+    })
+
+    const result = await runOuroCli([
+      "account",
+      "ensure",
+      "--agent",
+      "Slugger",
+      "--owner-email",
+      "ari@mendelow.me",
+      "--source",
+      "hey",
+    ], makeCliDeps(homeDir, bundlesRoot, {
+      now: () => Date.parse(NOW),
+      detectMode: () => "production",
+    }))
+
+    expect(fetchMock).toHaveBeenCalledTimes(1)
+    expect(result).toContain("Ouro work substrate ready for Slugger")
+    expect(result).toContain(`Hosted Mail Control: ${HOSTED_MAIL_CONTROL_URL}`)
+    expect(result).toContain(`Blob store: ${HOSTED_BLOB_ACCOUNT_URL}/mailroom`)
+    expect(result).toContain("private mail keys were not printed")
+    expect(result).not.toContain(HOSTED_NATIVE_KEY)
+    expect(result).not.toContain(HOSTED_SOURCE_KEY)
+    const stored = readRuntimeSecret("Slugger")
+    expect(stored.config.workSubstrate).toEqual(expect.objectContaining({
+      mode: "hosted",
+    }))
+    expect(stored.config.mailroom).toEqual(expect.objectContaining({
+      mode: "hosted",
+      mailboxAddress: "slugger@ouro.bot",
+      sourceAlias: "me.mendelow.ari.slugger@ouro.bot",
+      azureAccountUrl: HOSTED_BLOB_ACCOUNT_URL,
+      azureContainer: "mailroom",
+      registryAzureAccountUrl: HOSTED_BLOB_ACCOUNT_URL,
+      registryContainer: "mailroom",
+      registryBlob: "registry/mailroom.json",
+      registryDomain: "ouro.bot",
+      registryRevision: "1:1:777",
+      privateKeys: {
+        mail_slugger_native: HOSTED_NATIVE_KEY,
+        mail_slugger_hey: HOSTED_SOURCE_KEY,
+      },
+    }))
+    expect(fs.existsSync(path.join(agentRoot(bundlesRoot, "Slugger"), "state", "mailroom", "registry.json"))).toBe(false)
+    expect(readAgentConfig(bundlesRoot, "Slugger").senses).toMatchObject({
+      mail: { enabled: true },
+    })
+  })
+
+  it("preserves vault-held hosted mail keys when Mail Control returns no new secrets", async () => {
+    emitTestEvent("provider cli hosted mail control preserves keys")
+    const bundlesRoot = makeTempDir("provider-cli-hosted-preserve-keys-bundles")
+    const homeDir = makeTempDir("provider-cli-hosted-preserve-keys-home")
+    writeAgentConfig(bundlesRoot, "Slugger")
+    const privateKeys = {
+      mail_slugger_native: HOSTED_NATIVE_KEY,
+      mail_slugger_hey: HOSTED_SOURCE_KEY,
+    }
+    writeHostedWorkSubstrateConfig("Slugger", {
+      mode: "hosted",
+      mailboxAddress: "slugger@ouro.bot",
+      sourceAlias: "me.mendelow.ari.slugger@ouro.bot",
+      azureAccountUrl: HOSTED_BLOB_ACCOUNT_URL,
+      azureContainer: "mailroom",
+      registryRevision: "1:1:700",
+      privateKeys,
+    })
+    fetchMock.mockImplementationOnce(async (input: RequestInfo | URL, init?: RequestInit) => {
+      expectHostedEnsureRequest(input, init, {
+        agentId: "Slugger",
+        ownerEmail: "ari@mendelow.me",
+        source: "hey",
+      })
+      return mockJsonResponse(hostedEnsureResponse({
+        addedMailbox: false,
+        addedSourceGrant: false,
+        generatedPrivateKeys: {},
+        publicRegistry: {
+          kind: "azure-blob",
+          azureAccountUrl: HOSTED_BLOB_ACCOUNT_URL,
+          container: "mailroom",
+          blob: "registry/mailroom.json",
+          domain: "ouro.bot",
+          revision: "1:1:778",
+        },
+      }))
+    })
+
+    await runOuroCli([
+      "connect",
+      "mail",
+      "--agent",
+      "Slugger",
+      "--owner-email",
+      "ari@mendelow.me",
+      "--source",
+      "hey",
+    ], makeCliDeps(homeDir, bundlesRoot, {
+      now: () => Date.parse(NOW),
+      detectMode: () => "production",
+    }))
+
+    const mailroom = readRuntimeSecret("Slugger").config.mailroom as Record<string, unknown>
+    expect(fetchMock).toHaveBeenCalledTimes(1)
+    expect(mailroom.privateKeys).toEqual(privateKeys)
+    expect(mailroom.registryRevision).toBe("1:1:778")
+  })
+
+  it("ignores stale local registry paths during hosted Mail repair", async () => {
+    emitTestEvent("provider cli hosted mail control ignores stale local registry")
+    const bundlesRoot = makeTempDir("provider-cli-hosted-stale-local-registry-bundles")
+    const homeDir = makeTempDir("provider-cli-hosted-stale-local-registry-home")
+    writeAgentConfig(bundlesRoot, "Slugger")
+    const mailStateDir = path.join(agentRoot(bundlesRoot, "Slugger"), "state", "mailroom")
+    fs.mkdirSync(mailStateDir, { recursive: true })
+    const registryPath = path.join(mailStateDir, "registry.json")
+    fs.writeFileSync(registryPath, "{not-json", "utf-8")
+    writeHostedWorkSubstrateConfig("Slugger", {
+      mailboxAddress: "stale-local@ouro.bot",
+      registryPath,
+      storePath: mailStateDir,
+      privateKeys: {
+        mail_slugger_old: "old-key",
+      },
+    })
+    fetchMock.mockImplementationOnce(async (input: RequestInfo | URL, init?: RequestInit) => {
+      expectHostedEnsureRequest(input, init, {
+        agentId: "Slugger",
+        ownerEmail: "ari@mendelow.me",
+        source: "hey",
+      })
+      return mockJsonResponse(hostedEnsureResponse())
+    })
+
+    await runOuroCli([
+      "connect",
+      "mail",
+      "--agent",
+      "Slugger",
+      "--owner-email",
+      "ari@mendelow.me",
+      "--source",
+      "hey",
+    ], makeCliDeps(homeDir, bundlesRoot, {
+      now: () => Date.parse(NOW),
+      detectMode: () => "production",
+    }))
+
+    const mailroom = readRuntimeSecret("Slugger").config.mailroom as Record<string, unknown>
+    expect(mailroom.mailboxAddress).toBe("slugger@ouro.bot")
+    expect(mailroom.registryPath).toBeUndefined()
+    expect(mailroom.storePath).toBeUndefined()
+    expect(mailroom.privateKeys).toEqual({
+      mail_slugger_old: "old-key",
+      mail_slugger_native: HOSTED_NATIVE_KEY,
+      mail_slugger_hey: HOSTED_SOURCE_KEY,
+    })
+  })
+
+  it("reports hosted registry and vault drift when Mail Control no longer has a missing one-time key", async () => {
+    emitTestEvent("provider cli hosted mail control drift")
+    const bundlesRoot = makeTempDir("provider-cli-hosted-drift-bundles")
+    const homeDir = makeTempDir("provider-cli-hosted-drift-home")
+    writeAgentConfig(bundlesRoot, "Slugger")
+    writeHostedWorkSubstrateConfig("Slugger", {
+      mode: "hosted",
+      mailboxAddress: "slugger@ouro.bot",
+      sourceAlias: "me.mendelow.ari.slugger@ouro.bot",
+      azureAccountUrl: HOSTED_BLOB_ACCOUNT_URL,
+      azureContainer: "mailroom",
+      privateKeys: {
+        mail_slugger_native: HOSTED_NATIVE_KEY,
+      },
+    })
+    fetchMock.mockImplementationOnce(async (input: RequestInfo | URL, init?: RequestInit) => {
+      expectHostedEnsureRequest(input, init, {
+        agentId: "Slugger",
+        ownerEmail: "ari@mendelow.me",
+        source: "hey",
+      })
+      return mockJsonResponse(hostedEnsureResponse({
+        addedMailbox: false,
+        addedSourceGrant: false,
+        generatedPrivateKeys: {},
+      }))
+    })
+
+    await expect(runOuroCli([
+      "connect",
+      "mail",
+      "--agent",
+      "Slugger",
+      "--owner-email",
+      "ari@mendelow.me",
+      "--source",
+      "hey",
+    ], makeCliDeps(homeDir, bundlesRoot, {
+      now: () => Date.parse(NOW),
+      detectMode: () => "production",
+    }))).rejects.toThrow("--rotate-missing-mail-keys")
+    expect(fetchMock).toHaveBeenCalledTimes(1)
+  })
+
+  it("rotates missing hosted mail keys only when explicitly requested", async () => {
+    emitTestEvent("provider cli hosted mail control rotates missing keys")
+    const bundlesRoot = makeTempDir("provider-cli-hosted-rotate-missing-keys-bundles")
+    const homeDir = makeTempDir("provider-cli-hosted-rotate-missing-keys-home")
+    writeAgentConfig(bundlesRoot, "Slugger")
+    writeHostedWorkSubstrateConfig("Slugger", {
+      mode: "hosted",
+      mailboxAddress: "slugger@ouro.bot",
+      sourceAlias: "me.mendelow.ari.slugger@ouro.bot",
+      azureAccountUrl: HOSTED_BLOB_ACCOUNT_URL,
+      azureContainer: "mailroom",
+      privateKeys: {},
+    })
+    fetchMock
+      .mockImplementationOnce(async (input: RequestInfo | URL, init?: RequestInit) => {
+        expectHostedEnsureRequest(input, init, {
+          agentId: "Slugger",
+          ownerEmail: "ari@mendelow.me",
+          source: "hey",
+        })
+        return mockJsonResponse(hostedEnsureResponse({
+          addedMailbox: false,
+          addedSourceGrant: false,
+          generatedPrivateKeys: {},
+        }))
+      })
+      .mockImplementationOnce(async (input: RequestInfo | URL, init?: RequestInit) => {
+        expectHostedRotateRequest(input, init, {
+          agentId: "Slugger",
+          ownerEmail: "ari@mendelow.me",
+          source: "hey",
+          rotateMailbox: true,
+          rotateSourceGrant: true,
+          reason: "missing private mail keys in agent vault",
+        })
+        return mockJsonResponse(hostedRotateResponse())
+      })
+
+    const result = await runOuroCli([
+      "account",
+      "ensure",
+      "--agent",
+      "Slugger",
+      "--owner-email",
+      "ari@mendelow.me",
+      "--source",
+      "hey",
+      "--rotate-missing-mail-keys",
+    ], makeCliDeps(homeDir, bundlesRoot, {
+      now: () => Date.parse(NOW),
+      detectMode: () => "production",
+    }))
+
+    expect(fetchMock).toHaveBeenCalledTimes(2)
+    expect(result).toContain("private mail keys were not printed")
+    expect(result).not.toContain(HOSTED_ROTATED_NATIVE_KEY)
+    expect(result).not.toContain(HOSTED_ROTATED_SOURCE_KEY)
+    const mailroom = readRuntimeSecret("Slugger").config.mailroom as Record<string, unknown>
+    expect(mailroom.registryRevision).toBe("1:1:900")
+    expect(mailroom.privateKeys).toEqual({
+      mail_slugger_native_rotated: HOSTED_ROTATED_NATIVE_KEY,
+      mail_slugger_hey_rotated: HOSTED_ROTATED_SOURCE_KEY,
+    })
+  })
+
+  it("rotates a missing native hosted key through connect mail without creating a delegated source", async () => {
+    emitTestEvent("provider cli hosted mail control rotates native key through connect")
+    const bundlesRoot = makeTempDir("provider-cli-hosted-rotate-native-connect-bundles")
+    const homeDir = makeTempDir("provider-cli-hosted-rotate-native-connect-home")
+    writeAgentConfig(bundlesRoot, "Slugger")
+    writeHostedWorkSubstrateConfig("Slugger", {
+      mode: "hosted",
+      mailboxAddress: "slugger@ouro.bot",
+      azureAccountUrl: HOSTED_BLOB_ACCOUNT_URL,
+      azureContainer: "mailroom",
+      privateKeys: {},
+    })
+    fetchMock
+      .mockImplementationOnce(async (input: RequestInfo | URL, init?: RequestInit) => {
+        expectHostedEnsureRequest(input, init, {
+          agentId: "Slugger",
+        })
+        return mockJsonResponse(hostedEnsureResponse({
+          addedMailbox: false,
+          addedSourceGrant: false,
+          sourceAlias: undefined,
+          sourceGrant: undefined,
+          generatedPrivateKeys: {},
+        }))
+      })
+      .mockImplementationOnce(async (input: RequestInfo | URL, init?: RequestInit) => {
+        expectHostedRotateRequest(input, init, {
+          agentId: "Slugger",
+          rotateMailbox: true,
+          rotateSourceGrant: false,
+          reason: "missing private mail keys in agent vault",
+        })
+        return mockJsonResponse(hostedRotateResponse({
+          rotatedSourceGrant: false,
+          sourceAlias: undefined,
+          sourceGrant: undefined,
+          generatedPrivateKeys: {
+            mail_slugger_native_rotated: HOSTED_ROTATED_NATIVE_KEY,
+          },
+          publicRegistry: {
+            kind: "azure-blob",
+            azureAccountUrl: HOSTED_BLOB_ACCOUNT_URL,
+            container: "mailroom",
+            blob: "registry/mailroom.json",
+            domain: "ouro.bot",
+            revision: "1:0:901",
+          },
+        }))
+      })
+
+    const result = await runOuroCli([
+      "connect",
+      "mail",
+      "--agent",
+      "Slugger",
+      "--no-delegated-source",
+      "--rotate-missing-mail-keys",
+    ], makeCliDeps(homeDir, bundlesRoot, {
+      now: () => Date.parse(NOW),
+      detectMode: () => "production",
+    }))
+
+    expect(fetchMock).toHaveBeenCalledTimes(2)
+    expect(result).toContain("Agent Mail connected for Slugger")
+    expect(result).not.toContain("Delegated alias:")
+    const mailroom = readRuntimeSecret("Slugger").config.mailroom as Record<string, unknown>
+    expect(mailroom.sourceAlias).toBeNull()
+    expect(mailroom.registryRevision).toBe("1:0:901")
+    expect(mailroom.privateKeys).toEqual({
+      mail_slugger_native_rotated: HOSTED_ROTATED_NATIVE_KEY,
+    })
+  })
+
+  it("fails hosted Mail setup before network calls when the control token is missing", async () => {
+    emitTestEvent("provider cli hosted mail control missing token")
+    const bundlesRoot = makeTempDir("provider-cli-hosted-missing-token-bundles")
+    const homeDir = makeTempDir("provider-cli-hosted-missing-token-home")
+    writeAgentConfig(bundlesRoot, "Slugger")
+    writeRuntimeConfig("Slugger", {
+      workSubstrate: {
+        mode: "hosted",
+        mailControl: {
+          url: HOSTED_MAIL_CONTROL_URL,
+        },
+      },
+    })
+
+    await expect(runOuroCli([
+      "connect",
+      "mail",
+      "--agent",
+      "Slugger",
+      "--owner-email",
+      "ari@mendelow.me",
+      "--source",
+      "hey",
+    ], makeCliDeps(homeDir, bundlesRoot, {
+      now: () => Date.parse(NOW),
+      detectMode: () => "production",
+    }))).rejects.toThrow("requires url and token")
+    expect(fetchMock).not.toHaveBeenCalled()
+  })
+
+  it("fails hosted Mail setup before network calls when the Mail Control config is missing", async () => {
+    emitTestEvent("provider cli hosted mail control missing config")
+    const bundlesRoot = makeTempDir("provider-cli-hosted-missing-config-bundles")
+    const homeDir = makeTempDir("provider-cli-hosted-missing-config-home")
+    writeAgentConfig(bundlesRoot, "Slugger")
+    writeRuntimeConfig("Slugger", {
+      workSubstrate: {
+        mode: "hosted",
+      },
+    })
+
+    await expect(runOuroCli([
+      "connect",
+      "mail",
+      "--agent",
+      "Slugger",
+      "--owner-email",
+      "ari@mendelow.me",
+      "--source",
+      "hey",
+    ], makeCliDeps(homeDir, bundlesRoot, {
+      now: () => Date.parse(NOW),
+      detectMode: () => "production",
+    }))).rejects.toThrow("requires url and token")
+    expect(fetchMock).not.toHaveBeenCalled()
+  })
+
+  it("stops hosted Mail setup before network calls when the runtime vault is locked", async () => {
+    emitTestEvent("provider cli hosted mail control locked vault")
+    const bundlesRoot = makeTempDir("provider-cli-hosted-locked-vault-bundles")
+    const homeDir = makeTempDir("provider-cli-hosted-locked-vault-home")
+    writeAgentConfig(bundlesRoot, "Slugger")
+    const originalGet = mockVaultDeps.rawSecrets.get.bind(mockVaultDeps.rawSecrets)
+    mockVaultDeps.rawSecrets.get = ((key: string) => {
+      if (key === "Slugger:runtime/config") throw new Error("vault locked for runtime/config")
+      return originalGet(key)
+    }) as typeof mockVaultDeps.rawSecrets.get
+
+    try {
+      await expect(runOuroCli([
+        "connect",
+        "mail",
+        "--agent",
+        "Slugger",
+        "--owner-email",
+        "ari@mendelow.me",
+        "--source",
+        "hey",
+      ], makeCliDeps(homeDir, bundlesRoot, {
+        now: () => Date.parse(NOW),
+        detectMode: () => "production",
+      }))).rejects.toThrow("vault locked for runtime/config")
+      expect(fetchMock).not.toHaveBeenCalled()
+    } finally {
+      mockVaultDeps.rawSecrets.get = originalGet as typeof mockVaultDeps.rawSecrets.get
+    }
+  })
+
+  it("uses the hosted Mail Control admin token fallback for native-only setup", async () => {
+    emitTestEvent("provider cli hosted mail control admin token")
+    const bundlesRoot = makeTempDir("provider-cli-hosted-admin-token-bundles")
+    const homeDir = makeTempDir("provider-cli-hosted-admin-token-home")
+    writeAgentConfig(bundlesRoot, "Slugger")
+    writeRuntimeConfig("Slugger", {
+      workSubstrate: {
+        mode: "hosted",
+        mailControl: {
+          url: `${HOSTED_MAIL_CONTROL_URL}///`,
+          adminToken: HOSTED_MAIL_CONTROL_TOKEN,
+        },
+      },
+    })
+    fetchMock.mockImplementationOnce(async (input: RequestInfo | URL, init?: RequestInit) => {
+      expectHostedEnsureRequest(input, init, {
+        agentId: "Slugger",
+      })
+      return mockJsonResponse({
+        ok: true,
+        generatedPrivateKeys: {
+          mail_slugger_native: HOSTED_NATIVE_KEY,
+        },
+        mailbox: {
+          keyId: "mail_slugger_native",
+          canonicalAddress: "slugger@ouro.bot",
+        },
+        publicRegistry: {
+          kind: "azure-blob",
+          azureAccountUrl: HOSTED_BLOB_ACCOUNT_URL,
+          container: "mailroom",
+          blob: "registry/mailroom.json",
+          domain: "ouro.bot",
+          revision: "1:0:601",
+        },
+        blobStore: {
+          kind: "azure-blob",
+          azureAccountUrl: HOSTED_BLOB_ACCOUNT_URL,
+          container: "mailroom",
+        },
+      })
+    })
+
+    const result = await runOuroCli([
+      "connect",
+      "mail",
+      "--agent",
+      "Slugger",
+      "--no-delegated-source",
+    ], makeCliDeps(homeDir, bundlesRoot, {
+      now: () => Date.parse(NOW),
+      detectMode: () => "production",
+    }))
+
+    expect(result).toContain("mailbox: slugger@ouro.bot")
+    expect(result).not.toContain("delegated alias:")
+    expect(fetchMock).toHaveBeenCalledTimes(1)
+    expect(readRuntimeSecret("Slugger").config.mailroom).toEqual(expect.objectContaining({
+      mode: "hosted",
+      sourceAlias: null,
+      registryRevision: "1:0:601",
+      privateKeys: {
+        mail_slugger_native: HOSTED_NATIVE_KEY,
+      },
+    }))
+  })
+
+  it("surfaces hosted Mail Control outages with actor-runnable repair context", async () => {
+    emitTestEvent("provider cli hosted mail control outage")
+    const bundlesRoot = makeTempDir("provider-cli-hosted-outage-bundles")
+    const homeDir = makeTempDir("provider-cli-hosted-outage-home")
+    writeAgentConfig(bundlesRoot, "Slugger")
+    writeHostedWorkSubstrateConfig("Slugger")
+    fetchMock.mockResolvedValueOnce(mockJsonResponse({
+      ok: false,
+      error: "registry offline",
+    }, {
+      ok: false,
+      status: 503,
+      statusText: "Service Unavailable",
+    }))
+
+    await expect(runOuroCli([
+      "connect",
+      "mail",
+      "--agent",
+      "Slugger",
+      "--owner-email",
+      "ari@mendelow.me",
+      "--source",
+      "hey",
+    ], makeCliDeps(homeDir, bundlesRoot, {
+      now: () => Date.parse(NOW),
+      detectMode: () => "production",
+    }))).rejects.toThrow("hosted Mail Control ensure failed (503): registry offline")
+  })
+
+  it("uses Mail Control status text when hosted errors omit a response body reason", async () => {
+    emitTestEvent("provider cli hosted mail control status text")
+    const bundlesRoot = makeTempDir("provider-cli-hosted-status-text-bundles")
+    const homeDir = makeTempDir("provider-cli-hosted-status-text-home")
+    writeAgentConfig(bundlesRoot, "Slugger")
+    writeHostedWorkSubstrateConfig("Slugger")
+    fetchMock.mockResolvedValueOnce(mockJsonResponse({ ok: false }, {
+      ok: false,
+      status: 502,
+      statusText: "Bad Gateway",
+    }))
+
+    await expect(runOuroCli([
+      "connect",
+      "mail",
+      "--agent",
+      "Slugger",
+      "--owner-email",
+      "ari@mendelow.me",
+      "--source",
+      "hey",
+    ], makeCliDeps(homeDir, bundlesRoot, {
+      now: () => Date.parse(NOW),
+      detectMode: () => "production",
+    }))).rejects.toThrow("hosted Mail Control ensure failed (502): Bad Gateway")
+  })
+
+  it("rejects malformed hosted Mail Control responses before storing partial config", async () => {
+    emitTestEvent("provider cli hosted mail control malformed")
+    const bundlesRoot = makeTempDir("provider-cli-hosted-malformed-bundles")
+    const homeDir = makeTempDir("provider-cli-hosted-malformed-home")
+    writeAgentConfig(bundlesRoot, "Slugger")
+    writeHostedWorkSubstrateConfig("Slugger")
+    fetchMock.mockResolvedValueOnce(mockJsonResponse({
+      ok: true,
+      mailboxAddress: "slugger@ouro.bot",
+      generatedPrivateKeys: {
+        mail_slugger_native: HOSTED_NATIVE_KEY,
+      },
+      mailbox: {
+        keyId: "mail_slugger_native",
+        canonicalAddress: "slugger@ouro.bot",
+      },
+    }))
+
+    await expect(runOuroCli([
+      "connect",
+      "mail",
+      "--agent",
+      "Slugger",
+      "--no-delegated-source",
+    ], makeCliDeps(homeDir, bundlesRoot, {
+      now: () => Date.parse(NOW),
+      detectMode: () => "production",
+    }))).rejects.toThrow("publicRegistry")
+    expect(readRuntimeSecret("Slugger").config.mailroom).toBeUndefined()
+  })
+
+  it("rejects hosted Mail Control responses missing the mailbox record before storing partial config", async () => {
+    emitTestEvent("provider cli hosted mail control missing mailbox")
+    const bundlesRoot = makeTempDir("provider-cli-hosted-missing-mailbox-bundles")
+    const homeDir = makeTempDir("provider-cli-hosted-missing-mailbox-home")
+    writeAgentConfig(bundlesRoot, "Slugger")
+    writeHostedWorkSubstrateConfig("Slugger")
+    fetchMock.mockResolvedValueOnce(mockJsonResponse(hostedEnsureResponse({
+      mailboxAddress: undefined,
+      mailbox: undefined,
+      sourceAlias: undefined,
+      sourceGrant: undefined,
+      generatedPrivateKeys: {},
+    })))
+
+    await expect(runOuroCli([
+      "connect",
+      "mail",
+      "--agent",
+      "Slugger",
+      "--no-delegated-source",
+    ], makeCliDeps(homeDir, bundlesRoot, {
+      now: () => Date.parse(NOW),
+      detectMode: () => "production",
+    }))).rejects.toThrow("mailbox")
+    expect(readRuntimeSecret("Slugger").config.mailroom).toBeUndefined()
+  })
+
+  it("rejects hosted Mail Control responses missing required Blob text before storing partial config", async () => {
+    emitTestEvent("provider cli hosted mail control missing blob text")
+    const bundlesRoot = makeTempDir("provider-cli-hosted-missing-blob-text-bundles")
+    const homeDir = makeTempDir("provider-cli-hosted-missing-blob-text-home")
+    writeAgentConfig(bundlesRoot, "Slugger")
+    writeHostedWorkSubstrateConfig("Slugger")
+    fetchMock.mockResolvedValueOnce(mockJsonResponse(hostedEnsureResponse({
+      blobStore: {
+        kind: "azure-blob",
+        azureAccountUrl: HOSTED_BLOB_ACCOUNT_URL,
+      },
+    })))
+
+    await expect(runOuroCli([
+      "connect",
+      "mail",
+      "--agent",
+      "Slugger",
+      "--owner-email",
+      "ari@mendelow.me",
+      "--source",
+      "hey",
+    ], makeCliDeps(homeDir, bundlesRoot, {
+      now: () => Date.parse(NOW),
+      detectMode: () => "production",
+    }))).rejects.toThrow("blobStore.container")
+    expect(readRuntimeSecret("Slugger").config.mailroom).toBeUndefined()
+  })
+
+  it("accepts native-only hosted repairs from public mailbox records when no new key map is returned", async () => {
+    emitTestEvent("provider cli hosted mail control native-only repair")
+    const bundlesRoot = makeTempDir("provider-cli-hosted-native-repair-bundles")
+    const homeDir = makeTempDir("provider-cli-hosted-native-repair-home")
+    writeAgentConfig(bundlesRoot, "Slugger")
+    writeHostedWorkSubstrateConfig("Slugger", {
+      mode: "hosted",
+      mailboxAddress: "slugger@ouro.bot",
+      azureAccountUrl: HOSTED_BLOB_ACCOUNT_URL,
+      azureContainer: "mailroom",
+      privateKeys: {
+        mail_slugger_native: HOSTED_NATIVE_KEY,
+      },
+    })
+    fetchMock.mockResolvedValueOnce(mockJsonResponse({
+      ok: true,
+      addedMailbox: false,
+      addedSourceGrant: false,
+      mailbox: {
+        keyId: "mail_slugger_native",
+        canonicalAddress: "slugger@ouro.bot",
+      },
+      publicRegistry: {
+        kind: "azure-blob",
+        azureAccountUrl: HOSTED_BLOB_ACCOUNT_URL,
+        container: "mailroom",
+        blob: "registry/mailroom.json",
+        domain: "ouro.bot",
+        revision: "1:0:600",
+      },
+      blobStore: {
+        kind: "azure-blob",
+        azureAccountUrl: HOSTED_BLOB_ACCOUNT_URL,
+        container: "mailroom",
+      },
+    }))
+
+    const result = await runOuroCli([
+      "connect",
+      "mail",
+      "--agent",
+      "Slugger",
+      "--no-delegated-source",
+    ], makeCliDeps(homeDir, bundlesRoot, {
+      now: () => Date.parse(NOW),
+      detectMode: () => "production",
+    }))
+
+    expect(result).toContain("mailbox: slugger@ouro.bot")
+    expect(result).not.toContain("delegated alias:")
+    const mailroom = readRuntimeSecret("Slugger").config.mailroom as Record<string, unknown>
+    expect(mailroom).toEqual(expect.objectContaining({
+      mailboxAddress: "slugger@ouro.bot",
+      sourceAlias: null,
+      registryRevision: "1:0:600",
+      privateKeys: {
+        mail_slugger_native: HOSTED_NATIVE_KEY,
+      },
+    }))
+  })
+
+  it("ensures the agent work substrate account through one command", async () => {
+    emitTestEvent("provider cli account ensure")
+    const bundlesRoot = makeTempDir("provider-cli-account-ensure-bundles")
+    const homeDir = makeTempDir("provider-cli-account-ensure-home")
+    writeAgentConfig(bundlesRoot, "Nova")
+    const answers = ["owner@example.com", "hey"]
+
+    const result = await runOuroCli(["account", "ensure", "--agent", "Nova"], makeCliDeps(homeDir, bundlesRoot, {
+      now: () => Date.parse(NOW),
+      promptInput: async () => answers.shift() ?? "",
+    }))
+
+    expect(result).toContain("Ouro work substrate ready for Nova")
+    expect(result).toContain("vault: runtime/config")
+    expect(result).toContain("mailbox: nova@ouro.bot")
+    expect(result).toContain("delegated alias: com.example.owner.nova@ouro.bot")
+    const stored = readRuntimeSecret("Nova")
+    expect(stored.config.mailroom).toEqual(expect.objectContaining({
+      mailboxAddress: "nova@ouro.bot",
+    }))
+    expect(readAgentConfig(bundlesRoot, "Nova").senses).toMatchObject({
+      mail: { enabled: true },
+    })
+
+    writeAgentConfig(bundlesRoot, "NoSource")
+    updateAgentConfig(bundlesRoot, "NoSource", (config) => {
+      config.sync = { enabled: true, remote: "origin" }
+    })
+    const noSource = await runOuroCli(["account", "ensure", "--agent", "NoSource"], makeCliDeps(homeDir, bundlesRoot, {
+      now: () => Date.parse(NOW),
+      promptInput: async () => "",
+    }))
+    expect(noSource).toContain("mailbox: nosource@ouro.bot")
+    expect(noSource).not.toContain("delegated alias:")
+    expect(noSource).toContain("bundle sync: could not push bundle changes")
+  })
+
+  it("stops Mail setup before overwriting unreadable runtime credentials", async () => {
+    emitTestEvent("provider cli connect mail unreadable runtime")
+    const bundlesRoot = makeTempDir("provider-cli-connect-mail-unreadable-bundles")
+    const homeDir = makeTempDir("provider-cli-connect-mail-unreadable-home")
+    writeAgentConfig(bundlesRoot, "Slugger")
+    mockVaultDeps.rawSecrets.set("Slugger:runtime/config", "{")
+    const answers = ["ari@mendelow.me", "hey"]
+
+    await expect(runOuroCli(["connect", "mail", "--agent", "Slugger"], makeCliDeps(homeDir, bundlesRoot, {
+      promptInput: async () => answers.shift() ?? "",
+    }))).rejects.toThrow("cannot read existing runtime credentials")
+  })
+
+  it("stops Mail setup when an existing registry is malformed", async () => {
+    emitTestEvent("provider cli connect mail malformed registry")
+    const bundlesRoot = makeTempDir("provider-cli-connect-mail-malformed-registry-bundles")
+    const homeDir = makeTempDir("provider-cli-connect-mail-malformed-registry-home")
+    writeAgentConfig(bundlesRoot, "Slugger")
+    const mailStateDir = path.join(agentRoot(bundlesRoot, "Slugger"), "state", "mailroom")
+    fs.mkdirSync(mailStateDir, { recursive: true })
+    const registryPath = path.join(mailStateDir, "registry.json")
+    fs.writeFileSync(registryPath, JSON.stringify({ schemaVersion: 1, mailboxes: [] }), "utf-8")
+    writeRuntimeConfig("Slugger", {
+      mailroom: {
+        mailboxAddress: "slugger@ouro.bot",
+        registryPath,
+        storePath: mailStateDir,
+        privateKeys: { mail_slugger_native: "secret" },
+      },
+    })
+
+    await expect(runOuroCli(["connect", "mail", "--agent", "Slugger"], makeCliDeps(homeDir, bundlesRoot, {
+      promptInput: async () => "",
+    }))).rejects.toThrow("is not a valid Mailroom registry")
+  })
+
+  it("imports delegated HEY mail from an MBOX into the Mailroom store", async () => {
+    emitTestEvent("provider cli mail import mbox")
+    const bundlesRoot = makeTempDir("provider-cli-mail-import-bundles")
+    const homeDir = makeTempDir("provider-cli-mail-import-home")
+    writeAgentConfig(bundlesRoot, "Slugger")
+    const mailStateDir = path.join(agentRoot(bundlesRoot, "Slugger"), "state", "mailroom")
+    fs.mkdirSync(mailStateDir, { recursive: true })
+    const provisioned = provisionMailboxRegistry({
+      agentId: "Slugger",
+      ownerEmail: "ari@mendelow.me",
+      source: "hey",
+    })
+    const registryPath = path.join(mailStateDir, "registry.json")
+    fs.writeFileSync(registryPath, `${JSON.stringify(provisioned.registry, null, 2)}\n`, "utf-8")
+    writeRuntimeConfig("Slugger", {
+      mailroom: {
+        mailboxAddress: "slugger@ouro.bot",
+        registryPath,
+        storePath: mailStateDir,
+        privateKeys: provisioned.keys,
+      },
+    })
+    const mboxPath = path.join(mailStateDir, "hey.mbox")
+    fs.writeFileSync(mboxPath, [
+      "From ari@mendelow.me Sat Apr 20 12:00:00 2026",
+      "From: Ari <ari@mendelow.me>",
+      "To: Slugger <me.mendelow.ari.slugger@ouro.bot>",
+      "Subject: Shadow imbox hello",
+      "Message-ID: <hello@example.com>",
+      "Date: Mon, 20 Apr 2026 12:00:00 -0700",
+      "",
+      "This is the first delegated thread.",
+      "",
+    ].join("\n"), "utf-8")
+
+    const result = await runOuroCli([
+      "mail",
+      "import-mbox",
+      "--agent",
+      "Slugger",
+      "--foreground",
+      "--file",
+      mboxPath,
+      "--owner-email",
+      "ari@mendelow.me",
+      "--source",
+      "hey",
+    ], makeCliDeps(homeDir, bundlesRoot))
+
+    expect(result).toContain("Imported MBOX for Slugger")
+    expect(result).toContain("grant:")
+    expect(result).toContain("scanned: 1")
+    expect(result).toContain("imported: 1")
+    expect(result).toContain("source fresh through: 2026-04-20T19:00:00.000Z")
+    expect(result).toContain("archive imports are historical; they do not create Screener wakeups")
+    expect(result).toContain("body reads remain explicit")
+    expect(fs.readdirSync(path.join(mailStateDir, "messages")).some((name) => name.endsWith(".json"))).toBe(true)
+  })
+
+  it("discovers a recent HEY export in Playwright download sandboxes and imports it", async () => {
+    emitTestEvent("provider cli mail import discover playwright sandbox")
+    const bundlesRoot = makeTempDir("provider-cli-mail-import-discover-bundles")
+    const homeDir = makeTempDir("provider-cli-mail-import-discover-home")
+    const repoRoot = makeTempDir("provider-cli-mail-import-discover-repo")
+    writeAgentConfig(bundlesRoot, "Slugger")
+    const mailStateDir = path.join(agentRoot(bundlesRoot, "Slugger"), "state", "mailroom")
+    fs.mkdirSync(mailStateDir, { recursive: true })
+    const provisioned = provisionMailboxRegistry({
+      agentId: "Slugger",
+      ownerEmail: "ari@mendelow.me",
+      source: "hey",
+    })
+    const registryPath = path.join(mailStateDir, "registry.json")
+    fs.writeFileSync(registryPath, `${JSON.stringify(provisioned.registry, null, 2)}\n`, "utf-8")
+    writeRuntimeConfig("Slugger", {
+      mailroom: {
+        mailboxAddress: "slugger@ouro.bot",
+        registryPath,
+        storePath: mailStateDir,
+        privateKeys: provisioned.keys,
+      },
+    })
+    const sandboxDir = path.join(repoRoot, ".playwright-mcp")
+    fs.mkdirSync(sandboxDir, { recursive: true })
+    const mboxPath = path.join(sandboxDir, "HEY-emails-ari-mendelow-me.mbox")
+    fs.writeFileSync(mboxPath, [
+      "From ari@mendelow.me Sat Apr 20 12:00:00 2026",
+      "From: Ari <ari@mendelow.me>",
+      "To: Slugger <me.mendelow.ari.slugger@ouro.bot>",
+      "Subject: Primary HEY export",
+      "Message-ID: <primary@example.com>",
+      "Date: Mon, 20 Apr 2026 12:00:00 -0700",
+      "",
+      "Sandboxed browser export.",
+      "",
+    ].join("\n"), "utf-8")
+
+    const result = await runOuroCli([
+      "mail",
+      "import-mbox",
+      "--agent",
+      "Slugger",
+      "--foreground",
+      "--discover",
+      "--owner-email",
+      "ari@mendelow.me",
+      "--source",
+      "hey",
+    ], makeCliDeps(homeDir, bundlesRoot, {
+      getRepoCwd: () => repoRoot,
+    }))
+
+    expect(result).toContain(`Discovered MBOX: ${mboxPath}`)
+    expect(result).toContain("Imported MBOX for Slugger")
+    expect(result).toContain("imported: 1")
+  })
+
+  it("fails with candidate guidance when MBOX discovery is ambiguous", async () => {
+    emitTestEvent("provider cli mail import discover ambiguous")
+    const bundlesRoot = makeTempDir("provider-cli-mail-import-discover-ambiguous-bundles")
+    const homeDir = makeTempDir("provider-cli-mail-import-discover-ambiguous-home")
+    const repoRoot = makeTempDir("provider-cli-mail-import-discover-ambiguous-repo")
+    writeAgentConfig(bundlesRoot, "Slugger")
+    const sandboxDir = path.join(repoRoot, ".playwright-mcp")
+    const downloadsDir = path.join(homeDir, "Downloads")
+    fs.mkdirSync(sandboxDir, { recursive: true })
+    fs.mkdirSync(downloadsDir, { recursive: true })
+    const first = path.join(sandboxDir, "HEY-emails-ari-mendelow-me.mbox")
+    const second = path.join(downloadsDir, "HEY-emails-ari.mendelow.me-copy.mbox")
+    fs.writeFileSync(first, "", "utf-8")
+    fs.writeFileSync(second, "", "utf-8")
+    const sameTime = new Date("2026-04-24T03:08:00.000Z")
+    fs.utimesSync(first, sameTime, sameTime)
+    fs.utimesSync(second, sameTime, sameTime)
+
+    await expect(runOuroCli([
+      "mail",
+      "import-mbox",
+      "--agent",
+      "Slugger",
+      "--foreground",
+      "--discover",
+      "--owner-email",
+      "ari@mendelow.me",
+      "--source",
+      "hey",
+    ], makeCliDeps(homeDir, bundlesRoot, {
+      getRepoCwd: () => repoRoot,
+    }))).rejects.toThrow("multiple candidate MBOX files found")
+  })
+
+  it("fails clearly when no MBOX can be discovered", async () => {
+    emitTestEvent("provider cli mail import discover missing")
+    const bundlesRoot = makeTempDir("provider-cli-mail-import-discover-missing-bundles")
+    const homeDir = makeTempDir("provider-cli-mail-import-discover-missing-home")
+    const repoRoot = makeTempDir("provider-cli-mail-import-discover-missing-repo")
+    writeAgentConfig(bundlesRoot, "Slugger")
+
+    await expect(runOuroCli([
+      "mail",
+      "import-mbox",
+      "--agent",
+      "Slugger",
+      "--foreground",
+      "--discover",
+      "--owner-email",
+      "ari@mendelow.me",
+      "--source",
+      "hey",
+    ], makeCliDeps(homeDir, bundlesRoot, {
+      getRepoCwd: () => repoRoot,
+    }))).rejects.toThrow("could not discover an MBOX file")
+  })
+
+  it("guards against malformed direct mail-import commands without a file or discovery mode", () => {
+    emitTestEvent("provider cli mail import malformed direct command")
+    const bundlesRoot = makeTempDir("provider-cli-mail-import-malformed-bundles")
+    const homeDir = makeTempDir("provider-cli-mail-import-malformed-home")
+    writeAgentConfig(bundlesRoot, "Slugger")
+
+    expect(() => resolveMailImportFilePath({
+      kind: "mail.import-mbox",
+      agent: "Slugger",
+    } as any, makeCliDeps(homeDir, bundlesRoot))).toThrow("mail import requires either --file <path> or --discover")
+  })
+
+  it("falls back to process cwd and os.homedir when discovery deps omit explicit roots", () => {
+    emitTestEvent("provider cli mail import discover fallback roots")
+    const bundlesRoot = makeTempDir("provider-cli-mail-import-fallback-bundles")
+    const homeDir = makeTempDir("provider-cli-mail-import-fallback-home")
+    const repoRoot = makeTempDir("provider-cli-mail-import-fallback-repo")
+    writeAgentConfig(bundlesRoot, "Slugger")
+    const downloadsDir = path.join(homeDir, "Downloads")
+    fs.mkdirSync(downloadsDir, { recursive: true })
+    const mboxPath = path.join(downloadsDir, "HEY-emails-ari-mendelow-me.mbox")
+    fs.writeFileSync(mboxPath, "", "utf-8")
+    const originalCwd = process.cwd()
+    const originalHome = process.env.HOME
+    process.chdir(repoRoot)
+    process.env.HOME = homeDir
+
+    try {
+      expect(resolveMailImportFilePath({
+        kind: "mail.import-mbox",
+        agent: "Slugger",
+        discover: true,
+      } as any, makeCliDeps(homeDir, bundlesRoot, {
+        homeDir: undefined,
+        getRepoCwd: undefined,
+      }))).toBe(mboxPath)
+    } finally {
+      if (originalHome === undefined) {
+        delete process.env.HOME
+      } else {
+        process.env.HOME = originalHome
+      }
+      process.chdir(originalCwd)
+    }
+  })
+
+  it("falls back to recency when discovery hints do not match the exported filename", () => {
+    emitTestEvent("provider cli mail import discover hint mismatch")
+    const bundlesRoot = makeTempDir("provider-cli-mail-import-hint-mismatch-bundles")
+    const homeDir = makeTempDir("provider-cli-mail-import-hint-mismatch-home")
+    const repoRoot = makeTempDir("provider-cli-mail-import-hint-mismatch-repo")
+    writeAgentConfig(bundlesRoot, "Slugger")
+    const sandboxDir = path.join(repoRoot, ".playwright-mcp")
+    fs.mkdirSync(sandboxDir, { recursive: true })
+    const olderPath = path.join(sandboxDir, "mail-export-older.mbox")
+    const newerPath = path.join(sandboxDir, "mail-export-newer.mbox")
+    fs.writeFileSync(olderPath, "", "utf-8")
+    fs.writeFileSync(newerPath, "", "utf-8")
+    const olderTime = new Date("2026-04-24T03:07:00.000Z")
+    const newerTime = new Date("2026-04-24T03:08:00.000Z")
+    fs.utimesSync(olderPath, olderTime, olderTime)
+    fs.utimesSync(newerPath, newerTime, newerTime)
+
+    expect(resolveMailImportFilePath({
+      kind: "mail.import-mbox",
+      agent: "Slugger",
+      discover: true,
+      ownerEmail: "someone@example.com",
+      source: "imap",
+    } as any, makeCliDeps(homeDir, bundlesRoot, {
+      getRepoCwd: () => repoRoot,
+    }))).toBe(newerPath)
+  })
+
+  it("reports unknown source freshness when an imported MBOX has no dated messages", async () => {
+    emitTestEvent("provider cli mail import mbox unknown freshness")
+    const bundlesRoot = makeTempDir("provider-cli-mail-import-unknown-freshness-bundles")
+    const homeDir = makeTempDir("provider-cli-mail-import-unknown-freshness-home")
+    writeAgentConfig(bundlesRoot, "Slugger")
+    const mailStateDir = path.join(agentRoot(bundlesRoot, "Slugger"), "state", "mailroom")
+    fs.mkdirSync(mailStateDir, { recursive: true })
+    const provisioned = provisionMailboxRegistry({
+      agentId: "Slugger",
+      ownerEmail: "ari@mendelow.me",
+      source: "hey",
+    })
+    const registryPath = path.join(mailStateDir, "registry.json")
+    fs.writeFileSync(registryPath, `${JSON.stringify(provisioned.registry, null, 2)}\n`, "utf-8")
+    writeRuntimeConfig("Slugger", {
+      mailroom: {
+        mailboxAddress: "slugger@ouro.bot",
+        registryPath,
+        storePath: mailStateDir,
+        privateKeys: provisioned.keys,
+      },
+    })
+    const mboxPath = path.join(mailStateDir, "hey-undated.mbox")
+    fs.writeFileSync(mboxPath, [
+      "From ari@mendelow.me",
+      "From: Ari <ari@mendelow.me>",
+      "To: Slugger <me.mendelow.ari.slugger@ouro.bot>",
+      "Subject: Undated archive note",
+      "Message-ID: <undated@example.com>",
+      "",
+      "This archive export did not preserve a Date header.",
+      "",
+    ].join("\n"), "utf-8")
+
+    const result = await runOuroCli([
+      "mail",
+      "import-mbox",
+      "--agent",
+      "Slugger",
+      "--foreground",
+      "--file",
+      mboxPath,
+      "--owner-email",
+      "ari@mendelow.me",
+      "--source",
+      "hey",
+    ], makeCliDeps(homeDir, bundlesRoot))
+
+    expect(result).toContain("scanned: 1")
+    expect(result).toContain("imported: 1")
+    expect(result).toContain("source fresh through: unknown")
+    expect(result).toContain("archive imports are historical; they do not create Screener wakeups")
+  })
+
+  it("explains Mail MBOX import setup failures before touching the store", async () => {
+    emitTestEvent("provider cli mail import setup failures")
+    const bundlesRoot = makeTempDir("provider-cli-mail-import-failures-bundles")
+    const homeDir = makeTempDir("provider-cli-mail-import-failures-home")
+    writeAgentConfig(bundlesRoot, "Slugger")
+    const mailStateDir = path.join(agentRoot(bundlesRoot, "Slugger"), "state", "mailroom")
+    fs.mkdirSync(mailStateDir, { recursive: true })
+    const mboxPath = path.join(mailStateDir, "hey.mbox")
+    fs.writeFileSync(mboxPath, "", "utf-8")
+    const deps = makeCliDeps(homeDir, bundlesRoot)
+    const command = ["mail", "import-mbox", "--agent", "Slugger", "--foreground", "--file", mboxPath]
+
+    await expect(runOuroCli(command, deps)).rejects.toThrow("cannot read Mailroom config")
+
+    writeRuntimeConfig("Slugger", { mailroom: null })
+    resetRuntimeCredentialConfigCache()
+    await expect(runOuroCli(command, deps)).rejects.toThrow("missing mailroom config for Slugger")
+
+    writeRuntimeConfig("Slugger", {
+      mailroom: {
+        mailboxAddress: "slugger@ouro.bot",
+        privateKeys: { mail_slugger_primary: "secret" },
+      },
+    })
+    resetRuntimeCredentialConfigCache()
+    await expect(runOuroCli(command, deps)).rejects.toThrow("missing registryPath/storePath")
+
+    writeRuntimeConfig("Slugger", {
+      mailroom: {
+        mailboxAddress: "slugger@ouro.bot",
+        azureAccountUrl: HOSTED_BLOB_ACCOUNT_URL,
+        azureContainer: "mailroom",
+        privateKeys: { mail_slugger_primary: "secret" },
+      },
+    })
+    resetRuntimeCredentialConfigCache()
+    await expect(runOuroCli(command, deps)).rejects.toThrow("missing hosted registry coordinates")
+
+    writeRuntimeConfig("Slugger", {
+      mailroom: {
+        mailboxAddress: "slugger@ouro.bot",
+        azureAccountUrl: HOSTED_BLOB_ACCOUNT_URL,
+        azureContainer: "mailroom",
+        registryAzureAccountUrl: HOSTED_BLOB_ACCOUNT_URL,
+        privateKeys: { mail_slugger_primary: "secret" },
+      },
+    })
+    resetRuntimeCredentialConfigCache()
+    await expect(runOuroCli(command, deps)).rejects.toThrow("missing hosted registry coordinates")
+
+    writeRuntimeConfig("Slugger", {
+      mailroom: {
+        mailboxAddress: "slugger@ouro.bot",
+        registryPath: path.join(mailStateDir, "missing.json"),
+        storePath: mailStateDir,
+        privateKeys: { mail_slugger_primary: "secret" },
+      },
+    })
+    resetRuntimeCredentialConfigCache()
+    await expect(runOuroCli(command, deps)).rejects.toThrow("no such file")
+  })
+
+  it("surfaces Mailroom reader resolution failures after config parsing", async () => {
+    emitTestEvent("provider cli mail import reader resolution failure")
+    const bundlesRoot = makeTempDir("provider-cli-mail-import-reader-bundles")
+    const homeDir = makeTempDir("provider-cli-mail-import-reader-home")
+    writeAgentConfig(bundlesRoot, "Slugger")
+    const mailStateDir = path.join(agentRoot(bundlesRoot, "Slugger"), "state", "mailroom")
+    fs.mkdirSync(mailStateDir, { recursive: true })
+    const mboxPath = path.join(mailStateDir, "hey.mbox")
+    const registryPath = path.join(mailStateDir, "registry.json")
+    fs.writeFileSync(mboxPath, "", "utf-8")
+    fs.writeFileSync(registryPath, JSON.stringify(provisionMailboxRegistry({
+      agentId: "slugger",
+      ownerEmail: "ari@mendelow.me",
+      source: "hey",
+    }).registry), "utf-8")
+    writeRuntimeConfig("Slugger", {
+      mailroom: {
+        mailboxAddress: "slugger@ouro.bot",
+        registryPath,
+        storePath: mailStateDir,
+        privateKeys: { mail_slugger_primary: "secret" },
+      },
+    })
+    resetRuntimeCredentialConfigCache()
+
+    const readerSpy = vi.spyOn(mailroomReader, "resolveMailroomReader").mockReturnValue({
+      ok: false,
+      agentName: "Slugger",
+      reason: "misconfigured",
+      error: "AUTH_REQUIRED:mailroom -- synthetic reader failure for coverage",
+    })
+
+    await expect(runOuroCli([
+      "mail",
+      "import-mbox",
+      "--agent",
+      "Slugger",
+      "--foreground",
+      "--file",
+      mboxPath,
+    ], makeCliDeps(homeDir, bundlesRoot))).rejects.toThrow("AUTH_REQUIRED:mailroom -- synthetic reader failure for coverage")
+
+    readerSpy.mockRestore()
+  })
+
+  it("accepts complete hosted Mail import registry coordinates before reader resolution", async () => {
+    emitTestEvent("provider cli mail import hosted reader resolution")
+    const bundlesRoot = makeTempDir("provider-cli-mail-import-hosted-reader-bundles")
+    const homeDir = makeTempDir("provider-cli-mail-import-hosted-reader-home")
+    writeAgentConfig(bundlesRoot, "Slugger")
+    const mailStateDir = path.join(agentRoot(bundlesRoot, "Slugger"), "state", "mailroom")
+    fs.mkdirSync(mailStateDir, { recursive: true })
+    const mboxPath = path.join(mailStateDir, "hey.mbox")
+    fs.writeFileSync(mboxPath, "", "utf-8")
+    writeRuntimeConfig("Slugger", {
+      mailroom: {
+        mailboxAddress: "slugger@ouro.bot",
+        azureAccountUrl: HOSTED_BLOB_ACCOUNT_URL,
+        azureContainer: "mailroom",
+        registryAzureAccountUrl: HOSTED_BLOB_ACCOUNT_URL,
+        registryContainer: "mailroom",
+        registryBlob: "registry/mailroom.json",
+        privateKeys: { mail_slugger_primary: "secret" },
+      },
+    })
+    resetRuntimeCredentialConfigCache()
+
+    const readerSpy = vi.spyOn(mailroomReader, "resolveMailroomReader").mockReturnValue({
+      ok: false,
+      agentName: "Slugger",
+      reason: "misconfigured",
+      error: "AUTH_REQUIRED:mailroom -- hosted reader failure after coordinate validation",
+    })
+
+    await expect(runOuroCli([
+      "mail",
+      "import-mbox",
+      "--agent",
+      "Slugger",
+      "--foreground",
+      "--file",
+      mboxPath,
+    ], makeCliDeps(homeDir, bundlesRoot))).rejects.toThrow("AUTH_REQUIRED:mailroom -- hosted reader failure after coordinate validation")
+
+    readerSpy.mockRestore()
+  })
+
+  it("backfills hosted mail indexes through the Mail CLI", async () => {
+    emitTestEvent("provider cli mail backfill indexes")
+    const bundlesRoot = makeTempDir("provider-cli-mail-backfill-bundles")
+    const homeDir = makeTempDir("provider-cli-mail-backfill-home")
+    writeAgentConfig(bundlesRoot, "Slugger")
+
+    const backfillMessageIndexes = vi.fn(async () => 16616)
+    const refreshSpy = vi.spyOn(runtimeCredentials, "refreshRuntimeCredentialConfig").mockResolvedValue({
+      ok: true,
+      itemPath: "vault:Slugger:runtime/config",
+      config: { mailroom: {} },
+      revision: "runtime_test_backfill",
+      updatedAt: NOW,
+    })
+    const readerSpy = vi.spyOn(mailroomReader, "resolveMailroomReader").mockReturnValue({
+      ok: true,
+      agentName: "Slugger",
+      config: {
+        mailboxAddress: "slugger@ouro.bot",
+        azureAccountUrl: HOSTED_BLOB_ACCOUNT_URL,
+        azureContainer: "mailroom",
+        privateKeys: { mail_slugger_primary: "secret" },
+      },
+      store: { backfillMessageIndexes } as any,
+      storeKind: "azure-blob",
+      storeLabel: `${HOSTED_BLOB_ACCOUNT_URL}/mailroom`,
+    })
+
+    const result = await runOuroCli([
+      "mail",
+      "backfill-indexes",
+      "--agent",
+      "Slugger",
+      "--foreground",
+    ], makeCliDeps(homeDir, bundlesRoot))
+
+    expect(result).toContain("Backfilled hosted mail indexes for Slugger")
+    expect(result).toContain(`store: ${HOSTED_BLOB_ACCOUNT_URL}/mailroom`)
+    expect(result).toContain("indexed: 16616")
+    expect(refreshSpy).toHaveBeenCalledWith("Slugger", { preserveCachedOnFailure: true })
+    expect(backfillMessageIndexes).toHaveBeenCalledWith("Slugger", expect.any(Function))
+
+    refreshSpy.mockRestore()
+    readerSpy.mockRestore()
+  })
+
+  it("treats local mail stores as a no-op for hosted index backfill", async () => {
+    emitTestEvent("provider cli mail backfill local noop")
+    const bundlesRoot = makeTempDir("provider-cli-mail-backfill-local-bundles")
+    const homeDir = makeTempDir("provider-cli-mail-backfill-local-home")
+    writeAgentConfig(bundlesRoot, "Slugger")
+
+    const refreshSpy = vi.spyOn(runtimeCredentials, "refreshRuntimeCredentialConfig").mockResolvedValue({
+      ok: true,
+      itemPath: "vault:Slugger:runtime/config",
+      config: { mailroom: {} },
+      revision: "runtime_test_backfill_local",
+      updatedAt: NOW,
+    })
+    const readerSpy = vi.spyOn(mailroomReader, "resolveMailroomReader").mockReturnValue({
+      ok: true,
+      agentName: "Slugger",
+      config: {
+        mailboxAddress: "slugger@ouro.bot",
+        storePath: "/tmp/mailroom",
+        privateKeys: { mail_slugger_primary: "secret" },
+      },
+      store: {} as any,
+      storeKind: "file",
+      storeLabel: "/tmp/mailroom",
+    })
+
+    const result = await runOuroCli([
+      "mail",
+      "backfill-indexes",
+      "--agent",
+      "Slugger",
+      "--foreground",
+    ], makeCliDeps(homeDir, bundlesRoot))
+
+    expect(result).toContain("Hosted mail index backfill not needed for Slugger")
+    expect(result).toContain("local file Mailroom store")
+
+    refreshSpy.mockRestore()
+    readerSpy.mockRestore()
+  })
+
+  it("surfaces runtime-config refresh failures during hosted index backfill", async () => {
+    emitTestEvent("provider cli mail backfill runtime refresh failure")
+    const bundlesRoot = makeTempDir("provider-cli-mail-backfill-runtime-bundles")
+    const homeDir = makeTempDir("provider-cli-mail-backfill-runtime-home")
+    writeAgentConfig(bundlesRoot, "Slugger")
+
+    const refreshSpy = vi.spyOn(runtimeCredentials, "refreshRuntimeCredentialConfig").mockResolvedValue({
+      ok: false,
+      reason: "missing",
+      itemPath: "vault:Slugger:runtime/config",
+      error: "no runtime credentials stored at vault:Slugger:runtime/config",
+    })
+
+    await expect(runOuroCli([
+      "mail",
+      "backfill-indexes",
+      "--agent",
+      "Slugger",
+      "--foreground",
+    ], makeCliDeps(homeDir, bundlesRoot))).rejects.toThrow(
+      "cannot read Mailroom config from vault:Slugger:runtime/config: no runtime credentials stored at vault:Slugger:runtime/config",
+    )
+
+    refreshSpy.mockRestore()
+  })
+
+  it("surfaces Mailroom reader and repair-shape failures during hosted index backfill", async () => {
+    emitTestEvent("provider cli mail backfill failure")
+    const bundlesRoot = makeTempDir("provider-cli-mail-backfill-failure-bundles")
+    const homeDir = makeTempDir("provider-cli-mail-backfill-failure-home")
+    writeAgentConfig(bundlesRoot, "Slugger")
+
+    const refreshSpy = vi.spyOn(runtimeCredentials, "refreshRuntimeCredentialConfig").mockResolvedValue({
+      ok: true,
+      itemPath: "vault:Slugger:runtime/config",
+      config: { mailroom: {} },
+      revision: "runtime_test_backfill_failure",
+      updatedAt: NOW,
+    })
+    const readerSpy = vi.spyOn(mailroomReader, "resolveMailroomReader")
+    readerSpy.mockReturnValueOnce({
+      ok: false,
+      agentName: "Slugger",
+      reason: "misconfigured",
+      error: "AUTH_REQUIRED:mailroom -- synthetic backfill failure",
+    }).mockReturnValueOnce({
+      ok: true,
+      agentName: "Slugger",
+      config: {
+        mailboxAddress: "slugger@ouro.bot",
+        azureAccountUrl: HOSTED_BLOB_ACCOUNT_URL,
+        azureContainer: "mailroom",
+        privateKeys: { mail_slugger_primary: "secret" },
+      },
+      store: {} as any,
+      storeKind: "azure-blob",
+      storeLabel: `${HOSTED_BLOB_ACCOUNT_URL}/mailroom`,
+    })
+
+    await expect(runOuroCli([
+      "mail",
+      "backfill-indexes",
+      "--agent",
+      "Slugger",
+      "--foreground",
+    ], makeCliDeps(homeDir, bundlesRoot))).rejects.toThrow("AUTH_REQUIRED:mailroom -- synthetic backfill failure")
+
+    await expect(runOuroCli([
+      "mail",
+      "backfill-indexes",
+      "--agent",
+      "Slugger",
+      "--foreground",
+    ], makeCliDeps(homeDir, bundlesRoot))).rejects.toThrow("does not expose index backfill")
+
+    refreshSpy.mockRestore()
+    readerSpy.mockRestore()
+  })
+
+  it("starts MBOX imports as background operations by default", async () => {
+    emitTestEvent("provider cli mail import background launch")
+    const bundlesRoot = makeTempDir("provider-cli-mail-import-background-bundles")
+    const homeDir = makeTempDir("provider-cli-mail-import-background-home")
+    writeAgentConfig(bundlesRoot, "Slugger")
+    const mboxPath = path.join(agentRoot(bundlesRoot, "Slugger"), "hey-export.mbox")
+    fs.writeFileSync(mboxPath, "", "utf-8")
+
+    const spawnBackgroundCli = vi.fn(async () => ({ pid: 43210 }))
+    const result = await runOuroCli([
+      "mail",
+      "import-mbox",
+      "--agent",
+      "Slugger",
+      "--file",
+      mboxPath,
+      "--owner-email",
+      "ari@mendelow.me",
+      "--source",
+      "hey",
+    ], makeCliDeps(homeDir, bundlesRoot, { spawnBackgroundCli } as Partial<OuroCliDeps>))
+
+    expect(result).toContain("Started background mail import for Slugger")
+    expect(result).toContain("Slugger will be woken on failure or completion")
+    expect(result).toContain("Use query_active_work only when a live status check is actually needed.")
+    expect(spawnBackgroundCli).toHaveBeenCalledTimes(1)
+    expect(spawnBackgroundCli.mock.calls[0]?.[0]).toEqual(expect.arrayContaining([
+      "mail",
+      "import-mbox",
+      "--agent",
+      "Slugger",
+      "--file",
+      mboxPath,
+      "--owner-email",
+      "ari@mendelow.me",
+      "--source",
+      "hey",
+      "--foreground",
+      "--operation-id",
+    ]))
+
+    const operationsDir = path.join(agentRoot(bundlesRoot, "Slugger"), "state", "background-operations")
+    const operationFiles = fs.readdirSync(operationsDir).filter((entry) => entry.endsWith(".json"))
+    expect(operationFiles).toHaveLength(1)
+    const record = JSON.parse(fs.readFileSync(path.join(operationsDir, operationFiles[0]!), "utf-8")) as {
+      kind: string
+      status: string
+      spec: Record<string, unknown>
+    }
+    expect(record.kind).toBe("mail.import-mbox")
+    expect(record.status).toBe("queued")
+    expect(record.spec).toEqual(expect.objectContaining({
+      filePath: mboxPath,
+      ownerEmail: "ari@mendelow.me",
+      source: "hey",
+      fileSizeBytes: 0,
+    }))
+    expect(typeof record.spec?.fileModifiedAt).toBe("string")
+  })
+
+  it("fails fast when a background MBOX import file path does not exist", async () => {
+    emitTestEvent("provider cli mail import background missing file")
+    const bundlesRoot = makeTempDir("provider-cli-mail-import-missing-file-bundles")
+    const homeDir = makeTempDir("provider-cli-mail-import-missing-file-home")
+    writeAgentConfig(bundlesRoot, "Slugger")
+
+    const missingPath = path.join(agentRoot(bundlesRoot, "Slugger"), "missing.mbox")
+    const spawnBackgroundCli = vi.fn(async () => ({ pid: 999 }))
+
+    await expect(runOuroCli([
+      "mail",
+      "import-mbox",
+      "--agent",
+      "Slugger",
+      "--file",
+      missingPath,
+    ], makeCliDeps(homeDir, bundlesRoot, { spawnBackgroundCli } as Partial<OuroCliDeps>))).rejects.toThrow(
+      `no such file: ${missingPath}`,
+    )
+
+    expect(spawnBackgroundCli).not.toHaveBeenCalled()
+  })
+
+  it("does not start a duplicate background MBOX import when the same archive already succeeded", async () => {
+    emitTestEvent("provider cli mail import background duplicate success")
+    const bundlesRoot = makeTempDir("provider-cli-mail-import-background-duplicate-success-bundles")
+    const homeDir = makeTempDir("provider-cli-mail-import-background-duplicate-success-home")
+    writeAgentConfig(bundlesRoot, "Slugger")
+    const mboxPath = path.join(agentRoot(bundlesRoot, "Slugger"), "hey-export.mbox")
+    fs.writeFileSync(mboxPath, "hello", "utf-8")
+    fs.utimesSync(mboxPath, new Date("2026-04-24T05:40:00.000Z"), new Date("2026-04-24T05:40:00.000Z"))
+
+    const { startBackgroundOperation, completeBackgroundOperation } = await import("../../../heart/background-operations")
+    startBackgroundOperation({
+      agentName: "Slugger",
+      agentRoot: agentRoot(bundlesRoot, "Slugger"),
+      id: "op_mail_import_done",
+      kind: "mail.import-mbox",
+      title: "mail import",
+      summary: "queued delegated mail import",
+      createdAt: "2026-04-24T05:39:00.000Z",
+      spec: { filePath: mboxPath, ownerEmail: "ari@mendelow.me", source: "hey" },
+    })
+    completeBackgroundOperation({
+      agentName: "Slugger",
+      agentRoot: agentRoot(bundlesRoot, "Slugger"),
+      id: "op_mail_import_done",
+      finishedAt: "2026-04-24T05:51:02.787Z",
+      summary: "imported delegated mail archive",
+      detail: "scanned 28352; imported 28352; duplicates 0",
+    })
+
+    const spawnBackgroundCli = vi.fn(async () => ({ pid: 43210 }))
+    const result = await runOuroCli([
+      "mail",
+      "import-mbox",
+      "--agent",
+      "Slugger",
+      "--file",
+      mboxPath,
+      "--owner-email",
+      "ari@mendelow.me",
+      "--source",
+      "hey",
+    ], makeCliDeps(homeDir, bundlesRoot, { spawnBackgroundCli } as Partial<OuroCliDeps>))
+
+    expect(result).toContain("Background mail import already completed for Slugger")
+    expect(result).toContain("This archive has not changed since that import.")
+    expect(spawnBackgroundCli).not.toHaveBeenCalled()
+  })
+
+  it("allows rerunning a completed background MBOX import when the prior success has no comparable timestamp", async () => {
+    emitTestEvent("provider cli mail import background duplicate invalid timestamp")
+    const bundlesRoot = makeTempDir("provider-cli-mail-import-background-duplicate-invalid-timestamp-bundles")
+    const homeDir = makeTempDir("provider-cli-mail-import-background-duplicate-invalid-timestamp-home")
+    writeAgentConfig(bundlesRoot, "Slugger")
+    const mboxPath = path.join(agentRoot(bundlesRoot, "Slugger"), "hey-export.mbox")
+    fs.writeFileSync(mboxPath, "hello", "utf-8")
+
+    const { startBackgroundOperation, completeBackgroundOperation } = await import("../../../heart/background-operations")
+    startBackgroundOperation({
+      agentName: "Slugger",
+      agentRoot: agentRoot(bundlesRoot, "Slugger"),
+      id: "op_mail_import_done_invalid",
+      kind: "mail.import-mbox",
+      title: "mail import",
+      summary: "queued delegated mail import",
+      createdAt: "2026-04-24T05:39:00.000Z",
+      spec: { filePath: mboxPath, ownerEmail: "ari@mendelow.me", source: "hey" },
+    })
+    completeBackgroundOperation({
+      agentName: "Slugger",
+      agentRoot: agentRoot(bundlesRoot, "Slugger"),
+      id: "op_mail_import_done_invalid",
+      finishedAt: "2026-04-24T05:51:02.787Z",
+      summary: "imported delegated mail archive",
+      detail: "scanned 28352; imported 28352; duplicates 0",
+    })
+
+    const recordPath = path.join(
+      agentRoot(bundlesRoot, "Slugger"),
+      "state",
+      "background-operations",
+      "op_mail_import_done_invalid.json",
+    )
+    const record = JSON.parse(fs.readFileSync(recordPath, "utf-8")) as Record<string, unknown>
+    record.updatedAt = "not-a-date"
+    delete record.finishedAt
+    fs.writeFileSync(recordPath, `${JSON.stringify(record, null, 2)}\n`, "utf-8")
+
+    const spawnBackgroundCli = vi.fn(async () => ({ pid: 43210 }))
+    const result = await runOuroCli([
+      "mail",
+      "import-mbox",
+      "--agent",
+      "Slugger",
+      "--file",
+      mboxPath,
+      "--owner-email",
+      "ari@mendelow.me",
+      "--source",
+      "hey",
+    ], makeCliDeps(homeDir, bundlesRoot, { spawnBackgroundCli } as Partial<OuroCliDeps>))
+
+    expect(result).toContain("Started background mail import for Slugger")
+    expect(spawnBackgroundCli).toHaveBeenCalledTimes(1)
+  })
+
+  it("ignores mismatched or failed prior imports before reporting a running duplicate, and omits missing detail lines", async () => {
+    emitTestEvent("provider cli mail import duplicate matching filters")
+    const bundlesRoot = makeTempDir("provider-cli-mail-import-duplicate-filters-bundles")
+    const homeDir = makeTempDir("provider-cli-mail-import-duplicate-filters-home")
+    writeAgentConfig(bundlesRoot, "Slugger")
+    const mboxPath = path.join(agentRoot(bundlesRoot, "Slugger"), "hey-export.mbox")
+    fs.writeFileSync(mboxPath, "hello", "utf-8")
+
+    const { startBackgroundOperation, markBackgroundOperationRunning, failBackgroundOperation } = await import("../../../heart/background-operations")
+
+    startBackgroundOperation({
+      agentName: "Slugger",
+      agentRoot: agentRoot(bundlesRoot, "Slugger"),
+      id: "op_mail_import_other_owner",
+      kind: "mail.import-mbox",
+      title: "mail import",
+      summary: "queued delegated mail import",
+      createdAt: "2026-04-24T05:40:00.000Z",
+      spec: { filePath: mboxPath, ownerEmail: "other@example.com", source: "hey" },
+    })
+    markBackgroundOperationRunning({
+      agentName: "Slugger",
+      agentRoot: agentRoot(bundlesRoot, "Slugger"),
+      id: "op_mail_import_other_owner",
+      startedAt: "2026-04-24T05:40:01.000Z",
+      summary: "importing other delegated mail",
+    })
+
+    startBackgroundOperation({
+      agentName: "Slugger",
+      agentRoot: agentRoot(bundlesRoot, "Slugger"),
+      id: "op_mail_import_failed",
+      kind: "mail.import-mbox",
+      title: "mail import",
+      summary: "queued delegated mail import",
+      createdAt: "2026-04-24T05:45:00.000Z",
+      spec: { filePath: mboxPath, ownerEmail: "ari@mendelow.me", source: "hey" },
+    })
+    failBackgroundOperation({
+      agentName: "Slugger",
+      agentRoot: agentRoot(bundlesRoot, "Slugger"),
+      id: "op_mail_import_failed",
+      finishedAt: "2026-04-24T05:46:00.000Z",
+      summary: "delegated mail import failed",
+      detail: "temporary failure",
+      error: new Error("temporary failure"),
+      remediation: ["retry import"],
+    })
+
+    startBackgroundOperation({
+      agentName: "Slugger",
+      agentRoot: agentRoot(bundlesRoot, "Slugger"),
+      id: "op_mail_import_running_match",
+      kind: "mail.import-mbox",
+      title: "mail import",
+      summary: "queued delegated mail import",
+      createdAt: "2026-04-24T05:50:00.000Z",
+      spec: { filePath: mboxPath, ownerEmail: "ari@mendelow.me", source: "hey" },
+    })
+    markBackgroundOperationRunning({
+      agentName: "Slugger",
+      agentRoot: agentRoot(bundlesRoot, "Slugger"),
+      id: "op_mail_import_running_match",
+      startedAt: "2026-04-24T05:50:01.000Z",
+      summary: "importing delegated mail",
+    })
+
+    const result = await runOuroCli([
+      "mail",
+      "import-mbox",
+      "--agent",
+      "Slugger",
+      "--file",
+      mboxPath,
+      "--owner-email",
+      "ari@mendelow.me",
+      "--source",
+      "hey",
+    ], makeCliDeps(homeDir, bundlesRoot))
+
+    expect(result).toContain("Background mail import already running for Slugger")
+    expect(result).toContain("operation: op_mail_import_running_match")
+    expect(result).not.toContain("detail:")
+  })
+
+  it("ignores non-mail, mismatched path, and mismatched owner/source records before accepting a matching duplicate without owner/source lines", async () => {
+    emitTestEvent("provider cli mail import duplicate matching branches")
+    const bundlesRoot = makeTempDir("provider-cli-mail-import-duplicate-branches-bundles")
+    const homeDir = makeTempDir("provider-cli-mail-import-duplicate-branches-home")
+    writeAgentConfig(bundlesRoot, "Slugger")
+    const mboxPath = path.join(agentRoot(bundlesRoot, "Slugger"), "hey-export.mbox")
+    const otherPath = path.join(agentRoot(bundlesRoot, "Slugger"), "other-export.mbox")
+    fs.writeFileSync(mboxPath, "hello", "utf-8")
+    fs.writeFileSync(otherPath, "hello", "utf-8")
+
+    const { startBackgroundOperation, markBackgroundOperationRunning } = await import("../../../heart/background-operations")
+    for (const record of [
+      {
+        id: "op_not_mail",
+        kind: "mail.backfill-indexes",
+        spec: { filePath: mboxPath },
+      },
+      {
+        id: "op_other_path",
+        kind: "mail.import-mbox",
+        spec: { filePath: otherPath },
+      },
+      {
+        id: "op_other_owner",
+        kind: "mail.import-mbox",
+        spec: { filePath: mboxPath, ownerEmail: "other@example.com" },
+      },
+      {
+        id: "op_other_source",
+        kind: "mail.import-mbox",
+        spec: { filePath: mboxPath, source: "imap" },
+      },
+      {
+        id: "op_match",
+        kind: "mail.import-mbox",
+        spec: { filePath: mboxPath },
+      },
+    ]) {
+      startBackgroundOperation({
+        agentName: "Slugger",
+        agentRoot: agentRoot(bundlesRoot, "Slugger"),
+        id: record.id,
+        kind: record.kind as any,
+        title: "mail import",
+        summary: "queued delegated mail import",
+        createdAt: "2026-04-24T05:40:00.000Z",
+        spec: record.spec,
+      })
+      markBackgroundOperationRunning({
+        agentName: "Slugger",
+        agentRoot: agentRoot(bundlesRoot, "Slugger"),
+        id: record.id,
+        startedAt: "2026-04-24T05:40:01.000Z",
+        summary: "importing delegated mail",
+      })
+    }
+
+    const result = await runOuroCli([
+      "mail",
+      "import-mbox",
+      "--agent",
+      "Slugger",
+      "--file",
+      mboxPath,
+    ], makeCliDeps(homeDir, bundlesRoot))
+
+    expect(result).toContain("Background mail import already running for Slugger")
+    expect(result).toContain("operation: op_match")
+    expect(result).not.toContain("ownerEmail:")
+    expect(result).not.toContain("source:")
+  })
+
+  it("does not start a duplicate background MBOX import when the same archive is already running", async () => {
+    emitTestEvent("provider cli mail import background duplicate running")
+    const bundlesRoot = makeTempDir("provider-cli-mail-import-background-duplicate-running-bundles")
+    const homeDir = makeTempDir("provider-cli-mail-import-background-duplicate-running-home")
+    writeAgentConfig(bundlesRoot, "Slugger")
+    const mboxPath = path.join(agentRoot(bundlesRoot, "Slugger"), "hey-export.mbox")
+    fs.writeFileSync(mboxPath, "hello", "utf-8")
+
+    const { startBackgroundOperation, markBackgroundOperationRunning } = await import("../../../heart/background-operations")
+    startBackgroundOperation({
+      agentName: "Slugger",
+      agentRoot: agentRoot(bundlesRoot, "Slugger"),
+      id: "op_mail_import_running",
+      kind: "mail.import-mbox",
+      title: "mail import",
+      summary: "queued delegated mail import",
+      createdAt: "2026-04-24T05:55:00.000Z",
+      spec: { filePath: mboxPath, ownerEmail: "ari@mendelow.me", source: "hey" },
+    })
+    markBackgroundOperationRunning({
+      agentName: "Slugger",
+      agentRoot: agentRoot(bundlesRoot, "Slugger"),
+      id: "op_mail_import_running",
+      startedAt: "2026-04-24T05:55:01.000Z",
+      summary: "importing delegated mail",
+      detail: "scanned 500 messages",
+    })
+
+    const spawnBackgroundCli = vi.fn(async () => ({ pid: 43210 }))
+    const result = await runOuroCli([
+      "mail",
+      "import-mbox",
+      "--agent",
+      "Slugger",
+      "--file",
+      mboxPath,
+      "--owner-email",
+      "ari@mendelow.me",
+      "--source",
+      "hey",
+    ], makeCliDeps(homeDir, bundlesRoot, { spawnBackgroundCli } as Partial<OuroCliDeps>))
+
+    expect(result).toContain("Background mail import already running for Slugger")
+    expect(result).toContain("Slugger will be woken on failure or completion.")
+    expect(spawnBackgroundCli).not.toHaveBeenCalled()
+  })
+
+  it("starts a new background MBOX import when prior records are non-mail, spec-less, mismatched-path, or failed matches", async () => {
+    emitTestEvent("provider cli mail import duplicate non-matching records")
+    const bundlesRoot = makeTempDir("provider-cli-mail-import-duplicate-non-matching-bundles")
+    const homeDir = makeTempDir("provider-cli-mail-import-duplicate-non-matching-home")
+    writeAgentConfig(bundlesRoot, "Slugger")
+    const mboxPath = path.join(agentRoot(bundlesRoot, "Slugger"), "hey-export.mbox")
+    const otherPath = path.join(agentRoot(bundlesRoot, "Slugger"), "other-export.mbox")
+    fs.writeFileSync(mboxPath, "hello", "utf-8")
+    fs.writeFileSync(otherPath, "hello", "utf-8")
+
+    const { startBackgroundOperation, markBackgroundOperationRunning, failBackgroundOperation } = await import("../../../heart/background-operations")
+
+    startBackgroundOperation({
+      agentName: "Slugger",
+      agentRoot: agentRoot(bundlesRoot, "Slugger"),
+      id: "op_not_mail",
+      kind: "mail.backfill-indexes",
+      title: "mail backfill",
+      summary: "repairing indexes",
+      createdAt: "2026-04-24T05:40:00.000Z",
+      spec: { filePath: mboxPath },
+    })
+    markBackgroundOperationRunning({
+      agentName: "Slugger",
+      agentRoot: agentRoot(bundlesRoot, "Slugger"),
+      id: "op_not_mail",
+      startedAt: "2026-04-24T05:40:01.000Z",
+      summary: "repairing indexes",
+    })
+
+    startBackgroundOperation({
+      agentName: "Slugger",
+      agentRoot: agentRoot(bundlesRoot, "Slugger"),
+      id: "op_missing_spec",
+      kind: "mail.import-mbox",
+      title: "mail import",
+      summary: "queued delegated mail import",
+      createdAt: "2026-04-24T05:41:00.000Z",
+    })
+    markBackgroundOperationRunning({
+      agentName: "Slugger",
+      agentRoot: agentRoot(bundlesRoot, "Slugger"),
+      id: "op_missing_spec",
+      startedAt: "2026-04-24T05:41:01.000Z",
+      summary: "importing delegated mail without stored spec",
+    })
+
+    startBackgroundOperation({
+      agentName: "Slugger",
+      agentRoot: agentRoot(bundlesRoot, "Slugger"),
+      id: "op_other_path",
+      kind: "mail.import-mbox",
+      title: "mail import",
+      summary: "queued delegated mail import",
+      createdAt: "2026-04-24T05:42:00.000Z",
+      spec: { filePath: otherPath, ownerEmail: "ari@mendelow.me", source: "hey" },
+    })
+    markBackgroundOperationRunning({
+      agentName: "Slugger",
+      agentRoot: agentRoot(bundlesRoot, "Slugger"),
+      id: "op_other_path",
+      startedAt: "2026-04-24T05:42:01.000Z",
+      summary: "importing other delegated mail",
+    })
+
+    startBackgroundOperation({
+      agentName: "Slugger",
+      agentRoot: agentRoot(bundlesRoot, "Slugger"),
+      id: "op_failed_match",
+      kind: "mail.import-mbox",
+      title: "mail import",
+      summary: "queued delegated mail import",
+      createdAt: "2026-04-24T05:43:00.000Z",
+      spec: { filePath: mboxPath, ownerEmail: "ari@mendelow.me", source: "hey" },
+    })
+    failBackgroundOperation({
+      agentName: "Slugger",
+      agentRoot: agentRoot(bundlesRoot, "Slugger"),
+      id: "op_failed_match",
+      finishedAt: "2026-04-24T05:43:30.000Z",
+      summary: "delegated mail import failed",
+      detail: "temporary failure",
+      error: new Error("temporary failure"),
+      remediation: ["retry import"],
+    })
+
+    const spawnBackgroundCli = vi.fn(async () => ({ pid: 43210 }))
+    const result = await runOuroCli([
+      "mail",
+      "import-mbox",
+      "--agent",
+      "Slugger",
+      "--file",
+      mboxPath,
+      "--owner-email",
+      "ari@mendelow.me",
+      "--source",
+      "hey",
+    ], makeCliDeps(homeDir, bundlesRoot, { spawnBackgroundCli } as Partial<OuroCliDeps>))
+
+    expect(result).toContain("Started background mail import for Slugger")
+    expect(spawnBackgroundCli).toHaveBeenCalledTimes(1)
+  })
+
+  it("allows rerunning a background MBOX import when the archive file is newer than the prior success", async () => {
+    emitTestEvent("provider cli mail import background duplicate newer file")
+    const bundlesRoot = makeTempDir("provider-cli-mail-import-background-duplicate-newer-bundles")
+    const homeDir = makeTempDir("provider-cli-mail-import-background-duplicate-newer-home")
+    writeAgentConfig(bundlesRoot, "Slugger")
+    const mboxPath = path.join(agentRoot(bundlesRoot, "Slugger"), "hey-export.mbox")
+    fs.writeFileSync(mboxPath, "hello", "utf-8")
+    fs.utimesSync(mboxPath, new Date("2026-04-24T05:52:00.000Z"), new Date("2026-04-24T05:52:00.000Z"))
+
+    const { startBackgroundOperation, completeBackgroundOperation } = await import("../../../heart/background-operations")
+    startBackgroundOperation({
+      agentName: "Slugger",
+      agentRoot: agentRoot(bundlesRoot, "Slugger"),
+      id: "op_mail_import_old",
+      kind: "mail.import-mbox",
+      title: "mail import",
+      summary: "queued delegated mail import",
+      createdAt: "2026-04-24T05:39:00.000Z",
+      spec: { filePath: mboxPath, ownerEmail: "ari@mendelow.me", source: "hey" },
+    })
+    completeBackgroundOperation({
+      agentName: "Slugger",
+      agentRoot: agentRoot(bundlesRoot, "Slugger"),
+      id: "op_mail_import_old",
+      finishedAt: "2026-04-24T05:51:02.787Z",
+      summary: "imported delegated mail archive",
+      detail: "scanned 28352; imported 28352; duplicates 0",
+    })
+
+    const spawnBackgroundCli = vi.fn(async () => ({ pid: 43210 }))
+    const result = await runOuroCli([
+      "mail",
+      "import-mbox",
+      "--agent",
+      "Slugger",
+      "--file",
+      mboxPath,
+      "--owner-email",
+      "ari@mendelow.me",
+      "--source",
+      "hey",
+    ], makeCliDeps(homeDir, bundlesRoot, { spawnBackgroundCli } as Partial<OuroCliDeps>))
+
+    expect(result).toContain("Started background mail import for Slugger")
+    expect(spawnBackgroundCli).toHaveBeenCalledTimes(1)
+  })
+
+  it("explains when this runtime cannot launch background mail commands", async () => {
+    emitTestEvent("provider cli mail background unavailable")
+    const bundlesRoot = makeTempDir("provider-cli-mail-background-unavailable-bundles")
+    const homeDir = makeTempDir("provider-cli-mail-background-unavailable-home")
+    writeAgentConfig(bundlesRoot, "Slugger")
+    const mboxPath = path.join(agentRoot(bundlesRoot, "Slugger"), "hey-export.mbox")
+    fs.writeFileSync(mboxPath, "", "utf-8")
+
+    await expect(runOuroCli([
+      "mail",
+      "import-mbox",
+      "--agent",
+      "Slugger",
+      "--file",
+      mboxPath,
+    ], makeCliDeps(homeDir, bundlesRoot))).rejects.toThrow(
+      "background CLI launch is not available in this runtime",
+    )
+  })
+
+  it("records a failed background launch when detached spawn throws", async () => {
+    emitTestEvent("provider cli mail background spawn failure")
+    const bundlesRoot = makeTempDir("provider-cli-mail-background-spawn-failure-bundles")
+    const homeDir = makeTempDir("provider-cli-mail-background-spawn-failure-home")
+    writeAgentConfig(bundlesRoot, "Slugger")
+    const mboxPath = path.join(agentRoot(bundlesRoot, "Slugger"), "hey-export.mbox")
+    fs.writeFileSync(mboxPath, "", "utf-8")
+
+    const spawnBackgroundCli = vi.fn(async () => {
+      throw new Error("background spawn failed")
+    })
+
+    await expect(runOuroCli([
+      "mail",
+      "import-mbox",
+      "--agent",
+      "Slugger",
+      "--file",
+      mboxPath,
+    ], makeCliDeps(homeDir, bundlesRoot, { spawnBackgroundCli } as Partial<OuroCliDeps>))).rejects.toThrow(
+      "background spawn failed",
+    )
+
+    const operationsDir = path.join(agentRoot(bundlesRoot, "Slugger"), "state", "background-operations")
+    const operationFiles = fs.readdirSync(operationsDir).filter((entry) => entry.endsWith(".json"))
+    expect(operationFiles).toHaveLength(1)
+    const record = JSON.parse(fs.readFileSync(path.join(operationsDir, operationFiles[0]!), "utf-8")) as {
+      status: string
+      summary: string
+      error?: { message: string }
+      remediation?: string[]
+    }
+    expect(record.status).toBe("failed")
+    expect(record.summary).toBe("mail import could not be started")
+    expect(record.error).toEqual({ message: "background spawn failed" })
+    expect(record.remediation).toEqual(["retry the command once the local runtime is healthy"])
+  })
+
+  it("records non-Error background launch failures without crashing the formatter", async () => {
+    emitTestEvent("provider cli mail background spawn failure string")
+    const bundlesRoot = makeTempDir("provider-cli-mail-background-spawn-failure-string-bundles")
+    const homeDir = makeTempDir("provider-cli-mail-background-spawn-failure-string-home")
+    writeAgentConfig(bundlesRoot, "Slugger")
+    const mboxPath = path.join(agentRoot(bundlesRoot, "Slugger"), "hey-export.mbox")
+    fs.writeFileSync(mboxPath, "", "utf-8")
+
+    const spawnBackgroundCli = vi.fn(async () => {
+      throw "spawn broke"
+    })
+
+    await expect(runOuroCli([
+      "mail",
+      "import-mbox",
+      "--agent",
+      "Slugger",
+      "--file",
+      mboxPath,
+    ], makeCliDeps(homeDir, bundlesRoot, { spawnBackgroundCli } as Partial<OuroCliDeps>))).rejects.toThrow(
+      "spawn broke",
+    )
+
+    const operationsDir = path.join(agentRoot(bundlesRoot, "Slugger"), "state", "background-operations")
+    const operationFiles = fs.readdirSync(operationsDir).filter((entry) => entry.endsWith(".json"))
+    const record = JSON.parse(fs.readFileSync(path.join(operationsDir, operationFiles[0]!), "utf-8")) as {
+      error?: { message: string }
+    }
+    expect(record.error).toEqual({ message: "spawn broke" })
+  })
+
+  it("wakes the agent when a tracked foreground MBOX import finishes", async () => {
+    emitTestEvent("provider cli mail import completion wake")
+    const bundlesRoot = makeTempDir("provider-cli-mail-import-operation-bundles")
+    const homeDir = makeTempDir("provider-cli-mail-import-operation-home")
+    writeAgentConfig(bundlesRoot, "Slugger")
+    const sluggerRoot = agentRoot(bundlesRoot, "Slugger")
+    writeJson(path.join(sluggerRoot, "friends", "friend-mcp.json"), {
+      id: "friend-mcp",
+      name: "Dev Tool User",
+      trustLevel: "friend",
+    })
+    writeJson(path.join(sluggerRoot, "friends", "friend-phone.json"), {
+      id: "friend-phone",
+      name: "Phone User",
+      trustLevel: "friend",
+    })
+    writeJson(path.join(sluggerRoot, "state", "sessions", "friend-mcp", "mcp", "session-1.json"), {
+      state: { lastFriendActivityAt: recentIso(5) },
+      messages: [{ role: "user", content: "keep me posted here" }],
+    })
+    writeJson(path.join(sluggerRoot, "state", "sessions", "friend-phone", "bluebubbles", "chat-any.json"), {
+      state: { lastFriendActivityAt: recentIso(1) },
+      messages: [{ role: "user", content: "text me if anything breaks" }],
+    })
+    const mailStateDir = path.join(agentRoot(bundlesRoot, "Slugger"), "state", "mailroom")
+    fs.mkdirSync(mailStateDir, { recursive: true })
+    const provisioned = provisionMailboxRegistry({
+      agentId: "Slugger",
+      ownerEmail: "ari@mendelow.me",
+      source: "hey",
+    })
+    const registryPath = path.join(mailStateDir, "registry.json")
+    fs.writeFileSync(registryPath, `${JSON.stringify(provisioned.registry, null, 2)}\n`, "utf-8")
+    writeRuntimeConfig("Slugger", {
+      mailroom: {
+        mailboxAddress: "slugger@ouro.bot",
+        registryPath,
+        storePath: mailStateDir,
+        privateKeys: provisioned.keys,
+      },
+    })
+    const mboxPath = path.join(mailStateDir, "hey.mbox")
+    fs.writeFileSync(mboxPath, [
+      "From ari@mendelow.me Thu Apr 20 12:00:00 2026",
+      "Date: Thu, 20 Apr 2026 12:00:00 -0700",
+      "From: Ari <ari@mendelow.me>",
+      "To: Slugger <me.mendelow.ari.slugger@ouro.bot>",
+      "Subject: Status test",
+      "Message-ID: <status@example.com>",
+      "",
+      "Background operations should wake Slugger when they finish.",
+      "",
+    ].join("\n"), "utf-8")
+
+    const sendCommand = vi.fn(async () => ({ ok: true, message: "ok" }))
+    const result = await runOuroCli([
+      "mail",
+      "import-mbox",
+      "--agent",
+      "Slugger",
+      "--foreground",
+      "--operation-id",
+      "op_mail_import_complete",
+      "--file",
+      mboxPath,
+      "--owner-email",
+      "ari@mendelow.me",
+      "--source",
+      "hey",
+    ], makeCliDeps(homeDir, bundlesRoot, { sendCommand }))
+
+    expect(result).toContain("Imported MBOX for Slugger")
+    const record = JSON.parse(fs.readFileSync(
+      path.join(agentRoot(bundlesRoot, "Slugger"), "state", "background-operations", "op_mail_import_complete.json"),
+      "utf-8",
+    )) as { status: string; result?: Record<string, unknown> }
+    expect(record.status).toBe("succeeded")
+    expect(record.result).toMatchObject({ imported: 1, duplicates: 0, scanned: 1 })
+    expect(sendCommand).toHaveBeenCalledWith("/tmp/test-socket", { kind: "inner.wake", agent: "Slugger" })
+    const mcpPending = readPendingMessages(sluggerRoot, "friend-mcp", "mcp", "session-1")
+    expect(mcpPending).toHaveLength(1)
+    expect(mcpPending[0]?.content).toContain("[Background Operation]")
+    expect(mcpPending[0]?.content).toContain("mail import finished.")
+    expect(mcpPending[0]?.content).toContain("operation: op_mail_import_complete")
+    expect(readPendingMessages(sluggerRoot, "friend-phone", "bluebubbles", "chat-any")).toEqual([])
+  })
+
+  it("falls back to the freshest outward target when no MCP session is live", async () => {
+    emitTestEvent("provider cli mail import completion fallback wake")
+    const bundlesRoot = makeTempDir("provider-cli-mail-import-operation-fallback-bundles")
+    const homeDir = makeTempDir("provider-cli-mail-import-operation-fallback-home")
+    writeAgentConfig(bundlesRoot, "Slugger")
+    const sluggerRoot = agentRoot(bundlesRoot, "Slugger")
+    writeJson(path.join(sluggerRoot, "friends", "friend-phone.json"), {
+      id: "friend-phone",
+      name: "Phone User",
+      trustLevel: "friend",
+    })
+    writeJson(path.join(sluggerRoot, "state", "sessions", "friend-phone", "bluebubbles", "chat-any.json"), {
+      state: { lastFriendActivityAt: recentIso(1) },
+      messages: [{ role: "user", content: "text me if mail work changes" }],
+    })
+    const mailStateDir = path.join(agentRoot(bundlesRoot, "Slugger"), "state", "mailroom")
+    fs.mkdirSync(mailStateDir, { recursive: true })
+    const provisioned = provisionMailboxRegistry({
+      agentId: "Slugger",
+      ownerEmail: "ari@mendelow.me",
+      source: "hey",
+    })
+    const registryPath = path.join(mailStateDir, "registry.json")
+    fs.writeFileSync(registryPath, `${JSON.stringify(provisioned.registry, null, 2)}\n`, "utf-8")
+    writeRuntimeConfig("Slugger", {
+      mailroom: {
+        mailboxAddress: "slugger@ouro.bot",
+        registryPath,
+        storePath: mailStateDir,
+        privateKeys: provisioned.keys,
+      },
+    })
+    const mboxPath = path.join(mailStateDir, "hey-fallback.mbox")
+    fs.writeFileSync(mboxPath, [
+      "From ari@mendelow.me Thu Apr 20 12:00:00 2026",
+      "Date: Thu, 20 Apr 2026 12:00:00 -0700",
+      "From: Ari <ari@mendelow.me>",
+      "To: Slugger <me.mendelow.ari.slugger@ouro.bot>",
+      "Subject: Fallback wake test",
+      "Message-ID: <fallback-status@example.com>",
+      "",
+      "Completion notices should land in the best available outward queue.",
+      "",
+    ].join("\n"), "utf-8")
+
+    const sendCommand = vi.fn(async () => ({ ok: true, message: "ok" }))
+    const result = await runOuroCli([
+      "mail",
+      "import-mbox",
+      "--agent",
+      "Slugger",
+      "--foreground",
+      "--operation-id",
+      "op_mail_import_complete_fallback",
+      "--file",
+      mboxPath,
+      "--owner-email",
+      "ari@mendelow.me",
+      "--source",
+      "hey",
+    ], makeCliDeps(homeDir, bundlesRoot, { sendCommand }))
+
+    expect(result).toContain("Imported MBOX for Slugger")
+    expect(sendCommand).toHaveBeenCalledWith("/tmp/test-socket", { kind: "inner.wake", agent: "Slugger" })
+    const phonePending = readPendingMessages(sluggerRoot, "friend-phone", "bluebubbles", "chat-any")
+    expect(phonePending).toHaveLength(1)
+    expect(phonePending[0]?.content).toContain("mail import finished.")
+    expect(phonePending[0]?.content).toContain("operation: op_mail_import_complete_fallback")
+  })
+
+  it("still completes a tracked foreground MBOX import when the inner wake send fails", async () => {
+    emitTestEvent("provider cli mail import completion wake degraded")
+    const bundlesRoot = makeTempDir("provider-cli-mail-import-operation-degraded-bundles")
+    const homeDir = makeTempDir("provider-cli-mail-import-operation-degraded-home")
+    writeAgentConfig(bundlesRoot, "Slugger")
+    const mailStateDir = path.join(agentRoot(bundlesRoot, "Slugger"), "state", "mailroom")
+    fs.mkdirSync(mailStateDir, { recursive: true })
+    const provisioned = provisionMailboxRegistry({
+      agentId: "Slugger",
+      ownerEmail: "ari@mendelow.me",
+      source: "hey",
+    })
+    const registryPath = path.join(mailStateDir, "registry.json")
+    fs.writeFileSync(registryPath, `${JSON.stringify(provisioned.registry, null, 2)}\n`, "utf-8")
+    writeRuntimeConfig("Slugger", {
+      mailroom: {
+        mailboxAddress: "slugger@ouro.bot",
+        registryPath,
+        storePath: mailStateDir,
+        privateKeys: provisioned.keys,
+      },
+    })
+    const mboxPath = path.join(mailStateDir, "hey-degraded.mbox")
+    fs.writeFileSync(mboxPath, [
+      "From ari@mendelow.me Thu Apr 20 12:00:00 2026",
+      "Date: Thu, 20 Apr 2026 12:00:00 -0700",
+      "From: Ari <ari@mendelow.me>",
+      "To: Slugger <me.mendelow.ari.slugger@ouro.bot>",
+      "Subject: Wake degraded test",
+      "Message-ID: <wake-degraded@example.com>",
+      "",
+      "Import completion should still persist even if the wake ping fails.",
+      "",
+    ].join("\n"), "utf-8")
+
+    const sendCommand = vi.fn(async () => {
+      throw new Error("socket unavailable")
+    })
+    const result = await runOuroCli([
+      "mail",
+      "import-mbox",
+      "--agent",
+      "Slugger",
+      "--foreground",
+      "--operation-id",
+      "op_mail_import_complete_degraded",
+      "--file",
+      mboxPath,
+      "--owner-email",
+      "ari@mendelow.me",
+      "--source",
+      "hey",
+    ], makeCliDeps(homeDir, bundlesRoot, { sendCommand }))
+
+    expect(result).toContain("Imported MBOX for Slugger")
+    const record = JSON.parse(fs.readFileSync(
+      path.join(agentRoot(bundlesRoot, "Slugger"), "state", "background-operations", "op_mail_import_complete_degraded.json"),
+      "utf-8",
+    )) as { status: string }
+    expect(record.status).toBe("succeeded")
+    expect(sendCommand).toHaveBeenCalledWith("/tmp/test-socket", { kind: "inner.wake", agent: "Slugger" })
+  })
+
+  it("still completes a tracked foreground MBOX import when outward notification resolution fails", async () => {
+    emitTestEvent("provider cli mail import completion target-resolution degraded")
+    const bundlesRoot = makeTempDir("provider-cli-mail-import-operation-target-resolution-bundles")
+    const homeDir = makeTempDir("provider-cli-mail-import-operation-target-resolution-home")
+    writeAgentConfig(bundlesRoot, "Slugger")
+    const mailStateDir = path.join(agentRoot(bundlesRoot, "Slugger"), "state", "mailroom")
+    fs.mkdirSync(mailStateDir, { recursive: true })
+    const provisioned = provisionMailboxRegistry({
+      agentId: "Slugger",
+      ownerEmail: "ari@mendelow.me",
+      source: "hey",
+    })
+    const registryPath = path.join(mailStateDir, "registry.json")
+    fs.writeFileSync(registryPath, `${JSON.stringify(provisioned.registry, null, 2)}\n`, "utf-8")
+    writeRuntimeConfig("Slugger", {
+      mailroom: {
+        mailboxAddress: "slugger@ouro.bot",
+        registryPath,
+        storePath: mailStateDir,
+        privateKeys: provisioned.keys,
+      },
+    })
+    const mboxPath = path.join(mailStateDir, "hey-target-resolution-degraded.mbox")
+    fs.writeFileSync(mboxPath, [
+      "From ari@mendelow.me Thu Apr 20 12:00:00 2026",
+      "Date: Thu, 20 Apr 2026 12:00:00 -0700",
+      "From: Ari <ari@mendelow.me>",
+      "To: Slugger <me.mendelow.ari.slugger@ouro.bot>",
+      "Subject: Target resolution degraded test",
+      "Message-ID: <target-resolution-degraded@example.com>",
+      "",
+      "Import completion should persist even if outward notification routing explodes.",
+      "",
+    ].join("\n"), "utf-8")
+
+    const activitySpy = vi.spyOn(sessionActivity, "listSessionActivity").mockImplementation(() => {
+      throw new Error("session scan unavailable")
+    })
+    const sendCommand = vi.fn(async () => ({ ok: true, message: "ok" }))
+    const result = await runOuroCli([
+      "mail",
+      "import-mbox",
+      "--agent",
+      "Slugger",
+      "--foreground",
+      "--operation-id",
+      "op_mail_import_complete_target_resolution_degraded",
+      "--file",
+      mboxPath,
+      "--owner-email",
+      "ari@mendelow.me",
+      "--source",
+      "hey",
+    ], makeCliDeps(homeDir, bundlesRoot, { sendCommand }))
+
+    expect(result).toContain("Imported MBOX for Slugger")
+    const record = JSON.parse(fs.readFileSync(
+      path.join(agentRoot(bundlesRoot, "Slugger"), "state", "background-operations", "op_mail_import_complete_target_resolution_degraded.json"),
+      "utf-8",
+    )) as { status: string }
+    expect(record.status).toBe("succeeded")
+    expect(sendCommand).toHaveBeenCalledWith("/tmp/test-socket", { kind: "inner.wake", agent: "Slugger" })
+
+    activitySpy.mockRestore()
+  })
+
+  it("records tracked foreground backfill failures and wakes the agent immediately", async () => {
+    emitTestEvent("provider cli mail backfill failure wake")
+    const bundlesRoot = makeTempDir("provider-cli-mail-backfill-operation-bundles")
+    const homeDir = makeTempDir("provider-cli-mail-backfill-operation-home")
+    writeAgentConfig(bundlesRoot, "Slugger")
+    const sluggerRoot = agentRoot(bundlesRoot, "Slugger")
+    writeJson(path.join(sluggerRoot, "friends", "friend-mcp.json"), {
+      id: "friend-mcp",
+      name: "Dev Tool User",
+      trustLevel: "friend",
+    })
+    writeJson(path.join(sluggerRoot, "state", "sessions", "friend-mcp", "mcp", "session-2.json"), {
+      state: { lastFriendActivityAt: recentIso(2) },
+      messages: [{ role: "user", content: "watch the repair" }],
+    })
+
+    const refreshSpy = vi.spyOn(runtimeCredentials, "refreshRuntimeCredentialConfig").mockResolvedValue({
+      ok: true,
+      itemPath: "vault:Slugger:runtime/config",
+      config: { mailroom: {} },
+      revision: "runtime_test_backfill_operation_failure",
+      updatedAt: NOW,
+    })
+    const readerSpy = vi.spyOn(mailroomReader, "resolveMailroomReader").mockReturnValue({
+      ok: true,
+      agentName: "Slugger",
+      config: {
+        mailboxAddress: "slugger@ouro.bot",
+        azureAccountUrl: HOSTED_BLOB_ACCOUNT_URL,
+        azureContainer: "mailroom",
+        privateKeys: { mail_slugger_primary: "secret" },
+      },
+      store: {
+        backfillMessageIndexes: vi.fn(async () => {
+          throw new Error("hosted message index backfill incomplete after indexing 16583 message(s)")
+        }),
+      } as any,
+      storeKind: "azure-blob",
+      storeLabel: `${HOSTED_BLOB_ACCOUNT_URL}/mailroom`,
+    })
+    const sendCommand = vi.fn(async () => ({ ok: true, message: "ok" }))
+
+    await expect(runOuroCli([
+      "mail",
+      "backfill-indexes",
+      "--agent",
+      "Slugger",
+      "--foreground",
+      "--operation-id",
+      "op_mail_backfill_fail",
+    ], makeCliDeps(homeDir, bundlesRoot, { sendCommand }))).rejects.toThrow(
+      "hosted message index backfill incomplete after indexing 16583 message(s)",
+    )
+
+    const record = JSON.parse(fs.readFileSync(
+      path.join(agentRoot(bundlesRoot, "Slugger"), "state", "background-operations", "op_mail_backfill_fail.json"),
+      "utf-8",
+    )) as { status: string; error?: { message: string } }
+    expect(record.status).toBe("failed")
+    expect(record.error).toEqual({
+      message: "hosted message index backfill incomplete after indexing 16583 message(s)",
+    })
+    expect(sendCommand).toHaveBeenCalledWith("/tmp/test-socket", { kind: "inner.wake", agent: "Slugger" })
+    const mcpPending = readPendingMessages(sluggerRoot, "friend-mcp", "mcp", "session-2")
+    expect(mcpPending).toHaveLength(1)
+    expect(mcpPending[0]?.content).toContain("mail index repair failed.")
+    expect(mcpPending[0]?.content).toContain("hosted mail index repair failed")
+    expect(mcpPending[0]?.content).toContain("hosted message index backfill incomplete after indexing 16583 message(s)")
+
+    refreshSpy.mockRestore()
+    readerSpy.mockRestore()
+  })
+
+  it("starts hosted mail index repair as a background operation by default", async () => {
+    emitTestEvent("provider cli mail backfill background launch")
+    const bundlesRoot = makeTempDir("provider-cli-mail-backfill-background-bundles")
+    const homeDir = makeTempDir("provider-cli-mail-backfill-background-home")
+    writeAgentConfig(bundlesRoot, "Slugger")
+
+    const spawnBackgroundCli = vi.fn(async () => ({ pid: 54321 }))
+    const result = await runOuroCli([
+      "mail",
+      "backfill-indexes",
+      "--agent",
+      "Slugger",
+    ], makeCliDeps(homeDir, bundlesRoot, { spawnBackgroundCli } as Partial<OuroCliDeps>))
+
+    expect(result).toContain("Started background mail index repair for Slugger")
+    expect(spawnBackgroundCli).toHaveBeenCalledTimes(1)
+    expect(spawnBackgroundCli.mock.calls[0]?.[0]).toEqual(expect.arrayContaining([
+      "mail",
+      "backfill-indexes",
+      "--agent",
+      "Slugger",
+      "--foreground",
+      "--operation-id",
+    ]))
+
+    const operationsDir = path.join(agentRoot(bundlesRoot, "Slugger"), "state", "background-operations")
+    const operationFiles = fs.readdirSync(operationsDir).filter((entry) => entry.endsWith(".json"))
+    expect(operationFiles).toHaveLength(1)
+    const record = JSON.parse(fs.readFileSync(path.join(operationsDir, operationFiles[0]!), "utf-8")) as {
+      kind: string
+      status: string
+      summary: string
+    }
+    expect(record.kind).toBe("mail.backfill-indexes")
+    expect(record.status).toBe("queued")
+    expect(record.summary).toBe("queued hosted mail index repair")
+  })
+
+  it("tracks successful hosted backfill progress and wakes the agent on completion", async () => {
+    emitTestEvent("provider cli mail backfill completion wake")
+    const bundlesRoot = makeTempDir("provider-cli-mail-backfill-success-bundles")
+    const homeDir = makeTempDir("provider-cli-mail-backfill-success-home")
+    writeAgentConfig(bundlesRoot, "Slugger")
+
+    const refreshSpy = vi.spyOn(runtimeCredentials, "refreshRuntimeCredentialConfig").mockResolvedValue({
+      ok: true,
+      itemPath: "vault:Slugger:runtime/config",
+      config: { mailroom: {} },
+      revision: "runtime_test_backfill_operation_success",
+      updatedAt: NOW,
+    })
+    const backfillMessageIndexes = vi.fn(async (_agentId?: string, onProgress?: (progress: {
+      scanned: number
+      indexed: number
+      failures: number
+      total: number
+    }) => void) => {
+      onProgress?.({
+        scanned: 10,
+        indexed: 7,
+        failures: 0,
+        total: 12,
+      })
+      return 12
+    })
+    const readerSpy = vi.spyOn(mailroomReader, "resolveMailroomReader").mockReturnValue({
+      ok: true,
+      agentName: "Slugger",
+      config: {
+        mailboxAddress: "slugger@ouro.bot",
+        azureAccountUrl: HOSTED_BLOB_ACCOUNT_URL,
+        azureContainer: "mailroom",
+        privateKeys: { mail_slugger_primary: "secret" },
+      },
+      store: { backfillMessageIndexes } as any,
+      storeKind: "azure-blob",
+      storeLabel: `${HOSTED_BLOB_ACCOUNT_URL}/mailroom`,
+    })
+    const sendCommand = vi.fn(async () => ({ ok: true, message: "ok" }))
+
+    try {
+      const result = await runOuroCli([
+        "mail",
+        "backfill-indexes",
+        "--agent",
+        "Slugger",
+        "--foreground",
+        "--operation-id",
+        "op_mail_backfill_complete",
+      ], makeCliDeps(homeDir, bundlesRoot, { sendCommand }))
+
+      expect(result).toContain("Backfilled hosted mail indexes for Slugger")
+      const record = JSON.parse(fs.readFileSync(
+        path.join(agentRoot(bundlesRoot, "Slugger"), "state", "background-operations", "op_mail_backfill_complete.json"),
+        "utf-8",
+      )) as { status: string; progress?: Record<string, unknown>; result?: Record<string, unknown> }
+      expect(record.status).toBe("succeeded")
+      expect(record.progress).toEqual({
+        current: 10,
+        total: 12,
+        unit: "blobs",
+      })
+      expect(record.result).toEqual({
+        indexed: 12,
+        store: `${HOSTED_BLOB_ACCOUNT_URL}/mailroom`,
+      })
+      expect(sendCommand).toHaveBeenCalledWith("/tmp/test-socket", { kind: "inner.wake", agent: "Slugger" })
+    } finally {
+      refreshSpy.mockRestore()
+      readerSpy.mockRestore()
+    }
+  })
+
+  it("records non-Error tracked foreground import failures without losing wakeability", async () => {
+    emitTestEvent("provider cli mail import tracked failure string")
+    const bundlesRoot = makeTempDir("provider-cli-mail-import-operation-failure-string-bundles")
+    const homeDir = makeTempDir("provider-cli-mail-import-operation-failure-string-home")
+    writeAgentConfig(bundlesRoot, "Slugger")
+    const mailStateDir = path.join(agentRoot(bundlesRoot, "Slugger"), "state", "mailroom")
+    fs.mkdirSync(mailStateDir, { recursive: true })
+    const registryPath = path.join(mailStateDir, "registry.json")
+    fs.writeFileSync(registryPath, `${JSON.stringify(provisionMailboxRegistry({
+      agentId: "Slugger",
+      ownerEmail: "ari@mendelow.me",
+      source: "hey",
+    }).registry, null, 2)}\n`, "utf-8")
+    writeRuntimeConfig("Slugger", {
+      mailroom: {
+        mailboxAddress: "slugger@ouro.bot",
+        registryPath,
+        storePath: mailStateDir,
+        privateKeys: { mail_slugger_primary: "secret" },
+      },
+    })
+    resetRuntimeCredentialConfigCache()
+    const mboxPath = path.join(mailStateDir, "tracked-failure-string.mbox")
+    fs.writeFileSync(mboxPath, "", "utf-8")
+
+    const readerSpy = vi.spyOn(mailroomReader, "resolveMailroomReader").mockImplementation(() => {
+      throw "reader exploded"
+    })
+    const sendCommand = vi.fn(async () => ({ ok: true, message: "ok" }))
+
+    try {
+      await expect(runOuroCli([
+        "mail",
+        "import-mbox",
+        "--agent",
+        "Slugger",
+        "--foreground",
+        "--operation-id",
+        "op_mail_import_fail_string",
+        "--file",
+        mboxPath,
+      ], makeCliDeps(homeDir, bundlesRoot, { sendCommand }))).rejects.toThrow("reader exploded")
+
+      const record = JSON.parse(fs.readFileSync(
+        path.join(agentRoot(bundlesRoot, "Slugger"), "state", "background-operations", "op_mail_import_fail_string.json"),
+        "utf-8",
+      )) as {
+        status: string
+        detail?: string
+        progress?: { current: number; unit: string }
+        error?: { message: string }
+      }
+      expect(record.status).toBe("failed")
+      expect(record.detail).toBe(`file: ${mboxPath}`)
+      expect(record.progress).toEqual({ current: 0, unit: "messages" })
+      expect(record.error).toEqual({ message: "reader exploded" })
+      expect(sendCommand).toHaveBeenCalledWith("/tmp/test-socket", { kind: "inner.wake", agent: "Slugger" })
+    } finally {
+      readerSpy.mockRestore()
+    }
+  })
+
+  it("classifies ambiguous tracked discovery failures so query_active_work can explain the repair", async () => {
+    emitTestEvent("provider cli mail import tracked ambiguity failure")
+    const bundlesRoot = makeTempDir("provider-cli-mail-import-operation-failure-ambiguity-bundles")
+    const homeDir = makeTempDir("provider-cli-mail-import-operation-failure-ambiguity-home")
+    const repoRoot = makeTempDir("provider-cli-mail-import-operation-failure-ambiguity-repo")
+    writeAgentConfig(bundlesRoot, "Slugger")
+    const sandboxDir = path.join(repoRoot, ".playwright-mcp")
+    const downloadsDir = path.join(homeDir, "Downloads")
+    fs.mkdirSync(sandboxDir, { recursive: true })
+    fs.mkdirSync(downloadsDir, { recursive: true })
+    const first = path.join(sandboxDir, "HEY-emails-ari-mendelow-me.mbox")
+    const second = path.join(downloadsDir, "HEY-emails-ari.mendelow.me-copy.mbox")
+    fs.writeFileSync(first, "", "utf-8")
+    fs.writeFileSync(second, "", "utf-8")
+    const sameTime = new Date("2026-04-24T03:08:00.000Z")
+    fs.utimesSync(first, sameTime, sameTime)
+    fs.utimesSync(second, sameTime, sameTime)
+    const sendCommand = vi.fn(async () => ({ ok: true, message: "ok" }))
+
+    await expect(runOuroCli([
+      "mail",
+      "import-mbox",
+      "--agent",
+      "Slugger",
+      "--foreground",
+      "--operation-id",
+      "op_mail_import_fail_ambiguity",
+      "--discover",
+      "--owner-email",
+      "ari@mendelow.me",
+      "--source",
+      "hey",
+    ], makeCliDeps(homeDir, bundlesRoot, {
+      getRepoCwd: () => repoRoot,
+      sendCommand,
+    }))).rejects.toThrow("multiple candidate MBOX files found")
+
+    const record = JSON.parse(fs.readFileSync(
+      path.join(agentRoot(bundlesRoot, "Slugger"), "state", "background-operations", "op_mail_import_fail_ambiguity.json"),
+      "utf-8",
+    )) as {
+      status: string
+      detail?: string
+      failure?: { class?: string; retryDisposition?: string; hint?: string }
+      remediation?: string[]
+    }
+    expect(record.status).toBe("failed")
+    expect(record.detail).toBe("mode: discover; owner: ari@mendelow.me; source: hey")
+    expect(record.failure).toEqual({
+      class: "archive-ambiguity",
+      retryDisposition: "fix-before-retry",
+      hint: "more than one plausible archive matches this import request",
+    })
+    expect(record.remediation).toEqual([
+      "rerun with --file <path> or narrower owner/source hints so the archive choice is unambiguous",
+      "retry after confirming which archive is the intended one",
+    ])
+    expect(sendCommand).toHaveBeenCalledWith("/tmp/test-socket", { kind: "inner.wake", agent: "Slugger" })
+  })
+
+  it("keeps tracked discovery failure detail compact when no owner/source hints were supplied", async () => {
+    emitTestEvent("provider cli mail import tracked ambiguity failure without hints")
+    const bundlesRoot = makeTempDir("provider-cli-mail-import-operation-failure-ambiguity-no-hints-bundles")
+    const homeDir = makeTempDir("provider-cli-mail-import-operation-failure-ambiguity-no-hints-home")
+    const repoRoot = makeTempDir("provider-cli-mail-import-operation-failure-ambiguity-no-hints-repo")
+    writeAgentConfig(bundlesRoot, "Slugger")
+    const sandboxDir = path.join(repoRoot, ".playwright-mcp")
+    const downloadsDir = path.join(homeDir, "Downloads")
+    fs.mkdirSync(sandboxDir, { recursive: true })
+    fs.mkdirSync(downloadsDir, { recursive: true })
+    const first = path.join(sandboxDir, "HEY-emails-one.mbox")
+    const second = path.join(downloadsDir, "HEY-emails-two.mbox")
+    fs.writeFileSync(first, "", "utf-8")
+    fs.writeFileSync(second, "", "utf-8")
+    const sameTime = new Date("2026-04-24T03:10:00.000Z")
+    fs.utimesSync(first, sameTime, sameTime)
+    fs.utimesSync(second, sameTime, sameTime)
+    const sendCommand = vi.fn(async () => ({ ok: true, message: "ok" }))
+
+    await expect(runOuroCli([
+      "mail",
+      "import-mbox",
+      "--agent",
+      "Slugger",
+      "--foreground",
+      "--operation-id",
+      "op_mail_import_fail_ambiguity_no_hints",
+      "--discover",
+    ], makeCliDeps(homeDir, bundlesRoot, {
+      getRepoCwd: () => repoRoot,
+      sendCommand,
+    }))).rejects.toThrow("multiple candidate MBOX files found")
+
+    const record = JSON.parse(fs.readFileSync(
+      path.join(agentRoot(bundlesRoot, "Slugger"), "state", "background-operations", "op_mail_import_fail_ambiguity_no_hints.json"),
+      "utf-8",
+    )) as {
+      detail?: string
+      failure?: { class?: string }
+    }
+    expect(record.detail).toBe("mode: discover")
+    expect(record.failure?.class).toBe("archive-ambiguity")
+  })
+
+  it("classifies tracked archive-access failures when Mailroom reads hit permission problems", async () => {
+    emitTestEvent("provider cli mail import tracked archive access failure")
+    const bundlesRoot = makeTempDir("provider-cli-mail-import-operation-failure-access-bundles")
+    const homeDir = makeTempDir("provider-cli-mail-import-operation-failure-access-home")
+    writeAgentConfig(bundlesRoot, "Slugger")
+    const mailStateDir = path.join(agentRoot(bundlesRoot, "Slugger"), "state", "mailroom")
+    fs.mkdirSync(mailStateDir, { recursive: true })
+    const registryPath = path.join(mailStateDir, "registry.json")
+    fs.writeFileSync(registryPath, `${JSON.stringify(provisionMailboxRegistry({
+      agentId: "Slugger",
+      ownerEmail: "ari@mendelow.me",
+      source: "hey",
+    }).registry, null, 2)}\n`, "utf-8")
+    writeRuntimeConfig("Slugger", {
+      mailroom: {
+        mailboxAddress: "slugger@ouro.bot",
+        registryPath,
+        storePath: mailStateDir,
+        privateKeys: { mail_slugger_primary: "secret" },
+      },
+    })
+    resetRuntimeCredentialConfigCache()
+    const mboxPath = path.join(mailStateDir, "tracked-failure-access.mbox")
+    fs.writeFileSync(mboxPath, "", "utf-8")
+
+    const registrySpy = vi.spyOn(mailroomReader, "readMailroomRegistry").mockRejectedValue(new Error("permission denied"))
+    const sendCommand = vi.fn(async () => ({ ok: true, message: "ok" }))
+
+    try {
+      await expect(runOuroCli([
+        "mail",
+        "import-mbox",
+        "--agent",
+        "Slugger",
+        "--foreground",
+        "--operation-id",
+        "op_mail_import_fail_access",
+        "--file",
+        mboxPath,
+      ], makeCliDeps(homeDir, bundlesRoot, { sendCommand }))).rejects.toThrow("permission denied")
+
+      const record = JSON.parse(fs.readFileSync(
+        path.join(agentRoot(bundlesRoot, "Slugger"), "state", "background-operations", "op_mail_import_fail_access.json"),
+        "utf-8",
+      )) as {
+        status: string
+        detail?: string
+        failure?: { class?: string; retryDisposition?: string; hint?: string }
+        remediation?: string[]
+      }
+      expect(record.status).toBe("failed")
+      expect(record.detail).toBe(`file: ${mboxPath}`)
+      expect(record.failure).toEqual({
+        class: "archive-access",
+        retryDisposition: "fix-before-retry",
+        hint: "the archive or backing store could not be read with current filesystem permissions",
+      })
+      expect(record.remediation).toEqual([
+        "repair filesystem access to the archive or backing store, then rerun the import",
+        "retry after confirming the path is readable by Ouro",
+      ])
+      expect(sendCommand).toHaveBeenCalledWith("/tmp/test-socket", { kind: "inner.wake", agent: "Slugger" })
+    } finally {
+      registrySpy.mockRestore()
+    }
+  })
+
+  it("classifies tracked source-grant-missing failures so imports explain the repair", async () => {
+    emitTestEvent("provider cli mail import tracked source grant missing failure")
+    const bundlesRoot = makeTempDir("provider-cli-mail-import-source-grant-missing-bundles")
+    const homeDir = makeTempDir("provider-cli-mail-import-source-grant-missing-home")
+    writeAgentConfig(bundlesRoot, "Slugger")
+    const mailStateDir = path.join(agentRoot(bundlesRoot, "Slugger"), "state", "mailroom")
+    fs.mkdirSync(mailStateDir, { recursive: true })
+    const registryPath = path.join(mailStateDir, "registry.json")
+    fs.writeFileSync(registryPath, `${JSON.stringify(provisionMailboxRegistry({
+      agentId: "Slugger",
+    }).registry, null, 2)}\n`, "utf-8")
+    writeRuntimeConfig("Slugger", {
+      mailroom: {
+        mailboxAddress: "slugger@ouro.bot",
+        registryPath,
+        storePath: mailStateDir,
+        privateKeys: { mail_slugger_primary: "secret" },
+      },
+    })
+    resetRuntimeCredentialConfigCache()
+    const mboxPath = path.join(mailStateDir, "tracked-failure-source-grant-missing.mbox")
+    fs.writeFileSync(mboxPath, "", "utf-8")
+    const sendCommand = vi.fn(async () => ({ ok: true, message: "ok" }))
+
+    await expect(runOuroCli([
+      "mail",
+      "import-mbox",
+      "--agent",
+      "Slugger",
+      "--foreground",
+      "--operation-id",
+      "op_mail_import_fail_source_grant_missing",
+      "--file",
+      mboxPath,
+      "--owner-email",
+      "ari@mendelow.me",
+      "--source",
+      "hey",
+    ], makeCliDeps(homeDir, bundlesRoot, { sendCommand }))).rejects.toThrow("No enabled Mailroom source grant found")
+
+    const record = JSON.parse(fs.readFileSync(
+      path.join(agentRoot(bundlesRoot, "Slugger"), "state", "background-operations", "op_mail_import_fail_source_grant_missing.json"),
+      "utf-8",
+    )) as {
+      status: string
+      detail?: string
+      failure?: { class?: string; retryDisposition?: string; hint?: string }
+      remediation?: string[]
+    }
+    expect(record.status).toBe("failed")
+    expect(record.detail).toBe(`file: ${mboxPath}`)
+    expect(record.failure).toEqual({
+      class: "source-grant-missing",
+      retryDisposition: "fix-before-retry",
+      hint: "the requested owner/source lane is not provisioned yet",
+    })
+    expect(record.remediation).toEqual([
+      "create or repair the delegated source grant for the intended owner/source, then rerun the import",
+      "confirm the import is pointed at the intended owner/source before retrying",
+    ])
+    expect(sendCommand).toHaveBeenCalledWith("/tmp/test-socket", { kind: "inner.wake", agent: "Slugger" })
+  })
+
+  it("classifies tracked source-grant ambiguity failures when imports need narrower owner/source hints", async () => {
+    emitTestEvent("provider cli mail import tracked source grant ambiguity failure")
+    const bundlesRoot = makeTempDir("provider-cli-mail-import-source-grant-ambiguity-bundles")
+    const homeDir = makeTempDir("provider-cli-mail-import-source-grant-ambiguity-home")
+    writeAgentConfig(bundlesRoot, "Slugger")
+    const mailStateDir = path.join(agentRoot(bundlesRoot, "Slugger"), "state", "mailroom")
+    fs.mkdirSync(mailStateDir, { recursive: true })
+    const first = provisionMailboxRegistry({
+      agentId: "Slugger",
+      ownerEmail: "ari@mendelow.me",
+      source: "hey",
+    })
+    const second = provisionMailboxRegistry({
+      agentId: "Slugger",
+      ownerEmail: "ari+work@mendelow.me",
+      source: "gmail",
+    })
+    const registry = {
+      ...first.registry,
+      sourceGrants: [
+        ...first.registry.sourceGrants,
+        second.registry.sourceGrants[0]!,
+      ],
+    }
+    const registryPath = path.join(mailStateDir, "registry.json")
+    fs.writeFileSync(registryPath, `${JSON.stringify(registry, null, 2)}\n`, "utf-8")
+    writeRuntimeConfig("Slugger", {
+      mailroom: {
+        mailboxAddress: "slugger@ouro.bot",
+        registryPath,
+        storePath: mailStateDir,
+        privateKeys: first.keys,
+      },
+    })
+    resetRuntimeCredentialConfigCache()
+    const mboxPath = path.join(mailStateDir, "tracked-failure-source-grant-ambiguity.mbox")
+    fs.writeFileSync(mboxPath, "", "utf-8")
+    const sendCommand = vi.fn(async () => ({ ok: true, message: "ok" }))
+
+    await expect(runOuroCli([
+      "mail",
+      "import-mbox",
+      "--agent",
+      "Slugger",
+      "--foreground",
+      "--operation-id",
+      "op_mail_import_fail_source_grant_ambiguity",
+      "--file",
+      mboxPath,
+    ], makeCliDeps(homeDir, bundlesRoot, { sendCommand }))).rejects.toThrow("Multiple source grants found")
+
+    const record = JSON.parse(fs.readFileSync(
+      path.join(agentRoot(bundlesRoot, "Slugger"), "state", "background-operations", "op_mail_import_fail_source_grant_ambiguity.json"),
+      "utf-8",
+    )) as {
+      status: string
+      detail?: string
+      failure?: { class?: string; retryDisposition?: string; hint?: string }
+      remediation?: string[]
+    }
+    expect(record.status).toBe("failed")
+    expect(record.detail).toBe(`file: ${mboxPath}`)
+    expect(record.failure).toEqual({
+      class: "source-grant-ambiguous",
+      retryDisposition: "fix-before-retry",
+      hint: "more than one source grant matches; the import needs a narrower owner/source target",
+    })
+    expect(record.remediation).toEqual([
+      "rerun the import with explicit --owner-email and/or --source hints",
+      "confirm which delegated lane should receive this archive before retrying",
+    ])
+    expect(sendCommand).toHaveBeenCalledWith("/tmp/test-socket", { kind: "inner.wake", agent: "Slugger" })
+  })
+
+  it("classifies tracked transient import failures as retry-safe", async () => {
+    emitTestEvent("provider cli mail import tracked transient failure")
+    const bundlesRoot = makeTempDir("provider-cli-mail-import-operation-failure-transient-bundles")
+    const homeDir = makeTempDir("provider-cli-mail-import-operation-failure-transient-home")
+    writeAgentConfig(bundlesRoot, "Slugger")
+    const mailStateDir = path.join(agentRoot(bundlesRoot, "Slugger"), "state", "mailroom")
+    fs.mkdirSync(mailStateDir, { recursive: true })
+    const registryPath = path.join(mailStateDir, "registry.json")
+    fs.writeFileSync(registryPath, `${JSON.stringify(provisionMailboxRegistry({
+      agentId: "Slugger",
+      ownerEmail: "ari@mendelow.me",
+      source: "hey",
+    }).registry, null, 2)}\n`, "utf-8")
+    writeRuntimeConfig("Slugger", {
+      mailroom: {
+        mailboxAddress: "slugger@ouro.bot",
+        registryPath,
+        storePath: mailStateDir,
+        privateKeys: { mail_slugger_primary: "secret" },
+      },
+    })
+    resetRuntimeCredentialConfigCache()
+    const mboxPath = path.join(mailStateDir, "tracked-failure-transient.mbox")
+    fs.writeFileSync(mboxPath, "", "utf-8")
+
+    const readerSpy = vi.spyOn(mailroomReader, "resolveMailroomReader").mockImplementation(() => {
+      throw new Error("socket closed early")
+    })
+    const sendCommand = vi.fn(async () => ({ ok: true, message: "ok" }))
+
+    try {
+      await expect(runOuroCli([
+        "mail",
+        "import-mbox",
+        "--agent",
+        "Slugger",
+        "--foreground",
+        "--operation-id",
+        "op_mail_import_fail_transient",
+        "--file",
+        mboxPath,
+      ], makeCliDeps(homeDir, bundlesRoot, { sendCommand }))).rejects.toThrow("socket closed early")
+
+      const record = JSON.parse(fs.readFileSync(
+        path.join(agentRoot(bundlesRoot, "Slugger"), "state", "background-operations", "op_mail_import_fail_transient.json"),
+        "utf-8",
+      )) as {
+        status: string
+        detail?: string
+        failure?: { class?: string; retryDisposition?: string; hint?: string }
+        remediation?: string[]
+      }
+      expect(record.status).toBe("failed")
+      expect(record.detail).toBe(`file: ${mboxPath}`)
+      expect(record.failure).toEqual({
+        class: "transient-storage-read",
+        retryDisposition: "retry-safe",
+        hint: "likely transient hosted read failure",
+      })
+      expect(record.remediation).toEqual([
+        "retry the import from the same archive after the transient storage/network issue clears",
+        "use query_active_work to confirm the failed operation has settled before retrying",
+      ])
+      expect(sendCommand).toHaveBeenCalledWith("/tmp/test-socket", { kind: "inner.wake", agent: "Slugger" })
+    } finally {
+      readerSpy.mockRestore()
+    }
+  })
+
+
   it("ouro use writes local provider state after a successful live check", async () => {
     emitTestEvent("provider cli use writes provider state")
     const bundlesRoot = makeTempDir("provider-cli-bundles")
@@ -788,7 +4535,10 @@ describe("provider CLI command execution", () => {
     writeAgentConfig(bundlesRoot, "Slugger")
     writeProviderState(agentRoot(bundlesRoot, "Slugger"), providerState())
     writeProviderCredentialPool(homeDir, credentialPool())
-    mockPingProvider.mockResolvedValue({ ok: true, message: "ok", attempts: 1 })
+    mockPingProvider.mockImplementation(async (_provider, _config, options) => {
+      await options?.onAttemptStart?.(1, 3)
+      return { ok: true, message: "ok", attempts: 1 }
+    })
 
     const deps = makeCliDeps(homeDir, bundlesRoot)
     const result = await runOuroCli([
@@ -812,6 +4562,7 @@ describe("provider CLI command execution", () => {
     expect(output).toContain("reading vault items for Slugger...")
     expect(output).toContain("✓ reading minimax credentials")
     expect(output).toContain("... checking minimax / MiniMax-M2.5")
+    expect(output).toContain("checking minimax / MiniMax-M2.5 (attempt 1 of 3)")
     expect(output).toContain("✓ checking minimax / MiniMax-M2.5")
     expect(mockPingProvider).toHaveBeenCalledWith("minimax", { apiKey: "minimax-secret" }, expect.anything())
 
@@ -1140,6 +4891,45 @@ describe("provider CLI command execution", () => {
     expect(stateResult.state.lanes.outward.provider).toBe("anthropic")
   })
 
+  it("ouro auth lands on a shared completion board in TTY mode", async () => {
+    emitTestEvent("provider cli auth tty board")
+    const bundlesRoot = makeTempDir("provider-cli-auth-tty-bundles")
+    const homeDir = makeTempDir("provider-cli-auth-tty-home")
+    writeAgentConfig(bundlesRoot, "Slugger")
+    writeProviderState(agentRoot(bundlesRoot, "Slugger"), providerState())
+    writeProviderCredentialPool(homeDir, credentialPool())
+
+    const deps = makeCliDeps(homeDir, bundlesRoot, {
+      isTTY: true,
+      stdoutColumns: 78,
+      runAuthFlow: async (input) => {
+        input.onProgress?.("starting minimax credential entry...")
+        input.onProgress?.("storing minimax credentials in Slugger's vault...")
+        return {
+          agentName: "Slugger",
+          provider: "minimax",
+          message: "authenticated Slugger with minimax",
+          credentialPath: "providers/minimax",
+          credentials: { apiKey: "new-minimax-secret" },
+        }
+      },
+    })
+
+    const result = await runOuroCli([
+      "auth",
+      "--agent",
+      "Slugger",
+      "--provider",
+      "minimax",
+    ], deps)
+
+    expect(result).toContain("Provider auth")
+    expect(result).toContain("Slugger can now use minimax when this lane is selected.")
+    expect(result).toContain("What changed")
+    expect(result).toContain("Next moves")
+    expect(result).toContain("secret was not printed")
+  })
+
   it("vault unlock stores local unlock material and probes the agent vault", async () => {
     emitTestEvent("provider cli vault unlock")
     const bundlesRoot = makeTempDir("provider-cli-vault-unlock-bundles")
@@ -1371,6 +5161,35 @@ describe("provider CLI command execution", () => {
       "saved-unlock-secret",
       { homeDir, store: undefined },
     )
+  })
+
+  it("ouro repair renders a shared readiness board in TTY mode before prompting", async () => {
+    emitTestEvent("provider cli repair shared board")
+    const bundlesRoot = makeTempDir("provider-cli-repair-board-bundles")
+    const homeDir = makeTempDir("provider-cli-repair-board-home")
+    writeAgentConfig(bundlesRoot, "Slugger")
+    writeAgentVaultLocator(bundlesRoot, "Slugger", {
+      email: "slugger@ouro.bot",
+      serverUrl: "https://vault.ouroboros.bot",
+    })
+    writeProviderState(agentRoot(bundlesRoot, "Slugger"), providerState())
+    writeUnavailableProviderCredentialPool("Slugger", "vault locked")
+
+    const prompts: string[] = []
+    const result = await runOuroCli(["repair", "--agent", "Slugger"], makeCliDeps(homeDir, bundlesRoot, {
+      isTTY: true,
+      stdoutColumns: 74,
+      promptInput: async (prompt) => {
+        prompts.push(prompt)
+        return "4"
+      },
+    }))
+
+    expect(result).toContain("___    _   _")
+    expect(result).toContain("Repair Slugger")
+    expect(result).toContain("Unlock with saved secret")
+    expect(result).toContain("[human required]")
+    expect(prompts).toContain("Choose [1-4]: ")
   })
 
   it("ouro repair explains when no agents are available", async () => {
@@ -1655,6 +5474,62 @@ describe("provider CLI command execution", () => {
     expect(mockVaultDeps.rawSecrets.size).toBe(0)
   })
 
+  it("vault replace lands on a shared TTY repair board instead of a raw transcript", async () => {
+    emitTestEvent("provider cli vault replace tty board")
+    const bundlesRoot = makeTempDir("provider-cli-vault-replace-tty-bundles")
+    const homeDir = makeTempDir("provider-cli-vault-replace-tty-home")
+    writeAgentConfig(bundlesRoot, "Slugger")
+
+    const result = await runOuroCli([
+      "vault",
+      "replace",
+      "--agent",
+      "Slugger",
+      "--server",
+      "https://vault.example.com",
+    ], makeCliDeps(homeDir, bundlesRoot, {
+      isTTY: true,
+      stdoutColumns: 78,
+      promptSecret: async () => "Chosen-replacement-secret1!",
+    }))
+
+    expect(result).toContain("Credential vault")
+    expect(result).toContain("Slugger now has a fresh empty vault.")
+    expect(result).toContain("What changed")
+    expect(result).toContain("Next moves")
+    expect(result).toContain("secret was not printed")
+  })
+
+  it("vault replace reports bundle sync when the repaired bundle is sync-enabled", async () => {
+    emitTestEvent("provider cli vault replace bundle sync")
+    const bundlesRoot = makeTempDir("provider-cli-vault-replace-sync-bundles")
+    const homeDir = makeTempDir("provider-cli-vault-replace-sync-home")
+    writeAgentConfig(bundlesRoot, "Slugger")
+    updateAgentConfig(bundlesRoot, "Slugger", (config) => {
+      config.sync = { enabled: true }
+    })
+    initBundleGit(agentRoot(bundlesRoot, "Slugger"))
+
+    const result = await runOuroCli([
+      "vault",
+      "replace",
+      "--agent",
+      "Slugger",
+      "--server",
+      "https://vault.example.com",
+    ], makeCliDeps(homeDir, bundlesRoot, {
+      isTTY: true,
+      stdoutColumns: 78,
+      promptSecret: async () => "Chosen-replacement-secret1!",
+    }))
+
+    expect(result).toContain("bundle sync: ran post-change sync (remote: origin)")
+    expect(execFileSync("git", ["log", "--oneline", "-1"], {
+      cwd: agentRoot(bundlesRoot, "Slugger"),
+      stdio: "pipe",
+    }).toString()).toContain("sync: post-turn update")
+  })
+
   it("vault replace repairs prior generated replacement emails instead of compounding them", async () => {
     emitTestEvent("provider cli vault replace stable default")
     const bundlesRoot = makeTempDir("provider-cli-vault-replace-stable-bundles")
@@ -1890,6 +5765,50 @@ describe("provider CLI command execution", () => {
     })
     expect(runtime.config).not.toHaveProperty("providers")
     expect(runtime.config).not.toHaveProperty("vault")
+  })
+
+  it("vault recover reports bundle sync when the recovered bundle is sync-enabled", async () => {
+    emitTestEvent("provider cli vault recover bundle sync")
+    const bundlesRoot = makeTempDir("provider-cli-vault-recover-sync-bundles")
+    const homeDir = makeTempDir("provider-cli-vault-recover-sync-home")
+    const sourceDir = makeTempDir("provider-cli-vault-recover-sync-source")
+    writeAgentConfig(bundlesRoot, "Slugger")
+    updateAgentConfig(bundlesRoot, "Slugger", (config) => {
+      config.sync = { enabled: true }
+    })
+    initBundleGit(agentRoot(bundlesRoot, "Slugger"))
+    writeMachineIdentity(homeDir, "machine_recover_sync")
+
+    const legacySecretsPath = path.join(sourceDir, "legacy-secrets.json")
+    fs.writeFileSync(legacySecretsPath, JSON.stringify({
+      providers: {
+        minimax: { apiKey: "mini-secret", model: "MiniMax-M2.5" },
+      },
+      vault: { masterPassword: "" },
+    }), "utf-8")
+
+    const deps = makeCliDeps(homeDir, bundlesRoot, {
+      now: () => Date.parse(NOW),
+      promptSecret: async () => "Chosen-recovery-secret1!",
+    })
+    const result = await runOuroCli([
+      "vault",
+      "recover",
+      "--agent",
+      "Slugger",
+      "--from",
+      legacySecretsPath,
+      "--server",
+      "https://vault.example.com",
+      "--store",
+      "plaintext-file",
+    ], deps)
+
+    expect(result).toContain("bundle sync: ran post-change sync (remote: origin)")
+    expect(execFileSync("git", ["log", "--oneline", "-1"], {
+      cwd: agentRoot(bundlesRoot, "Slugger"),
+      stdio: "pipe",
+    }).toString()).toContain("sync: post-turn update")
   })
 
 	  it("vault recover covers empty imports, prompted secrets, failures, and guards", async () => {
@@ -2369,6 +6288,763 @@ describe("provider CLI command execution", () => {
     expect(promptedSecret).not.toContain("pplx-hidden")
   })
 
+  it("vault item set stores ordinary items with notes and hidden fields", async () => {
+    emitTestEvent("provider cli vault item set")
+    const bundlesRoot = makeTempDir("provider-cli-vault-item-bundles")
+    const homeDir = makeTempDir("provider-cli-vault-item-home")
+    writeAgentConfig(bundlesRoot, "Slugger")
+    const prompted: string[] = []
+    const deps = makeCliDeps(homeDir, bundlesRoot, {
+      now: () => Date.parse(NOW),
+      promptSecret: async (question) => {
+        prompted.push(question)
+        return question.includes("secretApiKey") ? "porkbun-secret-key" : "porkbun-api-key"
+      },
+    })
+
+    const result = await runOuroCli(
+      [
+        "vault", "item", "set",
+        "--agent", "Slugger",
+        "--item", "ops/porkbun/ari@mendelow.me",
+        "--secret-field", "apiKey",
+        "--secret-field", "secretApiKey",
+        "--public-field", "account=ari@mendelow.me",
+        "--note", "Account-level Porkbun key; DNS workflow bindings live outside this note.",
+      ],
+      deps,
+    )
+
+    expect(prompted).toEqual([
+      "Secret field apiKey for ops/porkbun/ari@mendelow.me: ",
+      "Secret field secretApiKey for ops/porkbun/ari@mendelow.me: ",
+    ])
+    expect(result).toContain("stored ordinary vault item for Slugger")
+    expect(result).toContain("item: vault:Slugger:ops/porkbun/ari@mendelow.me")
+    expect(result).toContain("public fields: account")
+    expect(result).toContain("secret fields: apiKey, secretApiKey")
+    expect(result).toContain("notes: present")
+    expect(result).toContain("secret values were not printed")
+    expect(result).not.toContain("porkbun-api-key")
+    expect(result).not.toContain("porkbun-secret-key")
+    expect(mockVaultDeps.rawSecrets.has("Slugger:runtime/config")).toBe(false)
+
+    const stored = mockVaultDeps.storedItems.get("Slugger:ops/porkbun/ari@mendelow.me")
+    expect(stored?.notes).toBe("Account-level Porkbun key; DNS workflow bindings live outside this note.")
+    const payload = JSON.parse(stored?.password ?? "{}") as Record<string, unknown>
+    expect(payload).toMatchObject({
+      schemaVersion: 1,
+      updatedAt: NOW,
+      publicFields: { account: "ari@mendelow.me" },
+      secretFields: {
+        apiKey: "porkbun-api-key",
+        secretApiKey: "porkbun-secret-key",
+      },
+    })
+    expect(payload).not.toHaveProperty("kind")
+
+    const noPublicResult = await runOuroCli(
+      [
+        "vault", "item", "set",
+        "--agent", "Slugger",
+        "--item", "ops/custom/no-public",
+        "--secret-field", "apiKey",
+      ],
+      makeCliDeps(homeDir, bundlesRoot, {
+        now: () => Date.parse(NOW),
+        promptSecret: async () => "no-public-secret",
+      }),
+    )
+    expect(noPublicResult).toContain("public fields: none")
+    expect(noPublicResult).toContain("secret fields: apiKey")
+    expect(noPublicResult).not.toContain("no-public-secret")
+  })
+
+  it("vault item set supports templates without making provider-specific credential species", async () => {
+    emitTestEvent("provider cli vault item template")
+    const bundlesRoot = makeTempDir("provider-cli-vault-item-template-bundles")
+    const homeDir = makeTempDir("provider-cli-vault-item-template-home")
+    writeAgentConfig(bundlesRoot, "Slugger")
+    const prompted: string[] = []
+    const deps = makeCliDeps(homeDir, bundlesRoot, {
+      now: () => Date.parse(NOW),
+      promptSecret: async (question) => {
+        prompted.push(question)
+        return question.includes("secretApiKey") ? "templated-secret-key" : "templated-api-key"
+      },
+    })
+
+    const result = await runOuroCli(
+      [
+        "vault", "item", "set",
+        "--agent", "Slugger",
+        "--item", "ops/porkbun/template-account",
+        "--template", "porkbun-api",
+        "--secret-field", "apiKey",
+        "--public-field", "account=ari@mendelow.me",
+      ],
+      deps,
+    )
+
+    expect(prompted).toEqual([
+      "Secret field apiKey for ops/porkbun/template-account: ",
+      "Secret field secretApiKey for ops/porkbun/template-account: ",
+    ])
+    expect(result).toContain("stored ordinary vault item")
+    expect(result).toContain("notes: absent")
+    const stored = mockVaultDeps.storedItems.get("Slugger:ops/porkbun/template-account")
+    const payload = JSON.parse(stored?.password ?? "{}") as Record<string, unknown>
+    expect(payload).toMatchObject({
+      schemaVersion: 1,
+      updatedAt: NOW,
+      publicFields: { account: "ari@mendelow.me" },
+      secretFields: {
+        apiKey: "templated-api-key",
+        secretApiKey: "templated-secret-key",
+      },
+    })
+    expect(payload).not.toHaveProperty("kind")
+  })
+
+  it("vault item reports status and lists metadata without exposing secrets", async () => {
+    emitTestEvent("provider cli vault item status list")
+    const bundlesRoot = makeTempDir("provider-cli-vault-item-status-list-bundles")
+    const homeDir = makeTempDir("provider-cli-vault-item-status-list-home")
+    writeAgentConfig(bundlesRoot, "Slugger")
+
+    mockVaultDeps.credentialProbeGet.mockResolvedValueOnce({
+      domain: "ops/custom/service",
+      username: "agent@example.com",
+      notes: "human context",
+      createdAt: NOW,
+    })
+    const present = await runOuroCli(
+      ["vault", "item", "status", "--agent", "Slugger", "--item", "ops/custom/service"],
+      makeCliDeps(homeDir, bundlesRoot),
+    )
+    expect(present).toContain("item: vault:Slugger:ops/custom/service")
+    expect(present).toContain("status: present")
+    expect(present).toContain("username: agent@example.com")
+    expect(present).toContain("notes: present")
+    expect(present).toContain("secret values were not printed")
+    expect(present).not.toContain("porkbun-api-key")
+
+    mockVaultDeps.credentialProbeGet.mockResolvedValueOnce(null)
+    const missing = await runOuroCli(
+      ["vault", "item", "status", "--agent", "Slugger", "--item", "ops/missing/service"],
+      makeCliDeps(homeDir, bundlesRoot),
+    )
+    expect(missing).toContain("status: missing")
+    expect(missing).not.toContain("username:")
+
+    mockVaultDeps.credentialProbeList.mockResolvedValueOnce([
+      { domain: "runtime/config", createdAt: NOW },
+      { domain: "ops/custom/z", createdAt: NOW },
+      { domain: "ops/custom/a", createdAt: NOW },
+    ])
+    const listed = await runOuroCli(
+      ["vault", "item", "list", "--agent", "Slugger", "--prefix", "ops/custom"],
+      makeCliDeps(homeDir, bundlesRoot),
+    )
+    expect(listed).toContain("prefix: ops/custom")
+    expect(listed).toContain("items: ops/custom/a, ops/custom/z")
+    expect(listed).not.toContain("runtime/config")
+    expect(listed).toContain("secret values were not printed")
+
+    mockVaultDeps.credentialProbeList.mockResolvedValueOnce([
+      { domain: "runtime/config", createdAt: NOW },
+      { domain: "ops/custom/z", createdAt: NOW },
+      { domain: "ops/custom/a", createdAt: NOW },
+    ])
+    const listedTrailingPrefix = await runOuroCli(
+      ["vault", "item", "list", "--agent", "Slugger", "--prefix", "ops/custom/"],
+      makeCliDeps(homeDir, bundlesRoot),
+    )
+    expect(listedTrailingPrefix).toContain("prefix: ops/custom/")
+    expect(listedTrailingPrefix).toContain("items: ops/custom/a, ops/custom/z")
+    expect(listedTrailingPrefix).not.toContain("runtime/config")
+
+    mockVaultDeps.credentialProbeList.mockResolvedValueOnce([
+      { domain: "runtime/config", createdAt: NOW },
+      { domain: "ops/custom/z", createdAt: NOW },
+      { domain: "ops/custom/a", createdAt: NOW },
+    ])
+    const listedWithoutPrefix = await runOuroCli(
+      ["vault", "item", "list", "--agent", "Slugger"],
+      makeCliDeps(homeDir, bundlesRoot),
+    )
+    expect(listedWithoutPrefix).not.toContain("prefix:")
+    expect(listedWithoutPrefix).toContain("items: ops/custom/a, ops/custom/z, runtime/config")
+    expect(listedWithoutPrefix).toContain("secret values were not printed")
+  })
+
+  it("vault item set guards hidden entry, blank secrets, SerpentGuide, and harness-managed item names", async () => {
+    emitTestEvent("provider cli vault item guards")
+    const bundlesRoot = makeTempDir("provider-cli-vault-item-guards-bundles")
+    const homeDir = makeTempDir("provider-cli-vault-item-guards-home")
+    writeAgentConfig(bundlesRoot, "Slugger")
+
+    await expect(runOuroCli(
+      ["vault", "item", "set", "--agent", "Slugger", "--item", "ops/custom/service", "--secret-field", "apiKey"],
+      makeCliDeps(homeDir, bundlesRoot),
+    )).rejects.toThrow("Vault item secret entry requires an interactive terminal")
+
+    await expect(runOuroCli(
+      ["vault", "item", "set", "--agent", "Slugger", "--item", "ops/custom/service", "--secret-field", "apiKey"],
+      makeCliDeps(homeDir, bundlesRoot, {
+        promptSecret: async () => "   ",
+      }),
+    )).rejects.toThrow("Secret field apiKey cannot be blank")
+
+    await expect(runOuroCli(
+      ["vault", "item", "set", "--agent", "SerpentGuide", "--item", "ops/custom/service", "--secret-field", "apiKey"],
+      makeCliDeps(homeDir, bundlesRoot, {
+        promptSecret: async () => "secret",
+      }),
+    )).rejects.toThrow("SerpentGuide has no persistent credential vault")
+
+    const prompted: string[] = []
+    await expect(runOuroCli(
+      ["vault", "item", "set", "--agent", "Slugger", "--item", "runtime/config", "--secret-field", "apiKey"],
+      makeCliDeps(homeDir, bundlesRoot, {
+        promptSecret: async (question) => {
+          prompted.push(question)
+          return "secret"
+        },
+      }),
+    )).rejects.toThrow("reserved for harness-managed workflows")
+    expect(prompted).toEqual([])
+
+    await expect(runOuroCli(
+      ["vault", "item", "set", "--agent", "Slugger", "--item", "providers/openai-codex", "--secret-field", "apiKey"],
+      makeCliDeps(homeDir, bundlesRoot, {
+        promptSecret: async () => "secret",
+      }),
+    )).rejects.toThrow("Use ouro auth or ouro connect")
+
+    const serpentStatus = await runOuroCli(
+      ["vault", "item", "status", "--agent", "SerpentGuide", "--item", "ops/custom/service"],
+      makeCliDeps(homeDir, bundlesRoot),
+    )
+    expect(serpentStatus).toContain("SerpentGuide has no persistent credential vault")
+
+    const serpentList = await runOuroCli(
+      ["vault", "item", "list", "--agent", "SerpentGuide"],
+      makeCliDeps(homeDir, bundlesRoot),
+    )
+    expect(serpentList).toContain("SerpentGuide has no persistent credential vault")
+  })
+
+  it("vault ops porkbun is a deprecated compatibility alias for an ordinary vault item", async () => {
+    emitTestEvent("provider cli vault ops porkbun")
+    const bundlesRoot = makeTempDir("provider-cli-vault-ops-porkbun-bundles")
+    const homeDir = makeTempDir("provider-cli-vault-ops-porkbun-home")
+    writeAgentConfig(bundlesRoot, "Slugger")
+    const prompted: string[] = []
+    const deps = makeCliDeps(homeDir, bundlesRoot, {
+      now: () => Date.parse(NOW),
+      promptSecret: async (question) => {
+        prompted.push(question)
+        return question.includes("Secret") ? "porkbun-secret-key" : "porkbun-api-key"
+      },
+    })
+
+    const result = await runOuroCli(
+      ["vault", "ops", "porkbun", "set", "--agent", "Slugger", "--account", "ari@mendelow.me"],
+      deps,
+    )
+
+    expect(prompted).toEqual([
+      "Porkbun API key for ari@mendelow.me: ",
+      "Porkbun Secret API key for ari@mendelow.me: ",
+    ])
+    expect(result).toContain("deprecated compatibility alias")
+    expect(result).toContain("ouro vault item set --template porkbun-api")
+    expect(result).toContain("stored ordinary vault item for Slugger")
+    expect(result).toContain("ops/registrars/porkbun/accounts/ari@mendelow.me")
+    expect(result).toContain("account: ari@mendelow.me")
+    expect(result).toContain("secret values were not printed")
+    expect(result).not.toContain("authority:")
+    expect(result).not.toContain("ops credentials")
+    expect(result).not.toContain("porkbun-api-key")
+    expect(result).not.toContain("porkbun-secret-key")
+    expect(mockVaultDeps.rawSecrets.has("Slugger:runtime/config")).toBe(false)
+
+    const stored = mockVaultDeps.storedItems.get("Slugger:ops/registrars/porkbun/accounts/ari@mendelow.me")
+    const payload = JSON.parse(stored?.password ?? "{}") as Record<string, unknown>
+    expect(payload).toMatchObject({
+      schemaVersion: 1,
+      updatedAt: NOW,
+      publicFields: { account: "ari@mendelow.me" },
+      secretFields: {
+        apiKey: "porkbun-api-key",
+        secretApiKey: "porkbun-secret-key",
+      },
+    })
+    expect(payload).not.toHaveProperty("kind")
+  })
+
+  it("vault ops porkbun status reports presence without exposing secrets", async () => {
+    emitTestEvent("provider cli vault ops porkbun status")
+    const bundlesRoot = makeTempDir("provider-cli-vault-ops-porkbun-status-bundles")
+    const homeDir = makeTempDir("provider-cli-vault-ops-porkbun-status-home")
+    writeAgentConfig(bundlesRoot, "Slugger")
+    const itemName = "ops/registrars/porkbun/accounts/ari@mendelow.me"
+
+    mockVaultDeps.credentialProbeGet.mockResolvedValueOnce({
+      domain: itemName,
+      username: "ari@mendelow.me",
+      createdAt: NOW,
+    })
+    const present = await runOuroCli(
+      ["vault", "ops", "porkbun", "status", "--agent", "Slugger", "--account", "ari@mendelow.me"],
+      makeCliDeps(homeDir, bundlesRoot),
+    )
+    expect(present).toContain("deprecated compatibility alias")
+    expect(present).toContain("agent: Slugger")
+    expect(present).toContain(`ordinary vault item: vault:Slugger:${itemName}`)
+    expect(present).toContain("status: present")
+    expect(present).toContain("account: ari@mendelow.me")
+    expect(present).toContain("secret values were not printed")
+    expect(present).not.toContain("authority:")
+    expect(present).not.toContain("porkbun-api-key")
+
+    mockVaultDeps.credentialProbeGet.mockResolvedValueOnce(null)
+    const missing = await runOuroCli(
+      ["vault", "ops", "porkbun", "status", "--agent", "Slugger", "--account", "missing@example.com"],
+      makeCliDeps(homeDir, bundlesRoot),
+    )
+    expect(missing).toContain("status: missing")
+    expect(missing).not.toContain("account:")
+
+    const emptyList = await runOuroCli(
+      ["vault", "ops", "porkbun", "status", "--agent", "Slugger"],
+      makeCliDeps(homeDir, bundlesRoot),
+    )
+    expect(emptyList).toContain("items: none stored")
+
+    mockVaultDeps.credentialProbeList.mockResolvedValueOnce([
+      { domain: "runtime/config", createdAt: NOW },
+      { domain: "ops/registrars/porkbun/accounts/z@example.com", createdAt: NOW },
+      { domain: "ops/registrars/porkbun/accounts/a@example.com", createdAt: NOW },
+    ])
+    const listed = await runOuroCli(
+      ["vault", "ops", "porkbun", "status", "--agent", "Slugger"],
+      makeCliDeps(homeDir, bundlesRoot),
+    )
+    expect(listed).toContain("items: ops/registrars/porkbun/accounts/a@example.com, ops/registrars/porkbun/accounts/z@example.com")
+    expect(listed).not.toContain("runtime/config")
+  })
+
+  it("vault ops porkbun protects the owning vault boundary and hidden-entry validation", async () => {
+    emitTestEvent("provider cli vault ops porkbun guards")
+    const bundlesRoot = makeTempDir("provider-cli-vault-ops-porkbun-guards-bundles")
+    const homeDir = makeTempDir("provider-cli-vault-ops-porkbun-guards-home")
+    writeAgentConfig(bundlesRoot, "Slugger")
+
+    await expect(runOuroCli(
+      ["vault", "ops", "porkbun", "set", "--agent", "Slugger", "--account", "ari@mendelow.me"],
+      makeCliDeps(homeDir, bundlesRoot),
+    )).rejects.toThrow("Porkbun ops credential entry requires an interactive terminal")
+
+    await expect(runOuroCli(
+      ["vault", "ops", "porkbun", "set", "--agent", "Slugger", "--account", "ari@mendelow.me"],
+      makeCliDeps(homeDir, bundlesRoot, {
+        promptSecret: async () => "   ",
+      }),
+    )).rejects.toThrow("Porkbun API key cannot be blank")
+
+    const answers = ["porkbun-api-key", "   "]
+    await expect(runOuroCli(
+      ["vault", "ops", "porkbun", "set", "--agent", "Slugger", "--account", "ari@mendelow.me"],
+      makeCliDeps(homeDir, bundlesRoot, {
+        promptSecret: async () => answers.shift() ?? "",
+      }),
+    )).rejects.toThrow("Porkbun Secret API key cannot be blank")
+
+    await expect(runOuroCli(
+      ["vault", "ops", "porkbun", "set", "--agent", "SerpentGuide", "--account", "ari@mendelow.me"],
+      makeCliDeps(homeDir, bundlesRoot, {
+        promptSecret: async () => "porkbun-api-key",
+      }),
+    )).rejects.toThrow("SerpentGuide has no persistent credential vault")
+
+    const serpentStatus = await runOuroCli(
+      ["vault", "ops", "porkbun", "status", "--agent", "SerpentGuide"],
+      makeCliDeps(homeDir, bundlesRoot),
+    )
+    expect(serpentStatus).toContain("SerpentGuide has no persistent credential vault")
+    expect(serpentStatus).toContain("owning agent vault")
+  })
+
+  it("dns workflow plan resolves a binding-backed vault item without leaking secrets", async () => {
+    emitTestEvent("provider cli dns workflow plan")
+    const bundlesRoot = makeTempDir("provider-cli-dns-plan-bundles")
+    const homeDir = makeTempDir("provider-cli-dns-plan-home")
+    const repoRoot = makeTempDir("provider-cli-dns-plan-repo")
+    writeAgentConfig(bundlesRoot, "Slugger")
+    const bindingPath = path.join(repoRoot, "infra", "dns", "ouro.bot.binding.json")
+    const outputPath = path.join(repoRoot, "artifacts", "dns-plan.json")
+    fs.mkdirSync(path.dirname(bindingPath), { recursive: true })
+    fs.writeFileSync(bindingPath, `${JSON.stringify({
+      workflow: "dns",
+      domain: "ouro.bot",
+      driver: "porkbun",
+      credentialItem: "ops/registrars/porkbun/accounts/ari@mendelow.me",
+      resources: { records: [{ type: "A", name: "mx1" }, { type: "MX", name: "@" }] },
+      desired: {
+        records: [
+          { type: "A", name: "mx1", content: "20.10.114.197", ttl: 600 },
+          { type: "MX", name: "@", content: "mx1.ouro.bot", priority: 10, ttl: 600 },
+        ],
+      },
+    }, null, 2)}\n`, "utf-8")
+    mockVaultDeps.rawSecrets.set("Slugger:ops/registrars/porkbun/accounts/ari@mendelow.me", JSON.stringify({
+      secretFields: {
+        apiKey: "porkbun-api-key",
+        secretApiKey: "porkbun-secret-key",
+      },
+    }))
+    fetchMock.mockImplementation(async (input: RequestInfo | URL, init?: RequestInit) => {
+      expect(fetchRequestUrl(input)).toBe("https://api.porkbun.com/api/json/v3/dns/retrieve/ouro.bot")
+      expect(init?.method).toBe("GET")
+      expect(fetchHeader(init, "X-API-Key")).toBe("porkbun-api-key")
+      expect(fetchHeader(init, "X-Secret-API-Key")).toBe("porkbun-secret-key")
+      return mockJsonResponse({
+        status: "SUCCESS",
+        records: [
+          { id: "mx-old", type: "MX", name: "ouro.bot", content: "ouro-bot.mail.protection.outlook.com", prio: "0", ttl: "600" },
+        ],
+      })
+    })
+
+    const result = await runOuroCli(
+      ["dns", "plan", "--agent", "Slugger", "--binding", "infra/dns/ouro.bot.binding.json", "--output", "artifacts/dns-plan.json"],
+      makeCliDeps(homeDir, bundlesRoot, {
+        fetchImpl: fetchMock as unknown as typeof fetch,
+        getRepoCwd: () => repoRoot,
+      }),
+    )
+
+    expect(result).toContain("dns plan for ouro.bot")
+    expect(result).toContain("credential item: vault:Slugger:ops/registrars/porkbun/accounts/ari@mendelow.me")
+    expect(result).toContain("changes: 2")
+    expect(result).toContain("secret values were not printed")
+    const artifact = fs.readFileSync(outputPath, "utf-8")
+    expect(artifact).toContain("mx1.ouro.bot")
+    expect(artifact).not.toContain("porkbun-api-key")
+    expect(artifact).not.toContain("porkbun-secret-key")
+
+    mockVaultDeps.rawSecrets.set("Slugger:ops/registrars/porkbun/accounts/ari@mendelow.me", JSON.stringify({
+      secretFields: { apiKey: "porkbun-api-key" },
+    }))
+    await expect(runOuroCli(
+      ["dns", "plan", "--agent", "Slugger", "--binding", "infra/dns/ouro.bot.binding.json"],
+      makeCliDeps(homeDir, bundlesRoot, {
+        fetchImpl: fetchMock as unknown as typeof fetch,
+        getRepoCwd: () => repoRoot,
+      }),
+    )).rejects.toThrow("missing required secret field secretApiKey")
+
+    mockVaultDeps.rawSecrets.set("Slugger:ops/registrars/porkbun/accounts/ari@mendelow.me", JSON.stringify({
+      schemaVersion: 1,
+      kind: "ops-credential/porkbun",
+      account: "ari@mendelow.me",
+      apiKey: "legacy-porkbun-api-key",
+      secretApiKey: "legacy-porkbun-secret-key",
+    }))
+    fetchMock.mockClear()
+    fetchMock.mockImplementation(async (input: RequestInfo | URL, init?: RequestInit) => {
+      expect(fetchRequestUrl(input)).toBe("https://api.porkbun.com/api/json/v3/dns/retrieve/ouro.bot")
+      expect(fetchHeader(init, "X-API-Key")).toBe("legacy-porkbun-api-key")
+      expect(fetchHeader(init, "X-Secret-API-Key")).toBe("legacy-porkbun-secret-key")
+      return mockJsonResponse({ status: "SUCCESS", records: [] })
+    })
+    const legacyResult = await runOuroCli(
+      ["dns", "plan", "--agent", "Slugger", "--binding", "infra/dns/ouro.bot.binding.json"],
+      makeCliDeps(homeDir, bundlesRoot, {
+        fetchImpl: fetchMock as unknown as typeof fetch,
+        getRepoCwd: () => repoRoot,
+      }),
+    )
+    expect(legacyResult).toContain("dns plan for ouro.bot")
+  })
+
+  it("dns workflow certificate retrieves and stores the TLS bundle without leaking secrets", async () => {
+    emitTestEvent("provider cli dns workflow certificate")
+    const bundlesRoot = makeTempDir("provider-cli-dns-certificate-bundles")
+    const homeDir = makeTempDir("provider-cli-dns-certificate-home")
+    const repoRoot = makeTempDir("provider-cli-dns-certificate-repo")
+    writeAgentConfig(bundlesRoot, "Slugger")
+    const bindingPath = path.join(repoRoot, "infra", "dns", "ouro.bot.binding.json")
+    const outputPath = path.join(repoRoot, "artifacts", "dns-certificate.json")
+    fs.mkdirSync(path.dirname(bindingPath), { recursive: true })
+    fs.writeFileSync(bindingPath, `${JSON.stringify({
+      workflow: "dns",
+      domain: "ouro.bot",
+      driver: "porkbun",
+      credentialItem: "ops/registrars/porkbun/accounts/ari@mendelow.me",
+      resources: { records: [{ type: "TXT", name: "_acme-challenge.mx1" }] },
+      desired: { records: [] },
+      certificate: {
+        host: "mx1.ouro.bot",
+        source: "porkbun-ssl",
+        storeItem: "runtime/mail/certificates/mx1.ouro.bot",
+      },
+    }, null, 2)}\n`, "utf-8")
+    mockVaultDeps.rawSecrets.set("Slugger:ops/registrars/porkbun/accounts/ari@mendelow.me", JSON.stringify({
+      secretFields: {
+        apiKey: "porkbun-api-key",
+        secretApiKey: "porkbun-secret-key",
+      },
+    }))
+    fetchMock.mockImplementation(async (input: RequestInfo | URL, init?: RequestInit) => {
+      expect(fetchRequestUrl(input)).toBe("https://api.porkbun.com/api/json/v3/ssl/retrieve/ouro.bot")
+      expect(init?.method).toBe("GET")
+      expect(fetchHeader(init, "X-API-Key")).toBe("porkbun-api-key")
+      expect(fetchHeader(init, "X-Secret-API-Key")).toBe("porkbun-secret-key")
+      return mockJsonResponse({
+        status: "SUCCESS",
+        certificatechain: "-----BEGIN CERTIFICATE-----\npublic-chain\n-----END CERTIFICATE-----",
+        publickey: "-----BEGIN CERTIFICATE-----\npublic-cert\n-----END CERTIFICATE-----",
+        privatekey: "-----BEGIN PRIVATE KEY-----\nprivate-key\n-----END PRIVATE KEY-----",
+      })
+    })
+
+    const result = await runOuroCli(
+      ["dns", "certificate", "--agent", "Slugger", "--binding", "infra/dns/ouro.bot.binding.json", "--output", "artifacts/dns-certificate.json"],
+      makeCliDeps(homeDir, bundlesRoot, {
+        fetchImpl: fetchMock as unknown as typeof fetch,
+        getRepoCwd: () => repoRoot,
+      }),
+    )
+
+    expect(result).toContain("dns certificate for ouro.bot")
+    expect(result).toContain("certificate item: vault:Slugger:runtime/mail/certificates/mx1.ouro.bot")
+    expect(result).toContain("secret values were not printed")
+    const stored = mockVaultDeps.storedItems.get("Slugger:runtime/mail/certificates/mx1.ouro.bot")
+    expect(stored?.username).toBe("mx1.ouro.bot")
+    expect(stored?.notes).toContain("workflow binding")
+    const payload = JSON.parse(stored?.password ?? "{}") as {
+      publicFields?: Record<string, string>
+      secretFields?: Record<string, string>
+    }
+    expect(payload.publicFields).toEqual(expect.objectContaining({
+      host: "mx1.ouro.bot",
+      source: "porkbun-ssl",
+      domain: "ouro.bot",
+    }))
+    expect(payload.secretFields).toEqual(expect.objectContaining({
+      certificatechain: expect.stringContaining("public-chain"),
+      publickey: expect.stringContaining("public-cert"),
+      privatekey: expect.stringContaining("private-key"),
+    }))
+    const artifact = fs.readFileSync(outputPath, "utf-8")
+    expect(artifact).toContain("public-cert")
+    expect(artifact).not.toContain("private-key")
+    expect(artifact).not.toContain("porkbun-secret-key")
+
+    const noArtifactResult = await runOuroCli(
+      ["dns", "certificate", "--agent", "Slugger", "--binding", "infra/dns/ouro.bot.binding.json"],
+      makeCliDeps(homeDir, bundlesRoot, {
+        fetchImpl: fetchMock as unknown as typeof fetch,
+        getRepoCwd: () => repoRoot,
+      }),
+    )
+    expect(noArtifactResult).toContain("artifact: not written")
+
+    fs.writeFileSync(bindingPath, `${JSON.stringify({
+      workflow: "dns",
+      domain: "ouro.bot",
+      driver: "porkbun",
+      credentialItem: "ops/registrars/porkbun/accounts/ari@mendelow.me",
+      resources: { records: [{ type: "MX", name: "@" }] },
+      desired: { records: [] },
+    }, null, 2)}\n`, "utf-8")
+    await expect(runOuroCli(
+      ["dns", "certificate", "--agent", "Slugger", "--binding", "infra/dns/ouro.bot.binding.json"],
+      makeCliDeps(homeDir, bundlesRoot, {
+        fetchImpl: fetchMock as unknown as typeof fetch,
+        getRepoCwd: () => repoRoot,
+      }),
+    )).rejects.toThrow("DNS workflow binding does not define a certificate")
+
+    fs.writeFileSync(bindingPath, `${JSON.stringify({
+      workflow: "dns",
+      domain: "ouro.bot",
+      driver: "porkbun",
+      credentialItem: "ops/registrars/porkbun/accounts/ari@mendelow.me",
+      resources: { records: [{ type: "TXT", name: "_acme-challenge.mx1" }] },
+      desired: { records: [] },
+      certificate: {
+        host: "mx1.ouro.bot",
+        source: "acme-dns-01",
+        storeItem: "runtime/mail/certificates/mx1.ouro.bot",
+      },
+    }, null, 2)}\n`, "utf-8")
+    await expect(runOuroCli(
+      ["dns", "certificate", "--agent", "Slugger", "--binding", "infra/dns/ouro.bot.binding.json"],
+      makeCliDeps(homeDir, bundlesRoot, {
+        fetchImpl: fetchMock as unknown as typeof fetch,
+        getRepoCwd: () => repoRoot,
+      }),
+    )).rejects.toThrow("DNS workflow certificate source acme-dns-01 is not implemented")
+  })
+
+  it("dns workflow plan supports absolute paths and current-directory relative paths", async () => {
+    emitTestEvent("provider cli dns workflow path resolution")
+    const bundlesRoot = makeTempDir("provider-cli-dns-path-bundles")
+    const homeDir = makeTempDir("provider-cli-dns-path-home")
+    const repoRoot = makeTempDir("provider-cli-dns-path-repo")
+    writeAgentConfig(bundlesRoot, "Slugger")
+    const bindingPath = path.join(repoRoot, "infra", "dns", "ouro.bot.binding.json")
+    const outputPath = path.join(repoRoot, "artifacts", "absolute-plan.json")
+    fs.mkdirSync(path.dirname(bindingPath), { recursive: true })
+    fs.writeFileSync(bindingPath, `${JSON.stringify({
+      workflow: "dns",
+      domain: "ouro.bot",
+      driver: "porkbun",
+      credentialItem: "ops/registrars/porkbun/accounts/ari@mendelow.me",
+      resources: { records: [{ type: "MX", name: "@" }] },
+      desired: {
+        records: [
+          { type: "MX", name: "@", content: "mx1.ouro.bot", priority: 10, ttl: 600 },
+        ],
+      },
+    }, null, 2)}\n`, "utf-8")
+    mockVaultDeps.rawSecrets.set("Slugger:ops/registrars/porkbun/accounts/ari@mendelow.me", JSON.stringify({
+      secretFields: {
+        apiKey: "porkbun-api-key",
+        secretApiKey: "porkbun-secret-key",
+      },
+    }))
+    fetchMock.mockImplementation(async (input: RequestInfo | URL) => {
+      expect(fetchRequestUrl(input)).toBe("https://api.porkbun.com/api/json/v3/dns/retrieve/ouro.bot")
+      return mockJsonResponse({
+        status: "SUCCESS",
+        records: [{ id: "mx-old", type: "MX", name: "@", content: "mx1.ouro.bot", priority: 10, ttl: 600 }],
+      })
+    })
+
+    const absoluteResult = await runOuroCli(
+      ["dns", "plan", "--agent", "Slugger", "--binding", bindingPath, "--output", outputPath],
+      makeCliDeps(homeDir, bundlesRoot),
+    )
+    expect(absoluteResult).toContain("changes: 0")
+    expect(fs.readFileSync(outputPath, "utf-8")).not.toContain("porkbun-secret-key")
+
+    const previousCwd = process.cwd()
+    try {
+      process.chdir(repoRoot)
+      const relativeResult = await runOuroCli(
+        ["dns", "verify", "--agent", "Slugger", "--binding", "infra/dns/ouro.bot.binding.json"],
+        makeCliDeps(homeDir, bundlesRoot),
+      )
+      expect(relativeResult).toContain("dns verify for ouro.bot")
+    } finally {
+      process.chdir(previousCwd)
+    }
+  })
+
+  it("dns workflow apply and rollback mutate only planned allowlisted records", async () => {
+    emitTestEvent("provider cli dns workflow apply rollback")
+    const bundlesRoot = makeTempDir("provider-cli-dns-apply-bundles")
+    const homeDir = makeTempDir("provider-cli-dns-apply-home")
+    const repoRoot = makeTempDir("provider-cli-dns-apply-repo")
+    writeAgentConfig(bundlesRoot, "Slugger")
+    const bindingPath = path.join(repoRoot, "infra", "dns", "ouro.bot.binding.json")
+    const backupPath = path.join(repoRoot, "artifacts", "backup.json")
+    fs.mkdirSync(path.dirname(bindingPath), { recursive: true })
+    fs.mkdirSync(path.dirname(backupPath), { recursive: true })
+    fs.writeFileSync(bindingPath, `${JSON.stringify({
+      workflow: "dns",
+      domain: "ouro.bot",
+      driver: "porkbun",
+      credentialItem: "ops/registrars/porkbun/accounts/ari@mendelow.me",
+      resources: { records: [{ type: "A", name: "mx1" }, { type: "MX", name: "@" }, { type: "TXT", name: "_dmarc" }] },
+      desired: {
+        records: [
+          { type: "A", name: "mx1", content: "20.10.114.197", ttl: 600 },
+          { type: "MX", name: "@", content: "mx1.ouro.bot", priority: 10, ttl: 600 },
+          { type: "TXT", name: "_dmarc", content: "v=DMARC1; p=none", ttl: 600 },
+        ],
+      },
+    }, null, 2)}\n`, "utf-8")
+    fs.writeFileSync(backupPath, `${JSON.stringify({
+      plan: {
+        backup: {
+          records: [
+            { id: "mx-old", type: "MX", name: "@", content: "ouro-bot.mail.protection.outlook.com", priority: 0, ttl: 600 },
+          ],
+        },
+      },
+    })}\n`, "utf-8")
+    mockVaultDeps.rawSecrets.set("Slugger:ops/registrars/porkbun/accounts/ari@mendelow.me", JSON.stringify({
+      secretFields: {
+        apiKey: "porkbun-api-key",
+        secretApiKey: "porkbun-secret-key",
+      },
+    }))
+    let mode: "apply" | "rollback" = "apply"
+    fetchMock.mockImplementation(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = fetchRequestUrl(input)
+      if (url.endsWith("/dns/retrieve/ouro.bot")) {
+        return mockJsonResponse({
+          status: "SUCCESS",
+          records: mode === "apply"
+            ? [{ id: "mx-old", type: "MX", name: "@", content: "ouro-bot.mail.protection.outlook.com", priority: 0, ttl: 600 }]
+            : [
+                { id: "mx1-a", type: "A", name: "mx1", content: "20.10.114.197", ttl: 600 },
+                { id: "mx-new", type: "MX", name: "@", content: "mx1.ouro.bot", priority: 10, ttl: 600 },
+                { id: "dmarc", type: "TXT", name: "_dmarc", content: "v=DMARC1; p=none", ttl: 600 },
+                { id: "www", type: "A", name: "www", content: "203.0.113.12", ttl: 600 },
+              ],
+        })
+      }
+      expect(init?.method).toBe("POST")
+      expect(fetchHeader(init, "X-API-Key")).toBe("porkbun-api-key")
+      expect(fetchHeader(init, "X-Secret-API-Key")).toBe("porkbun-secret-key")
+      expect(String(init?.body ?? "")).not.toContain("porkbun-api-key")
+      return mockJsonResponse(url.includes("/dns/create/") ? { status: "SUCCESS", id: "created" } : { status: "SUCCESS" })
+    })
+    const deps = makeCliDeps(homeDir, bundlesRoot, {
+      fetchImpl: fetchMock as unknown as typeof fetch,
+      getRepoCwd: () => repoRoot,
+    })
+
+    const applied = await runOuroCli(
+      ["dns", "apply", "--agent", "Slugger", "--binding", "infra/dns/ouro.bot.binding.json", "--yes"],
+      deps,
+    )
+    expect(applied).toContain("applied: 3")
+    expect(fetchMock.mock.calls.map(([input]) => fetchRequestUrl(input))).toEqual([
+      "https://api.porkbun.com/api/json/v3/dns/retrieve/ouro.bot",
+      "https://api.porkbun.com/api/json/v3/dns/create/ouro.bot",
+      "https://api.porkbun.com/api/json/v3/dns/edit/ouro.bot/mx-old",
+      "https://api.porkbun.com/api/json/v3/dns/create/ouro.bot",
+    ])
+
+    mode = "rollback"
+    fetchMock.mockClear()
+    const rolledBack = await runOuroCli(
+      ["dns", "rollback", "--agent", "Slugger", "--binding", "infra/dns/ouro.bot.binding.json", "--backup", "artifacts/backup.json", "--yes"],
+      deps,
+    )
+    expect(rolledBack).toContain("applied: 3")
+    expect(fetchMock.mock.calls.map(([input]) => fetchRequestUrl(input))).toEqual([
+      "https://api.porkbun.com/api/json/v3/dns/retrieve/ouro.bot",
+      "https://api.porkbun.com/api/json/v3/dns/edit/ouro.bot/mx-new",
+      "https://api.porkbun.com/api/json/v3/dns/delete/ouro.bot/mx1-a",
+      "https://api.porkbun.com/api/json/v3/dns/delete/ouro.bot/dmarc",
+    ])
+
+    fs.writeFileSync(backupPath, "{\"not\":\"a backup\"}\n", "utf-8")
+    await expect(runOuroCli(
+      ["dns", "rollback", "--agent", "Slugger", "--binding", "infra/dns/ouro.bot.binding.json", "--backup", "artifacts/backup.json", "--yes"],
+      deps,
+    )).rejects.toThrow("dns rollback backup does not contain records")
+  })
+
   it("connects Perplexity through a discoverable hidden-prompt flow", async () => {
     emitTestEvent("provider cli connect perplexity")
     const bundlesRoot = makeTempDir("provider-cli-connect-perplexity-bundles")
@@ -2394,11 +7070,13 @@ describe("provider CLI command execution", () => {
     expect(output).toContain("Connect Perplexity for Slugger")
     expect(output).toContain("The API key stays hidden while you type.")
     expect(output).toContain("... saving Perplexity search")
+    expect(output).toContain("... verifying Perplexity search")
     expect(output).toContain("checking existing runtime config")
     expect(output).toContain("storing integrations.perplexityApiKey")
     expect(output).toContain("✓ saving Perplexity search")
+    expect(output).toContain("✓ verifying Perplexity search")
     expect(output).toContain("... applying change to running Slugger")
-    expect(output).toContain("checking daemon socket")
+    expect(output).toContain("checking whether Ouro is already running")
     expect(output).toContain("daemon is not running; next `ouro up` will load the change")
     expect(output).not.toContain("pplx-secret")
 
@@ -2408,6 +7086,47 @@ describe("provider CLI command execution", () => {
         perplexityApiKey: "pplx-secret",
       },
     })
+  })
+
+  it("renders a richer TTY onboarding board for Perplexity", async () => {
+    emitTestEvent("provider cli connect perplexity tty board")
+    const bundlesRoot = makeTempDir("provider-cli-connect-perplexity-tty-bundles")
+    const homeDir = makeTempDir("provider-cli-connect-perplexity-tty-home")
+    writeAgentConfig(bundlesRoot, "Slugger")
+
+    const deps = makeCliDeps(homeDir, bundlesRoot, {
+      now: () => Date.parse(NOW),
+      isTTY: true,
+      stdoutColumns: 90,
+      promptSecret: async () => "pplx-secret",
+    })
+    await runOuroCli(["connect", "perplexity", "--agent", "Slugger"], deps)
+    const output = ((deps as OuroCliDeps & { _output: string[] })._output).join("")
+
+    expect(output).toContain("Connect Perplexity")
+    expect(output).toContain("Unlocks")
+    expect(output).toContain("What you need")
+    expect(output).toContain("Where it lives")
+    expect(output).toContain("Portable web search inside Ouro")
+  })
+
+  it("renders a shared TTY completion board for Perplexity", async () => {
+    emitTestEvent("provider cli connect perplexity tty completion")
+    const bundlesRoot = makeTempDir("provider-cli-connect-perplexity-tty-complete-bundles")
+    const homeDir = makeTempDir("provider-cli-connect-perplexity-tty-complete-home")
+    writeAgentConfig(bundlesRoot, "Slugger")
+
+    const result = await runOuroCli(["connect", "perplexity", "--agent", "Slugger"], makeCliDeps(homeDir, bundlesRoot, {
+      now: () => Date.parse(NOW),
+      isTTY: true,
+      stdoutColumns: 88,
+      promptSecret: async () => "pplx-secret",
+    }))
+
+    expect(result).toContain("Capability connected")
+    expect(result).toContain("Perplexity search is ready to travel with Slugger.")
+    expect(result).toContain("What changed")
+    expect(result).toContain("Next moves")
   })
 
   it("connect Perplexity keeps progress visible when the vault write path fails", async () => {
@@ -2455,6 +7174,7 @@ describe("provider CLI command execution", () => {
       "18888",
       "/bb-webhook",
       "12000",
+      "+1 415 555 0000, slugger@ouro.bot",
     ]
     const deps = makeCliDeps(homeDir, bundlesRoot, {
       now: () => Date.parse(NOW),
@@ -2486,6 +7206,7 @@ describe("provider CLI command execution", () => {
       bluebubbles: {
         serverUrl: "http://127.0.0.1:1234",
         password: "bb-password",
+        ownHandles: ["+1 415 555 0000", "slugger@ouro.bot"],
       },
       bluebubblesChannel: {
         port: 18888,
@@ -2499,6 +7220,247 @@ describe("provider CLI command execution", () => {
     }
     expect(agentJson.senses?.bluebubbles?.enabled).toBe(true)
     expect(agentJson.senses?.bluebubbles?.preserved).toBe("yes")
+  })
+
+  it("restarts a running daemon after connecting BlueBubbles so the local sense starts immediately", async () => {
+    emitTestEvent("provider cli connect bluebubbles applies running daemon")
+    const bundlesRoot = makeTempDir("provider-cli-connect-bluebubbles-daemon-restart-bundles")
+    const homeDir = makeTempDir("provider-cli-connect-bluebubbles-daemon-restart-home")
+    writeAgentConfig(bundlesRoot, "Slugger")
+    writeMachineIdentity(homeDir, "machine_bb_live")
+
+    const answers = [
+      "http://127.0.0.1:1234",
+      "18888",
+      "/bb-webhook",
+      "12000",
+    ]
+    let nowMs = Date.parse(NOW)
+    const cleanupStaleSocket = vi.fn()
+    const startDaemonProcess = vi.fn(async () => ({ pid: 42 }))
+    const sentCommands: string[] = []
+    const deps = makeCliDeps(homeDir, bundlesRoot, {
+      now: () => nowMs,
+      sleep: async (ms) => { nowMs += ms },
+      startupPollIntervalMs: 1,
+      startupTimeoutMs: 50,
+      checkSocketAlive: async () => true,
+      cleanupStaleSocket,
+      startDaemonProcess,
+      sendCommand: async (_socketPath, command) => {
+        sentCommands.push(command.kind)
+        if (command.kind === "daemon.stop") return { ok: true, message: "daemon stopped" }
+        if (command.kind === "daemon.status") {
+          return {
+            ok: true,
+            data: {
+              overview: { daemon: "running", health: "ok", workerCount: 1, senseCount: 1 },
+              workers: [{
+                agent: "Slugger",
+                worker: "inner-dialog",
+                status: "running",
+                pid: 42,
+                restartCount: 0,
+                startedAt: new Date(nowMs - 10_000).toISOString(),
+                lastExitCode: null,
+                lastSignal: null,
+                errorReason: null,
+                fixHint: null,
+              }],
+              senses: [{
+                agent: "Slugger",
+                sense: "bluebubbles",
+                label: "BlueBubbles",
+                enabled: true,
+                status: "running",
+                detail: ":18888 /bb-webhook",
+              }],
+              sync: [],
+              agents: [{ name: "Slugger", enabled: true }],
+              providers: [],
+            },
+          }
+        }
+        return { ok: true }
+      },
+      promptInput: async () => answers.shift() ?? "",
+      promptSecret: async () => "bb-password",
+    })
+
+    const result = await runOuroCli(["connect", "bluebubbles", "--agent", "Slugger"], deps)
+
+    expect(result).toContain("runtime: restarted Ouro; BlueBubbles is loaded for Slugger")
+    expect(sentCommands).toContain("daemon.stop")
+    expect(sentCommands).toContain("daemon.status")
+    expect(cleanupStaleSocket).toHaveBeenCalledWith("/tmp/test-socket")
+    expect(startDaemonProcess).toHaveBeenCalledWith("/tmp/test-socket")
+  })
+
+  it("keeps BlueBubbles setup successful when live daemon apply cannot inspect the socket", async () => {
+    emitTestEvent("provider cli connect bluebubbles daemon apply socket inspection failure")
+    const bundlesRoot = makeTempDir("provider-cli-connect-bluebubbles-daemon-apply-failure-bundles")
+    const homeDir = makeTempDir("provider-cli-connect-bluebubbles-daemon-apply-failure-home")
+    writeAgentConfig(bundlesRoot, "Slugger")
+    writeMachineIdentity(homeDir, "machine_bb_socket_fail")
+
+    const answers = [
+      "http://127.0.0.1:1234",
+      "18888",
+      "/bb-webhook",
+      "12000",
+    ]
+    const deps = makeCliDeps(homeDir, bundlesRoot, {
+      now: () => Date.parse(NOW),
+      checkSocketAlive: async () => {
+        throw "socket unavailable"
+      },
+      promptInput: async () => answers.shift() ?? "",
+      promptSecret: async () => "bb-password",
+    })
+
+    const result = await runOuroCli(["connect", "bluebubbles", "--agent", "Slugger"], deps)
+
+    expect(result).toContain("BlueBubbles attached for Slugger on this machine")
+    expect(result).toContain("runtime: daemon restart skipped: socket unavailable")
+  })
+
+  it("keeps BlueBubbles setup successful when socket inspection throws an Error", async () => {
+    emitTestEvent("provider cli connect bluebubbles daemon apply socket inspection error")
+    const bundlesRoot = makeTempDir("provider-cli-connect-bluebubbles-daemon-apply-error-bundles")
+    const homeDir = makeTempDir("provider-cli-connect-bluebubbles-daemon-apply-error-home")
+    writeAgentConfig(bundlesRoot, "Slugger")
+    writeMachineIdentity(homeDir, "machine_bb_socket_error")
+
+    const answers = [
+      "http://127.0.0.1:1234",
+      "18888",
+      "/bb-webhook",
+      "12000",
+    ]
+    const deps = makeCliDeps(homeDir, bundlesRoot, {
+      now: () => Date.parse(NOW),
+      checkSocketAlive: async () => {
+        throw new Error("socket probe blew up")
+      },
+      promptInput: async () => answers.shift() ?? "",
+      promptSecret: async () => "bb-password",
+    })
+
+    const result = await runOuroCli(["connect", "bluebubbles", "--agent", "Slugger"], deps)
+
+    expect(result).toContain("BlueBubbles attached for Slugger on this machine")
+    expect(result).toContain("runtime: daemon restart skipped: socket probe blew up")
+  })
+
+  it.each([
+    [{ ok: false, error: "stop refused" }, "stop refused"],
+    [{ ok: false, message: "stop returned a message" }, "stop returned a message"],
+    [{ ok: false }, "unknown daemon error"],
+  ])("keeps BlueBubbles setup successful when daemon stop does not accept the restart (%s)", async (stopResponse, expectedReason) => {
+    emitTestEvent(`provider cli connect bluebubbles daemon stop fallback ${expectedReason}`)
+    const bundlesRoot = makeTempDir("provider-cli-connect-bluebubbles-daemon-stop-fallback-bundles")
+    const homeDir = makeTempDir("provider-cli-connect-bluebubbles-daemon-stop-fallback-home")
+    writeAgentConfig(bundlesRoot, "Slugger")
+    writeMachineIdentity(homeDir, "machine_bb_stop_fallback")
+
+    const answers = [
+      "http://127.0.0.1:1234",
+      "18888",
+      "/bb-webhook",
+      "12000",
+    ]
+    const startDaemonProcess = vi.fn(async () => ({ pid: 42 }))
+    const deps = makeCliDeps(homeDir, bundlesRoot, {
+      now: () => Date.parse(NOW),
+      checkSocketAlive: async () => true,
+      startDaemonProcess,
+      sendCommand: async (_socketPath, command) => {
+        if (command.kind === "daemon.stop") return stopResponse as any
+        return { ok: true }
+      },
+      promptInput: async () => answers.shift() ?? "",
+      promptSecret: async () => "bb-password",
+    })
+
+    const result = await runOuroCli(["connect", "bluebubbles", "--agent", "Slugger"], deps)
+
+    expect(result).toContain("BlueBubbles attached for Slugger on this machine")
+    expect(result).toContain(`runtime: daemon restart skipped: ${expectedReason}`)
+    expect(startDaemonProcess).not.toHaveBeenCalled()
+  })
+
+  it("keeps BlueBubbles setup successful when daemon restart begins but startup fails", async () => {
+    emitTestEvent("provider cli connect bluebubbles daemon restart startup failure")
+    const bundlesRoot = makeTempDir("provider-cli-connect-bluebubbles-daemon-startup-failure-bundles")
+    const homeDir = makeTempDir("provider-cli-connect-bluebubbles-daemon-startup-failure-home")
+    writeAgentConfig(bundlesRoot, "Slugger")
+    writeMachineIdentity(homeDir, "machine_bb_startup_failure")
+
+    const answers = [
+      "http://127.0.0.1:1234",
+      "18888",
+      "/bb-webhook",
+      "12000",
+    ]
+    let nowMs = Date.parse(NOW)
+    let socketChecks = 0
+    const deps = makeCliDeps(homeDir, bundlesRoot, {
+      now: () => nowMs,
+      sleep: async (ms) => { nowMs += ms },
+      startupPollIntervalMs: 1,
+      startupTimeoutMs: 3,
+      startupRetryLimit: 0,
+      checkSocketAlive: async () => {
+        socketChecks += 1
+        return socketChecks === 1
+      },
+      startDaemonProcess: async () => ({ pid: 42 }),
+      sendCommand: async (_socketPath, command) => {
+        if (command.kind === "daemon.stop") return { ok: true, message: "daemon stopped" }
+        return { ok: true }
+      },
+      promptInput: async () => answers.shift() ?? "",
+      promptSecret: async () => "bb-password",
+    })
+
+    const result = await runOuroCli(["connect", "bluebubbles", "--agent", "Slugger"], deps)
+
+    expect(result).toContain("BlueBubbles attached for Slugger on this machine")
+    expect(result).toContain("runtime: daemon restart requested, but startup failed:")
+    expect(result).toContain("new background service did not answer")
+  })
+
+  it("renders a richer TTY onboarding board and shared completion board for BlueBubbles", async () => {
+    emitTestEvent("provider cli connect bluebubbles tty boards")
+    const bundlesRoot = makeTempDir("provider-cli-connect-bluebubbles-tty-bundles")
+    const homeDir = makeTempDir("provider-cli-connect-bluebubbles-tty-home")
+    writeAgentConfig(bundlesRoot, "Slugger")
+    writeMachineIdentity(homeDir, "machine_bb_tty")
+
+    const answers = [
+      "http://127.0.0.1:1234",
+      "18888",
+      "/bb-webhook",
+      "12000",
+    ]
+    const deps = makeCliDeps(homeDir, bundlesRoot, {
+      now: () => Date.parse(NOW),
+      isTTY: true,
+      stdoutColumns: 88,
+      promptInput: async () => answers.shift() ?? "",
+      promptSecret: async () => "bb-password",
+    })
+    const result = await runOuroCli(["connect", "bluebubbles", "--agent", "Slugger"], deps)
+    const output = ((deps as OuroCliDeps & { _output: string[] })._output).join("")
+
+    expect(output).toContain("Connect BlueBubbles")
+    expect(output).toContain("Unlocks")
+    expect(output).toContain("What you need")
+    expect(output).toContain("Where it lives")
+    expect(result).toContain("Capability connected")
+    expect(result).toContain("BlueBubbles is attached on this machine for Slugger.")
+    expect(result).toContain("What changed")
+    expect(result).toContain("Next moves")
   })
 
   it("guards connect flows that cannot persist credentials", async () => {
@@ -2700,22 +7662,707 @@ describe("provider CLI command execution", () => {
     writeProviderCredentialPool(homeDir, credentialPool())
 
     const prompts: string[] = []
-    const result = await runOuroCli(["connect", "--agent", "Slugger"], makeCliDeps(homeDir, bundlesRoot, {
+    const deps = makeCliDeps(homeDir, bundlesRoot, {
       now: () => Date.parse(NOW),
       promptInput: async (question) => {
         prompts.push(question)
         return "2"
       },
       promptSecret: async () => "pplx-secret",
+    })
+    const result = await runOuroCli(["connect", "--agent", "Slugger"], deps)
+    const output = ((deps as OuroCliDeps & { _output: string[] })._output).join("")
+    const prompt = joinedPrompt(prompts)
+
+    expect(prompt).toContain("Connect Slugger")
+    expect(prompt).toContain("Recommended next step")
+    expect(prompt).toContain("Providers")
+    expect(prompt).toContain("Portable")
+    expect(prompt).toContain("This machine")
+    expect(output).toContain("... checking current connections")
+    expect(output).toContain("checking selected providers")
+    expect(output).toContain("loading portable settings")
+    expect(output).toContain("loading this machine's settings")
+    expect(prompt).toContain("Providers")
+    expect(prompt).toContain("Perplexity search")
+    expect(prompt).toContain("Memory embeddings")
+    expect(prompt).toContain("Teams")
+    expect(prompt).toContain("BlueBubbles iMessage")
+    expect(result).toContain("Perplexity connected for Slugger")
+  })
+
+  it("runs the shared live provider verification path before rendering the root connect bay", async () => {
+    emitTestEvent("provider cli connect menu live verification")
+    const bundlesRoot = makeTempDir("provider-cli-connect-menu-live-verification-bundles")
+    const homeDir = makeTempDir("provider-cli-connect-menu-live-verification-home")
+    writeAgentConfig(bundlesRoot, "Slugger")
+    writeProviderState(agentRoot(bundlesRoot, "Slugger"), providerState({
+      lanes: {
+        outward: {
+          provider: "openai-codex",
+          model: "gpt-5.4",
+          source: "local",
+          updatedAt: NOW,
+        },
+        inner: {
+          provider: "minimax",
+          model: "MiniMax-M2.5",
+          source: "local",
+          updatedAt: NOW,
+        },
+      },
+      readiness: {},
+    }))
+    writeProviderCredentialPool(homeDir, credentialPool({
+      providers: {
+        ...credentialPool().providers,
+        "openai-codex": {
+          provider: "openai-codex",
+          revision: "cred_openai_connect_live",
+          updatedAt: NOW,
+          credentials: { oauthAccessToken: "openai-secret" },
+          config: {},
+          provenance: {
+            source: "auth-flow",
+            updatedAt: NOW,
+          },
+        },
+      },
+    }))
+    mockPingProvider.mockImplementation(async (provider, _config, options) => {
+      const maxAttempts = options?.attemptPolicy?.maxAttempts ?? 3
+      await options?.onAttemptStart?.(1, maxAttempts)
+      if (provider === "openai-codex") return { ok: true, message: "ok", attempts: [1] }
+      if (provider === "minimax") return { ok: true, message: "ok", attempts: [1] }
+      throw new Error(`unexpected provider ${provider}`)
+    })
+
+    const prompts: string[] = []
+    const deps = makeCliDeps(homeDir, bundlesRoot, {
+      promptInput: async (question) => {
+        prompts.push(question)
+        return "cancel"
+      },
+    })
+    const result = await runOuroCli(["connect", "--agent", "Slugger"], deps)
+    const output = ((deps as OuroCliDeps & { _output: string[] })._output).join("")
+    const prompt = joinedPrompt(prompts)
+
+    expect(result).toBe("connect cancelled.")
+    expect(output).toContain("checking selected providers")
+    expect(output).toContain("Slugger: opening saved provider credentials in the vault")
+    expect(output).toContain("checking openai-codex / gpt-5.4")
+    expect(output).toContain("checking minimax / MiniMax-M2.5")
+    expect(output).not.toContain("attempt 1 of 3")
+    expectConnectStatus(prompt, 1, "Providers", "ready")
+    expect(mockPingProvider).toHaveBeenCalledTimes(2)
+    expect(mockPingProvider).toHaveBeenNthCalledWith(1, "openai-codex", { oauthAccessToken: "openai-secret" }, expect.objectContaining({
+      model: "gpt-5.4",
+      attemptPolicy: { maxAttempts: 1, baseDelayMs: 0, backoffMultiplier: 2 },
+      timeoutMs: 5_000,
+    }))
+    expect(mockPingProvider).toHaveBeenNthCalledWith(2, "minimax", { apiKey: "minimax-secret" }, expect.objectContaining({
+      model: "MiniMax-M2.5",
+      attemptPolicy: { maxAttempts: 1, baseDelayMs: 0, backoffMultiplier: 2 },
+      timeoutMs: 5_000,
+    }))
+  })
+
+  it("renders failed live provider checks as attention instead of auth gaps in the root connect bay", async () => {
+    emitTestEvent("provider cli connect menu live verification failed")
+    const bundlesRoot = makeTempDir("provider-cli-connect-menu-live-verification-failed-bundles")
+    const homeDir = makeTempDir("provider-cli-connect-menu-live-verification-failed-home")
+    writeAgentConfig(bundlesRoot, "Slugger")
+    writeProviderState(agentRoot(bundlesRoot, "Slugger"), providerState({
+      lanes: {
+        outward: {
+          provider: "openai-codex",
+          model: "gpt-5.4",
+          source: "local",
+          updatedAt: NOW,
+        },
+        inner: {
+          provider: "minimax",
+          model: "MiniMax-M2.5",
+          source: "local",
+          updatedAt: NOW,
+        },
+      },
+      readiness: {},
+    }))
+    writeProviderCredentialPool(homeDir, credentialPool({
+      providers: {
+        ...credentialPool().providers,
+        "openai-codex": {
+          provider: "openai-codex",
+          revision: "cred_openai_connect_failed",
+          updatedAt: NOW,
+          credentials: { oauthAccessToken: "openai-secret" },
+          config: {},
+          provenance: {
+            source: "auth-flow",
+            updatedAt: NOW,
+          },
+        },
+      },
+    }))
+    mockPingProvider.mockImplementation(async (provider, _config, options) => {
+      await options?.onAttemptStart?.(1, options?.attemptPolicy?.maxAttempts ?? 3)
+      if (provider === "openai-codex") return { ok: false, message: "400 status code (no body)", attempts: [1] }
+      if (provider === "minimax") return { ok: true, message: "ok", attempts: [1] }
+      throw new Error(`unexpected provider ${provider}`)
+    })
+
+    const prompts: string[] = []
+    const deps = makeCliDeps(homeDir, bundlesRoot, {
+      promptInput: async (question) => {
+        prompts.push(question)
+        return "cancel"
+      },
+    })
+    const result = await runOuroCli(["connect", "--agent", "Slugger"], deps)
+    const output = ((deps as OuroCliDeps & { _output: string[] })._output).join("")
+    const prompt = joinedPrompt(prompts)
+
+    expect(result).toBe("connect cancelled.")
+    expect(output).toContain("checking openai-codex / gpt-5.4")
+    expect(output).toContain("✓ checking current connections — checked")
+    expect(output).not.toContain("✓ checking current connections — ready")
+    expectConnectStatus(prompt, 1, "Providers", "needs attention")
+    expect(prompt).toContain("openai-codex / gpt-5.4")
+    expect(prompt).toContain("failed live check: 400 status code (no body)")
+    expect(prompt).not.toContain("Providers - needs credentials")
+  })
+
+  it("does not overwrite saved provider readiness when the root connect bay quick check fails", async () => {
+    emitTestEvent("provider cli connect menu quick failure keeps saved readiness")
+    const bundlesRoot = makeTempDir("provider-cli-connect-menu-quick-failure-readiness-bundles")
+    const homeDir = makeTempDir("provider-cli-connect-menu-quick-failure-readiness-home")
+    writeAgentConfig(bundlesRoot, "Slugger")
+    writeProviderState(agentRoot(bundlesRoot, "Slugger"), providerState({
+      lanes: {
+        outward: {
+          provider: "openai-codex",
+          model: "gpt-5.4",
+          source: "local",
+          updatedAt: NOW,
+        },
+        inner: {
+          provider: "minimax",
+          model: "MiniMax-M2.5",
+          source: "local",
+          updatedAt: NOW,
+        },
+      },
+      readiness: {
+        outward: {
+          status: "ready",
+          provider: "openai-codex",
+          model: "gpt-5.4",
+          checkedAt: NOW,
+          credentialRevision: "cred_openai_connect_saved",
+        },
+        inner: {
+          status: "ready",
+          provider: "minimax",
+          model: "MiniMax-M2.5",
+          checkedAt: NOW,
+          credentialRevision: "cred_minimax_1",
+        },
+      },
+    }))
+    writeProviderCredentialPool(homeDir, credentialPool({
+      providers: {
+        ...credentialPool().providers,
+        "openai-codex": {
+          provider: "openai-codex",
+          revision: "cred_openai_connect_saved",
+          updatedAt: NOW,
+          credentials: { oauthAccessToken: "openai-secret" },
+          config: {},
+          provenance: {
+            source: "auth-flow",
+            updatedAt: NOW,
+          },
+        },
+      },
+    }))
+    mockPingProvider.mockImplementation(async (provider, _config, options) => {
+      const maxAttempts = options?.attemptPolicy?.maxAttempts ?? 3
+      await options?.onAttemptStart?.(1, maxAttempts)
+      if (provider === "openai-codex") {
+        return {
+          ok: false,
+          classification: "network-error",
+          message: "provider ping timed out after 5000ms",
+          attempts: [1],
+        }
+      }
+      return { ok: true, message: "ok", attempts: [1] }
+    })
+
+    const prompts: string[] = []
+    const result = await runOuroCli(["connect", "--agent", "Slugger"], makeCliDeps(homeDir, bundlesRoot, {
+      promptInput: async (question) => {
+        prompts.push(question)
+        return "cancel"
+      },
     }))
 
-    expect(prompts.join("\n")).toContain("Slugger // connect bay")
-    expect(prompts.join("\n")).toContain("Providers")
-    expect(prompts.join("\n")).toContain("Perplexity search")
-    expect(prompts.join("\n")).toContain("Memory embeddings")
-    expect(prompts.join("\n")).toContain("Teams")
-    expect(prompts.join("\n")).toContain("BlueBubbles iMessage")
-    expect(result).toContain("Perplexity connected for Slugger")
+    expect(result).toBe("connect cancelled.")
+    const prompt = joinedPrompt(prompts)
+    expectConnectStatus(prompt, 1, "Providers", "needs attention")
+    expect(prompt).toContain("provider ping timed out after 5000ms")
+    const stateResult = readProviderState(agentRoot(bundlesRoot, "Slugger"))
+    expect(stateResult.ok).toBe(true)
+    if (!stateResult.ok) throw new Error(stateResult.error)
+    expect(stateResult.state.readiness.outward).toMatchObject({
+      status: "ready",
+      provider: "openai-codex",
+      model: "gpt-5.4",
+      credentialRevision: "cred_openai_connect_saved",
+    })
+  })
+
+  it("shows an everything-ready next move when every connect capability is already available", async () => {
+    emitTestEvent("provider cli connect menu everything ready")
+    const bundlesRoot = makeTempDir("provider-cli-connect-menu-everything-ready-bundles")
+    const homeDir = makeTempDir("provider-cli-connect-menu-everything-ready-home")
+    writeAgentConfig(bundlesRoot, "Slugger")
+    updateAgentConfig(bundlesRoot, "Slugger", (config) => {
+      config.senses = {
+        ...(config.senses ?? {}),
+        teams: { enabled: true },
+        bluebubbles: { enabled: true },
+        mail: { enabled: true },
+      }
+    })
+    writeProviderState(agentRoot(bundlesRoot, "Slugger"), providerState({
+      lanes: {
+        outward: {
+          provider: "openai-codex",
+          model: "gpt-5.4",
+          source: "local",
+          updatedAt: NOW,
+        },
+        inner: {
+          provider: "minimax",
+          model: "MiniMax-M2.5",
+          source: "local",
+          updatedAt: NOW,
+        },
+      },
+      readiness: {},
+    }))
+    writeProviderCredentialPool(homeDir, credentialPool({
+      providers: {
+        ...credentialPool().providers,
+        "openai-codex": {
+          provider: "openai-codex",
+          revision: "cred_openai_connect_everything_ready",
+          updatedAt: NOW,
+          credentials: { oauthAccessToken: "openai-secret" },
+          config: {},
+          provenance: {
+            source: "auth-flow",
+            updatedAt: NOW,
+          },
+        },
+      },
+    }))
+    writeRuntimeConfig("Slugger", {
+      integrations: {
+        perplexityApiKey: "pplx-secret",
+        openaiEmbeddingsApiKey: "embed-secret",
+      },
+      teams: {
+        clientId: "teams-client-id",
+        clientSecret: "teams-secret",
+        tenantId: "tenant-id",
+      },
+      mailroom: {
+        mailboxAddress: "slugger@ouro.bot",
+        registryPath: "/tmp/ouro-mailroom/registry.json",
+        storePath: "/tmp/ouro-mailroom",
+        privateKeys: {
+          mail_slugger_test: "-----BEGIN PRIVATE KEY-----\ntest\n-----END PRIVATE KEY-----",
+        },
+      },
+    })
+    writeMachineIdentity(homeDir, "machine_everything_ready")
+    mockVaultDeps.rawSecrets.set("Slugger:runtime/machines/machine_everything_ready/config", runtimeConfigSecret({
+      bluebubbles: {
+        serverUrl: "http://127.0.0.1:1234",
+        password: "bb-password",
+        accountId: "default",
+      },
+    }))
+    mockPingProvider.mockImplementation(async (provider) => {
+      if (provider === "openai-codex") return { ok: true, message: "ok", attempts: [1] }
+      if (provider === "minimax") return { ok: true, message: "ok", attempts: [1] }
+      throw new Error(`unexpected provider ${provider}`)
+    })
+
+    const prompts: string[] = []
+    const result = await runOuroCli(["connect", "--agent", "Slugger"], makeCliDeps(homeDir, bundlesRoot, {
+      promptInput: async (question) => {
+        prompts.push(question)
+        return "cancel"
+      },
+    }))
+
+    expect(result).toBe("connect cancelled.")
+    expect(joinedPrompt(prompts)).toContain("Everything here is already connected.")
+  })
+
+  it("renders transient provider-read trouble as attention in the root connect bay", async () => {
+    emitTestEvent("provider cli connect menu transient provider trouble")
+    const bundlesRoot = makeTempDir("provider-cli-connect-menu-transient-provider-trouble-bundles")
+    const homeDir = makeTempDir("provider-cli-connect-menu-transient-provider-trouble-home")
+    writeAgentConfig(bundlesRoot, "Slugger")
+    writeUnavailableProviderCredentialPool("Slugger", "ETIMEDOUT while reading vault")
+
+    const prompts: string[] = []
+    const result = await runOuroCli(["connect", "--agent", "Slugger"], makeCliDeps(homeDir, bundlesRoot, {
+      promptInput: async (question) => {
+        prompts.push(question)
+        return "cancel"
+      },
+    }))
+
+    expect(result).toBe("connect cancelled.")
+    expectConnectStatus(joinedPrompt(prompts), 1, "Providers", "needs attention")
+  })
+
+  it("renders locked provider access with an unlock next move in the root connect bay", async () => {
+    emitTestEvent("provider cli connect menu provider locked")
+    const bundlesRoot = makeTempDir("provider-cli-connect-menu-provider-locked-bundles")
+    const homeDir = makeTempDir("provider-cli-connect-menu-provider-locked-home")
+    writeAgentConfig(bundlesRoot, "Slugger")
+    writeProviderState(agentRoot(bundlesRoot, "Slugger"), providerState({
+      lanes: {
+        outward: {
+          provider: "openai-codex",
+          model: "gpt-5.4",
+          source: "local",
+          updatedAt: NOW,
+        },
+        inner: {
+          provider: "minimax",
+          model: "MiniMax-M2.5",
+          source: "local",
+          updatedAt: NOW,
+        },
+      },
+      readiness: {},
+    }))
+    writeUnavailableProviderCredentialPool("Slugger", "vault locked on this machine")
+
+    const prompts: string[] = []
+    const result = await runOuroCli(["connect", "--agent", "Slugger"], makeCliDeps(homeDir, bundlesRoot, {
+      promptInput: async (question) => {
+        prompts.push(question)
+        return "cancel"
+      },
+    }))
+
+    expect(result).toBe("connect cancelled.")
+    const prompt = joinedPrompt(prompts)
+    expectConnectStatus(prompt, 1, "Providers", "locked")
+    expect(prompt).toContain("ouro vault unlock --agent Slugger")
+  })
+
+  it("treats generic provider vault read failures as unlockable in the root connect bay", async () => {
+    emitTestEvent("provider cli connect menu provider unlock repair")
+    const bundlesRoot = makeTempDir("provider-cli-connect-menu-provider-unlock-repair-bundles")
+    const homeDir = makeTempDir("provider-cli-connect-menu-provider-unlock-repair-home")
+    writeAgentConfig(bundlesRoot, "Slugger")
+    writeProviderState(agentRoot(bundlesRoot, "Slugger"), providerState({
+      lanes: {
+        outward: {
+          provider: "openai-codex",
+          model: "gpt-5.4",
+          source: "local",
+          updatedAt: NOW,
+        },
+        inner: {
+          provider: "minimax",
+          model: "MiniMax-M2.5",
+          source: "local",
+          updatedAt: NOW,
+        },
+      },
+      readiness: {},
+    }))
+    writeUnavailableProviderCredentialPool("Slugger", "vault backend refused the request")
+
+    const prompts: string[] = []
+    const result = await runOuroCli(["connect", "--agent", "Slugger"], makeCliDeps(homeDir, bundlesRoot, {
+      promptInput: async (question) => {
+        prompts.push(question)
+        return "cancel"
+      },
+    }))
+
+    expect(result).toBe("connect cancelled.")
+    const prompt = joinedPrompt(prompts)
+    expectConnectStatus(prompt, 1, "Providers", "locked")
+    expect(prompt).toContain("ouro vault unlock --agent Slugger")
+  })
+
+  it("keeps the connect bay usable when provider verification throws unexpectedly", async () => {
+    emitTestEvent("provider cli connect menu provider health throws")
+    const bundlesRoot = makeTempDir("provider-cli-connect-menu-provider-health-throws-bundles")
+    const homeDir = makeTempDir("provider-cli-connect-menu-provider-health-throws-home")
+    writeAgentConfig(bundlesRoot, "Slugger")
+    writeProviderCredentialPool(homeDir, credentialPool())
+    mockProviderCredentials.refreshProviderCredentialPool.mockImplementationOnce(async (_agentName, options) => {
+      options?.onProgress?.("opening credential vault")
+      throw new Error("vault subprocess crashed")
+    })
+
+    const prompts: string[] = []
+    const deps = makeCliDeps(homeDir, bundlesRoot, {
+      promptInput: async (question) => {
+        prompts.push(question)
+        return "cancel"
+      },
+    })
+    const result = await runOuroCli(["connect", "--agent", "Slugger"], deps)
+    const output = ((deps as OuroCliDeps & { _output: string[] })._output).join("")
+    const prompt = joinedPrompt(prompts)
+
+    expect(result).toBe("connect cancelled.")
+    expect(output).toContain("Slugger: checking the providers this agent uses right now")
+    expectConnectStatus(prompt, 1, "Providers", "needs attention")
+    expect(prompt).toContain("run: ouro auth verify --agent Slugger")
+  })
+
+  it("includes a runnable next-step command when the recommended capability needs setup", async () => {
+    emitTestEvent("provider cli connect menu next step command")
+    const bundlesRoot = makeTempDir("provider-cli-connect-menu-next-step-command-bundles")
+    const homeDir = makeTempDir("provider-cli-connect-menu-next-step-command-home")
+    writeAgentConfig(bundlesRoot, "Slugger")
+    writeProviderCredentialPool(homeDir, credentialPool())
+
+    const prompts: string[] = []
+    const result = await runOuroCli(["connect", "--agent", "Slugger"], makeCliDeps(homeDir, bundlesRoot, {
+      promptInput: async (question) => {
+        prompts.push(question)
+        return "cancel"
+      },
+    }))
+
+    expect(result).toBe("connect cancelled.")
+    expect(joinedPrompt(prompts)).toContain("run: ouro connect perplexity --agent Slugger")
+  })
+
+  it("keeps the connect bay usable when provider verification throws a string", async () => {
+    emitTestEvent("provider cli connect menu provider health throws string")
+    const bundlesRoot = makeTempDir("provider-cli-connect-menu-provider-health-throws-string-bundles")
+    const homeDir = makeTempDir("provider-cli-connect-menu-provider-health-throws-string-home")
+    writeAgentConfig(bundlesRoot, "Slugger")
+    writeProviderCredentialPool(homeDir, credentialPool())
+    mockProviderCredentials.refreshProviderCredentialPool.mockImplementationOnce(async (_agentName, options) => {
+      options?.onProgress?.("opening credential vault")
+      throw "vault subprocess string broke"
+    })
+
+    const prompts: string[] = []
+    const result = await runOuroCli(["connect", "--agent", "Slugger"], makeCliDeps(homeDir, bundlesRoot, {
+      promptInput: async (question) => {
+        prompts.push(question)
+        return "cancel"
+      },
+    }))
+
+    const prompt = joinedPrompt(prompts)
+    expect(result).toBe("connect cancelled.")
+    expectConnectStatus(prompt, 1, "Providers", "needs attention")
+    expect(prompt).toContain("run: ouro auth verify --agent Slugger")
+  })
+
+  it("renders the connect bay with ANSI section styling on TTY terminals", async () => {
+    emitTestEvent("provider cli connect menu tty styling")
+    const bundlesRoot = makeTempDir("provider-cli-connect-menu-tty-styling-bundles")
+    const homeDir = makeTempDir("provider-cli-connect-menu-tty-styling-home")
+    writeAgentConfig(bundlesRoot, "Slugger")
+    writeProviderCredentialPool(homeDir, credentialPool())
+
+    const prompts: string[] = []
+    const result = await runOuroCli(["connect", "--agent", "Slugger"], makeCliDeps(homeDir, bundlesRoot, {
+      isTTY: true,
+      promptInput: async (question) => {
+        prompts.push(question)
+        return "cancel"
+      },
+    }))
+
+    expect(result).toBe("connect cancelled.")
+    const prompt = joinedPrompt(prompts)
+    expect(prompt).toContain("\x1b[38;2;30;61;40m─ \x1b[0m")
+    expect(stripAnsi(prompt)).toContain("Connect Slugger")
+  })
+
+  it("renders the TTY connect bay as the shared wizard surface with humane provider lane labels", async () => {
+    emitTestEvent("provider cli connect menu shared wizard")
+    const bundlesRoot = makeTempDir("provider-cli-connect-menu-shared-wizard-bundles")
+    const homeDir = makeTempDir("provider-cli-connect-menu-shared-wizard-home")
+    writeAgentConfig(bundlesRoot, "Slugger")
+    writeProviderCredentialPool(homeDir, credentialPool())
+
+    const prompts: string[] = []
+    const result = await runOuroCli(["connect", "--agent", "Slugger"], makeCliDeps(homeDir, bundlesRoot, {
+      isTTY: true,
+      promptInput: async (question) => {
+        prompts.push(question)
+        return "cancel"
+      },
+    }))
+
+    const prompt = joinedPrompt(prompts)
+    expect(result).toBe("connect cancelled.")
+    expect(prompt).toContain("Recommended next step")
+    expect(prompt).toContain("Outward lane")
+    expect(prompt).toContain("Inner lane")
+    expect(prompt).toContain("Choose a number, or type the capability name.")
+  })
+
+  it("keeps the shared wizard stable on wide TTY terminals", async () => {
+    emitTestEvent("provider cli connect menu wide tty wizard")
+    const bundlesRoot = makeTempDir("provider-cli-connect-menu-wide-tty-wizard-bundles")
+    const homeDir = makeTempDir("provider-cli-connect-menu-wide-tty-wizard-home")
+    writeAgentConfig(bundlesRoot, "Slugger")
+    writeProviderCredentialPool(homeDir, credentialPool())
+
+    const prompts: string[] = []
+    const result = await runOuroCli(
+      ["connect", "--agent", "Slugger"],
+      makeCliDeps(homeDir, bundlesRoot, {
+        isTTY: true,
+        promptInput: async (question) => {
+          prompts.push(question)
+          return "cancel"
+        },
+        ...( { stdoutColumns: 132 } as Record<string, unknown>),
+      }),
+    )
+
+    const promptLines = joinedPrompt(prompts).split("\n")
+    expect(result).toBe("connect cancelled.")
+    expect(promptLines.some((line) => line.includes("Recommended next step"))).toBe(true)
+    expect(promptLines.some((line) => line.includes("Providers"))).toBe(true)
+    expect(promptLines.some((line) => line.includes("Portable"))).toBe(true)
+    expect(promptLines.some((line) => line.includes("This machine"))).toBe(true)
+  })
+
+  it("shows setup guidance when a provider lane is not configured on this machine", async () => {
+    emitTestEvent("provider cli connect menu unconfigured lane")
+    const bundlesRoot = makeTempDir("provider-cli-connect-menu-unconfigured-lane-bundles")
+    const homeDir = makeTempDir("provider-cli-connect-menu-unconfigured-lane-home")
+    writeAgentConfig(bundlesRoot, "Slugger")
+    writeProviderCredentialPool(homeDir, credentialPool())
+    fs.mkdirSync(path.join(agentRoot(bundlesRoot, "Slugger"), "state"), { recursive: true })
+    fs.writeFileSync(path.join(agentRoot(bundlesRoot, "Slugger"), "state", "providers.json"), "{not-json", "utf-8")
+
+    const prompts: string[] = []
+    const result = await runOuroCli(["connect", "--agent", "Slugger"], makeCliDeps(homeDir, bundlesRoot, {
+      promptInput: async (question) => {
+        prompts.push(question)
+        return "cancel"
+      },
+    }))
+
+    expect(result).toBe("connect cancelled.")
+    const prompt = joinedPrompt(prompts)
+    expect(prompt).toContain("choose provider and model")
+    expectConnectStatus(prompt, 1, "Providers", "needs setup")
+  })
+
+  it("treats missing agent.json provider selection as setup work in the root connect bay", async () => {
+    emitTestEvent("provider cli connect menu missing agent json provider")
+    const bundlesRoot = makeTempDir("provider-cli-connect-menu-missing-agent-json-provider-bundles")
+    const homeDir = makeTempDir("provider-cli-connect-menu-missing-agent-json-provider-home")
+    writeAgentConfig(bundlesRoot, "Slugger")
+    updateAgentConfig(bundlesRoot, "Slugger", (config) => {
+      delete config.humanFacing
+    })
+    writeProviderCredentialPool(homeDir, credentialPool())
+
+    const prompts: string[] = []
+    const result = await runOuroCli(["connect", "--agent", "Slugger"], makeCliDeps(homeDir, bundlesRoot, {
+      promptInput: async (question) => {
+        prompts.push(question)
+        return "cancel"
+      },
+    }))
+
+    expect(result).toBe("connect cancelled.")
+    const prompt = joinedPrompt(prompts)
+    expectConnectStatus(prompt, 1, "Providers", "needs setup")
+    expect(prompt).toContain("run: ouro use --agent Slugger --lane outward --provider <provider> --model <model>")
+  })
+
+  it("surfaces stale provider readiness when another lane blocks the live check", async () => {
+    emitTestEvent("provider cli connect menu stale readiness")
+    const bundlesRoot = makeTempDir("provider-cli-connect-menu-stale-readiness-bundles")
+    const homeDir = makeTempDir("provider-cli-connect-menu-stale-readiness-home")
+    writeAgentConfig(bundlesRoot, "Slugger")
+    writeProviderState(agentRoot(bundlesRoot, "Slugger"), providerState({
+      lanes: {
+        outward: {
+          provider: "openai-codex",
+          model: "gpt-5.4",
+          source: "local",
+          updatedAt: NOW,
+        },
+        inner: {
+          provider: "github-copilot",
+          model: "gpt-4o",
+          source: "local",
+          updatedAt: NOW,
+        },
+      },
+      readiness: {
+        inner: {
+          status: "stale",
+          provider: "github-copilot",
+          model: "gpt-4o",
+          checkedAt: NOW,
+          credentialRevision: "cred_ghc_stale",
+          reason: "previous ping expired",
+        },
+      },
+    }))
+    writeProviderCredentialPool(homeDir, credentialPool({
+      providers: {
+        ...credentialPool().providers,
+        "github-copilot": {
+          provider: "github-copilot",
+          revision: "cred_ghc_stale",
+          updatedAt: NOW,
+          credentials: {},
+          config: { baseUrl: "https://api.copilot.example.com" },
+          provenance: {
+            source: "manual",
+            updatedAt: NOW,
+          },
+        },
+      },
+    }))
+
+    const prompts: string[] = []
+    const result = await runOuroCli(["connect", "--agent", "Slugger"], makeCliDeps(homeDir, bundlesRoot, {
+      promptInput: async (question) => {
+        prompts.push(question)
+        return "cancel"
+      },
+    }))
+
+    expect(result).toBe("connect cancelled.")
+    const prompt = joinedPrompt(prompts)
+    expect(prompt).toContain("live check is stale")
+    expectConnectStatus(prompt, 1, "Providers", "needs credentials")
   })
 
   it("renders provider repair status in the connect bay when bindings need auth or attention", async () => {
@@ -2750,7 +8397,9 @@ describe("provider CLI command execution", () => {
       },
     }))
     expect(result).toBe("connect cancelled.")
-    expect(prompts.join("\n")).toContain("[needs auth] Providers")
+    let prompt = joinedPrompt(prompts)
+    expectConnectStatus(prompt, 1, "Providers", "needs credentials")
+    expect(prompt).toContain("credentials missing")
 
     writeProviderState(agentRoot(bundlesRoot, "Slugger"), providerState({
       lanes: {
@@ -2795,6 +8444,10 @@ describe("provider CLI command execution", () => {
       },
     }))
     prompts = []
+    mockPingProvider.mockImplementation(async (provider) => {
+      if (provider === "github-copilot") return { ok: false, message: "bad token", attempts: [1] }
+      return { ok: true, message: "ok", attempts: [1] }
+    })
     result = await runOuroCli(["connect", "--agent", "Slugger"], makeCliDeps(homeDir, bundlesRoot, {
       promptInput: async (question) => {
         prompts.push(question)
@@ -2802,7 +8455,9 @@ describe("provider CLI command execution", () => {
       },
     }))
     expect(result).toBe("connect cancelled.")
-    expect(prompts.join("\n")).toContain("[needs attention] Providers")
+    prompt = joinedPrompt(prompts)
+    expectConnectStatus(prompt, 1, "Providers", "needs attention")
+    expect(prompt).toContain("failed live check: bad token")
 
     writeProviderState(agentRoot(bundlesRoot, "Slugger"), providerState({
       lanes: {
@@ -2830,6 +8485,7 @@ describe("provider CLI command execution", () => {
       },
     }))
     prompts = []
+    mockPingProvider.mockImplementation(async () => ({ ok: true, message: "ok", attempts: [1] }))
     result = await runOuroCli(["connect", "--agent", "Slugger"], makeCliDeps(homeDir, bundlesRoot, {
       promptInput: async (question) => {
         prompts.push(question)
@@ -2837,7 +8493,135 @@ describe("provider CLI command execution", () => {
       },
     }))
     expect(result).toBe("connect cancelled.")
-    expect(prompts.join("\n")).toContain("[needs attention] Providers")
+    prompt = joinedPrompt(prompts)
+    expectConnectStatus(prompt, 1, "Providers", "ready")
+  })
+
+  it("clears cached failed-live-check wording once a fresh live provider check succeeds", async () => {
+    emitTestEvent("provider cli connect menu clears stale failed readiness")
+    const bundlesRoot = makeTempDir("provider-cli-connect-menu-failed-readiness-fallback-bundles")
+    const homeDir = makeTempDir("provider-cli-connect-menu-failed-readiness-fallback-home")
+    writeAgentConfig(bundlesRoot, "Slugger")
+    writeProviderState(agentRoot(bundlesRoot, "Slugger"), providerState({
+      lanes: {
+        outward: {
+          provider: "openai-codex",
+          model: "gpt-5.4",
+          source: "local",
+          updatedAt: NOW,
+        },
+        inner: {
+          provider: "minimax",
+          model: "MiniMax-M2.5",
+          source: "local",
+          updatedAt: NOW,
+        },
+      },
+      readiness: {
+        outward: {
+          status: "failed",
+          provider: "openai-codex",
+          model: "gpt-5.4",
+          checkedAt: NOW,
+          credentialRevision: "cred_openai_fallback",
+        },
+      },
+    }))
+    writeProviderCredentialPool(homeDir, credentialPool({
+      providers: {
+        ...credentialPool().providers,
+        "openai-codex": {
+          provider: "openai-codex",
+          revision: "cred_openai_fallback",
+          updatedAt: NOW,
+          credentials: { oauthAccessToken: "openai-secret" },
+          config: {},
+          provenance: {
+            source: "auth-flow",
+            updatedAt: NOW,
+          },
+        },
+      },
+    }))
+    const healthSpy = vi.spyOn(agentConfigCheck, "checkAgentConfigWithProviderHealth").mockResolvedValueOnce({ ok: true })
+
+    const prompts: string[] = []
+    const result = await runOuroCli(["connect", "--agent", "Slugger"], makeCliDeps(homeDir, bundlesRoot, {
+      promptInput: async (question) => {
+        prompts.push(question)
+        return "cancel"
+      },
+    }))
+    healthSpy.mockRestore()
+
+    expect(result).toBe("connect cancelled.")
+    const prompt = joinedPrompt(prompts)
+    expectConnectStatus(prompt, 1, "Providers", "ready")
+    expect(prompt).toContain("Outward lane: openai-codex / gpt-5.4")
+    expect(prompt).toContain("ready")
+    expect(prompt).not.toContain("failed live check: unknown error")
+  })
+
+  it("clears cached stale wording once a fresh live provider check succeeds", async () => {
+    emitTestEvent("provider cli connect menu clears stale readiness")
+    const bundlesRoot = makeTempDir("provider-cli-connect-menu-stale-readiness-fallback-bundles")
+    const homeDir = makeTempDir("provider-cli-connect-menu-stale-readiness-fallback-home")
+    writeAgentConfig(bundlesRoot, "Slugger")
+    writeProviderState(agentRoot(bundlesRoot, "Slugger"), providerState({
+      lanes: {
+        outward: {
+          provider: "github-copilot",
+          model: "gpt-4o",
+          source: "local",
+          updatedAt: NOW,
+        },
+        inner: {
+          provider: "anthropic",
+          model: "claude-opus-4-6",
+          source: "bootstrap",
+          updatedAt: NOW,
+        },
+      },
+      readiness: {
+        outward: {
+          status: "stale",
+          provider: "github-copilot",
+          model: "gpt-4o",
+          checkedAt: NOW,
+          credentialRevision: "cred_ghc_stale_fallback",
+        },
+      },
+    }))
+    writeProviderCredentialPool(homeDir, credentialPool({
+      providers: {
+        ...credentialPool().providers,
+        "github-copilot": {
+          provider: "github-copilot",
+          revision: "cred_ghc_stale_fallback",
+          updatedAt: NOW,
+          credentials: {},
+          config: { baseUrl: "https://api.copilot.example.com" },
+          provenance: {
+            source: "manual",
+            updatedAt: NOW,
+          },
+        },
+      },
+    }))
+    const healthSpy = vi.spyOn(agentConfigCheck, "checkAgentConfigWithProviderHealth").mockResolvedValueOnce({ ok: true })
+
+    const prompts: string[] = []
+    const result = await runOuroCli(["connect", "--agent", "Slugger"], makeCliDeps(homeDir, bundlesRoot, {
+      promptInput: async (question) => {
+        prompts.push(question)
+        return "cancel"
+      },
+    }))
+    healthSpy.mockRestore()
+
+    expect(result).toBe("connect cancelled.")
+    expectConnectStatus(joinedPrompt(prompts), 1, "Providers", "ready")
+    expect(joinedPrompt(prompts)).not.toContain("live check is stale")
   })
 
   it("shows providers as ready in the connect bay when both lanes are configured and healthy", async () => {
@@ -2888,7 +8672,72 @@ describe("provider CLI command execution", () => {
     }))
 
     expect(result).toBe("connect cancelled.")
-    expect(prompts.join("\n")).toContain("[ready] Providers")
+    expectConnectStatus(joinedPrompt(prompts), 1, "Providers", "ready")
+  })
+
+  it("uses a bounded one-attempt provider check while the root connect bay verifies providers", async () => {
+    emitTestEvent("provider cli connect menu bounded live provider check")
+    const bundlesRoot = makeTempDir("provider-cli-connect-menu-provider-retry-progress-bundles")
+    const homeDir = makeTempDir("provider-cli-connect-menu-provider-retry-progress-home")
+    writeAgentConfig(bundlesRoot, "Slugger")
+    writeProviderState(agentRoot(bundlesRoot, "Slugger"), providerState({
+      lanes: {
+        outward: {
+          provider: "openai-codex",
+          model: "gpt-5.4",
+          source: "local",
+          updatedAt: NOW,
+        },
+        inner: {
+          provider: "minimax",
+          model: "MiniMax-M2.5",
+          source: "local",
+          updatedAt: NOW,
+        },
+      },
+    }))
+    writeProviderCredentialPool(homeDir, credentialPool({
+      providers: {
+        ...credentialPool().providers,
+        "openai-codex": {
+          provider: "openai-codex",
+          revision: "cred_openai_live_progress",
+          updatedAt: NOW,
+          credentials: { oauthAccessToken: "openai-secret" },
+          config: {},
+          provenance: {
+            source: "auth-flow",
+            updatedAt: NOW,
+          },
+        },
+      },
+    }))
+    mockPingProvider.mockImplementation(async (provider, _config, options) => {
+      if (provider === "minimax") {
+        const maxAttempts = options?.attemptPolicy?.maxAttempts ?? 3
+        await options?.onAttemptStart?.(1, maxAttempts)
+      }
+      return { ok: true, attempts: [] }
+    })
+
+    const prompts: string[] = []
+    const deps = makeCliDeps(homeDir, bundlesRoot, {
+      promptInput: async (question) => {
+        prompts.push(question)
+        return "cancel"
+      },
+    })
+    const result = await runOuroCli(["connect", "--agent", "Slugger"], deps)
+    const output = ((deps as OuroCliDeps & { _output: string[] })._output).join("")
+
+    expect(result).toBe("connect cancelled.")
+    expect(output).toContain("checking minimax / MiniMax-M2.5")
+    expect(output).not.toContain("attempt 1 of 3")
+    expect(output).not.toContain("retrying now")
+    expect(mockPingProvider).toHaveBeenCalledWith("minimax", { apiKey: "minimax-secret" }, expect.objectContaining({
+      attemptPolicy: { maxAttempts: 1, baseDelayMs: 0, backoffMultiplier: 2 },
+      timeoutMs: 5_000,
+    }))
   })
 
   it("keeps connect menu fallbacks compact for noninteractive shells and alternate choices", async () => {
@@ -2899,12 +8748,14 @@ describe("provider CLI command execution", () => {
     writeMachineIdentity(homeDir, "machine_menu")
 
     const noninteractive = await runOuroCli(["connect", "--agent", "Slugger"], makeCliDeps(homeDir, bundlesRoot))
-    expect(noninteractive).toContain("Slugger // connect bay")
+    expect(noninteractive).toContain("Connect Slugger")
+    expect(noninteractive).toContain("Recommended next step")
     expect(noninteractive).toContain("ouro connect providers --agent Slugger")
     expect(noninteractive).toContain("ouro connect perplexity --agent Slugger")
     expect(noninteractive).toContain("ouro connect embeddings --agent Slugger")
     expect(noninteractive).toContain("ouro connect teams --agent Slugger")
     expect(noninteractive).toContain("ouro connect bluebubbles --agent Slugger")
+    expect(noninteractive).toContain("ouro connect mail --agent Slugger")
 
     const blueBubblesAnswers = ["5", "http://127.0.0.1:1234", "", "", ""]
     const blueBubbles = await runOuroCli(["connect", "--agent", "Slugger"], makeCliDeps(homeDir, bundlesRoot, {
@@ -2917,7 +8768,7 @@ describe("provider CLI command execution", () => {
     expect(blueBubbles).not.toContain("bb-password")
 
     const providerAuth = await runOuroCli(["connect", "--agent", "Slugger"], makeCliDeps(homeDir, bundlesRoot, {
-      promptInput: async () => "6",
+      promptInput: async () => "unknown",
     }))
     expect(providerAuth).toBe("connect cancelled.")
 
@@ -2994,7 +8845,9 @@ describe("provider CLI command execution", () => {
     expect(result).not.toContain("emb-secret")
     expect(output).toContain("Connect embeddings for Slugger")
     expect(output).toContain("... saving memory embeddings")
+    expect(output).toContain("... verifying memory embeddings")
     expect(output).toContain("storing integrations.openaiEmbeddingsApiKey")
+    expect(output).toContain("✓ verifying memory embeddings")
     expect(output).toContain("... applying change to running Slugger")
     expect(output).not.toContain("emb-secret")
 
@@ -3004,6 +8857,158 @@ describe("provider CLI command execution", () => {
         openaiEmbeddingsApiKey: "emb-secret",
       },
     })
+  })
+
+  it("does not claim Perplexity is connected when the live check fails", async () => {
+    emitTestEvent("provider cli connect perplexity verify failure")
+    const bundlesRoot = makeTempDir("provider-cli-connect-perplexity-verify-failure-bundles")
+    const homeDir = makeTempDir("provider-cli-connect-perplexity-verify-failure-home")
+    writeAgentConfig(bundlesRoot, "Slugger")
+    fetchMock.mockResolvedValueOnce(mockJsonResponse({
+      error: { message: "bad api key" },
+    }, {
+      ok: false,
+      status: 401,
+      statusText: "Unauthorized",
+    }))
+
+    const deps = makeCliDeps(homeDir, bundlesRoot, {
+      now: () => Date.parse(NOW),
+      promptSecret: async () => "pplx-secret",
+    })
+    const result = await runOuroCli(["connect", "perplexity", "--agent", "Slugger"], deps)
+    const output = ((deps as OuroCliDeps & { _output: string[] })._output).join("")
+
+    expect(result).toContain("Perplexity key was saved for Slugger, but the live check failed")
+    expect(result).toContain("stored: vault:Slugger:runtime/config")
+    expect(result).toContain("live check:")
+    expect(result).not.toContain("Perplexity connected for Slugger")
+    expect(output).toContain("✗ verifying Perplexity search")
+  })
+
+  it("renders a shared TTY failure board when Perplexity live verification fails", async () => {
+    emitTestEvent("provider cli connect perplexity tty verify failure")
+    const bundlesRoot = makeTempDir("provider-cli-connect-perplexity-tty-verify-failure-bundles")
+    const homeDir = makeTempDir("provider-cli-connect-perplexity-tty-verify-failure-home")
+    writeAgentConfig(bundlesRoot, "Slugger")
+    fetchMock.mockResolvedValueOnce(mockJsonResponse({
+      error: { message: "bad api key" },
+    }, {
+      ok: false,
+      status: 401,
+      statusText: "Unauthorized",
+    }))
+
+    const result = await runOuroCli(["connect", "perplexity", "--agent", "Slugger"], makeCliDeps(homeDir, bundlesRoot, {
+      now: () => Date.parse(NOW),
+      isTTY: true,
+      stdoutColumns: 88,
+      promptSecret: async () => "pplx-secret",
+    }))
+
+    expect(result).toContain("Capability needs attention")
+    expect(result).toContain("Perplexity search was saved, but the live check failed.")
+    expect(result).toContain("What changed")
+    expect(result).toContain("Next moves")
+  })
+
+  it("does not claim embeddings are connected when the live check fails", async () => {
+    emitTestEvent("provider cli connect embeddings verify failure")
+    const bundlesRoot = makeTempDir("provider-cli-connect-embeddings-verify-failure-bundles")
+    const homeDir = makeTempDir("provider-cli-connect-embeddings-verify-failure-home")
+    writeAgentConfig(bundlesRoot, "Slugger")
+    fetchMock.mockResolvedValueOnce(mockJsonResponse({
+      error: { message: "bad embeddings key" },
+    }, {
+      ok: false,
+      status: 401,
+      statusText: "Unauthorized",
+    }))
+
+    const deps = makeCliDeps(homeDir, bundlesRoot, {
+      now: () => Date.parse(NOW),
+      promptSecret: async () => "emb-secret",
+    })
+    const result = await runOuroCli(["connect", "embeddings", "--agent", "Slugger"], deps)
+    const output = ((deps as OuroCliDeps & { _output: string[] })._output).join("")
+
+    expect(result).toContain("Embeddings key was saved for Slugger, but the live check failed")
+    expect(result).toContain("stored: vault:Slugger:runtime/config")
+    expect(result).toContain("live check:")
+    expect(result).not.toContain("Embeddings connected for Slugger")
+    expect(output).toContain("✗ verifying memory embeddings")
+  })
+
+  it("verifies saved portable capabilities when the root connect bay opens", async () => {
+    emitTestEvent("provider cli connect menu live capability verification")
+    const bundlesRoot = makeTempDir("provider-cli-connect-menu-live-capability-verification-bundles")
+    const homeDir = makeTempDir("provider-cli-connect-menu-live-capability-verification-home")
+    writeAgentConfig(bundlesRoot, "Slugger")
+    writeProviderCredentialPool(homeDir, credentialPool())
+    writeRuntimeConfig("Slugger", {
+      integrations: {
+        perplexityApiKey: "pplx-secret",
+        openaiEmbeddingsApiKey: "emb-secret",
+      },
+    })
+
+    const prompts: string[] = []
+    const result = await runOuroCli(["connect", "--agent", "Slugger"], makeCliDeps(homeDir, bundlesRoot, {
+      promptInput: async (question) => {
+        prompts.push(question)
+        return "cancel"
+      },
+    }))
+
+    expect(result).toBe("connect cancelled.")
+    const prompt = joinedPrompt(prompts)
+    expect(prompt).toContain("verified live just now")
+    expectConnectStatus(prompt, 2, "Perplexity search", "ready")
+    expectConnectStatus(prompt, 3, "Memory embeddings", "ready")
+  })
+
+  it("marks saved portable capabilities as needing attention when their live checks fail", async () => {
+    emitTestEvent("provider cli connect menu failed capability verification")
+    const bundlesRoot = makeTempDir("provider-cli-connect-menu-failed-capability-verification-bundles")
+    const homeDir = makeTempDir("provider-cli-connect-menu-failed-capability-verification-home")
+    writeAgentConfig(bundlesRoot, "Slugger")
+    writeProviderCredentialPool(homeDir, credentialPool())
+    writeRuntimeConfig("Slugger", {
+      integrations: {
+        perplexityApiKey: "pplx-secret",
+        openaiEmbeddingsApiKey: "emb-secret",
+      },
+    })
+    fetchMock
+      .mockResolvedValueOnce(mockJsonResponse({
+        error: { message: "bad perplexity key" },
+      }, {
+        ok: false,
+        status: 401,
+        statusText: "Unauthorized",
+      }))
+      .mockResolvedValueOnce(mockJsonResponse({
+        error: { message: "bad embeddings key" },
+      }, {
+        ok: false,
+        status: 401,
+        statusText: "Unauthorized",
+      }))
+
+    const prompts: string[] = []
+    const result = await runOuroCli(["connect", "--agent", "Slugger"], makeCliDeps(homeDir, bundlesRoot, {
+      promptInput: async (question) => {
+        prompts.push(question)
+        return "cancel"
+      },
+    }))
+
+    expect(result).toBe("connect cancelled.")
+    const prompt = joinedPrompt(prompts)
+    expectConnectStatus(prompt, 2, "Perplexity search", "needs attention")
+    expectConnectStatus(prompt, 3, "Memory embeddings", "needs attention")
+    expect(prompt).toContain("live check failed: 401 bad perplexity key")
+    expect(prompt).toContain("live check failed: 401 bad embeddings key")
   })
 
   it("connects Teams through a guided flow and enables the sense", async () => {
@@ -3054,6 +9059,66 @@ describe("provider CLI command execution", () => {
     expect(readAgentConfig(bundlesRoot, "Slugger").senses).toMatchObject({
       teams: { enabled: true },
     })
+  })
+
+  it("renders a richer TTY onboarding board and shared completion board for Teams", async () => {
+    emitTestEvent("provider cli connect teams tty boards")
+    const bundlesRoot = makeTempDir("provider-cli-connect-teams-tty-bundles")
+    const homeDir = makeTempDir("provider-cli-connect-teams-tty-home")
+    writeAgentConfig(bundlesRoot, "Slugger")
+
+    const answers = [
+      "teams-client-id",
+      "teams-tenant-id",
+      "",
+    ]
+    const deps = makeCliDeps(homeDir, bundlesRoot, {
+      now: () => Date.parse(NOW),
+      isTTY: true,
+      stdoutColumns: 88,
+      promptInput: async () => answers.shift() ?? "",
+      promptSecret: async () => "teams-secret",
+    })
+    const result = await runOuroCli(["connect", "teams", "--agent", "Slugger"], deps)
+    const output = ((deps as OuroCliDeps & { _output: string[] })._output).join("")
+
+    expect(output).toContain("Connect Teams")
+    expect(output).toContain("Unlocks")
+    expect(output).toContain("What you need")
+    expect(output).toContain("Where it lives")
+    expect(result).toContain("Capability connected")
+    expect(result).toContain("Teams is ready for Slugger.")
+    expect(result).toContain("What changed")
+    expect(result).toContain("Next moves")
+  })
+
+  it("reports bundle sync from Teams onboarding when the bundle is sync-enabled", async () => {
+    emitTestEvent("provider cli connect teams bundle sync")
+    const bundlesRoot = makeTempDir("provider-cli-connect-teams-sync-bundles")
+    const homeDir = makeTempDir("provider-cli-connect-teams-sync-home")
+    writeAgentConfig(bundlesRoot, "Slugger")
+    updateAgentConfig(bundlesRoot, "Slugger", (config) => {
+      config.sync = { enabled: true }
+    })
+    initBundleGit(agentRoot(bundlesRoot, "Slugger"))
+
+    const answers = [
+      "teams-client-id",
+      "teams-tenant-id",
+      "",
+    ]
+    const deps = makeCliDeps(homeDir, bundlesRoot, {
+      now: () => Date.parse(NOW),
+      promptInput: async () => answers.shift() ?? "",
+      promptSecret: async () => "teams-secret",
+    })
+    const result = await runOuroCli(["connect", "teams", "--agent", "Slugger"], deps)
+
+    expect(result).toContain("bundle sync: ran post-change sync (remote: origin)")
+    expect(execFileSync("git", ["log", "--oneline", "-1"], {
+      cwd: agentRoot(bundlesRoot, "Slugger"),
+      stdio: "pipe",
+    }).toString()).toContain("sync: post-turn update")
   })
 
   it("rejects blank required Teams fields before storing anything", async () => {
@@ -3217,10 +9282,11 @@ describe("provider CLI command execution", () => {
     expect(restartOutput).toContain("reading vault items for Slugger")
     expect(restartOutput).toContain("✓ refreshing provider credentials")
     expect(restartOutput).toContain("... applying change to running Slugger")
-    expect(restartOutput).toContain("checking daemon socket")
-    expect(restartOutput).toContain("requesting restart from daemon")
-    expect(restartOutput).toContain("waiting for Slugger to report running state")
-    expect(restartOutput).toContain("daemon reports Slugger/inner-dialog running")
+    expect(restartOutput).toContain("checking whether Ouro is already running")
+    expect(restartOutput).toContain("asking Ouro to reload Slugger")
+    expect(restartOutput).toContain("waiting for Slugger to come back")
+    expect(restartOutput).toContain("- reload request accepted")
+    expect(restartOutput).toContain("- daemon reports Slugger/inner-dialog running")
     expect(restartOutput).toContain("✓ applying change to running Slugger")
 
     writeProviderCredentialPool(homeDir, credentialPool({ providers: {} }))
@@ -3300,8 +9366,8 @@ describe("provider CLI command execution", () => {
 
     expect(result).toContain("running agent: restart requested, but Slugger did not report running before timeout")
     expect(output).toContain("... applying change to running Slugger")
-    expect(output).toContain("waiting for Slugger to report running state")
-    expect(output).toContain("still waiting: Slugger/inner-dialog is starting")
+    expect(output).toContain("waiting for Slugger to come back")
+    expect(output).toContain("- current worker state: starting")
     expect(output).toContain("✓ applying change to running Slugger")
   })
 
@@ -3330,7 +9396,7 @@ describe("provider CLI command execution", () => {
 
       expect(result).toContain("daemon restart skipped: daemon restart request timed out")
       expect(output).toContain("... applying change to running Slugger")
-      expect(output).toContain("requesting restart from daemon")
+      expect(output).toContain("asking Ouro to reload Slugger")
       expect(output).toContain("✓ applying change to running Slugger")
     } finally {
       vi.useRealTimers()
@@ -3432,7 +9498,7 @@ describe("provider CLI command execution", () => {
     const output = ((deps as OuroCliDeps & { _output: string[] })._output).join("")
 
     expect(result).toContain("running agent: restart requested, but Slugger did not report running before timeout")
-    expect(output).toContain("still waiting: daemon status returned status unavailable")
+    expect(output).toContain("- latest status check: status unavailable")
   })
 
   it("provider refresh keeps progress visible when daemon status returns only a message", async () => {
@@ -3458,7 +9524,7 @@ describe("provider CLI command execution", () => {
     const output = ((deps as OuroCliDeps & { _output: string[] })._output).join("")
 
     expect(result).toContain("running agent: restart requested, but Slugger did not report running before timeout")
-    expect(output).toContain("still waiting: daemon status returned status said nope")
+    expect(output).toContain("- latest status check: status said nope")
   })
 
   it("provider refresh falls back to unknown error text when daemon status returns no detail", async () => {
@@ -3484,7 +9550,7 @@ describe("provider CLI command execution", () => {
     const output = ((deps as OuroCliDeps & { _output: string[] })._output).join("")
 
     expect(result).toContain("running agent: restart requested, but Slugger did not report running before timeout")
-    expect(output).toContain("still waiting: daemon status returned unknown error")
+    expect(output).toContain("- latest status check: unknown error")
   })
 
   it("provider refresh keeps progress visible when daemon status throws", async () => {
@@ -3510,7 +9576,7 @@ describe("provider CLI command execution", () => {
     const output = ((deps as OuroCliDeps & { _output: string[] })._output).join("")
 
     expect(result).toContain("running agent: restart requested, but Slugger did not report running before timeout")
-    expect(output).toContain("still waiting: status probe blew up")
+    expect(output).toContain("- latest status check: status probe blew up")
   })
 
   it("provider refresh keeps progress visible when daemon status throws an Error object", async () => {
@@ -3536,7 +9602,7 @@ describe("provider CLI command execution", () => {
     const output = ((deps as OuroCliDeps & { _output: string[] })._output).join("")
 
     expect(result).toContain("running agent: restart requested, but Slugger did not report running before timeout")
-    expect(output).toContain("still waiting: status error object")
+    expect(output).toContain("- latest status check: status error object")
   })
 
   it("provider refresh explains when daemon status payload is not structured", async () => {
@@ -3583,14 +9649,18 @@ describe("provider CLI command execution", () => {
     }) as typeof mockVaultDeps.rawSecrets.get
     try {
       const prompts: string[] = []
-      const locked = await runOuroCli(["connect", "--agent", "Slugger"], makeCliDeps(homeDir, bundlesRoot, {
+      const deps = makeCliDeps(homeDir, bundlesRoot, {
         promptInput: async (question) => {
           prompts.push(question)
           return "cancel"
         },
-      }))
+      })
+      const locked = await runOuroCli(["connect", "--agent", "Slugger"], deps)
+      const output = ((deps as OuroCliDeps & { _output: string[] })._output).join("")
       expect(locked).toBe("connect cancelled.")
-      expect(prompts.join("\n")).toContain("[locked] BlueBubbles iMessage")
+      expect(output).toContain("... checking current connections")
+      expect(output).toContain("loading this machine's settings")
+      expectConnectStatus(joinedPrompt(prompts), 5, "BlueBubbles iMessage", "locked")
     } finally {
       mockVaultDeps.rawSecrets.get = originalGet as typeof mockVaultDeps.rawSecrets.get
     }
@@ -3607,7 +9677,7 @@ describe("provider CLI command execution", () => {
       },
     }))
     expect(malformed).toBe("connect cancelled.")
-    expect(prompts.join("\n")).toContain("[needs attention] BlueBubbles iMessage")
+    expectConnectStatus(joinedPrompt(prompts), 5, "BlueBubbles iMessage", "needs attention")
   })
 
   it("shows BlueBubbles as attached in the connect bay when this machine is already configured", async () => {
@@ -3640,7 +9710,7 @@ describe("provider CLI command execution", () => {
     }))
 
     expect(result).toBe("connect cancelled.")
-    expect(prompts.join("\n")).toContain("[attached] BlueBubbles iMessage")
+    expectConnectStatus(joinedPrompt(prompts), 5, "BlueBubbles iMessage", "attached")
   })
 
   it("shows BlueBubbles as not attached when this machine config is incomplete", async () => {
@@ -3672,7 +9742,7 @@ describe("provider CLI command execution", () => {
     }))
 
     expect(result).toBe("connect cancelled.")
-    expect(prompts.join("\n")).toContain("[not attached] BlueBubbles iMessage")
+    expectConnectStatus(joinedPrompt(prompts), 5, "BlueBubbles iMessage", "not attached")
   })
 
   it("renders portable runtime config trouble clearly in the connect bay", async () => {
@@ -3692,9 +9762,10 @@ describe("provider CLI command execution", () => {
     }))
 
     expect(result).toBe("connect cancelled.")
-    expect(prompts.join("\n")).toContain("[needs attention] Perplexity search")
-    expect(prompts.join("\n")).toContain("[needs attention] Memory embeddings")
-    expect(prompts.join("\n")).toContain("[needs attention] Teams")
+    const prompt = joinedPrompt(prompts)
+    expectConnectStatus(prompt, 2, "Perplexity search", "needs attention")
+    expectConnectStatus(prompt, 3, "Memory embeddings", "needs attention")
+    expectConnectStatus(prompt, 4, "Teams", "needs attention")
   })
 
   it("renders portable runtime config as locked when this machine cannot read the runtime vault item", async () => {
@@ -3721,9 +9792,10 @@ describe("provider CLI command execution", () => {
       }))
 
       expect(result).toBe("connect cancelled.")
-      expect(prompts.join("\n")).toContain("[locked] Perplexity search")
-      expect(prompts.join("\n")).toContain("[locked] Memory embeddings")
-      expect(prompts.join("\n")).toContain("[locked] Teams")
+      const prompt = joinedPrompt(prompts)
+      expectConnectStatus(prompt, 2, "Perplexity search", "locked")
+      expectConnectStatus(prompt, 3, "Memory embeddings", "locked")
+      expectConnectStatus(prompt, 4, "Teams", "locked")
     } finally {
       mockVaultDeps.rawSecrets.get = originalGet as typeof mockVaultDeps.rawSecrets.get
     }
@@ -3749,9 +9821,10 @@ describe("provider CLI command execution", () => {
     }))
 
     expect(result).toBe("connect cancelled.")
-    expect(prompts.join("\n")).toContain("[ready] Perplexity search")
-    expect(prompts.join("\n")).toContain("[missing] Memory embeddings")
-    expect(prompts.join("\n")).toContain("[missing] Teams")
+    const prompt = joinedPrompt(prompts)
+    expectConnectStatus(prompt, 2, "Perplexity search", "ready")
+    expectConnectStatus(prompt, 3, "Memory embeddings", "missing")
+    expectConnectStatus(prompt, 4, "Teams", "missing")
   })
 
   it("keeps Teams marked missing until the sense is enabled, even when credentials already exist", async () => {
@@ -3777,7 +9850,7 @@ describe("provider CLI command execution", () => {
     }))
 
     expect(result).toBe("connect cancelled.")
-    expect(prompts.join("\n")).toContain("[missing] Teams")
+    expectConnectStatus(joinedPrompt(prompts), 4, "Teams", "missing")
   })
 
   it("shows Teams as ready in the connect bay when credentials exist and the sense is enabled", async () => {
@@ -3809,7 +9882,7 @@ describe("provider CLI command execution", () => {
     }))
 
     expect(result).toBe("connect cancelled.")
-    expect(prompts.join("\n")).toContain("[ready] Teams")
+    expectConnectStatus(joinedPrompt(prompts), 4, "Teams", "ready")
   })
 
   it("provider refresh leaves visible progress when vault refresh throws", async () => {
@@ -3844,6 +9917,18 @@ describe("provider CLI command execution", () => {
     }))
 
     expect(result).toContain("refreshed provider credential snapshot for Slugger")
+  })
+
+  it("provider refresh throws multi-agent guidance when --agent is omitted without prompt support", async () => {
+    emitTestEvent("provider cli refresh missing agent throws")
+    const bundlesRoot = makeTempDir("provider-cli-refresh-missing-agent-bundles")
+    const homeDir = makeTempDir("provider-cli-refresh-missing-agent-home")
+    writeAgentConfig(bundlesRoot, "Slugger")
+    writeAgentConfig(bundlesRoot, "Ouroboros")
+
+    await expect(runOuroCli(["provider", "refresh"], makeCliDeps(homeDir, bundlesRoot, {
+      listDiscoveredAgents: () => ["Slugger", "Ouroboros"],
+    }))).rejects.toThrow("multiple agents found: Slugger, Ouroboros")
   })
 
   it("connect prompts for an agent when --agent is omitted and multiple bundles exist", async () => {
@@ -3891,7 +9976,7 @@ describe("provider CLI command execution", () => {
       const output = ((deps as OuroCliDeps & { _output: string[] })._output).join("")
 
       expect(result).toContain("running agent: restart requested, but Slugger did not report running before timeout")
-      expect(output).toContain("still waiting: Slugger is not listed by daemon")
+      expect(output).toContain("- Slugger is not listed by daemon yet")
     } finally {
       vi.useRealTimers()
     }
@@ -4084,6 +10169,47 @@ describe("provider CLI command execution", () => {
     expect(result).not.toContain("minimax-secret")
   })
 
+  it("ouro status --agent distinguishes an unloaded local provider cache from missing vault credentials", async () => {
+    emitTestEvent("provider cli status unloaded credential cache")
+    const bundlesRoot = makeTempDir("provider-cli-status-unloaded-cache-bundles")
+    const homeDir = makeTempDir("provider-cli-status-unloaded-cache-home")
+    writeAgentConfig(bundlesRoot, "Slugger")
+    writeProviderState(agentRoot(bundlesRoot, "Slugger"), providerState({
+      lanes: {
+        outward: {
+          provider: "minimax",
+          model: "MiniMax-M2.5",
+          source: "local",
+          updatedAt: NOW,
+        },
+        inner: {
+          provider: "minimax",
+          model: "MiniMax-M2.5",
+          source: "local",
+          updatedAt: NOW,
+        },
+      },
+      readiness: {
+        outward: {
+          status: "ready",
+          provider: "minimax",
+          model: "MiniMax-M2.5",
+          checkedAt: NOW,
+          credentialRevision: "cred_minimax_1",
+          attempts: 1,
+        },
+      },
+    }))
+    writeMissingProviderCredentialPool("Slugger")
+
+    const result = await runOuroCli(["status", "--agent", "Slugger"], makeCliDeps(homeDir, bundlesRoot))
+
+    expect(result).toContain("readiness: ready")
+    expect(result).toContain("credentials: not loaded in this process; run `ouro provider refresh --agent Slugger` to read the vault now")
+    expect(result).not.toContain("credentials: missing")
+    expect(result).not.toContain("warning: minimax has no credential record")
+  })
+
   it("ouro status --agent renders invalid credential-pool repair guidance", async () => {
     emitTestEvent("provider cli status invalid credential pool")
     const bundlesRoot = makeTempDir("provider-cli-status-invalid-pool-bundles")
@@ -4191,26 +10317,42 @@ describe("provider CLI command execution", () => {
       readiness: {},
     }))
     writeProviderCredentialPool(homeDir, credentialPool())
-    mockPingProvider.mockResolvedValue({
-      ok: true,
-      attempts: [
-        {
-          attempt: 1,
-          provider: "minimax",
-          model: "MiniMax-M2.5",
-          operation: "ping",
-          ok: false,
-          willRetry: true,
-        },
-        {
-          attempt: 2,
-          provider: "minimax",
-          model: "MiniMax-M2.5",
-          operation: "ping",
-          ok: true,
-          willRetry: false,
-        },
-      ],
+    mockPingProvider.mockImplementation(async (_provider, _config, options) => {
+      await options?.onAttemptStart?.(1, 3)
+      await options?.onRetry?.({
+        attempt: 1,
+        provider: "minimax",
+        model: "MiniMax-M2.5",
+        operation: "ping",
+        ok: false,
+        classification: "server-error",
+        errorMessage: "provider busy",
+        httpStatus: 529,
+        willRetry: true,
+        delayMs: 0,
+      }, 3)
+      await options?.onAttemptStart?.(2, 3)
+      return {
+        ok: true,
+        attempts: [
+          {
+            attempt: 1,
+            provider: "minimax",
+            model: "MiniMax-M2.5",
+            operation: "ping",
+            ok: false,
+            willRetry: true,
+          },
+          {
+            attempt: 2,
+            provider: "minimax",
+            model: "MiniMax-M2.5",
+            operation: "ping",
+            ok: true,
+            willRetry: false,
+          },
+        ],
+      }
     })
 
     const deps = makeCliDeps(homeDir, bundlesRoot)
@@ -4225,6 +10367,9 @@ describe("provider CLI command execution", () => {
     expect(output).toContain("reading vault items for Slugger...")
     expect(output).toContain("✓ reading minimax credentials")
     expect(output).toContain("... checking minimax / MiniMax-M2.5")
+    expect(output).toContain("checking minimax / MiniMax-M2.5 (attempt 1 of 3)")
+    expect(output).toContain("minimax / MiniMax-M2.5: provider is busy right now; retrying now (attempt 2 of 3)")
+    expect(output).toContain("checking minimax / MiniMax-M2.5 (attempt 2 of 3)")
     expect(output).toContain("✓ checking minimax / MiniMax-M2.5")
     const stateResult = readProviderState(agentRoot(bundlesRoot, "Slugger"))
     expect(stateResult.ok).toBe(true)

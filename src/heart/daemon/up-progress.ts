@@ -12,6 +12,11 @@
  */
 
 import { emitNervesEvent } from "../../nerves/runtime"
+import {
+  renderOverwriteFrame,
+  renderTerminalOperation,
+  type TerminalOperationStep,
+} from "./terminal-ui"
 
 // ── ANSI constants (shared with startup-tui.ts pattern) ──
 
@@ -36,9 +41,36 @@ interface CurrentPhase {
   detail?: string
 }
 
+const BASE_UP_PHASE_PLAN = [
+  "update check",
+  "system setup",
+  "provider checks",
+  "starting daemon",
+  "final daemon check",
+] as const
+
+const FRIENDLY_UP_PHASE_LABELS: Record<string, string> = {
+  "update check": "Check for updates",
+  "system setup": "Prepare this machine",
+  "agent updates": "Update installed agents",
+  "bundle cleanup": "Clean up stale bundles",
+  "provider checks": "Check the providers your agents use right now",
+  "starting daemon": "Start the background service",
+  "final daemon check": "Confirm the background service stayed up",
+}
+
+function splitDetailLines(detail: string | undefined): string[] {
+  if (!detail) return []
+  return detail
+    .split(/\r?\n/)
+    .map((line) => line.trimEnd())
+    .filter((line) => line.length > 0)
+}
+
 export interface UpProgressOptions {
   write?: (text: string) => void
   isTTY?: boolean
+  columns?: number
   now?: () => number
   autoRender?: boolean
   renderIntervalMs?: number
@@ -53,6 +85,7 @@ export interface UpProgressOptions {
 export class UpProgress {
   private readonly write: (text: string) => void
   private readonly isTTY: boolean
+  private readonly columns: number | undefined
   private readonly now: () => number
   private readonly autoRender: boolean
   private readonly renderIntervalMs: number
@@ -63,6 +96,7 @@ export class UpProgress {
   private completed: CompletedPhase[] = []
   private currentPhase: CurrentPhase | null = null
   private currentDetail: string | null = null
+  private upPhasePlan: readonly string[] = BASE_UP_PHASE_PLAN
   private prevLineCount = 0
   private ended = false
   private renderTimer: unknown | null = null
@@ -72,6 +106,7 @@ export class UpProgress {
     this.write = options?.write ?? ((text: string) => process.stdout.write(text))
     /* v8 ignore next -- thin wrapper: real isTTY check injected for testability @preserve */
     this.isTTY = options?.isTTY ?? (process.stdout.isTTY === true)
+    this.columns = options?.columns
     /* v8 ignore next -- thin wrapper: real Date.now injected for testability @preserve */
     this.now = options?.now ?? (() => Date.now())
     this.autoRender = options?.autoRender ?? false
@@ -115,6 +150,14 @@ export class UpProgress {
     this.write(`    ${label}\n`)
   }
 
+  setPhasePlan(labels: readonly string[]): void {
+    const nextPlan = [...new Set(labels.map((label) => label.trim()).filter((label) => label.length > 0))]
+    this.upPhasePlan = nextPlan.length > 0 ? nextPlan : BASE_UP_PHASE_PLAN
+    if (this.isTTY && this.eventScope === "up") {
+      this.flushRender()
+    }
+  }
+
   /**
    * Update the sub-step detail on the current spinner phase. Rendered as
    * "label (Xs) -- detail" in TTY mode. In non-TTY mode, writes changed
@@ -128,7 +171,9 @@ export class UpProgress {
       this.flushRender()
       return
     }
-    this.write(`    ${detail}\n`)
+    for (const line of splitDetailLines(detail)) {
+      this.write(`    ${line}\n`)
+    }
   }
 
   /**
@@ -216,41 +261,8 @@ export class UpProgress {
       return ""
     }
 
-    const lines: string[] = []
-
-    // Completed phases
-    for (const phase of this.completed) {
-      const detailStr = phase.detail ? ` ${DIM}\u2014 ${phase.detail}${RESET}` : ""
-      if (phase.status === "failure") {
-        lines.push(`  ${RED}\u2717${RESET} ${phase.label}${detailStr}`)
-      } else {
-        lines.push(`  ${GREEN}\u2713${RESET} ${phase.label}${detailStr}`)
-      }
-    }
-
-    // Current phase with spinner
-    if (this.currentPhase) {
-      const elapsed = now - this.currentPhase.startedAt
-      const elapsedSec = (elapsed / 1000).toFixed(1)
-      const frameIndex = Math.floor(elapsed / 80) % SPINNER_FRAMES.length
-      const spinner = SPINNER_FRAMES[frameIndex]
-      const detailSuffix = this.currentPhase.detail ? ` \u2014 ${this.currentPhase.detail}` : ""
-      lines.push(`  ${BOLD}${spinner}${RESET} ${this.currentPhase.label} ${DIM}(${elapsedSec}s)${detailSuffix}${RESET}`)
-    }
-
-    let output = ""
-    if (this.prevLineCount > 0) {
-      output += `\x1b[${this.prevLineCount}A`
-    }
-    for (const line of lines) {
-      output += `\x1b[2K${line}\n`
-    }
-    // Clear any leftover lines from previous render that are no longer needed
-    if (lines.length < this.prevLineCount) {
-      for (let i = 0; i < this.prevLineCount - lines.length; i++) {
-        output += `\x1b[2K\n`
-      }
-    }
+    const lines = this.renderLines(now)
+    const output = renderOverwriteFrame(lines, this.prevLineCount, true)
     this.prevLineCount = lines.length
 
     return output
@@ -294,9 +306,121 @@ export class UpProgress {
 
   private flushRender(): void {
     const output = this.render(this.now())
-    if (output) {
-      this.write(output)
+    this.write(output)
+  }
+
+  private renderLines(now: number): string[] {
+    if (this.eventScope === "up") {
+      return this.renderUpScreen(now)
     }
+
+    const lines: string[] = []
+
+    for (const phase of this.completed) {
+      const detailStr = phase.detail ? ` ${DIM}\u2014 ${phase.detail}${RESET}` : ""
+      if (phase.status === "failure") {
+        lines.push(`  ${RED}\u2717${RESET} ${phase.label}${detailStr}`)
+      } else {
+        lines.push(`  ${GREEN}\u2713${RESET} ${phase.label}${detailStr}`)
+      }
+    }
+
+    if (this.currentPhase) {
+      const elapsed = now - this.currentPhase.startedAt
+      const elapsedSec = (elapsed / 1000).toFixed(1)
+      const frameIndex = Math.floor(elapsed / 80) % SPINNER_FRAMES.length
+      const spinner = SPINNER_FRAMES[frameIndex]
+      lines.push(`  ${BOLD}${spinner}${RESET} ${this.currentPhase.label} ${DIM}(${elapsedSec}s)${RESET}`)
+      for (const detailLine of splitDetailLines(this.currentPhase.detail)) {
+        lines.push(`    ${DIM}${detailLine}${RESET}`)
+      }
+    }
+
+    return lines
+  }
+
+  private renderUpStepLabel(label: string): string {
+    return FRIENDLY_UP_PHASE_LABELS[label] ?? label
+  }
+
+  private renderUpScreen(now: number): string[] {
+    const seenLabels = new Set<string>()
+    const completedByLabel = new Map(this.completed.map((phase) => [phase.label, phase]))
+    const steps: TerminalOperationStep[] = []
+
+    let currentStepLabel = this.completed.some((phase) => phase.status === "failure")
+      ? "Boot paused."
+      : this.completed.length > 0
+        ? "Boot checklist complete."
+        : "Waiting to begin."
+    let currentStepDetails: string[] = []
+    if (this.currentPhase) {
+      const elapsed = now - this.currentPhase.startedAt
+      const elapsedSec = (elapsed / 1000).toFixed(1)
+      const frameIndex = Math.floor(elapsed / 80) % SPINNER_FRAMES.length
+      const spinner = SPINNER_FRAMES[frameIndex]
+      currentStepLabel = `${spinner} ${this.renderUpStepLabel(this.currentPhase.label)} (${elapsedSec}s)`
+      currentStepDetails = splitDetailLines(this.currentPhase.detail)
+    }
+
+    for (const label of this.upPhasePlan) {
+      seenLabels.add(label)
+      const completedPhase = completedByLabel.get(label)
+      if (completedPhase) {
+        steps.push({
+          label: this.renderUpStepLabel(label),
+          status: completedPhase.status === "failure" ? "failed" : "done",
+          detail: completedPhase.detail,
+        })
+        continue
+      }
+      if (this.currentPhase?.label === label) {
+        steps.push({
+          label: this.renderUpStepLabel(label),
+          status: "active",
+        })
+        continue
+      }
+      steps.push({
+        label: this.renderUpStepLabel(label),
+        status: "pending",
+      })
+    }
+
+    for (const phase of this.completed) {
+      if (!seenLabels.has(phase.label)) {
+        steps.push({
+          label: this.renderUpStepLabel(phase.label),
+          status: phase.status === "failure" ? "failed" : "done",
+          detail: phase.detail,
+        })
+      }
+    }
+
+    if (this.currentPhase && !seenLabels.has(this.currentPhase.label)) {
+      steps.push({
+        label: this.renderUpStepLabel(this.currentPhase.label),
+        status: "active",
+      })
+    }
+
+    return renderTerminalOperation({
+      isTTY: true,
+      columns: this.columns,
+      masthead: {
+        subtitle: "Booting the local agent runtime.",
+      },
+      title: "Starting Ouro",
+      summary: "Ouro is bringing the local agent runtime online and will stop here if anything needs attention.",
+      currentStep: {
+        label: currentStepLabel,
+        detailLines: currentStepDetails,
+      },
+      steps,
+      currentTitle: "Doing now",
+      stepsTitle: "Boot checklist",
+      suppressEvent: true,
+    }).trimEnd().split("\n")
   }
 }
 
