@@ -2,7 +2,7 @@ import * as fs from "node:fs"
 import * as path from "node:path"
 import { afterEach, describe, expect, it } from "vitest"
 import { createTmpBundle, type TmpBundleHandle } from "../test-helpers/tmpdir-bundle"
-import { FileA2ASeenLedger, SEEN_RETENTION_MS } from "../../a2a/seen-ledger"
+import { FileA2ASeenLedger, openPrivateSeenLedger, SEEN_RETENTION_MS } from "../../a2a/seen-ledger"
 
 let tmp: TmpBundleHandle | null = null
 
@@ -147,4 +147,20 @@ describe("durable a2a SeenLedger (replay defense, restart-safe)", () => {
   it("keeps the retention at friends' 7-day freshness window plus its 2-minute future skew", () => {
     expect(SEEN_RETENTION_MS).toBe(7 * 24 * 60 * 60 * 1000 + 2 * 60 * 1000)
   })
+
+  it("opens a private reply ledger and refuses one that group or other can reach, or a symlink", () => {
+    tmp = createTmpBundle({ agentName: "seen-private" })
+    const root = path.join(tmp.agentRoot, "reply-ledger")
+    const ledger = openPrivateSeenLedger(root)
+    ledger.markSeen("reply-1")
+    expect(fs.statSync(root).mode & 0o777).toBe(0o700)
+    expect(openPrivateSeenLedger(root).isSeen("reply-1")).toBe(true)
+    fs.chmodSync(root, 0o755)
+    expect(() => openPrivateSeenLedger(root)).toThrow(/must be a folder owned by you with mode 0700/)
+    const link = path.join(tmp.agentRoot, "linked-ledger")
+    fs.chmodSync(root, 0o700)
+    fs.symlinkSync(root, link)
+    expect(() => openPrivateSeenLedger(link)).toThrow(/must be a folder owned by you/)
+  })
 })
+

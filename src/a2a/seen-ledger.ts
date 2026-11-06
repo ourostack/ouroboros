@@ -134,3 +134,20 @@ export class FileA2ASeenLedger implements DurableSeenLedger {
     }
   }
 }
+
+/**
+ * A seen ledger under `root` that only this user can reach (the CLI keeps one for replies). `root` is created 0700 and
+ * refused when it is a symlink, not a folder, owned by someone else, or open to group or other, since anyone who can
+ * delete entries can replay an old reply.
+ */
+export function openPrivateSeenLedger(root: string): FileA2ASeenLedger {
+  fs.mkdirSync(root, { recursive: true, mode: 0o700 })
+  const stat = fs.lstatSync(root)
+  /* v8 ignore next -- process.getuid exists on every POSIX platform the CLI runs on @preserve */
+  const uid = typeof process.getuid === "function" ? process.getuid() : stat.uid
+  if (!stat.isDirectory() || stat.uid !== uid || (stat.mode & 0o077) !== 0) {
+    throw new Error(`refusing the A2A reply ledger at ${root}: it must be a folder owned by you with mode 0700`)
+  }
+  return new FileA2ASeenLedger(root)
+}
+

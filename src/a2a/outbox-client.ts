@@ -46,7 +46,8 @@ export async function callOutboxMethod(input: {
   const reply = rpc.result as A2AMessage | undefined
   if (!reply || !Array.isArray(reply.parts)) throw new Error("A2A outbox call returned no reply message")
   const opened = await openChatMessage({ sodium, self: input.identity, message: reply, senderDid: peerDid, senderEd25519Pub: parsed.ed25519Pub, ...(input.seen ? { seen: input.seen } : {}) })
-  if (!opened.ok) throw new Error(`A2A outbox reply rejected: ${opened.reason}`)
+  // The peer has already handled the call when its reply is refused, so say so (an older peer sends unbound replies).
+  if (!opened.ok) throw new Error(`A2A outbox reply rejected: ${opened.reason}; the call may already have run on the peer`)
   let result: unknown
   try {
     result = JSON.parse(opened.text)

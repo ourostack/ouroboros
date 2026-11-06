@@ -30,11 +30,15 @@ const REFUSALS: Record<string, ReceiveRefusal> = {
   stale_delegation: { message: "the delegated command is more than 10 minutes old", next: `Check the sender's clock. ${RESEND}`, retry: false },
   replayed: { message: "this message was already received", next: `Nothing to do if it was delivered; otherwise ${RESEND.toLowerCase()}`, retry: false },
   in_flight: { message: "the same message is being handled right now", next: "Retry in a moment.", retry: true },
-  resolve_failed: { message: "the sender's DID could not be resolved or pinned", next: "Retry later; if it persists, the sender's key changed and the operator must re-link it.", retry: true },
+  resolve_failed: { message: "the sender's DID could not be resolved or pinned (it is not a did:key, its pinned key differs, or a key rotation was refused)", next: "Send from the identity this agent knows you by, or ask the operator to re-link you.", retry: false },
   retired_pin: { message: "the sender's DID was rotated to a successor and no longer verifies", next: "Send from the successor identity.", retry: false },
   bad_signature: { message: "the signature does not verify against the sender's pinned key", next: "Send from the key this agent pinned for you, or ask the operator to re-link you.", retry: false },
   untrusted_source: { message: "this agent does not trust the sender enough for this kind of message", next: "Ask the operator to connect you as a friend.", retry: false },
-  import_failed: { message: "the message verified but could not be stored", next: "Retry later.", retry: true },
+  import_failed: { message: "the message verified but could not be stored", next: RESEND, retry: false },
+  // Mission results (the harness result wire).
+  no_mission: { message: "this agent has no mission with that key", next: "Check the mission key; the delegator may have dropped the mission.", retry: false },
+  no_delegation: { message: "this agent delegated no task with that request id", next: "Check the request id the delegation gave you.", retry: false },
+  assignee_mismatch: { message: "the task was delegated to a different agent", next: "Only the assignee can send this result.", retry: false },
 }
 
 const UNKNOWN: ReceiveRefusal = { message: "the message was refused", next: "Check the agent's logs.", retry: false }

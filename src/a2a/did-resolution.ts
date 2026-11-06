@@ -117,11 +117,23 @@ export function makeDidResolution(input: MakeDidResolutionInput): DidResolution 
       }
       // Accepted means the old record is family or friend, which was read from `store`, so the store is present.
       const moved = await applyAcceptedRotation({ store: store!, pinStore, oldDid: statement.oldDid, newDid: did })
+      if (!moved.ok) {
+        // The pins moved but the friend record did not follow (another record already holds the new DID, or the old
+        // record is gone). Refuse rather than run the message under a record that does not carry the old trust.
+        emitNervesEvent({
+          level: "warn",
+          component: "channels",
+          event: "channel.a2a_rotation_record_not_moved",
+          message: "A2A key rotation verified but the friend record could not follow; refusing the message",
+          meta: { oldDid: statement.oldDid, newDid: did, trustOfSource: oldTrust, reason: moved.reason },
+        })
+        return null
+      }
       emitNervesEvent({
         component: "channels",
         event: "channel.a2a_rotation_accepted",
         message: "A2A signed key rotation accepted",
-        meta: { oldDid: statement.oldDid, newDid: did, trustOfSource: oldTrust, recordMoved: moved.ok, ...(moved.ok ? {} : { moveRefused: moved.reason }) },
+        meta: { oldDid: statement.oldDid, newDid: did, trustOfSource: oldTrust },
       })
       return { ed25519Pub: parsed.ed25519Pub }
     },

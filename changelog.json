@@ -5,7 +5,8 @@
       "version": "0.1.0-alpha.989",
       "changes": [
         "Agents now use friends 0.1.0-alpha.17. Every signed message is bound to its recipient, kind, a message id and its time, and a message without that binding is refused, so an old message cannot be replayed or resealed to another agent. A message counts as received only once its signature checks out, so a delivery that fails before that can be sent again.",
-        "Mission results get the same binding and replay checks as other messages. A delegated command's id is the sender's signed message id, and the refusal a sender gets for a rejected message now says what happened and what to do next.",
+        "Mission results get the same binding and replay checks as other messages. A delegated command's id comes from the sender's DID, its signed message id and its signed time, and the refusal a sender gets for a rejected message now says what happened and what to do next.",
+        "Compatibility: an agent on this release refuses messages from agents whose harness uses friends 0.1.0-alpha.14 or older (they are unbound), and `ouro a2a` refuses their replies, saying the call may already have run. Upgrade every agent that talks to this one.",
         "Key rotation follows friends' signed successor statement: the old key and the new key both sign it, and an accepted rotation moves the peer's record, trust and grants to the new DID. The old DID is kept as a retired pin that verifies nothing. The friends wire has no carrier for successor statements yet, so a DID seen for the first time is still a first contact.",
         "The seen-message ledger drops entries older than the 7-day freshness window. The CLI checks replies against a durable ledger, and `ouro friend link` says when a link was refused instead of reporting it as linked."
       ]

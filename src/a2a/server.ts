@@ -228,11 +228,16 @@ function messageHasDataPart(message: A2AMessage): boolean {
 /** Map a friends `receiveShare` rejection reason → a JSON-RPC error code.
  * Malformed-shape reasons map to invalid-params (-32602); auth/trust/replay
  * rejections map to a dedicated A2A "rejected" code (-32003). */
-/** A delegated command's id is the sender's signed message id, so a redelivery of the same message names the same
- * command; a message without one (unbound, so refused upstream) falls back to a random id. */
-function commandIdFor(chat: { bindingId?: string }): string {
+/**
+ * A delegated command's id: a hash of the sender's DID, its signed message id and its signed issue time. A redelivery of
+ * the same message names the same command, while a sender reusing a message id on a new message (possible once the
+ * old one ages out of the seen ledger) gets a new command, so it can never ride an earlier command's owner notice or
+ * effect record. A message without a binding (unbound, so refused upstream) falls back to a random id.
+ */
+export function commandIdFor(chat: { did: string; bindingId?: string; issuedAt?: string }): string {
   /* v8 ignore next -- unbound envelopes are refused before a delegated command is admitted @preserve */
-  return chat.bindingId ?? randomUUID()
+  if (!chat.bindingId) return randomUUID()
+  return createHash("sha256").update(JSON.stringify([chat.did, chat.bindingId, chat.issuedAt ?? ""])).digest("hex").slice(0, 32)
 }
 
 function refusalResponse(id: A2AJsonRpcRequest["id"], what: string, reason: string): A2AJsonRpcResponse {
@@ -577,7 +582,7 @@ export async function startA2AServer(options: StartA2AServerOptions): Promise<A2
         let verifiedPeerAgentId: string | undefined
         let verifiedPeerName: string | undefined
         let verifiedShareText: string | undefined
-        let verifiedChat: { did: string; friend?: FriendRecord; onBehalfOf?: "principal"; bindingId?: string } | undefined
+        let verifiedChat: { did: string; friend?: FriendRecord; onBehalfOf?: "principal"; bindingId?: string; issuedAt?: string } | undefined
         if (inbound && inboundShareDeps && messageHasDataPart(inbound)) {
           const bridged = await receiveInboundShare(inbound, inboundShareDeps)
           if (bridged.outcome === "rejected") {
@@ -596,7 +601,7 @@ export async function startA2AServer(options: StartA2AServerOptions): Promise<A2
               verifiedShareText = bridged.message.text
               /* v8 ignore next -- a completed chat always has a friend record: an unknown DID reads as stranger and the message is refused @preserve */
               verifiedPeerName = bridged.friend?.name ?? bridged.verifiedDid
-              verifiedChat = { did: bridged.verifiedDid, friend: bridged.friend, ...(bridged.message.onBehalfOf ? { onBehalfOf: bridged.message.onBehalfOf } : {}), ...(bridged.bindingId ? { bindingId: bridged.bindingId } : {}) }
+              verifiedChat = { did: bridged.verifiedDid, friend: bridged.friend, ...(bridged.message.onBehalfOf ? { onBehalfOf: bridged.message.onBehalfOf } : {}), bindingId: bridged.bindingId, issuedAt: bridged.message.issuedAt }
             } else {
               verifiedShareText = `[a2a] received ${bridged.friendsKind} (${bridged.status}) from ${bridged.verifiedDid}`
             }

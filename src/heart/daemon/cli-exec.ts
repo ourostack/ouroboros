@@ -7376,8 +7376,8 @@ async function executeA2AClientCommand(command: A2AClientCliCommand, deps: OuroC
   const identityFile = command.identityFile ?? path.join(os.homedir(), ".ouro-cli", "a2a", "client-identity.json")
   const identity = await loadOrMintA2AIdentityFile({ filePath: identityFile })
   // Replies are replay-checked against a durable ledger beside the identity file, so an old reply cannot be served again.
-  const { FileA2ASeenLedger } = await import("../../a2a/seen-ledger")
-  const replySeen = () => new FileA2ASeenLedger(path.dirname(identityFile))
+  const { openPrivateSeenLedger } = await import("../../a2a/seen-ledger")
+  const replySeen = () => openPrivateSeenLedger(path.join(path.dirname(identityFile), "reply-ledger"))
   if (command.kind === "a2a.identity") {
     const message = command.json ? JSON.stringify({ did: identity.did, identityFile }) : `did: ${identity.did}\nidentity file: ${identityFile}`
     deps.writeStdout(message)

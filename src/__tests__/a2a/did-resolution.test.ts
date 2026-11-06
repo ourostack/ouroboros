@@ -162,11 +162,11 @@ describe("DidResolution.resolveAndPin (signed successor statement)", () => {
     expect(pinStore.get(old.did)?.retiredBy).toBeUndefined()
   })
 
-  it("accepts the rotation but reports when the record cannot move (a record already holds the new DID)", async () => {
+  it("refuses the message when the verified rotation cannot move the record (a record already holds the new DID)", async () => {
     const { pinStore, store, next, statement } = await setup("family")
     await upsertAgentPeer(store, { name: "Squatter", agentId: next.did, trustLevel: "stranger", a2a: { did: next.did, agentId: next.did, endpointUrl: "https://other.example/a2a" } })
     const didRes = makeDidResolution({ sodium, store, successorFor: () => statement })
-    expect(await didRes.resolveAndPin({ fromAgentId: next.did, did: next.did, pinStore, trustOfSource: "stranger" })).not.toBeNull()
+    expect(await didRes.resolveAndPin({ fromAgentId: next.did, did: next.did, pinStore, trustOfSource: "stranger" })).toBeNull()
     expect((await findFriendByDid(store, next.did))?.name).toBe("Squatter")
   })
 })
