@@ -1484,7 +1484,8 @@ export function makeHost({ bundle = DEFAULT_BUNDLE, trustDir = DEFAULT_TRUST_DIR
     },
     /**
      * Puts the replay principal's notes, toolPreferences and relationshipPolicy back to the snapshot, as root, and leaves every other field as found.
-     * The file stays owned by its current uid and gid with mode 0600. Refuses a link, a hard link and any friend but the principal.
+     * A record that already holds the snapshot is left untouched; otherwise it is rewritten owned by its current uid and gid with mode 0600.
+     * Refuses a link, a hard link and any friend but the principal.
      */
     restoreReplayFriendLearned(learned, friendId = provisioned.principal.friendId) {
       if (friendId !== provisioned.principal.friendId) throw new Error(`refusing to restore the record of ${friendId}: only the replay principal is restored`)
