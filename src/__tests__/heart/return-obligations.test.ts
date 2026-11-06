@@ -80,6 +80,28 @@ describe("createReturnObligation", () => {
     expect(written).toEqual(obligation)
   })
 
+  it("caps oversized delegated content before writing JSON", async () => {
+    const { EVENT_CONTENT_MAX_CHARS } = await import("../../heart/session-events")
+    const { expectedCappedContent, expectedTruncationMarker, makeOversizedAgentContent } = await import("../helpers/content-cap")
+    const { createReturnObligation } = await import("../../arc/obligations")
+    const oversized = makeOversizedAgentContent("delegated return ")
+
+    createReturnObligation("testagent", {
+      id: "1709900001000-abc12345",
+      origin: { friendId: "friend-1", channel: "bluebubbles", key: "chat" },
+      status: "queued" as const,
+      delegatedContent: oversized,
+      createdAt: 1709900001000,
+    })
+
+    const writeCall = vi.mocked(fs.writeFileSync).mock.calls.find((call) => String(call[0]).endsWith(".json"))
+    expect(writeCall).toBeTruthy()
+    const written = JSON.parse(writeCall![1] as string)
+    expect(written.delegatedContent.length).toBeLessThanOrEqual(EVENT_CONTENT_MAX_CHARS)
+    expect(written.delegatedContent).toContain(expectedTruncationMarker(oversized))
+    expect(written.delegatedContent).toBe(expectedCappedContent(oversized))
+  })
+
   it("emits a nerves event on creation", async () => {
     const { createReturnObligation } = await import("../../arc/obligations")
     createReturnObligation("testagent", {
@@ -266,12 +288,52 @@ describe("listActiveReturnObligations", () => {
       throw new Error("ENOENT")
     }) as any)
 
-    const result = listActiveReturnObligations("testagent")
+    // Pin `now` to just after the fixture timestamps so all three are within
+    // the 14-day injection window (which would otherwise exclude them).
+    const result = listActiveReturnObligations("testagent", { now: () => 1709900004000 })
     expect(result).toHaveLength(2)
     expect(result[0].id).toBe("1709900001000-first")
     expect(result[0].status).toBe("queued")
     expect(result[1].id).toBe("1709900003000-third")
     expect(result[1].status).toBe("running")
+  })
+
+  it("excludes obligations older than 14 days from injection even if still queued", async () => {
+    const { listActiveReturnObligations } = await import("../../arc/obligations")
+    vi.mocked(fs.existsSync).mockReturnValue(true)
+    const dayMs = 24 * 60 * 60 * 1000
+    const nowMs = 2_000_000_000_000 // arbitrary fixed point
+    const fresh = { id: "fresh", status: "queued", createdAt: nowMs - 10 * dayMs, origin: { friendId: "f", channel: "c", key: "k" }, delegatedContent: "fresh" }
+    const aging = { id: "aging", status: "queued", createdAt: nowMs - 14 * dayMs, origin: { friendId: "f", channel: "c", key: "k" }, delegatedContent: "aging" }
+    const stale = { id: "stale", status: "queued", createdAt: nowMs - 30 * dayMs, origin: { friendId: "f", channel: "c", key: "k" }, delegatedContent: "stale" }
+    vi.mocked(fs.readdirSync).mockReturnValue(["fresh.json", "aging.json", "stale.json"] as any)
+    vi.mocked(fs.readFileSync).mockImplementation(((p: string) => {
+      if ((p as string).includes("fresh")) return JSON.stringify(fresh)
+      if ((p as string).includes("aging")) return JSON.stringify(aging)
+      if ((p as string).includes("stale")) return JSON.stringify(stale)
+      throw new Error("ENOENT")
+    }) as any)
+
+    const result = listActiveReturnObligations("testagent", { now: () => nowMs })
+    // 30-day item is excluded; 14-day-on-the-dot item is included at the boundary; 10-day item is included.
+    expect(result.map((o) => o.id)).toEqual(["aging", "fresh"])
+  })
+
+  it("excludes invalid legacy statuses (e.g. fulfilled written by pre-split code) from injection", async () => {
+    const { listActiveReturnObligations } = await import("../../arc/obligations")
+    vi.mocked(fs.existsSync).mockReturnValue(true)
+    const nowMs = 2_000_000_000_000
+    const valid = { id: "v", status: "queued", createdAt: nowMs - 1000, origin: { friendId: "f", channel: "c", key: "k" }, delegatedContent: "ok" }
+    const legacy = { id: "l", status: "fulfilled" /* not in ReturnObligationStatus */, createdAt: nowMs - 1000, origin: { friendId: "f", channel: "c", key: "k" }, delegatedContent: "old" }
+    vi.mocked(fs.readdirSync).mockReturnValue(["v.json", "l.json"] as any)
+    vi.mocked(fs.readFileSync).mockImplementation(((p: string) => {
+      if ((p as string).includes("v")) return JSON.stringify(valid)
+      if ((p as string).includes("l")) return JSON.stringify(legacy)
+      throw new Error("ENOENT")
+    }) as any)
+
+    const result = listActiveReturnObligations("testagent", { now: () => nowMs })
+    expect(result.map((o) => o.id)).toEqual(["v"])
   })
 
   it("skips unparseable files", async () => {
@@ -285,7 +347,8 @@ describe("listActiveReturnObligations", () => {
       })
     }) as any)
 
-    expect(listActiveReturnObligations("testagent")).toHaveLength(1)
+    // Pin `now` to just after the fixture timestamp so the good entry is fresh.
+    expect(listActiveReturnObligations("testagent", { now: () => 100 })).toHaveLength(1)
   })
 
   it("returns empty array when readdirSync throws", async () => {

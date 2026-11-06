@@ -8,6 +8,7 @@ import {
   mergeUniqueOrphanPids,
   killOrphanProcesses,
   writePidfile,
+  waitForOrphanProcessesToSettle,
 } from "../../../heart/daemon/daemon"
 
 // The orphan-cleanup fallback is load-bearing: when the pidfile is missing
@@ -56,15 +57,16 @@ describe("parseOrphanPidsFromPs", () => {
     expect(parseOrphanPidsFromPs(psOutput, 99)).toEqual([5000])
   })
 
-  it("matches all four harness entry points: agent-entry, daemon-entry, bluebubbles/entry, teams-entry", () => {
+  it("matches all daemon-managed harness entry points", () => {
     const psOutput = [
       "  PID  PPID COMMAND",
       " 100     1 node /x/dist/heart/daemon/agent-entry.js --agent Alpha",
       " 101     1 node /x/dist/heart/daemon/daemon-entry.js --socket /tmp/x.sock",
       " 102     1 node /x/dist/senses/bluebubbles/entry.js --agent Alpha",
       " 103     1 node /x/dist/senses/teams-entry.js --agent Alpha",
+      " 104     1 node /x/dist/senses/mail-entry.js --agent Alpha",
     ].join("\n")
-    expect(parseOrphanPidsFromPs(psOutput, 99)).toEqual([100, 101, 102, 103])
+    expect(parseOrphanPidsFromPs(psOutput, 99)).toEqual([100, 101, 102, 103, 104])
   })
 
   it("excludes mcp-serve processes even when they would otherwise match", () => {
@@ -193,6 +195,55 @@ describe("mergeUniqueOrphanPids", () => {
   })
 })
 
+describe("waitForOrphanProcessesToSettle", () => {
+  it("returns immediately when there are no orphan PIDs to settle", async () => {
+    const isPidAlive = vi.fn(() => true)
+    const sleep = vi.fn(async () => {})
+
+    await expect(waitForOrphanProcessesToSettle([], { isPidAlive, sleep })).resolves.toEqual([])
+
+    expect(isPidAlive).not.toHaveBeenCalled()
+    expect(sleep).not.toHaveBeenCalled()
+  })
+
+  it("uses production defaults when orphan PIDs are already gone", async () => {
+    await expect(waitForOrphanProcessesToSettle([999_999_999])).resolves.toEqual([])
+  })
+
+  it("waits until orphan PIDs stop responding", async () => {
+    let nowMs = 0
+    const sleep = vi.fn(async (ms: number) => { nowMs += ms })
+    const isPidAlive = vi.fn((pid: number) => pid === 5001 && nowMs < 100)
+
+    await expect(waitForOrphanProcessesToSettle([5000, 5001], {
+      isPidAlive,
+      sleep,
+      now: () => nowMs,
+      timeoutMs: 500,
+      pollIntervalMs: 50,
+    })).resolves.toEqual([])
+
+    expect(sleep).toHaveBeenCalledTimes(2)
+    expect(sleep).toHaveBeenCalledWith(50)
+  })
+
+  it("returns remaining live PIDs after the settle timeout", async () => {
+    let nowMs = 0
+    const sleep = vi.fn(async (ms: number) => { nowMs += ms })
+    const isPidAlive = vi.fn(() => true)
+
+    await expect(waitForOrphanProcessesToSettle([5000], {
+      isPidAlive,
+      sleep,
+      now: () => nowMs,
+      timeoutMs: 100,
+      pollIntervalMs: 50,
+    })).resolves.toEqual([5000])
+
+    expect(sleep).toHaveBeenCalledTimes(2)
+  })
+})
+
 describe("vitest guard for production pidfile (defense in depth)", () => {
   // The pidfile path is hardcoded under ~/.ouro-cli/ — there is no DI seam
   // to redirect it. So when a test creates a real OuroDaemon and calls start(),
@@ -227,6 +278,18 @@ describe("vitest guard for production pidfile (defense in depth)", () => {
     const before = fs.existsSync(pidfilePath) ? fs.readFileSync(pidfilePath, "utf-8") : null
 
     expect(() => writePidfile([99999, 99998])).not.toThrow()
+
+    const after = fs.existsSync(pidfilePath) ? fs.readFileSync(pidfilePath, "utf-8") : null
+    expect(after).toBe(before)
+  })
+
+  it("custom-socket daemons never touch the production pidfile", () => {
+    const homeDir = os.homedir()
+    const pidfilePath = path.join(homeDir, OURO_CLI_SUBPATH, PIDFILE_NAME)
+    const before = fs.existsSync(pidfilePath) ? fs.readFileSync(pidfilePath, "utf-8") : null
+
+    expect(() => killOrphanProcesses("/tmp/ouro-hermetic-runtime.sock")).not.toThrow()
+    expect(() => writePidfile([99997], "/tmp/ouro-hermetic-runtime.sock")).not.toThrow()
 
     const after = fs.existsSync(pidfilePath) ? fs.readFileSync(pidfilePath, "utf-8") : null
     expect(after).toBe(before)

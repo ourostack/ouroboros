@@ -11,7 +11,7 @@ import { getRuntimeMetadata } from "./runtime-metadata"
 import { detectRuntimeMode } from "./runtime-mode"
 import { getRepoRoot } from "../identity"
 import { readDaemonTombstone } from "./daemon-tombstone"
-import { readHealth, getDefaultHealthPath } from "./daemon-health"
+import { readHealth, getDefaultHealthPath, type DaemonHealthState, type DaemonStatus } from "./daemon-health"
 import { listAllBundleAgents, listBundleSyncRows } from "./agent-discovery"
 import type { McpListCliCommand, McpCallCliCommand } from "./cli-types"
 
@@ -21,7 +21,8 @@ interface StatusOverviewRow {
   daemon: string
   health: string
   socketPath: string
-  outlookUrl: string
+  mailboxUrl: string
+  outlookUrl?: string
   version: string
   lastUpdated: string
   repoRoot: string
@@ -39,6 +40,20 @@ interface StatusSenseRow {
   enabled: boolean
   status: string
   detail: string
+  proofMethod?: string
+  lastProofAt?: string
+  proofAgeMs?: number
+  lastFailure?: string
+  failureLayer?: string
+  recoveryAction?: string
+  pendingRecoveryCount?: number
+  failedRecoveryCount?: number
+  oldestPendingRecoveryAt?: string
+  oldestPendingRecoveryAgeMs?: number
+  activeTurnCount?: number
+  stalledTurnCount?: number
+  oldestActiveTurnStartedAt?: string
+  oldestActiveTurnAgeMs?: number
 }
 
 interface StatusWorkerRow {
@@ -78,10 +93,17 @@ interface StatusProviderRow {
   credential: string
 }
 
+interface StatusHealthCheckRow {
+  name: string
+  status: string
+  message: string
+}
+
 export interface StatusPayload {
   overview: StatusOverviewRow
   senses: StatusSenseRow[]
   workers: StatusWorkerRow[]
+  healthChecks: StatusHealthCheckRow[]
   sync: StatusSyncRow[]
   agents: StatusAgentRow[]
   providers: StatusProviderRow[]
@@ -101,6 +123,41 @@ function booleanField(value: unknown): boolean | null {
   return typeof value === "boolean" ? value : null
 }
 
+function formatDurationMs(ms: number): string {
+  if (ms < 1_000) return `${Math.round(ms)}ms`
+  if (ms < 60_000) return `${Math.round(ms / 1_000)}s`
+  if (ms < 3_600_000) return `${Math.round(ms / 60_000)}m`
+  if (ms < 86_400_000) return `${Math.round(ms / 3_600_000)}h`
+  return `${Math.round(ms / 86_400_000)}d`
+}
+
+function formatSenseDetail(row: StatusSenseRow): string {
+  const details = [row.detail]
+  const proofParts: string[] = []
+  if (row.proofMethod) proofParts.push(`proof=${row.proofMethod}`)
+  if (row.lastProofAt) proofParts.push(`lastProof=${row.lastProofAt}`)
+  if (row.proofAgeMs !== undefined) proofParts.push(`proofAge=${formatDurationMs(row.proofAgeMs)}`)
+  if (proofParts.length > 0) details.push(proofParts.join(" "))
+
+  const recoveryParts: string[] = []
+  if (row.pendingRecoveryCount !== undefined) recoveryParts.push(`pendingRecovery=${row.pendingRecoveryCount}`)
+  if (row.failedRecoveryCount !== undefined) recoveryParts.push(`failedRecovery=${row.failedRecoveryCount}`)
+  if (row.oldestPendingRecoveryAt) recoveryParts.push(`oldestPending=${row.oldestPendingRecoveryAt}`)
+  if (row.oldestPendingRecoveryAgeMs !== undefined) recoveryParts.push(`oldestPendingAge=${formatDurationMs(row.oldestPendingRecoveryAgeMs)}`)
+  if (row.activeTurnCount !== undefined) recoveryParts.push(`activeTurns=${row.activeTurnCount}`)
+  if (row.stalledTurnCount !== undefined) recoveryParts.push(`stalledTurns=${row.stalledTurnCount}`)
+  if (row.oldestActiveTurnStartedAt) recoveryParts.push(`oldestActive=${row.oldestActiveTurnStartedAt}`)
+  if (row.oldestActiveTurnAgeMs !== undefined) recoveryParts.push(`oldestActiveAge=${formatDurationMs(row.oldestActiveTurnAgeMs)}`)
+  if (recoveryParts.length > 0) details.push(recoveryParts.join(" "))
+
+  const failureParts: string[] = []
+  if (row.failureLayer) failureParts.push(`failureLayer=${row.failureLayer}`)
+  if (row.lastFailure) failureParts.push(`lastFailure=${row.lastFailure}`)
+  if (row.recoveryAction) failureParts.push(`recovery=${row.recoveryAction}`)
+  if (failureParts.length > 0) details.push(failureParts.join(" "))
+  return details.filter(Boolean).join("; ")
+}
+
 // ── Parsers ──
 
 export function parseStatusPayload(data: unknown): StatusPayload | null {
@@ -112,18 +169,23 @@ export function parseStatusPayload(data: unknown): StatusPayload | null {
   const sync = raw.sync
   const agents = raw.agents
   const providers = raw.providers
+  const healthChecks = raw.healthChecks
   if (!overview || typeof overview !== "object" || Array.isArray(overview)) return null
   if (!Array.isArray(senses) || !Array.isArray(workers)) return null
   // sync, agents, and providers are optional for backward compatibility — older daemons may omit them
   if (sync !== undefined && !Array.isArray(sync)) return null
   if (agents !== undefined && !Array.isArray(agents)) return null
   if (providers !== undefined && !Array.isArray(providers)) return null
+  if (healthChecks !== undefined && !Array.isArray(healthChecks)) return null
 
   const parsedOverview: StatusOverviewRow = {
     daemon: stringField((overview as Record<string, unknown>).daemon) ?? "unknown",
     health: stringField((overview as Record<string, unknown>).health) ?? "unknown",
     socketPath: stringField((overview as Record<string, unknown>).socketPath) ?? "unknown",
-    outlookUrl: stringField((overview as Record<string, unknown>).outlookUrl) ?? "unavailable",
+    mailboxUrl: stringField((overview as Record<string, unknown>).mailboxUrl)
+      ?? stringField((overview as Record<string, unknown>).outlookUrl)
+      ?? "unavailable",
+    outlookUrl: stringField((overview as Record<string, unknown>).outlookUrl) ?? undefined,
     version: stringField((overview as Record<string, unknown>).version) ?? "unknown",
     lastUpdated: stringField((overview as Record<string, unknown>).lastUpdated) ?? "unknown",
     repoRoot: stringField((overview as Record<string, unknown>).repoRoot) ?? "unknown",
@@ -143,14 +205,43 @@ export function parseStatusPayload(data: unknown): StatusPayload | null {
     const detail = stringField(row.detail)
     const enabled = booleanField(row.enabled)
     if (!agent || !sense || !status || detail === null || enabled === null) return null
-    return {
+    const parsed: StatusSenseRow = {
       agent,
       sense,
       label: stringField(row.label) ?? undefined,
       enabled,
       status,
       detail,
-    } satisfies StatusSenseRow
+    }
+    const proofMethod = stringField(row.proofMethod)
+    const lastProofAt = stringField(row.lastProofAt)
+    const proofAgeMs = numberField(row.proofAgeMs)
+    const lastFailure = stringField(row.lastFailure)
+    const failureLayer = stringField(row.failureLayer)
+    const recoveryAction = stringField(row.recoveryAction)
+    const pendingRecoveryCount = numberField(row.pendingRecoveryCount)
+    const failedRecoveryCount = numberField(row.failedRecoveryCount)
+    const oldestPendingRecoveryAt = stringField(row.oldestPendingRecoveryAt)
+    const oldestPendingRecoveryAgeMs = numberField(row.oldestPendingRecoveryAgeMs)
+    const activeTurnCount = numberField(row.activeTurnCount)
+    const stalledTurnCount = numberField(row.stalledTurnCount)
+    const oldestActiveTurnStartedAt = stringField(row.oldestActiveTurnStartedAt)
+    const oldestActiveTurnAgeMs = numberField(row.oldestActiveTurnAgeMs)
+    if (proofMethod !== null) parsed.proofMethod = proofMethod
+    if (lastProofAt !== null) parsed.lastProofAt = lastProofAt
+    if (proofAgeMs !== null) parsed.proofAgeMs = proofAgeMs
+    if (lastFailure !== null) parsed.lastFailure = lastFailure
+    if (failureLayer !== null) parsed.failureLayer = failureLayer
+    if (recoveryAction !== null) parsed.recoveryAction = recoveryAction
+    if (pendingRecoveryCount !== null) parsed.pendingRecoveryCount = pendingRecoveryCount
+    if (failedRecoveryCount !== null) parsed.failedRecoveryCount = failedRecoveryCount
+    if (oldestPendingRecoveryAt !== null) parsed.oldestPendingRecoveryAt = oldestPendingRecoveryAt
+    if (oldestPendingRecoveryAgeMs !== null) parsed.oldestPendingRecoveryAgeMs = oldestPendingRecoveryAgeMs
+    if (activeTurnCount !== null) parsed.activeTurnCount = activeTurnCount
+    if (stalledTurnCount !== null) parsed.stalledTurnCount = stalledTurnCount
+    if (oldestActiveTurnStartedAt !== null) parsed.oldestActiveTurnStartedAt = oldestActiveTurnStartedAt
+    if (oldestActiveTurnAgeMs !== null) parsed.oldestActiveTurnAgeMs = oldestActiveTurnAgeMs
+    return parsed
   })
 
   const parsedWorkers = workers.map((entry) => {
@@ -227,18 +318,30 @@ export function parseStatusPayload(data: unknown): StatusPayload | null {
     return parsed
   })
 
+  const parsedHealthChecks = (healthChecks ?? []).map((entry) => {
+    if (!entry || typeof entry !== "object" || Array.isArray(entry)) return null
+    const row = entry as Record<string, unknown>
+    const name = stringField(row.name)
+    const status = stringField(row.status)
+    const message = stringField(row.message)
+    if (!name || !status || !message) return null
+    return { name, status, message } satisfies StatusHealthCheckRow
+  })
+
   if (
     parsedSenses.some((row) => row === null) ||
     parsedWorkers.some((row) => row === null) ||
     parsedSync.some((row) => row === null) ||
     parsedAgents.some((row) => row === null) ||
-    parsedProviders.some((row) => row === null)
+    parsedProviders.some((row) => row === null) ||
+    parsedHealthChecks.some((row) => row === null)
   ) return null
 
   return {
     overview: parsedOverview,
     senses: parsedSenses as StatusSenseRow[],
     workers: parsedWorkers as StatusWorkerRow[],
+    healthChecks: parsedHealthChecks as StatusHealthCheckRow[],
     sync: parsedSync as StatusSyncRow[],
     agents: parsedAgents as StatusAgentRow[],
     providers: parsedProviders as StatusProviderRow[],
@@ -345,7 +448,7 @@ export function formatDaemonStatusOutput(response: DaemonResponse, fallback: str
   // ── Key-value overview ──
   const kvLine = (label: string, value: string) => `  ${teal(label.padEnd(11))} ${value}`
   lines.push(kvLine("Socket", ov.socketPath))
-  lines.push(kvLine("Outlook", ov.outlookUrl))
+  lines.push(kvLine("Mailbox", ov.mailboxUrl))
   lines.push(kvLine("Health", `${statusDot(ov.health)} ${ov.health}`))
   lines.push(kvLine("Updated", ov.lastUpdated))
   lines.push("")
@@ -401,7 +504,7 @@ export function formatDaemonStatusOutput(response: DaemonResponse, fallback: str
         const name = humanizeSenseName(row.sense, row.label).padEnd(nameWidth)
         const dot = row.enabled ? statusDot(row.status) : dim("○")
         const statusText = (row.enabled ? row.status : "disabled").padEnd(statusWidth)
-        lines.push(`    ${name} ${dot} ${statusText}  ${dim(row.detail)}`)
+        lines.push(`    ${name} ${dot} ${statusText}  ${dim(formatSenseDetail(row))}`)
       }
     }
     lines.push("")
@@ -441,6 +544,17 @@ export function formatDaemonStatusOutput(response: DaemonResponse, fallback: str
           lines.push(`      ${dim(`fix:   ${row.fixHint}`)}`)
         }
       }
+    }
+    lines.push("")
+  }
+
+  // ── Health Checks ──
+  if (payload.healthChecks.length > 0) {
+    lines.push(`  ${teal("──")} ${bold("Health Checks")} ${teal("─".repeat(29))}`)
+    const nameWidth = Math.max(16, ...payload.healthChecks.map((r) => r.name.length))
+    const statusWidth = Math.max(8, ...payload.healthChecks.map((r) => r.status.length))
+    for (const row of payload.healthChecks) {
+      lines.push(`    ${row.name.padEnd(nameWidth)} ${statusDot(row.status)} ${row.status.padEnd(statusWidth)}  ${dim(row.message)}`)
     }
     lines.push("")
   }
@@ -501,6 +615,7 @@ export function buildStoppedStatusPayload(
       daemon: "stopped",
       health: "warn",
       socketPath,
+      mailboxUrl: "unavailable",
       outlookUrl: "unavailable",
       version: metadata.version,
       lastUpdated: metadata.lastUpdated,
@@ -513,9 +628,88 @@ export function buildStoppedStatusPayload(
     },
     senses: [],
     workers: [],
+    healthChecks: [],
     sync: syncRows,
     agents: agentRows,
     providers: [],
+  }
+}
+
+/**
+ * Render the cached daemon-rollup status as a one-line string for the
+ * "daemon not running" view. Each `DaemonStatus` literal maps to a
+ * label + a brief explanatory copy fragment. The default branch is
+ * `never`-typed so future widening of `DaemonStatus` compile-errors
+ * here — Layer 1's compiler-forced exhaustiveness contract.
+ *
+ * The `degraded` literal splits into two copy variants based on the
+ * cached health file's `agents` map:
+ * - empty map → "no agents configured" (fresh-install copy).
+ * - non-empty map → "none ready" (all-agents-failed-live-check copy).
+ *
+ * The split lives at the render layer (not in the rollup status itself)
+ * so the same status can carry distinct UX copy without inflating the
+ * type union.
+ */
+export function renderRollupStatusLine(health: DaemonHealthState): string {
+  const status: DaemonStatus = health.status
+  const tail = `(pid ${health.pid}, uptime ${health.uptimeSeconds}s)`
+  /* v8 ignore next -- v8 instruments the switch statement itself as a branch; the never-typed default below is unreachable by construction so v8 cannot observe its branch firing @preserve */
+  switch (status) {
+    case "healthy":
+      return `Last known status: healthy ${tail}`
+    case "partial": {
+      const unhealthyCount = Object.values(health.agents).filter(
+        (agent) => agent.status !== "running",
+      ).length
+      const parts: string[] = []
+      if (unhealthyCount > 0) {
+        parts.push(`${unhealthyCount} agent${unhealthyCount === 1 ? "" : "s"} unhealthy`)
+      }
+      // Fallback for legacy cached files: status="partial" with no
+      // visible cause. Prompt refresh via `ouro up` rather than asserting
+      // a specific cause.
+      const detail = parts.length > 0
+        ? ` — ${parts.join("; ")}`
+        : " — stale cache, run `ouro up` to refresh"
+      return `Last known status: partial${detail} ${tail}`
+    }
+    case "degraded": {
+      // Three-way copy split based on the cached agents map:
+      // - empty map → fresh install / no agents configured.
+      // - non-empty + any agent reports "running" → legacy stale cache:
+      //   pre-Layer-1, status="degraded" meant "any sick component," so a
+      //   running agent could coexist with a degraded daemon. Post-Layer-1,
+      //   degraded means "zero serving" — mutually exclusive with a running
+      //   agent. A live disagreement therefore implies the cache pre-dates
+      //   the rollup-semantics fix; prompt for `ouro up` to refresh rather
+      //   than falsely claim "none ready."
+      // - non-empty + zero agents reporting "running" → all-failed copy.
+      const agentEntries = Object.values(health.agents)
+      if (agentEntries.length === 0) {
+        return `Last known status: degraded — no agents configured (run \`ouro hatch\` to add one) ${tail}`
+      }
+      const anyRunning = agentEntries.some((agent) => agent.status === "running")
+      if (anyRunning) {
+        return `Last known status: degraded — stale cache, run \`ouro up\` to refresh ${tail}`
+      }
+      return `Last known status: degraded — agents configured but none ready (run \`ouro doctor\`) ${tail}`
+    }
+    case "safe-mode":
+      return `Last known status: safe-mode — crash loop tripped ${tail}`
+    case "down":
+      return `Last known status: down ${tail}`
+    /* v8 ignore start -- compiler-forced exhaustiveness: the never-typed default branch is unreachable by construction; if DaemonStatus widens, tsc errors at the assignment before the throw can run @preserve */
+    default: {
+      // Compiler-forced exhaustiveness. If DaemonStatus grows a new
+      // literal, this `never` cast errors at tsc, forcing every
+      // consumer to handle it explicitly. NEVER replace this with a
+      // permissive `default:` returning a fallback string — that's
+      // exactly how the old "ok | degraded" semantics leaked through.
+      const _exhaustive: never = status
+      throw new Error(`unhandled daemon status: ${_exhaustive as string}`)
+    }
+    /* v8 ignore stop */
   }
 }
 
@@ -563,7 +757,7 @@ export function daemonUnavailableStatusOutput(socketPath: string, healthFilePath
   const resolvedHealthPath = healthFilePath ?? getDefaultHealthPath()
   const health = readHealth(resolvedHealthPath)
   if (health) {
-    lines.push(`Last known status: ${health.status} (pid ${health.pid}, uptime ${health.uptimeSeconds}s)`)
+    lines.push(renderRollupStatusLine(health))
 
     if (health.safeMode?.active) {
       lines.push(`SAFE MODE: ${health.safeMode.reason}`)
