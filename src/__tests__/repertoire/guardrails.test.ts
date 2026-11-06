@@ -1282,6 +1282,9 @@ describe("OURO_CLI_TRUST_MANIFEST — rollback and versions", () => {
       ["a dot segment", "echo x > /bundle/./friends/peer.json"],
       ["a dotdot segment", "echo x > /bundle/notes/../friends/peer.json"],
       ["a relative path in code", "node -e \"require('fs').writeFileSync('friends/peer.json','{}')\""],
+      // No brace, so the glob check passes it by and only the last mention test sees the store inside the code.
+      ["the absolute path inside code", "node -e \"require('fs').unlinkSync('/bundle/friends/peer.json')\""],
+      ["a relative path inside code", "node -e \"require('fs').unlinkSync('friends/peer.json')\""],
       ["a variable", "echo x > $BUNDLE/friends/peer.json"],
       ["a command substitution", "echo x > $(echo /bundle/friends)/peer.json"],
       ["a heredoc", "cat <<EOF > /bundle/friends/peer.json\nx\nEOF"],
