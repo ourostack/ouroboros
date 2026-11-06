@@ -9,10 +9,14 @@ import {
   refreshMachineRuntimeCredentialConfig,
   refreshRuntimeCredentialConfig,
   type RuntimeCredentialConfigReadResult,
+  type RuntimeCredentialConfig,
 } from "../runtime-credentials"
+import { readProviderCredentialPool, type ProviderCredentialRecord } from "../provider-credentials"
 import { getSenseInventory, type SenseRuntimeInfo, type SenseStatus } from "../sense-truth"
 import { loadOrCreateMachineIdentity } from "../machine-identity"
 import { DaemonProcessManager } from "./process-manager"
+import { createHttpHealthProbe } from "./http-health-probe"
+import type { SenseProbe } from "./health-monitor"
 
 export interface DaemonSenseRow {
   agent: string
@@ -21,13 +25,30 @@ export interface DaemonSenseRow {
   enabled: boolean
   status: SenseStatus
   detail: string
+  proofMethod?: string
+  lastProofAt?: string
+  proofAgeMs?: number
+  lastFailure?: string
+  failureLayer?: string
+  recoveryAction?: string
+  pendingRecoveryCount?: number
+  failedRecoveryCount?: number
+  oldestPendingRecoveryAt?: string
+  oldestPendingRecoveryAgeMs?: number
+  activeTurnCount?: number
+  stalledTurnCount?: number
+  oldestActiveTurnStartedAt?: string
+  oldestActiveTurnAgeMs?: number
 }
 
 export interface DaemonSenseManagerLike {
   startAutoStartSenses(): Promise<void>
+  triggerAutoStartSenses?(): void
   stopAll(): Promise<void>
   listSenseRows(): DaemonSenseRow[]
+  listHealthProbes?(): SenseProbe[]
   listManagedPids?(): number[]
+  restartSense?(managedName: string): Promise<void>
 }
 
 export interface DaemonSenseManagerOptions {
@@ -35,6 +56,9 @@ export interface DaemonSenseManagerOptions {
   bundlesRoot?: string
   processManager?: {
     startAutoStartAgents(): Promise<void>
+    triggerAutoStartAgents?(): void
+    startAgent?(agent: string): Promise<void>
+    restartAgent?(agent: string): Promise<void>
     stopAll(): Promise<void>
     listAgentSnapshots(): Array<{ name: string; status: string; pid?: number | null }>
   }
@@ -49,6 +73,20 @@ interface SenseConfigFacts {
 interface SenseRuntimeFacts {
   runtime?: "running" | "error"
   detail?: string
+  proofMethod?: string
+  lastProofAt?: string
+  proofAgeMs?: number
+  lastFailure?: string
+  failureLayer?: string
+  recoveryAction?: string
+  pendingRecoveryCount?: number
+  failedRecoveryCount?: number
+  oldestPendingRecoveryAt?: string
+  oldestPendingRecoveryAgeMs?: number
+  activeTurnCount?: number
+  stalledTurnCount?: number
+  oldestActiveTurnStartedAt?: string
+  oldestActiveTurnAgeMs?: number
 }
 
 interface AgentSenseContext {
@@ -66,6 +104,8 @@ function defaultSenses(): AgentSensesConfig {
     cli: { ...DEFAULT_AGENT_SENSES.cli },
     teams: { ...DEFAULT_AGENT_SENSES.teams },
     bluebubbles: { ...DEFAULT_AGENT_SENSES.bluebubbles },
+    mail: { ...DEFAULT_AGENT_SENSES.mail },
+    voice: { ...DEFAULT_AGENT_SENSES.voice },
   }
 }
 
@@ -94,7 +134,7 @@ function readAgentSenses(agentJsonPath: string): AgentSensesConfig {
     return defaults
   }
 
-  for (const sense of ["cli", "teams", "bluebubbles"] as SenseName[]) {
+  for (const sense of ["cli", "teams", "bluebubbles", "mail", "voice"] as SenseName[]) {
     const rawSense = (rawSenses as Record<string, unknown>)[sense]
     if (!rawSense || typeof rawSense !== "object" || Array.isArray(rawSense)) {
       continue
@@ -146,6 +186,8 @@ function senseFactsFromRuntimeConfig(
     cli: { configured: true, detail: "local interactive terminal" },
     teams: { configured: false, detail: "not enabled in agent.json" },
     bluebubbles: { configured: false, detail: "not enabled in agent.json" },
+    mail: { configured: false, detail: "not enabled in agent.json" },
+    voice: { configured: false, detail: "not enabled in agent.json" },
   }
 
   const payload = runtimeConfig.ok ? runtimeConfig.config : {}
@@ -155,6 +197,9 @@ function senseFactsFromRuntimeConfig(
   const machinePayload = machineRuntimeConfig.ok ? machineRuntimeConfig.config : {}
   const bluebubbles = machinePayload.bluebubbles as Record<string, unknown> | undefined
   const bluebubblesChannel = machinePayload.bluebubblesChannel as Record<string, unknown> | undefined
+  const mailroom = payload.mailroom as Record<string, unknown> | undefined
+  const integrations = payload.integrations as Record<string, unknown> | undefined
+  const voice = machinePayload.voice as Record<string, unknown> | undefined
 
   if (senses.teams.enabled) {
     const missing: string[] = []
@@ -196,12 +241,66 @@ function senseFactsFromRuntimeConfig(
         }
   }
 
+  if (senses.mail.enabled) {
+    const privateKeys = mailroom?.privateKeys
+    const hasPrivateKeys = !!privateKeys && typeof privateKeys === "object" && !Array.isArray(privateKeys) && Object.values(privateKeys).some((value) => typeof value === "string" && value.trim().length > 0)
+    const mailboxAddress = textField(mailroom, "mailboxAddress")
+    const missing: string[] = []
+    if (!mailboxAddress) missing.push("mailroom.mailboxAddress")
+    if (!hasPrivateKeys) missing.push("mailroom.privateKeys")
+
+    base.mail = missing.length === 0
+      ? { configured: true, detail: mailboxAddress }
+      : {
+          configured: false,
+          detail: runtimeConfig.ok
+            ? `missing ${missing.join("/")}`
+            : unavailableDetail,
+        }
+  }
+
+  if (senses.voice.enabled) {
+    const missing: string[] = []
+    if (!textField(integrations, "elevenLabsApiKey")) missing.push("integrations.elevenLabsApiKey")
+    if (!textField(integrations, "elevenLabsVoiceId") && !textField(payload.voice as Record<string, unknown> | undefined, "elevenLabsVoiceId")) {
+      missing.push("integrations.elevenLabsVoiceId")
+    }
+    if (!textField(voice, "whisperCliPath")) missing.push("voice.whisperCliPath")
+    if (!textField(voice, "whisperModelPath")) missing.push("voice.whisperModelPath")
+
+    const twilioPublicUrl = textField(voice, "twilioPublicUrl")
+    base.voice = missing.length === 0
+      ? {
+          configured: true,
+          detail: twilioPublicUrl
+            ? "local Whisper.cpp STT + ElevenLabs TTS; Twilio phone transport attached"
+            : "local Whisper.cpp STT + ElevenLabs TTS",
+        }
+      : {
+          configured: false,
+          optional: !machineRuntimeConfig.ok && machineRuntimeConfig.reason === "missing",
+          detail: !machineRuntimeConfig.ok && machineRuntimeConfig.reason === "missing"
+            ? "not attached on this machine"
+            : runtimeConfig.ok && machineRuntimeConfig.ok
+              ? `missing ${missing.join("/")}`
+              : !runtimeConfig.ok
+                ? unavailableDetail
+                : runtimeConfigUnavailableDetail(agent, machineRuntimeConfig),
+        }
+  }
+
   return base
 }
 
 function senseRepairHint(agent: string, sense: SenseName): string {
   if (sense === "teams") {
     return `Run 'ouro vault config set --agent ${agent} --key teams.clientId', teams.clientSecret, and teams.tenantId; then run 'ouro up' again.`
+  }
+  if (sense === "mail") {
+    return `Agent-runnable: provision Mailroom access with 'ouro connect mail --agent ${agent}', then restart with 'ouro up'.`
+  }
+  if (sense === "voice") {
+    return `Agent-runnable: run 'ouro connect voice --agent ${agent}' for config guidance, save ElevenLabs and local Whisper.cpp settings, then run 'ouro up' again.`
   }
   return `Run 'ouro connect bluebubbles --agent ${agent}' to attach BlueBubbles on this machine; then run 'ouro up' again.`
 }
@@ -214,13 +313,45 @@ function parseSenseSnapshotName(name: string): { agent: string; sense: SenseName
   const parts = name.split(":")
   if (parts.length !== 2) return null
   const [agent, sense] = parts
-  if (sense !== "teams" && sense !== "bluebubbles") return null
+  if (sense !== "teams" && sense !== "bluebubbles" && sense !== "mail" && sense !== "voice") return null
   return { agent, sense }
 }
 
 function runtimeInfoFor(status: string): SenseRuntimeInfo {
   if (status === "running") return { runtime: "running" }
   return { runtime: "error" }
+}
+
+function managedSenseEntry(sense: Exclude<SenseName, "cli">): string {
+  if (sense === "teams") return "senses/teams-entry.js"
+  if (sense === "bluebubbles") return "senses/bluebubbles/entry.js"
+  if (sense === "voice") return "senses/voice-entry.js"
+  return "senses/mail-entry.js"
+}
+
+function runtimeCredentialBootstrapFor(agent: string, sense: Exclude<SenseName, "cli">): {
+  agentName: string
+  runtimeConfig?: RuntimeCredentialConfig
+  machineRuntimeConfig?: RuntimeCredentialConfig
+  machineId?: string
+  providerCredentialRecords?: ProviderCredentialRecord[]
+} | null {
+  const runtime = readRuntimeCredentialConfig(agent)
+  const machineId = sense === "bluebubbles" || sense === "voice" ? currentMachineId() : undefined
+  const machine = sense === "bluebubbles" || sense === "voice" ? readMachineRuntimeCredentialConfig(agent) : null
+  const providerPool = readProviderCredentialPool(agent)
+  const providerCredentialRecords = providerPool.ok
+    ? Object.values(providerPool.pool.providers).filter((record): record is ProviderCredentialRecord => !!record)
+    : []
+  const bootstrap = {
+    agentName: agent,
+    runtimeConfig: runtime.ok ? runtime.config : undefined,
+    machineRuntimeConfig: machine?.ok ? machine.config : undefined,
+    machineId,
+    providerCredentialRecords: providerCredentialRecords.length > 0 ? providerCredentialRecords : undefined,
+  }
+  if (!bootstrap.runtimeConfig && !bootstrap.machineRuntimeConfig && !bootstrap.providerCredentialRecords) return null
+  return bootstrap
 }
 
 function blueBubblesRuntimeStateIsFresh(lastCheckedAt?: string, now = Date.now()): boolean {
@@ -242,6 +373,15 @@ interface BlueBubblesRuntimeStateSlice {
   upstreamStatus: "unknown" | "ok" | "error"
   detail: string
   lastCheckedAt?: string
+  proofMethod?: string
+  pendingRecoveryCount: number
+  failedRecoveryCount: number
+  oldestPendingRecoveryAt?: string
+  oldestPendingRecoveryAgeMs?: number
+  activeTurnCount?: number
+  stalledTurnCount?: number
+  oldestActiveTurnStartedAt?: string
+  oldestActiveTurnAgeMs?: number
 }
 
 function readBlueBubblesRuntimeJson(runtimePath: string): BlueBubblesRuntimeStateSlice {
@@ -257,11 +397,34 @@ function readBlueBubblesRuntimeJson(runtimePath: string): BlueBubblesRuntimeStat
         ? parsed.detail
         : "startup health probe pending",
       lastCheckedAt: typeof parsed.lastCheckedAt === "string" ? parsed.lastCheckedAt : undefined,
+      proofMethod: typeof parsed.proofMethod === "string" && parsed.proofMethod.trim()
+        ? parsed.proofMethod
+        : undefined,
+      pendingRecoveryCount: typeof parsed.pendingRecoveryCount === "number" && Number.isFinite(parsed.pendingRecoveryCount)
+        ? parsed.pendingRecoveryCount
+        : 0,
+      failedRecoveryCount: typeof parsed.failedRecoveryCount === "number" && Number.isFinite(parsed.failedRecoveryCount)
+        ? parsed.failedRecoveryCount
+        : 0,
+      oldestPendingRecoveryAt: typeof parsed.oldestPendingRecoveryAt === "string" ? parsed.oldestPendingRecoveryAt : undefined,
+      oldestPendingRecoveryAgeMs: typeof parsed.oldestPendingRecoveryAgeMs === "number" && Number.isFinite(parsed.oldestPendingRecoveryAgeMs)
+        ? parsed.oldestPendingRecoveryAgeMs
+        : undefined,
+      activeTurnCount: typeof parsed.activeTurnCount === "number" && Number.isFinite(parsed.activeTurnCount)
+        ? parsed.activeTurnCount
+        : undefined,
+      stalledTurnCount: typeof parsed.stalledTurnCount === "number" && Number.isFinite(parsed.stalledTurnCount)
+        ? parsed.stalledTurnCount
+        : undefined,
+      oldestActiveTurnStartedAt: typeof parsed.oldestActiveTurnStartedAt === "string" ? parsed.oldestActiveTurnStartedAt : undefined,
+      oldestActiveTurnAgeMs: typeof parsed.oldestActiveTurnAgeMs === "number" && Number.isFinite(parsed.oldestActiveTurnAgeMs)
+        ? parsed.oldestActiveTurnAgeMs
+        : undefined,
     }
     /* v8 ignore stop */
   /* v8 ignore start -- defensive: catch for missing/corrupt BB runtime state file @preserve */
   } catch {
-    return { upstreamStatus: "unknown", detail: "startup health probe pending" }
+    return { upstreamStatus: "unknown", detail: "startup health probe pending", pendingRecoveryCount: 0, failedRecoveryCount: 0 }
   }
   /* v8 ignore stop */
 }
@@ -278,27 +441,92 @@ function readBlueBubblesRuntimeFacts(
   }
 
   const state = readBlueBubblesRuntimeJson(runtimePath)
+  const checkedAtMs = state.lastCheckedAt ? Date.parse(state.lastCheckedAt) : Number.NaN
+  const proofFacts = {
+    proofMethod: state.proofMethod ?? "bluebubbles.checkHealth",
+    lastProofAt: state.lastCheckedAt,
+    proofAgeMs: Number.isFinite(checkedAtMs) ? Math.max(0, Date.now() - checkedAtMs) : undefined,
+    pendingRecoveryCount: state.pendingRecoveryCount,
+    failedRecoveryCount: state.failedRecoveryCount,
+    oldestPendingRecoveryAt: state.oldestPendingRecoveryAt,
+    oldestPendingRecoveryAgeMs: state.oldestPendingRecoveryAgeMs,
+    activeTurnCount: state.activeTurnCount,
+    stalledTurnCount: state.stalledTurnCount,
+    oldestActiveTurnStartedAt: state.oldestActiveTurnStartedAt,
+    oldestActiveTurnAgeMs: state.oldestActiveTurnAgeMs,
+  }
   if (!blueBubblesRuntimeStateIsFresh(state.lastCheckedAt)) {
-    return { runtime: snapshot?.runtime }
+    return {
+      runtime: snapshot?.runtime,
+      lastFailure: state.lastCheckedAt ? "BlueBubbles proof is stale" : undefined,
+      failureLayer: state.lastCheckedAt ? "proof_freshness" : undefined,
+    }
+  }
+
+  if (snapshot?.runtime !== "running") {
+    return {
+      runtime: "error",
+      detail: "BlueBubbles listener is not running",
+      ...proofFacts,
+      lastFailure: "listener process is not running",
+      failureLayer: "listener",
+      recoveryAction: "daemon health monitor will restart the BlueBubbles listener when its probe fails",
+    }
   }
 
   if (state.upstreamStatus === "error") {
     return {
       runtime: "error",
       detail: state.detail,
+      ...proofFacts,
+      lastFailure: state.detail,
+      failureLayer: "upstream",
+      recoveryAction: "verify BlueBubbles server/app auth and local machine attachment, then retry the listener",
+    }
+  }
+
+  if (state.pendingRecoveryCount > 0) {
+    return {
+      runtime: "error",
+      detail: state.detail,
+      ...proofFacts,
+      lastFailure: state.detail,
+      failureLayer: "recovery_queue",
+      recoveryAction: "queued recovery will retry; inspect BlueBubbles inbound/recovery sidecar logs if age keeps growing",
+    }
+  }
+
+  if ((state.stalledTurnCount ?? 0) > 0) {
+    return {
+      runtime: "error",
+      detail: state.detail,
+      ...proofFacts,
+      lastFailure: state.detail,
+      failureLayer: "live_turn_stall",
+      recoveryAction: "live iMessage turn timeout/watchdog will release the lane and recovery will retry captured messages",
     }
   }
 
   if (state.upstreamStatus === "ok") {
-    return { runtime: "running" }
+    return {
+      runtime: "running",
+      ...proofFacts,
+      ...(state.failedRecoveryCount > 0 ? { detail: state.detail } : {}),
+      ...(state.failedRecoveryCount > 0 ? {
+        lastFailure: state.detail,
+        failureLayer: "recovery_quarantine",
+        recoveryAction: "inspect quarantined BlueBubbles recovery failures; live transport remains reachable",
+      } : {}),
+    }
   }
 
-  return { runtime: snapshot?.runtime }
+  return { runtime: snapshot?.runtime, ...proofFacts }
 }
 
 export class DaemonSenseManager implements DaemonSenseManagerLike {
   private readonly processManager: NonNullable<DaemonSenseManagerOptions["processManager"]>
   private readonly contexts: Map<string, AgentSenseContext>
+  private readonly pendingConfigRefreshes = new Set<string>()
   private readonly bundlesRoot: string
 
   constructor(options: DaemonSenseManagerOptions) {
@@ -313,14 +541,15 @@ export class DaemonSenseManager implements DaemonSenseManagerLike {
     )
 
     const managedSenseAgents = [...this.contexts.entries()].flatMap(([agent, context]) => {
-      return (["teams", "bluebubbles"] as SenseName[])
+      return (["teams", "bluebubbles", "mail", "voice"] as Exclude<SenseName, "cli">[])
         .filter((sense) => context.senses[sense].enabled)
         .map((sense) => ({
           name: `${agent}:${sense}`,
           agentArg: agent,
-          entry: sense === "teams" ? "senses/teams-entry.js" : "senses/bluebubbles/entry.js",
+          entry: managedSenseEntry(sense),
           channel: sense,
           autoStart: true,
+          getRuntimeCredentialBootstrap: () => runtimeCredentialBootstrapFor(agent, sense),
         }))
     })
 
@@ -331,13 +560,15 @@ export class DaemonSenseManager implements DaemonSenseManagerLike {
         if (!parsed) return { ok: true }
         const context = this.contexts.get(parsed.agent)
         if (!context) return { ok: true }
-        const refreshed = await refreshRuntimeCredentialConfig(parsed.agent, { preserveCachedOnFailure: true })
-        const machineRefreshed = parsed.sense === "bluebubbles"
-          ? await refreshMachineRuntimeCredentialConfig(parsed.agent, currentMachineId(), { preserveCachedOnFailure: true })
-          : readMachineRuntimeCredentialConfig(parsed.agent)
-        context.facts = senseFactsFromRuntimeConfig(parsed.agent, context.senses, refreshed, machineRefreshed)
+        context.facts = senseFactsFromRuntimeConfig(
+          parsed.agent,
+          context.senses,
+          readRuntimeCredentialConfig(parsed.agent),
+          readMachineRuntimeCredentialConfig(parsed.agent),
+        )
         const fact = context.facts[parsed.sense]
         if (fact.configured) return { ok: true }
+        this.scheduleSenseConfigRefresh(name, parsed)
         if (fact.optional) {
           return {
             ok: false,
@@ -347,6 +578,7 @@ export class DaemonSenseManager implements DaemonSenseManagerLike {
         }
         return {
           ok: false,
+          skip: true,
           error: `${parsed.sense} is enabled for ${parsed.agent} but runtime credentials are not ready: ${fact.detail}`,
           fix: senseRepairHint(parsed.agent, parsed.sense),
         }
@@ -364,8 +596,67 @@ export class DaemonSenseManager implements DaemonSenseManagerLike {
     })
   }
 
+  private scheduleSenseConfigRefresh(name: string, parsed: { agent: string; sense: SenseName }): void {
+    if (this.pendingConfigRefreshes.has(name)) return
+    this.pendingConfigRefreshes.add(name)
+    void this.refreshSenseConfigAndRetry(name, parsed)
+  }
+
+  private async refreshSenseConfigAndRetry(name: string, parsed: { agent: string; sense: SenseName }): Promise<void> {
+    try {
+      const refreshed = await refreshRuntimeCredentialConfig(parsed.agent, { preserveCachedOnFailure: true })
+      const machineRefreshed = parsed.sense === "bluebubbles" || parsed.sense === "voice"
+        ? await refreshMachineRuntimeCredentialConfig(parsed.agent, currentMachineId(), { preserveCachedOnFailure: true })
+        : readMachineRuntimeCredentialConfig(parsed.agent)
+      const context = this.contexts.get(parsed.agent)
+      /* v8 ignore next -- defensive: config refreshes are only scheduled for known agent contexts @preserve */
+      if (!context) return
+      context.facts = senseFactsFromRuntimeConfig(parsed.agent, context.senses, refreshed, machineRefreshed)
+      if (!context.facts[parsed.sense].configured) return
+      setTimeout(() => {
+        void this.processManager.startAgent?.(name).catch((error) => {
+          emitNervesEvent({
+            level: "error",
+            component: "channels",
+            event: "channel.daemon_sense_autostart_error",
+            message: "sense autostart failed",
+            /* v8 ignore next -- defensive: process manager rejects with Error instances in normal use @preserve */
+            meta: { error: error instanceof Error ? error.message : String(error) },
+          })
+        })
+      }, 0)
+    } catch (error) {
+      emitNervesEvent({
+        level: "error",
+        component: "channels",
+        event: "channel.daemon_sense_autostart_error",
+        message: "sense config refresh failed",
+        /* v8 ignore next -- defensive: runtime credential refresh rejects with Error instances in normal use @preserve */
+        meta: { error: error instanceof Error ? error.message : String(error) },
+      })
+    } finally {
+      this.pendingConfigRefreshes.delete(name)
+    }
+  }
+
   async startAutoStartSenses(): Promise<void> {
     await this.processManager.startAutoStartAgents()
+  }
+
+  triggerAutoStartSenses(): void {
+    if (this.processManager.triggerAutoStartAgents) {
+      this.processManager.triggerAutoStartAgents()
+      return
+    }
+    void this.processManager.startAutoStartAgents().catch((error) => {
+        emitNervesEvent({
+          level: "error",
+          component: "channels",
+          event: "channel.daemon_sense_autostart_error",
+          message: "sense autostart failed",
+          meta: { error: error instanceof Error ? error.message : String(error) },
+        })
+      })
   }
 
   async stopAll(): Promise<void> {
@@ -379,6 +670,35 @@ export class DaemonSenseManager implements DaemonSenseManagerLike {
       .filter((pid): pid is number => pid !== null && pid !== undefined)
   }
   /* v8 ignore stop */
+
+  listHealthProbes(): SenseProbe[] {
+    const probes: SenseProbe[] = []
+    for (const [agent, context] of this.contexts.entries()) {
+      const runtimeConfig = readRuntimeCredentialConfig(agent)
+      const machineRuntimeConfig = readMachineRuntimeCredentialConfig(agent)
+      context.facts = senseFactsFromRuntimeConfig(agent, context.senses, runtimeConfig, machineRuntimeConfig)
+      if (!context.senses.bluebubbles.enabled || !context.facts.bluebubbles.configured || !machineRuntimeConfig.ok) {
+        continue
+      }
+
+      const machinePayload = machineRuntimeConfig.config
+      const bluebubblesChannel = machinePayload.bluebubblesChannel as Record<string, unknown> | undefined
+      const port = numberField(bluebubblesChannel, "port", DEFAULT_BLUEBUBBLES_PORT)
+      probes.push({
+        ...createHttpHealthProbe(`bluebubbles:${agent}`, port),
+        managedName: `${agent}:bluebubbles`,
+      })
+    }
+    return probes
+  }
+
+  async restartSense(managedName: string): Promise<void> {
+    if (this.processManager.restartAgent) {
+      await this.processManager.restartAgent(managedName)
+      return
+    }
+    await this.processManager.startAgent?.(managedName)
+  }
 
   listSenseRows(): DaemonSenseRow[] {
     const runtime = new Map<string, Partial<Record<SenseName, SenseRuntimeInfo>>>()
@@ -404,6 +724,15 @@ export class DaemonSenseManager implements DaemonSenseManagerLike {
           optional: context.facts.bluebubbles.optional,
           ...blueBubblesRuntimeFacts,
         },
+        mail: {
+          configured: context.facts.mail.configured,
+          ...(runtime.get(agent)?.mail ?? {}),
+        },
+        voice: {
+          configured: context.facts.voice.configured,
+          optional: context.facts.voice.optional,
+          ...(runtime.get(agent)?.voice ?? {}),
+        },
       }
       const inventory = getSenseInventory({ senses: context.senses }, runtimeInfo)
       return inventory.map((entry) => ({
@@ -418,6 +747,22 @@ export class DaemonSenseManager implements DaemonSenseManagerLike {
               ?? context.facts[entry.sense].detail
             : context.facts[entry.sense].detail
           : "not enabled in agent.json",
+        ...(entry.sense === "bluebubbles" ? {
+          proofMethod: blueBubblesRuntimeFacts.proofMethod,
+          lastProofAt: blueBubblesRuntimeFacts.lastProofAt,
+          proofAgeMs: blueBubblesRuntimeFacts.proofAgeMs,
+          lastFailure: blueBubblesRuntimeFacts.lastFailure,
+          failureLayer: blueBubblesRuntimeFacts.failureLayer,
+          recoveryAction: blueBubblesRuntimeFacts.recoveryAction,
+          pendingRecoveryCount: blueBubblesRuntimeFacts.pendingRecoveryCount,
+          failedRecoveryCount: blueBubblesRuntimeFacts.failedRecoveryCount,
+          oldestPendingRecoveryAt: blueBubblesRuntimeFacts.oldestPendingRecoveryAt,
+          oldestPendingRecoveryAgeMs: blueBubblesRuntimeFacts.oldestPendingRecoveryAgeMs,
+          activeTurnCount: blueBubblesRuntimeFacts.activeTurnCount,
+          stalledTurnCount: blueBubblesRuntimeFacts.stalledTurnCount,
+          oldestActiveTurnStartedAt: blueBubblesRuntimeFacts.oldestActiveTurnStartedAt,
+          oldestActiveTurnAgeMs: blueBubblesRuntimeFacts.oldestActiveTurnAgeMs,
+        } : {}),
       }))
     })
 

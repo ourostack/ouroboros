@@ -19,8 +19,10 @@ import { userProfileToolDefinitions } from "./tools-user-profile";
 import { stripeToolDefinitions } from "./tools-stripe";
 import { flightToolDefinitions } from "./tools-flight";
 import { attachmentToolDefinitions } from "./tools-attachments";
+import { mailToolDefinitions } from "./tools-mail"
+import { tripToolDefinitions } from "./tools-trip"
 // Re-export flow tools for consumers that import them from tools-base
-export { ponderTool, observeTool, settleTool, restTool } from "./tools-flow";
+export { ponderTool, observeTool, settleTool, restTool, speakTool } from "./tools-flow";
 
 // Re-export renderInnerProgressStatus for consumers
 export { renderInnerProgressStatus } from "./tools-session";
@@ -98,9 +100,10 @@ export const baseToolDefinitions: ToolDefinition[] = [
   ...stripeToolDefinitions,
   ...flightToolDefinitions,
   ...attachmentToolDefinitions,
+  ...mailToolDefinitions,
+  ...tripToolDefinitions,
 ];
 
 // Convenience array of just the tool schemas (no handler/integration metadata).
 // Used by consumers that need the OpenAI function-tool format.
 export const tools: OpenAI.ChatCompletionFunctionTool[] = baseToolDefinitions.map((d) => d.tool);
-

@@ -25,6 +25,7 @@ vi.mock("../../../heart/daemon/hooks/bundle-meta", () => ({
 
 // Mock update-checker
 vi.mock("../../../heart/versioning/update-checker", () => ({
+  CLI_UPDATE_DIST_TAG: "latest",
   startUpdateChecker: (...a: any[]) => mocks.startUpdateChecker(...a),
   stopUpdateChecker: (...a: any[]) => mocks.stopUpdateChecker(...a),
 }))
@@ -86,7 +87,7 @@ describe("daemon boot: applyPendingUpdates wiring", () => {
       stopAll: vi.fn(async () => undefined),
       listSenseRows: vi.fn(() => []),
     }
-    const outlookServerFactory = vi.fn(async () => ({
+    const mailboxServerFactory = vi.fn(async () => ({
       origin: "http://127.0.0.1:0",
       stop: vi.fn(async () => undefined),
     }))
@@ -99,7 +100,7 @@ describe("daemon boot: applyPendingUpdates wiring", () => {
       router,
       bundlesRoot,
       senseManager,
-      outlookServerFactory,
+      mailboxServerFactory,
     } as any)
     return { daemon, processManager }
   }
@@ -155,6 +156,7 @@ describe("daemon boot: applyPendingUpdates wiring", () => {
         deps: expect.objectContaining({ distTag: "latest" }),
       }),
     )
+    expect(mocks.startUpdateChecker.mock.calls[0]?.[0]).not.toHaveProperty("onUpdate")
 
     fs.rmSync(bundlesRoot, { recursive: true, force: true })
   })
@@ -215,7 +217,7 @@ describe("daemon boot: applyPendingUpdates wiring", () => {
       stopAll: vi.fn(async () => undefined),
       listSenseRows: vi.fn(() => []),
     }
-    const outlookServerFactory = vi.fn(async () => ({
+    const mailboxServerFactory = vi.fn(async () => ({
       origin: "http://127.0.0.1:0",
       stop: vi.fn(async () => undefined),
     }))
@@ -229,7 +231,7 @@ describe("daemon boot: applyPendingUpdates wiring", () => {
       bundlesRoot,
       senseManager,
       mode: "dev",
-      outlookServerFactory,
+      mailboxServerFactory,
     } as any)
 
     await daemon.start()
@@ -267,7 +269,7 @@ describe("daemon boot: applyPendingUpdates wiring", () => {
       stopAll: vi.fn(async () => undefined),
       listSenseRows: vi.fn(() => []),
     }
-    const outlookServerFactory = vi.fn(async () => ({
+    const mailboxServerFactory = vi.fn(async () => ({
       origin: "http://127.0.0.1:0",
       stop: vi.fn(async () => undefined),
     }))
@@ -281,7 +283,7 @@ describe("daemon boot: applyPendingUpdates wiring", () => {
       bundlesRoot,
       senseManager,
       mode: "production",
-      outlookServerFactory,
+      mailboxServerFactory,
     } as any)
 
     await daemon.start()
