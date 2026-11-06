@@ -156,6 +156,9 @@ describe("a2a_send_message falls back to the peer's relay", () => {
     closers.push(() => server.close())
     const store = new FileFriendStore(`${tmp.agentRoot}/friends`)
     await upsertAgentPeer(store, { name: "Sender", agentId: sender.did, trustLevel: "family", a2a: { did: sender.did, agentId: sender.did, endpointUrl: "https://sender.example/a2a" } })
+    // An active friend, so the peer answers relay/contact (a refused call would also cache "no relay").
+    const senderOnPeer = (await store.findByExternalId("a2a-agent", sender.did))!
+    await store.put(senderOnPeer.id, { ...senderOnPeer, admissionState: "active" })
     const record = await peerRecord(store, peer, server.endpointUrl)
 
     const out = await sendMessage()({ friend_id: record.id, message: "hello" }, localCtx(tmp.agentRoot, store))

@@ -52,6 +52,8 @@ const PROTECTED_PATH_SEGMENTS = [
   "state/policy/",
   // The pre-trust-directory home of the escalation grants; the file is no longer read, and a model must not recreate it.
   "state/a2a/escalation-grants.json",
+  // Where to queue mail for offline peers; a model that rewrote a contact could send a peer's mail to its own relay.
+  "state/a2a/relay-contacts/",
   "state/outbox/",
   "state/reports/",
 ]
