@@ -7313,6 +7313,10 @@ async function executeFriendCommand(command: FriendCliCommand, store: FriendStor
     })
     if (result.status === "not_found") return `friend not found: ${command.friendId}`
     if (result.status === "noop") return `identity already linked: ${command.provider}:${command.externalId}`
+    // Anything but linked or merged changed nothing (for example conflict_requires_operator or retry_unsupported).
+    if (result.status !== "linked" && result.status !== "merged") {
+      return `not linked: ${command.provider}:${command.externalId} (${[result.status, result.message].filter(Boolean).join(": ")})`
+    }
     const mergeMessage = result.status === "merged" ? " (merged orphan)" : ""
     return `linked ${command.provider}:${command.externalId} to ${command.friendId}${mergeMessage}`
   }
@@ -7371,6 +7375,9 @@ async function executeA2AClientCommand(command: A2AClientCliCommand, deps: OuroC
   /* v8 ignore next -- production CLI keeps the client key under the home dir; tests pass an explicit file @preserve */
   const identityFile = command.identityFile ?? path.join(os.homedir(), ".ouro-cli", "a2a", "client-identity.json")
   const identity = await loadOrMintA2AIdentityFile({ filePath: identityFile })
+  // Replies are replay-checked against a durable ledger beside the identity file, so an old reply cannot be served again.
+  const { FileA2ASeenLedger } = await import("../../a2a/seen-ledger")
+  const replySeen = () => new FileA2ASeenLedger(path.dirname(identityFile))
   if (command.kind === "a2a.identity") {
     const message = command.json ? JSON.stringify({ did: identity.did, identityFile }) : `did: ${identity.did}\nidentity file: ${identityFile}`
     deps.writeStdout(message)
@@ -7388,7 +7395,7 @@ async function executeA2AClientCommand(command: A2AClientCliCommand, deps: OuroC
           return { method: "report/resolve" as const, params: { id: claim.reportId, version: claim.version, note: claim.note, resolvedAt: claim.resolvedAt, proof: signResolution({ sodium: await ready(), identity, claim }) } }
         })()
     const result = await callOutboxMethod({
-      cardUrl: command.to, ...call, identity,
+      cardUrl: command.to, ...call, identity, seen: replySeen(),
       /* v8 ignore next -- production CLI uses global fetch; tests inject fetch for a hermetic peer @preserve */
       ...(deps.fetchImpl ? { fetchImpl: deps.fetchImpl } : {}),
     })
@@ -7405,6 +7412,7 @@ async function executeA2AClientCommand(command: A2AClientCliCommand, deps: OuroC
       ...(command.conversationId ? { conversationId: command.conversationId } : {}),
       ...(command.delegated ? { onBehalfOf: "principal" as const } : {}),
       identity,
+      seen: replySeen(),
       /* v8 ignore next -- production CLI uses global fetch; tests inject fetch for a hermetic peer @preserve */
       ...(deps.fetchImpl ? { fetchImpl: deps.fetchImpl } : {}),
     })

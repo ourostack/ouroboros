@@ -25,6 +25,13 @@ export interface DurableSeenLedger extends SeenLedgerLike {
   readonly size: number
 }
 
+/**
+ * How long a seen entry must be kept: friends accepts an envelope until 7 days after its `issuedAt`, and an `issuedAt`
+ * at most 2 minutes ahead of the clock, so an entry marked longer ago than both can never match an acceptable
+ * envelope again (`DEFAULT_MAX_AGE_MS` plus `DEFAULT_MAX_FUTURE_SKEW_MS` in friends `envelope-binding`).
+ */
+export const SEEN_RETENTION_MS = 7 * 24 * 60 * 60 * 1000 + 2 * 60 * 1000
+
 function nonceFileName(nonce: string): string {
   return `${createHash("sha256").update(nonce).digest("hex")}.json`
 }
@@ -33,10 +40,10 @@ export class FileA2ASeenLedger implements DurableSeenLedger {
   private readonly dir: string
   private readonly cache = new Set<string>()
 
-  constructor(agentRoot: string) {
+  constructor(agentRoot: string, options: { now?: number } = {}) {
     this.dir = path.join(agentRoot, "state", "a2a", "seen")
     fs.mkdirSync(this.dir, { recursive: true })
-    this.loadExisting()
+    this.loadExisting(options.now ?? Date.now())
     emitNervesEvent({
       component: "channels",
       event: "channel.a2a_seen_ledger_init",
@@ -86,7 +93,8 @@ export class FileA2ASeenLedger implements DurableSeenLedger {
   /** Reload every persisted nonce from disk into the in-memory set (the restart
    * replay defense). Corrupt/unreadable artifacts are skipped so one bad file can
    * never reopen the replay window for the rest. */
-  private loadExisting(): void {
+  private loadExisting(now: number): void {
+    let pruned = 0
     let entries: string[]
     try {
       entries = fs.readdirSync(this.dir)
@@ -96,15 +104,33 @@ export class FileA2ASeenLedger implements DurableSeenLedger {
     }
     for (const name of entries) {
       if (!name.endsWith(".json")) continue
-      let record: { nonce?: unknown }
+      const file = path.join(this.dir, name)
+      let record: { nonce?: unknown; markedAt?: unknown }
       try {
-        record = JSON.parse(fs.readFileSync(path.join(this.dir, name), "utf-8")) as { nonce?: unknown }
+        record = JSON.parse(fs.readFileSync(file, "utf-8")) as { nonce?: unknown; markedAt?: unknown }
       } catch {
+        continue
+      }
+      // Entries past the freshness window can never match an acceptable envelope again, so they are dropped
+      // (the ledger would otherwise grow forever). An undated entry is kept.
+      const markedAt = typeof record.markedAt === "string" ? Date.parse(record.markedAt) : Number.NaN
+      if (Number.isFinite(markedAt) && now - markedAt > SEEN_RETENTION_MS) {
+        /* v8 ignore start -- a file that vanished or cannot be removed is simply left; it is retried next start @preserve */
+        try {
+          fs.unlinkSync(file)
+          pruned += 1
+        } catch {
+          // left for the next start
+        }
+        /* v8 ignore stop @preserve */
         continue
       }
       if (typeof record.nonce === "string" && record.nonce.length > 0) {
         this.cache.add(record.nonce)
       }
+    }
+    if (pruned > 0) {
+      emitNervesEvent({ component: "channels", event: "channel.a2a_seen_pruned", message: "pruned A2A seen entries past the freshness window", meta: { dir: this.dir, pruned } })
     }
   }
 }

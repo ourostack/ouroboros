@@ -480,4 +480,59 @@ describe("mission_result wire (harness-owned, NOT a FriendsKind)", () => {
     const out = await receiveInboundMissionResult(textMsg, depsFor(tmp.agentRoot, a, aStore))
     expect(out.outcome).toBe("not-a-result")
   })
+
+  describe("signed binding, in-flight claims and retired pins (friends 0.1.0-alpha.17)", () => {
+    async function delegatedTo(agentName: string, missionKey: string, issuedAt = new Date().toISOString()) {
+      tmp = createTmpBundle({ agentName })
+      const a = mintIdentity()
+      const b = mintIdentity()
+      const aStore = new FileFriendStore(`${tmp.agentRoot}/friends`)
+      await upsertAgentPeer(aStore, { name: "B", agentId: b.did, trustLevel: "family", a2a: { did: b.did, agentId: b.did, endpointUrl: "https://b.example/a2a" } })
+      const { missionStore } = delegationStoresFor(tmp.agentRoot)
+      const mission = await recordMission(missionStore, { missionKey, title: "M" })
+      await missionStore.put(mission.id, {
+        ...mission,
+        delegations: { "req-1": { task: { requestId: "req-1", summary: "x" }, assignee: { agentId: b.did, displayName: "B" }, provenance: { assertedBy: { agentId: a.did, displayName: "A" }, assertedAt: issuedAt } } },
+      })
+      const envelope: MissionResultEnvelope = {
+        subject: { missionKey, title: "M" }, fromAgentId: b.did, requestId: "req-1",
+        result: { requestId: "req-1", summary: "done", provenance: { assertedBy: { agentId: b.did, displayName: "B" }, assertedAt: issuedAt } },
+        issuedAt,
+      }
+      return { a, b, deps: depsFor(tmp.agentRoot, a, aStore), message: sealedResultFrom(b, a, envelope), agentRoot: tmp.agentRoot }
+    }
+
+    it("refuses a stale result without consuming it, so the same result imports once the clock is right", async () => {
+      const issuedAt = "2026-01-01T00:00:00.000Z"
+      const { deps, message } = await delegatedTo("result-stale", "mk-stale", issuedAt)
+      expect(await receiveInboundMissionResult(message, deps)).toMatchObject({ outcome: "rejected", reason: "stale_envelope" })
+      const fresh = await receiveInboundMissionResult(message, { ...deps, bindingOptions: { now: Date.parse(issuedAt) + 60_000 } })
+      expect(fresh.outcome).toBe("imported")
+    })
+
+    it("answers a concurrent duplicate with the retryable in_flight, and the duplicate is then a replay", async () => {
+      const { deps, message } = await delegatedTo("result-in-flight", "mk-in-flight")
+      const [first, second] = await Promise.all([receiveInboundMissionResult(message, deps), receiveInboundMissionResult(message, deps)])
+      expect(first.outcome).toBe("imported")
+      expect(second).toMatchObject({ outcome: "rejected", reason: "in_flight" })
+      expect(await receiveInboundMissionResult(message, deps)).toMatchObject({ outcome: "rejected", reason: "replayed" })
+    })
+
+    it("marks nothing seen when the signature fails, so a forged copy cannot burn the real result", async () => {
+      const { deps, message, b } = await delegatedTo("result-no-burn", "mk-no-burn")
+      // Pin a different key under B's DID: verification fails, and nothing is marked.
+      const other = mintIdentity()
+      deps.pinStore.set(b.did, { did: b.did, ed25519Pub: other.ed25519Pub })
+      expect((await receiveInboundMissionResult(message, deps)).outcome).toBe("rejected")
+      deps.pinStore.set(b.did, { did: b.did, ed25519Pub: b.ed25519Pub })
+      expect((await receiveInboundMissionResult(message, deps)).outcome).toBe("imported")
+    })
+
+    it("refuses a result from a retired DID", async () => {
+      const { deps, message, b } = await delegatedTo("result-retired", "mk-retired")
+      deps.pinStore.set(b.did, { did: b.did, ed25519Pub: b.ed25519Pub })
+      deps.pinStore.retire(b.did, "did:key:zSuccessor", "2026-11-06T00:00:00.000Z")
+      expect(await receiveInboundMissionResult(message, deps)).toMatchObject({ outcome: "rejected", reason: "retired_pin" })
+    })
+  })
 })

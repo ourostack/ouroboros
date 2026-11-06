@@ -83,6 +83,7 @@ function sealedFromSelfToSelf(self: DidKeyIdentity): A2AMessage {
     subject: { missionKey: "own-mission", title: "Own mission" },
     fromAgentId: self.did,
     intent: "request",
+    issuedAt: new Date().toISOString(),
     note: "self-check",
   }
   const sealed = sealEnvelope({

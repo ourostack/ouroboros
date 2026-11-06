@@ -3,6 +3,7 @@ import {
   openSealedEnvelope,
   receiveShare,
   type DidResolution,
+  type EnvelopeBindingOptions,
   type PinStore,
   type SeenLedgerLike,
   type Sodium,
@@ -33,6 +34,8 @@ export interface InboundShareDeps {
   didResolution: DidResolution
   seen: SeenLedgerLike
   identity: A2AIdentity
+  /** Clock and age windows for the signed binding check (tests inject a clock). Unbound envelopes are always refused. */
+  bindingOptions?: Omit<EnvelopeBindingOptions, "rejectUnboundEnvelopes">
 }
 
 /** The outcome of bridging an inbound A2A message through `receiveShare`. */
@@ -50,6 +53,8 @@ export type InboundShareResult =
       message?: { text: string; conversationId?: string; onBehalfOf?: "principal"; issuedAt: string }
       /** The sender's friend record, when the verified DID is a known friend. */
       friend?: FriendRecord
+      /** The signed per-message id (friends' envelope binding): stable across redeliveries of the same message. */
+      bindingId?: string
     }
   | {
       /** The message was rejected; do NOT run a turn. */
@@ -147,6 +152,9 @@ export async function receiveInboundShare(
     recipientDid: deps.identity.did,
     recipientIdentity,
     trustOfSource: trust,
+    // Every sender on friends alpha.15 or later binds its envelopes to recipient, kind, id and time; an unbound
+    // envelope can be replayed or re-sealed to another recipient, so it is refused.
+    options: { ...deps.bindingOptions, rejectUnboundEnvelopes: true },
   })
 
   if (result.state === "completed") {
@@ -163,6 +171,8 @@ export async function receiveInboundShare(
       friendsKind: result.friendsKind,
       status: result.status,
       ...(result.message ? { message: result.message } : {}),
+      // Unbound envelopes are refused above, so a completed receipt always carries its signed binding id.
+      bindingId: result.bindingId,
       /* v8 ignore next -- a completed receipt implies a trusted friend record: an unknown DID reads as stranger and is refused @preserve */
       ...(record ? { friend: record } : {}),
     }

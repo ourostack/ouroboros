@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto"
-import { parseDidKey, ready, verifyCardDidBinding, type DidKeyIdentity, type Sodium } from "@ouro.bot/friends/a2a-client"
+import { parseDidKey, ready, verifyCardDidBinding, type DidKeyIdentity, type SeenLedgerLike, type Sodium } from "@ouro.bot/friends/a2a-client"
 import { emitNervesEvent } from "../nerves/runtime"
 import { openChatMessage, sealChatMessage } from "./sealed-chat"
 import type { A2AAgentCard, A2AJsonRpcRequest, A2AJsonRpcResponse, A2AMessage, A2ATask } from "./types"
@@ -250,6 +250,8 @@ export async function sendSealedA2AChat(input: {
   identity: DidKeyIdentity
   sodium?: Sodium
   fetchImpl?: typeof fetch
+  /** A durable seen ledger for replies (see `openChatMessage`). */
+  seen?: SeenLedgerLike
 }): Promise<SealedA2AChatReply> {
   const fetchImpl = input.fetchImpl ?? fetch
   const sodium = input.sodium ?? await ready()
@@ -283,7 +285,7 @@ export async function sendSealedA2AChat(input: {
   const task = rpc.result as A2ATask
   const replyMessage = task?.status?.message as A2AMessage | undefined
   if (!replyMessage) throw new Error("A2A chat returned no reply message")
-  const opened = await openChatMessage({ sodium, self: input.identity, message: replyMessage, senderDid: peerDid, senderEd25519Pub: parsed.ed25519Pub })
+  const opened = await openChatMessage({ sodium, self: input.identity, message: replyMessage, senderDid: peerDid, senderEd25519Pub: parsed.ed25519Pub, ...(input.seen ? { seen: input.seen } : {}) })
   if (!opened.ok) throw new Error(`A2A chat reply rejected: ${opened.reason}`)
   emitNervesEvent({ component: "channels", event: "channel.a2a_chat_send_end", message: "received sealed A2A chat reply", meta: { endpointUrl, peerDid, taskId: task.id } })
   return { text: opened.text, conversationId, taskId: task.id, peerDid, peerName: card.name }

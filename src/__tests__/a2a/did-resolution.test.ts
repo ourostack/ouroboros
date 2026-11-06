@@ -2,14 +2,15 @@ import { afterEach, beforeAll, describe, expect, it } from "vitest"
 import {
   ready,
   didKeyIdentityFromEd25519,
-  signSuccessor,
+  signFullSuccessor,
   type DidKeyIdentity,
   type PinStore,
   type Sodium,
 } from "@ouro.bot/friends/a2a-client"
 import { createTmpBundle, type TmpBundleHandle } from "../test-helpers/tmpdir-bundle"
 import { FileA2APinStore } from "../../a2a/pin-store"
-import { makeDidResolution } from "../../a2a/did-resolution"
+import { FileFriendStore, findFriendByDid, upsertAgentPeer } from "@ouro.bot/friends"
+import { makeDidResolution, type SuccessorStatement } from "../../a2a/did-resolution"
 
 let sodium: Sodium
 let tmp: TmpBundleHandle | null = null
@@ -38,15 +39,7 @@ function newPinStore(): FileA2APinStore {
   return new FileA2APinStore(tmp.agentRoot)
 }
 
-/**
- * `resolveAndPin` is the verify-and-pin core the inbound bridge consumes. The pin
- * is keyed by the stable `fromAgentId` (NOT the did:key string), so a rotation is
- * "same fromAgentId, new (did, key)". The rotation proof is a HOST-owned channel
- * (`rotationProofFor`) because the friends `resolveAndPin` interface carries no
- * proof field; in the production receiveShare wire there is no proof (over-the-wire
- * rotation-accept is a documented follow-up). These isolated tests inject a
- * `signSuccessor`-minted proof to cover the accept branch.
- */
+/** `resolveAndPin` is the verify-and-pin core the inbound bridge consumes: refusals, first contact and pin hits. */
 describe("DidResolution.resolveAndPin (first-contact + rotation, did:key)", () => {
   it("returns null for an unparseable DID (refused)", async () => {
     const pinStore = newPinStore()
@@ -100,103 +93,80 @@ describe("DidResolution.resolveAndPin (first-contact + rotation, did:key)", () =
     expect(Buffer.from(again!.ed25519Pub).equals(Buffer.from(id.ed25519Pub))).toBe(true)
   })
 
-  it("rotation, signed successor, family trust: evaluateRotation accepts → returns the NEW key", async () => {
+  it("refuses a DID whose pinned key differs, and a retired DID", async () => {
     const pinStore = newPinStore()
     const old = mintIdentity()
     const next = mintIdentity()
-    const fromAgentId = "stable-peer-family"
-
-    // The host's rotation-proof channel: the OLD private key signs the successor.
-    const didRes = makeDidResolution({
-      sodium,
-      rotationProofFor: (peer, newDid, newKey) => {
-        if (peer !== fromAgentId) return undefined
-        return signSuccessor({ sodium, oldEd25519Priv: old.ed25519Priv, newDid, newEd25519Pub: newKey })
-      },
-    })
-
-    // First contact pins the OLD identity under the stable fromAgentId.
-    await didRes.resolveAndPin({ fromAgentId, did: old.did, pinStore, trustOfSource: "family" })
-    // Now present the NEW did:key under the SAME fromAgentId → signed rotation.
-    const out = await didRes.resolveAndPin({ fromAgentId, did: next.did, pinStore, trustOfSource: "family" })
-
-    expect(out).not.toBeNull()
-    expect(Buffer.from(out!.ed25519Pub).equals(Buffer.from(next.ed25519Pub))).toBe(true)
-    // evaluateRotation re-pinned to the new key under the same fromAgentId.
-    expect(pinStore.get(fromAgentId)?.did).toBe(next.did)
-  })
-
-  it("rotation, signed successor, friend trust: accepted → returns the NEW key", async () => {
-    const pinStore = newPinStore()
-    const old = mintIdentity()
-    const next = mintIdentity()
-    const fromAgentId = "stable-peer-friend"
-    const didRes = makeDidResolution({
-      sodium,
-      rotationProofFor: (_peer, newDid, newKey) =>
-        signSuccessor({ sodium, oldEd25519Priv: old.ed25519Priv, newDid, newEd25519Pub: newKey }),
-    })
-    await didRes.resolveAndPin({ fromAgentId, did: old.did, pinStore, trustOfSource: "friend" })
-    const out = await didRes.resolveAndPin({ fromAgentId, did: next.did, pinStore, trustOfSource: "friend" })
-    expect(out).not.toBeNull()
-    expect(Buffer.from(out!.ed25519Pub).equals(Buffer.from(next.ed25519Pub))).toBe(true)
-  })
-
-  it("rotation, signed successor, acquaintance trust: hard-reject (null)", async () => {
-    const pinStore = newPinStore()
-    const old = mintIdentity()
-    const next = mintIdentity()
-    const fromAgentId = "stable-peer-acq"
-    // Even WITH a valid proof, acquaintance never auto-accepts a rotation.
-    const didRes = makeDidResolution({
-      sodium,
-      rotationProofFor: (_peer, newDid, newKey) =>
-        signSuccessor({ sodium, oldEd25519Priv: old.ed25519Priv, newDid, newEd25519Pub: newKey }),
-    })
-    await didRes.resolveAndPin({ fromAgentId, did: old.did, pinStore, trustOfSource: "acquaintance" })
-    const out = await didRes.resolveAndPin({ fromAgentId, did: next.did, pinStore, trustOfSource: "acquaintance" })
-    expect(out).toBeNull()
-  })
-
-  it("rotation, signed successor, stranger trust: hard-reject (null)", async () => {
-    const pinStore = newPinStore()
-    const old = mintIdentity()
-    const next = mintIdentity()
-    const fromAgentId = "stable-peer-stranger"
-    const didRes = makeDidResolution({
-      sodium,
-      rotationProofFor: (_peer, newDid, newKey) =>
-        signSuccessor({ sodium, oldEd25519Priv: old.ed25519Priv, newDid, newEd25519Pub: newKey }),
-    })
-    await didRes.resolveAndPin({ fromAgentId, did: old.did, pinStore, trustOfSource: "stranger" })
-    const out = await didRes.resolveAndPin({ fromAgentId, did: next.did, pinStore, trustOfSource: "stranger" })
-    expect(out).toBeNull()
-  })
-
-  it("rotation, UNSIGNED successor (family): rejected → null (production proofless wire)", async () => {
-    const pinStore = newPinStore()
-    const old = mintIdentity()
-    const next = mintIdentity()
-    const fromAgentId = "stable-peer-unsigned"
-    // No rotationProofFor → the host channel yields no proof (the production case).
     const didRes = makeDidResolution({ sodium })
-    await didRes.resolveAndPin({ fromAgentId, did: old.did, pinStore, trustOfSource: "family" })
-    const out = await didRes.resolveAndPin({ fromAgentId, did: next.did, pinStore, trustOfSource: "family" })
-    expect(out).toBeNull()
+    // A pin filed under one DID that names another key (only a hand-edited pin file looks like this).
+    await didRes.resolveAndPin({ fromAgentId: "stable-peer", did: old.did, pinStore, trustOfSource: "family" })
+    expect(await didRes.resolveAndPin({ fromAgentId: "stable-peer", did: next.did, pinStore, trustOfSource: "family" })).toBeNull()
+    pinStore.retire("stable-peer", next.did, "2026-11-06T00:00:00.000Z")
+    expect(await didRes.resolveAndPin({ fromAgentId: "stable-peer", did: old.did, pinStore, trustOfSource: "family" })).toBeNull()
   })
+})
 
-  it("rotation, BAD successor proof (family): rejected → null", async () => {
+/**
+ * Rotation. friends calls `resolveAndPin` with the signed sender DID as both `fromAgentId` and `did`, so a peer that
+ * rotated arrives as a DID with no pin. A successor statement (old key and new key both signing, over `issuedAt`) is
+ * judged against the OLD DID's pin, at the trust of the OLD record. The friends wire has no carrier for statements, so
+ * the host channel (`successorFor`) supplies them; production omits it.
+ */
+describe("DidResolution.resolveAndPin (signed successor statement)", () => {
+  const ISSUED = "2026-11-06T10:00:00.000Z"
+
+  async function setup(trustLevel: "family" | "friend" | "acquaintance" | "stranger") {
     const pinStore = newPinStore()
+    const store = new FileFriendStore(`${tmp!.agentRoot}/friends`)
     const old = mintIdentity()
     const next = mintIdentity()
-    const fromAgentId = "stable-peer-badproof"
-    // A garbage proof string → evaluateRotation rejects (bad_rotation_proof).
-    const didRes = makeDidResolution({
-      sodium,
-      rotationProofFor: () => "not-a-valid-base64-signature!!!",
+    await upsertAgentPeer(store, { name: "Peer", agentId: old.did, trustLevel, a2a: { did: old.did, agentId: old.did, endpointUrl: "https://peer.example/a2a" } })
+    await makeDidResolution({ sodium }).resolveAndPin({ fromAgentId: old.did, did: old.did, pinStore, trustOfSource: trustLevel })
+    const statement = { oldDid: old.did, ...signFullSuccessor({ sodium, oldDid: old.did, oldEd25519Priv: old.ed25519Priv, newDid: next.did, newEd25519Pub: next.ed25519Pub, newEd25519Priv: next.ed25519Priv, issuedAt: ISSUED }) } as SuccessorStatement
+    return { pinStore, store, old, next, statement }
+  }
+
+  for (const trustLevel of ["family", "friend"] as const) {
+    it(`accepts a full statement from a ${trustLevel} peer, retires the old pin and moves the record`, async () => {
+      const { pinStore, store, old, next, statement } = await setup(trustLevel)
+      const didRes = makeDidResolution({ sodium, store, successorFor: (did) => did === next.did ? statement : undefined })
+      const out = await didRes.resolveAndPin({ fromAgentId: next.did, did: next.did, pinStore, trustOfSource: "stranger" })
+      expect(Buffer.from(out!.ed25519Pub).equals(Buffer.from(next.ed25519Pub))).toBe(true)
+      expect(pinStore.get(next.did)).toMatchObject({ did: next.did, rotatedAt: ISSUED })
+      expect(pinStore.get(old.did)).toMatchObject({ did: old.did, retiredBy: next.did, rotatedAt: ISSUED })
+      const moved = await findFriendByDid(store, next.did)
+      expect(moved).toMatchObject({ trustLevel })
+      expect(await findFriendByDid(store, old.did)).toBeNull()
+      // The old DID is a tombstone now.
+      expect(await didRes.resolveAndPin({ fromAgentId: old.did, did: old.did, pinStore, trustOfSource: trustLevel })).toBeNull()
     })
-    await didRes.resolveAndPin({ fromAgentId, did: old.did, pinStore, trustOfSource: "family" })
-    const out = await didRes.resolveAndPin({ fromAgentId, did: next.did, pinStore, trustOfSource: "family" })
-    expect(out).toBeNull()
+  }
+
+  it("rejects a rotation from an acquaintance or unknown peer, and never falls back to a first contact", async () => {
+    const { pinStore, store, next, statement } = await setup("acquaintance")
+    const didRes = makeDidResolution({ sodium, store, successorFor: () => statement })
+    expect(await didRes.resolveAndPin({ fromAgentId: next.did, did: next.did, pinStore, trustOfSource: "stranger" })).toBeNull()
+    expect(pinStore.get(next.did)).toBeUndefined()
+    // Without a friend store the old trust is unknown, so it is read as stranger.
+    expect(await makeDidResolution({ sodium, successorFor: () => statement }).resolveAndPin({ fromAgentId: next.did, did: next.did, pinStore, trustOfSource: "family" })).toBeNull()
+  })
+
+  it("rejects a statement missing the successor's consent or signed by the wrong key", async () => {
+    const { pinStore, store, old, next, statement } = await setup("family")
+    const stranger = mintIdentity()
+    const forged = { ...statement, successorProof: signFullSuccessor({ sodium, oldDid: old.did, oldEd25519Priv: old.ed25519Priv, newDid: next.did, newEd25519Pub: next.ed25519Pub, newEd25519Priv: stranger.ed25519Priv, issuedAt: ISSUED }).successorProof }
+    for (const bad of [forged, { ...statement, rotationProof: "not-a-signature" }, { ...statement, issuedAt: "2026-11-06T10:00:01.000Z" }]) {
+      const didRes = makeDidResolution({ sodium, store, successorFor: () => bad })
+      expect(await didRes.resolveAndPin({ fromAgentId: next.did, did: next.did, pinStore, trustOfSource: "stranger" })).toBeNull()
+    }
+    expect(pinStore.get(old.did)?.retiredBy).toBeUndefined()
+  })
+
+  it("accepts the rotation but reports when the record cannot move (a record already holds the new DID)", async () => {
+    const { pinStore, store, next, statement } = await setup("family")
+    await upsertAgentPeer(store, { name: "Squatter", agentId: next.did, trustLevel: "stranger", a2a: { did: next.did, agentId: next.did, endpointUrl: "https://other.example/a2a" } })
+    const didRes = makeDidResolution({ sodium, store, successorFor: () => statement })
+    expect(await didRes.resolveAndPin({ fromAgentId: next.did, did: next.did, pinStore, trustOfSource: "stranger" })).not.toBeNull()
+    expect((await findFriendByDid(store, next.did))?.name).toBe("Squatter")
   })
 })

@@ -2,7 +2,7 @@ import * as fs from "node:fs"
 import * as path from "node:path"
 import { afterEach, describe, expect, it } from "vitest"
 import { createTmpBundle, type TmpBundleHandle } from "../test-helpers/tmpdir-bundle"
-import { FileA2ASeenLedger } from "../../a2a/seen-ledger"
+import { FileA2ASeenLedger, SEEN_RETENTION_MS } from "../../a2a/seen-ledger"
 
 let tmp: TmpBundleHandle | null = null
 
@@ -123,5 +123,28 @@ describe("durable a2a SeenLedger (replay defense, restart-safe)", () => {
     const ledger = new FileA2ASeenLedger(tmp.agentRoot)
     expect(ledger.size).toBe(0)
     expect(ledger.isSeen("")).toBe(false)
+  })
+
+  it("drops entries marked longer ago than the freshness window on load, keeping recent and undated ones", () => {
+    tmp = createTmpBundle({ agentName: "seen-prune" })
+    const seenDir = path.join(tmp.agentRoot, "state", "a2a", "seen")
+    fs.mkdirSync(seenDir, { recursive: true })
+    const now = Date.parse("2026-11-20T00:00:00.000Z")
+    const write = (name: string, record: unknown) => fs.writeFileSync(path.join(seenDir, name), JSON.stringify(record))
+    write("old.json", { nonce: "old", markedAt: new Date(now - SEEN_RETENTION_MS - 1).toISOString() })
+    write("edge.json", { nonce: "edge", markedAt: new Date(now - SEEN_RETENTION_MS).toISOString() })
+    write("undated.json", { nonce: "undated" })
+    write("garbled-date.json", { nonce: "garbled", markedAt: "not a date" })
+    const ledger = new FileA2ASeenLedger(tmp.agentRoot, { now })
+    expect(ledger.isSeen("old")).toBe(false)
+    expect(fs.existsSync(path.join(seenDir, "old.json"))).toBe(false)
+    for (const kept of ["edge", "undated", "garbled"]) expect(ledger.isSeen(kept)).toBe(true)
+    expect(ledger.size).toBe(3)
+    // Nothing stale: nothing is pruned, and the default clock is used.
+    expect(new FileA2ASeenLedger(tmp.agentRoot).size).toBe(3)
+  })
+
+  it("keeps the retention at friends' 7-day freshness window plus its 2-minute future skew", () => {
+    expect(SEEN_RETENTION_MS).toBe(7 * 24 * 60 * 60 * 1000 + 2 * 60 * 1000)
   })
 })

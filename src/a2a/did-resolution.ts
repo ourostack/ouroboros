@@ -1,4 +1,5 @@
 import {
+  applyAcceptedRotation,
   parseDidKey,
   pinOnFirstContact,
   evaluateRotation,
@@ -6,50 +7,54 @@ import {
   type PinStore,
   type Sodium,
 } from "@ouro.bot/friends/a2a-client"
-import type { TrustLevel } from "@ouro.bot/friends"
+import { findFriendByDid, type FriendStore, type TrustLevel } from "@ouro.bot/friends"
 import { emitNervesEvent } from "../nerves/runtime"
 
 /**
- * A host-owned channel that supplies a rotation proof for a presented successor
- * key, if one is available. The friends `DidResolution.resolveAndPin` interface
- * carries NO rotation-proof field, and friends alpha.7's over-the-wire surface
- * (sealed envelope / DataPart / `receiveShare`) has no carrier for one either — so
- * the HOST owns where a proof comes from. In the production inbound path no proof
- * is presented (this returns `undefined`), so a key change for a pinned peer is
- * refused (`bad_rotation_proof`). A signed over-the-wire rotation-accept is a
- * documented follow-up (needs a proof carrier added to the friends wire / a
- * `did:web` slice). Tests inject a `signSuccessor`-minted proof here to exercise
- * the accept branch of the matrix.
+ * A signed successor statement: the peer's OLD key names its new DID and key (`rotationProof`, from friends'
+ * `signSuccessor`), and the NEW key consents to succeed the old DID (`successorProof`, from `signSuccessorConsent`),
+ * both over the same `issuedAt`. friends verifies both signatures and that `issuedAt` is newer than the old pin's last
+ * rotation, so a statement cannot be replayed.
  */
-export type RotationProofResolver = (
-  fromAgentId: string,
-  newDid: string,
-  newEd25519Pub: Uint8Array,
-) => string | undefined
-
-export interface MakeDidResolutionInput {
-  sodium: Sodium
-  /** Optional host rotation-proof channel. Omitted ⇒ no proof (production). */
-  rotationProofFor?: RotationProofResolver
+export interface SuccessorStatement {
+  oldDid: string
+  rotationProof: string
+  successorProof: string
+  issuedAt: string
 }
 
 /**
- * Build the friends `DidResolution` for did:key peers. `resolveAndPin` is the
- * verify-and-pin core the inbound bridge consumes:
- *   parse the did:key → derive the presented Ed25519 key →
- *     first contact (no pin under `fromAgentId`) → TOFU `pinOnFirstContact`
- *     already pinned → `evaluateRotation` against the pin:
- *       unchanged  → pin-hit, return the pinned key
- *       accepted   → (re-pinned by evaluateRotation) return the NEW key
- *       rejected   → loud security event, return null
- *
- * The pin is keyed by the STABLE `fromAgentId` (NOT the did:key string), so a
- * rotation is "same `fromAgentId`, new (did, key)". An unparseable or empty DID is
- * refused (null) and never matchable. The crypto is the friends primitives' — this
- * only sequences them.
+ * A host-owned channel that supplies the successor statement for a DID seen for the first time, if one exists. The
+ * friends wire has no carrier for a statement, so in the production inbound path none is presented (this is omitted)
+ * and a new DID is a first contact. Tests, and a later carrier, inject statements here.
+ */
+export type SuccessorStatementResolver = (newDid: string, newEd25519Pub: Uint8Array) => SuccessorStatement | undefined
+
+export interface MakeDidResolutionInput {
+  sodium: Sodium
+  /** The friend store, so an accepted rotation moves the peer's record (trust, grants) to the new DID. */
+  store?: FriendStore
+  /** Optional host successor-statement channel. Omitted ⇒ no rotation (production). */
+  successorFor?: SuccessorStatementResolver
+}
+
+function refused(fromAgentId: string, reason: string, message: string): null {
+  emitNervesEvent({ component: "channels", event: "channel.a2a_did_resolve_refused", message, meta: { fromAgentId, reason } })
+  return null
+}
+
+/**
+ * Build the friends `DidResolution` for did:key peers. `resolveAndPin` is the verify-and-pin core the inbound bridge
+ * consumes. friends calls it with the SIGNED sender DID as both `fromAgentId` and `did`, so pins are keyed by DID:
+ *   unparseable or empty DID, or a retired pin  → refused (null)
+ *   pinned                                       → the pinned key (a did:key's key cannot change under the same DID)
+ *   not pinned, with a successor statement       → `evaluateRotation` from the old DID (at the OLD record's trust);
+ *                                                  accepted: `applyAcceptedRotation` moves the record, then the new key
+ *                                                  rejected: refused, never a silent first contact
+ *   not pinned, no statement                     → first contact (TOFU `pinOnFirstContact`)
  */
 export function makeDidResolution(input: MakeDidResolutionInput): DidResolution {
-  const { sodium, rotationProofFor } = input
+  const { sodium, store, successorFor } = input
   return {
     async resolveAndPin(args: {
       fromAgentId: string
@@ -57,32 +62,24 @@ export function makeDidResolution(input: MakeDidResolutionInput): DidResolution 
       pinStore: PinStore
       trustOfSource: TrustLevel
     }): Promise<{ ed25519Pub: Uint8Array } | null> {
-      const { fromAgentId, did, pinStore, trustOfSource } = args
-
-      // Empty DID is never a matchable key.
-      if (!did) {
-        emitNervesEvent({
-          component: "channels",
-          event: "channel.a2a_did_resolve_refused",
-          message: "A2A DID resolve refused (empty DID)",
-          meta: { fromAgentId, reason: "empty_did" },
-        })
-        return null
-      }
-
+      const { fromAgentId, did, pinStore } = args
+      if (!did) return refused(fromAgentId, "empty_did", "A2A DID resolve refused (empty DID)")
       const parsed = parseDidKey(did)
-      if (!parsed) {
-        emitNervesEvent({
-          component: "channels",
-          event: "channel.a2a_did_resolve_refused",
-          message: "A2A DID resolve refused (unparseable did:key)",
-          meta: { fromAgentId, reason: "parse_failed" },
-        })
-        return null
-      }
+      if (!parsed) return refused(fromAgentId, "parse_failed", "A2A DID resolve refused (unparseable did:key)")
 
       const pinned = pinStore.get(fromAgentId)
-      if (!pinned) {
+      // A retired pin is a tombstone: the old key must never verify again (friends requires hosts to enforce this).
+      if (pinned?.retiredBy !== undefined) return refused(fromAgentId, "retired_pin", "A2A DID resolve refused (the DID was rotated away)")
+      if (pinned) {
+        const decision = evaluateRotation({ sodium, pinStore, fromAgentId, trustOfSource: args.trustOfSource, newDid: did, newEd25519Pub: parsed.ed25519Pub })
+        if (decision.decision === "unchanged") return { ed25519Pub: parsed.ed25519Pub }
+        // A did:key encodes its key, so a differing pin means the pin was filed under another DID (or edited by hand).
+        /* v8 ignore next -- evaluateRotation only returns "accepted" with a proof, and none is passed here @preserve */
+        return refused(fromAgentId, decision.decision === "rejected" ? decision.reason : "key_changed", "A2A DID resolve refused (pinned key differs)")
+      }
+
+      const statement = successorFor?.(did, parsed.ed25519Pub)
+      if (!statement) {
         // First contact (TOFU): accept + pin the (did, key) under fromAgentId.
         pinOnFirstContact({ pinStore, fromAgentId, did, ed25519Pub: parsed.ed25519Pub })
         emitNervesEvent({
@@ -94,41 +91,39 @@ export function makeDidResolution(input: MakeDidResolutionInput): DidResolution 
         return { ed25519Pub: parsed.ed25519Pub }
       }
 
-      // Already pinned: evaluate the presented key against the pin.
-      const rotationProof = rotationProofFor?.(fromAgentId, did, parsed.ed25519Pub)
+      // A rotation is judged at the trust of the peer the OLD DID belongs to: the new DID itself is still unknown.
+      const oldTrust: TrustLevel = (store ? (await findFriendByDid(store, statement.oldDid))?.trustLevel : undefined) ?? "stranger"
       const decision = evaluateRotation({
         sodium,
         pinStore,
-        fromAgentId,
-        trustOfSource,
+        fromAgentId: statement.oldDid,
+        trustOfSource: oldTrust,
         newDid: did,
         newEd25519Pub: parsed.ed25519Pub,
-        rotationProof,
+        rotationProof: statement.rotationProof,
+        successorProof: statement.successorProof,
+        issuedAt: statement.issuedAt,
       })
-
-      if (decision.decision === "unchanged") {
-        // Same key — pin-hit. (FileA2APinStore.get already emitted a2a_pin_hit.)
-        return { ed25519Pub: parsed.ed25519Pub }
-      }
-      if (decision.decision === "accepted") {
-        // evaluateRotation already re-pinned to the new key under fromAgentId.
+      if (decision.decision !== "accepted") {
         emitNervesEvent({
+          level: "warn",
           component: "channels",
-          event: "channel.a2a_rotation_accepted",
-          message: "A2A signed key rotation accepted",
-          meta: { fromAgentId, newDid: did, trustOfSource },
+          event: "channel.a2a_rotation_rejected",
+          message: "A2A key rotation rejected",
+          /* v8 ignore next -- the new DID has no pin, so evaluateRotation cannot call it unchanged @preserve */
+          meta: { oldDid: statement.oldDid, newDid: did, trustOfSource: oldTrust, reason: decision.decision === "rejected" ? decision.reason : decision.decision },
         })
-        return { ed25519Pub: parsed.ed25519Pub }
+        return null
       }
-
-      // Rejected — loud security signal (carries the reason).
+      // Accepted means the old record is family or friend, which was read from `store`, so the store is present.
+      const moved = await applyAcceptedRotation({ store: store!, pinStore, oldDid: statement.oldDid, newDid: did })
       emitNervesEvent({
         component: "channels",
-        event: "channel.a2a_rotation_rejected",
-        message: "A2A key rotation rejected",
-        meta: { fromAgentId, newDid: did, trustOfSource, reason: decision.reason },
+        event: "channel.a2a_rotation_accepted",
+        message: "A2A signed key rotation accepted",
+        meta: { oldDid: statement.oldDid, newDid: did, trustOfSource: oldTrust, recordMoved: moved.ok, ...(moved.ok ? {} : { moveRefused: moved.reason }) },
       })
-      return null
+      return { ed25519Pub: parsed.ed25519Pub }
     },
   }
 }
