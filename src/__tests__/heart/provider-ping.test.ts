@@ -418,6 +418,42 @@ describe("pingProvider", () => {
     expect(mockAnthropicCreate).toHaveBeenCalledTimes(3)
   })
 
+  it("forwards shared attempt and retry callbacks through pingProvider", async () => {
+    const error = Object.assign(new Error("529 High traffic detected"), { status: 529 })
+    const onAttemptStart = vi.fn()
+    const onRetry = vi.fn()
+    const sleep = vi.fn(async () => undefined)
+    mockOpenAICreate
+      .mockRejectedValueOnce(error)
+      .mockResolvedValueOnce({ choices: [{ message: { content: "pong" } }] })
+    mockClassifyError.mockReturnValue("server-error" as ProviderErrorClassification)
+
+    const result = await pingProvider("minimax", {
+      apiKey: "valid-key",
+    }, {
+      model: "MiniMax-M2.5",
+      onAttemptStart,
+      onRetry,
+      sleep,
+    })
+
+    expect(result.ok).toBe(true)
+    expect(onAttemptStart).toHaveBeenNthCalledWith(1, 1, 3)
+    expect(onAttemptStart).toHaveBeenNthCalledWith(2, 2, 3)
+    expect(onRetry).toHaveBeenCalledWith(expect.objectContaining({
+      attempt: 1,
+      provider: "minimax",
+      model: "MiniMax-M2.5",
+      operation: "ping",
+      classification: "server-error",
+      errorMessage: "529 High traffic detected",
+      httpStatus: 529,
+      willRetry: true,
+      delayMs: 0,
+    }), 3)
+    expect(sleep).toHaveBeenCalledWith(0)
+  })
+
   it("classifies usage-limit error", async () => {
     const err = Object.assign(new Error("exceeded your usage limit"), { status: 429 })
     mockResponsesCreate.mockRejectedValue(err)
@@ -446,6 +482,59 @@ describe("pingProvider", () => {
     expect(result.ok).toBe(false)
     if (!result.ok) {
       expect(result.classification).toBe("network-error")
+    }
+  })
+
+  it("hard-times out a provider ping even when the SDK ignores the abort signal", async () => {
+    vi.useFakeTimers()
+    let receivedSignal: AbortSignal | undefined
+    mockAnthropicCreate.mockImplementation((_params, options?: { signal?: AbortSignal }) => {
+      receivedSignal = options?.signal
+      return new Promise(() => {})
+    })
+    mockClassifyError.mockReturnValue("network-error" as ProviderErrorClassification)
+
+    try {
+      const resultPromise = pingProvider("anthropic", {
+        model: "claude-opus-4-6",
+        setupToken: "sk-ant-oat01-valid-token-that-is-long-enough-to-pass-format-check-1234567890abcdef",
+      }, {
+        attemptPolicy: { maxAttempts: 1 },
+        timeoutMs: 5,
+      })
+
+      await vi.advanceTimersByTimeAsync(5)
+      const result = await resultPromise
+
+      expect(receivedSignal?.aborted).toBe(true)
+      expect(result.ok).toBe(false)
+      if (!result.ok) {
+        expect(result.classification).toBe("network-error")
+        expect(result.message).toContain("provider ping timed out after 5ms")
+        expect(result.attempts).toHaveLength(1)
+      }
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it("falls back to the default ping timeout when given a non-finite timeout", async () => {
+    const err = Object.assign(new Error("provider down"), { status: 503 })
+    mockAnthropicCreate.mockRejectedValue(err)
+    mockClassifyError.mockReturnValue("server-error" as ProviderErrorClassification)
+
+    const result = await pingProvider("anthropic", {
+      model: "claude-opus-4-6",
+      setupToken: "sk-ant-oat01-valid-token-that-is-long-enough-to-pass-format-check-1234567890abcdef",
+    }, {
+      attemptPolicy: { maxAttempts: 1 },
+      timeoutMs: Number.POSITIVE_INFINITY,
+    })
+
+    expect(result.ok).toBe(false)
+    if (!result.ok) {
+      expect(result.classification).toBe("server-error")
+      expect(result.message).toBe("provider down")
     }
   })
 

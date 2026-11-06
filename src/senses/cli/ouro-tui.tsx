@@ -6,7 +6,7 @@
  *   Only the "live" area (current streaming + spinner + input) re-renders.
  *   This avoids the screen-clearing problem that broke the previous Ink attempt.
  *
- * Design language: ouroboros brand palette from ouroboros.bot / Outlook UI.
+ * Design language: ouroboros brand palette from ouroboros.bot / Mailbox UI.
  * ZERO business logic here — pure rendering from CliStore state.
  */
 import React, { useState, useRef, useEffect, useCallback } from "react"
@@ -135,8 +135,10 @@ function Header({ agentName, model, contextPercent, cwd, resumeInfo }: {
 
 // ─── Message Rendering ──────────────────────────────────────────────
 
-// Flow control tools are invisible to the user — they are internal agent mechanics
-const FLOW_CONTROL_TOOLS = new Set(["settle", "ponder", "observe", "rest"])
+// Flow control tools are invisible to the user — they are internal agent mechanics.
+// `speak` is included because its visible output is the message itself (rendered as
+// regular assistant text), not a tool-result line or in-progress activity indicator.
+const FLOW_CONTROL_TOOLS = new Set(["settle", "ponder", "observe", "rest", "speak"])
 
 function ToolResultLine({ tc }: { readonly tc: { name: string; argSummary: string; success?: boolean } }): React.ReactElement {
   const icon = tc.success !== false ? "✓" : "✗"

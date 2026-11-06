@@ -47,6 +47,15 @@ const CHANNEL_CAPABILITIES: Record<string, ChannelCapabilities> = {
     supportsRichCards: false,
     maxMessageLength: Infinity,
   },
+  mail: {
+    channel: "mail",
+    senseType: "open",
+    availableIntegrations: [],
+    supportsMarkdown: false,
+    supportsStreaming: false,
+    supportsRichCards: false,
+    maxMessageLength: Infinity,
+  },
   inner: {
     channel: "inner",
     senseType: "internal",

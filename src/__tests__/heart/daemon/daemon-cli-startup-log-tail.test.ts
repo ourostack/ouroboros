@@ -120,13 +120,48 @@ describe("ensureDaemonRunning startup log tail", () => {
     })
 
     expect(event).toBe("starting auto-start agents")
-    expect(phases).toContain("verifying daemon health")
+    expect(phases).toContain("new background service answered\n- waiting for this boot to publish its ready signal\n- latest daemon event: starting auto-start agents")
   })
 
   it("returns null when the bundles root does not exist", async () => {
     const missingRoot = path.join(makeBundlesRoot(), "missing")
     const event = await captureLatestEvent(missingRoot)
     expect(event).toBeNull()
+  })
+
+  it("keeps startup progress calm when no bundle root exists yet", async () => {
+    const missingRoot = path.join(makeBundlesRoot(), "missing")
+    mockedBundlesRoot.value = missingRoot
+
+    let healthReads = 0
+    const phases: string[] = []
+    const result = await ensureDaemonRunning(makeStartupDeps({
+      checkSocketAlive: vi.fn().mockResolvedValueOnce(false).mockResolvedValueOnce(false).mockResolvedValue(true),
+      reportDaemonStartupPhase: (text) => phases.push(text),
+      readHealthState: vi.fn(() => {
+        healthReads += 1
+        if (healthReads === 1) return null
+        return {
+          status: "ok",
+          mode: "normal",
+          pid: 4242,
+          startedAt: "2026-04-10T08:00:00.002Z",
+          uptimeSeconds: 0,
+          safeMode: null,
+          degraded: [],
+          agents: {},
+          habits: {},
+        }
+      }),
+      startupPollIntervalMs: 1,
+      startupStabilityWindowMs: 0,
+      startupTimeoutMs: 10,
+      startupRetryLimit: 0,
+    }))
+
+    expect(result.message).toContain("daemon started")
+    expect(phases).toContain("waiting for the new background service to answer")
+    expect(phases.every((phase) => !phase.includes("latest daemon event:"))).toBe(true)
   })
 
   it("returns null when the bundle exists but no daemon log has been created yet", async () => {
@@ -218,7 +253,43 @@ describe("ensureDaemonRunning startup log tail", () => {
     }))
 
     expect(result.message).toContain("daemon started")
-    expect(phases.filter((phase) => phase === "verifying daemon health")).toHaveLength(1)
+    expect(phases.filter((phase) => phase.startsWith("new background service answered\n- waiting for this boot to publish its ready signal")).length).toBeGreaterThanOrEqual(2)
     expect(healthReads).toBeGreaterThanOrEqual(2)
+  })
+
+  it("omits daemon-event tails when startup progress has no recent log message", async () => {
+    const bundlesRoot = makeBundlesRoot()
+    fs.mkdirSync(path.join(bundlesRoot, "slugger.ouro"), { recursive: true })
+    mockedBundlesRoot.value = bundlesRoot
+
+    let healthReads = 0
+    const phases: string[] = []
+    const result = await ensureDaemonRunning(makeStartupDeps({
+      reportDaemonStartupPhase: (text) => phases.push(text),
+      readHealthState: vi.fn(() => {
+        healthReads += 1
+        if (healthReads === 1) return null
+        return {
+          status: "ok",
+          mode: "normal",
+          pid: 4242,
+          startedAt: "2026-04-10T08:00:00.002Z",
+          uptimeSeconds: 0,
+          safeMode: null,
+          degraded: [],
+          agents: {},
+          habits: {},
+        }
+      }),
+      startupPollIntervalMs: 1,
+      startupStabilityWindowMs: 0,
+      startupTimeoutMs: 10,
+      startupRetryLimit: 0,
+    }))
+
+    expect(result.message).toContain("daemon started")
+    expect(phases).toContain("waiting for the new background service to answer")
+    expect(phases).toContain("new background service answered\n- waiting for this boot to publish its ready signal")
+    expect(phases.every((phase) => !phase.includes("latest daemon event:"))).toBe(true)
   })
 })

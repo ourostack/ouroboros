@@ -33,6 +33,7 @@ export interface RunProviderAttemptInput<T> {
   classifyError: (error: Error) => ProviderErrorClassification
   policy?: Partial<ProviderAttemptPolicy>
   sleep?: (delayMs: number) => Promise<void>
+  onAttemptStart?: (attempt: number, maxAttempts: number) => void | Promise<void>
   onRetry?: (record: ProviderAttemptRecord, maxAttempts: number) => void | Promise<void>
 }
 
@@ -94,6 +95,7 @@ export async function runProviderAttempt<T>(input: RunProviderAttemptInput<T>): 
 
   for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
     try {
+      await input.onAttemptStart?.(attempt, maxAttempts)
       const value = await input.run()
       attempts.push({
         attempt,
