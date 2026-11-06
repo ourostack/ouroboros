@@ -78,6 +78,16 @@ export interface BlueBubblesConfig {
   serverUrl: string
   password: string
   accountId: string
+  /**
+   * iMessage handles owned by this agent — phone numbers (e164 or otherwise)
+   * and email addresses that the BlueBubbles server will broadcast back as
+   * the sender of the agent's own group-chat outbound messages. Used as a
+   * fallback self-detection guard for ingested events whose `isFromMe` flag
+   * is missing or wrong (which happens for group echoes). Compared
+   * case-insensitively after stripping leading `+` and non-digit chars from
+   * phone-shaped strings.
+   */
+  ownHandles: string[]
 }
 
 export interface BlueBubblesChannelConfig {
@@ -148,6 +158,7 @@ const DEFAULT_LOCAL_RUNTIME_CONFIG: Omit<OuroborosConfig, "context"> = {
     serverUrl: "",
     password: "",
     accountId: "default",
+    ownHandles: [],
   },
   bluebubblesChannel: {
     port: 18790,
@@ -386,7 +397,7 @@ export function getTeamsChannelConfig(): TeamsChannelConfig {
 
 export function getBlueBubblesConfig(): BlueBubblesConfig {
   const config = loadConfig()
-  const { serverUrl, password, accountId } = config.bluebubbles
+  const { serverUrl, password, accountId, ownHandles } = config.bluebubbles
 
   if (!serverUrl.trim()) {
     throw new Error("bluebubbles.serverUrl is required in this machine's agent-vault runtime config. Run `ouro connect bluebubbles --agent <agent>`.")
@@ -395,10 +406,16 @@ export function getBlueBubblesConfig(): BlueBubblesConfig {
     throw new Error("bluebubbles.password is required in this machine's agent-vault runtime config. Run `ouro connect bluebubbles --agent <agent>`.")
   }
 
+  const normalizedHandles: string[] = []
+  for (const handle of ownHandles) {
+    const trimmed = handle.trim()
+    if (trimmed.length > 0) normalizedHandles.push(trimmed)
+  }
   return {
     serverUrl: serverUrl.trim(),
     password: password.trim(),
     accountId: accountId.trim() || "default",
+    ownHandles: normalizedHandles,
   }
 }
 

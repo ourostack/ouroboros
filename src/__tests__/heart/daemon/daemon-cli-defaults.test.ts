@@ -85,7 +85,7 @@ describe("daemon CLI default dependency branches", () => {
       const { createDefaultOuroCliDeps } = await import("../../../heart/daemon/daemon-cli")
       const deps = createDefaultOuroCliDeps("/tmp/daemon.sock")
 
-      deps.ensureDaemonBootPersistence?.("/tmp/daemon.sock")
+      await deps.ensureDaemonBootPersistence?.("/tmp/daemon.sock")
 
       expect(writeLaunchAgentPlist).toHaveBeenCalledOnce()
     } finally {
@@ -97,6 +97,91 @@ describe("daemon CLI default dependency branches", () => {
         Reflect.deleteProperty(process, "getuid")
       }
       fs.rmSync(tempHome, { recursive: true, force: true })
+    }
+  })
+
+  it("uses detached default background CLI spawning", async () => {
+    vi.resetModules()
+
+    const unref = vi.fn()
+    const spawn = vi.fn(() => ({
+      pid: 54321,
+      unref,
+    }))
+
+    try {
+      vi.doMock("net", () => ({ createConnection: vi.fn() }))
+      vi.doMock("child_process", () => ({ spawn, execSync: vi.fn() }))
+      vi.doMock("../../../nerves/runtime", () => ({ emitNervesEvent: vi.fn() }))
+
+      const { createDefaultOuroCliDeps } = await import("../../../heart/daemon/daemon-cli")
+      const deps = createDefaultOuroCliDeps("/tmp/daemon.sock")
+
+      await expect(deps.spawnBackgroundCli?.(["mail", "backfill-indexes", "--agent", "Slugger"])).resolves.toEqual({
+        pid: 54321,
+      })
+      expect(spawn).toHaveBeenCalledWith(process.execPath, ["mail", "backfill-indexes", "--agent", "Slugger"], {
+        detached: true,
+        stdio: "ignore",
+      })
+      expect(unref).toHaveBeenCalledOnce()
+    } finally {
+      vi.doUnmock("../../../nerves/runtime")
+    }
+  })
+
+  it("uses the latest dist-tag for default CLI update checks", async () => {
+    vi.resetModules()
+
+    const checkForUpdate = vi.fn(async () => ({ available: false, latestVersion: "0.1.0-alpha.534" }))
+
+    try {
+      vi.doMock("net", () => ({ createConnection: vi.fn() }))
+      vi.doMock("child_process", () => ({ spawn: vi.fn(), execSync: vi.fn() }))
+      vi.doMock("../../../nerves/runtime", () => ({ emitNervesEvent: vi.fn() }))
+      vi.doMock("../../../heart/versioning/update-checker", async () => {
+        const actual = await vi.importActual<typeof import("../../../heart/versioning/update-checker")>("../../../heart/versioning/update-checker")
+        return { ...actual, checkForUpdate }
+      })
+
+      const { createDefaultOuroCliDeps } = await import("../../../heart/daemon/daemon-cli")
+      const deps = createDefaultOuroCliDeps("/tmp/daemon.sock")
+
+      await deps.checkForCliUpdate?.()
+
+      expect(checkForUpdate).toHaveBeenCalledWith(
+        expect.any(String),
+        expect.objectContaining({ distTag: "latest" }),
+      )
+    } finally {
+      vi.doUnmock("../../../heart/versioning/update-checker")
+      vi.doUnmock("../../../nerves/runtime")
+    }
+  })
+
+  it("returns a null pid when detached background launch does not expose one", async () => {
+    vi.resetModules()
+
+    const unref = vi.fn()
+    const spawn = vi.fn(() => ({
+      pid: undefined,
+      unref,
+    }))
+
+    try {
+      vi.doMock("net", () => ({ createConnection: vi.fn() }))
+      vi.doMock("child_process", () => ({ spawn, execSync: vi.fn() }))
+      vi.doMock("../../../nerves/runtime", () => ({ emitNervesEvent: vi.fn() }))
+
+      const { createDefaultOuroCliDeps } = await import("../../../heart/daemon/daemon-cli")
+      const deps = createDefaultOuroCliDeps("/tmp/daemon.sock")
+
+      await expect(deps.spawnBackgroundCli?.(["mail", "backfill-indexes", "--agent", "Slugger"])).resolves.toEqual({
+        pid: null,
+      })
+      expect(unref).toHaveBeenCalledOnce()
+    } finally {
+      vi.doUnmock("../../../nerves/runtime")
     }
   })
 
@@ -125,7 +210,7 @@ describe("daemon CLI default dependency branches", () => {
       const { createDefaultOuroCliDeps } = await import("../../../heart/daemon/daemon-cli")
       const deps = createDefaultOuroCliDeps("/tmp/daemon.sock")
 
-      deps.ensureDaemonBootPersistence?.("/tmp/daemon.sock")
+      await deps.ensureDaemonBootPersistence?.("/tmp/daemon.sock")
 
       const plistPath = path.join(tempHome, "Library", "LaunchAgents", "bot.ouro.daemon.plist")
       const logDir = path.join(tempHome, "AgentBundles", "slugger.ouro", "state", "daemon", "logs")
@@ -137,9 +222,551 @@ describe("daemon CLI default dependency branches", () => {
       expect(plist).toContain("/mock/repo/dist/heart/daemon/daemon-entry.js")
       expect(plist).toContain("<key>RunAtLoad</key>")
       expect(plist).toContain(path.join(logDir, "ouro-daemon-stdout.log"))
-      // Bootstrap IS called — for KeepAlive crash recovery (runs after daemon start)
-      const bootstrapCalls = execSync.mock.calls.filter((c: unknown[]) => String(c[0]).includes("bootstrap"))
-      expect(bootstrapCalls.length).toBeGreaterThanOrEqual(0) // may or may not be called depending on test ordering
+      const printCalls = execSync.mock.calls.filter((c: unknown[]) => String(c[0]).includes("launchctl print gui/"))
+      expect(printCalls.length).toBe(1)
+    } finally {
+      restorePlatform()
+      fs.rmSync(tempHome, { recursive: true, force: true })
+    }
+  })
+
+  it("detects whether the daemon launch agent is loaded", async () => {
+    vi.resetModules()
+
+    const { isDaemonLaunchAgentLoaded } = await import("../../../heart/daemon/cli-defaults")
+    const exec = vi.fn()
+
+    expect(isDaemonLaunchAgentLoaded({ exec, userUid: 501 })).toBe(true)
+    expect(exec).toHaveBeenCalledWith("launchctl print gui/501/bot.ouro.daemon")
+
+    exec.mockImplementationOnce(() => {
+      throw new Error("not loaded")
+    })
+    expect(isDaemonLaunchAgentLoaded({ exec, userUid: 501 })).toBe(false)
+  })
+
+  it("uses default launchctl deps when checking whether the daemon launch agent is loaded", async () => {
+    vi.resetModules()
+
+    const originalGetuid = Object.getOwnPropertyDescriptor(process, "getuid")
+    const execSync = vi.fn()
+
+    try {
+      Object.defineProperty(process, "getuid", { value: undefined, configurable: true })
+      vi.doMock("child_process", () => ({ spawn: vi.fn(), execSync }))
+
+      const { isDaemonLaunchAgentLoaded } = await import("../../../heart/daemon/cli-defaults")
+
+      expect(isDaemonLaunchAgentLoaded()).toBe(true)
+      expect(execSync).toHaveBeenCalledWith("launchctl print gui/0/bot.ouro.daemon", { stdio: "ignore" })
+    } finally {
+      if (originalGetuid) {
+        Object.defineProperty(process, "getuid", originalGetuid)
+      } else {
+        Reflect.deleteProperty(process, "getuid")
+      }
+    }
+  })
+
+  it("waits for a bootstrapped launch agent socket to settle", async () => {
+    vi.resetModules()
+
+    const { waitForBootstrappedDaemonSocket } = await import("../../../heart/daemon/cli-defaults")
+    let nowMs = 0
+    const sleep = vi.fn(async (ms: number) => { nowMs += ms })
+    const checkSocketAlive = vi.fn(async () => checkSocketAlive.mock.calls.length >= 2)
+
+    await waitForBootstrappedDaemonSocket("/tmp/daemon.sock", {
+      checkSocketAlive,
+      sleep,
+      now: () => nowMs,
+      timeoutMs: 500,
+      initialSettleMs: 100,
+      pollIntervalMs: 50,
+      requiredConsecutiveAliveChecks: 2,
+    })
+
+    expect(sleep).toHaveBeenCalledWith(50)
+    expect(checkSocketAlive).toHaveBeenCalledTimes(3)
+  })
+
+  it("emits a warning when a bootstrapped launch agent socket does not settle", async () => {
+    vi.resetModules()
+
+    const emitNervesEvent = vi.fn()
+    try {
+      vi.doMock("../../../nerves/runtime", () => ({ emitNervesEvent }))
+
+      const { waitForBootstrappedDaemonSocket } = await import("../../../heart/daemon/cli-defaults")
+      let nowMs = 0
+      await waitForBootstrappedDaemonSocket("/tmp/daemon.sock", {
+        checkSocketAlive: vi.fn(async () => false),
+        sleep: vi.fn(async (ms: number) => { nowMs += ms }),
+        now: () => nowMs,
+        timeoutMs: 100,
+        initialSettleMs: 0,
+        pollIntervalMs: 50,
+      })
+
+      expect(emitNervesEvent).toHaveBeenCalledWith(expect.objectContaining({
+        level: "warn",
+        event: "daemon.launchd_bootstrap_socket_wait_timeout",
+        meta: expect.objectContaining({ socketPath: "/tmp/daemon.sock" }),
+      }))
+    } finally {
+      vi.doUnmock("../../../nerves/runtime")
+    }
+  })
+
+  it("starts the default daemon through launchd when the launch agent is unloaded", async () => {
+    vi.resetModules()
+
+    const tempHome = fs.mkdtempSync(path.join(os.tmpdir(), "daemon-start-launchd-"))
+    const restorePlatform = withProcessPlatform("darwin")
+    const emitNervesEvent = vi.fn()
+    const checkDaemonSocketAlive = vi.fn(async () => true)
+    const spawn = vi.fn()
+    const execSync = vi.fn((cmd: string) => {
+      if (cmd.includes("launchctl print") && execSync.mock.calls.filter((call) => String(call[0]).includes("launchctl print")).length === 1) {
+        throw new Error("not loaded")
+      }
+      if (cmd.includes("launchctl print")) return "    pid = 2468\n"
+      return ""
+    })
+
+    try {
+      vi.doMock("net", () => ({ createConnection: vi.fn() }))
+      vi.doMock("child_process", () => ({ spawn, execSync }))
+      vi.doMock("../../../heart/daemon/socket-client", async () => {
+        const actual = await vi.importActual<typeof import("../../../heart/daemon/socket-client")>("../../../heart/daemon/socket-client")
+        return { ...actual, checkDaemonSocketAlive }
+      })
+      vi.doMock("os", async () => {
+        const actual = await vi.importActual<typeof import("os")>("os")
+        return { ...actual, homedir: () => tempHome }
+      })
+      vi.doMock("../../../heart/identity", () => ({
+        getRepoRoot: () => "/mock/repo",
+        getAgentBundlesRoot: () => "/mock/AgentBundles",
+        getAgentDaemonLogsDir: () => path.join(tempHome, "AgentBundles", "slugger.ouro", "state", "daemon", "logs"),
+        getAgentDaemonLoggingConfigPath: () => path.join(tempHome, "AgentBundles", "slugger.ouro", "state", "daemon", "logging.json"),
+      }))
+      vi.doMock("../../../nerves/runtime", () => ({ emitNervesEvent }))
+
+      const { createDefaultOuroCliDeps } = await import("../../../heart/daemon/daemon-cli")
+      const deps = createDefaultOuroCliDeps("/tmp/daemon.sock")
+
+      await expect(deps.startDaemonProcess("/tmp/daemon.sock")).resolves.toEqual({ pid: 2468 })
+
+      expect(execSync).toHaveBeenCalledWith(expect.stringContaining("launchctl print gui/"), { stdio: "ignore" })
+      expect(execSync).toHaveBeenCalledWith(expect.stringContaining("launchctl bootstrap gui/"), { stdio: "ignore" })
+      expect(spawn).not.toHaveBeenCalled()
+      expect(emitNervesEvent).toHaveBeenCalledWith(expect.objectContaining({
+        event: "daemon.launchd_bootstrap_start",
+      }))
+      expect(emitNervesEvent).toHaveBeenCalledWith(expect.objectContaining({
+        event: "daemon.launchd_bootstrap_end",
+      }))
+    } finally {
+      vi.doUnmock("../../../heart/daemon/socket-client")
+      vi.doUnmock("../../../nerves/runtime")
+      restorePlatform()
+      fs.rmSync(tempHome, { recursive: true, force: true })
+    }
+  })
+
+  it("kickstarts the default daemon through launchd when the launch agent is loaded", async () => {
+    vi.resetModules()
+
+    const tempHome = fs.mkdtempSync(path.join(os.tmpdir(), "daemon-start-launchd-loaded-"))
+    const restorePlatform = withProcessPlatform("darwin")
+    const emitNervesEvent = vi.fn()
+    const checkDaemonSocketAlive = vi.fn(async () => true)
+    const spawn = vi.fn()
+    const execSync = vi.fn((cmd: string) => {
+      if (cmd.includes("launchctl print")) return "no pid yet\n"
+      return ""
+    })
+
+    try {
+      vi.doMock("net", () => ({ createConnection: vi.fn() }))
+      vi.doMock("child_process", () => ({ spawn, execSync }))
+      vi.doMock("../../../heart/daemon/socket-client", async () => {
+        const actual = await vi.importActual<typeof import("../../../heart/daemon/socket-client")>("../../../heart/daemon/socket-client")
+        return { ...actual, checkDaemonSocketAlive }
+      })
+      vi.doMock("os", async () => {
+        const actual = await vi.importActual<typeof import("os")>("os")
+        return { ...actual, homedir: () => tempHome }
+      })
+      vi.doMock("../../../heart/identity", () => ({
+        getRepoRoot: () => "/mock/repo",
+        getAgentBundlesRoot: () => "/mock/AgentBundles",
+        getAgentDaemonLogsDir: () => path.join(tempHome, "AgentBundles", "slugger.ouro", "state", "daemon", "logs"),
+        getAgentDaemonLoggingConfigPath: () => path.join(tempHome, "AgentBundles", "slugger.ouro", "state", "daemon", "logging.json"),
+      }))
+      vi.doMock("../../../nerves/runtime", () => ({ emitNervesEvent }))
+
+      const { createDefaultOuroCliDeps } = await import("../../../heart/daemon/daemon-cli")
+      const deps = createDefaultOuroCliDeps("/tmp/daemon.sock")
+
+      await expect(deps.startDaemonProcess("/tmp/daemon.sock")).resolves.toEqual({ pid: null })
+
+      expect(execSync).toHaveBeenCalledWith(expect.stringContaining("launchctl kickstart -k gui/"), { stdio: "ignore" })
+      expect(execSync).not.toHaveBeenCalledWith(expect.stringContaining("launchctl bootstrap gui/"), { stdio: "ignore" })
+      expect(spawn).not.toHaveBeenCalled()
+      expect(emitNervesEvent).toHaveBeenCalledWith(expect.objectContaining({
+        event: "daemon.launchd_bootstrap_end",
+      }))
+    } finally {
+      vi.doUnmock("../../../heart/daemon/socket-client")
+      vi.doUnmock("../../../nerves/runtime")
+      restorePlatform()
+      fs.rmSync(tempHome, { recursive: true, force: true })
+    }
+  })
+
+  it("keeps launchd as daemon owner when the post-start pid probe fails", async () => {
+    vi.resetModules()
+
+    const tempHome = fs.mkdtempSync(path.join(os.tmpdir(), "daemon-start-launchd-pid-error-"))
+    const restorePlatform = withProcessPlatform("darwin")
+    const emitNervesEvent = vi.fn()
+    const checkDaemonSocketAlive = vi.fn(async () => true)
+    const spawn = vi.fn()
+    const execSync = vi.fn((cmd: string) => {
+      if (cmd.includes("launchctl print")) throw new Error("print unavailable")
+      return ""
+    })
+
+    try {
+      vi.doMock("net", () => ({ createConnection: vi.fn() }))
+      vi.doMock("child_process", () => ({ spawn, execSync }))
+      vi.doMock("../../../heart/daemon/socket-client", async () => {
+        const actual = await vi.importActual<typeof import("../../../heart/daemon/socket-client")>("../../../heart/daemon/socket-client")
+        return { ...actual, checkDaemonSocketAlive }
+      })
+      vi.doMock("os", async () => {
+        const actual = await vi.importActual<typeof import("os")>("os")
+        return { ...actual, homedir: () => tempHome }
+      })
+      vi.doMock("../../../heart/identity", () => ({
+        getRepoRoot: () => "/mock/repo",
+        getAgentBundlesRoot: () => "/mock/AgentBundles",
+        getAgentDaemonLogsDir: () => path.join(tempHome, "AgentBundles", "slugger.ouro", "state", "daemon", "logs"),
+        getAgentDaemonLoggingConfigPath: () => path.join(tempHome, "AgentBundles", "slugger.ouro", "state", "daemon", "logging.json"),
+      }))
+      vi.doMock("../../../nerves/runtime", () => ({ emitNervesEvent }))
+
+      const { createDefaultOuroCliDeps } = await import("../../../heart/daemon/daemon-cli")
+      const deps = createDefaultOuroCliDeps("/tmp/daemon.sock")
+
+      await expect(deps.startDaemonProcess("/tmp/daemon.sock")).resolves.toEqual({ pid: null })
+
+      expect(execSync).toHaveBeenCalledWith(expect.stringContaining("launchctl bootstrap gui/"), { stdio: "ignore" })
+      expect(spawn).not.toHaveBeenCalled()
+      expect(emitNervesEvent).toHaveBeenCalledWith(expect.objectContaining({
+        event: "daemon.launchd_bootstrap_end",
+      }))
+    } finally {
+      vi.doUnmock("../../../heart/daemon/socket-client")
+      vi.doUnmock("../../../nerves/runtime")
+      restorePlatform()
+      fs.rmSync(tempHome, { recursive: true, force: true })
+    }
+  })
+
+  it("falls back to manual daemon start when launchd start throws a non-Error value", async () => {
+    vi.resetModules()
+
+    const tempHome = fs.mkdtempSync(path.join(os.tmpdir(), "daemon-start-launchd-error-"))
+    const restorePlatform = withProcessPlatform("darwin")
+    const emitNervesEvent = vi.fn()
+    const unref = vi.fn()
+    const spawn = vi.fn(() => ({ pid: 1357, unref }))
+    const execSync = vi.fn((cmd: string) => {
+      if (cmd.includes("launchctl print")) throw new Error("not loaded")
+      if (cmd.includes("launchctl bootstrap")) throw "bootstrap failed"
+      return ""
+    })
+
+    try {
+      vi.doMock("net", () => ({ createConnection: vi.fn() }))
+      vi.doMock("child_process", () => ({ spawn, execSync }))
+      vi.doMock("os", async () => {
+        const actual = await vi.importActual<typeof import("os")>("os")
+        return { ...actual, homedir: () => tempHome }
+      })
+      vi.doMock("../../../heart/identity", () => ({
+        getRepoRoot: () => "/mock/repo",
+        getAgentBundlesRoot: () => "/mock/AgentBundles",
+        getAgentDaemonLogsDir: () => path.join(tempHome, "AgentBundles", "slugger.ouro", "state", "daemon", "logs"),
+        getAgentDaemonLoggingConfigPath: () => path.join(tempHome, "AgentBundles", "slugger.ouro", "state", "daemon", "logging.json"),
+      }))
+      vi.doMock("../../../nerves/runtime", () => ({ emitNervesEvent }))
+
+      const { createDefaultOuroCliDeps } = await import("../../../heart/daemon/daemon-cli")
+      const deps = createDefaultOuroCliDeps("/tmp/daemon.sock")
+
+      await expect(deps.startDaemonProcess("/tmp/daemon.sock")).resolves.toEqual({ pid: 1357 })
+
+      expect(spawn).toHaveBeenCalledWith(
+        process.execPath,
+        ["/mock/repo/dist/heart/daemon/daemon-entry.js", "--socket", "/tmp/daemon.sock"],
+        expect.objectContaining({ detached: true }),
+      )
+      expect(unref).toHaveBeenCalledOnce()
+      expect(emitNervesEvent).toHaveBeenCalledWith(expect.objectContaining({
+        level: "warn",
+        event: "daemon.launchd_bootstrap_error",
+        meta: expect.objectContaining({ error: "bootstrap failed" }),
+      }))
+    } finally {
+      vi.doUnmock("../../../nerves/runtime")
+      restorePlatform()
+      fs.rmSync(tempHome, { recursive: true, force: true })
+    }
+  })
+
+  it("falls back to manual daemon start when launchd start throws an Error", async () => {
+    vi.resetModules()
+
+    const tempHome = fs.mkdtempSync(path.join(os.tmpdir(), "daemon-start-launchd-error-object-"))
+    const restorePlatform = withProcessPlatform("darwin")
+    const emitNervesEvent = vi.fn()
+    const unref = vi.fn()
+    const spawn = vi.fn(() => ({ pid: 2468, unref }))
+    const execSync = vi.fn((cmd: string) => {
+      if (cmd.includes("launchctl print")) throw new Error("not loaded")
+      if (cmd.includes("launchctl bootstrap")) throw new Error("bootstrap failed as Error")
+      return ""
+    })
+
+    try {
+      vi.doMock("net", () => ({ createConnection: vi.fn() }))
+      vi.doMock("child_process", () => ({ spawn, execSync }))
+      vi.doMock("os", async () => {
+        const actual = await vi.importActual<typeof import("os")>("os")
+        return { ...actual, homedir: () => tempHome }
+      })
+      vi.doMock("../../../heart/identity", () => ({
+        getRepoRoot: () => "/mock/repo",
+        getAgentBundlesRoot: () => "/mock/AgentBundles",
+        getAgentDaemonLogsDir: () => path.join(tempHome, "AgentBundles", "slugger.ouro", "state", "daemon", "logs"),
+        getAgentDaemonLoggingConfigPath: () => path.join(tempHome, "AgentBundles", "slugger.ouro", "state", "daemon", "logging.json"),
+      }))
+      vi.doMock("../../../nerves/runtime", () => ({ emitNervesEvent }))
+
+      const { createDefaultOuroCliDeps } = await import("../../../heart/daemon/daemon-cli")
+      const deps = createDefaultOuroCliDeps("/tmp/daemon.sock")
+
+      await expect(deps.startDaemonProcess("/tmp/daemon.sock")).resolves.toEqual({ pid: 2468 })
+
+      expect(spawn).toHaveBeenCalled()
+      expect(unref).toHaveBeenCalledOnce()
+      expect(emitNervesEvent).toHaveBeenCalledWith(expect.objectContaining({
+        level: "warn",
+        event: "daemon.launchd_bootstrap_error",
+        meta: expect.objectContaining({ error: "bootstrap failed as Error" }),
+      }))
+    } finally {
+      vi.doUnmock("../../../nerves/runtime")
+      restorePlatform()
+      fs.rmSync(tempHome, { recursive: true, force: true })
+    }
+  })
+
+  it("does not bootstrap launchd during post-start boot persistence", async () => {
+    vi.resetModules()
+
+    const tempHome = fs.mkdtempSync(path.join(os.tmpdir(), "daemon-boot-no-post-start-bootstrap-"))
+    const restorePlatform = withProcessPlatform("darwin")
+    const execSync = vi.fn((cmd: string) => {
+      if (cmd.includes("launchctl print")) throw new Error("not loaded")
+      return ""
+    })
+
+    try {
+      vi.doMock("net", () => ({ createConnection: vi.fn() }))
+      vi.doMock("child_process", () => ({ spawn: vi.fn(), execSync }))
+      vi.doMock("os", async () => {
+        const actual = await vi.importActual<typeof import("os")>("os")
+        return { ...actual, homedir: () => tempHome }
+      })
+      vi.doMock("../../../heart/identity", () => ({
+        getRepoRoot: () => "/mock/repo",
+        getAgentBundlesRoot: () => "/mock/AgentBundles",
+        getAgentDaemonLogsDir: () => path.join(tempHome, "AgentBundles", "slugger.ouro", "state", "daemon", "logs"),
+        getAgentDaemonLoggingConfigPath: () => path.join(tempHome, "AgentBundles", "slugger.ouro", "state", "daemon", "logging.json"),
+      }))
+      vi.doMock("../../../nerves/runtime", () => ({ emitNervesEvent: vi.fn() }))
+
+      const { createDefaultOuroCliDeps } = await import("../../../heart/daemon/daemon-cli")
+      const deps = createDefaultOuroCliDeps("/tmp/daemon.sock")
+
+      await deps.ensureDaemonBootPersistence?.("/tmp/daemon.sock")
+
+      expect(execSync).toHaveBeenCalledWith(expect.stringContaining("launchctl print gui/"), { stdio: "ignore" })
+      expect(execSync).not.toHaveBeenCalledWith(expect.stringContaining("launchctl bootstrap gui/"), { stdio: "ignore" })
+      expect(fs.existsSync(path.join(tempHome, "Library", "LaunchAgents", "bot.ouro.daemon.plist"))).toBe(true)
+    } finally {
+      restorePlatform()
+      fs.rmSync(tempHome, { recursive: true, force: true })
+    }
+  })
+
+  it("boots out a loaded launch agent label before replacing a daemon runtime", async () => {
+    vi.resetModules()
+
+    const tempHome = fs.mkdtempSync(path.join(os.tmpdir(), "daemon-runtime-replace-"))
+    const restorePlatform = withProcessPlatform("darwin")
+    const originalGetuid = Object.getOwnPropertyDescriptor(process, "getuid")
+    const execSync = vi.fn()
+
+    try {
+      Object.defineProperty(process, "getuid", { value: () => 501, configurable: true })
+      vi.doMock("net", () => ({ createConnection: vi.fn() }))
+      vi.doMock("child_process", () => ({ spawn: vi.fn(), execSync }))
+      vi.doMock("os", async () => {
+        const actual = await vi.importActual<typeof import("os")>("os")
+        return { ...actual, homedir: () => tempHome }
+      })
+      vi.doMock("../../../heart/identity", () => ({
+        getRepoRoot: () => "/mock/repo",
+        getAgentBundlesRoot: () => "/mock/AgentBundles",
+        getAgentDaemonLogsDir: () => path.join(tempHome, "AgentBundles", "slugger.ouro", "state", "daemon", "logs"),
+        getAgentDaemonLoggingConfigPath: () => path.join(tempHome, "AgentBundles", "slugger.ouro", "state", "daemon", "logging.json"),
+      }))
+      vi.doMock("../../../nerves/runtime", () => ({ emitNervesEvent: vi.fn() }))
+
+      const { createDefaultOuroCliDeps } = await import("../../../heart/daemon/daemon-cli")
+      const deps = createDefaultOuroCliDeps("/tmp/daemon.sock")
+
+      deps.prepareDaemonRuntimeReplacement?.()
+
+      expect(execSync).toHaveBeenCalledWith("launchctl bootout gui/501/bot.ouro.daemon", { stdio: "ignore" })
+      expect(execSync).toHaveBeenCalledWith("/bin/sleep 1", { stdio: "ignore" })
+    } finally {
+      restorePlatform()
+      if (originalGetuid) {
+        Object.defineProperty(process, "getuid", originalGetuid)
+      } else {
+        Reflect.deleteProperty(process, "getuid")
+      }
+      fs.rmSync(tempHome, { recursive: true, force: true })
+    }
+  })
+
+  it("falls back to uid 0 when preparing runtime replacement without getuid", async () => {
+    vi.resetModules()
+
+    const tempHome = fs.mkdtempSync(path.join(os.tmpdir(), "daemon-runtime-replace-root-"))
+    const restorePlatform = withProcessPlatform("darwin")
+    const originalGetuid = Object.getOwnPropertyDescriptor(process, "getuid")
+    const execSync = vi.fn()
+
+    try {
+      Object.defineProperty(process, "getuid", { value: undefined, configurable: true })
+      vi.doMock("net", () => ({ createConnection: vi.fn() }))
+      vi.doMock("child_process", () => ({ spawn: vi.fn(), execSync }))
+      vi.doMock("os", async () => {
+        const actual = await vi.importActual<typeof import("os")>("os")
+        return { ...actual, homedir: () => tempHome }
+      })
+      vi.doMock("../../../heart/identity", () => ({
+        getRepoRoot: () => "/mock/repo",
+        getAgentBundlesRoot: () => "/mock/AgentBundles",
+        getAgentDaemonLogsDir: () => path.join(tempHome, "AgentBundles", "slugger.ouro", "state", "daemon", "logs"),
+        getAgentDaemonLoggingConfigPath: () => path.join(tempHome, "AgentBundles", "slugger.ouro", "state", "daemon", "logging.json"),
+      }))
+      vi.doMock("../../../nerves/runtime", () => ({ emitNervesEvent: vi.fn() }))
+
+      const { createDefaultOuroCliDeps } = await import("../../../heart/daemon/daemon-cli")
+      const deps = createDefaultOuroCliDeps("/tmp/daemon.sock")
+
+      deps.prepareDaemonRuntimeReplacement?.()
+
+      expect(execSync).toHaveBeenCalledWith("launchctl bootout gui/0/bot.ouro.daemon", { stdio: "ignore" })
+      expect(execSync).toHaveBeenCalledWith("/bin/sleep 1", { stdio: "ignore" })
+    } finally {
+      restorePlatform()
+      if (originalGetuid) {
+        Object.defineProperty(process, "getuid", originalGetuid)
+      } else {
+        Reflect.deleteProperty(process, "getuid")
+      }
+      fs.rmSync(tempHome, { recursive: true, force: true })
+    }
+  })
+
+  it("skips daemon runtime replacement launchd bootout outside darwin", async () => {
+    vi.resetModules()
+
+    const tempHome = fs.mkdtempSync(path.join(os.tmpdir(), "daemon-runtime-replace-nondarwin-"))
+    const restorePlatform = withProcessPlatform("linux")
+    const execSync = vi.fn()
+
+    try {
+      vi.doMock("net", () => ({ createConnection: vi.fn() }))
+      vi.doMock("child_process", () => ({ spawn: vi.fn(), execSync }))
+      vi.doMock("os", async () => {
+        const actual = await vi.importActual<typeof import("os")>("os")
+        return { ...actual, homedir: () => tempHome }
+      })
+      vi.doMock("../../../heart/identity", () => ({
+        getRepoRoot: () => "/mock/repo",
+        getAgentBundlesRoot: () => "/mock/AgentBundles",
+        getAgentDaemonLogsDir: () => path.join(tempHome, "AgentBundles", "slugger.ouro", "state", "daemon", "logs"),
+        getAgentDaemonLoggingConfigPath: () => path.join(tempHome, "AgentBundles", "slugger.ouro", "state", "daemon", "logging.json"),
+      }))
+      vi.doMock("../../../nerves/runtime", () => ({ emitNervesEvent: vi.fn() }))
+
+      const { createDefaultOuroCliDeps } = await import("../../../heart/daemon/daemon-cli")
+      const deps = createDefaultOuroCliDeps("/tmp/daemon.sock")
+
+      deps.prepareDaemonRuntimeReplacement?.()
+
+      expect(execSync).not.toHaveBeenCalled()
+    } finally {
+      restorePlatform()
+      fs.rmSync(tempHome, { recursive: true, force: true })
+    }
+  })
+
+  it("uses the CurrentVersion symlink for version-managed production daemon plists", async () => {
+    vi.resetModules()
+
+    const tempHome = fs.mkdtempSync(path.join(os.tmpdir(), "daemon-boot-current-version-"))
+    const restorePlatform = withProcessPlatform("darwin")
+    const versionedRepoRoot = path.join(tempHome, ".ouro-cli", "versions", "0.1.0-alpha.547", "node_modules", "@ouro.bot", "cli")
+    const currentEntryPath = path.join(tempHome, ".ouro-cli", "CurrentVersion", "node_modules", "@ouro.bot", "cli", "dist", "heart", "daemon", "daemon-entry.js")
+
+    try {
+      fs.mkdirSync(path.dirname(currentEntryPath), { recursive: true })
+      fs.writeFileSync(currentEntryPath, "", "utf-8")
+
+      vi.doMock("net", () => ({ createConnection: vi.fn() }))
+      vi.doMock("child_process", () => ({ spawn: vi.fn(), execSync: vi.fn() }))
+      vi.doMock("os", async () => {
+        const actual = await vi.importActual<typeof import("os")>("os")
+        return { ...actual, homedir: () => tempHome }
+      })
+      vi.doMock("../../../heart/identity", () => ({
+        getRepoRoot: () => versionedRepoRoot,
+        getAgentBundlesRoot: () => "/mock/AgentBundles",
+        getAgentDaemonLogsDir: () => path.join(tempHome, "AgentBundles", "slugger.ouro", "state", "daemon", "logs"),
+        getAgentDaemonLoggingConfigPath: () => path.join(tempHome, "AgentBundles", "slugger.ouro", "state", "daemon", "logging.json"),
+      }))
+      vi.doMock("../../../nerves/runtime", () => ({ emitNervesEvent: vi.fn() }))
+
+      const { createDefaultOuroCliDeps } = await import("../../../heart/daemon/daemon-cli")
+      const deps = createDefaultOuroCliDeps("/tmp/daemon.sock")
+
+      await deps.ensureDaemonBootPersistence?.("/tmp/daemon.sock")
+
+      const plist = fs.readFileSync(path.join(tempHome, "Library", "LaunchAgents", "bot.ouro.daemon.plist"), "utf-8")
+      expect(plist).toContain(currentEntryPath)
+      expect(plist).not.toContain(path.join(tempHome, ".ouro-cli", "versions", "0.1.0-alpha.547"))
     } finally {
       restorePlatform()
       fs.rmSync(tempHome, { recursive: true, force: true })
@@ -175,12 +802,12 @@ describe("daemon CLI default dependency branches", () => {
       const { createDefaultOuroCliDeps } = await import("../../../heart/daemon/daemon-cli")
       const deps = createDefaultOuroCliDeps("/tmp/daemon.sock")
 
-      deps.ensureDaemonBootPersistence?.("/tmp/daemon.sock")
+      await deps.ensureDaemonBootPersistence?.("/tmp/daemon.sock")
 
-      // Boot persistence only writes the plist — no launchctl commands.
-      // (bootstrapping would start a competing daemon)
+      // A loaded launch agent does not need a second bootstrap.
       const launchctlCalls = execSync.mock.calls.filter((c: unknown[]) => String(c[0]).includes("launchctl"))
-      expect(launchctlCalls.length).toBe(0)
+      expect(launchctlCalls).toHaveLength(1)
+      expect(String(launchctlCalls[0]?.[0])).toContain("launchctl print gui/")
     } finally {
       restorePlatform()
       fs.rmSync(tempHome, { recursive: true, force: true })
@@ -213,7 +840,7 @@ describe("daemon CLI default dependency branches", () => {
       const { createDefaultOuroCliDeps } = await import("../../../heart/daemon/daemon-cli")
       const deps = createDefaultOuroCliDeps("/tmp/daemon.sock")
 
-      deps.ensureDaemonBootPersistence?.("/tmp/daemon.sock")
+      await deps.ensureDaemonBootPersistence?.("/tmp/daemon.sock")
 
       // Plist should still be written (non-blocking warning)
       const plistPath = path.join(tempHome, "Library", "LaunchAgents", "bot.ouro.daemon.plist")
@@ -269,7 +896,7 @@ describe("daemon CLI default dependency branches", () => {
       const { createDefaultOuroCliDeps } = await import("../../../heart/daemon/daemon-cli")
       const deps = createDefaultOuroCliDeps("/tmp/daemon.sock")
 
-      expect(() => deps.ensureDaemonBootPersistence?.("/tmp/daemon.sock")).not.toThrow()
+      await expect(Promise.resolve(deps.ensureDaemonBootPersistence?.("/tmp/daemon.sock"))).resolves.toBeUndefined()
       expect(writeFileSync).not.toHaveBeenCalled()
       expect(mkdirSync).not.toHaveBeenCalled()
     } finally {
@@ -415,6 +1042,7 @@ describe("daemon CLI default dependency branches", () => {
   it("uses default daemon-start process launch and stdout writer", async () => {
     vi.resetModules()
 
+    const restorePlatform = withProcessPlatform("linux")
     const unref = vi.fn()
     const spawn = vi.fn(() => ({ pid: undefined, unref }))
     const createConnection = vi.fn()
@@ -451,7 +1079,7 @@ describe("daemon CLI default dependency branches", () => {
     const started = await deps.startDaemonProcess("/tmp/daemon.sock")
 
     expect(spawn).toHaveBeenCalledWith(
-      "node",
+      process.execPath,
       ["/mock/repo/dist/heart/daemon/daemon-entry.js", "--socket", "/tmp/daemon.sock"],
       expect.objectContaining({ detached: true, stdio: ["ignore", 99, 99] }),
     )
@@ -460,7 +1088,27 @@ describe("daemon CLI default dependency branches", () => {
 
     const result = await runOuroCli(["up"], {
       ...deps,
-      checkSocketAlive: vi.fn().mockResolvedValueOnce(false).mockResolvedValue(true),
+      sendCommand: vi.fn(async (_socketPath, command) => {
+        if (command.kind === "daemon.status") {
+          return {
+            ok: true,
+            data: {
+              overview: {
+                daemon: "running",
+                health: "ok",
+                socketPath: "/tmp/daemon.sock",
+                version: "9.9.9",
+                workerCount: 0,
+                senseCount: 0,
+              },
+              senses: [],
+              workers: [],
+            },
+          }
+        }
+        return { ok: true, data: {} }
+      }),
+      checkSocketAlive: vi.fn().mockResolvedValueOnce(false).mockResolvedValueOnce(false).mockResolvedValue(true),
       cleanupStaleSocket: vi.fn(),
       getCurrentCliVersion: () => null,
       detectMode: () => "production" as const,
@@ -474,6 +1122,7 @@ describe("daemon CLI default dependency branches", () => {
     expect(result).toContain("daemon started")
     expect(stdoutWrite).toHaveBeenCalled()
     stdoutWrite.mockRestore()
+    restorePlatform()
   })
 
   it("writes stdout messages with exactly one trailing newline", async () => {
@@ -503,6 +1152,7 @@ describe("daemon CLI default dependency branches", () => {
     try {
       const { createDefaultOuroCliDeps } = await import("../../../heart/daemon/daemon-cli")
       const deps = createDefaultOuroCliDeps("/tmp/daemon.sock")
+      stdoutWrite.mockClear()
 
       deps.writeStdout("hello")
       deps.writeStdout("already-newlined\n")
@@ -1499,7 +2149,7 @@ describe("daemon CLI default dependency branches", () => {
     vi.resetModules()
 
     const readHealth = vi.fn(() => ({
-      status: "ok",
+      status: "healthy",
       mode: "normal",
       pid: 123,
       startedAt: "2026-04-10T05:02:36.000Z",
@@ -1512,6 +2162,7 @@ describe("daemon CLI default dependency branches", () => {
     const discoverLogFiles = vi.fn(() => ["/tmp/daemon.ndjson"])
     const readLastLines = vi.fn(() => ['{"level":"warn","component":"daemon","event":"daemon.startup","message":"socket lost"}'])
     const formatLogLine = vi.fn((line: string) => `formatted:${line}`)
+    const tailLogs = vi.fn(() => vi.fn())
     const statSync = vi.fn(() => ({ mtimeMs: 4242 }))
 
     vi.doMock("net", () => ({ createConnection: vi.fn() }))
@@ -1534,6 +2185,7 @@ describe("daemon CLI default dependency branches", () => {
       discoverLogFiles,
       readLastLines,
       formatLogLine,
+      tailLogs,
     }))
     vi.doMock("../../../heart/identity", () => ({
       getRepoRoot: () => "/mock/repo",
@@ -1549,7 +2201,7 @@ describe("daemon CLI default dependency branches", () => {
     expect(deps.healthFilePath).toBe("/tmp/daemon-health.json")
     expect(deps.readHealthState?.("/tmp/daemon-health.json")).toEqual(expect.objectContaining({
       pid: 123,
-      status: "ok",
+      status: "healthy",
     }))
     expect(deps.readHealthUpdatedAt?.("/tmp/daemon-health.json")).toBe(4242)
     expect(deps.readRecentDaemonLogLines?.(5)).toEqual([
@@ -1557,8 +2209,21 @@ describe("daemon CLI default dependency branches", () => {
     ])
     expect(deps.startupPollIntervalMs).toBe(250)
     expect(deps.startupStabilityWindowMs).toBe(1_500)
-    expect(deps.startupTimeoutMs).toBe(10_000)
+    expect(deps.startupTimeoutMs).toBe(60_000)
     expect(deps.startupRetryLimit).toBe(1)
+    expect(typeof deps.tailLogs).toBe("function")
+    expect(deps.tailLogs?.({ follow: true })).toEqual(expect.any(Function))
+    expect(tailLogs).toHaveBeenCalledWith({ follow: true })
+    const originalExitCode = process.exitCode
+    try {
+      process.exitCode = undefined
+      deps.setExitCode?.(2)
+      expect(process.exitCode).toBe(2)
+      deps.setExitCode?.(1)
+      expect(process.exitCode).toBe(2)
+    } finally {
+      process.exitCode = originalExitCode
+    }
     await expect(deps.sleep?.(0)).resolves.toBeUndefined()
   })
 
