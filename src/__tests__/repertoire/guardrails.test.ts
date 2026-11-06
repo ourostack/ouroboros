@@ -1670,6 +1670,7 @@ describe("the product rules change only by release", () => {
         `echo x > ${alias}/product/PRODUCT.md`, "echo x > ~/AgentBundles/b.ouro/product/PRODUCT.md", `cd ${root} && echo x > ./product/PRODUCT.md`,
         `cd ${root} && echo x > "./product/PRODUCT.md"`, `cd ${root}/arc && echo x > ../product/PRODUCT.md`, `cd ${root} && cd product && echo x > PRODUCT.md`,
         `node -e "require('fs').writeFileSync('${root}/product/PRODUCT.md','x')"`,
+        "echo x > $HOME/AgentBundles/b.ouro/product/PRODUCT.md", `git -C ${root} checkout -- product/PRODUCT.md`,
       ]) {
         expect(guardInvocation("shell", { command }, ctx), command).toEqual({ allowed: false, reason: PROTECTED })
       }

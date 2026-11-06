@@ -252,6 +252,12 @@ describe("file tools note a change to the agent's own psyche", () => {
     expect(await handler("write_file")({ path: path.join(agentRoot, "notes.md"), content: "x" }, { agentRoot } as never)).not.toContain("psyche edit:")
   })
 
+  it("names SOUL when the write went to a TACIT that links to it", async () => {
+    fs.rmSync(path.join(agentRoot, "psyche", "TACIT.md"))
+    fs.symlinkSync(path.join(agentRoot, "psyche", "SOUL.md"), path.join(agentRoot, "psyche", "TACIT.md"))
+    expect(await handler("write_file")({ path: path.join(agentRoot, "psyche", "TACIT.md"), content: "x" }, { agentRoot } as never)).toContain(NOTE)
+  })
+
   it("names the real file when the write went through an alias outside psyche/", async () => {
     const alias = path.join(agentRoot, "soul-link.md")
     fs.symlinkSync(path.join(agentRoot, "psyche", "SOUL.md"), alias)

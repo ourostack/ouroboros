@@ -13,11 +13,8 @@ function psycheNoteFor(resolvedPath: string, ctx: ToolContext | undefined): stri
   try {
     const agentRoot = ctx?.agentRoot ?? getAgentRoot()
     if (psycheFileClass(resolvedPath, agentRoot) !== "identity") return ""
-    const lexical = path.relative(path.resolve(agentRoot, "psyche"), resolvedPath)
-    // A write through an alias (a symlink outside psyche/) names the file it actually changed.
-    const relative = lexical.startsWith("..")
-      ? path.relative(fs.realpathSync.native(path.resolve(agentRoot, "psyche")), fs.realpathSync.native(resolvedPath))
-      : lexical
+    // The note names the file that actually changed, even when the write went through a link.
+    const relative = path.relative(fs.realpathSync.native(path.resolve(agentRoot, "psyche")), fs.realpathSync.native(resolvedPath))
     return `\n\n${psycheEditNote(relative.split(path.sep).join("/"))}`
   } catch {
     /* v8 ignore next -- defensive: the write already succeeded, so a failed lookup only drops the note @preserve */

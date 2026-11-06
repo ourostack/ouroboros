@@ -359,11 +359,14 @@ function commandMentionsProduct(command: string, words: readonly string[], agent
   if (globOrExpansionCouldReach(command, lexicalProduct, agentRoot)) return true
   const candidates = productWords(command)
   if (candidates.length === 0) return false
+  // A variable in front of the path ($HOME/.../product/x): where it lands is the shell's to say, so it counts.
+  if (candidates.some((candidate) => candidate.includes("$"))) return true
   const folders = [lexicalProduct, path.join(canonicalize(path.resolve(agentRoot)), "product")]
   // Every directory the command could be working in: where the shell starts, and each cd target, from each earlier one.
   const cwds = [process.cwd()]
   for (const [index, word] of words.entries()) {
-    if (words[index - 1] !== "cd") continue
+    // `git -C <dir>` works in <dir> just as `cd <dir>` does.
+    if (words[index - 1] !== "cd" && words[index - 1] !== "-C") continue
     const target = expandHome(word)
     cwds.push(...(path.isAbsolute(target) ? [target] : cwds.map((cwd) => path.resolve(cwd, target))))
   }
