@@ -6,6 +6,16 @@ function mockMachineIdentity(machineId = "machine_test"): void {
   }))
 }
 
+function mockRuntimeCredentials(overrides: Record<string, unknown> = {}): void {
+  vi.doMock("../../../heart/runtime-credentials", () => ({
+    waitForRuntimeCredentialBootstrap: vi.fn(async () => false),
+    readMachineRuntimeCredentialConfig: vi.fn(() => ({ ok: false, reason: "missing" })),
+    refreshRuntimeCredentialConfig: vi.fn(async () => ({ ok: false, reason: "missing" })),
+    refreshMachineRuntimeCredentialConfig: vi.fn(async () => ({ ok: false, reason: "missing" })),
+    ...overrides,
+  }))
+}
+
 describe("bluebubbles entrypoint", () => {
   afterEach(() => {
     vi.restoreAllMocks()
@@ -19,10 +29,7 @@ describe("bluebubbles entrypoint", () => {
     vi.doMock("../../../senses/bluebubbles/index", () => ({ startBlueBubblesApp }))
     vi.doMock("../../../heart/daemon/runtime-logging", () => ({ configureDaemonRuntimeLogger }))
     mockMachineIdentity()
-    vi.doMock("../../../heart/runtime-credentials", () => ({
-      refreshRuntimeCredentialConfig: vi.fn(async () => ({ ok: false, reason: "missing" })),
-      refreshMachineRuntimeCredentialConfig: vi.fn(async () => ({ ok: false, reason: "missing" })),
-    }))
+    mockRuntimeCredentials()
 
     const argvSpy = vi.spyOn(process, "argv", "get").mockReturnValue([
       "node",
@@ -51,10 +58,9 @@ describe("bluebubbles entrypoint", () => {
     vi.doMock("../../../senses/bluebubbles/index", () => ({ startBlueBubblesApp }))
     vi.doMock("../../../heart/daemon/runtime-logging", () => ({ configureDaemonRuntimeLogger }))
     mockMachineIdentity()
-    vi.doMock("../../../heart/runtime-credentials", () => ({
+    mockRuntimeCredentials({
       refreshRuntimeCredentialConfig,
-      refreshMachineRuntimeCredentialConfig: vi.fn(async () => ({ ok: false, reason: "missing" })),
-    }))
+    })
 
     const argvSpy = vi.spyOn(process, "argv", "get").mockReturnValue([
       "node",
@@ -66,8 +72,10 @@ describe("bluebubbles entrypoint", () => {
     await import("../../../senses/bluebubbles/entry")
 
     await vi.waitFor(() => {
-      expect(refreshRuntimeCredentialConfig).toHaveBeenCalledWith("slugger", { preserveCachedOnFailure: true })
       expect(startBlueBubblesApp).toHaveBeenCalledTimes(1)
+    })
+    await vi.waitFor(() => {
+      expect(refreshRuntimeCredentialConfig).toHaveBeenCalledWith("slugger", { preserveCachedOnFailure: true })
     })
     argvSpy.mockRestore()
   })
@@ -83,10 +91,9 @@ describe("bluebubbles entrypoint", () => {
     vi.doMock("../../../senses/bluebubbles/index", () => ({ startBlueBubblesApp }))
     vi.doMock("../../../heart/daemon/runtime-logging", () => ({ configureDaemonRuntimeLogger }))
     mockMachineIdentity("machine_entry")
-    vi.doMock("../../../heart/runtime-credentials", () => ({
-      refreshRuntimeCredentialConfig: vi.fn(async () => ({ ok: false, reason: "missing" })),
+    mockRuntimeCredentials({
       refreshMachineRuntimeCredentialConfig,
-    }))
+    })
 
     const argvSpy = vi.spyOn(process, "argv", "get").mockReturnValue([
       "node",
@@ -101,6 +108,77 @@ describe("bluebubbles entrypoint", () => {
       expect(refreshMachineRuntimeCredentialConfig).toHaveBeenCalledWith("slugger", "machine_entry", { preserveCachedOnFailure: true })
       expect(startBlueBubblesApp).toHaveBeenCalledTimes(1)
     })
+    argvSpy.mockRestore()
+  })
+
+  it("waits for machine runtime config before starting when bootstrap is unavailable", async () => {
+    vi.resetModules()
+
+    let resolveMachineRefresh: (value: { ok: false; reason: "missing" }) => void = () => undefined
+    const startBlueBubblesApp = vi.fn()
+    const configureDaemonRuntimeLogger = vi.fn()
+    const refreshMachineRuntimeCredentialConfig = vi.fn(() => new Promise<{ ok: false; reason: "missing" }>((resolve) => {
+      resolveMachineRefresh = resolve
+    }))
+    vi.doMock("../../../senses/bluebubbles/index", () => ({ startBlueBubblesApp }))
+    vi.doMock("../../../heart/daemon/runtime-logging", () => ({ configureDaemonRuntimeLogger }))
+    mockMachineIdentity("machine_entry")
+    mockRuntimeCredentials({
+      refreshMachineRuntimeCredentialConfig,
+    })
+
+    const argvSpy = vi.spyOn(process, "argv", "get").mockReturnValue([
+      "node",
+      "bluebubbles-entry.js",
+      "--agent",
+      "slugger",
+    ])
+
+    await import("../../../senses/bluebubbles/entry")
+
+    await vi.waitFor(() => {
+      expect(refreshMachineRuntimeCredentialConfig).toHaveBeenCalledWith("slugger", "machine_entry", { preserveCachedOnFailure: true })
+    })
+    expect(startBlueBubblesApp).not.toHaveBeenCalled()
+
+    resolveMachineRefresh({ ok: false, reason: "missing" })
+
+    await vi.waitFor(() => {
+      expect(startBlueBubblesApp).toHaveBeenCalledTimes(1)
+    })
+    argvSpy.mockRestore()
+  })
+
+  it("uses daemon-bootstrap machine config without blocking on vault refresh", async () => {
+    vi.resetModules()
+
+    const startBlueBubblesApp = vi.fn()
+    const configureDaemonRuntimeLogger = vi.fn()
+    const waitForRuntimeCredentialBootstrap = vi.fn(async () => true)
+    const refreshMachineRuntimeCredentialConfig = vi.fn(async () => ({ ok: false, reason: "missing" }))
+    vi.doMock("../../../senses/bluebubbles/index", () => ({ startBlueBubblesApp }))
+    vi.doMock("../../../heart/daemon/runtime-logging", () => ({ configureDaemonRuntimeLogger }))
+    mockMachineIdentity("machine_entry")
+    mockRuntimeCredentials({
+      waitForRuntimeCredentialBootstrap,
+      readMachineRuntimeCredentialConfig: vi.fn(() => ({ ok: true, config: { bluebubbles: { serverUrl: "http://localhost", password: "pw" } } })),
+      refreshMachineRuntimeCredentialConfig,
+    })
+
+    const argvSpy = vi.spyOn(process, "argv", "get").mockReturnValue([
+      "node",
+      "bluebubbles-entry.js",
+      "--agent",
+      "slugger",
+    ])
+
+    await import("../../../senses/bluebubbles/entry")
+
+    await vi.waitFor(() => {
+      expect(waitForRuntimeCredentialBootstrap).toHaveBeenCalledWith("slugger")
+      expect(startBlueBubblesApp).toHaveBeenCalledTimes(1)
+    })
+    expect(refreshMachineRuntimeCredentialConfig).not.toHaveBeenCalled()
     argvSpy.mockRestore()
   })
 
@@ -137,10 +215,7 @@ describe("bluebubbles entrypoint", () => {
     vi.doMock("../../../senses/bluebubbles/index", () => ({ startBlueBubblesApp }))
     vi.doMock("../../../heart/daemon/runtime-logging", () => ({ configureDaemonRuntimeLogger }))
     mockMachineIdentity()
-    vi.doMock("../../../heart/runtime-credentials", () => ({
-      refreshRuntimeCredentialConfig: vi.fn(async () => ({ ok: false, reason: "missing" })),
-      refreshMachineRuntimeCredentialConfig: vi.fn(async () => ({ ok: false, reason: "missing" })),
-    }))
+    mockRuntimeCredentials()
 
     const consoleError = vi.spyOn(console, "error").mockImplementation(() => undefined)
     const exitSpy = vi.spyOn(process, "exit").mockImplementation((() => undefined) as never)
@@ -172,10 +247,7 @@ describe("bluebubbles entrypoint", () => {
     vi.doMock("../../../senses/bluebubbles/index", () => ({ startBlueBubblesApp }))
     vi.doMock("../../../heart/daemon/runtime-logging", () => ({ configureDaemonRuntimeLogger }))
     mockMachineIdentity()
-    vi.doMock("../../../heart/runtime-credentials", () => ({
-      refreshRuntimeCredentialConfig: vi.fn(async () => ({ ok: false, reason: "missing" })),
-      refreshMachineRuntimeCredentialConfig: vi.fn(async () => ({ ok: false, reason: "missing" })),
-    }))
+    mockRuntimeCredentials()
 
     const consoleError = vi.spyOn(console, "error").mockImplementation(() => undefined)
     const exitSpy = vi.spyOn(process, "exit").mockImplementation((() => undefined) as never)

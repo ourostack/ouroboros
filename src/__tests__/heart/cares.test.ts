@@ -10,6 +10,7 @@ import {
   resolveCare,
   type CareRecord,
 } from "../../arc/cares"
+import { expectCappedAgentContent, makeOversizedAgentContent } from "../helpers/content-cap"
 
 describe("care store", () => {
   let tmpDir: string
@@ -75,6 +76,22 @@ describe("care store", () => {
       const stored = JSON.parse(fs.readFileSync(filePath, "utf-8")) as CareRecord
       expect(stored.id).toBe(care.id)
       expect(stored.label).toBe("harness reliability")
+    })
+
+    it("caps oversized agent-authored care fields before writing JSON", () => {
+      const oversized = makeOversizedAgentContent("care reason ")
+      const care = createCare(tmpDir, {
+        ...baseCareInput,
+        label: oversized,
+        why: oversized,
+        currentRisk: oversized,
+      })
+
+      const filePath = path.join(tmpDir, "arc", "cares", `${care.id}.json`)
+      const stored = JSON.parse(fs.readFileSync(filePath, "utf-8")) as CareRecord
+      expectCappedAgentContent(stored.label, oversized)
+      expectCappedAgentContent(stored.why, oversized)
+      expectCappedAgentContent(stored.currentRisk ?? "", oversized)
     })
 
     it("generates unique IDs", () => {
@@ -206,6 +223,35 @@ describe("care store", () => {
       const filePath = path.join(tmpDir, "arc", "cares", `${care.id}.json`)
       const stored = JSON.parse(fs.readFileSync(filePath, "utf-8")) as CareRecord
       expect(stored.label).toBe("updated")
+    })
+
+    it("caps oversized agent-authored update fields before writing JSON", () => {
+      const care = createCare(tmpDir, baseCareInput)
+      const oversized = makeOversizedAgentContent("updated care ")
+
+      updateCare(tmpDir, care.id, {
+        label: oversized,
+        why: oversized,
+        currentRisk: oversized,
+      })
+
+      const filePath = path.join(tmpDir, "arc", "cares", `${care.id}.json`)
+      const stored = JSON.parse(fs.readFileSync(filePath, "utf-8")) as CareRecord
+      expectCappedAgentContent(stored.label, oversized)
+      expectCappedAgentContent(stored.why, oversized)
+      expectCappedAgentContent(stored.currentRisk ?? "", oversized)
+    })
+
+    it("preserves the existing label when capping an oversized why-only update", () => {
+      const care = createCare(tmpDir, baseCareInput)
+      const oversized = makeOversizedAgentContent("updated care why ")
+
+      updateCare(tmpDir, care.id, { why: oversized })
+
+      const filePath = path.join(tmpDir, "arc", "cares", `${care.id}.json`)
+      const stored = JSON.parse(fs.readFileSync(filePath, "utf-8")) as CareRecord
+      expect(stored.label).toBe("harness reliability")
+      expectCappedAgentContent(stored.why, oversized)
     })
 
     it("throws when care does not exist", () => {

@@ -4,9 +4,53 @@ import { getAgentRoot, getAgentName } from "../heart/identity";
 import { handleSurface, type SurfaceRouteResult } from "../senses/surface-tool";
 import { advanceReturnObligation, findPendingObligationForOrigin, fulfillObligation } from "../arc/obligations";
 import { listSessionActivity } from "../heart/session-activity";
+import { containsInternalMetaMarkers } from "../senses/bluebubbles-meta-guard";
+import { emitNervesEvent } from "../nerves/runtime";
 import * as path from "path";
 import type { AttentionItem } from "../arc/attention-types";
-import type { ToolDefinition } from "./tools-base";
+import { placeTrustedFriendVoiceOutboundCall } from "../senses/voice/outbound";
+import type { ToolDefinition, VoiceCallAudioRequest } from "./tools-base";
+
+type SurfaceDeliveryChannel = "auto" | "voice"
+
+interface SurfaceDeliveryHint {
+  channel?: SurfaceDeliveryChannel
+  phoneNumber?: string
+  initialAudio?: VoiceCallAudioRequest
+}
+
+/* v8 ignore start -- surface voice delivery hints are covered at the outbound voice bridge; this adapter only normalizes optional tool args @preserve */
+function normalizeSurfaceDeliveryChannel(value: unknown): SurfaceDeliveryChannel {
+  if (typeof value !== "string") return "auto"
+  const normalized = value.trim().toLowerCase()
+  return normalized === "voice" ? "voice" : "auto"
+}
+
+function parseSurfaceVoiceInitialAudio(args: Record<string, string>): VoiceCallAudioRequest | undefined {
+  const source = args.voiceAudioSource === "url" || args.voiceAudioSource === "file" || args.voiceAudioSource === "tone"
+    ? args.voiceAudioSource
+    : undefined
+  const hasAudioHint = Boolean(
+    source
+    || args.voiceAudioUrl?.trim()
+    || args.voiceAudioPath?.trim()
+    || args.voiceAudioLabel?.trim()
+    || args.voiceAudioToneHz?.trim()
+    || args.voiceAudioDurationMs?.trim(),
+  )
+  if (!hasAudioHint) return undefined
+  const toneHz = args.voiceAudioToneHz?.trim() ? Number(args.voiceAudioToneHz) : undefined
+  const durationMs = args.voiceAudioDurationMs?.trim() ? Number(args.voiceAudioDurationMs) : undefined
+  return {
+    source: source ?? "tone",
+    ...(args.voiceAudioUrl?.trim() ? { url: args.voiceAudioUrl.trim() } : {}),
+    ...(args.voiceAudioPath?.trim() ? { path: args.voiceAudioPath.trim() } : {}),
+    ...(args.voiceAudioLabel?.trim() ? { label: args.voiceAudioLabel.trim() } : {}),
+    ...(Number.isFinite(toneHz) ? { toneHz } : {}),
+    ...(Number.isFinite(durationMs) ? { durationMs } : {}),
+  }
+}
+/* v8 ignore stop */
 
 // Surface tool schema — canonical home. Handler lives in senses/surface-tool.ts.
 export const surfaceToolDef: OpenAI.ChatCompletionFunctionTool = {
@@ -14,7 +58,7 @@ export const surfaceToolDef: OpenAI.ChatCompletionFunctionTool = {
   function: {
     name: "surface",
     description:
-      "send a message to someone — write it the way you'd text a friend. pass delegationId to address a held thought (see your attention queue above), or friendId for spontaneous outreach. does not end your turn.",
+      "return a ready thought to a friend or active session without publishing private inner work to BlueBubbles. pass delegationId to address a held thought (see your attention queue above), or friendId for spontaneous outreach. Surface delivers tool responses to the active session. BlueBubbles is a dedicated channel - use send_message with channel=\"bluebubbles\" for intentional iMessage delivery. set channel=voice only when you intentionally want a live phone call; content becomes the call reason/opening context. does not end your turn.",
     parameters: {
       type: "object",
       properties: {
@@ -30,6 +74,40 @@ export const surfaceToolDef: OpenAI.ChatCompletionFunctionTool = {
           type: "string",
           description: "friend to reach out to spontaneously (when not addressing a held thought)",
         },
+        channel: {
+          type: "string",
+          enum: ["auto", "voice"],
+          description: "optional delivery channel; use voice for a live phone call to a trusted friend, otherwise omit",
+        },
+        phoneNumber: {
+          type: "string",
+          description: "optional E.164 phone override for channel=voice when the trusted friend's record has no usable phone handle",
+        },
+        voiceAudioSource: {
+          type: "string",
+          enum: ["tone", "url", "file"],
+          description: "optional initial non-speech audio to play after the opening greeting when channel=voice",
+        },
+        voiceAudioUrl: {
+          type: "string",
+          description: "short audio URL for voiceAudioSource=url",
+        },
+        voiceAudioPath: {
+          type: "string",
+          description: "local audio file path for voiceAudioSource=file",
+        },
+        voiceAudioLabel: {
+          type: "string",
+          description: "short label for the initial voice audio",
+        },
+        voiceAudioToneHz: {
+          type: "number",
+          description: "tone frequency for voiceAudioSource=tone",
+        },
+        voiceAudioDurationMs: {
+          type: "number",
+          description: "initial audio duration in milliseconds",
+        },
       },
       required: ["content"],
     },
@@ -41,10 +119,31 @@ export const surfaceToolDef: OpenAI.ChatCompletionFunctionTool = {
 export const surfaceToolDefinition: ToolDefinition = {
   tool: surfaceToolDef,
   handler: async (args, ctx) => {
+    const rawContent = args.content ?? ""
+    const deliveryHint: SurfaceDeliveryHint = {
+      channel: normalizeSurfaceDeliveryChannel(args.channel),
+      phoneNumber: typeof args.phoneNumber === "string" ? args.phoneNumber : undefined,
+      initialAudio: parseSurfaceVoiceInitialAudio(args),
+    }
+    if (containsInternalMetaMarkers(rawContent)) {
+      emitNervesEvent({
+        level: "warn",
+        component: "repertoire",
+        event: "tools.surface_meta_blocked",
+        message: "surface tool blocked: internal meta markers in content",
+        meta: {
+          hasDelegationId: Boolean(args.delegationId),
+          hasFriendId: Boolean(args.friendId),
+          contentLength: rawContent.length,
+        },
+      })
+      return "failed — blocked: contains internal meta markers"
+    }
+
     const queue = ctx?.delegatedOrigins ?? []
     const agentName = (() => { try { return getAgentName() } catch { return "unknown" } })()
 
-    const routeToFriend = async (friendId: string, content: string, queueItem?: AttentionItem): Promise<SurfaceRouteResult> => {
+    const routeToFriend = async (friendId: string, content: string, queueItem?: AttentionItem, hint?: SurfaceDeliveryHint): Promise<SurfaceRouteResult> => {
       /* v8 ignore start -- routing: integration path tested via inner-dialog routing tests @preserve */
       try {
         const agentRoot = getAgentRoot()
@@ -68,6 +167,20 @@ export const surfaceToolDefinition: ToolDefinition = {
         }
         friendId = resolvedFriendId
 
+        if (hint?.channel === "voice") {
+          const voiceResult = await placeTrustedFriendVoiceOutboundCall({
+            agentName,
+            agentRoot,
+            friendId,
+            reason: content,
+            phoneNumber: hint.phoneNumber,
+            ...(hint.initialAudio ? { initialAudio: hint.initialAudio } : {}),
+          })
+          return voiceResult.status === "placed"
+            ? { status: "delivered", detail: voiceResult.detail }
+            : { status: "failed", detail: voiceResult.detail }
+        }
+
         // Priority 1: Bridge-preferred session (if queue item has a bridgeId)
         if (queueItem?.bridgeId) {
           const { createBridgeManager } = await import("../heart/bridges/manager")
@@ -82,24 +195,6 @@ export const surfaceToolDefinition: ToolDefinition = {
               ),
             )
             if (bridgeTarget) {
-              // Attempt proactive BB delivery for bridge target
-              if (bridgeTarget.channel === "bluebubbles") {
-                const { sendProactiveBlueBubblesMessageToSession } = await import("../senses/bluebubbles")
-                const proactiveResult = await sendProactiveBlueBubblesMessageToSession({
-                  friendId: bridgeTarget.friendId,
-                  sessionKey: bridgeTarget.key,
-                  text: content,
-                  intent: "explicit_cross_chat",
-                } as any)
-                if (proactiveResult.delivered) {
-                  // Inject surfaced content into the target session so it knows what was delivered
-                  const { appendSyntheticAssistantMessage } = await import("../mind/context")
-                  const sessionFilePath = path.join(sessionsDir, bridgeTarget.friendId, bridgeTarget.channel, `${bridgeTarget.key}.json`)
-                  appendSyntheticAssistantMessage(sessionFilePath, content)
-                  return { status: "delivered", detail: "via iMessage" }
-                }
-              }
-              // Fall back to pending queue for bridge target
               const { queuePendingMessage, getPendingDir } = await import("../mind/pending")
               const pendingDir = getPendingDir(agentName, bridgeTarget.friendId, bridgeTarget.channel, bridgeTarget.key)
               queuePendingMessage(pendingDir, {
@@ -119,24 +214,7 @@ export const surfaceToolDefinition: ToolDefinition = {
         const allFriendSessions = listSessionActivity({ sessionsDir, friendsDir, agentName, activeThresholdMs: Number.MAX_SAFE_INTEGER })
           .filter((s) => s.friendId === friendId && s.channel !== "inner")
 
-        // 2a: Attempt proactive BB delivery on a DM session (;-; = individual, never ;+; = group)
-        const bbSession = allFriendSessions.find((s) => s.channel === "bluebubbles" && s.key.includes(";-;"))
-        if (bbSession) {
-          const { sendProactiveBlueBubblesMessageToSession } = await import("../senses/bluebubbles")
-          const proactiveResult = await sendProactiveBlueBubblesMessageToSession({
-            friendId: bbSession.friendId,
-            sessionKey: bbSession.key,
-            text: content,
-          })
-          if (proactiveResult.delivered) {
-            const { appendSyntheticAssistantMessage } = await import("../mind/context")
-            const sessionFilePath = path.join(sessionsDir, bbSession.friendId, bbSession.channel, `${bbSession.key}.json`)
-            appendSyntheticAssistantMessage(sessionFilePath, content)
-            return { status: "delivered", detail: "via iMessage" }
-          }
-        }
-
-        // 2b: No proactive delivery — queue to freshest non-inner session
+        // Priority 2: Queue to freshest non-inner session
         const freshest = allFriendSessions[0]
         if (freshest) {
           const { queuePendingMessage, getPendingDir } = await import("../mind/pending")
@@ -175,6 +253,7 @@ export const surfaceToolDefinition: ToolDefinition = {
       content: args.content ?? "",
       delegationId: args.delegationId,
       friendId: args.friendId,
+      deliveryHint: deliveryHint.channel === "voice" || deliveryHint.phoneNumber ? deliveryHint : undefined,
       queue,
       routeToFriend,
       advanceObligation: (obligationId, update) => {
@@ -206,7 +285,11 @@ export const surfaceToolDefinition: ToolDefinition = {
       },
     })
   },
-  summaryKeys: ["content", "delegationId"],
+  summaryKeys: ["content", "delegationId", "friendId", "channel"],
+  riskProfile: {
+    mutates: ["durable_state_write", "external_side_effect"] as const,
+    risk: "high",
+    reason: "queues or delivers surfaced responses and may fulfill obligations",
+  },
 }
 /* v8 ignore stop */
-
