@@ -2,6 +2,12 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.988",
+      "changes": [
+        "The work-protocol contract test gives the same result on every machine: it no longer compares against a sibling ouro-work-substrate clone when one happens to exist."
+      ]
+    },
+    {
       "version": "0.1.0-alpha.987",
       "changes": [
         "Desk's plugin source in help text and examples is now ourostack/desk, where Desk lives, instead of the old ouroboros-skills copy."
