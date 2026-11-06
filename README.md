@@ -6,7 +6,7 @@ Ouroboros is a TypeScript harness for daemon-managed agents that live in externa
 
 ## What The Runtime Looks Like
 
-- `npx ouro.bot` is the bootstrap path.
+- `npx ouro.bot@latest` is the supported bootstrap path.
 - `ouro` is the installed day-to-day command.
 - `ouro up` starts the daemon from the installed production version, syncs the launcher, installs workflow helpers, and reconciles stale runtime state.
 - `ouro dev` starts the daemon from a local repo build. It auto-builds from source, disables launchd auto-restart (so the installed daemon doesn't respawn underneath you), persists the repo path in `~/.ouro-cli/dev-config.json` for next time, and force-restarts the daemon. If you run `ouro dev` from inside the repo, it detects the CWD automatically. Run `ouro up` to return to production mode (this also cleans up `dev-config.json`).
@@ -22,7 +22,9 @@ Current first-class senses:
 - `cli`
 - `teams`
 - `bluebubbles`
-- `mcp`
+- `mail`
+
+(MCP is a bridge for developer tools — a separate channel, not a sense. See `src/heart/mcp/` for the implementation.)
 
 Current provider ids:
 
@@ -45,7 +47,7 @@ The shared harness lives in `src/`:
 - `src/repertoire/`
   Tool registry (split into category modules: files, shell, notes, bridge, session, continuity, flow, surface, config, and sense-specific tools), coding orchestration, task tools, shared API client, and integration clients (Graph, ADO, GitHub).
 - `src/senses/`
-  CLI (with TUI in senses/cli/), Teams, BlueBubbles (in senses/bluebubbles/), MCP, activity transport, inner-dialog orchestration, and contextual heartbeat.
+  CLI (with TUI in senses/cli/), Teams, BlueBubbles (in senses/bluebubbles/), Mail (in senses/mail.ts), activity transport, inner-dialog orchestration, and contextual heartbeat. The MCP bridge is at `src/heart/mcp/`, not here.
 - `src/nerves/`
   Structured runtime logging and coverage-audit infrastructure.
 - `src/__tests__/`
@@ -99,6 +101,7 @@ Task docs do not live in this repo anymore. Planning and doing docs live in the 
 - Vault unlock material is local machine state. Prefer macOS Keychain, Windows DPAPI, or Linux Secret Service; plaintext fallback is allowed only by explicit human choice.
 - New vault unlock secrets are confirmed before use and rejected if they do not meet the minimum strength requirements.
 - Provider and runtime credentials are loaded into process memory at startup/auth/unlock/refresh and reused. The remote vault is not queried for every model or sense request.
+- Human TTY commands share one CLI surface family: bare `ouro` opens the home deck, `ouro up` uses the boot checklist, `ouro connect`/`ouro auth verify`/`ouro repair` agree on provider and vault truth, and `ouro help`/`ouro whoami`/`ouro versions`/`ouro hatch` render through the same Ouro-branded wizard/guide language instead of raw transcript walls. Orientation commands such as root `ouro connect` may use shorter live probes, while startup and verification commands own durable readiness updates.
 - Human-facing CLI commands that can wait on browser auth, vault IO, daemon startup, daemon restart, provider checks, or connector setup use a shared progress checklist. If a cursor may blink for more than a few seconds, the command should print or animate the current step instead of going quiet.
 - CLI commands that mutate bundle config, such as vault setup or `ouro connect bluebubbles`, run bundle sync after the change when `sync.enabled` is true and report a compact `bundle sync:` line.
 - The daemon discovers bundles dynamically from `~/AgentBundles`.
@@ -141,15 +144,15 @@ For a clean smoke test, run from outside the repo:
 
 ```bash
 cd ~
-npx ouro.bot -v
-npx ouro.bot up
+npx ouro.bot@latest -v
+npx ouro.bot@latest up
 ouro -v
 ouro status
 ```
 
 Expected shape:
 
-- `npx ouro.bot` and `ouro` report the same version.
+- `npx ouro.bot@latest` and `ouro` report the same version.
 - `ouro status` shows the daemon overview plus discovered agents, senses, and workers.
 
 ### Work On The Harness
@@ -167,6 +170,7 @@ If you are changing runtime code, keep all three green.
 ## Common Commands
 
 ```bash
+ouro                             # open the interactive home deck in a human TTY
 ouro up                          # start daemon from installed production version
 ouro dev                         # start daemon from local repo build (auto-detects CWD)
 ouro dev --repo-path /path       # start from a specific repo checkout
@@ -178,6 +182,9 @@ ouro vault unlock --agent <name>
 ouro vault status --agent <name>
 ouro vault config set --agent <name> --key teams.clientSecret
 ouro vault config status --agent <name> --scope all
+ouro vault item set --agent <name> --item <path> --secret-field <field>
+ouro vault item status --agent <name> --item <path>
+ouro vault ops porkbun set --agent <name> --account <account>
 ouro connect --agent <name>
 ouro connect providers --agent <name>
 ouro connect perplexity --agent <name>
@@ -205,9 +212,11 @@ ouro mcp-serve --agent <name>             # start MCP server on stdin/stdout (us
 ouro hook <event> --agent <name>          # fire a lifecycle hook (SessionStart, Stop, PostToolUse)
 ```
 
+The generic secret primitive is a vault item / credential in the owning agent vault: stable item name/path, hidden secret material, optional public fields, notes, timestamps/provenance, and no assumed use. `ouro connect` is for harness-managed workflows; workflow bindings reference ordinary vault items when they need secret material.
+
 ## Setting Up On Another Machine
 
-To clone an existing agent onto a new machine (macOS, Linux, or Windows via WSL2), see **[docs/cross-machine-setup.md](docs/cross-machine-setup.md)**. The short version is bundle plus vault: `npx ouro.bot`, pick "clone", enter the bundle's git remote URL, unlock the agent vault, refresh/verify credentials, and start with `ouro up`.
+To clone an existing agent onto a new machine (macOS, Linux, or Windows via WSL2), see **[docs/cross-machine-setup.md](docs/cross-machine-setup.md)**. The short version is bundle plus vault: `npx ouro.bot@latest`, open the home deck, choose clone, enter the bundle's git remote URL, unlock the agent vault, refresh/verify credentials, and start with `ouro up`.
 
 ## The Agent's Inner Life
 
@@ -260,4 +269,3 @@ See `skills/configure-dev-tools.md` for the full tool inventory and troubleshoot
 ## A Note To Future Maintainers
 
 If you discover a doc that lies, fix it or remove it. Accuracy is a kindness. A future agent should not have to untangle a fossil record just to understand where their hands are.
-# Production SPA serving

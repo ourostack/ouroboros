@@ -20,18 +20,34 @@ import {
 } from "../provider-credentials"
 import { isCredentialVaultNotConfiguredError, vaultCreateRecoverFix, vaultUnlockReplaceRecoverFix } from "../../repertoire/vault-unlock"
 import {
+  providerLiveCheckFix,
   providerCredentialMissingIssue,
   providerLiveCheckFailedIssue,
   vaultLockedIssue,
   vaultUnconfiguredIssue,
   type AgentReadinessIssue,
 } from "./readiness-repair"
+import { createProviderPingProgressReporter } from "./provider-ping-progress"
+import {
+  detectProviderBindingDrift,
+  loadDriftInputsForAgent,
+  type DriftFinding,
+} from "./drift-detection"
 
 export interface ConfigCheckResult {
   ok: boolean
   error?: string
   fix?: string
   issue?: AgentReadinessIssue
+  /**
+   * Layer 4 drift findings: per-lane intent (`agent.json`) vs observed
+   * (`state/providers.json`) mismatches. Populated only when the function
+   * advanced far enough to read both inputs (a state-setup failure or
+   * agent.json parse error returns the result without ever computing
+   * drift, so this field stays `undefined` in those branches). Drift is
+   * advisory — its presence does NOT flip `ok` to false.
+   */
+  driftFindings?: DriftFinding[]
 }
 
 export type ProviderPing = (
@@ -44,6 +60,8 @@ export interface LiveConfigCheckDeps {
   pingProvider?: ProviderPing
   homeDir?: string
   onProgress?: (message: string) => void
+  providerPingOptions?: Pick<ProviderPingOptions, "attemptPolicy" | "timeoutMs">
+  recordReadiness?: boolean
 }
 
 type FacingName = "humanFacing" | "agentFacing"
@@ -386,12 +404,18 @@ function failedPingResult(
   return {
     ok: false,
     error: `${lane} provider ${provider} model ${model} failed live check: ${result.message}`,
-    fix: `Run 'ouro auth --agent ${agentName} --provider ${provider}' to refresh credentials.`,
+    fix: providerLiveCheckFix({
+      agentName,
+      lane,
+      provider,
+      classification: result.classification,
+    }),
     issue: providerLiveCheckFailedIssue({
       agentName,
       lane,
       provider,
       model,
+      classification: result.classification,
       message: result.message,
     }),
   }
@@ -402,6 +426,50 @@ function credentialRecordForLane(
   provider: AgentProvider,
 ): ProviderCredentialRecord | undefined {
   return pool.providers[provider]
+}
+
+function laneAudienceLabel(lane: ProviderLane): string {
+  return lane === "outward" ? "chat" : "inner dialog"
+}
+
+function bindingLabel(binding: { provider: AgentProvider; model: string }): string {
+  return `${binding.provider} / ${binding.model}`
+}
+
+function selectedProviderPlan(agentName: string, state: ProviderState): string {
+  return [
+    `${agentName}: checking the providers this agent uses right now`,
+    ...(["outward", "inner"] as ProviderLane[]).map((lane) => `- ${laneAudienceLabel(lane)}: ${bindingLabel(state.lanes[lane])}`),
+  ].join("\n")
+}
+
+function selectedProvidersForState(state: ProviderState): AgentProvider[] {
+  return [...new Set((["outward", "inner"] as ProviderLane[]).map((lane) => state.lanes[lane].provider))]
+}
+
+function mapVaultRefreshProgress(
+  agentName: string,
+  onProgress: (message: string) => void,
+): (message: string) => void {
+  return (message: string) => {
+    if (message.startsWith("reading vault items for ")) {
+      onProgress(`${agentName}: opening saved provider credentials in the vault`)
+      return
+    }
+    const providerRead = message.match(/^reading ([a-z0-9-]+) credentials\.\.\.$/i)
+    if (providerRead) {
+      onProgress(`${agentName}: reading saved ${providerRead[1]} credentials`)
+      return
+    }
+    if (message === "parsing provider credentials...") {
+      onProgress(`${agentName}: organizing saved provider credentials`)
+    }
+  }
+}
+
+function providerPingSubject(agentName: string, lanes: ProviderLane[]): string {
+  const laneList = lanes.map((lane) => laneAudienceLabel(lane)).join(" + ")
+  return `${agentName} (${laneList})`
 }
 
 /**
@@ -441,8 +509,39 @@ export async function checkAgentConfigWithProviderHealth(
   if (!stateResult.ok) return stateResult.result
   if (stateResult.disabled) return { ok: true }
 
+  // Layer 4 drift detection. Runs once per call after state setup so that
+  // drift findings ride along regardless of ping outcome — consumers
+  // (Layer 4 rollup, Layer 3 RepairGuide) want to see drift even when a
+  // live-check is failing for unrelated reasons. Drift detection is pure
+  // and never throws on a malformed agent.json: any read error here would
+  // indicate the bundle disappeared between state setup and now (a
+  // race), which we surface as `[]` rather than a hard failure.
+  let driftFindings: DriftFinding[] = []
+  try {
+    const inputs = loadDriftInputsForAgent(bundlesRoot, agentName)
+    driftFindings = detectProviderBindingDrift({
+      agentName,
+      agentJson: inputs.agentJson,
+      providerState: inputs.providerState,
+    })
+  } catch {
+    /* v8 ignore next 1 -- defensive race-window guard: agent.json went away after state setup. Tested via Unit 5 integration when at all. @preserve */
+    driftFindings = []
+  }
+
+  deps.onProgress?.(selectedProviderPlan(agentName, stateResult.state))
+
   const ping = deps.pingProvider ?? ((await import("../provider-ping")).pingProvider as unknown as ProviderPing)
-  const poolResult = await refreshProviderCredentialPool(agentName, deps.onProgress ? { onProgress: deps.onProgress } : undefined)
+  const shouldRecordReadiness = deps.recordReadiness ?? true
+  const providers = selectedProvidersForState(stateResult.state)
+  const poolResult = await refreshProviderCredentialPool(
+    agentName,
+    {
+      ...(deps.onProgress ? { onProgress: mapVaultRefreshProgress(agentName, deps.onProgress) } : {}),
+      providers,
+      skipCache: true,
+    },
+  )
 
   const pingGroups = new Map<string, {
     provider: AgentProvider
@@ -455,16 +554,16 @@ export async function checkAgentConfigWithProviderHealth(
     const binding = stateResult.state.lanes[lane]
     if (!poolResult.ok) {
       if (poolResult.reason === "missing") {
-        return missingCredentialResult(agentName, lane, binding.provider, binding.model, poolResult.poolPath)
+        return { ...missingCredentialResult(agentName, lane, binding.provider, binding.model, poolResult.poolPath), driftFindings }
       }
-      return invalidPoolResult(agentName, lane, binding.provider, binding.model, {
+      return { ...invalidPoolResult(agentName, lane, binding.provider, binding.model, {
         ...poolResult,
         reason: poolResult.reason,
-      })
+      }), driftFindings }
     }
     const record = credentialRecordForLane(poolResult.pool, binding.provider)
     if (!record) {
-      return missingCredentialResult(agentName, lane, binding.provider, binding.model, poolResult.poolPath)
+      return { ...missingCredentialResult(agentName, lane, binding.provider, binding.model, poolResult.poolPath), driftFindings }
     }
     const key = `${binding.provider}\0${binding.model}\0${record.revision}`
     const group = pingGroups.get(key)
@@ -480,33 +579,59 @@ export async function checkAgentConfigWithProviderHealth(
     }
   }
 
-  for (const group of pingGroups.values()) {
-    const result = await ping(group.provider, providerCredentialConfig(group.record), { model: group.model })
+  const groups = [...pingGroups.values()]
+  const pingResults = await Promise.all(groups.map(async (group) => {
+    const result = await ping(group.provider, providerCredentialConfig(group.record), {
+      model: group.model,
+      ...(deps.providerPingOptions ?? {}),
+      ...(deps.onProgress
+        ? createProviderPingProgressReporter(
+            {
+              provider: group.provider,
+              model: group.model,
+              subject: providerPingSubject(agentName, group.lanes),
+            },
+            deps.onProgress,
+          )
+        : {}),
+    })
+    return { group, result }
+  }))
+
+  let firstFailure: ConfigCheckResult | null = null
+  for (const { group, result } of pingResults) {
     if (!result.ok) {
+      if (shouldRecordReadiness) {
+        for (const lane of group.lanes) {
+          writeLaneReadiness({
+            agentRoot: stateResult.agentRoot,
+            state: stateResult.state,
+            lane,
+            status: "failed",
+            credentialRevision: group.record.revision,
+            error: result.message,
+            attempts: pingAttemptCount(result),
+          })
+        }
+      }
+      firstFailure ??= failedPingResult(agentName, group.lanes[0], group.provider, group.model, result)
+      continue
+    }
+    if (shouldRecordReadiness) {
       for (const lane of group.lanes) {
         writeLaneReadiness({
           agentRoot: stateResult.agentRoot,
           state: stateResult.state,
           lane,
-          status: "failed",
+          status: "ready",
           credentialRevision: group.record.revision,
-          error: result.message,
           attempts: pingAttemptCount(result),
         })
       }
-      return failedPingResult(agentName, group.lanes[0], group.provider, group.model, result)
-    }
-    for (const lane of group.lanes) {
-      writeLaneReadiness({
-        agentRoot: stateResult.agentRoot,
-        state: stateResult.state,
-        lane,
-        status: "ready",
-        credentialRevision: group.record.revision,
-        attempts: pingAttemptCount(result),
-      })
     }
   }
+
+  if (firstFailure) return { ...firstFailure, driftFindings }
 
   emitNervesEvent({
     component: "daemon",
@@ -516,7 +641,8 @@ export async function checkAgentConfigWithProviderHealth(
       agent: agentName,
       providers: [...new Set([...pingGroups.values()].map((group) => group.provider))],
       liveProviderCheck: true,
+      driftCount: driftFindings.length,
     },
   })
-  return { ok: true }
+  return { ok: true, driftFindings }
 }

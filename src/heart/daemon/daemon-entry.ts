@@ -14,6 +14,7 @@ import {
   type DaemonHealthState,
   type DegradedComponent,
 } from "./daemon-health"
+import { computeDaemonRollup } from "./daemon-rollup"
 import { TaskDrivenScheduler } from "./task-scheduler"
 import { configureDaemonRuntimeLogger } from "./runtime-logging"
 import { DaemonSenseManager } from "./sense-manager"
@@ -26,11 +27,10 @@ import { createRealOsCronDeps, resolveOuroBinaryPath } from "./os-cron-deps"
 import { LaunchdCronManager } from "./os-cron"
 import { writeDaemonTombstone } from "./daemon-tombstone"
 import { checkAgentConfigWithProviderHealth } from "./agent-config-check"
+import { detectProviderBindingDrift, loadDriftInputsForAgent, type DriftFinding } from "./drift-detection"
 import { flushPulse } from "./pulse"
 import { sendDaemonCommand } from "./socket-client"
 import { getPackageVersion } from "../../mind/bundle-manifest"
-import { createHttpHealthProbe } from "./http-health-probe"
-import { getBlueBubblesChannelConfig } from "../config"
 
 function parseSocketPath(argv: string[]): string {
   const socketIndex = argv.indexOf("--socket")
@@ -110,17 +110,10 @@ const senseManager = new DaemonSenseManager({
   agents: [...managedAgents],
 })
 
-/* v8 ignore next 5 -- entry-point wiring: probe factory and HealthMonitor both have full unit tests @preserve */
-let bbPort = 18790
-try { bbPort = getBlueBubblesChannelConfig().port } catch {
-  // Daemon runs without --agent; agent-scoped config may not be available.
-}
-const bbProbe = createHttpHealthProbe("bluebubbles", bbPort)
-
 const healthMonitor = new HealthMonitor({
   processManager,
   scheduler,
-  senseProbes: [bbProbe],
+  senseProbeProvider: () => senseManager.listHealthProbes(),
   alertSink: (message) => {
     emitNervesEvent({
       level: "error",
@@ -164,19 +157,77 @@ function buildDaemonHealthState(): DaemonHealthState {
         since: snapshot.lastCrashAt ?? daemonStartedAt,
       }
     })
+  // Preserved for backwards-compatible inspection: callers (status
+  // command, outlook surface, etc.) may still read this combined list
+  // for per-component reasons. The rollup status field above is what
+  // changed meaning — the array is still the union of bootstrap +
+  // agent-derived degradation entries.
   const degraded = [
     ...degradedComponents.map((entry) => ({ ...entry })),
     ...agentDegradedComponents,
   ]
 
+  // Layer 4: probe each enabled agent for drift between agent.json
+  // (intent) and state/providers.json (observed binding). The result is
+  // a single boolean — driftDetected — that downgrades the rollup from
+  // healthy to partial when true. Per-finding detail is consumed by
+  // render-side surfaces (inner-status, --no-repair summary) and by
+  // Layer 3 RepairGuide; the rollup itself only cares about presence.
+  // Best-effort: a single agent's read failure is not blocking — the
+  // function returns "no drift detected for that agent" and continues.
+  const bundlesRoot = getAgentBundlesRoot()
+  const drift: DriftFinding[] = []
+  for (const snapshot of snapshots) {
+    try {
+      const inputs = loadDriftInputsForAgent(bundlesRoot, snapshot.name)
+      const findings = detectProviderBindingDrift({
+        agentName: snapshot.name,
+        agentJson: inputs.agentJson,
+        providerState: inputs.providerState,
+      })
+      if (findings.length > 0) {
+        drift.push(...findings)
+      }
+    } catch {
+      // best-effort: continue scanning
+    }
+  }
+  const driftDetected = drift.length > 0
+
+  // Layer 1 rollup: project per-agent snapshots into the minimal
+  // AgentRollupInput shape and let computeDaemonRollup decide. The
+  // input is "every enabled agent" — managedAgents was filtered via
+  // listEnabledBundleAgents at module init, and snapshots only covers
+  // agents the process manager was told to manage, so by construction
+  // these entries are all enabled. The rollup function is a pure
+  // declarative function on the data we hand it.
+  //
+  // Note: safe-mode is wired as `false` here. Existing crash-loop
+  // detection (safe-mode.ts) already runs at the daemon-up boot path
+  // (cli-exec.ts), not from inside the daemon process itself. Once
+  // the daemon is up and reaching this rollup, safe mode no longer
+  // applies — the daemon is by definition past the crash-loop gate.
+  // If a future PR moves safe-mode signal into the running daemon,
+  // wire it through this third argument.
+  const rollupStatus = computeDaemonRollup({
+    enabledAgents: snapshots.map((snapshot) => ({
+      name: snapshot.name,
+      status: snapshot.status,
+    })),
+    bootstrapDegraded: degradedComponents,
+    safeMode: false,
+    driftDetected,
+  })
+
   return {
-    status: degraded.length > 0 ? "degraded" : "ok",
+    status: rollupStatus,
     mode,
     pid: process.pid,
     startedAt: daemonStartedAt,
     uptimeSeconds: Math.floor(process.uptime()),
     safeMode: null,
     degraded,
+    drift,
     agents: Object.fromEntries(snapshots.map((snapshot) => [
       snapshot.name,
       {

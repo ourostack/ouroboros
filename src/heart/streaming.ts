@@ -148,6 +148,17 @@ export interface AssistantMessageWithReasoning extends OpenAI.ChatCompletionAssi
   phase?: "commentary" | "settle";
 }
 
+export const RESPONSES_FUNCTION_CALL_OUTPUT_CAP = 200_000;
+
+export function truncateResponsesFunctionCallOutput(output: string, maxChars = RESPONSES_FUNCTION_CALL_OUTPUT_CAP): string {
+  if (output.length <= maxChars) return output;
+  const marker = `\n\n[truncated — function_call_output exceeded ${maxChars} chars; original length ${output.length} chars]\n\n`;
+  const remainingBudget = Math.max(0, maxChars - marker.length);
+  const headLength = Math.ceil(remainingBudget * 0.75);
+  const tailLength = Math.max(0, remainingBudget - headLength);
+  return `${output.slice(0, headLength)}${marker}${output.slice(-tailLength)}`;
+}
+
 function toResponsesUserContent(
   content: OpenAI.ChatCompletionUserMessageParam["content"],
 ): string | Array<Record<string, unknown>> {
@@ -264,7 +275,7 @@ export function toResponsesInput(
       input.push({
         type: "function_call_output",
         call_id: t.tool_call_id,
-        output: typeof t.content === "string" ? t.content : "",
+        output: truncateResponsesFunctionCallOutput(typeof t.content === "string" ? t.content : ""),
       });
       continue;
     }

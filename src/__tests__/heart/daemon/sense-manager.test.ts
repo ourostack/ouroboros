@@ -23,6 +23,7 @@ describe("daemon sense manager", () => {
   afterEach(() => {
     vi.restoreAllMocks()
     vi.doUnmock("../../../heart/runtime-credentials")
+    vi.doUnmock("../../../heart/daemon/http-health-probe")
     vi.resetModules()
   })
 
@@ -45,6 +46,7 @@ describe("daemon sense manager", () => {
       expect.objectContaining({ agent: "slugger", sense: "cli", status: "interactive", detail: "local interactive terminal" }),
       expect.objectContaining({ agent: "slugger", sense: "teams", status: "disabled", detail: "not enabled in agent.json" }),
       expect.objectContaining({ agent: "slugger", sense: "bluebubbles", status: "disabled", detail: "not enabled in agent.json" }),
+      expect.objectContaining({ agent: "slugger", sense: "mail", status: "disabled", detail: "not enabled in agent.json" }),
     ])
 
     await manager.startAutoStartSenses()
@@ -64,6 +66,7 @@ describe("daemon sense manager", () => {
         cli: { enabled: true },
         teams: { enabled: true },
         bluebubbles: { enabled: true },
+        mail: { enabled: true },
       },
       phrases: { thinking: ["t"], tool: ["t"], followup: ["f"] },
     })
@@ -83,7 +86,80 @@ describe("daemon sense manager", () => {
       expect.objectContaining({ sense: "cli", status: "interactive" }),
       expect.objectContaining({ sense: "teams", status: "needs_config", detail: "missing vault runtime/config (slugger)" }),
       expect.objectContaining({ sense: "bluebubbles", status: "not_attached", detail: "not attached on this machine" }),
+      expect.objectContaining({ sense: "mail", status: "needs_config", detail: "missing vault runtime/config (slugger)" }),
     ])
+  })
+
+  it("builds BlueBubbles health probes from the machine-local listener config", async () => {
+    const bundlesRoot = fs.mkdtempSync(path.join(os.tmpdir(), "sense-manager-bundles-"))
+    writeAgentJson(bundlesRoot, "slugger", {
+      version: 1,
+      enabled: true,
+      provider: "anthropic",
+      senses: {
+        cli: { enabled: true },
+        bluebubbles: { enabled: true },
+      },
+      phrases: { thinking: ["t"], tool: ["t"], followup: ["f"] },
+    })
+    await cacheMachineRuntimeConfig("slugger", {
+      bluebubbles: {
+        serverUrl: "http://localhost:1234",
+        password: "bb-secret",
+      },
+      bluebubblesChannel: {
+        port: 18888,
+        webhookPath: "/bb-hook",
+      },
+    })
+    const createHttpHealthProbe = vi.fn((name: string, port: number) => ({
+      name,
+      check: async () => ({ ok: true, detail: String(port) }),
+    }))
+    vi.doMock("../../../heart/daemon/http-health-probe", () => ({ createHttpHealthProbe }))
+
+    const { DaemonSenseManager } = await import("../../../heart/daemon/sense-manager")
+    const manager = new DaemonSenseManager({
+      agents: ["slugger"],
+      bundlesRoot,
+      processManager: {
+        startAutoStartAgents: async () => undefined,
+        stopAll: async () => undefined,
+        listAgentSnapshots: () => [],
+      },
+    })
+
+    const probes = manager.listHealthProbes()
+    expect(createHttpHealthProbe).toHaveBeenCalledWith("bluebubbles:slugger", 18888)
+    expect(probes).toHaveLength(1)
+    await expect(probes[0]!.check()).resolves.toEqual({ ok: true, detail: "18888" })
+  })
+
+  it("skips BlueBubbles health probes when this machine is not attached", async () => {
+    const bundlesRoot = fs.mkdtempSync(path.join(os.tmpdir(), "sense-manager-bundles-"))
+    writeAgentJson(bundlesRoot, "slugger", {
+      version: 1,
+      enabled: true,
+      provider: "anthropic",
+      senses: {
+        cli: { enabled: true },
+        bluebubbles: { enabled: true },
+      },
+      phrases: { thinking: ["t"], tool: ["t"], followup: ["f"] },
+    })
+
+    const { DaemonSenseManager } = await import("../../../heart/daemon/sense-manager")
+    const manager = new DaemonSenseManager({
+      agents: ["slugger"],
+      bundlesRoot,
+      processManager: {
+        startAutoStartAgents: async () => undefined,
+        stopAll: async () => undefined,
+        listAgentSnapshots: () => [],
+      },
+    })
+
+    expect(manager.listHealthProbes()).toEqual([])
   })
 
   it("uses configured details, ignores malformed snapshot ids, and marks non-running daemon senses as error", async () => {
@@ -96,6 +172,7 @@ describe("daemon sense manager", () => {
         cli: { enabled: true },
         teams: { enabled: true },
         bluebubbles: { enabled: true },
+        mail: { enabled: true },
       },
       phrases: { thinking: ["t"], tool: ["t"], followup: ["f"] },
     })
@@ -107,6 +184,12 @@ describe("daemon sense manager", () => {
       },
       teamsChannel: {
         port: 5000,
+      },
+      mailroom: {
+        mailboxAddress: "slugger@ouro.bot",
+        privateKeys: {
+          mail_slugger_primary: "secret",
+        },
       },
     })
     await cacheMachineRuntimeConfig("slugger", {
@@ -140,6 +223,7 @@ describe("daemon sense manager", () => {
       expect.objectContaining({ sense: "cli", status: "interactive", detail: "local interactive terminal" }),
       expect.objectContaining({ sense: "teams", status: "error", detail: ":5000" }),
       expect.objectContaining({ sense: "bluebubbles", status: "running", detail: ":18888 /hooks/bb" }),
+      expect.objectContaining({ sense: "mail", status: "ready", detail: "slugger@ouro.bot" }),
     ])
   })
 
@@ -204,6 +288,11 @@ describe("daemon sense manager", () => {
         sense: "bluebubbles",
         status: "error",
         detail: expect.stringContaining("upstream unreachable"),
+      }),
+      expect.objectContaining({
+        sense: "mail",
+        status: "disabled",
+        detail: "not enabled in agent.json",
       }),
     ])
   })
@@ -270,6 +359,11 @@ describe("daemon sense manager", () => {
         status: "running",
         detail: ":18888 /hooks/bb",
       }),
+      expect.objectContaining({
+        sense: "mail",
+        status: "disabled",
+        detail: "not enabled in agent.json",
+      }),
     ])
   })
 
@@ -335,6 +429,11 @@ describe("daemon sense manager", () => {
         status: "running",
         detail: ":18888 /hooks/bb",
       }),
+      expect.objectContaining({
+        sense: "mail",
+        status: "disabled",
+        detail: "not enabled in agent.json",
+      }),
     ])
   })
 
@@ -397,6 +496,11 @@ describe("daemon sense manager", () => {
         sense: "bluebubbles",
         status: "error",
         detail: ":18888 /hooks/bb",
+      }),
+      expect.objectContaining({
+        sense: "mail",
+        status: "disabled",
+        detail: "not enabled in agent.json",
       }),
     ])
   })
@@ -461,6 +565,11 @@ describe("daemon sense manager", () => {
         sense: "bluebubbles",
         status: "error",
         detail: ":18888 /hooks/bb",
+      }),
+      expect.objectContaining({
+        sense: "mail",
+        status: "disabled",
+        detail: "not enabled in agent.json",
       }),
     ])
   })
@@ -527,6 +636,11 @@ describe("daemon sense manager", () => {
         status: "running",
         detail: ":18888 /hooks/bb",
       }),
+      expect.objectContaining({
+        sense: "mail",
+        status: "disabled",
+        detail: "not enabled in agent.json",
+      }),
     ])
   })
 
@@ -541,6 +655,7 @@ describe("daemon sense manager", () => {
         cli: { enabled: true },
         teams: { enabled: true },
         bluebubbles: { enabled: true },
+        mail: { enabled: true },
       },
       phrases: { thinking: ["t"], tool: ["t"], followup: ["f"] },
     })
@@ -560,6 +675,12 @@ describe("daemon sense manager", () => {
         clientId: "cid",
         clientSecret: "secret",
         tenantId: "tenant",
+      },
+      mailroom: {
+        mailboxAddress: "slugger@ouro.bot",
+        privateKeys: {
+          mail_slugger_primary: "secret",
+        },
       },
     })
     await cacheMachineRuntimeConfig("slugger", {
@@ -600,6 +721,7 @@ describe("daemon sense manager", () => {
         agents: [
           expect.objectContaining({ name: "slugger:teams", agentArg: "slugger", entry: "senses/teams-entry.js" }),
           expect.objectContaining({ name: "slugger:bluebubbles", agentArg: "slugger", entry: "senses/bluebubbles/entry.js" }),
+          expect.objectContaining({ name: "slugger:mail", agentArg: "slugger", entry: "senses/mail-entry.js" }),
         ],
       }),
     )
@@ -619,6 +741,7 @@ describe("daemon sense manager", () => {
         cli: { enabled: true },
         teams: { enabled: true },
         bluebubbles: { enabled: true },
+        mail: { enabled: true },
       },
       phrases: { thinking: ["t"], tool: ["t"], followup: ["f"] },
     })
@@ -627,6 +750,12 @@ describe("daemon sense manager", () => {
         clientId: "cid",
         clientSecret: "secret",
         tenantId: "tenant",
+      },
+      mailroom: {
+        mailboxAddress: "slugger@ouro.bot",
+        privateKeys: {
+          mail_slugger_primary: "secret",
+        },
       },
     }
     let machineRuntimeConfig: Record<string, unknown> | null = {
@@ -714,6 +843,7 @@ describe("daemon sense manager", () => {
     await expect(options.configCheck("bad-format")).resolves.toEqual({ ok: true })
     await expect(options.configCheck("missing:teams")).resolves.toEqual({ ok: true })
     await expect(options.configCheck("slugger:teams")).resolves.toEqual({ ok: true })
+    await expect(options.configCheck("slugger:mail")).resolves.toEqual({ ok: true })
 
     runtimeConfig = {
     }
@@ -722,6 +852,12 @@ describe("daemon sense manager", () => {
       ok: false,
       error: "teams is enabled for slugger but runtime credentials are not ready: missing teams.clientId/teams.clientSecret/teams.tenantId",
       fix: "Run 'ouro vault config set --agent slugger --key teams.clientId', teams.clientSecret, and teams.tenantId; then run 'ouro up' again.",
+    })
+    const missingMail = await options.configCheck("slugger:mail")
+    expect(missingMail).toEqual({
+      ok: false,
+      error: "mail is enabled for slugger but runtime credentials are not ready: missing mailroom.mailboxAddress/mailroom.privateKeys",
+      fix: "Agent-runnable: provision Mailroom access with 'ouro connect mail --agent slugger', then restart with 'ouro up'.",
     })
 
     runtimeConfig = {
@@ -762,6 +898,7 @@ describe("daemon sense manager", () => {
         cli: { enabled: true },
         teams: { enabled: true },
         bluebubbles: { enabled: true },
+        mail: { enabled: true },
       },
       phrases: { thinking: ["t"], tool: ["t"], followup: ["f"] },
     })
@@ -788,6 +925,12 @@ describe("daemon sense manager", () => {
       expect.objectContaining({
         status: "not_attached",
         detail: "not attached on this machine",
+      }),
+    )
+    expect(manager.listSenseRows().find((row) => row.sense === "mail")).toEqual(
+      expect.objectContaining({
+        status: "needs_config",
+        detail: "missing mailroom.mailboxAddress/mailroom.privateKeys",
       }),
     )
   })
@@ -966,11 +1109,13 @@ describe("daemon sense manager", () => {
       expect.objectContaining({ sense: "cli", status: "interactive" }),
       expect.objectContaining({ sense: "teams", status: "disabled" }),
       expect.objectContaining({ sense: "bluebubbles", status: "disabled" }),
+      expect.objectContaining({ sense: "mail", status: "disabled" }),
     ])
     expect(manager.listSenseRows().filter((row) => row.agent === "ouroboros")).toEqual([
       expect.objectContaining({ sense: "cli", status: "interactive" }),
       expect.objectContaining({ sense: "teams", status: "disabled" }),
       expect.objectContaining({ sense: "bluebubbles", status: "disabled" }),
+      expect.objectContaining({ sense: "mail", status: "disabled" }),
     ])
   })
 
@@ -1193,6 +1338,7 @@ describe("daemon sense manager", () => {
       expect.objectContaining({ sense: "cli", status: "interactive" }),
       expect.objectContaining({ sense: "teams", status: "disabled" }),
       expect.objectContaining({ sense: "bluebubbles", status: "disabled" }),
+      expect.objectContaining({ sense: "mail", status: "disabled" }),
     ])
   })
 })

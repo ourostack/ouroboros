@@ -30,7 +30,11 @@ import {
   checkSenses,
   checkHabits,
   checkSecurity,
+  checkTrips,
+  checkMailroom,
+  checkFriends,
   checkDisk,
+  checkLifecycle,
 } from "../../../heart/daemon/doctor"
 
 function createMockDeps(overrides: Partial<DoctorDeps> = {}): DoctorDeps {
@@ -187,7 +191,7 @@ fi
 # Fall back to installed version
 ENTRY="$HOME/.ouro-cli/CurrentVersion/node_modules/@ouro.bot/cli/dist/heart/daemon/ouro-entry.js"
 if [ ! -e "$ENTRY" ]; then
-  echo "ouro not installed. Run: npx ouro.bot" >&2
+  echo "ouro not installed. Run: npx ouro.bot@latest" >&2
   exit 1
 fi
 exec node "$ENTRY" "$@"
@@ -541,6 +545,174 @@ describe("checkSenses", () => {
     const cat = await checkSenses(deps)
     expect(cat.checks[0].status).toBe("warn")
     expect(cat.checks[0].detail).toContain("no agents")
+  })
+
+  it("fails enabled Mail config checks when hosted Blob reader fields are missing", async () => {
+    const config = JSON.stringify({
+      senses: {
+        mail: { enabled: true },
+      },
+    })
+    seedRuntimeConfig("test", {
+      workSubstrate: { mode: "hosted" },
+      mailroom: {
+        mailboxAddress: "slugger@ouro.bot",
+        privateKeys: {},
+      },
+    })
+    const deps = createMockDeps({
+      existsSync: existsFor([
+        "/tmp/bundles",
+        "/tmp/bundles/test.ouro/agent.json",
+      ]),
+      readdirSync: readdirFor({ "/tmp/bundles": ["test.ouro"] }),
+      readFileSync: readFileFor({
+        "/tmp/bundles/test.ouro/agent.json": config,
+      }),
+    })
+
+    const cat = await checkSenses(deps)
+
+    expect(cat.checks).toContainEqual(expect.objectContaining({
+      label: "test.ouro mail config",
+      status: "fail",
+      detail: "missing mailroom.privateKeys/mailroom.azureAccountUrl for hosted Blob reader",
+    }))
+  })
+
+  it("fails enabled Mail config checks when mailbox identity is missing", async () => {
+    const config = JSON.stringify({
+      senses: {
+        mail: { enabled: true },
+      },
+    })
+    seedRuntimeConfig("test", {
+      mailroom: {
+        privateKeys: { mail_slugger: "PRIVATE KEY" },
+      },
+    })
+    const deps = createMockDeps({
+      existsSync: existsFor([
+        "/tmp/bundles",
+        "/tmp/bundles/test.ouro/agent.json",
+      ]),
+      readdirSync: readdirFor({ "/tmp/bundles": ["test.ouro"] }),
+      readFileSync: readFileFor({
+        "/tmp/bundles/test.ouro/agent.json": config,
+      }),
+    })
+
+    const cat = await checkSenses(deps)
+
+    expect(cat.checks).toContainEqual(expect.objectContaining({
+      label: "test.ouro mail config",
+      status: "fail",
+      detail: "missing mailroom.mailboxAddress",
+    }))
+  })
+
+  it("passes enabled Mail config checks and reports hosted Blob plus autonomy kill switch state", async () => {
+    const config = JSON.stringify({
+      senses: {
+        mail: { enabled: true },
+      },
+    })
+    seedRuntimeConfig("test", {
+      workSubstrate: { mode: "hosted" },
+      mailroom: {
+        mailboxAddress: "slugger@ouro.bot",
+        privateKeys: { mail_slugger: "PRIVATE KEY" },
+        azureAccountUrl: "https://mailstore.blob.core.windows.net",
+        azureContainer: "mailroom",
+        autonomousSendPolicy: {
+          enabled: true,
+          killSwitch: true,
+        },
+      },
+    })
+    const deps = createMockDeps({
+      existsSync: existsFor([
+        "/tmp/bundles",
+        "/tmp/bundles/test.ouro/agent.json",
+      ]),
+      readdirSync: readdirFor({ "/tmp/bundles": ["test.ouro"] }),
+      readFileSync: readFileFor({
+        "/tmp/bundles/test.ouro/agent.json": config,
+      }),
+    })
+
+    const cat = await checkSenses(deps)
+
+    expect(cat.checks).toContainEqual(expect.objectContaining({
+      label: "test.ouro mail config",
+      status: "pass",
+      detail: "slugger@ouro.bot; hosted azure-blob https://mailstore.blob.core.windows.net/mailroom; autonomy enabled; kill switch on",
+    }))
+  })
+
+  it("passes enabled local Mail config checks and reports autonomy fallback state", async () => {
+    const config = JSON.stringify({
+      senses: {
+        mail: { enabled: true },
+      },
+    })
+    seedRuntimeConfig("test", {
+      mailroom: {
+        mailboxAddress: "slugger@ouro.bot",
+        privateKeys: { mail_slugger: "PRIVATE KEY" },
+        storePath: "/tmp/bundles/test.ouro/state/mailroom",
+      },
+    })
+    const deps = createMockDeps({
+      existsSync: existsFor([
+        "/tmp/bundles",
+        "/tmp/bundles/test.ouro/agent.json",
+      ]),
+      readdirSync: readdirFor({ "/tmp/bundles": ["test.ouro"] }),
+      readFileSync: readFileFor({
+        "/tmp/bundles/test.ouro/agent.json": config,
+      }),
+    })
+
+    const cat = await checkSenses(deps)
+
+    expect(cat.checks).toContainEqual(expect.objectContaining({
+      label: "test.ouro mail config",
+      status: "pass",
+      detail: "slugger@ouro.bot; local file Mailroom; autonomy disabled; kill switch off",
+    }))
+  })
+
+  it("fails enabled Mail config checks when portable runtime config is unavailable", async () => {
+    const config = JSON.stringify({
+      senses: {
+        mail: { enabled: true },
+      },
+    })
+    mockRuntimeConfigs.set("test", {
+      ok: false,
+      reason: "locked",
+      itemPath: "vault:test:runtime/config",
+      error: "vault is locked",
+    })
+    const deps = createMockDeps({
+      existsSync: existsFor([
+        "/tmp/bundles",
+        "/tmp/bundles/test.ouro/agent.json",
+      ]),
+      readdirSync: readdirFor({ "/tmp/bundles": ["test.ouro"] }),
+      readFileSync: readFileFor({
+        "/tmp/bundles/test.ouro/agent.json": config,
+      }),
+    })
+
+    const cat = await checkSenses(deps)
+
+    expect(cat.checks).toContainEqual(expect.objectContaining({
+      label: "test.ouro mail config",
+      status: "fail",
+      detail: "runtime config unavailable: vault is locked",
+    }))
   })
 
   it("fails when agent.json is unparseable for senses check", async () => {
@@ -1052,38 +1224,655 @@ describe("checkSecurity", () => {
   })
 })
 
+// ── Trip ledger checks ──
+
+describe("checkTrips", () => {
+  const ledgerJson = (overrides: Record<string, unknown> = {}): string => JSON.stringify({
+    ledgerId: "ledger_slugger_xyz",
+    privateKeyPem: "-----BEGIN PRIVATE KEY-----\nABC\n-----END PRIVATE KEY-----",
+    ...overrides,
+  })
+
+  it("warns when no agents are found", () => {
+    const deps = createMockDeps({
+      existsSync: existsFor(["/tmp/bundles"]),
+      readdirSync: readdirFor({ "/tmp/bundles": [] }),
+    })
+    const cat = checkTrips(deps)
+    expect(cat.name).toBe("Trips")
+    expect(cat.checks[0].status).toBe("warn")
+    expect(cat.checks[0].detail).toContain("no agent bundles")
+  })
+
+  it("passes when an agent has no trip ledger directory yet (optional feature)", () => {
+    const deps = createMockDeps({
+      existsSync: existsFor(["/tmp/bundles"]),
+      readdirSync: readdirFor({ "/tmp/bundles": ["test.ouro"] }),
+    })
+    const cat = checkTrips(deps)
+    expect(cat.checks[0].status).toBe("pass")
+    expect(cat.checks[0].detail).toContain("no ledger directory")
+  })
+
+  it("warns when trips dir exists but ledger.json is missing", () => {
+    const deps = createMockDeps({
+      existsSync: existsFor(["/tmp/bundles", "/tmp/bundles/test.ouro/state/trips"]),
+      readdirSync: readdirFor({ "/tmp/bundles": ["test.ouro"] }),
+    })
+    const cat = checkTrips(deps)
+    expect(cat.checks[0].status).toBe("warn")
+    expect(cat.checks[0].detail).toContain("ledger.json missing")
+  })
+
+  it("fails when ledger.json is unparseable", () => {
+    const deps = createMockDeps({
+      existsSync: existsFor([
+        "/tmp/bundles",
+        "/tmp/bundles/test.ouro/state/trips",
+        "/tmp/bundles/test.ouro/state/trips/ledger.json",
+      ]),
+      readdirSync: readdirFor({ "/tmp/bundles": ["test.ouro"] }),
+      readFileSync: readFileFor({ "/tmp/bundles/test.ouro/state/trips/ledger.json": "{not json" }),
+    })
+    const cat = checkTrips(deps)
+    expect(cat.checks[0].status).toBe("fail")
+    expect(cat.checks[0].detail).toContain("not valid JSON")
+  })
+
+  it("warns when ledger.json is missing the ledgerId field", () => {
+    const deps = createMockDeps({
+      existsSync: existsFor([
+        "/tmp/bundles",
+        "/tmp/bundles/test.ouro/state/trips",
+        "/tmp/bundles/test.ouro/state/trips/ledger.json",
+      ]),
+      readdirSync: readdirFor({ "/tmp/bundles": ["test.ouro"] }),
+      readFileSync: readFileFor({ "/tmp/bundles/test.ouro/state/trips/ledger.json": JSON.stringify({ privateKeyPem: "-----BEGIN PRIVATE KEY-----\nABC\n-----END PRIVATE KEY-----" }) }),
+    })
+    const cat = checkTrips(deps)
+    expect(cat.checks[0].status).toBe("warn")
+    expect(cat.checks[0].detail).toContain("ledgerId")
+  })
+
+  it("fails when privateKeyPem is missing — encrypted records cannot be read", () => {
+    const deps = createMockDeps({
+      existsSync: existsFor([
+        "/tmp/bundles",
+        "/tmp/bundles/test.ouro/state/trips",
+        "/tmp/bundles/test.ouro/state/trips/ledger.json",
+      ]),
+      readdirSync: readdirFor({ "/tmp/bundles": ["test.ouro"] }),
+      readFileSync: readFileFor({ "/tmp/bundles/test.ouro/state/trips/ledger.json": JSON.stringify({ ledgerId: "lg" }) }),
+    })
+    const cat = checkTrips(deps)
+    expect(cat.checks[0].status).toBe("fail")
+    expect(cat.checks[0].detail).toContain("privateKeyPem missing")
+  })
+
+  it("passes with record count when ledger is healthy", () => {
+    const deps = createMockDeps({
+      existsSync: existsFor([
+        "/tmp/bundles",
+        "/tmp/bundles/test.ouro/state/trips",
+        "/tmp/bundles/test.ouro/state/trips/ledger.json",
+        "/tmp/bundles/test.ouro/state/trips/records",
+      ]),
+      readdirSync: readdirFor({
+        "/tmp/bundles": ["test.ouro"],
+        "/tmp/bundles/test.ouro/state/trips/records": ["trip_a.json", "trip_b.json", "ignore.txt"],
+      }),
+      readFileSync: readFileFor({ "/tmp/bundles/test.ouro/state/trips/ledger.json": ledgerJson() }),
+    })
+    const cat = checkTrips(deps)
+    expect(cat.checks[0].status).toBe("pass")
+    expect(cat.checks[0].detail).toContain("ledger_slugger_xyz")
+    expect(cat.checks[0].detail).toContain("2 records")
+  })
+})
+
+// ── Mailroom checks ──
+
+describe("checkMailroom", () => {
+  const registryJson = (overrides: Record<string, unknown> = {}): string => JSON.stringify({
+    schemaVersion: 1,
+    domain: "ouro.bot",
+    mailboxes: [{ agentId: "test", mailboxId: "mb_x", canonicalAddress: "test@ouro.bot", keyId: "k", publicKeyPem: "pem", defaultPlacement: "imbox" }],
+    sourceGrants: [],
+    ...overrides,
+  })
+
+  it("warns when no agents found", () => {
+    const deps = createMockDeps({
+      existsSync: existsFor(["/tmp/bundles"]),
+      readdirSync: readdirFor({ "/tmp/bundles": [] }),
+    })
+    const cat = checkMailroom(deps)
+    expect(cat.name).toBe("Mailroom")
+    expect(cat.checks[0].status).toBe("warn")
+    expect(cat.checks[0].detail).toContain("no agent bundles")
+  })
+
+  it("passes when no mailroom dir (mail not connected)", () => {
+    const deps = createMockDeps({
+      existsSync: existsFor(["/tmp/bundles"]),
+      readdirSync: readdirFor({ "/tmp/bundles": ["test.ouro"] }),
+    })
+    const cat = checkMailroom(deps)
+    expect(cat.checks[0].status).toBe("pass")
+    expect(cat.checks[0].detail).toContain("not connected")
+  })
+
+  it("warns when state/mailroom dir exists but no registry.json", () => {
+    const deps = createMockDeps({
+      existsSync: existsFor(["/tmp/bundles", "/tmp/bundles/test.ouro/state/mailroom"]),
+      readdirSync: readdirFor({ "/tmp/bundles": ["test.ouro"] }),
+    })
+    const cat = checkMailroom(deps)
+    expect(cat.checks[0].status).toBe("warn")
+    expect(cat.checks[0].detail).toContain("registry.json missing")
+  })
+
+  it("fails when registry.json is unparseable", () => {
+    const deps = createMockDeps({
+      existsSync: existsFor([
+        "/tmp/bundles",
+        "/tmp/bundles/test.ouro/state/mailroom",
+        "/tmp/bundles/test.ouro/state/mailroom/registry.json",
+      ]),
+      readdirSync: readdirFor({ "/tmp/bundles": ["test.ouro"] }),
+      readFileSync: readFileFor({ "/tmp/bundles/test.ouro/state/mailroom/registry.json": "{not json" }),
+    })
+    const cat = checkMailroom(deps)
+    expect(cat.checks[0].status).toBe("fail")
+    expect(cat.checks[0].detail).toContain("not valid JSON")
+  })
+
+  it("warns when registry has zero mailboxes", () => {
+    const deps = createMockDeps({
+      existsSync: existsFor([
+        "/tmp/bundles",
+        "/tmp/bundles/test.ouro/state/mailroom",
+        "/tmp/bundles/test.ouro/state/mailroom/registry.json",
+      ]),
+      readdirSync: readdirFor({ "/tmp/bundles": ["test.ouro"] }),
+      readFileSync: readFileFor({ "/tmp/bundles/test.ouro/state/mailroom/registry.json": registryJson({ mailboxes: [] }) }),
+    })
+    const cat = checkMailroom(deps)
+    expect(cat.checks[0].status).toBe("warn")
+    expect(cat.checks[0].detail).toContain("no mailboxes")
+  })
+
+  it("passes with mailbox / grant / message counts when healthy", () => {
+    const deps = createMockDeps({
+      existsSync: existsFor([
+        "/tmp/bundles",
+        "/tmp/bundles/test.ouro/state/mailroom",
+        "/tmp/bundles/test.ouro/state/mailroom/registry.json",
+        "/tmp/bundles/test.ouro/state/mailroom/messages",
+      ]),
+      readdirSync: readdirFor({
+        "/tmp/bundles": ["test.ouro"],
+        "/tmp/bundles/test.ouro/state/mailroom/messages": ["mail_a.json", "mail_b.json", "mail_c.json", "skip.txt"],
+      }),
+      readFileSync: readFileFor({
+        "/tmp/bundles/test.ouro/state/mailroom/registry.json": registryJson({
+          sourceGrants: [
+            { grantId: "g1", agentId: "test", ownerEmail: "x@y.com", source: "hey", aliasAddress: "x.test@ouro.bot", keyId: "k", publicKeyPem: "pem", defaultPlacement: "imbox", enabled: true },
+          ],
+        }),
+      }),
+    })
+    const cat = checkMailroom(deps)
+    expect(cat.checks[0].status).toBe("pass")
+    expect(cat.checks[0].detail).toContain("1 mailbox")
+    expect(cat.checks[0].detail).toContain("1 source grant")
+    expect(cat.checks[0].detail).toContain("3 messages")
+  })
+})
+
+// ── Friends checks ──
+
+describe("checkFriends", () => {
+  const friendJson = (overrides: Record<string, unknown> = {}): string => JSON.stringify({
+    id: "test-friend",
+    name: "Test Friend",
+    trustLevel: "friend",
+    externalIds: [],
+    ...overrides,
+  })
+
+  it("warns when no agents found", () => {
+    const deps = createMockDeps({
+      existsSync: existsFor(["/tmp/bundles"]),
+      readdirSync: readdirFor({ "/tmp/bundles": [] }),
+    })
+    const cat = checkFriends(deps)
+    expect(cat.name).toBe("Friends")
+    expect(cat.checks[0].status).toBe("warn")
+    expect(cat.checks[0].detail).toContain("no agent bundles")
+  })
+
+  it("passes when no friends directory (no friends recorded)", () => {
+    const deps = createMockDeps({
+      existsSync: existsFor(["/tmp/bundles"]),
+      readdirSync: readdirFor({ "/tmp/bundles": ["test.ouro"] }),
+    })
+    const cat = checkFriends(deps)
+    expect(cat.checks[0].status).toBe("pass")
+    expect(cat.checks[0].detail).toContain("no friends directory")
+  })
+
+  it("passes with zero count when friends dir is empty", () => {
+    const deps = createMockDeps({
+      existsSync: existsFor(["/tmp/bundles", "/tmp/bundles/test.ouro/friends"]),
+      readdirSync: readdirFor({
+        "/tmp/bundles": ["test.ouro"],
+        "/tmp/bundles/test.ouro/friends": [],
+      }),
+    })
+    const cat = checkFriends(deps)
+    expect(cat.checks[0].status).toBe("pass")
+    expect(cat.checks[0].detail).toBe("0 friends recorded")
+  })
+
+  it("passes with trust-level breakdown when friends are healthy", () => {
+    const deps = createMockDeps({
+      existsSync: existsFor(["/tmp/bundles", "/tmp/bundles/test.ouro/friends"]),
+      readdirSync: readdirFor({
+        "/tmp/bundles": ["test.ouro"],
+        "/tmp/bundles/test.ouro/friends": ["a.json", "b.json", "c.json", "d.json", "ignore.txt"],
+      }),
+      readFileSync: readFileFor({
+        "/tmp/bundles/test.ouro/friends/a.json": friendJson({ id: "a", trustLevel: "family" }),
+        "/tmp/bundles/test.ouro/friends/b.json": friendJson({ id: "b", trustLevel: "family" }),
+        "/tmp/bundles/test.ouro/friends/c.json": friendJson({ id: "c", trustLevel: "friend" }),
+        "/tmp/bundles/test.ouro/friends/d.json": friendJson({ id: "d", trustLevel: "stranger" }),
+      }),
+    })
+    const cat = checkFriends(deps)
+    expect(cat.checks[0].status).toBe("pass")
+    expect(cat.checks[0].detail).toContain("4 friends")
+    expect(cat.checks[0].detail).toContain("2 family")
+    expect(cat.checks[0].detail).toContain("1 friend")
+    expect(cat.checks[0].detail).toContain("1 stranger")
+  })
+
+  it("warns when some friend files are unparseable", () => {
+    const deps = createMockDeps({
+      existsSync: existsFor(["/tmp/bundles", "/tmp/bundles/test.ouro/friends"]),
+      readdirSync: readdirFor({
+        "/tmp/bundles": ["test.ouro"],
+        "/tmp/bundles/test.ouro/friends": ["good.json", "bad.json"],
+      }),
+      readFileSync: readFileFor({
+        "/tmp/bundles/test.ouro/friends/good.json": friendJson(),
+        "/tmp/bundles/test.ouro/friends/bad.json": "{not json",
+      }),
+    })
+    const cat = checkFriends(deps)
+    expect(cat.checks[0].status).toBe("warn")
+    expect(cat.checks[0].detail).toContain("1 unparseable")
+  })
+
+  it("counts a record with an unrecognized trust level under 'other'", () => {
+    const deps = createMockDeps({
+      existsSync: existsFor(["/tmp/bundles", "/tmp/bundles/test.ouro/friends"]),
+      readdirSync: readdirFor({
+        "/tmp/bundles": ["test.ouro"],
+        "/tmp/bundles/test.ouro/friends": ["weird.json"],
+      }),
+      readFileSync: readFileFor({
+        "/tmp/bundles/test.ouro/friends/weird.json": friendJson({ trustLevel: "blocked" }),
+      }),
+    })
+    const cat = checkFriends(deps)
+    expect(cat.checks[0].status).toBe("pass")
+    expect(cat.checks[0].detail).toContain("1 other")
+  })
+})
+
 // ── Disk checks ──
+
+describe("checkLifecycle", () => {
+  function ndjsonLine(ts: string, event: string, meta: Record<string, unknown> = {}): string {
+    return JSON.stringify({ ts, level: "info", event, component: "daemon", message: "evt", meta }) + "\n"
+  }
+
+  it("warns when no daemon log is found", () => {
+    const deps = createMockDeps({ existsSync: existsFor([]) })
+    const cat = checkLifecycle(deps)
+    expect(cat.name).toBe("Lifecycle")
+    expect(cat.checks).toHaveLength(1)
+    expect(cat.checks[0].status).toBe("warn")
+    expect(cat.checks[0].detail).toContain("no daemon.ndjson")
+  })
+
+  it("warns when an agent bundle exists but its daemon.ndjson does not", () => {
+    // discoverAgents returns ['slugger.ouro'] (bundlesRoot exists), but the
+    // log file inside it doesn't — the candidate-existsSync check fails.
+    const deps = createMockDeps({
+      existsSync: existsFor(["/tmp/bundles"]), // bundlesRoot exists, log path doesn't
+      readdirSync: readdirFor({ "/tmp/bundles": ["slugger.ouro"] }),
+    })
+    const cat = checkLifecycle(deps)
+    expect(cat.checks[0].status).toBe("warn")
+    expect(cat.checks[0].detail).toContain("no daemon.ndjson")
+  })
+
+  it("passes when last activity is recent", () => {
+    const recentTs = new Date(Date.now() - 30_000).toISOString()
+    const log = ndjsonLine(recentTs, "daemon.command_received")
+    const deps = createMockDeps({
+      existsSync: existsFor(["/tmp/bundles", "/tmp/bundles/slugger.ouro/state/daemon/logs/daemon.ndjson"]),
+      readdirSync: readdirFor({ "/tmp/bundles": ["slugger.ouro"] }),
+      readFileSync: readFileFor({ "/tmp/bundles/slugger.ouro/state/daemon/logs/daemon.ndjson": log }),
+    })
+    const cat = checkLifecycle(deps)
+    const activity = cat.checks.find((c) => c.label === "recent daemon activity")
+    expect(activity?.status).toBe("pass")
+    expect(activity?.detail).toContain("daemon.command_received")
+  })
+
+  it("warns when last activity is older than 5 minutes", () => {
+    const staleTs = new Date(Date.now() - 10 * 60 * 1000).toISOString()
+    const log = ndjsonLine(staleTs, "senses.shared_turn_end")
+    const deps = createMockDeps({
+      existsSync: existsFor(["/tmp/bundles", "/tmp/bundles/slugger.ouro/state/daemon/logs/daemon.ndjson"]),
+      readdirSync: readdirFor({ "/tmp/bundles": ["slugger.ouro"] }),
+      readFileSync: readFileFor({ "/tmp/bundles/slugger.ouro/state/daemon/logs/daemon.ndjson": log }),
+    })
+    const cat = checkLifecycle(deps)
+    const activity = cat.checks.find((c) => c.label === "recent daemon activity")
+    expect(activity?.status).toBe("warn")
+    expect(activity?.detail).toContain("silent or stopped")
+  })
+
+  it("counts daemon restarts in the last hour", () => {
+    const now = Date.now()
+    const log = [
+      ndjsonLine(new Date(now - 30 * 60 * 1000).toISOString(), "daemon.daemon_started"),
+      ndjsonLine(new Date(now - 20 * 60 * 1000).toISOString(), "daemon.daemon_started"),
+      ndjsonLine(new Date(now - 60 * 1000).toISOString(), "daemon.command_received"),
+    ].join("")
+    const deps = createMockDeps({
+      existsSync: existsFor(["/tmp/bundles", "/tmp/bundles/slugger.ouro/state/daemon/logs/daemon.ndjson"]),
+      readdirSync: readdirFor({ "/tmp/bundles": ["slugger.ouro"] }),
+      readFileSync: readFileFor({ "/tmp/bundles/slugger.ouro/state/daemon/logs/daemon.ndjson": log }),
+    })
+    const cat = checkLifecycle(deps)
+    const restarts = cat.checks.find((c) => c.label === "daemon restarts (last hour)")
+    expect(restarts?.status).toBe("pass")
+    expect(restarts?.detail).toContain("2 restarts")
+  })
+
+  it("warns when restart count is high (churn)", () => {
+    const now = Date.now()
+    const lines: string[] = []
+    for (let i = 0; i < 5; i++) {
+      lines.push(ndjsonLine(new Date(now - (5 - i) * 60 * 1000).toISOString(), "daemon.daemon_started"))
+    }
+    lines.push(ndjsonLine(new Date(now - 1000).toISOString(), "daemon.command_received"))
+    const deps = createMockDeps({
+      existsSync: existsFor(["/tmp/bundles", "/tmp/bundles/slugger.ouro/state/daemon/logs/daemon.ndjson"]),
+      readdirSync: readdirFor({ "/tmp/bundles": ["slugger.ouro"] }),
+      readFileSync: readFileFor({ "/tmp/bundles/slugger.ouro/state/daemon/logs/daemon.ndjson": lines.join("") }),
+    })
+    const cat = checkLifecycle(deps)
+    const restarts = cat.checks.find((c) => c.label === "daemon restarts (last hour)")
+    expect(restarts?.status).toBe("warn")
+    expect(restarts?.detail).toContain("high churn")
+  })
+
+  it("reports cli_version_install_end events with versions", () => {
+    const now = Date.now()
+    const log = [
+      ndjsonLine(new Date(now - 10 * 60 * 1000).toISOString(), "daemon.cli_version_install_end", { version: "0.1.0-alpha.493" }),
+      ndjsonLine(new Date(now - 1000).toISOString(), "daemon.command_received"),
+    ].join("")
+    const deps = createMockDeps({
+      existsSync: existsFor(["/tmp/bundles", "/tmp/bundles/slugger.ouro/state/daemon/logs/daemon.ndjson"]),
+      readdirSync: readdirFor({ "/tmp/bundles": ["slugger.ouro"] }),
+      readFileSync: readFileFor({ "/tmp/bundles/slugger.ouro/state/daemon/logs/daemon.ndjson": log }),
+    })
+    const cat = checkLifecycle(deps)
+    const installs = cat.checks.find((c) => c.label === "version installs (last hour)")
+    expect(installs?.status).toBe("pass")
+    expect(installs?.detail).toContain("alpha.493")
+  })
+
+  it("warns on agent_process_error events with the reason", () => {
+    const now = Date.now()
+    const log = [
+      ndjsonLine(new Date(now - 5 * 60 * 1000).toISOString(), "daemon.agent_process_error", { agent: "slugger", reason: "ENOENT" }),
+      ndjsonLine(new Date(now - 1000).toISOString(), "daemon.command_received"),
+    ].join("")
+    const deps = createMockDeps({
+      existsSync: existsFor(["/tmp/bundles", "/tmp/bundles/slugger.ouro/state/daemon/logs/daemon.ndjson"]),
+      readdirSync: readdirFor({ "/tmp/bundles": ["slugger.ouro"] }),
+      readFileSync: readFileFor({ "/tmp/bundles/slugger.ouro/state/daemon/logs/daemon.ndjson": log }),
+    })
+    const cat = checkLifecycle(deps)
+    const errors = cat.checks.find((c) => c.label === "agent process errors (last hour)")
+    expect(errors?.status).toBe("warn")
+    expect(errors?.detail).toContain("slugger: ENOENT")
+  })
+
+  it("ignores events older than one hour", () => {
+    const oldTs = new Date(Date.now() - 2 * 60 * 60 * 1000).toISOString()
+    const recentTs = new Date(Date.now() - 30_000).toISOString()
+    const log = [
+      ndjsonLine(oldTs, "daemon.daemon_started"),
+      ndjsonLine(recentTs, "daemon.command_received"),
+    ].join("")
+    const deps = createMockDeps({
+      existsSync: existsFor(["/tmp/bundles", "/tmp/bundles/slugger.ouro/state/daemon/logs/daemon.ndjson"]),
+      readdirSync: readdirFor({ "/tmp/bundles": ["slugger.ouro"] }),
+      readFileSync: readFileFor({ "/tmp/bundles/slugger.ouro/state/daemon/logs/daemon.ndjson": log }),
+    })
+    const cat = checkLifecycle(deps)
+    const restarts = cat.checks.find((c) => c.label === "daemon restarts (last hour)")
+    // Old daemon_started is outside the hour cutoff and not counted.
+    expect(restarts).toBeUndefined()
+  })
+
+  it("handles malformed ndjson lines gracefully", () => {
+    const recentTs = new Date(Date.now() - 1000).toISOString()
+    const log = [
+      "not valid json\n",
+      JSON.stringify({ ts: "not a date", event: "wat" }) + "\n",
+      ndjsonLine(recentTs, "daemon.command_received"),
+    ].join("")
+    const deps = createMockDeps({
+      existsSync: existsFor(["/tmp/bundles", "/tmp/bundles/slugger.ouro/state/daemon/logs/daemon.ndjson"]),
+      readdirSync: readdirFor({ "/tmp/bundles": ["slugger.ouro"] }),
+      readFileSync: readFileFor({ "/tmp/bundles/slugger.ouro/state/daemon/logs/daemon.ndjson": log }),
+    })
+    const cat = checkLifecycle(deps)
+    const activity = cat.checks.find((c) => c.label === "recent daemon activity")
+    expect(activity?.status).toBe("pass")
+    expect(activity?.detail).toContain("daemon.command_received")
+  })
+
+  it("fails if the log read throws", () => {
+    const deps = createMockDeps({
+      existsSync: existsFor(["/tmp/bundles", "/tmp/bundles/slugger.ouro/state/daemon/logs/daemon.ndjson"]),
+      readdirSync: readdirFor({ "/tmp/bundles": ["slugger.ouro"] }),
+      readFileSync: () => { throw new Error("EACCES") },
+    })
+    const cat = checkLifecycle(deps)
+    const readable = cat.checks.find((c) => c.label === "daemon log readable")
+    expect(readable?.status).toBe("fail")
+    expect(readable?.detail).toContain("EACCES")
+  })
+
+  it("falls back to 'unknown' when agent_process_error meta lacks reason/agent fields", () => {
+    const recentTs = new Date(Date.now() - 1000).toISOString()
+    const log = [
+      ndjsonLine(recentTs, "daemon.agent_process_error", {}), // missing reason and agent
+      ndjsonLine(recentTs, "daemon.command_received"),
+    ].join("")
+    const deps = createMockDeps({
+      existsSync: existsFor(["/tmp/bundles", "/tmp/bundles/slugger.ouro/state/daemon/logs/daemon.ndjson"]),
+      readdirSync: readdirFor({ "/tmp/bundles": ["slugger.ouro"] }),
+      readFileSync: readFileFor({ "/tmp/bundles/slugger.ouro/state/daemon/logs/daemon.ndjson": log }),
+    })
+    const cat = checkLifecycle(deps)
+    const errors = cat.checks.find((c) => c.label === "agent process errors (last hour)")
+    expect(errors?.detail).toContain("unknown: unknown")
+  })
+
+  it("uses singular 'restart' when count is 1", () => {
+    const now = Date.now()
+    const log = [
+      ndjsonLine(new Date(now - 30 * 60 * 1000).toISOString(), "daemon.daemon_started"),
+      ndjsonLine(new Date(now - 1000).toISOString(), "daemon.command_received"),
+    ].join("")
+    const deps = createMockDeps({
+      existsSync: existsFor(["/tmp/bundles", "/tmp/bundles/slugger.ouro/state/daemon/logs/daemon.ndjson"]),
+      readdirSync: readdirFor({ "/tmp/bundles": ["slugger.ouro"] }),
+      readFileSync: readFileFor({ "/tmp/bundles/slugger.ouro/state/daemon/logs/daemon.ndjson": log }),
+    })
+    const cat = checkLifecycle(deps)
+    const restarts = cat.checks.find((c) => c.label === "daemon restarts (last hour)")
+    expect(restarts?.detail).toContain("1 restart")
+    expect(restarts?.detail).not.toContain("1 restarts")
+  })
+
+  it("truncates the agent_process_error detail when more than 3 errors", () => {
+    const now = Date.now()
+    const lines: string[] = []
+    for (let i = 0; i < 5; i++) {
+      lines.push(ndjsonLine(new Date(now - (5 - i) * 60 * 1000).toISOString(), "daemon.agent_process_error", { agent: `a${i}`, reason: `r${i}` }))
+    }
+    lines.push(ndjsonLine(new Date(now - 1000).toISOString(), "daemon.command_received"))
+    const deps = createMockDeps({
+      existsSync: existsFor(["/tmp/bundles", "/tmp/bundles/slugger.ouro/state/daemon/logs/daemon.ndjson"]),
+      readdirSync: readdirFor({ "/tmp/bundles": ["slugger.ouro"] }),
+      readFileSync: readFileFor({ "/tmp/bundles/slugger.ouro/state/daemon/logs/daemon.ndjson": lines.join("") }),
+    })
+    const cat = checkLifecycle(deps)
+    const errors = cat.checks.find((c) => c.label === "agent process errors (last hour)")
+    expect(errors?.detail).toContain("5 errors")
+    expect(errors?.detail).toContain("...")
+  })
+
+  it("formats activity age in seconds when under one minute", () => {
+    const log = ndjsonLine(new Date(Date.now() - 5_000).toISOString(), "daemon.command_received")
+    const deps = createMockDeps({
+      existsSync: existsFor(["/tmp/bundles", "/tmp/bundles/slugger.ouro/state/daemon/logs/daemon.ndjson"]),
+      readdirSync: readdirFor({ "/tmp/bundles": ["slugger.ouro"] }),
+      readFileSync: readFileFor({ "/tmp/bundles/slugger.ouro/state/daemon/logs/daemon.ndjson": log }),
+    })
+    const cat = checkLifecycle(deps)
+    const activity = cat.checks.find((c) => c.label === "recent daemon activity")
+    expect(activity?.detail).toMatch(/\d+s ago/)
+  })
+
+  it("trims to last 5000 lines when log is huge", () => {
+    const lines: string[] = []
+    // 10000 lines, the first 5000 should be ignored
+    for (let i = 0; i < 5000; i++) {
+      lines.push(ndjsonLine(new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString(), "daemon.update_check"))
+    }
+    // Recent activity in last 5000 lines
+    for (let i = 0; i < 5000; i++) {
+      lines.push(ndjsonLine(new Date(Date.now() - 1000 - i).toISOString(), "daemon.command_received"))
+    }
+    const deps = createMockDeps({
+      existsSync: existsFor(["/tmp/bundles", "/tmp/bundles/slugger.ouro/state/daemon/logs/daemon.ndjson"]),
+      readdirSync: readdirFor({ "/tmp/bundles": ["slugger.ouro"] }),
+      readFileSync: readFileFor({ "/tmp/bundles/slugger.ouro/state/daemon/logs/daemon.ndjson": lines.join("") }),
+    })
+    const cat = checkLifecycle(deps)
+    const activity = cat.checks.find((c) => c.label === "recent daemon activity")
+    expect(activity?.status).toBe("pass")
+  })
+
+  it("skips entries missing ts or event fields", () => {
+    const recentTs = new Date(Date.now() - 1000).toISOString()
+    const log = [
+      JSON.stringify({ event: "daemon.daemon_started" }) + "\n", // no ts
+      JSON.stringify({ ts: recentTs, message: "no event field" }) + "\n",
+      JSON.stringify({ ts: "garbage-not-iso-date", event: "x" }) + "\n", // bad ts
+      ndjsonLine(recentTs, "daemon.command_received"),
+    ].join("")
+    const deps = createMockDeps({
+      existsSync: existsFor(["/tmp/bundles", "/tmp/bundles/slugger.ouro/state/daemon/logs/daemon.ndjson"]),
+      readdirSync: readdirFor({ "/tmp/bundles": ["slugger.ouro"] }),
+      readFileSync: readFileFor({ "/tmp/bundles/slugger.ouro/state/daemon/logs/daemon.ndjson": log }),
+    })
+    const cat = checkLifecycle(deps)
+    const activity = cat.checks.find((c) => c.label === "recent daemon activity")
+    expect(activity?.status).toBe("pass")
+    expect(activity?.detail).toContain("daemon.command_received")
+  })
+
+  it("handles cli_version_install_end with no version meta", () => {
+    const recentTs = new Date(Date.now() - 1000).toISOString()
+    const log = [
+      ndjsonLine(recentTs, "daemon.cli_version_install_end", {}), // no version key
+      ndjsonLine(recentTs, "daemon.command_received"),
+    ].join("")
+    const deps = createMockDeps({
+      existsSync: existsFor(["/tmp/bundles", "/tmp/bundles/slugger.ouro/state/daemon/logs/daemon.ndjson"]),
+      readdirSync: readdirFor({ "/tmp/bundles": ["slugger.ouro"] }),
+      readFileSync: readFileFor({ "/tmp/bundles/slugger.ouro/state/daemon/logs/daemon.ndjson": log }),
+    })
+    const cat = checkLifecycle(deps)
+    const installs = cat.checks.find((c) => c.label === "version installs (last hour)")
+    // installCount > 0 but no versions → detail says installed: (empty)
+    expect(installs?.status).toBe("pass")
+    expect(installs?.detail).toBe("installed: ")
+  })
+
+  it("warns when file exists but contains no parseable entries", () => {
+    const deps = createMockDeps({
+      existsSync: existsFor(["/tmp/bundles", "/tmp/bundles/slugger.ouro/state/daemon/logs/daemon.ndjson"]),
+      readdirSync: readdirFor({ "/tmp/bundles": ["slugger.ouro"] }),
+      readFileSync: readFileFor({ "/tmp/bundles/slugger.ouro/state/daemon/logs/daemon.ndjson": "garbage\nnot json\n" }),
+    })
+    const cat = checkLifecycle(deps)
+    const activity = cat.checks.find((c) => c.label === "recent daemon activity")
+    expect(activity?.status).toBe("warn")
+    expect(activity?.detail).toContain("no parseable events")
+  })
+})
 
 describe("checkDisk", () => {
   it("passes when logs dir exists with reasonable size", () => {
+    const logsDir = "/tmp/bundles/test.ouro/state/daemon/logs"
     const deps = createMockDeps({
-      existsSync: existsFor(["/tmp/home/.ouro-cli/logs", "/tmp/bundles"]),
-      readdirSync: readdirFor({ "/tmp/home/.ouro-cli/logs": ["daemon.log"] }),
+      existsSync: existsFor(["/tmp/bundles", logsDir]),
+      readdirSync: readdirFor({ "/tmp/bundles": ["test.ouro"], [logsDir]: ["daemon.log"] }),
       statSync: statFor({
-        "/tmp/home/.ouro-cli/logs/daemon.log": { mode: 0o644, size: 5000 },
+        [`${logsDir}/daemon.log`]: { mode: 0o644, size: 5000 },
       }),
     })
     const cat = checkDisk(deps)
     expect(cat.name).toBe("Disk")
     expect(cat.checks.find((c) => c.label.includes("log size"))?.status).toBe("pass")
+    expect(cat.checks.find((c) => c.label.includes("log size"))?.label).toBe("test.ouro daemon log size")
     expect(cat.checks.find((c) => c.label.includes("bundles root"))?.status).toBe("pass")
   })
 
   it("warns when log directory is missing", () => {
     const deps = createMockDeps({
       existsSync: existsFor(["/tmp/bundles"]),
+      readdirSync: readdirFor({ "/tmp/bundles": ["test.ouro"] }),
     })
     const cat = checkDisk(deps)
     expect(cat.checks.find((c) => c.label.includes("logs dir"))?.status).toBe("warn")
+    expect(cat.checks.find((c) => c.label.includes("logs dir"))?.detail).toContain("/tmp/bundles/test.ouro/state/daemon/logs")
   })
 
   it("warns when log files are over 100MB", () => {
     const bigSize = 150 * 1024 * 1024 // 150MB
+    const logsDir = "/tmp/bundles/test.ouro/state/daemon/logs"
     const deps = createMockDeps({
-      existsSync: existsFor(["/tmp/home/.ouro-cli/logs", "/tmp/bundles"]),
-      readdirSync: readdirFor({ "/tmp/home/.ouro-cli/logs": ["big.log"] }),
+      existsSync: existsFor(["/tmp/bundles", logsDir]),
+      readdirSync: readdirFor({ "/tmp/bundles": ["test.ouro"], [logsDir]: ["big.log"] }),
       statSync: statFor({
-        "/tmp/home/.ouro-cli/logs/big.log": { mode: 0o644, size: bigSize },
+        [`${logsDir}/big.log`]: { mode: 0o644, size: bigSize },
       }),
     })
     const cat = checkDisk(deps)
@@ -1093,11 +1882,12 @@ describe("checkDisk", () => {
 
   it("fails when log files are over 500MB", () => {
     const hugeSize = 600 * 1024 * 1024 // 600MB
+    const logsDir = "/tmp/bundles/test.ouro/state/daemon/logs"
     const deps = createMockDeps({
-      existsSync: existsFor(["/tmp/home/.ouro-cli/logs", "/tmp/bundles"]),
-      readdirSync: readdirFor({ "/tmp/home/.ouro-cli/logs": ["huge.log"] }),
+      existsSync: existsFor(["/tmp/bundles", logsDir]),
+      readdirSync: readdirFor({ "/tmp/bundles": ["test.ouro"], [logsDir]: ["huge.log"] }),
       statSync: statFor({
-        "/tmp/home/.ouro-cli/logs/huge.log": { mode: 0o644, size: hugeSize },
+        [`${logsDir}/huge.log`]: { mode: 0o644, size: hugeSize },
       }),
     })
     const cat = checkDisk(deps)
@@ -1107,17 +1897,18 @@ describe("checkDisk", () => {
 
   it("warns when bundles root missing", () => {
     const deps = createMockDeps({
-      existsSync: existsFor(["/tmp/home/.ouro-cli/logs"]),
-      readdirSync: readdirFor({ "/tmp/home/.ouro-cli/logs": [] }),
+      existsSync: existsFor([]),
+      readdirSync: readdirFor({}),
     })
     const cat = checkDisk(deps)
     expect(cat.checks.find((c) => c.label.includes("bundles root"))?.status).toBe("warn")
   })
 
   it("handles statSync failure on individual log files gracefully", () => {
+    const logsDir = "/tmp/bundles/test.ouro/state/daemon/logs"
     const deps = createMockDeps({
-      existsSync: existsFor(["/tmp/home/.ouro-cli/logs", "/tmp/bundles"]),
-      readdirSync: readdirFor({ "/tmp/home/.ouro-cli/logs": ["bad.log"] }),
+      existsSync: existsFor(["/tmp/bundles", logsDir]),
+      readdirSync: readdirFor({ "/tmp/bundles": ["test.ouro"], [logsDir]: ["bad.log"] }),
       statSync: vi.fn().mockImplementation(() => { throw new Error("EACCES") }),
     })
     const cat = checkDisk(deps)
@@ -1126,9 +1917,13 @@ describe("checkDisk", () => {
   })
 
   it("handles readdirSync failure on logs dir gracefully", () => {
+    const logsDir = "/tmp/bundles/test.ouro/state/daemon/logs"
     const deps = createMockDeps({
-      existsSync: existsFor(["/tmp/home/.ouro-cli/logs", "/tmp/bundles"]),
-      readdirSync: vi.fn().mockImplementation(() => { throw new Error("EACCES") }),
+      existsSync: existsFor(["/tmp/bundles", logsDir]),
+      readdirSync: vi.fn().mockImplementation((path: string) => {
+        if (path === "/tmp/bundles") return ["test.ouro"]
+        throw new Error("EACCES")
+      }),
     })
     const cat = checkDisk(deps)
     // Should still produce a result with 0 bytes (catch absorbs error)
