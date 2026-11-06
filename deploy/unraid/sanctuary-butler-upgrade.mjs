@@ -47,8 +47,8 @@
 //        sanctuary-butler-upgrade.mjs verify [--gate]
 
 import { execFileSync, spawn, spawnSync } from "node:child_process"
-import { createHash } from "node:crypto"
-import { mkdtempSync, rmSync, writeFileSync, readFileSync, existsSync, statSync, lstatSync, chmodSync, realpathSync, readdirSync } from "node:fs"
+import { createHash, randomBytes } from "node:crypto"
+import { mkdtempSync, rmSync, writeFileSync, readFileSync, existsSync, statSync, lstatSync, chmodSync, realpathSync, readdirSync, openSync, closeSync, fchownSync, fchmodSync, renameSync, constants as fsConstants } from "node:fs"
 import { fileURLToPath } from "node:url"
 import { createRequire } from "node:module"
 import { tmpdir } from "node:os"
@@ -598,21 +598,67 @@ function restorePsycheRoot() {
   if (existsSync(dir)) restorePsycheModes(dir)
 }
 
-/** What is wrong with the psyche folder as the resident's boot check needs it: files owned by the resident at exactly 0600, directories not writable by group or others, no symlinks. Empty when it is sound. */
+/** What is wrong with the psyche folder: anything not owned by the resident, writable by group or others, or a symlink. A file the Butler creates may be 0644. Empty when it is sound. */
 export function psycheProblems(dir, { lstat = lstatSync, readdir = readdirSync } = {}) {
   const problems = []
   const walk = (current) => {
     const stat = lstat(current)
     if (stat.isSymbolicLink()) { problems.push(`${current} is a symlink`); return }
     if (stat.uid !== 10001) problems.push(`${current} is owned by uid ${stat.uid}, not the resident (10001)`)
-    if (stat.isDirectory()) {
-      if ((stat.mode & 0o022) !== 0) problems.push(`${current} is writable by group or others (mode ${(stat.mode & 0o777).toString(8)})`)
-      for (const name of readdir(current)) walk(`${current}/${name}`)
-    } else if ((stat.mode & 0o777) !== 0o600) problems.push(`${current} is mode ${(stat.mode & 0o777).toString(8)}, not 600`)
+    if ((stat.mode & 0o022) !== 0) problems.push(`${current} is writable by group or others (mode ${(stat.mode & 0o777).toString(8)})`)
+    if (stat.isDirectory()) for (const name of readdir(current)) walk(`${current}/${name}`)
   }
   walk(dir)
   return problems
 }
+// A gated upgrade plants a marker in the psyche and hashes the four identity files, then proves both survived the release
+// and any rollback. TACIT is the Butler's own and may change, so only its presence is checked.
+export const PSYCHE_IDENTITY_FILES = ["SOUL.md", "IDENTITY.md", "LORE.md", "ASPIRATIONS.md"]
+const PSYCHE_FILES = [...PSYCHE_IDENTITY_FILES, "TACIT.md"]
+const PSYCHE_MARKER = ".release-marker"
+const sha256 = (file) => createHash("sha256").update(readFileSync(file)).digest("hex")
+const readMarker = (dir) => { try { return readFileSync(`${dir}/${PSYCHE_MARKER}`, "utf8") } catch { return null } }
+
+/** Write psyche/.release-marker (0600, resident-owned, a random token) without following a link the Butler could plant, and hash the identity files. */
+export function plantPsycheMarker(dir, { uid, gid }) {
+  if (!lstatSync(dir).isDirectory()) throw new Error(`${dir} is not a real directory`)
+  const identity = Object.fromEntries(PSYCHE_IDENTITY_FILES.map((name) => [name, sha256(`${dir}/${name}`)]))
+  const token = randomBytes(16).toString("hex")
+  const staged = `${dir}/${PSYCHE_MARKER}.${token}`
+  const fd = openSync(staged, fsConstants.O_WRONLY | fsConstants.O_CREAT | fsConstants.O_EXCL | fsConstants.O_NOFOLLOW, 0o600)
+  try {
+    fchownSync(fd, uid, gid)
+    fchmodSync(fd, 0o600)
+    writeFileSync(fd, token)
+  } finally { closeSync(fd) }
+  renameSync(staged, `${dir}/${PSYCHE_MARKER}`)
+  return { token, identity }
+}
+
+/** Null when the marker holds the token, all five psyche files exist and the four identity hashes match; otherwise the first problem. */
+export function psycheSurvival(dir, planted) {
+  const marker = readMarker(dir)
+  if (marker === null) return `psyche/${PSYCHE_MARKER} is missing`
+  if (marker !== planted.token) return `psyche/${PSYCHE_MARKER} does not hold this upgrade's token`
+  const missing = PSYCHE_FILES.find((name) => !existsSync(`${dir}/${name}`))
+  if (missing) return `psyche/${missing} is missing`
+  const changed = PSYCHE_IDENTITY_FILES.find((name) => sha256(`${dir}/${name}`) !== planted.identity[name])
+  return changed ? `psyche/${changed} changed` : null
+}
+
+/** Remove the marker only while it holds this upgrade's token. */
+export function removePsycheMarker(dir, token) {
+  if (readMarker(dir) === token) rmSync(`${dir}/${PSYCHE_MARKER}`, { force: true })
+}
+
+/** Print the survival check as a gate case line (the shape butler-ship's parseCases reports) and return the problem, if any. */
+export function reportPsycheSurvival(id, dir, planted, log = console.log) {
+  const problem = psycheSurvival(dir, planted)
+  const check = { name: "the psyche marker and all five psyche files survived, with the four identity files byte-identical", ok: problem === null, ...(problem ? { detail: problem } : {}) }
+  log(JSON.stringify({ id, status: problem ? "fail" : "pass", checks: [check] }))
+  return problem
+}
+
 /**
  * What is wrong with the resident's psyche mount, from `docker inspect` Mounts, or null for a supported shape: no separate psyche
  * mount (current releases), or a read-only one (alpha.978 and earlier, which a rollback recreates).
@@ -1236,6 +1282,12 @@ async function upgrade(version, rehearse, { noGate = false, plant } = {}) {
   if (!telegram.ok) fail(`api.telegram.org is not reachable from this host (${telegram.detail}); the new gateway could not pass its Telegram identity check. Nothing was paused or changed; fix the network and re-run.`)
   if (telegram.skipped) console.log("  note: resuming a pending upgrade; Telegram reachability not re-checked")
   else ok(`api.telegram.org reachable (${telegram.detail})`)
+  const psycheDir = `${BUNDLE}/psyche`
+  let planted = null
+  if (gated) {
+    try { planted = plantPsycheMarker(psycheDir, { uid: 10001, gid: 10001 }) } catch (e) { fail(`could not plant the psyche marker before the gated upgrade; nothing was paused or changed: ${e.message}`) }
+    ok("psyche marker planted and the four identity files hashed")
+  }
   pauseSupervision()
   let failure = null
   try {
@@ -1264,36 +1316,42 @@ async function upgrade(version, rehearse, { noGate = false, plant } = {}) {
   if (gated && !failure) {
     say(`replay gate${plant ? ` (planted failure: ${plant})` : ""}`)
     const stillHeld = () => heldUpgradeProblem({ journalExists: existsSync(UPGRADE_JOURNAL), liveImage: butlerState().split(" ")[0], expectedImage: image(version) })
-    const outcome = completeGatedUpgrade({
-      runGate: () => {
-        if (preserved.length) return { ok: false, detail: preserved.join("; ") }
-        if (!waitForButler(image(version), 300)) return { ok: false, detail: `the new Butler did not become healthy on ${image(version)}` }
-        const result = runReplayGate(plant)
-        if (!result.ok) return result
-        const problem = stillHeld()
-        return problem ? { ok: false, detail: problem } : result
-      },
-      commit: () => {
-        pauseSupervision()
-        try {
+    let outcome
+    try {
+      outcome = completeGatedUpgrade({
+        runGate: () => {
+          if (preserved.length) return { ok: false, detail: preserved.join("; ") }
+          if (!waitForButler(image(version), 300)) return { ok: false, detail: `the new Butler did not become healthy on ${image(version)}` }
+          const lost = reportPsycheSurvival("psyche-survives-release", psycheDir, planted)
+          if (lost) return { ok: false, detail: `the psyche did not survive the release: ${lost}` }
+          const result = runReplayGate(plant)
+          if (!result.ok) return result
           const problem = stillHeld()
-          if (problem) throw new Error(`refusing to commit: ${problem}`)
-          ok(`commit: ${sh("/usr/local/bin/node", [lifecycle, "upgrade", id, image(version)], { stdio: ["ignore", "pipe", "pipe"] }).trim()}`)
-        } finally { resumeSupervision() }
-      },
-      rollback: () => {
-        pauseSupervision()
-        try { ok(`rollback: ${sh("/usr/local/bin/node", [lifecycle, "upgrade-rollback"], { stdio: ["ignore", "pipe", "pipe"] }).trim()}`) }
-        catch (e) { fail(ROLLBACK_FAILED(e, lifecycle)) }
-        resumeSupervision()
-      },
-      confirmRollback: () => {
-        if (!waitForButler(priorImage, 300)) fail(`rolled back, but ${priorImage} is not running healthy; inspect \`docker logs ${CONTAINER}\``)
-        return priorImage
-      },
-      pin: () => pinTemplate(version),
-      prune: () => pruneButlerImages(),
-    })
+          return problem ? { ok: false, detail: problem } : result
+        },
+        commit: () => {
+          pauseSupervision()
+          try {
+            const problem = stillHeld()
+            if (problem) throw new Error(`refusing to commit: ${problem}`)
+            ok(`commit: ${sh("/usr/local/bin/node", [lifecycle, "upgrade", id, image(version)], { stdio: ["ignore", "pipe", "pipe"] }).trim()}`)
+          } finally { resumeSupervision() }
+        },
+        rollback: () => {
+          pauseSupervision()
+          try { ok(`rollback: ${sh("/usr/local/bin/node", [lifecycle, "upgrade-rollback"], { stdio: ["ignore", "pipe", "pipe"] }).trim()}`) }
+          catch (e) { fail(ROLLBACK_FAILED(e, lifecycle)) }
+          resumeSupervision()
+        },
+        confirmRollback: () => {
+          if (!waitForButler(priorImage, 300)) fail(`rolled back, but ${priorImage} is not running healthy; inspect \`docker logs ${CONTAINER}\``)
+          reportPsycheSurvival("psyche-survives-rollback", psycheDir, planted)
+          return priorImage
+        },
+        pin: () => pinTemplate(version),
+        prune: () => pruneButlerImages(),
+      })
+    } finally { removePsycheMarker(psycheDir, planted.token) }
     if (!outcome.passed) process.exit(1)
     console.log(`\nUPGRADE done — ${version} live and gate-verified. Run verify.`)
     return
@@ -1324,7 +1382,7 @@ function verify(withGate = false) {
   const psycheDir = `${BUNDLE}/psyche`
   if (existsSync(psycheDir)) {
     const psycheIssues = psycheProblems(psycheDir)
-    psycheIssues.length === 0 ? ok("psyche files are resident-owned 0600") : bad(`psyche files do not match what the resident boot check requires: ${psycheIssues.slice(0, 3).join("; ")}`)
+    psycheIssues.length === 0 ? ok("psyche files are resident-owned and writable") : bad(`psyche files do not match what the resident boot check requires: ${psycheIssues.slice(0, 3).join("; ")}`)
   } else bad("psyche folder missing from the bundle")
   ok(containerExists("jellyfin") ? `jellyfin ${docker(["inspect", "jellyfin", "--format", "{{.State.Status}} restarts={{.RestartCount}}"]).trim()}` : "no jellyfin container")
   if (withGate) {

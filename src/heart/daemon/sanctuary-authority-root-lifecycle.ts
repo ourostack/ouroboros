@@ -789,8 +789,8 @@ export class SanctuaryAuthorityRootLifecycle {
     const predecessor = new SanctuaryAuthorityRootLifecycle({ targetImageId: journal.from.imageId, rollbackImageId: journal.from.rollbackImageId }, this.#options)
     predecessor.#publishBoot()
     if (this.#containers().find((container) => container.Name === "/ouro-butler")?.Image !== journal.from.imageId) {
-      // The predecessor release (up to alpha.978) expects its psyche read-only over the bundle; give it back that shape.
-      predecessor.#recreateResident(journal.from.imageReference, journal.from.imageId, { psycheMount: true })
+      // A predecessor up to alpha.978 expects its psyche read-only over the bundle; alpha.979 and later own a writable one.
+      predecessor.#recreateResident(journal.from.imageReference, journal.from.imageId, { psycheMount: predecessorExpectsPsycheMount(journal.from.imageReference) })
     }
     await predecessor.#startUpgraded(PREDECESSOR_READY_TIMEOUT_MS)
     this.#remove(UPGRADE)
@@ -893,7 +893,7 @@ export class SanctuaryAuthorityRootLifecycle {
     this.#write(BOOT, fs.readFileSync(this.#p(`${ROOT}/package/deploy/unraid/sanctuary-authority-service.sh`), "utf8"))
   }
 
-  /** `psycheMount` adds the read-only psyche mount that releases up to alpha.978 expect; only a rollback passes true. */
+  /** `psycheMount` adds the read-only psyche mount that releases up to alpha.978 expect; only a rollback to such a release passes true. */
   #recreateResident(reference: string, imageId: string, { psycheMount }: { psycheMount: boolean }): void {
     if (this.#containers().some((container) => container.Name === "/ouro-butler")) this.#docker(["rm", "-f", "ouro-butler"])
     this.#docker(["create", "--name", "ouro-butler", "--network", "host", "--restart", "unless-stopped", "--user", "10001:10001",
@@ -1088,6 +1088,12 @@ export class SanctuaryAuthorityRootLifecycle {
  * because a parse error can quote private bytes; the authority root is as private
  * as the token it already holds.
  */
+/** Whether a release expects its psyche mounted read-only over the bundle: only `0.1.0-alpha.N` tags with N <= 978 do. */
+export function predecessorExpectsPsycheMount(imageReference: string): boolean {
+  const release = /^0\.1\.0-alpha\.(\d+)$/u.exec(imageReference.slice(imageReference.lastIndexOf(":") + 1))
+  return release !== null && Number(release[1]) <= 978
+}
+
 export function recordSanctuaryRootLifecycleFailure(error: unknown, file = `${ROOT}/lifecycle-failure.log`): string {
   try {
     fs.appendFileSync(file, `${new Date().toISOString()} ${error instanceof Error ? error.stack : String(error)}\n`, { mode: 0o600 })
