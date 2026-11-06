@@ -12,13 +12,11 @@ import { applyPendingUpdates, registerUpdateHook } from "../versioning/update-ho
 import { bundleMetaHook } from "./hooks/bundle-meta"
 import { agentConfigV2Hook } from "./hooks/agent-config-v2"
 import { getPackageVersion } from "../../mind/bundle-manifest"
-import { startUpdateChecker, stopUpdateChecker } from "../versioning/update-checker"
-import { performStagedRestart } from "../versioning/staged-restart"
-import { installVersion, activateVersion, getOuroCliHome } from "../versioning/ouro-version-manager"
-import { execSync, spawn, spawnSync } from "child_process"
+import { CLI_UPDATE_DIST_TAG, startUpdateChecker, stopUpdateChecker } from "../versioning/update-checker"
+import { execSync } from "child_process"
 import { drainPending } from "../../mind/pending"
 import {
-  handleAgentAsk, handleAgentCatchup, handleAgentCheckGuidance,
+  handleAgentCatchup, handleAgentCheckGuidance,
   handleAgentCheckScope, handleAgentDelegate, handleAgentGetContext,
   handleAgentGetTask, handleAgentReportBlocker, handleAgentReportComplete,
   handleAgentReportProgress, handleAgentRequestDecision, handleAgentSearchNotes,
@@ -26,11 +24,12 @@ import {
 } from "./agent-service"
 import { getAlwaysOnSenseNames } from "../../mind/friends/channel"
 import { getSharedMcpManager, shutdownSharedMcpManager } from "../../repertoire/mcp-manager"
-import { startOutlookHttpServer, type OutlookHttpServerHandle } from "../outlook/outlook-http"
-import { OUTLOOK_DEFAULT_PORT } from "../outlook/outlook-types"
-import { readOutlookAgentState, readOutlookMachineState } from "../outlook/outlook-read"
-import { buildOutlookAgentView, buildOutlookMachineView } from "../outlook/outlook-view"
+import { startMailboxHttpServer, type MailboxHttpServerHandle } from "../mailbox/mailbox-http"
+import { MAILBOX_DEFAULT_PORT } from "../mailbox/mailbox-types"
+import { readMailboxAgentState, readMailboxMachineState } from "../mailbox/mailbox-read"
+import { buildMailboxAgentView, buildMailboxMachineView } from "../mailbox/mailbox-view"
 import { buildAgentProviderVisibility, providerVisibilityStatusRows, type ProviderStatusRow } from "../provider-visibility"
+import { DEFAULT_DAEMON_SOCKET_PATH } from "./socket-client"
 
 const PIDFILE_PATH = path.join(os.homedir(), ".ouro-cli", "daemon.pids")
 
@@ -73,6 +72,7 @@ export function parseOrphanPidsFromPs(psOutput: string, selfPid: number): number
       !line.includes("agent-entry.js")
       && !line.includes("daemon-entry.js")
       && !line.includes("bluebubbles/entry.js")
+      && !line.includes("mail-entry.js")
       && !line.includes("teams-entry.js")
     ) continue
     // Parse `<pid> <ppid> <command...>`. ps pads these with leading spaces.
@@ -140,6 +140,55 @@ export function mergeUniqueOrphanPids(...sources: number[][]): number[] {
   return merged
 }
 
+interface OrphanSettleDeps {
+  isPidAlive?: (pid: number) => boolean
+  now?: () => number
+  sleep?: (ms: number) => Promise<void>
+  timeoutMs?: number
+  pollIntervalMs?: number
+}
+
+const ORPHAN_CLEANUP_SETTLE_TIMEOUT_MS = 5_000
+const ORPHAN_CLEANUP_SETTLE_POLL_INTERVAL_MS = 50
+
+/* v8 ignore start -- process liveness probe; pure wait behavior covered via injected deps @preserve */
+function defaultIsPidAlive(pid: number): boolean {
+  try {
+    process.kill(pid, 0)
+    return true
+  } catch (error) {
+    return (error as NodeJS.ErrnoException).code === "EPERM"
+  }
+}
+/* v8 ignore stop */
+
+/* v8 ignore start -- real timer wiring; wait behavior covered via injected sleep @preserve */
+async function defaultSettleSleep(ms: number): Promise<void> {
+  await new Promise((resolve) => setTimeout(resolve, ms))
+}
+/* v8 ignore stop */
+
+export async function waitForOrphanProcessesToSettle(
+  pids: number[],
+  deps: OrphanSettleDeps = {},
+): Promise<number[]> {
+  if (pids.length === 0) return []
+  const isPidAlive = deps.isPidAlive ?? defaultIsPidAlive
+  const now = deps.now ?? Date.now
+  const sleep = deps.sleep ?? defaultSettleSleep
+  const timeoutMs = deps.timeoutMs ?? ORPHAN_CLEANUP_SETTLE_TIMEOUT_MS
+  const pollIntervalMs = deps.pollIntervalMs ?? ORPHAN_CLEANUP_SETTLE_POLL_INTERVAL_MS
+  const deadline = now() + timeoutMs
+  let survivors = pids.filter(isPidAlive)
+
+  while (survivors.length > 0 && now() < deadline) {
+    await sleep(pollIntervalMs)
+    survivors = pids.filter(isPidAlive)
+  }
+
+  return survivors
+}
+
 /* v8 ignore start -- shells out to ps; covered by filterPidfilePidsToActualOrphans unit tests via injected runner @preserve */
 function runPsCheck(pids: number[]): string | null {
   try {
@@ -169,7 +218,21 @@ function runPsCheck(pids: number[]): string | null {
  * manual cleanup). The scope is narrow on purpose — see parseOrphanPidsFromPs.
  */
 /* v8 ignore start -- process lifecycle: uses kill/ps, tested via deployment @preserve */
-export function killOrphanProcesses(): void {
+function isProductionDaemonSocketPath(socketPath: string): boolean {
+  return socketPath === DEFAULT_DAEMON_SOCKET_PATH
+}
+
+export function killOrphanProcesses(socketPath = DEFAULT_DAEMON_SOCKET_PATH): number[] {
+  if (!isProductionDaemonSocketPath(socketPath)) {
+    emitNervesEvent({
+      level: "warn",
+      component: "daemon",
+      event: "daemon.orphan_cleanup_nonproduction_blocked",
+      message: "blocked orphan cleanup for non-production daemon socket",
+      meta: { socketPath, pidfilePath: PIDFILE_PATH },
+    })
+    return []
+  }
   if (isVitestProcess()) {
     emitNervesEvent({
       level: "warn",
@@ -178,7 +241,7 @@ export function killOrphanProcesses(): void {
       message: "blocked killOrphanProcesses from touching real pidfile under vitest",
       meta: { pidfilePath: PIDFILE_PATH },
     })
-    return
+    return []
   }
   try {
     let pidfileOrphans: number[] = []
@@ -219,6 +282,7 @@ export function killOrphanProcesses(): void {
         meta: { pids: pidsToKill },
       })
     }
+    return pidsToKill
   } catch (error) {
     emitNervesEvent({
       level: "warn",
@@ -227,6 +291,7 @@ export function killOrphanProcesses(): void {
       message: "failed to clean up orphaned ouro processes",
       meta: { error: error instanceof Error ? error.message : String(error) },
     })
+    return []
   }
 }
 
@@ -234,7 +299,17 @@ export function killOrphanProcesses(): void {
  * Write all managed PIDs (daemon + children) to the pidfile.
  * Called after all agents and senses are spawned.
  */
-export function writePidfile(extraPids: number[] = []): void {
+export function writePidfile(extraPids: number[] = [], socketPath = DEFAULT_DAEMON_SOCKET_PATH): void {
+  if (!isProductionDaemonSocketPath(socketPath)) {
+    emitNervesEvent({
+      level: "warn",
+      component: "daemon",
+      event: "daemon.write_pidfile_nonproduction_blocked",
+      message: "blocked production pidfile write for non-production daemon socket",
+      meta: { socketPath, pidfilePath: PIDFILE_PATH, attemptedPids: extraPids.length },
+    })
+    return
+  }
   if (isVitestProcess()) {
     emitNervesEvent({
       level: "warn",
@@ -272,6 +347,7 @@ export interface DaemonMessageReceipt {
 
 export interface DaemonProcessManagerLike {
   startAutoStartAgents(): Promise<void>
+  triggerAutoStartAgents?(): void
   stopAll(): Promise<void>
   startAgent(agent: string): Promise<void>
   stopAgent?(agent: string): Promise<void>
@@ -304,6 +380,8 @@ export interface DaemonSchedulerLike {
 
 export interface DaemonHealthMonitorLike {
   runChecks(): Promise<DaemonHealthResult[]>
+  stopPeriodicChecks?(): void
+  getLastResults?(): DaemonHealthResult[]
 }
 
 export interface DaemonRouterLike {
@@ -321,6 +399,7 @@ export interface DaemonRouterLike {
 export type DaemonCommand =
   | { kind: "daemon.start" }
   | { kind: "daemon.stop" }
+  | { kind: "daemon.restart"; reason?: string; requestedBy?: string }
   | { kind: "daemon.status" }
   | { kind: "daemon.health" }
   | { kind: "daemon.logs" }
@@ -346,6 +425,7 @@ export type DaemonCommand =
   | { kind: "chat.connect"; agent: string }
   | { kind: "task.poke"; agent: string; taskId: string }
   | { kind: "habit.poke"; agent: string; habitName: string }
+  | { kind: "await.poke"; agent: string; awaitName: string }
   | { kind: "message.send"; from: string; to: string; content: string; priority?: string; sessionId?: string; taskRef?: string }
   | { kind: "message.poll"; agent: string }
   | { kind: "mcp.list" }
@@ -371,13 +451,20 @@ export interface OuroDaemonOptions {
   bundlesRoot?: string
   mode?: "dev" | "production"
   /**
-   * Factory for the Outlook HTTP server. Tests inject a stub so they can
+   * Factory for the Mailbox HTTP server. Tests inject a stub so they can
    * exercise the full start/stop lifecycle without binding to port 6876
    * (which is held by a running production daemon on dev machines and
-   * causes EADDRINUSE flakes). Defaults to the real `startOutlookHttpServer`
+   * causes EADDRINUSE flakes). Defaults to the real `startMailboxHttpServer`
    * wired with the daemon's bundlesRoot and view builders.
    */
-  outlookServerFactory?: () => Promise<OutlookHttpServerHandle>
+  mailboxServerFactory?: () => Promise<MailboxHttpServerHandle>
+  /**
+   * Runs after a daemon.stop command has completed daemon-owned cleanup but
+   * before the JSON response is returned to the command socket. Entrypoints
+   * use this to schedule process-level shutdown without putting process.exit()
+   * in the daemon core.
+   */
+  onStopCommandComplete?: () => void
 }
 
 interface DaemonWorkerRow {
@@ -397,6 +484,7 @@ interface DaemonStatusOverview {
   daemon: "running" | "stopped"
   health: "ok" | "warn"
   socketPath: string
+  mailboxUrl: string
   outlookUrl: string
   version: string
   lastUpdated: string
@@ -412,6 +500,7 @@ interface DaemonStatusPayload {
   overview: DaemonStatusOverview
   workers: DaemonWorkerRow[]
   senses: DaemonSenseRow[]
+  healthChecks?: DaemonHealthResult[]
   sync: BundleSyncRow[]
   /** Every discovered bundle (`<name>.ouro` with a parseable agent.json),
    * including disabled ones. The senses/workers/sync rows above only cover
@@ -463,17 +552,51 @@ function buildWorkerRows(
   }))
 }
 
+function unhealthySenseRows(senses: DaemonSenseRow[]): DaemonSenseRow[] {
+  return senses.filter((row) => {
+    if (!row.enabled) return false
+    if (row.status === "disabled" || row.status === "not_attached") return false
+    if (row.status === "interactive" || row.status === "running") return false
+    return true
+  })
+}
+
+function unhealthyHealthChecks(healthChecks: DaemonHealthResult[]): DaemonHealthResult[] {
+  return healthChecks.filter((row) => row.status !== "ok")
+}
+
+function overviewHealth(workers: DaemonWorkerRow[], senses: DaemonSenseRow[], healthChecks: DaemonHealthResult[] = []): "ok" | "warn" {
+  if (!workers.every((worker) => worker.status === "running")) return "warn"
+  if (unhealthySenseRows(senses).length > 0) return "warn"
+  if (unhealthyHealthChecks(healthChecks).length > 0) return "warn"
+  return "ok"
+}
+
 function formatStatusSummary(payload: DaemonStatusPayload): string {
-  if (payload.overview.workerCount === 0 && payload.overview.senseCount === 0) {
+  if (payload.overview.workerCount === 0 && payload.overview.senseCount === 0 && (payload.healthChecks ?? []).length === 0) {
     return "no managed agents"
   }
-  const rows = [
-    ...payload.workers.map((row) => `${row.agent}/${row.worker}:${row.status}`),
-    ...payload.senses
-      .filter((row) => row.enabled)
-      .map((row) => `${row.agent}/${row.sense}:${row.status}`),
+  const degraded = [
+    ...payload.workers
+      .filter((row) => row.status !== "running")
+      .map((row) => `worker:${row.agent}/${row.worker}:${row.status}`),
+    ...unhealthySenseRows(payload.senses)
+      .map((row) => `sense:${row.agent}/${row.sense}:${row.status}`),
+    ...(payload.healthChecks ?? [])
+      .filter((row) => row.status !== "ok")
+      .map((row) => `health-check:${row.name}:${row.status}`),
   ]
-  const detail = rows.length > 0 ? `\titems=${rows.join(",")}` : ""
+  const detail = degraded.length > 0 ? `\tdegraded=${degraded.join(",")}` : ""
+  if (!detail) {
+    const rows = [
+      ...payload.workers.map((row) => `${row.agent}/${row.worker}:${row.status}`),
+      ...payload.senses
+        .filter((row) => row.enabled)
+        .map((row) => `${row.agent}/${row.sense}:${row.status}`),
+    ]
+    const items = rows.length > 0 ? `\titems=${rows.join(",")}` : ""
+    return `daemon=${payload.overview.daemon}\tworkers=${payload.overview.workerCount}\tsenses=${payload.overview.senseCount}\thealth=${payload.overview.health}${items}`
+  }
   return `daemon=${payload.overview.daemon}\tworkers=${payload.overview.workerCount}\tsenses=${payload.overview.senseCount}\thealth=${payload.overview.health}${detail}`
 }
 
@@ -528,6 +651,27 @@ export async function handleAgentSenseTurn(
   }
 }
 
+export async function handleAgentAskTurn(
+  command: Extract<DaemonCommand, { kind: "agent.ask" }>,
+): Promise<DaemonResponse> {
+  /* v8 ignore start -- ask command parameter defaults are legacy MCP compatibility; send_message shares the primary path @preserve */
+  const question = typeof command.question === "string" ? command.question : ""
+  if (!question.trim()) return { ok: false, error: "Missing required parameter: question" }
+  const channel = typeof command.channel === "string" && command.channel.trim() ? command.channel.trim() : "mcp"
+  const sessionKey = typeof command.sessionKey === "string" && command.sessionKey.trim()
+    ? command.sessionKey.trim()
+    : `agent-ask:${command.friendId}`
+  /* v8 ignore stop */
+  return handleAgentSenseTurn({
+    kind: "agent.senseTurn",
+    agent: command.agent,
+    friendId: command.friendId,
+    channel,
+    sessionKey,
+    message: question,
+  })
+}
+
 export class OuroDaemon {
   private readonly socketPath: string
   private readonly processManager: DaemonProcessManagerLike
@@ -538,9 +682,11 @@ export class OuroDaemon {
   private readonly bundlesRoot: string
   private readonly mode: "dev" | "production"
   private server: net.Server | null = null
-  private outlookServer: OutlookHttpServerHandle | null = null
+  private mailboxServer: MailboxHttpServerHandle | null = null
   private socketIdentity: SocketIdentity | null = null
-  private readonly outlookServerFactory: () => Promise<OutlookHttpServerHandle>
+  private senseAutostartTimer: ReturnType<typeof setTimeout> | null = null
+  private readonly mailboxServerFactory: () => Promise<MailboxHttpServerHandle>
+  private readonly onStopCommandComplete: (() => void) | null
 
   constructor(options: OuroDaemonOptions) {
     this.socketPath = options.socketPath
@@ -551,36 +697,37 @@ export class OuroDaemon {
     this.senseManager = options.senseManager ?? null
     this.bundlesRoot = options.bundlesRoot ?? getAgentBundlesRoot()
     this.mode = options.mode ?? "production"
-    this.outlookServerFactory = options.outlookServerFactory ?? this.createDefaultOutlookServer.bind(this)
+    this.mailboxServerFactory = options.mailboxServerFactory ?? this.createDefaultMailboxServer.bind(this)
+    this.onStopCommandComplete = options.onStopCommandComplete ?? null
   }
 
-  /* v8 ignore start -- default outlook server wiring: production-only path, tests inject outlookServerFactory stub instead. startOutlookHttpServer itself has full coverage in outlook-http.test.ts @preserve */
-  private createDefaultOutlookServer(): Promise<OutlookHttpServerHandle> {
-    return startOutlookHttpServer({
+  /* v8 ignore start -- default mailbox server wiring: production-only path, tests inject mailboxServerFactory stub instead. startMailboxHttpServer itself has full coverage in mailbox-http.test.ts @preserve */
+  private createDefaultMailboxServer(): Promise<MailboxHttpServerHandle> {
+    return startMailboxHttpServer({
       host: "127.0.0.1",
-      port: OUTLOOK_DEFAULT_PORT,
+      port: MAILBOX_DEFAULT_PORT,
       bundlesRoot: this.bundlesRoot,
-      readMachineState: () => readOutlookMachineState({ bundlesRoot: this.bundlesRoot }),
+      readMachineState: () => readMailboxMachineState({ bundlesRoot: this.bundlesRoot }),
       readMachineView: ({ machine }) => {
         const overview = this.buildStatusPayload().overview
-        return buildOutlookMachineView({
+        return buildMailboxMachineView({
           machine,
           daemon: {
             status: overview.daemon,
             health: overview.health,
             mode: overview.mode,
             socketPath: overview.socketPath,
-            outlookUrl: overview.outlookUrl,
+            mailboxUrl: overview.mailboxUrl,
             entryPath: overview.entryPath,
             workerCount: overview.workerCount,
             senseCount: overview.senseCount,
           },
         })
       },
-      readAgentState: (agentName) => readOutlookAgentState(agentName, { bundlesRoot: this.bundlesRoot }),
+      readAgentState: (agentName) => readMailboxAgentState(agentName, { bundlesRoot: this.bundlesRoot }),
       readAgentView: (agentName) => {
-        const agent = readOutlookAgentState(agentName, { bundlesRoot: this.bundlesRoot })
-        return buildOutlookAgentView({
+        const agent = readMailboxAgentState(agentName, { bundlesRoot: this.bundlesRoot })
+        return buildMailboxAgentView({
           agent,
           viewer: { kind: "human" },
         })
@@ -593,6 +740,7 @@ export class OuroDaemon {
     const snapshots = this.processManager.listAgentSnapshots()
     const workers = buildWorkerRows(snapshots)
     const senses = this.senseManager?.listSenseRows() ?? []
+    const healthChecks = this.healthMonitor.getLastResults?.() ?? []
     const repoRoot = getRepoRoot()
     const sync = listBundleSyncRows({ bundlesRoot: this.bundlesRoot })
     const agents = listAllBundleAgents({ bundlesRoot: this.bundlesRoot })
@@ -603,12 +751,14 @@ export class OuroDaemon {
       })),
     )
 
+    const mailboxUrl = this.mailboxServer?.origin ?? "http://127.0.0.1:0"
     return {
       overview: {
         daemon: "running",
-        health: workers.every((worker) => worker.status === "running") ? "ok" : "warn",
+        health: overviewHealth(workers, senses, healthChecks),
         socketPath: this.socketPath,
-        outlookUrl: this.outlookServer?.origin ?? "http://127.0.0.1:0",
+        mailboxUrl,
+        outlookUrl: mailboxUrl,
         ...getRuntimeMetadata(),
         workerCount: workers.length,
         senseCount: senses.length,
@@ -617,6 +767,7 @@ export class OuroDaemon {
       },
       workers,
       senses,
+      ...(healthChecks.length > 0 ? { healthChecks } : {}),
       sync,
       agents,
       ...(providers.length > 0 ? { providers } : {}),
@@ -661,8 +812,6 @@ export class OuroDaemon {
 
     // Start periodic update checker (polls npm registry every 30 minutes)
     // Skip in dev mode — dev builds should not auto-update from npm
-    const bundlesRoot = this.bundlesRoot
-    const daemonSocketPath = this.socketPath
     if (this.mode === "dev") {
       emitNervesEvent({
         component: "daemon",
@@ -671,64 +820,15 @@ export class OuroDaemon {
         meta: { reason: "dev mode" },
       })
     } else {
-      const daemon = this
       startUpdateChecker({
         currentVersion,
         deps: {
-          distTag: "latest",
+          distTag: CLI_UPDATE_DIST_TAG,
           fetchRegistryJson: /* v8 ignore next -- integration: real HTTP fetch @preserve */ async () => {
             const res = await fetch("https://registry.npmjs.org/@ouro.bot/cli")
             return res.json()
           },
         },
-        onUpdate: /* v8 ignore start -- integration: real npm install + process spawn @preserve */ async (result) => {
-          if (!result.latestVersion) return
-          // Install via the version manager (NOT `npm install -g`). The
-          // global install path doesn't end up on the daemon process's
-          // NODE_PATH, so the previous `require.resolve('@ouro.bot/cli')`
-          // -based path lookup always returned null and the staged restart
-          // never actually completed. Verified live on 2026-04-08:
-          // alpha.268 daemon detected alpha.270 was available, ran the
-          // staged restart, and bailed at `staged_restart_path_failed` —
-          // meaning the daemon could never auto-update itself and required
-          // manual `ouro up` to pick up new versions.
-          //
-          // Switch to the version-managed layout the CLI itself uses:
-          // installVersion(version) puts files at
-          //   ~/.ouro-cli/versions/{version}/node_modules/@ouro.bot/cli
-          // which is a known path we can compute deterministically.
-          // Then activateVersion(version) flips the CurrentVersion symlink
-          // so the next `ouro up` from the user sees the same version
-          // the daemon is running.
-          const cliHome = getOuroCliHome()
-          await performStagedRestart(result.latestVersion, {
-            execSync: (cmd) => execSync(cmd, { stdio: "inherit" }),
-            spawnSync,
-            installNewVersion: (version) => {
-              installVersion(version, {})
-              activateVersion(version, {})
-            },
-            resolveNewCodePath: (version) => {
-              const versionPath = path.join(cliHome, "versions", version, "node_modules", "@ouro.bot", "cli")
-              return fs.existsSync(versionPath) ? versionPath : null
-            },
-            gracefulShutdown: () => daemon.stop(),
-            spawnNewDaemon: (entryPath, sock) => {
-              const outFd = fs.openSync(os.devNull, "w")
-              const errFd = fs.openSync(os.devNull, "w")
-              const child = spawn(process.execPath, [entryPath, "--socket", sock], {
-                detached: true,
-                stdio: ["ignore", outFd, errFd],
-              })
-              child.unref()
-              return { pid: child.pid ?? null }
-            },
-            nodePath: process.execPath,
-            bundlesRoot,
-            socketPath: daemonSocketPath,
-          })
-        },
-        /* v8 ignore stop */
       })
     }
 
@@ -736,16 +836,18 @@ export class OuroDaemon {
     // (daemon manages multiple agents; agent identity must be set before loading MCP config)
 
     /* v8 ignore start -- orphan cleanup + pidfile: calls process management functions @preserve */
-    killOrphanProcesses()
+    const killedOrphanPids = killOrphanProcesses(this.socketPath)
+    await waitForOrphanProcessesToSettle(killedOrphanPids)
     /* v8 ignore stop */
-    await this.processManager.startAutoStartAgents()
-    await this.senseManager?.startAutoStartSenses()
+    await this.openCommandSocket()
+    this.triggerAutoStartAgents()
+    this.triggerAutoStartSensesWhenAgentsSettled()
 
     // Write all managed PIDs to disk so the next daemon can clean up
     /* v8 ignore start -- pidfile write: collects PIDs from process managers @preserve */
     const agentPids = this.processManager.listAgentSnapshots().map((s) => s.pid).filter((p): p is number => p !== null)
     const sensePids = this.senseManager?.listManagedPids?.() ?? []
-    writePidfile([...agentPids, ...sensePids])
+    writePidfile([...agentPids, ...sensePids], this.socketPath)
     /* v8 ignore stop */
 
     this.scheduler.start?.()
@@ -753,20 +855,70 @@ export class OuroDaemon {
     await this.drainPendingBundleMessages()
     await this.drainPendingSenseMessages()
     // startInner is only reachable when this.server is null (guarded in
-    // start()), and stop() nulls out this.outlookServer alongside this.server,
-    // so outlookServer is guaranteed unset here — no need for a guard.
+    // start()), and stop() nulls out this.mailboxServer alongside this.server,
+    // so mailboxServer is guaranteed unset here — no need for a guard.
     try {
-      this.outlookServer = await this.outlookServerFactory()
+      this.mailboxServer = await this.mailboxServerFactory()
     } catch (error) {
       emitNervesEvent({
         level: "warn",
         component: "daemon",
-        event: "daemon.outlook_start_failed",
-        message: `Outlook server failed to start: ${String(error)}`,
-        meta: { port: OUTLOOK_DEFAULT_PORT },
+        event: "daemon.mailbox_start_failed",
+        message: `Mailbox server failed to start: ${String(error)}`,
+        meta: { port: MAILBOX_DEFAULT_PORT },
       })
     }
+  }
 
+  private triggerAutoStartAgents(): void {
+    if (this.processManager.triggerAutoStartAgents) {
+      this.processManager.triggerAutoStartAgents()
+      return
+    }
+    void this.processManager.startAutoStartAgents().catch((error) => {
+      emitNervesEvent({
+        level: "error",
+        component: "daemon",
+        event: "daemon.agent_autostart_error",
+        message: "agent autostart failed after daemon socket opened",
+        meta: { error: error instanceof Error ? error.message : String(error) },
+      })
+    })
+  }
+
+  private triggerAutoStartSenses(): void {
+    /* v8 ignore next -- defensive: callers already check senseManager before delegating here @preserve */
+    if (!this.senseManager) return
+    if (this.senseManager.triggerAutoStartSenses) {
+      this.senseManager.triggerAutoStartSenses()
+      return
+    }
+    void this.senseManager.startAutoStartSenses().catch((error) => {
+      emitNervesEvent({
+        level: "error",
+        component: "daemon",
+        event: "daemon.sense_autostart_error",
+        message: "sense autostart failed after daemon socket opened",
+        meta: { error: error instanceof Error ? error.message : String(error) },
+      })
+    })
+  }
+
+  private triggerAutoStartSensesWhenAgentsSettled(): void {
+    if (!this.senseManager) return
+    const waitingOnAgents = this.processManager.listAgentSnapshots()
+      .some((snapshot) => snapshot.status === "starting")
+    if (!waitingOnAgents) {
+      this.triggerAutoStartSenses()
+      return
+    }
+    this.senseAutostartTimer = setTimeout(() => {
+      this.senseAutostartTimer = null
+      this.triggerAutoStartSensesWhenAgentsSettled()
+    }, 250)
+  }
+
+  private async openCommandSocket(): Promise<void> {
     if (fs.existsSync(this.socketPath)) {
       fs.unlinkSync(this.socketPath)
     }
@@ -1007,6 +1159,11 @@ export class OuroDaemon {
     stopUpdateChecker()
     shutdownSharedMcpManager()
     this.scheduler.stop?.()
+    this.healthMonitor.stopPeriodicChecks?.()
+    if (this.senseAutostartTimer) {
+      clearTimeout(this.senseAutostartTimer)
+      this.senseAutostartTimer = null
+    }
     await this.processManager.stopAll()
     await this.senseManager?.stopAll()
 
@@ -1043,9 +1200,9 @@ export class OuroDaemon {
       this.server.close()
       this.server = null
     }
-    if (this.outlookServer) {
-      await this.outlookServer.stop()
-      this.outlookServer = null
+    if (this.mailboxServer) {
+      await this.mailboxServer.stop()
+      this.mailboxServer = null
     }
 
     const socketPathExists = fs.existsSync(this.socketPath)
@@ -1122,7 +1279,29 @@ export class OuroDaemon {
         return { ok: true, message: "daemon started" }
       case "daemon.stop":
         await this.stop()
+        this.onStopCommandComplete?.()
         return { ok: true, message: "daemon stopped" }
+      case "daemon.restart": {
+        // Restart is "stop + let launchctl respawn." Under launchctl's KeepAlive
+        // policy the process is auto-restarted on exit, so daemon.restart and
+        // daemon.stop differ only in intent + audit trail. In dev (no launchctl),
+        // the process simply exits — same observable behavior as daemon.stop.
+        emitNervesEvent({
+          component: "daemon",
+          event: "daemon.restart_requested",
+          message: "daemon restart requested",
+          meta: {
+            reason: command.reason ?? null,
+            requestedBy: command.requestedBy ?? null,
+          },
+        })
+        await this.stop()
+        this.onStopCommandComplete?.()
+        return {
+          ok: true,
+          message: "daemon restarting — launchctl will respawn",
+        }
+      }
       case "daemon.status": {
         const data = this.buildStatusPayload()
         return {
@@ -1153,7 +1332,7 @@ export class OuroDaemon {
         await this.processManager.restartAgent?.(command.agent)
         return { ok: true, message: `restarted ${command.agent}` }
       case "agent.ask":
-        return handleAgentAsk(command)
+        return handleAgentAskTurn(command)
       case "agent.status":
         return handleAgentStatus(command)
       case "agent.catchup":
@@ -1193,6 +1372,20 @@ export class OuroDaemon {
         return { ok: result.ok, message: result.message }
       }
       case "message.send": {
+        // Pure queue-only delivery. We DO NOT wake the recipient — that was
+        // the 2026-05-11 $50 bleed. The Claude Code post-tool-use hook
+        // (cli-exec.ts) intentionally sends only message.send for tool-use
+        // events to avoid waking the agent on every tool call. The hook's
+        // intent was completely defeated by this handler calling
+        // `sendToAgent({type: "message"})`, which woke the inner-dialog
+        // worker on EVERY message.send anyway. ~30 message.send/min × the
+        // 3-turn instinct-loop cap = ~90 turns/min sustained for hours.
+        //
+        // Callers that want immediate processing must send `inner.wake`
+        // explicitly after message.send. The CLI `ouro msg` does so
+        // (lifecycle-boundary delivery should wake); the hook does so
+        // only on session-start / stop, not per tool-use; the API does
+        // not (notifications go to the queue).
         const receipt = await this.router.send({
           from: command.from,
           to: command.to,
@@ -1201,7 +1394,6 @@ export class OuroDaemon {
           sessionId: command.sessionId,
           taskRef: command.taskRef,
         })
-        this.processManager.sendToAgent?.(command.to, { type: "message" })
         return { ok: true, message: `queued message ${receipt.id}`, data: receipt }
       }
       case "message.poll": {
@@ -1246,6 +1438,13 @@ export class OuroDaemon {
         return {
           ok: true,
           message: `poked habit ${command.habitName} for ${command.agent}`,
+        }
+      }
+      case "await.poke": {
+        this.processManager.sendToAgent?.(command.agent, { type: "await", awaitName: command.awaitName })
+        return {
+          ok: true,
+          message: `poked await ${command.awaitName} for ${command.agent}`,
         }
       }
       case "mcp.list": {

@@ -19,12 +19,13 @@ import type { DaemonHealthState } from "./daemon/daemon-health"
 import type { BundleMeta } from "../mind/bundle-manifest"
 import type { JournalFileEntry } from "../mind/prompt"
 import type { Channel } from "../mind/friends/types"
+import type { BackgroundOperationRecord } from "./background-operations"
 
 import * as fs from "fs"
 import * as path from "path"
 import { emitNervesEvent } from "../nerves/runtime"
 import { createBridgeManager } from "./bridges/manager"
-import { getAgentName, getAgentRoot, loadAgentConfig, type SenseName } from "./identity"
+import { getAgentName, getAgentRoot, loadAgentConfig, type AgentSensesConfig, type SenseName } from "./identity"
 import { getTaskModule } from "../repertoire/tasks"
 import { getCodingSessionManager } from "../repertoire/coding"
 import { listSessionActivity } from "./session-activity"
@@ -35,11 +36,13 @@ import { listTargetSessionCandidates } from "./target-resolution"
 import { readRecentEpisodes, type EpisodeRecord } from "../arc/episodes"
 import { readActiveCares, type CareRecord } from "../arc/cares"
 import { getSyncConfig, loadConfig } from "./config"
+import { readMachineRuntimeCredentialConfig, readRuntimeCredentialConfig } from "./runtime-credentials"
 import { readHealth, getDefaultHealthPath } from "./daemon/daemon-health"
 import { readJournalFiles } from "../mind/prompt"
 import type { FriendStore } from "../mind/friends/store"
 import type { CodingSessionStatus } from "../repertoire/coding/types"
 import { buildAgentProviderVisibility, type AgentProviderVisibility } from "./provider-visibility"
+import { listVisibleBackgroundOperations } from "./mail-import-discovery"
 
 // ── TurnContext: the raw state snapshot ─────────────────────────────
 
@@ -65,6 +68,8 @@ export interface TurnContext {
   codingSessions: CodingSession[]
   /** Live coding sessions owned by other sessions. */
   otherCodingSessions: CodingSession[]
+  /** Visible background operations, including ambient import readiness. */
+  backgroundOperations: BackgroundOperationRecord[]
   /** Inner dialog work state. */
   innerWorkState: InnerWorkState
   /** Task board snapshot. */
@@ -193,21 +198,80 @@ function hasTextField(record: Record<string, unknown> | undefined, key: string):
   return typeof record?.[key] === "string" && (record[key] as string).trim().length > 0
 }
 
+function hasTrueField(record: Record<string, unknown> | undefined, key: string): boolean {
+  return record?.[key] === true
+}
+
+function hasOpenAIRealtimeVoiceConfig(options: {
+  integrations: Record<string, unknown> | undefined
+  portableVoice: Record<string, unknown> | undefined
+}): boolean {
+  return hasTextField(options.portableVoice, "openaiRealtimeApiKey")
+    || hasTextField(options.integrations, "openaiApiKey")
+    || hasTextField(options.integrations, "openaiEmbeddingsApiKey")
+}
+
+function recordOrUndefined(value: unknown): Record<string, unknown> | undefined {
+  return !!value && typeof value === "object" && !Array.isArray(value) ? (value as Record<string, unknown>) : undefined
+}
+
 function readSenseStatusLines(): string[] {
   const config = loadAgentConfig()
-  const senses = config.senses ?? {
-    cli: { enabled: true },
-    teams: { enabled: false },
-    bluebubbles: { enabled: false },
+  const configuredSenses = config.senses ?? {} as Partial<AgentSensesConfig>
+  const senses: AgentSensesConfig = {
+    ...configuredSenses,
+    cli: configuredSenses.cli ?? { enabled: true },
+    teams: configuredSenses.teams ?? { enabled: false },
+    bluebubbles: configuredSenses.bluebubbles ?? { enabled: false },
+    mail: configuredSenses.mail ?? { enabled: false },
+    voice: configuredSenses.voice ?? { enabled: false },
   }
   const payload = loadConfig() as unknown as Record<string, unknown>
-
-  const teams = payload.teams as Record<string, unknown> | undefined
-  const bluebubbles = payload.bluebubbles as Record<string, unknown> | undefined
+  const agentName = getAgentName()
+  const runtimeConfig = readRuntimeCredentialConfig(agentName)
+  const machineRuntimeConfig = readMachineRuntimeCredentialConfig(agentName)
+  const runtimePayload = runtimeConfig.ok ? runtimeConfig.config : {}
+  const machinePayload = machineRuntimeConfig.ok ? machineRuntimeConfig.config : {}
+  const teams = recordOrUndefined(runtimePayload.teams) ?? recordOrUndefined(payload.teams)
+  const bluebubbles = recordOrUndefined(machinePayload.bluebubbles) ?? recordOrUndefined(payload.bluebubbles)
+  const mailroom = recordOrUndefined(runtimePayload.mailroom) ?? recordOrUndefined(payload.mailroom)
+  const voice = recordOrUndefined(machinePayload.voice) ?? recordOrUndefined(payload.voice)
+  const portableVoice = recordOrUndefined(runtimePayload.voice) ?? recordOrUndefined(payload.voice)
+  const integrations = recordOrUndefined(runtimePayload.integrations) ?? recordOrUndefined(payload.integrations)
+  /* v8 ignore start -- voice readiness permutations are covered by voice runtime tests; turn-context keeps a compact status projection for prompts @preserve */
+  const voiceConversationEngine = (
+    typeof voice?.twilioConversationEngine === "string" ? voice.twilioConversationEngine
+      : typeof voice?.conversationEngine === "string" ? voice.conversationEngine
+      : typeof portableVoice?.twilioConversationEngine === "string" ? portableVoice.twilioConversationEngine
+      : typeof portableVoice?.conversationEngine === "string" ? portableVoice.conversationEngine
+      : "cascade"
+  ).trim().toLowerCase()
+  const openAIRealtimeVoiceReady = hasOpenAIRealtimeVoiceConfig({ integrations, portableVoice })
+  const openAISipVoiceReady = openAIRealtimeVoiceReady
+    && (hasTextField(portableVoice, "openaiSipProjectId") || hasTextField(voice, "openaiSipProjectId"))
+    && (
+      hasTrueField(portableVoice, "openaiSipAllowUnsignedWebhooks")
+      || hasTrueField(voice, "openaiSipAllowUnsignedWebhooks")
+      || hasTextField(portableVoice, "openaiSipWebhookSecret")
+      || hasTextField(voice, "openaiSipWebhookSecret")
+    )
+  /* v8 ignore stop */
+  const cascadeVoiceReady = hasTextField(integrations, "elevenLabsApiKey")
+    && (hasTextField(integrations, "elevenLabsVoiceId") || hasTextField(portableVoice, "elevenLabsVoiceId"))
+    && hasTextField(voice, "whisperCliPath")
+    && hasTextField(voice, "whisperModelPath")
+  const privateKeys = mailroom?.privateKeys
   const configured: Record<SenseName, boolean> = {
     cli: true,
     teams: hasTextField(teams, "clientId") && hasTextField(teams, "clientSecret") && hasTextField(teams, "tenantId"),
     bluebubbles: hasTextField(bluebubbles, "serverUrl") && hasTextField(bluebubbles, "password"),
+    mail: hasTextField(mailroom, "mailboxAddress") && !!privateKeys && typeof privateKeys === "object" && !Array.isArray(privateKeys),
+    /* v8 ignore next 5 -- full voice mode matrix lives in the voice runtime resolver; this row only mirrors that result into prompt context @preserve */
+    voice: voiceConversationEngine === "openai-sip"
+      ? openAISipVoiceReady
+      : voiceConversationEngine === "openai-realtime"
+        ? openAIRealtimeVoiceReady
+        : cascadeVoiceReady,
   }
 
   const rows: Array<{ label: string; status: string }> = [
@@ -219,6 +283,14 @@ function readSenseStatusLines(): string[] {
     {
       label: "BlueBubbles",
       status: !senses.bluebubbles.enabled ? "disabled" : configured.bluebubbles ? "ready" : "not_attached",
+    },
+    {
+      label: "Mail",
+      status: !senses.mail.enabled ? "disabled" : configured.mail ? "ready" : "needs_config",
+    },
+    {
+      label: "Voice",
+      status: !senses.voice.enabled ? "disabled" : configured.voice ? "ready" : "needs_config",
     },
   ]
 
@@ -326,6 +398,15 @@ export async function buildTurnContext(input: BuildTurnContextInput): Promise<Tu
   /* v8 ignore stop */
   }
 
+  const backgroundOperations = listVisibleBackgroundOperations({
+    agentName,
+    agentRoot,
+    repoRoot: process.cwd(),
+    homeDir: process.env.HOME,
+    nowMs: Date.now(),
+    limit: 5,
+  })
+
   // Inner work state
   const innerWorkState = readInnerWorkState()
 
@@ -394,6 +475,7 @@ export async function buildTurnContext(input: BuildTurnContextInput): Promise<Tu
       obligationCount: pendingObligations.length,
       bridgeCount: activeBridges.length,
       codingSessionCount: codingSessions.length,
+      backgroundOperationCount: backgroundOperations.length,
       episodeCount: recentEpisodes.length,
       providerLaneCount: providerVisibility.lanes.length,
     },
@@ -406,6 +488,7 @@ export async function buildTurnContext(input: BuildTurnContextInput): Promise<Tu
     pendingObligations,
     codingSessions,
     otherCodingSessions,
+    backgroundOperations,
     innerWorkState,
     taskBoard,
     returnObligations,

@@ -118,11 +118,24 @@ describe("tool registry contract", () => {
     expect(names).toContain("search_notes");
     expect(names).toContain("save_friend_note");
     expect(names).toContain("get_friend_note");
+    expect(names).toContain("friend_list");
     expect(names).toContain("list_skills");
     expect(names).toContain("load_skill");
     expect(names).toContain("list_recent_attachments");
     expect(names).toContain("materialize_attachment");
     expect(names).toContain("describe_image");
+    expect(names).toContain("mail_recent");
+    expect(names).toContain("mail_search");
+    expect(names).toContain("mail_body");
+    expect(names).toContain("mail_thread");
+    expect(names).toContain("mail_screener");
+    expect(names).toContain("mail_decide");
+    expect(names).toContain("mail_status");
+    expect(names).toContain("mail_compose");
+    expect(names).toContain("mail_send");
+    expect(names).toContain("mail_outbox");
+    expect(names).toContain("mail_access_log");
+    expect(names).toContain("mail_index_refresh");
     expect(names).toContain("claude");
     expect(names).toContain("coding_spawn");
     expect(names).toContain("coding_status");
@@ -180,7 +193,30 @@ describe("tool registry contract", () => {
     expect(names).toContain("flight_book");
     expect(names).toContain("flight_cancel");
 
-    // Exact count: 58 tools total including the shared attachment and image recovery tools
-    expect(names).toHaveLength(58);
+    // Added in trip ledger Step 4: 8 trip tools
+    expect(names).toContain("trip_ensure_ledger");
+    expect(names).toContain("trip_status");
+    expect(names).toContain("trip_get");
+    expect(names).toContain("trip_upsert");
+    expect(names).toContain("trip_attach_evidence");
+    expect(names).toContain("trip_update_leg");
+    expect(names).toContain("trip_remove_leg");
+    expect(names).toContain("trip_calendar");
+    expect(names).toContain("trip_new_id");
+
+    expect(names).toContain("mail_outbox");
+    expect(names).toContain("friend_list");
+    expect(names).toContain("await_condition");
+    expect(names).toContain("resolve_await");
+    expect(names).toContain("cancel_await");
+
+    // Added in let_go primitive: 1 obligation-release tool
+    expect(names).toContain("let_go");
+
+    // Added in agent self-maintenance: 1 runtime tool
+    expect(names).toContain("restart_runtime");
+
+    // Exact count: 85 tools (83 prior + let_go + restart_runtime)
+    expect(names).toHaveLength(85);
   });
 });

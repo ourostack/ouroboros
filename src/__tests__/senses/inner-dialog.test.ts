@@ -470,6 +470,26 @@ describe("inner dialog runtime", () => {
     expect(checkpoint).toBe("Unit 3 refactor pass")
   })
 
+  it("strips think tags when deriving the fallback checkpoint line", () => {
+    const checkpoint = deriveResumeCheckpoint([
+      {
+        role: "assistant",
+        content: "<think>Rest with HEARTBEAT_OK.</think>",
+      },
+    ])
+    expect(checkpoint).toBe("Rest with HEARTBEAT_OK.")
+  })
+
+  it("falls back when think tags strip the assistant checkpoint down to nothing", () => {
+    const checkpoint = deriveResumeCheckpoint([
+      {
+        role: "assistant",
+        content: "<think>   </think>",
+      },
+    ])
+    expect(checkpoint).toBe("no prior checkpoint recorded")
+  })
+
   // ── Pipeline integration tests ──────────────────────────────────
 
   it("calls handleInboundTurn instead of inline lifecycle", async () => {

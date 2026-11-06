@@ -99,6 +99,32 @@ describe("auth/provider documentation contract", () => {
     expect(corpus).not.toContain("operator password manager")
   })
 
+  it("documents freeform vault items separately from managed workflows and bindings", () => {
+    const authGuide = readRepoFile("docs", "auth-and-providers.md")
+    const readme = readRepoFile("README.md")
+    const agentGuide = readRepoFile("AGENTS.md")
+
+    expect(authGuide).toContain("## Vault Items, Managed Workflows, And Bindings")
+    expect(authGuide).toContain("vault item / credential")
+    expect(authGuide).toContain("no assumed use")
+    expect(authGuide).toContain("Managed workflow")
+    expect(authGuide).toContain("Freeform vault item")
+    expect(authGuide).toContain("Binding / run config")
+    expect(authGuide).toContain("Notes are for humans and agents")
+    expect(authGuide).toContain("Code must not parse meaning out of notes")
+    expect(authGuide).toContain("Templates are convenience only")
+    expect(authGuide).toContain("ouro vault item set")
+    expect(authGuide).toContain("deprecated compatibility alias")
+
+    expect(authGuide).not.toContain("## Operational Credentials")
+    expect(authGuide).not.toContain("ops-credential/porkbun")
+
+    for (const content of [readme, agentGuide]) {
+      expect(content).toContain("vault item / credential")
+      expect(content).toContain("no assumed use")
+    }
+  })
+
   it("documents hatchling vault unlock secrets as human-provided and non-echoing", () => {
     const authGuide = readRepoFile("docs", "auth-and-providers.md")
     const specialistPrompt = readRepoFile("src", "heart", "hatch", "specialist-prompt.ts")

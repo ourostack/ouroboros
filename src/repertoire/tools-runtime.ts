@@ -1,0 +1,83 @@
+import { getAgentName } from "../heart/identity"
+import { emitNervesEvent } from "../nerves/runtime"
+import { DEFAULT_DAEMON_SOCKET_PATH, sendDaemonCommand } from "../heart/daemon/socket-client"
+import type { ToolDefinition } from "./tools-base"
+
+/**
+ * `restart_runtime` is the agent-callable counterpart to `ouro down && ouro up`.
+ *
+ * Slugger had been asking Ari to restart his daemon over BlueBubbles because
+ * he had no primitive to do it himself. With launchctl's KeepAlive policy the
+ * daemon auto-respawns on exit, so this tool simply sends `daemon.restart`:
+ * the daemon logs the reason, runs its normal stop path, and exits — launchctl
+ * brings it back. In dev mode (no launchctl) the daemon just exits; the
+ * developer brings it back manually.
+ *
+ * Note on response delivery: when the daemon exits, the agent's process exits
+ * with it. The agent will not see this tool's result — it experiences a fresh
+ * boot on the other side. That's the expected UX: "I asked for a restart,
+ * I came back fresh."
+ */
+
+interface RestartRuntimeArgs {
+  reason: string
+}
+
+async function restartRuntime(args: RestartRuntimeArgs, agentName: string): Promise<string> {
+  if (typeof args.reason !== "string" || args.reason.trim().length === 0) {
+    return JSON.stringify({ error: "reason is required (one-line audit string)" })
+  }
+  const reason = args.reason.trim()
+
+  emitNervesEvent({
+    component: "repertoire",
+    event: "repertoire.runtime_restart_requested",
+    message: "agent requested runtime restart",
+    meta: { agent: agentName, reason },
+  })
+
+  try {
+    const response = await sendDaemonCommand(DEFAULT_DAEMON_SOCKET_PATH, {
+      kind: "daemon.restart",
+      reason,
+      requestedBy: agentName,
+    })
+    return JSON.stringify({
+      requested: true,
+      reason,
+      detail: response.message ?? "daemon restart requested",
+    })
+  } catch (error) {
+    return JSON.stringify({
+      error: "failed to reach daemon socket",
+      detail: error instanceof Error ? error.message : String(error),
+    })
+  }
+}
+
+export const runtimeToolDefinitions: ToolDefinition[] = [
+  {
+    tool: {
+      type: "function",
+      function: {
+        name: "restart_runtime",
+        description:
+          "ask my runtime (the daemon hosting me) to restart itself. for when something is wedged — stale state, recovery queue jammed, version mismatch, or i just need a fresh boot. under launchctl the daemon auto-respawns, so i come back on the other side with a clean slate. takes a one-line reason that lands in the audit log. i will NOT see this tool's response — my process exits with the daemon and i wake up fresh.",
+        parameters: {
+          type: "object",
+          properties: {
+            reason: {
+              type: "string",
+              description: "one-line audit reason (e.g. 'bluebubbles recovery queue wedged for 4h', 'picking up daemon version update').",
+            },
+          },
+          required: ["reason"],
+        },
+      },
+    },
+    handler: async (args) => {
+      const agentName = getAgentName()
+      return restartRuntime({ reason: args.reason }, agentName)
+    },
+  },
+]
