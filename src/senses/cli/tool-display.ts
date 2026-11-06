@@ -11,8 +11,10 @@
 
 import { emitNervesEvent } from "../../nerves/runtime"
 
-// Flow control tools are invisible to the user — internal agent mechanics
-const FLOW_CONTROL_TOOLS = new Set(["settle", "ponder", "observe", "rest"])
+// Flow control tools are invisible to the user — internal agent mechanics.
+// `speak` is included because its visible output is the message itself (delivered
+// via onTextChunk/flushNow), not a "running speak..." spinner or tool-end status line.
+const FLOW_CONTROL_TOOLS = new Set(["settle", "ponder", "observe", "rest", "speak"])
 
 // Ouroboros teal: #4ec9b0 -> RGB escape
 const OURO_TEAL = "\x1b[38;2;78;201;176m"

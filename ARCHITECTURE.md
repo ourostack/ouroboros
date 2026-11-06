@@ -6,7 +6,7 @@ This document describes the current runtime shape of the Ouroboros harness.
 
 The harness is daemon-centered.
 
-- `npx ouro.bot` is the bootstrap entrypoint.
+- `npx ouro.bot@latest` is the supported bootstrap entrypoint.
 - `ouro` is the installed launcher used after bootstrap.
 - `ouro up` starts the daemon from the installed production version, repairs stale wrapper state, installs workflow helpers, and replaces the daemon if needed.
 - `ouro dev` starts the daemon from a local repo build (for development — skips update checker, always force-restarts).
@@ -22,7 +22,7 @@ The important design goal is one coherent runtime truth:
 
 ## Runtime Topology
 
-1. Human enters through `npx ouro.bot` or `ouro`.
+1. Human enters through `npx ouro.bot@latest` or `ouro`.
 2. CLI setup verifies launcher, bundle registration, and helper installs.
 3. `ouro up` starts the daemon from the installed version; `ouro dev` starts from a local repo build.
 4. Daemon discovers bundles under `~/AgentBundles`.
@@ -36,7 +36,7 @@ The important design goal is one coherent runtime truth:
    - `ouro chat`
    - `ouro msg`
    - `ouro poke`
-   - daemon-managed senses like Teams and BlueBubbles
+   - daemon-managed senses like Teams, BlueBubbles, Mail, and Voice
    - MCP bridge (dev tools like Claude Code and Codex)
    - lifecycle hooks (SessionStart, Stop, PostToolUse)
 
@@ -77,7 +77,7 @@ Vault unlock material is machine-local cache, not a second credential source.
 
 ### Machine-scoped runtime/test spillover
 
-`~/.agentstate/...`
+`~/.ouro-cli/...`
 
 This is for machine-level artifacts, not bundle-owned identity.
 
@@ -85,37 +85,54 @@ This is for machine-level artifacts, not bundle-owned identity.
 
 `agent.json` is the runtime-facing contract for:
 
-- provider+model selection per facing (`humanFacing` and `agentFacing`)
 - phrases
 - context settings
 - sense enablement
-- `configPath`
+- vault coordinates
+- provider/model lane selection
+
+Provider/model selection is part of `agent.json`: `outward` powers CLI and human-facing senses, while `inner` powers inner dialogue and agent-facing model calls. There is no second local provider-selection file.
 
 `bundle-meta.json` tracks the runtime version that last touched the bundle and supports version-aware behavior on startup.
 
+## Human CLI Surfaces
+
+Human-facing CLI commands share one terminal surface family instead of each command printing its own transcript.
+
+- `src/heart/daemon/terminal-ui.ts` owns the shared Ouro masthead, board layout, wrapping, and action rendering.
+- `src/heart/daemon/human-readiness.ts` owns the canonical human-readable readiness snapshot and recommended next actions.
+- `src/heart/daemon/human-command-screens.ts` owns shared boards for the home deck, agent picker, and readiness screens.
+- `ouro`, `ouro up`, `ouro connect`, `ouro auth verify`, `ouro repair`, `ouro help`, `ouro whoami`, `ouro versions`, and the `ouro hatch` welcome shell should read like one CLI family in a TTY.
+- Non-TTY and automation paths should stay compact and deterministic.
+- Long-running human flows keep visible progress on screen; replacing a daemon stays unresolved until the new background service is actually answering.
+
 ## Senses
 
-Current senses:
+Current senses (`SenseName` in `src/heart/identity.ts`):
 
 - `cli`
 - `teams`
 - `bluebubbles`
-- `mcp`
+- `mail`
+- `voice`
 
 Sense status model:
 
 - `interactive`
 - `disabled`
 - `needs_config`
+- `not_attached`
 - `ready`
 - `running`
 - `error`
 
-The daemon manages daemon-hosted senses and reports them in `ouro status`. CLI remains `interactive` rather than daemon-hosted.
+The daemon manages daemon-hosted senses (teams, bluebubbles, mail, voice) and reports them in `ouro status`. CLI remains `interactive` rather than daemon-hosted. Voice is local-machine attached: transcript sessions are normal `voice` channel sessions, ElevenLabs TTS credentials are portable runtime config, and Whisper.cpp paths are machine runtime config.
 
-### MCP Sense
+MCP is **not** a sense — it's a bridge for developer tools (Claude Code, Codex). It's described below for completeness but lives at `src/heart/mcp/`, not under `src/senses/`. Tool calls coming through MCP route into the same agent runtime as senses do, but MCP is a transport, not a managed input channel.
 
-The MCP sense is how agents talk to developer tools like Claude Code and Codex. It works like this:
+### MCP Bridge
+
+The MCP bridge is how agents talk to developer tools like Claude Code and Codex. It works like this:
 
 - `ouro mcp-serve --agent <name>` starts a JSON-RPC 2.0 server on stdin/stdout. The dev tool launches this as a subprocess.
 - The MCP server exposes tools (e.g., `send_message`, `check_response`, `status`, `search_notes`, `delegate`) that map to daemon commands.
@@ -143,7 +160,7 @@ Threads are treated as routing/context metadata, not as separate long-lived worl
 - `src/heart/`
   Core engine, provider runtimes, identity/config loading, daemon, bootstrap, and entrypoints. Organized into topic subdirectories:
   - `heart/daemon/` — daemon lifecycle, CLI routing, process management, health, sockets (~37 files)
-  - `heart/outlook/` — Outlook/calendar integration (HTTP, read, render, types, view)
+  - `heart/mailbox/` — Ouro Mailbox integration (HTTP, read, types, view)
   - `heart/habits/` — habit parsing, scheduling, and migration
   - `heart/hatch/` — agent creation flow, specialist orchestration, animation
   - `heart/versioning/` — version management, update checking, staged restart, wrapper publishing
@@ -156,7 +173,7 @@ Threads are treated as routing/context metadata, not as separate long-lived worl
 - `src/repertoire/`
   Tool registry (split into category modules: tools-files, tools-shell, tools-notes, tools-bridge, tools-session, tools-continuity, tools-flow, tools-surface, tools-config, tools-bluebubbles, tools-teams, tools-github), coding orchestration, task tooling, skills, shared API client, and integration clients (Graph, ADO, GitHub).
 - `src/senses/`
-  CLI (with TUI in senses/cli/), Teams, BlueBubbles (in senses/bluebubbles/), MCP bridge, activity transport, trust gating, inner-dialog worker logic, and contextual heartbeat.
+  CLI (with TUI in senses/cli/), Teams, BlueBubbles (in senses/bluebubbles/), Voice (in senses/voice/), MCP bridge, activity transport, trust gating, inner-dialog worker logic, and contextual heartbeat.
 - `src/nerves/`
   Structured runtime events, log rotation, and deterministic audit coverage.
 

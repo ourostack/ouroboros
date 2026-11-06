@@ -29,6 +29,9 @@ const bwHarness = vi.hoisted(() => {
     failEveryCreateWith: null as string | null,
     failEveryCreateErrorMessage: null as string | null,
     failEveryCreateStderr: null as string | null,
+    getItemCalls: 0,
+    failGetAtCall: 0,
+    failNextGetWith: null as string | null,
     reset(): void {
       items.clear()
       this.commands = []
@@ -43,6 +46,9 @@ const bwHarness = vi.hoisted(() => {
       this.failEveryCreateWith = null
       this.failEveryCreateErrorMessage = null
       this.failEveryCreateStderr = null
+      this.getItemCalls = 0
+      this.failGetAtCall = 0
+      this.failNextGetWith = null
     },
   }
 })
@@ -100,6 +106,27 @@ function writeAgentConfig(homeDir: string, agentName: string): void {
   }, null, 2)}\n`, "utf8")
 }
 
+function makeJwt(payload: Record<string, unknown>): string {
+  const encode = (value: unknown): string =>
+    Buffer.from(JSON.stringify(value), "utf8").toString("base64url")
+  return `${encode({ alg: "none" })}.${encode(payload)}.sig`
+}
+
+function writeCodexAuth(homeDir: string, input: {
+  accessToken: string
+  refreshToken?: string
+}): void {
+  const codexDir = path.join(homeDir, ".codex")
+  fs.mkdirSync(codexDir, { recursive: true })
+  fs.writeFileSync(path.join(codexDir, "auth.json"), `${JSON.stringify({
+    auth_mode: "chatgpt",
+    tokens: {
+      access_token: input.accessToken,
+      ...(input.refreshToken ? { refresh_token: input.refreshToken } : {}),
+    },
+  }, null, 2)}\n`, "utf8")
+}
+
 function installBwExecHarness(): void {
   mockExecFile.mockImplementation((_cmd: string, args: string[], opts: { env?: Record<string, string | undefined> } | undefined, cb: Function) => {
     const session = opts?.env?.BW_SESSION
@@ -150,8 +177,15 @@ function installBwExecHarness(): void {
         cb(new Error("Command failed: bw get item"), "", "Session key is invalid or expired")
         return
       }
-      const id = args[2]
-      const item = [...bwHarness.items.values()].find((entry) => entry.id === id)
+      bwHarness.getItemCalls += 1
+      if (bwHarness.failNextGetWith && bwHarness.getItemCalls === bwHarness.failGetAtCall) {
+        const failure = bwHarness.failNextGetWith
+        bwHarness.failNextGetWith = null
+        cb(new Error("Command failed: bw get item"), "", failure)
+        return
+      }
+      const idOrName = args[2]
+      const item = bwHarness.items.get(idOrName) ?? [...bwHarness.items.values()].find((entry) => entry.id === idOrName)
       if (!item) {
         cb(new Error("Command failed: bw get item"), "", "Not found.")
         return
@@ -215,6 +249,9 @@ function installBwExecHarness(): void {
 describe("runtime auth flow with the Bitwarden-backed provider vault", () => {
   const originalHome = process.env.HOME
   const tempHomes: string[] = []
+  const minimaxReadProgress = [
+    "reading minimax credentials...",
+  ]
 
   afterEach(() => {
     process.env.HOME = originalHome
@@ -247,14 +284,15 @@ describe("runtime auth flow with the Bitwarden-backed provider vault", () => {
     expect(progress).toEqual([
       "checking VaultSaveBot's vault access...",
       "reading vault items for VaultSaveBot...",
+      ...minimaxReadProgress,
       "parsing provider credentials...",
       "opening VaultSaveBot's vault session...",
       "storing minimax credentials in VaultSaveBot's vault...",
-      "refreshing local provider snapshot from VaultSaveBot's vault...",
+      "refreshing in-memory provider credential pool from VaultSaveBot's vault...",
       "reading vault items for VaultSaveBot...",
-      "reading minimax credentials...",
+      ...minimaxReadProgress,
       "parsing provider credentials...",
-      "credentials stored at providers/minimax; local provider snapshot refreshed.",
+      "credentials stored at providers/minimax; in-memory provider credential pool refreshed.",
     ])
 
     const record = await readProviderCredentialRecord("VaultSaveBot", "minimax")
@@ -274,10 +312,124 @@ describe("runtime auth flow with the Bitwarden-backed provider vault", () => {
     expect(Buffer.from(createCommand!.stdin!, "base64").toString("utf8")).toContain("minimax-secret")
   })
 
+  it("stores fresh local Codex auth without starting browser login", async () => {
+    installBwExecHarness()
+    const tempHome = fs.mkdtempSync(path.join(os.tmpdir(), "auth-flow-bw-home-"))
+    tempHomes.push(tempHome)
+    process.env.HOME = tempHome
+    writeAgentConfig(tempHome, "CodexLocalBot")
+    const accessToken = makeJwt({ exp: 1_900_000_000, iat: 1_800_000_000 })
+    writeCodexAuth(tempHome, {
+      accessToken,
+      refreshToken: "codex-refresh-token",
+    })
+    const spawnSync = vi.fn((_cmd: string, args: string[]) => {
+      if (args[0] === "login" && args[1] === "status") {
+        return { status: 0, stdout: "Logged in using ChatGPT\n", stderr: "" }
+      }
+      throw new Error(`unexpected codex command: ${args.join(" ")}`)
+    }) as unknown as typeof import("node:child_process").spawnSync
+    const progress: string[] = []
+
+    const result = await runRuntimeAuthFlow({
+      agentName: "CodexLocalBot",
+      provider: "openai-codex",
+      onProgress: (message) => progress.push(message),
+    }, {
+      homeDir: tempHome,
+      spawnSync,
+      now: () => new Date("2026-05-05T00:00:00.000Z"),
+    })
+
+    expect(result.message).toBe("authenticated CodexLocalBot with openai-codex")
+    expect(spawnSync).toHaveBeenCalledWith("codex", ["login", "status"], { encoding: "utf8" })
+    expect(spawnSync).not.toHaveBeenCalledWith("codex", ["login"], expect.anything())
+    expect(progress).toEqual([
+      "checking CodexLocalBot's vault access...",
+      "reading vault items for CodexLocalBot...",
+      "reading openai-codex credentials...",
+      "parsing provider credentials...",
+      "checking local Codex login...",
+      "using existing openai-codex local login...",
+      "opening CodexLocalBot's vault session...",
+      "storing openai-codex credentials in CodexLocalBot's vault...",
+      "refreshing in-memory provider credential pool from CodexLocalBot's vault...",
+      "reading vault items for CodexLocalBot...",
+      "reading openai-codex credentials...",
+      "parsing provider credentials...",
+      "credentials stored at providers/openai-codex; in-memory provider credential pool refreshed.",
+    ])
+
+    const record = await readProviderCredentialRecord("CodexLocalBot", "openai-codex")
+    expect(record).toMatchObject({
+      ok: true,
+      record: {
+        provider: "openai-codex",
+        credentials: {
+          oauthAccessToken: accessToken,
+          refreshToken: "codex-refresh-token",
+          expiresAt: 1_900_000_000_000,
+        },
+      },
+    })
+  })
+
+  it("falls back to browser login when local Codex auth is expired", async () => {
+    installBwExecHarness()
+    const tempHome = fs.mkdtempSync(path.join(os.tmpdir(), "auth-flow-bw-home-"))
+    tempHomes.push(tempHome)
+    process.env.HOME = tempHome
+    writeAgentConfig(tempHome, "CodexExpiredBot")
+    writeCodexAuth(tempHome, {
+      accessToken: makeJwt({ exp: 1_700_000_000, iat: 1_600_000_000 }),
+      refreshToken: "old-refresh-token",
+    })
+    const freshAccessToken = makeJwt({ exp: 1_900_000_000, iat: 1_800_000_000 })
+    const spawnSync = vi.fn((_cmd: string, args: string[]) => {
+      if (args[0] === "login" && args[1] === "status") {
+        return { status: 0, stdout: "Logged in using ChatGPT\n", stderr: "" }
+      }
+      if (args[0] === "login") {
+        writeCodexAuth(tempHome, {
+          accessToken: freshAccessToken,
+          refreshToken: "fresh-refresh-token",
+        })
+        return { status: 0, stdout: "", stderr: "" }
+      }
+      throw new Error(`unexpected codex command: ${args.join(" ")}`)
+    }) as unknown as typeof import("node:child_process").spawnSync
+    const progress: string[] = []
+
+    await runRuntimeAuthFlow({
+      agentName: "CodexExpiredBot",
+      provider: "openai-codex",
+      onProgress: (message) => progress.push(message),
+    }, {
+      homeDir: tempHome,
+      spawnSync,
+      now: () => new Date("2026-05-05T00:00:00.000Z"),
+    })
+
+    expect(spawnSync).toHaveBeenCalledWith("codex", ["login", "status"], { encoding: "utf8" })
+    expect(spawnSync).toHaveBeenCalledWith("codex", ["login"], { stdio: "inherit" })
+    expect(progress).toContain("starting openai-codex browser login...")
+    const record = await readProviderCredentialRecord("CodexExpiredBot", "openai-codex")
+    expect(record).toMatchObject({
+      ok: true,
+      record: {
+        credentials: {
+          oauthAccessToken: freshAccessToken,
+          refreshToken: "fresh-refresh-token",
+          expiresAt: 1_900_000_000_000,
+        },
+      },
+    })
+  })
+
   it("surfaces a clear post-save refresh failure when the vault write succeeded but the snapshot reload did not", async () => {
     installBwExecHarness()
-    bwHarness.failNextListAllWith = "access denied by vault policy"
-    bwHarness.failListAllAtCall = 2
+    bwHarness.failNextGetWith = "access denied by vault policy"
+    bwHarness.failGetAtCall = 3
     const tempHome = fs.mkdtempSync(path.join(os.tmpdir(), "auth-flow-bw-home-"))
     tempHomes.push(tempHome)
     process.env.HOME = tempHome
@@ -291,17 +443,19 @@ describe("runtime auth flow with the Bitwarden-backed provider vault", () => {
       promptInput: async () => "minimax-secret",
       onProgress: (message) => progress.push(message),
     })).rejects.toThrow(
-      "provider authentication succeeded and minimax credentials were stored in VaultRefreshBot's vault, but the local provider snapshot refresh failed: bw CLI error: access denied by vault policy. Run 'ouro provider refresh --agent VaultRefreshBot' after fixing vault access, then run 'ouro auth verify --agent VaultRefreshBot'.",
+      "provider authentication succeeded and minimax credentials were stored in VaultRefreshBot's vault, but the in-memory provider credential pool refresh failed: bw CLI error: access denied by vault policy. Run 'ouro provider refresh --agent VaultRefreshBot' after fixing vault access, then run 'ouro auth verify --agent VaultRefreshBot'.",
     )
 
     expect(progress).toEqual([
       "checking VaultRefreshBot's vault access...",
       "reading vault items for VaultRefreshBot...",
+      ...minimaxReadProgress,
       "parsing provider credentials...",
       "opening VaultRefreshBot's vault session...",
       "storing minimax credentials in VaultRefreshBot's vault...",
-      "refreshing local provider snapshot from VaultRefreshBot's vault...",
+      "refreshing in-memory provider credential pool from VaultRefreshBot's vault...",
       "reading vault items for VaultRefreshBot...",
+      "reading minimax credentials...",
     ])
     expect(bwHarness.items.has("providers/minimax")).toBe(true)
   })
@@ -330,6 +484,7 @@ describe("runtime auth flow with the Bitwarden-backed provider vault", () => {
     expect(progress).toEqual([
       "checking VaultLockedBot's vault access...",
       "reading vault items for VaultLockedBot...",
+      ...minimaxReadProgress,
       "parsing provider credentials...",
       "opening VaultLockedBot's vault session...",
       "storing minimax credentials in VaultLockedBot's vault...",
@@ -359,6 +514,7 @@ describe("runtime auth flow with the Bitwarden-backed provider vault", () => {
     expect(progress).toEqual([
       "checking VaultServerBot's vault access...",
       "reading vault items for VaultServerBot...",
+      ...minimaxReadProgress,
       "parsing provider credentials...",
       "opening VaultServerBot's vault session...",
       "storing minimax credentials in VaultServerBot's vault...",
@@ -397,6 +553,7 @@ describe("runtime auth flow with the Bitwarden-backed provider vault", () => {
     expect(progress).toEqual([
       "checking VaultPromptBot's vault access...",
       "reading vault items for VaultPromptBot...",
+      ...minimaxReadProgress,
       "parsing provider credentials...",
       "opening VaultPromptBot's vault session...",
       "storing minimax credentials in VaultPromptBot's vault...",
